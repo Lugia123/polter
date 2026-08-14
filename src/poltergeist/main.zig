@@ -13,9 +13,11 @@
 pub const Fingerprint = @import("Fingerprint.zig");
 pub const Sampler = @import("Sampler.zig");
 pub const Watcher = @import("Watcher.zig");
+pub const screen = @import("screen.zig");
 
 test {
     _ = Fingerprint;
     _ = Sampler;
     _ = Watcher;
+    _ = screen;
 }

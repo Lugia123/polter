@@ -1260,6 +1260,41 @@ command: ?Command = null,
 /// Available since 1.3.0
 @"notify-on-command-finish-after": Duration = .{ .duration = 5 * std.time.ns_per_s },
 
+/// Watch this terminal for quiescence.
+///
+/// This is the sensing half of Poltergeist. When enabled, Ghostty samples
+/// the visible screen periodically and measures how long it has gone
+/// unchanged. It does not read, interpret, or act on what is on the screen.
+///
+/// Ghostty never decides what a still screen *means* -- whether the program
+/// is thinking, waiting, finished, or wedged. That judgement belongs to the
+/// supervising agent, which looks at the screen itself.
+///
+/// The default is `false`: nothing is watched unless you ask for it.
+@"poltergeist-watch": bool = false,
+
+/// How long the visible screen must go unchanged before this terminal is
+/// considered quiescent.
+///
+/// Only has an effect when `poltergeist-watch` is enabled.
+///
+/// Set this to how long you would wait before glancing at the terminal
+/// yourself. Too short and a program that pauses to think looks stuck; too
+/// long and a genuinely finished terminal sits idle. A screen that is being
+/// redrawn without changing -- a spinner, for instance -- still counts as
+/// unchanged, which is deliberate: the redraw tells you the program is
+/// alive, not that it is making progress.
+@"poltergeist-quiescence-after": Duration = .{ .duration = 3 * std.time.ns_per_min },
+
+/// How long to wait before reporting a terminal that is *still* quiescent.
+///
+/// Only has an effect when `poltergeist-watch` is enabled.
+///
+/// Without this, a terminal parked overnight would report itself on every
+/// sample. The first report fires at `poltergeist-quiescence-after`; this
+/// controls every one after that.
+@"poltergeist-quiescence-repeat": Duration = .{ .duration = 15 * std.time.ns_per_min },
+
 /// Extra environment variables to pass to commands launched in a terminal
 /// surface. The format is `env=KEY=VALUE`.
 ///

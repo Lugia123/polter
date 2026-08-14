@@ -45,6 +45,10 @@ terminal: terminalpkg.Terminal,
 /// The shared render state
 renderer_state: *renderer.State,
 
+/// pty bytes seen since Poltergeist last sampled. Written by the reader
+/// thread, drained by the sampler on the writer thread.
+poltergeist_bytes: std.atomic.Value(u64) = .init(0),
+
 /// A handle to wake up the renderer. This hints to the renderer that
 /// a repaint should happen.
 renderer_wakeup: xev.Async,
@@ -171,6 +175,11 @@ pub const DerivedConfig = struct {
     enquiry_response: []const u8,
     conditional_state: configpkg.ConditionalState,
 
+    /// Poltergeist quiescence sampling. See `poltergeist-watch`.
+    poltergeist_watch: bool,
+    poltergeist_quiescence_ms: u64,
+    poltergeist_repeat_ms: u64,
+
     pub fn init(
         alloc_gpa: Allocator,
         config: *const configpkg.Config,
@@ -206,6 +215,10 @@ pub const DerivedConfig = struct {
             .clipboard_write = config.@"clipboard-write",
             .enquiry_response = try alloc.dupe(u8, config.@"enquiry-response"),
             .conditional_state = config._conditional_state,
+
+            .poltergeist_watch = config.@"poltergeist-watch",
+            .poltergeist_quiescence_ms = config.@"poltergeist-quiescence-after".duration / std.time.ns_per_ms,
+            .poltergeist_repeat_ms = config.@"poltergeist-quiescence-repeat".duration / std.time.ns_per_ms,
 
             // This has to be last so that we copy AFTER the arena allocations
             // above happen (Zig assigns in order).
@@ -654,6 +667,17 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
 
 /// Process output from readdata but the lock is already held.
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
+    // Count pty output for Poltergeist. This runs on the reader thread while
+    // the sampler runs on the writer thread, hence the atomic; it is a plain
+    // add on the hot path and is not read unless sampling is on.
+    //
+    // This is reported to the supervisor alongside the quiescence duration,
+    // never used to decide quiescence. A program can redraw itself forever
+    // without changing anything on screen, and a screen can change with no
+    // pty output at all (scrolling, selection, IME preedit), so neither
+    // number substitutes for the other.
+    _ = self.poltergeist_bytes.fetchAdd(buf.len, .monotonic);
+
     // Schedule a render. We can call this first because we have the lock.
     self.terminal_stream.handler.queueRender() catch unreachable;
 

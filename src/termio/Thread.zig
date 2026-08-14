@@ -20,8 +20,10 @@ const crash = @import("../crash/main.zig");
 const internal_os = @import("../os/main.zig");
 const termio = @import("../termio.zig");
 const renderer = @import("../renderer.zig");
+const poltergeist = @import("../poltergeist/main.zig");
 
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 const log = std.log.scoped(.io_thread);
 
 /// This stores the information that is coalesced.
@@ -36,6 +38,24 @@ const Coalesce = struct {
 /// The number of milliseconds before we reset the synchronized output flag
 /// if the running program hasn't already.
 const sync_reset_ms = 1000;
+
+/// How often Poltergeist samples the screen. A sample is one pass over the
+/// visible rows hashing raw cell bytes, so this is cheap; the interval is
+/// about how promptly we notice a terminal has gone still, not about cost.
+const quiescence_sample_ms = 1000;
+
+/// Poltergeist's sampling state. Grouped so that the whole feature is one
+/// optional field on the thread and costs nothing when disabled.
+const Quiescence = struct {
+    timer: xev.Timer,
+    c: xev.Completion = .{},
+    watcher: poltergeist.Watcher,
+
+    fn deinit(self: *Quiescence) void {
+        self.timer.deinit();
+        self.watcher.deinit();
+    }
+};
 
 /// The number of milliseconds between each movement during selection scrolling.
 const selection_scroll_ms = 15;
@@ -72,6 +92,20 @@ coalesce_data: Coalesce = .{},
 sync_reset: xev.Timer,
 sync_reset_c: xev.Completion = .{},
 sync_reset_cancel_c: xev.Completion = .{},
+
+/// Poltergeist's quiescence sampler. This lives on the IO thread rather
+/// than the renderer thread on purpose: the renderer stops rebuilding
+/// frames entirely while a surface is not visible (see the visibility
+/// check in `renderer/Thread.zig`), and watching a terminal that has been
+/// left running in a background window overnight is the main thing
+/// Poltergeist exists to do. This thread runs regardless of visibility.
+///
+/// Null when Poltergeist is disabled, which is the default.
+quiescence: ?Quiescence = null,
+
+/// Baseline for the monotonic millisecond clock handed to the sampler.
+/// Taken once when sampling starts so the numbers are small and monotonic.
+quiescence_epoch: std.Io.Timestamp = undefined,
 
 flags: packed struct {
     /// This is set to true only when an abnormal exit is detected. It
@@ -125,6 +159,7 @@ pub fn init(
 /// Clean up the thread. This is only safe to call once the thread
 /// completes executing; the caller must join prior to this.
 pub fn deinit(self: *Thread) void {
+    if (self.quiescence) |*q| q.deinit();
     self.scroll.deinit();
     self.coalesce.deinit();
     self.sync_reset.deinit();
@@ -273,6 +308,15 @@ fn threadMain_(self: *Thread, io: *termio.Termio) !void {
     mailbox.wakeup.wait(&self.loop, &self.wakeup_c, CallbackData, &cb, wakeupCallback);
     self.stop.wait(&self.loop, &self.stop_c, CallbackData, &cb, stopCallback);
 
+    // Start Poltergeist's quiescence sampling if this surface is watched.
+    // Failing to set it up must never take the terminal down with it: a
+    // monitoring feature is not worth a dead pty.
+    if (io.config.poltergeist_watch) {
+        self.startQuiescence(io, &cb) catch |err| {
+            log.warn("poltergeist: could not start quiescence sampling err={}", .{err});
+        };
+    }
+
     // Run
     log.debug("starting IO thread", .{});
     defer log.debug("starting IO thread shutdown", .{});
@@ -396,6 +440,120 @@ fn handleResize(self: *Thread, cb: *CallbackData, resize: renderer.Size) void {
         cb,
         coalesceCallback,
     );
+}
+
+/// Set up and arm Poltergeist's quiescence sampling.
+fn startQuiescence(
+    self: *Thread,
+    io: *termio.Termio,
+    cb: *CallbackData,
+) !void {
+    assert(self.quiescence == null);
+
+    var timer = try xev.Timer.init();
+    errdefer timer.deinit();
+
+    self.quiescence = .{
+        .timer = timer,
+        .watcher = .init(self.alloc, .{
+            .quiescence_ms = io.config.poltergeist_quiescence_ms,
+            .repeat_ms = io.config.poltergeist_repeat_ms,
+        }),
+    };
+    self.quiescence_epoch = .now(global.io(), .awake);
+
+    log.info("poltergeist: watching for quiescence after {d}ms", .{
+        io.config.poltergeist_quiescence_ms,
+    });
+
+    self.armQuiescence(cb);
+}
+
+fn armQuiescence(self: *Thread, cb: *CallbackData) void {
+    const q = &(self.quiescence orelse return);
+    q.timer.run(
+        &self.loop,
+        &q.c,
+        quiescence_sample_ms,
+        CallbackData,
+        cb,
+        quiescenceCallback,
+    );
+}
+
+fn quiescenceCallback(
+    cb_: ?*CallbackData,
+    _: *xev.Loop,
+    _: *xev.Completion,
+    r: xev.Timer.RunError!void,
+) xev.CallbackAction {
+    _ = r catch |err| switch (err) {
+        error.Canceled => return .disarm,
+        else => {
+            log.warn("poltergeist: sample timer error err={}", .{err});
+            return .disarm;
+        },
+    };
+
+    const cb = cb_ orelse return .disarm;
+    cb.self.sampleQuiescence(cb.io);
+
+    // Re-arm by hand, the way the selection scroll timer does, rather than
+    // returning `.rearm`: the interval is fixed and this keeps the arming in
+    // one place.
+    cb.self.armQuiescence(cb);
+    return .disarm;
+}
+
+/// Take one quiescence sample. Never blocks and never fails loudly: this is
+/// a passive observer and must not be able to disturb the terminal.
+fn sampleQuiescence(self: *Thread, io: *termio.Termio) void {
+    const q = &(self.quiescence orelse return);
+
+    // Never wait on the terminal lock. If the renderer or the parser holds
+    // it we simply skip this tick; the next one is a second away, and a
+    // monitoring feature has no business adding contention to the hot path.
+    if (!io.renderer_state.mutex.tryLock()) return;
+    defer io.renderer_state.mutex.unlock(global.io());
+
+    const now: std.Io.Timestamp = .now(global.io(), .awake);
+    const now_ms: u64 = @intCast(std.math.clamp(
+        self.quiescence_epoch.durationTo(now).toMilliseconds(),
+        0,
+        std.math.maxInt(i64),
+    ));
+
+    // Drain the reader thread's byte counter into this sample.
+    q.watcher.noteBytes(io.poltergeist_bytes.swap(0, .monotonic));
+
+    // The active screen, so that a program on the alternate screen (a TUI,
+    // which is exactly what an agent CLI is) is what gets watched.
+    const event = poltergeist.screen.sample(
+        &q.watcher,
+        io.renderer_state.terminal.screens.active,
+        now_ms,
+    ) catch |err| {
+        log.warn("poltergeist: sample failed err={}", .{err});
+        return;
+    } orelse return;
+
+    // S0 reports to the log and nowhere else. Telling the supervisor is a
+    // separate step, deliberately built only once the judgement of when to
+    // report has been checked against real sessions.
+    switch (event) {
+        .quiescent => |r| log.info(
+            "poltergeist: quiescent quiet_ms={d} silent_ms={d} rows={d}",
+            .{ r.quiet_ms, r.silent_ms, r.total_rows },
+        ),
+        .still_quiescent => |r| log.info(
+            "poltergeist: still quiescent quiet_ms={d} silent_ms={d}",
+            .{ r.quiet_ms, r.silent_ms },
+        ),
+        .resumed => |r| log.info(
+            "poltergeist: resumed after quiet_ms={d}",
+            .{r.quiet_ms},
+        ),
+    }
 }
 
 fn syncResetCallback(
