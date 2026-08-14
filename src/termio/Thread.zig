@@ -470,7 +470,10 @@ fn startQuiescence(
 }
 
 fn armQuiescence(self: *Thread, cb: *CallbackData) void {
-    const q = &(self.quiescence orelse return);
+    // `if (opt) |*p|` rather than `&(opt orelse ...)`: the completion we
+    // hand the loop must point at the field itself, and this form says so
+    // without leaning on result-location semantics to get there.
+    const q = if (self.quiescence) |*p| p else return;
     q.timer.run(
         &self.loop,
         &q.c,
@@ -508,7 +511,7 @@ fn quiescenceCallback(
 /// Take one quiescence sample. Never blocks and never fails loudly: this is
 /// a passive observer and must not be able to disturb the terminal.
 fn sampleQuiescence(self: *Thread, io: *termio.Termio) void {
-    const q = &(self.quiescence orelse return);
+    const q = if (self.quiescence) |*p| p else return;
 
     // Never wait on the terminal lock. If the renderer or the parser holds
     // it we simply skip this tick; the next one is a second away, and a
