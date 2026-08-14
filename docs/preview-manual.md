@@ -410,6 +410,43 @@ shellcheck --check-sourced --severity=warning $(find . \( -name "*.sh" -o -name 
 - **`HACKING.md:83` 提到的 `/gh-issue` 命令并不存在** — `.agents/` 下当前只有 `.agents/commands/review-branch` 与 `.agents/skills/writing-commit-messages/SKILL.md` 两个文件，该段文档已过时。
 - **铁律** — 本仓库 `AGENTS.md:34-39` 明令：永远不要创建 issue，永远不要创建 PR。
 
+## 在没有完整 Xcode 的 macOS 上开发
+
+只装了 Command Line Tools（没装 Xcode.app）时，`zig build` 和 `zig build test` **都会失败**，报：
+
+```text
+xcrun: error: unable to find utility "metal", not a developer tool or in PATH
+```
+
+原因是 metallib 这一步对任何 Darwin 目标都无条件挂接（`src/build/SharedDeps.zig:499-505`，构造在 `:131-136`），`-Drenderer=opengl` 也绕不过——它是按目标操作系统挂的，不是按渲染后端。
+
+根治办法是装完整 Xcode 26 加 Metal Toolchain。装不了的时候，纯 Zig 改动仍有两条可用的验证路径：
+
+### 1. 跑独立模块的单元测试
+
+不依赖 build 系统注入模块（如 `terminal_options`）的文件，可以直接跑：
+
+```sh
+zig test src/poltergeist/Watcher.zig
+```
+
+注意 `zig test` 的模块根是**该文件所在目录**，所以文件里不能 `@import("../…")`，否则会报 `import of file outside module path`。跨目录 import 的文件只能走下面第 2 条。
+
+### 2. 交叉编译做全量类型检查
+
+编到非 Darwin 目标就不会挂 metallib：
+
+```sh
+zig build test -Dtarget=x86_64-linux-gnu -Dapp-runtime=none -Demit-test-exe
+```
+
+- `-Dapp-runtime=none` 是必需的：Linux 默认 `gtk`（`src/apprt/runtime.zig:16-19`），会去找本机没有的 `gtk/gtk.h` 与 `adwaita.h`。
+- 末尾必然报 `the host system ... is unable to execute binaries from the target`。那是**运行**步骤失败，不是编译失败。只看 `^src/` 开头的行来判断有没有真错误。
+
+这条能覆盖全部 Zig 代码的类型检查，但**覆盖不到 macOS 专有的条件编译分支**。实测遇到过只在 macOS 目标下才暴露的编译错误，所以只跑 Linux 目标是不够的。
+
+> 如果你确实需要验证 macOS 目标的编译，可以临时把 `src/build/MetallibStep.zig` 里那两条 `xcrun` 调用换成 `/usr/bin/touch`（产出空的假 metallib），跑 `zig build test -Dtarget=aarch64-macos -Demit-test-exe` 做类型检查，然后**立刻还原该文件**。假 metallib 只够骗过编译，链接和运行都会失败，绝不可提交。
+
 ## Nix VM 与集成测试
 
 本文只指路，不展开。
