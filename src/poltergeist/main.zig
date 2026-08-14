@@ -10,12 +10,14 @@
 //! See `docs/poltergeist/README.md` for the design, and
 //! `docs/poltergeist/sensing.md` for why the sensing layer is this thin.
 
+pub const Bus = @import("Bus.zig");
 pub const Fingerprint = @import("Fingerprint.zig");
 pub const Sampler = @import("Sampler.zig");
 pub const Watcher = @import("Watcher.zig");
 pub const screen = @import("screen.zig");
 
 test {
+    _ = Bus;
     _ = Fingerprint;
     _ = Sampler;
     _ = Watcher;
