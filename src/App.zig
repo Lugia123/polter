@@ -237,7 +237,7 @@ fn poltergeistReport(
 
     const notice = self.poltergeist.report(from, event, now_ms) orelse return;
 
-    const supervisor = self.surfaceById(notice.to) orelse {
+    const supervisor = self.findSurfaceByID(notice.to) orelse {
         // The supervisor's terminal went away between the report and here.
         self.poltergeist.unregister(notice.to);
         return;
@@ -255,21 +255,18 @@ fn poltergeistReport(
     };
 }
 
-/// Find a live surface by the id Poltergeist and child processes know it by.
-fn surfaceById(self: *App, id: poltergeistpkg.Bus.Id) ?*Surface {
-    for (self.surfaces.items) |rt_surface| {
-        const surface = rt_surface.core();
-        if (surface.id == id) return surface;
-    }
-    return null;
-}
-
 pub fn addSurface(
     self: *App,
     rt_surface: *apprt.Surface,
 ) Allocator.Error!void {
     try self.surfaces.append(self.alloc, rt_surface);
-    try self.poltergeist.register(rt_surface.core().id);
+
+    // Deliberately not registering with the Poltergeist bus here. Both
+    // apprts call this *before* the core surface exists -- GTK's `core()`
+    // unwraps a null and embedded's is still `undefined` -- so there is no
+    // id to read yet. The bus registers a terminal the first time it is
+    // named as supervisor or put under watch, which is the only point at
+    // which it needs to know about it anyway.
 
     // Since we have non-zero surfaces, we can cancel the quit timer.
     // It is up to the apprt if there is a quit timer at all and if it
@@ -295,8 +292,6 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
             self.focused_surface = null;
         }
     }
-
-    self.poltergeist.unregister(rt_surface.core().id);
 
     var i: usize = 0;
     while (i < self.surfaces.items.len) {

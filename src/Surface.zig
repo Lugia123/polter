@@ -804,6 +804,12 @@ pub fn init(
 }
 
 pub fn deinit(self: *Surface) void {
+    // Forget this terminal in the Poltergeist bus. Done here rather than in
+    // `App.deleteSurface` because both apprts reach that through an
+    // `errdefer` that can fire before the core surface exists, where there
+    // is no id to read. Here `self` is the core surface by definition.
+    self.app.poltergeist.unregister(self.id);
+
     // Stop search thread
     if (self.search) |*s| s.deinit();
 
@@ -3336,6 +3342,16 @@ const notice_quiet_keyboard_ms = 10 * std.time.ms_per_s;
 fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
     if (text.len == 0) return;
 
+    // A terminal whose child has exited is showing the user why. Typing
+    // into it would send the synthesized return down `keyCallback`'s
+    // "any key closes the window" path and take that away unconfirmed --
+    // and a supervisor with no process left is not supervising anything
+    // anyway.
+    if (self.child_exited) {
+        log.info("poltergeist: notice dropped, the child process has exited", .{});
+        return;
+    }
+
     // Never interrupt someone who is currently using this terminal. A
     // notice landing mid-sentence would both corrupt what they were writing
     // and submit it. Skipping costs nothing: the sampler says the same
@@ -5505,6 +5521,15 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
 
         .poltergeist_toggle_watch => {
             const bus = &self.app.poltergeist;
+
+            // The supervisor is not one of the terminals it watches. Say so
+            // rather than silently doing nothing, or the keybind looks
+            // broken.
+            if (bus.supervisor == self.id) {
+                log.info("poltergeist: this terminal is the supervisor, so it is not watched", .{});
+                return true;
+            }
+
             const watched = if (bus.get(self.id)) |e| e.role == .watched else false;
             if (watched) {
                 bus.unwatch(self.id);
@@ -5513,6 +5538,12 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 try bus.watch(self.id);
                 log.info("poltergeist: now watching this terminal", .{});
             }
+
+            // Marking a terminal watched has to actually start the sampler.
+            // Otherwise this only records an intention: `poltergeist-watch`
+            // defaults to off, so with a default config nothing would ever
+            // look at the terminal and no notice could ever arrive.
+            self.queueIo(.{ .poltergeist_watch = !watched }, .locked);
             return true;
         },
 

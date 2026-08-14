@@ -2,7 +2,7 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**设计草案，尚未实现**。描述 Ghostty 现状的句子均带 路径:行号；描述 Poltergeist 行为的句子是设计意图。
+> 状态：**部分已实现**。已落地：监督关系与上班/下班状态（`src/poltergeist/Bus.zig`）、「无限工作模式禁止下班」与「总管不得改工作模式」两条程序硬闸、静止通知注入（`src/Surface.zig` 的 `typePoltergeistNotice`）、两个键绑定 action。**尚未实现**：监工模式的 skill 执行、确认策略与通知时间段（R3）、下班模式的「连续 n 次」计数——这些要等 S2 的 MCP 与 skill 体系。
 
 ## 本章覆盖什么
 

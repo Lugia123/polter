@@ -123,10 +123,14 @@ const Entry = struct {
 };
 
 pub const Config = struct {
-    /// Minimum gap between notices about the same terminal. The sampler
-    /// already limits repeats; this is a second floor so that a terminal
-    /// flapping between quiet and busy cannot flood the supervisor.
-    min_notice_gap_ms: u64 = 30 * std.time.ms_per_s,
+    /// Minimum gap between notices about the same terminal.
+    ///
+    /// A backstop, not the main control: how often a still terminal is
+    /// mentioned is the user's to set through the sampler's repeat
+    /// interval, and a large value here would silently override that. This
+    /// only exists to stop a terminal flapping between quiet and busy from
+    /// flooding the supervisor.
+    min_notice_gap_ms: u64 = std.time.ms_per_s,
 };
 
 alloc: Allocator,
@@ -252,10 +256,16 @@ pub fn report(
         .resumed => |r| .{ Notice.Kind.resumed, r },
     };
 
-    if (e.last_notice_ms) |last| {
-        if (now_ms -| last < self.config.min_notice_gap_ms) return null;
+    // `resumed` is a one-shot: it marks a transition that will not be
+    // repeated, so dropping it does not merely delay a notice -- it leaves
+    // the supervisor believing a terminal is still stuck long after it went
+    // back to work. Only the repeatable kinds are rate limited.
+    if (kind != .resumed) {
+        if (e.last_notice_ms) |last| {
+            if (now_ms -| last < self.config.min_notice_gap_ms) return null;
+        }
+        e.last_notice_ms = now_ms;
     }
-    e.last_notice_ms = now_ms;
 
     return .{
         .to = to,
@@ -311,6 +321,13 @@ fn testBus() Bus {
     return .init(testing.allocator, .{ .min_notice_gap_ms = 1000 });
 }
 
+test "the default notice gap cannot override the sampler's repeat interval" {
+    // A large default here would silently take the repeat interval away
+    // from the user, who sets it through poltergeist-quiescence-repeat.
+    const d: Config = .{};
+    try testing.expect(d.min_notice_gap_ms <= std.time.ms_per_s);
+}
+
 test "no supervisor means no notices" {
     var b = testBus();
     defer b.deinit();
@@ -348,6 +365,48 @@ test "an unwatched terminal is not reported" {
     try b.setSupervisor(boss);
     try b.register(worker); // known, but not watched
     try testing.expect(b.report(worker, quiet(180_000), 0) == null);
+}
+
+test "a resumed notice is never rate limited away" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+
+    // Quiescent first, which arms the rate limiter.
+    try testing.expect(b.report(worker, quiet(180_000), 0) != null);
+
+    // Coming back to work is a one-shot transition. Dropping it would leave
+    // the supervisor thinking this terminal is still stuck.
+    const back = b.report(worker, .{ .resumed = .{
+        .quiet_ms = 180_000,
+        .silent_ms = 0,
+        .changed_rows = 12,
+        .total_rows = 24,
+    } }, 100) orelse return error.TestExpectedNotice;
+    try testing.expectEqual(Notice.Kind.resumed, back.kind);
+}
+
+test "a resumed notice does not reset the gap for repeatable kinds" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+
+    try testing.expect(b.report(worker, quiet(180_000), 0) != null);
+    _ = b.report(worker, .{ .resumed = .{
+        .quiet_ms = 180_000,
+        .silent_ms = 0,
+        .changed_rows = 1,
+        .total_rows = 24,
+    } }, 100);
+
+    // The gap still runs from the quiescent notice at t=0, not from the
+    // resumed one at t=100.
+    try testing.expect(b.report(worker, quiet(180_000), 999) == null);
+    try testing.expect(b.report(worker, quiet(180_000), 1000) != null);
 }
 
 test "notices about one terminal are rate limited" {

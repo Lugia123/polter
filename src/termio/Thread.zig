@@ -392,6 +392,7 @@ fn drainMailbox(
                 // threshold, has to apply here or the setting looks broken.
                 self.syncQuiescence(io, cb);
             },
+            .poltergeist_watch => |v| self.setQuiescenceWatch(io, cb, v),
             .inspector => |v| self.flags.has_inspector = v,
             .resize => |v| self.handleResize(cb, v),
             .size_report => |v| try io.sizeReport(data, v),
@@ -497,6 +498,28 @@ fn samplerConfig(io: *termio.Termio) poltergeist.Sampler.Config {
         .quiescence_ms = quiescenceMs(io.config.poltergeist_quiescence_ms),
         .repeat_ms = quiescenceMs(io.config.poltergeist_repeat_ms),
     };
+}
+
+/// Turn sampling on or off for this terminal at runtime, independently of
+/// the config. This is what the `poltergeist_toggle_watch` keybind reaches.
+fn setQuiescenceWatch(
+    self: *Thread,
+    io: *termio.Termio,
+    cb: *CallbackData,
+    want: bool,
+) void {
+    const q = if (self.quiescence) |*p| p else {
+        if (!want) return;
+        self.startQuiescence(io, cb) catch |err| {
+            log.warn("poltergeist: could not start quiescence sampling err={}", .{err});
+        };
+        return;
+    };
+
+    if (q.enabled == want) return;
+    q.enabled = want;
+    if (want) self.armQuiescence(cb);
+    log.info("poltergeist: sampling {s}", .{if (want) "on" else "off"});
 }
 
 /// Bring sampling in line with the current config. Called after a config

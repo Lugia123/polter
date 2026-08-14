@@ -2,7 +2,7 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**设计草案，尚未实现**。描述 Ghostty 现状的句子均带 路径:行号；描述 Poltergeist 行为的句子是设计意图。
+> 状态：**尚未实现**（S2）。`Bus` 里已经有工具面要用的状态与硬闸（`src/poltergeist/Bus.zig`），但 MCP sidecar、socket、工具本身都还没有。
 
 ## 本章覆盖什么
 

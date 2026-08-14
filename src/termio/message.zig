@@ -53,6 +53,14 @@ pub const Message = union(enum) {
     /// [XTWINOPS](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h4-Functions-using-CSI-_-ordered-by-the-final-character-lparen-s-rparen:CSI-Ps;Ps;Ps-t.1EB0)).
     size_report: SizeReport,
 
+    /// Turn Poltergeist's quiescence sampling on or off for this terminal.
+    ///
+    /// Separate from the `poltergeist-watch` config, which only decides
+    /// whether a terminal starts out being sampled. Putting a terminal
+    /// under watch at runtime has to be able to start the sampler, or the
+    /// keybind would mark it watched while nothing ever looked at it.
+    poltergeist_watch: bool,
+
     /// Clear the screen.
     clear_screen: struct {
         /// Include clearing the history
