@@ -56,6 +56,19 @@ pub fn isQuiescent(self: *const Watcher) bool {
     return self.sampler.isQuiescent();
 }
 
+/// Apply new thresholds, keeping everything observed so far.
+pub fn setConfig(self: *Watcher, config: Sampler.Config) void {
+    self.sampler.setConfig(config);
+}
+
+/// Record that a sample could not be taken at all -- typically because the
+/// terminal lock was busy, which is what a terminal under load looks like
+/// from here. The window counts as activity rather than as stillness; see
+/// `Sampler.noteActivity`.
+pub fn noteMissedSample(self: *Watcher, now_ms: u64) ?Sampler.Event {
+    return self.sampler.noteActivity(now_ms);
+}
+
 /// Begin a sample covering `row_count` rows. Feed every row into the
 /// returned builder, then pass it to `end`.
 pub fn begin(self: *Watcher, row_count: usize) Allocator.Error!Fingerprint.Builder {
@@ -232,6 +245,44 @@ test "abort leaves the sampler untouched" {
     // should still cross into quiescence on schedule.
     const e = (try feed(&w, 1000, screen)) orelse return error.TestExpectedEvent;
     try testing.expectEqual(@as(u64, 1000), e.quiescent.quiet_ms);
+}
+
+test "a missed sample stops a change-and-change-back from reading as quiet" {
+    var w: Watcher = .init(testing.allocator, fast);
+    defer w.deinit();
+
+    const screen: []const []const u8 = &.{"frame A"};
+    try testing.expect(try feed(&w, 0, screen) == null);
+
+    // Samples we could not take, during which the screen really did move --
+    // this is the terminal-under-load case, where the lock is never free.
+    var t: u64 = 100;
+    while (t < 2000) : (t += 100) try testing.expect(w.noteMissedSample(t) == null);
+
+    // It happens to look identical again. That must not be read as 2s of
+    // stillness.
+    try testing.expect(try feed(&w, 2000, screen) == null);
+    try testing.expect(!w.isQuiescent());
+
+    // Quiet is measured from the end of the gap.
+    const e = (try feed(&w, 3000, screen)) orelse return error.TestExpectedEvent;
+    try testing.expectEqual(@as(u64, 1000), e.quiescent.quiet_ms);
+}
+
+test "setConfig reaches an already running watcher" {
+    var w: Watcher = .init(testing.allocator, .{
+        .quiescence_ms = 60_000,
+        .repeat_ms = 60_000,
+    });
+    defer w.deinit();
+
+    const screen: []const []const u8 = &.{"steady"};
+    _ = try feed(&w, 0, screen);
+    try testing.expect(try feed(&w, 5000, screen) == null);
+
+    w.setConfig(.{ .quiescence_ms = 1000, .repeat_ms = 60_000 });
+    const e = (try feed(&w, 5001, screen)) orelse return error.TestExpectedEvent;
+    try testing.expectEqual(@as(u64, 5001), e.quiescent.quiet_ms);
 }
 
 test "an empty screen is a valid sample" {

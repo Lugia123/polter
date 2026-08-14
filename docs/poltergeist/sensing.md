@@ -2,7 +2,7 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**设计草案，尚未实现**。描述 Ghostty 现状的句子均带 路径:行号；描述 Poltergeist 行为的句子是设计意图。
+> 状态：**S0 已实现**（`src/poltergeist/`，接线在 `src/termio/Thread.zig`）。本章其余部分是设计推导，实现与设计的出入记在「实现与本章的出入」一节。
 
 ## 本章覆盖什么
 
@@ -125,6 +125,8 @@ Ghostty 已解析了几路语义零歧义的信号：OSC 9 / 777 桌面通知 `s
 
 **E 做粗筛（廉价、总是有效）+ F 做确认（精确、跨可见性一致）；B 只在可见时作为提前唤醒。** 分工的理由：E 是充分条件的廉价近似（没字节 → 一定没内容变化），F 负责排掉「有字节但可见网格没变」的情况（例如写的是不改变网格的转义序列）。
 
+> **实现没有采用这条分工**，只做了 F，E 降级为随事件一起上报的元数据。原因见下面「实现与本章的出入」第 1 条。
+
 ### 定时器挂哪
 
 挂 termio 线程既有的 libxev 循环（`src/termio/Thread.zig:279`），新增第四个 `xev.Timer`，照既有三个 timer 的写法（声明 `src/termio/Thread.zig:60`、`:65`、`:72`；init 在 `:104`、`:108`、`:112`；deinit 在 `:128-130`）。理由：
@@ -152,6 +154,8 @@ Ghostty 已解析了几路语义零歧义的信号：OSC 9 / 777 桌面通知 `s
                                   ->  发一次静止事件，置「已上报」
 ```
 
+实现落在 `src/poltergeist/Sampler.zig` 的 `observe` 与 `noteActivity`，第 1 步未实现（理由见下节），第 2 步对应 `noteActivity`，第 3 步对应 `src/poltergeist/screen.zig` 的 `sample`，第 4、5 步对应 `observe`。
+
 **去抖是边沿触发**：一次静止只报一次，直到指纹再变才复位。这样总管不会被同一段静止反复叫醒。
 
 ### 屏幕指纹为什么用 Wyhash
@@ -176,6 +180,24 @@ Ghostty **不把光标闪烁计入 dirty**。闪烁只翻转渲染线程的私�
 
 滚动、选区、IME 会让屏幕变而 pty 无字节（出处见候选 E）。挂机过夜时不发生；有人在场时误判成「不静止」是安全方向的错误（少催一次），不需要额外处理。
 
+## 实现与本章的出入
+
+S0 落地时有三处与上面的推导不一致，记在这里而不是偷偷改掉，因为每一处都是有理由的判断。
+
+**1. 没有做「字节静默粗筛」，每一拍都算指纹。**
+
+本章推荐 E+F 分工，实现只做了 F。粗筛那条门是「最近有输出 → 跳过采样」，它成立，但把它装上之后，一个正在干活的终端几乎每一拍都会走粗筛路径，于是整套机制退化成「pty 静默多久」——而滚动、选区、IME 预编辑都会改变屏幕却不产生任何 pty 字节，这些恰恰是有人在场的信号，退化后全看不见了。
+
+代价是每秒一次全屏哈希。200×60 的屏幕是 96 KB，Wyhash 一次约几十微秒，1 Hz 下可以忽略，不值得为它牺牲正确性。字节数仍然每拍上报（`silent_ms`），总管照样能自己分辨「一直在刷但没变化」和「彻底没动静」。
+
+**2. `tryLock` 失败按「有活动」处理，这条实现了，而且是必须的。**
+
+第一版实现写成了拿不到锁就直接返回，采样器完全不知道有一拍被跳过。这是错的：持续输出时解析线程几乎焊住这把锁，一段被跳过的窗口里屏幕完全可能变了又变回来，之后就会被算成「一直静止」。现在走 `Sampler.noteActivity`，把未知窗口当作活动，并把上一次指纹标记为失效，使下一次成功采样无条件算作一次变化。
+
+**3. `changed_rows` 报的是「上一次真变化时变了几行」，不是本次采样的变化行数。**
+
+静止事件里本次采样的变化行数按定义恒为 0，说不了任何事情。有用的是「最后发生的那件事，是整屏重绘还是某一行在跳」。
+
 ## 静止事件的定义与配置
 
 ### 事件字段只有四个
@@ -195,15 +217,27 @@ Ghostty **不把光标闪烁计入 dirty**。闪烁只翻转渲染线程的私�
 2. `Surface` 侧处理该消息 —— 现有的 `.start_command` / `.stop_command` 就是在 `src/Surface.zig:1141-1170` 这样处理的。
 3. 需要跨到 app 线程时走 `App.Mailbox.push`，它在推入后会顺带 `rt_app.wakeup()`（`src/App.zig:617-621`）—— 这正是没有周期 tick 时把事件送上去的办法。
 
-### 配置项只有三个
+### 配置项
 
-以下为设计示意，仓库中尚不存在（全仓 `src/` 与 `macos/` 下 grep 无 `polter` 命中）。
+实际实现了三个，定义在 `src/config/Config.zig`：
 
 ```ini
-polter-quiescence-threshold = 2m
-polter-sample-interval = 1s
-polter-structured-signals = false
+poltergeist-watch = true             # 默认 false，不开就什么都不做
+poltergeist-quiescence-after = 3m    # 屏幕静止多久算静止
+poltergeist-quiescence-repeat = 15m  # 仍在静止时隔多久再报一次
 ```
+
+与本章原先设想的三个名字对不上，逐条说明：
+
+| 本章原名                      | 实际                                                                                               |
+| ----------------------------- | -------------------------------------------------------------------------------------------------- |
+| `polter-quiescence-threshold` | 改名 `poltergeist-quiescence-after`，与 `notify-on-command-finish-after` 同构                      |
+| `polter-sample-interval`      | **没做成配置**，硬编码 `quiescence_sample_ms = 1000`（`src/termio/Thread.zig`）                    |
+| `polter-structured-signals`   | **没做**，S0 不消费 OSC，等 S1 再说                                                                |
+| —                             | 新增 `poltergeist-watch` 总开关，与 R4「没有一键开关」不冲突：它是「要不要观察」，不是「启停总管」 |
+| —                             | 新增 `poltergeist-quiescence-repeat`，本章原先漏了这一项                                           |
+
+两个 `Duration` 换算成毫秒时取 `@max(采样间隔, ...)` 下限。整除会把亚毫秒值变成 0，而阈值为 0 会让每个终端在第二次采样就「静止」，重复间隔为 0 会让日志每秒刷一行。
 
 字段风格照仓库里语义最接近的一条 —— `notify-on-command-finish-after`（`src/config/Config.zig:1261`，类型 `Duration` 定义在 `src/config/Config.zig:10047`，消费点 `src/apprt/gtk/class/surface.zig:1176`），那也是一条「超过某时长就通知」的配置。默认值 `2m` / `1s` 是**设计建议**，不是实测结论，待 README 未决问题 1 在 S0 阶段定夺。
 

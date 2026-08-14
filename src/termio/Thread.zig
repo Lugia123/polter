@@ -51,11 +51,31 @@ const Quiescence = struct {
     c: xev.Completion = .{},
     watcher: poltergeist.Watcher,
 
+    /// Whether sampling is currently wanted. Config reload flips this
+    /// rather than tearing the sampler down, so that turning watching off
+    /// and on again does not lose how long a terminal has been still.
+    enabled: bool,
+
+    /// Whether a timer completion is outstanding. Guards against arming
+    /// twice, which would leave two callbacks sharing one completion.
+    armed: bool = false,
+
     fn deinit(self: *Quiescence) void {
         self.timer.deinit();
         self.watcher.deinit();
     }
 };
+
+/// Turn a configured duration into whole milliseconds, never returning less
+/// than one sample interval.
+///
+/// Integer division alone would turn any sub-millisecond value into 0, and a
+/// zero threshold makes every terminal quiescent on its second sample while
+/// a zero repeat logs a line every tick. Sampling faster than the sample
+/// interval is meaningless anyway, so that is the floor.
+fn quiescenceMs(ns: u64) u64 {
+    return @max(quiescence_sample_ms, ns / std.time.ns_per_ms);
+}
 
 /// The number of milliseconds between each movement during selection scrolling.
 const selection_scroll_ms = 15;
@@ -366,6 +386,11 @@ fn drainMailbox(
             .change_config => |config| {
                 defer config.alloc.destroy(config.ptr);
                 try io.changeConfig(data, config.ptr);
+
+                // Reach terminals that are already open, not just new ones:
+                // turning `poltergeist-watch` on or off, or changing a
+                // threshold, has to apply here or the setting looks broken.
+                self.syncQuiescence(io, cb);
             },
             .inspector => |v| self.flags.has_inspector = v,
             .resize => |v| self.handleResize(cb, v),
@@ -455,18 +480,53 @@ fn startQuiescence(
 
     self.quiescence = .{
         .timer = timer,
-        .watcher = .init(self.alloc, .{
-            .quiescence_ms = io.config.poltergeist_quiescence_ms,
-            .repeat_ms = io.config.poltergeist_repeat_ms,
-        }),
+        .enabled = true,
+        .watcher = .init(self.alloc, samplerConfig(io)),
     };
     self.quiescence_epoch = .now(global.io(), .awake);
 
     log.info("poltergeist: watching for quiescence after {d}ms", .{
-        io.config.poltergeist_quiescence_ms,
+        samplerConfig(io).quiescence_ms,
     });
 
     self.armQuiescence(cb);
+}
+
+fn samplerConfig(io: *termio.Termio) poltergeist.Sampler.Config {
+    return .{
+        .quiescence_ms = quiescenceMs(io.config.poltergeist_quiescence_ms),
+        .repeat_ms = quiescenceMs(io.config.poltergeist_repeat_ms),
+    };
+}
+
+/// Bring sampling in line with the current config. Called after a config
+/// reload so that turning `poltergeist-watch` on or off, or changing a
+/// threshold, reaches terminals that are already open rather than only new
+/// ones.
+fn syncQuiescence(self: *Thread, io: *termio.Termio, cb: *CallbackData) void {
+    const want = io.config.poltergeist_watch;
+
+    const q = if (self.quiescence) |*p| p else {
+        if (!want) return;
+        self.startQuiescence(io, cb) catch |err| {
+            log.warn("poltergeist: could not start quiescence sampling err={}", .{err});
+        };
+        return;
+    };
+
+    q.watcher.setConfig(samplerConfig(io));
+
+    if (q.enabled == want) return;
+    q.enabled = want;
+
+    if (want) {
+        log.info("poltergeist: watching resumed by config reload", .{});
+        self.armQuiescence(cb);
+    } else {
+        // Left to lapse rather than cancelled: an outstanding completion
+        // fires at most once more, sees `enabled` false, and stops there.
+        log.info("poltergeist: watching stopped by config reload", .{});
+    }
 }
 
 fn armQuiescence(self: *Thread, cb: *CallbackData) void {
@@ -474,6 +534,8 @@ fn armQuiescence(self: *Thread, cb: *CallbackData) void {
     // hand the loop must point at the field itself, and this form says so
     // without leaning on result-location semantics to get there.
     const q = if (self.quiescence) |*p| p else return;
+    if (!q.enabled or q.armed) return;
+    q.armed = true;
     q.timer.run(
         &self.loop,
         &q.c,
@@ -499,6 +561,14 @@ fn quiescenceCallback(
     };
 
     const cb = cb_ orelse return .disarm;
+
+    if (cb.self.quiescence) |*q| {
+        q.armed = false;
+        // Config reload may have turned watching off while this completion
+        // was outstanding. Stop here rather than sampling one last time.
+        if (!q.enabled) return .disarm;
+    }
+
     cb.self.sampleQuiescence(cb.io);
 
     // Re-arm by hand, the way the selection scroll timer does, rather than
@@ -513,18 +583,27 @@ fn quiescenceCallback(
 fn sampleQuiescence(self: *Thread, io: *termio.Termio) void {
     const q = if (self.quiescence) |*p| p else return;
 
-    // Never wait on the terminal lock. If the renderer or the parser holds
-    // it we simply skip this tick; the next one is a second away, and a
-    // monitoring feature has no business adding contention to the hot path.
-    if (!io.renderer_state.mutex.tryLock()) return;
-    defer io.renderer_state.mutex.unlock(global.io());
-
     const now: std.Io.Timestamp = .now(global.io(), .awake);
     const now_ms: u64 = @intCast(std.math.clamp(
         self.quiescence_epoch.durationTo(now).toMilliseconds(),
         0,
         std.math.maxInt(i64),
     ));
+
+    // Never wait on the terminal lock: a monitoring feature has no business
+    // adding contention to the parse hot path.
+    //
+    // But a skipped sample is not a quiet sample. Under sustained output
+    // the parse loop holds this lock almost continuously, so failing to
+    // take it is exactly what a busy terminal looks like from here. If we
+    // just returned, a screen that changed and changed back across a run of
+    // skipped ticks would later be reported as having been still the whole
+    // time. Hand the gap to the sampler as activity instead.
+    if (!io.renderer_state.mutex.tryLock()) {
+        if (q.watcher.noteMissedSample(now_ms)) |event| self.logQuiescence(event);
+        return;
+    }
+    defer io.renderer_state.mutex.unlock(global.io());
 
     // Drain the reader thread's byte counter into this sample.
     q.watcher.noteBytes(io.poltergeist_bytes.swap(0, .monotonic));
@@ -540,13 +619,18 @@ fn sampleQuiescence(self: *Thread, io: *termio.Termio) void {
         return;
     } orelse return;
 
-    // S0 reports to the log and nowhere else. Telling the supervisor is a
-    // separate step, deliberately built only once the judgement of when to
-    // report has been checked against real sessions.
+    self.logQuiescence(event);
+}
+
+/// S0 reports to the log and nowhere else. Telling the supervisor is a
+/// separate step, deliberately built only once the judgement of when to
+/// report has been checked against real sessions.
+fn logQuiescence(self: *Thread, event: poltergeist.Sampler.Event) void {
+    _ = self;
     switch (event) {
         .quiescent => |r| log.info(
-            "poltergeist: quiescent quiet_ms={d} silent_ms={d} rows={d}",
-            .{ r.quiet_ms, r.silent_ms, r.total_rows },
+            "poltergeist: quiescent quiet_ms={d} silent_ms={d} changed_rows={d}/{d}",
+            .{ r.quiet_ms, r.silent_ms, r.changed_rows, r.total_rows },
         ),
         .still_quiescent => |r| log.info(
             "poltergeist: still quiescent quiet_ms={d} silent_ms={d}",

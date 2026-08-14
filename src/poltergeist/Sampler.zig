@@ -56,7 +56,14 @@ pub const Report = struct {
     /// so it can tell those cases apart itself.
     silent_ms: u64,
 
+    /// How many rows moved the last time the screen actually changed.
+    ///
+    /// Not "how many rows changed in this sample": on a quiescent report
+    /// that is zero by definition, which says nothing. What is worth
+    /// knowing is whether the thing that happened last was a whole screen
+    /// repainting or a single line ticking over.
     changed_rows: u16,
+
     total_rows: u16,
 };
 
@@ -85,6 +92,16 @@ last_byte_ms: u64 = 0,
 /// When we last reported quiescence. Null while active.
 last_report_ms: ?u64 = null,
 
+/// Row counts carried forward from the last sample that changed, so a
+/// quiescent report can say what the last thing to happen looked like.
+last_change_rows: u16 = 0,
+last_total_rows: u16 = 0,
+
+/// Set when a sample was missed, so `last_screen` no longer describes what
+/// is on screen now. The next successful sample is treated as a change
+/// whatever it hashes to.
+stale: bool = false,
+
 pub fn init(config: Config) Sampler {
     return .{ .config = config };
 }
@@ -95,10 +112,20 @@ pub fn isQuiescent(self: *const Sampler) bool {
     return self.last_report_ms != null;
 }
 
+/// Apply new thresholds without losing what has been observed so far.
+///
+/// Config reload has to reach a terminal that is already being watched;
+/// rebuilding the sampler instead would silently restart its quiet clock,
+/// so a terminal that had been still for an hour would look brand new.
+pub fn setConfig(self: *Sampler, config: Config) void {
+    self.config = config;
+}
+
 /// Feed one sample. Returns an event only on a transition worth reporting,
 /// so the caller can log or forward unconditionally.
 pub fn observe(self: *Sampler, obs: Observation) ?Event {
     if (obs.bytes > 0) self.last_byte_ms = obs.now_ms;
+    self.last_total_rows = obs.fingerprint.total_rows;
 
     // First observation just arms the sampler. We cannot know how long the
     // screen was already still before we started looking, and guessing
@@ -110,22 +137,11 @@ pub fn observe(self: *Sampler, obs: Observation) ?Event {
         return null;
     };
 
-    if (obs.fingerprint.screen != last) {
-        // Build the report before moving `last_change_ms`, so `quiet_ms`
-        // says how long it had been still *before* it moved again. That is
-        // the number the supervisor wants ("it sat for 12 minutes and has
-        // just come back"); measuring after the update would always be 0.
-        const resumed: Report = self.report(obs);
-
+    if (self.stale or obs.fingerprint.screen != last) {
+        self.stale = false;
         self.last_screen = obs.fingerprint.screen;
-        self.last_change_ms = obs.now_ms;
-
-        // Only worth an event if we had previously said it was quiescent.
-        if (self.last_report_ms != null) {
-            self.last_report_ms = null;
-            return .{ .resumed = resumed };
-        }
-        return null;
+        self.last_change_rows = obs.fingerprint.changed_rows;
+        return self.markChanged(obs.now_ms);
     }
 
     // Saturating so a clock that jumps backwards reads as "no time passed"
@@ -135,23 +151,72 @@ pub fn observe(self: *Sampler, obs: Observation) ?Event {
 
     const reported = self.last_report_ms orelse {
         self.last_report_ms = obs.now_ms;
-        return .{ .quiescent = self.report(obs) };
+        return .{ .quiescent = self.report(obs.now_ms) };
     };
 
     if (obs.now_ms -| reported >= self.config.repeat_ms) {
         self.last_report_ms = obs.now_ms;
-        return .{ .still_quiescent = self.report(obs) };
+        return .{ .still_quiescent = self.report(obs.now_ms) };
     }
 
     return null;
 }
 
-fn report(self: *const Sampler, obs: Observation) Report {
+/// Record that a sample could not be taken, and that we therefore do not
+/// know whether the screen changed during that window.
+///
+/// The caller reaches this when it could not take the terminal lock. Under
+/// sustained output the parse loop holds that lock almost continuously, so
+/// this is not a rare case -- it is precisely what a busy terminal looks
+/// like from here.
+///
+/// An unknown window is treated as activity, not as stillness. Doing the
+/// opposite would let a terminal that changed and changed back across a run
+/// of skipped samples be reported as having been still the whole time,
+/// which is the one direction of error this design cannot accept. The cost
+/// of guessing this way is only that a genuinely idle terminal takes
+/// another sample or two to be reported.
+pub fn noteActivity(self: *Sampler, now_ms: u64) ?Event {
+    // Nothing to do before the first real sample: there is no baseline to
+    // invalidate and nothing has been reported.
+    if (self.last_screen == null) return null;
+
+    // We do not know what the screen looks like now, so the stored
+    // fingerprint can no longer be trusted as "what we last saw". Marking
+    // it stale forces the next successful sample to count as a change even
+    // if the screen happens to hash back to the same value.
+    //
+    // Note this deliberately does not touch `last_byte_ms`: the reader
+    // thread keeps counting pty output whether or not we can sample, so
+    // silence remains measured correctly across a skipped window.
+    self.stale = true;
+    return self.markChanged(now_ms);
+}
+
+/// Common tail for "the screen is not still": restart the quiet clock and,
+/// if we had already reported quiescence, say that it is over.
+fn markChanged(self: *Sampler, now_ms: u64) ?Event {
+    // Build the report before moving `last_change_ms`, so `quiet_ms` says
+    // how long it had been still *before* it moved again. That is the
+    // number the supervisor wants ("it sat for 12 minutes and has just come
+    // back"); measuring after the update would always be 0.
+    const resumed: Report = self.report(now_ms);
+    self.last_change_ms = now_ms;
+
+    // Only worth an event if we had previously said it was quiescent.
+    if (self.last_report_ms != null) {
+        self.last_report_ms = null;
+        return .{ .resumed = resumed };
+    }
+    return null;
+}
+
+fn report(self: *const Sampler, now_ms: u64) Report {
     return .{
-        .quiet_ms = obs.now_ms -| self.last_change_ms,
-        .silent_ms = obs.now_ms -| self.last_byte_ms,
-        .changed_rows = obs.fingerprint.changed_rows,
-        .total_rows = obs.fingerprint.total_rows,
+        .quiet_ms = now_ms -| self.last_change_ms,
+        .silent_ms = now_ms -| self.last_byte_ms,
+        .changed_rows = self.last_change_rows,
+        .total_rows = self.last_total_rows,
     };
 }
 
@@ -274,18 +339,114 @@ test "a clock that jumps backwards does not fire early" {
     try testing.expect(!s.isQuiescent());
 }
 
-test "report carries the fingerprint row counts through" {
+test "a quiet sample reports its own row count but not its own changed rows" {
     var s: Sampler = .init(fast);
     _ = s.observe(sample(0, 7, 0));
 
+    // changed_rows on this sample is noise: the screen did not move, so
+    // whatever the builder counted against the previous buffer says nothing
+    // about what the terminal last did. total_rows is still current.
     const e = s.observe(.{
         .now_ms = 1000,
         .bytes = 0,
         .fingerprint = .{ .screen = 7, .changed_rows = 3, .total_rows = 40 },
     }) orelse return error.TestExpectedEvent;
 
-    try testing.expectEqual(@as(u16, 3), e.quiescent.changed_rows);
+    try testing.expectEqual(@as(u16, 0), e.quiescent.changed_rows);
     try testing.expectEqual(@as(u16, 40), e.quiescent.total_rows);
+}
+
+test "a skipped sample is treated as activity, not as stillness" {
+    var s: Sampler = .init(fast);
+    _ = s.observe(sample(0, 7, 0));
+
+    // The screen really did change and change back while we could not look.
+    // Counting that window as quiet is the failure this guards against.
+    for (1..180) |i| _ = s.noteActivity(@intCast(i * 10));
+
+    // Same fingerprint as before the gap. Without staleness this would read
+    // as "unchanged for 1800ms" and report quiescent immediately.
+    try testing.expect(s.observe(sample(1800, 7, 0)) == null);
+    try testing.expect(!s.isQuiescent());
+
+    // The quiet clock restarts from the end of the gap, so quiescence is
+    // still a full threshold away.
+    try testing.expect(s.observe(sample(2799, 7, 0)) == null);
+    const e = s.observe(sample(2800, 7, 0)) orelse return error.TestExpectedEvent;
+    try testing.expectEqual(@as(u64, 1000), e.quiescent.quiet_ms);
+}
+
+test "noteActivity on a quiescent terminal reports it resumed" {
+    var s: Sampler = .init(fast);
+    _ = s.observe(sample(0, 7, 0));
+    _ = s.observe(sample(1000, 7, 0));
+    try testing.expect(s.isQuiescent());
+
+    const e = s.noteActivity(5000) orelse return error.TestExpectedEvent;
+    try testing.expectEqual(@as(u64, 5000), e.resumed.quiet_ms);
+    try testing.expect(!s.isQuiescent());
+}
+
+test "noteActivity before the first sample does nothing" {
+    var s: Sampler = .init(fast);
+    try testing.expect(s.noteActivity(1000) == null);
+    try testing.expect(!s.isQuiescent());
+}
+
+test "noteActivity does not disturb pty silence tracking" {
+    var s: Sampler = .init(fast);
+    _ = s.observe(sample(0, 7, 1));
+
+    // Samples missed, but the reader thread kept seeing nothing.
+    _ = s.noteActivity(1000);
+    _ = s.noteActivity(2000);
+
+    // The first sample after the gap counts as a change, so it is quiet from
+    // t=3000 onwards and reports one threshold later.
+    try testing.expect(s.observe(sample(3000, 7, 0)) == null);
+
+    const e = s.observe(sample(4000, 7, 0)) orelse return error.TestExpectedEvent;
+    try testing.expectEqual(@as(u64, 1000), e.quiescent.quiet_ms);
+
+    // Silence is measured from the last pty byte at t=0, straight through
+    // the skipped window -- it is not reset by noteActivity.
+    try testing.expectEqual(@as(u64, 4000), e.quiescent.silent_ms);
+}
+
+test "changed_rows reports the last real change, not the quiet sample" {
+    var s: Sampler = .init(fast);
+    _ = s.observe(.{
+        .now_ms = 0,
+        .fingerprint = .{ .screen = 1, .changed_rows = 0, .total_rows = 24 },
+    });
+
+    // A change that moved 9 rows.
+    _ = s.observe(.{
+        .now_ms = 100,
+        .fingerprint = .{ .screen = 2, .changed_rows = 9, .total_rows = 24 },
+    });
+
+    // Now it goes still. The sample itself has 0 changed rows, but what the
+    // supervisor wants to know is that the last thing to happen moved 9.
+    const e = s.observe(.{
+        .now_ms = 1100,
+        .fingerprint = .{ .screen = 2, .changed_rows = 0, .total_rows = 24 },
+    }) orelse return error.TestExpectedEvent;
+
+    try testing.expectEqual(@as(u16, 9), e.quiescent.changed_rows);
+    try testing.expectEqual(@as(u16, 24), e.quiescent.total_rows);
+}
+
+test "setConfig applies without restarting the quiet clock" {
+    var s: Sampler = .init(.{ .quiescence_ms = 60_000, .repeat_ms = 60_000 });
+    _ = s.observe(sample(0, 7, 0));
+    try testing.expect(s.observe(sample(5000, 7, 0)) == null);
+
+    // Shorten the threshold below the time already elapsed. The next sample
+    // should report at once rather than starting the count again.
+    s.setConfig(.{ .quiescence_ms = 1000, .repeat_ms = 60_000 });
+    const e = s.observe(sample(5001, 7, 0)) orelse return error.TestExpectedEvent;
+    try testing.expectEqual(@as(u64, 5001), e.quiescent.quiet_ms);
 }
 
 test "default config uses minutes, not milliseconds" {
