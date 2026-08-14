@@ -180,6 +180,13 @@ search: ?Search = null,
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.Io.Timestamp = null,
 
+/// When a real key event last arrived from the user.
+///
+/// Poltergeist uses this to keep out of the way: it will not type a notice
+/// into a terminal somebody is currently using. Injected keys deliberately
+/// do not update it, or a notice would keep pushing its own deadline back.
+last_key_time: ?std.Io.Timestamp = null,
+
 /// The effect of an input event. This can be used by callers to take
 /// the appropriate action after an input event. For example, key
 /// input can be forwarded to the OS for further processing if it
@@ -2692,6 +2699,11 @@ pub fn keyCallback(
     crash.sentry.thread_state = self.crashThreadState();
     defer crash.sentry.thread_state = null;
 
+    // Note that somebody is at this terminal, so Poltergeist keeps out of
+    // the way. Releases count too: a key held down during a pause in typing
+    // still means a person is here.
+    self.last_key_time = .now(global.io(), .awake);
+
     // Setup our inspector event if we have an inspector.
     var insp_ev: ?inspectorpkg.KeyEvent = if (self.inspector != null) ev: {
         var copy = event;
@@ -3309,6 +3321,11 @@ fn encodeKeyOpts(self: *const Surface) input.key_encode.Options {
 /// from the clipboard so the same logic will be applied. Namely,
 /// if bracketed mode is on this will do a bracketed paste. Otherwise,
 /// this will filter newlines to '\r'.
+/// How long the keyboard must have been idle before Poltergeist will type
+/// into a terminal. Long enough to cover a pause mid-sentence, short enough
+/// that a supervisor is not left waiting on a terminal nobody is at.
+const notice_quiet_keyboard_ms = 10 * std.time.ms_per_s;
+
 /// Type a Poltergeist notice into this terminal as if the user had typed it.
 ///
 /// Two steps, and they have to be two: the text goes through the same paste
@@ -3319,15 +3336,31 @@ fn encodeKeyOpts(self: *const Surface) input.key_encode.Options {
 fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
     if (text.len == 0) return;
 
-    // Never interrupt someone who is mid-sentence. A notice that lands in
-    // the middle of a half-typed line would both corrupt what they were
-    // writing and submit it. The next report will come around again.
-    if (self.io.terminal.screens.active.cursor.x > 0) {
-        log.info("poltergeist: notice deferred, input line is not empty", .{});
-        return;
+    // Never interrupt someone who is currently using this terminal. A
+    // notice landing mid-sentence would both corrupt what they were writing
+    // and submit it. Skipping costs nothing: the sampler says the same
+    // thing again on its repeat interval.
+    //
+    // This asks "has the user touched the keyboard recently", not "is the
+    // input line empty". An agent CLI draws its own prompt, so the cursor
+    // sits past column zero even when nothing has been typed -- testing the
+    // cursor would mean never delivering anything. It also avoids reading
+    // terminal state from this thread without the renderer lock.
+    if (self.last_key_time) |last| {
+        const now: std.Io.Timestamp = .now(global.io(), .awake);
+        if (last.durationTo(now).toMilliseconds() < notice_quiet_keyboard_ms) {
+            log.info("poltergeist: notice deferred, the user is typing", .{});
+            return;
+        }
     }
 
     try self.textCallback(text);
+
+    // `keyCallback` stamps `last_key_time`, and this key is ours, not the
+    // user's. Leaving the stamp would have Poltergeist mistake its own
+    // typing for somebody being at the keyboard.
+    const stamp = self.last_key_time;
+    defer self.last_key_time = stamp;
 
     _ = try self.keyCallback(.{
         .action = .press,
