@@ -600,7 +600,7 @@ fn sampleQuiescence(self: *Thread, io: *termio.Termio) void {
     // skipped ticks would later be reported as having been still the whole
     // time. Hand the gap to the sampler as activity instead.
     if (!io.renderer_state.mutex.tryLock()) {
-        if (q.watcher.noteMissedSample(now_ms)) |event| self.logQuiescence(event);
+        if (q.watcher.noteMissedSample(now_ms)) |event| self.reportQuiescence(io, event);
         return;
     }
     defer io.renderer_state.mutex.unlock(global.io());
@@ -619,14 +619,23 @@ fn sampleQuiescence(self: *Thread, io: *termio.Termio) void {
         return;
     } orelse return;
 
-    self.logQuiescence(event);
+    self.reportQuiescence(io, event);
 }
 
-/// S0 reports to the log and nowhere else. Telling the supervisor is a
-/// separate step, deliberately built only once the judgement of when to
-/// report has been checked against real sessions.
-fn logQuiescence(self: *Thread, event: poltergeist.Sampler.Event) void {
+/// Log the event, then hand it to the app so it can decide whether the
+/// supervisor should hear about it.
+///
+/// The decision is not made here. This thread knows one terminal; who is
+/// supervising whom, who has clocked off, and how recently anyone spoke are
+/// all app-level facts, so the event is simply forwarded and the bus sorts
+/// it out.
+fn reportQuiescence(
+    self: *Thread,
+    io: *termio.Termio,
+    event: poltergeist.Sampler.Event,
+) void {
     _ = self;
+
     switch (event) {
         .quiescent => |r| log.info(
             "poltergeist: quiescent quiet_ms={d} silent_ms={d} changed_rows={d}/{d}",
@@ -641,6 +650,19 @@ fn logQuiescence(self: *Thread, event: poltergeist.Sampler.Event) void {
             .{r.quiet_ms},
         ),
     }
+
+    // `Surface.id` is assigned once at creation and never written again, so
+    // reading it from this thread needs no lock. It is also the id child
+    // processes already see as GHOSTTY_SURFACE_ID, so the bus, the agents
+    // and the logs all name terminals the same way.
+    const id = io.surface_mailbox.surface.id;
+
+    // Instant: a monitoring event is not worth blocking the IO thread for.
+    // Losing one to a full mailbox costs nothing -- the sampler will say the
+    // same thing again on its repeat interval.
+    _ = io.surface_mailbox.app.push(.{
+        .poltergeist_report = .{ .from = id, .event = event },
+    }, .{ .instant = {} });
 }
 
 fn syncResetCallback(

@@ -673,6 +673,24 @@ pub const Action = union(enum) {
     ///     process is not running
     toggle_readonly,
 
+    /// Make this terminal Poltergeist's supervisor.
+    ///
+    /// The supervisor is the terminal whose agent minds the others: it is
+    /// told when a watched terminal's screen goes quiet, and it decides
+    /// what, if anything, to do about it. There is one at a time, so doing
+    /// this steps the previous supervisor down.
+    ///
+    /// Ghostty itself never judges a quiet terminal. It reports durations
+    /// and carries messages; the reading and the judgement are the
+    /// supervisor's.
+    poltergeist_supervisor,
+
+    /// Put this terminal under the supervisor's eye, or take it out again.
+    ///
+    /// Only watched terminals are reported on. Watching does not start,
+    /// stop, or otherwise touch whatever is running in the terminal.
+    poltergeist_toggle_watch,
+
     /// Resize the current split in the specified direction and amount in
     /// pixels. The two arguments should be joined with a comma (`,`),
     /// like in `resize_split:up,10`.
@@ -1459,6 +1477,8 @@ pub const Action = union(enum) {
             .goto_window,
             .toggle_split_zoom,
             .toggle_readonly,
+            .poltergeist_supervisor,
+            .poltergeist_toggle_watch,
             .resize_split,
             .equalize_splits,
             .inspector,

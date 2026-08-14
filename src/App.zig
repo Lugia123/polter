@@ -19,6 +19,8 @@ const global = @import("global.zig");
 
 const log = std.log.scoped(.app);
 
+const poltergeistpkg = @import("poltergeist/main.zig");
+
 const SurfaceList = std.ArrayListUnmanaged(*apprt.Surface);
 
 /// General purpose allocator
@@ -26,6 +28,14 @@ alloc: Allocator,
 
 /// The list of surfaces that are currently active.
 surfaces: SurfaceList,
+
+/// Who is supervising whom. Lives on the app because supervision spans
+/// surfaces; a surface only ever reports into it.
+poltergeist: poltergeistpkg.Bus,
+
+/// Baseline for the monotonic clock the bus is given. Taken on the first
+/// report rather than at startup so it costs nothing when unused.
+poltergeist_epoch: ?std.Io.Timestamp = null,
 
 /// This is true if the app that Ghostty is in is focused. This may
 /// mean that no surfaces (terminals) are focused but the app is still
@@ -126,6 +136,7 @@ pub fn init(
         .mailbox = .{},
         .font_grid_set = font_grid_set,
         .config_conditional_state = .{},
+        .poltergeist = .init(alloc, .{}),
     };
 }
 
@@ -133,6 +144,8 @@ pub fn deinit(self: *App) void {
     // Clean up all our surfaces
     for (self.surfaces.items) |surface| surface.deinit();
     self.surfaces.deinit(self.alloc);
+
+    self.poltergeist.deinit();
 
     // Clean up our font group cache
     // We should have zero items in the grid set at this point because
@@ -191,11 +204,72 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
 /// Add an initialized surface. This is really only for the runtime
 /// implementations to call and should NOT be called by general app users.
 /// The surface must be from the pool.
+/// Handle a quiescence report from one surface.
+///
+/// The bus decides whether this is worth saying at all -- it knows who is
+/// supervising, who has clocked off, and how recently this terminal last
+/// spoke. If it is, the notice is typed into the supervisor's terminal as
+/// if the user had typed it.
+///
+/// The notice carries an id and two durations, never screen contents. The
+/// supervisor reads the other terminal itself if it wants to know what is
+/// on it, which keeps the judgement on the AI's side and keeps a whole
+/// screen out of its context.
+fn poltergeistReport(
+    self: *App,
+    from: poltergeistpkg.Bus.Id,
+    event: poltergeistpkg.Sampler.Event,
+) void {
+    // Monotonic milliseconds from the first report onwards. The bus only
+    // ever compares these to each other, so an arbitrary baseline is fine
+    // and a monotonic one is what matters.
+    const epoch = self.poltergeist_epoch orelse epoch: {
+        const t: std.Io.Timestamp = .now(global.io(), .awake);
+        self.poltergeist_epoch = t;
+        break :epoch t;
+    };
+    const now: std.Io.Timestamp = .now(global.io(), .awake);
+    const now_ms: u64 = @intCast(std.math.clamp(
+        epoch.durationTo(now).toMilliseconds(),
+        0,
+        std.math.maxInt(i64),
+    ));
+
+    const notice = self.poltergeist.report(from, event, now_ms) orelse return;
+
+    const supervisor = self.surfaceById(notice.to) orelse {
+        // The supervisor's terminal went away between the report and here.
+        self.poltergeist.unregister(notice.to);
+        return;
+    };
+
+    var msg: apprt.surface.Message = .{ .poltergeist_notice = undefined };
+    const line = poltergeistpkg.Bus.formatNotice(notice, &msg.poltergeist_notice) catch {
+        log.warn("poltergeist: notice did not fit, dropping it", .{});
+        return;
+    };
+    msg.poltergeist_notice[line.len] = 0;
+
+    self.surfaceMessage(supervisor, msg) catch |err| {
+        log.warn("poltergeist: could not deliver notice err={}", .{err});
+    };
+}
+
+/// Find a live surface by the id Poltergeist and child processes know it by.
+fn surfaceById(self: *App, id: poltergeistpkg.Bus.Id) ?*Surface {
+    for (self.surfaces.items) |rt_surface| {
+        const surface = rt_surface.core();
+        if (surface.id == id) return surface;
+    }
+    return null;
+}
+
 pub fn addSurface(
     self: *App,
     rt_surface: *apprt.Surface,
 ) Allocator.Error!void {
     try self.surfaces.append(self.alloc, rt_surface);
+    try self.poltergeist.register(rt_surface.core().id);
 
     // Since we have non-zero surfaces, we can cancel the quit timer.
     // It is up to the apprt if there is a quit timer at all and if it
@@ -221,6 +295,8 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
             self.focused_surface = null;
         }
     }
+
+    self.poltergeist.unregister(rt_surface.core().id);
 
     var i: usize = 0;
     while (i < self.surfaces.items.len) {
@@ -284,6 +360,7 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
             .new_window => |msg| try self.newWindow(rt_app, msg),
             .close => |surface| self.closeSurface(surface),
             .surface_message => |msg| try self.surfaceMessage(msg.surface, msg.message),
+            .poltergeist_report => |msg| self.poltergeistReport(msg.from, msg.event),
             .redraw_surface => |surface| try self.redrawSurface(rt_app, surface),
 
             // If we're quitting, then we set the quit flag and stop
@@ -584,6 +661,16 @@ pub const Message = union(enum) {
     surface_message: struct {
         surface: *Surface,
         message: apprt.surface.Message,
+    },
+
+    /// A surface reporting that its screen has gone quiet, or come back.
+    ///
+    /// Routed through the app rather than sent surface to surface because
+    /// only the app knows who is supervising whom, and because the sending
+    /// surface must not learn anything about the receiving one.
+    poltergeist_report: struct {
+        from: poltergeistpkg.Bus.Id,
+        event: poltergeistpkg.Sampler.Event,
     },
 
     /// Redraw a surface. This only has an effect for runtimes that

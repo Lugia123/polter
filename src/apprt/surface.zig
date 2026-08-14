@@ -16,6 +16,14 @@ pub const Message = union(enum) {
     /// we want this union to be.
     pub const WriteReq = MessageData(u8, 255);
 
+    /// A line for Poltergeist to type into this terminal, exactly as if
+    /// the user had typed it.
+    ///
+    /// Fixed size and NUL terminated rather than a `WriteReq`: notices are
+    /// short by design (an id and two durations -- never screen contents),
+    /// and a fixed buffer keeps this off the allocator on the app thread.
+    poltergeist_notice: [255:0]u8,
+
     /// Set the title of the surface.
     /// TODO: we should change this to a "WriteReq" style structure in
     /// the termio message so that we can more efficiently send strings

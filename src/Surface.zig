@@ -1100,6 +1100,10 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             try self.showDesktopNotification(title, body);
         },
 
+        .poltergeist_notice => |*notice| try self.typePoltergeistNotice(
+            std.mem.sliceTo(notice, 0),
+        ),
+
         .renderer_health => |health| self.updateRendererHealth(health),
 
         .scrollbar => |scrollbar| self.updateScrollbar(scrollbar),
@@ -3305,6 +3309,33 @@ fn encodeKeyOpts(self: *const Surface) input.key_encode.Options {
 /// from the clipboard so the same logic will be applied. Namely,
 /// if bracketed mode is on this will do a bracketed paste. Otherwise,
 /// this will filter newlines to '\r'.
+/// Type a Poltergeist notice into this terminal as if the user had typed it.
+///
+/// Two steps, and they have to be two: the text goes through the same paste
+/// path as user input, but under bracketed paste a newline inside pasted
+/// text does not submit -- that is exactly why an agent CLI can accept
+/// multi-line pastes. So the newline is sent afterwards as its own key
+/// event, which is what a real return keypress looks like.
+fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
+    if (text.len == 0) return;
+
+    // Never interrupt someone who is mid-sentence. A notice that lands in
+    // the middle of a half-typed line would both corrupt what they were
+    // writing and submit it. The next report will come around again.
+    if (self.io.terminal.screens.active.cursor.x > 0) {
+        log.info("poltergeist: notice deferred, input line is not empty", .{});
+        return;
+    }
+
+    try self.textCallback(text);
+
+    _ = try self.keyCallback(.{
+        .action = .press,
+        .key = .enter,
+        .utf8 = "\r",
+    });
+}
+
 pub fn textCallback(self: *Surface, text: []const u8) !void {
     // Crash metadata in case we crash in here
     crash.sentry.thread_state = self.crashThreadState();
@@ -5430,6 +5461,25 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 .readonly,
                 if (self.readonly) .on else .off,
             );
+            return true;
+        },
+
+        .poltergeist_supervisor => {
+            try self.app.poltergeist.setSupervisor(self.id);
+            log.info("poltergeist: this terminal is now the supervisor", .{});
+            return true;
+        },
+
+        .poltergeist_toggle_watch => {
+            const bus = &self.app.poltergeist;
+            const watched = if (bus.get(self.id)) |e| e.role == .watched else false;
+            if (watched) {
+                bus.unwatch(self.id);
+                log.info("poltergeist: no longer watching this terminal", .{});
+            } else {
+                try bus.watch(self.id);
+                log.info("poltergeist: now watching this terminal", .{});
+            }
             return true;
         },
 

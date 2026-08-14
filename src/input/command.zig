@@ -552,6 +552,18 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Toggle read-only mode for the current surface."),
         }},
 
+        .poltergeist_supervisor => comptime &.{.{
+            .action = .poltergeist_supervisor,
+            .title = i18n.N_("Make This Terminal the Supervisor"),
+            .description = i18n.N_("Let this terminal's agent mind the watched terminals. There is one supervisor at a time."),
+        }},
+
+        .poltergeist_toggle_watch => comptime &.{.{
+            .action = .poltergeist_toggle_watch,
+            .title = i18n.N_("Toggle Supervision of This Terminal"),
+            .description = i18n.N_("Report this terminal to the supervisor when its screen goes quiet."),
+        }},
+
         .equalize_splits => comptime &.{.{
             .action = .equalize_splits,
             .title = i18n.N_("Equalize Splits"),
