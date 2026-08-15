@@ -182,6 +182,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "notices",
+        .description = "What has happened that you have not been shown yet: which terminals went quiet and for how long, and which came back to work. Reading clears them, so what comes back will not come back again. You are also handed this on a timer; call it yourself whenever you finish something, rather than waiting to be interrupted. An empty answer means nothing is waiting. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "terminal_read",
         .description = "Read the visible screen of another terminal. Scrollback is not available. Supervisor only.",
         .schema =

@@ -1309,6 +1309,23 @@ command: ?Command = null,
 /// controls every one after that.
 @"poltergeist-quiescence-repeat": Duration = .{ .duration = 15 * std.time.ns_per_min },
 
+/// How often the supervisor may be interrupted with what it has not seen.
+///
+/// Reports do not go to the supervisor as they happen. They collect, one
+/// entry per terminal, and are handed over on this interval as a single
+/// line naming everything that is waiting. Reading clears them.
+///
+/// This is what bounds the interruptions: the per-terminal settings above
+/// cannot, because each watched terminal keeps its own clock and ten of
+/// them make ten times the noise while the supervisor remains one terminal
+/// with one screen. Raise it if the supervisor is being interrupted more
+/// often than the work warrants; lower it if you want to hear sooner.
+///
+/// The supervisor can always look of its own accord with the `notices`
+/// tool, which this does not delay -- choosing to look is not an
+/// interruption.
+@"poltergeist-notice-interval": Duration = .{ .duration = std.time.ns_per_min },
+
 /// Extra environment variables to pass to commands launched in a terminal
 /// surface. The format is `env=KEY=VALUE`.
 ///

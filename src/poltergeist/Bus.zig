@@ -98,20 +98,15 @@ pub const SetModeError = error{
     NotPermitted,
 };
 
-/// What gets put in front of the supervisor.
+/// What a report says happened, and all that is kept of one.
 ///
-/// Only durations and identity -- no screen contents. The supervisor reads
-/// the other terminal itself if it wants to know what is on it, which keeps
-/// the judgement (and the reading) on the AI's side of the line.
-pub const Notice = struct {
-    to: Id,
-    about: Id,
-    kind: Kind,
-    quiet_ms: u64,
-    silent_ms: u64,
-
-    pub const Kind = enum { quiescent, still_quiescent, resumed };
-};
+/// No screen contents anywhere -- the supervisor reads the other terminal
+/// itself if it wants to know what is on it, which keeps the judgement (and
+/// the reading) on the AI's side of the line. Durations are not stored
+/// either: `quietMs` computes the true figure on demand, so a report that
+/// sat in the box says how long the terminal has been quiet now rather than
+/// how long it had been when it arrived.
+pub const NoticeKind = enum { quiescent, still_quiescent, resumed };
 
 pub const Entry = struct {
     role: Role = .none,
@@ -135,17 +130,38 @@ pub const Entry = struct {
     /// anything left to do stays with the supervisor; this is only the
     /// number it counts against.
     rounds: u16 = 0,
+
+    /// What the supervisor has not been shown about this terminal yet.
+    ///
+    /// One slot, not a queue. A terminal that has been still for an hour
+    /// has one thing to say -- that it has been still for an hour -- not
+    /// four copies of it a repeat interval apart. Merging as they arrive is
+    /// what keeps what the supervisor receives proportional to how many
+    /// terminals there are, rather than to how long they have been quiet or
+    /// how often anyone looked.
+    ///
+    /// A later kind overwrites an earlier one, so a terminal that went
+    /// quiet and came back before anybody read the box reads as back at
+    /// work. That is the true state, and the excursion in between is
+    /// precisely the case where nobody needed to do anything.
+    pending: ?NoticeKind = null,
 };
 
 pub const Config = struct {
-    /// Minimum gap between notices about the same terminal.
+    /// Least time between two interruptions of the supervisor.
     ///
-    /// A backstop, not the main control: how often a still terminal is
-    /// mentioned is the user's to set through the sampler's repeat
-    /// interval, and a large value here would silently override that. This
-    /// only exists to stop a terminal flapping between quiet and busy from
-    /// flooding the supervisor.
-    min_notice_gap_ms: u64 = std.time.ms_per_s,
+    /// Nothing is put in front of the supervisor as it happens. Reports go
+    /// into the box and are handed over on this interval, all of them at
+    /// once. So this bounds how often the supervisor is interrupted no
+    /// matter how many terminals are watched or how often they report --
+    /// the per-terminal gap above cannot do that, because every terminal
+    /// keeps its own clock and ten of them make ten times the noise.
+    ///
+    /// A minute by default, on the grounds that a terminal which has been
+    /// still long enough to be worth mentioning is not going to become
+    /// urgent in the next sixty seconds. The supervisor can always look
+    /// sooner: reading the box itself is not on this schedule.
+    notice_interval_ms: u64 = std.time.ms_per_min,
 };
 
 alloc: Allocator,
@@ -158,6 +174,10 @@ entries: std.AutoHashMapUnmanaged(Id, Entry) = .empty,
 /// nudge it without knowing about the other, and the terminal on the
 /// receiving end has no way to tell the difference.
 supervisor: ?Id = null,
+
+/// When the box was last handed to the supervisor on its own initiative.
+/// Null until the first delivery.
+last_delivery_ms: ?u64 = null,
 
 pub fn init(alloc: Allocator, config: Config) Bus {
     return .{ .alloc = alloc, .config = config };
@@ -264,16 +284,16 @@ pub fn report(
     about: Id,
     event: Sampler.Event,
     now_ms: u64,
-) ?Notice {
-    const to = self.supervisor orelse return null;
-    if (to == about) return null;
+) bool {
+    const to = self.supervisor orelse return false;
+    if (to == about) return false;
 
-    const e = self.entries.getPtr(about) orelse return null;
+    const e = self.entries.getPtr(about) orelse return false;
 
-    const kind: Notice.Kind, const report_data = switch (event) {
-        .quiescent => |r| .{ Notice.Kind.quiescent, r },
-        .still_quiescent => |r| .{ Notice.Kind.still_quiescent, r },
-        .resumed => |r| .{ Notice.Kind.resumed, r },
+    const kind: NoticeKind, const report_data = switch (event) {
+        .quiescent => |r| .{ NoticeKind.quiescent, r },
+        .still_quiescent => |r| .{ NoticeKind.still_quiescent, r },
+        .resumed => |r| .{ NoticeKind.resumed, r },
     };
 
     // Track the duration whatever we decide to do about telling anyone.
@@ -291,31 +311,24 @@ pub fn report(
         .resumed => 0,
     };
 
-    if (e.role != .watched) return null;
+    if (e.role != .watched) return false;
 
     // A terminal that has clocked off is supposed to be quiet. Saying so
     // again every quarter of an hour is exactly the kind of nagging that
     // makes someone turn the whole thing off.
-    if (e.duty == .off) return null;
+    if (e.duty == .off) return false;
 
-    // `resumed` is a one-shot: it marks a transition that will not be
-    // repeated, so dropping it does not merely delay a notice -- it leaves
-    // the supervisor believing a terminal is still stuck long after it went
-    // back to work. Only the repeatable kinds are rate limited.
-    if (kind != .resumed) {
-        if (e.last_notice_ms) |last| {
-            if (now_ms -| last < self.config.min_notice_gap_ms) return null;
-        }
-        e.last_notice_ms = now_ms;
-    }
-
-    return .{
-        .to = to,
-        .about = about,
-        .kind = kind,
-        .quiet_ms = report_data.quiet_ms,
-        .silent_ms = report_data.silent_ms,
-    };
+    // Into the box. One slot per terminal, so a later report replaces an
+    // earlier one rather than stacking behind it.
+    //
+    // There is no rate limit here any more, and there should not be one: a
+    // limit at this end would decide what the supervisor is allowed to find
+    // out, and a terminal that went quiet during a busy moment would stay
+    // unmentioned for good. How often the supervisor is *interrupted* is a
+    // separate question, answered by `notice_interval_ms` at the other end.
+    e.pending = kind;
+    e.last_notice_ms = now_ms;
+    return true;
 }
 
 /// What a tab should say about a terminal beyond its own title.
@@ -371,29 +384,93 @@ pub fn tabMark(self: *const Bus, id: Id, now_ms: u64, quiet_after_ms: u64) TabMa
     };
 }
 
-/// Render a notice as the line the supervisor's terminal will receive.
-///
-/// Deliberately terse and deliberately not the screen contents: it says
-/// which terminal and for how long, and leaves the supervisor to go and
-/// look. Pushing the whole screen in would flood its context and would also
-/// take the decision of whether to look away from it.
-pub fn formatNotice(notice: Notice, buf: []u8) std.fmt.BufPrintError![]u8 {
-    const what = switch (notice.kind) {
-        .quiescent => "has gone quiet",
-        .still_quiescent => "is still quiet",
-        .resumed => "is active again",
-    };
 
-    return std.fmt.bufPrint(
-        buf,
-        "[poltergeist] terminal 0x{x:0>16} {s} (screen unchanged {d}s, pty silent {d}s)",
-        .{
-            notice.about,
-            what,
-            notice.quiet_ms / std.time.ms_per_s,
-            notice.silent_ms / std.time.ms_per_s,
-        },
-    );
+/// Most terminals named individually in one summary. Beyond this the rest
+/// are counted rather than listed: a line long enough to need scrolling is
+/// not a line anybody reads, and `terminal_list` gives the full picture to
+/// a supervisor that wants it.
+const max_listed = 5;
+
+/// Everything the supervisor has not been shown, written into `buf`, and
+/// cleared as it goes.
+///
+/// **Reading is consuming.** What comes back here does not come back again;
+/// a terminal that is still quiet will make a fresh entry on its next
+/// report. This is the whole point of the box: the supervisor is
+/// interrupted on a schedule the user sets, not once per event per
+/// terminal, and it never sees the same thing twice.
+///
+/// Returns null when the box is empty, which is most of the time. Nothing
+/// is put in front of the supervisor to say that all is well -- an
+/// interruption that carries no information is still an interruption.
+///
+/// Durations are recomputed here rather than stored at report time, so a
+/// notice that waited in the box says how long the terminal has been quiet
+/// *now*, not how long it had been when it first came up.
+pub fn drain(self: *Bus, now_ms: u64, buf: []u8) ?[]u8 {
+    var listed: usize = 0;
+    var total: usize = 0;
+
+    // Written into a fixed buffer with a running end, because the whole
+    // point is to produce one line for one injection.
+    var w: std.Io.Writer = .fixed(buf);
+    w.writeAll("[poltergeist]") catch return null;
+
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const e = kv.value_ptr;
+        const kind = e.pending orelse continue;
+        e.pending = null;
+        total += 1;
+
+        if (listed >= max_listed) continue;
+
+        const sep = if (listed == 0) " " else ", ";
+        const written = switch (kind) {
+            .quiescent, .still_quiescent => w.print(
+                "{s}0x{x:0>16} quiet {d}s",
+                .{ sep, kv.key_ptr.*, self.quietMs(kv.key_ptr.*, now_ms) / std.time.ms_per_s },
+            ),
+            .resumed => w.print(
+                "{s}0x{x:0>16} back at work",
+                .{ sep, kv.key_ptr.* },
+            ),
+        };
+
+        // Out of room. What is written already stands, and the rest is
+        // covered by the count below. The `pending` flags are cleared
+        // either way: they have been accounted for.
+        written catch break;
+        listed += 1;
+    }
+
+    if (total == 0) return null;
+    if (total > listed) {
+        w.print(" (+{d} more)", .{total - listed}) catch {};
+    }
+
+    return w.buffered();
+}
+
+/// The box, but only if enough time has passed to interrupt the supervisor
+/// again. Null when it is too soon, or when there is nothing to say.
+///
+/// This is the scheduled hand-over. `drain` is the other way in, for a
+/// supervisor that asks of its own accord -- that one is never held back,
+/// because somebody choosing to look is not an interruption.
+///
+/// The clock only advances on a delivery that actually happened. An empty
+/// box does not count as having been shown anything, so a terminal going
+/// quiet a second after a silent tick is not made to wait another full
+/// interval.
+pub fn drainIfDue(self: *Bus, now_ms: u64, buf: []u8) ?[]u8 {
+    if (self.last_delivery_ms) |last| {
+        if (now_ms -| last < self.config.notice_interval_ms) return null;
+    }
+
+    const line = self.drain(now_ms, buf) orelse return null;
+    self.last_delivery_ms = now_ms;
+    return line;
 }
 
 // -- tests ------------------------------------------------------------------
@@ -413,14 +490,7 @@ fn quiet(quiet_ms: u64) Sampler.Event {
 }
 
 fn testBus() Bus {
-    return .init(testing.allocator, .{ .min_notice_gap_ms = 1000 });
-}
-
-test "the default notice gap cannot override the sampler's repeat interval" {
-    // A large default here would silently take the repeat interval away
-    // from the user, who sets it through poltergeist-quiescence-repeat.
-    const d: Config = .{};
-    try testing.expect(d.min_notice_gap_ms <= std.time.ms_per_s);
+    return .init(testing.allocator, .{});
 }
 
 test "no supervisor means no notices" {
@@ -428,7 +498,7 @@ test "no supervisor means no notices" {
     defer b.deinit();
 
     try b.watch(worker);
-    try testing.expect(b.report(worker, quiet(60_000), 0) == null);
+    try testing.expect(b.report(worker, quiet(60_000), 0) == false);
 }
 
 test "a watched terminal going quiet reaches the supervisor" {
@@ -438,11 +508,11 @@ test "a watched terminal going quiet reaches the supervisor" {
     try b.setSupervisor(boss);
     try b.watch(worker);
 
-    const n = b.report(worker, quiet(180_000), 0) orelse
-        return error.TestExpectedNotice;
-    try testing.expectEqual(boss, n.to);
-    try testing.expectEqual(worker, n.about);
-    try testing.expectEqual(Notice.Kind.quiescent, n.kind);
+    try testing.expect(b.report(worker, quiet(180_000), 0));
+    try testing.expectEqual(NoticeKind.quiescent, b.get(worker).?.pending.?);
+
+    // And it is the supervisor that would be handed it.
+    try testing.expectEqual(boss, b.supervisor.?);
 }
 
 test "the supervisor is not reported to itself" {
@@ -450,7 +520,7 @@ test "the supervisor is not reported to itself" {
     defer b.deinit();
 
     try b.setSupervisor(boss);
-    try testing.expect(b.report(boss, quiet(180_000), 0) == null);
+    try testing.expect(b.report(boss, quiet(180_000), 0) == false);
 }
 
 test "an unwatched terminal is not reported" {
@@ -459,49 +529,7 @@ test "an unwatched terminal is not reported" {
 
     try b.setSupervisor(boss);
     try b.register(worker); // known, but not watched
-    try testing.expect(b.report(worker, quiet(180_000), 0) == null);
-}
-
-test "a resumed notice is never rate limited away" {
-    var b = testBus();
-    defer b.deinit();
-
-    try b.setSupervisor(boss);
-    try b.watch(worker);
-
-    // Quiescent first, which arms the rate limiter.
-    try testing.expect(b.report(worker, quiet(180_000), 0) != null);
-
-    // Coming back to work is a one-shot transition. Dropping it would leave
-    // the supervisor thinking this terminal is still stuck.
-    const back = b.report(worker, .{ .resumed = .{
-        .quiet_ms = 180_000,
-        .silent_ms = 0,
-        .changed_rows = 12,
-        .total_rows = 24,
-    } }, 100) orelse return error.TestExpectedNotice;
-    try testing.expectEqual(Notice.Kind.resumed, back.kind);
-}
-
-test "a resumed notice does not reset the gap for repeatable kinds" {
-    var b = testBus();
-    defer b.deinit();
-
-    try b.setSupervisor(boss);
-    try b.watch(worker);
-
-    try testing.expect(b.report(worker, quiet(180_000), 0) != null);
-    _ = b.report(worker, .{ .resumed = .{
-        .quiet_ms = 180_000,
-        .silent_ms = 0,
-        .changed_rows = 1,
-        .total_rows = 24,
-    } }, 100);
-
-    // The gap still runs from the quiescent notice at t=0, not from the
-    // resumed one at t=100.
-    try testing.expect(b.report(worker, quiet(180_000), 999) == null);
-    try testing.expect(b.report(worker, quiet(180_000), 1000) != null);
+    try testing.expect(b.report(worker, quiet(180_000), 0) == false);
 }
 
 test "quiet duration is extrapolated, not left stale" {
@@ -549,7 +577,7 @@ test "a clocked off terminal still answers how long it has been quiet" {
 
     // No notice is produced -- that is the point of clocking off -- but the
     // supervisor asking directly still gets a real answer.
-    try testing.expect(b.report(worker, quiet(180_000), 180_000) == null);
+    try testing.expect(b.report(worker, quiet(180_000), 180_000) == false);
     try testing.expectEqual(@as(u64, 200_000), b.quietMs(worker, 200_000));
 }
 
@@ -582,45 +610,25 @@ test "rounds count up while quiet and reset on coming back" {
     try testing.expectEqual(@as(u16, 0), b.get(worker).?.rounds);
 }
 
-test "rounds count even while rate limited" {
-    // The supervisor is told less often than the terminal goes quiet, but
-    // the count is what the clock-out skill reasons about, so it must
-    // follow the terminal rather than the notices.
+test "rounds count every report, not every interruption" {
+    // The supervisor is interrupted far less often than the terminals
+    // report, but the count is what the clock-out skill reasons about, so
+    // it has to follow the terminal rather than the hand-overs.
     var b = testBus();
     defer b.deinit();
 
     try b.setSupervisor(boss);
     try b.watch(worker);
 
-    try testing.expect(b.report(worker, quiet(180_000), 0) != null);
-    try testing.expect(b.report(worker, quiet(181_000), 100) == null);
+    try testing.expect(b.report(worker, quiet(180_000), 0));
+    try testing.expect(b.report(worker, quiet(181_000), 100));
     try testing.expectEqual(@as(u16, 2), b.get(worker).?.rounds);
-}
 
-test "notices about one terminal are rate limited" {
-    var b = testBus();
-    defer b.deinit();
-
-    try b.setSupervisor(boss);
-    try b.watch(worker);
-
-    try testing.expect(b.report(worker, quiet(180_000), 0) != null);
-    try testing.expect(b.report(worker, quiet(180_000), 500) == null);
-    try testing.expect(b.report(worker, quiet(180_000), 999) == null);
-    try testing.expect(b.report(worker, quiet(180_000), 1000) != null);
-}
-
-test "rate limiting is per terminal" {
-    var b = testBus();
-    defer b.deinit();
-
-    const other: Id = 0x3333;
-    try b.setSupervisor(boss);
-    try b.watch(worker);
-    try b.watch(other);
-
-    try testing.expect(b.report(worker, quiet(180_000), 0) != null);
-    try testing.expect(b.report(other, quiet(180_000), 0) != null);
+    // Both of them are one entry in the box, not two.
+    var buf: [255]u8 = undefined;
+    const line = b.drain(100, &buf) orelse return error.ExpectedANotice;
+    const first = std.mem.indexOf(u8, line, "0x0000000000002222").?;
+    try testing.expect(std.mem.indexOfPos(u8, line, first + 1, "0x0000000000002222") == null);
 }
 
 test "a clocked off terminal stops being reported" {
@@ -631,11 +639,11 @@ test "a clocked off terminal stops being reported" {
     try b.watch(worker);
 
     try b.clockOff(worker, .supervisor);
-    try testing.expect(b.report(worker, quiet(180_000), 10_000) == null);
+    try testing.expect(b.report(worker, quiet(180_000), 10_000) == false);
 
     // Back on duty, reported again.
     try b.clockOn(worker);
-    try testing.expect(b.report(worker, quiet(180_000), 20_000) != null);
+    try testing.expect(b.report(worker, quiet(180_000), 20_000));
 }
 
 test "infinite work modes cannot be clocked off" {
@@ -722,7 +730,7 @@ test "closing the supervisor's terminal leaves nobody supervising" {
 
     b.unregister(boss);
     try testing.expect(b.supervisor == null);
-    try testing.expect(b.report(worker, quiet(180_000), 0) == null);
+    try testing.expect(b.report(worker, quiet(180_000), 0) == false);
 }
 
 test "register is idempotent and keeps existing state" {
@@ -811,41 +819,129 @@ test "every mark but none has a marker, and none has nothing" {
     }
 }
 
-test "a notice reads as a pointer, not as the screen" {
-    var buf: [256]u8 = undefined;
-    const line = try formatNotice(.{
-        .to = boss,
-        .about = worker,
-        .kind = .quiescent,
-        .quiet_ms = 185_000,
-        .silent_ms = 12_000,
-    }, &buf);
+test "reading the box clears it" {
+    // The point of the box: what has been shown once is not shown again.
+    var bus = testBus();
+    defer bus.deinit();
 
-    try testing.expectEqualStrings(
-        "[poltergeist] terminal 0x0000000000002222 has gone quiet " ++
-            "(screen unchanged 185s, pty silent 12s)",
-        line,
-    );
+    try bus.setSupervisor(boss);
+    try bus.watch(worker);
+    _ = bus.report(worker, quiet(60_000), 1000);
+
+    var buf: [255]u8 = undefined;
+    const first = bus.drain(1000, &buf) orelse return error.ExpectedANotice;
+    try testing.expect(std.mem.indexOf(u8, first, "0x0000000000002222") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "quiet") != null);
+
+    // Nothing new has happened, so there is nothing to say.
+    try testing.expect(bus.drain(2000, &buf) == null);
 }
 
-test "resumed and still quiescent read differently" {
-    var buf: [256]u8 = undefined;
+test "many reports about one terminal read as one line" {
+    // Fifteen repeats of "still quiet" are one fact, not fifteen. This is
+    // what keeps the supervisor's screen proportional to how many terminals
+    // exist rather than to how long they have been idle.
+    var bus = testBus();
+    defer bus.deinit();
 
-    const still = try formatNotice(.{
-        .to = boss,
-        .about = worker,
-        .kind = .still_quiescent,
-        .quiet_ms = 900_000,
-        .silent_ms = 900_000,
-    }, &buf);
-    try testing.expect(std.mem.indexOf(u8, still, "is still quiet") != null);
+    try bus.setSupervisor(boss);
+    try bus.watch(worker);
 
-    const back = try formatNotice(.{
-        .to = boss,
-        .about = worker,
-        .kind = .resumed,
-        .quiet_ms = 900_000,
+    var t: u64 = 1000;
+    for (0..15) |_| {
+        _ = bus.report(worker, quiet(60_000), t);
+        t += 20_000;
+    }
+
+    var buf: [255]u8 = undefined;
+    const line = bus.drain(t, &buf) orelse return error.ExpectedANotice;
+
+    // One mention of the terminal, and no "+N more".
+    const first = std.mem.indexOf(u8, line, "0x0000000000002222").?;
+    try testing.expect(std.mem.indexOfPos(u8, line, first + 1, "0x0000000000002222") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "more") == null);
+}
+
+test "coming back to work replaces the quiet it is waiting on" {
+    // Quiet then busy again before anybody read the box: the terminal is
+    // working, and that is all worth saying. The excursion in between is
+    // exactly the case that needed nobody.
+    var bus = testBus();
+    defer bus.deinit();
+
+    try bus.setSupervisor(boss);
+    try bus.watch(worker);
+
+    _ = bus.report(worker, quiet(60_000), 1000);
+    _ = bus.report(worker, .{ .resumed = .{
+        .quiet_ms = 0,
         .silent_ms = 0,
-    }, &buf);
-    try testing.expect(std.mem.indexOf(u8, back, "is active again") != null);
+        .changed_rows = 3,
+        .total_rows = 24,
+    } }, 3000);
+
+    var buf: [255]u8 = undefined;
+    const line = bus.drain(3000, &buf) orelse return error.ExpectedANotice;
+    try testing.expect(std.mem.indexOf(u8, line, "back at work") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "quiet") == null);
+}
+
+test "an empty box says nothing rather than saying all is well" {
+    // An interruption carrying no information is still an interruption.
+    var bus = testBus();
+    defer bus.deinit();
+
+    try bus.setSupervisor(boss);
+    try bus.watch(worker);
+
+    var buf: [255]u8 = undefined;
+    try testing.expect(bus.drain(1000, &buf) == null);
+}
+
+test "more terminals than fit are counted rather than listed" {
+    var bus = testBus();
+    defer bus.deinit();
+
+    try bus.setSupervisor(boss);
+
+    var id: Id = 0x100;
+    for (0..max_listed + 3) |_| {
+        try bus.watch(id);
+        _ = bus.report(id, quiet(60_000), 1000);
+        id += 1;
+    }
+
+    var buf: [255]u8 = undefined;
+    const line = bus.drain(1000, &buf) orelse return error.ExpectedANotice;
+    try testing.expect(std.mem.indexOf(u8, line, "(+3 more)") != null);
+
+    // Counted or listed, every one of them was consumed.
+    try testing.expect(bus.drain(1000, &buf) == null);
+}
+
+test "a notice that waited says how long it has been quiet now" {
+    // The figure is recomputed on reading, not frozen at report time, so a
+    // supervisor reading a minute later is not told a minute-old number.
+    var bus = testBus();
+    defer bus.deinit();
+
+    try bus.setSupervisor(boss);
+    try bus.watch(worker);
+    _ = bus.report(worker, quiet(60_000), 1000);
+
+    var buf: [255]u8 = undefined;
+    const line = bus.drain(1000 + 30_000, &buf) orelse return error.ExpectedANotice;
+    try testing.expect(std.mem.indexOf(u8, line, "quiet 90s") != null);
+}
+
+test "a terminal the supervisor never watched is not in the box" {
+    var bus = testBus();
+    defer bus.deinit();
+
+    try bus.setSupervisor(boss);
+    try bus.register(worker);
+    _ = bus.report(worker, quiet(60_000), 1000);
+
+    var buf: [255]u8 = undefined;
+    try testing.expect(bus.drain(1000, &buf) == null);
 }

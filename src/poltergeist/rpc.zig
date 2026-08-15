@@ -24,6 +24,15 @@ pub const Method = enum {
     /// duty state. Durations and bookkeeping only -- never screen contents.
     terminal_list,
 
+    /// What has happened that the supervisor has not been shown yet.
+    ///
+    /// Reading consumes: the same thing is not handed over twice. This is
+    /// the supervisor asking of its own accord, so unlike the scheduled
+    /// hand-over it is never held back -- choosing to look is not an
+    /// interruption. Use it after finishing something, rather than waiting
+    /// to be told.
+    notices,
+
     /// Read what is on another terminal's screen.
     terminal_read,
 
@@ -73,6 +82,7 @@ pub const Method = enum {
 pub const Request = union(Method) {
     me,
     terminal_list,
+    notices,
     terminal_read: struct { id: Bus.Id, lines: u16 = 0 },
     terminal_send: struct { id: Bus.Id, text: []const u8, submit: bool = true },
     clock_out: struct { id: Bus.Id, reason: []const u8 = "" },
@@ -120,6 +130,7 @@ pub fn requiresSupervisor(method: Method) bool {
         .me => false,
 
         .terminal_list,
+        .notices,
         .terminal_read,
         .terminal_send,
         .clock_out,
@@ -162,6 +173,7 @@ pub fn targetsTerminal(method: Method) bool {
     return switch (method) {
         .me,
         .terminal_list,
+        .notices,
         .skill_read,
         .group_create,
         .group_destroy,
@@ -190,6 +202,7 @@ pub fn target(req: Request) ?Bus.Id {
     return switch (req) {
         .me,
         .terminal_list,
+        .notices,
         .skill_read,
         .group_create,
         .group_destroy,
@@ -280,6 +293,7 @@ test "only what reaches another terminal needs the supervisor" {
             => true,
 
             .terminal_list,
+            .notices,
             .terminal_read,
             .terminal_send,
             .clock_out,
@@ -617,6 +631,17 @@ pub const Host = struct {
         /// How long that terminal's screen has been unchanged.
         quietMs: *const fn (ctx: *anyopaque, id: Bus.Id) u64,
 
+        /// Everything the supervisor has not been shown, cleared as it is
+        /// read. Empty when there is nothing waiting. Returned memory
+        /// belongs to the caller's allocator.
+        ///
+        /// Goes through the host rather than straight to the bus because
+        /// the clock does: the bus is given time, it does not keep it.
+        drainNotices: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+        ) anyerror![]const u8,
+
         /// Change how long it must be still before it is reported.
         setThreshold: *const fn (
             ctx: *anyopaque,
@@ -701,6 +726,10 @@ pub const Host = struct {
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
         return self.vtable.quietMs(self.ctx, id);
+    }
+
+    fn drainNotices(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
+        return self.vtable.drainNotices(self.ctx, alloc);
     }
 
     fn setThreshold(self: Host, id: Bus.Id, ms: u64) anyerror!void {
@@ -810,6 +839,15 @@ pub fn dispatch(
             const owned = try list.toOwnedSlice(alloc);
             std.mem.sort(wire.TerminalInfo, owned, {}, lessById);
             return .{ .terminals = owned };
+        },
+
+        .notices => {
+            // Empty is a normal answer, and a common one. It is not an
+            // error and it is not silence -- the supervisor asked, and the
+            // truthful reply is that nothing is waiting.
+            const line = host.drainNotices(alloc) catch
+                return hostFailure("ReadFailed", "could not read the notices");
+            return .{ .text = line };
         },
 
         .terminal_read => |p| {
@@ -974,11 +1012,16 @@ const FakeHost = struct {
     read_group: ?[]const u8 = null,
     quiet_ms: u64 = 0,
 
+    /// What `notices` hands back, and how many times it was asked.
+    notices: []const u8 = "",
+    drained: usize = 0,
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
             .sendText = send,
             .quietMs = quietMs,
+        .drainNotices = drainNotices,
             .setThreshold = setThreshold,
             .readSkill = readSkill,
             .chatCreate = chatCreate,
@@ -1114,6 +1157,13 @@ const FakeHost = struct {
         return self.quiet_ms;
     }
 
+    fn drainNotices(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.Refused;
+        self.drained += 1;
+        return alloc.dupe(u8, self.notices);
+    }
+
     fn setThreshold(ctx: *anyopaque, id: Bus.Id, ms: u64) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.Refused;
@@ -1244,4 +1294,44 @@ test "get_work_mode reads but nothing writes" {
         .get_work_mode = .{ .id = worker },
     });
     try testing.expectEqual(Bus.WorkMode.infinite_directed, res.work_mode);
+}
+
+test "reading the notices is the supervisor's alone" {
+    // A watched terminal reading the supervisor's box would learn which of
+    // its peers had gone quiet and for how long -- a picture of the whole
+    // room that its own role never granted it.
+    try testing.expect(requiresSupervisor(.notices));
+}
+
+test "notices hands back what is waiting and clears it" {
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    try b.setSupervisor(boss);
+
+    var fake: FakeHost = .{ .notices = "[poltergeist] 0x2222 quiet 90s" };
+    const host = fake.host();
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const res = try dispatch(arena.allocator(), &b, host, boss, .notices);
+    try testing.expectEqualStrings("[poltergeist] 0x2222 quiet 90s", res.text);
+    try testing.expectEqual(@as(usize, 1), fake.drained);
+}
+
+test "an empty box is an answer, not a failure" {
+    // The supervisor asked and nothing is waiting. That is worth saying
+    // plainly rather than as an error it would have to interpret.
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    try b.setSupervisor(boss);
+
+    var fake: FakeHost = .{};
+    const host = fake.host();
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const res = try dispatch(arena.allocator(), &b, host, boss, .notices);
+    try testing.expectEqualStrings("", res.text);
 }

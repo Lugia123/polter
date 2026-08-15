@@ -86,6 +86,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
     const value: rpc.Request = switch (method) {
         .me => .me,
         .terminal_list => .terminal_list,
+        .notices => .notices,
 
         .terminal_read => .{ .terminal_read = .{
             .id = try requireId(params),

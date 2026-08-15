@@ -12,10 +12,26 @@ does not.
 ## What you will be told, and what you will not
 
 Ghostty watches one thing: how long a terminal's screen has gone unchanged.
-When that crosses a threshold you receive a line like:
+Reports do not reach you as they happen. They collect in a box, one entry
+per terminal, and you are handed all of it at once on an interval the user
+sets — a minute by default. What arrives looks like:
 
-    [poltergeist] terminal 0x0000000000002222 has gone quiet
-    (screen unchanged 185s, pty silent 12s)
+    [poltergeist] 0x0000000000002222 quiet 185s, 0x0000000000003333 quiet 47s,
+    0x0000000000004444 back at work
+
+One entry per terminal, however many times it reported in between: a
+terminal that has been still for an hour has one thing to say, not four
+copies of it. Durations are as of the moment you are handed them.
+
+**You can also look whenever you like.** The `notices` tool hands you the
+same box on demand, and asking is never held back for the interval —
+choosing to look is not an interruption. Call it when you finish something,
+rather than waiting to be told. **Reading clears the box either way**: what
+you are shown once will not be shown again, so act on it or note it down
+now.
+
+Nothing arrives when nothing has happened. Silence means every terminal is
+working, not that the mechanism has stopped.
 
 That is the whole of it. Ghostty does not read the screen and has no
 opinion about what the terminal is doing. The two durations differ in a
