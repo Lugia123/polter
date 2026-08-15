@@ -87,6 +87,9 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .me => .me,
         .terminal_list => .terminal_list,
         .notices => .notices,
+        .group_members => .{ .group_members = .{
+            .group = try requireString(aa, params, "group"),
+        } },
 
         .terminal_read => .{ .terminal_read = .{
             .id = try requireId(params),
@@ -281,6 +284,7 @@ pub const Response = union(enum) {
     skill: struct { name: []const u8, body: []const u8 },
     messages: []const rpc.ChatLine,
     groups: []const []const u8,
+    members: []const rpc.ChatMember,
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -328,6 +332,22 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.objectField("body");
             try s.write(k.body);
         },
+        .members => |list| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("members");
+            try s.beginArray();
+            for (list) |m| {
+                try s.beginObject();
+                try s.objectField("id");
+                try writeId(&s, m.id);
+                try s.objectField("title");
+                try s.write(m.title);
+                try s.endObject();
+            }
+            try s.endArray();
+        },
+
         .groups => |names| {
             try s.objectField("ok");
             try s.write(true);
@@ -347,6 +367,8 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.write(m.seq);
                 try s.objectField("from");
                 try writeId(&s, m.from);
+                try s.objectField("author");
+                try s.write(m.author);
                 try s.objectField("at_ms");
                 try s.write(m.at_ms);
                 try s.objectField("summary");

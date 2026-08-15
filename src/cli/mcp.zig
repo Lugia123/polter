@@ -189,6 +189,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "group_members",
+        .description = "Who is in a group, and what each terminal is currently called. Useful before asking somebody to do something: a group where the terminal you want is not a member cannot reach it.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"}},"required":["group"]}
+        ,
+    },
+    .{
         .name = "terminal_read",
         .description = "Read the visible screen of another terminal. Scrollback is not available. Supervisor only.",
         .schema =

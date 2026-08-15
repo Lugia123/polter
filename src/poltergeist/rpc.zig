@@ -33,6 +33,10 @@ pub const Method = enum {
     /// to be told.
     notices,
 
+    /// Who is in a group, so a reader can see who is there rather than
+    /// inferring it from who has spoken.
+    group_members,
+
     /// Read what is on another terminal's screen.
     terminal_read,
 
@@ -83,6 +87,7 @@ pub const Request = union(Method) {
     me,
     terminal_list,
     notices,
+    group_members: struct { group: []const u8 },
     terminal_read: struct { id: Bus.Id, lines: u16 = 0 },
     terminal_send: struct { id: Bus.Id, text: []const u8, submit: bool = true },
     clock_out: struct { id: Bus.Id, reason: []const u8 = "" },
@@ -163,6 +168,7 @@ pub fn requiresSupervisor(method: Method) bool {
         .group_list,
         .group_post,
         .group_read,
+        .group_members,
         => false,
     };
 }
@@ -181,6 +187,7 @@ pub fn targetsTerminal(method: Method) bool {
         .group_list,
         .group_post,
         .group_read,
+        .group_members,
         => false,
 
         // These name a terminal to put in or take out of a group. Checked
@@ -203,6 +210,7 @@ pub fn target(req: Request) ?Bus.Id {
         .me,
         .terminal_list,
         .notices,
+        .group_members,
         .skill_read,
         .group_create,
         .group_destroy,
@@ -290,6 +298,7 @@ test "only what reaches another terminal needs the supervisor" {
             .group_list,
             .group_post,
             .group_read,
+            .group_members,
             => true,
 
             .terminal_list,
@@ -417,7 +426,10 @@ test "group_read asks for the group it was given" {
         .group_read = .{ .group = "research", .since = 7 },
     });
     defer {
-        for (res.messages) |m| testing.allocator.free(m.text);
+        for (res.messages) |m| {
+            testing.allocator.free(m.text);
+            testing.allocator.free(m.author);
+        }
         testing.allocator.free(res.messages);
     }
     try testing.expectEqualStrings("research", fake.read_group.?);
@@ -592,12 +604,28 @@ const max_text_bytes = 128 * 1024;
 pub const ChatLine = struct {
     seq: u64,
     from: Bus.Id,
-    at_ms: u64,
+
+    /// What the terminal that said this was called at the time, which is
+    /// the same string its tab is showing. Carried so that a reader can
+    /// tell which window a message came from; an id cannot be matched
+    /// against anything on screen.
+    author: []const u8,
+
+    /// Unix milliseconds, so this can be shown as a time of day. The log
+    /// itself runs on a monotonic clock -- right for measuring stillness,
+    /// useless for saying when somebody spoke -- and the host converts.
+    at_ms: i64,
 
     /// True when this stands in for messages the supervisor compacted away.
     summary: bool,
 
     text: []const u8,
+};
+
+/// One member of a group.
+pub const ChatMember = struct {
+    id: Bus.Id,
+    title: []const u8,
 };
 
 /// What the app must supply for a request to be carried out.
@@ -690,6 +718,14 @@ pub const Host = struct {
 
         /// Groups `id` is in. The slice and the names inside it must belong
         /// to `alloc`.
+        /// Who is in a group, with what each one is currently called.
+        /// Returned memory belongs to the caller's allocator.
+        chatMembers: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            group: []const u8,
+        ) anyerror![]const ChatMember,
+
         chatGroups: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
@@ -730,6 +766,14 @@ pub const Host = struct {
 
     fn drainNotices(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
         return self.vtable.drainNotices(self.ctx, alloc);
+    }
+
+    fn chatMembers(
+        self: Host,
+        alloc: std.mem.Allocator,
+        group: []const u8,
+    ) anyerror![]const ChatMember {
+        return self.vtable.chatMembers(self.ctx, alloc, group);
     }
 
     fn setThreshold(self: Host, id: Bus.Id, ms: u64) anyerror!void {
@@ -848,6 +892,12 @@ pub fn dispatch(
             const line = host.drainNotices(alloc) catch
                 return hostFailure("ReadFailed", "could not read the notices");
             return .{ .text = line };
+        },
+
+        .group_members => |p| {
+            const members = host.chatMembers(alloc, p.group) catch
+                return hostFailure("NoSuchGroup", "no group by that name");
+            return .{ .members = members };
         },
 
         .terminal_read => |p| {
@@ -1030,6 +1080,7 @@ const FakeHost = struct {
             .chatRemove = chatRemove,
             .chatCompact = chatCompact,
             .chatPost = chatPost,
+            .chatMembers = chatMembers,
             .chatGroups = chatGroups,
             .chatRead = chatRead,
         } };
@@ -1089,6 +1140,19 @@ const FakeHost = struct {
         self.posted = .{ .group = group, .from = from, .text = text };
     }
 
+    fn chatMembers(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        _: []const u8,
+    ) anyerror![]const ChatMember {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.NoSuchGroup;
+
+        const out = try alloc.alloc(ChatMember, 1);
+        out[0] = .{ .id = 0x9999, .title = try alloc.dupe(u8, "a terminal") };
+        return out;
+    }
+
     fn chatGroups(
         ctx: *anyopaque,
         alloc: std.mem.Allocator,
@@ -1117,6 +1181,7 @@ const FakeHost = struct {
         one[0] = .{
             .seq = since + 1,
             .from = 0x9999,
+            .author = try alloc.dupe(u8, "a terminal"),
             .at_ms = 0,
             .summary = false,
             .text = try alloc.dupe(u8, "hello"),

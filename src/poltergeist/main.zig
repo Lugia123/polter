@@ -12,6 +12,7 @@
 
 pub const Bus = @import("Bus.zig");
 pub const Chat = @import("Chat.zig");
+pub const ChatLog = @import("ChatLog.zig");
 pub const Fingerprint = @import("Fingerprint.zig");
 pub const rpc = @import("rpc.zig");
 pub const Sampler = @import("Sampler.zig");

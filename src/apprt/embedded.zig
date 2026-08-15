@@ -481,6 +481,20 @@ pub const Surface = struct {
 
         /// Context for the new surface
         context: apprt.surface.NewSurfaceContext = .window,
+
+        /// True when this surface is being opened to run the chat
+        /// interface. Requests arriving from it then count as coming from
+        /// the person at the keyboard rather than from a terminal.
+        ///
+        /// Set by the apprt, because only the apprt knows it opened this
+        /// one for that purpose. Nothing a client says can produce it,
+        /// which is the point: an agent must not be able to reach user
+        /// identity, and an agent can say anything.
+        ///
+        /// Declared after `context` to match `ghostty_surface_config_s`.
+        /// These two are one struct across the C boundary and the order is
+        /// the layout.
+        poltergeist_chat: bool = false,
     };
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
@@ -604,6 +618,15 @@ pub const Surface = struct {
             self,
         );
         errdefer self.core_surface.deinit();
+
+        // Now that the core surface has an id, tell the app this one is
+        // the chat. Failing to record it costs the interface its user
+        // identity but must not stop the terminal from opening.
+        if (opts.poltergeist_chat) {
+            app.core_app.addChatSurface(self.core_surface.id) catch |err| {
+                log.warn("could not mark the chat surface err={}", .{err});
+            };
+        }
 
         // If our options requested a specific font-size, set that.
         if (opts.font_size != 0) {

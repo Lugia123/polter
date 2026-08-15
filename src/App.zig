@@ -44,13 +44,45 @@ poltergeist: poltergeistpkg.Bus,
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
 
+/// The same conversation, written down. Null when logging is off.
+///
+/// The chat in memory is a working set: it trims as it grows and the
+/// supervisor compacts it on purpose. This is the record, and nothing
+/// removes anything from it -- otherwise the morning after an unattended
+/// night has nothing to read, which is the case the whole feature is for.
+chat_log: ?poltergeistpkg.ChatLog = null,
+
 /// Baseline for the monotonic clock the bus is given. Taken on the first
 /// report rather than at startup so it costs nothing when unused.
 poltergeist_epoch: ?std.Io.Timestamp = null,
 
+/// What the wall clock read at that same instant, in Unix milliseconds.
+///
+/// The bus and the chat log run on a monotonic clock, which is the right
+/// choice for measuring how long something has been still: it does not
+/// jump when the system clock is corrected. But somebody reading the chat
+/// wants to know what time a thing was said, and an offset from an
+/// arbitrary baseline cannot answer that. Pairing the two clocks once, at
+/// the single instant both were read, lets either be recovered from the
+/// other.
+poltergeist_epoch_wall_ms: i64 = 0,
+
 /// The socket agents reach Poltergeist through. Null unless
 /// `poltergeist-mcp` is on, so the default build opens nothing.
 poltergeist_server: ?poltergeistpkg.Server = null,
+
+/// Surfaces this app opened to run the chat interface.
+///
+/// A request arriving from one of these counts as coming from the person
+/// at the keyboard (`Chat.user_id`) rather than from the terminal it
+/// happens to be running in. That terminal is usually in no group at all,
+/// and the user is a member of every one.
+///
+/// Kept as a list of ids the host itself put there, so identity still
+/// comes from the host rather than from anything a client says about
+/// itself. A watched agent's surface is not on it, so an agent cannot
+/// reach user identity by any route.
+chat_surfaces: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty,
 
 /// The apprt, kept so that a connection thread can wake the app loop after
 /// putting a request in the mailbox.
@@ -170,6 +202,8 @@ pub fn deinit(self: *App) void {
     self.surfaces.deinit(self.alloc);
 
     if (self.poltergeist_server) |*srv| srv.deinit();
+    if (self.chat_log) |*l| l.deinit();
+    self.chat_surfaces.deinit(self.alloc);
     self.chat.deinit();
     self.poltergeist.deinit();
 
@@ -299,6 +333,35 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
     };
 }
 
+/// Open the chat log if the config wants it and it is not open yet.
+///
+/// Same reasoning as the socket: `updateConfig` runs only on a config
+/// *reload*, which neither apprt does at launch, so waiting for it would
+/// mean nothing was written down until somebody reloaded by hand.
+pub fn ensureChatLog(self: *App, want: bool) void {
+    if (!want or self.chat_log != null) return;
+
+    const io = global.io();
+    var environ_map = global.environMap() catch return;
+    defer environ_map.deinit();
+
+    const state_dir = internal_os.xdg.state(
+        io,
+        self.alloc,
+        &environ_map,
+        .{ .subdir = "polter" },
+    ) catch |err| {
+        log.warn("poltergeist: no state directory for the chat log err={}", .{err});
+        return;
+    };
+    defer self.alloc.free(state_dir);
+
+    self.chat_log = poltergeistpkg.ChatLog.open(self.alloc, io, state_dir) catch |err| {
+        log.warn("poltergeist: could not open the chat log err={}", .{err});
+        return;
+    };
+}
+
 /// Open the agent socket if the config wants it and it is not open yet.
 ///
 /// Called as a surface starts, because `updateConfig` runs only on a config
@@ -413,11 +476,20 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // has not moved.
     defer self.refreshPoltergeistTabs();
 
+    // The server resolved the token to a surface, exactly as it does for
+    // an agent's sidecar. One more question decides whose request this is:
+    // a surface this app opened for the chat speaks for the person at the
+    // keyboard, and nothing else does.
+    const caller = if (self.isChatSurface(pending.caller))
+        poltergeistpkg.Chat.user_id
+    else
+        pending.caller;
+
     const response = poltergeistpkg.rpc.dispatch(
         pending.arena.allocator(),
         &self.poltergeist,
         self.poltergeistHost(),
-        pending.caller,
+        caller,
         pending.request,
     ) catch |err| switch (err) {
         error.OutOfMemory => poltergeistpkg.wire.Response{ .failed = .{
@@ -427,6 +499,29 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     };
 
     pending.complete(global.io(), response);
+}
+
+/// Whether this surface is one the app opened to run the chat interface.
+fn isChatSurface(self: *const App, id: poltergeistpkg.Bus.Id) bool {
+    for (self.chat_surfaces.items) |v| if (v == id) return true;
+    return false;
+}
+
+/// Record that a surface is running the chat, so its requests count as the
+/// user's. Called by the apprt after it has opened one.
+pub fn addChatSurface(self: *App, id: poltergeistpkg.Bus.Id) Allocator.Error!void {
+    if (self.isChatSurface(id)) return;
+    try self.chat_surfaces.append(self.alloc, id);
+}
+
+/// Forget one, because the terminal running it has gone.
+pub fn removeChatSurface(self: *App, id: poltergeistpkg.Bus.Id) void {
+    for (self.chat_surfaces.items, 0..) |v, i| {
+        if (v == id) {
+            _ = self.chat_surfaces.swapRemove(i);
+            return;
+        }
+    }
 }
 
 fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
@@ -443,6 +538,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatRemove = chatRemove,
         .chatCompact = chatCompact,
         .chatPost = chatPost,
+        .chatMembers = chatMembers,
         .chatGroups = chatGroups,
         .chatRead = chatRead,
     } };
@@ -561,7 +657,14 @@ fn chatCompact(
     by: poltergeistpkg.Bus.Id,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    _ = try self.chat.compact(group, through, summary, by, self.poltergeistNow());
+    const at = self.poltergeistNow();
+    _ = try self.chat.compact(group, through, summary, by, at);
+
+    // Written after the messages it replaced, not over them. Compaction
+    // frees the agents' context; it is not an instruction to forget, and
+    // the record of a night is worth more than the shape it was in when
+    // the supervisor tidied up.
+    self.logChat(group, by, at, true, summary);
 }
 
 fn chatPost(
@@ -571,8 +674,43 @@ fn chatPost(
     text: []const u8,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    _ = try self.chat.post(group, from, text, self.poltergeistNow());
+    const at = self.poltergeistNow();
+    _ = try self.chat.post(group, from, text, at);
+
+    // Written down after the model accepted it, so the record holds what
+    // was actually said rather than what somebody tried to say.
+    self.logChat(group, from, at, false, text);
+
     self.tellTerminalsAboutMessages();
+}
+
+/// Put one message in the log on disk, if there is one.
+///
+/// The author's name is resolved here rather than at read time because a
+/// terminal's title changes, and worse, the terminal goes away: a record
+/// written tonight has to still say who spoke when it is read tomorrow.
+fn logChat(
+    self: *App,
+    group: []const u8,
+    from: poltergeistpkg.Bus.Id,
+    at_ms: u64,
+    summary: bool,
+    text: []const u8,
+) void {
+    const l = if (self.chat_log) |*v| v else return;
+
+    var buf: [256]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buf);
+    const author = self.chatMemberTitle(fixed.allocator(), from) catch "";
+
+    l.append(
+        group,
+        from,
+        author,
+        self.poltergeist_epoch_wall_ms + @as(i64, @intCast(at_ms)),
+        summary,
+        text,
+    );
 }
 
 fn chatGroups(
@@ -591,6 +729,66 @@ fn chatGroups(
     for (names, 0..) |n, i| owned[i] = try alloc.dupe(u8, n);
     alloc.free(names);
     return owned;
+}
+
+/// Who is in a group, each named the way a person can find them.
+fn chatMembers(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    group: []const u8,
+) anyerror![]const poltergeistpkg.rpc.ChatMember {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const ids = try self.chat.membersOf(alloc, group);
+    defer alloc.free(ids);
+
+    const out = try alloc.alloc(poltergeistpkg.rpc.ChatMember, ids.len);
+    var named: usize = 0;
+    errdefer {
+        for (out[0..named]) |m| alloc.free(m.title);
+        alloc.free(out);
+    }
+
+    for (ids, 0..) |id, i| {
+        out[i] = .{ .id = id, .title = try self.chatMemberTitle(alloc, id) };
+        named += 1;
+    }
+    return out;
+}
+
+/// What to call a terminal where a person will read it.
+///
+/// Its tab title first, so the name in the chat and the name on the tab are
+/// the same string and a reader can tell which window a message came from.
+/// An id cannot be matched against anything on screen, so it is the last
+/// resort rather than the obvious answer.
+///
+/// A terminal only has a title once the program in it sets one. Agent CLIs
+/// do; a bare shell sitting at a prompt may not, and then the directory it
+/// is in says far more about which window it is than sixteen hex digits.
+fn chatMemberTitle(
+    self: *App,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+) Allocator.Error![]const u8 {
+    if (id == poltergeistpkg.Chat.user_id) return alloc.dupe(u8, "you");
+
+    const surface = self.findSurfaceByID(id) orelse
+        return std.fmt.allocPrint(alloc, "0x{x:0>16}", .{id});
+
+    if (surface.rt_surface.getTitle()) |title| {
+        if (title.len > 0) return alloc.dupe(u8, title);
+    }
+
+    if (surface.pwd(alloc) catch null) |dir| {
+        defer alloc.free(dir);
+        if (dir.len > 0) {
+            const base = std.fs.path.basename(dir);
+            return alloc.dupe(u8, if (base.len > 0) base else dir);
+        }
+    }
+
+    return std.fmt.allocPrint(alloc, "0x{x:0>16}", .{id});
 }
 
 fn chatRead(
@@ -613,7 +811,13 @@ fn chatRead(
         out[i] = .{
             .seq = m.seq,
             .from = m.from,
-            .at_ms = m.at_ms,
+            .author = try self.chatMemberTitle(alloc, m.from),
+
+            // Back onto the wall clock. The log runs on a monotonic one,
+            // which is right for measuring stillness and useless for
+            // saying what time somebody spoke.
+            .at_ms = self.poltergeist_epoch_wall_ms + @as(i64, @intCast(m.at_ms)),
+
             .summary = m.summary,
             .text = try alloc.dupe(u8, m.text),
         };
@@ -661,6 +865,13 @@ pub fn poltergeistNow(self: *App) u64 {
     const epoch = self.poltergeist_epoch orelse epoch: {
         const t: std.Io.Timestamp = .now(global.io(), .awake);
         self.poltergeist_epoch = t;
+
+        const wall: std.Io.Timestamp = .now(global.io(), .real);
+        self.poltergeist_epoch_wall_ms = @intCast(@divTrunc(
+            wall.nanoseconds,
+            std.time.ns_per_ms,
+        ));
+
         break :epoch t;
     };
     const now: std.Io.Timestamp = .now(global.io(), .awake);

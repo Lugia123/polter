@@ -481,6 +481,11 @@ typedef struct {
   const char* initial_input;
   bool wait_after_command;
   ghostty_surface_context_e context;
+
+  // True when this surface is being opened to run the chat interface, so
+  // that requests from it count as the user rather than as a terminal.
+  // Only the host may set this; see docs/poltergeist/chatui.md.
+  bool poltergeist_chat;
 } ghostty_surface_config_s;
 
 typedef struct {

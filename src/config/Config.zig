@@ -1326,6 +1326,24 @@ command: ?Command = null,
 /// interruption.
 @"poltergeist-notice-interval": Duration = .{ .duration = std.time.ns_per_min },
 
+/// Write what the terminals say to each other to disk.
+///
+/// The conversation in memory is a working set: it trims as it grows, and
+/// the supervisor compacts it on purpose to keep the agents' context free.
+/// That is the wrong shape for a record, and unattended overnight is the
+/// case this whole feature exists for -- without this, the morning after
+/// has nothing to read.
+///
+/// The log is append-only and nothing removes anything from it: messages
+/// trimmed or compacted away in memory are still in the file. It lives in
+/// `$XDG_STATE_HOME/polter/chat/`, is created owner-only, and rotates once
+/// past 8MB keeping one older generation.
+///
+/// Turn it off if you would rather nothing was written down. The contents
+/// are whatever the agents paste at each other, which is to say your code,
+/// your paths and your stack traces.
+@"poltergeist-chat-log": bool = true,
+
 /// Extra environment variables to pass to commands launched in a terminal
 /// surface. The format is `env=KEY=VALUE`.
 ///

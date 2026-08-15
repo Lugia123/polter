@@ -416,6 +416,29 @@ pub fn read(
     return out.toOwnedSlice(alloc);
 }
 
+/// Who is in this group, sorted so two listings can be compared.
+///
+/// Ids only. What to call each one is not the chat's business: it knows
+/// terminals by the id the host assigned, and the host is the one that can
+/// turn that into whatever the tab currently says.
+pub fn membersOf(
+    self: *const Chat,
+    alloc: Allocator,
+    name: []const u8,
+) Error![]const Id {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+
+    var out: std.ArrayListUnmanaged(Id) = .empty;
+    errdefer out.deinit(alloc);
+
+    var it = group.members.keyIterator();
+    while (it.next()) |id| try out.append(alloc, id.*);
+
+    const owned = try out.toOwnedSlice(alloc);
+    std.mem.sort(Id, owned, {}, std.sort.asc(Id));
+    return owned;
+}
+
 /// The groups `id` is in, sorted so two listings can be compared.
 ///
 /// The names belong to the chat, so a caller that keeps them must copy.

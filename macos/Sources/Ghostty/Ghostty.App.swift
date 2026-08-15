@@ -467,6 +467,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_NEW_TAB:
                 newTab(app, target: target)
 
+            case GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CHAT:
+                openChat(app, target: target)
+
             case GHOSTTY_ACTION_NEW_SPLIT:
                 newSplit(app, target: target, direction: action.action.new_split)
 
@@ -833,6 +836,44 @@ extension Ghostty {
                     userInfo: [
                         Notification.NewSurfaceConfigKey: SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_TAB)),
                     ]
+                )
+
+            default:
+                assertionFailure()
+            }
+        }
+
+        /// Open a terminal running the chat interface.
+        ///
+        /// A terminal rather than a window of our own: the chat is a TUI, so
+        /// anything that can open a terminal has the interface, and there is
+        /// no second implementation to keep in step on GTK.
+        ///
+        /// `poltergeistChat` is what makes the difference between this and
+        /// any other terminal -- it tells the core that requests from this
+        /// surface speak for the person at the keyboard. It is set here,
+        /// where we know why the surface is being opened, and nowhere else.
+        private static func openChat(_ app: ghostty_app_t, target: ghostty_target_s) {
+            var config = SurfaceConfiguration()
+            config.command = "polter +chat"
+            config.poltergeistChat = true
+            config.context = GHOSTTY_SURFACE_CONTEXT_TAB
+
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                NotificationCenter.default.post(
+                    name: Notification.ghosttyNewTab,
+                    object: nil,
+                    userInfo: [Notification.NewSurfaceConfigKey: config]
+                )
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return }
+                guard let surfaceView = self.surfaceView(from: surface) else { return }
+                NotificationCenter.default.post(
+                    name: Notification.ghosttyNewTab,
+                    object: surfaceView,
+                    userInfo: [Notification.NewSurfaceConfigKey: config]
                 )
 
             default:

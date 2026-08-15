@@ -676,6 +676,7 @@ pub fn init(
         // The socket is opened here rather than only at config reload:
         // neither apprt calls `updateConfig` at launch.
         app.ensurePoltergeistServer(rt_app, config.@"poltergeist-mcp");
+        app.ensureChatLog(config.@"poltergeist-chat-log");
 
         if (app.poltergeist_server) |*srv| {
             if (srv.issueToken(self.id)) |token| {
@@ -835,6 +836,7 @@ pub fn deinit(self: *Surface) void {
     // is no id to read. Here `self` is the core surface by definition.
     self.app.poltergeist.unregister(self.id);
     self.app.chat.forget(self.id);
+    self.app.removeChatSurface(self.id);
     if (self.app.poltergeist_server) |*srv| srv.revokeTokens(self.id);
 
     // Stop search thread

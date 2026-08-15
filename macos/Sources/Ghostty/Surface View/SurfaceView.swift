@@ -599,6 +599,12 @@ extension Ghostty {
         /// Context for surface creation
         var context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_WINDOW
 
+        /// True when this surface is being opened to run the chat interface.
+        /// Set only by us, never inherited from another surface: it is what
+        /// gives the interface the user's identity, and inheriting it would
+        /// hand that identity to whatever the chat opened next.
+        var poltergeistChat: Bool = false
+
         init() {}
 
         init(from config: ghostty_surface_config_s) {
@@ -642,6 +648,8 @@ extension Ghostty {
 
             // Set context
             config.context = context
+
+            config.poltergeist_chat = poltergeistChat
 
             // Use withCString to ensure strings remain valid for the duration of the closure
             return try workingDirectory.withCString { cWorkingDir in
