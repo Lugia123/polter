@@ -339,3 +339,316 @@ test "a demoted supervisor immediately loses its reach" {
     }));
     try authorize(&b, other, .{ .terminal_read = .{ .id = worker } });
 }
+
+// -- dispatch ---------------------------------------------------------------
+
+const wire = @import("wire.zig");
+
+/// What the app must supply for a request to be carried out.
+///
+/// An interface rather than a direct dependency on `App` so the dispatch
+/// rules can be tested against a fake. It is deliberately narrow: reading a
+/// screen, typing into one, and two numbers. Anything wider would invite
+/// the tool surface to grow capabilities that were never argued for.
+pub const Host = struct {
+    ctx: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        /// The visible screen, or the last `lines` rows when non-zero.
+        /// Returned memory belongs to the caller's allocator.
+        readTerminal: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+            lines: u16,
+        ) anyerror![]const u8,
+
+        /// Type text into a terminal as if the user had.
+        sendText: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+            text: []const u8,
+            submit: bool,
+        ) anyerror!void,
+
+        /// How long that terminal's screen has been unchanged.
+        quietMs: *const fn (ctx: *anyopaque, id: Bus.Id) u64,
+
+        /// Change how long it must be still before it is reported.
+        setThreshold: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+            ms: u64,
+        ) anyerror!void,
+    };
+
+    fn readTerminal(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+        lines: u16,
+    ) anyerror![]const u8 {
+        return self.vtable.readTerminal(self.ctx, alloc, id, lines);
+    }
+
+    fn sendText(self: Host, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
+        return self.vtable.sendText(self.ctx, id, text, submit);
+    }
+
+    fn quietMs(self: Host, id: Bus.Id) u64 {
+        return self.vtable.quietMs(self.ctx, id);
+    }
+
+    fn setThreshold(self: Host, id: Bus.Id, ms: u64) anyerror!void {
+        return self.vtable.setThreshold(self.ctx, id, ms);
+    }
+};
+
+/// Carry out one request on behalf of `caller`.
+///
+/// Authorization happens first and is never skipped: every path out of this
+/// function that touches the host has been through `authorize`.
+///
+/// Anything the host itself refuses comes back as a failure response rather
+/// than an error, because the agent on the other end needs to be told what
+/// happened -- a silent failure would have it waiting on something that is
+/// never going to occur.
+pub fn dispatch(
+    alloc: std.mem.Allocator,
+    bus: *Bus,
+    host: Host,
+    caller: Bus.Id,
+    req: Request,
+) std.mem.Allocator.Error!wire.Response {
+    authorize(bus, caller, req) catch |err| return failure(err);
+
+    switch (req) {
+        .me => return .{ .me = describe(bus, host, caller) },
+
+        .terminal_list => {
+            var list: std.ArrayListUnmanaged(wire.TerminalInfo) = .empty;
+            defer list.deinit(alloc);
+
+            var it = bus.entries.iterator();
+            while (it.next()) |kv| {
+                try list.append(alloc, describe(bus, host, kv.key_ptr.*));
+            }
+
+            // Sorted so that repeated calls read the same way; a hash map's
+            // order is not stable and an agent comparing two listings would
+            // see phantom movement.
+            const owned = try list.toOwnedSlice(alloc);
+            std.mem.sort(wire.TerminalInfo, owned, {}, lessById);
+            return .{ .terminals = owned };
+        },
+
+        .terminal_read => |p| {
+            const text = host.readTerminal(alloc, p.id, p.lines) catch
+                return hostFailure("ReadFailed", "could not read that terminal");
+            return .{ .text = text };
+        },
+
+        .terminal_send => |p| {
+            host.sendText(p.id, p.text, p.submit) catch
+                return hostFailure("SendFailed", "could not type into that terminal");
+            return .ok;
+        },
+
+        .clock_out => |p| {
+            bus.clockOff(p.id, .supervisor) catch |err| return switch (err) {
+                error.WorkModeForbids => failure(error.WorkModeForbids),
+                error.UnknownTerminal => failure(error.UnknownTerminal),
+                error.NotPermitted => failure(error.NotPermitted),
+            };
+            return .ok;
+        },
+
+        .clock_in => |p| {
+            bus.clockOn(p.id) catch return failure(error.UnknownTerminal);
+            return .ok;
+        },
+
+        .get_work_mode => |p| {
+            const e = bus.get(p.id) orelse return failure(error.UnknownTerminal);
+            return .{ .work_mode = e.work_mode };
+        },
+
+        .set_quiescence_threshold => |p| {
+            host.setThreshold(p.id, p.ms) catch
+                return hostFailure("ThresholdFailed", "could not change that threshold");
+            return .ok;
+        },
+    }
+}
+
+fn lessById(_: void, a: wire.TerminalInfo, b: wire.TerminalInfo) bool {
+    return a.id < b.id;
+}
+
+fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
+    const e = bus.get(id) orelse Bus.Entry{};
+    return .{
+        .id = id,
+        .role = e.role,
+        .duty = e.duty,
+        .work_mode = e.work_mode,
+        .quiet_ms = host.quietMs(id),
+        .watching = e.role == .watched,
+    };
+}
+
+fn failure(err: Error) wire.Response {
+    return .{ .failed = .{ .code = @errorName(err), .message = errorMessage(err) } };
+}
+
+fn hostFailure(code: []const u8, message: []const u8) wire.Response {
+    return .{ .failed = .{ .code = code, .message = message } };
+}
+
+// -- dispatch tests ---------------------------------------------------------
+
+/// A host that records what it was asked to do and can be told to refuse.
+const FakeHost = struct {
+    sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
+    set_to: ?struct { id: Bus.Id, ms: u64 } = null,
+    read_count: usize = 0,
+    refuse: bool = false,
+    quiet_ms: u64 = 0,
+
+    fn host(self: *FakeHost) Host {
+        return .{ .ctx = self, .vtable = &.{
+            .readTerminal = read,
+            .sendText = send,
+            .quietMs = quietMs,
+            .setThreshold = setThreshold,
+        } };
+    }
+
+    fn read(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        _: Bus.Id,
+        _: u16,
+    ) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.Refused;
+        self.read_count += 1;
+        return alloc.dupe(u8, "screen contents");
+    }
+
+    fn send(ctx: *anyopaque, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.Refused;
+        self.sent = .{ .id = id, .text = text, .submit = submit };
+    }
+
+    fn quietMs(ctx: *anyopaque, _: Bus.Id) u64 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.quiet_ms;
+    }
+
+    fn setThreshold(ctx: *anyopaque, id: Bus.Id, ms: u64) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.Refused;
+        self.set_to = .{ .id = id, .ms = ms };
+    }
+};
+
+test "dispatch refuses an unauthorized request before touching the host" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+        .terminal_read = .{ .id = boss },
+    });
+
+    try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    try testing.expectEqual(@as(usize, 0), fake.read_count);
+}
+
+test "the supervisor can read and type into a watched terminal" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const read = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .terminal_read = .{ .id = worker },
+    });
+    defer testing.allocator.free(read.text);
+    try testing.expectEqualStrings("screen contents", read.text);
+
+    const sent = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .terminal_send = .{ .id = worker, .text = "继续", .submit = true },
+    });
+    try testing.expect(sent == .ok);
+    try testing.expectEqualStrings("继续", fake.sent.?.text);
+    try testing.expectEqual(worker, fake.sent.?.id);
+}
+
+test "a host refusal comes back as a failure the agent can read" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .refuse = true };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .terminal_send = .{ .id = worker, .text = "x" },
+    });
+    try testing.expectEqualStrings("SendFailed", res.failed.code);
+    try testing.expect(res.failed.message.len > 0);
+}
+
+test "clock_out through dispatch still obeys the work mode ban" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    try b.setWorkMode(worker, .infinite_sequential, .user);
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .clock_out = .{ .id = worker },
+    });
+
+    try testing.expectEqualStrings("WorkModeForbids", res.failed.code);
+    try testing.expectEqual(Bus.Duty.on, b.get(worker).?.duty);
+}
+
+test "terminal_list is sorted so two listings can be compared" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.watch(0xaaaa);
+    try b.watch(0x0001);
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .terminal_list);
+    defer testing.allocator.free(res.terminals);
+
+    try testing.expect(res.terminals.len >= 4);
+    for (res.terminals[1..], 0..) |info, i| {
+        try testing.expect(res.terminals[i].id < info.id);
+    }
+}
+
+test "me works for a terminal that supervises nothing" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .quiet_ms = 4242 };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .me);
+    try testing.expectEqual(worker, res.me.id);
+    try testing.expectEqual(Bus.Role.watched, res.me.role);
+    try testing.expectEqual(@as(u64, 4242), res.me.quiet_ms);
+    try testing.expect(res.me.watching);
+}
+
+test "get_work_mode reads but nothing writes" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    try b.setWorkMode(worker, .infinite_directed, .user);
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .get_work_mode = .{ .id = worker },
+    });
+    try testing.expectEqual(Bus.WorkMode.infinite_directed, res.work_mode);
+}

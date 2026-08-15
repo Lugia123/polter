@@ -113,7 +113,7 @@ pub const Notice = struct {
     pub const Kind = enum { quiescent, still_quiescent, resumed };
 };
 
-const Entry = struct {
+pub const Entry = struct {
     role: Role = .none,
     duty: Duty = .on,
     work_mode: WorkMode = .clock_off,
