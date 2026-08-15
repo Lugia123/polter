@@ -5,7 +5,7 @@ const args = @import("args.zig");
 const global = @import("../global.zig");
 const net = std.Io.net;
 
-const log = std.log.scoped(.polter_mcp);
+const log = std.log.scoped(.mcp);
 
 /// MCP protocol revision this speaks. Sent back in `initialize`.
 const protocol_version = "2024-11-05";
@@ -37,12 +37,12 @@ pub const Options = struct {
     }
 };
 
-/// The `polter-mcp` command runs an MCP server that lets an agent see and
+/// The `mcp` command runs an MCP server that lets an agent see and
 /// steer the other terminals a Poltergeist supervisor is watching.
 ///
 /// It is not run by hand. Point an MCP client at it:
 ///
-///   {"command": "ghostty", "args": ["+polter-mcp"]}
+///   {"command": "polter", "args": ["+mcp"]}
 ///
 /// It finds the terminal it belongs to through `GHOSTTY_POLTER_SOCKET` and
 /// `GHOSTTY_POLTER_TOKEN`, which Ghostty puts in every terminal's
@@ -309,7 +309,7 @@ fn serve(alloc: Allocator, io: std.Io, host: *Host) !u8 {
         if (line.len == 0) continue;
 
         handleOne(alloc, host, &writer.interface, line) catch |err| {
-            log.warn("polter-mcp: could not handle a message err={}", .{err});
+            log.warn("mcp: could not handle a message err={}", .{err});
         };
     }
 }

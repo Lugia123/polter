@@ -2,11 +2,11 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**已实现**（S2）。工具面在 `src/poltergeist/rpc.zig`，线协议在 `wire.zig`，socket 与 token 在 `Server.zig`，sidecar 在 `src/cli/polter_mcp.zig`，Skill 体系在 `skill.zig` 与 `skills/`。**本章若与代码不一致，以代码为准**：下面几节是设计推导，实现与它的出入记在各节的「实现与本章的出入」里。
+> 状态：**已实现**（S2）。工具面在 `src/poltergeist/rpc.zig`，线协议在 `wire.zig`，socket 与 token 在 `Server.zig`，sidecar 在 `src/cli/mcp.zig`，Skill 体系在 `skill.zig` 与 `skills/`。**本章若与代码不一致，以代码为准**：下面几节是设计推导，实现与它的出入记在各节的「实现与本章的出入」里。
 
 ## 本章覆盖什么
 
-- MCP 承载形态：为什么是 sidecar 进程 `ghostty +polter-mcp`，而不是把 MCP server 塞进 Ghostty 核心。
+- MCP 承载形态：为什么是 sidecar 进程 `polter +mcp`，而不是把 MCP server 塞进 Ghostty 核心。
 - sidecar 怎么认领身份、怎么连回宿主进程；传输层四选一与鉴权形态。
 - 完整 MCP 工具清单、参数 / 返回 / 角色权限矩阵，以及权限矩阵为什么是单向星形。
 - 输入注入机制：复用粘贴通道，以及回车为什么必须单独合成。
@@ -26,7 +26,7 @@
 
 ## 一句话概括
 
-Poltergeist（能力层）的控制面是一个跟着 AI 进程跑的 sidecar：`ghostty +polter-mcp` 作为 MCP server，靠宿主已注入的 `GHOSTTY_SURFACE_ID`（`src/Surface.zig:651-655`）认领身份，经本地 unix socket 连回宿主 Ghostty，把「读屏 / 注入 / 群聊私信 / 打下班标记」四类能力暴露给 AI；监工模式落成几份 skill 文本，硬约束则落在程序里。
+Poltergeist（能力层）的控制面是一个跟着 AI 进程跑的 sidecar：`polter +mcp` 作为 MCP server，靠宿主已注入的 `GHOSTTY_SURFACE_ID`（`src/Surface.zig:651-655`）认领身份，经本地 unix socket 连回宿主 Ghostty，把「读屏 / 注入 / 群聊私信 / 打下班标记」四类能力暴露给 AI；监工模式落成几份 skill 文本，硬约束则落在程序里。
 
 ## 设计目标与约束
 
@@ -37,7 +37,7 @@ Poltergeist（能力层）的控制面是一个跟着 AI 进程跑的 sidecar：
 
 **两处与 README 的分工在此重申。**其一，「消息送达只注入通知、不注入正文」的机制层面（为什么只送通知、限流形状、拉取工具）归本章，chatui.md 只留界面呈现。其二，注入路径继承的是 bracketed 封装与控制字节剥除，**不是**不安全粘贴确认，详见下文「复用粘贴通道」。README 的对应两条已按此口径同步，若日后再次出现分歧，以本章为准。
 
-## 承载形态：sidecar 进程 polter-mcp
+## 承载形态：sidecar 进程 polter +mcp
 
 ### 为什么不把 MCP 塞进 Ghostty 核心
 
@@ -51,7 +51,7 @@ Poltergeist（能力层）的控制面是一个跟着 AI 进程跑的 sidecar：
 
 1. 在 `Action` 枚举里加一项（`src/cli/ghostty.zig:31-87`，当前 19 项，从 `version` 到 `@"toggle-quick-terminal"`）。
 2. 在 `runMain` 的 switch 里加一条分发（`src/cli/ghostty.zig:153-174`）。
-3. 新建 `src/cli/polter_mcp.zig` —— 文件路径由 `Action.file()` 从枚举名机械推导，把 `-` 换成 `_` 再加 `cli/` 前缀与 `.zig` 后缀（`src/cli/ghostty.zig:179-190`）。
+3. 新建 `src/cli/mcp.zig` —— 文件路径由 `Action.file()` 从枚举名机械推导，把 `-` 换成 `_` 再加 `cli/` 前缀与 `.zig` 后缀（`src/cli/ghostty.zig:179-190`）。
 4. 帮助文本**不用手写注册**：`helpgen` 在构建期 `inline for` 遍历 `Action` 枚举字段、`@embedFile` 每个 action 源文件、找到名为 `run` 的函数并要求其前必须有 doc comment，否则直接报错（`src/helpgen.zig:82-100`）。这条规则写在 `src/cli/README.md:11-13`。
 5. 参数解析要求 action 以 `+` 开头且一次只能出现一个，否则返回 `MultipleActions` / `InvalidAction`（`src/cli/action.zig:47-51`）。
 
@@ -59,7 +59,7 @@ Poltergeist（能力层）的控制面是一个跟着 AI 进程跑的 sidecar：
 
 **推翻条件**：若 MCP 的延迟要求降到毫秒级、或需要在核心里维持大量长连接状态，sidecar 的往返成本才会成为问题。当前场景（挂机过夜）的时间尺度是分钟，不会触发。
 
-MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/call` 的确切 schema 不来自本仓库，本章不复述（未核实：实现按规范写成，但没有对着官方 schema 逐条比对过，也没有接过真实 MCP 客户端）。实现见 `src/cli/polter_mcp.zig`。
+MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/call` 的确切 schema 不来自本仓库，本章不复述（未核实：实现按规范写成，但没有对着官方 schema 逐条比对过，也没有接过真实 MCP 客户端）。实现见 `src/cli/mcp.zig`。
 
 ## 身份识别：现状代码已经解决了
 
@@ -69,7 +69,7 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 
 **就地结论**：不新增环境变量，也不让 AI 自报家门。**身份来自宿主注入而非 AI 声明**，这条同时是后面权限矩阵的地基 —— AI 无法伪造自己是哪个终端。
 
-顺带一提既有注入：`GHOSTTY_RESOURCES_DIR`（`src/termio/Exec.zig:638`）、`GHOSTTY_BIN_DIR` 并把 ghostty 可执行文件目录追加进子进程 `PATH`（`src/termio/Exec.zig:692-711`）、`GHOSTTY_SHELL_FEATURES`（`src/termio/Exec.zig:770`）。`PATH` 那条的实际含义是：AI 进程里直接敲 `ghostty +polter-mcp` 就能命中二进制，MCP 客户端配置不必写绝对路径。
+顺带一提既有注入：`GHOSTTY_RESOURCES_DIR`（`src/termio/Exec.zig:638`）、`GHOSTTY_BIN_DIR` 并把 ghostty 可执行文件目录追加进子进程 `PATH`（`src/termio/Exec.zig:692-711`）、`GHOSTTY_SHELL_FEATURES`（`src/termio/Exec.zig:770`）。`PATH` 那条的实际含义是：AI 进程里直接敲 `polter +mcp` 就能命中二进制，MCP 客户端配置不必写绝对路径。
 
 ## 传输层选型
 
@@ -317,7 +317,7 @@ description: 下班模式：连续若干轮判定无事可做后让终端下班
 
 | 方案                                       | 成本                                                                                    | 为什么没选 / 为什么选                                                                                             |
 | ------------------------------------------ | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| **选**：sidecar `ghostty +polter-mcp`      | 三处枚举登记 + 一个新文件（`src/cli/ghostty.zig:31-190`），无构建改动                   | 崩溃隔离；协议演进不动终端二进制；集成成本近乎为零                                                                |
+| **选**：sidecar `polter +mcp`      | 三处枚举登记 + 一个新文件（`src/cli/ghostty.zig:31-190`），无构建改动                   | 崩溃隔离；协议演进不动终端二进制；集成成本近乎为零                                                                |
 | MCP server 塞进 Ghostty 核心               | 长连接状态挤进渲染 / IO 线程；每次协议改版动核心                                        | 核心崩了影响全部终端；与上游分叉面变宽                                                                            |
 | 传输 (a) 扩展 `apprt.ipc` 并补 macOS       | 要给 union 加返回值通道；同步 `include/ghostty.h` 的 C ABI（`src/apprt/ipc.zig:57-71`） | macOS 三分支全 false（`src/apprt/embedded.zig:349-360`）；且它是单向命令通道，形状不对                            |
 | **选**：传输 (b) 自建 unix socket          | 自管监听 / 鉴权 / 生命周期 / 崩溃清理；`src/` 现无 `std.net` 代码                       | 跨平台一份实现；请求-响应形状天生正确；与上游零耦合，分叉面最小                                                   |

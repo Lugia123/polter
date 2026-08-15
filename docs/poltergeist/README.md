@@ -2,7 +2,7 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**S0–S4 全部落地**，见 `src/poltergeist/`、`src/cli/polter_mcp.zig`、`macos/Sources/Features/Poltergeist/`。
+> 状态：**S0–S4 全部落地**，见 `src/poltergeist/`、`src/cli/mcp.zig`、`macos/Sources/Features/Poltergeist/`。
 > **但整条链路尚未在真机上跑过一次** —— 验证情况与如何自己试，见「验证到什么程度」与「怎么试」两节。GTK 侧的聊天窗口未做。
 
 ## 本章覆盖什么
@@ -198,7 +198,7 @@ poltergeist-mcp = true
 4. 让被监督那个静置超过 `poltergeist-quiescence-after`（默认 3 分钟）。
 5. 看总管终端有没有收到 `[poltergeist] terminal 0x... has gone quiet`。
 
-要试 MCP，把 `ghostty +polter-mcp` 配给总管里的 agent 当 MCP server（socket 与 token 已经在它的环境变量里，不用配）。要试群聊，让总管调 `group_create` / `group_add`，再用命令面板的 **Show Terminal Conversations** 打开窗口。
+要试 MCP，把 `polter +mcp` 配给总管里的 agent 当 MCP server（socket 与 token 已经在它的环境变量里，不用配）。要试群聊，让总管调 `group_create` / `group_add`，再用命令面板的 **Show Terminal Conversations** 打开窗口。
 
 **没跑通的话**：先看日志（`GHOSTTY_LOG` 的用法见 [preview-manual.md](../preview-manual.md)），`poltergeist:` 前缀的行会说明它认为自己在做什么。
 

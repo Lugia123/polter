@@ -101,7 +101,7 @@ Ghostty 侧沿用 `docs/_conventions.md` 的既有译法：表面（surface）�
 | 中文        | 英文 / 标识        | 说明                                                                                                 |
 | ----------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
 | Poltergeist | Poltergeist        | 能力层名，首次出现写「Poltergeist（能力层）」，其后直接写 Poltergeist。禁止再写 "Ghostty Agent Loop" |
-| polter      | polter             | 命令名 / 短名，如 `ghostty +polter-mcp`。全小写                                                      |
+| polter      | polter             | 命令名 / 短名，如 `polter +mcp`。全小写                                                      |
 | 宿主终端    | Ghostty            | Poltergeist 的宿主，fork 自 ghostty-org/ghostty                                                      |
 | 总管        | Supervisor         | 被指定为监督者的那个终端里的 AI。禁止译成「管理员」「主控」                                          |
 | 被监督终端  | supervised surface | 总管监督的终端。禁止写「从属终端」「worker」                                                         |

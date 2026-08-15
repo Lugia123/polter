@@ -1261,7 +1261,7 @@ command: ?Command = null,
 @"notify-on-command-finish-after": Duration = .{ .duration = 5 * std.time.ns_per_s },
 
 /// Let agents running in this terminal reach Poltergeist over a local
-/// socket, through the `ghostty +polter-mcp` MCP server.
+/// socket, through the `polter +mcp` MCP server.
 ///
 /// This is what makes a supervisor able to read and type into the
 /// terminals it watches, so it grants real reach and defaults to `false`.

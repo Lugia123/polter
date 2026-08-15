@@ -307,7 +307,7 @@ fn syncPoltergeistServer(self: *App, want: bool) !void {
         io,
         self.alloc,
         &environ_map,
-        .{ .subdir = "ghostty" },
+        .{ .subdir = "polter" },
     );
     defer self.alloc.free(state_dir);
 
@@ -729,7 +729,7 @@ fn poltergeistSkill(
             io,
             self.alloc,
             &environ_map,
-            .{ .subdir = "ghostty" },
+            .{ .subdir = "polter" },
         ) catch break :user;
         defer self.alloc.free(config_dir);
 

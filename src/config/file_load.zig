@@ -16,7 +16,7 @@ pub fn defaultXdgPath(alloc: Allocator) ![]const u8 {
         global.io(),
         alloc,
         &environ_map,
-        .{ .subdir = "ghostty/config.ghostty" },
+        .{ .subdir = "polter/config.polter" },
     );
 }
 
@@ -29,7 +29,7 @@ pub fn legacyDefaultXdgPath(alloc: Allocator) ![]const u8 {
         global.io(),
         alloc,
         &environ_map,
-        .{ .subdir = "ghostty/config" },
+        .{ .subdir = "polter/config" },
     );
 }
 
@@ -61,7 +61,7 @@ pub fn preferredXdgPath(alloc: Allocator) ![]const u8 {
 /// Default path for the macOS Application Support configuration file.
 /// Returned value must be freed by the caller.
 pub fn defaultAppSupportPath(alloc: Allocator) ![]const u8 {
-    return try internal_os.macos.appSupportDir(alloc, "config.ghostty");
+    return try internal_os.macos.appSupportDir(alloc, "config.polter");
 }
 
 /// Ghostty <1.3.0 default path for the macOS Application Support

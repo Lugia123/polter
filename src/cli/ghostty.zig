@@ -23,7 +23,7 @@ const boo = @import("boo.zig");
 const new_window = @import("new_window.zig");
 const new_tab = @import("new_tab.zig");
 const toggle_quick_terminal = @import("toggle_quick_terminal.zig");
-const polter_mcp = @import("polter_mcp.zig");
+const mcp = @import("mcp.zig");
 const global = @import("../global.zig");
 
 /// Special commands that can be invoked via CLI flags. These are all
@@ -89,7 +89,7 @@ pub const Action = enum {
 
     // Run an MCP server so an agent can see and steer the terminals a
     // Poltergeist supervisor is watching.
-    @"polter-mcp",
+    mcp,
 
     pub fn detectSpecialCase(arg: []const u8) ?SpecialCase(Action) {
         // If we see a "-e" and we haven't seen a command yet, then
@@ -176,7 +176,7 @@ pub const Action = enum {
             .@"new-window" => try new_window.run(alloc),
             .@"new-tab" => try new_tab.run(alloc),
             .@"toggle-quick-terminal" => try toggle_quick_terminal.run(alloc),
-            .@"polter-mcp" => try polter_mcp.run(alloc),
+            .mcp => try mcp.run(alloc),
         };
     }
 
@@ -220,7 +220,7 @@ pub const Action = enum {
                 .@"new-window" => new_window.Options,
                 .@"new-tab" => new_tab.Options,
                 .@"toggle-quick-terminal" => toggle_quick_terminal.Options,
-                .@"polter-mcp" => polter_mcp.Options,
+                .mcp => mcp.Options,
             };
         }
     }
