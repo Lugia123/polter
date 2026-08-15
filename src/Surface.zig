@@ -675,7 +675,7 @@ pub fn init(
         // says so plainly rather than misbehaving.
         // The socket is opened here rather than only at config reload:
         // neither apprt calls `updateConfig` at launch.
-        app.ensurePoltergeistServer(config.@"poltergeist-mcp");
+        app.ensurePoltergeistServer(rt_app, config.@"poltergeist-mcp");
 
         if (app.poltergeist_server) |*srv| {
             if (srv.issueToken(self.id)) |token| {

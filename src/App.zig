@@ -52,6 +52,14 @@ poltergeist_epoch: ?std.Io.Timestamp = null,
 /// `poltergeist-mcp` is on, so the default build opens nothing.
 poltergeist_server: ?poltergeistpkg.Server = null,
 
+/// The apprt, kept so that a connection thread can wake the app loop after
+/// putting a request in the mailbox.
+///
+/// Set before the socket is opened and never changed after, so the
+/// connection threads that read it cannot race the write: they do not exist
+/// until `start` has been called, which happens later in the same function.
+poltergeist_rt_app: ?*apprt.App = null,
+
 /// This is true if the app that Ghostty is in is focused. This may
 /// mean that no surfaces (terminals) are focused but the app is still
 /// focused, i.e. may an about window. On macOS, this concept is known
@@ -196,9 +204,13 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
     // Bring the agent socket in line with the config. Failing to open it
     // must never take the app down with it: the terminal has to keep
     // working whether or not agents can reach it.
+    self.poltergeist_rt_app = rt_app;
     self.syncPoltergeistServer(config.@"poltergeist-mcp") catch |err| {
         log.warn("poltergeist: could not open the agent socket err={}", .{err});
     };
+
+    self.poltergeist.config.notice_interval_ms =
+        config.@"poltergeist-notice-interval".duration / std.time.ns_per_ms;
 
     // Go through and update all of the surface configurations.
     for (self.surfaces.items) |surface| {
@@ -248,24 +260,42 @@ fn poltergeistReport(
     // Whatever comes of the report, the tabs should say what is true now.
     defer self.refreshPoltergeistTabs();
 
-    const notice = self.poltergeist.report(from, event, self.poltergeistNow()) orelse
-        return;
+    const now_ms = self.poltergeistNow();
 
-    const supervisor = self.findSurfaceByID(notice.to) orelse {
-        // The supervisor's terminal went away between the report and here.
-        self.poltergeist.unregister(notice.to);
+    // Into the box. Nothing goes to the supervisor at this instant: a
+    // report is a change of state, not an errand, and interrupting somebody
+    // once per event per terminal is how a helpful signal turns into noise
+    // that gets ignored or switched off.
+    _ = self.poltergeist.report(from, event, now_ms);
+
+    self.deliverPoltergeistNotices(now_ms);
+}
+
+/// Hand the box to the supervisor, if it is time and there is anything in
+/// it.
+///
+/// Driven by reports arriving rather than by a timer of its own. A terminal
+/// that is still quiet keeps reporting on the sampler's repeat interval, so
+/// there is always something to drive the next hand-over while anything is
+/// waiting; and when every terminal is busy there is nothing to hand over.
+/// The supervisor can also read the box itself at any time, which is what
+/// covers the gap after the last report of all.
+fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
+    const to = self.poltergeist.supervisor orelse return;
+
+    const supervisor = self.findSurfaceByID(to) orelse {
+        // The supervisor's terminal went away.
+        self.poltergeist.unregister(to);
         return;
     };
 
     var msg: apprt.surface.Message = .{ .poltergeist_notice = undefined };
-    const line = poltergeistpkg.Bus.formatNotice(notice, &msg.poltergeist_notice) catch {
-        log.warn("poltergeist: notice did not fit, dropping it", .{});
+    const line = self.poltergeist.drainIfDue(now_ms, &msg.poltergeist_notice) orelse
         return;
-    };
     msg.poltergeist_notice[line.len] = 0;
 
     self.surfaceMessage(supervisor, msg) catch |err| {
-        log.warn("poltergeist: could not deliver notice err={}", .{err});
+        log.warn("poltergeist: could not deliver notices err={}", .{err});
     };
 }
 
@@ -275,8 +305,9 @@ fn poltergeistReport(
 /// *reload* -- neither apprt calls it at launch. Without this a user who
 /// set `poltergeist-mcp` in their config file would find no socket until
 /// they reloaded by hand, which reads as the feature being broken.
-pub fn ensurePoltergeistServer(self: *App, want: bool) void {
+pub fn ensurePoltergeistServer(self: *App, rt_app: *apprt.App, want: bool) void {
     if (!want or self.poltergeist_server != null) return;
+    self.poltergeist_rt_app = rt_app;
     self.syncPoltergeistServer(true) catch |err| {
         log.warn("poltergeist: could not open the agent socket err={}", .{err});
     };
@@ -355,7 +386,17 @@ fn submitPoltergeistRequest(
     ) == 0) {
         log.warn("poltergeist: could not queue an agent request", .{});
         pending.release();
+        return;
     }
+
+    // Queuing is not delivering. The app loop sleeps until something wakes
+    // it, so without this the request sits in the mailbox until some
+    // unrelated event -- a keystroke, a redraw, the next quiescence sample
+    // -- happens to wake the loop for its own reasons. Measured on a real
+    // machine that meant replies arriving between 50ms and never: the agent
+    // saw an occasional fast answer and an occasional timeout, with no
+    // pattern to it.
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
 }
 
 /// Answer one agent request. Runs on the app thread, which is the only
@@ -393,6 +434,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .readTerminal = poltergeistRead,
         .sendText = poltergeistSend,
         .quietMs = poltergeistQuiet,
+        .drainNotices = poltergeistDrainNotices,
         .setThreshold = poltergeistThreshold,
         .readSkill = poltergeistSkill,
         .chatCreate = chatCreate,
@@ -449,6 +491,21 @@ fn poltergeistSend(
 fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.poltergeist.quietMs(id, self.poltergeistNow());
+}
+
+/// The supervisor reading its own box, which is not the scheduled
+/// hand-over and so is never held back for it. Consuming, like the
+/// hand-over: what is read here will not arrive again on the interval.
+fn poltergeistDrainNotices(
+    ctx: *anyopaque,
+    alloc: Allocator,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    var buf: [255]u8 = undefined;
+    const line = self.poltergeist.drain(self.poltergeistNow(), &buf) orelse
+        return "";
+    return alloc.dupe(u8, line);
 }
 
 fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) anyerror!void {
