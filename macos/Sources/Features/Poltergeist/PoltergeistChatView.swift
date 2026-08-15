@@ -42,13 +42,19 @@ struct PoltergeistChatView: View {
             if let group = current {
                 messages(for: group)
             } else {
-                ContentUnavailableView(
-                    "No conversations",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text(
-                        "Groups appear here once a supervisor creates one."
-                    )
-                )
+                // Spelled out rather than `ContentUnavailableView`, which
+                // arrived in macOS 14 while this app still deploys to 13.
+                VStack(spacing: 8) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.tertiary)
+                    Text("No conversations")
+                        .font(.title3.weight(.medium))
+                    Text("Groups appear here once a supervisor creates one.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .onAppear(perform: reload)
@@ -73,7 +79,9 @@ struct PoltergeistChatView: View {
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .onChange(of: group.lines.count) {
+                // The one-argument form, because the zero-argument closure
+                // is macOS 14 and this app deploys to 13.
+                .onChange(of: group.lines.count) { _ in
                     guard let last = group.lines.last else { return }
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
@@ -118,12 +126,14 @@ struct PoltergeistChatView: View {
         guard ghostty_app_chat(ghostty, &snapshot) else { return }
         defer { ghostty_app_free_chat(&snapshot) }
 
+        // `Int(...)`: the lengths come across as `uintptr_t`, which Swift
+        // imports as `UInt`, and a pointer subscript takes an `Int`.
         var built: [ChatGroup] = []
-        for gi in 0..<snapshot.groups_len {
+        for gi in 0..<Int(snapshot.groups_len) {
             let g = snapshot.groups[gi]
 
             var lines: [ChatLine] = []
-            for li in 0..<g.lines_len {
+            for li in 0..<Int(g.lines_len) {
                 let l = g.lines[li]
                 lines.append(
                     ChatLine(
@@ -140,6 +150,14 @@ struct PoltergeistChatView: View {
         }
 
         groups = built
+
+        // A selection naming a group that is gone is worse than none: the
+        // list shows nothing selected while `current` quietly falls back to
+        // the first group, so a draft typed in what looks like an empty
+        // pane would be sent somewhere else entirely.
+        if let selected, !built.contains(where: { $0.name == selected }) {
+            self.selected = nil
+        }
         if selected == nil { selected = built.first?.name }
     }
 }

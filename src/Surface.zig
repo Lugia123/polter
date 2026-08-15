@@ -3378,6 +3378,16 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     if (mark == self.poltergeist_tab_mark) return;
     self.poltergeist_tab_mark = mark;
 
+    // Unmarked means handing the tab back, not stamping it with what it
+    // happens to say right now. A tab title is an override: writing the
+    // current title into it would pin that text for good, and the
+    // terminal's own later titles would never show again. An empty
+    // override is the way to release it.
+    if (mark == .none) {
+        self.setTabTitleOverride("");
+        return;
+    }
+
     const own = self.rt_surface.getTitle() orelse "";
     const title = std.fmt.allocPrintSentinel(
         self.alloc,
@@ -3387,6 +3397,10 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     ) catch return;
     defer self.alloc.free(title);
 
+    self.setTabTitleOverride(title);
+}
+
+fn setTabTitleOverride(self: *Surface, title: [:0]const u8) void {
     _ = self.rt_app.performAction(
         .{ .surface = self },
         .set_tab_title,
@@ -5619,12 +5633,21 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         },
 
         .poltergeist_supervisor => {
+            // Marks are refreshed here rather than only after a stillness
+            // report, because the report is what happens next at the
+            // earliest -- and with nothing watched yet, possibly never. A
+            // keypress that changes a tab's standing should show on the tab
+            // at once.
+            defer self.app.refreshPoltergeistTabs();
+
             try self.app.poltergeist.setSupervisor(self.id);
             log.info("poltergeist: this terminal is now the supervisor", .{});
             return true;
         },
 
         .poltergeist_toggle_watch => {
+            defer self.app.refreshPoltergeistTabs();
+
             const bus = &self.app.poltergeist;
 
             // The supervisor is not one of the terminals it watches. Say so

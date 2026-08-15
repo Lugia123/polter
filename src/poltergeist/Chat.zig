@@ -147,8 +147,10 @@ pub fn create(self: *Chat, name: []const u8, by: Id) Error!void {
     if (self.groups.count() >= self.config.max_groups) return error.TooManyGroups;
 
     const owned = try self.alloc.dupe(u8, name);
-    errdefer self.alloc.free(owned);
 
+    // No `errdefer` on `owned` itself: from here on the group owns it, and
+    // `Group.deinit` frees it. Two errdefers over one allocation would free
+    // it twice on the way out of a failed `put`.
     var group: Group = .{ .name = owned, .created_by = by };
     errdefer group.deinit(self.alloc);
     try group.members.put(self.alloc, by, .{});
@@ -212,6 +214,23 @@ pub fn post(
     return self.append(group, from, text, now_ms, false);
 }
 
+/// `text` cut to at most `limit` bytes without splitting a character.
+///
+/// A blind cut at a byte offset can land inside a multi-byte sequence, and
+/// the leftover bytes are then not a character at all. That does not stay
+/// contained: the JSON writer answers invalid UTF-8 with an array of
+/// numbers instead of a string, so a reader asking for one agent's message
+/// would be handed a list of byte values.
+fn utf8Cut(text: []const u8, limit: usize) []const u8 {
+    if (text.len <= limit) return text;
+
+    // Back up over continuation bytes to the start of the character the
+    // limit fell inside of.
+    var i = limit;
+    while (i > 0 and text[i] & 0xC0 == 0x80) i -= 1;
+    return text[0..i];
+}
+
 fn append(
     self: *Chat,
     group: *Group,
@@ -223,7 +242,7 @@ fn append(
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (trimmed.len == 0) return error.Empty;
 
-    const kept = trimmed[0..@min(trimmed.len, self.config.max_text_bytes)];
+    const kept = utf8Cut(trimmed, self.config.max_text_bytes);
     const owned = try self.alloc.dupe(u8, kept);
     errdefer self.alloc.free(owned);
 
@@ -291,10 +310,12 @@ pub fn compact(
     // messages it did not replace.
     if (cut == 0) return error.Empty;
 
-    const kept = trimmed[0..@min(trimmed.len, self.config.max_text_bytes)];
+    const kept = utf8Cut(trimmed, self.config.max_text_bytes);
     const owned = try self.alloc.dupe(u8, kept);
     errdefer self.alloc.free(owned);
 
+    // Both ends of the range being replaced, read before the texts go.
+    const first_seq = group.log.items[0].seq;
     const seq = group.log.items[cut - 1].seq;
     for (group.log.items[0..cut]) |m| self.alloc.free(m.text);
 
@@ -315,13 +336,27 @@ pub fn compact(
         .text = owned,
     };
 
-    // A member whose view began inside the replaced range should see the
-    // summary rather than nothing: that is what leaving one is for.
+    // Where each member now stands. Nobody's cursor moves: what somebody
+    // has already read stays read, and dragging a cursor back would turn a
+    // compaction into a pile of new messages for a member who was up to
+    // date -- the opposite of what compacting is for.
     var it = group.members.valueIterator();
     while (it.next()) |m| {
+        // Already looking past the whole range: nothing here concerns them.
         if (m.floor >= seq) continue;
-        m.floor = seq - 1;
-        if (m.cursor >= seq) m.cursor = seq - 1;
+
+        if (m.floor < first_seq) {
+            // The entire range was theirs to see, so the summary stands in
+            // for it.
+            m.floor = seq - 1;
+        } else {
+            // They were held back from part of this range -- by joining with
+            // `.none`, or by an earlier compaction. The summary covers what
+            // they were kept out of, so it is not theirs to read either.
+            // Hiding it costs them a recap; showing it would hand over the
+            // history they were deliberately not given.
+            m.floor = seq;
+        }
     }
 
     return seq;
@@ -669,6 +704,75 @@ test "compacting leaves somebody who had not caught up with the summary" {
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 1), seen.len);
     try testing.expectEqualStrings("the gist of it", seen[0].text);
+}
+
+test "compacting does not make read messages unread again" {
+    // A member who was up to date must stay up to date. Dragging a cursor
+    // back to the cut turned a compaction into a pile of "new" messages
+    // for exactly the members who had nothing new to read, and the notice
+    // they then got pointed at messages they had already been shown.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all);
+    for (0..10) |i| {
+        var buf: [8]u8 = undefined;
+        _ = try chat.post("build", boss, try std.fmt.bufPrint(&buf, "m{d}", .{i}), i);
+    }
+
+    // Caught up on everything.
+    const first = try chat.read(testing.allocator, "build", a, 0);
+    testing.allocator.free(first);
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+
+    // Compacting the first half changes nothing about what is unread.
+    _ = try chat.compact("build", 5, "the gist", boss, 11);
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.unreadTotal(a));
+}
+
+test "compacting does not hand over history a member was kept out of" {
+    // Joining with `.none` is a promise that what came before is not
+    // theirs to read. A summary written across that boundary would break
+    // the promise by other means, so they do not get shown it.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    _ = try chat.post("build", boss, "the prod credentials are in vault", 1);
+    _ = try chat.post("build", boss, "and the rotation plan is quarterly", 2);
+
+    // Deliberately started with a clean slate.
+    try chat.add("build", a, .none);
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+
+    _ = try chat.post("build", boss, "anyway, the build is green", 3);
+    _ = try chat.compact("build", 3, "credentials, rotation, and a green build", boss, 4);
+
+    const seen = try chat.read(testing.allocator, "build", a, 0);
+    defer testing.allocator.free(seen);
+    try testing.expectEqual(@as(usize, 0), seen.len);
+}
+
+test "a message is cut on a character boundary, not a byte one" {
+    // Half a character is not a character, and the JSON writer answers
+    // invalid UTF-8 with an array of numbers -- so a reader would be
+    // handed byte values instead of a message.
+    var chat = testChat();
+    defer chat.deinit();
+    chat.config.max_text_bytes = 8;
+
+    try chat.create("build", boss);
+
+    // Three-byte characters against a limit that falls mid-character.
+    _ = try chat.post("build", boss, "日日日", 1);
+
+    const seen = try chat.read(testing.allocator, "build", boss, 0);
+    defer testing.allocator.free(seen);
+    try testing.expectEqual(@as(usize, 1), seen.len);
+    try testing.expect(std.unicode.utf8ValidateSlice(seen[0].text));
+    try testing.expectEqualStrings("日日", seen[0].text);
 }
 
 test "compacting nothing is refused rather than leaving a stray summary" {

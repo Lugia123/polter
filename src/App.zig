@@ -366,6 +366,12 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // shutdown answered the request before we got to it.
     defer pending.release();
 
+    // A request can clock a terminal off or on, which is exactly the sort
+    // of thing the tabs are there to show. Cheap enough to do after every
+    // request: each surface compares its own mark and does nothing when it
+    // has not moved.
+    defer self.refreshPoltergeistTabs();
+
     const response = poltergeistpkg.rpc.dispatch(
         pending.arena.allocator(),
         &self.poltergeist,
@@ -474,7 +480,18 @@ pub fn chatSnapshot(self: *App, alloc: Allocator) Allocator.Error!ChatSnapshot {
     defer alloc.free(names);
 
     var groups: std.ArrayListUnmanaged(ChatSnapshot.Group) = .empty;
-    errdefer groups.deinit(alloc);
+
+    // The whole of what has been built, not just the list holding it:
+    // freeing only the list would strand every name and message text
+    // already copied into it.
+    errdefer {
+        for (groups.items) |g| {
+            for (g.lines) |l| alloc.free(l.text);
+            alloc.free(g.lines);
+            alloc.free(g.name);
+        }
+        groups.deinit(alloc);
+    }
 
     for (names) |name| {
         const messages = self.chat.read(
@@ -486,18 +503,27 @@ pub fn chatSnapshot(self: *App, alloc: Allocator) Allocator.Error!ChatSnapshot {
         defer alloc.free(messages);
 
         const lines = try alloc.alloc(ChatSnapshot.Line, messages.len);
-        for (messages, 0..) |m, i| lines[i] = .{
-            .seq = m.seq,
-            .from = m.from,
-            .at_ms = m.at_ms,
-            .summary = m.summary,
-            .text = try alloc.dupeZ(u8, m.text),
-        };
+        var filled: usize = 0;
+        errdefer {
+            for (lines[0..filled]) |l| alloc.free(l.text);
+            alloc.free(lines);
+        }
 
-        try groups.append(alloc, .{
-            .name = try alloc.dupeZ(u8, name),
-            .lines = lines,
-        });
+        for (messages, 0..) |m, i| {
+            lines[i] = .{
+                .seq = m.seq,
+                .from = m.from,
+                .at_ms = m.at_ms,
+                .summary = m.summary,
+                .text = try alloc.dupeZ(u8, m.text),
+            };
+            filled += 1;
+        }
+
+        const owned_name = try alloc.dupeZ(u8, name);
+        errdefer alloc.free(owned_name);
+
+        try groups.append(alloc, .{ .name = owned_name, .lines = lines });
     }
 
     return .{ .groups = try groups.toOwnedSlice(alloc) };

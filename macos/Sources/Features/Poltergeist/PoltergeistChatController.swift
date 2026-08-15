@@ -42,7 +42,10 @@ class PoltergeistChatController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        if ghostty != app {
+        // Rebuilt when there is nothing to show -- the first time, or after
+        // a close tore the old view down.
+        let needsView = !(window.contentView is NSHostingView<PoltergeistChatView>)
+        if ghostty != app || needsView {
             ghostty = app
             window.contentView = NSHostingView(
                 rootView: PoltergeistChatView(ghostty: app)
@@ -51,6 +54,18 @@ class PoltergeistChatController: NSWindowController, NSWindowDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Drop the view when the window closes.
+    ///
+    /// Closing an `NSWindow` hides it and keeps its content view, so the
+    /// SwiftUI view inside would live on -- and with it the subscription
+    /// driving its one-second poll. That poll copies every message in every
+    /// group across the C boundary, which is not something a closed window
+    /// should be doing once a second forever. Letting go of the hosting
+    /// view ends the subscription; `toggle` builds a fresh one.
+    func windowWillClose(_ notification: Notification) {
+        window?.contentView = NSView()
     }
 
     @IBAction func close(_ sender: Any) {

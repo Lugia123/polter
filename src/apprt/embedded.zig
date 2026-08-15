@@ -1664,56 +1664,83 @@ pub const CAPI = struct {
     ///
     /// Free with `ghostty_app_free_chat`.
     export fn ghostty_app_chat(app: *App, result: *ChatSnapshot) bool {
-        const alloc = global.alloc();
-
-        const snapshot = app.core_app.chatSnapshot(alloc) catch |err| {
+        result.* = buildChatSnapshot(app) catch |err| {
             log.warn("error reading chat err={}", .{err});
             return false;
         };
+        return true;
+    }
+
+    /// The body of `ghostty_app_chat`, kept apart so that it can fail.
+    ///
+    /// It has to return an error union for the cleanup to work at all: an
+    /// `errdefer` in a function that returns `bool` is dead code, because
+    /// `return false` is not an error return. Written that way, every
+    /// allocation made before the failure leaked, and with `result` never
+    /// written the caller had no pointer left to free them by.
+    fn buildChatSnapshot(app: *App) !ChatSnapshot {
+        const alloc = global.alloc();
+
+        const snapshot = try app.core_app.chatSnapshot(alloc);
         defer snapshot.deinit(alloc);
 
-        const groups = alloc.alloc(ChatGroup, snapshot.groups.len) catch return false;
+        const groups = try alloc.alloc(ChatGroup, snapshot.groups.len);
         var built: usize = 0;
         errdefer {
-            for (groups[0..built]) |g| {
-                for (g.lines[0..g.lines_len]) |l| alloc.free(std.mem.span(l.text));
-                alloc.free(g.lines[0..g.lines_len]);
-                alloc.free(std.mem.span(g.name));
-            }
+            for (groups[0..built]) |g| freeChatGroup(alloc, g);
             alloc.free(groups);
         }
 
         for (snapshot.groups, 0..) |g, gi| {
-            const lines = alloc.alloc(ChatLine, g.lines.len) catch return false;
-            for (g.lines, 0..) |l, li| lines[li] = .{
-                .seq = l.seq,
-                .from = l.from,
-                .at_ms = l.at_ms,
-                .summary = l.summary,
-                .text = (alloc.dupeZ(u8, l.text) catch return false).ptr,
-            };
+            const lines = try alloc.alloc(ChatLine, g.lines.len);
+
+            // Counted separately from `built`, because a group only joins
+            // that count once it is whole. Without this the half-filled
+            // group in hand at the moment of failure went unfreed.
+            var filled: usize = 0;
+            errdefer {
+                for (lines[0..filled]) |l| alloc.free(std.mem.span(l.text));
+                alloc.free(lines);
+            }
+
+            for (g.lines, 0..) |l, li| {
+                lines[li] = .{
+                    .seq = l.seq,
+                    .from = l.from,
+                    .at_ms = l.at_ms,
+                    .summary = l.summary,
+                    .text = (try alloc.dupeZ(u8, l.text)).ptr,
+                };
+                filled += 1;
+            }
 
             groups[gi] = .{
-                .name = (alloc.dupeZ(u8, g.name) catch return false).ptr,
+                .name = (try alloc.dupeZ(u8, g.name)).ptr,
                 .lines = lines.ptr,
                 .lines_len = lines.len,
             };
             built += 1;
         }
 
-        result.* = .{ .groups = groups.ptr, .groups_len = groups.len };
-        return true;
+        return .{ .groups = groups.ptr, .groups_len = groups.len };
+    }
+
+    fn freeChatGroup(alloc: Allocator, g: ChatGroup) void {
+        for (g.lines[0..g.lines_len]) |l| alloc.free(std.mem.span(l.text));
+        alloc.free(g.lines[0..g.lines_len]);
+        alloc.free(std.mem.span(g.name));
     }
 
     export fn ghostty_app_free_chat(snapshot: *ChatSnapshot) void {
         const alloc = global.alloc();
-        for (snapshot.groups[0..snapshot.groups_len]) |g| {
-            for (g.lines[0..g.lines_len]) |l| alloc.free(std.mem.span(l.text));
-            alloc.free(g.lines[0..g.lines_len]);
-            alloc.free(std.mem.span(g.name));
-        }
+        for (snapshot.groups[0..snapshot.groups_len]) |g| freeChatGroup(alloc, g);
         alloc.free(snapshot.groups[0..snapshot.groups_len]);
-        snapshot.* = .{ .groups = undefined, .groups_len = 0 };
+
+        // Left owning nothing, so a second call passes through harmlessly
+        // rather than walking a freed array. The pointer is to a static
+        // empty array rather than `undefined`, because slicing an
+        // undefined pointer trips a safety check even for a length of zero.
+        snapshot.* = .{ .groups = &[_]ChatGroup{}, .groups_len = 0 };
     }
 
     /// Say something in a group as the person at the keyboard.
