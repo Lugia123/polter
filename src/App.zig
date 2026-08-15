@@ -311,6 +311,14 @@ fn syncPoltergeistServer(self: *App, want: bool) !void {
     );
     defer self.alloc.free(state_dir);
 
+    // Nothing else creates this on a fresh machine, and a missing
+    // directory would make listen fail with a single warning that reads
+    // like the feature is broken.
+    std.Io.Dir.cwd().createDirPath(io, state_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
     const path = try poltergeistpkg.Server.defaultPath(self.alloc, io, state_dir);
     defer self.alloc.free(path);
 
@@ -343,6 +351,11 @@ fn submitPoltergeistRequest(
 /// Answer one agent request. Runs on the app thread, which is the only
 /// thread that may touch the bus or a surface.
 fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void {
+    // The reference taken when this was handed over. Releasing it here is
+    // what lets the connection thread's frame go away safely even if
+    // shutdown answered the request before we got to it.
+    defer pending.release();
+
     const response = poltergeistpkg.rpc.dispatch(
         pending.arena.allocator(),
         &self.poltergeist,

@@ -124,7 +124,8 @@ const Host = struct {
         ++ "\n", .{token});
         try self.writer.interface.flush();
 
-        const reply = try self.reader.interface.takeDelimiterExclusive('\n');
+        const reply = (try self.reader.interface.takeDelimiter('\n')) orelse
+            return error.EndOfStream;
         if (std.mem.indexOf(u8, reply, "\"ok\":true") == null) {
             log.err("ghostty refused this token", .{});
             return error.AuthFailed;
@@ -146,7 +147,10 @@ const Host = struct {
         try self.writer.interface.writeAll(line);
         try self.writer.interface.writeByte('\n');
         try self.writer.interface.flush();
-        return self.reader.interface.takeDelimiterExclusive('\n');
+        // `takeDelimiter` consumes the newline; the exclusive form leaves it
+        // and every later call returns an empty slice forever.
+        return (try self.reader.interface.takeDelimiter('\n')) orelse
+            error.EndOfStream;
     }
 };
 
@@ -238,10 +242,8 @@ fn serve(alloc: Allocator, io: std.Io, host: *Host) !u8 {
     var writer = stdout.writer(io, &out_buf);
 
     while (true) {
-        const line = reader.interface.takeDelimiterExclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => return 0,
-            else => return err,
-        };
+        // A null line is end of stdin: the client closed, so we are done.
+        const line = (try reader.interface.takeDelimiter('\n')) orelse return 0;
         if (line.len == 0) continue;
 
         handleOne(alloc, host, &writer.interface, line) catch |err| {

@@ -43,8 +43,19 @@ pub const Parsed = struct {
 pub fn parseRequest(alloc: Allocator, bytes: []const u8) ParseError!Parsed {
     var arena: std.heap.ArenaAllocator = .init(alloc);
     errdefer arena.deinit();
-    const aa = arena.allocator();
+    // The parse has to happen before the struct is built: Zig evaluates
+    // fields in order, so copying the arena first would copy it empty and
+    // every allocation would be lost with the local.
+    const value = try parseRequestLeaky(arena.allocator(), bytes);
+    return .{ .arena = arena, .value = value };
+}
 
+/// Same, but allocating from a caller-owned arena.
+///
+/// Used where the request must outlive the function that read it -- the
+/// server hands it to another thread, and strings inside it have to stay
+/// valid until that thread is finished with them.
+pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Request {
     const parsed = std.json.parseFromSliceLeaky(
         std.json.Value,
         aa,
@@ -105,7 +116,7 @@ pub fn parseRequest(alloc: Allocator, bytes: []const u8) ParseError!Parsed {
         } },
     };
 
-    return .{ .arena = arena, .value = value };
+    return value;
 }
 
 fn requireId(params: ?std.json.ObjectMap) ParseError!Bus.Id {

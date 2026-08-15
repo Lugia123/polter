@@ -34,6 +34,22 @@ const log = std.log.scoped(.poltergeist);
 /// and a couple of numbers; anything larger is a mistake or an attack.
 const max_request_bytes = 64 * 1024;
 
+/// How many agents may be connected at once. One per terminal running an
+/// agent is the shape of the real thing, so this is generous.
+const max_connections = 16;
+
+/// One connection's thread and socket, kept so shutdown can close the
+/// socket -- which is what unblocks a thread parked in read -- and then
+/// join the thread.
+const Slot = struct {
+    thread: ?std.Thread = null,
+    stream: ?net.Stream = null,
+
+    /// Set by the connection thread on its way out, so the accept loop can
+    /// reap it without blocking.
+    finished: std.atomic.Value(bool) = .init(false),
+};
+
 /// Tokens are 32 random bytes, rendered as hex.
 const token_bytes = 32;
 pub const token_len = token_bytes * 2;
@@ -44,9 +60,14 @@ pub const token_len = token_bytes * 2;
 /// then posts `done`. The connection thread writes the response and frees
 /// the arena. Nothing else touches it.
 pub const Pending = struct {
+    alloc: Allocator,
     caller: Bus.Id,
     request: rpc.Request,
+
+    /// Owns everything the request points at, so it stays valid for as long
+    /// as either side still holds a reference.
     arena: std.heap.ArenaAllocator,
+
     response: ?wire.Response = null,
     done: std.Io.Semaphore = .{},
 
@@ -55,12 +76,35 @@ pub const Pending = struct {
     /// at once; whichever gets here first is the one that counts.
     settled: std.atomic.Value(bool) = .init(false),
 
+    /// Starts at one, for the connection thread that made it. A second is
+    /// taken when it is handed to the app, and the app drops that one when
+    /// it is done.
+    ///
+    /// Heap allocated and counted rather than left on the connection
+    /// thread's stack: shutdown can answer a request early, and the
+    /// connection thread would then return -- taking the stack frame with
+    /// it -- while the app's mailbox still held a pointer to it.
+    refs: std.atomic.Value(u8) = .init(1),
+
+    /// Take a reference before handing this to another thread.
+    pub fn retain(self: *Pending) void {
+        _ = self.refs.fetchAdd(1, .acq_rel);
+    }
+
     /// Answer this request and wake whoever is waiting on it. Safe to call
     /// from either thread, and safe to call more than once.
     pub fn complete(self: *Pending, io: std.Io, response: wire.Response) void {
         if (self.settled.cmpxchgStrong(false, true, .acq_rel, .acquire) != null) return;
         self.response = response;
         self.done.post(io);
+    }
+
+    /// Drop one reference. The last one out frees it.
+    pub fn release(self: *Pending) void {
+        if (self.refs.fetchSub(1, .acq_rel) != 1) return;
+        const alloc = self.alloc;
+        self.arena.deinit();
+        alloc.destroy(self);
     }
 };
 
@@ -100,6 +144,15 @@ inflight_mutex: std.Io.Mutex = .init,
 
 listen_thread: ?std.Thread = null,
 running: std.atomic.Value(bool) = .init(false),
+
+/// Live connections, so shutdown can reach them.
+///
+/// A detached thread would outlive the server and go on dereferencing it
+/// after `deinit` had freed everything. These are joined instead, and the
+/// fixed size doubles as a cap: without one, anything that can reach the
+/// socket could spawn threads until the process ran out.
+slots: [max_connections]Slot = @splat(.{}),
+slots_mutex: std.Io.Mutex = .init,
 
 /// Whether the listening socket has been closed. `stop` closes it to
 /// unblock accept, and `deinit` closes it when the server never started;
@@ -177,10 +230,11 @@ pub fn stop(self: *Server) void {
         self.listen_thread = null;
     }
 
-    // Answer everything still waiting. Connection threads are detached, so
-    // one left blocked here would outlive the bus and the surfaces it holds
-    // pointers into.
+    // Answer everything still waiting, then close and join every
+    // connection. Both are needed: answering releases a thread parked on a
+    // semaphore, and closing the socket releases one parked in read.
     self.failInflight();
+    self.stopConnections();
 }
 
 fn closeListener(self: *Server) void {
@@ -291,21 +345,114 @@ fn listenMain(self: *Server) void {
     while (self.running.load(.acquire)) {
         const stream = self.listener.accept(self.io) catch |err| {
             if (!self.running.load(.acquire)) return;
-            log.warn("poltergeist: accept failed err={}", .{err});
-            return;
+
+            // Running out of descriptors or memory is temporary. Returning
+            // here would end the accept loop for good while the socket file
+            // and the tokens stayed in place, so every later connection
+            // would hang with nothing in the log to explain it.
+            switch (err) {
+                error.ProcessFdQuotaExceeded,
+                error.SystemFdQuotaExceeded,
+                error.SystemResources,
+                error.ConnectionAborted,
+                => {
+                    log.warn("poltergeist: accept failed, retrying err={}", .{err});
+                    self.reapFinished();
+                    continue;
+                },
+                else => {
+                    log.warn("poltergeist: accept failed, stopping err={}", .{err});
+                    return;
+                },
+            }
         };
 
-        const thread = std.Thread.spawn(.{}, connectionMain, .{ self, stream }) catch |err| {
-            log.warn("poltergeist: could not serve connection err={}", .{err});
+        self.reapFinished();
+
+        const index = self.claimSlot(stream) orelse {
+            log.warn("poltergeist: too many agent connections, refusing one", .{});
             stream.close(self.io);
             continue;
         };
-        thread.detach();
+
+        const thread = std.Thread.spawn(
+            .{},
+            connectionMain,
+            .{ self, index },
+        ) catch |err| {
+            log.warn("poltergeist: could not serve connection err={}", .{err});
+            self.releaseSlot(index);
+            stream.close(self.io);
+            continue;
+        };
+
+        self.slots_mutex.lockUncancelable(self.io);
+        self.slots[index].thread = thread;
+        self.slots_mutex.unlock(self.io);
     }
 }
 
-fn connectionMain(self: *Server, stream: net.Stream) void {
-    defer stream.close(self.io);
+/// Join and clear any connection whose thread has finished.
+fn reapFinished(self: *Server) void {
+    for (0..max_connections) |i| {
+        self.slots_mutex.lockUncancelable(self.io);
+        const done = self.slots[i].thread != null and
+            self.slots[i].finished.load(.acquire);
+        const thread = if (done) self.slots[i].thread else null;
+        if (done) self.slots[i] = .{};
+        self.slots_mutex.unlock(self.io);
+
+        if (thread) |t| t.join();
+    }
+}
+
+fn claimSlot(self: *Server, stream: net.Stream) ?usize {
+    self.slots_mutex.lockUncancelable(self.io);
+    defer self.slots_mutex.unlock(self.io);
+
+    for (0..max_connections) |i| {
+        if (self.slots[i].stream == null) {
+            self.slots[i] = .{ .stream = stream };
+            return i;
+        }
+    }
+    return null;
+}
+
+fn releaseSlot(self: *Server, index: usize) void {
+    self.slots_mutex.lockUncancelable(self.io);
+    defer self.slots_mutex.unlock(self.io);
+    self.slots[index] = .{};
+}
+
+/// Close every live connection and join its thread.
+///
+/// Closing the socket is what unblocks a thread parked in read; without it
+/// a join here would wait forever on a connection that is simply idle.
+fn stopConnections(self: *Server) void {
+    var threads: [max_connections]?std.Thread = @splat(null);
+
+    self.slots_mutex.lockUncancelable(self.io);
+    for (0..max_connections) |i| {
+        if (self.slots[i].stream) |stream| stream.close(self.io);
+        threads[i] = self.slots[i].thread;
+        self.slots[i] = .{};
+    }
+    self.slots_mutex.unlock(self.io);
+
+    for (threads) |t| if (t) |thread| thread.join();
+}
+
+fn connectionMain(self: *Server, index: usize) void {
+    // The socket belongs to the slot, and shutdown closes it there. This
+    // thread only marks itself finished so the accept loop can reap it.
+    defer self.slots[index].finished.store(true, .release);
+
+    const stream = stream: {
+        self.slots_mutex.lockUncancelable(self.io);
+        defer self.slots_mutex.unlock(self.io);
+        break :stream self.slots[index].stream orelse return;
+    };
 
     var read_buf: [max_request_bytes]u8 = undefined;
     var write_buf: [16 * 1024]u8 = undefined;
@@ -316,7 +463,10 @@ fn connectionMain(self: *Server, stream: net.Stream) void {
     const caller = self.handshake(&reader, &writer) orelse return;
 
     while (self.running.load(.acquire)) {
-        const line = reader.interface.takeDelimiterExclusive('\n') catch return;
+        // `takeDelimiter`, not `takeDelimiterExclusive`: the latter leaves
+        // the newline in the buffer, so every call after the first returns
+        // an empty slice without advancing and this loop spins forever.
+        const line = (reader.interface.takeDelimiter('\n') catch return) orelse return;
         if (line.len == 0) continue;
         self.serveOne(&writer, caller, line) catch return;
     }
@@ -328,7 +478,7 @@ fn handshake(
     reader: *net.Stream.Reader,
     writer: *net.Stream.Writer,
 ) ?Bus.Id {
-    const line = reader.interface.takeDelimiterExclusive('\n') catch return null;
+    const line = (reader.interface.takeDelimiter('\n') catch return null) orelse return null;
 
     const token = parseAuthToken(self.alloc, line) orelse {
         self.refuse(writer, "BadHandshake", "first line must be an auth request");
@@ -388,30 +538,43 @@ fn serveOne(
     caller: Bus.Id,
     line: []const u8,
 ) !void {
-    var parsed = wire.parseRequest(self.alloc, line) catch |err| {
+    // The request is parsed straight into the pending's arena, so anything
+    // it points at lives exactly as long as the pending does. Parsing into
+    // a local arena instead would leave the app holding slices into memory
+    // this function had already freed.
+    const pending = try self.alloc.create(Pending);
+    pending.* = .{
+        .alloc = self.alloc,
+        .caller = caller,
+        .request = undefined,
+        .arena = .init(self.alloc),
+    };
+
+    // Ours to release however this goes; the app takes its own before the
+    // request is handed over.
+    defer pending.release();
+
+    pending.request = wire.parseRequestLeaky(
+        pending.arena.allocator(),
+        line,
+    ) catch |err| {
         const code, const message = switch (err) {
             error.Malformed => .{ "Malformed", "could not read that as a request" },
             error.UnknownMethod => .{ "UnknownMethod", "no such method" },
             error.BadParams => .{ "BadParams", "a parameter is missing or the wrong type" },
             error.OutOfMemory => .{ "OutOfMemory", "out of memory" },
         };
+
         self.refuse(writer, code, message);
         return;
     };
-    defer parsed.deinit();
 
-    var pending: Pending = .{
-        .caller = caller,
-        .request = parsed.value,
-        .arena = .init(self.alloc),
-    };
-    defer pending.arena.deinit();
+    try self.trackInflight(pending);
 
-    try self.trackInflight(&pending);
-    defer self.untrackInflight(&pending);
-
-    self.submit.call(&pending);
+    pending.retain();
+    self.submit.call(pending);
     pending.done.waitUncancelable(self.io);
+    self.untrackInflight(pending);
 
     const response = pending.response orelse {
         self.refuse(writer, "NoResponse", "the terminal produced no answer");
