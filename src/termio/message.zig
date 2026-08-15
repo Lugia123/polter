@@ -61,6 +61,9 @@ pub const Message = union(enum) {
     /// keybind would mark it watched while nothing ever looked at it.
     poltergeist_watch: bool,
 
+    /// Change how long this terminal must be still before it is reported.
+    poltergeist_threshold: u64,
+
     /// Clear the screen.
     clear_screen: struct {
         /// Include clearing the history

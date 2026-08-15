@@ -661,6 +661,22 @@ pub fn init(
             std.fmt.bufPrint(&buf, "0x{x:0>16}", .{self.id}) catch unreachable,
         );
 
+        // Tell agents in this terminal how to reach Poltergeist, and give
+        // them a token that says which terminal they are in. The token is
+        // this terminal's alone -- holding it is the only way to act as
+        // this terminal, and there is no way to ask to be another.
+        //
+        // Absent unless `poltergeist-mcp` is on, in which case the sidecar
+        // says so plainly rather than misbehaving.
+        if (app.poltergeist_server) |*srv| {
+            if (srv.issueToken(self.id)) |token| {
+                try env.put("GHOSTTY_POLTER_SOCKET", srv.path);
+                try env.put("GHOSTTY_POLTER_TOKEN", token);
+            } else |err| {
+                log.warn("poltergeist: could not issue a token err={}", .{err});
+            }
+        }
+
         // Initialize our IO backend
         var io_exec = try termio.Exec.init(alloc, .{
             .command = command,
@@ -809,6 +825,7 @@ pub fn deinit(self: *Surface) void {
     // `errdefer` that can fire before the core surface exists, where there
     // is no id to read. Here `self` is the core surface by definition.
     self.app.poltergeist.unregister(self.id);
+    if (self.app.poltergeist_server) |*srv| srv.revokeTokens(self.id);
 
     // Stop search thread
     if (self.search) |*s| s.deinit();
@@ -3340,6 +3357,17 @@ const notice_quiet_keyboard_ms = 10 * std.time.ms_per_s;
 /// multi-line pastes. So the newline is sent afterwards as its own key
 /// event, which is what a real return keypress looks like.
 fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
+    return self.typePoltergeistText(text, true);
+}
+
+/// Change how long this terminal must be still before it is reported.
+pub fn setPoltergeistThreshold(self: *Surface, ms: u64) void {
+    self.queueIo(.{ .poltergeist_threshold = ms }, .locked);
+}
+
+/// Type text into this terminal as if the user had, optionally pressing
+/// return afterwards.
+pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void {
     if (text.len == 0) return;
 
     // A terminal whose child has exited is showing the user why. Typing
@@ -3375,6 +3403,8 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
     // `keyCallback` stamps `last_key_time`, and this key is ours, not the
     // user's. Leaving the stamp would have Poltergeist mistake its own
     // typing for somebody being at the keyboard.
+    if (!submit) return;
+
     const stamp = self.last_key_time;
     defer self.last_key_time = stamp;
 

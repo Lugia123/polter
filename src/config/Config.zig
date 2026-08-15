@@ -1260,6 +1260,20 @@ command: ?Command = null,
 /// Available since 1.3.0
 @"notify-on-command-finish-after": Duration = .{ .duration = 5 * std.time.ns_per_s },
 
+/// Let agents running in this terminal reach Poltergeist over a local
+/// socket, through the `ghostty +polter-mcp` MCP server.
+///
+/// This is what makes a supervisor able to read and type into the
+/// terminals it watches, so it grants real reach and defaults to `false`.
+/// With it off, Ghostty behaves exactly as it did before Poltergeist
+/// existed and opens no socket at all.
+///
+/// The socket is a unix socket in your state directory, never a network
+/// port. Each terminal gets its own token, placed in its environment as
+/// `GHOSTTY_POLTER_TOKEN`; an agent proves which terminal it is by holding
+/// that token and can never claim to be another one.
+@"poltergeist-mcp": bool = false,
+
 /// Watch this terminal for quiescence.
 ///
 /// This is the sensing half of Poltergeist. When enabled, Ghostty samples

@@ -120,6 +120,12 @@ pub const Entry = struct {
 
     /// When this terminal last produced a notice, for rate limiting.
     last_notice_ms: ?u64 = null,
+
+    /// How long the screen had been unchanged as of the last report, and
+    /// when that report arrived. Together these give the current figure
+    /// exactly; see `Bus.quietMs`.
+    last_quiet_ms: u64 = 0,
+    last_event_ms: u64 = 0,
 };
 
 pub const Config = struct {
@@ -167,6 +173,17 @@ pub fn unregister(self: *Bus, id: Id) void {
 
 pub fn get(self: *const Bus, id: Id) ?Entry {
     return self.entries.get(id);
+}
+
+/// How long this terminal's screen has been unchanged, as of now.
+///
+/// Extrapolated rather than stale, and exactly so: a screen that changed
+/// would have produced a `resumed` report, so the absence of one since the
+/// last report means it has not changed since either. Adding the elapsed
+/// time is therefore the true figure, not an estimate.
+pub fn quietMs(self: *const Bus, id: Id, now_ms: u64) u64 {
+    const e = self.entries.get(id) orelse return 0;
+    return e.last_quiet_ms + (now_ms -| e.last_event_ms);
 }
 
 /// Name the supervisor. Naming a new one steps the previous one down.
@@ -243,18 +260,30 @@ pub fn report(
     if (to == about) return null;
 
     const e = self.entries.getPtr(about) orelse return null;
-    if (e.role != .watched) return null;
-
-    // A terminal that has clocked off is supposed to be quiet. Saying so
-    // again every quarter of an hour is exactly the kind of nagging that
-    // makes someone turn the whole thing off.
-    if (e.duty == .off) return null;
 
     const kind: Notice.Kind, const report_data = switch (event) {
         .quiescent => |r| .{ Notice.Kind.quiescent, r },
         .still_quiescent => |r| .{ Notice.Kind.still_quiescent, r },
         .resumed => |r| .{ Notice.Kind.resumed, r },
     };
+
+    // Track the duration whatever we decide to do about telling anyone.
+    // `terminal_list` reads this, and a terminal that is not being reported
+    // -- clocked off, or rate limited -- is still worth answering about
+    // when the supervisor asks directly.
+    e.last_event_ms = now_ms;
+    e.last_quiet_ms = switch (kind) {
+        .quiescent, .still_quiescent => report_data.quiet_ms,
+        // Just came back to work: the clock starts again from here.
+        .resumed => 0,
+    };
+
+    if (e.role != .watched) return null;
+
+    // A terminal that has clocked off is supposed to be quiet. Saying so
+    // again every quarter of an hour is exactly the kind of nagging that
+    // makes someone turn the whole thing off.
+    if (e.duty == .off) return null;
 
     // `resumed` is a one-shot: it marks a transition that will not be
     // repeated, so dropping it does not merely delay a notice -- it leaves
@@ -407,6 +436,61 @@ test "a resumed notice does not reset the gap for repeatable kinds" {
     // resumed one at t=100.
     try testing.expect(b.report(worker, quiet(180_000), 999) == null);
     try testing.expect(b.report(worker, quiet(180_000), 1000) != null);
+}
+
+test "quiet duration is extrapolated, not left stale" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+
+    // Reported still for 180s at t=180_000.
+    _ = b.report(worker, quiet(180_000), 180_000);
+
+    // A minute later with no further report. The screen cannot have moved
+    // in between -- that would have produced a `resumed` -- so the true
+    // figure is 240s, not the 180s that was last announced.
+    try testing.expectEqual(@as(u64, 240_000), b.quietMs(worker, 240_000));
+}
+
+test "coming back to work restarts the quiet clock" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+
+    _ = b.report(worker, quiet(180_000), 180_000);
+    _ = b.report(worker, .{ .resumed = .{
+        .quiet_ms = 180_000,
+        .silent_ms = 0,
+        .changed_rows = 4,
+        .total_rows = 24,
+    } }, 200_000);
+
+    try testing.expectEqual(@as(u64, 0), b.quietMs(worker, 200_000));
+    try testing.expectEqual(@as(u64, 5_000), b.quietMs(worker, 205_000));
+}
+
+test "a clocked off terminal still answers how long it has been quiet" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+    try b.clockOff(worker, .supervisor);
+
+    // No notice is produced -- that is the point of clocking off -- but the
+    // supervisor asking directly still gets a real answer.
+    try testing.expect(b.report(worker, quiet(180_000), 180_000) == null);
+    try testing.expectEqual(@as(u64, 200_000), b.quietMs(worker, 200_000));
+}
+
+test "an unknown terminal reports no quiet time rather than misleading" {
+    var b = testBus();
+    defer b.deinit();
+    try testing.expectEqual(@as(u64, 0), b.quietMs(0xdead, 999_999));
 }
 
 test "notices about one terminal are rate limited" {

@@ -393,6 +393,12 @@ fn drainMailbox(
                 self.syncQuiescence(io, cb);
             },
             .poltergeist_watch => |v| self.setQuiescenceWatch(io, cb, v),
+            .poltergeist_threshold => |ms| {
+                if (self.quiescence) |*q| q.watcher.setConfig(.{
+                    .quiescence_ms = @max(quiescence_sample_ms, ms),
+                    .repeat_ms = quiescenceMs(io.config.poltergeist_repeat_ms),
+                });
+            },
             .inspector => |v| self.flags.has_inspector = v,
             .resize => |v| self.handleResize(cb, v),
             .size_report => |v| try io.sizeReport(data, v),

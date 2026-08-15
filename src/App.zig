@@ -20,6 +20,8 @@ const global = @import("global.zig");
 const log = std.log.scoped(.app);
 
 const poltergeistpkg = @import("poltergeist/main.zig");
+const terminal = @import("terminal/main.zig");
+const internal_os = @import("os/main.zig");
 
 const SurfaceList = std.ArrayListUnmanaged(*apprt.Surface);
 
@@ -36,6 +38,10 @@ poltergeist: poltergeistpkg.Bus,
 /// Baseline for the monotonic clock the bus is given. Taken on the first
 /// report rather than at startup so it costs nothing when unused.
 poltergeist_epoch: ?std.Io.Timestamp = null,
+
+/// The socket agents reach Poltergeist through. Null unless
+/// `poltergeist-mcp` is on, so the default build opens nothing.
+poltergeist_server: ?poltergeistpkg.Server = null,
 
 /// This is true if the app that Ghostty is in is focused. This may
 /// mean that no surfaces (terminals) are focused but the app is still
@@ -145,6 +151,7 @@ pub fn deinit(self: *App) void {
     for (self.surfaces.items) |surface| surface.deinit();
     self.surfaces.deinit(self.alloc);
 
+    if (self.poltergeist_server) |*srv| srv.deinit();
     self.poltergeist.deinit();
 
     // Clean up our font group cache
@@ -175,6 +182,13 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
 /// called from the main thread. The caller owns the config memory. The
 /// memory can be freed immediately when this returns.
 pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void {
+    // Bring the agent socket in line with the config. Failing to open it
+    // must never take the app down with it: the terminal has to keep
+    // working whether or not agents can reach it.
+    self.syncPoltergeistServer(config.@"poltergeist-mcp") catch |err| {
+        log.warn("poltergeist: could not open the agent socket err={}", .{err});
+    };
+
     // Go through and update all of the surface configurations.
     for (self.surfaces.items) |surface| {
         try surface.core().handleMessage(.{ .change_config = config });
@@ -253,6 +267,147 @@ fn poltergeistReport(
     self.surfaceMessage(supervisor, msg) catch |err| {
         log.warn("poltergeist: could not deliver notice err={}", .{err});
     };
+}
+
+/// Open or close the agent socket to match the config.
+///
+/// Turning it off tears the socket down rather than leaving it listening,
+/// since the point of turning it off is that nothing should be able to
+/// reach in any more.
+fn syncPoltergeistServer(self: *App, want: bool) !void {
+    if (!want) {
+        if (self.poltergeist_server) |*srv| {
+            srv.deinit();
+            self.poltergeist_server = null;
+            log.info("poltergeist: agent socket closed", .{});
+        }
+        return;
+    }
+
+    if (self.poltergeist_server != null) return;
+
+    const io = global.io();
+    var environ_map = try global.environMap();
+    defer environ_map.deinit();
+
+    const state_dir = try internal_os.xdg.state(
+        io,
+        self.alloc,
+        &environ_map,
+        .{ .subdir = "ghostty" },
+    );
+    defer self.alloc.free(state_dir);
+
+    const path = try poltergeistpkg.Server.defaultPath(self.alloc, io, state_dir);
+    defer self.alloc.free(path);
+
+    self.poltergeist_server = try .init(self.alloc, io, path, .{
+        .ctx = self,
+        .func = submitPoltergeistRequest,
+    });
+    errdefer {
+        self.poltergeist_server.?.deinit();
+        self.poltergeist_server = null;
+    }
+
+    try self.poltergeist_server.?.start();
+    log.info("poltergeist: agent socket open at {s}", .{path});
+}
+
+/// Hand a request from a connection thread to the app thread.
+///
+/// Pushed with a blocking timeout rather than dropped: the connection
+/// thread is already waiting on this, and losing it would leave the agent
+/// waiting for an answer that is never coming.
+fn submitPoltergeistRequest(
+    ctx: *anyopaque,
+    pending: *poltergeistpkg.Server.Pending,
+) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    _ = self.mailbox.push(.{ .poltergeist_request = pending }, .{ .forever = {} });
+}
+
+/// Answer one agent request. Runs on the app thread, which is the only
+/// thread that may touch the bus or a surface.
+fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void {
+    const response = poltergeistpkg.rpc.dispatch(
+        pending.arena.allocator(),
+        &self.poltergeist,
+        self.poltergeistHost(),
+        pending.caller,
+        pending.request,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => poltergeistpkg.wire.Response{ .failed = .{
+            .code = "OutOfMemory",
+            .message = "out of memory",
+        } },
+    };
+
+    pending.complete(global.io(), response);
+}
+
+fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
+    return .{ .ctx = self, .vtable = &.{
+        .readTerminal = poltergeistRead,
+        .sendText = poltergeistSend,
+        .quietMs = poltergeistQuiet,
+        .setThreshold = poltergeistThreshold,
+    } };
+}
+
+fn poltergeistRead(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    lines: u16,
+) anyerror![]const u8 {
+    _ = lines;
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+
+    // The visible screen. `lines` is not honoured yet: selecting further
+    // back needs a pin walk into the scrollback, and handing back the wrong
+    // rows would be worse than not offering it.
+    const screen = surface.io.terminal.screens.active;
+    const tl = screen.pages.getTopLeft(.viewport);
+    const br = screen.pages.getBottomRight(.viewport) orelse tl;
+    const sel: terminal.Selection = .init(tl, br, false);
+
+    const text = try surface.dumpText(alloc, sel);
+    return text.text;
+}
+
+fn poltergeistSend(
+    ctx: *anyopaque,
+    id: poltergeistpkg.Bus.Id,
+    text: []const u8,
+    submit: bool,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+    try surface.typePoltergeistText(text, submit);
+}
+
+fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const epoch = self.poltergeist_epoch orelse return 0;
+    const now: std.Io.Timestamp = .now(global.io(), .awake);
+    const now_ms: u64 = @intCast(std.math.clamp(
+        epoch.durationTo(now).toMilliseconds(),
+        0,
+        std.math.maxInt(i64),
+    ));
+    return self.poltergeist.quietMs(id, now_ms);
+}
+
+fn poltergeistThreshold(
+    ctx: *anyopaque,
+    id: poltergeistpkg.Bus.Id,
+    ms: u64,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+    surface.setPoltergeistThreshold(ms);
 }
 
 pub fn addSurface(
@@ -356,6 +511,7 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
             .close => |surface| self.closeSurface(surface),
             .surface_message => |msg| try self.surfaceMessage(msg.surface, msg.message),
             .poltergeist_report => |msg| self.poltergeistReport(msg.from, msg.event),
+            .poltergeist_request => |p| self.poltergeistRequest(p),
             .redraw_surface => |surface| try self.redrawSurface(rt_app, surface),
 
             // If we're quitting, then we set the quit flag and stop
@@ -667,6 +823,12 @@ pub const Message = union(enum) {
         from: poltergeistpkg.Bus.Id,
         event: poltergeistpkg.Sampler.Event,
     },
+
+    /// A request from an agent, waiting on its connection thread for an
+    /// answer. Carrying the pointer is safe because that thread blocks
+    /// until this is answered and the server answers any that are left
+    /// when it shuts down.
+    poltergeist_request: *poltergeistpkg.Server.Pending,
 
     /// Redraw a surface. This only has an effect for runtimes that
     /// use single-threaded draws. To redraw a surface for all runtimes,
