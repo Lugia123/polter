@@ -1,0 +1,432 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Action = @import("ghostty.zig").Action;
+const args = @import("args.zig");
+const global = @import("../global.zig");
+const net = std.Io.net;
+
+const log = std.log.scoped(.polter_mcp);
+
+/// MCP protocol revision this speaks. Sent back in `initialize`.
+const protocol_version = "2024-11-05";
+
+/// Longest line we will read from either side.
+const max_line = 256 * 1024;
+
+pub const Options = struct {
+    /// Socket to reach Ghostty on. Defaults to `GHOSTTY_POLTER_SOCKET`.
+    socket: ?[]const u8 = null,
+
+    /// Token identifying this terminal. Defaults to `GHOSTTY_POLTER_TOKEN`.
+    token: ?[]const u8 = null,
+
+    pub fn deinit(self: Options) void {
+        _ = self;
+    }
+
+    /// Enables "-h" and "--help" to work.
+    pub fn help(self: Options) !void {
+        _ = self;
+        return Action.help_error;
+    }
+};
+
+/// The `polter-mcp` command runs an MCP server that lets an agent see and
+/// steer the other terminals a Poltergeist supervisor is watching.
+///
+/// It is not run by hand. Point an MCP client at it:
+///
+///   {"command": "ghostty", "args": ["+polter-mcp"]}
+///
+/// It finds the terminal it belongs to through `GHOSTTY_POLTER_SOCKET` and
+/// `GHOSTTY_POLTER_TOKEN`, which Ghostty puts in every terminal's
+/// environment when `poltergeist-mcp` is enabled. Identity comes from that
+/// token alone -- an agent cannot ask to be treated as a different terminal.
+///
+/// Flags:
+///
+///   * `--socket`: override the socket path.
+///   * `--token`: override the token.
+pub fn run(alloc: Allocator) !u8 {
+    var opts: Options = .{};
+    defer opts.deinit();
+
+    {
+        var iter = try args.argsIterator(alloc, global.args());
+        defer iter.deinit();
+        try args.parse(Options, alloc, &opts, &iter);
+    }
+
+    const io = global.io();
+
+    var env = try global.environMap();
+    defer env.deinit();
+
+    const socket_path = opts.socket orelse
+        env.get("GHOSTTY_POLTER_SOCKET") orelse
+        {
+            log.err("no socket: is `poltergeist-mcp` enabled, and is this running inside Ghostty?", .{});
+            return 1;
+        };
+
+    const token = opts.token orelse
+        env.get("GHOSTTY_POLTER_TOKEN") orelse
+        {
+            log.err("no token: is `poltergeist-mcp` enabled, and is this running inside Ghostty?", .{});
+            return 1;
+        };
+
+    var host: Host = try .connect(alloc, io, socket_path, token);
+    defer host.deinit();
+
+    return serve(alloc, io, &host);
+}
+
+/// The connection back to Ghostty.
+const Host = struct {
+    alloc: Allocator,
+    io: std.Io,
+    stream: net.Stream,
+    read_buf: []u8,
+    write_buf: []u8,
+    reader: net.Stream.Reader,
+    writer: net.Stream.Writer,
+
+    fn connect(
+        alloc: Allocator,
+        io: std.Io,
+        path: []const u8,
+        token: []const u8,
+    ) !Host {
+        const addr = try net.UnixAddress.init(path);
+        const stream = try addr.connect(io);
+        errdefer stream.close(io);
+
+        const read_buf = try alloc.alloc(u8, max_line);
+        errdefer alloc.free(read_buf);
+        const write_buf = try alloc.alloc(u8, max_line);
+        errdefer alloc.free(write_buf);
+
+        var self: Host = .{
+            .alloc = alloc,
+            .io = io,
+            .stream = stream,
+            .read_buf = read_buf,
+            .write_buf = write_buf,
+            .reader = stream.reader(io, read_buf),
+            .writer = stream.writer(io, write_buf),
+        };
+
+        // Prove who we are before anything else. The host closes the
+        // connection if this does not check out.
+        try self.writer.interface.print(
+            \\{{"method":"auth","params":{{"token":"{s}"}}}}
+        ++ "\n", .{token});
+        try self.writer.interface.flush();
+
+        const reply = try self.reader.interface.takeDelimiterExclusive('\n');
+        if (std.mem.indexOf(u8, reply, "\"ok\":true") == null) {
+            log.err("ghostty refused this token", .{});
+            return error.AuthFailed;
+        }
+
+        return self;
+    }
+
+    fn deinit(self: *Host) void {
+        self.stream.close(self.io);
+        self.alloc.free(self.read_buf);
+        self.alloc.free(self.write_buf);
+        self.* = undefined;
+    }
+
+    /// Send one request line and return the reply line. The reply borrows
+    /// the read buffer and is valid until the next call.
+    fn call(self: *Host, line: []const u8) ![]const u8 {
+        try self.writer.interface.writeAll(line);
+        try self.writer.interface.writeByte('\n');
+        try self.writer.interface.flush();
+        return self.reader.interface.takeDelimiterExclusive('\n');
+    }
+};
+
+/// Every tool this exposes, with the request it maps to.
+///
+/// The list is deliberately short and matches `src/poltergeist/rpc.zig`
+/// exactly. In particular there is no tool for changing a work mode and
+/// none for answering another agent's permission prompt; see that file for
+/// why neither will be added.
+const tools = [_]Tool{
+    .{
+        .name = "me",
+        .description = "Which terminal this agent is running in, and whether it is supervising or supervised.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "terminal_list",
+        .description = "Every terminal Poltergeist knows about: how long each screen has been unchanged, and whether it is on duty. Durations only -- call terminal_read to see what is actually on one.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "terminal_read",
+        .description = "Read what is on another terminal's screen. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string","description":"Terminal id, as shown by terminal_list"},"lines":{"type":"integer","description":"Last N rows; omit for the visible screen"}},"required":["id"]}
+        ,
+    },
+    .{
+        .name = "terminal_send",
+        .description = "Type into another terminal, exactly as the user would. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"},"submit":{"type":"boolean","description":"Press return afterwards; defaults to true"}},"required":["id","text"]}
+        ,
+    },
+    .{
+        .name = "clock_out",
+        .description = "Mark a terminal as done for the day, so its going quiet stops being reported. Refused for terminals in an infinite work mode. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"reason":{"type":"string"}},"required":["id"]}
+        ,
+    },
+    .{
+        .name = "clock_in",
+        .description = "Put a terminal back on duty. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+        ,
+    },
+    .{
+        .name = "get_work_mode",
+        .description = "What work mode a terminal runs under. Only the user can change it. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
+        ,
+    },
+    .{
+        .name = "set_quiescence_threshold",
+        .description = "How long a terminal must be still before it is reported. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"ms":{"type":"integer"}},"required":["id","ms"]}
+        ,
+    },
+};
+
+const Tool = struct {
+    name: []const u8,
+    description: []const u8,
+    schema: []const u8,
+};
+
+fn serve(alloc: Allocator, io: std.Io, host: *Host) !u8 {
+    var in_buf: [max_line]u8 = undefined;
+    var out_buf: [64 * 1024]u8 = undefined;
+
+    var stdin: std.Io.File = .stdin();
+    var stdout: std.Io.File = .stdout();
+    var reader = stdin.reader(io, &in_buf);
+    var writer = stdout.writer(io, &out_buf);
+
+    while (true) {
+        const line = reader.interface.takeDelimiterExclusive('\n') catch |err| switch (err) {
+            error.EndOfStream => return 0,
+            else => return err,
+        };
+        if (line.len == 0) continue;
+
+        handleOne(alloc, host, &writer.interface, line) catch |err| {
+            log.warn("polter-mcp: could not handle a message err={}", .{err});
+        };
+    }
+}
+
+fn handleOne(
+    alloc: Allocator,
+    host: *Host,
+    out: *std.Io.Writer,
+    line: []const u8,
+) !void {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const msg = std.json.parseFromSliceLeaky(std.json.Value, aa, line, .{}) catch {
+        // No id to answer against, so there is nobody to tell.
+        return;
+    };
+    const obj = switch (msg) {
+        .object => |o| o,
+        else => return,
+    };
+
+    const method = switch (obj.get("method") orelse return) {
+        .string => |s| s,
+        else => return,
+    };
+
+    // A notification has no id and takes no reply. `notifications/initialized`
+    // is the common one, and answering it is a protocol error.
+    const id = obj.get("id") orelse return;
+
+    if (std.mem.eql(u8, method, "initialize")) {
+        try writeResult(out, id, aa,
+            \\{"protocolVersion":"
+        ++ protocol_version ++
+            \\","capabilities":{"tools":{}},"serverInfo":{"name":"poltergeist","version":"0"}}
+        );
+        return;
+    }
+
+    if (std.mem.eql(u8, method, "tools/list")) {
+        var body: std.Io.Writer.Allocating = .init(aa);
+        defer body.deinit();
+        const w = &body.writer;
+
+        try w.writeAll("{\"tools\":[");
+        for (tools, 0..) |t, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.print(
+                \\{{"name":"{s}","description":{f},"inputSchema":{s}}}
+            , .{ t.name, std.json.fmt(t.description, .{}), t.schema });
+        }
+        try w.writeAll("]}");
+
+        try writeResult(out, id, aa, body.written());
+        return;
+    }
+
+    if (std.mem.eql(u8, method, "tools/call")) {
+        const params = switch (obj.get("params") orelse .null) {
+            .object => |o| o,
+            else => return writeToolError(out, id, aa, "call had no params"),
+        };
+        const name = switch (params.get("name") orelse .null) {
+            .string => |s| s,
+            else => return writeToolError(out, id, aa, "call had no tool name"),
+        };
+
+        var known = false;
+        for (tools) |t| {
+            if (std.mem.eql(u8, t.name, name)) known = true;
+        }
+        if (!known) return writeToolError(out, id, aa, "no such tool");
+
+        // The host speaks the same method names, so the call is a rewrap
+        // rather than a translation.
+        const arguments: []const u8 = if (params.get("arguments")) |a|
+            try std.fmt.allocPrint(aa, "{f}", .{std.json.fmt(a, .{})})
+        else
+            "{}";
+
+        const request = try std.fmt.allocPrint(aa,
+            \\{{"method":"{s}","params":{s}}}
+        , .{ name, arguments });
+
+        const reply = host.call(request) catch |err| {
+            return writeToolError(out, id, aa, switch (err) {
+                error.EndOfStream => "ghostty closed the connection",
+                else => "could not reach ghostty",
+            });
+        };
+
+        // Pass the host's answer through as text. Agents read this, and the
+        // host already phrases its failures for them.
+        try writeResult(out, id, aa, try std.fmt.allocPrint(aa,
+            \\{{"content":[{{"type":"text","text":{f}}}],"isError":{}}}
+        , .{
+            std.json.fmt(reply, .{}),
+            std.mem.indexOf(u8, reply, "\"ok\":false") != null,
+        }));
+        return;
+    }
+
+    try writeError(out, id, aa, -32601, "method not found");
+}
+
+fn writeResult(
+    out: *std.Io.Writer,
+    id: std.json.Value,
+    aa: Allocator,
+    result: []const u8,
+) !void {
+    _ = aa;
+    try out.print(
+        \\{{"jsonrpc":"2.0","id":{f},"result":{s}}}
+    ++ "\n", .{ std.json.fmt(id, .{}), result });
+    try out.flush();
+}
+
+fn writeError(
+    out: *std.Io.Writer,
+    id: std.json.Value,
+    aa: Allocator,
+    code: i32,
+    message: []const u8,
+) !void {
+    _ = aa;
+    try out.print(
+        \\{{"jsonrpc":"2.0","id":{f},"error":{{"code":{d},"message":{f}}}}}
+    ++ "\n", .{ std.json.fmt(id, .{}), code, std.json.fmt(message, .{}) });
+    try out.flush();
+}
+
+/// A tool failure is a *successful* JSON-RPC reply carrying `isError`, not a
+/// protocol error. Getting this backwards makes clients treat a refused
+/// action as a broken server.
+fn writeToolError(
+    out: *std.Io.Writer,
+    id: std.json.Value,
+    aa: Allocator,
+    message: []const u8,
+) !void {
+    const body = try std.fmt.allocPrint(aa,
+        \\{{"content":[{{"type":"text","text":{f}}}],"isError":true}}
+    , .{std.json.fmt(message, .{})});
+    try writeResult(out, id, aa, body);
+}
+
+test {
+    // Nothing here runs without a socket and an agent on the other end, so
+    // without this the whole file would go unchecked.
+    std.testing.refAllDecls(@This());
+}
+
+test "the tool list matches the host's method names" {
+    const rpc = @import("../poltergeist/rpc.zig");
+
+    // A tool the host does not know is a tool that fails at the worst
+    // possible moment: after an agent has decided to use it.
+    for (tools) |t| {
+        try std.testing.expect(
+            std.meta.stringToEnum(rpc.Method, t.name) != null,
+        );
+    }
+
+    // And every host method is offered, so nothing is silently unreachable.
+    for (std.enums.values(rpc.Method)) |m| {
+        var found = false;
+        for (tools) |t| {
+            if (std.mem.eql(u8, t.name, @tagName(m))) found = true;
+        }
+        try std.testing.expect(found);
+    }
+}
+
+test "no tool offers to change a work mode or answer a prompt" {
+    for (tools) |t| {
+        try std.testing.expect(!std.mem.eql(u8, t.name, "set_work_mode"));
+        try std.testing.expect(std.mem.indexOf(u8, t.name, "approve") == null);
+        try std.testing.expect(std.mem.indexOf(u8, t.name, "permission") == null);
+    }
+}
+
+test "every tool describes itself and carries a schema" {
+    for (tools) |t| {
+        try std.testing.expect(t.name.len > 0);
+        try std.testing.expect(t.description.len > 20);
+        try std.testing.expect(std.mem.startsWith(u8, t.schema, "{\"type\":\"object\""));
+    }
+}
