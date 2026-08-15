@@ -269,6 +269,19 @@ fn poltergeistReport(
     };
 }
 
+/// Open the agent socket if the config wants it and it is not open yet.
+///
+/// Called as a surface starts, because `updateConfig` runs only on a config
+/// *reload* -- neither apprt calls it at launch. Without this a user who
+/// set `poltergeist-mcp` in their config file would find no socket until
+/// they reloaded by hand, which reads as the feature being broken.
+pub fn ensurePoltergeistServer(self: *App, want: bool) void {
+    if (!want or self.poltergeist_server != null) return;
+    self.syncPoltergeistServer(true) catch |err| {
+        log.warn("poltergeist: could not open the agent socket err={}", .{err});
+    };
+}
+
 /// Open or close the agent socket to match the config.
 ///
 /// Turning it off tears the socket down rather than leaving it listening,

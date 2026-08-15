@@ -101,6 +101,11 @@ inflight_mutex: std.Io.Mutex = .init,
 listen_thread: ?std.Thread = null,
 running: std.atomic.Value(bool) = .init(false),
 
+/// Whether the listening socket has been closed. `stop` closes it to
+/// unblock accept, and `deinit` closes it when the server never started;
+/// without this flag the two paths close it twice.
+listener_closed: bool = false,
+
 pub const InitError = error{
     UnixSocketsUnavailable,
     PathTooLong,
@@ -150,7 +155,7 @@ pub fn deinit(self: *Server) void {
     self.tokens.deinit(self.alloc);
     self.inflight.deinit(self.alloc);
 
-    self.listener.deinit(self.io);
+    self.closeListener();
     std.Io.Dir.cwd().deleteFile(self.io, self.path) catch {};
     self.alloc.free(self.path);
     self.* = undefined;
@@ -167,7 +172,7 @@ pub fn stop(self: *Server) void {
 
     if (self.listen_thread) |t| {
         // Closing the listener is what unblocks accept.
-        self.listener.deinit(self.io);
+        self.closeListener();
         t.join();
         self.listen_thread = null;
     }
@@ -176,6 +181,12 @@ pub fn stop(self: *Server) void {
     // one left blocked here would outlive the bus and the surfaces it holds
     // pointers into.
     self.failInflight();
+}
+
+fn closeListener(self: *Server) void {
+    if (self.listener_closed) return;
+    self.listener_closed = true;
+    self.listener.deinit(self.io);
 }
 
 fn failInflight(self: *Server) void {

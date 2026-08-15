@@ -668,6 +668,10 @@ pub fn init(
         //
         // Absent unless `poltergeist-mcp` is on, in which case the sidecar
         // says so plainly rather than misbehaving.
+        // The socket is opened here rather than only at config reload:
+        // neither apprt calls `updateConfig` at launch.
+        app.ensurePoltergeistServer(config.@"poltergeist-mcp");
+
         if (app.poltergeist_server) |*srv| {
             if (srv.issueToken(self.id)) |token| {
                 try env.put("GHOSTTY_POLTER_SOCKET", srv.path);
