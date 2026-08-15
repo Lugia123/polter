@@ -16,7 +16,7 @@
 - [rendering-and-font.md](rendering-and-font.md) — `src/renderer` 的 Metal/OpenGL/WebGL 后端与着色器，`src/font` 的字体发现、face、整形器与图集（atlas）。
 - [platform-and-config.md](platform-and-config.md) — `src/apprt` 应用运行时（apprt）抽象、`macos/` Swift 应用、`src/config` 配置系统、`src/input` 键绑定与按键编码。
 - [preview-manual.md](preview-manual.md) — 怎么构建、怎么跑起来、怎么快速迭代、怎么看日志和调试。**构建与运行命令以本篇为唯一权威**，其他篇只做一行引用。
-- [poltergeist/](poltergeist/README.md) — Poltergeist 能力层的设计文档（**设计草案，尚未实现**）：让一个「总管」终端照看多个 AI 终端。总览与五章索引见 [poltergeist/README.md](poltergeist/README.md)，本批文档的写作规范见 [poltergeist/\_spec.md](poltergeist/_spec.md)。
+- [poltergeist/](poltergeist/README.md) — Poltergeist 能力层：让一个「总管」终端照看多个 AI 终端。**代码已落地**（`src/poltergeist/`），但整条链路尚未在真机上跑过 —— 验证情况与如何自己试见 [poltergeist/README.md](poltergeist/README.md)。本批文档的写作规范见 [poltergeist/\_spec.md](poltergeist/_spec.md)。
 
 ## 先读哪一篇
 

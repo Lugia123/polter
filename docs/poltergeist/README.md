@@ -2,7 +2,8 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**部分已实现**。S0（感知层）与 S1（通知总管）已落地，见 `src/poltergeist/`；S2 起仍是设计。各章开头标注了自己的进度。
+> 状态：**S0–S4 全部落地**，见 `src/poltergeist/`、`src/cli/polter_mcp.zig`、`macos/Sources/Features/Poltergeist/`。
+> **但整条链路尚未在真机上跑过一次** —— 验证情况与如何自己试，见「验证到什么程度」与「怎么试」两节。GTK 侧的聊天窗口未做。
 
 ## 本章覆盖什么
 
@@ -94,7 +95,7 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 
 ## 架构图
 
-以下为设计示意，仓库中尚不存在。
+下图各层现已全部落地；每个挂接点的 `路径:行号` 是当初调研的结果，行号可能已随改动漂移，以文件为准。
 
 ```text
 ┌── 用户层 ──────────────────────────────────────────────────────────┐
@@ -137,19 +138,64 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 
 ## 分阶段路线
 
-这是本设计自己的分阶段计划，是设计内容而非交付承诺。
+全部落地。「验证方式」一栏写的是**实际做到的**，不是当初计划的。
 
-| 阶段 | 内容                                                | 验证方式                                         |
-| ---- | --------------------------------------------------- | ------------------------------------------------ |
-| S0   | 只做静止采样 + 日志，**不通知任何人**               | 跑一次真实长任务，人工核对静止判定是否与肉眼一致 |
-| S1   | 加「通知总管」，先只做单个被监督终端                | 一个总管 + 一个被监督终端跑通一轮                |
-| S2   | 加 MCP 工具面与 skill 体系（含下班 / 无限工作模式） | 总管能让下班模式的终端下班，无限模式的下不了     |
-| S3   | 加群聊 / 私信与界面                                 | 三终端互通                                       |
-| S4   | 加 tab 状态标记                                     | tab 上能看出上班中 / 下班休息                    |
+| 阶段 | 内容                                    | 验证到哪一步                                                                  |
+| ---- | --------------------------------------- | ----------------------------------------------------------------------------- |
+| S0   | 静止采样 + 日志，不通知任何人           | 单测覆盖判定逻辑；未在真实长任务上人工核对过静止判定                          |
+| S1   | 通知总管                                | 单测覆盖 Bus 与注入守卫；跨线程投递路径只做过编译验证                         |
+| S2   | MCP 工具面、socket、sidecar、skill 体系 | **真实 unix socket 端到端测试**（握手 / 多请求 / 停机）；MCP 侧未接过真 agent |
+| S3   | 群、界面                                | Chat 单测；SwiftUI 只做过 `swiftc -typecheck`，未构建成 app                   |
+| S4   | tab 状态标记                            | 判定逻辑单测；未在真 tab 上看过                                               |
 
-**S0 必须先跑通，否则后面所有催促都在错误时机开火。** S0 还要顺带验掉一个已知陷阱：不可见 surface 的渲染回调直接返回（`src/renderer/Thread.zig:648`），挂后台过夜时渲染器不再推进 —— 感知层若依赖渲染侧状态就会在主场景下失效，见 [sensing.md](sensing.md)。
+**共 149 个 poltergeist 单测**，加上 Ghostty 自身 3400+ 个测试的全量回归。
 
-## 安全边界
+## 验证到什么程度
+
+诚实地讲清楚每一层：
+
+| 层                                                                  | 手段                           | 覆盖到什么             |
+| ------------------------------------------------------------------- | ------------------------------ | ---------------------- |
+| 纯逻辑（感知 / Bus / Chat / 权限 / 线协议 / skill）                 | 原生 `zig test`                | **真跑过**，149 个用例 |
+| socket 链路                                                         | 真实 unix socket + 真客户端    | **真跑过**             |
+| 全部 Zig 代码                                                       | Linux 与 macOS 双目标类型检查  | 编译期                 |
+| SwiftUI                                                             | `swiftc -typecheck`            | 编译期                 |
+| 全量测试套件                                                        | Docker 容器内 `zig build test` | **真跑过**             |
+| **整条链路（终端里跑 agent → 静止 → 通知总管 → MCP → 群聊 → tab）** | —                              | **从未运行**           |
+
+最后一行是这套东西目前最大的未知。S2 那轮复核的教训值得记住：一个致命 bug 通过了编译、通过了 130 个单测、通过了双目标类型检查、经过 25 个 agent 的代码审查，最后是靠**真实执行**才发现的。
+
+## 怎么试
+
+需要一台装了 **Xcode 26** 的 macOS（构建 app 必需），或者一台 Linux（GTK 侧没有聊天窗口，其余可用）。
+
+```sh
+# 1. 构建
+zig build -Demit-macos-app=false
+macos/build.nu --scheme Ghostty --configuration Debug --action build
+open macos/build/Debug/Ghostty.app
+```
+
+配置里打开两个开关：
+
+```ini
+poltergeist-watch = true
+poltergeist-mcp = true
+```
+
+然后：
+
+1. 开两个终端，都跑起 agent。
+2. 在其中一个上执行命令面板的 **Make This Terminal the Supervisor**。
+3. 在另一个上执行 **Toggle Supervision of This Terminal**。
+4. 让被监督那个静置超过 `poltergeist-quiescence-after`（默认 3 分钟）。
+5. 看总管终端有没有收到 `[poltergeist] terminal 0x... has gone quiet`。
+
+要试 MCP，把 `ghostty +polter-mcp` 配给总管里的 agent 当 MCP server（socket 与 token 已经在它的环境变量里，不用配）。要试群聊，让总管调 `group_create` / `group_add`，再用命令面板的 **Show Terminal Conversations** 打开窗口。
+
+**没跑通的话**：先看日志（`GHOSTTY_LOG` 的用法见 [preview-manual.md](../preview-manual.md)），`poltergeist:` 前缀的行会说明它认为自己在做什么。
+
+## 安全边界## 安全边界
 
 - **明确不做自动点 yes**（P2）。理由见上：替对方按授权键等于废掉对方的安全模型，且 Claude Code 自己已有自动模式。
 - 注入路径复用现有的粘贴通道 `Surface.textCallback`（`src/Surface.zig:3308`）→ `completeClipboardPaste`（`src/Surface.zig:5914`），从而继承 bracketed paste 封装与控制字节剥除（`src/input/paste.zig:46-91`），不另开一条绕过既有编码的旁路。**但继承的不是不安全粘贴确认** —— 调用点传的是 `allow_unsafe = true`（`src/Surface.zig:3313`），确认分支据此直接放行（`src/Surface.zig:5936-5938`），所以长度上限与内容白名单必须由 Poltergeist 自带，见 [mcp.md](mcp.md)。
@@ -190,10 +236,12 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 
 ## 未决问题
 
-1. 静止阈值的默认值取多少，以及是否需要按被监督程序类型给不同预设 —— 待 S0 实测数据。
+1. 静止阈值的默认值取多少，以及是否需要按被监督程序类型给不同预设 —— 待实测数据。默认 3 分钟是猜的。
 2. 挂后台过夜时的采样来源最终落在哪一层（termio 侧字节活动 vs 独立定时器直读屏幕）—— 见 [sensing.md](sensing.md) 的取舍记录。
 3. 监控状态与监督关系是否需要跨 Ghostty 进程重启持久化，还是每次挂机重新设一遍。
-4. Skill 体系的存放位置与更新方式（随配置目录 / 随 resources 目录）—— 见 [mcp.md](mcp.md)。
+4. Skill 体系的存放位置与更新方式 —— 已定并落地：内置在 resources 目录，用户副本在配置目录且优先。见 [mcp.md](mcp.md)。
+5. GTK 侧的聊天窗口。当前只有 macOS 有。
+6. 确认策略与通知时间段（R3）—— 设计已定，**尚未实现**，见 [supervisor.md](supervisor.md)。
 
 ## 延伸阅读
 

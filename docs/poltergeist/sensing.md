@@ -143,7 +143,7 @@ Ghostty 已解析了几路语义零歧义的信号：OSC 9 / 777 桌面通知 `s
 
 ### 采样回调的算法
 
-以下为设计示意，仓库中尚不存在。
+以下为当初的设计示意。实际实现见 `src/poltergeist/Sampler.zig` 的 `observe` 与 `noteActivity`；与本图的出入记在下一节。
 
 ```text
 1. now - last_output < threshold  ->  重排定时器，返回（零锁的粗筛路径）

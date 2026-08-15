@@ -2,7 +2,8 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**尚未实现**（S4）。
+> 状态：**已实现**（S4）。判定在 `src/poltergeist/Bus.zig` 的 `TabMark` 与 `tabMark`，写入在 `src/Surface.zig` 的 `updatePoltergeistTabMark`，刷新在 `src/App.zig` 的 `refreshPoltergeistTabs`。
+> 本章前半是选型推导；实际落地的样子见「实现」一节，两者不一致时以代码为准。
 
 ## 本章覆盖什么
 
@@ -139,7 +140,7 @@ override 通道被谁占着：`set_tab_title` apprt action 直接写 `controller
 7. GTK 落点：做成 `Surface` 的 gobject 属性，getter 直读核心字段、setter 只发 notify（`src/apprt/gtk/class/surface.zig:1211-1223`，属性定义在 `:426-443`），UI 由 blp 声明式绑定（范本 `src/apprt/gtk/ui/1.2/surface.blp:83-86`），再由 `Tab` 汇总到页上。
 8. 是否自动褪去：`progress_report` 在 macOS 侧有 15 秒自动清除定时器（`macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift:22-37`），可作为参照。本设计倾向「下班」标记不自动褪去（它是判定结果，不是瞬时事件），静止类标记若上界面则应自动褪去。
 
-以下为设计示意，仓库中尚不存在。它只是把上面八跳画成一张图，每一格右侧标的是它的现成范本出处：
+下图把上面八跳画成一张图，每一格右侧标的是它的现成范本出处。实际落地比这张图短得多 —— 复用了既有的 `set_tab_title`，两端一行未改，见「实现」一节：
 
 ```text
 core Surface 字段                      范本 src/Surface.zig:164-168 (readonly)
@@ -162,6 +163,34 @@ TerminalWindow.swift:163-171       blp 声明式绑定，范本 surface.blp:83-8
 ```
 
 两端在这条链路上的形状差异要写清：macOS 侧是命令式的 —— handler 收到 action 后自己找到 `surfaceView`、再找到 window controller，往 `tab.accessoryView` 里塞视图；GTK 侧是声明式的 —— handler 只负责 `notifyByPspec`，真正的显示由 blueprint 里的 `bind` 表达式驱动（`src/apprt/gtk/ui/1.2/surface.blp:84` 的 `reveal-child: bind template.readonly` 就是这个形状）。因此同一份设计在两端的代码量与改动位置并不对称，GTK 侧的改动集中在 blp 与属性定义，macOS 侧集中在 handler 与视图组装。
+
+## 实现
+
+### 复用既有通道，两端都不用改
+
+落地用的是仓库里已有的 `set_tab_title` action（`src/apprt/action.zig:213`），macOS 与 GTK 两侧**一行都没改** —— 两端本来就实现了这个 action。这是本章选型里最省的一条路，也是它被选中的原因。
+
+### 组合，不是替换
+
+`set_tab_title` 是**覆盖**：写进去什么，tab 就显示什么。所以不能写一个纯状态串进去 —— 那会把程序自己设的标题扔掉，而那才是人真正在看的内容。
+
+实现是**组合**：`标记前缀 + 程序自己的标题`，标题从 `rt_surface.getTitle()` 取。没有标记时写回不带前缀的标题。
+
+### 五个状态
+
+| 标记   | 含义                                       |
+| ------ | ------------------------------------------ |
+| （无） | 不在监督范围内 —— tab 只显示程序自己的标题 |
+| ●      | 上班中                                     |
+| ○      | 静止（屏幕停了超过阈值）                   |
+| 💤     | 下班休息                                   |
+| ⚑      | 总管                                       |
+
+**下班优先于静止。**一个已下班的终端当然是静止的，但「下班」是更有用的说法：它安静是因为被叫停了，不是因为卡住了。
+
+### 不重复写
+
+每个 surface 记住自己上次写过的标记，没变就什么都不做。这样 `refreshPoltergeistTabs` 可以在任何事件后被调用而不会不停重写 tab 标题。
 
 ## 状态集合
 

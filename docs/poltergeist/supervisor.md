@@ -2,7 +2,8 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**部分已实现**。已落地：监督关系与上班/下班状态（`src/poltergeist/Bus.zig`）、「无限工作模式禁止下班」与「总管不得改工作模式」两条程序硬闸、静止通知注入（`src/Surface.zig` 的 `typePoltergeistNotice`）、两个键绑定 action。**尚未实现**：监工模式的 skill 执行、确认策略与通知时间段（R3）、下班模式的「连续 n 次」计数——这些要等 S2 的 MCP 与 skill 体系。
+> 状态：**大部分已实现**。已落地：监督关系与上班/下班状态（`src/poltergeist/Bus.zig`）、「无限工作模式禁止下班」与「总管不得改工作模式」两条程序硬闸、静止通知注入（`src/Surface.zig` 的 `typePoltergeistText`）、三个键绑定 action（指定总管 / 切换监督 / 轮换工作模式）、「连续 n 次」的 rounds 计数（随 `terminal_list` 给总管）、skill 体系（`src/poltergeist/skills/`）。
+> **仍未实现**：确认策略与通知时间段（R3）。本章描述它的那一节是设计，不是现状。
 
 ## 本章覆盖什么
 
@@ -117,7 +118,7 @@ Poltergeist（能力层）在总管这一侧只维护三张表——谁监督谁
 
 ### 状态图
 
-以下为设计示意，仓库中尚不存在。
+下表的 on-duty / quiescent / off-duty 三态已落地（`src/poltergeist/Bus.zig` 的 `Duty` 与 `TabMark`）；pending-cfm 对应 R3 的确认策略，**尚未实现**。
 
 ```text
 边                            触发条件                                  改写者
@@ -199,7 +200,7 @@ R3 给的是二选一：(a) 总管代理用户决策；(b) 通知用户。本设
 
 ### 通知时间段的配置形态
 
-以下为设计示意，仓库中尚不存在。
+**尚未实现。**以下为设计示意，这两个配置项在仓库中不存在。
 
 ```ini
 polter-confirmation-policy = notify-user

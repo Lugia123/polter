@@ -59,7 +59,7 @@ Poltergeist（能力层）的控制面是一个跟着 AI 进程跑的 sidecar：
 
 **推翻条件**：若 MCP 的延迟要求降到毫秒级、或需要在核心里维持大量长连接状态，sidecar 的往返成本才会成为问题。当前场景（挂机过夜）的时间尺度是分钟，不会触发。
 
-MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/call` 的确切 schema 不在本文范围内（未核实：这些细节不来自本仓库 —— 全仓 `src/`、`macos/` 下 grep 无 `polter` 或 Poltergeist 命中，核实方式是查阅 modelcontextprotocol 官方规范）。本章只写到「作为 MCP server 暴露工具」这一层。
+MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/call` 的确切 schema 不来自本仓库，本章不复述（未核实：实现按规范写成，但没有对着官方 schema 逐条比对过，也没有接过真实 MCP 客户端）。实现见 `src/cli/polter_mcp.zig`。
 
 ## 身份识别：现状代码已经解决了
 
@@ -270,7 +270,7 @@ R6 要求「连续 n 次执行后判断没必要再继续」。次数正是长�
 
 ### 结构示意
 
-以下为设计示意，仓库中尚不存在：
+实际的内置 skill 在 `src/poltergeist/skills/`，安装到 `share/ghostty/poltergeist/`。下面是其中一份的开头：
 
 ```md
 ---

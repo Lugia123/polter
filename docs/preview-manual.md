@@ -26,11 +26,12 @@
 
 本文列出的每条命令都标注了仓库内出处（`build.zig`、`src/build/*.zig`、`AGENTS.md`、`macos/AGENTS.md`、`HACKING.md`、各子目录 `AGENTS.md`、`.github/workflows/test.yml`）。
 
-撰写本文的机器 PATH 中没有 `zig`、`nu`、`swiftlint`、`prettier`、`pandoc`（只有 `/usr/bin/xcodebuild`），仓库里也不存在 `zig-out/`。因此：
+本文最初写于一台没有 zig 的机器上，那时所有命令都只是从构建脚本读出来的。后来装了 zig 0.16.0 并实际跑过其中相当一部分，所以现在分两类：
 
-- **本文所有命令均未在撰写环境实际执行（未核实）**，全文不给出任何命令输出、耗时数字或泄漏计数。
-- 所有产物路径都来自对构建脚本的静态阅读，而不是对实际构建结果的观察（未核实）。
-- 想确认某个选项当前是否存在、默认值是什么，以 `zig build --help` 的实际输出和 `src/build/Config.zig` 为准 —— 这也是 `build.zig:20-22` 注释本身的建议。
+- **实际执行过**：`zig build`、`zig build test`（含各种 `-D` 组合）、`zig test <file>`、容器内全量测试、`swiftc -typecheck`。「在没有完整 Xcode 的 macOS 上开发」一节的每条命令都跑过。
+- **仍未执行过（未核实）**：`macos/build.nu`（需要完整 Xcode）、`zig build run`、Valgrind、Nix VM、benchmark 的实际跑法。这些仍然只有静态阅读作为依据。
+
+想确认某个选项当前是否存在、默认值是什么，以 `zig build --help` 的实际输出和 `src/build/Config.zig` 为准 —— 这也是 `build.zig:20-22` 注释本身的建议。
 
 ## 一句话概括
 
@@ -422,7 +423,7 @@ xcrun: error: unable to find utility "metal", not a developer tool or in PATH
 
 根治办法是装完整 Xcode 26 加 Metal Toolchain。装不了的时候，纯 Zig 改动仍有两条可用的验证路径：
 
-### 1. 跑独立模块的单元测试
+### 1. 跑独立模块的单元测试（无需容器）
 
 不依赖 build 系统注入模块（如 `terminal_options`）的文件，可以直接跑：
 
@@ -432,7 +433,43 @@ zig test src/poltergeist/Watcher.zig
 
 注意 `zig test` 的模块根是**该文件所在目录**，所以文件里不能 `@import("../…")`，否则会报 `import of file outside module path`。跨目录 import 的文件只能走下面第 2 条。
 
-### 2. 交叉编译做全量类型检查
+### 2. 在 Linux 容器里跑全量测试
+
+有 Docker 的话，这是**唯一能真正跑完整测试套件**的办法，不需要任何 Xcode：
+
+```sh
+# 下载 Linux 版 zig（与 build.zig.zon 的 minimum_zig_version 对齐）
+curl -L https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz | tar xJ
+
+docker run --rm \
+  -v "$PWD:/repo" -v "$PWD/zig-aarch64-linux-0.16.0:/zig:ro" \
+  -v /tmp/zigcache:/cache -v /tmp/zigglobal:/gcache \
+  -w /repo debian:bookworm-slim \
+  sh -c 'apt-get -qq update >/dev/null && \
+         apt-get -qq install -y fontconfig fonts-dejavu-core >/dev/null && \
+         /zig/zig build test -Dapp-runtime=none \
+           --cache-dir /cache --global-cache-dir /gcache'
+```
+
+- `fontconfig` 与一份字体是必需的，否则 `src/font/discovery.zig` 的三个测试会失败（镜像里没有字体配置文件）。
+- 挂载持久的 cache 目录，否则每次都要重新编译全部依赖（首次约十分钟）。
+- 结尾可能出现一行 `failed command: ... ghostty-test`，而 `exit=0`。这是 Zig 0.16 的行为：任何测试往 stderr 打字都会触发这行。`src/main.zig:30-35` 的注释原样写了这件事。判断真实失败要看有没有 `^error: '...' failed` 的行。
+
+想连 GTK 一起构建，镜像换 `debian:trixie-slim`（`blueprint-compiler` 需要 ≥ 0.16.0），并加装 `libgtk-4-dev libadwaita-1-dev pkg-config gettext`。（未核实：这条路上 translate-c 找不到 GTK 头文件，未继续排查。）
+
+### 3. 类型检查 Swift 代码
+
+**不需要完整 Xcode。**`swiftc` 随 Command Line Tools 提供，SDK 里也有 AppKit 与 SwiftUI：
+
+```sh
+swiftc -typecheck -sdk "$(xcrun --show-sdk-path)" path/to/File.swift
+```
+
+需要注意的是：直接对 `macos/Sources/` 下的文件这么做会因为 `import GhosttyKit` 失败（那是 `zig build` 产出的 xcframework）。做法是把文件复制一份、把 `import GhosttyKit` 换成用到的那几个符号的桩声明，再检查。这能覆盖 SwiftUI 的类型错误，覆盖不到与真实 C ABI 的对接。
+
+构建 `.app` 仍然需要完整 Xcode，没有替代路径。
+
+### 4. 交叉编译做全量类型检查
 
 编到非 Darwin 目标就不会挂 metallib：
 
