@@ -365,12 +365,6 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="bC9-n9-RbJ"/>
-                            <menuItem title="Terminal Conversations" keyEquivalent="g" id="Plt-Ch-0001">
-                                <modifierMask key="keyEquivalentModifierMask" shift="YES" command="YES"/>
-                                <connections>
-                                    <action selector="togglePoltergeistChat:" target="bbz-4X-AYv" id="Plt-Ch-0002"/>
-                                </connections>
-                            </menuItem>
                             <menuItem title="Terminal Inspector" id="QwP-M5-fvh">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>

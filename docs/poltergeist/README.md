@@ -2,7 +2,7 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**S0–S4 全部落地**，见 `src/poltergeist/`、`src/cli/mcp.zig`、`macos/Sources/Features/Poltergeist/`。
+> 状态：**S0–S2、S4 落地**，见 `src/poltergeist/`、`src/cli/mcp.zig`。**S3 的界面正在重做** —— macOS 原生窗口做出来后被否掉了，改回终端内 TUI，见 [chatui.md](chatui.md)「决策变更」。群聊的模型层（`Chat.zig`）不受影响，一直是好的。
 > 整条链路已用真实 Claude Code CLI 跑过一轮，并因此改掉了两个单元测试结构上发现不了的致命 bug —— 见「验证到什么程度」。GTK 侧的聊天窗口未做。
 
 ## 本章覆盖什么
@@ -145,7 +145,8 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | S0   | 静止采样 + 日志，不通知任何人           | 单测覆盖判定逻辑；未在真实长任务上人工核对过静止判定                          |
 | S1   | 通知总管                                | 单测覆盖 Bus 与注入守卫；跨线程投递路径只做过编译验证                         |
 | S2   | MCP 工具面、socket、sidecar、skill 体系 | **真实 unix socket 端到端测试**（握手 / 多请求 / 停机）；MCP 侧未接过真 agent |
-| S3   | 群、界面                                | Chat 单测；SwiftUI 只做过 `swiftc -typecheck`，未构建成 app                   |
+| S3   | 群（模型层）                            | Chat 单测；真机验证了 `history: none` 的隔离                                  |
+| S3'  | 界面                                    | **重做中**：macOS 原生窗口已删，改为终端内 TUI `polter +chat`                 |
 | S4   | tab 状态标记                            | 判定逻辑单测；未在真 tab 上看过                                               |
 
 **共 152 个 poltergeist 单测**，加上 Ghostty 自身 3500+ 个测试的全量回归。

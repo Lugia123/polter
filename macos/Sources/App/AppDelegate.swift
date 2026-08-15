@@ -985,13 +985,6 @@ class AppDelegate: NSObject,
         quickController.toggle()
     }
 
-    /// Show or hide the window listing what the terminals have said to each
-    /// other. Same entry point as the `poltergeist_toggle_chat` keybind, so
-    /// the menu and the key cannot drift apart.
-    @IBAction func togglePoltergeistChat(_ sender: Any) {
-        guard let app = self.ghostty.app else { return }
-        PoltergeistChatController.shared.toggle(app)
-    }
 
     /// Toggles visibility of all Ghosty Terminal windows. When hidden, activates Ghostty as the frontmost application
     @IBAction func toggleVisibility(_ sender: Any) {

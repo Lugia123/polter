@@ -557,9 +557,6 @@ extension Ghostty {
             case GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE:
                 toggleCommandPalette(app, target: target)
 
-            case GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CHAT:
-                PoltergeistChatController.shared.toggle(app)
-
             case GHOSTTY_ACTION_TOGGLE_MAXIMIZE:
                 toggleMaximize(app, target: target)
 
