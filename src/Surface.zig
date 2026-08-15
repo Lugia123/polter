@@ -26,6 +26,7 @@ const crash = @import("crash/main.zig");
 const unicode = @import("unicode/main.zig");
 const rendererpkg = @import("renderer.zig");
 const termio = @import("termio.zig");
+const poltergeistpkg = @import("poltergeist/main.zig");
 const font = @import("font/main.zig");
 const Command = @import("Command.zig");
 const terminal = @import("terminal/main.zig");
@@ -179,6 +180,10 @@ search: ?Search = null,
 
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.Io.Timestamp = null,
+
+/// What Poltergeist last put on this tab, so an unchanged state does not
+/// rewrite the title on every event.
+poltergeist_tab_mark: poltergeistpkg.Bus.TabMark = .none,
 
 /// When a real key event last arrived from the user.
 ///
@@ -3353,6 +3358,43 @@ fn encodeKeyOpts(self: *const Surface) input.key_encode.Options {
 /// into a terminal. Long enough to cover a pause mid-sentence, short enough
 /// that a supervisor is not left waiting on a terminal nobody is at.
 const notice_quiet_keyboard_ms = 10 * std.time.ms_per_s;
+
+/// Put Poltergeist's mark on this terminal's tab, in front of whatever the
+/// program running here called itself.
+///
+/// Composed rather than replaced. `set_tab_title` is an override, so
+/// setting it to a bare status would throw away the title the program set
+/// -- which is the part somebody is actually reading. When there is nothing
+/// to mark, the title goes back unadorned.
+pub fn updatePoltergeistTabMark(self: *Surface) void {
+    const mark = self.app.poltergeist.tabMark(
+        self.id,
+        self.app.poltergeistNow(),
+        self.io.config.poltergeist_quiescence_ms,
+    );
+
+    // Nothing has changed for this tab: leave it alone rather than
+    // rewriting the same title every time anything happens.
+    if (mark == self.poltergeist_tab_mark) return;
+    self.poltergeist_tab_mark = mark;
+
+    const own = self.rt_surface.getTitle() orelse "";
+    const title = std.fmt.allocPrintSentinel(
+        self.alloc,
+        "{s}{s}",
+        .{ mark.prefix(), own },
+        0,
+    ) catch return;
+    defer self.alloc.free(title);
+
+    _ = self.rt_app.performAction(
+        .{ .surface = self },
+        .set_tab_title,
+        .{ .title = title },
+    ) catch |err| {
+        log.warn("poltergeist: could not mark the tab err={}", .{err});
+    };
+}
 
 /// Type a Poltergeist notice into this terminal as if the user had typed it.
 ///

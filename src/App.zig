@@ -245,6 +245,9 @@ fn poltergeistReport(
     from: poltergeistpkg.Bus.Id,
     event: poltergeistpkg.Sampler.Event,
 ) void {
+    // Whatever comes of the report, the tabs should say what is true now.
+    defer self.refreshPoltergeistTabs();
+
     const notice = self.poltergeist.report(from, event, self.poltergeistNow()) orelse
         return;
 
@@ -452,6 +455,16 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
     try self.chat.add(group, poltergeistpkg.Chat.user_id, .all);
 }
 
+/// Bring every tab's Poltergeist mark in line with the state behind it.
+///
+/// Cheap: each surface compares the mark it last set and does nothing when
+/// it has not moved, so this can be called whenever anything happens.
+pub fn refreshPoltergeistTabs(self: *App) void {
+    for (self.surfaces.items) |rt_surface| {
+        rt_surface.core().updatePoltergeistTabMark();
+    }
+}
+
 /// Everything the chat window needs, in one call.
 ///
 /// Runs on the app thread, which owns the chat, so it reads directly. The
@@ -655,7 +668,7 @@ fn tellTerminalsAboutMessages(self: *App) void {
 }
 
 /// Monotonic milliseconds for the bus and the chat log alike.
-fn poltergeistNow(self: *App) u64 {
+pub fn poltergeistNow(self: *App) u64 {
     const epoch = self.poltergeist_epoch orelse epoch: {
         const t: std.Io.Timestamp = .now(global.io(), .awake);
         self.poltergeist_epoch = t;

@@ -318,6 +318,59 @@ pub fn report(
     };
 }
 
+/// What a tab should say about a terminal beyond its own title.
+///
+/// A short marker rather than a sentence: it sits in front of whatever the
+/// program running there called itself, and that title is the part somebody
+/// is actually reading.
+pub const TabMark = enum {
+    /// Nothing to say. The tab shows only the program's own title.
+    none,
+
+    /// Watched and working.
+    on_duty,
+
+    /// Watched, and the screen has stopped moving.
+    quiet,
+
+    /// Done for the day.
+    off_duty,
+
+    /// The terminal minding the others.
+    supervisor,
+
+    pub fn prefix(self: TabMark) []const u8 {
+        return switch (self) {
+            .none => "",
+            .on_duty => "\u{25CF} ",
+            .quiet => "\u{25CB} ",
+            .off_duty => "\u{1F4A4} ",
+            .supervisor => "\u{2691} ",
+        };
+    }
+};
+
+/// How this terminal's tab should be marked, given how long it has been
+/// quiet.
+///
+/// Takes the quiescence threshold rather than reading one: the bus does not
+/// own that number, and passing it in keeps this decidable without a
+/// terminal.
+pub fn tabMark(self: *const Bus, id: Id, now_ms: u64, quiet_after_ms: u64) TabMark {
+    const e = self.entries.get(id) orelse return .none;
+    return switch (e.role) {
+        .none => .none,
+        .supervisor => .supervisor,
+        .watched => switch (e.duty) {
+            .off => .off_duty,
+            .on => if (self.quietMs(id, now_ms) >= quiet_after_ms)
+                .quiet
+            else
+                .on_duty,
+        },
+    };
+}
+
 /// Render a notice as the line the supervisor's terminal will receive.
 ///
 /// Deliberately terse and deliberately not the screen contents: it says
@@ -698,6 +751,64 @@ test "unknown terminals are rejected rather than silently created" {
         error.UnknownTerminal,
         b.clockOff(0xdead, .supervisor),
     );
+}
+
+test "an unwatched terminal's tab says nothing" {
+    var b = testBus();
+    defer b.deinit();
+
+    try testing.expectEqual(TabMark.none, b.tabMark(worker, 0, 1000));
+    try b.register(worker);
+    try testing.expectEqual(TabMark.none, b.tabMark(worker, 0, 1000));
+}
+
+test "a tab mark follows the terminal's role and duty" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+
+    try testing.expectEqual(TabMark.supervisor, b.tabMark(boss, 0, 1000));
+    try testing.expectEqual(TabMark.on_duty, b.tabMark(worker, 0, 1000));
+
+    try b.clockOff(worker, .supervisor);
+    try testing.expectEqual(TabMark.off_duty, b.tabMark(worker, 0, 1000));
+}
+
+test "a tab says quiet once the screen has been still long enough" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+    _ = b.report(worker, quiet(60_000), 60_000);
+
+    try testing.expectEqual(TabMark.on_duty, b.tabMark(worker, 60_000, 120_000));
+    try testing.expectEqual(TabMark.quiet, b.tabMark(worker, 180_000, 120_000));
+}
+
+test "a clocked off terminal reads as off duty even while quiet" {
+    // Off duty is the more useful thing to say: it is quiet because it was
+    // told to stop, not because it got stuck.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+    _ = b.report(worker, quiet(600_000), 600_000);
+    try b.clockOff(worker, .supervisor);
+
+    try testing.expectEqual(TabMark.off_duty, b.tabMark(worker, 600_000, 1000));
+}
+
+test "every mark but none has a marker, and none has nothing" {
+    try testing.expectEqualStrings("", TabMark.none.prefix());
+    for ([_]TabMark{ .on_duty, .quiet, .off_duty, .supervisor }) |m| {
+        try testing.expect(m.prefix().len > 0);
+        // Trailing space, because it sits in front of a title.
+        try testing.expect(m.prefix()[m.prefix().len - 1] == ' ');
+    }
 }
 
 test "a notice reads as a pointer, not as the screen" {
