@@ -114,14 +114,38 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .skill_read => .{ .skill_read = .{
             .name = try requireString(aa, params, "name"),
         } },
+
+        .group_join => .group_join,
+        .group_leave => .group_leave,
+
+        .group_post => .{ .group_post = .{
+            .text = try requireString(aa, params, "text"),
+        } },
+
+        .group_read => .{ .group_read = .{
+            .since = try optionalU64(params, "since", 0),
+        } },
+
+        .dm_send => .{ .dm_send = .{
+            .to = try requireIdNamed(params, "to"),
+            .text = try requireString(aa, params, "text"),
+        } },
+
+        .dm_read => .{ .dm_read = .{
+            .since = try optionalU64(params, "since", 0),
+        } },
     };
 
     return value;
 }
 
 fn requireId(params: ?std.json.ObjectMap) ParseError!Bus.Id {
+    return requireIdNamed(params, "id");
+}
+
+fn requireIdNamed(params: ?std.json.ObjectMap, key: []const u8) ParseError!Bus.Id {
     const p = params orelse return error.BadParams;
-    const v = p.get("id") orelse return error.BadParams;
+    const v = p.get(key) orelse return error.BadParams;
     return switch (v) {
         .integer => |i| if (i < 0) error.BadParams else @intCast(i),
 
@@ -156,6 +180,19 @@ fn optionalString(
 fn requireU64(params: ?std.json.ObjectMap, key: []const u8) ParseError!u64 {
     const p = params orelse return error.BadParams;
     const v = p.get(key) orelse return error.BadParams;
+    return switch (v) {
+        .integer => |i| if (i < 0) error.BadParams else @intCast(i),
+        else => error.BadParams,
+    };
+}
+
+fn optionalU64(
+    params: ?std.json.ObjectMap,
+    key: []const u8,
+    default: u64,
+) ParseError!u64 {
+    const p = params orelse return default;
+    const v = p.get(key) orelse return default;
     return switch (v) {
         .integer => |i| if (i < 0) error.BadParams else @intCast(i),
         else => error.BadParams,
@@ -212,6 +249,7 @@ pub const Response = union(enum) {
     text: []const u8,
     work_mode: Bus.WorkMode,
     skill: struct { name: []const u8, body: []const u8 },
+    messages: []const rpc.ChatLine,
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -259,6 +297,27 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.objectField("body");
             try s.write(k.body);
         },
+        .messages => |list| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("messages");
+            try s.beginArray();
+            for (list) |m| {
+                try s.beginObject();
+                try s.objectField("seq");
+                try s.write(m.seq);
+                try s.objectField("from");
+                try writeId(&s, m.from);
+                try s.objectField("to");
+                if (m.to) |to| try writeId(&s, to) else try s.write(null);
+                try s.objectField("at_ms");
+                try s.write(m.at_ms);
+                try s.objectField("text");
+                try s.write(m.text);
+                try s.endObject();
+            }
+            try s.endArray();
+        },
         .failed => |f| {
             try s.objectField("ok");
             try s.write(false);
@@ -272,16 +331,20 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
     try writer.writeByte('\n');
 }
 
+/// Ids go out as the same `0x…` text the host puts in the environment, so
+/// what an agent reads from `GHOSTTY_SURFACE_ID` and what it sees here are
+/// the same string. A JSON number would also lose precision in clients that
+/// treat every number as a double.
+fn writeId(s: *std.json.Stringify, id: Bus.Id) std.Io.Writer.Error!void {
+    var buf: [18]u8 = undefined;
+    try s.write(std.fmt.bufPrint(&buf, "0x{x:0>16}", .{id}) catch unreachable);
+}
+
 fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error!void {
     try s.beginObject();
 
-    // The id goes out as the same `0x…` text the host puts in the
-    // environment, so what an agent reads from `GHOSTTY_SURFACE_ID` and what
-    // it sees here are the same string. A JSON number would also lose
-    // precision in clients that treat every number as a double.
     try s.objectField("id");
-    var buf: [18]u8 = undefined;
-    try s.write(std.fmt.bufPrint(&buf, "0x{x:0>16}", .{info.id}) catch unreachable);
+    try writeId(s, info.id);
 
     try s.objectField("role");
     try s.write(@tagName(info.role));

@@ -11,6 +11,7 @@
 //! `docs/poltergeist/sensing.md` for why the sensing layer is this thin.
 
 pub const Bus = @import("Bus.zig");
+pub const Chat = @import("Chat.zig");
 pub const Fingerprint = @import("Fingerprint.zig");
 pub const rpc = @import("rpc.zig");
 pub const Sampler = @import("Sampler.zig");
@@ -23,6 +24,7 @@ pub const screen = @import("screen.zig");
 test {
     _ = @import("server_test.zig");
     _ = Bus;
+    _ = Chat;
     _ = Fingerprint;
     _ = rpc;
     _ = Sampler;

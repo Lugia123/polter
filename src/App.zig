@@ -20,6 +20,11 @@ const global = @import("global.zig");
 const log = std.log.scoped(.app);
 
 const poltergeistpkg = @import("poltergeist/main.zig");
+
+/// Least time between telling one terminal it has messages. Agents talking
+/// to each other can produce a burst; being told once about all of it is
+/// what a person would want too.
+const chat_notice_gap_ms = 30 * std.time.ms_per_s;
 const terminal = @import("terminal/main.zig");
 const internal_os = @import("os/main.zig");
 
@@ -34,6 +39,10 @@ surfaces: SurfaceList,
 /// Who is supervising whom. Lives on the app because supervision spans
 /// surfaces; a surface only ever reports into it.
 poltergeist: poltergeistpkg.Bus,
+
+/// What the terminals have said to each other. Separate from the bus
+/// because talking is not steering, and mixing them would blur that.
+chat: poltergeistpkg.Chat,
 
 /// Baseline for the monotonic clock the bus is given. Taken on the first
 /// report rather than at startup so it costs nothing when unused.
@@ -143,6 +152,7 @@ pub fn init(
         .font_grid_set = font_grid_set,
         .config_conditional_state = .{},
         .poltergeist = .init(alloc, .{}),
+        .chat = .init(alloc, .{}),
     };
 }
 
@@ -152,6 +162,7 @@ pub fn deinit(self: *App) void {
     self.surfaces.deinit(self.alloc);
 
     if (self.poltergeist_server) |*srv| srv.deinit();
+    self.chat.deinit();
     self.poltergeist.deinit();
 
     // Clean up our font group cache
@@ -234,22 +245,8 @@ fn poltergeistReport(
     from: poltergeistpkg.Bus.Id,
     event: poltergeistpkg.Sampler.Event,
 ) void {
-    // Monotonic milliseconds from the first report onwards. The bus only
-    // ever compares these to each other, so an arbitrary baseline is fine
-    // and a monotonic one is what matters.
-    const epoch = self.poltergeist_epoch orelse epoch: {
-        const t: std.Io.Timestamp = .now(global.io(), .awake);
-        self.poltergeist_epoch = t;
-        break :epoch t;
-    };
-    const now: std.Io.Timestamp = .now(global.io(), .awake);
-    const now_ms: u64 = @intCast(std.math.clamp(
-        epoch.durationTo(now).toMilliseconds(),
-        0,
-        std.math.maxInt(i64),
-    ));
-
-    const notice = self.poltergeist.report(from, event, now_ms) orelse return;
+    const notice = self.poltergeist.report(from, event, self.poltergeistNow()) orelse
+        return;
 
     const supervisor = self.findSurfaceByID(notice.to) orelse {
         // The supervisor's terminal went away between the report and here.
@@ -389,6 +386,10 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .quietMs = poltergeistQuiet,
         .setThreshold = poltergeistThreshold,
         .readSkill = poltergeistSkill,
+        .chatJoin = chatJoin,
+        .chatLeave = chatLeave,
+        .chatSend = chatSend,
+        .chatRead = chatRead,
     } };
 }
 
@@ -434,14 +435,117 @@ fn poltergeistSend(
 
 fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
     const self: *App = @ptrCast(@alignCast(ctx));
-    const epoch = self.poltergeist_epoch orelse return 0;
+    return self.poltergeist.quietMs(id, self.poltergeistNow());
+}
+
+fn chatJoin(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.chat.join(id);
+}
+
+fn chatLeave(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    self.chat.leave(id);
+}
+
+fn chatSend(
+    ctx: *anyopaque,
+    from: poltergeistpkg.Bus.Id,
+    to: ?poltergeistpkg.Bus.Id,
+    text: []const u8,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    if (to) |peer| {
+        _ = try self.chat.direct(from, peer, text, self.poltergeistNow());
+    } else {
+        _ = try self.chat.post(from, text, self.poltergeistNow());
+    }
+
+    self.tellTerminalsAboutMessages();
+}
+
+fn chatRead(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    since: u64,
+    direct_only: bool,
+) anyerror![]const poltergeistpkg.rpc.ChatLine {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const messages = try self.chat.read(alloc, id, since);
+    defer alloc.free(messages);
+
+    var out: std.ArrayListUnmanaged(poltergeistpkg.rpc.ChatLine) = .empty;
+    errdefer out.deinit(alloc);
+
+    for (messages) |m| {
+        const to: ?poltergeistpkg.Bus.Id = switch (m.audience) {
+            .group => null,
+            .direct => |peer| peer,
+        };
+        if (direct_only and to == null) continue;
+        if (!direct_only and to != null) continue;
+
+        // Copied, not borrowed: the reply is written by the connection
+        // thread after this returns, and the log trims itself as it grows.
+        try out.append(alloc, .{
+            .seq = m.seq,
+            .from = m.from,
+            .to = to,
+            .at_ms = m.at_ms,
+            .text = try alloc.dupe(u8, m.text),
+        });
+    }
+
+    return out.toOwnedSlice(alloc);
+}
+
+/// Tell every terminal that has messages waiting that it has them.
+///
+/// A count and how to fetch, never the messages themselves. What an agent
+/// does about it is its own decision, and one it can decline.
+fn tellTerminalsAboutMessages(self: *App) void {
+    const now_ms = self.poltergeistNow();
+
+    for (self.surfaces.items) |rt_surface| {
+        const surface = rt_surface.core();
+        const count = self.chat.unread(surface.id);
+        if (count == 0) continue;
+
+        const notify = self.chat.shouldNotify(
+            surface.id,
+            now_ms,
+            chat_notice_gap_ms,
+        ) catch continue;
+        if (!notify) continue;
+
+        var buf: [255:0]u8 = undefined;
+        const line = poltergeistpkg.Chat.formatNotice(count, &buf) catch continue;
+        buf[line.len] = 0;
+
+        self.surfaceMessage(surface, .{
+            .poltergeist_notice = buf,
+        }) catch |err| {
+            log.warn("poltergeist: could not deliver a message notice err={}", .{err});
+        };
+    }
+}
+
+/// Monotonic milliseconds for the bus and the chat log alike.
+fn poltergeistNow(self: *App) u64 {
+    const epoch = self.poltergeist_epoch orelse epoch: {
+        const t: std.Io.Timestamp = .now(global.io(), .awake);
+        self.poltergeist_epoch = t;
+        break :epoch t;
+    };
     const now: std.Io.Timestamp = .now(global.io(), .awake);
-    const now_ms: u64 = @intCast(std.math.clamp(
+    return @intCast(std.math.clamp(
         epoch.durationTo(now).toMilliseconds(),
         0,
         std.math.maxInt(i64),
     ));
-    return self.poltergeist.quietMs(id, now_ms);
 }
 
 /// Load a skill, preferring the user's copy.

@@ -224,6 +224,48 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "group_join",
+        .description = "Join the group the terminals talk in. Messages sent before you join are not replayed.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "group_leave",
+        .description = "Leave the group. Direct messages still reach you.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "group_post",
+        .description = "Say something to everyone in the group. They are told they have a message; they read it when they choose to.",
+        .schema =
+        \\{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}
+        ,
+    },
+    .{
+        .name = "group_read",
+        .description = "Read group messages you have not seen. Pass the last seq you saw to pick up from there.",
+        .schema =
+        \\{"type":"object","properties":{"since":{"type":"integer","description":"Last seq already seen; omit for everything unread"}}}
+        ,
+    },
+    .{
+        .name = "dm_send",
+        .description = "Say something to one terminal, seen by nobody else -- not even the supervisor.",
+        .schema =
+        \\{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}
+        ,
+    },
+    .{
+        .name = "dm_read",
+        .description = "Read direct messages you have not seen.",
+        .schema =
+        \\{"type":"object","properties":{"since":{"type":"integer"}}}
+        ,
+    },
+    .{
         .name = "set_quiescence_threshold",
         .description = "How long a terminal must be still before it is reported. Supervisor only.",
         .schema =

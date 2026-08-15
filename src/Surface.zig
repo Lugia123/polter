@@ -829,6 +829,7 @@ pub fn deinit(self: *Surface) void {
     // `errdefer` that can fire before the core surface exists, where there
     // is no id to read. Here `self` is the core surface by definition.
     self.app.poltergeist.unregister(self.id);
+    self.app.chat.forget(self.id);
     if (self.app.poltergeist_server) |*srv| srv.revokeTokens(self.id);
 
     // Stop search thread
