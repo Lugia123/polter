@@ -224,45 +224,59 @@ const tools = [_]Tool{
         ,
     },
     .{
-        .name = "group_join",
-        .description = "Join the group the terminals talk in. Messages sent before you join are not replayed.",
+        .name = "group_create",
+        .description = "Make a group for terminals to talk in. Supervisor only: who talks to whom is yours to arrange.",
         .schema =
-        \\{"type":"object","properties":{},"additionalProperties":false}
+        \\{"type":"object","properties":{"group":{"type":"string","description":"Lowercase letters, digits and dashes"}},"required":["group"]}
         ,
     },
     .{
-        .name = "group_leave",
-        .description = "Leave the group. Direct messages still reach you.",
+        .name = "group_destroy",
+        .description = "Take a group away, and everything said in it. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"}},"required":["group"]}
+        ,
+    },
+    .{
+        .name = "group_add",
+        .description = "Put a terminal in a group. Choose whether it sees what was said before it arrived: `none` starts the conversation for it now, `all` hands it everything still in the log. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"id":{"type":"string"},"history":{"type":"string","enum":["none","all"],"description":"Defaults to none"}},"required":["group","id"]}
+        ,
+    },
+    .{
+        .name = "group_remove",
+        .description = "Take a terminal out of a group. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"id":{"type":"string"}},"required":["group","id"]}
+        ,
+    },
+    .{
+        .name = "group_compact",
+        .description = "Replace everything up to a given seq with one summary you write, the way /compact shortens a conversation. Use it when a group's history has grown longer than it is worth. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"through":{"type":"integer","description":"Replace messages up to and including this seq"},"summary":{"type":"string","description":"What those messages amounted to"}},"required":["group","through","summary"]}
+        ,
+    },
+    .{
+        .name = "group_list",
+        .description = "Which groups you are in.",
         .schema =
         \\{"type":"object","properties":{},"additionalProperties":false}
         ,
     },
     .{
         .name = "group_post",
-        .description = "Say something to everyone in the group. They are told they have a message; they read it when they choose to.",
+        .description = "Say something to a group you are in. The others are told they have a message; they read it when they choose to.",
         .schema =
-        \\{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}
+        \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"}},"required":["group","text"]}
         ,
     },
     .{
         .name = "group_read",
-        .description = "Read group messages you have not seen. Pass the last seq you saw to pick up from there.",
+        .description = "Read messages you have not seen in a group. Pass the last seq you saw to pick up from there. A message marked `summary` stands in for older ones that were compacted away.",
         .schema =
-        \\{"type":"object","properties":{"since":{"type":"integer","description":"Last seq already seen; omit for everything unread"}}}
-        ,
-    },
-    .{
-        .name = "dm_send",
-        .description = "Say something to one terminal, seen by nobody else -- not even the supervisor.",
-        .schema =
-        \\{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}
-        ,
-    },
-    .{
-        .name = "dm_read",
-        .description = "Read direct messages you have not seen.",
-        .schema =
-        \\{"type":"object","properties":{"since":{"type":"integer"}}}
+        \\{"type":"object","properties":{"group":{"type":"string"},"since":{"type":"integer"}},"required":["group"]}
         ,
     },
     .{

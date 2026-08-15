@@ -386,9 +386,13 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .quietMs = poltergeistQuiet,
         .setThreshold = poltergeistThreshold,
         .readSkill = poltergeistSkill,
-        .chatJoin = chatJoin,
-        .chatLeave = chatLeave,
-        .chatSend = chatSend,
+        .chatCreate = chatCreate,
+        .chatDestroy = chatDestroy,
+        .chatAdd = chatAdd,
+        .chatRemove = chatRemove,
+        .chatCompact = chatCompact,
+        .chatPost = chatPost,
+        .chatGroups = chatGroups,
         .chatRead = chatRead,
     } };
 }
@@ -438,68 +442,102 @@ fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
     return self.poltergeist.quietMs(id, self.poltergeistNow());
 }
 
-fn chatJoin(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) anyerror!void {
+fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    try self.chat.join(id);
+    try self.chat.create(group, by);
 }
 
-fn chatLeave(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) void {
+fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    self.chat.leave(id);
+    try self.chat.destroy(group);
 }
 
-fn chatSend(
+fn chatAdd(
     ctx: *anyopaque,
+    group: []const u8,
+    id: poltergeistpkg.Bus.Id,
+    history: poltergeistpkg.Chat.History,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.chat.add(group, id, history);
+}
+
+fn chatRemove(
+    ctx: *anyopaque,
+    group: []const u8,
+    id: poltergeistpkg.Bus.Id,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.chat.remove(group, id);
+}
+
+fn chatCompact(
+    ctx: *anyopaque,
+    group: []const u8,
+    through: u64,
+    summary: []const u8,
+    by: poltergeistpkg.Bus.Id,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    _ = try self.chat.compact(group, through, summary, by, self.poltergeistNow());
+}
+
+fn chatPost(
+    ctx: *anyopaque,
+    group: []const u8,
     from: poltergeistpkg.Bus.Id,
-    to: ?poltergeistpkg.Bus.Id,
     text: []const u8,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-
-    if (to) |peer| {
-        _ = try self.chat.direct(from, peer, text, self.poltergeistNow());
-    } else {
-        _ = try self.chat.post(from, text, self.poltergeistNow());
-    }
-
+    _ = try self.chat.post(group, from, text, self.poltergeistNow());
     self.tellTerminalsAboutMessages();
+}
+
+fn chatGroups(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+) anyerror![]const []const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const names = try self.chat.groupsFor(alloc, id);
+    errdefer alloc.free(names);
+
+    // Copied, not borrowed: the reply is written by the connection thread
+    // after this returns, and a group can be destroyed in between.
+    const owned = try alloc.alloc([]const u8, names.len);
+    for (names, 0..) |n, i| owned[i] = try alloc.dupe(u8, n);
+    alloc.free(names);
+    return owned;
 }
 
 fn chatRead(
     ctx: *anyopaque,
     alloc: Allocator,
+    group: []const u8,
     id: poltergeistpkg.Bus.Id,
     since: u64,
-    direct_only: bool,
 ) anyerror![]const poltergeistpkg.rpc.ChatLine {
     const self: *App = @ptrCast(@alignCast(ctx));
 
-    const messages = try self.chat.read(alloc, id, since);
+    const messages = try self.chat.read(alloc, group, id, since);
     defer alloc.free(messages);
 
-    var out: std.ArrayListUnmanaged(poltergeistpkg.rpc.ChatLine) = .empty;
-    errdefer out.deinit(alloc);
+    const out = try alloc.alloc(poltergeistpkg.rpc.ChatLine, messages.len);
+    errdefer alloc.free(out);
 
-    for (messages) |m| {
-        const to: ?poltergeistpkg.Bus.Id = switch (m.audience) {
-            .group => null,
-            .direct => |peer| peer,
-        };
-        if (direct_only and to == null) continue;
-        if (!direct_only and to != null) continue;
-
-        // Copied, not borrowed: the reply is written by the connection
-        // thread after this returns, and the log trims itself as it grows.
-        try out.append(alloc, .{
+    for (messages, 0..) |m, i| {
+        // Copied for the same reason: the log trims itself as it grows.
+        out[i] = .{
             .seq = m.seq,
             .from = m.from,
-            .to = to,
             .at_ms = m.at_ms,
+            .summary = m.summary,
             .text = try alloc.dupe(u8, m.text),
-        });
+        };
     }
 
-    return out.toOwnedSlice(alloc);
+    return out;
 }
 
 /// Tell every terminal that has messages waiting that it has them.
@@ -511,25 +549,28 @@ fn tellTerminalsAboutMessages(self: *App) void {
 
     for (self.surfaces.items) |rt_surface| {
         const surface = rt_surface.core();
-        const count = self.chat.unread(surface.id);
-        if (count == 0) continue;
 
-        const notify = self.chat.shouldNotify(
-            surface.id,
-            now_ms,
-            chat_notice_gap_ms,
-        ) catch continue;
-        if (!notify) continue;
+        const names = self.chat.groupsFor(self.alloc, surface.id) catch continue;
+        defer self.alloc.free(names);
 
-        var buf: [255:0]u8 = undefined;
-        const line = poltergeistpkg.Chat.formatNotice(count, &buf) catch continue;
-        buf[line.len] = 0;
+        for (names) |name| {
+            const count = self.chat.unread(name, surface.id);
+            if (count == 0) continue;
+            if (!self.chat.shouldNotify(name, surface.id, now_ms, chat_notice_gap_ms)) {
+                continue;
+            }
 
-        self.surfaceMessage(surface, .{
-            .poltergeist_notice = buf,
-        }) catch |err| {
-            log.warn("poltergeist: could not deliver a message notice err={}", .{err});
-        };
+            var buf: [255:0]u8 = undefined;
+            const line = poltergeistpkg.Chat.formatNotice(name, count, &buf) catch
+                continue;
+            buf[line.len] = 0;
+
+            self.surfaceMessage(surface, .{
+                .poltergeist_notice = buf,
+            }) catch |err| {
+                log.warn("poltergeist: could not deliver a message notice err={}", .{err});
+            };
+        }
     }
 }
 

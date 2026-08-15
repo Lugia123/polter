@@ -115,23 +115,40 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .name = try requireString(aa, params, "name"),
         } },
 
-        .group_join => .group_join,
-        .group_leave => .group_leave,
+        .group_create => .{ .group_create = .{
+            .group = try requireString(aa, params, "group"),
+        } },
+
+        .group_destroy => .{ .group_destroy = .{
+            .group = try requireString(aa, params, "group"),
+        } },
+
+        .group_add => .{ .group_add = .{
+            .group = try requireString(aa, params, "group"),
+            .id = try requireId(params),
+            .history = try optionalHistory(params),
+        } },
+
+        .group_remove => .{ .group_remove = .{
+            .group = try requireString(aa, params, "group"),
+            .id = try requireId(params),
+        } },
+
+        .group_compact => .{ .group_compact = .{
+            .group = try requireString(aa, params, "group"),
+            .through = try requireU64(params, "through"),
+            .summary = try requireString(aa, params, "summary"),
+        } },
+
+        .group_list => .group_list,
 
         .group_post => .{ .group_post = .{
+            .group = try requireString(aa, params, "group"),
             .text = try requireString(aa, params, "text"),
         } },
 
         .group_read => .{ .group_read = .{
-            .since = try optionalU64(params, "since", 0),
-        } },
-
-        .dm_send => .{ .dm_send = .{
-            .to = try requireIdNamed(params, "to"),
-            .text = try requireString(aa, params, "text"),
-        } },
-
-        .dm_read => .{ .dm_read = .{
+            .group = try requireString(aa, params, "group"),
             .since = try optionalU64(params, "since", 0),
         } },
     };
@@ -182,6 +199,18 @@ fn requireU64(params: ?std.json.ObjectMap, key: []const u8) ParseError!u64 {
     const v = p.get(key) orelse return error.BadParams;
     return switch (v) {
         .integer => |i| if (i < 0) error.BadParams else @intCast(i),
+        else => error.BadParams,
+    };
+}
+
+/// Defaults to showing nothing of what came before. Adding somebody to a
+/// group should not hand them the backlog unless that was asked for.
+fn optionalHistory(params: ?std.json.ObjectMap) ParseError!rpc.History {
+    const p = params orelse return .none;
+    const v = p.get("history") orelse return .none;
+    return switch (v) {
+        .string => |str| std.meta.stringToEnum(rpc.History, str) orelse
+            error.BadParams,
         else => error.BadParams,
     };
 }
@@ -250,6 +279,7 @@ pub const Response = union(enum) {
     work_mode: Bus.WorkMode,
     skill: struct { name: []const u8, body: []const u8 },
     messages: []const rpc.ChatLine,
+    groups: []const []const u8,
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -297,6 +327,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.objectField("body");
             try s.write(k.body);
         },
+        .groups => |names| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("groups");
+            try s.beginArray();
+            for (names) |n| try s.write(n);
+            try s.endArray();
+        },
         .messages => |list| {
             try s.objectField("ok");
             try s.write(true);
@@ -308,10 +346,10 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.write(m.seq);
                 try s.objectField("from");
                 try writeId(&s, m.from);
-                try s.objectField("to");
-                if (m.to) |to| try writeId(&s, to) else try s.write(null);
                 try s.objectField("at_ms");
                 try s.write(m.at_ms);
+                try s.objectField("summary");
+                try s.write(m.summary);
                 try s.objectField("text");
                 try s.write(m.text);
                 try s.endObject();

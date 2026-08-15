@@ -111,20 +111,23 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 | `me()`                      | 无         | `{surface_id, role, work_mode}`                    | 全部     |
 | `terminal_list()`           | 无         | 每终端一行 `{id, name, quiescence_ms, duty, mode}` | 总管     |
 | `terminal_read(id, lines?)` | 终端与行数 | 可见屏幕或最近 N 行纯文本                          | 总管     |
-| `group_read(since?)`        | 时间游标   | 消息数组                                           | 全部     |
-| `dm_read(peer?, since?)`    | 对端与游标 | 消息数组                                           | 全部     |
+| `group_read(group, since?)` | 群名与游标 | 消息数组                                           | 成员     |
+| `group_list()`              | 无         | 自己所在的群名，已排序                             | 全部     |
 
 `terminal_list` 给的是**静止时长这一个标量**，不做任何语义推断 —— 旧稿感知层的 working / thinking / idle / stalled 推断已废，见 [sensing.md](sensing.md)。返回里的 `duty` 字段是 [supervisor.md](supervisor.md) 的上班 / 下班簿记状态，不是对屏幕内容的判断，两者不要混为一谈。`terminal_read` 是 R1 的落点：总管靠它自己看内容、自己判断该叫还是该等。另有 `get_work_mode(id)` 与 `skill_read(name)` 两个只读工具，见后文。
 
 ### 写工具
 
-| 工具                                                  | 参数       | 返回          | 可用角色 |
-| ----------------------------------------------------- | ---------- | ------------- | -------- |
-| `terminal_send(id, text, submit?)`                    | 目标与文本 | ok / 拒绝原因 | 仅总管   |
-| `clock_out(id, reason)`                               | 目标与理由 | ok / 拒绝原因 | 仅总管   |
-| `set_quiescence_threshold(id, duration)`              | 目标与时长 | ok / 拒绝原因 | 仅总管   |
-| `group_post(text)` / `group_join()` / `group_leave()` | 文本       | ok            | 全部     |
-| `dm_send(peer, text)`                                 | 对端与文本 | ok            | 全部     |
+| 工具                                           | 参数                 | 返回          | 可用角色 |
+| ---------------------------------------------- | -------------------- | ------------- | -------- |
+| `terminal_send(id, text, submit?)`             | 目标与文本           | ok / 拒绝原因 | 仅总管   |
+| `clock_out(id, reason)`                        | 目标与理由           | ok / 拒绝原因 | 仅总管   |
+| `set_quiescence_threshold(id, duration)`       | 目标与时长           | ok / 拒绝原因 | 仅总管   |
+| `group_post(group, text)`                      | 群名与文本           | ok            | 成员     |
+| `group_create(group)` / `group_destroy(group)` | 群名                 | ok / 拒绝原因 | 仅总管   |
+| `group_add(group, id, history)`                | 群名/终端/是否给历史 | ok / 拒绝原因 | 仅总管   |
+| `group_remove(group, id)`                      | 群名与终端           | ok / 拒绝原因 | 仅总管   |
+| `group_compact(group, through, summary)`       | 群名/截止 seq/摘要   | ok / 拒绝原因 | 仅总管   |
 
 `clock_out` 在无限工作模式下由程序直接拒绝，并把理由回给总管（不静默失败）—— 这是 R6 硬约束的落点。
 
@@ -145,7 +148,7 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 ### 权限矩阵与它的理由
 
 - **总管**：全部工具，含两个不在上面两张表里的只读工具 `get_work_mode(id)` 与 `skill_read(name)`。
-- **被监督终端**：只有 `me` 与 `skill_read`（群聊 / 私信属 S3，尚未实现）。**别的一个都没有** —— 没有 `terminal_send`，没有 `terminal_read`，没有 `clock_out`，也没有 `get_work_mode`。这份白名单是穷举的：新增工具默认落在总管一侧，要放给被监督终端必须显式改 `src/poltergeist/rpc.zig` 的 `requiresSupervisor`，那里有一条测试逐个方法核对。
+- **被监督终端**：`me`、`skill_read`，以及在它已被拉进的群里 `group_list` / `group_post` / `group_read`。**别的一个都没有** —— 没有 `terminal_send`，没有 `terminal_read`，没有 `clock_out`，也没有 `get_work_mode`。这份白名单是穷举的：新增工具默认落在总管一侧，要放给被监督终端必须显式改 `src/poltergeist/rpc.zig` 的 `requiresSupervisor`，那里有一条测试逐个方法核对。
 - **`skill_read` 对所有终端开放**（本章早先写作总管专属，与实现相反，已按实现更正）。理由：skill 是说明书不是权限，读它不构成对任何终端的影响；而被监督终端读不到它，就无从知道自己为什么被叫。
 - `me()` 里那个 `work_mode` 与 `get_work_mode(id)` 不冲突：前者只报**自己**的模式（服务端按 token 反查，不接受入参），后者能问**任意终端**的模式。被监督终端知道自己在哪种模式下工作是必要的，知道别人的则不是。
 - 角色在配置里指定，不能由 AI 自己声明 —— 服务端按 token → surface_id → 配置查角色。
@@ -190,6 +193,16 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 可用的抓手：`queueIo` 与 `Termio.queueMessage` 都带一个 `MutexState` 参数（`src/termio/Termio.zig:397-407`），`.locked` 会把 `renderer_state.mutex` 传给 `mailbox.send`；同一个 doc comment 还给出了批量提示 —— 「如果你要发很多消息，直接用 mailbox 再单独调 notify 可能更高效」（`src/termio/Termio.zig:394-396`）。（未核实：现有代码里没有把两条不同来源的写请求打成一个原子批次的原语，是否需要新增，核实方式是读 `src/termio/mailbox.zig` 的 send 语义与 `BlockingQueue` 的批量接口。）
 
 注入前后各取一次屏幕指纹用于回环识别：紧跟注入之后的屏幕变化是我们自己造成的，不应被当成「对方动了」。更完整的守卫规则（用户正在打字、输入框非空、总管自我注入）归 [supervisor.md](supervisor.md)。
+
+## 群的模型：只有总管能拉群，没有私聊
+
+**私聊被取消了。**两个终端之间的对话就是一个只有两个成员的群，这样只有一套规则而不是两套 —— 少一套语义、少一处权限矩阵、少一类边界情况。
+
+**建群、拉人、踢人、压缩历史都只有总管能做。**理由与「谁被监督由总管安排」同源：一个能自己建群并把别人拉进来的终端，是在搭一套用户从未设立的结构。但**群内说话不需要总管批准** —— 权限的界线不是读写，而是「这个调用会不会把东西塞进别人的输入框」。`group_post` 不会：对方只被告知有新消息，去不去看是它自己的决定。
+
+**拉人进群时总管选择它能否看到历史。**`history: none`（默认）让对话从此刻对它开始；`history: all` 把日志里还在的全部交给它。默认是 `none`，因为把一整夜的背景灌给一个刚被叫来干活的 agent，吃掉的是它本该用在自己活上的上下文。已在群里的终端被重复 `group_add` 不会改变它的可见范围 —— 否则一次误操作就能把它当初被特意挡在外面的历史递给它。
+
+**总管可以压缩群历史**（`group_compact`），等同 `/compact`：把截止某个 seq 的消息换成一段摘要。分工照旧 —— **摘要由总管写**（判断一段对话到底讲了什么，代码做不到），**替换由程序做**（正确地重写日志，不该交给提示词）。摘要继承它所替换的最后一条消息的 seq，所以还没跟上的成员读到的是摘要而不是一个空洞。
 
 ## 消息送达：只送通知，不送正文
 

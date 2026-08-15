@@ -47,17 +47,27 @@ pub const Method = enum {
     /// job. Any terminal may read one; they are instructions, not reach.
     skill_read,
 
-    /// Join or leave the group everyone can talk in.
-    group_join,
-    group_leave,
+    /// Make a group, or take one away. The supervisor's alone: it decides
+    /// who talks to whom.
+    group_create,
+    group_destroy,
 
-    /// Say something to the group, or read what has been said.
+    /// Put a terminal in a group or take it out, choosing what it sees of
+    /// what was said before. The supervisor's alone.
+    group_add,
+    group_remove,
+
+    /// Replace a stretch of a group's history with a summary. The
+    /// supervisor's alone -- it is the one that can judge what a
+    /// conversation amounted to.
+    group_compact,
+
+    /// Which groups am I in.
+    group_list,
+
+    /// Say something to a group, or read what has been said.
     group_post,
     group_read,
-
-    /// Say something to one terminal, or read what has been said to you.
-    dm_send,
-    dm_read,
 };
 
 pub const Request = union(Method) {
@@ -71,13 +81,17 @@ pub const Request = union(Method) {
     set_quiescence_threshold: struct { id: Bus.Id, ms: u64 },
     skill_read: struct { name: []const u8 },
 
-    group_join,
-    group_leave,
-    group_post: struct { text: []const u8 },
-    group_read: struct { since: u64 = 0 },
-    dm_send: struct { to: Bus.Id, text: []const u8 },
-    dm_read: struct { since: u64 = 0 },
+    group_create: struct { group: []const u8 },
+    group_destroy: struct { group: []const u8 },
+    group_add: struct { group: []const u8, id: Bus.Id, history: History = .none },
+    group_remove: struct { group: []const u8, id: Bus.Id },
+    group_compact: struct { group: []const u8, through: u64, summary: []const u8 },
+    group_list,
+    group_post: struct { group: []const u8, text: []const u8 },
+    group_read: struct { group: []const u8, since: u64 = 0 },
 };
+
+pub const History = @import("Chat.zig").History;
 
 pub const Error = error{
     /// The caller's role does not permit this method.
@@ -119,16 +133,25 @@ pub fn requiresSupervisor(method: Method) bool {
         // refusing would mean an agent cannot find out why it was nudged.
         .skill_read => false,
 
-        // Talking is not steering. The star topology exists so that no
-        // agent can put text in another's input box uninvited; a message
-        // that the recipient has to go and fetch is the opposite of that,
-        // and an agent team that cannot talk to each other is not a team.
-        .group_join,
-        .group_leave,
+        // Who talks to whom is the supervisor's to arrange, the same way
+        // who is watched is. A terminal that could make its own groups and
+        // pull others into them would be building a structure the user
+        // never set up.
+        .group_create,
+        .group_destroy,
+        .group_add,
+        .group_remove,
+        .group_compact,
+        => true,
+
+        // Talking inside a group it was already put in, though, is not
+        // steering. The star topology exists so no agent can put text in
+        // another's input box uninvited; a message the recipient has to go
+        // and fetch is the opposite of that, and a team that cannot talk to
+        // each other is not a team.
+        .group_list,
         .group_post,
         .group_read,
-        .dm_send,
-        .dm_read,
         => false,
     };
 }
@@ -140,17 +163,18 @@ pub fn targetsTerminal(method: Method) bool {
         .me,
         .terminal_list,
         .skill_read,
-        .group_join,
-        .group_leave,
+        .group_create,
+        .group_destroy,
+        .group_compact,
+        .group_list,
         .group_post,
         .group_read,
-        .dm_read,
         => false,
 
-        // `dm_send` names a terminal, but it does not act on it: the
-        // recipient has to come and read. It is checked for existence all
-        // the same, so a typo fails rather than vanishing.
-        .dm_send,
+        // These name a terminal to put in or take out of a group. Checked
+        // for existence so a typo fails rather than vanishing.
+        .group_add,
+        .group_remove,
         .terminal_read,
         .terminal_send,
         .clock_out,
@@ -167,14 +191,15 @@ pub fn target(req: Request) ?Bus.Id {
         .me,
         .terminal_list,
         .skill_read,
-        .group_join,
-        .group_leave,
+        .group_create,
+        .group_destroy,
+        .group_compact,
+        .group_list,
         .group_post,
         .group_read,
-        .dm_read,
         => null,
 
-        .dm_send => |v| v.to,
+        inline .group_add, .group_remove => |v| v.id,
         inline else => |v| v.id,
     };
 }
@@ -242,20 +267,16 @@ fn testBus(alloc: std.mem.Allocator) !Bus {
 }
 
 test "only what reaches another terminal needs the supervisor" {
-    // The line is not "read versus write" -- posting to the group writes.
-    // It is whether the call puts anything in another terminal's input
-    // box. Talking is not steering: a message the recipient has to fetch
-    // is the opposite of typing into their session uninvited.
+    // Two lines, not one. Arranging who talks to whom is the supervisor's,
+    // the same way arranging who is watched is. Talking inside a group it
+    // was already put in is not: the recipient has to come and fetch it.
     for (std.enums.values(Method)) |m| {
         const open = switch (m) {
             .me,
             .skill_read,
-            .group_join,
-            .group_leave,
+            .group_list,
             .group_post,
             .group_read,
-            .dm_send,
-            .dm_read,
             => true,
 
             .terminal_list,
@@ -265,79 +286,128 @@ test "only what reaches another terminal needs the supervisor" {
             .clock_in,
             .get_work_mode,
             .set_quiescence_threshold,
+            .group_create,
+            .group_destroy,
+            .group_add,
+            .group_remove,
+            .group_compact,
             => false,
         };
         try testing.expectEqual(!open, requiresSupervisor(m));
     }
 }
 
-test "a watched terminal can talk but cannot steer" {
+test "a watched terminal can talk in a group but cannot arrange one" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var fake: FakeHost = .{};
 
     // Talking: allowed.
-    _ = try dispatch(testing.allocator, &b, fake.host(), worker, .group_join);
     const posted = try dispatch(testing.allocator, &b, fake.host(), worker, .{
-        .group_post = .{ .text = "build is green" },
+        .group_post = .{ .group = "build", .text = "build is green" },
     });
     try testing.expect(posted == .ok);
     try testing.expectEqualStrings("build is green", fake.posted.?.text);
-    try testing.expect(fake.posted.?.to == null);
+    try testing.expectEqualStrings("build", fake.posted.?.group);
 
-    // Steering: still refused.
-    const steered = try dispatch(testing.allocator, &b, fake.host(), worker, .{
-        .terminal_send = .{ .id = boss, .text = "do this" },
-    });
-    try testing.expectEqualStrings("NotPermitted", steered.failed.code);
+    // Making a group, or pulling somebody into one: refused.
+    for ([_]Request{
+        .{ .group_create = .{ .group = "mine" } },
+        .{ .group_add = .{ .group = "build", .id = boss } },
+        .{ .group_remove = .{ .group = "build", .id = boss } },
+        .{ .group_compact = .{ .group = "build", .through = 1, .summary = "x" } },
+        .{ .group_destroy = .{ .group = "build" } },
+    }) |req| {
+        const res = try dispatch(testing.allocator, &b, fake.host(), worker, req);
+        try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    }
 }
 
-test "a direct message names its recipient and is refused if unknown" {
+test "the supervisor chooses what a terminal it adds can see" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    const sent = try dispatch(testing.allocator, &b, fake.host(), worker, .{
-        .dm_send = .{ .to = boss, .text = "a word" },
+    _ = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .group_add = .{ .group = "build", .id = worker, .history = .none },
     });
-    try testing.expect(sent == .ok);
-    try testing.expectEqual(boss, fake.posted.?.to.?);
+    try testing.expectEqual(History.none, fake.added.?.history);
 
-    const nowhere = try dispatch(testing.allocator, &b, fake.host(), worker, .{
-        .dm_send = .{ .to = 0xdead, .text = "a word" },
+    _ = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .group_add = .{ .group = "build", .id = worker, .history = .all },
     });
-    try testing.expectEqualStrings("UnknownTerminal", nowhere.failed.code);
+    try testing.expectEqual(History.all, fake.added.?.history);
 }
 
-test "a terminal cannot message itself" {
+test "adding a terminal that does not exist is refused" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .group_add = .{ .group = "build", .id = 0xdead },
+    });
+    try testing.expectEqualStrings("UnknownTerminal", res.failed.code);
+}
+
+test "compacting carries the summary the supervisor wrote" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    _ = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .group_compact = .{
+            .group = "build",
+            .through = 42,
+            .summary = "they argued about the build",
+        },
+    });
+
+    try testing.expectEqual(@as(u64, 42), fake.compacted.?.through);
+    try testing.expectEqualStrings("they argued about the build", fake.compacted.?.summary);
+    try testing.expectEqual(boss, fake.compacted.?.by);
+}
+
+test "what the chat log refuses comes back as something to act on" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .refuse = true };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+        .group_post = .{ .group = "nope", .text = "hello" },
+    });
+    try testing.expectEqualStrings("NoSuchGroup", res.failed.code);
+    try testing.expect(res.failed.message.len > 0);
+}
+
+test "group_list names the groups a terminal is in" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .group_list);
+    defer {
+        for (res.groups) |g| testing.allocator.free(g);
+        testing.allocator.free(res.groups);
+    }
+    try testing.expectEqual(@as(usize, 1), res.groups.len);
+    try testing.expectEqualStrings("build", res.groups[0]);
+}
+
+test "group_read asks for the group it was given" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var fake: FakeHost = .{};
 
     const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
-        .dm_send = .{ .to = worker, .text = "talking to myself" },
+        .group_read = .{ .group = "research", .since = 7 },
     });
-    try testing.expectEqualStrings("SelfTarget", res.failed.code);
-}
-
-test "group_read and dm_read ask for different things" {
-    var b = try testBus(testing.allocator);
-    defer b.deinit();
-    var fake: FakeHost = .{};
-
-    const group = try dispatch(testing.allocator, &b, fake.host(), worker, .{
-        .group_read = .{ .since = 7 },
-    });
-    testing.allocator.free(group.messages[0].text);
-    testing.allocator.free(group.messages);
-    try testing.expect(!fake.read_direct_only);
-
-    const dm = try dispatch(testing.allocator, &b, fake.host(), worker, .{
-        .dm_read = .{},
-    });
-    testing.allocator.free(dm.messages[0].text);
-    testing.allocator.free(dm.messages);
-    try testing.expect(fake.read_direct_only);
+    defer {
+        for (res.messages) |m| testing.allocator.free(m.text);
+        testing.allocator.free(res.messages);
+    }
+    try testing.expectEqualStrings("research", fake.read_group.?);
+    try testing.expectEqual(@as(u64, 8), res.messages[0].seq);
 }
 
 test "a watched terminal may only ask about itself" {
@@ -508,9 +578,11 @@ const max_text_bytes = 128 * 1024;
 pub const ChatLine = struct {
     seq: u64,
     from: Bus.Id,
-    /// Null for a group message.
-    to: ?Bus.Id,
     at_ms: u64,
+
+    /// True when this stands in for messages the supervisor compacted away.
+    summary: bool,
+
     text: []const u8,
 };
 
@@ -560,18 +632,46 @@ pub const Host = struct {
             name: []const u8,
         ) anyerror![]const u8,
 
-        chatJoin: *const fn (ctx: *anyopaque, id: Bus.Id) anyerror!void,
-        chatLeave: *const fn (ctx: *anyopaque, id: Bus.Id) void,
+        chatCreate: *const fn (ctx: *anyopaque, group: []const u8, by: Bus.Id) anyerror!void,
+        chatDestroy: *const fn (ctx: *anyopaque, group: []const u8) anyerror!void,
 
-        /// Post to the group, or to one terminal when `to` is given.
-        chatSend: *const fn (
+        chatAdd: *const fn (
             ctx: *anyopaque,
+            group: []const u8,
+            id: Bus.Id,
+            history: History,
+        ) anyerror!void,
+
+        chatRemove: *const fn (
+            ctx: *anyopaque,
+            group: []const u8,
+            id: Bus.Id,
+        ) anyerror!void,
+
+        chatCompact: *const fn (
+            ctx: *anyopaque,
+            group: []const u8,
+            through: u64,
+            summary: []const u8,
+            by: Bus.Id,
+        ) anyerror!void,
+
+        chatPost: *const fn (
+            ctx: *anyopaque,
+            group: []const u8,
             from: Bus.Id,
-            to: ?Bus.Id,
             text: []const u8,
         ) anyerror!void,
 
-        /// Messages `id` has not seen, above `since`.
+        /// Groups `id` is in. The slice and the names inside it must belong
+        /// to `alloc`.
+        chatGroups: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+        ) anyerror![]const []const u8,
+
+        /// Messages `id` has not seen in `group`, above `since`.
         ///
         /// Both the slice and the text inside it must belong to `alloc`.
         /// Borrowing from the log would not survive: the reply is written
@@ -580,9 +680,9 @@ pub const Host = struct {
         chatRead: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
+            group: []const u8,
             id: Bus.Id,
             since: u64,
-            direct_only: bool,
         ) anyerror![]const ChatLine,
     };
 
@@ -615,31 +715,62 @@ pub const Host = struct {
         return self.vtable.readSkill(self.ctx, alloc, name);
     }
 
-    fn chatJoin(self: Host, id: Bus.Id) anyerror!void {
-        return self.vtable.chatJoin(self.ctx, id);
+    fn chatCreate(self: Host, group: []const u8, by: Bus.Id) anyerror!void {
+        return self.vtable.chatCreate(self.ctx, group, by);
     }
 
-    fn chatLeave(self: Host, id: Bus.Id) void {
-        return self.vtable.chatLeave(self.ctx, id);
+    fn chatDestroy(self: Host, group: []const u8) anyerror!void {
+        return self.vtable.chatDestroy(self.ctx, group);
     }
 
-    fn chatSend(
+    fn chatAdd(
         self: Host,
+        group: []const u8,
+        id: Bus.Id,
+        history: History,
+    ) anyerror!void {
+        return self.vtable.chatAdd(self.ctx, group, id, history);
+    }
+
+    fn chatRemove(self: Host, group: []const u8, id: Bus.Id) anyerror!void {
+        return self.vtable.chatRemove(self.ctx, group, id);
+    }
+
+    fn chatCompact(
+        self: Host,
+        group: []const u8,
+        through: u64,
+        summary: []const u8,
+        by: Bus.Id,
+    ) anyerror!void {
+        return self.vtable.chatCompact(self.ctx, group, through, summary, by);
+    }
+
+    fn chatPost(
+        self: Host,
+        group: []const u8,
         from: Bus.Id,
-        to: ?Bus.Id,
         text: []const u8,
     ) anyerror!void {
-        return self.vtable.chatSend(self.ctx, from, to, text);
+        return self.vtable.chatPost(self.ctx, group, from, text);
+    }
+
+    fn chatGroups(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+    ) anyerror![]const []const u8 {
+        return self.vtable.chatGroups(self.ctx, alloc, id);
     }
 
     fn chatRead(
         self: Host,
         alloc: std.mem.Allocator,
+        group: []const u8,
         id: Bus.Id,
         since: u64,
-        direct_only: bool,
     ) anyerror![]const ChatLine {
-        return self.vtable.chatRead(self.ctx, alloc, id, since, direct_only);
+        return self.vtable.chatRead(self.ctx, alloc, group, id, since);
     }
 };
 
@@ -746,47 +877,46 @@ pub fn dispatch(
             return .{ .skill = .{ .name = p.name, .body = body } };
         },
 
-        .group_join => {
-            host.chatJoin(caller) catch
-                return hostFailure("JoinFailed", "could not join the group");
+        .group_create => |p| {
+            host.chatCreate(p.group, caller) catch |err| return chatFailure(err);
             return .ok;
         },
 
-        .group_leave => {
-            host.chatLeave(caller);
+        .group_destroy => |p| {
+            host.chatDestroy(p.group) catch |err| return chatFailure(err);
             return .ok;
+        },
+
+        .group_add => |p| {
+            host.chatAdd(p.group, p.id, p.history) catch |err| return chatFailure(err);
+            return .ok;
+        },
+
+        .group_remove => |p| {
+            host.chatRemove(p.group, p.id) catch |err| return chatFailure(err);
+            return .ok;
+        },
+
+        .group_compact => |p| {
+            host.chatCompact(p.group, p.through, p.summary, caller) catch |err|
+                return chatFailure(err);
+            return .ok;
+        },
+
+        .group_list => {
+            const names = host.chatGroups(alloc, caller) catch
+                return hostFailure("ListFailed", "could not list groups");
+            return .{ .groups = names };
         },
 
         .group_post => |p| {
-            host.chatSend(caller, null, p.text) catch |err| return switch (err) {
-                error.NotJoined => hostFailure(
-                    "NotJoined",
-                    "join the group before posting to it",
-                ),
-                error.Empty => hostFailure("Empty", "there is nothing in that message"),
-                else => hostFailure("PostFailed", "could not post that"),
-            };
-            return .ok;
-        },
-
-        .dm_send => |p| {
-            host.chatSend(caller, p.to, p.text) catch |err| return switch (err) {
-                error.SelfTarget => failure(error.SelfTarget),
-                error.Empty => hostFailure("Empty", "there is nothing in that message"),
-                else => hostFailure("PostFailed", "could not send that"),
-            };
+            host.chatPost(p.group, caller, p.text) catch |err| return chatFailure(err);
             return .ok;
         },
 
         .group_read => |p| {
-            const lines = host.chatRead(alloc, caller, p.since, false) catch
-                return hostFailure("ReadFailed", "could not read messages");
-            return .{ .messages = lines };
-        },
-
-        .dm_read => |p| {
-            const lines = host.chatRead(alloc, caller, p.since, true) catch
-                return hostFailure("ReadFailed", "could not read messages");
+            const lines = host.chatRead(alloc, p.group, caller, p.since) catch |err|
+                return chatFailure(err);
             return .{ .messages = lines };
         },
     }
@@ -813,6 +943,19 @@ fn failure(err: Error) wire.Response {
     return .{ .failed = .{ .code = @errorName(err), .message = errorMessage(err) } };
 }
 
+/// Turn what the chat log refused into something an agent can act on.
+fn chatFailure(err: anyerror) wire.Response {
+    return switch (err) {
+        error.NoSuchGroup => hostFailure("NoSuchGroup", "no group by that name"),
+        error.GroupExists => hostFailure("GroupExists", "a group by that name already exists"),
+        error.NotAMember => hostFailure("NotAMember", "you are not in that group"),
+        error.TooManyGroups => hostFailure("TooManyGroups", "there are already too many groups"),
+        error.BadName => hostFailure("BadName", "group names may use lowercase letters, digits and dashes"),
+        error.Empty => hostFailure("Empty", "there is nothing there to send or to compact"),
+        else => hostFailure("ChatFailed", "the group could not do that"),
+    };
+}
+
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
     return .{ .failed = .{ .code = code, .message = message } };
 }
@@ -825,10 +968,10 @@ const FakeHost = struct {
     set_to: ?struct { id: Bus.Id, ms: u64 } = null,
     read_count: usize = 0,
     refuse: bool = false,
-    joined: ?Bus.Id = null,
-    left: ?Bus.Id = null,
-    posted: ?struct { from: Bus.Id, to: ?Bus.Id, text: []const u8 } = null,
-    read_direct_only: bool = false,
+    posted: ?struct { group: []const u8, from: Bus.Id, text: []const u8 } = null,
+    added: ?struct { group: []const u8, id: Bus.Id, history: History } = null,
+    compacted: ?struct { group: []const u8, through: u64, summary: []const u8, by: Bus.Id } = null,
+    read_group: ?[]const u8 = null,
     quiet_ms: u64 = 0,
 
     fn host(self: *FakeHost) Host {
@@ -838,52 +981,101 @@ const FakeHost = struct {
             .quietMs = quietMs,
             .setThreshold = setThreshold,
             .readSkill = readSkill,
-            .chatJoin = chatJoin,
-            .chatLeave = chatLeave,
-            .chatSend = chatSend,
+            .chatCreate = chatCreate,
+            .chatDestroy = chatDestroy,
+            .chatAdd = chatAdd,
+            .chatRemove = chatRemove,
+            .chatCompact = chatCompact,
+            .chatPost = chatPost,
+            .chatGroups = chatGroups,
             .chatRead = chatRead,
         } };
     }
 
-    fn chatJoin(ctx: *anyopaque, id: Bus.Id) anyerror!void {
+    fn chatCreate(ctx: *anyopaque, _: []const u8, _: Bus.Id) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
-        if (self.refuse) return error.Refused;
-        self.joined = id;
+        if (self.refuse) return error.GroupExists;
     }
 
-    fn chatLeave(ctx: *anyopaque, id: Bus.Id) void {
+    fn chatDestroy(ctx: *anyopaque, _: []const u8) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
-        self.left = id;
+        if (self.refuse) return error.NoSuchGroup;
     }
 
-    fn chatSend(
+    fn chatAdd(
         ctx: *anyopaque,
+        group: []const u8,
+        id: Bus.Id,
+        history: History,
+    ) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.NoSuchGroup;
+        self.added = .{ .group = group, .id = id, .history = history };
+    }
+
+    fn chatRemove(ctx: *anyopaque, _: []const u8, _: Bus.Id) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.NoSuchGroup;
+    }
+
+    fn chatCompact(
+        ctx: *anyopaque,
+        group: []const u8,
+        through: u64,
+        summary: []const u8,
+        by: Bus.Id,
+    ) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.NoSuchGroup;
+        self.compacted = .{
+            .group = group,
+            .through = through,
+            .summary = summary,
+            .by = by,
+        };
+    }
+
+    fn chatPost(
+        ctx: *anyopaque,
+        group: []const u8,
         from: Bus.Id,
-        to: ?Bus.Id,
         text: []const u8,
     ) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
-        if (self.refuse) return error.Refused;
-        self.posted = .{ .from = from, .to = to, .text = text };
+        if (self.refuse) return error.NoSuchGroup;
+        self.posted = .{ .group = group, .from = from, .text = text };
+    }
+
+    fn chatGroups(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        _: Bus.Id,
+    ) anyerror![]const []const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.NoSuchGroup;
+
+        const names = try alloc.alloc([]const u8, 1);
+        names[0] = try alloc.dupe(u8, "build");
+        return names;
     }
 
     fn chatRead(
         ctx: *anyopaque,
         alloc: std.mem.Allocator,
-        id: Bus.Id,
+        group: []const u8,
+        _: Bus.Id,
         since: u64,
-        direct_only: bool,
     ) anyerror![]const ChatLine {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
-        if (self.refuse) return error.Refused;
-        self.read_direct_only = direct_only;
+        if (self.refuse) return error.NotAMember;
+        self.read_group = group;
 
         const one = try alloc.alloc(ChatLine, 1);
         one[0] = .{
             .seq = since + 1,
             .from = 0x9999,
-            .to = if (direct_only) id else null,
             .at_ms = 0,
+            .summary = false,
             .text = try alloc.dupe(u8, "hello"),
         };
         return one;
