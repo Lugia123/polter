@@ -216,6 +216,36 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 
 因此三种模式 = 三份 skill 文本 + 一张「模式 → 是否允许 `clock_out`」的程序侧映射表。
 
+### 一共几个，怎么分
+
+**5 个：2 个通用 + 3 个模式。**分法不按主题，按**什么会让它改变**：
+
+| skill                      | 内容                                                         | 何时需要改                   | 何时被读           |
+| -------------------------- | ------------------------------------------------------------ | ---------------------------- | ------------------ |
+| `supervising`              | 总管行事总则：收到通知先做什么、何时袖手、怎么措辞、两条红线 | 监督策略变时                 | 成为总管时一次     |
+| `reading-a-terminal`       | 怎么看一屏内容判断对方处于什么状态                           | **被监督的 AI CLI 改界面时** | 每次判断前         |
+| `mode-clock-out`           | 下班模式的判据                                               | 用户想改下班标准时           | 按该终端的模式加载 |
+| `mode-infinite-directed`   | 定向无限的判据                                               | 同上                         | 同上               |
+| `mode-infinite-sequential` | 接续无限的判据                                               | 同上                         | 同上               |
+
+**为什么把 `reading-a-terminal` 单独拎出来。**它是整套东西里唯一会自然腐烂的部分 —— 被监督的 agent CLI 改一次界面，判断依据就失效一次。隔离之后，用户换个 agent CLI 只需要改这一个文件，不必碰监督策略；反过来调整监督策略也不会碰坏识别逻辑。若按主题切（例如「判断类 / 动作类」），得不到这个性质。
+
+**为什么三个模式 skill 不合并。**它们是按终端各自加载的：一个总管可能同时管着三种模式的终端，合成一份会让它每次都读到大量与当前终端无关的判据。
+
+**为什么不再多切。**确认策略与通知时段（R3）看起来也够一个 skill，但它对应的程序机制尚未实现；为还不存在的行为写 skill 会让读它的 AI 以为自己能做到。等 R3 落地再加第 6 个。
+
+### frontmatter 里没有 allow_clock_out
+
+结构示意里早先带过这个字段，现已删除。「无限工作模式禁止下班」已经是程序硬闸（`src/poltergeist/Bus.zig` 的 `WorkMode.forbidsClockOff`），同一条约束有两个出处必然漂移；更糟的是 skill 文件用户可编辑，若程序采信文件里的值，用户改 skill 时就可能**无意中削弱一条安全约束**。硬闸只能有一个出处，而且必须在代码里。
+
+frontmatter 只保留程序真正要读的：`name` / `mode` / `version` / `max_rounds` / `description`。正文原样交给 AI。
+
+### 「连续 n 次」由程序计数，判断交给 AI
+
+R6 要求「连续 n 次执行后判断没必要再继续」。次数正是长会话里最容易被上下文冲掉的东西，而计数恰恰是程序擅长、提示词不擅长的。
+
+落法：Bus 记录「自上次 `resumed` 以来这个终端被通知过几轮」，随 `terminal_list` 一并给出；skill 文本写「当 rounds 达到 max_rounds 且你仍看不出还有事可做时，让它下班」。程序供数，AI 供判断 —— 与整套设计的分工一致，且不需要新增工具。
+
 ### 存放位置与优先级
 
 照搬 themes 的两层结构：`themepkg.Location = { user, resources }`，注释明说枚举顺序即优先级、从上到下（`src/config/theme.zig:8-12`）；user 层由 `internal_os.xdg.config` 拼出、subdir 为 `ghostty/themes`（`src/config/theme.zig:30-35`）。
@@ -230,11 +260,11 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 
 ```md
 ---
-name: clock-out-default
+name: mode-clock-out
 version: 1
-mode: clock-out
-allow_clock_out: true
+mode: clock_off
 max_rounds: 5
+description: 下班模式：连续若干轮判定无事可做后让终端下班
 ---
 
 每轮先用 terminal_read 看这个终端现在的屏幕内容，再判断……

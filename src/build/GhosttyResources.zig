@@ -125,6 +125,20 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
         try steps.append(b.allocator, &install_step.step);
     }
 
+    // Poltergeist skills
+    //
+    // Shipped as files rather than compiled in, because the whole point of
+    // them is that a user can edit one. A copy in the config directory wins
+    // over the copy installed here.
+    {
+        const install_step = b.addInstallDirectory(.{
+            .source_dir = b.path("src/poltergeist/skills"),
+            .install_dir = .{ .custom = "share" },
+            .install_subdir = b.pathJoin(&.{ "ghostty", "poltergeist" }),
+        });
+        try steps.append(b.allocator, &install_step.step);
+    }
+
     // Themes
     if (cfg.emit_themes) {
         if (b.lazyDependency("iterm2_themes", .{})) |upstream| {

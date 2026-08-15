@@ -324,7 +324,7 @@ fn submitPoltergeistRequest(
     pending: *poltergeistpkg.Server.Pending,
 ) void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    _ = self.mailbox.push(.{ .poltergeist_request = pending }, .{ .forever = {} });
+    _ = self.mailbox.push(global.io(), .{ .poltergeist_request = pending }, .{ .forever = {} });
 }
 
 /// Answer one agent request. Runs on the app thread, which is the only
@@ -352,6 +352,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .sendText = poltergeistSend,
         .quietMs = poltergeistQuiet,
         .setThreshold = poltergeistThreshold,
+        .readSkill = poltergeistSkill,
     } };
 }
 
@@ -398,6 +399,62 @@ fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
         std.math.maxInt(i64),
     ));
     return self.poltergeist.quietMs(id, now_ms);
+}
+
+/// Load a skill, preferring the user's copy.
+///
+/// The user layer is checked first so that editing a file is how you change
+/// what a supervisor does, without touching the install and without the
+/// change being undone by the next upgrade.
+fn poltergeistSkill(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    name: []const u8,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const io = global.io();
+
+    user: {
+        var environ_map = global.environMap() catch break :user;
+        defer environ_map.deinit();
+
+        const config_dir = internal_os.xdg.config(
+            io,
+            self.alloc,
+            &environ_map,
+            .{ .subdir = "ghostty" },
+        ) catch break :user;
+        defer self.alloc.free(config_dir);
+
+        const path = poltergeistpkg.skill.userPath(self.alloc, config_dir, name) catch
+            break :user;
+        defer self.alloc.free(path);
+
+        if (readSkillFile(io, alloc, path)) |body| return body else |_| {}
+    }
+
+    // The app-visible copy: this runs inside Ghostty, not in a sandboxed
+    // host.
+    const dir = global.resourcesDir();
+    const resources = dir.app() orelse return error.NoSuchSkill;
+    const path = try poltergeistpkg.skill.resourcePath(self.alloc, resources, name);
+    defer self.alloc.free(path);
+
+    return readSkillFile(io, alloc, path) catch error.NoSuchSkill;
+}
+
+/// Read a skill file and hand back its prose, checking that it parses so
+/// that a broken file reads as missing rather than as instructions.
+fn readSkillFile(io: std.Io, alloc: Allocator, path: []const u8) ![]const u8 {
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024));
+    defer alloc.free(source);
+
+    const parsed = poltergeistpkg.skill.parse(source) catch |err| {
+        log.warn("poltergeist: skill at {s} does not parse err={}", .{ path, err });
+        return err;
+    };
+
+    return alloc.dupe(u8, parsed.body);
 }
 
 fn poltergeistThreshold(

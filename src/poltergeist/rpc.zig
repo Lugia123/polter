@@ -42,6 +42,10 @@ pub const Method = enum {
     /// Change how long this terminal must be still before the supervisor
     /// hears about it.
     set_quiescence_threshold,
+
+    /// Read one of Poltergeist's skills: the text describing how to do this
+    /// job. Any terminal may read one; they are instructions, not reach.
+    skill_read,
 };
 
 pub const Request = union(Method) {
@@ -53,6 +57,7 @@ pub const Request = union(Method) {
     clock_in: struct { id: Bus.Id },
     get_work_mode: struct { id: Bus.Id },
     set_quiescence_threshold: struct { id: Bus.Id, ms: u64 },
+    skill_read: struct { name: []const u8 },
 };
 
 pub const Error = error{
@@ -89,6 +94,11 @@ pub fn requiresSupervisor(method: Method) bool {
         .get_work_mode,
         .set_quiescence_threshold,
         => true,
+
+        // Skills are instructions, not reach. A watched terminal reading
+        // how supervision works learns nothing it could not be told, and
+        // refusing would mean an agent cannot find out why it was nudged.
+        .skill_read => false,
     };
 }
 
@@ -96,7 +106,7 @@ pub fn requiresSupervisor(method: Method) bool {
 /// against the bus for existence.
 pub fn targetsTerminal(method: Method) bool {
     return switch (method) {
-        .me, .terminal_list => false,
+        .me, .terminal_list, .skill_read => false,
         .terminal_read,
         .terminal_send,
         .clock_out,
@@ -110,7 +120,7 @@ pub fn targetsTerminal(method: Method) bool {
 /// The target terminal, if this request has one.
 pub fn target(req: Request) ?Bus.Id {
     return switch (req) {
-        .me, .terminal_list => null,
+        .me, .terminal_list, .skill_read => null,
         inline else => |v| v.id,
     };
 }
@@ -177,10 +187,16 @@ fn testBus(alloc: std.mem.Allocator) !Bus {
     return b;
 }
 
-test "every method except me needs the supervisor" {
+test "only asking about yourself and reading instructions is open to all" {
+    // Everything that reaches another terminal needs the supervisor.
+    // Knowing who you are and reading how the job works do not reach
+    // anything, so they are open.
     for (std.enums.values(Method)) |m| {
-        const expected = m != .me;
-        try testing.expectEqual(expected, requiresSupervisor(m));
+        const open = switch (m) {
+            .me, .skill_read => true,
+            else => false,
+        };
+        try testing.expectEqual(!open, requiresSupervisor(m));
     }
 }
 
@@ -381,6 +397,14 @@ pub const Host = struct {
             id: Bus.Id,
             ms: u64,
         ) anyerror!void,
+
+        /// The prose of one skill. Returned memory belongs to the caller's
+        /// allocator.
+        readSkill: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            name: []const u8,
+        ) anyerror![]const u8,
     };
 
     fn readTerminal(
@@ -402,6 +426,14 @@ pub const Host = struct {
 
     fn setThreshold(self: Host, id: Bus.Id, ms: u64) anyerror!void {
         return self.vtable.setThreshold(self.ctx, id, ms);
+    }
+
+    fn readSkill(
+        self: Host,
+        alloc: std.mem.Allocator,
+        name: []const u8,
+    ) anyerror![]const u8 {
+        return self.vtable.readSkill(self.ctx, alloc, name);
     }
 };
 
@@ -479,6 +511,12 @@ pub fn dispatch(
                 return hostFailure("ThresholdFailed", "could not change that threshold");
             return .ok;
         },
+
+        .skill_read => |p| {
+            const body = host.readSkill(alloc, p.name) catch
+                return hostFailure("NoSuchSkill", "no skill by that name");
+            return .{ .skill = .{ .name = p.name, .body = body } };
+        },
     }
 }
 
@@ -495,6 +533,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         .work_mode = e.work_mode,
         .quiet_ms = host.quietMs(id),
         .watching = e.role == .watched,
+        .rounds = e.rounds,
     };
 }
 
@@ -522,7 +561,18 @@ const FakeHost = struct {
             .sendText = send,
             .quietMs = quietMs,
             .setThreshold = setThreshold,
+            .readSkill = readSkill,
         } };
+    }
+
+    fn readSkill(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        name: []const u8,
+    ) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.Refused;
+        return std.fmt.allocPrint(alloc, "prose for {s}", .{name});
     }
 
     fn read(
@@ -639,6 +689,33 @@ test "me works for a terminal that supervises nothing" {
     try testing.expectEqual(Bus.Role.watched, res.me.role);
     try testing.expectEqual(@as(u64, 4242), res.me.quiet_ms);
     try testing.expect(res.me.watching);
+}
+
+test "any terminal may read a skill" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    // A watched terminal can read how supervision works. These are
+    // instructions, not reach, and refusing would mean an agent cannot find
+    // out why it was nudged.
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+        .skill_read = .{ .name = "supervising" },
+    });
+    defer testing.allocator.free(res.skill.body);
+    try testing.expectEqualStrings("supervising", res.skill.name);
+    try testing.expectEqualStrings("prose for supervising", res.skill.body);
+}
+
+test "an unknown skill fails rather than returning nothing" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .refuse = true };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .skill_read = .{ .name = "no-such-skill" },
+    });
+    try testing.expectEqualStrings("NoSuchSkill", res.failed.code);
 }
 
 test "get_work_mode reads but nothing writes" {

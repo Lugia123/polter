@@ -207,6 +207,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "skill_read",
+        .description = "Read one of Poltergeist's skills: the text describing how to supervise, how to read a terminal, or how a particular work mode should be handled. Start with `supervising`.",
+        .schema =
+        \\{"type":"object","properties":{"name":{"type":"string","description":"supervising, reading-a-terminal, mode-clock-out, mode-infinite-directed or mode-infinite-sequential"}},"required":["name"]}
+        ,
+    },
+    .{
         .name = "set_quiescence_threshold",
         .description = "How long a terminal must be still before it is reported. Supervisor only.",
         .schema =

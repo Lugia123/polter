@@ -99,6 +99,10 @@ pub fn parseRequest(alloc: Allocator, bytes: []const u8) ParseError!Parsed {
             .id = try requireId(params),
             .ms = try requireU64(params, "ms"),
         } },
+
+        .skill_read => .{ .skill_read = .{
+            .name = try requireString(aa, params, "name"),
+        } },
     };
 
     return .{ .arena = arena, .value = value };
@@ -184,6 +188,10 @@ pub const TerminalInfo = struct {
     work_mode: Bus.WorkMode,
     quiet_ms: u64,
     watching: bool,
+
+    /// How many times the supervisor has been told this terminal is quiet
+    /// since it last resumed. The clock-out skill counts against this.
+    rounds: u16,
 };
 
 pub const Response = union(enum) {
@@ -192,6 +200,7 @@ pub const Response = union(enum) {
     terminals: []const TerminalInfo,
     text: []const u8,
     work_mode: Bus.WorkMode,
+    skill: struct { name: []const u8, body: []const u8 },
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -231,6 +240,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.objectField("work_mode");
             try s.write(@tagName(m));
         },
+        .skill => |k| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("name");
+            try s.write(k.name);
+            try s.objectField("body");
+            try s.write(k.body);
+        },
         .failed => |f| {
             try s.objectField("ok");
             try s.write(false);
@@ -265,6 +282,8 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
     try s.write(info.quiet_ms);
     try s.objectField("watching");
     try s.write(info.watching);
+    try s.objectField("rounds");
+    try s.write(info.rounds);
 
     try s.endObject();
 }
@@ -406,6 +425,7 @@ test "a response carries ids as the same text the host exports" {
         .work_mode = .clock_off,
         .quiet_ms = 1234,
         .watching = true,
+        .rounds = 3,
     } });
 
     const out = w.buffered();
@@ -433,8 +453,8 @@ test "a response is one line" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 1, .role = .supervisor, .duty = .on, .work_mode = .clock_off, .quiet_ms = 0, .watching = false },
-        .{ .id = 2, .role = .watched, .duty = .off, .work_mode = .infinite_directed, .quiet_ms = 90_000, .watching = true },
+        .{ .id = 1, .role = .supervisor, .duty = .on, .work_mode = .clock_off, .quiet_ms = 0, .watching = false, .rounds = 0 },
+        .{ .id = 2, .role = .watched, .duty = .off, .work_mode = .infinite_directed, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
     };
     try writeResponse(&w, .{ .terminals = &list });
 

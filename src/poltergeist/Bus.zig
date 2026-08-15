@@ -126,6 +126,15 @@ pub const Entry = struct {
     /// exactly; see `Bus.quietMs`.
     last_quiet_ms: u64 = 0,
     last_event_ms: u64 = 0,
+
+    /// How many times the supervisor has been told this terminal is quiet
+    /// since it last came back to work.
+    ///
+    /// Kept here because a count is the first thing a long session forgets,
+    /// and the clock-out skill needs one. The judgement of whether there is
+    /// anything left to do stays with the supervisor; this is only the
+    /// number it counts against.
+    rounds: u16 = 0,
 };
 
 pub const Config = struct {
@@ -275,6 +284,10 @@ pub fn report(
     e.last_quiet_ms = switch (kind) {
         .quiescent, .still_quiescent => report_data.quiet_ms,
         // Just came back to work: the clock starts again from here.
+        .resumed => 0,
+    };
+    e.rounds = switch (kind) {
+        .quiescent, .still_quiescent => e.rounds +| 1,
         .resumed => 0,
     };
 
@@ -491,6 +504,44 @@ test "an unknown terminal reports no quiet time rather than misleading" {
     var b = testBus();
     defer b.deinit();
     try testing.expectEqual(@as(u64, 0), b.quietMs(0xdead, 999_999));
+}
+
+test "rounds count up while quiet and reset on coming back" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+    try testing.expectEqual(@as(u16, 0), b.get(worker).?.rounds);
+
+    _ = b.report(worker, quiet(180_000), 0);
+    try testing.expectEqual(@as(u16, 1), b.get(worker).?.rounds);
+
+    _ = b.report(worker, quiet(190_000), 10_000);
+    try testing.expectEqual(@as(u16, 2), b.get(worker).?.rounds);
+
+    _ = b.report(worker, .{ .resumed = .{
+        .quiet_ms = 190_000,
+        .silent_ms = 0,
+        .changed_rows = 2,
+        .total_rows = 24,
+    } }, 20_000);
+    try testing.expectEqual(@as(u16, 0), b.get(worker).?.rounds);
+}
+
+test "rounds count even while rate limited" {
+    // The supervisor is told less often than the terminal goes quiet, but
+    // the count is what the clock-out skill reasons about, so it must
+    // follow the terminal rather than the notices.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+
+    try testing.expect(b.report(worker, quiet(180_000), 0) != null);
+    try testing.expect(b.report(worker, quiet(181_000), 100) == null);
+    try testing.expectEqual(@as(u16, 2), b.get(worker).?.rounds);
 }
 
 test "notices about one terminal are rate limited" {
