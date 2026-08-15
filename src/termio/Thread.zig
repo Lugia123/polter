@@ -66,15 +66,23 @@ const Quiescence = struct {
     }
 };
 
-/// Turn a configured duration into whole milliseconds, never returning less
-/// than one sample interval.
+/// A threshold in milliseconds, never less than one sample interval.
 ///
-/// Integer division alone would turn any sub-millisecond value into 0, and a
-/// zero threshold makes every terminal quiescent on its second sample while
-/// a zero repeat logs a line every tick. Sampling faster than the sample
-/// interval is meaningless anyway, so that is the floor.
-fn quiescenceMs(ns: u64) u64 {
-    return @max(quiescence_sample_ms, ns / std.time.ns_per_ms);
+/// The value arrives already in milliseconds: `Termio.DerivedConfig` does
+/// the conversion from the configured nanoseconds. This only applies the
+/// floor, because a threshold shorter than the gap between two samples
+/// cannot mean anything -- there is no stillness to observe below the rate
+/// at which we look.
+///
+/// It used to divide by `ns_per_ms` a second time, on the strength of its
+/// own parameter being named `ns`. Every caller passes a `_ms` field, so a
+/// 15s threshold became 15000/1000000 = 0 and got floored to one sample
+/// interval; so did the repeat. Both settings silently collapsed to one
+/// second, and a supervisor watching three terminals took three lines a
+/// second. Unit tests never saw it: they build a `Sampler.Config` directly
+/// and never make this trip.
+fn quiescenceFloor(ms: u64) u64 {
+    return @max(quiescence_sample_ms, ms);
 }
 
 /// The number of milliseconds between each movement during selection scrolling.
@@ -395,8 +403,8 @@ fn drainMailbox(
             .poltergeist_watch => |v| self.setQuiescenceWatch(io, cb, v),
             .poltergeist_threshold => |ms| {
                 if (self.quiescence) |*q| q.watcher.setConfig(.{
-                    .quiescence_ms = @max(quiescence_sample_ms, ms),
-                    .repeat_ms = quiescenceMs(io.config.poltergeist_repeat_ms),
+                    .quiescence_ms = quiescenceFloor(ms),
+                    .repeat_ms = quiescenceFloor(io.config.poltergeist_repeat_ms),
                 });
             },
             .inspector => |v| self.flags.has_inspector = v,
@@ -501,8 +509,8 @@ fn startQuiescence(
 
 fn samplerConfig(io: *termio.Termio) poltergeist.Sampler.Config {
     return .{
-        .quiescence_ms = quiescenceMs(io.config.poltergeist_quiescence_ms),
-        .repeat_ms = quiescenceMs(io.config.poltergeist_repeat_ms),
+        .quiescence_ms = quiescenceFloor(io.config.poltergeist_quiescence_ms),
+        .repeat_ms = quiescenceFloor(io.config.poltergeist_repeat_ms),
     };
 }
 
@@ -830,4 +838,28 @@ fn selectionScrollCallback(
     );
 
     return .disarm;
+}
+
+test "a configured threshold reaches the sampler in the unit it left in" {
+    const testing = std.testing;
+
+    // The value handed to `quiescenceFloor` has already been converted to
+    // milliseconds by `Termio.DerivedConfig`, so it must come out unchanged.
+    // A second conversion here is not a rounding error: it collapses every
+    // realistic threshold to the floor, and the terminals then report
+    // themselves once per sample forever. Caught on a real machine rather
+    // than here, because the sampler's own tests never make this trip.
+    try testing.expectEqual(
+        @as(u64, 15 * std.time.ms_per_s),
+        quiescenceFloor(15 * std.time.ms_per_s),
+    );
+    try testing.expectEqual(
+        @as(u64, 3 * std.time.ms_per_min),
+        quiescenceFloor(3 * std.time.ms_per_min),
+    );
+
+    // Below one sample interval there is nothing to observe, so the floor
+    // applies -- but only there.
+    try testing.expectEqual(@as(u64, quiescence_sample_ms), quiescenceFloor(0));
+    try testing.expectEqual(@as(u64, quiescence_sample_ms), quiescenceFloor(1));
 }
