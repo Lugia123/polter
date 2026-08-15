@@ -15,6 +15,7 @@ pub const Fingerprint = @import("Fingerprint.zig");
 pub const rpc = @import("rpc.zig");
 pub const Sampler = @import("Sampler.zig");
 pub const Watcher = @import("Watcher.zig");
+pub const wire = @import("wire.zig");
 pub const screen = @import("screen.zig");
 
 test {
@@ -23,5 +24,6 @@ test {
     _ = rpc;
     _ = Sampler;
     _ = Watcher;
+    _ = wire;
     _ = screen;
 }
