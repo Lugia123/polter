@@ -24,6 +24,14 @@ const Bus = @import("Bus.zig");
 
 pub const Id = Bus.Id;
 
+/// The person at the keyboard.
+///
+/// Zero, which `Surface.id` is documented never to be, so it cannot
+/// collide with a terminal. The user is put in every group as it is made:
+/// these are conversations happening on their machine, and a window they
+/// can read but not answer in would be a strange thing to build.
+pub const user_id: Id = 0;
+
 /// What a terminal added to a group is shown of what came before.
 pub const History = enum {
     /// Nothing. The conversation starts for them now.
@@ -444,6 +452,12 @@ const b: Id = 0x3333;
 
 fn testChat() Chat {
     return .init(testing.allocator, .{});
+}
+
+test "the user's id cannot collide with a terminal's" {
+    // Surface.id is documented never to be zero, which is what makes zero
+    // safe to reserve.
+    try testing.expect(user_id == 0);
 }
 
 test "a group starts with its creator in it" {

@@ -699,6 +699,10 @@ pub const Action = union(enum) {
     /// anything -- otherwise it would switch the mode and then clock off.
     poltergeist_cycle_work_mode,
 
+    /// Show or hide the window with what the terminals have said to each
+    /// other.
+    poltergeist_toggle_chat,
+
     /// Resize the current split in the specified direction and amount in
     /// pixels. The two arguments should be joined with a comma (`,`),
     /// like in `resize_split:up,10`.
@@ -1488,6 +1492,7 @@ pub const Action = union(enum) {
             .poltergeist_supervisor,
             .poltergeist_toggle_watch,
             .poltergeist_cycle_work_mode,
+            .poltergeist_toggle_chat,
             .resize_split,
             .equalize_splits,
             .inspector,

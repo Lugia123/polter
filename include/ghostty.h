@@ -915,6 +915,7 @@ typedef enum {
   GHOSTTY_ACTION_TOGGLE_WINDOW_DECORATIONS,
   GHOSTTY_ACTION_TOGGLE_QUICK_TERMINAL,
   GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE,
+  GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CHAT,
   GHOSTTY_ACTION_TOGGLE_VISIBILITY,
   GHOSTTY_ACTION_TOGGLE_BACKGROUND_OPACITY,
   GHOSTTY_ACTION_MOVE_TAB,
@@ -1184,6 +1185,29 @@ GHOSTTY_API void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
                                                                bool);
 GHOSTTY_API bool ghostty_surface_has_selection(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_read_selection(ghostty_surface_t, ghostty_text_s*);
+typedef struct {
+  uint64_t seq;
+  uint64_t from;
+  uint64_t at_ms;
+  bool summary;
+  const char* text;
+} ghostty_chat_line_s;
+
+typedef struct {
+  const char* name;
+  const ghostty_chat_line_s* lines;
+  uintptr_t lines_len;
+} ghostty_chat_group_s;
+
+typedef struct {
+  const ghostty_chat_group_s* groups;
+  uintptr_t groups_len;
+} ghostty_chat_snapshot_s;
+
+GHOSTTY_API bool ghostty_app_chat(ghostty_app_t, ghostty_chat_snapshot_s*);
+GHOSTTY_API void ghostty_app_free_chat(ghostty_chat_snapshot_s*);
+GHOSTTY_API bool ghostty_app_chat_post(ghostty_app_t, const char*, const char*);
+
 GHOSTTY_API bool ghostty_surface_read_text(ghostty_surface_t,
                                               ghostty_selection_s,
                                               ghostty_text_s*);

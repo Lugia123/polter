@@ -5634,6 +5634,12 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             return true;
         },
 
+        .poltergeist_toggle_chat => return try self.rt_app.performAction(
+            .{ .surface = self },
+            .toggle_poltergeist_chat,
+            {},
+        ),
+
         .reset_window_size => return try self.rt_app.performAction(
             .{ .surface = self },
             .reset_window_size,

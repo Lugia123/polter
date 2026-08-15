@@ -445,6 +445,86 @@ fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
 fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.chat.create(group, by);
+
+    // The person at the keyboard is in every group. These are
+    // conversations happening on their machine; a window they could read
+    // but not answer in would be a strange thing to build.
+    try self.chat.add(group, poltergeistpkg.Chat.user_id, .all);
+}
+
+/// Everything the chat window needs, in one call.
+///
+/// Runs on the app thread, which owns the chat, so it reads directly. The
+/// caller owns what comes back.
+pub fn chatSnapshot(self: *App, alloc: Allocator) Allocator.Error!ChatSnapshot {
+    const names = try self.chat.groupsFor(alloc, poltergeistpkg.Chat.user_id);
+    defer alloc.free(names);
+
+    var groups: std.ArrayListUnmanaged(ChatSnapshot.Group) = .empty;
+    errdefer groups.deinit(alloc);
+
+    for (names) |name| {
+        const messages = self.chat.read(
+            alloc,
+            name,
+            poltergeistpkg.Chat.user_id,
+            0,
+        ) catch continue;
+        defer alloc.free(messages);
+
+        const lines = try alloc.alloc(ChatSnapshot.Line, messages.len);
+        for (messages, 0..) |m, i| lines[i] = .{
+            .seq = m.seq,
+            .from = m.from,
+            .at_ms = m.at_ms,
+            .summary = m.summary,
+            .text = try alloc.dupeZ(u8, m.text),
+        };
+
+        try groups.append(alloc, .{
+            .name = try alloc.dupeZ(u8, name),
+            .lines = lines,
+        });
+    }
+
+    return .{ .groups = try groups.toOwnedSlice(alloc) };
+}
+
+pub const ChatSnapshot = struct {
+    groups: []const Group,
+
+    pub const Group = struct {
+        name: [:0]const u8,
+        lines: []const Line,
+    };
+
+    pub const Line = struct {
+        seq: u64,
+        from: poltergeistpkg.Bus.Id,
+        at_ms: u64,
+        summary: bool,
+        text: [:0]const u8,
+    };
+
+    pub fn deinit(self: ChatSnapshot, alloc: Allocator) void {
+        for (self.groups) |g| {
+            for (g.lines) |l| alloc.free(l.text);
+            alloc.free(g.lines);
+            alloc.free(g.name);
+        }
+        alloc.free(self.groups);
+    }
+};
+
+/// Say something as the person at the keyboard.
+pub fn chatPostAsUser(self: *App, group: []const u8, text: []const u8) !void {
+    _ = try self.chat.post(
+        group,
+        poltergeistpkg.Chat.user_id,
+        text,
+        self.poltergeistNow(),
+    );
+    self.tellTerminalsAboutMessages();
 }
 
 fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {

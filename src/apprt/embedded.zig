@@ -1633,6 +1633,105 @@ pub const CAPI = struct {
         return readTextLocked(surface, core_sel, result);
     }
 
+    /// One message in the chat window.
+    pub const ChatLine = extern struct {
+        seq: u64,
+        from: u64,
+        at_ms: u64,
+        /// True when this stands in for messages compacted away.
+        summary: bool,
+        text: [*:0]const u8,
+    };
+
+    /// One group in the chat window.
+    pub const ChatGroup = extern struct {
+        name: [*:0]const u8,
+        lines: [*]const ChatLine,
+        lines_len: usize,
+    };
+
+    pub const ChatSnapshot = extern struct {
+        groups: [*]const ChatGroup,
+        groups_len: usize,
+    };
+
+    /// Everything the chat window needs, in one call.
+    ///
+    /// Deliberately a snapshot rather than a subscription: the window is
+    /// something a person opens now and then, and a push channel across
+    /// the C boundary would be a great deal of machinery for a view that
+    /// can simply ask again.
+    ///
+    /// Free with `ghostty_app_free_chat`.
+    export fn ghostty_app_chat(app: *App, result: *ChatSnapshot) bool {
+        const alloc = global.alloc();
+
+        const snapshot = app.core_app.chatSnapshot(alloc) catch |err| {
+            log.warn("error reading chat err={}", .{err});
+            return false;
+        };
+        defer snapshot.deinit(alloc);
+
+        const groups = alloc.alloc(ChatGroup, snapshot.groups.len) catch return false;
+        var built: usize = 0;
+        errdefer {
+            for (groups[0..built]) |g| {
+                for (g.lines[0..g.lines_len]) |l| alloc.free(std.mem.span(l.text));
+                alloc.free(g.lines[0..g.lines_len]);
+                alloc.free(std.mem.span(g.name));
+            }
+            alloc.free(groups);
+        }
+
+        for (snapshot.groups, 0..) |g, gi| {
+            const lines = alloc.alloc(ChatLine, g.lines.len) catch return false;
+            for (g.lines, 0..) |l, li| lines[li] = .{
+                .seq = l.seq,
+                .from = l.from,
+                .at_ms = l.at_ms,
+                .summary = l.summary,
+                .text = (alloc.dupeZ(u8, l.text) catch return false).ptr,
+            };
+
+            groups[gi] = .{
+                .name = (alloc.dupeZ(u8, g.name) catch return false).ptr,
+                .lines = lines.ptr,
+                .lines_len = lines.len,
+            };
+            built += 1;
+        }
+
+        result.* = .{ .groups = groups.ptr, .groups_len = groups.len };
+        return true;
+    }
+
+    export fn ghostty_app_free_chat(snapshot: *ChatSnapshot) void {
+        const alloc = global.alloc();
+        for (snapshot.groups[0..snapshot.groups_len]) |g| {
+            for (g.lines[0..g.lines_len]) |l| alloc.free(std.mem.span(l.text));
+            alloc.free(g.lines[0..g.lines_len]);
+            alloc.free(std.mem.span(g.name));
+        }
+        alloc.free(snapshot.groups[0..snapshot.groups_len]);
+        snapshot.* = .{ .groups = undefined, .groups_len = 0 };
+    }
+
+    /// Say something in a group as the person at the keyboard.
+    export fn ghostty_app_chat_post(
+        app: *App,
+        group: [*:0]const u8,
+        text: [*:0]const u8,
+    ) bool {
+        app.core_app.chatPostAsUser(
+            std.mem.span(group),
+            std.mem.span(text),
+        ) catch |err| {
+            log.warn("error posting to chat err={}", .{err});
+            return false;
+        };
+        return true;
+    }
+
     /// Read some arbitrary text from the surface.
     ///
     /// This is an expensive operation so it shouldn't be called too

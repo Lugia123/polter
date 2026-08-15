@@ -570,6 +570,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Clock-off, keep working on a standing direction, or move task to task. Only you can set this; a supervisor cannot."),
         }},
 
+        .poltergeist_toggle_chat => comptime &.{.{
+            .action = .poltergeist_toggle_chat,
+            .title = i18n.N_("Show Terminal Conversations"),
+            .description = i18n.N_("Open the window showing what the terminals have said to each other."),
+        }},
+
         .equalize_splits => comptime &.{.{
             .action = .equalize_splits,
             .title = i18n.N_("Equalize Splits"),
