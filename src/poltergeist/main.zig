@@ -21,6 +21,7 @@ pub const wire = @import("wire.zig");
 pub const screen = @import("screen.zig");
 
 test {
+    _ = @import("server_test.zig");
     _ = Bus;
     _ = Fingerprint;
     _ = rpc;

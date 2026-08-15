@@ -111,6 +111,12 @@ pub const Pending = struct {
 /// How a request reaches the app thread. A callback rather than a direct
 /// dependency on `App`, so this file stays testable and the import graph
 /// stays one-way.
+///
+/// The callback is handed one reference and owns it. Whoever ends up
+/// answering the request -- the callback itself, or whatever it passes the
+/// pointer along to -- must call `Pending.release` exactly once when it is
+/// finished. Answering it is not enough: the connection thread may still be
+/// reading from it.
 pub const Submit = struct {
     ctx: *anyopaque,
     func: *const fn (ctx: *anyopaque, pending: *Pending) void,
@@ -275,7 +281,8 @@ fn untrackInflight(self: *Server, p: *Pending) void {
 /// Mint a token for a terminal, to be put in its pty environment.
 ///
 /// Called on the app thread as a surface starts. The returned slice is
-/// owned by the server and stays valid until the server is torn down.
+/// owned by the server and is freed by `revokeTokens` or `deinit`, so a
+/// caller that needs to keep it must copy it first.
 pub fn issueToken(self: *Server, id: Bus.Id) Allocator.Error![]const u8 {
     var raw: [token_bytes]u8 = undefined;
 
@@ -399,6 +406,9 @@ fn reapFinished(self: *Server) void {
         const done = self.slots[i].thread != null and
             self.slots[i].finished.load(.acquire);
         const thread = if (done) self.slots[i].thread else null;
+
+        // Cleared before the join so nothing else can find the socket the
+        // finishing thread has already closed.
         if (done) self.slots[i] = .{};
         self.slots_mutex.unlock(self.io);
 
@@ -425,34 +435,51 @@ fn releaseSlot(self: *Server, index: usize) void {
     self.slots[index] = .{};
 }
 
-/// Close every live connection and join its thread.
+/// Wake every live connection and join its thread.
 ///
-/// Closing the socket is what unblocks a thread parked in read; without it
-/// a join here would wait forever on a connection that is simply idle.
+/// `shutdown`, not `close`. Shutting a socket down unblocks a thread parked
+/// in read without invalidating the descriptor, so a thread that was also
+/// about to write its answer gets an ordinary error instead of using a
+/// closed descriptor. Each thread closes its own socket on the way out.
 fn stopConnections(self: *Server) void {
     var threads: [max_connections]?std.Thread = @splat(null);
 
     self.slots_mutex.lockUncancelable(self.io);
     for (0..max_connections) |i| {
-        if (self.slots[i].stream) |stream| stream.close(self.io);
+        if (self.slots[i].stream) |stream| stream.shutdown(self.io, .both) catch {};
         threads[i] = self.slots[i].thread;
-        self.slots[i] = .{};
     }
     self.slots_mutex.unlock(self.io);
 
     for (threads) |t| if (t) |thread| thread.join();
+
+    // Only now that every thread has finished is it safe to forget them.
+    self.slots_mutex.lockUncancelable(self.io);
+    for (0..max_connections) |i| self.slots[i] = .{};
+    self.slots_mutex.unlock(self.io);
 }
 
 fn connectionMain(self: *Server, index: usize) void {
-    // The socket belongs to the slot, and shutdown closes it there. This
-    // thread only marks itself finished so the accept loop can reap it.
-    defer self.slots[index].finished.store(true, .release);
-
+    // This thread owns the socket and closes it, so no other thread can
+    // close a descriptor while this one is still writing to it. Shutdown
+    // only wakes it; the close happens here.
     const stream = stream: {
         self.slots_mutex.lockUncancelable(self.io);
         defer self.slots_mutex.unlock(self.io);
         break :stream self.slots[index].stream orelse return;
     };
+
+    defer {
+        // Take the socket out of the slot before closing it, under the same
+        // lock shutdown uses. After this nobody else can find the
+        // descriptor, so nobody can act on one this thread has closed.
+        self.slots_mutex.lockUncancelable(self.io);
+        self.slots[index].stream = null;
+        self.slots_mutex.unlock(self.io);
+
+        stream.close(self.io);
+        self.slots[index].finished.store(true, .release);
+    }
 
     var read_buf: [max_request_bytes]u8 = undefined;
     var write_buf: [16 * 1024]u8 = undefined;

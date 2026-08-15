@@ -345,7 +345,17 @@ fn submitPoltergeistRequest(
     pending: *poltergeistpkg.Server.Pending,
 ) void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    _ = self.mailbox.push(global.io(), .{ .poltergeist_request = pending }, .{ .forever = {} });
+
+    // A zero return means the push failed, in which case nothing will ever
+    // take the reference off our hands.
+    if (self.mailbox.push(
+        global.io(),
+        .{ .poltergeist_request = pending },
+        .{ .forever = {} },
+    ) == 0) {
+        log.warn("poltergeist: could not queue an agent request", .{});
+        pending.release();
+    }
 }
 
 /// Answer one agent request. Runs on the app thread, which is the only
