@@ -122,12 +122,13 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 | ----------------------------------------------------- | ---------- | ------------- | -------- |
 | `terminal_send(id, text, submit?)`                    | 目标与文本 | ok / 拒绝原因 | 仅总管   |
 | `clock_out(id, reason)`                               | 目标与理由 | ok / 拒绝原因 | 仅总管   |
-| `set_work_mode(id, mode)`                             | 目标与模式 | ok / 拒绝原因 | 仅总管   |
 | `set_quiescence_threshold(id, duration)`              | 目标与时长 | ok / 拒绝原因 | 仅总管   |
 | `group_post(text)` / `group_join()` / `group_leave()` | 文本       | ok            | 全部     |
 | `dm_send(peer, text)`                                 | 对端与文本 | ok            | 全部     |
 
 `clock_out` 在无限工作模式下由程序直接拒绝，并把理由回给总管（不静默失败）—— 这是 R6 硬约束的落点。
+
+**`set_work_mode` 不在工具面里**，只有只读的 `get_work_mode`。本表早先把它列为「仅总管」，与下文「只有用户能改工作模式」的论证直接矛盾；实现按后者落地（`src/poltergeist/Bus.zig` 的 `setWorkMode` 要求 `Authority.user`，`src/poltergeist/rpc.zig` 的 `Method` 里根本没有这一项，并有一条测试专门守着它别被加回来）。理由就是下文那句：总管若能改模式，只要先改再 `clock_out` 就绕过了 R6，硬闸等于没有。工作模式由用户在终端上设定。
 
 `set_quiescence_threshold` 是 [sensing.md](sensing.md) 那条「per-terminal 阈值只能是运行时状态、不能进 `Config.zig`」结论的工具面落点：全局默认值走配置项 `polter-quiescence-threshold`，单个终端的覆盖值由总管在运行时调。它只影响「多久之后通知总管」这一个调参，不表达用户意图，因此不受 `set_work_mode` 那条「跨线只能用户改」的限制。时长解析可直接复用 `Duration`（`src/config/Config.zig:10047`，`parseCLI` 在 `:10085`）。
 
