@@ -3,6 +3,7 @@
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**大部分已实现**。已落地：监督关系与上班/下班状态（`src/poltergeist/Bus.zig`）、「无限工作模式禁止下班」与「总管不得改工作模式」两条程序硬闸、静止通知注入（`src/Surface.zig` 的 `typePoltergeistText`）、三个键绑定 action（指定总管 / 切换监督 / 轮换工作模式）、「连续 n 次」的 rounds 计数（随 `terminal_list` 给总管）、skill 体系（`src/poltergeist/skills/`）。
+> 真机验证过的：下班（`clock_out` → `duty: off` → tab 打 `💤`）、无限工作模式拒绝下班（`WorkModeForbids`），以及总管**没有**改工作模式的入口 —— 那个方法不在工具面里，所以绕不过去。
 > **仍未实现**：确认策略与通知时间段（R3）。本章描述它的那一节是设计，不是现状。
 
 ## 本章覆盖什么
