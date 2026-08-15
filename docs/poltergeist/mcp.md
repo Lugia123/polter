@@ -2,7 +2,7 @@
 
 > 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**尚未实现**（S2）。`Bus` 里已经有工具面要用的状态与硬闸（`src/poltergeist/Bus.zig`），但 MCP sidecar、socket、工具本身都还没有。
+> 状态：**已实现**（S2）。工具面在 `src/poltergeist/rpc.zig`，线协议在 `wire.zig`，socket 与 token 在 `Server.zig`，sidecar 在 `src/cli/polter_mcp.zig`，Skill 体系在 `skill.zig` 与 `skills/`。**本章若与代码不一致，以代码为准**：下面几节是设计推导，实现与它的出入记在各节的「实现与本章的出入」里。
 
 ## 本章覆盖什么
 
@@ -145,7 +145,8 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 ### 权限矩阵与它的理由
 
 - **总管**：全部工具，含两个不在上面两张表里的只读工具 `get_work_mode(id)` 与 `skill_read(name)`。
-- **被监督终端**：只有 `me` / `group_*` / `dm_*`，**别的一个都没有** —— 没有 `terminal_send`，没有 `terminal_read`，没有 `clock_out`，也没有 `get_work_mode` / `skill_read`。这份白名单是穷举的：新增工具默认落在总管一侧，要放给被监督终端必须显式改这一行。
+- **被监督终端**：只有 `me` 与 `skill_read`（群聊 / 私信属 S3，尚未实现）。**别的一个都没有** —— 没有 `terminal_send`，没有 `terminal_read`，没有 `clock_out`，也没有 `get_work_mode`。这份白名单是穷举的：新增工具默认落在总管一侧，要放给被监督终端必须显式改 `src/poltergeist/rpc.zig` 的 `requiresSupervisor`，那里有一条测试逐个方法核对。
+- **`skill_read` 对所有终端开放**（本章早先写作总管专属，与实现相反，已按实现更正）。理由：skill 是说明书不是权限，读它不构成对任何终端的影响；而被监督终端读不到它，就无从知道自己为什么被叫。
 - `me()` 里那个 `work_mode` 与 `get_work_mode(id)` 不冲突：前者只报**自己**的模式（服务端按 token 反查，不接受入参），后者能问**任意终端**的模式。被监督终端知道自己在哪种模式下工作是必要的，知道别人的则不是。
 - 角色在配置里指定，不能由 AI 自己声明 —— 服务端按 token → surface_id → 配置查角色。
 

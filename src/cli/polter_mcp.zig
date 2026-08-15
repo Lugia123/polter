@@ -10,8 +10,14 @@ const log = std.log.scoped(.polter_mcp);
 /// MCP protocol revision this speaks. Sent back in `initialize`.
 const protocol_version = "2024-11-05";
 
-/// Longest line we will read from either side.
+/// Longest reply we will read from the host. Screen dumps are the large
+/// case, and the host caps them below this.
 const max_line = 256 * 1024;
+
+/// Longest request the host will read. Kept in step with
+/// `Server.max_request_bytes`; a mismatch means the host silently drops the
+/// connection on a request the sidecar thought was fine.
+const max_request_bytes = 64 * 1024;
 
 pub const Options = struct {
     /// Socket to reach Ghostty on. Defaults to `GHOSTTY_POLTER_SOCKET`.
@@ -177,9 +183,9 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_read",
-        .description = "Read what is on another terminal's screen. Supervisor only.",
+        .description = "Read the visible screen of another terminal. Scrollback is not available. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"id":{"type":"string","description":"Terminal id, as shown by terminal_list"},"lines":{"type":"integer","description":"Last N rows; omit for the visible screen"}},"required":["id"]}
+        \\{"type":"object","properties":{"id":{"type":"string","description":"Terminal id, as shown by terminal_list"}},"required":["id"]}
         ,
     },
     .{
@@ -289,6 +295,13 @@ fn handleOne(
         return;
     }
 
+    // MCP requires a server to answer ping. Falling through to "method not
+    // found" makes a client treat a healthy server as broken.
+    if (std.mem.eql(u8, method, "ping")) {
+        try writeResult(out, id, aa, "{}");
+        return;
+    }
+
     if (std.mem.eql(u8, method, "tools/list")) {
         var body: std.Io.Writer.Allocating = .init(aa);
         defer body.deinit();
@@ -333,6 +346,13 @@ fn handleOne(
         const request = try std.fmt.allocPrint(aa,
             \\{{"method":"{s}","params":{s}}}
         , .{ name, arguments });
+
+        // The host reads a bounded line. Sending more would have it drop
+        // the connection with nothing said, so refuse here where there is
+        // still somebody to tell.
+        if (request.len + 1 > max_request_bytes) {
+            return writeToolError(out, id, aa, "that call is too large to send");
+        }
 
         const reply = host.call(request) catch |err| {
             return writeToolError(out, id, aa, switch (err) {

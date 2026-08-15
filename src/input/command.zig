@@ -564,6 +564,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Report this terminal to the supervisor when its screen goes quiet."),
         }},
 
+        .poltergeist_cycle_work_mode => comptime &.{.{
+            .action = .poltergeist_cycle_work_mode,
+            .title = i18n.N_("Cycle This Terminal's Work Mode"),
+            .description = i18n.N_("Clock-off, keep working on a standing direction, or move task to task. Only you can set this; a supervisor cannot."),
+        }},
+
         .equalize_splits => comptime &.{.{
             .action = .equalize_splits,
             .title = i18n.N_("Equalize Splits"),

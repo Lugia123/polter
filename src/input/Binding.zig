@@ -691,6 +691,14 @@ pub const Action = union(enum) {
     /// stop, or otherwise touch whatever is running in the terminal.
     poltergeist_toggle_watch,
 
+    /// Cycle this terminal's work mode: clock-off, then the two infinite
+    /// modes, then back.
+    ///
+    /// Only the user sets a work mode. A supervisor cannot, and that is
+    /// what makes the ban on clocking off an infinite-mode terminal worth
+    /// anything -- otherwise it would switch the mode and then clock off.
+    poltergeist_cycle_work_mode,
+
     /// Resize the current split in the specified direction and amount in
     /// pixels. The two arguments should be joined with a comma (`,`),
     /// like in `resize_split:up,10`.
@@ -1479,6 +1487,7 @@ pub const Action = union(enum) {
             .toggle_readonly,
             .poltergeist_supervisor,
             .poltergeist_toggle_watch,
+            .poltergeist_cycle_work_mode,
             .resize_split,
             .equalize_splits,
             .inspector,

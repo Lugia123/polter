@@ -3361,18 +3361,46 @@ const notice_quiet_keyboard_ms = 10 * std.time.ms_per_s;
 /// multi-line pastes. So the newline is sent afterwards as its own key
 /// event, which is what a real return keypress looks like.
 fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
-    return self.typePoltergeistText(text, true);
+    // A refused notice is not an error worth propagating: the sampler will
+    // say the same thing again on its repeat interval.
+    self.typePoltergeistText(text, true) catch |err| switch (err) {
+        error.ChildExited, error.UserPresent, error.UnsafeText => {},
+        else => return err,
+    };
 }
 
 /// Change how long this terminal must be still before it is reported.
 pub fn setPoltergeistThreshold(self: *Surface, ms: u64) void {
-    self.queueIo(.{ .poltergeist_threshold = ms }, .locked);
+    // `.unlocked`: this runs on the app thread from an agent request, which
+    // holds no terminal lock. Claiming otherwise would have queueIo skip
+    // taking it.
+    self.queueIo(.{ .poltergeist_threshold = ms }, .unlocked);
 }
 
 /// Type text into this terminal as if the user had, optionally pressing
 /// return afterwards.
+pub const TypeError = error{
+    /// The terminal's child process has exited.
+    ChildExited,
+
+    /// Somebody is using this terminal right now.
+    UserPresent,
+
+    /// The text held something that would run on arrival.
+    UnsafeText,
+};
+
 pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void {
     if (text.len == 0) return;
+
+    // A newline inside the text is a submission the caller did not ask
+    // for. Bracketed paste swallows it, but a target that has bracketed
+    // paste off would run every line on arrival -- and `submit = false`
+    // would have promised the opposite.
+    if (std.mem.indexOfAny(u8, text, "\r\n") != null) {
+        log.warn("poltergeist: refusing text containing a line break", .{});
+        return error.UnsafeText;
+    }
 
     // A terminal whose child has exited is showing the user why. Typing
     // into it would send the synthesized return down `keyCallback`'s
@@ -3381,7 +3409,7 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
     // anyway.
     if (self.child_exited) {
         log.info("poltergeist: notice dropped, the child process has exited", .{});
-        return;
+        return error.ChildExited;
     }
 
     // Never interrupt someone who is currently using this terminal. A
@@ -3398,7 +3426,7 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
         const now: std.Io.Timestamp = .now(global.io(), .awake);
         if (last.durationTo(now).toMilliseconds() < notice_quiet_keyboard_ms) {
             log.info("poltergeist: notice deferred, the user is typing", .{});
-            return;
+            return error.UserPresent;
         }
     }
 
@@ -5577,7 +5605,31 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // Otherwise this only records an intention: `poltergeist-watch`
             // defaults to off, so with a default config nothing would ever
             // look at the terminal and no notice could ever arrive.
-            self.queueIo(.{ .poltergeist_watch = !watched }, .locked);
+            // `.unlocked`: a keybind action holds no terminal lock.
+            self.queueIo(.{ .poltergeist_watch = !watched }, .unlocked);
+            return true;
+        },
+
+        .poltergeist_cycle_work_mode => {
+            const bus = &self.app.poltergeist;
+            const current = if (bus.get(self.id)) |e| e.work_mode else .clock_off;
+            const next: @TypeOf(current) = switch (current) {
+                .clock_off => .infinite_directed,
+                .infinite_directed => .infinite_sequential,
+                .infinite_sequential => .clock_off,
+            };
+
+            // `.user`: this is a keypress. The bus refuses this from
+            // anywhere else, which is the whole point.
+            bus.setWorkMode(self.id, next, .user) catch |err| switch (err) {
+                error.UnknownTerminal => {
+                    try bus.register(self.id);
+                    try bus.setWorkMode(self.id, next, .user);
+                },
+                error.NotPermitted => unreachable,
+            };
+
+            log.info("poltergeist: work mode is now {s}", .{@tagName(next)});
             return true;
         },
 

@@ -24,8 +24,13 @@ useful way:
 - **screen unchanged** — nothing visible has moved.
 - **pty silent** — the program has written nothing at all.
 
-A program redrawing a spinner is silent in the first sense and noisy in the
-second. A program that has genuinely stopped is silent in both.
+A spinner changes the screen, so a terminal drawing one does not go quiet
+at all and you will not hear about it. What the two figures separate is
+subtler: a program can write bytes that leave the visible screen unchanged
+— redrawing the same frame, or emitting escape sequences that move the
+cursor and put it back. Then the screen is unchanged while the pty is not
+silent, and the program is alive even though nothing has moved. A program
+that has genuinely stopped is silent in both.
 
 ## What to do when you are told
 

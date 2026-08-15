@@ -360,6 +360,10 @@ test "a demoted supervisor immediately loses its reach" {
 
 const wire = @import("wire.zig");
 
+/// Most screen text one reply may carry, comfortably under what the sidecar
+/// will read back.
+const max_text_bytes = 128 * 1024;
+
 /// What the app must supply for a request to be carried out.
 ///
 /// An interface rather than a direct dependency on `App` so the dispatch
@@ -476,8 +480,30 @@ pub fn dispatch(
         },
 
         .terminal_read => |p| {
-            const text = host.readTerminal(alloc, p.id, p.lines) catch
+            // Accepted in the wire format for forward compatibility, but
+            // refused rather than ignored: an agent that asked for
+            // scrollback and silently got the visible screen would reason
+            // about rows it never saw.
+            if (p.lines != 0) return hostFailure(
+                "NotImplemented",
+                "reading scrollback is not available; omit `lines` for the visible screen",
+            );
+
+            const text = host.readTerminal(alloc, p.id, 0) catch
                 return hostFailure("ReadFailed", "could not read that terminal");
+
+            // Bounded so one reply cannot exceed what the sidecar will
+            // read. A truncated screen with a note beats a desynchronised
+            // connection.
+            if (text.len > max_text_bytes) {
+                defer alloc.free(text);
+                return .{ .text = try std.fmt.allocPrint(
+                    alloc,
+                    "[truncated to the last {d} bytes]\n{s}",
+                    .{ max_text_bytes, text[text.len - max_text_bytes ..] },
+                ) };
+            }
+
             return .{ .text = text };
         },
 

@@ -164,7 +164,7 @@ pub const InitError = error{
     PathTooLong,
 } || Allocator.Error || net.UnixAddress.ListenError;
 
-/// Start listening. The socket is created with owner-only permissions.
+/// Start listening.
 pub fn init(
     alloc: Allocator,
     io: std.Io,

@@ -392,6 +392,13 @@ fn poltergeistRead(
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
 
+    // The pins have to be taken under the same lock that the read happens
+    // under. The terminal belongs to the IO thread, and building a
+    // selection first would let it scroll or reclaim a page in between --
+    // leaving the pins pointing at freed nodes by the time they are used.
+    surface.renderer_state.mutex.lockUncancelable(global.io());
+    defer surface.renderer_state.mutex.unlock(global.io());
+
     // The visible screen. `lines` is not honoured yet: selecting further
     // back needs a pin walk into the scrollback, and handing back the wrong
     // rows would be worse than not offering it.
@@ -400,7 +407,7 @@ fn poltergeistRead(
     const br = screen.pages.getBottomRight(.viewport) orelse tl;
     const sel: terminal.Selection = .init(tl, br, false);
 
-    const text = try surface.dumpText(alloc, sel);
+    const text = try surface.dumpTextLocked(alloc, sel);
     return text.text;
 }
 
