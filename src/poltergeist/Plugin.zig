@@ -1,0 +1,348 @@
+//! Running somebody else's script on our behalf.
+//!
+//! A plugin is a directory with a `plugin.yaml` and an executable. Polter
+//! writes one line of JSON to the executable's stdin and reads its exit
+//! code. That is the whole contract.
+//!
+//! **Why a process and not a library.** These are scripts people copy off
+//! the internet. They will hang, segfault, and flood stdout, and none of
+//! that may take the terminal down with it -- a process boundary is the
+//! only place that guarantee comes free. The rate makes it affordable: the
+//! box already caps interruptions at one a minute, so a fork per
+//! notification costs nothing that matters. And it means any language: a
+//! twenty-line `curl` script is a complete plugin, where requiring Zig
+//! would mean the extension point does not exist. See
+//! `docs/poltergeist/plugins.md` for the routes that were rejected.
+//!
+//! This file is the **host**: it knows about manifests, processes, timeouts
+//! and exit codes, and nothing about what any particular kind of plugin is
+//! for. What goes in the JSON is decided a layer up. That split is what
+//! lets `sensor` and `action` plugins arrive later without this file
+//! learning about them -- and why there is no code for those two here now,
+//! since an interface guessed before its first use is harder to change than
+//! no interface at all.
+
+const Plugin = @This();
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const log = std.log.scoped(.poltergeist);
+
+/// Longest a plugin may take before it is killed.
+///
+/// Something has to bound this. A plugin that cannot reach the network
+/// will sit there, and the scenario this feature exists for is one where
+/// nobody is watching to notice.
+const default_timeout_ms: u64 = 10 * std.time.ms_per_s;
+
+/// What a plugin is for.
+///
+/// Only one value today. The field exists so that the host can tell kinds
+/// apart before there is a second one -- adding a variant should not mean
+/// discovering that every manifest has to be rewritten.
+pub const Kind = enum {
+    /// Sends a message somewhere the user will see it.
+    notify,
+};
+
+/// A plugin as declared by its manifest.
+///
+/// Everything is owned by `arena`, which the loader hands over whole.
+pub const Manifest = struct {
+    /// Unique, and the name the config refers to.
+    key: []const u8,
+
+    /// For a person reading a list of them.
+    name: []const u8 = "",
+
+    kind: Kind,
+
+    /// Absolute path to the executable.
+    exec: []const u8,
+
+    timeout_ms: u64 = default_timeout_ms,
+};
+
+/// What came of running one.
+pub const Outcome = enum {
+    /// Exit code zero. The plugin says it did the job.
+    done,
+
+    /// Exit code non-zero: the plugin says it failed.
+    refused,
+
+    /// Killed for taking too long.
+    timed_out,
+
+    /// Could not be started at all.
+    unstartable,
+};
+
+/// Run a plugin, giving it `input` on stdin.
+///
+/// Never returns an error. Every way this can go wrong is a way a
+/// *notification* fails, and a failed notification must not propagate into
+/// whatever was being reported -- the terminals go on talking either way.
+///
+/// `input` normally holds resolved credentials, which is why it goes on
+/// stdin rather than into the environment or the argument list: both of
+/// those are readable by any process the plugin itself starts, and by
+/// anyone running `ps`.
+pub fn run(
+    manifest: Manifest,
+    alloc: Allocator,
+    io: std.Io,
+    input: []const u8,
+) Outcome {
+    var child = std.process.spawn(io, .{
+        .argv = &.{manifest.exec},
+        .stdin = .pipe,
+
+        // Ignored rather than captured: a plugin has nothing to tell us
+        // that the exit code does not already say, and reading a pipe we
+        // do not care about is one more thing that can block.
+        .stdout = .ignore,
+
+        // Inherited so that whatever a plugin complains about lands
+        // wherever Polter's own output goes. Its author put it there to be
+        // read.
+        .stderr = .inherit,
+    }) catch |err| {
+        log.warn("plugin {s}: could not start err={}", .{ manifest.key, err });
+        return .unstartable;
+    };
+
+    // Write, then close: a plugin reading to end-of-input has to see one.
+    if (child.stdin) |stdin| {
+        stdin.writeStreamingAll(io, input) catch |err| {
+            log.warn("plugin {s}: could not write err={}", .{ manifest.key, err });
+        };
+        stdin.close(io);
+        child.stdin = null;
+    }
+
+    _ = alloc;
+
+    // Waiting has no timeout of its own, so the clock runs on another
+    // thread. It signals the child; the wait below then returns on its own
+    // because the process is gone.
+    //
+    // A signal rather than `Child.kill`, which also reaps -- and reaping
+    // from over here would leave the `wait` below with no child to wait
+    // for. One reaper, one waiter.
+    var killer: Killer = .{
+        .pid = child.id,
+        .io = io,
+        .deadline_ms = manifest.timeout_ms,
+        .key = manifest.key,
+    };
+    const thread = std.Thread.spawn(.{}, Killer.run, .{&killer}) catch null;
+
+    const term = child.wait(io) catch |err| {
+        log.warn("plugin {s}: could not wait err={}", .{ manifest.key, err });
+        killer.retire();
+        if (thread) |t| t.join();
+        return .unstartable;
+    };
+
+    killer.retire();
+    if (thread) |t| t.join();
+
+    if (killer.fired.load(.acquire)) return .timed_out;
+
+    return switch (term) {
+        .exited => |code| if (code == 0) .done else .refused,
+        else => .refused,
+    };
+}
+
+/// Signals the child once the deadline passes, unless the wait finished
+/// first.
+///
+/// Polls rather than sleeping out the whole deadline, so a plugin that
+/// finishes in 50ms does not leave a thread parked for ten seconds.
+///
+/// The lock is what makes signalling safe: `retire` is called once the
+/// waiter has reaped, and takes the same lock, so a signal is either sent
+/// while the process is definitely alive or not sent at all. Without it
+/// there is a window where the pid has been reaped and reissued, and the
+/// signal would land on somebody else's process.
+const Killer = struct {
+    pid: ?std.process.Child.Id,
+    io: std.Io,
+    deadline_ms: u64,
+    key: []const u8,
+
+    mutex: std.Io.Mutex = .init,
+    fired: std.atomic.Value(bool) = .init(false),
+
+    const tick_ms: u64 = 50;
+
+    /// The child has been reaped; there is no longer anything to signal.
+    fn retire(self: *Killer) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.pid = null;
+    }
+
+    fn run(self: *Killer) void {
+        var waited: u64 = 0;
+        while (waited < self.deadline_ms) {
+            {
+                self.mutex.lockUncancelable(self.io);
+                defer self.mutex.unlock(self.io);
+                if (self.pid == null) return;
+            }
+            std.Io.sleep(self.io, .fromMilliseconds(tick_ms), .awake) catch return;
+            waited += tick_ms;
+        }
+
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const pid = self.pid orelse return;
+
+        log.warn(
+            "plugin {s}: gave up after {d}ms",
+            .{ self.key, self.deadline_ms },
+        );
+        self.fired.store(true, .release);
+        std.posix.kill(pid, std.posix.SIG.KILL) catch |err| {
+            log.warn("plugin {s}: could not stop it err={}", .{ self.key, err });
+        };
+    }
+};
+
+// -- tests ------------------------------------------------------------------
+
+const testing = std.testing;
+
+test {
+    testing.refAllDecls(@This());
+}
+
+/// Write a throwaway script and give back its path, owned by `arena`.
+fn scriptFor(arena: Allocator, io: std.Io, body: []const u8) ![]const u8 {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+
+    const dir = try std.fmt.allocPrint(arena, "/tmp/polter-plug-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+
+    var f = try d.createFile(io, "run.sh", .{ .permissions = .fromMode(0o755) });
+    try f.writeStreamingAll(io, body);
+    f.close(io);
+
+    return std.fmt.allocPrint(arena, "{s}/run.sh", .{dir});
+}
+
+test "a plugin that exits zero has done the job" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const path = try scriptFor(alloc, io, "#!/bin/sh\nexit 0\n");
+    const outcome = run(
+        .{ .key = "ok", .kind = .notify, .exec = path },
+        alloc,
+        io,
+        "{}",
+    );
+    try testing.expectEqual(Outcome.done, outcome);
+}
+
+test "a plugin that exits non-zero has refused" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const path = try scriptFor(alloc, io, "#!/bin/sh\nexit 3\n");
+    const outcome = run(
+        .{ .key = "nope", .kind = .notify, .exec = path },
+        alloc,
+        io,
+        "{}",
+    );
+    try testing.expectEqual(Outcome.refused, outcome);
+}
+
+test "what goes in on stdin is what the plugin reads" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const out = try std.fmt.allocPrint(alloc, "/tmp/polter-in-{x}", .{&raw});
+
+    const body = try std.fmt.allocPrint(
+        alloc,
+        "#!/bin/sh\ncat > {s}\nexit 0\n",
+        .{out},
+    );
+    const path = try scriptFor(alloc, io, body);
+
+    const outcome = run(
+        .{ .key = "echo", .kind = .notify, .exec = path },
+        alloc,
+        io,
+        "{\"event\":\"confirmation_needed\"}",
+    );
+    try testing.expectEqual(Outcome.done, outcome);
+
+    const got = try std.Io.Dir.cwd().readFileAlloc(io, out, alloc, .limited(4096));
+    try testing.expectEqualStrings("{\"event\":\"confirmation_needed\"}", got);
+}
+
+test "a plugin that hangs is killed rather than waited on" {
+    // The case this matters for: nobody is watching. A plugin that cannot
+    // reach the network would otherwise sit there until morning.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const path = try scriptFor(alloc, io, "#!/bin/sh\nsleep 30\n");
+    const outcome = run(
+        .{ .key = "hang", .kind = .notify, .exec = path, .timeout_ms = 300 },
+        alloc,
+        io,
+        "{}",
+    );
+    try testing.expectEqual(Outcome.timed_out, outcome);
+}
+
+test "a plugin that is not there is not a crash" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+
+    const outcome = run(
+        .{ .key = "ghost", .kind = .notify, .exec = "/nonexistent/plugin" },
+        alloc,
+        threaded.io(),
+        "{}",
+    );
+    try testing.expectEqual(Outcome.unstartable, outcome);
+}
