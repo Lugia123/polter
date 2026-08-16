@@ -76,6 +76,11 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuTerminalInspector: NSMenuItem?
     @IBOutlet private var menuCommandPalette: NSMenuItem?
 
+    @IBOutlet private var menuPoltergeistChat: NSMenuItem?
+    @IBOutlet private var menuPoltergeistSupervisor: NSMenuItem?
+    @IBOutlet private var menuPoltergeistWatch: NSMenuItem?
+    @IBOutlet private var menuPoltergeistWorkMode: NSMenuItem?
+
     @IBOutlet private var menuEqualizeSplits: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerUp: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerDown: NSMenuItem?
@@ -1202,6 +1207,14 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "toggle_window_float_on_top", menuItem: self.menuFloatOnTop)
         syncMenuShortcut(config, action: "inspector:toggle", menuItem: self.menuTerminalInspector)
         syncMenuShortcut(config, action: "toggle_command_palette", menuItem: self.menuCommandPalette)
+
+        // None of these four ship with a default binding, so ordinarily the
+        // menu shows no shortcut at all -- which is the point of them being
+        // in the menu. If somebody does bind one, it shows up here.
+        syncMenuShortcut(config, action: "poltergeist_toggle_chat", menuItem: self.menuPoltergeistChat)
+        syncMenuShortcut(config, action: "poltergeist_supervisor", menuItem: self.menuPoltergeistSupervisor)
+        syncMenuShortcut(config, action: "poltergeist_toggle_watch", menuItem: self.menuPoltergeistWatch)
+        syncMenuShortcut(config, action: "poltergeist_cycle_work_mode", menuItem: self.menuPoltergeistWorkMode)
 
         syncMenuShortcut(config, action: "toggle_secure_input", menuItem: self.menuSecureInput)
 

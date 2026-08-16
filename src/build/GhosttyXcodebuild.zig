@@ -49,7 +49,11 @@ pub fn init(
     };
 
     const env = b.graph.environ_map;
-    const app_path = b.fmt("macos/build/{s}/Ghostty.app", .{xc_config});
+    // The bundle is named for the product, not for the Xcode target: the
+    // target is still called Ghostty, and renaming it would churn the
+    // project file for nothing. Getting this wrong fails `zig build` at
+    // the very last step, after everything has already been compiled.
+    const app_path = b.fmt("macos/build/{s}/Polter.app", .{xc_config});
 
     // Our step to build the Ghostty macOS app.
     const build = build: {

@@ -67,6 +67,10 @@
                 <outlet property="menuSplitRight" destination="VUR-Ld-nLx" id="RxO-Zw-ovb"/>
                 <outlet property="menuSplitUp" destination="Ggp-7N-GbX" id="YJF-uq-S4Y"/>
                 <outlet property="menuTerminalInspector" destination="QwP-M5-fvh" id="wJi-Dh-S9f"/>
+                <outlet property="menuPoltergeistChat" destination="pg1-Ch-At1" id="pg1-Ou-Tl1"/>
+                <outlet property="menuPoltergeistSupervisor" destination="pg3-Su-Pv1" id="pg3-Ou-Tl1"/>
+                <outlet property="menuPoltergeistWatch" destination="pg4-Wa-Tc1" id="pg4-Ou-Tl1"/>
+                <outlet property="menuPoltergeistWorkMode" destination="pg5-Wm-Cy1" id="pg5-Ou-Tl1"/>
                 <outlet property="menuToggleFullScreen" destination="8kY-Pi-KaY" id="yQg-6V-OO6"/>
                 <outlet property="menuToggleVisibility" destination="DOX-wA-ilh" id="iBj-Bc-2bq"/>
                 <outlet property="menuUndo" destination="r83-CV-syt" id="bU9-0b-xgQ"/>
@@ -369,6 +373,38 @@
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="toggleTerminalInspector:" target="-1" id="87m-3R-fQl"/>
+                                </connections>
+                            </menuItem>
+                        </items>
+                    </menu>
+                </menuItem>
+                <menuItem title="Polter" id="pg0-Mn-Ma1" userLabel="Polter">
+                    <modifierMask key="keyEquivalentModifierMask"/>
+                    <menu key="submenu" title="Polter" id="pg0-Mn-Ma2">
+                        <items>
+                            <menuItem title="Terminal Conversations" id="pg1-Ch-At1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="poltergeistToggleChat:" target="-1" id="pg1-Ch-At2"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem isSeparatorItem="YES" id="pg2-Sp-Ar1"/>
+                            <menuItem title="Make This Terminal the Supervisor" id="pg3-Su-Pv1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="poltergeistSupervisor:" target="-1" id="pg3-Su-Pv2"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Supervise This Terminal" id="pg4-Wa-Tc1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="poltergeistToggleWatch:" target="-1" id="pg4-Wa-Tc2"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Cycle This Terminal's Work Mode" id="pg5-Wm-Cy1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="poltergeistCycleWorkMode:" target="-1" id="pg5-Wm-Cy2"/>
                                 </connections>
                             </menuItem>
                         </items>

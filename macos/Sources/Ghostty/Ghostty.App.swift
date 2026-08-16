@@ -246,6 +246,17 @@ extension Ghostty {
             }
         }
 
+        /// Perform one of the poltergeist bindings on a surface.
+        ///
+        /// One function for all of them rather than four that differ only
+        /// in a string: they are reached the same way and fail the same
+        /// way, and a copy each would be four places to fix a typo.
+        func poltergeistAction(surface: ghostty_surface_t, _ action: String) {
+            if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
+                logger.warning("action failed action=\(action, privacy: .public)")
+            }
+        }
+
         func resetTerminal(surface: ghostty_surface_t) {
             let action = "reset"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {

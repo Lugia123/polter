@@ -62,6 +62,14 @@ poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
 /// directory is known. Owned.
 poltergeist_session_path: ?[]const u8 = null,
 
+/// What the previous run left in the session file, read once at startup.
+///
+/// This is what `session_recall` answers with, and it is deliberately not
+/// the current arrangement: the point of recall is the arrangement that
+/// was lost. The live one is what `group_members` and `group_read` are
+/// for.
+poltergeist_recall: ?[]const u8 = null,
+
 /// The same conversation, written down. Null when logging is off.
 ///
 /// The chat in memory is a working set: it trims as it grows and the
@@ -222,6 +230,7 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_server) |*srv| srv.deinit();
     if (self.chat_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
+    if (self.poltergeist_recall) |r| self.alloc.free(r);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
     self.chat_surfaces.deinit(self.alloc);
     self.chat.deinit();
@@ -480,6 +489,15 @@ fn sessionSnapshot(
             // so there is nothing about them to write down.
             if (id == poltergeistpkg.Chat.user_id) continue;
 
+            // Asked again here, not only when the member was added and
+            // when it last spoke. A terminal added in the second before
+            // its shell reported a working directory had nothing to
+            // record, and a supervisor -- which mostly reads -- may never
+            // post at all, so it would keep that blank for good. This is
+            // the moment the record is being written down, which makes it
+            // the moment to make it as true as we can.
+            self.refreshFooting(name, id);
+
             const footing = self.chat.footingOf(name, id) orelse continue;
             const entry = self.poltergeist.get(id);
 
@@ -535,6 +553,20 @@ pub fn ensureChatLog(self: *App, want: bool) void {
             self.alloc,
             state_dir,
         ) catch null;
+
+        // Read before anything can write. What is in the file now is what
+        // the *last* run left behind, and this run will overwrite it the
+        // first time anything changes -- with nothing, because no group
+        // has been rebuilt yet. Held in memory, the material outlives the
+        // write that would otherwise destroy it before anybody asked.
+        if (self.poltergeist_session_path) |p| {
+            self.poltergeist_recall = std.Io.Dir.cwd().readFileAlloc(
+                io,
+                p,
+                self.alloc,
+                .limited(4 * 1024 * 1024),
+            ) catch null;
+        }
     }
 }
 
@@ -814,7 +846,6 @@ pub fn refreshPoltergeistTabs(self: *App) void {
         rt_surface.core().updatePoltergeistTabMark();
     }
 }
-
 
 fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
@@ -1150,13 +1181,12 @@ fn pluginParams(
 fn sessionRecall(ctx: *anyopaque, alloc: Allocator) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
 
-    const path = self.poltergeist_session_path orelse return "";
-    return std.Io.Dir.cwd().readFileAlloc(
-        global.io(),
-        path,
-        alloc,
-        .limited(4 * 1024 * 1024),
-    ) catch "";
+    // Not read from the file here. By the time anybody asks, this run has
+    // already written over it -- becoming the supervisor is itself a
+    // change worth saving, and it happens before the supervisor can ask a
+    // single question.
+    const recall = self.poltergeist_recall orelse return "";
+    return alloc.dupe(u8, recall);
 }
 
 /// Say what a group is for.

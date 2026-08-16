@@ -1412,6 +1412,33 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         ghostty.toggleTerminalInspector(surface: surface)
     }
 
+    // MARK: - Poltergeist
+    //
+    // These four are in the menu because until they were, the only way to
+    // reach any of them was a keybind nobody had set: they ship with no
+    // default binding, so a feature with no menu item was a feature with
+    // no way in at all.
+
+    @IBAction func poltergeistToggleChat(_ sender: Any?) {
+        guard let surface = focusedSurface?.surface else { return }
+        ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_chat")
+    }
+
+    @IBAction func poltergeistSupervisor(_ sender: Any?) {
+        guard let surface = focusedSurface?.surface else { return }
+        ghostty.poltergeistAction(surface: surface, "poltergeist_supervisor")
+    }
+
+    @IBAction func poltergeistToggleWatch(_ sender: Any?) {
+        guard let surface = focusedSurface?.surface else { return }
+        ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_watch")
+    }
+
+    @IBAction func poltergeistCycleWorkMode(_ sender: Any?) {
+        guard let surface = focusedSurface?.surface else { return }
+        ghostty.poltergeistAction(surface: surface, "poltergeist_cycle_work_mode")
+    }
+
     // MARK: - TerminalViewDelegate
 
     override func focusedSurfaceDidChange(to: Ghostty.SurfaceView?) {
