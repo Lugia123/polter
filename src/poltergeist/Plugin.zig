@@ -27,6 +27,8 @@ const Plugin = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const secret = @import("secret.zig");
+
 const log = std.log.scoped(.poltergeist);
 
 /// Longest a plugin may take before it is killed.
@@ -64,6 +66,13 @@ pub const Manifest = struct {
     timeout_ms: u64 = default_timeout_ms,
 };
 
+/// One parameter as configured. The value may be a reference; see
+/// `secret.zig`.
+pub const Param = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
 /// What came of running one.
 pub const Outcome = enum {
     /// Exit code zero. The plugin says it did the job.
@@ -77,7 +86,79 @@ pub const Outcome = enum {
 
     /// Could not be started at all.
     unstartable,
+
+    /// A parameter names something that could not be fetched -- a locked
+    /// vault, a missing file. The plugin was not run: handing it a
+    /// half-resolved set of parameters would have it send the reference
+    /// itself somewhere.
+    unresolved,
 };
+
+/// Resolve `params` and run the plugin with them.
+///
+/// `body` is the part of the JSON that is the same whatever the plugin --
+/// the event, the message, which terminal. This wraps it with a `params`
+/// object built by resolving each configured value, and hands the whole
+/// thing over on stdin.
+///
+/// Resolution happens **here, once, at the moment of the call**. Nothing
+/// is cached: a vault that has locked since this morning must fail, and a
+/// cache would hide that it locked at all.
+pub fn call(
+    manifest: Manifest,
+    alloc: Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+    body: []const u8,
+    params: []const Param,
+) Outcome {
+    // The params object is rendered on its own, so the JSON writer owns a
+    // complete value and its state machine stays honest. Splicing into a
+    // half-written object is what it asserts against, and rightly.
+    var rendered: std.Io.Writer.Allocating = .init(alloc);
+    defer rendered.deinit();
+
+    {
+        var s: std.json.Stringify = .{ .writer = &rendered.writer, .options = .{} };
+        s.beginObject() catch return .unstartable;
+        for (params) |p| {
+            const value = secret.resolve(alloc, io, env, p.value) catch {
+                log.warn(
+                    "plugin {s}: could not resolve {s}, not running it",
+                    .{ manifest.key, p.name },
+                );
+                return .unresolved;
+            };
+            defer alloc.free(value);
+
+            s.objectField(p.name) catch return .unstartable;
+            s.write(value) catch return .unstartable;
+        }
+        s.endObject() catch return .unstartable;
+    }
+
+    // `body` is already an object; params go in beside its fields rather
+    // than under them, so a plugin author reads one flat thing.
+    const trimmed = std.mem.trim(u8, body, " \t\r\n");
+    const inner = if (trimmed.len >= 2 and trimmed[0] == '{' and trimmed[trimmed.len - 1] == '}')
+        std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\r\n")
+    else
+        "";
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+
+    out.writer.writeAll("{") catch return .unstartable;
+    if (inner.len > 0) {
+        out.writer.writeAll(inner) catch return .unstartable;
+        out.writer.writeAll(",") catch return .unstartable;
+    }
+    out.writer.writeAll("\"params\":") catch return .unstartable;
+    out.writer.writeAll(rendered.written()) catch return .unstartable;
+    out.writer.writeAll("}") catch return .unstartable;
+
+    return run(manifest, alloc, io, out.written());
+}
 
 /// Run a plugin, giving it `input` on stdin.
 ///
@@ -345,4 +426,87 @@ test "a plugin that is not there is not a crash" {
         "{}",
     );
     try testing.expectEqual(Outcome.unstartable, outcome);
+}
+
+test "resolved parameters arrive as plain values" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    try env.put("POLTER_TEST_KEY", "s3cret");
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const out = try std.fmt.allocPrint(alloc, "/tmp/polter-call-{x}", .{&raw});
+
+    const body = try std.fmt.allocPrint(alloc, "#!/bin/sh\ncat > {s}\n", .{out});
+    const path = try scriptFor(alloc, io, body);
+
+    const outcome = call(
+        .{ .key = "feishu", .kind = .notify, .exec = path },
+        alloc,
+        io,
+        &env,
+        "{\"event\":\"confirmation_needed\"}",
+        &.{
+            .{ .name = "webhook", .value = "https://example/hook" },
+            .{ .name = "signing_key", .value = "env:POLTER_TEST_KEY" },
+        },
+    );
+    try testing.expectEqual(Outcome.done, outcome);
+
+    const got = try std.Io.Dir.cwd().readFileAlloc(io, out, alloc, .limited(4096));
+
+    // The event survives, the literal survives, and the reference has
+    // become the value it points at -- not the reference.
+    try testing.expect(std.mem.indexOf(u8, got, "\"event\":\"confirmation_needed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"webhook\":\"https://example/hook\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"signing_key\":\"s3cret\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "env:") == null);
+}
+
+test "a parameter that will not resolve stops the call" {
+    // The plugin must not run at all. Running it with the reference in
+    // place would send `cmd:...` to Feishu as though it were the key.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const marker = try std.fmt.allocPrint(alloc, "/tmp/polter-ran-{x}", .{&raw});
+
+    const body = try std.fmt.allocPrint(alloc, "#!/bin/sh\ntouch {s}\n", .{marker});
+    const path = try scriptFor(alloc, io, body);
+
+    const outcome = call(
+        .{ .key = "feishu", .kind = .notify, .exec = path },
+        alloc,
+        io,
+        &env,
+        "{}",
+        &.{.{ .name = "signing_key", .value = "env:POLTER_TEST_ABSENT" }},
+    );
+    try testing.expectEqual(Outcome.unresolved, outcome);
+
+    // Nothing ran: the plugin would have created this if it had.
+    try testing.expect(std.Io.Dir.cwd().readFileAlloc(
+        io,
+        marker,
+        alloc,
+        .limited(16),
+    ) == error.FileNotFound);
 }
