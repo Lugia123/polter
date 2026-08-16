@@ -33,3 +33,6 @@ glad.zip
 vgcore.*
 
 /sprite_face_test*
+
+# LLVM profiling output, dropped wherever a build happens to run
+*.profraw
