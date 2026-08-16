@@ -44,6 +44,10 @@ poltergeist: poltergeistpkg.Bus,
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
 
+/// Where last night's arrangement is written down. Null until the state
+/// directory is known. Owned.
+poltergeist_session_path: ?[]const u8 = null,
+
 /// The same conversation, written down. Null when logging is off.
 ///
 /// The chat in memory is a working set: it trims as it grows and the
@@ -203,6 +207,7 @@ pub fn deinit(self: *App) void {
 
     if (self.poltergeist_server) |*srv| srv.deinit();
     if (self.chat_log) |*l| l.deinit();
+    if (self.poltergeist_session_path) |p| self.alloc.free(p);
     self.chat_surfaces.deinit(self.alloc);
     self.chat.deinit();
     self.poltergeist.deinit();
@@ -333,6 +338,68 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
     };
 }
 
+/// Write down what tomorrow needs, now.
+///
+/// Called after anything that changes the arrangement -- a group made, a
+/// member added or removed, a brief written, a role or work mode changed.
+/// Not at exit: the cases this exists for are the machine shutting down
+/// and Polter being killed, and neither of those runs an exit path.
+///
+/// Cheap enough to do eagerly: a few hundred bytes, and these events are
+/// rare. Skipped entirely when there is nowhere to write.
+pub fn saveSession(self: *App) void {
+    const path = self.poltergeist_session_path orelse return;
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const snapshot = self.sessionSnapshot(alloc) catch |err| {
+        log.warn("poltergeist: could not gather the session err={}", .{err});
+        return;
+    };
+
+    poltergeistpkg.Session.write(alloc, global.io(), path, snapshot);
+}
+
+/// Everything worth writing down, borrowed from `alloc`.
+fn sessionSnapshot(
+    self: *App,
+    alloc: Allocator,
+) Allocator.Error!poltergeistpkg.Session.Snapshot {
+    const names = try self.chat.groupsFor(alloc, poltergeistpkg.Chat.user_id);
+
+    var groups: std.ArrayListUnmanaged(poltergeistpkg.Session.Group) = .empty;
+    for (names) |name| {
+        const ids = self.chat.membersOf(alloc, name) catch continue;
+
+        var members: std.ArrayListUnmanaged(poltergeistpkg.Session.Member) = .empty;
+        for (ids) |id| {
+            // The user is in every group and has no terminal of their own,
+            // so there is nothing about them to write down.
+            if (id == poltergeistpkg.Chat.user_id) continue;
+
+            const footing = self.chat.footingOf(name, id) orelse continue;
+            const entry = self.poltergeist.get(id);
+
+            try members.append(alloc, .{
+                .cwd = footing.cwd,
+                .title = footing.title,
+                .role = if (entry) |e| e.role else .none,
+                .work_mode = if (entry) |e| e.work_mode else .clock_off,
+            });
+        }
+
+        try groups.append(alloc, .{
+            .name = name,
+            .brief = self.chat.briefOf(name) catch "",
+            .members = members.items,
+        });
+    }
+
+    return .{ .groups = groups.items };
+}
+
 /// Open the chat log if the config wants it and it is not open yet.
 ///
 /// Same reasoning as the socket: `updateConfig` runs only on a config
@@ -360,6 +427,14 @@ pub fn ensureChatLog(self: *App, want: bool) void {
         log.warn("poltergeist: could not open the chat log err={}", .{err});
         return;
     };
+
+    // Same directory, and the log having opened means it exists.
+    if (self.poltergeist_session_path == null) {
+        self.poltergeist_session_path = poltergeistpkg.Session.defaultPath(
+            self.alloc,
+            state_dir,
+        ) catch null;
+    }
 }
 
 /// Open the agent socket if the config wants it and it is not open yet.
@@ -476,6 +551,14 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // has not moved.
     defer self.refreshPoltergeistTabs();
 
+    // Duty changes are part of the arrangement, so they go in the notes
+    // for tomorrow. The group calls save themselves; these do not pass
+    // through the chat at all.
+    defer switch (pending.request) {
+        .clock_out, .clock_in => self.saveSession(),
+        else => {},
+    };
+
     // The server resolved the token to a surface, exactly as it does for
     // an agent's sidecar. One more question decides whose request this is:
     // a surface this app opened for the chat speaks for the person at the
@@ -538,6 +621,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatRemove = chatRemove,
         .chatCompact = chatCompact,
         .chatPost = chatPost,
+        .sessionRecall = sessionRecall,
         .chatSetBrief = chatSetBrief,
         .chatGroupInfo = chatGroupInfo,
         .chatMembers = chatMembers,
@@ -616,6 +700,7 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
     // The person at the keyboard has no terminal of their own, so there
     // is nothing to record about where they are working.
     try self.chat.add(group, poltergeistpkg.Chat.user_id, .all, .{});
+    self.saveSession();
 }
 
 /// Bring every tab's Poltergeist mark in line with the state behind it.
@@ -632,6 +717,7 @@ pub fn refreshPoltergeistTabs(self: *App) void {
 fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.chat.destroy(group);
+    self.saveSession();
 }
 
 fn chatAdd(
@@ -650,6 +736,7 @@ fn chatAdd(
     const footing = self.footingOf(fixed.allocator(), id);
 
     try self.chat.add(group, id, history, footing);
+    self.saveSession();
 }
 
 /// Bring a member's recorded footing up to date, if we learned anything.
@@ -706,6 +793,7 @@ fn chatRemove(
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.chat.remove(group, id);
+    self.saveSession();
 }
 
 fn chatCompact(
@@ -795,6 +883,23 @@ fn chatGroups(
     return owned;
 }
 
+/// Hand back last night's arrangement, as it was written down.
+///
+/// Verbatim, unparsed. The program has no use for it -- it is material for
+/// the supervisor to read and act on, and re-encoding it here would only
+/// add a place for the two shapes to drift apart.
+fn sessionRecall(ctx: *anyopaque, alloc: Allocator) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const path = self.poltergeist_session_path orelse return "";
+    return std.Io.Dir.cwd().readFileAlloc(
+        global.io(),
+        path,
+        alloc,
+        .limited(4 * 1024 * 1024),
+    ) catch "";
+}
+
 /// Say what a group is for.
 fn chatSetBrief(
     ctx: *anyopaque,
@@ -803,6 +908,7 @@ fn chatSetBrief(
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.chat.setBrief(group, text);
+    self.saveSession();
 }
 
 /// The groups a terminal is in, with each group's note when it is asked

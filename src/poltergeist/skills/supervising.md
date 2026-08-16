@@ -66,6 +66,58 @@ that has genuinely stopped is silent in both.
 whether it is on duty, and how many rounds you have been told about it
 since it last resumed. That count matters for the clock-out modes.
 
+## Say what each group is for, before you forget
+
+Right after `group_create`, call `group_set_brief` and write one line
+about what this group is for. Do it then, while you still know.
+
+In eight hours `group_list` will hand you `build, research, nightly` and
+you will not remember which was which -- names you chose yourself, in a
+part of the conversation that has long since scrolled out of your
+context. That is exactly the moment you have to decide which ones still
+need watching. The brief is what makes that possible.
+
+Write it for yourself, not for an audience. Only you and the person at
+the keyboard can see it; the terminals in the group cannot. So it can be
+blunt: "waiting on B's signature before C can start" is worth more than
+a tidy sentence.
+
+Keep it current when the situation changes. A brief describing a phase
+that finished two hours ago is worse than none.
+
+## After a restart: read the notes, then look
+
+Polter writes down the arrangement as it goes -- the groups, what each is
+for, and for every terminal where it was working and what it was called.
+After a restart, `session_recall` hands that back.
+
+**Nothing has been restored when you read it.** The supervision is gone;
+what you have is a description of what it was. The work is yours:
+
+1. `session_recall` -- what was set up last night.
+2. `terminal_list`, and `terminal_read` where you need it -- what is open
+   now.
+3. Match them up yourself. The directory and the title are what you have
+   to go on.
+4. For the ones you can place: ask the person to put them back under
+   watch, since only they can. For the ones you cannot: say so plainly.
+
+**Do not assume that terminals in the same directory are the same
+terminal.** Three agents working in one repository all report that same
+directory, and the program deliberately does not guess between them --
+guessing wrong attaches one terminal's supervision to another and looks
+entirely normal while doing it. If two candidates are indistinguishable,
+that is a thing to report, not a coin to flip.
+
+A resumed agent may need its own session back, not just its terminal.
+`claude -r`, run in the directory the notes give, is usually what that
+means -- but whether last night's thread is worth resuming at all is a
+judgement, and the chat log is where you make it.
+
+What is deliberately not in the notes: how long anything had been quiet,
+and the round counts. Those describe a moment that has passed. Your
+counting starts again from zero, which is the honest place to start.
+
 ## Two things you cannot do, and should not try
 
 - **You cannot answer another agent's permission prompt.** There is no tool

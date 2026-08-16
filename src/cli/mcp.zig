@@ -189,6 +189,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "session_recall",
+        .description = "What last night's arrangement was, written down before the restart: the groups, what each was for, and for every terminal where it was working and what it was called. Read this first after a restart, then look at what is open now and decide for yourself which is which -- nothing here does that for you, and a wrong guess would attach one terminal's supervision to another without saying so. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "group_set_brief",
         .description = "Say what a group is for, in your own words. Write this right after creating a group, while you still know why you made it -- in eight hours group_list will show you a name you no longer recognise, and that is exactly when you have to decide whether it still needs watching. Only you and the person at the keyboard see it; the members do not. Supervisor only.",
         .schema =

@@ -42,6 +42,15 @@ pub const Method = enum {
     /// back hours later when it no longer remembers why it made this one.
     group_set_brief,
 
+    /// What last night's arrangement was, as written down before the
+    /// restart.
+    ///
+    /// Read-only, and nothing acts on it. Which terminal on screen now is
+    /// which one from the notes is a judgement, and it is yours -- the
+    /// program guessing would attach one terminal's supervision to another
+    /// and look fine doing it.
+    session_recall,
+
     /// Read what is on another terminal's screen.
     terminal_read,
 
@@ -94,6 +103,7 @@ pub const Request = union(Method) {
     notices,
     group_members: struct { group: []const u8 },
     group_set_brief: struct { group: []const u8, text: []const u8 },
+    session_recall,
     terminal_read: struct { id: Bus.Id, lines: u16 = 0 },
     terminal_send: struct { id: Bus.Id, text: []const u8, submit: bool = true },
     clock_out: struct { id: Bus.Id, reason: []const u8 = "" },
@@ -149,6 +159,7 @@ pub fn requiresSupervisor(method: Method) bool {
         .get_work_mode,
         .set_quiescence_threshold,
         .group_set_brief,
+        .session_recall,
         => true,
 
         // Skills are instructions, not reach. A watched terminal reading
@@ -187,6 +198,7 @@ pub fn targetsTerminal(method: Method) bool {
         .me,
         .terminal_list,
         .notices,
+        .session_recall,
         .skill_read,
         .group_create,
         .group_destroy,
@@ -227,6 +239,7 @@ pub fn target(req: Request) ?Bus.Id {
         .group_read,
         .group_members,
         .group_set_brief,
+        .session_recall,
         => null,
 
         inline .group_add, .group_remove => |v| v.id,
@@ -311,7 +324,9 @@ test "only what reaches another terminal needs the supervisor" {
             => true,
 
             // Writing what a group is for is arranging, not talking.
+            // Reading last night's arrangement, likewise.
             .group_set_brief,
+            .session_recall,
 
             .terminal_list,
             .notices,
@@ -770,6 +785,16 @@ pub const Host = struct {
         /// nothing to free.
         ///
         /// Returned memory belongs to the caller's allocator.
+        /// Last night's arrangement, as JSON. Empty when there is none.
+        ///
+        /// Handed over as text rather than parsed into types: the program
+        /// does nothing with it, and every field it would parse is one
+        /// more thing to keep in step for no reader's benefit.
+        sessionRecall: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+        ) anyerror![]const u8,
+
         chatGroupInfo: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
@@ -817,6 +842,10 @@ pub const Host = struct {
 
     fn drainNotices(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
         return self.vtable.drainNotices(self.ctx, alloc);
+    }
+
+    fn sessionRecall(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
+        return self.vtable.sessionRecall(self.ctx, alloc);
     }
 
     fn chatSetBrief(self: Host, group: []const u8, text: []const u8) anyerror!void {
@@ -956,6 +985,12 @@ pub fn dispatch(
             const line = host.drainNotices(alloc) catch
                 return hostFailure("ReadFailed", "could not read the notices");
             return .{ .text = line };
+        },
+
+        .session_recall => {
+            const text = host.sessionRecall(alloc) catch
+                return hostFailure("ReadFailed", "could not read last night's notes");
+            return .{ .text = text };
         },
 
         .group_set_brief => |p| {
@@ -1150,6 +1185,9 @@ const FakeHost = struct {
     /// The last brief that was written, if any.
     brief_set: ?struct { group: []const u8, text: []const u8 } = null,
 
+    /// What `session_recall` hands back.
+    session: []const u8 = "",
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
@@ -1164,6 +1202,7 @@ const FakeHost = struct {
             .chatRemove = chatRemove,
             .chatCompact = chatCompact,
             .chatPost = chatPost,
+            .sessionRecall = sessionRecall,
             .chatSetBrief = chatSetBrief,
             .chatGroupInfo = chatGroupInfo,
             .chatMembers = chatMembers,
@@ -1244,6 +1283,12 @@ const FakeHost = struct {
                 "",
         };
         return out;
+    }
+
+    fn sessionRecall(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.ReadFailed;
+        return alloc.dupe(u8, self.session);
     }
 
     fn chatSetBrief(ctx: *anyopaque, group: []const u8, text: []const u8) anyerror!void {

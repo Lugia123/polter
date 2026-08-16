@@ -87,6 +87,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .me => .me,
         .terminal_list => .terminal_list,
         .notices => .notices,
+        .session_recall => .session_recall,
         .group_members => .{ .group_members = .{
             .group = try requireString(aa, params, "group"),
         } },

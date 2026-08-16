@@ -5642,6 +5642,10 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // at once.
             defer self.app.refreshPoltergeistTabs();
 
+            // Naming a supervisor is part of the arrangement tomorrow will
+            // want to know about.
+            defer self.app.saveSession();
+
             try self.app.poltergeist.setSupervisor(self.id);
             log.info("poltergeist: this terminal is now the supervisor", .{});
             return true;
@@ -5649,6 +5653,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
 
         .poltergeist_toggle_watch => {
             defer self.app.refreshPoltergeistTabs();
+            defer self.app.saveSession();
 
             const bus = &self.app.poltergeist;
 
