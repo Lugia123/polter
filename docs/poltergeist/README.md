@@ -134,6 +134,7 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | [supervisor.md](supervisor.md) | R3、R4、R6 | 监督关系、上班 / 下班、监工模式、确认策略、停掉监控       | 无限工作模式的禁下班约束放程序侧而非提示词                                         |
 | [mcp.md](mcp.md)               | R7、R8     | MCP 工具面、sidecar、身份识别、skill 体系、不管任务的边界 | sidecar 而非把 MCP 塞进核心；现成 IPC 不可复用（`src/apprt/embedded.zig:349-360`） |
 | [chatui.md](chatui.md)         | R9         | 群聊与私信界面的承载方式                                  | 原生 UI（参照 command palette）对比 imgui（参照 `src/inspector/Inspector.zig`）    |
+| [plugins.md](plugins.md)       | R3 的一半  | 插件体系（先做通知）：进程式插件、凭据、给以后留位置       | 进程边界换崩溃隔离与语言无关，代价是每次通知一次 fork/exec |
 | [tabs.md](tabs.md)             | R10        | tab 合并与状态标记                                        | macOS 用 NSWindow tabbing，GTK 用 libadwaita，两套各写一份                         |
 
 ## 分阶段路线
@@ -252,11 +253,13 @@ poltergeist-mcp = true
 ## 未决问题
 
 1. 静止阈值的默认值取多少，以及是否需要按被监督程序类型给不同预设 —— 待实测数据。默认 3 分钟是猜的。
-2. 挂后台过夜时的采样来源最终落在哪一层（termio 侧字节活动 vs 独立定时器直读屏幕）—— 见 [sensing.md](sensing.md) 的取舍记录。
-3. 监控状态与监督关系是否需要跨 Ghostty 进程重启持久化，还是每次挂机重新设一遍。
+2. ~~采样来源落在哪一层~~ —— **已定并落地**：termio 线程的 libxev 定时器，每秒一次（`src/termio/Thread.zig`）。选它而不是渲染线程，是因为窗口不可见时渲染线程根本不跑，而挂机过夜正是窗口不可见的时候。
+3. 监控状态与监督关系跨重启持久化 —— **已定：要做**，设计见 [supervisor.md](supervisor.md)「关掉再打开」。尚未实现。
 4. Skill 体系的存放位置与更新方式 —— 已定并落地：内置在 resources 目录，用户副本在配置目录且优先。见 [mcp.md](mcp.md)。
-5. GTK 侧的聊天窗口。当前只有 macOS 有。
-6. 确认策略与通知时间段（R3）—— 设计已定，**尚未实现**，见 [supervisor.md](supervisor.md)。
+5. ~~GTK 侧的聊天窗口~~ —— **已作废**。界面改成终端内 TUI（`polter +chat`）之后，任何能开终端的平台就有聊天界面，不需要第二份实现。见 [chatui.md](chatui.md)「决策变更」。
+6. 确认策略与通知时间段（R3）—— 设计已定，**尚未实现**，见 [supervisor.md](supervisor.md)。其中「通知用户」这一半的送达方式改为插件体系，见 [plugins.md](plugins.md)。
+7. 群的任务说明 —— 设计已定，**尚未实现**，见 [mcp.md](mcp.md)。
+8. 多群并行从未测过。真机两轮都只开了一个群。
 
 ## 延伸阅读
 
