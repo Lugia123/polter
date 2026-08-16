@@ -613,7 +613,9 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
     // The person at the keyboard is in every group. These are
     // conversations happening on their machine; a window they could read
     // but not answer in would be a strange thing to build.
-    try self.chat.add(group, poltergeistpkg.Chat.user_id, .all);
+    // The person at the keyboard has no terminal of their own, so there
+    // is nothing to record about where they are working.
+    try self.chat.add(group, poltergeistpkg.Chat.user_id, .all, .{});
 }
 
 /// Bring every tab's Poltergeist mark in line with the state behind it.
@@ -639,7 +641,62 @@ fn chatAdd(
     history: poltergeistpkg.Chat.History,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    try self.chat.add(group, id, history);
+
+    // Recorded here, by us, because these are facts we already hold.
+    // Asking the supervisor to tell us where a terminal is working would
+    // only add a chance for it to be told wrong.
+    var buf: [2048]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buf);
+    const footing = self.footingOf(fixed.allocator(), id);
+
+    try self.chat.add(group, id, history, footing);
+}
+
+/// Bring a member's recorded footing up to date, if we learned anything.
+///
+/// **Only overwrites with something.** When a terminal has closed there
+/// is no surface to ask, and that is exactly when the old record matters
+/// most -- it is what tomorrow's restart has to go on. Blanking it here
+/// would throw away the answer at the moment the question gets asked.
+fn refreshFooting(
+    self: *App,
+    group: []const u8,
+    id: poltergeistpkg.Bus.Id,
+) void {
+    if (id == poltergeistpkg.Chat.user_id) return;
+
+    var buf: [2048]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buf);
+    const now = self.footingOf(fixed.allocator(), id);
+    if (now.cwd.len == 0 and now.title.len == 0) return;
+
+    self.chat.setFooting(group, id, now) catch |err| {
+        log.debug("poltergeist: could not update footing err={}", .{err});
+    };
+}
+
+/// Where a terminal is working, for finding it again after a restart.
+///
+/// Best effort throughout: a bare shell may have no title, and the
+/// working directory is only known once the shell has reported one. An
+/// empty field is an honest "we do not know", which beats refusing to
+/// record the member at all.
+fn footingOf(
+    self: *App,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+) poltergeistpkg.Chat.Footing {
+    const surface = self.findSurfaceByID(id) orelse return .{};
+
+    var out: poltergeistpkg.Chat.Footing = .{};
+
+    if (surface.pwd(alloc) catch null) |dir| out.cwd = dir;
+
+    if (surface.rt_surface.getTitle()) |title| {
+        if (title.len > 0) out.title = alloc.dupe(u8, title) catch "";
+    }
+
+    return out;
 }
 
 fn chatRemove(
@@ -678,6 +735,11 @@ fn chatPost(
     const self: *App = @ptrCast(@alignCast(ctx));
     const at = self.poltergeistNow();
     _ = try self.chat.post(group, from, text, at);
+
+    // A terminal's title moves with its work, so the record follows it.
+    // Speaking is the right moment: it is infrequent, and a terminal that
+    // just spoke is one whose title means something.
+    self.refreshFooting(group, from);
 
     // Written down after the model accepted it, so the record holds what
     // was actually said rather than what somebody tried to say.

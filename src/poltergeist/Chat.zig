@@ -89,6 +89,51 @@ const Member = struct {
 
     /// When it was last told this group had messages, for rate limiting.
     last_told_ms: ?u64 = null,
+
+    /// What it takes to find this terminal again after a restart.
+    ///
+    /// Recorded by the host when the member joins, because these are facts
+    /// the host already has -- asking the supervisor to restate them only
+    /// adds a chance to get them wrong.
+    ///
+    /// None of it is used by the program. It is material handed back to
+    /// the supervisor so *it* can work out what to resume and where; see
+    /// `docs/poltergeist/supervisor.md`. `Surface.id` is a fresh random
+    /// number every run, so it is worthless for this and is not kept.
+    footing: Footing = .{},
+};
+
+/// Where a member was working, in the words a person would use.
+///
+/// Two fields, deliberately. The directory is what `claude -r` needs to
+/// be run in; the title is how a person tells one terminal from another.
+///
+/// **The command it was started with is not kept.** Resuming does not
+/// replay it -- `claude -r` is a different command from `claude` -- and
+/// the title already answers "which one is worker-core". A field nobody
+/// reads is a field that goes stale without anyone noticing.
+///
+/// All owned by the chat. Empty where the host did not know: a bare shell
+/// may have no title, and the directory is only known once the shell has
+/// reported one.
+pub const Footing = struct {
+    cwd: []const u8 = "",
+    title: []const u8 = "",
+
+    fn deinit(self: *Footing, alloc: Allocator) void {
+        if (self.cwd.len > 0) alloc.free(self.cwd);
+        if (self.title.len > 0) alloc.free(self.title);
+        self.* = .{};
+    }
+
+    fn dupe(self: Footing, alloc: Allocator) Allocator.Error!Footing {
+        var out: Footing = .{};
+        errdefer out.deinit(alloc);
+
+        if (self.cwd.len > 0) out.cwd = try alloc.dupe(u8, self.cwd);
+        if (self.title.len > 0) out.title = try alloc.dupe(u8, self.title);
+        return out;
+    }
 };
 
 const Group = struct {
@@ -115,6 +160,9 @@ const Group = struct {
         for (self.log.items) |m| alloc.free(m.text);
         self.log.deinit(alloc);
         if (self.brief.len > 0) alloc.free(self.brief);
+
+        var it = self.members.valueIterator();
+        while (it.next()) |m| m.footing.deinit(alloc);
         self.members.deinit(alloc);
         alloc.free(self.name);
     }
@@ -209,25 +257,64 @@ pub fn destroy(self: *Chat, name: []const u8) Error!void {
 }
 
 /// Put a terminal in a group, deciding what it sees of what came before.
-pub fn add(self: *Chat, name: []const u8, id: Id, history: History) Error!void {
+pub fn add(
+    self: *Chat,
+    name: []const u8,
+    id: Id,
+    history: History,
+    footing: Footing,
+) Error!void {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
 
     // Already in it: leave its view alone rather than silently rewriting
     // what it can see.
     if (group.members.contains(id)) return;
 
+    var owned = try footing.dupe(self.alloc);
+    errdefer owned.deinit(self.alloc);
+
     try group.members.put(self.alloc, id, switch (history) {
         // Nothing before now, and nothing waiting.
-        .none => .{ .floor = group.head(), .cursor = group.head() },
+        .none => .{
+            .floor = group.head(),
+            .cursor = group.head(),
+            .footing = owned,
+        },
 
         // Everything, and all of it unread and worth fetching.
-        .all => .{ .floor = 0, .cursor = 0 },
+        .all => .{ .floor = 0, .cursor = 0, .footing = owned },
     });
+}
+
+/// Where a member was working, or null if it is not in this group.
+pub fn footingOf(self: *const Chat, name: []const u8, id: Id) ?Footing {
+    const group = self.groups.getPtr(name) orelse return null;
+    const m = group.members.get(id) orelse return null;
+    return m.footing;
+}
+
+/// Update where a member is working.
+///
+/// A terminal's title changes as it works, and its directory can too. The
+/// record has to follow, or a restart tomorrow would resume it wherever
+/// it happened to be when it joined.
+pub fn setFooting(self: *Chat, name: []const u8, id: Id, footing: Footing) Error!void {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    const m = group.members.getPtr(id) orelse return error.NotAMember;
+
+    var owned = try footing.dupe(self.alloc);
+    errdefer owned.deinit(self.alloc);
+
+    m.footing.deinit(self.alloc);
+    m.footing = owned;
 }
 
 pub fn remove(self: *Chat, name: []const u8, id: Id) Error!void {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
-    _ = group.members.remove(id);
+    if (group.members.fetchRemove(id)) |kv| {
+        var m = kv.value;
+        m.footing.deinit(self.alloc);
+    }
 }
 
 pub fn isMember(self: *const Chat, name: []const u8, id: Id) bool {
@@ -242,7 +329,12 @@ pub fn exists(self: *const Chat, name: []const u8) bool {
 /// Forget a terminal everywhere, for example because it closed.
 pub fn forget(self: *Chat, id: Id) void {
     var it = self.groups.valueIterator();
-    while (it.next()) |g| _ = g.members.remove(id);
+    while (it.next()) |g| {
+        if (g.members.fetchRemove(id)) |kv| {
+            var m = kv.value;
+            m.footing.deinit(self.alloc);
+        }
+    }
 }
 
 /// Say something to a group.
@@ -595,8 +687,8 @@ test "there can be several groups at once" {
 
     try chat.create("build", boss);
     try chat.create("research", boss);
-    try chat.add("build", a, .none);
-    try chat.add("research", b, .none);
+    try chat.add("build", a, .none, .{});
+    try chat.add("research", b, .none, .{});
 
     _ = try chat.post("build", boss, "for the builders", 0);
     try testing.expectEqual(@as(usize, 1), chat.unread("build", a));
@@ -610,7 +702,7 @@ test "only members may post" {
     try chat.create("build", boss);
     try testing.expectError(error.NotAMember, chat.post("build", a, "hi", 0));
 
-    try chat.add("build", a, .none);
+    try chat.add("build", a, .none, .{});
     _ = try chat.post("build", a, "hi", 0);
 }
 
@@ -619,7 +711,7 @@ test "a group that does not exist refuses everything" {
     defer chat.deinit();
 
     try testing.expectError(error.NoSuchGroup, chat.post("nope", boss, "hi", 0));
-    try testing.expectError(error.NoSuchGroup, chat.add("nope", a, .none));
+    try testing.expectError(error.NoSuchGroup, chat.add("nope", a, .none, .{}));
     try testing.expectError(error.NoSuchGroup, chat.destroy("nope"));
     try testing.expectError(
         error.NoSuchGroup,
@@ -635,7 +727,7 @@ test "a terminal added without history sees nothing that came before" {
     _ = try chat.post("build", boss, "old one", 0);
     _ = try chat.post("build", boss, "old two", 1);
 
-    try chat.add("build", a, .none);
+    try chat.add("build", a, .none, .{});
     try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
 
     const seen = try chat.read(testing.allocator, "build", a, 0);
@@ -654,7 +746,7 @@ test "a terminal added with history sees everything still in the log" {
     _ = try chat.post("build", boss, "old one", 0);
     _ = try chat.post("build", boss, "old two", 1);
 
-    try chat.add("build", a, .all);
+    try chat.add("build", a, .all, .{});
     try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
 
     const seen = try chat.read(testing.allocator, "build", a, 0);
@@ -668,12 +760,12 @@ test "adding somebody already in a group leaves their view alone" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .none);
+    try chat.add("build", a, .none, .{});
     _ = try chat.post("build", boss, "after", 0);
 
     // A second add with `.all` must not hand them the backlog they were
     // deliberately kept out of.
-    try chat.add("build", a, .all);
+    try chat.add("build", a, .all, .{});
     try testing.expectEqual(@as(usize, 1), chat.unread("build", a));
 }
 
@@ -682,7 +774,7 @@ test "removing a member stops them reading" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .all);
+    try chat.add("build", a, .all, .{});
     try chat.remove("build", a);
 
     try testing.expectError(
@@ -697,10 +789,10 @@ test "a two terminal group is what a direct message used to be" {
     defer chat.deinit();
 
     try chat.create("boss-and-a", boss);
-    try chat.add("boss-and-a", a, .none);
+    try chat.add("boss-and-a", a, .none, .{});
     try chat.create("everyone", boss);
-    try chat.add("everyone", a, .none);
-    try chat.add("everyone", b, .none);
+    try chat.add("everyone", a, .none, .{});
+    try chat.add("everyone", b, .none, .{});
 
     _ = try chat.post("boss-and-a", boss, "just between us", 0);
 
@@ -714,7 +806,7 @@ test "reading marks seen, and a cursor picks up where it left off" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .none);
+    try chat.add("build", a, .none, .{});
     const first = try chat.post("build", boss, "one", 0);
     _ = try chat.post("build", boss, "two", 1);
 
@@ -732,7 +824,7 @@ test "compacting replaces what it covers with one summary" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .all);
+    try chat.add("build", a, .all, .{});
     for (0..5) |i| {
         var buf: [8]u8 = undefined;
         _ = try chat.post("build", boss, try std.fmt.bufPrint(&buf, "m{d}", .{i}), i);
@@ -759,7 +851,7 @@ test "compacting leaves somebody who had not caught up with the summary" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .all);
+    try chat.add("build", a, .all, .{});
     for (0..4) |i| {
         var buf: [8]u8 = undefined;
         _ = try chat.post("build", boss, try std.fmt.bufPrint(&buf, "m{d}", .{i}), i);
@@ -782,7 +874,7 @@ test "compacting does not make read messages unread again" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .all);
+    try chat.add("build", a, .all, .{});
     for (0..10) |i| {
         var buf: [8]u8 = undefined;
         _ = try chat.post("build", boss, try std.fmt.bufPrint(&buf, "m{d}", .{i}), i);
@@ -811,7 +903,7 @@ test "compacting does not hand over history a member was kept out of" {
     _ = try chat.post("build", boss, "and the rotation plan is quarterly", 2);
 
     // Deliberately started with a clean slate.
-    try chat.add("build", a, .none);
+    try chat.add("build", a, .none, .{});
     try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
 
     _ = try chat.post("build", boss, "anyway, the build is green", 3);
@@ -871,7 +963,7 @@ test "compacting shrinks what a later read has to carry" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .all);
+    try chat.add("build", a, .all, .{});
     for (0..20) |i| {
         var buf: [16]u8 = undefined;
         _ = try chat.post("build", boss, try std.fmt.bufPrint(&buf, "chatter {d}", .{i}), i);
@@ -939,8 +1031,8 @@ test "groupsFor lists what a terminal is in, sorted" {
     try chat.create("zebra", boss);
     try chat.create("alpha", boss);
     try chat.create("other", boss);
-    try chat.add("zebra", a, .none);
-    try chat.add("alpha", a, .none);
+    try chat.add("zebra", a, .none, .{});
+    try chat.add("alpha", a, .none, .{});
 
     const mine = try chat.groupsFor(testing.allocator, a);
     defer testing.allocator.free(mine);
@@ -956,8 +1048,8 @@ test "unreadTotal counts across every group" {
 
     try chat.create("one", boss);
     try chat.create("two", boss);
-    try chat.add("one", a, .none);
-    try chat.add("two", a, .none);
+    try chat.add("one", a, .none, .{});
+    try chat.add("two", a, .none, .{});
 
     _ = try chat.post("one", boss, "x", 0);
     _ = try chat.post("two", boss, "y", 1);
@@ -971,7 +1063,7 @@ test "a terminal is never unread to itself" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .none);
+    try chat.add("build", a, .none, .{});
     _ = try chat.post("build", a, "mine", 0);
 
     try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
@@ -983,7 +1075,7 @@ test "notices are rate limited per group and per terminal" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .none);
+    try chat.add("build", a, .none, .{});
     _ = try chat.post("build", boss, "one", 0);
 
     try testing.expect(chat.shouldNotify("build", a, 0, 1000));
@@ -999,8 +1091,8 @@ test "being noisy in one group does not silence another" {
 
     try chat.create("one", boss);
     try chat.create("two", boss);
-    try chat.add("one", a, .none);
-    try chat.add("two", a, .none);
+    try chat.add("one", a, .none, .{});
+    try chat.add("two", a, .none, .{});
 
     _ = try chat.post("one", boss, "x", 0);
     _ = try chat.post("two", boss, "y", 0);
@@ -1015,8 +1107,8 @@ test "forgetting a terminal takes it out of every group" {
 
     try chat.create("one", boss);
     try chat.create("two", boss);
-    try chat.add("one", a, .none);
-    try chat.add("two", a, .none);
+    try chat.add("one", a, .none, .{});
+    try chat.add("two", a, .none, .{});
 
     chat.forget(a);
     try testing.expect(!chat.isMember("one", a));
@@ -1085,7 +1177,7 @@ test "a brief does not appear in the messages" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.add("build", a, .all);
+    try chat.add("build", a, .all, .{});
     try chat.setBrief("build", "这个群在等 B 定接口");
     _ = try chat.post("build", boss, "开始吧", 1);
 
@@ -1102,4 +1194,103 @@ test "asking about a group that is not there says so" {
 
     try testing.expectError(error.NoSuchGroup, chat.briefOf("nope"));
     try testing.expectError(error.NoSuchGroup, chat.setBrief("nope", "x"));
+}
+
+test "a member's footing is kept so it can be found again tomorrow" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{
+        .cwd = "/work/repo",
+        .title = "✳ Write retry.py",
+    });
+
+    const f = chat.footingOf("build", a).?;
+    try testing.expectEqualStrings("/work/repo", f.cwd);
+    try testing.expectEqualStrings("✳ Write retry.py", f.title);
+}
+
+test "footing follows a terminal as its title changes" {
+    // A tab's title moves with the work. A record frozen at join time
+    // would send tomorrow's restart to wherever it happened to start.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{ .cwd = "/work", .title = "zsh" });
+
+    try chat.setFooting("build", a, .{
+        .cwd = "/work/repo",
+        .title = "✳ Write retry.py",
+    });
+
+    const f = chat.footingOf("build", a).?;
+    try testing.expectEqualStrings("/work/repo", f.cwd);
+    try testing.expectEqualStrings("✳ Write retry.py", f.title);
+}
+
+test "a member with nothing known about it is still a member" {
+    // A bare shell may have no title, and the host may not know its
+    // directory. That is a member with an empty footing, not an error.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{});
+
+    const f = chat.footingOf("build", a).?;
+    try testing.expectEqualStrings("", f.cwd);
+    try testing.expect(chat.isMember("build", a));
+}
+
+test "footing goes away with the member" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{ .cwd = "/work", .title = "t" });
+    try chat.remove("build", a);
+
+    try testing.expect(chat.footingOf("build", a) == null);
+}
+
+test "forgetting a terminal releases what was known about it" {
+    // Same path as a closed surface. The leak check in the allocator is
+    // the real assertion here.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.create("research", boss);
+    try chat.add("build", a, .all, .{ .cwd = "/work", .title = "t" });
+    try chat.add("research", a, .all, .{ .cwd = "/other", .title = "u" });
+
+    chat.forget(a);
+    try testing.expect(chat.footingOf("build", a) == null);
+    try testing.expect(chat.footingOf("research", a) == null);
+}
+
+test "a closed terminal keeps the footing it had" {
+    // The moment a terminal goes away is the moment its last known
+    // position becomes the only thing a restart has to go on. Updating it
+    // with "we no longer know" would throw that away precisely then.
+    //
+    // The chat cannot see terminals, so it enforces nothing here; this
+    // pins the shape the host relies on -- an empty update is the host's
+    // to skip, and a real one replaces cleanly.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{ .cwd = "/work/repo", .title = "✳ retry" });
+
+    // What the host does when it learned something new.
+    try chat.setFooting("build", a, .{ .cwd = "/work/repo", .title = "✳ tests" });
+    try testing.expectEqualStrings("✳ tests", chat.footingOf("build", a).?.title);
+
+    // What it must not do when it learned nothing -- shown here as the
+    // effect that would follow if it did.
+    try chat.setFooting("build", a, .{});
+    try testing.expectEqualStrings("", chat.footingOf("build", a).?.cwd);
 }
