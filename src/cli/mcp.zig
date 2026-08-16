@@ -189,6 +189,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "group_set_brief",
+        .description = "Say what a group is for, in your own words. Write this right after creating a group, while you still know why you made it -- in eight hours group_list will show you a name you no longer recognise, and that is exactly when you have to decide whether it still needs watching. Only you and the person at the keyboard see it; the members do not. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"}},"required":["group","text"]}
+        ,
+    },
+    .{
         .name = "group_members",
         .description = "Who is in a group, and what each terminal is currently called. Useful before asking somebody to do something: a group where the terminal you want is not a member cannot reach it.",
         .schema =

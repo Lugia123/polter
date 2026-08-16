@@ -99,9 +99,22 @@ const Group = struct {
     log: std.ArrayListUnmanaged(Message) = .empty,
     members: std.AutoHashMapUnmanaged(Id, Member) = .empty,
 
+    /// What this group is for, in the supervisor's own words. Owned.
+    ///
+    /// A memo it writes to itself: after eight hours `group_list` says
+    /// "build, research, nightly" and the session that named them has long
+    /// since lost that context -- which is exactly when it has to decide
+    /// which one still needs watching.
+    ///
+    /// Opaque to the program. It is never parsed, never matched on, and has
+    /// no status of its own; see `docs/poltergeist/mcp.md` for why that
+    /// last part is the line between keeping a note and managing a task.
+    brief: []const u8 = "",
+
     fn deinit(self: *Group, alloc: Allocator) void {
         for (self.log.items) |m| alloc.free(m.text);
         self.log.deinit(alloc);
+        if (self.brief.len > 0) alloc.free(self.brief);
         self.members.deinit(alloc);
         alloc.free(self.name);
     }
@@ -156,6 +169,37 @@ pub fn create(self: *Chat, name: []const u8, by: Id) Error!void {
     try group.members.put(self.alloc, by, .{});
 
     try self.groups.put(self.alloc, owned, group);
+}
+
+/// Set what a group is for. Only the supervisor gets here; the caller
+/// checks that, because the chat does not know about roles.
+///
+/// Replaces rather than appends: it is one note, kept current, not a
+/// history of intentions.
+pub fn setBrief(
+    self: *Chat,
+    name: []const u8,
+    text: []const u8,
+) Error!void {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    const kept = utf8Cut(trimmed, self.config.max_text_bytes);
+
+    // Copied before the old one goes, so a failure here leaves the
+    // previous note intact rather than blanking it.
+    const owned = try self.alloc.dupe(u8, kept);
+    if (group.brief.len > 0) self.alloc.free(group.brief);
+    group.brief = owned;
+}
+
+/// What a group is for, or empty when nobody has said.
+///
+/// The caller decides who may see this. It is the supervisor's memo to
+/// itself, and `read` deliberately does not carry it.
+pub fn briefOf(self: *const Chat, name: []const u8) Error![]const u8 {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    return group.brief;
 }
 
 pub fn destroy(self: *Chat, name: []const u8) Error!void {
@@ -1001,4 +1045,61 @@ test "a notice names the group but never quotes it" {
 
     const many = try formatNotice("build", 4, &buf);
     try testing.expect(std.mem.indexOf(u8, many, "4 new messages") != null);
+}
+
+test "a group's brief is kept and replaced, not appended to" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try testing.expectEqualStrings("", try chat.briefOf("build"));
+
+    try chat.setBrief("build", "写 retry 装饰器，B 定接口 C 写测试");
+    try testing.expectEqualStrings(
+        "写 retry 装饰器，B 定接口 C 写测试",
+        try chat.briefOf("build"),
+    );
+
+    // One note kept current, not a history of intentions.
+    try chat.setBrief("build", "接口定了，现在等测试");
+    try testing.expectEqualStrings("接口定了，现在等测试", try chat.briefOf("build"));
+}
+
+test "a brief is cut on a character boundary like any other text" {
+    var chat = testChat();
+    defer chat.deinit();
+    chat.config.max_text_bytes = 8;
+
+    try chat.create("build", boss);
+    try chat.setBrief("build", "日日日");
+
+    const brief = try chat.briefOf("build");
+    try testing.expect(std.unicode.utf8ValidateSlice(brief));
+    try testing.expectEqualStrings("日日", brief);
+}
+
+test "a brief does not appear in the messages" {
+    // It is a memo the supervisor writes to itself. Reading the group must
+    // not hand it to the members.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all);
+    try chat.setBrief("build", "这个群在等 B 定接口");
+    _ = try chat.post("build", boss, "开始吧", 1);
+
+    const seen = try chat.read(testing.allocator, "build", a, 0);
+    defer testing.allocator.free(seen);
+
+    try testing.expectEqual(@as(usize, 1), seen.len);
+    try testing.expectEqualStrings("开始吧", seen[0].text);
+}
+
+test "asking about a group that is not there says so" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try testing.expectError(error.NoSuchGroup, chat.briefOf("nope"));
+    try testing.expectError(error.NoSuchGroup, chat.setBrief("nope", "x"));
 }

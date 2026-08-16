@@ -538,6 +538,8 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatRemove = chatRemove,
         .chatCompact = chatCompact,
         .chatPost = chatPost,
+        .chatSetBrief = chatSetBrief,
+        .chatGroupInfo = chatGroupInfo,
         .chatMembers = chatMembers,
         .chatGroups = chatGroups,
         .chatRead = chatRead,
@@ -729,6 +731,54 @@ fn chatGroups(
     for (names, 0..) |n, i| owned[i] = try alloc.dupe(u8, n);
     alloc.free(names);
     return owned;
+}
+
+/// Say what a group is for.
+fn chatSetBrief(
+    ctx: *anyopaque,
+    group: []const u8,
+    text: []const u8,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.chat.setBrief(group, text);
+}
+
+/// The groups a terminal is in, with each group's note when it is asked
+/// for. Not asked for means not read -- see the vtable for why that is
+/// better than reading and discarding.
+fn chatGroupInfo(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    want_brief: bool,
+) anyerror![]poltergeistpkg.rpc.ChatGroupInfo {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const names = try self.chat.groupsFor(alloc, id);
+    defer alloc.free(names);
+
+    const out = try alloc.alloc(poltergeistpkg.rpc.ChatGroupInfo, names.len);
+    var filled: usize = 0;
+    errdefer {
+        for (out[0..filled]) |g| {
+            alloc.free(g.name);
+            if (g.brief.len > 0) alloc.free(g.brief);
+        }
+        alloc.free(out);
+    }
+
+    for (names, 0..) |n, i| {
+        // Copied for the same reason as above: the reply is written after
+        // this returns, and the chat can move underneath it.
+        const brief = if (want_brief) brief: {
+            const b = self.chat.briefOf(n) catch "";
+            break :brief if (b.len > 0) try alloc.dupe(u8, b) else "";
+        } else "";
+
+        out[i] = .{ .name = try alloc.dupe(u8, n), .brief = brief };
+        filled += 1;
+    }
+    return out;
 }
 
 /// Who is in a group, each named the way a person can find them.

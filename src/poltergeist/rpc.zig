@@ -15,6 +15,7 @@
 const std = @import("std");
 
 const Bus = @import("Bus.zig");
+const Chat = @import("Chat.zig");
 
 pub const Method = enum {
     /// Which terminal am I, what is my role, what work mode am I under.
@@ -36,6 +37,10 @@ pub const Method = enum {
     /// Who is in a group, so a reader can see who is there rather than
     /// inferring it from who has spoken.
     group_members,
+
+    /// Say what a group is for. The supervisor's own note, for reading
+    /// back hours later when it no longer remembers why it made this one.
+    group_set_brief,
 
     /// Read what is on another terminal's screen.
     terminal_read,
@@ -88,6 +93,7 @@ pub const Request = union(Method) {
     terminal_list,
     notices,
     group_members: struct { group: []const u8 },
+    group_set_brief: struct { group: []const u8, text: []const u8 },
     terminal_read: struct { id: Bus.Id, lines: u16 = 0 },
     terminal_send: struct { id: Bus.Id, text: []const u8, submit: bool = true },
     clock_out: struct { id: Bus.Id, reason: []const u8 = "" },
@@ -142,6 +148,7 @@ pub fn requiresSupervisor(method: Method) bool {
         .clock_in,
         .get_work_mode,
         .set_quiescence_threshold,
+        .group_set_brief,
         => true,
 
         // Skills are instructions, not reach. A watched terminal reading
@@ -188,6 +195,7 @@ pub fn targetsTerminal(method: Method) bool {
         .group_post,
         .group_read,
         .group_members,
+        .group_set_brief,
         => false,
 
         // These name a terminal to put in or take out of a group. Checked
@@ -210,7 +218,6 @@ pub fn target(req: Request) ?Bus.Id {
         .me,
         .terminal_list,
         .notices,
-        .group_members,
         .skill_read,
         .group_create,
         .group_destroy,
@@ -218,6 +225,8 @@ pub fn target(req: Request) ?Bus.Id {
         .group_list,
         .group_post,
         .group_read,
+        .group_members,
+        .group_set_brief,
         => null,
 
         inline .group_add, .group_remove => |v| v.id,
@@ -300,6 +309,9 @@ test "only what reaches another terminal needs the supervisor" {
             .group_read,
             .group_members,
             => true,
+
+            // Writing what a group is for is arranging, not talking.
+            .group_set_brief,
 
             .terminal_list,
             .notices,
@@ -410,11 +422,14 @@ test "group_list names the groups a terminal is in" {
 
     const res = try dispatch(testing.allocator, &b, fake.host(), worker, .group_list);
     defer {
-        for (res.groups) |g| testing.allocator.free(g);
+        for (res.groups) |g| {
+            testing.allocator.free(g.name);
+            if (g.brief.len > 0) testing.allocator.free(g.brief);
+        }
         testing.allocator.free(res.groups);
     }
     try testing.expectEqual(@as(usize, 1), res.groups.len);
-    try testing.expectEqualStrings("build", res.groups[0]);
+    try testing.expectEqualStrings("build", res.groups[0].name);
 }
 
 test "group_read asks for the group it was given" {
@@ -628,6 +643,20 @@ pub const ChatMember = struct {
     title: []const u8,
 };
 
+/// One group as it appears in a listing.
+///
+/// `brief` is empty for the watched terminals -- not because the text is
+/// secret, but because it is a memo, and a note you might have to justify
+/// to your peers stops being worth writing. The supervisor wrote it; the
+/// person at the keyboard owns the machine. This is the first place a
+/// reply depends on who asked; the reasoning is the same as
+/// `history: none`, that visibility is reckoned per person rather than
+/// per datum.
+pub const ChatGroupInfo = struct {
+    name: []const u8,
+    brief: []const u8,
+};
+
 /// What the app must supply for a request to be carried out.
 ///
 /// An interface rather than a direct dependency on `App` so the dispatch
@@ -726,6 +755,28 @@ pub const Host = struct {
             group: []const u8,
         ) anyerror![]const ChatMember,
 
+        /// Say what a group is for. Replaces whatever was there.
+        chatSetBrief: *const fn (
+            ctx: *anyopaque,
+            group: []const u8,
+            text: []const u8,
+        ) anyerror!void,
+
+        /// The groups this terminal is in.
+        ///
+        /// `want_brief` decides whether each group's note comes along.
+        /// Passed down rather than filtered afterwards: a note that was
+        /// never fetched cannot be leaked by a later mistake, and there is
+        /// nothing to free.
+        ///
+        /// Returned memory belongs to the caller's allocator.
+        chatGroupInfo: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+            want_brief: bool,
+        ) anyerror![]ChatGroupInfo,
+
         chatGroups: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
@@ -766,6 +817,19 @@ pub const Host = struct {
 
     fn drainNotices(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
         return self.vtable.drainNotices(self.ctx, alloc);
+    }
+
+    fn chatSetBrief(self: Host, group: []const u8, text: []const u8) anyerror!void {
+        return self.vtable.chatSetBrief(self.ctx, group, text);
+    }
+
+    fn chatGroupInfo(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+        want_brief: bool,
+    ) anyerror![]ChatGroupInfo {
+        return self.vtable.chatGroupInfo(self.ctx, alloc, id, want_brief);
     }
 
     fn chatMembers(
@@ -894,6 +958,12 @@ pub fn dispatch(
             return .{ .text = line };
         },
 
+        .group_set_brief => |p| {
+            host.chatSetBrief(p.group, p.text) catch
+                return hostFailure("NoSuchGroup", "no group by that name");
+            return .ok;
+        },
+
         .group_members => |p| {
             const members = host.chatMembers(alloc, p.group) catch
                 return hostFailure("NoSuchGroup", "no group by that name");
@@ -992,9 +1062,20 @@ pub fn dispatch(
         },
 
         .group_list => {
-            const names = host.chatGroups(alloc, caller) catch
+            // The brief goes to the supervisor, who wrote it, and to the
+            // person at the keyboard, whose machine this is -- they face
+            // the same question of what a group called "build" was for.
+            //
+            // Not to the other members. The reason is not secrecy: it is
+            // that a note you might have to justify to your peers stops
+            // being worth writing, and this one's whole value is that it
+            // can be written carelessly.
+            const want_brief = bus.supervisor == caller or
+                caller == Chat.user_id;
+
+            const groups = host.chatGroupInfo(alloc, caller, want_brief) catch
                 return hostFailure("ListFailed", "could not list groups");
-            return .{ .groups = names };
+            return .{ .groups = groups };
         },
 
         .group_post => |p| {
@@ -1066,6 +1147,9 @@ const FakeHost = struct {
     notices: []const u8 = "",
     drained: usize = 0,
 
+    /// The last brief that was written, if any.
+    brief_set: ?struct { group: []const u8, text: []const u8 } = null,
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
@@ -1080,6 +1164,8 @@ const FakeHost = struct {
             .chatRemove = chatRemove,
             .chatCompact = chatCompact,
             .chatPost = chatPost,
+            .chatSetBrief = chatSetBrief,
+            .chatGroupInfo = chatGroupInfo,
             .chatMembers = chatMembers,
             .chatGroups = chatGroups,
             .chatRead = chatRead,
@@ -1138,6 +1224,32 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
         self.posted = .{ .group = group, .from = from, .text = text };
+    }
+
+    fn chatGroupInfo(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        _: Bus.Id,
+        want_brief: bool,
+    ) anyerror![]ChatGroupInfo {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.ListFailed;
+
+        const out = try alloc.alloc(ChatGroupInfo, 1);
+        out[0] = .{
+            .name = try alloc.dupe(u8, "build"),
+            .brief = if (want_brief)
+                try alloc.dupe(u8, "写 retry 装饰器")
+            else
+                "",
+        };
+        return out;
+    }
+
+    fn chatSetBrief(ctx: *anyopaque, group: []const u8, text: []const u8) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.NoSuchGroup;
+        self.brief_set = .{ .group = group, .text = text };
     }
 
     fn chatMembers(
@@ -1399,4 +1511,66 @@ test "an empty box is an answer, not a failure" {
 
     const res = try dispatch(arena.allocator(), &b, host, boss, .notices);
     try testing.expectEqualStrings("", res.text);
+}
+
+test "a group's brief is the supervisor's alone to write" {
+    // Saying what a group is for is arranging it, which is the same
+    // authority as making one.
+    try testing.expect(requiresSupervisor(.group_set_brief));
+}
+
+test "only the supervisor's listing carries the brief" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The supervisor sees what it wrote.
+    const mine = try dispatch(alloc, &b, fake.host(), boss, .group_list);
+    try testing.expect(mine.groups[0].brief.len > 0);
+
+    // A member gets the group but not the note. Not an error -- asking
+    // which groups you are in is a fair question.
+    const theirs = try dispatch(alloc, &b, fake.host(), worker, .group_list);
+    try testing.expectEqualStrings("build", theirs.groups[0].name);
+    try testing.expectEqualStrings("", theirs.groups[0].brief);
+}
+
+test "setting a brief reaches the host with what was written" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{
+        .group_set_brief = .{ .group = "build", .text = "写 retry 装饰器" },
+    });
+    try testing.expectEqual(wire.Response.ok, res);
+    try testing.expectEqualStrings("build", fake.brief_set.?.group);
+    try testing.expectEqualStrings("写 retry 装饰器", fake.brief_set.?.text);
+}
+
+test "the person at the keyboard sees the brief too" {
+    // Not because they wrote it, but because it is their machine and they
+    // face the same question the supervisor does: what was "build" for?
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const res = try dispatch(
+        arena.allocator(),
+        &b,
+        fake.host(),
+        Chat.user_id,
+        .group_list,
+    );
+    try testing.expect(res.groups[0].brief.len > 0);
 }

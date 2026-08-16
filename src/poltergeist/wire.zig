@@ -91,6 +91,11 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
         } },
 
+        .group_set_brief => .{ .group_set_brief = .{
+            .group = try requireString(aa, params, "group"),
+            .text = try requireString(aa, params, "text"),
+        } },
+
         .terminal_read => .{ .terminal_read = .{
             .id = try requireId(params),
             .lines = try optionalU16(params, "lines", 0),
@@ -283,7 +288,7 @@ pub const Response = union(enum) {
     work_mode: Bus.WorkMode,
     skill: struct { name: []const u8, body: []const u8 },
     messages: []const rpc.ChatLine,
-    groups: []const []const u8,
+    groups: []const rpc.ChatGroupInfo,
     members: []const rpc.ChatMember,
     failed: struct { code: []const u8, message: []const u8 },
 };
@@ -348,12 +353,25 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.endArray();
         },
 
-        .groups => |names| {
+        .groups => |list| {
             try s.objectField("ok");
             try s.write(true);
             try s.objectField("groups");
             try s.beginArray();
-            for (names) |n| try s.write(n);
+            for (list) |g| {
+                try s.beginObject();
+                try s.objectField("name");
+                try s.write(g.name);
+
+                // Only written when there is one, so a member's listing
+                // does not carry an empty field that invites the question
+                // of what it would have said.
+                if (g.brief.len > 0) {
+                    try s.objectField("brief");
+                    try s.write(g.brief);
+                }
+                try s.endObject();
+            }
             try s.endArray();
         },
         .messages => |list| {

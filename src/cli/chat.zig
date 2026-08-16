@@ -258,6 +258,10 @@ const Message = struct {
 /// One group, with everything needed to draw it.
 const Group = struct {
     name: []const u8,
+
+    /// What the supervisor said this group is for. Empty when nobody has
+    /// said, which is most groups most of the time.
+    brief: []const u8 = "",
     messages: std.ArrayListUnmanaged(Message) = .empty,
     members: std.ArrayListUnmanaged([]const u8) = .empty,
 
@@ -404,16 +408,19 @@ const Chat = struct {
         const arena = self.arena.allocator();
 
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        var briefs: std.ArrayListUnmanaged([]const u8) = .empty;
         {
             const v = try self.host.callJson(arena, "{\"method\":\"group_list\"}");
             for (try arrayField(v, "groups")) |item| {
-                try names.append(arena, stringOf(item) orelse continue);
+                const name = stringField(item, "name") orelse continue;
+                try names.append(arena, name);
+                try briefs.append(arena, stringField(item, "brief") orelse "");
             }
         }
 
         self.groups.clearRetainingCapacity();
-        for (names.items) |name| {
-            var group: Group = .{ .name = name };
+        for (names.items, 0..) |name, gi| {
+            var group: Group = .{ .name = name, .brief = briefs.items[gi] };
 
             {
                 var buf: [256]u8 = undefined;
@@ -564,11 +571,21 @@ const Chat = struct {
         }));
 
         const right_width = win.width -| members_width;
-        try self.drawMessages(win.child(.{
+        // The brief sits above the messages: it is the answer to "what is
+        // this group" and belongs where the eye lands first.
+        const brief_height: u16 = if (self.currentBrief().len > 0) 2 else 0;
+        if (brief_height > 0) self.drawBrief(win.child(.{
             .x_off = members_width,
             .y_off = tabs_height,
             .width = right_width,
-            .height = body_height -| input_height,
+            .height = brief_height,
+        }));
+
+        try self.drawMessages(win.child(.{
+            .x_off = members_width,
+            .y_off = tabs_height + brief_height,
+            .width = right_width,
+            .height = body_height -| input_height -| brief_height,
         }));
 
         self.drawInput(win.child(.{
@@ -708,6 +725,20 @@ const Chat = struct {
 
             row -= 2;
         }
+    }
+
+    fn currentBrief(self: *const Chat) []const u8 {
+        if (self.groups.items.len == 0) return "";
+        return self.groups.items[self.current].brief;
+    }
+
+    fn drawBrief(self: *Chat, win: vaxis.Window) void {
+        if (win.height == 0 or win.width < 4) return;
+
+        _ = win.printSegment(.{
+            .text = self.currentBrief(),
+            .style = .{ .italic = true, .dim = true },
+        }, .{ .col_offset = 1 });
     }
 
     fn drawInput(self: *Chat, win: vaxis.Window) void {
