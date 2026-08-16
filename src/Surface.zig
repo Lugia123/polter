@@ -678,6 +678,13 @@ pub fn init(
         app.ensurePoltergeistServer(rt_app, config.@"poltergeist-mcp");
         app.ensureChatLog(config.@"poltergeist-chat-log");
 
+        // Same reason as the socket and the log: `updateConfig` runs only
+        // on a reload, which neither apprt does at launch.
+        app.poltergeist_notify_window = poltergeistpkg.notify.Window.parse(
+            config.@"poltergeist-notify-window",
+        );
+        app.ensurePlugins(config.@"poltergeist-notify".list.items);
+
         if (app.poltergeist_server) |*srv| {
             if (srv.issueToken(self.id)) |token| {
                 try env.put("GHOSTTY_POLTER_SOCKET", srv.path);

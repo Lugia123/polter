@@ -1344,6 +1344,35 @@ command: ?Command = null,
 /// your paths and your stack traces.
 @"poltergeist-chat-log": bool = true,
 
+/// Which notification plugins to use when the user has to be told
+/// something.
+///
+/// Repeat this to use more than one; each is an independent route, and all
+/// of them are tried. Redundancy is the point -- the case this exists for
+/// is one where nobody finds out for hours that a channel was broken.
+///
+/// A plugin is a directory holding a `plugin.yaml` and an executable,
+/// looked for in the Polter resources directory and in
+/// `$XDG_CONFIG_HOME/polter/plugins/`. Parameters go in
+/// `$XDG_CONFIG_HOME/polter/plugins/<key>.json`, where a value may be a
+/// reference (`env:`, `file:`, `keychain:`, `cmd:`) rather than the secret
+/// itself. See `docs/poltergeist/plugins.md`.
+///
+/// Empty by default: nothing is sent anywhere until you say where.
+@"poltergeist-notify": RepeatableString = .{},
+
+/// When it is acceptable to disturb you, as `HH:MM-HH:MM` in local time.
+///
+/// Outside this window a scheduling question -- keep going, change tack,
+/// give up -- is left to the supervisor, which is what unattended running
+/// means. **A tool-authorisation prompt is sent anyway.** Nobody may
+/// answer those on your behalf, so the choice there is not "disturb you or
+/// decide for you" but "disturb you or let the terminal sit until
+/// morning", and a night wasted costs more than a notification does.
+///
+/// Empty means any time is acceptable.
+@"poltergeist-notify-window": []const u8 = "",
+
 /// Extra environment variables to pass to commands launched in a terminal
 /// surface. The format is `env=KEY=VALUE`.
 ///

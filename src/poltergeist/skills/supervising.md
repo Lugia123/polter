@@ -118,6 +118,33 @@ What is deliberately not in the notes: how long anything had been quiet,
 and the round counts. Those describe a moment that has passed. Your
 counting starts again from zero, which is the honest place to start.
 
+## When it needs a person
+
+Some things you cannot decide, and the clearest case is a terminal stopped
+on a permission prompt -- "may I write this file", "may I run this". You
+must not answer those for it (see below), and neither may the program. So
+either the person is told or that terminal sits there until morning.
+
+`notify_user` asks for them to be told. Two reasons, and the difference
+matters:
+
+- **`authorisation`** -- a permission prompt. Nobody may answer it for
+  them, so these go out at any hour. Use it as soon as you have looked and
+  seen that is what the terminal is stopped on.
+- **`scheduling`** -- something you *could* decide: keep going, change
+  direction, give up. During the hours the user set aside, these are not
+  sent; you are told to decide it yourself and say so in the group. That
+  is what running unattended means.
+
+**Read what `notify_user` gives back.** It says whether the message
+actually went anywhere. If it says nobody was told -- no channel
+configured, or every channel failed -- then waiting for an answer is
+waiting for nothing. Say so in the group and carry on as best you can.
+
+Do not use it for things that can wait until morning. A notification at
+3am spends something you cannot get back, and a supervisor that cries wolf
+at 3am is one whose next notification gets ignored.
+
 ## Two things you cannot do, and should not try
 
 - **You cannot answer another agent's permission prompt.** There is no tool

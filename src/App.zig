@@ -44,6 +44,20 @@ poltergeist: poltergeistpkg.Bus,
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
 
+/// When it is acceptable to disturb the user. Null means any hour.
+///
+/// Only scheduling questions respect it; an authorisation prompt goes out
+/// whatever the hour, because holding one back protects nobody's sleep --
+/// it just leaves a terminal stopped until morning.
+poltergeist_notify_window: ?poltergeistpkg.notify.Window = null,
+
+/// The notification plugins the config asked for, loaded once at startup.
+///
+/// Everything they own lives in `plugin_arena`, which is why they are a
+/// pair: manifests are strings all the way down and are read once.
+poltergeist_plugins: []const poltergeistpkg.Plugin.Manifest = &.{},
+poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
+
 /// Where last night's arrangement is written down. Null until the state
 /// directory is known. Owned.
 poltergeist_session_path: ?[]const u8 = null,
@@ -208,6 +222,7 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_server) |*srv| srv.deinit();
     if (self.chat_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
+    if (self.poltergeist_plugin_arena) |*a| a.deinit();
     self.chat_surfaces.deinit(self.alloc);
     self.chat.deinit();
     self.poltergeist.deinit();
@@ -250,6 +265,10 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
 
     self.poltergeist.config.notice_interval_ms =
         config.@"poltergeist-notice-interval".duration / std.time.ns_per_ms;
+
+    self.poltergeist_notify_window =
+        poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
+    self.ensurePlugins(config.@"poltergeist-notify".list.items);
 
     // Go through and update all of the surface configurations.
     for (self.surfaces.items) |surface| {
@@ -336,6 +355,88 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
     self.surfaceMessage(supervisor, msg) catch |err| {
         log.warn("poltergeist: could not deliver notices err={}", .{err});
     };
+}
+
+/// Load the notification plugins the config named.
+///
+/// Once, at startup. A plugin that will not load is skipped with a
+/// warning rather than taken as fatal: the terminal has to work whether
+/// or not a notification channel does.
+pub fn ensurePlugins(self: *App, wanted: []const [:0]const u8) void {
+    if (self.poltergeist_plugin_arena != null) return;
+    if (wanted.len == 0) return;
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    errdefer arena.deinit();
+    const alloc = arena.allocator();
+
+    const io = global.io();
+
+    var environ_map = global.environMap() catch return;
+    defer environ_map.deinit();
+
+    var found: std.ArrayListUnmanaged(poltergeistpkg.Plugin.Manifest) = .empty;
+
+    for (wanted) |key| {
+        const dir = self.findPluginDir(alloc, io, &environ_map, key) orelse {
+            log.warn("poltergeist: no plugin named {s}", .{key});
+            continue;
+        };
+
+        const manifest = poltergeistpkg.Plugin.load(alloc, io, dir) catch |err| {
+            log.warn("poltergeist: plugin {s} would not load err={}", .{ key, err });
+            continue;
+        };
+
+        found.append(alloc, manifest) catch continue;
+    }
+
+    self.poltergeist_plugins = found.items;
+    self.poltergeist_plugin_arena = arena;
+
+    log.info("poltergeist: {d} notification plugin(s) ready", .{found.items.len});
+}
+
+/// Where a plugin with this key lives, if anywhere.
+///
+/// The user's own directory wins over what shipped, so a plugin can be
+/// replaced without touching the installation -- the same rule the skills
+/// follow.
+fn findPluginDir(
+    self: *App,
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) ?[]const u8 {
+    _ = self;
+
+    if (internal_os.xdg.config(
+        io,
+        alloc,
+        environ_map,
+        .{ .subdir = "polter/plugins" },
+    )) |base| {
+        const dir = std.fmt.allocPrint(alloc, "{s}/{s}", .{ base, key }) catch return null;
+        if (std.Io.Dir.cwd().openDir(io, dir, .{})) |*d| {
+            var handle = d.*;
+            handle.close(io);
+            return dir;
+        } else |_| {}
+    } else |_| {}
+
+    const resources = internal_os.resourcesDir(alloc) catch return null;
+    const app_path = resources.app_path orelse return null;
+
+    const dir = std.fmt.allocPrint(alloc, "{s}/polter/plugins/{s}", .{ app_path, key }) catch
+        return null;
+    if (std.Io.Dir.cwd().openDir(io, dir, .{})) |*d| {
+        var handle = d.*;
+        handle.close(io);
+        return dir;
+    } else |_| {}
+
+    return null;
 }
 
 /// Write down what tomorrow needs, now.
@@ -621,6 +722,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatRemove = chatRemove,
         .chatCompact = chatCompact,
         .chatPost = chatPost,
+        .notifyUser = notifyUser,
         .sessionRecall = sessionRecall,
         .chatSetBrief = chatSetBrief,
         .chatGroupInfo = chatGroupInfo,
@@ -881,6 +983,163 @@ fn chatGroups(
     for (names, 0..) |n, i| owned[i] = try alloc.dupe(u8, n);
     alloc.free(names);
     return owned;
+}
+
+/// Tell the person something, and say plainly what came of it.
+///
+/// The supervisor asked for this because it looked at a screen and decided
+/// a human was needed; the program never makes that call itself. What it
+/// does decide is the hour: a scheduling question inside quiet hours is
+/// handed back to the supervisor, while an authorisation prompt goes out
+/// regardless -- nobody may answer those for somebody else, so holding one
+/// back does not protect anyone's sleep, it just wastes the night.
+///
+/// The reply is a sentence rather than a code because the supervisor has
+/// to act on it: if nothing was sent, waiting for an answer is waiting for
+/// nothing.
+fn notifyUser(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    reason_text: []const u8,
+    title: []const u8,
+    body: []const u8,
+    id: poltergeistpkg.Bus.Id,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const reason: poltergeistpkg.notify.Reason =
+        if (std.mem.eql(u8, reason_text, "authorisation"))
+            .authorisation
+        else
+            .scheduling;
+
+    var name_buf: [256]u8 = undefined;
+    var name_fixed: std.heap.FixedBufferAllocator = .init(&name_buf);
+    const terminal_name = if (id != 0)
+        self.chatMemberTitle(name_fixed.allocator(), id) catch ""
+    else
+        "";
+
+    const event: poltergeistpkg.notify.Event = .{
+        .reason = reason,
+        .title = title,
+        .body = body,
+        .terminal = id,
+        .terminal_name = terminal_name,
+        .at_ms = self.poltergeist_epoch_wall_ms +
+            @as(i64, @intCast(self.poltergeistNow())),
+    };
+
+    switch (poltergeistpkg.notify.decide(
+        event,
+        self.poltergeist_notify_window,
+        localMinuteNow(),
+        self.poltergeist_plugins.len,
+    )) {
+        .nowhere_to_send => return alloc.dupe(
+            u8,
+            "nobody was told: no notification plugin is configured. " ++
+                "Set poltergeist-notify, or handle this yourself.",
+        ),
+
+        .leave_to_supervisor => return alloc.dupe(
+            u8,
+            "not sent: outside the hours the user allows for questions " ++
+                "like this. Decide it yourself and say so in the group.",
+        ),
+
+        .tell => {},
+    }
+
+    var environ_map = try global.environMap();
+    defer environ_map.deinit();
+
+    const result = poltergeistpkg.notify.send(
+        alloc,
+        global.io(),
+        &environ_map,
+        self.poltergeist_plugins,
+        pluginParams,
+        self,
+        event,
+    );
+
+    if (result.delivered == 0) {
+        return std.fmt.allocPrint(
+            alloc,
+            "nobody was told: all {d} channel(s) failed. Do not wait for an answer.",
+            .{result.failed},
+        );
+    }
+
+    return std.fmt.allocPrint(
+        alloc,
+        "sent through {d} of {d} channel(s)",
+        .{ result.delivered, result.delivered + result.failed },
+    );
+}
+
+/// Minutes since local midnight.
+fn localMinuteNow() u16 {
+    const wall: std.Io.Timestamp = .now(global.io(), .real);
+    const secs: i64 = @intCast(@divTrunc(wall.nanoseconds, std.time.ns_per_s));
+
+    var tm: internal_os.Tm = undefined;
+    if (internal_os.localtime_r(&secs, &tm) == null) return 0;
+
+    const h: u16 = @intCast(@mod(tm.hour, 24));
+    const m: u16 = @intCast(@mod(tm.min, 60));
+    return h * 60 + m;
+}
+
+/// A plugin's configured parameters, from its own JSON file.
+fn pluginParams(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    key: []const u8,
+) anyerror![]const poltergeistpkg.Plugin.Param {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    _ = self;
+
+    const io = global.io();
+    var environ_map = try global.environMap();
+    defer environ_map.deinit();
+
+    const base = try internal_os.xdg.config(
+        io,
+        alloc,
+        &environ_map,
+        .{ .subdir = "polter/plugins" },
+    );
+
+    const path = try std.fmt.allocPrint(alloc, "{s}/{s}.json", .{ base, key });
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        path,
+        alloc,
+        .limited(256 * 1024),
+    ) catch return &.{};
+
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, alloc, bytes, .{}) catch {
+        log.warn("poltergeist: {s} will not parse", .{path});
+        return &.{};
+    };
+
+    const obj = switch (parsed) {
+        .object => |o| o,
+        else => return &.{},
+    };
+
+    var out: std.ArrayListUnmanaged(poltergeistpkg.Plugin.Param) = .empty;
+    var it = obj.iterator();
+    while (it.next()) |kv| {
+        const value = switch (kv.value_ptr.*) {
+            .string => |v| v,
+            else => continue,
+        };
+        try out.append(alloc, .{ .name = kv.key_ptr.*, .value = value });
+    }
+    return out.items;
 }
 
 /// Hand back last night's arrangement, as it was written down.

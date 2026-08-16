@@ -74,3 +74,27 @@ test {
         _ = macos;
     }
 }
+
+/// `struct tm`, and the one function that fills it in.
+///
+/// Declared here because the standard library has neither, and both the
+/// chat window and the notifier need to turn a Unix timestamp into a local
+/// time of day. Declared in full even though only two fields are read:
+/// `localtime_r` writes into whatever it is handed, so a struct short by a
+/// field is a buffer overrun. The first nine members are POSIX; the last
+/// two are a BSD extension that both macOS and glibc have.
+pub const Tm = extern struct {
+    sec: c_int,
+    min: c_int,
+    hour: c_int,
+    mday: c_int,
+    mon: c_int,
+    year: c_int,
+    wday: c_int,
+    yday: c_int,
+    isdst: c_int,
+    gmtoff: c_long,
+    zone: ?[*:0]const u8,
+};
+
+pub extern "c" fn localtime_r(timep: *const i64, result: *Tm) ?*Tm;

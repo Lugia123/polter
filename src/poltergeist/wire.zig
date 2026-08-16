@@ -88,6 +88,15 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .terminal_list => .terminal_list,
         .notices => .notices,
         .session_recall => .session_recall,
+
+        .notify_user => .{ .notify_user = .{
+            .reason = try requireString(aa, params, "reason"),
+            .title = try requireString(aa, params, "title"),
+            .body = (try optionalString(aa, params, "body")) orelse "",
+            // Optional: a notice can be about the arrangement as a whole
+            // rather than about one terminal.
+            .id = requireId(params) catch 0,
+        } },
         .group_members => .{ .group_members = .{
             .group = try requireString(aa, params, "group"),
         } },

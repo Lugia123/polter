@@ -66,6 +66,86 @@ pub const Manifest = struct {
     timeout_ms: u64 = default_timeout_ms,
 };
 
+/// Load a plugin's manifest from a directory.
+///
+/// Everything returned belongs to `arena`, including `exec`, which is made
+/// absolute here so that running it never depends on where Polter happens
+/// to be.
+///
+/// The manifest is JSON rather than YAML: Zig has no YAML in its standard
+/// library, and a hand-written subset parser gets indentation and
+/// implicit typing wrong in ways that silently mean something else. See
+/// `docs/poltergeist/plugins.md`.
+pub fn load(
+    arena: Allocator,
+    io: std.Io,
+    dir: []const u8,
+) !Manifest {
+    const path = try std.fmt.allocPrint(arena, "{s}/plugin.json", .{dir});
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        path,
+        arena,
+        .limited(64 * 1024),
+    ) catch |err| {
+        log.warn("plugin: could not read {s} err={}", .{ path, err });
+        return error.NoManifest;
+    };
+
+    const parsed = std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        bytes,
+        .{},
+    ) catch |err| {
+        log.warn("plugin: {s} will not parse err={}", .{ path, err });
+        return error.BadManifest;
+    };
+
+    const obj = switch (parsed) {
+        .object => |o| o,
+        else => return error.BadManifest,
+    };
+
+    const key = stringField(obj, "key") orelse {
+        log.warn("plugin: {s} has no key", .{path});
+        return error.BadManifest;
+    };
+
+    const kind_text = stringField(obj, "kind") orelse "notify";
+    const kind = std.meta.stringToEnum(Kind, kind_text) orelse {
+        // Not an error worth failing the whole load over -- a newer plugin
+        // for a kind this build does not know about should be skipped,
+        // not fatal.
+        log.warn("plugin {s}: unknown kind {s}", .{ key, kind_text });
+        return error.UnknownKind;
+    };
+
+    const exec_rel = stringField(obj, "exec") orelse {
+        log.warn("plugin {s}: no exec", .{key});
+        return error.BadManifest;
+    };
+
+    return .{
+        .key = key,
+        .name = stringField(obj, "name") orelse key,
+        .kind = kind,
+        .exec = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, exec_rel }),
+        .timeout_ms = switch (obj.get("timeout_ms") orelse std.json.Value{ .null = {} }) {
+            .integer => |n| if (n > 0) @intCast(n) else default_timeout_ms,
+            else => default_timeout_ms,
+        },
+    };
+}
+
+fn stringField(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    return switch (obj.get(name) orelse return null) {
+        .string => |v| v,
+        else => null,
+    };
+}
+
 /// One parameter as configured. The value may be a reference; see
 /// `secret.zig`.
 pub const Param = struct {
@@ -509,4 +589,90 @@ test "a parameter that will not resolve stops the call" {
         alloc,
         .limited(16),
     ) == error.FileNotFound);
+}
+
+test "a manifest is read, and its exec made absolute" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-man-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+
+    var f = try d.createFile(io, "plugin.json", .{});
+    try f.writeStreamingAll(io,
+        \\{"key":"feishu","name":"飞书","kind":"notify","exec":"send.sh","timeout_ms":5000}
+    );
+    f.close(io);
+
+    const m = try load(alloc, io, dir);
+    try testing.expectEqualStrings("feishu", m.key);
+    try testing.expectEqualStrings("飞书", m.name);
+    try testing.expectEqual(Kind.notify, m.kind);
+    try testing.expectEqual(@as(u64, 5000), m.timeout_ms);
+
+    // Absolute, so running it never depends on where Polter happens to be.
+    const want = try std.fmt.allocPrint(alloc, "{s}/send.sh", .{dir});
+    try testing.expectEqualStrings(want, m.exec);
+}
+
+test "a manifest for a kind this build does not know is skipped, not fatal" {
+    // A newer plugin should be passed over quietly. Refusing to start
+    // because one directory mentions a future feature would be worse.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-man-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "plugin.json", .{});
+    try f.writeStreamingAll(io, "{\"key\":\"future\",\"kind\":\"sensor\",\"exec\":\"x\"}");
+    f.close(io);
+
+    try testing.expectError(error.UnknownKind, load(alloc, io, dir));
+}
+
+test "a manifest missing what it needs is refused" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-man-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "plugin.json", .{});
+    try f.writeStreamingAll(io, "{\"name\":\"nameless\"}");
+    f.close(io);
+
+    try testing.expectError(error.BadManifest, load(alloc, io, dir));
+    try testing.expectError(error.NoManifest, load(alloc, io, "/tmp/polter-no-dir-9c1f"));
 }

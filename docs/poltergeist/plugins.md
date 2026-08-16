@@ -72,31 +72,32 @@ plugins/
 2. 用户自己的：`$XDG_CONFIG_HOME/polter/plugins/`
 3. 配置里显式指定的目录
 
-### `plugin.yaml`
+### `plugin.json`
 
-```yaml
-key: feishu                  # 唯一，也是配置里引用的名字
-name: 飞书群机器人
-kind: notify                 # 见「给以后留位置」
-version: 1.0.0
-description: 发到飞书自定义机器人 webhook
+**是 JSON 不是 YAML，这一条与本章早先的稿子不同。**照抄 Tinia 时写的是 `plugin.yaml` —— 但 Tinia 是 Python，标准库之外就有 YAML；Zig 没有。摆在面前的是「手写一个 YAML 子集解析器」和「用 JSON」，而前者要处理缩进、多行字符串、隐式类型转换，每一样都是能悄悄解析错的地方。清单文件解析错的后果是插件行为与它声称的不一致，那比多打几个引号糟糕得多。
 
-exec: send.sh                # 相对本目录；必须可执行
-timeout_ms: 10000            # 超过就杀掉，默认 10 秒
+```json
+{
+  "key": "feishu",
+  "name": "飞书群机器人",
+  "kind": "notify",
+  "version": "1.0.0",
+  "description": "发到飞书自定义机器人 webhook",
 
-params:                      # JSON Schema，用来校验与将来生成配置界面
-  type: object
-  properties:
-    webhook:
-      type: string
-      title: 机器人 webhook 地址
-  required: [webhook]
+  "exec": "send.sh",
+  "timeout_ms": 10000,
 
-secrets:                     # 只声明字段名。值不在这里，见「凭据」
-  - signing_key
+  "params": {
+    "type": "object",
+    "properties": {
+      "webhook": { "type": "string", "title": "机器人 webhook 地址" }
+    },
+    "required": ["webhook"]
+  }
+}
 ```
 
-`params` 用 JSON Schema 而不是自定义格式，理由和 Tinia 的节点一样：schema 能同时用来校验和生成界面，而自定义格式两样都要自己写。
+`params` 是 JSON Schema，理由和 Tinia 的节点一样：schema 能同时用来校验和生成界面，自定义格式两样都要自己写。而它本来就是 JSON —— 用 YAML 包一层 JSON Schema，从一开始就是别扭的。
 
 ### 调用协议
 

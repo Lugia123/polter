@@ -18,6 +18,7 @@ pub const rpc = @import("rpc.zig");
 pub const Sampler = @import("Sampler.zig");
 pub const Server = @import("Server.zig");
 pub const Plugin = @import("Plugin.zig");
+pub const notify = @import("notify.zig");
 pub const secret = @import("secret.zig");
 pub const Session = @import("Session.zig");
 pub const skill = @import("skill.zig");

@@ -1,0 +1,22 @@
+{
+  "key": "webhook",
+  "name": "Webhook",
+  "kind": "notify",
+  "version": "1.0.0",
+  "description": "POST the notice as JSON to a URL. Works with Feishu, Slack, Discord, ntfy and anything else that takes a webhook.",
+
+  "exec": "send.sh",
+  "timeout_ms": 10000,
+
+  "params": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "title": "Where to POST",
+        "description": "May be a reference: env:, file:, keychain: or cmd:"
+      }
+    },
+    "required": ["url"]
+  }
+}

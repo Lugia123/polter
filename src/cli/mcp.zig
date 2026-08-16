@@ -189,6 +189,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "notify_user",
+        .description = "Ask for the person to be told something. Use `reason: authorisation` when a terminal is stopped on a permission prompt -- nobody may answer those for it, so those go out at any hour. Use `reason: scheduling` for questions you could answer yourself (keep going, change tack, give up); those are held back during the hours the user set aside, and handed back to you to decide. **Read the reply**: it says whether the message actually went anywhere. If it did not, do not sit waiting for an answer. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"reason":{"type":"string","enum":["authorisation","scheduling"]},"title":{"type":"string"},"body":{"type":"string"},"id":{"type":"string","description":"The terminal this is about, if it is about one"}},"required":["reason","title"]}
+        ,
+    },
+    .{
         .name = "session_recall",
         .description = "What last night's arrangement was, written down before the restart: the groups, what each was for, and for every terminal where it was working and what it was called. Read this first after a restart, then look at what is open now and decide for yourself which is which -- nothing here does that for you, and a wrong guess would attach one terminal's supervision to another without saying so. Supervisor only.",
         .schema =

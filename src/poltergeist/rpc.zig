@@ -42,6 +42,15 @@ pub const Method = enum {
     /// back hours later when it no longer remembers why it made this one.
     group_set_brief,
 
+    /// Ask for the person to be told something.
+    ///
+    /// The program never decides that a human is needed -- it cannot read
+    /// a screen and would not know an authorisation prompt from a spinner.
+    /// You looked; you say so. Whether it actually reaches them depends on
+    /// what they have configured and, for scheduling questions, on the
+    /// hour.
+    notify_user,
+
     /// What last night's arrangement was, as written down before the
     /// restart.
     ///
@@ -103,6 +112,16 @@ pub const Request = union(Method) {
     notices,
     group_members: struct { group: []const u8 },
     group_set_brief: struct { group: []const u8, text: []const u8 },
+
+    notify_user: struct {
+        /// `scheduling` or `authorisation`. The second is never held back
+        /// for quiet hours, because nobody may answer it for them.
+        reason: []const u8,
+        title: []const u8,
+        body: []const u8 = "",
+        id: Bus.Id = 0,
+    },
+
     session_recall,
     terminal_read: struct { id: Bus.Id, lines: u16 = 0 },
     terminal_send: struct { id: Bus.Id, text: []const u8, submit: bool = true },
@@ -160,6 +179,7 @@ pub fn requiresSupervisor(method: Method) bool {
         .set_quiescence_threshold,
         .group_set_brief,
         .session_recall,
+        .notify_user,
         => true,
 
         // Skills are instructions, not reach. A watched terminal reading
@@ -199,6 +219,7 @@ pub fn targetsTerminal(method: Method) bool {
         .terminal_list,
         .notices,
         .session_recall,
+        .notify_user,
         .skill_read,
         .group_create,
         .group_destroy,
@@ -240,6 +261,7 @@ pub fn target(req: Request) ?Bus.Id {
         .group_members,
         .group_set_brief,
         .session_recall,
+        .notify_user,
         => null,
 
         inline .group_add, .group_remove => |v| v.id,
@@ -327,6 +349,7 @@ test "only what reaches another terminal needs the supervisor" {
             // Reading last night's arrangement, likewise.
             .group_set_brief,
             .session_recall,
+            .notify_user,
 
             .terminal_list,
             .notices,
@@ -785,6 +808,21 @@ pub const Host = struct {
         /// nothing to free.
         ///
         /// Returned memory belongs to the caller's allocator.
+        /// Tell the person something, through whatever they configured.
+        ///
+        /// Returns what came of it, as a sentence to hand back -- the
+        /// supervisor has to know whether the message actually went
+        /// anywhere, because if it did not, waiting for an answer is
+        /// waiting for nothing.
+        notifyUser: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            reason: []const u8,
+            title: []const u8,
+            body: []const u8,
+            id: Bus.Id,
+        ) anyerror![]const u8,
+
         /// Last night's arrangement, as JSON. Empty when there is none.
         ///
         /// Handed over as text rather than parsed into types: the program
@@ -842,6 +880,17 @@ pub const Host = struct {
 
     fn drainNotices(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
         return self.vtable.drainNotices(self.ctx, alloc);
+    }
+
+    fn notifyUser(
+        self: Host,
+        alloc: std.mem.Allocator,
+        reason: []const u8,
+        title: []const u8,
+        body: []const u8,
+        id: Bus.Id,
+    ) anyerror![]const u8 {
+        return self.vtable.notifyUser(self.ctx, alloc, reason, title, body, id);
     }
 
     fn sessionRecall(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -985,6 +1034,12 @@ pub fn dispatch(
             const line = host.drainNotices(alloc) catch
                 return hostFailure("ReadFailed", "could not read the notices");
             return .{ .text = line };
+        },
+
+        .notify_user => |p| {
+            const said = host.notifyUser(alloc, p.reason, p.title, p.body, p.id) catch
+                return hostFailure("NotifyFailed", "could not attempt to notify");
+            return .{ .text = said };
         },
 
         .session_recall => {
@@ -1188,6 +1243,9 @@ const FakeHost = struct {
     /// What `session_recall` hands back.
     session: []const u8 = "",
 
+    /// The reason of the last notification asked for.
+    notified: ?[]const u8 = null,
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
@@ -1202,6 +1260,7 @@ const FakeHost = struct {
             .chatRemove = chatRemove,
             .chatCompact = chatCompact,
             .chatPost = chatPost,
+            .notifyUser = notifyUser,
             .sessionRecall = sessionRecall,
             .chatSetBrief = chatSetBrief,
             .chatGroupInfo = chatGroupInfo,
@@ -1283,6 +1342,20 @@ const FakeHost = struct {
                 "",
         };
         return out;
+    }
+
+    fn notifyUser(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        reason: []const u8,
+        _: []const u8,
+        _: []const u8,
+        _: Bus.Id,
+    ) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.NotifyFailed;
+        self.notified = reason;
+        return alloc.dupe(u8, "sent to 1 of 1");
     }
 
     fn sessionRecall(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror![]const u8 {
