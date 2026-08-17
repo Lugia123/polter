@@ -166,6 +166,12 @@ pub fn read(arena: Allocator, io: std.Io, path: []const u8) ?Snapshot {
         .limited(4 * 1024 * 1024),
     ) catch return null;
 
+    return parse(arena, bytes);
+}
+
+/// The same, for bytes already in hand. Everything it borrows comes from
+/// `arena`.
+pub fn parse(arena: Allocator, bytes: []const u8) ?Snapshot {
     const parsed = std.json.parseFromSliceLeaky(
         std.json.Value,
         arena,
@@ -219,6 +225,68 @@ pub fn read(arena: Allocator, io: std.Io, path: []const u8) ?Snapshot {
 
     return .{ .groups = groups.items };
 }
+
+/// What the previous run left behind, taken before this run can write.
+///
+/// **Constructing it is the read.** There is no way to ask for the material
+/// later, and that is the whole point of the type: the file is overwritten
+/// early and often -- "this terminal is now the supervisor" is itself a
+/// change worth saving, and it is the *first step* of a restore -- so by
+/// the time anybody asks, the file holds this run's empty arrangement
+/// rather than last night's. Reading late gave the supervisor an empty
+/// list and a whole night's work to not find. Reading at construction
+/// makes that ordering impossible to get wrong rather than merely
+/// documented.
+///
+/// See `docs/poltergeist/supervisor.md`, and note that this is *recall*:
+/// the arrangement that was lost. The live one is what the group tools
+/// are for.
+pub const Recall = struct {
+    /// The file as it was, or empty when there was nothing usable. Owned.
+    bytes: []const u8 = "",
+
+    /// Read the file now, keeping it only if it says something.
+    ///
+    /// A file that will not parse is kept as nothing rather than passed
+    /// on: a corrupt note is worth no more than a missing one, and handing
+    /// the supervisor damaged JSON is worse than handing it none, because
+    /// it will try to act on it.
+    ///
+    /// The bytes are kept as they were read rather than re-rendered from
+    /// the parse. Anything a later version writes that this one does not
+    /// model still reaches the supervisor intact -- and the supervisor,
+    /// unlike this parser, can make sense of a field it has never seen.
+    pub fn open(alloc: Allocator, io: std.Io, path: []const u8) Recall {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            alloc,
+            .limited(4 * 1024 * 1024),
+        ) catch return .{};
+
+        // Parsed only to find out whether it is worth keeping. The result
+        // is thrown away with the arena; what is served is the original.
+        var arena: std.heap.ArenaAllocator = .init(alloc);
+        defer arena.deinit();
+
+        if (parse(arena.allocator(), bytes) == null) {
+            alloc.free(bytes);
+            return .{};
+        }
+
+        return .{ .bytes = bytes };
+    }
+
+    pub fn deinit(self: *Recall, alloc: Allocator) void {
+        if (self.bytes.len > 0) alloc.free(self.bytes);
+        self.* = .{};
+    }
+
+    /// The material, or an empty string when there is none.
+    pub fn text(self: Recall) []const u8 {
+        return self.bytes;
+    }
+};
 
 fn str(v: ?std.json.Value) ?[]const u8 {
     return switch (v orelse return null) {
@@ -390,4 +458,157 @@ test "writing twice leaves one file, not two halves" {
 
     const back = read(alloc, io, path) orelse return error.NothingRead;
     try testing.expectEqual(@as(usize, 2), back.groups.len);
+}
+
+/// A scratch directory that cleans itself up, for the Recall tests below.
+fn tmpDir(alloc: Allocator, io: std.Io) ![]const u8 {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-recall-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    return dir;
+}
+
+test "recall with no file to read is empty, not an error" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var r: Recall = .open(testing.allocator, io, "/tmp/polter-no-such-session-4a1f");
+    defer r.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("", r.text());
+    _ = alloc;
+}
+
+test "a corrupt file recalls as nothing rather than as damaged JSON" {
+    // Handing the supervisor half a file is worse than handing it none:
+    // none it can see, and damage it will try to act on.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "session.json", .{});
+    try f.writeStreamingAll(io, "{\"groups\":[{\"name\":\"buil");
+    f.close(io);
+
+    var r: Recall = .open(testing.allocator, io, try defaultPath(alloc, dir));
+    defer r.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("", r.text());
+}
+
+test "recall hands back what was actually written" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const path = try defaultPath(alloc, dir);
+
+    const members = [_]Member{.{ .cwd = "/work/alpha", .title = "◑ colstat", .role = .watched }};
+    const groups = [_]Group{.{ .name = "alpha", .brief = "CSV 列统计", .members = &members }};
+    write(alloc, io, path, .{ .groups = &groups });
+
+    var r: Recall = .open(testing.allocator, io, path);
+    defer r.deinit(testing.allocator);
+
+    const back = parse(alloc, r.text()) orelse return error.NothingRead;
+    try testing.expectEqual(@as(usize, 1), back.groups.len);
+    try testing.expectEqualStrings("alpha", back.groups[0].name);
+    try testing.expectEqualStrings("CSV 列统计", back.groups[0].brief);
+    try testing.expectEqualStrings("/work/alpha", back.groups[0].members[0].cwd);
+}
+
+test "this run overwriting the file does not take the recall with it" {
+    // The bug this type exists for. On startup there are no groups in
+    // memory, and "this terminal is now the supervisor" is itself a change
+    // worth saving -- and it is the *first step* of a restore. So the file
+    // is replaced by this run's empty arrangement before the supervisor
+    // can ask its first question. Read late, it answered `{"groups":[]}`
+    // and a restore supervisor spent a night finding nothing.
+    //
+    // Reading at construction is what makes that ordering unwritable.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const path = try defaultPath(alloc, dir);
+
+    // Last night.
+    const groups = [_]Group{
+        .{ .name = "alpha", .brief = "CSV 列统计" },
+        .{ .name = "beta", .brief = "路径去重" },
+    };
+    write(alloc, io, path, .{ .groups = &groups });
+
+    // This morning: the material is taken first...
+    var r: Recall = .open(testing.allocator, io, path);
+    defer r.deinit(testing.allocator);
+
+    // ...and then this run writes its own, empty, arrangement over it.
+    write(alloc, io, path, .{});
+    const on_disk = read(alloc, io, path) orelse return error.NothingRead;
+    try testing.expectEqual(@as(usize, 0), on_disk.groups.len);
+
+    // The supervisor still gets last night.
+    const back = parse(alloc, r.text()) orelse return error.NothingRecalled;
+    try testing.expectEqual(@as(usize, 2), back.groups.len);
+    try testing.expectEqualStrings("alpha", back.groups[0].name);
+    try testing.expectEqualStrings("路径去重", back.groups[1].brief);
+}
+
+test "a field this version does not model still reaches the supervisor" {
+    // The bytes are served as they were read, not re-rendered from the
+    // parse. A later version's field would be dropped by re-rendering --
+    // and the supervisor, unlike this parser, can make sense of something
+    // it has never seen before.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "session.json", .{});
+    try f.writeStreamingAll(io,
+        \\{"groups":[{"name":"alpha","deadline":"2026-08-20","members":[]}]}
+    );
+    f.close(io);
+
+    var r: Recall = .open(testing.allocator, io, try defaultPath(alloc, dir));
+    defer r.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, r.text(), "deadline") != null);
+    try testing.expect(std.mem.indexOf(u8, r.text(), "2026-08-20") != null);
 }

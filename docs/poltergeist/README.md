@@ -268,3 +268,11 @@ poltergeist-mcp = true
 - [\_conventions.md](../_conventions.md) — 通用文档规范，本批规范继承自它。
 - [architecture.md](../architecture.md) — Ghostty 模块地图与每个 surface 的线程模型。
 - [preview-manual.md](../preview-manual.md) — 构建、运行、调试命令的唯一权威。
+
+## 测试为什么会「全绿但没跑」
+
+`src/poltergeist/main.zig` 的 `test {}` 块里必须逐个 `_ = Module;`。**Zig 只分析被引用到的东西**——在 `pub const` 里导出一个模块不算引用它的测试。名字在上面、不在 `test {}` 里的模块，它的测试既不会失败也不会运行，而且没有任何东西会提示你。
+
+`ChatLog`、`Plugin`、`notify`、`secret`、`Session` 五个模块曾经就是这样，加回来之后测试数从 3573 变成 3610。恢复路径的那个 bug 正是躲在一堆「看起来在通过」的测试后面——**它们从来没被编译过**。
+
+在上面加一行 import，就要在 `test {}` 里加一行。

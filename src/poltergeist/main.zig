@@ -26,14 +26,28 @@ pub const Watcher = @import("Watcher.zig");
 pub const wire = @import("wire.zig");
 pub const screen = @import("screen.zig");
 
+// Every module in this package, and the list is exhaustive on purpose.
+//
+// Zig only analyses what is referenced, so a module named above but absent
+// here has tests that are never compiled -- they do not fail, they do not
+// run, and nothing says so. Five of them sat like that (`ChatLog`,
+// `Plugin`, `notify`, `secret`, `Session`), which is how a bug in the
+// restore path lived behind a file full of passing-looking tests.
+//
+// Adding an import above means adding a line here.
 test {
     _ = @import("server_test.zig");
     _ = Bus;
     _ = Chat;
+    _ = ChatLog;
     _ = Fingerprint;
+    _ = notify;
+    _ = Plugin;
     _ = rpc;
     _ = Sampler;
+    _ = secret;
     _ = Server;
+    _ = Session;
     _ = skill;
     _ = Watcher;
     _ = wire;

@@ -62,13 +62,10 @@ poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
 /// directory is known. Owned.
 poltergeist_session_path: ?[]const u8 = null,
 
-/// What the previous run left in the session file, read once at startup.
-///
-/// This is what `session_recall` answers with, and it is deliberately not
-/// the current arrangement: the point of recall is the arrangement that
-/// was lost. The live one is what `group_members` and `group_read` are
-/// for.
-poltergeist_recall: ?[]const u8 = null,
+/// What the previous run left behind. See `Session.Recall`, which reads
+/// the file as it is constructed so that this run cannot overwrite the
+/// material before anybody asks for it.
+poltergeist_recall: poltergeistpkg.Session.Recall = .{},
 
 /// The same conversation, written down. Null when logging is off.
 ///
@@ -230,7 +227,7 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_server) |*srv| srv.deinit();
     if (self.chat_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
-    if (self.poltergeist_recall) |r| self.alloc.free(r);
+    self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
     self.chat_surfaces.deinit(self.alloc);
     self.chat.deinit();
@@ -554,18 +551,8 @@ pub fn ensureChatLog(self: *App, want: bool) void {
             state_dir,
         ) catch null;
 
-        // Read before anything can write. What is in the file now is what
-        // the *last* run left behind, and this run will overwrite it the
-        // first time anything changes -- with nothing, because no group
-        // has been rebuilt yet. Held in memory, the material outlives the
-        // write that would otherwise destroy it before anybody asked.
         if (self.poltergeist_session_path) |p| {
-            self.poltergeist_recall = std.Io.Dir.cwd().readFileAlloc(
-                io,
-                p,
-                self.alloc,
-                .limited(4 * 1024 * 1024),
-            ) catch null;
+            self.poltergeist_recall = .open(self.alloc, io, p);
         }
     }
 }
@@ -1181,12 +1168,7 @@ fn pluginParams(
 fn sessionRecall(ctx: *anyopaque, alloc: Allocator) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
 
-    // Not read from the file here. By the time anybody asks, this run has
-    // already written over it -- becoming the supervisor is itself a
-    // change worth saving, and it happens before the supervisor can ask a
-    // single question.
-    const recall = self.poltergeist_recall orelse return "";
-    return alloc.dupe(u8, recall);
+    return alloc.dupe(u8, self.poltergeist_recall.text());
 }
 
 /// Say what a group is for.
