@@ -53,9 +53,28 @@ pub const Group = struct {
     members: []const Member = &.{},
 };
 
+/// A terminal that was open, whether or not anybody was minding it.
+///
+/// Two fields, and that is the whole promise. What runs in a terminal may
+/// be an agent with a session to resume, or it may be somebody's shell
+/// with a build half finished in it -- so "start it again" does not
+/// generalise, and "same directory, same tab name" does. Writing down more
+/// than can be put back would be writing down a promise that breaks on the
+/// first ordinary terminal.
+pub const Terminal = struct {
+    cwd: []const u8 = "",
+    title: []const u8 = "",
+};
+
 /// Everything worth writing down.
 pub const Snapshot = struct {
+    /// How the supervision was arranged.
     groups: []const Group = &.{},
+
+    /// What was on screen. Includes terminals in no group at all -- those
+    /// are the ones with no other record anywhere, so leaving them out
+    /// means they simply vanish at the restart.
+    terminals: []const Terminal = &.{},
 };
 
 /// Where the file lives, given the state directory. Caller owns it.
@@ -150,6 +169,23 @@ fn writeJson(s: *std.json.Stringify, snapshot: Snapshot) !void {
         try s.endObject();
     }
     try s.endArray();
+
+    try s.objectField("terminals");
+    try s.beginArray();
+    for (snapshot.terminals) |t| {
+        try s.beginObject();
+        if (t.cwd.len > 0) {
+            try s.objectField("cwd");
+            try s.write(t.cwd);
+        }
+        if (t.title.len > 0) {
+            try s.objectField("title");
+            try s.write(t.title);
+        }
+        try s.endObject();
+    }
+    try s.endArray();
+
     try s.endObject();
 }
 
@@ -223,7 +259,24 @@ pub fn parse(arena: Allocator, bytes: []const u8) ?Snapshot {
         }) catch return null;
     }
 
-    return .{ .groups = groups.items };
+    // Absent in files written before terminals were recorded, which is
+    // not a reason to reject the groups in them.
+    var terminals: std.ArrayListUnmanaged(Terminal) = .empty;
+    if (obj.get("terminals")) |ts| switch (ts) {
+        .array => |a| for (a.items) |ti| {
+            const to = switch (ti) {
+                .object => |o| o,
+                else => continue,
+            };
+            terminals.append(arena, .{
+                .cwd = str(to.get("cwd")) orelse "",
+                .title = str(to.get("title")) orelse "",
+            }) catch return null;
+        },
+        else => {},
+    };
+
+    return .{ .groups = groups.items, .terminals = terminals.items };
 }
 
 /// What the previous run left behind, taken before this run can write.
@@ -611,4 +664,49 @@ test "a field this version does not model still reaches the supervisor" {
 
     try testing.expect(std.mem.indexOf(u8, r.text(), "deadline") != null);
     try testing.expect(std.mem.indexOf(u8, r.text(), "2026-08-20") != null);
+}
+
+test "a terminal in no group is still written down" {
+    // The one with no other record anywhere. If the snapshot only held
+    // group members, an ordinary shell -- somebody's build, somebody's
+    // editor -- would vanish at the restart with nothing to put it back.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const path = try defaultPath(alloc, dir);
+
+    const groups = [_]Group{.{ .name = "alpha" }};
+    const terminals = [_]Terminal{
+        .{ .cwd = "/work/alpha", .title = "◑ colstat" },
+        .{ .cwd = "/home/lugia", .title = "zsh" },
+    };
+    write(alloc, io, path, .{ .groups = &groups, .terminals = &terminals });
+
+    const back = read(alloc, io, path) orelse return error.NothingRead;
+    try testing.expectEqual(@as(usize, 2), back.terminals.len);
+    try testing.expectEqualStrings("/work/alpha", back.terminals[0].cwd);
+    try testing.expectEqualStrings("zsh", back.terminals[1].title);
+}
+
+test "notes from before terminals were recorded still read" {
+    // Older files have no `terminals` key at all. Rejecting them would
+    // throw away the groups over a field that did not exist yet.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const back = parse(alloc,
+        \\{"groups":[{"name":"alpha","brief":"CSV","members":[]}]}
+    ) orelse return error.NothingRead;
+
+    try testing.expectEqual(@as(usize, 1), back.groups.len);
+    try testing.expectEqualStrings("CSV", back.groups[0].brief);
+    try testing.expectEqual(@as(usize, 0), back.terminals.len);
 }

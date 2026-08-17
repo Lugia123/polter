@@ -89,14 +89,16 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .notices => .notices,
         .session_recall => .session_recall,
 
-        .notify_user => .{ .notify_user = .{
-            .reason = try requireString(aa, params, "reason"),
-            .title = try requireString(aa, params, "title"),
-            .body = (try optionalString(aa, params, "body")) orelse "",
-            // Optional: a notice can be about the arrangement as a whole
-            // rather than about one terminal.
-            .id = requireId(params) catch 0,
-        } },
+        .notify_user => .{
+            .notify_user = .{
+                .reason = try requireString(aa, params, "reason"),
+                .title = try requireString(aa, params, "title"),
+                .body = (try optionalString(aa, params, "body")) orelse "",
+                // Optional: a notice can be about the arrangement as a whole
+                // rather than about one terminal.
+                .id = requireId(params) catch 0,
+            },
+        },
         .group_members => .{ .group_members = .{
             .group = try requireString(aa, params, "group"),
         } },
@@ -279,15 +281,33 @@ fn optionalBool(params: ?std.json.ObjectMap, key: []const u8, default: bool) boo
 /// keeps both the reading and the judgement on its side.
 pub const TerminalInfo = struct {
     id: Bus.Id,
-    role: Bus.Role,
-    duty: Bus.Duty,
-    work_mode: Bus.WorkMode,
-    quiet_ms: u64,
-    watching: bool,
+    role: Bus.Role = .none,
+    duty: Bus.Duty = .off,
+    work_mode: Bus.WorkMode = .clock_off,
+    watching: bool = false,
+
+    /// Where it is working, and what its tab says.
+    ///
+    /// These two are here because they are the only things that can be put
+    /// back for *any* terminal. What runs inside one may be an agent, or it
+    /// may be somebody's shell with a build half finished in it -- so
+    /// "resume the session" does not generalise, and "same directory, same
+    /// tab name" does. They are also the only handle the supervisor has for
+    /// telling last night's notes apart from what is on screen now.
+    cwd: []const u8 = "",
+    title: []const u8 = "",
+
+    /// How long the screen has been unchanged, when anybody is measuring.
+    ///
+    /// Null for a terminal nobody is minding: it is not sampled at all, and
+    /// reporting `0` would read as "busy this instant", which is the
+    /// opposite of not knowing.
+    quiet_ms: ?u64 = null,
 
     /// How many times the supervisor has been told this terminal is quiet
     /// since it last resumed. The clock-out skill counts against this.
-    rounds: u16,
+    /// Null on the same terms as `quiet_ms`.
+    rounds: ?u16 = null,
 };
 
 pub const Response = union(enum) {
@@ -441,12 +461,25 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
     try s.write(@tagName(info.duty));
     try s.objectField("work_mode");
     try s.write(@tagName(info.work_mode));
-    try s.objectField("quiet_ms");
-    try s.write(info.quiet_ms);
     try s.objectField("watching");
     try s.write(info.watching);
-    try s.objectField("rounds");
-    try s.write(info.rounds);
+
+    try s.objectField("cwd");
+    try s.write(info.cwd);
+    try s.objectField("title");
+    try s.write(info.title);
+
+    // Left out entirely rather than sent as null. A field that is absent
+    // reads as "not measured"; a field that is present and null invites
+    // the reader to treat it as a number it can compare against.
+    if (info.quiet_ms) |ms| {
+        try s.objectField("quiet_ms");
+        try s.write(ms);
+    }
+    if (info.rounds) |r| {
+        try s.objectField("rounds");
+        try s.write(r);
+    }
 
     try s.endObject();
 }
@@ -639,4 +672,40 @@ test "screen text goes out escaped, not raw" {
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\n"));
     try testing.expect(std.mem.indexOf(u8, out, "\\n") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\\\"") != null);
+}
+
+test "an unwatched terminal is placed, but not measured" {
+    // The two halves of the same rule: a terminal nobody is minding still
+    // reports where it is and what its tab says, because those are what
+    // put it back -- and reports no quiet time at all, because nothing is
+    // sampling it. `"quiet_ms":0` would read as "busy this instant".
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const list = [_]TerminalInfo{
+        .{
+            .id = 0x11,
+            .cwd = "/work/alpha",
+            .title = "◑ colstat",
+        },
+        .{
+            .id = 0x22,
+            .role = .watched,
+            .watching = true,
+            .cwd = "/work/beta",
+            .title = "◐ dedupe",
+            .quiet_ms = 90_000,
+            .rounds = 2,
+        },
+    };
+    try writeResponse(&w, .{ .terminals = &list });
+    const out = w.buffered();
+
+    try testing.expect(std.mem.indexOf(u8, out, "\"cwd\":\"/work/alpha\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"title\":\"◑ colstat\"") != null);
+
+    // One of the two is measured; the other says nothing rather than zero.
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"quiet_ms\""));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"rounds\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"quiet_ms\":90000") != null);
 }

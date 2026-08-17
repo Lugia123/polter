@@ -62,9 +62,17 @@ that has genuinely stopped is silent in both.
 4. **Then leave it alone** for at least as long as you waited the first
    time. Repeated nudging is how an agent ends up thrashing.
 
-`terminal_list` tells you every terminal, how long each has been quiet,
-whether it is on duty, and how many rounds you have been told about it
-since it last resumed. That count matters for the clock-out modes.
+`terminal_list` tells you every terminal that is open -- where it is
+working, what its tab says, and for the ones under supervision, how long
+each has been quiet, whether it is on duty, and how many rounds you have
+been told about it since it last resumed. That count matters for the
+clock-out modes.
+
+A terminal nobody is minding appears with its directory and name and
+**no quiet time at all**. That absence is information: nothing is
+sampling it, so there is no duration to report. Do not read a missing
+`quiet_ms` as zero -- zero would mean it was busy this instant, which is
+the opposite of not knowing.
 
 ## Say what each group is for, before you forget
 
@@ -109,10 +117,22 @@ guessing wrong attaches one terminal's supervision to another and looks
 entirely normal while doing it. If two candidates are indistinguishable,
 that is a thing to report, not a coin to flip.
 
-A resumed agent may need its own session back, not just its terminal.
-`claude -r`, run in the directory the notes give, is usually what that
-means -- but whether last night's thread is worth resuming at all is a
-judgement, and the chat log is where you make it.
+**What can be put back is a directory and a tab name.** That is the whole
+promise, and it is deliberately small: not every terminal holds an agent.
+One of them may be a shell somebody left a build in, or an editor, or a
+tail on a log. "Start it again" means something different in each of
+those, and nothing at all in some.
+
+So the notes carry `cwd` and `title` for every terminal that was open --
+including ones in no group, which have no other record anywhere -- and
+`terminal_list` reports the same two for every terminal on screen now,
+whether or not anybody is minding it. Those are what you match on.
+
+Where you do know an agent was running, its own session may be worth
+having back as well as its terminal: `claude -r` in the directory the
+notes give is usually what that means. That is an extra you may suggest
+when you have reason to believe it applies, **not** part of what restoring
+a terminal means.
 
 What is deliberately not in the notes: how long anything had been quiet,
 and the round counts. Those describe a moment that has passed. Your

@@ -513,7 +513,25 @@ fn sessionSnapshot(
         });
     }
 
-    return .{ .groups = groups.items };
+    // Every terminal on screen, not only the ones in a group. A terminal
+    // nobody put under watch has no other record anywhere, so leaving it
+    // out means it simply vanishes at the restart -- and it may be the
+    // shell somebody had a build running in, which is worth as much to
+    // them as any agent.
+    var terminals: std.ArrayListUnmanaged(poltergeistpkg.Session.Terminal) = .empty;
+    if (poltergeistOpenTerminals(self, alloc)) |places| {
+        for (places) |place| {
+            if (place.cwd.len == 0 and place.title.len == 0) continue;
+            try terminals.append(alloc, .{
+                .cwd = place.cwd,
+                .title = place.title,
+            });
+        }
+    } else |err| {
+        log.warn("poltergeist: could not list terminals to save err={}", .{err});
+    }
+
+    return .{ .groups = groups.items, .terminals = terminals.items };
 }
 
 /// Open the chat log if the config wants it and it is not open yet.
@@ -732,6 +750,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .readTerminal = poltergeistRead,
         .sendText = poltergeistSend,
         .quietMs = poltergeistQuiet,
+        .openTerminals = poltergeistOpenTerminals,
         .drainNotices = poltergeistDrainNotices,
         .setThreshold = poltergeistThreshold,
         .readSkill = poltergeistSkill,
@@ -794,6 +813,35 @@ fn poltergeistSend(
 fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.poltergeist.quietMs(id, self.poltergeistNow());
+}
+
+/// Every terminal on screen, with where it is and what it is called.
+///
+/// The chat interface is left out: it is a window onto the conversation,
+/// not a terminal anybody could resume, and listing it would put a thing
+/// the supervisor cannot act on into the list it uses to decide.
+fn poltergeistOpenTerminals(
+    ctx: *anyopaque,
+    alloc: Allocator,
+) anyerror![]const poltergeistpkg.rpc.Place {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    var out: std.ArrayListUnmanaged(poltergeistpkg.rpc.Place) = .empty;
+    errdefer out.deinit(alloc);
+
+    for (self.surfaces.items) |v| {
+        const surface: *Surface = v.core();
+        if (self.isChatSurface(surface.id)) continue;
+
+        const footing = self.footingOf(alloc, surface.id);
+        try out.append(alloc, .{
+            .id = surface.id,
+            .cwd = footing.cwd,
+            .title = footing.title,
+        });
+    }
+
+    return out.toOwnedSlice(alloc);
 }
 
 /// The supervisor reading its own box, which is not the scheduled

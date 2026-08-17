@@ -17,11 +17,13 @@ const std = @import("std");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 
+const log = std.log.scoped(.poltergeist);
+
 pub const Method = enum {
     /// Which terminal am I, what is my role, what work mode am I under.
     me,
 
-    /// Every terminal the bus knows about, with its quiescence duration and
+    /// Every terminal that is open, with its quiescence duration and
     /// duty state. Durations and bookkeeping only -- never screen contents.
     terminal_list,
 
@@ -701,6 +703,19 @@ pub const ChatGroupInfo = struct {
 /// rules can be tested against a fake. It is deliberately narrow: reading a
 /// screen, typing into one, and two numbers. Anything wider would invite
 /// the tool surface to grow capabilities that were never argued for.
+/// A terminal and the two things about it that can be put back.
+///
+/// Where it was working and what its tab said. Deliberately not "what was
+/// running in it": that may be an agent whose session can be resumed, or it
+/// may be a shell with a half-finished build in it, and only the first of
+/// those can be restored by a command. The directory and the name are true
+/// of both.
+pub const Place = struct {
+    id: Bus.Id,
+    cwd: []const u8 = "",
+    title: []const u8 = "",
+};
+
 pub const Host = struct {
     ctx: *anyopaque,
     vtable: *const VTable,
@@ -725,6 +740,23 @@ pub const Host = struct {
 
         /// How long that terminal's screen has been unchanged.
         quietMs: *const fn (ctx: *anyopaque, id: Bus.Id) u64,
+
+        /// Every terminal the app has open, minded or not.
+        ///
+        /// The bus only knows terminals somebody put under watch, and
+        /// after a restart that is none of them -- which is exactly when
+        /// the supervisor needs to see what is on screen in order to match
+        /// it against last night's notes. Asking the host instead is the
+        /// difference between a restore procedure that can be carried out
+        /// and one that can only be written down.
+        ///
+        /// Where and what it is called, and nothing else: no screen
+        /// contents, and no measurement of terminals nobody asked to be
+        /// measured. Returned memory belongs to the caller's allocator.
+        openTerminals: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+        ) anyerror![]const Place,
 
         /// Everything the supervisor has not been shown, cleared as it is
         /// read. Empty when there is nothing waiting. Returned memory
@@ -878,6 +910,10 @@ pub const Host = struct {
         return self.vtable.quietMs(self.ctx, id);
     }
 
+    fn openTerminals(self: Host, alloc: std.mem.Allocator) anyerror![]const Place {
+        return self.vtable.openTerminals(self.ctx, alloc);
+    }
+
     fn drainNotices(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
         return self.vtable.drainNotices(self.ctx, alloc);
     }
@@ -1014,9 +1050,30 @@ pub fn dispatch(
             var list: std.ArrayListUnmanaged(wire.TerminalInfo) = .empty;
             defer list.deinit(alloc);
 
-            var it = bus.entries.iterator();
-            while (it.next()) |kv| {
-                try list.append(alloc, describe(bus, host, kv.key_ptr.*));
+            // Every terminal on screen, not only the ones the bus knows.
+            // After a restart the bus knows none of them, and a list that
+            // is empty precisely when the supervisor needs it is not a
+            // list. Falling back to the bus keeps the tool working for a
+            // host that cannot enumerate.
+            if (host.openTerminals(alloc)) |places| {
+                // The array is ours to release; the strings inside it are
+                // not. They are handed on into the response and outlive
+                // this list, so only the slice is freed here.
+                defer alloc.free(places);
+
+                for (places) |place| {
+                    var info = describe(bus, host, place.id);
+                    info.cwd = place.cwd;
+                    info.title = place.title;
+                    try list.append(alloc, info);
+                }
+            } else |err| {
+                log.warn("poltergeist: could not list terminals err={}", .{err});
+
+                var it = bus.entries.iterator();
+                while (it.next()) |kv| {
+                    try list.append(alloc, describe(bus, host, kv.key_ptr.*));
+                }
             }
 
             // Sorted so that repeated calls read the same way; a hash map's
@@ -1186,7 +1243,11 @@ fn lessById(_: void, a: wire.TerminalInfo, b: wire.TerminalInfo) bool {
 }
 
 fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
-    const e = bus.get(id) orelse Bus.Entry{};
+    // A terminal with no entry is one nobody has put under watch. It gets
+    // its identity and nothing else: quiet time is not measured for it, and
+    // saying `0` would claim it was busy this instant.
+    const e = bus.get(id) orelse return .{ .id = id };
+
     return .{
         .id = id,
         .role = e.role,
@@ -1246,12 +1307,16 @@ const FakeHost = struct {
     /// The reason of the last notification asked for.
     notified: ?[]const u8 = null,
 
+    /// What is on screen, whether or not the bus knows about any of it.
+    open: []const Place = &.{},
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
             .sendText = send,
             .quietMs = quietMs,
-        .drainNotices = drainNotices,
+            .openTerminals = openTerminals,
+            .drainNotices = drainNotices,
             .setThreshold = setThreshold,
             .readSkill = readSkill,
             .chatCreate = chatCreate,
@@ -1452,6 +1517,14 @@ const FakeHost = struct {
         return self.quiet_ms;
     }
 
+    fn openTerminals(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+    ) anyerror![]const Place {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return alloc.dupe(Place, self.open);
+    }
+
     fn drainNotices(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror![]const u8 {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.Refused;
@@ -1529,7 +1602,11 @@ test "terminal_list is sorted so two listings can be compared" {
     defer b.deinit();
     try b.watch(0xaaaa);
     try b.watch(0x0001);
-    var fake: FakeHost = .{};
+
+    const open = [_]Place{
+        .{ .id = 0xaaaa }, .{ .id = 0x0001 }, .{ .id = boss }, .{ .id = worker },
+    };
+    var fake: FakeHost = .{ .open = &open };
 
     const res = try dispatch(testing.allocator, &b, fake.host(), boss, .terminal_list);
     defer testing.allocator.free(res.terminals);
@@ -1538,6 +1615,42 @@ test "terminal_list is sorted so two listings can be compared" {
     for (res.terminals[1..], 0..) |info, i| {
         try testing.expect(res.terminals[i].id < info.id);
     }
+}
+
+test "a terminal nobody is watching is still listed, with where it is" {
+    // The restore case, and the reason this list stopped coming from the
+    // bus. After a restart nothing is under watch -- so a list built from
+    // the bus is empty exactly when the supervisor needs it to match last
+    // night's notes against what is on screen.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    const open = [_]Place{
+        .{ .id = boss, .cwd = "/work", .title = "supervisor" },
+        .{ .id = 0x5151, .cwd = "/work/alpha", .title = "◑ colstat" },
+    };
+    var fake: FakeHost = .{ .open = &open, .quiet_ms = 4242 };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .terminal_list);
+    defer testing.allocator.free(res.terminals);
+
+    var found: ?wire.TerminalInfo = null;
+    for (res.terminals) |info| if (info.id == 0x5151) {
+        found = info;
+    };
+    const stranger = found orelse return error.NotListed;
+
+    // Enough to put it back: where it was, and what it was called.
+    try testing.expectEqualStrings("/work/alpha", stranger.cwd);
+    try testing.expectEqualStrings("◑ colstat", stranger.title);
+
+    // And nothing that would have to be measured to be true. The fake
+    // would happily answer 4242ms; a terminal nobody samples has no
+    // quiet time, and `0` would read as "busy this instant".
+    try testing.expect(!stranger.watching);
+    try testing.expectEqual(Bus.Role.none, stranger.role);
+    try testing.expect(stranger.quiet_ms == null);
+    try testing.expect(stranger.rounds == null);
 }
 
 test "me works for a terminal that supervises nothing" {

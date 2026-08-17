@@ -109,13 +109,19 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 | 工具                        | 参数       | 返回                                               | 可用角色 |
 | --------------------------- | ---------- | -------------------------------------------------- | -------- |
 | `me()`                      | 无         | `{surface_id, role, work_mode}`                    | 全部     |
-| `terminal_list()`           | 无         | 每终端一行 `{id, name, quiescence_ms, duty, mode}` | 总管     |
+| `terminal_list()`           | 无         | 每终端一行 `{id, cwd, title, duty, mode, watching}`，被监督的另带 `quiescence_ms` 与 `rounds` | 总管     |
 | `notices()`                 | 无         | 尚未被看过的情况，一行文本；空表示没有            | 总管     |
 | `terminal_read(id, lines?)` | 终端与行数 | 可见屏幕或最近 N 行纯文本                          | 总管     |
 | `group_read(group, since?)` | 群名与游标 | 消息数组                                           | 成员     |
 | `group_list()`              | 无         | 自己所在的群名，已排序                             | 全部     |
 
-`terminal_list` 给的是**静止时长这一个标量**，不做任何语义推断 —— 旧稿感知层的 working / thinking / idle / stalled 推断已废，见 [sensing.md](sensing.md)。返回里的 `duty` 字段是 [supervisor.md](supervisor.md) 的上班 / 下班簿记状态，不是对屏幕内容的判断，两者不要混为一谈。`terminal_read` 是 R1 的落点：总管靠它自己看内容、自己判断该叫还是该等。另有 `get_work_mode(id)` 与 `skill_read(name)` 两个只读工具，见后文。
+`terminal_list` **列出所有开着的终端，不只是被监督的那些**。这一条是被真机测出来的：原来它只遍历 bus 里有登记的终端，而重启后按定义什么都没被监督 —— 于是这个列表在它唯一有用的场景（恢复）里永远是空的，[supervisor.md](supervisor.md) 写的恢复三步**写得出、做不到**。
+
+每个终端都带 `cwd` 与 `title`。这两样是**任何**终端都能放回的东西：里面跑的可能是 agent，也可能只是一个开着构建的普通 shell，「把会话恢复回来」对后者没有意义，「回到那个目录、还叫那个名字」对两者都成立。
+
+没被监督的终端**完全不出现 `quiescence_ms` 字段**，而不是出现一个 0。没人在采样它，`0` 会被读成「此刻正忙」，恰好是「不知道」的反面。
+
+除此之外，`terminal_list` 给的仍是**静止时长这一个标量**，不做任何语义推断 —— 旧稿感知层的 working / thinking / idle / stalled 推断已废，见 [sensing.md](sensing.md)。返回里的 `duty` 字段是 [supervisor.md](supervisor.md) 的上班 / 下班簿记状态，不是对屏幕内容的判断，两者不要混为一谈。`terminal_read` 是 R1 的落点：总管靠它自己看内容、自己判断该叫还是该等。另有 `get_work_mode(id)` 与 `skill_read(name)` 两个只读工具，见后文。
 
 ### 写工具
 
@@ -366,11 +372,11 @@ skill 里要求总管 `group_create` 之后**立刻** `group_set_brief` —— �
 | --- | --- | --- |
 | `group_set_brief(group, text)` | 群名、说明 | 总管 |
 | `group_list()` | 无 | 全部；**但 `brief` 与重建材料只对总管出现** |
-| `session_recall()` | 无 | 总管。返回上次落盘的群与成员材料，**不做任何自动动作** |
+| `session_recall()` | 无 | 总管。返回上次落盘的群、成员与**所有开着过的终端**，**不做任何自动动作** |
 
 `session_recall` 只读，读到之后干什么是总管的判断 —— 见 [supervisor.md](supervisor.md)「关掉再打开」的三步。
 
-## 边界：Poltergeist 不管理任务## 边界：Poltergeist 不管理任务
+## 边界：Poltergeist 不管理任务
 
 四条禁令，正面回答 R8：
 
