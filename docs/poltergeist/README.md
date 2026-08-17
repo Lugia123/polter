@@ -181,6 +181,18 @@ S2 那轮的教训因此要改写得更狠：一个致命 bug 可以通过编译
 
 教训是同一个：**验证命令覆盖不到的地方，等于没验证** —— 而它看起来和验证过一模一样。
 
+### GTK 现在真编过了（S4 补）
+
+在开发机上装了 `gtk4`、`libadwaita`、`blueprint-compiler` 之后：
+
+```
+zig build -Dapp-runtime=gtk -Dtarget=x86_64-linux-gnu -Demit-macos-app=false
+```
+
+**Zig 侧语义分析全过**，包括所有 apprt action 的穷举 `switch`。只在最后链接 Linux 动态库时失败（Mac 上没有 `.so`），这一步和代码正确性无关。也就是说上面记的那个 GTK 穷举 switch 问题确实已经修好了，而且这次是编译器说的，不是覆盖率脚本猜的。
+
+**注意不要走 `-Dapp-runtime=gtk` 而不带 `-Dtarget`**：那是「macOS 上的 GTK」，上游不支持这个组合，会在 `Surface.encodeKey` 里撞上 `keyboardLayout()`（macOS 分支要的方法 GTK 的 App 没有）。这不是本项目的问题，也不能当成 GTK 构建失败的证据 —— 真实目标是 Linux。
+
 ## 怎么试
 
 需要一台装了 **Xcode 26** 的 macOS（构建 app 必需），或者一台 Linux（GTK 侧没有聊天窗口，其余可用）。
