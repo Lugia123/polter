@@ -708,6 +708,11 @@ extension TerminalWindow {
 
     private static let tabColorPaletteIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.tabColorPalette")
 
+    private static let agentSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentSeparator")
+    private static let agentSupervisorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentSupervisor")
+    private static let agentWatchIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentWatch")
+    private static let agentWorkModeIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentWorkMode")
+
     func configureTabContextMenuIfNeeded(_ menu: NSMenu) {
         guard isTabContextMenu(menu) else { return }
 
@@ -738,6 +743,7 @@ extension TerminalWindow {
         }
 
         appendTabModifierSection(to: menu, target: targetController)
+        appendAgentSection(to: menu, target: targetController)
     }
 
     private func isTabContextMenu(_ menu: NSMenu) -> Bool {
@@ -753,6 +759,55 @@ extension TerminalWindow {
 
         let selectorNames = Set(menu.items.compactMap { $0.action }.map { NSStringFromSelector($0) })
         return requiredSelectors.isSubset(of: selectorNames)
+    }
+
+    /// The per-terminal agent actions, on the tab that was right-clicked.
+    ///
+    /// The same three that are in the Agents menu and the terminal's own
+    /// context menu. They belong here because each is about one terminal,
+    /// and the tab strip is where you look when you are deciding *which*
+    /// terminal -- picking the supervisor out of six tabs by clicking into
+    /// each one first is the long way round.
+    ///
+    /// `target` is the right-clicked tab's controller, not the focused one,
+    /// which is what makes this act on the tab under the pointer.
+    private func appendAgentSection(to menu: NSMenu, target: TerminalController?) {
+        menu.removeItems(withIdentifiers: [
+            Self.agentSeparatorIdentifier,
+            Self.agentSupervisorIdentifier,
+            Self.agentWatchIdentifier,
+            Self.agentWorkModeIdentifier,
+        ])
+
+        let separator = NSMenuItem.separator()
+        separator.identifier = Self.agentSeparatorIdentifier
+        menu.addItem(separator)
+
+        let entries: [(String, String, Selector, NSUserInterfaceItemIdentifier)] = [
+            (String(localized: "Make This Terminal the Supervisor",
+                    comment: "标签页右键菜单：设为总管"),
+             "eyeglasses",
+             #selector(TerminalController.poltergeistSupervisor(_:)),
+             Self.agentSupervisorIdentifier),
+            (String(localized: "Supervise This Terminal",
+                    comment: "标签页右键菜单：监督此终端"),
+             "binoculars",
+             #selector(TerminalController.poltergeistToggleWatch(_:)),
+             Self.agentWatchIdentifier),
+            (String(localized: "Cycle This Terminal's Work Mode",
+                    comment: "标签页右键菜单：切换工作模式"),
+             "clock.arrow.circlepath",
+             #selector(TerminalController.poltergeistCycleWorkMode(_:)),
+             Self.agentWorkModeIdentifier),
+        ]
+
+        for (title, symbol, action, identifier) in entries {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.identifier = identifier
+            item.target = target
+            item.setImageIfDesired(systemSymbolName: symbol)
+            menu.addItem(item)
+        }
     }
 
     private func appendTabModifierSection(to menu: NSMenu, target: TerminalController?) {

@@ -1263,16 +1263,27 @@ command: ?Command = null,
 /// Let agents running in this terminal reach Poltergeist over a local
 /// socket, through the `polter +mcp` MCP server.
 ///
-/// This is what makes a supervisor able to read and type into the
-/// terminals it watches, so it grants real reach and defaults to `false`.
-/// With it off, Ghostty behaves exactly as it did before Poltergeist
-/// existed and opens no socket at all.
+/// **On by default**, because this is what Polter is for. It was off while
+/// this was a patch on top of Ghostty, where the honest default was "behave
+/// as though none of it existed" -- but somebody who installs Polter and
+/// finds the conversations view dying on open, the supervisor unreachable
+/// and every agent tool absent has a terminal that is Ghostty with a
+/// different icon.
+///
+/// **Opening the socket grants almost nothing on its own.** Until you make
+/// some terminal the supervisor, an agent holding a token can ask about
+/// itself, read a skill, and list the groups it is in -- which is none.
+/// Reading another terminal's screen, typing into one, and making groups
+/// all require the supervisor role, and only you can hand that out. The
+/// reach arrives with that decision, not with this switch.
 ///
 /// The socket is a unix socket in your state directory, never a network
 /// port. Each terminal gets its own token, placed in its environment as
 /// `GHOSTTY_POLTER_TOKEN`; an agent proves which terminal it is by holding
 /// that token and can never claim to be another one.
-@"poltergeist-mcp": bool = false,
+///
+/// Set it to `false` for a plain terminal that opens no socket at all.
+@"poltergeist-mcp": bool = true,
 
 /// Watch this terminal for quiescence.
 ///

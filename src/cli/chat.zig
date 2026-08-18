@@ -77,17 +77,11 @@ pub fn run(alloc: Allocator) !u8 {
 
     const socket_path = opts.socket orelse
         env.get("GHOSTTY_POLTER_SOCKET") orelse
-        {
-            log.err("no socket: is `poltergeist-mcp` enabled, and is this running inside Polter?", .{});
-            return 1;
-        };
+        return complain(io, "GHOSTTY_POLTER_SOCKET");
 
     const token = opts.token orelse
         env.get("GHOSTTY_POLTER_TOKEN") orelse
-        {
-            log.err("no token: is `poltergeist-mcp` enabled, and is this running inside Polter?", .{});
-            return 1;
-        };
+        return complain(io, "GHOSTTY_POLTER_TOKEN");
 
     var host: Host = try .connect(alloc, io, socket_path, token);
     defer host.deinit();
@@ -98,6 +92,32 @@ pub fn run(alloc: Allocator) !u8 {
 
     try chat.run();
     return 0;
+}
+
+/// Say why this will not start, where the person who ran it will see it.
+///
+/// To stderr, not the log. This runs in a terminal the user just opened
+/// from a menu, and on macOS the log goes to `os_log` -- so a `log.err`
+/// here is a terminal that closes after a tenth of a second having said
+/// nothing at all, which is exactly how this was first reported.
+fn complain(io: std.Io, missing: []const u8) u8 {
+    var buffer: [512]u8 = undefined;
+    var stderr: std.Io.File = .stderr();
+    var writer = stderr.writer(io, &buffer);
+
+    writer.interface.print(
+        \\Polter: no {s} in this terminal, so there is nothing to talk to.
+        \\
+        \\The conversations view runs inside Polter and needs the agent
+        \\socket, which is off by default. Put this in
+        \\$XDG_CONFIG_HOME/polter/config.polter and restart Polter:
+        \\
+        \\    poltergeist-mcp = true
+        \\
+    , .{missing}) catch return 1;
+    writer.end() catch {};
+
+    return 1;
 }
 
 /// The connection back to Polter.
