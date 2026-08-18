@@ -36,11 +36,11 @@ enum UntrustedURLAlert {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.icon = NSImage(named: NSImage.cautionName)
-            alert.messageText = "Ghostty Blocked This Link"
+            alert.messageText = String(localized: "Polter Blocked This Link", comment: "拦截链接对话框标题")
             alert.informativeText = reason.message
             alert.accessoryView = targetView(displayString)
             alert.addButton(withTitle: "OK")
-            alert.addButton(withTitle: "Copy Link")
+            alert.addButton(withTitle: String(localized: "Copy Link", comment: "拦截链接：拷贝链接按钮"))
 
             present(alert) { response in
                 // Keep blocked targets out of Launch Services. Copying the

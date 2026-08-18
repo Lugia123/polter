@@ -62,7 +62,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>OSAScriptingDefinition</key>
-	<string>Ghostty.sdef</string>
+	<string>Polter.sdef</string>
 	<key>NSServices</key>
 	<array>
 		<dict>
@@ -114,7 +114,7 @@
 			<key>UTTypeIdentifier</key>
 			<string>com.lugia.polterSurfaceId</string>
 			<key>UTTypeDescription</key>
-			<string>Ghostty Surface Identifier</string>
+			<string>Polter Surface Identifier</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>

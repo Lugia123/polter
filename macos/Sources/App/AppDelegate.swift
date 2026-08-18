@@ -80,6 +80,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuPoltergeistSupervisor: NSMenuItem?
     @IBOutlet private var menuPoltergeistWatch: NSMenuItem?
     @IBOutlet private var menuPoltergeistWorkMode: NSMenuItem?
+    @IBOutlet private var menuLanguage: NSMenuItem?
 
     @IBOutlet private var menuEqualizeSplits: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerUp: NSMenuItem?
@@ -216,6 +217,89 @@ class AppDelegate: NSObject,
         ])
     }
 
+    /// Fill in the Language submenu.
+    ///
+    /// Built here rather than in the xib because the entries come from
+    /// `AppLanguage.allCases`: adding a language should mean adding one enum
+    /// case, not editing a nib by hand and hoping the two stay in step.
+    private func setupLanguageMenu() {
+        guard let item = menuLanguage else { return }
+
+        let submenu = NSMenu(title: item.title)
+        let effective = AppLanguage.effective
+        for language in AppLanguage.allCases {
+            let entry = NSMenuItem(
+                title: language.displayName,
+                action: #selector(selectLanguage(_:)),
+                keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = language.rawValue
+            entry.state = (language == effective) ? .on : .off
+            submenu.addItem(entry)
+        }
+        item.submenu = submenu
+    }
+
+    @IBAction func selectLanguage(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let raw = item.representedObject as? String,
+              let language = AppLanguage(rawValue: raw) else { return }
+
+        // Already chosen: say nothing rather than offer a restart that would
+        // change nothing.
+        guard AppLanguage.select(language) else { return }
+        setupLanguageMenu()
+
+        let alert = NSAlert()
+        alert.messageText = String(
+            localized: "Restart Polter?",
+            comment: "Language change restart prompt title")
+        alert.informativeText = String(
+            localized: "The language changes after Polter restarts.",
+            comment: "Language change restart prompt body")
+        alert.addButton(withTitle: String(
+            localized: "Restart Now", comment: "Language change: restart"))
+        alert.addButton(withTitle: String(
+            localized: "Later", comment: "Language change: postpone"))
+        alert.alertStyle = .informational
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        relaunch()
+    }
+
+    /// Start a fresh copy and stand down, so the new process reads the
+    /// language that was just written.
+    ///
+    /// The replacement waits for this pid to disappear before opening: this
+    /// app is a singleton over a socket, and launching first would leave two
+    /// instances briefly fighting over it.
+    ///
+    /// The bundle path is passed as an argument rather than spliced into the
+    /// script. A path with a quote or a space in it -- and this one lives
+    /// under "claude lugia" on at least one machine -- would otherwise turn
+    /// into a broken command, or worse, a working one that runs something
+    /// else.
+    private func relaunch() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = [
+            "-c",
+            "while /bin/kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open -n \"$2\"",
+            "polter-relaunch",
+            String(ProcessInfo.processInfo.processIdentifier),
+            Bundle.main.bundlePath,
+        ]
+
+        do {
+            try task.run()
+        } catch {
+            AppDelegate.logger.warning("could not schedule relaunch: \(error)")
+            return
+        }
+
+        NSApp.terminate(nil)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [
@@ -225,6 +309,9 @@ class AppDelegate: NSObject,
 
         // Store our start time
         applicationLaunchTime = ProcessInfo.processInfo.systemUptime
+
+        // The Language submenu is built from AppLanguage rather than the nib.
+        setupLanguageMenu()
 
         // Check if secure input was enabled when we last quit.
         if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
@@ -505,7 +592,7 @@ class AppDelegate: NSObject,
             // may want to show this as a sheet on the focused window (especially if we're
             // opening a tab). I'm not sure.
             let alert = NSAlert()
-            alert.messageText = "Allow Ghostty to execute \"\(filename)\"?"
+            alert.messageText = "Allow Polter to execute \"\(filename)\"?"
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Cancel")
             alert.alertStyle = .warning
@@ -1335,9 +1422,9 @@ extension AppDelegate {
         if controllersNeedConfirmation.count == 1 {
             Task {
                 let response = await controllersNeedConfirmation[0].confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
-                    informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
-                    confirmButtonTitle: "Terminate",
+                    messageText: String(localized: "Quit Polter?", comment: "退出确认对话框标题"),
+                    informativeText: String(localized: "The terminal still has a running process. If you quit, the process will be killed.", comment: "退出确认：仍有进程在跑"),
+                    confirmButtonTitle: String(localized: "Terminate", comment: "退出确认按钮"),
                 )
 
                 if [.OK, .alertFirstButtonReturn].contains(response) {
@@ -1373,9 +1460,9 @@ extension AppDelegate {
         Task {
             for controller in controllers {
                 let response = await controller.confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
-                    informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
-                    confirmButtonTitle: "Terminate",
+                    messageText: String(localized: "Quit Polter?", comment: "退出确认对话框标题"),
+                    informativeText: String(localized: "The terminal still has a running process. If you quit, the process will be killed.", comment: "退出确认：仍有进程在跑"),
+                    confirmButtonTitle: String(localized: "Terminate", comment: "退出确认按钮"),
                 )
 
                 if [.OK, .alertFirstButtonReturn].contains(response) {

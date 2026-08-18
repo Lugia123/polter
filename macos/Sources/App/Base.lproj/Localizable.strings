@@ -1,0 +1,31 @@
+/* Base (English). Present so the key set is visible in one place; the
+   values are the keys, because the keys are the English text. */
+
+"Copy" = "Copy";
+"Paste" = "Paste";
+"Split Right" = "Split Right";
+"Split Left" = "Split Left";
+"Split Down" = "Split Down";
+"Split Up" = "Split Up";
+"Reset Terminal" = "Reset Terminal";
+"Toggle Terminal Inspector" = "Toggle Terminal Inspector";
+"Terminal Read-only" = "Terminal Read-only";
+"Change Tab Title..." = "Change Tab Title...";
+"Change Terminal Title..." = "Change Terminal Title...";
+
+"Quit Polter?" = "Quit Polter?";
+"The terminal still has a running process. If you quit, the process will be killed." = "The terminal still has a running process. If you quit, the process will be killed.";
+"Terminate" = "Terminate";
+
+"Polter Blocked This Link" = "Polter Blocked This Link";
+"Copy Link" = "Copy Link";
+
+"Allow Shortcuts to interact with Polter?" = "Allow Shortcuts to interact with Polter?";
+
+"Language" = "Language";
+"English" = "English";
+"简体中文" = "简体中文";
+"Restart Polter?" = "Restart Polter?";
+"The language changes after Polter restarts." = "The language changes after Polter restarts.";
+"Restart Now" = "Restart Now";
+"Later" = "Later";

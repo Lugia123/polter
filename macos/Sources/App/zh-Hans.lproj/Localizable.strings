@@ -1,0 +1,36 @@
+/* Swift 代码里的文案。键就是英文原文 —— 改英文原文时这里要跟着改，
+   否则会静默回落成英文，不会报错。*/
+
+/* 右键菜单 */
+"Copy" = "拷贝";
+"Paste" = "粘贴";
+"Split Right" = "向右分屏";
+"Split Left" = "向左分屏";
+"Split Down" = "向下分屏";
+"Split Up" = "向上分屏";
+"Reset Terminal" = "重置终端";
+"Toggle Terminal Inspector" = "切换终端检查器";
+"Terminal Read-only" = "终端只读";
+"Change Tab Title..." = "修改标签页标题…";
+"Change Terminal Title..." = "修改终端标题…";
+
+/* 退出确认 */
+"Quit Polter?" = "退出 Polter？";
+"The terminal still has a running process. If you quit, the process will be killed." = "终端里还有进程在运行。退出会杀掉它。";
+"Terminate" = "结束进程";
+
+/* 拦截链接 */
+"Polter Blocked This Link" = "Polter 拦截了这个链接";
+"Copy Link" = "拷贝链接";
+
+/* 快捷指令 */
+"Allow Shortcuts to interact with Polter?" = "允许「快捷指令」操作 Polter？";
+
+/* 语言切换 */
+"Language" = "语言";
+"English" = "English";
+"简体中文" = "简体中文";
+"Restart Polter?" = "重启 Polter？";
+"The language changes after Polter restarts." = "语言会在 Polter 重启后生效。";
+"Restart Now" = "立即重启";
+"Later" = "稍后";

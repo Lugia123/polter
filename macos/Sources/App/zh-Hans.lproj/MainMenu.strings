@@ -1,0 +1,96 @@
+/* Polter 主菜单简体中文。
+   键是 MainMenu.xib 里的 object id —— 改 xib 时 id 不变，标题变了这里也要跟着改。
+   术语跟着 docs/poltergeist 走：supervisor = 总管，group chat = 群聊。*/
+
+/* 应用菜单 */
+"5kV-Vb-QxS.title" = "关于 Polter";
+"GEA-5y-yzH.title" = "检查更新…";
+"BOF-NM-1cW.title" = "设置…";
+"KKH-XX-5py.title" = "重新载入配置";
+"oC6-w4-qI7.title" = "安全键盘输入";
+"b1t-oB-7MI.title" = "将 Polter 设为默认终端";
+"rJe-5J-bwL.title" = "服务";
+"Olw-nP-bQN.title" = "隐藏 Polter";
+"Vdr-fp-XzO.title" = "隐藏其他";
+"Kd2-mp-pUS.title" = "全部显示";
+"4sb-4s-VLi.title" = "退出 Polter";
+
+/* 文件 */
+"dMs-cI-mzQ.title" = "文件";
+"Was-JA-tGl.title" = "新建窗口";
+"uTG-Vz-hJU.title" = "新建标签页";
+"VUR-Ld-nLx.title" = "向右分屏";
+"Ppv-GP-lQU.title" = "向左分屏";
+"UDZ-4y-6xL.title" = "向下分屏";
+"Ggp-7N-GbX.title" = "向上分屏";
+"DVo-aG-piG.title" = "关闭";
+"Obb-Mk-j8J.title" = "关闭标签页";
+"W5w-UZ-crk.title" = "关闭窗口";
+"yKr-Vi-Yqw.title" = "关闭所有窗口";
+
+/* 编辑 */
+"ZUG-Nx-Wkj.title" = "编辑";
+"r83-CV-syt.title" = "撤销";
+"EX8-lB-4s7.title" = "重做";
+"Jqf-pv-Zcu.title" = "拷贝";
+"i27-pK-umN.title" = "粘贴";
+"akq-ov-Jjh.title" = "粘贴选中内容";
+"q2h-lq-e4r.title" = "全选";
+"cE3-Bt-FcH.title" = "查找";
+"nwE-0w-30h.title" = "查找…";
+"XqU-X8-q32.title" = "查找下一个";
+"1hd-2Z-wVm.title" = "查找上一个";
+"xzC-AG-HAc.title" = "隐藏查找栏";
+"TDN-42-Bu7.title" = "用选中内容查找";
+"1rN-4k-Dz3.title" = "跳转到选中处";
+
+/* 显示 */
+"3L3-2p-Joi.title" = "显示";
+"Jah-MY-aLX.title" = "恢复默认字号";
+"CIH-ey-Z6x.title" = "增大字号";
+"kzb-SZ-dOA.title" = "减小字号";
+"et6-de-Mh7.title" = "命令面板";
+"iac-lh-Cl7.title" = "修改标签页标题…";
+"24I-xg-qIq.title" = "修改终端标题…";
+"xpe-ia-Yjw.title" = "终端只读";
+"1pv-LF-NBJ.title" = "快捷终端";
+"QwP-M5-fvh.title" = "终端检查器";
+
+/* 智能体 —— 这几项是 Polter 自己的 */
+"pg0-Mn-Ma1.title" = "智能体";
+"pg1-Ch-At1.title" = "终端群聊";
+"pg3-Su-Pv1.title" = "将此终端设为总管";
+"pg4-Wa-Tc1.title" = "监督此终端";
+"pg5-Wm-Cy1.title" = "切换此终端的工作模式";
+
+/* 窗口 */
+"aUF-d1-5bR.title" = "窗口";
+"OY7-WF-poV.title" = "最小化";
+"R4o-n2-Eq4.title" = "缩放";
+"8kY-Pi-KaY.title" = "切换全屏";
+"DOX-wA-ilh.title" = "显示/隐藏所有终端";
+"oPd-mn-IEH.title" = "放大分屏";
+"Lic-px-1wg.title" = "选择上一个分屏";
+"bD7-ei-wKU.title" = "选择下一个分屏";
+"dos-9S-LXC.title" = "选择分屏";
+"0yU-hC-8xF.title" = "选择上方分屏";
+"QDz-d9-CBr.title" = "选择下方分屏";
+"cTK-oy-KuV.title" = "选择左侧分屏";
+"upj-mc-L7X.title" = "选择右侧分屏";
+"BJO-3W-fkO.title" = "调整分屏大小";
+"3gH-VD-vL9.title" = "均分各分屏";
+"h9Y-40-3oo.title" = "分隔线上移";
+"Zj7-2W-fdF.title" = "分隔线下移";
+"wSR-ny-j1a.title" = "分隔线左移";
+"CcX-ql-QU4.title" = "分隔线右移";
+"Gbx-Vi-OGC.title" = "恢复默认大小";
+"uRj-7z-1Nh.title" = "窗口置顶";
+"TrB-O8-g8H.title" = "设为默认";
+"LE2-aR-0XJ.title" = "前置全部窗口";
+
+/* 帮助 */
+"wpr-3q-Mcd.title" = "帮助";
+"FKE-Sm-Kum.title" = "Polter 帮助";
+
+/* 语言子菜单 */
+"pg7-La-Ng1.title" = "语言";

@@ -71,6 +71,7 @@
                 <outlet property="menuPoltergeistSupervisor" destination="pg3-Su-Pv1" id="pg3-Ou-Tl1"/>
                 <outlet property="menuPoltergeistWatch" destination="pg4-Wa-Tc1" id="pg4-Ou-Tl1"/>
                 <outlet property="menuPoltergeistWorkMode" destination="pg5-Wm-Cy1" id="pg5-Ou-Tl1"/>
+                <outlet property="menuLanguage" destination="pg7-La-Ng1" id="pg7-Ou-Tl1"/>
                 <outlet property="menuToggleFullScreen" destination="8kY-Pi-KaY" id="yQg-6V-OO6"/>
                 <outlet property="menuToggleVisibility" destination="DOX-wA-ilh" id="iBj-Bc-2bq"/>
                 <outlet property="menuUndo" destination="r83-CV-syt" id="bU9-0b-xgQ"/>
@@ -378,9 +379,9 @@
                         </items>
                     </menu>
                 </menuItem>
-                <menuItem title="Polter" id="pg0-Mn-Ma1" userLabel="Polter">
+                <menuItem title="Agents" id="pg0-Mn-Ma1" userLabel="Agents">
                     <modifierMask key="keyEquivalentModifierMask"/>
-                    <menu key="submenu" title="Polter" id="pg0-Mn-Ma2">
+                    <menu key="submenu" title="Agents" id="pg0-Mn-Ma2">
                         <items>
                             <menuItem title="Terminal Conversations" id="pg1-Ch-At1">
                                 <modifierMask key="keyEquivalentModifierMask"/>
@@ -406,6 +407,10 @@
                                 <connections>
                                     <action selector="poltergeistCycleWorkMode:" target="-1" id="pg5-Wm-Cy2"/>
                                 </connections>
+                            </menuItem>
+                            <menuItem isSeparatorItem="YES" id="pg6-Sp-Ar1"/>
+                            <menuItem title="Language" id="pg7-La-Ng1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
                             </menuItem>
                         </items>
                     </menu>

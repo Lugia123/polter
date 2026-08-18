@@ -12,7 +12,7 @@
 		552964E62B34A9B400030505 /* vim in Resources */ = {isa = PBXBuildFile; fileRef = 552964E52B34A9B400030505 /* vim */; };
 		819324582F24E78800A9ED8F /* DockTilePlugin.plugin in Copy DockTilePlugin */ = {isa = PBXBuildFile; fileRef = 8193244D2F24E6C000A9ED8F /* DockTilePlugin.plugin */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		819324642F24FF2100A9ED8F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A5B30538299BEAAB0047F10C /* Assets.xcassets */; };
-		8F3A9B4C2FA6B88000A18D13 /* Ghostty.sdef in Resources */ = {isa = PBXBuildFile; fileRef = 8F3A9B4B2FA6B88000A18D13 /* Ghostty.sdef */; };
+		8F3A9B4C2FA6B88000A18D13 /* Polter.sdef in Resources */ = {isa = PBXBuildFile; fileRef = 8F3A9B4B2FA6B88000A18D13 /* Polter.sdef */; };
 		9351BE8E3D22937F003B3499 /* nvim in Resources */ = {isa = PBXBuildFile; fileRef = 9351BE8E2D22937F003B3499 /* nvim */; };
 		A51BFC272B30F1B800E92F16 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A51BFC262B30F1B800E92F16 /* Sparkle */; };
 		A546F1142D7B68D7003B11A0 /* locale in Resources */ = {isa = PBXBuildFile; fileRef = A546F1132D7B68D7003B11A0 /* locale */; };
@@ -72,7 +72,7 @@
 		552964E52B34A9B400030505 /* vim */ = {isa = PBXFileReference; lastKnownFileType = folder; name = vim; path = "../zig-out/share/vim"; sourceTree = "<group>"; };
 		810ACC9F2E9D3301004F8F92 /* GhosttyUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GhosttyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8193244D2F24E6C000A9ED8F /* DockTilePlugin.plugin */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DockTilePlugin.plugin; sourceTree = BUILT_PRODUCTS_DIR; };
-		8F3A9B4B2FA6B88000A18D13 /* Ghostty.sdef */ = {isa = PBXFileReference; lastKnownFileType = text.sdef; path = Ghostty.sdef; sourceTree = "<group>"; };
+		8F3A9B4B2FA6B88000A18D13 /* Polter.sdef */ = {isa = PBXFileReference; lastKnownFileType = text.sdef; path = Polter.sdef; sourceTree = "<group>"; };
 		9351BE8E2D22937F003B3499 /* nvim */ = {isa = PBXFileReference; lastKnownFileType = folder; name = nvim; path = "../zig-out/share/nvim"; sourceTree = "<group>"; };
 		A51BFC282B30F26D00E92F16 /* GhosttyDebug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GhosttyDebug.entitlements; sourceTree = "<group>"; };
 		A546F1132D7B68D7003B11A0 /* locale */ = {isa = PBXFileReference; lastKnownFileType = folder; name = locale; path = "../zig-out/share/locale"; sourceTree = "<group>"; };
@@ -179,7 +179,7 @@
 			isa = PBXGroup;
 			children = (
 				A571AB1C2A206FC600248498 /* Ghostty-Info.plist */,
-				8F3A9B4B2FA6B88000A18D13 /* Ghostty.sdef */,
+				8F3A9B4B2FA6B88000A18D13 /* Polter.sdef */,
 				A5B30538299BEAAB0047F10C /* Assets.xcassets */,
 				A553F4122E06EB1600257779 /* Polter.icon */,
 				A5B3053D299BEAAB0047F10C /* Ghostty.entitlements */,
@@ -342,6 +342,7 @@
 			knownRegions = (
 				en,
 				Base,
+				"zh-Hans",
 			);
 			mainGroup = A5B30528299BEAAA0047F10C;
 			packageReferences = (
@@ -390,7 +391,7 @@
 				A553F4142E06EB1600257779 /* Polter.icon in Resources */,
 				29C15B1D2CDC3B2900520DD4 /* bat in Resources */,
 				A586167C2B7703CC009BDB1D /* fish in Resources */,
-				8F3A9B4C2FA6B88000A18D13 /* Ghostty.sdef in Resources */,
+				8F3A9B4C2FA6B88000A18D13 /* Polter.sdef in Resources */,
 				55154BE02B33911F001622DC /* ghostty in Resources */,
 				A546F1142D7B68D7003B11A0 /* locale in Resources */,
 				A5985CE62C33060F00C57AD3 /* man in Resources */,
@@ -554,23 +555,23 @@
 				INFOPLIST_FILE = "Ghostty-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Polter;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Ghostty would like to use AppleScript.";
-				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "A program running within Ghostty would like to access your system's audio.";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Ghostty would like to use Bluetooth.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Ghostty would like to access your Calendar.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Ghostty would like to use the camera.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Ghostty would like to access your Contacts.";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Polter would like to use AppleScript.";
+				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "A program running within Polter would like to access your system's audio.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Polter would like to use Bluetooth.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Polter would like to access your Calendar.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Polter would like to use the camera.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Polter would like to access your Contacts.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Ghostty would like to access the local network.";
-				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Ghostty would like to use your location temporarily.";
-				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Ghostty would like to access your location information.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Polter would like to access the local network.";
+				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Polter would like to use your location temporarily.";
+				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Polter would like to access your location information.";
 				INFOPLIST_KEY_NSMainNibFile = MainMenu;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Ghostty would like to use your microphone.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Ghostty would like to access motion data.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Ghostty would like to access your Photo Library.";
-				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Ghostty would like to access your reminders.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Ghostty would like to use speech recognition.";
-				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Ghostty requires elevated privileges.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Polter would like to use your microphone.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Polter would like to access motion data.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Polter would like to access your Photo Library.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Polter would like to access your reminders.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Polter would like to use speech recognition.";
+				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Polter requires elevated privileges.";
 				INFOPLIST_PREPROCESS = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -953,22 +954,22 @@
 				INFOPLIST_FILE = "Ghostty-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Polter[DEBUG]";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Ghostty would like to use AppleScript.";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Ghostty would like to use Bluetooth.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Ghostty would like to access your Calendar.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Ghostty would like to use the camera.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Ghostty would like to access your Contacts.";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Polter would like to use AppleScript.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Polter would like to use Bluetooth.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Polter would like to access your Calendar.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Polter would like to use the camera.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Polter would like to access your Contacts.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Ghostty would like to access the local network.";
-				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Ghostty would like to use your location temporarily.";
-				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Ghostty would like to access your location information.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Polter would like to access the local network.";
+				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Polter would like to use your location temporarily.";
+				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Polter would like to access your location information.";
 				INFOPLIST_KEY_NSMainNibFile = MainMenu;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Ghostty would like to use your microphone.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Ghostty would like to access motion data.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Ghostty would like to access your Photo Library.";
-				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Ghostty would like to access your reminders.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Ghostty would like to use speech recognition.";
-				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Ghostty requires elevated privileges.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Polter would like to use your microphone.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Polter would like to access motion data.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Polter would like to access your Photo Library.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Polter would like to access your reminders.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Polter would like to use speech recognition.";
+				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Polter requires elevated privileges.";
 				INFOPLIST_PREPROCESS = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1009,22 +1010,22 @@
 				INFOPLIST_FILE = "Ghostty-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Polter;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Ghostty would like to use AppleScript.";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Ghostty would like to use Bluetooth.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Ghostty would like to access your Calendar.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Ghostty would like to use the camera.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Ghostty would like to access your Contacts.";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Polter would like to use AppleScript.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Polter would like to use Bluetooth.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Polter would like to access your Calendar.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Polter would like to use the camera.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Polter would like to access your Contacts.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Ghostty would like to access the local network.";
-				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Ghostty would like to use your location temporarily.";
-				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Ghostty would like to access your location information.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Polter would like to access the local network.";
+				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Polter would like to use your location temporarily.";
+				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Polter would like to access your location information.";
 				INFOPLIST_KEY_NSMainNibFile = MainMenu;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Ghostty would like to use your microphone.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Ghostty would like to access motion data.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Ghostty would like to access your Photo Library.";
-				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Ghostty would like to access your reminders.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Ghostty would like to use speech recognition.";
-				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Ghostty requires elevated privileges.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Polter would like to use your microphone.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Polter would like to access motion data.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Polter would like to access your Photo Library.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Polter would like to access your reminders.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Polter would like to use speech recognition.";
+				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Polter requires elevated privileges.";
 				INFOPLIST_PREPROCESS = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

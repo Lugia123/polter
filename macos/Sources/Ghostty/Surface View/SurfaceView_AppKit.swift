@@ -1605,32 +1605,32 @@ extension Ghostty {
 
             // If we have a selection, add copy
             if let text = self.accessibilitySelectedText(), text.count > 0 {
-                menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+                menu.addItem(withTitle: String(localized: "Copy", comment: "右键菜单：拷贝选中文本"), action: #selector(copy(_:)), keyEquivalent: "")
             }
-            menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: String(localized: "Paste", comment: "右键菜单：粘贴"), action: #selector(paste(_:)), keyEquivalent: "")
 
             menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Split Right", comment: "右键菜单：向右分屏"), action: #selector(splitRight(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
-            item = menu.addItem(withTitle: "Split Left", action: #selector(splitLeft(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Split Left", comment: "右键菜单：向左分屏"), action: #selector(splitLeft(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.leadinghalf.inset.filled")
-            item = menu.addItem(withTitle: "Split Down", action: #selector(splitDown(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Split Down", comment: "右键菜单：向下分屏"), action: #selector(splitDown(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.bottomhalf.inset.filled")
-            item = menu.addItem(withTitle: "Split Up", action: #selector(splitUp(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Split Up", comment: "右键菜单：向上分屏"), action: #selector(splitUp(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.tophalf.inset.filled")
 
             menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Reset Terminal", action: #selector(resetTerminal(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Reset Terminal", comment: "右键菜单：重置终端"), action: #selector(resetTerminal(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise")
-            item = menu.addItem(withTitle: "Toggle Terminal Inspector", action: #selector(toggleTerminalInspector(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Toggle Terminal Inspector", comment: "右键菜单：切换终端检查器"), action: #selector(toggleTerminalInspector(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "scope")
-            item = menu.addItem(withTitle: "Terminal Read-only", action: #selector(toggleReadonly(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Terminal Read-only", comment: "右键菜单：终端只读"), action: #selector(toggleReadonly(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "eye.fill")
             item.state = readonly ? .on : .off
             menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Change Tab Title...", action: #selector(BaseTerminalController.changeTabTitle(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Change Tab Title...", comment: "右键菜单：修改标签页标题"), action: #selector(BaseTerminalController.changeTabTitle(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "pencil.line")
-            item = menu.addItem(withTitle: "Change Terminal Title...", action: #selector(changeTitle(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Change Terminal Title...", comment: "右键菜单：修改终端标题"), action: #selector(changeTitle(_:)), keyEquivalent: "")
 
             return menu
         }
