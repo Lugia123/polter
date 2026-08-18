@@ -29,3 +29,7 @@
 "The language changes after Polter restarts." = "The language changes after Polter restarts.";
 "Restart Now" = "Restart Now";
 "Later" = "Later";
+
+"Make This Terminal the Supervisor" = "Make This Terminal the Supervisor";
+"Supervise This Terminal" = "Supervise This Terminal";
+"Cycle This Terminal's Work Mode" = "Cycle This Terminal's Work Mode";

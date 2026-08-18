@@ -683,7 +683,7 @@ pub fn init(
         app.poltergeist_notify_window = poltergeistpkg.notify.Window.parse(
             config.@"poltergeist-notify-window",
         );
-        app.ensurePlugins(config.@"poltergeist-notify".list.items);
+        app.ensurePlugins();
 
         if (app.poltergeist_server) |*srv| {
             if (srv.issueToken(self.id)) |token| {

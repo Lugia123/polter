@@ -1352,13 +1352,18 @@ command: ?Command = null,
 /// is one where nobody finds out for hours that a channel was broken.
 ///
 /// A plugin is a directory holding a `plugin.yaml` and an executable,
-/// looked for in the Polter resources directory and in
-/// `$XDG_CONFIG_HOME/polter/plugins/`. Parameters go in
-/// `$XDG_CONFIG_HOME/polter/plugins/<key>.json`, where a value may be a
-/// reference (`env:`, `file:`, `keychain:`, `cmd:`) rather than the secret
-/// itself. See `docs/poltergeist/plugins.md`.
+/// Deprecated, and does nothing.
 ///
-/// Empty by default: nothing is sent anywhere until you say where.
+/// Whether a plugin is switched on now lives in the plugin's own file,
+/// `$XDG_CONFIG_HOME/polter/plugins/<name>.json`, alongside its parameters:
+///
+///     {"enabled": true, "params": {"url": "cmd:op read op://Private/hook"}}
+///
+/// One plugin, one file. Splitting "is it on" from "how is it set up" meant
+/// the two could disagree, and meant nothing could offer a settings screen
+/// without writing to the config file you hand-write.
+///
+/// Setting this logs a warning saying so. It is not read.
 @"poltergeist-notify": RepeatableString = .{},
 
 /// When it is acceptable to disturb you, as `HH:MM-HH:MM` in local time.

@@ -274,7 +274,18 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
 
     self.poltergeist_notify_window =
         poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
-    self.ensurePlugins(config.@"poltergeist-notify".list.items);
+    self.ensurePlugins();
+
+    // Moved into each plugin's own file, so that one plugin's state lives in
+    // one place and a settings UI can own it. Said plainly rather than
+    // ignored in silence: somebody who set this expects it to do something.
+    if (config.@"poltergeist-notify".list.items.len > 0) {
+        log.warn(
+            "poltergeist-notify no longer does anything; a plugin is switched " ++
+                "on by \"enabled\" in $XDG_CONFIG_HOME/polter/plugins/<name>.json",
+            .{},
+        );
+    }
 
     // Go through and update all of the surface configurations.
     for (self.surfaces.items) |surface| {
@@ -368,9 +379,19 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
 /// Once, at startup. A plugin that will not load is skipped with a
 /// warning rather than taken as fatal: the terminal has to work whether
 /// or not a notification channel does.
-pub fn ensurePlugins(self: *App, wanted: []const [:0]const u8) void {
+/// Find every plugin that is installed and switched on.
+///
+/// Enumerated rather than named in the config: a plugin's own file says
+/// whether it is on (`Plugin.Settings`), so there is nothing for the main
+/// config to list, and a settings UI can switch one on without editing a
+/// file the user hand-writes.
+///
+/// Both places are read, the user's first. A plugin shipped with Polter and
+/// one written by hand are the same thing to everything downstream; only the
+/// user's copy wins when the names collide, so a shipped plugin can be
+/// replaced without touching the bundle.
+pub fn ensurePlugins(self: *App) void {
     if (self.poltergeist_plugin_arena != null) return;
-    if (wanted.len == 0) return;
 
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     errdefer arena.deinit();
@@ -382,19 +403,34 @@ pub fn ensurePlugins(self: *App, wanted: []const [:0]const u8) void {
     defer environ_map.deinit();
 
     var found: std.ArrayListUnmanaged(poltergeistpkg.Plugin.Manifest) = .empty;
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
 
-    for (wanted) |key| {
-        const dir = self.findPluginDir(alloc, io, &environ_map, key) orelse {
-            log.warn("poltergeist: no plugin named {s}", .{key});
-            continue;
-        };
+    for (self.pluginSearchPath(alloc, io, &environ_map)) |base| {
+        var dir = std.Io.Dir.cwd().openDir(io, base, .{ .iterate = true }) catch continue;
+        defer dir.close(io);
 
-        const manifest = poltergeistpkg.Plugin.load(alloc, io, dir) catch |err| {
-            log.warn("poltergeist: plugin {s} would not load err={}", .{ key, err });
-            continue;
-        };
+        var it = dir.iterate();
+        while (it.next(io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            if (seen.contains(entry.name)) continue;
 
-        found.append(alloc, manifest) catch continue;
+            const key = alloc.dupe(u8, entry.name) catch continue;
+            seen.put(alloc, key, {}) catch {};
+
+            const path = std.fmt.allocPrint(alloc, "{s}/{s}", .{ base, key }) catch continue;
+            const manifest = poltergeistpkg.Plugin.load(alloc, io, path) catch |err| {
+                log.warn("poltergeist: plugin {s} would not load err={}", .{ key, err });
+                continue;
+            };
+
+            const settings = self.pluginSettings(alloc, io, &environ_map, manifest.key);
+            if (!settings.enabled) {
+                log.debug("poltergeist: plugin {s} is installed but off", .{manifest.key});
+                continue;
+            }
+
+            found.append(alloc, manifest) catch continue;
+        }
     }
 
     self.poltergeist_plugins = found.items;
@@ -403,11 +439,62 @@ pub fn ensurePlugins(self: *App, wanted: []const [:0]const u8) void {
     log.info("poltergeist: {d} notification plugin(s) ready", .{found.items.len});
 }
 
-/// Where a plugin with this key lives, if anywhere.
-///
-/// The user's own directory wins over what shipped, so a plugin can be
-/// replaced without touching the installation -- the same rule the skills
-/// follow.
+/// Where plugins live, nearest first.
+fn pluginSearchPath(
+    self: *App,
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+) []const []const u8 {
+    _ = self;
+
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+
+    if (internal_os.xdg.config(
+        io,
+        alloc,
+        environ_map,
+        .{ .subdir = "polter/plugins" },
+    )) |base| {
+        out.append(alloc, base) catch {};
+    } else |_| {}
+
+    if (internal_os.resourcesDir(alloc)) |resources| {
+        if (resources.app_path) |app_path| {
+            if (std.fmt.allocPrint(
+                alloc,
+                "{s}/polter/plugins",
+                .{app_path},
+            )) |base| {
+                out.append(alloc, base) catch {};
+            } else |_| {}
+        }
+    } else |_| {}
+
+    return out.items;
+}
+
+/// One plugin's own settings file.
+fn pluginSettings(
+    self: *App,
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) poltergeistpkg.Plugin.Settings {
+    _ = self;
+
+    const base = internal_os.xdg.config(
+        io,
+        alloc,
+        environ_map,
+        .{ .subdir = "polter/plugins" },
+    ) catch return .{};
+
+    const path = std.fmt.allocPrint(alloc, "{s}/{s}.json", .{ base, key }) catch return .{};
+    return poltergeistpkg.Plugin.Settings.read(alloc, io, path);
+}
+
 fn findPluginDir(
     self: *App,
     alloc: Allocator,
@@ -1104,8 +1191,9 @@ fn notifyUser(
     )) {
         .nowhere_to_send => return alloc.dupe(
             u8,
-            "nobody was told: no notification plugin is configured. " ++
-                "Set poltergeist-notify, or handle this yourself.",
+            "nobody was told: no notification plugin is switched on. " ++
+                "Set \"enabled\" in a plugin's file under " ++
+                "$XDG_CONFIG_HOME/polter/plugins/, or handle this yourself.",
         ),
 
         .leave_to_supervisor => return alloc.dupe(
@@ -1165,47 +1253,12 @@ fn pluginParams(
     key: []const u8,
 ) anyerror![]const poltergeistpkg.Plugin.Param {
     const self: *App = @ptrCast(@alignCast(ctx));
-    _ = self;
 
     const io = global.io();
     var environ_map = try global.environMap();
     defer environ_map.deinit();
 
-    const base = try internal_os.xdg.config(
-        io,
-        alloc,
-        &environ_map,
-        .{ .subdir = "polter/plugins" },
-    );
-
-    const path = try std.fmt.allocPrint(alloc, "{s}/{s}.json", .{ base, key });
-    const bytes = std.Io.Dir.cwd().readFileAlloc(
-        io,
-        path,
-        alloc,
-        .limited(256 * 1024),
-    ) catch return &.{};
-
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, alloc, bytes, .{}) catch {
-        log.warn("poltergeist: {s} will not parse", .{path});
-        return &.{};
-    };
-
-    const obj = switch (parsed) {
-        .object => |o| o,
-        else => return &.{},
-    };
-
-    var out: std.ArrayListUnmanaged(poltergeistpkg.Plugin.Param) = .empty;
-    var it = obj.iterator();
-    while (it.next()) |kv| {
-        const value = switch (kv.value_ptr.*) {
-            .string => |v| v,
-            else => continue,
-        };
-        try out.append(alloc, .{ .name = kv.key_ptr.*, .value = value });
-    }
-    return out.items;
+    return self.pluginSettings(alloc, io, &environ_map, key).params;
 }
 
 /// Hand back last night's arrangement, as it was written down.

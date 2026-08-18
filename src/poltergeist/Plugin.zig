@@ -153,6 +153,124 @@ pub const Param = struct {
     value: []const u8,
 };
 
+/// Everything the user has said about one plugin, in one file.
+///
+/// Lives at `$XDG_CONFIG_HOME/polter/plugins/<key>.json`, beside the plugin's
+/// own directory:
+///
+///     {"enabled": true, "params": {"url": "cmd:op read op://…"}}
+///
+/// **One plugin, one file, one source of truth.** Whether it is switched on
+/// used to live in the main config and its parameters here, which meant the
+/// two could disagree and that a GUI could not own either without fighting a
+/// file the user hand-writes. This file is structured, ours, and safe to
+/// rewrite.
+pub const Settings = struct {
+    enabled: bool = false,
+    params: []const Param = &.{},
+
+    /// Read one. Missing or unparseable reads as "not configured", which is
+    /// the same as not enabled -- a plugin nobody has set up should not be
+    /// sending anything.
+    ///
+    /// Everything borrowed comes from `arena`.
+    pub fn read(
+        arena: Allocator,
+        io: std.Io,
+        path: []const u8,
+    ) Settings {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            arena,
+            .limited(256 * 1024),
+        ) catch return .{};
+
+        const parsed = std.json.parseFromSliceLeaky(
+            std.json.Value,
+            arena,
+            bytes,
+            .{},
+        ) catch {
+            log.warn("plugin: {s} will not parse", .{path});
+            return .{};
+        };
+
+        const obj = switch (parsed) {
+            .object => |o| o,
+            else => return .{},
+        };
+
+        // The older shape was the parameters alone, with whether the plugin
+        // was on kept in the main config. Such a file was only ever written
+        // to make a plugin work, so it reads as enabled -- the alternative
+        // silently stops delivering for somebody who changed nothing.
+        const modern = obj.get("params") != null or obj.get("enabled") != null;
+        if (!modern) return .{
+            .enabled = true,
+            .params = paramsOf(arena, obj),
+        };
+
+        const enabled = switch (obj.get("enabled") orelse .null) {
+            .bool => |b| b,
+            else => false,
+        };
+        const params = switch (obj.get("params") orelse .null) {
+            .object => |o| paramsOf(arena, o),
+            else => &.{},
+        };
+        return .{ .enabled = enabled, .params = params };
+    }
+
+    /// Render back out. The caller owns the bytes.
+    ///
+    /// Written whole: this file is small and the app is the only thing that
+    /// writes it, so there is nothing to merge.
+    pub fn render(self: Settings, alloc: Allocator) Allocator.Error![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+
+        var s: std.json.Stringify = .{
+            .writer = &out.writer,
+            .options = .{ .whitespace = .indent_2 },
+        };
+
+        s.beginObject() catch return error.OutOfMemory;
+        s.objectField("enabled") catch return error.OutOfMemory;
+        s.write(self.enabled) catch return error.OutOfMemory;
+        s.objectField("params") catch return error.OutOfMemory;
+        s.beginObject() catch return error.OutOfMemory;
+        for (self.params) |param| {
+            s.objectField(param.name) catch return error.OutOfMemory;
+            s.write(param.value) catch return error.OutOfMemory;
+        }
+        s.endObject() catch return error.OutOfMemory;
+        s.endObject() catch return error.OutOfMemory;
+
+        return out.toOwnedSlice();
+    }
+
+    fn paramsOf(arena: Allocator, obj: std.json.ObjectMap) []const Param {
+        var out: std.ArrayListUnmanaged(Param) = .empty;
+        var it = obj.iterator();
+        while (it.next()) |kv| {
+            // Strings only. A parameter reaches a plugin as an environment
+            // variable, and there is no sensible rendering of a nested
+            // object as one -- guessing at it would put something arbitrary
+            // where the user expected their value.
+            const value = switch (kv.value_ptr.*) {
+                .string => |v| v,
+                else => continue,
+            };
+            out.append(arena, .{
+                .name = kv.key_ptr.*,
+                .value = value,
+            }) catch return out.items;
+        }
+        return out.items;
+    }
+};
+
 /// What came of running one.
 pub const Outcome = enum {
     /// Exit code zero. The plugin says it did the job.
@@ -675,4 +793,102 @@ test "a manifest missing what it needs is refused" {
 
     try testing.expectError(error.BadManifest, load(alloc, io, dir));
     try testing.expectError(error.NoManifest, load(alloc, io, "/tmp/polter-no-dir-9c1f"));
+}
+
+test "settings round-trip through the file format" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const params = [_]Param{
+        .{ .name = "url", .value = "cmd:op read op://Private/hook" },
+    };
+    const rendered = try (Settings{ .enabled = true, .params = &params }).render(alloc);
+
+    // The secret stayed a reference. Rendering a resolved value into the
+    // file is the whole thing `secret.zig` exists to avoid.
+    try testing.expect(std.mem.indexOf(u8, rendered, "cmd:op read") != null);
+    try testing.expect(std.mem.indexOf(u8, rendered, "\"enabled\": true") != null);
+}
+
+test "the older flat file still delivers" {
+    // Before this, the file held parameters alone and the main config said
+    // which plugins were on. Reading such a file as "not enabled" would stop
+    // delivering notifications for somebody who changed nothing.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-set-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "webhook.json", .{});
+    try f.writeStreamingAll(io,
+        \\{"url":"https://example.com/hook"}
+    );
+    f.close(io);
+
+    const path = try std.fmt.allocPrint(alloc, "{s}/webhook.json", .{dir});
+    const settings = Settings.read(alloc, io, path);
+
+    try testing.expect(settings.enabled);
+    try testing.expectEqual(@as(usize, 1), settings.params.len);
+    try testing.expectEqualStrings("url", settings.params[0].name);
+}
+
+test "a plugin nobody has configured is not enabled" {
+    // Missing and unreadable both mean "not set up", and something not set
+    // up must not be sending anything anywhere.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+
+    const settings = Settings.read(
+        arena.allocator(),
+        threaded.io(),
+        "/tmp/polter-no-such-plugin-7f31.json",
+    );
+    try testing.expect(!settings.enabled);
+    try testing.expectEqual(@as(usize, 0), settings.params.len);
+}
+
+test "switched off means off, however many parameters are set" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-off-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "webhook.json", .{});
+    try f.writeStreamingAll(io,
+        \\{"enabled":false,"params":{"url":"https://example.com/hook"}}
+    );
+    f.close(io);
+
+    const path = try std.fmt.allocPrint(alloc, "{s}/webhook.json", .{dir});
+    const settings = Settings.read(alloc, io, path);
+
+    try testing.expect(!settings.enabled);
+    try testing.expectEqual(@as(usize, 1), settings.params.len);
 }

@@ -1632,6 +1632,14 @@ extension Ghostty {
             item.setImageIfDesired(systemSymbolName: "pencil.line")
             item = menu.addItem(withTitle: String(localized: "Change Terminal Title...", comment: "右键菜单：修改终端标题"), action: #selector(changeTitle(_:)), keyEquivalent: "")
 
+            menu.addItem(.separator())
+            item = menu.addItem(withTitle: String(localized: "Make This Terminal the Supervisor", comment: "右键菜单：设为总管"), action: #selector(poltergeistSupervisor(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "eyeglasses")
+            item = menu.addItem(withTitle: String(localized: "Supervise This Terminal", comment: "右键菜单：监督此终端"), action: #selector(poltergeistToggleWatch(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "binoculars")
+            item = menu.addItem(withTitle: String(localized: "Cycle This Terminal's Work Mode", comment: "右键菜单：切换工作模式"), action: #selector(poltergeistCycleWorkMode(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "clock.arrow.circlepath")
+
             return menu
         }
 
@@ -1763,6 +1771,34 @@ extension Ghostty {
 
         @IBAction func changeTitle(_ sender: Any) {
             promptTitle()
+        }
+
+        // MARK: Poltergeist
+        //
+        // These three are in the context menu because they are all about
+        // *this* terminal, which is the one the menu was opened on. Opening
+        // the conversations is not -- it belongs to the app, so it stays in
+        // the Agents menu and out of here.
+
+        @objc func poltergeistSupervisor(_ sender: Any) {
+            poltergeistAction("poltergeist_supervisor")
+        }
+
+        @objc func poltergeistToggleWatch(_ sender: Any) {
+            poltergeistAction("poltergeist_toggle_watch")
+        }
+
+        @objc func poltergeistCycleWorkMode(_ sender: Any) {
+            poltergeistAction("poltergeist_cycle_work_mode")
+        }
+
+        private func poltergeistAction(_ action: String) {
+            guard let surface = self.surface else { return }
+            if !ghostty_surface_binding_action(
+                surface, action, UInt(action.lengthOfBytes(using: .utf8))
+            ) {
+                AppDelegate.logger.warning("action failed action=\(action, privacy: .public)")
+            }
         }
 
         /// Show a user notification and associate it with this surface

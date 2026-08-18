@@ -34,3 +34,8 @@
 "The language changes after Polter restarts." = "语言会在 Polter 重启后生效。";
 "Restart Now" = "立即重启";
 "Later" = "稍后";
+
+/* 右键菜单里的智能体动作 */
+"Make This Terminal the Supervisor" = "将此终端设为总管";
+"Supervise This Terminal" = "监督此终端";
+"Cycle This Terminal's Work Mode" = "切换此终端的工作模式";

@@ -39,7 +39,7 @@
     </class>
 
     <class name="window" code="Gwnd" plural="windows" description="A Polter window containing one or more tabs.">
-      <cocoa class="PolterScriptWindow"/>
+      <cocoa class="GhosttyScriptWindow"/>
       <property name="id" code="ID  " type="text" access="r" description="Stable ID for this window."/>
       <property name="name" code="pnam" type="text" access="r" description="The title of the window.">
         <cocoa key="title"/>
@@ -62,7 +62,7 @@
     </class>
 
     <class name="tab" code="Gtab" plural="tabs" description="A tab within a Polter window.">
-      <cocoa class="PolterScriptTab"/>
+      <cocoa class="GhosttyScriptTab"/>
       <property name="id" code="ID  " type="text" access="r" description="Stable ID for this tab."/>
       <property name="name" code="pnam" type="text" access="r" description="The title of the tab.">
         <cocoa key="title"/>
@@ -84,7 +84,7 @@
     </class>
 
     <class name="terminal" code="Gtrm" plural="terminals" description="An individual terminal surface.">
-      <cocoa class="PolterScriptTerminal"/>
+      <cocoa class="GhosttyScriptTerminal"/>
       <property name="id" code="ID  " type="text" access="r" description="Stable ID for this terminal surface."/>
       <property name="name" code="pnam" type="text" access="r" description="Current terminal title.">
         <cocoa key="title"/>
@@ -219,7 +219,7 @@
     </command>
 
     <command name="input text" code="GhstInTx" description="Input text to a terminal as if it was pasted.">
-      <cocoa class="PolterScriptInputTextCommand"/>
+      <cocoa class="GhosttyScriptInputTextCommand"/>
       <direct-parameter type="text" description="The text to input."/>
       <parameter name="to" code="GItT" type="terminal" description="The terminal to input text to.">
         <cocoa key="terminal"/>
@@ -227,7 +227,7 @@
     </command>
 
     <command name="send key" code="GhstSKey" description="Send a keyboard event to a terminal.">
-      <cocoa class="PolterScriptKeyEventCommand"/>
+      <cocoa class="GhosttyScriptKeyEventCommand"/>
       <direct-parameter type="text" description="The key name (e.g. &quot;enter&quot;, &quot;a&quot;, &quot;space&quot;)."/>
       <parameter name="action" code="GKeA" type="input action" optional="yes" description="Press or release (default: press).">
         <cocoa key="action"/>
@@ -241,7 +241,7 @@
     </command>
 
     <command name="send mouse button" code="GhstSMBt" description="Send a mouse button event to a terminal.">
-      <cocoa class="PolterScriptMouseButtonCommand"/>
+      <cocoa class="GhosttyScriptMouseButtonCommand"/>
       <direct-parameter type="mouse button" description="The mouse button."/>
       <parameter name="action" code="GMbA" type="input action" optional="yes" description="Press or release (default: press).">
         <cocoa key="action"/>
@@ -255,7 +255,7 @@
     </command>
 
     <command name="send mouse position" code="GhstSMPs" description="Send a mouse position event to a terminal.">
-      <cocoa class="PolterScriptMousePosCommand"/>
+      <cocoa class="GhosttyScriptMousePosCommand"/>
       <parameter name="x" code="GMpX" type="real" description="Horizontal position in pixels.">
         <cocoa key="x"/>
       </parameter>
@@ -271,7 +271,7 @@
     </command>
 
     <command name="send mouse scroll" code="GhstSMSc" description="Send a mouse scroll event to a terminal.">
-      <cocoa class="PolterScriptMouseScrollCommand"/>
+      <cocoa class="GhosttyScriptMouseScrollCommand"/>
       <parameter name="x" code="GMsX" type="real" description="Horizontal scroll delta.">
         <cocoa key="x"/>
       </parameter>
