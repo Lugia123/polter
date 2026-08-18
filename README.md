@@ -1,25 +1,72 @@
-<!-- LOGO -->
 <h1>
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/fe853809-ba8b-400b-83ab-a9a0da25be8a" alt="Logo" width="128">
-  <br>Ghostty
+  <img src="images/icons/icon_256.png" alt="Polter" width="128">
+  <br>Polter
 </h1>
   <p align="center">
-    Fast, native, feature-rich terminal emulator pushing modern features.
+    A terminal that can mind several AI agents at once.
     <br />
-    A native GUI or embeddable library via <code>libghostty</code>.
-    <br />
-    <a href="#about">About</a>
+    <a href="#what-this-is">What this is</a>
     ·
-    <a href="https://ghostty.org/download">Download</a>
+    <a href="docs/poltergeist/README.md">Design</a>
     ·
-    <a href="https://ghostty.org/docs">Documentation</a>
-    ·
-    <a href="CONTRIBUTING.md">Contributing</a>
-    ·
-    <a href="HACKING.md">Developing</a>
+    <a href="#relationship-to-ghostty">Relationship to Ghostty</a>
   </p>
 </p>
+
+## What this is
+
+Polter is a fork of [Ghostty](https://github.com/ghostty-org/ghostty) that
+turns the terminal into a host for agent loops. Several terminals run AI
+agents; one of them is the **supervisor** and can see how long the others
+have been still, read their screens, talk to them in group chats, and
+decide what to do about it.
+
+The program itself never judges. It measures how long a screen has gone
+unchanged and carries messages -- **is that agent stuck or thinking** is a
+question it refuses to answer, because answering it wrongly is worse than
+not answering. That judgement belongs to the supervisor, and the boundary
+is argued out in [`docs/poltergeist/`](docs/poltergeist/README.md).
+
+Some things it deliberately will not do:
+
+- **Never answer a permission prompt for an agent.** Not even optionally,
+  and there is no allow-list to turn on. Pressing "yes" on somebody else's
+  authorisation defeats their safety model, so when one is waiting the
+  person is told -- at any hour, because nobody else may answer it.
+- **Never manage your tasks.** A group can carry a note saying what it is
+  for. Giving that note a status field would be the start of a task
+  tracker, and there are enough of those.
+- **Never let an agent put text in another agent's input box uninvited.**
+  Reach is a star, not a mesh: the supervisor can reach the terminals the
+  user placed under it, and they cannot reach each other.
+
+Status: **an experiment that works**. It has been run end to end with the
+real Claude Code CLI, and several fatal bugs it found were ones no unit
+test could have -- see the verification notes in the design docs.
+
+## Relationship to Ghostty
+
+Everything that makes this a good terminal is
+[Ghostty](https://github.com/ghostty-org/ghostty)'s work, by Mitchell
+Hashimoto and the Ghostty contributors. Polter is a fork, not a rewrite:
+the renderer, the VT implementation, the font stack and the native UIs are
+all theirs, and upstream is merged in as it moves.
+
+Polter adds `src/poltergeist/`, the MCP surface agents speak to, the chat
+TUI, and the notification plugins. It is not affiliated with the Ghostty
+project, and bugs found here should not be reported there unless they
+reproduce on upstream Ghostty.
+
+MIT licensed, the same as upstream; see [LICENSE](LICENSE), which keeps
+the original copyright.
+
+---
+
+# Ghostty
+
+What follows is upstream Ghostty's own README, kept because all of it
+still applies to the terminal underneath.
 
 ## About
 

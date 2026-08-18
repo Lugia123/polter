@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- tile -->
+  <rect width="512" height="512" rx="114" fill="#3F38C9"/>
+  <!-- terminal panel -->
+  <rect x="76" y="100" width="360" height="312" rx="22" fill="#F7F5EF"/>
+  <!-- title bar divider: bar clear height is 100..162 -->
+  <rect x="76" y="162" width="360" height="2" fill="#DCD8CE"/>
+  <!-- P chip: 44x44 at x108 y109, 9px clear above and below -->
+  <rect x="108" y="109" width="44" height="44" rx="12" fill="#3F38C9"/>
+  <g transform="translate(121.2,118) scale(0.1857)">
+    <path fill="#F7F5EF" fill-rule="evenodd" d="
+      M 0 0 H 55 A 40 40 0 0 1 55 80 H 26 V 140 H 0 Z
+      M 26 26 H 55 A 14 14 0 0 1 55 54 H 26 Z
+    "/>
+  </g>
+  <!-- channel 1 -->
+  <rect x="108" y="211" width="130" height="18" rx="9" fill="#DCD8CE"/>
+  <rect x="252" y="204" width="46" height="32" rx="8" fill="#2FD8A8"/>
+  <!-- channel 2 -->
+  <rect x="108" y="279" width="90" height="18" rx="9" fill="#DCD8CE"/>
+  <rect x="212" y="272" width="46" height="32" rx="8" fill="#FF6B57"/>
+  <!-- channel 3 -->
+  <rect x="108" y="347" width="160" height="18" rx="9" fill="#DCD8CE"/>
+  <rect x="282" y="340" width="46" height="32" rx="8" fill="#FFC44D"/>
+</svg>
