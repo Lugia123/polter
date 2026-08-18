@@ -72,6 +72,7 @@
                 <outlet property="menuPoltergeistWatch" destination="pg4-Wa-Tc1" id="pg4-Ou-Tl1"/>
                 <outlet property="menuPoltergeistWorkMode" destination="pg5-Wm-Cy1" id="pg5-Ou-Tl1"/>
                 <outlet property="menuLanguage" destination="pg7-La-Ng1" id="pg7-Ou-Tl1"/>
+                <outlet property="menuPlugins" destination="pg8-Pl-Ug1" id="pg8-Ou-Tl1"/>
                 <outlet property="menuToggleFullScreen" destination="8kY-Pi-KaY" id="yQg-6V-OO6"/>
                 <outlet property="menuToggleVisibility" destination="DOX-wA-ilh" id="iBj-Bc-2bq"/>
                 <outlet property="menuUndo" destination="r83-CV-syt" id="bU9-0b-xgQ"/>
@@ -409,6 +410,9 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="pg6-Sp-Ar1"/>
+                            <menuItem title="Plugins" id="pg8-Pl-Ug1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                            </menuItem>
                             <menuItem title="Language" id="pg7-La-Ng1">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                             </menuItem>

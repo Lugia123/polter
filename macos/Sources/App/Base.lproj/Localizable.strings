@@ -33,3 +33,12 @@
 "Make This Terminal the Supervisor" = "Make This Terminal the Supervisor";
 "Supervise This Terminal" = "Supervise This Terminal";
 "Cycle This Terminal's Work Mode" = "Cycle This Terminal's Work Mode";
+
+"No plugins installed" = "No plugins installed";
+"Settings…" = "Settings…";
+"Switch On" = "Switch On";
+"Switch Off" = "Switch Off";
+"Switch On (needs settings first)" = "Switch On (needs settings first)";
+"Open Plugins Folder" = "Open Plugins Folder";
+"Restart Polter to apply" = "Restart Polter to apply";
+"Plugins are loaded when Polter starts." = "Plugins are loaded when Polter starts.";

@@ -139,6 +139,23 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
         try steps.append(b.allocator, &install_step.step);
     }
 
+    // Poltergeist plugins
+    //
+    // Shipped the same way as the skills, and found the same way: a copy in
+    // the config directory wins over this one, so a user can replace a
+    // plugin we ship without touching the bundle. Without this step the
+    // plugins in the repository are examples nobody can run -- the lookup
+    // path exists and nothing is ever installed into it.
+    {
+        const install_step = b.addInstallDirectory(.{
+            .source_dir = b.path("plugins"),
+            .install_dir = .{ .custom = "share" },
+            .install_subdir = b.pathJoin(&.{ "ghostty", "polter", "plugins" }),
+            .exclude_extensions = &.{".md"},
+        });
+        try steps.append(b.allocator, &install_step.step);
+    }
+
     // Themes
     if (cfg.emit_themes) {
         if (b.lazyDependency("iterm2_themes", .{})) |upstream| {

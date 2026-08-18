@@ -39,3 +39,17 @@
 "Make This Terminal the Supervisor" = "将此终端设为总管";
 "Supervise This Terminal" = "监督此终端";
 "Cycle This Terminal's Work Mode" = "切换此终端的工作模式";
+
+/* 插件 */
+"No plugins installed" = "没有已安装的插件";
+"Settings…" = "设置…";
+"Switch On" = "启用";
+"Switch Off" = "停用";
+"Switch On (needs settings first)" = "启用（需先完成设置）";
+"Open Plugins Folder" = "打开插件目录";
+"Restart Polter to apply" = "需重启 Polter 才生效";
+"Plugins are loaded when Polter starts." = "插件在 Polter 启动时加载。";
+"Send notifications through this plugin" = "通过此插件发送通知";
+"This plugin has nothing to configure." = "此插件没有需要配置的项。";
+"A value may be a reference instead of the thing itself: env:NAME, file:/path, keychain:service/account, or cmd:… for a password manager. It is resolved when the notification is sent, and never stored here." = "值可以写成引用而不是内容本身：env:名称、file:/路径、keychain:服务/账户，或用 cmd:… 接密码管理器。引用在发送通知时才解析，不会存进这个文件。";
+"Prefer a reference here so the secret stays out of this file." = "这里建议填引用，别把密钥本身留在文件里。";

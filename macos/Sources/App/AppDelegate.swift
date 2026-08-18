@@ -81,6 +81,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuPoltergeistWatch: NSMenuItem?
     @IBOutlet private var menuPoltergeistWorkMode: NSMenuItem?
     @IBOutlet private var menuLanguage: NSMenuItem?
+    @IBOutlet private var menuPlugins: NSMenuItem?
 
     @IBOutlet private var menuEqualizeSplits: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerUp: NSMenuItem?
@@ -177,6 +178,9 @@ class AppDelegate: NSObject,
     private let appIconUpdater = AppIconUpdater()
 
     @MainActor private lazy var menuShortcutManager = Ghostty.MenuShortcutManager()
+
+    /// Fills in the Plugins submenu, and rebuilds it each time it opens.
+    @MainActor private lazy var pluginMenu = PluginMenu()
 
     override init() {
 #if DEBUG
@@ -312,6 +316,9 @@ class AppDelegate: NSObject,
 
         // The Language submenu is built from AppLanguage rather than the nib.
         setupLanguageMenu()
+
+        // The Plugins submenu is filled in from what is installed on disk.
+        if let item = menuPlugins { pluginMenu.attach(to: item) }
 
         // Check if secure input was enabled when we last quit.
         if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
