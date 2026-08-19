@@ -81,6 +81,22 @@ pub const Method = enum {
     /// hears about it.
     set_quiescence_threshold,
 
+    /// Put a terminal under supervision, or take it out again.
+    ///
+    /// The supervisor's, because arranging who is minded is the same kind
+    /// of decision as arranging who talks to whom. Note what it grants:
+    /// a terminal under supervision can be read and typed into, so this is
+    /// the tool that decides reach.
+    set_watch,
+
+    /// Change what a terminal's work mode asks of it.
+    ///
+    /// Scheduling, which is the supervisor's job. It may put a terminal
+    /// into an infinite mode and move it between them -- but an infinite
+    /// mode the *user* set is a standing instruction, and lifting that is
+    /// refused however the request is routed.
+    set_work_mode,
+
     /// Read one of Poltergeist's skills: the text describing how to do this
     /// job. Any terminal may read one; they are instructions, not reach.
     skill_read,
@@ -131,6 +147,8 @@ pub const Request = union(Method) {
     clock_in: struct { id: Bus.Id },
     get_work_mode: struct { id: Bus.Id },
     set_quiescence_threshold: struct { id: Bus.Id, ms: u64 },
+    set_watch: struct { id: Bus.Id, watch: bool },
+    set_work_mode: struct { id: Bus.Id, mode: []const u8 },
     skill_read: struct { name: []const u8 },
 
     group_create: struct { group: []const u8 },
@@ -179,6 +197,8 @@ pub fn requiresSupervisor(method: Method) bool {
         .clock_in,
         .get_work_mode,
         .set_quiescence_threshold,
+        .set_watch,
+        .set_work_mode,
         .group_set_brief,
         .session_recall,
         .notify_user,
@@ -232,6 +252,13 @@ pub fn targetsTerminal(method: Method) bool {
         .group_members,
         .group_set_brief,
         => false,
+
+        // Both name another terminal, so both go through the self-target
+        // check: a supervisor arranging its own supervision is a knot, not
+        // a feature.
+        .set_watch,
+        .set_work_mode,
+        => true,
 
         // These name a terminal to put in or take out of a group. Checked
         // for existence so a typo fails rather than vanishing.
@@ -361,6 +388,8 @@ test "only what reaches another terminal needs the supervisor" {
             .clock_in,
             .get_work_mode,
             .set_quiescence_threshold,
+            .set_watch,
+            .set_work_mode,
             .group_create,
             .group_destroy,
             .group_add,
@@ -564,13 +593,34 @@ test "clock_out is refused for an infinite work mode" {
     try authorize(&b, boss, .{ .clock_in = .{ .id = worker } });
 }
 
-test "there is no way to change a work mode through this surface" {
-    // The ban on clocking off an infinite-mode terminal is only worth
-    // something if the mode itself is out of reach here. If a `set_work_mode`
-    // method ever appears, this test should be the thing that objects.
-    for (std.enums.values(Method)) |m| {
-        try testing.expect(!std.mem.eql(u8, @tagName(m), "set_work_mode"));
-    }
+test "a work mode may be arranged here, but a user's standing one may not be lifted" {
+    // This surface used to have no way to change a work mode at all: the ban
+    // on clocking off an infinite-mode terminal is only worth something if
+    // the mode itself cannot be swapped out from under it.
+    //
+    // The supervisor arranges work now, so the rule moved rather than went
+    // away. The bus refuses to lift an infinite mode the *user* set -- and
+    // that refusal is what this test guards, because it is the only thing
+    // standing between "keep going" and an agent deciding otherwise.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    // The supervisor may put a terminal into an infinite mode.
+    try authorize(&b, boss, .{ .set_work_mode = .{
+        .id = worker,
+        .mode = "infinite_directed",
+    } });
+
+    // But once the user has said it, only the user unsays it.
+    try b.setWorkMode(worker, .infinite_directed, .user);
+    try testing.expectError(
+        error.NotPermitted,
+        b.setWorkMode(worker, .clock_off, .supervisor),
+    );
+    try testing.expectError(
+        error.WorkModeForbids,
+        b.clockOff(worker, .supervisor),
+    );
 }
 
 test "there is no tool for answering another agent's permission prompt" {
@@ -740,6 +790,18 @@ pub const Host = struct {
 
         /// How long that terminal's screen has been unchanged.
         quietMs: *const fn (ctx: *anyopaque, id: Bus.Id) u64,
+
+        /// Start or stop sampling a terminal's screen.
+        ///
+        /// Separate from the bus entry because they are separate facts: the
+        /// entry says a terminal is meant to be watched, and this makes
+        /// something actually look at it. Marked without this, a terminal
+        /// reports nothing and looks broken rather than unwatched.
+        setWatching: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+            watching: bool,
+        ) anyerror!void,
 
         /// Every terminal the app has open, minded or not.
         ///
@@ -912,6 +974,10 @@ pub const Host = struct {
 
     fn openTerminals(self: Host, alloc: std.mem.Allocator) anyerror![]const Place {
         return self.vtable.openTerminals(self.ctx, alloc);
+    }
+
+    fn setWatching(self: Host, id: Bus.Id, watching: bool) anyerror!void {
+        return self.vtable.setWatching(self.ctx, id, watching);
     }
 
     fn drainNotices(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
@@ -1176,6 +1242,46 @@ pub fn dispatch(
             return .ok;
         },
 
+        .set_watch => |p| {
+            if (p.watch) {
+                bus.watch(p.id) catch
+                    return hostFailure("WatchFailed", "could not watch that terminal");
+            } else {
+                bus.unwatch(p.id);
+            }
+
+            // The sampler has to actually start or stop; the bus entry on
+            // its own only records an intention, and a terminal marked
+            // watched that nothing samples never reports anything.
+            host.setWatching(p.id, p.watch) catch
+                return hostFailure("WatchFailed", "could not change that terminal's sampling");
+
+            return .ok;
+        },
+
+        .set_work_mode => |p| {
+            const mode = std.meta.stringToEnum(Bus.WorkMode, p.mode) orelse
+                return hostFailure(
+                    "BadParams",
+                    "mode must be clock_off, infinite_directed or infinite_sequential",
+                );
+
+            bus.setWorkMode(p.id, mode, .supervisor) catch |err| switch (err) {
+                error.UnknownTerminal => return failure(error.UnknownTerminal),
+
+                // Deliberately a distinct message. "Not permitted" alone
+                // reads as a bug in the caller; this is the user having
+                // said something the supervisor does not get to unsay.
+                error.NotPermitted => return hostFailure(
+                    "StandingInstruction",
+                    "the user put this terminal in an infinite work mode; " ++
+                        "only they can take it out of one",
+                ),
+            };
+
+            return .ok;
+        },
+
         .skill_read => |p| {
             const body = host.readSkill(alloc, p.name) catch
                 return hostFailure("NoSuchSkill", "no skill by that name");
@@ -1310,12 +1416,16 @@ const FakeHost = struct {
     /// What is on screen, whether or not the bus knows about any of it.
     open: []const Place = &.{},
 
+    /// Whether the last `set_watch` asked to start or stop sampling.
+    watching: ?bool = null,
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
             .sendText = send,
             .quietMs = quietMs,
             .openTerminals = openTerminals,
+            .setWatching = setWatching,
             .drainNotices = drainNotices,
             .setThreshold = setThreshold,
             .readSkill = readSkill,
@@ -1523,6 +1633,11 @@ const FakeHost = struct {
     ) anyerror![]const Place {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return alloc.dupe(Place, self.open);
+    }
+
+    fn setWatching(ctx: *anyopaque, _: Bus.Id, watching: bool) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.watching = watching;
     }
 
     fn drainNotices(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror![]const u8 {

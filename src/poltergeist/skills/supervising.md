@@ -9,6 +9,32 @@ Your job is to notice when one of them has stopped making progress and
 decide whether it needs a nudge — and, just as often, to decide that it
 does not.
 
+## Set the work up yourself. Nobody else will.
+
+The only thing the user does is name you supervisor. **Everything after
+that is yours**, and none of it happens on its own:
+
+1. **`group_create`** a group for the work, then **`group_set_brief`**
+   immediately — see below for why immediately.
+2. **`set_watch`** each terminal that is part of the work. This is the
+   step that makes a terminal readable and writable by you: until you
+   watch it, `terminal_read` will refuse it as unknown. It is also what
+   starts the clock that tells you when it has gone quiet.
+3. **`group_add`** each of them, so they can talk to each other and so
+   the arrangement is written down.
+4. **`set_work_mode`** where the terminal should not stop at the end of a
+   task.
+
+**Talk to the terminals you supervise through the group tools.** If your
+runtime offers some other way to message another session, do not use it
+for this: only what goes through a group is recorded, and only what is
+recorded survives a restart. A conversation held anywhere else is one
+nobody — including you, tomorrow — can read back.
+
+Do not wait to be asked to do any of this. A user who names a supervisor
+has said what they want; asking them to also run each step is asking them
+to do the job they just handed over.
+
 ## What you will be told, and what you will not
 
 Ghostty watches one thing: how long a terminal's screen has gone unchanged.
@@ -74,6 +100,40 @@ sampling it, so there is no duration to report. Do not read a missing
 `quiet_ms` as zero -- zero would mean it was busy this instant, which is
 the opposite of not knowing.
 
+## Watching, and what it grants you
+
+`set_watch` puts a terminal under your eye or takes it out again. Be
+clear-eyed about what it does: **a terminal you watch is one you can read
+and type into.** Watching is not observation, it is reach. Watch the
+terminals that are part of the work, and leave the user's own shell alone
+— it is open in the same window and looks exactly like the others in
+`terminal_list`.
+
+Taking a terminal out again (`watch: false`) stops the sampling and the
+reach with it.
+
+## Work modes, and the one you cannot lift
+
+`set_work_mode` decides what a terminal does when it runs out of task:
+
+- `clock_off` — it may finish when the work is genuinely done.
+- `infinite_directed` — it does not finish; it keeps working to a
+  standing direction.
+- `infinite_sequential` — it does not finish; it moves task to task.
+
+You may put a terminal into an infinite mode, and move it between the two.
+**You cannot take a terminal out of an infinite mode the user set.** That
+is a standing instruction — the user saying "this one does not stop" — and
+being able to lift it would mean being able to stop the terminal a moment
+later, which is the thing the mode exists to prevent. The refusal comes
+back as `StandingInstruction`; when you see it, say so rather than trying
+another route.
+
+Each mode has a skill of its own (`mode-clock-out`,
+`mode-infinite-directed`, `mode-infinite-sequential`) describing what it
+asks of the terminal. The terminal is told to read its own when you change
+it, so you do not need to explain the mode to it.
+
 ## Say what each group is for, before you forget
 
 Right after `group_create`, call `group_set_brief` and write one line
@@ -103,12 +163,23 @@ After a restart, `session_recall` hands that back.
 what you have is a description of what it was. The work is yours:
 
 1. `session_recall` -- what was set up last night.
-2. `terminal_list`, and `terminal_read` where you need it -- what is open
-   now.
+2. `terminal_list` -- what is open now. `terminal_read` only works on
+   terminals you are already watching, so at this point you have their
+   directories and names and nothing else.
 3. Match them up yourself. The directory and the title are what you have
    to go on.
-4. For the ones you can place: ask the person to put them back under
-   watch, since only they can. For the ones you cannot: say so plainly.
+4. **For the ones you can place, put them back yourself**: `set_watch`,
+   rebuild the group, `group_add` them, write the brief again from what
+   the notes told you. You do not need permission for any of it.
+5. For the ones you cannot place: say so plainly, and ask. Do not guess.
+
+**When `session_recall` comes back empty but terminals are open**, say
+that before doing anything else. It means last night's work was never
+recorded -- most often because no group was ever made -- and the terminals
+on screen are strangers to Polter rather than colleagues waiting to be
+recognised. Reading their directories and inferring what they were doing
+is not restoring; it is starting over while calling it something else.
+Offer to set the work up properly instead.
 
 **Do not assume that terminals in the same directory are the same
 terminal.** Three agents working in one repository all report that same

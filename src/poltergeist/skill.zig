@@ -410,12 +410,42 @@ test "the shipped skills do not promise what the tools cannot do" {
     // A skill that tells a supervisor to approve something on another
     // agent's behalf would be describing a tool that does not exist, and
     // the AI would go looking for it.
+    //
+    // `set_work_mode` used to be on this list and is not any more: the
+    // supervisor arranges work now, and the skill says so. What guards the
+    // ban on clocking off an infinite-mode terminal moved into the bus,
+    // which refuses to lift an infinite mode the user set.
     for (builtin_sources, builtin_names) |source, name| {
-        for ([_][]const u8{ "set_work_mode", "approve(", "grant_permission" }) |forbidden| {
+        for ([_][]const u8{ "approve(", "grant_permission", "answer_prompt" }) |forbidden| {
             if (std.mem.indexOf(u8, source, forbidden) != null) {
                 std.debug.print("\n{s} mentions {s}\n", .{ name, forbidden });
                 return error.TestUnexpectedResult;
             }
+        }
+    }
+}
+
+test "the supervising skill names the tools it tells you to use" {
+    // The skill's whole job here is to be the thing that gets a supervisor
+    // to set the work up. If it names a tool that is not on the surface,
+    // the AI goes looking for something that is not there; if it stops
+    // naming one, nothing points at it at all.
+    const supervising = for (builtin_sources, builtin_names) |source, name| {
+        if (std.mem.eql(u8, name, "supervising")) break source;
+    } else return error.TestUnexpectedResult;
+
+    for ([_][]const u8{
+        "group_create",
+        "group_set_brief",
+        "group_add",
+        "set_watch",
+        "set_work_mode",
+        "session_recall",
+        "terminal_list",
+    }) |tool| {
+        if (std.mem.indexOf(u8, supervising, tool) == null) {
+            std.debug.print("\nsupervising never mentions {s}\n", .{tool});
+            return error.TestUnexpectedResult;
         }
     }
 }

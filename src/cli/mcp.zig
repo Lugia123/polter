@@ -321,6 +321,25 @@ const tools = [_]Tool{
         \\{"type":"object","properties":{"id":{"type":"string"},"ms":{"type":"integer"}},"required":["id","ms"]}
         ,
     },
+    .{
+        .name = "set_watch",
+        .description = "Put a terminal under your supervision, or take it out again. " ++
+            "A terminal you watch is one you can read and type into, so this is the tool " ++
+            "that decides your reach. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to true"}},"required":["id"]}
+        ,
+    },
+    .{
+        .name = "set_work_mode",
+        .description = "Change what a terminal's work mode asks of it: clock_off, " ++
+            "infinite_directed or infinite_sequential. You may put a terminal into an " ++
+            "infinite mode and move it between them. An infinite mode the *user* set is a " ++
+            "standing instruction and only they can lift it. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"mode":{"type":"string","enum":["clock_off","infinite_directed","infinite_sequential"]}},"required":["id","mode"]}
+        ,
+    },
 };
 
 const Tool = struct {
@@ -535,12 +554,32 @@ test "the tool list matches the host's method names" {
     }
 }
 
-test "no tool offers to change a work mode or answer a prompt" {
+test "no tool offers to answer another agent's prompt" {
+    // `terminal_send` is a general text primitive and that is all there is.
+    // A dedicated approve/deny tool would make it one step to hand away
+    // another agent's safety model (R2), so there is none -- and this is
+    // the test that should object if one appears.
+    //
+    // Changing a work mode *is* offered now: arranging work is the
+    // supervisor's job. What protects the ban on clocking off an
+    // infinite-mode terminal moved into the bus, which refuses to lift an
+    // infinite mode the user set. See `Bus.setWorkMode`.
     for (tools) |t| {
-        try std.testing.expect(!std.mem.eql(u8, t.name, "set_work_mode"));
         try std.testing.expect(std.mem.indexOf(u8, t.name, "approve") == null);
         try std.testing.expect(std.mem.indexOf(u8, t.name, "permission") == null);
+        try std.testing.expect(std.mem.indexOf(u8, t.name, "deny") == null);
     }
+}
+
+test "the tools that decide reach say so in their own description" {
+    // Somebody reading the tool list should not have to infer that watching
+    // a terminal is what makes it readable.
+    for (tools) |t| {
+        if (!std.mem.eql(u8, t.name, "set_watch")) continue;
+        try std.testing.expect(std.mem.indexOf(u8, t.description, "read") != null);
+        return;
+    }
+    return error.ToolMissing;
 }
 
 test "every tool describes itself and carries a schema" {

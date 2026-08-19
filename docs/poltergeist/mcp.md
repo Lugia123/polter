@@ -130,6 +130,8 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 | `terminal_send(id, text, submit?)`             | 目标与文本           | ok / 拒绝原因 | 仅总管   |
 | `clock_out(id, reason)`                        | 目标与理由           | ok / 拒绝原因 | 仅总管   |
 | `set_quiescence_threshold(id, duration)`       | 目标与时长           | ok / 拒绝原因 | 仅总管   |
+| `set_watch(id, watch?)`                        | 目标与是否监督       | ok / 拒绝原因 | 仅总管   |
+| `set_work_mode(id, mode)`                      | 目标与模式           | ok / 拒绝原因 | 仅总管   |
 | `group_post(group, text)`                      | 群名与文本           | ok            | 成员     |
 | `group_create(group)` / `group_destroy(group)` | 群名                 | ok / 拒绝原因 | 仅总管   |
 | `group_add(group, id, history)`                | 群名/终端/是否给历史 | ok / 拒绝原因 | 仅总管   |
@@ -138,9 +140,17 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 
 `clock_out` 在无限工作模式下由程序直接拒绝，并把理由回给总管（不静默失败）—— 这是 R6 硬约束的落点。
 
-**`set_work_mode` 不在工具面里**，只有只读的 `get_work_mode`。本表早先把它列为「仅总管」，与下文「只有用户能改工作模式」的论证直接矛盾；实现按后者落地（`src/poltergeist/Bus.zig` 的 `setWorkMode` 要求 `Authority.user`，`src/poltergeist/rpc.zig` 的 `Method` 里根本没有这一项，并有一条测试专门守着它别被加回来）。理由就是下文那句：总管若能改模式，只要先改再 `clock_out` 就绕过了 R6，硬闸等于没有。工作模式由用户在终端上设定。
+**`set_watch` 决定的是「够得着谁」，不只是「看着谁」。** 被监督的终端才能被 `terminal_read` 读、被 `terminal_send` 写；没被监督的终端在 `terminal_list` 里看得见目录和标题，但读它会返回 `UnknownTerminal`。所以这个工具的描述里明写了这一点——**让总管在按下去之前就知道自己在授予什么**，而不是从别处推断出来。
 
-`set_quiescence_threshold` 是 [sensing.md](sensing.md) 那条「per-terminal 阈值只能是运行时状态、不能进 `Config.zig`」结论的工具面落点：全局默认值走配置项 `polter-quiescence-threshold`，单个终端的覆盖值由总管在运行时调。它只影响「多久之后通知总管」这一个调参，不表达用户意图，因此不受 `set_work_mode` 那条「跨线只能用户改」的限制。时长解析可直接复用 `Duration`（`src/config/Config.zig:10047`，`parseCLI` 在 `:10085`）。
+**`set_work_mode` 曾经完全不在工具面里，现在在了，但那条硬闸换了地方而不是拿掉了。**
+
+早先的论证是：总管若能改模式，只要先把无限模式改成 `clock_off` 再 `clock_out`，R6 就形同虚设。这个论证是对的，问题在于它的代价——用户被迫为每一个终端亲手设模式，而同一个总管却被信任去读这些终端的屏幕、往里面打字。**排班本来就是总管的活。**
+
+现在的规则：**总管可以把终端放进无限模式，可以在两个无限模式之间移动，但不能解除用户设的无限模式。** 用户设的无限模式是一句常设指令——「这个不许停」——而能解除它就等于能在下一刻把它停掉，恰恰是这个模式要防的事。被拒时返回 `StandingInstruction`，措辞与普通的 `NotPermitted` 区分开：后者读起来像调用方写错了，前者是用户说过的话轮不到总管改口。
+
+实现在 `src/poltergeist/Bus.zig` 的 `setWorkMode`，`Entry.work_mode_by` 记住是谁定的。**写测试时抓到过一个洞**：总管可以先在两个无限模式之间跳一次把归属洗成自己的，再解除——所以归属在用户指令仍生效期间不转移。原来那条 `the supervisor cannot change a work mode to get around the ban` 测试没有删，仍然通过。
+
+`set_quiescence_threshold` 是 [sensing.md](sensing.md) 那条「per-terminal 阈值只能是运行时状态、不能进 `Config.zig`」结论的工具面落点：全局默认值走配置项 `polter-quiescence-threshold`，单个终端的覆盖值由总管在运行时调。它只影响「多久之后通知总管」这一个调参，不表达用户意图，因此连 `set_work_mode` 那条「不得解除用户常设指令」的限制都不需要。时长解析可直接复用 `Duration`（`src/config/Config.zig:10047`，`parseCLI` 在 `:10085`）。
 
 ### terminal_read 的实现落点
 
@@ -415,7 +425,7 @@ skill 里要求总管 `group_create` 之后**立刻** `group_set_brief` —— �
 | skill 编译进二进制                         | 最省运行时                                                                              | 直接违背 R7「可维护、用户能改能加」                                                                               |
 | **选**：判断在提示词、约束在程序           | 两处维护                                                                                | 语义判断会随 UI 改版烂掉；而提示词会被长会话冲掉，程序不会                                                        |
 | 监工模式做成纯程序状态机                   | 可测试                                                                                  | 「没必要再继续」是语义判断，写死判据随被监督程序改版失效                                                          |
-| **选**：`set_work_mode` 跨模式线只能用户改 | 少一个自由度                                                                            | 否则总管先改模式再 `clock_out` 就绕过了 R6 的程序硬闸                                                             |
+| **选**：`set_work_mode` 开放给总管，但不得解除用户设的无限模式 | 归属要多记一个字段，且要防「在两个无限模式间跳一次洗白归属」 | 全禁会让用户为每个终端亲手设模式，而同一个总管却被信任读屏和注入；只锁住「解除用户的常设指令」这一步，R6 的硬闸仍在 |
 | **选**：不提供任何任务工具                 | 总管做不了跨任务全局调度                                                                | 任务载体 schema 各异必成半吊子；与用户已有工具打架会产生两份真相                                                  |
 
 ## 未决问题

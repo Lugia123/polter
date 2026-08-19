@@ -132,6 +132,16 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .ms = try requireU64(params, "ms"),
         } },
 
+        .set_watch => .{ .set_watch = .{
+            .id = try requireId(params),
+            .watch = optionalBool(params, "watch", true),
+        } },
+
+        .set_work_mode => .{ .set_work_mode = .{
+            .id = try requireId(params),
+            .mode = try requireString(aa, params, "mode"),
+        } },
+
         .skill_read => .{ .skill_read = .{
             .name = try requireString(aa, params, "name"),
         } },
@@ -574,12 +584,40 @@ test "unknown and missing methods are refused" {
     ));
 }
 
-test "set_work_mode is not a method, however it is spelled" {
-    // The ban on clocking off an infinite-mode terminal depends on there
-    // being no way to change the mode from here. See rpc.zig.
-    try testing.expectError(error.UnknownMethod, parse(
-        \\{"method":"set_work_mode","params":{"id":1,"mode":"clock_off"}}
-    ));
+test "set_work_mode parses, and an unknown mode is refused where it is handled" {
+    // This used to be refused outright: the ban on clocking off an
+    // infinite-mode terminal depended on the mode being unreachable from
+    // here. The supervisor arranges work now, and the rule moved into the
+    // bus, which will not lift an infinite mode the user set.
+    //
+    // The wire layer's job is narrower: name and shape. Whether the string
+    // is a mode this build knows is decided where the request is handled,
+    // so that the answer can say what the choices are.
+    var p = try parse(
+        \\{"method":"set_work_mode","params":{"id":1,"mode":"infinite_directed"}}
+    );
+    defer p.deinit();
+    try testing.expectEqualStrings("infinite_directed", p.value.set_work_mode.mode);
+
+    var nonsense = try parse(
+        \\{"method":"set_work_mode","params":{"id":1,"mode":"whenever"}}
+    );
+    defer nonsense.deinit();
+    try testing.expectEqualStrings("whenever", nonsense.value.set_work_mode.mode);
+}
+
+test "set_watch defaults to watching, because that is what it is for" {
+    var on = try parse(
+        \\{"method":"set_watch","params":{"id":1}}
+    );
+    defer on.deinit();
+    try testing.expect(on.value.set_watch.watch);
+
+    var off = try parse(
+        \\{"method":"set_watch","params":{"id":1,"watch":false}}
+    );
+    defer off.deinit();
+    try testing.expect(!off.value.set_watch.watch);
 }
 
 test "a wrongly typed optional field is refused, not ignored" {

@@ -113,6 +113,15 @@ pub const Entry = struct {
     duty: Duty = .on,
     work_mode: WorkMode = .clock_off,
 
+    /// Who put it in that mode.
+    ///
+    /// Kept because the supervisor may change a mode but may not undo a
+    /// standing instruction from the user: an infinite mode the *user* set
+    /// is the user saying "this one does not stop", and an agent that could
+    /// lift it could then clock the terminal off, which is the thing the
+    /// mode existed to prevent.
+    work_mode_by: Authority = .user,
+
     /// When this terminal last produced a notice, for rate limiting.
     last_notice_ms: ?u64 = null,
 
@@ -252,9 +261,30 @@ pub fn setWorkMode(
     mode: WorkMode,
     who: Authority,
 ) SetModeError!void {
-    if (who != .user) return error.NotPermitted;
     const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
+
+    // The supervisor may arrange work modes -- that is scheduling, and
+    // scheduling is its job. What it may not do is lift an infinite mode
+    // the user set: that mode is the user saying "this one does not stop",
+    // and lifting it would let the supervisor clock the terminal off a
+    // moment later, which is exactly what the mode existed to prevent.
+    //
+    // Moving *between* infinite modes is allowed, and so is putting a
+    // terminal into one. Only taking the standing instruction away is not.
+    const user_standing = e.work_mode.forbidsClockOff() and e.work_mode_by == .user;
+
+    if (who != .user and user_standing and !mode.forbidsClockOff()) {
+        return error.NotPermitted;
+    }
+
     e.work_mode = mode;
+
+    // Attribution sticks to the user while their instruction is still in
+    // force. Otherwise the supervisor could launder it: move the terminal
+    // from one infinite mode to the other -- allowed, it still does not
+    // stop -- and claim the mode as its own on the way, then lift it a
+    // moment later. A test caught exactly that.
+    if (who == .user or !user_standing) e.work_mode_by = who;
 }
 
 /// Clock a terminal off. The supervisor only, and never in a work mode that
@@ -383,7 +413,6 @@ pub fn tabMark(self: *const Bus, id: Id, now_ms: u64, quiet_after_ms: u64) TabMa
         },
     };
 }
-
 
 /// Most terminals named individually in one summary. Beyond this the rest
 /// are counted rather than listed: a line long enough to need scrolling is
@@ -944,4 +973,55 @@ test "a terminal the supervisor never watched is not in the box" {
 
     var buf: [255]u8 = undefined;
     try testing.expect(bus.drain(1000, &buf) == null);
+}
+
+test "the supervisor may arrange work modes, which is scheduling" {
+    // Deciding what a terminal should be doing is the supervisor's job. It
+    // was refused this outright, which meant the user had to reach for the
+    // keyboard for every terminal -- while the supervisor was trusted to
+    // read those same terminals and type into them.
+    var b = testBus();
+    defer b.deinit();
+
+    const hand: Id = 0xbeef;
+    try b.watch(hand);
+
+    // Into an infinite mode, and between them.
+    try b.setWorkMode(hand, .infinite_directed, .supervisor);
+    try testing.expectEqual(WorkMode.infinite_directed, b.get(hand).?.work_mode);
+
+    try b.setWorkMode(hand, .infinite_sequential, .supervisor);
+    try testing.expectEqual(WorkMode.infinite_sequential, b.get(hand).?.work_mode);
+
+    // And back out of one it set itself: no standing instruction from the
+    // user is being undone here.
+    try b.setWorkMode(hand, .clock_off, .supervisor);
+    try testing.expectEqual(WorkMode.clock_off, b.get(hand).?.work_mode);
+}
+
+test "a standing instruction from the user outlives the supervisor's wishes" {
+    var b = testBus();
+    defer b.deinit();
+
+    const hand: Id = 0xbeef;
+    try b.watch(hand);
+
+    // The user says this one does not stop.
+    try b.setWorkMode(hand, .infinite_directed, .user);
+
+    // The supervisor may move it to the other infinite mode -- still not
+    // stopping -- but may not lift the instruction.
+    try b.setWorkMode(hand, .infinite_sequential, .supervisor);
+    try testing.expectError(
+        error.NotPermitted,
+        b.setWorkMode(hand, .clock_off, .supervisor),
+    );
+
+    // And the terminal still cannot be clocked off, which is what the
+    // instruction was for.
+    try testing.expectError(error.WorkModeForbids, b.clockOff(hand, .supervisor));
+
+    // The user can always lift their own.
+    try b.setWorkMode(hand, .clock_off, .user);
+    try b.clockOff(hand, .supervisor);
 }

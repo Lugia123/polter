@@ -838,6 +838,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .sendText = poltergeistSend,
         .quietMs = poltergeistQuiet,
         .openTerminals = poltergeistOpenTerminals,
+        .setWatching = poltergeistSetWatching,
         .drainNotices = poltergeistDrainNotices,
         .setThreshold = poltergeistThreshold,
         .readSkill = poltergeistSkill,
@@ -895,6 +896,27 @@ fn poltergeistSend(
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
     try surface.typePoltergeistText(text, submit);
+}
+
+fn poltergeistSetWatching(
+    ctx: *anyopaque,
+    id: poltergeistpkg.Bus.Id,
+    watching: bool,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
+    surface.setPoltergeistWatching(watching);
+
+    // Being put under supervision changes what may happen to this terminal,
+    // so the terminal is told -- the same reason the keybind path tells it.
+    if (watching) {
+        self.tellSurface(id, "[Polter] A supervisor is now watching this " ++
+            "terminal and will be told when your screen has been still for a " ++
+            "while. It may read your screen and write to you. Nothing is " ++
+            "watching what you type.");
+    }
+
+    self.saveSession();
 }
 
 fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
@@ -1448,6 +1470,33 @@ fn tellTerminalsAboutMessages(self: *App) void {
             };
         }
     }
+}
+
+/// Tell a terminal something about its own standing.
+///
+/// **Because a role nobody is told about is a role nobody plays.** Making a
+/// terminal the supervisor used to set a flag in the bus and nothing else:
+/// the agent inside it was never told, so it had no reason to look for the
+/// `supervising` skill or the group tools, and it reached for whatever
+/// messaging its own runtime advertised instead. Watched in one place,
+/// working in another, and no record either would survive a restart.
+///
+/// Delivered through the ordinary notice path, so it inherits the guard
+/// against interrupting somebody mid-sentence and simply does not arrive
+/// if the person is typing.
+pub fn tellSurface(self: *App, id: poltergeistpkg.Bus.Id, text: []const u8) void {
+    const surface = self.findSurfaceByID(id) orelse return;
+
+    var buf: [255:0]u8 = undefined;
+    if (text.len >= buf.len) return;
+    @memcpy(buf[0..text.len], text);
+    buf[text.len] = 0;
+
+    self.surfaceMessage(surface, .{
+        .poltergeist_notice = buf,
+    }) catch |err| {
+        log.warn("poltergeist: could not tell a terminal its standing err={}", .{err});
+    };
 }
 
 /// Monotonic milliseconds for the bus and the chat log alike.

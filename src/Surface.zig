@@ -3436,6 +3436,17 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
 }
 
 /// Change how long this terminal must be still before it is reported.
+/// Start or stop sampling this terminal's screen.
+///
+/// The bus entry and the sampler are two separate facts, and both have to
+/// be set: a terminal marked watched that nothing samples reports nothing
+/// and looks broken rather than unwatched.
+pub fn setPoltergeistWatching(self: *Surface, watching: bool) void {
+    // `.unlocked`: this runs on the app thread from an agent request, which
+    // holds no terminal lock.
+    self.queueIo(.{ .poltergeist_watch = watching }, .unlocked);
+}
+
 pub fn setPoltergeistThreshold(self: *Surface, ms: u64) void {
     // `.unlocked`: this runs on the app thread from an agent request, which
     // holds no terminal lock. Claiming otherwise would have queueIo skip
@@ -5655,6 +5666,19 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
 
             try self.app.poltergeist.setSupervisor(self.id);
             log.info("poltergeist: this terminal is now the supervisor", .{});
+
+            // Told, not merely recorded. Without this the agent has no way
+            // to know its standing changed, and reaches for whatever
+            // messaging its own runtime advertises -- leaving nothing in a
+            // group and nothing to recall tomorrow.
+            self.app.tellSurface(self.id, "[Polter] You are now the supervisor " ++
+                "of this window's terminals. Read the `supervising` skill with " ++
+                "the polter MCP tool skill_read before doing anything else, and " ++
+                "follow it -- including making a group for the work and keeping " ++
+                "its brief current. Talk to the terminals you supervise through " ++
+                "the group tools, not through any other channel: only what goes " ++
+                "through them is written down and survives a restart.");
+
             return true;
         },
 
@@ -5679,6 +5703,11 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             } else {
                 try bus.watch(self.id);
                 log.info("poltergeist: now watching this terminal", .{});
+
+                self.app.tellSurface(self.id, "[Polter] A supervisor is now " ++
+                    "watching this terminal and will be told when your screen " ++
+                    "has been still for a while. It may read your screen and " ++
+                    "write to you. Nothing is watching what you type.");
             }
 
             // Marking a terminal watched has to actually start the sampler.
@@ -5710,6 +5739,25 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             };
 
             log.info("poltergeist: work mode is now {s}", .{@tagName(next)});
+
+            // Each mode has a skill saying what it asks of this terminal,
+            // and the terminal is the only one that can act on it. Naming
+            // the skill is the whole delivery mechanism -- there is no
+            // other way for it to find out the rules changed.
+            self.app.tellSurface(self.id, switch (next) {
+                .clock_off => "[Polter] Your work mode is now clock-off: you " ++
+                    "may finish when the work is genuinely done. Read the " ++
+                    "`mode-clock-out` skill with skill_read and follow it.",
+                .infinite_directed => "[Polter] Your work mode is now " ++
+                    "infinite-directed: you do not finish, you keep working " ++
+                    "to a standing direction. Read the " ++
+                    "`mode-infinite-directed` skill with skill_read and follow it.",
+                .infinite_sequential => "[Polter] Your work mode is now " ++
+                    "infinite-sequential: you do not finish, you move from " ++
+                    "one task to the next. Read the " ++
+                    "`mode-infinite-sequential` skill with skill_read and follow it.",
+            });
+
             return true;
         },
 
