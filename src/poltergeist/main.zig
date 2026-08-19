@@ -14,6 +14,7 @@ pub const Bus = @import("Bus.zig");
 pub const Chat = @import("Chat.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const Fingerprint = @import("Fingerprint.zig");
+pub const register = @import("register.zig");
 pub const rpc = @import("rpc.zig");
 pub const Sampler = @import("Sampler.zig");
 pub const Server = @import("Server.zig");
@@ -43,6 +44,7 @@ test {
     _ = Fingerprint;
     _ = notify;
     _ = Plugin;
+    _ = register;
     _ = rpc;
     _ = Sampler;
     _ = secret;

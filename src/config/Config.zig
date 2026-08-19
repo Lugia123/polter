@@ -1296,6 +1296,23 @@ command: ?Command = null,
 /// supervising agent, which looks at the screen itself.
 ///
 /// The default is `false`: nothing is watched unless you ask for it.
+/// Register Polter as an MCP server with Claude Code, so that agents in
+/// any directory can reach it.
+///
+/// Polter puts a socket path and a token in every terminal's environment,
+/// which is what an agent needs to *reach* it -- but an MCP client only
+/// loads servers it has been configured with, so without this an agent
+/// has both and no tools. Registration is user-scoped, so it applies
+/// wherever you start one.
+///
+/// Checked at every start and rewritten only when it does not point at
+/// this build: that file is Claude Code's own, and rewriting it for no
+/// reason is asking for the one race that eats somebody's settings.
+///
+/// Done by running `claude mcp`, so it does nothing when Claude Code is
+/// not installed. Set it to `false` to manage the registration yourself.
+@"poltergeist-register-mcp": bool = true,
+
 @"poltergeist-watch": bool = false,
 
 /// How long the visible screen must go unchanged before this terminal is

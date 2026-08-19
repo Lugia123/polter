@@ -15,6 +15,7 @@ const Config = configpkg.Config;
 const BlockingQueue = @import("datastruct/main.zig").BlockingQueue;
 const renderer = @import("renderer.zig");
 const font = @import("font/main.zig");
+const build_config = @import("build_config.zig");
 const global = @import("global.zig");
 
 const log = std.log.scoped(.app);
@@ -61,6 +62,10 @@ poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
 /// Where last night's arrangement is written down. Null until the state
 /// directory is known. Owned.
 poltergeist_session_path: ?[]const u8 = null,
+
+/// Whether the MCP registration has been checked this run. Once is enough:
+/// it cannot go stale while we are the thing it points at.
+poltergeist_registered: bool = false,
 
 /// What the previous run left behind. See `Session.Recall`, which reads
 /// the file as it is constructed so that this run cannot overwrite the
@@ -674,6 +679,38 @@ pub fn ensurePoltergeistServer(self: *App, rt_app: *apprt.App, want: bool) void 
     self.syncPoltergeistServer(true) catch |err| {
         log.warn("poltergeist: could not open the agent socket err={}", .{err});
     };
+}
+
+/// Make sure an agent's runtime knows these tools exist.
+///
+/// The socket and the token are in every terminal's environment already;
+/// this is what makes the tools appear in a session at all. See
+/// `poltergeist/register.zig` for why it goes through `claude mcp` rather
+/// than editing the file.
+pub fn ensureMcpRegistered(self: *App, want: bool) void {
+    if (!want or self.poltergeist_registered) return;
+    self.poltergeist_registered = true;
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const io = global.io();
+
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe = exe_buf[0 .. std.process.executablePath(io, &exe_buf) catch |err| {
+        log.warn("poltergeist: could not find my own path err={}", .{err});
+        return;
+    }];
+
+    const outcome = poltergeistpkg.register.ensure(
+        alloc,
+        io,
+        exe,
+        build_config.version_string,
+    );
+
+    log.info("poltergeist: mcp registration {t}", .{outcome});
 }
 
 /// Open or close the agent socket to match the config.
