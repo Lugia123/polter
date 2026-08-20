@@ -17,6 +17,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const net = std.Io.net;
 const vaxis = @import("vaxis");
+const layout = @import("chat_layout.zig");
 const args = @import("args.zig");
 const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
@@ -24,7 +25,11 @@ const global = @import("../global.zig");
 const log = std.log.scoped(.chat);
 
 /// Longest line the host will read or write.
-const max_line = 64 * 1024;
+// Matches the sidecar (`cli/mcp.zig`). A reply larger than this is
+// `StreamTooLong` and a connection that never recovers, so the server caps
+// what it sends (`rpc.read_budget_bytes`) and this is the headroom for the
+// JSON escaping on top of it.
+const max_line = 256 * 1024;
 
 /// How often to ask the host what is new.
 ///
@@ -829,4 +834,8 @@ fn formatTime(alloc: Allocator, at_ms: i64) []const u8 {
         "{d:0>2}:{d:0>2}",
         .{ @as(u32, @intCast(@mod(tm.hour, 24))), @as(u32, @intCast(@mod(tm.min, 60))) },
     ) catch "";
+}
+
+test {
+    _ = layout;
 }

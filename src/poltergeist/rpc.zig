@@ -161,6 +161,43 @@ pub const Request = union(Method) {
     group_read: struct { group: []const u8, since: u64 = 0 },
 };
 
+/// How much text one `group_read` reply may carry.
+///
+/// The protocol is one JSON object per line, and both readers take a line
+/// into a fixed buffer -- so a reply larger than that buffer is not a slow
+/// reply, it is `StreamTooLong` and a connection that never recovers,
+/// because the next attempt asks for the same range again.
+///
+/// A group holds up to a thousand messages of up to eight kilobytes each,
+/// so an unbounded reply had eight megabytes of headroom over a sixty-four
+/// kilobyte buffer. It took a few days of real use to get there.
+///
+/// The budget is over the *raw* text. JSON escaping inflates it, and worst
+/// of all for CJK: `std.json` writes a three-byte character as a six-byte
+/// `\uXXXX` escape, so Chinese doubles. The figure below leaves room for
+/// that doubling inside the smaller of the two read buffers.
+pub const read_budget_bytes: usize = 96 * 1024;
+
+/// Keep the oldest messages that fit the budget.
+///
+/// Oldest first, not newest: the caller polls with a cursor, so handing
+/// back the front of the range lets it advance and ask again. Nothing is
+/// lost, it only arrives in instalments. Handing back the newest instead
+/// would strand everything before them behind a cursor that had already
+/// moved past.
+pub fn capMessages(lines: []const ChatLine) []const ChatLine {
+    var used: usize = 0;
+    for (lines, 0..) |line, i| {
+        used += line.text.len + line.author.len;
+        if (used > read_budget_bytes) {
+            // At least one, however big it is: returning none would have
+            // the caller poll forever without its cursor ever moving.
+            return lines[0..@max(i, 1)];
+        }
+    }
+    return lines;
+}
+
 pub const History = @import("Chat.zig").History;
 
 pub const Error = error{
@@ -1339,7 +1376,7 @@ pub fn dispatch(
         .group_read => |p| {
             const lines = host.chatRead(alloc, p.group, caller, p.since) catch |err|
                 return chatFailure(err);
-            return .{ .messages = lines };
+            return .{ .messages = capMessages(lines) };
         },
     }
 }
@@ -1919,4 +1956,59 @@ test "the person at the keyboard sees the brief too" {
         .group_list,
     );
     try testing.expect(res.groups[0].brief.len > 0);
+}
+
+test "a reply is capped so it cannot outgrow the line buffer" {
+    // The failure this prevents is not a slow reply, it is `StreamTooLong`
+    // and a connection that never recovers: the next attempt asks for the
+    // same range and fails the same way. It took a few days of real use to
+    // reach, because it needs a group with a few hundred long messages in
+    // it.
+    const big = "x" ** 8192;
+
+    var lines: [64]ChatLine = undefined;
+    for (&lines, 0..) |*line, i| line.* = .{
+        .seq = i,
+        .from = 1,
+        .author = "worker",
+        .at_ms = 0,
+        .summary = false,
+        .text = big,
+    };
+
+    const kept = capMessages(&lines);
+    try testing.expect(kept.len < lines.len);
+
+    var total: usize = 0;
+    for (kept) |line| total += line.text.len + line.author.len;
+
+    // Inside the budget, and not so far inside that a caller polling one
+    // instalment at a time would be here all day.
+    try testing.expect(total <= read_budget_bytes + big.len);
+    try testing.expect(kept.len > 1);
+}
+
+test "one message larger than the whole budget is still delivered" {
+    // Returning nothing would leave the caller polling forever with a
+    // cursor that never moves -- a quieter failure than the one this
+    // replaced, and a worse one.
+    const huge = "y" ** (128 * 1024);
+    const lines = [_]ChatLine{.{
+        .seq = 1,
+        .from = 1,
+        .author = "worker",
+        .at_ms = 0,
+        .summary = false,
+        .text = huge,
+    }};
+
+    try testing.expectEqual(@as(usize, 1), capMessages(&lines).len);
+}
+
+test "a reply that fits is passed through whole" {
+    const lines = [_]ChatLine{
+        .{ .seq = 1, .from = 1, .author = "a", .at_ms = 0, .summary = false, .text = "hello" },
+        .{ .seq = 2, .from = 2, .author = "b", .at_ms = 0, .summary = false, .text = "there" },
+    };
+    try testing.expectEqual(@as(usize, 2), capMessages(&lines).len);
 }
