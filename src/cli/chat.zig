@@ -314,13 +314,25 @@ const Chat = struct {
     tty: vaxis.Tty,
     vx: vaxis.Vaxis,
     env: std.process.Environ.Map,
-    text_input: vaxis.widgets.TextInput,
 
     groups: std.ArrayListUnmanaged(Group) = .empty,
     current: usize = 0,
 
-    /// How far the message pane is scrolled back from the newest message.
+    /// How far the message pane is scrolled back, **in rendered rows**.
+    ///
+    /// Rows, not messages: one report from an agent can be forty rows, and
+    /// scrolling by message stepped over a screenful at a time.
     scroll: usize = 0,
+
+    /// Where each group's name was drawn last frame, so a click can be
+    /// turned back into a group. Rebuilt every frame because the list
+    /// moves when a group is made or destroyed.
+    group_rows: std.ArrayListUnmanaged(usize) = .empty,
+
+    /// The bounds of the group pane last frame, for hit testing.
+    groups_top: u16 = 0,
+    groups_left: u16 = 0,
+    groups_right: u16 = 0,
 
     should_quit: bool = false,
 
@@ -331,6 +343,7 @@ const Chat = struct {
 
     const Event = union(enum) {
         key_press: vaxis.Key,
+        mouse: vaxis.Mouse,
         winsize: vaxis.Winsize,
     };
 
@@ -357,7 +370,6 @@ const Chat = struct {
             .tty = try .init(io, tty_buf),
             .vx = undefined,
             .env = env,
-            .text_input = .init(alloc),
         };
         errdefer self.tty.deinit();
 
@@ -372,11 +384,11 @@ const Chat = struct {
     }
 
     fn deinit(self: *Chat) void {
-        self.text_input.deinit();
         self.vx.deinit(self.alloc, self.tty.writer());
         self.tty.deinit();
         self.env.deinit();
         self.groups.deinit(self.alloc);
+        self.group_rows.deinit(self.alloc);
         self.frame.deinit();
         self.arena.deinit();
     }
@@ -390,6 +402,11 @@ const Chat = struct {
         try self.vx.enterAltScreen(writer);
         try self.vx.setTitle(writer, "Polter — terminal conversations");
         try self.vx.queryTerminal(writer, .fromSeconds(1));
+
+        // Without this the pane is a picture: no clicking a group, no
+        // wheel. It was never switched on, which is most of why this felt
+        // like something to read rather than something to use.
+        try self.vx.setMouseMode(writer, true);
 
         // Wait for the first event before drawing anything. Until the
         // terminal has told us its size, the window is zero by zero, and
@@ -490,77 +507,116 @@ const Chat = struct {
         self.err = null;
     }
 
-    fn send(self: *Chat) !void {
-        if (self.groups.items.len == 0) return;
-
-        const text = try self.text_input.toOwnedSlice();
-        defer self.alloc.free(text);
-
-        const trimmed = std.mem.trim(u8, text, " \t\r\n");
-        if (trimmed.len == 0) return;
-
-        const group = self.groups.items[self.current].name;
-
-        var buf: [max_line]u8 = undefined;
-        var w: std.Io.Writer = .fixed(&buf);
-        w.print(
-            "{{\"method\":\"group_post\",\"params\":{{\"group\":\"{s}\",\"text\":",
-            .{group},
-        ) catch return error.TooLong;
-        var s: std.json.Stringify = .{ .writer = &w, .options = .{} };
-        s.write(trimmed) catch return error.TooLong;
-        w.writeAll("}}") catch return error.TooLong;
-
-        const reply = try self.host.call(w.buffered());
-        if (std.mem.indexOf(u8, reply, "\"ok\":true") == null) {
-            self.err = "could not send";
-            return;
-        }
-
-        self.scroll = 0;
-        try self.refresh();
-    }
-
     fn update(self: *Chat, event: Event) !void {
         switch (event) {
             .winsize => |ws| try self.vx.resize(self.alloc, self.tty.writer(), ws),
 
+            .mouse => |m| self.onMouse(m),
+
             .key_press => |key| {
                 if (key.matches('c', .{ .ctrl = true }) or
-                    key.matches('q', .{ .ctrl = true }))
+                    key.matches('q', .{ .ctrl = true }) or
+                    key.matches('q', .{}))
                 {
                     self.should_quit = true;
                     return;
                 }
 
                 if (key.matches(vaxis.Key.tab, .{})) {
-                    if (self.groups.items.len > 0) {
-                        self.current = (self.current + 1) % self.groups.items.len;
-                        self.scroll = 0;
-                    }
+                    self.selectGroup(self.current +| 1);
+                    return;
+                }
+                if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
+                    self.selectGroup(self.current -| 1);
                     return;
                 }
 
-                if (key.matches(vaxis.Key.enter, .{})) {
-                    self.send() catch |err| {
-                        self.err = @errorName(err);
-                    };
+                // Up and down move through the groups, which is what the
+                // arrows mean everywhere else in a two-pane list.
+                if (key.matches(vaxis.Key.down, .{})) {
+                    self.selectGroup(self.current +| 1);
+                    return;
+                }
+                if (key.matches(vaxis.Key.up, .{})) {
+                    self.selectGroup(self.current -| 1);
                     return;
                 }
 
                 if (key.matches(vaxis.Key.page_up, .{})) {
-                    self.scroll +|= 5;
+                    self.scroll +|= 10;
                     return;
                 }
                 if (key.matches(vaxis.Key.page_down, .{})) {
-                    self.scroll -|= 5;
+                    self.scroll -|= 10;
                     return;
                 }
-
-                try self.text_input.update(.{ .key_press = key });
+                if (key.matches(vaxis.Key.home, .{})) {
+                    self.scroll = std.math.maxInt(usize);
+                    return;
+                }
+                if (key.matches(vaxis.Key.end, .{})) {
+                    self.scroll = 0;
+                    return;
+                }
             },
         }
     }
+
+    /// Move to a group by index, clamped, and start it at the newest.
+    fn selectGroup(self: *Chat, index: usize) void {
+        if (self.groups.items.len == 0) return;
+        const last = self.groups.items.len - 1;
+        self.current = @min(index, last);
+
+        // A group you have just opened should show what was said last, not
+        // wherever you happened to be reading in the previous one.
+        self.scroll = 0;
+    }
+
+    fn onMouse(self: *Chat, m: vaxis.Mouse) void {
+        switch (m.button) {
+            // The wheel scrolls whatever is under it, and the message pane
+            // is the only thing long enough to scroll.
+            .wheel_up => self.scroll +|= 3,
+            .wheel_down => self.scroll -|= 3,
+
+            .left => {
+                if (m.type != .press) return;
+                if (m.col < 0 or m.row < 0) return;
+
+                // Mouse coordinates are signed and the panes are not, so
+                // the comparison happens in one type rather than at three
+                // different call sites.
+                const col: u16 = @intCast(m.col);
+                const row: u16 = @intCast(m.row);
+
+                if (col < self.groups_left or col >= self.groups_right) return;
+                if (row < self.groups_top) return;
+
+                const offset: usize = row - self.groups_top;
+                for (self.group_rows.items, 0..) |at, i| {
+                    if (at == offset) {
+                        self.selectGroup(i);
+                        return;
+                    }
+                }
+            },
+
+            else => {},
+        }
+    }
+
+    // The palette, in one place so the whole thing can be re-tuned without
+    // hunting for colour literals. Indexed rather than RGB: these follow
+    // whatever theme the terminal is wearing, and a chat window that
+    // ignores the user's theme looks like it came from somewhere else.
+    const c_frame: vaxis.Color = .{ .index = 8 };
+    const c_title: vaxis.Color = .{ .index = 4 };
+    const c_selected_bg: vaxis.Color = .{ .index = 4 };
+    const c_selected_fg: vaxis.Color = .{ .index = 0 };
+    const c_author: vaxis.Color = .{ .index = 6 };
+    const c_user: vaxis.Color = .{ .index = 5 };
+    const c_dim: vaxis.Color = .{ .index = 8 };
 
     fn draw(self: *Chat) !void {
         const win = self.vx.window();
@@ -572,184 +628,203 @@ const Chat = struct {
 
         // Last frame's strings have been rendered and are no longer read.
         _ = self.frame.reset(.retain_capacity);
-
         win.clear();
 
-        const tabs_height: u16 = 1;
-        const members_width: u16 = 22;
-        const input_height: u16 = 2;
+        // Narrow windows drop the side column rather than squeezing it:
+        // eighteen columns of group names beside twelve of message is two
+        // unreadable panes instead of one readable one.
+        const side_width: u16 = if (win.width >= 60) 24 else 0;
 
-        try self.drawTabs(win.child(.{
-            .x_off = 0,
+        if (side_width > 0) {
+            const groups_height = @min(
+                @max(win.height / 3, 6),
+                win.height -| 4,
+            );
+
+            self.drawGroups(win.child(.{
+                .x_off = 0,
+                .y_off = 0,
+                .width = side_width,
+                .height = groups_height,
+            }));
+
+            self.drawMembers(win.child(.{
+                .x_off = 0,
+                .y_off = groups_height,
+                .width = side_width,
+                .height = win.height -| groups_height,
+            }));
+
+            // The rule between the columns, drawn once rather than as two
+            // borders meeting: two adjacent lines read as a gutter.
+            var row: u16 = 0;
+            while (row < win.height) : (row += 1) {
+                win.writeCell(side_width -| 1, row, .{
+                    .char = .{ .grapheme = "│", .width = 1 },
+                    .style = .{ .fg = c_frame },
+                });
+            }
+        }
+
+        const right = win.child(.{
+            .x_off = side_width,
             .y_off = 0,
-            .width = win.width,
-            .height = tabs_height,
-        }));
+            .width = win.width -| side_width,
+            .height = win.height,
+        });
 
-        const body_height = win.height -| tabs_height;
-
-        self.drawMembers(win.child(.{
-            .x_off = 0,
-            .y_off = tabs_height,
-            .width = members_width,
-            .height = body_height,
-        }));
-
-        const right_width = win.width -| members_width;
-        // The brief sits above the messages: it is the answer to "what is
-        // this group" and belongs where the eye lands first.
-        const brief_height: u16 = if (self.currentBrief().len > 0) 2 else 0;
-        if (brief_height > 0) self.drawBrief(win.child(.{
-            .x_off = members_width,
-            .y_off = tabs_height,
-            .width = right_width,
-            .height = brief_height,
-        }));
-
-        try self.drawMessages(win.child(.{
-            .x_off = members_width,
-            .y_off = tabs_height + brief_height,
-            .width = right_width,
-            .height = body_height -| input_height -| brief_height,
-        }));
-
-        self.drawInput(win.child(.{
-            .x_off = members_width,
-            .y_off = win.height -| input_height,
-            .width = right_width,
-            .height = input_height,
-        }));
+        try self.drawConversation(right);
     }
 
-    fn drawTabs(self: *Chat, win: vaxis.Window) !void {
-        if (win.height == 0 or win.width == 0) return;
+    /// The list of groups, and where each one was drawn.
+    fn drawGroups(self: *Chat, win: vaxis.Window) void {
+        if (win.height == 0 or win.width < 4) return;
+
+        self.groups_top = 1;
+        self.groups_left = 0;
+        self.groups_right = win.width -| 1;
+        self.group_rows.clearRetainingCapacity();
+
+        self.heading(win, "群聊 / GROUPS");
+
         if (self.groups.items.len == 0) {
             _ = win.printSegment(.{
-                .text = " no groups yet — the supervisor makes them ",
-                .style = .{ .dim = true },
-            }, .{});
+                .text = "  (还没有群)",
+                .style = .{ .fg = c_dim, .italic = true },
+            }, .{ .row_offset = 1, .col_offset = 0 });
             return;
         }
 
-        var col: u16 = 1;
+        var row: u16 = 1;
         for (self.groups.items, 0..) |group, i| {
+            if (row >= win.height) break;
+            self.group_rows.append(self.alloc, row) catch {};
+
             const selected = i == self.current;
-            const res = win.printSegment(.{
-                .text = group.name,
-                .style = .{
-                    .bold = selected,
-                    .reverse = selected,
-                    .dim = !selected,
-                },
-            }, .{ .col_offset = col });
-            col = res.col + 2;
-            if (col >= win.width) break;
+            const style: vaxis.Style = if (selected) .{
+                .bg = c_selected_bg,
+                .fg = c_selected_fg,
+                .bold = true,
+            } else .{};
+
+            // The selected row is painted across the whole pane, so it
+            // reads as a row rather than as a differently coloured word.
+            if (selected) {
+                var col: u16 = 0;
+                while (col < win.width -| 1) : (col += 1) {
+                    win.writeCell(col, row, .{
+                        .char = .{ .grapheme = " ", .width = 1 },
+                        .style = style,
+                    });
+                }
+            }
+
+            const label = std.fmt.allocPrint(
+                self.frame.allocator(),
+                "{s} {s}",
+                .{ if (selected) "▸" else " ", group.name },
+            ) catch group.name;
+
+            _ = win.printSegment(
+                .{ .text = label, .style = style },
+                .{ .row_offset = row, .col_offset = 0 },
+            );
+
+            row += 1;
         }
     }
 
     fn drawMembers(self: *Chat, win: vaxis.Window) void {
-        if (win.height == 0 or win.width == 0) return;
+        if (win.height == 0 or win.width < 4) return;
+
+        self.heading(win, "成员 / MEMBERS");
         if (self.groups.items.len == 0) return;
+
         const group = self.groups.items[self.current];
-
-        const header = std.fmt.allocPrint(
-            self.frame.allocator(),
-            "{d} here",
-            .{group.members.items.len},
-        ) catch "members";
-        _ = win.printSegment(.{
-            .text = header,
-            .style = .{ .dim = true },
-        }, .{ .col_offset = 1 });
-
-        for (group.members.items, 0..) |title, i| {
-            const row: u16 = @intCast(i + 2);
+        var row: u16 = 1;
+        for (group.members.items) |name| {
             if (row >= win.height) break;
 
             _ = win.printSegment(.{
-                .text = "• ",
-                .style = .{ .dim = true },
-            }, .{ .row_offset = row, .col_offset = 1 });
+                .text = "●",
+                .style = .{ .fg = c_author },
+            }, .{ .row_offset = row, .col_offset = 0 });
 
-            _ = win.printSegment(.{ .text = title }, .{
-                .row_offset = row,
-                .col_offset = 3,
-            });
+            _ = win.printSegment(
+                .{ .text = name },
+                .{ .row_offset = row, .col_offset = 2 },
+            );
+            row += 1;
         }
     }
 
-    fn drawMessages(self: *Chat, win: vaxis.Window) !void {
-        if (win.height == 0 or win.width == 0) return;
-        if (self.groups.items.len == 0) return;
-        const group = self.groups.items[self.current];
+    /// A section title with a rule under it.
+    fn heading(self: *Chat, win: vaxis.Window, text: []const u8) void {
+        _ = self;
+        _ = win.printSegment(.{
+            .text = text,
+            .style = .{ .fg = c_title, .bold = true },
+        }, .{ .row_offset = 0, .col_offset = 0 });
+    }
 
-        // Drawn from the bottom up, because the newest message is the one
-        // that must always be on screen.
-        var row: i32 = @as(i32, @intCast(win.height)) - 1;
-        var i: usize = group.messages.items.len;
-        var skipped: usize = 0;
+    /// The right-hand column: which group, what it is for, and what was
+    /// said in it.
+    fn drawConversation(self: *Chat, win: vaxis.Window) !void {
+        if (win.height == 0 or win.width < 8) return;
 
-        while (i > 0 and row >= 0) {
-            i -= 1;
-            const m = group.messages.items[i];
+        const name = if (self.groups.items.len > 0)
+            self.groups.items[self.current].name
+        else
+            "";
 
-            if (skipped < self.scroll) {
-                skipped += 1;
-                continue;
-            }
+        _ = win.printSegment(.{
+            .text = name,
+            .style = .{ .fg = c_title, .bold = true },
+        }, .{ .row_offset = 0, .col_offset = 1 });
 
-            // Body first: it is below the author line, and we are going up.
-            var lines = std.mem.splitScalar(u8, m.text, '\n');
-            var body: std.ArrayListUnmanaged([]const u8) = .empty;
-            defer body.deinit(self.alloc);
-            while (lines.next()) |l| try body.append(self.alloc, l);
+        // The brief is what this group is *for*, so it sits with the name
+        // rather than in the scroll where it would leave the screen.
+        var head_height: u16 = 1;
+        const brief = self.currentBrief();
+        if (brief.len > 0 and win.height > 3) {
+            var rows: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer rows.deinit(self.alloc);
 
-            var b = body.items.len;
-            while (b > 0 and row >= 0) {
-                b -= 1;
-                _ = win.printSegment(.{ .text = body.items[b] }, .{
-                    .row_offset = @intCast(row),
-                    .col_offset = 2,
-                });
-                row -= 1;
-            }
+            const inner = win.width -| 2;
+            try layout.wrap(self.alloc, &rows, brief, inner, measure);
 
-            if (row < 0) break;
-
-            _ = win.printSegment(.{
-                .text = m.author,
-                .style = .{
-                    .bold = true,
-                    .fg = if (m.from_user) .{ .index = 4 } else .default,
-                },
-            }, .{ .row_offset = @intCast(row), .col_offset = 1 });
-
-            const stamp = formatTime(self.frame.allocator(), m.at_ms);
-            if (win.width > stamp.len + 2) {
+            // Two lines of it at most: a brief long enough to fill the
+            // screen is one the supervisor should have trimmed, and this
+            // is not the place to read it in full.
+            for (rows.items[0..@min(rows.items.len, 2)], 0..) |line, i| {
                 _ = win.printSegment(.{
-                    .text = stamp,
-                    .style = .{ .dim = true },
-                }, .{
-                    .row_offset = @intCast(row),
-                    .col_offset = @intCast(win.width - stamp.len - 1),
-                });
+                    .text = line,
+                    .style = .{ .fg = c_dim, .italic = true },
+                }, .{ .row_offset = @intCast(1 + i), .col_offset = 1 });
+                head_height += 1;
             }
-
-            if (m.summary) {
-                _ = win.printSegment(.{
-                    .text = " (summary)",
-                    .style = .{ .dim = true, .italic = true },
-                }, .{
-                    .row_offset = @intCast(row),
-                    .col_offset = @intCast(@min(
-                        win.width -| 1,
-                        m.author.len + 1,
-                    )),
-                });
-            }
-
-            row -= 2;
         }
+
+        // The rule under the header.
+        if (win.height > head_height) {
+            var col: u16 = 0;
+            while (col < win.width) : (col += 1) {
+                win.writeCell(col, head_height, .{
+                    .char = .{ .grapheme = "─", .width = 1 },
+                    .style = .{ .fg = c_frame },
+                });
+            }
+        }
+
+        const body_top = head_height + 1;
+        if (win.height <= body_top) return;
+
+        try self.drawMessages(win.child(.{
+            .x_off = 0,
+            .y_off = body_top,
+            .width = win.width,
+            .height = win.height -| body_top,
+        }));
     }
 
     fn currentBrief(self: *const Chat) []const u8 {
@@ -757,36 +832,116 @@ const Chat = struct {
         return self.groups.items[self.current].brief;
     }
 
-    fn drawBrief(self: *Chat, win: vaxis.Window) void {
-        if (win.height == 0 or win.width < 4) return;
-
-        _ = win.printSegment(.{
-            .text = self.currentBrief(),
-            .style = .{ .italic = true, .dim = true },
-        }, .{ .col_offset = 1 });
-    }
-
-    fn drawInput(self: *Chat, win: vaxis.Window) void {
-        if (win.height == 0 or win.width < 4) return;
-        if (self.err) |e| {
+    /// The messages, laid out as rows and then drawn top-down.
+    ///
+    /// Laid out first, drawn second. The version this replaces printed
+    /// bottom-up straight into the pane, which meant a line longer than
+    /// the pane wrapped onto rows that had already been drawn -- putting
+    /// fragments of three messages on one line. Rows have to be counted
+    /// before anything is placed.
+    fn drawMessages(self: *Chat, win: vaxis.Window) !void {
+        if (win.height == 0 or win.width < 8) return;
+        if (self.groups.items.len == 0) {
             _ = win.printSegment(.{
-                .text = e,
-                .style = .{ .fg = .{ .index = 1 } },
-            }, .{ .col_offset = 1 });
+                .text = "  没有群聊。总管建群之后，对话会出现在这里。",
+                .style = .{ .fg = c_dim, .italic = true },
+            }, .{ .row_offset = 0, .col_offset = 0 });
             return;
         }
 
-        _ = win.printSegment(.{
-            .text = "> ",
-            .style = .{ .dim = true },
-        }, .{ .col_offset = 1 });
+        const group = self.groups.items[self.current];
+        const alloc = self.frame.allocator();
 
-        self.text_input.draw(win.child(.{
-            .x_off = 3,
-            .y_off = 0,
-            .width = win.width -| 3,
-            .height = 1,
-        }));
+        // Two columns of margin, and the body indented under its header so
+        // the eye can find where one message stops.
+        const body_width = win.width -| 4;
+        if (body_width == 0) return;
+
+        var rows: std.ArrayListUnmanaged(layout.Row) = .empty;
+        defer rows.deinit(alloc);
+
+        for (group.messages.items, 0..) |m, mi| {
+            const stamp = formatTime(alloc, m.at_ms);
+            const header = std.fmt.allocPrint(alloc, "{s}  {s}{s}", .{
+                stamp,
+                m.author,
+                if (m.summary) "  (摘要)" else "",
+            }) catch m.author;
+
+            try rows.append(alloc, .{
+                .text = header,
+                .kind = .header,
+                .message = mi,
+            });
+
+            var lines = std.mem.splitScalar(u8, m.text, '\n');
+            while (lines.next()) |line| {
+                var wrapped: std.ArrayListUnmanaged([]const u8) = .empty;
+                defer wrapped.deinit(alloc);
+                try layout.wrap(alloc, &wrapped, line, body_width, measure);
+
+                for (wrapped.items) |piece| {
+                    try rows.append(alloc, .{
+                        .text = piece,
+                        .kind = .body,
+                        .message = mi,
+                    });
+                }
+            }
+
+            try rows.append(alloc, .{ .text = "", .kind = .gap, .message = mi });
+        }
+
+        // Scrolling is clamped here rather than where the key is handled,
+        // because how far back you *can* go depends on the width the text
+        // was just wrapped to.
+        const visible = win.height;
+        const max_scroll = rows.items.len -| visible;
+        if (self.scroll > max_scroll) self.scroll = max_scroll;
+
+        const first = rows.items.len -| visible -| self.scroll;
+        const last = @min(rows.items.len, first + visible);
+
+        for (rows.items[first..last], 0..) |row, i| {
+            const y: u16 = @intCast(i);
+            switch (row.kind) {
+                .gap => {},
+
+                .header => {
+                    const from_user = group.messages.items[row.message].from_user;
+                    _ = win.printSegment(.{
+                        .text = row.text,
+                        .style = .{
+                            .fg = if (from_user) c_user else c_author,
+                            .bold = true,
+                        },
+                    }, .{ .row_offset = y, .col_offset = 1 });
+                },
+
+                .body => {
+                    _ = win.printSegment(
+                        .{ .text = row.text },
+                        .{ .row_offset = y, .col_offset = 3 },
+                    );
+                },
+            }
+        }
+
+        // A marker when there is more below, so scrolled-back is a state
+        // you can see rather than one you infer from nothing arriving.
+        if (self.scroll > 0 and win.height > 0) {
+            const note = std.fmt.allocPrint(alloc, "↓ {d}", .{self.scroll}) catch "↓";
+            const at = win.width -| @as(u16, @intCast(note.len)) -| 1;
+            _ = win.printSegment(.{
+                .text = note,
+                .style = .{ .fg = c_selected_bg, .bold = true },
+            }, .{ .row_offset = win.height -| 1, .col_offset = at });
+        }
+    }
+
+    /// What a string will occupy on this terminal, in columns.
+    fn measure(text: []const u8) u16 {
+        return vaxis.gwidth.gwidth(text, .unicode);
     }
 };
 
