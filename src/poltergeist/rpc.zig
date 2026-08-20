@@ -358,7 +358,18 @@ pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
         // agent typing into its own terminal through this surface would be
         // a loop with no natural end.
         if (id == caller) return error.SelfTarget;
-        if (bus.get(id) == null) return error.UnknownTerminal;
+
+        // Everything else here acts on a terminal already under
+        // supervision -- except the tool that *puts* one there. Requiring
+        // `set_watch`'s target to be known already made it refuse every
+        // terminal it was for, which is all of them: a terminal you are
+        // about to start watching is by definition not being watched.
+        //
+        // Whether the id is a terminal at all is still checked, by the
+        // host, which is the side that knows.
+        if (method != .set_watch and bus.get(id) == null) {
+            return error.UnknownTerminal;
+        }
     }
 
     // Refuse a clock-out the bus would refuse anyway, so the sidecar gets
@@ -1280,18 +1291,19 @@ pub fn dispatch(
         },
 
         .set_watch => |p| {
+            // The host goes first, because it is the side that knows
+            // whether this id is a terminal at all. Recording the bus entry
+            // first would leave a phantom behind when it is not -- one that
+            // shows up in `terminal_list` and can never be read.
+            host.setWatching(p.id, p.watch) catch
+                return failure(error.UnknownTerminal);
+
             if (p.watch) {
                 bus.watch(p.id) catch
                     return hostFailure("WatchFailed", "could not watch that terminal");
             } else {
                 bus.unwatch(p.id);
             }
-
-            // The sampler has to actually start or stop; the bus entry on
-            // its own only records an intention, and a terminal marked
-            // watched that nothing samples never reports anything.
-            host.setWatching(p.id, p.watch) catch
-                return hostFailure("WatchFailed", "could not change that terminal's sampling");
 
             return .ok;
         },
@@ -2011,4 +2023,60 @@ test "a reply that fits is passed through whole" {
         .{ .seq = 2, .from = 2, .author = "b", .at_ms = 0, .summary = false, .text = "there" },
     };
     try testing.expectEqual(@as(usize, 2), capMessages(&lines).len);
+}
+
+test "set_watch works on a terminal nobody is watching, which is the point" {
+    // The bug this catches: every other tool here acts on a terminal
+    // already under supervision, so the permission check required the
+    // target to be known -- and `set_watch` inherited it. That made it
+    // refuse every terminal it was for, because a terminal you are about
+    // to start watching is by definition not being watched yet.
+    //
+    // The first version of this test used a terminal the fixture had
+    // already watched, and passed while the tool was unusable.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    const stranger: Bus.Id = 0x5151;
+    try testing.expect(b.get(stranger) == null);
+
+    try authorize(&b, boss, .{ .set_watch = .{ .id = stranger, .watch = true } });
+}
+
+test "only the supervisor may start watching a terminal" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try testing.expectError(
+        error.NotPermitted,
+        authorize(&b, worker, .{ .set_watch = .{ .id = 0x5151, .watch = true } }),
+    );
+}
+
+test "a supervisor cannot put itself under its own supervision" {
+    // A knot rather than a feature: the supervisor is not one of the
+    // terminals it watches, and the keybind path says so too.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try testing.expectError(
+        error.SelfTarget,
+        authorize(&b, boss, .{ .set_watch = .{ .id = boss, .watch = true } }),
+    );
+}
+
+test "setting a work mode still requires a terminal under supervision" {
+    // The exemption is `set_watch`'s alone. A work mode is a thing you say
+    // about a terminal you are minding, and the bus has nowhere to record
+    // it for one you are not.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try testing.expectError(
+        error.UnknownTerminal,
+        authorize(&b, boss, .{ .set_work_mode = .{
+            .id = 0x5151,
+            .mode = "clock_off",
+        } }),
+    );
 }
