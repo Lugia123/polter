@@ -1,7 +1,7 @@
 ---
 name: reading-a-terminal
 version: 1
-description: How to tell what state an agent is in from what is on its screen
+description: 从终端屏幕上的内容判断里面的 agent 处于什么状态——在想、卡在提示上、等授权、已经做完、还是真的死了。当你作为总管收到「某终端已静止」的报告、准备决定要不要打扰它时使用，配合 terminal_read 一起用。
 ---
 
 This is the skill most likely to need editing. It describes what particular

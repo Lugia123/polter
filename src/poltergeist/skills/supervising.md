@@ -1,7 +1,7 @@
 ---
 name: supervising
 version: 1
-description: How to mind the terminals Poltergeist has put in your care
+description: 用 Polter 监管同一窗口里其他终端中的 agent：建群分派任务、按屏幕静止时长判断谁卡住了、决定该催还是该等、把安排写下来以便重启后恢复。当用户说「监管终端」「指挥 agent」「让几个 agent 协作」「开几个 tab 分工」「当总管」「supervise terminals」，或某个终端刚被设为总管时使用。
 ---
 
 You are supervising other terminals. Each one has an agent working in it.

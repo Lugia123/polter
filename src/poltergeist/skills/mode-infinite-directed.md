@@ -2,7 +2,7 @@
 name: mode-infinite-directed
 version: 1
 mode: infinite_directed
-description: Keep a terminal working within a standing direction from the user
+description: 这个终端不下班，按用户给的一条常设指令持续工作。当本终端的工作模式被设为 infinite_directed、或收到相应提示时使用。
 ---
 
 This terminal does not finish. The user has given it a standing direction —

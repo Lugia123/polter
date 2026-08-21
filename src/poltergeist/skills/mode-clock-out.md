@@ -3,7 +3,7 @@ name: mode-clock-out
 version: 1
 mode: clock_off
 max_rounds: 3
-description: Let a terminal finish for the day once there is nothing left to do
+description: 这个终端可以下班：活真的干完了就停下来，而不是找活干。当本终端的工作模式被设为 clock_off、或收到「你的工作模式现在是下班模式」的提示时使用。
 ---
 
 This terminal is allowed to finish. When its work is genuinely done, clock

@@ -2,7 +2,7 @@
 name: mode-infinite-sequential
 version: 1
 mode: infinite_sequential
-description: Keep a terminal moving from one task to the next
+description: 这个终端不下班，做完一个任务就接下一个。当本终端的工作模式被设为 infinite_sequential、或收到相应提示时使用。
 ---
 
 This terminal works through tasks one after another. When it finishes one,

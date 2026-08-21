@@ -729,6 +729,26 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
     );
 
     log.info("poltergeist: mcp registration {t}", .{outcome});
+
+    // The tools are only half of it. A skill the runtime has never heard
+    // of is one it cannot match against what the user asked for, which is
+    // how a supervisor ends up reaching for its own subagent tool instead.
+    var environ_map = global.environMap() catch return;
+    defer environ_map.deinit();
+
+    const home = environ_map.get("HOME") orelse return;
+
+    const config_dir = internal_os.xdg.config(io, alloc, &environ_map, .{}) catch null;
+    const resources = internal_os.resourcesDir(alloc) catch null;
+
+    poltergeistpkg.register.ensureSkills(
+        alloc,
+        io,
+        &poltergeistpkg.skill.builtin_names,
+        config_dir,
+        if (resources) |r| r.app_path else null,
+        home,
+    );
 }
 
 /// Open or close the agent socket to match the config.

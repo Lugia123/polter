@@ -162,3 +162,131 @@ fn capture(alloc: Allocator, io: std.Io, argv: []const []const u8) ?[]const u8 {
 
     return out.toOwnedSlice() catch null;
 }
+
+/// Mirror the skills into Claude Code's own skill directory.
+///
+/// Polter's skills are reachable through `skill_read`, which an agent has
+/// to think to call. Claude Code's are found by the runtime itself and
+/// matched against what the user asked for -- which is why a supervisor
+/// told to "指挥 agent" reached for the subagent tool in its system prompt
+/// and never looked for `supervising` at all. Two mechanisms sharing a
+/// word; only one of them does any matching.
+///
+/// Installed under `polter-`, so nothing a user wrote themselves is
+/// overwritten and `/polter-supervising` says where it came from.
+///
+/// The user's own copy wins as the source, the same way it does for
+/// `skill_read`: editing one file should change Polter's behaviour
+/// everywhere, not in one of two places.
+pub fn ensureSkills(
+    alloc: Allocator,
+    io: std.Io,
+    names: []const []const u8,
+    config_dir: ?[]const u8,
+    resources_dir: ?[]const u8,
+    home: []const u8,
+) void {
+    for (names) |name| {
+        // The whole file, frontmatter and all. `skill_read` hands back the
+        // prose alone, which is what an agent wants -- but a Claude Code
+        // skill without frontmatter is not a skill it will load at all.
+        // Installing bodies produced five files that looked right in a
+        // directory listing and did nothing.
+        const source = readSkill(alloc, io, config_dir, resources_dir, name) orelse {
+            log.warn("poltergeist: no source for skill {s}", .{name});
+            continue;
+        };
+
+        // The name in the frontmatter has to match the directory, or the
+        // runtime lists it under a name the user cannot type.
+        const rendered = std.mem.replaceOwned(
+            u8,
+            alloc,
+            source,
+            "name: " ++ "",
+            "name: polter-",
+        ) catch continue;
+
+        const dir = std.fmt.allocPrint(
+            alloc,
+            "{s}/.claude/skills/polter-{s}",
+            .{ home, name },
+        ) catch continue;
+
+        const path = std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{dir}) catch continue;
+
+        // Written only when it differs. This runs at every start, and
+        // rewriting a file the runtime may be reading, for no reason, is
+        // asking for the one race that makes a skill vanish mid-session.
+        if (std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            alloc,
+            .limited(1024 * 1024),
+        )) |existing| {
+            if (std.mem.eql(u8, existing, rendered)) continue;
+        } else |_| {}
+
+        std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
+            log.warn("poltergeist: could not make {s} err={}", .{ dir, err });
+            continue;
+        };
+
+        var d = std.Io.Dir.cwd().openDir(io, dir, .{}) catch continue;
+        defer d.close(io);
+
+        var f = d.createFile(io, "SKILL.md", .{}) catch |err| {
+            log.warn("poltergeist: could not write skill {s} err={}", .{ name, err });
+            continue;
+        };
+        defer f.close(io);
+
+        f.writeStreamingAll(io, rendered) catch |err| {
+            log.warn("poltergeist: could not write skill {s} err={}", .{ name, err });
+            continue;
+        };
+
+        log.info("poltergeist: installed skill polter-{s}", .{name});
+    }
+}
+
+/// A skill's file as it is on disk, the user's own copy first.
+///
+/// Same order `skill_read` uses: editing one file should change Polter's
+/// behaviour everywhere, not in one of two places.
+fn readSkill(
+    alloc: Allocator,
+    io: std.Io,
+    config_dir: ?[]const u8,
+    resources_dir: ?[]const u8,
+    name: []const u8,
+) ?[]const u8 {
+    if (config_dir) |dir| {
+        const path = std.fmt.allocPrint(
+            alloc,
+            "{s}/polter/skills/{s}.md",
+            .{ dir, name },
+        ) catch return null;
+
+        if (std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            alloc,
+            .limited(1024 * 1024),
+        )) |body| return body else |_| {}
+    }
+
+    const dir = resources_dir orelse return null;
+    const path = std.fmt.allocPrint(
+        alloc,
+        "{s}/poltergeist/{s}.md",
+        .{ dir, name },
+    ) catch return null;
+
+    return std.Io.Dir.cwd().readFileAlloc(
+        io,
+        path,
+        alloc,
+        .limited(1024 * 1024),
+    ) catch null;
+}
