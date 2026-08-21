@@ -361,22 +361,40 @@ fn poltergeistReport(
 /// The supervisor can also read the box itself at any time, which is what
 /// covers the gap after the last report of all.
 fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
-    const to = self.poltergeist.supervisor orelse return;
+    // Each supervisor gets its own box, on its own clock. A shared one
+    // would hand each of them the other's reports: twice the interruption,
+    // and half of it about terminals they cannot read anyway.
+    var supervisors: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+    defer supervisors.deinit(self.alloc);
 
-    const supervisor = self.findSurfaceByID(to) orelse {
-        // The supervisor's terminal went away.
-        self.poltergeist.unregister(to);
-        return;
-    };
+    var it = self.poltergeist.entries.iterator();
+    while (it.next()) |kv| {
+        if (kv.value_ptr.role != .supervisor) continue;
+        supervisors.append(self.alloc, kv.key_ptr.*) catch return;
+    }
 
-    var msg: apprt.surface.Message = .{ .poltergeist_notice = undefined };
-    const line = self.poltergeist.drainIfDue(now_ms, &msg.poltergeist_notice) orelse
-        return;
-    msg.poltergeist_notice[line.len] = 0;
+    for (supervisors.items) |to| {
+        const surface = self.findSurfaceByID(to) orelse {
+            // That supervisor's terminal went away. Releasing it here also
+            // releases the terminals it was minding, which then belong to
+            // nobody until somebody claims them -- better than reporting
+            // into a terminal that is gone.
+            self.poltergeist.unregister(to);
+            continue;
+        };
 
-    self.surfaceMessage(supervisor, msg) catch |err| {
-        log.warn("poltergeist: could not deliver notices err={}", .{err});
-    };
+        var msg: apprt.surface.Message = .{ .poltergeist_notice = undefined };
+        const line = self.poltergeist.drainIfDue(
+            to,
+            now_ms,
+            &msg.poltergeist_notice,
+        ) orelse continue;
+        msg.poltergeist_notice[line.len] = 0;
+
+        self.surfaceMessage(surface, msg) catch |err| {
+            log.warn("poltergeist: could not deliver notices err={}", .{err});
+        };
+    }
 }
 
 /// Load the notification plugins the config named.
@@ -889,6 +907,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .sessionRecall = sessionRecall,
         .chatSetBrief = chatSetBrief,
         .chatGroupInfo = chatGroupInfo,
+        .chatOwner = chatOwner,
         .chatMembers = chatMembers,
         .chatGroups = chatGroups,
         .chatRead = chatRead,
@@ -996,11 +1015,12 @@ fn poltergeistOpenTerminals(
 fn poltergeistDrainNotices(
     ctx: *anyopaque,
     alloc: Allocator,
+    to: poltergeistpkg.Bus.Id,
 ) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
 
     var buf: [255]u8 = undefined;
-    const line = self.poltergeist.drain(self.poltergeistNow(), &buf) orelse
+    const line = self.poltergeist.drain(to, self.poltergeistNow(), &buf) orelse
         return "";
     return alloc.dupe(u8, line);
 }
@@ -1098,6 +1118,11 @@ fn footingOf(
     }
 
     return out;
+}
+
+fn chatOwner(ctx: *anyopaque, group: []const u8) anyerror!poltergeistpkg.Bus.Id {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.chat.createdBy(group);
 }
 
 fn chatRemove(

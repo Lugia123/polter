@@ -36,7 +36,7 @@
 "Later" = "稍后";
 
 /* 右键菜单里的智能体动作 */
-"Make This Terminal the Supervisor" = "将此终端设为总管";
+"Make This Terminal a Supervisor" = "将此终端设为总管";
 "Supervise This Terminal" = "监督此终端";
 "Cycle This Terminal's Work Mode" = "切换此终端的工作模式";
 

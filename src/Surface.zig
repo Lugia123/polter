@@ -5671,8 +5671,20 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // want to know about.
             defer self.app.saveSession();
 
-            try self.app.poltergeist.setSupervisor(self.id);
-            log.info("poltergeist: this terminal is now the supervisor", .{});
+            // A toggle now, because there can be several. Naming one used
+            // to stand the previous one down, which made a window hold one
+            // piece of work: a single supervisor minding two unrelated
+            // jobs has to keep both in its head, and the notices from both
+            // arrive interleaved in one box.
+            const bus = &self.app.poltergeist;
+            if (bus.isSupervisor(self.id)) {
+                bus.removeSupervisor(self.id);
+                log.info("poltergeist: this terminal is no longer a supervisor", .{});
+                return true;
+            }
+
+            try bus.addSupervisor(self.id);
+            log.info("poltergeist: this terminal is now a supervisor", .{});
 
             // Told, not merely recorded. Without this the agent has no way
             // to know its standing changed, and reaches for whatever
@@ -5698,7 +5710,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // The supervisor is not one of the terminals it watches. Say so
             // rather than silently doing nothing, or the keybind looks
             // broken.
-            if (bus.supervisor == self.id) {
+            if (bus.isSupervisor(self.id)) {
                 log.info("poltergeist: this terminal is the supervisor, so it is not watched", .{});
                 return true;
             }
@@ -5708,7 +5720,11 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 bus.unwatch(self.id);
                 log.info("poltergeist: no longer watching this terminal", .{});
             } else {
-                try bus.watch(self.id);
+                // Null owner: the user did this from the keyboard, and
+                // which supervisor should mind it is not theirs to say
+                // from a keybind. A supervisor claims it with `set_watch`;
+                // until one does, the reports have nowhere to go.
+                try bus.watch(self.id, null);
                 log.info("poltergeist: now watching this terminal", .{});
 
                 self.app.tellSurface(self.id, "[Polter] A supervisor is now " ++

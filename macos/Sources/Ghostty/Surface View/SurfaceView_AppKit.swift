@@ -1633,7 +1633,7 @@ extension Ghostty {
             item = menu.addItem(withTitle: String(localized: "Change Terminal Title...", comment: "右键菜单：修改终端标题"), action: #selector(changeTitle(_:)), keyEquivalent: "")
 
             menu.addItem(.separator())
-            item = menu.addItem(withTitle: String(localized: "Make This Terminal the Supervisor", comment: "右键菜单：设为总管"), action: #selector(poltergeistSupervisor(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: String(localized: "Make This Terminal a Supervisor", comment: "右键菜单：设为总管"), action: #selector(poltergeistSupervisor(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "eyeglasses")
             item = menu.addItem(withTitle: String(localized: "Supervise This Terminal", comment: "右键菜单：监督此终端"), action: #selector(poltergeistToggleWatch(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "binoculars")

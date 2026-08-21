@@ -673,30 +673,45 @@ pub const Action = union(enum) {
     ///     process is not running
     toggle_readonly,
 
-    /// Make this terminal Poltergeist's supervisor.
+    /// Make this terminal a Poltergeist supervisor, or stand it down.
     ///
-    /// The supervisor is the terminal whose agent minds the others: it is
-    /// told when a watched terminal's screen goes quiet, and it decides
-    /// what, if anything, to do about it. There is one at a time, so doing
-    /// this steps the previous supervisor down.
+    /// A supervisor is a terminal whose agent minds others: it is told
+    /// when one of the terminals it watches goes quiet, and it decides
+    /// what, if anything, to do about it.
+    ///
+    /// There may be several. Each minds the terminals it claimed and is
+    /// interrupted on its own schedule -- one supervisor holding two
+    /// unrelated pieces of work has to keep both in its head, and hears
+    /// about both in one box.
+    ///
+    /// A supervisor reaches only the terminals it is minding. Another
+    /// supervisor's are not its business and it cannot read or type into
+    /// them.
     ///
     /// Ghostty itself never judges a quiet terminal. It reports durations
     /// and carries messages; the reading and the judgement are the
     /// supervisor's.
     poltergeist_supervisor,
 
-    /// Put this terminal under the supervisor's eye, or take it out again.
+    /// Put this terminal under supervision, or take it out again.
     ///
     /// Only watched terminals are reported on. Watching does not start,
     /// stop, or otherwise touch whatever is running in the terminal.
+    ///
+    /// Done from here it belongs to no supervisor in particular: which one
+    /// should mind it is not a thing a keybind can say. Its reports go to
+    /// whichever supervisor reads its box first, which with one supervisor
+    /// is simply the right answer. A supervisor claims a terminal for
+    /// itself with the `set_watch` tool.
     poltergeist_toggle_watch,
 
     /// Cycle this terminal's work mode: clock-off, then the two infinite
     /// modes, then back.
     ///
-    /// Only the user sets a work mode. A supervisor cannot, and that is
-    /// what makes the ban on clocking off an infinite-mode terminal worth
-    /// anything -- otherwise it would switch the mode and then clock off.
+    /// A supervisor may arrange work modes too, but it may not lift an
+    /// infinite mode *you* set: that is a standing instruction, and being
+    /// able to lift it would mean being able to clock the terminal off a
+    /// moment later -- which is what the mode exists to prevent.
     poltergeist_cycle_work_mode,
 
     /// Show or hide the window with what the terminals have said to each

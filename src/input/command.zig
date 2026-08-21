@@ -554,8 +554,8 @@ fn actionCommands(action: Action.Key) []const Command {
 
         .poltergeist_supervisor => comptime &.{.{
             .action = .poltergeist_supervisor,
-            .title = i18n.N_("Make This Terminal the Supervisor"),
-            .description = i18n.N_("Let this terminal's agent mind the watched terminals. There is one supervisor at a time."),
+            .title = i18n.N_("Make This Terminal a Supervisor"),
+            .description = i18n.N_("Let this terminal's agent mind terminals it claims. There may be several supervisors; each reaches only its own."),
         }},
 
         .poltergeist_toggle_watch => comptime &.{.{

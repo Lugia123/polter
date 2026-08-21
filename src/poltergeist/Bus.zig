@@ -122,6 +122,26 @@ pub const Entry = struct {
     /// mode existed to prevent.
     work_mode_by: Authority = .user,
 
+    /// Which supervisor is minding this terminal.
+    ///
+    /// Supervision is reach: a terminal you watch is one you can read and
+    /// type into. With more than one supervisor in a window that has to
+    /// have an owner, or every supervisor could steer every other's
+    /// workers -- which is the thing the star topology exists to prevent,
+    /// just with several centres instead of one.
+    ///
+    /// Null for a terminal nobody is minding, and for the supervisors
+    /// themselves.
+    watched_by: ?Id = null,
+
+    /// When this supervisor was last handed its box. Only meaningful on a
+    /// supervisor's own entry.
+    ///
+    /// Per supervisor rather than one clock for the bus: two supervisors
+    /// minding separate work are interrupted on their own schedules, and a
+    /// shared clock would have one of them swallow the other's turn.
+    last_delivery_ms: ?u64 = null,
+
     /// How many scheduled hand-overs have carried this notice already.
     ///
     /// A hand-over is typed into the supervisor's terminal, and typing is
@@ -196,12 +216,6 @@ entries: std.AutoHashMapUnmanaged(Id, Entry) = .empty,
 /// One at a time. Two supervisors watching the same terminal would each
 /// nudge it without knowing about the other, and the terminal on the
 /// receiving end has no way to tell the difference.
-supervisor: ?Id = null,
-
-/// When the box was last handed to the supervisor on its own initiative.
-/// Null until the first delivery.
-last_delivery_ms: ?u64 = null,
-
 pub fn init(alloc: Allocator, config: Config) Bus {
     return .{ .alloc = alloc, .config = config };
 }
@@ -219,8 +233,11 @@ pub fn register(self: *Bus, id: Id) Allocator.Error!void {
 
 /// Stop tracking a terminal, for example because it closed.
 pub fn unregister(self: *Bus, id: Id) void {
+    // A supervisor whose terminal closed releases what it was minding,
+    // rather than leaving those terminals pointing at an id that is gone
+    // and their notices piling up for nobody.
+    self.removeSupervisor(id);
     _ = self.entries.remove(id);
-    if (self.supervisor == id) self.supervisor = null;
 }
 
 pub fn get(self: *const Bus, id: Id) ?Entry {
@@ -239,32 +256,91 @@ pub fn quietMs(self: *const Bus, id: Id, now_ms: u64) u64 {
 }
 
 /// Name the supervisor. Naming a new one steps the previous one down.
-pub fn setSupervisor(self: *Bus, id: Id) Allocator.Error!void {
+/// Make a terminal a supervisor, alongside any others.
+///
+/// There used to be exactly one, and naming a new one stood the old one
+/// down. That made a window hold one job: a single supervisor minding two
+/// unrelated pieces of work has to keep both in its head at once, and the
+/// notices from both arrive interleaved in one box.
+///
+/// A terminal already minding others keeps them.
+pub fn addSupervisor(self: *Bus, id: Id) Allocator.Error!void {
     try self.register(id);
+    const e = self.entries.getPtr(id).?;
 
-    if (self.supervisor) |old| {
-        if (old != id) {
-            if (self.entries.getPtr(old)) |e| e.role = .none;
-        }
-    }
-
-    self.entries.getPtr(id).?.role = .supervisor;
-    self.supervisor = id;
+    // A supervisor is not watched, by anyone including itself.
+    e.role = .supervisor;
+    e.watched_by = null;
 }
 
-/// Put a terminal under the supervisor's eye.
-pub fn watch(self: *Bus, id: Id) Allocator.Error!void {
+/// Stand a supervisor down, releasing the terminals it was minding.
+///
+/// Released rather than handed on: which supervisor should inherit them is
+/// a judgement, and the program guessing would attach somebody's terminals
+/// to an agent the user never put in charge of them.
+pub fn removeSupervisor(self: *Bus, id: Id) void {
+    const e = self.entries.getPtr(id) orelse return;
+    if (e.role != .supervisor) return;
+    e.role = .none;
+    e.last_delivery_ms = null;
+
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const other = kv.value_ptr;
+        if (other.watched_by == id) {
+            other.watched_by = null;
+            if (other.role == .watched) other.role = .none;
+        }
+    }
+}
+
+/// Whether this terminal is minding others.
+pub fn isSupervisor(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    return e.role == .supervisor;
+}
+
+/// Whether `caller` is the supervisor minding `id`.
+pub fn minds(self: *const Bus, caller: Id, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    return e.watched_by != null and e.watched_by.? == caller;
+}
+
+/// Put a terminal under a supervisor's eye.
+///
+/// `by` is null when the user did it from the keyboard and no supervisor
+/// has claimed it -- the terminal is watched and its notices go to
+/// whoever claims it, which for one supervisor is the obvious answer and
+/// for none is nobody.
+pub fn watch(self: *Bus, id: Id, by: ?Id) WatchError!void {
     try self.register(id);
     const e = self.entries.getPtr(id).?;
     if (e.role == .supervisor) return;
+
+    // Two supervisors typing into one input box is the same thing, to the
+    // agent in it, as being given orders by two people at once. Refused
+    // rather than silently taken over.
+    if (by) |claimant| {
+        if (e.watched_by) |owner| {
+            if (owner != claimant) return error.AlreadyWatched;
+        }
+        e.watched_by = claimant;
+    }
+
     e.role = .watched;
     e.duty = .on;
 }
+
+pub const WatchError = error{
+    /// Another supervisor is already minding this terminal.
+    AlreadyWatched,
+} || Allocator.Error;
 
 /// Stop watching a terminal, without forgetting it.
 pub fn unwatch(self: *Bus, id: Id) void {
     if (self.entries.getPtr(id)) |e| {
         if (e.role == .watched) e.role = .none;
+        e.watched_by = null;
     }
 }
 
@@ -329,10 +405,11 @@ pub fn report(
     event: Sampler.Event,
     now_ms: u64,
 ) bool {
-    const to = self.supervisor orelse return false;
-    if (to == about) return false;
-
+    // Recorded on the terminal it is about, and sorted out at delivery by
+    // who is minding it. Deciding here would mean a terminal watched
+    // before any supervisor claimed it had nowhere to put its report.
     const e = self.entries.getPtr(about) orelse return false;
+    if (e.role == .supervisor) return false;
 
     const kind: NoticeKind, const report_data = switch (event) {
         .quiescent => |r| .{ NoticeKind.quiescent, r },
@@ -469,11 +546,17 @@ pub const Take = enum {
 /// cover an agent busy through a couple of intervals.
 const max_hand_overs = 3;
 
-pub fn drain(self: *Bus, now_ms: u64, buf: []u8) ?[]u8 {
-    return self.take(now_ms, buf, .consume);
+pub fn drain(self: *Bus, to: Id, now_ms: u64, buf: []u8) ?[]u8 {
+    return self.take(to, now_ms, buf, .consume);
 }
 
-pub fn take(self: *Bus, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
+/// The box belonging to one supervisor.
+///
+/// Filtered by who is minding each terminal: with two supervisors on two
+/// pieces of work, a shared box would hand each of them the other's
+/// reports -- twice the interruption and half of it about terminals they
+/// cannot even read.
+pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
     var listed: usize = 0;
     var total: usize = 0;
 
@@ -486,6 +569,12 @@ pub fn take(self: *Bus, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
     while (it.next()) |kv| {
         const e = kv.value_ptr;
         const kind = e.pending orelse continue;
+
+        // Not this supervisor's terminal. Left in the box for whoever is
+        // minding it, rather than dropped.
+        const owner = e.watched_by orelse to;
+        if (owner != to) continue;
+
         total += 1;
 
         switch (how) {
@@ -542,13 +631,16 @@ pub fn take(self: *Bus, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
 /// box does not count as having been shown anything, so a terminal going
 /// quiet a second after a silent tick is not made to wait another full
 /// interval.
-pub fn drainIfDue(self: *Bus, now_ms: u64, buf: []u8) ?[]u8 {
-    if (self.last_delivery_ms) |last| {
+pub fn drainIfDue(self: *Bus, to: Id, now_ms: u64, buf: []u8) ?[]u8 {
+    const minder = self.entries.getPtr(to) orelse return null;
+    if (minder.last_delivery_ms) |last| {
         if (now_ms -| last < self.config.notice_interval_ms) return null;
     }
 
-    const line = self.take(now_ms, buf, .hand_over) orelse return null;
-    self.last_delivery_ms = now_ms;
+    const line = self.take(to, now_ms, buf, .hand_over) orelse return null;
+
+    // Re-fetched: `take` may have grown the map and moved the entry.
+    if (self.entries.getPtr(to)) |b| b.last_delivery_ms = now_ms;
     return line;
 }
 
@@ -572,33 +664,65 @@ fn testBus() Bus {
     return .init(testing.allocator, .{});
 }
 
-test "no supervisor means no notices" {
+test "an unclaimed terminal reports to whoever is asking" {
+    // Watching from the keyboard leaves the terminal with no owner: which
+    // supervisor should mind it is not something a keybind can say. Its
+    // reports go to whoever reads the box.
+    //
+    // With one supervisor that is simply right. With several it is
+    // arbitrary -- but the alternative is a terminal the user explicitly
+    // watched whose reports go nowhere at all, and silence that the user
+    // asked for is worse than an answer given to the wrong reader.
     var b = testBus();
     defer b.deinit();
 
-    try b.watch(worker);
-    try testing.expect(b.report(worker, quiet(60_000), 0) == false);
+    try b.addSupervisor(boss);
+    try b.watch(worker, null);
+    _ = b.report(worker, quiet(60_000), 0);
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 1_000, &buf) orelse return error.ExpectedANotice;
+    try testing.expect(std.mem.indexOf(u8, line, "quiet") != null);
+}
+
+test "a claimed terminal reports only to the supervisor minding it" {
+    var b = testBus();
+    defer b.deinit();
+
+    const second: Id = 0x4444;
+    try b.addSupervisor(boss);
+    try b.addSupervisor(second);
+    try b.watch(worker, boss);
+    _ = b.report(worker, quiet(60_000), 0);
+
+    // Not the other one's business, and not in its box.
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(second, 1_000, &buf) == null);
+
+    // Still waiting for the one whose terminal it is.
+    var buf2: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 1_000, &buf2) != null);
 }
 
 test "a watched terminal going quiet reaches the supervisor" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
 
     try testing.expect(b.report(worker, quiet(180_000), 0));
     try testing.expectEqual(NoticeKind.quiescent, b.get(worker).?.pending.?);
 
     // And it is the supervisor that would be handed it.
-    try testing.expectEqual(boss, b.supervisor.?);
+    try testing.expect(b.isSupervisor(boss));
 }
 
 test "the supervisor is not reported to itself" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
+    try b.addSupervisor(boss);
     try testing.expect(b.report(boss, quiet(180_000), 0) == false);
 }
 
@@ -606,7 +730,7 @@ test "an unwatched terminal is not reported" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
+    try b.addSupervisor(boss);
     try b.register(worker); // known, but not watched
     try testing.expect(b.report(worker, quiet(180_000), 0) == false);
 }
@@ -615,8 +739,8 @@ test "quiet duration is extrapolated, not left stale" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
 
     // Reported still for 180s at t=180_000.
     _ = b.report(worker, quiet(180_000), 180_000);
@@ -631,8 +755,8 @@ test "coming back to work restarts the quiet clock" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
 
     _ = b.report(worker, quiet(180_000), 180_000);
     _ = b.report(worker, .{ .resumed = .{
@@ -650,8 +774,8 @@ test "a clocked off terminal still answers how long it has been quiet" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     try b.clockOff(worker, .supervisor);
 
     // No notice is produced -- that is the point of clocking off -- but the
@@ -670,8 +794,8 @@ test "rounds count up while quiet and reset on coming back" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     try testing.expectEqual(@as(u16, 0), b.get(worker).?.rounds);
 
     _ = b.report(worker, quiet(180_000), 0);
@@ -696,8 +820,8 @@ test "rounds count every report, not every interruption" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
 
     try testing.expect(b.report(worker, quiet(180_000), 0));
     try testing.expect(b.report(worker, quiet(181_000), 100));
@@ -705,7 +829,7 @@ test "rounds count every report, not every interruption" {
 
     // Both of them are one entry in the box, not two.
     var buf: [255]u8 = undefined;
-    const line = b.drain(100, &buf) orelse return error.ExpectedANotice;
+    const line = b.drain(boss, 100, &buf) orelse return error.ExpectedANotice;
     const first = std.mem.indexOf(u8, line, "0x0000000000002222").?;
     try testing.expect(std.mem.indexOfPos(u8, line, first + 1, "0x0000000000002222") == null);
 }
@@ -714,8 +838,8 @@ test "a clocked off terminal stops being reported" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
 
     try b.clockOff(worker, .supervisor);
     try testing.expect(b.report(worker, quiet(180_000), 10_000) == false);
@@ -729,8 +853,8 @@ test "infinite work modes cannot be clocked off" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
 
     for ([_]WorkMode{ .infinite_directed, .infinite_sequential }) |mode| {
         try b.setWorkMode(worker, mode, .user);
@@ -751,8 +875,8 @@ test "the supervisor cannot change a work mode to get around the ban" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     try b.setWorkMode(worker, .infinite_directed, .user);
 
     // The obvious way around the rule: switch the mode, then clock off.
@@ -771,44 +895,50 @@ test "only the supervisor clocks terminals off" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
 
     try testing.expectError(error.NotPermitted, b.clockOff(worker, .user));
 }
 
-test "naming a new supervisor steps the old one down" {
+test "naming a second supervisor leaves the first one standing" {
     var b = testBus();
     defer b.deinit();
 
+    // There used to be exactly one, and this named the second to prove the
+    // first was stood down. That made a window hold one piece of work.
     const second: Id = 0x4444;
-    try b.setSupervisor(boss);
-    try b.setSupervisor(second);
+    try b.addSupervisor(boss);
+    try b.addSupervisor(second);
 
-    try testing.expectEqual(second, b.supervisor.?);
-    try testing.expectEqual(Role.none, b.get(boss).?.role);
-    try testing.expectEqual(Role.supervisor, b.get(second).?.role);
+    try testing.expect(b.isSupervisor(boss));
+    try testing.expect(b.isSupervisor(second));
+
+    // Standing one down is now its own act, and touches only that one.
+    b.removeSupervisor(second);
+    try testing.expect(b.isSupervisor(boss));
+    try testing.expect(!b.isSupervisor(second));
 }
 
 test "watching the supervisor does not demote it" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(boss);
+    try b.addSupervisor(boss);
+    try b.watch(boss, boss);
     try testing.expectEqual(Role.supervisor, b.get(boss).?.role);
-    try testing.expectEqual(boss, b.supervisor.?);
+    try testing.expect(b.isSupervisor(boss));
 }
 
 test "closing the supervisor's terminal leaves nobody supervising" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
 
     b.unregister(boss);
-    try testing.expect(b.supervisor == null);
+    try testing.expect(!b.isSupervisor(boss));
     try testing.expect(b.report(worker, quiet(180_000), 0) == false);
 }
 
@@ -816,8 +946,8 @@ test "register is idempotent and keeps existing state" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     try b.setWorkMode(worker, .infinite_directed, .user);
 
     try b.register(worker);
@@ -833,7 +963,7 @@ test "unknown terminals are rejected rather than silently created" {
         error.UnknownTerminal,
         b.setWorkMode(0xdead, .clock_off, .user),
     );
-    try b.setSupervisor(boss);
+    try b.addSupervisor(boss);
     try testing.expectError(
         error.UnknownTerminal,
         b.clockOff(0xdead, .supervisor),
@@ -853,8 +983,8 @@ test "a tab mark follows the terminal's role and duty" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
 
     try testing.expectEqual(TabMark.supervisor, b.tabMark(boss, 0, 1000));
     try testing.expectEqual(TabMark.on_duty, b.tabMark(worker, 0, 1000));
@@ -867,8 +997,8 @@ test "a tab says quiet once the screen has been still long enough" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     _ = b.report(worker, quiet(60_000), 60_000);
 
     try testing.expectEqual(TabMark.on_duty, b.tabMark(worker, 60_000, 120_000));
@@ -881,8 +1011,8 @@ test "a clocked off terminal reads as off duty even while quiet" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     _ = b.report(worker, quiet(600_000), 600_000);
     try b.clockOff(worker, .supervisor);
 
@@ -903,17 +1033,17 @@ test "reading the box clears it" {
     var bus = testBus();
     defer bus.deinit();
 
-    try bus.setSupervisor(boss);
-    try bus.watch(worker);
+    try bus.addSupervisor(boss);
+    try bus.watch(worker, boss);
     _ = bus.report(worker, quiet(60_000), 1000);
 
     var buf: [255]u8 = undefined;
-    const first = bus.drain(1000, &buf) orelse return error.ExpectedANotice;
+    const first = bus.drain(boss, 1000, &buf) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, first, "0x0000000000002222") != null);
     try testing.expect(std.mem.indexOf(u8, first, "quiet") != null);
 
     // Nothing new has happened, so there is nothing to say.
-    try testing.expect(bus.drain(2000, &buf) == null);
+    try testing.expect(bus.drain(boss, 2000, &buf) == null);
 }
 
 test "many reports about one terminal read as one line" {
@@ -923,8 +1053,8 @@ test "many reports about one terminal read as one line" {
     var bus = testBus();
     defer bus.deinit();
 
-    try bus.setSupervisor(boss);
-    try bus.watch(worker);
+    try bus.addSupervisor(boss);
+    try bus.watch(worker, boss);
 
     var t: u64 = 1000;
     for (0..15) |_| {
@@ -933,7 +1063,7 @@ test "many reports about one terminal read as one line" {
     }
 
     var buf: [255]u8 = undefined;
-    const line = bus.drain(t, &buf) orelse return error.ExpectedANotice;
+    const line = bus.drain(boss, t, &buf) orelse return error.ExpectedANotice;
 
     // One mention of the terminal, and no "+N more".
     const first = std.mem.indexOf(u8, line, "0x0000000000002222").?;
@@ -948,8 +1078,8 @@ test "coming back to work replaces the quiet it is waiting on" {
     var bus = testBus();
     defer bus.deinit();
 
-    try bus.setSupervisor(boss);
-    try bus.watch(worker);
+    try bus.addSupervisor(boss);
+    try bus.watch(worker, boss);
 
     _ = bus.report(worker, quiet(60_000), 1000);
     _ = bus.report(worker, .{ .resumed = .{
@@ -960,7 +1090,7 @@ test "coming back to work replaces the quiet it is waiting on" {
     } }, 3000);
 
     var buf: [255]u8 = undefined;
-    const line = bus.drain(3000, &buf) orelse return error.ExpectedANotice;
+    const line = bus.drain(boss, 3000, &buf) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, line, "back at work") != null);
     try testing.expect(std.mem.indexOf(u8, line, "quiet") == null);
 }
@@ -970,32 +1100,32 @@ test "an empty box says nothing rather than saying all is well" {
     var bus = testBus();
     defer bus.deinit();
 
-    try bus.setSupervisor(boss);
-    try bus.watch(worker);
+    try bus.addSupervisor(boss);
+    try bus.watch(worker, boss);
 
     var buf: [255]u8 = undefined;
-    try testing.expect(bus.drain(1000, &buf) == null);
+    try testing.expect(bus.drain(boss, 1000, &buf) == null);
 }
 
 test "more terminals than fit are counted rather than listed" {
     var bus = testBus();
     defer bus.deinit();
 
-    try bus.setSupervisor(boss);
+    try bus.addSupervisor(boss);
 
     var id: Id = 0x100;
     for (0..max_listed + 3) |_| {
-        try bus.watch(id);
+        try bus.watch(id, boss);
         _ = bus.report(id, quiet(60_000), 1000);
         id += 1;
     }
 
     var buf: [255]u8 = undefined;
-    const line = bus.drain(1000, &buf) orelse return error.ExpectedANotice;
+    const line = bus.drain(boss, 1000, &buf) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, line, "(+3 more)") != null);
 
     // Counted or listed, every one of them was consumed.
-    try testing.expect(bus.drain(1000, &buf) == null);
+    try testing.expect(bus.drain(boss, 1000, &buf) == null);
 }
 
 test "a notice that waited says how long it has been quiet now" {
@@ -1004,12 +1134,12 @@ test "a notice that waited says how long it has been quiet now" {
     var bus = testBus();
     defer bus.deinit();
 
-    try bus.setSupervisor(boss);
-    try bus.watch(worker);
+    try bus.addSupervisor(boss);
+    try bus.watch(worker, boss);
     _ = bus.report(worker, quiet(60_000), 1000);
 
     var buf: [255]u8 = undefined;
-    const line = bus.drain(1000 + 30_000, &buf) orelse return error.ExpectedANotice;
+    const line = bus.drain(boss, 1000 + 30_000, &buf) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, line, "quiet 90s") != null);
 }
 
@@ -1017,12 +1147,12 @@ test "a terminal the supervisor never watched is not in the box" {
     var bus = testBus();
     defer bus.deinit();
 
-    try bus.setSupervisor(boss);
+    try bus.addSupervisor(boss);
     try bus.register(worker);
     _ = bus.report(worker, quiet(60_000), 1000);
 
     var buf: [255]u8 = undefined;
-    try testing.expect(bus.drain(1000, &buf) == null);
+    try testing.expect(bus.drain(boss, 1000, &buf) == null);
 }
 
 test "the supervisor may arrange work modes, which is scheduling" {
@@ -1034,7 +1164,7 @@ test "the supervisor may arrange work modes, which is scheduling" {
     defer b.deinit();
 
     const hand: Id = 0xbeef;
-    try b.watch(hand);
+    try b.watch(hand, boss);
 
     // Into an infinite mode, and between them.
     try b.setWorkMode(hand, .infinite_directed, .supervisor);
@@ -1054,7 +1184,7 @@ test "a standing instruction from the user outlives the supervisor's wishes" {
     defer b.deinit();
 
     const hand: Id = 0xbeef;
-    try b.watch(hand);
+    try b.watch(hand, boss);
 
     // The user says this one does not stop.
     try b.setWorkMode(hand, .infinite_directed, .user);
@@ -1085,18 +1215,18 @@ test "a scheduled hand-over holds the notice, because typing is not arrival" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     _ = b.report(worker, quiet(200_000), 1_000);
 
     var buf: [512]u8 = undefined;
 
     // Handed over, and still there to hand over again.
-    const first = b.take(1_000, &buf, .hand_over) orelse return error.NothingToSay;
+    const first = b.take(boss, 1_000, &buf, .hand_over) orelse return error.NothingToSay;
     try testing.expect(std.mem.indexOf(u8, first, "quiet") != null);
 
     var buf2: [512]u8 = undefined;
-    const second = b.take(2_000, &buf2, .hand_over) orelse return error.NothingToSay;
+    const second = b.take(boss, 2_000, &buf2, .hand_over) orelse return error.NothingToSay;
     try testing.expect(std.mem.indexOf(u8, second, "quiet") != null);
 }
 
@@ -1104,16 +1234,16 @@ test "the supervisor reading the box clears it, because that is arrival" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     _ = b.report(worker, quiet(200_000), 1_000);
 
     var buf: [512]u8 = undefined;
-    _ = b.take(1_000, &buf, .consume) orelse return error.NothingToSay;
+    _ = b.take(boss, 1_000, &buf, .consume) orelse return error.NothingToSay;
 
     // Nothing left: what it read, it has.
     var buf2: [512]u8 = undefined;
-    try testing.expect(b.take(2_000, &buf2, .consume) == null);
+    try testing.expect(b.take(boss, 2_000, &buf2, .consume) == null);
 }
 
 test "a notice nobody reads stops repeating rather than stacking up" {
@@ -1123,14 +1253,14 @@ test "a notice nobody reads stops repeating rather than stacking up" {
     var b = testBus();
     defer b.deinit();
 
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     _ = b.report(worker, quiet(200_000), 1_000);
 
     var buf: [512]u8 = undefined;
     var handed: usize = 0;
     var at: u64 = 1_000;
-    while (b.take(at, &buf, .hand_over) != null) : (at += 1_000) {
+    while (b.take(boss, at, &buf, .hand_over) != null) : (at += 1_000) {
         handed += 1;
         if (handed > 10) break;
     }

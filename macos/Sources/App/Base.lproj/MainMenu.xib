@@ -391,7 +391,7 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="pg2-Sp-Ar1"/>
-                            <menuItem title="Make This Terminal the Supervisor" id="pg3-Su-Pv1">
+                            <menuItem title="Make This Terminal a Supervisor" id="pg3-Su-Pv1">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="poltergeistSupervisor:" target="-1" id="pg3-Su-Pv2"/>

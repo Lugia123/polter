@@ -784,7 +784,7 @@ extension TerminalWindow {
         menu.addItem(separator)
 
         let entries: [(String, String, Selector, NSUserInterfaceItemIdentifier)] = [
-            (String(localized: "Make This Terminal the Supervisor",
+            (String(localized: "Make This Terminal a Supervisor",
                     comment: "标签页右键菜单：设为总管"),
              "eyeglasses",
              #selector(TerminalController.poltergeistSupervisor(_:)),

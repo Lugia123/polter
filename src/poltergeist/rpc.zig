@@ -212,6 +212,9 @@ pub const Error = error{
 
     /// A terminal may not act on itself through this surface.
     SelfTarget,
+
+    /// Another supervisor is minding that terminal.
+    NotYours,
 };
 
 /// Whether a method needs the caller to be the supervisor.
@@ -348,9 +351,8 @@ pub fn target(req: Request) ?Bus.Id {
 pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
     const method: Method = req;
 
-    if (requiresSupervisor(method)) {
-        const supervisor = bus.supervisor orelse return error.NotPermitted;
-        if (supervisor != caller) return error.NotPermitted;
+    if (requiresSupervisor(method) and !bus.isSupervisor(caller)) {
+        return error.NotPermitted;
     }
 
     if (target(req)) |id| {
@@ -358,6 +360,23 @@ pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
         // agent typing into its own terminal through this surface would be
         // a loop with no natural end.
         if (id == caller) return error.SelfTarget;
+
+        // Being *a* supervisor is not being *this terminal's* supervisor.
+        // With several of them in a window, reach follows who is minding
+        // what: otherwise one supervisor could read and type into another
+        // one's workers, which is the thing the star topology exists to
+        // prevent -- it just has more than one centre now.
+        //
+        // `set_watch` is how a terminal gets an owner, so it is the one
+        // thing that cannot require having one already.
+        if (method != .set_watch) {
+            // A terminal the bus has never heard of is a different mistake
+            // from one somebody else is minding, and saying so is the
+            // difference between "check your id" and "that one is not
+            // yours".
+            if (bus.get(id) == null) return error.UnknownTerminal;
+            if (!bus.minds(caller, id)) return error.NotYours;
+        }
 
         // Everything else here acts on a terminal already under
         // supervision -- except the tool that *puts* one there. Requiring
@@ -367,9 +386,7 @@ pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
         //
         // Whether the id is a terminal at all is still checked, by the
         // host, which is the side that knows.
-        if (method != .set_watch and bus.get(id) == null) {
-            return error.UnknownTerminal;
-        }
+
     }
 
     // Refuse a clock-out the bus would refuse anyway, so the sidecar gets
@@ -385,10 +402,12 @@ pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
 /// agent. Agents read these, so they say what to do about it.
 pub fn errorMessage(err: Error) []const u8 {
     return switch (err) {
-        error.NotPermitted => "not permitted: only the supervisor may do this",
+        error.NotPermitted => "not permitted: only a supervisor may do this",
         error.UnknownTerminal => "no terminal with that id",
         error.WorkModeForbids => "this terminal runs in an infinite work mode and cannot clock out; only the user can change that",
         error.SelfTarget => "a terminal cannot target itself",
+        error.NotYours => "another supervisor is minding that terminal; " ++
+            "watch it yourself first, or leave it to them",
     };
 }
 
@@ -403,8 +422,8 @@ const other: Bus.Id = 0x3333;
 fn testBus(alloc: std.mem.Allocator) !Bus {
     var b: Bus = .init(alloc, .{});
     errdefer b.deinit();
-    try b.setSupervisor(boss);
-    try b.watch(worker);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
     return b;
 }
 
@@ -621,7 +640,7 @@ test "an unknown target is rejected" {
 test "with no supervisor named, nothing but me is permitted" {
     var b: Bus = .init(testing.allocator, .{});
     defer b.deinit();
-    try b.watch(worker);
+    try b.watch(worker, boss);
 
     try authorize(&b, worker, .me);
     try testing.expectError(error.NotPermitted, authorize(&b, worker, .terminal_list));
@@ -718,31 +737,74 @@ test "every error has a message that says what to do" {
     }
 }
 
-test "a terminal that stopped being watched loses nothing it never had" {
+test "letting a terminal go gives up reaching it" {
+    // This used to say the opposite: unwatching stopped the reports but
+    // left the supervisor able to read the terminal, because with one
+    // supervisor reach was global and watching was only about noise.
+    //
+    // With several, reach follows who is minding what -- so letting a
+    // terminal go is giving it up, and that is the point. Otherwise a
+    // supervisor could unwatch a terminal to stop hearing about it and
+    // still type into it, which is not a coherent thing to offer.
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
-    b.unwatch(worker);
-
-    // Still known to the bus, so the supervisor can still look at it; being
-    // unwatched only stops it being reported, it does not hide it.
     try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
+
+    b.unwatch(worker);
+    try testing.expectError(error.NotYours, authorize(&b, boss, .{
+        .terminal_read = .{ .id = worker },
+    }));
 
     // And it still cannot act on anyone.
     try testing.expectError(error.NotPermitted, authorize(&b, worker, .terminal_list));
 }
 
-test "a demoted supervisor immediately loses its reach" {
+test "a supervisor stood down immediately loses its reach" {
+    // Naming a second supervisor used to stand the first one down, and
+    // this test proved the reach went with it. Supervisors are peers now,
+    // so standing one down is its own act.
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
     try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
 
-    try b.setSupervisor(other);
+    b.removeSupervisor(boss);
     try testing.expectError(error.NotPermitted, authorize(&b, boss, .{
         .terminal_read = .{ .id = worker },
     }));
-    try authorize(&b, other, .{ .terminal_read = .{ .id = worker } });
+}
+
+test "one supervisor cannot reach another's terminals" {
+    // The property that makes several supervisors safe. Without it, naming
+    // a second supervisor would hand it every worker in the window --
+    // including ones the user put under somebody else.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try b.addSupervisor(other);
+
+    // `other` is a supervisor, but it is not minding `worker`.
+    try testing.expectError(error.NotYours, authorize(&b, other, .{
+        .terminal_read = .{ .id = worker },
+    }));
+    try testing.expectError(error.NotYours, authorize(&b, other, .{
+        .terminal_send = .{ .id = worker, .text = "hello" },
+    }));
+
+    // And the one that is minding it still can.
+    try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
+}
+
+test "a terminal already minded is not quietly taken over" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try b.addSupervisor(other);
+    try testing.expectError(error.AlreadyWatched, b.watch(worker, other));
+
+    // Still the first one's.
+    try testing.expect(b.minds(boss, worker));
 }
 
 // -- dispatch ---------------------------------------------------------------
@@ -877,6 +939,7 @@ pub const Host = struct {
         drainNotices: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
+            to: Bus.Id,
         ) anyerror![]const u8,
 
         /// Change how long it must be still before it is reported.
@@ -929,6 +992,10 @@ pub const Host = struct {
         /// to `alloc`.
         /// Who is in a group, with what each one is currently called.
         /// Returned memory belongs to the caller's allocator.
+        /// Who made a group, so the tools that rearrange one can refuse a
+        /// supervisor that did not.
+        chatOwner: *const fn (ctx: *anyopaque, group: []const u8) anyerror!Bus.Id,
+
         chatMembers: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
@@ -1028,8 +1095,8 @@ pub const Host = struct {
         return self.vtable.setWatching(self.ctx, id, watching);
     }
 
-    fn drainNotices(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
-        return self.vtable.drainNotices(self.ctx, alloc);
+    fn drainNotices(self: Host, alloc: std.mem.Allocator, to: Bus.Id) anyerror![]const u8 {
+        return self.vtable.drainNotices(self.ctx, alloc, to);
     }
 
     fn notifyUser(
@@ -1058,6 +1125,21 @@ pub const Host = struct {
         want_brief: bool,
     ) anyerror![]ChatGroupInfo {
         return self.vtable.chatGroupInfo(self.ctx, alloc, id, want_brief);
+    }
+
+    fn chatOwner(self: Host, group: []const u8) anyerror!Bus.Id {
+        return self.vtable.chatOwner(self.ctx, group);
+    }
+
+    /// Refuse a supervisor rearranging a group that is not its own.
+    ///
+    /// A group nobody can be found for is left alone rather than refused:
+    /// the group tools already answer `NoSuchGroup` where that matters,
+    /// and turning a lookup failure into a permission failure would say
+    /// the wrong thing.
+    fn ownsGroup(self: Host, group: []const u8, caller: Bus.Id) bool {
+        const owner = self.chatOwner(group) catch return true;
+        return owner == caller;
     }
 
     fn chatMembers(
@@ -1202,7 +1284,7 @@ pub fn dispatch(
             // Empty is a normal answer, and a common one. It is not an
             // error and it is not silence -- the supervisor asked, and the
             // truthful reply is that nothing is waiting.
-            const line = host.drainNotices(alloc) catch
+            const line = host.drainNotices(alloc, caller) catch
                 return hostFailure("ReadFailed", "could not read the notices");
             return .{ .text = line };
         },
@@ -1220,6 +1302,7 @@ pub fn dispatch(
         },
 
         .group_set_brief => |p| {
+            if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
             host.chatSetBrief(p.group, p.text) catch
                 return hostFailure("NoSuchGroup", "no group by that name");
             return .ok;
@@ -1299,9 +1382,19 @@ pub fn dispatch(
                 return failure(error.UnknownTerminal);
 
             if (p.watch) {
-                bus.watch(p.id) catch
-                    return hostFailure("WatchFailed", "could not watch that terminal");
+                bus.watch(p.id, caller) catch |err| switch (err) {
+                    // Two supervisors typing into one input box is, to the
+                    // agent in it, being given orders by two people at
+                    // once. Refused rather than silently taken over.
+                    error.AlreadyWatched => return failure(error.NotYours),
+                    error.OutOfMemory => return hostFailure(
+                        "WatchFailed",
+                        "could not watch that terminal",
+                    ),
+                };
             } else {
+                // Only the supervisor minding it may let it go.
+                if (!bus.minds(caller, p.id)) return failure(error.NotYours);
                 bus.unwatch(p.id);
             }
 
@@ -1343,16 +1436,19 @@ pub fn dispatch(
         },
 
         .group_destroy => |p| {
+            if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
             host.chatDestroy(p.group) catch |err| return chatFailure(err);
             return .ok;
         },
 
         .group_add => |p| {
+            if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
             host.chatAdd(p.group, p.id, p.history) catch |err| return chatFailure(err);
             return .ok;
         },
 
         .group_remove => |p| {
+            if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
             host.chatRemove(p.group, p.id) catch |err| return chatFailure(err);
             return .ok;
         },
@@ -1372,7 +1468,7 @@ pub fn dispatch(
             // that a note you might have to justify to your peers stops
             // being worth writing, and this one's whole value is that it
             // can be written carelessly.
-            const want_brief = bus.supervisor == caller or
+            const want_brief = bus.isSupervisor(caller) or
                 caller == Chat.user_id;
 
             const groups = host.chatGroupInfo(alloc, caller, want_brief) catch
@@ -1468,6 +1564,9 @@ const FakeHost = struct {
     /// Whether the last `set_watch` asked to start or stop sampling.
     watching: ?bool = null,
 
+    /// Who the fake says made every group. Null means the usual boss.
+    group_owner: ?Bus.Id = null,
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
@@ -1488,10 +1587,16 @@ const FakeHost = struct {
             .sessionRecall = sessionRecall,
             .chatSetBrief = chatSetBrief,
             .chatGroupInfo = chatGroupInfo,
+            .chatOwner = chatOwner,
             .chatMembers = chatMembers,
             .chatGroups = chatGroups,
             .chatRead = chatRead,
         } };
+    }
+
+    fn chatOwner(ctx: *anyopaque, _: []const u8) anyerror!Bus.Id {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.group_owner orelse boss;
     }
 
     fn chatCreate(ctx: *anyopaque, _: []const u8, _: Bus.Id) anyerror!void {
@@ -1689,7 +1794,7 @@ const FakeHost = struct {
         self.watching = watching;
     }
 
-    fn drainNotices(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror![]const u8 {
+    fn drainNotices(ctx: *anyopaque, alloc: std.mem.Allocator, _: Bus.Id) anyerror![]const u8 {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.Refused;
         self.drained += 1;
@@ -1764,8 +1869,8 @@ test "clock_out through dispatch still obeys the work mode ban" {
 test "terminal_list is sorted so two listings can be compared" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
-    try b.watch(0xaaaa);
-    try b.watch(0x0001);
+    try b.watch(0xaaaa, boss);
+    try b.watch(0x0001, boss);
 
     const open = [_]Place{
         .{ .id = 0xaaaa }, .{ .id = 0x0001 }, .{ .id = boss }, .{ .id = worker },
@@ -1878,7 +1983,7 @@ test "reading the notices is the supervisor's alone" {
 test "notices hands back what is waiting and clears it" {
     var b: Bus = .init(testing.allocator, .{});
     defer b.deinit();
-    try b.setSupervisor(boss);
+    try b.addSupervisor(boss);
 
     var fake: FakeHost = .{ .notices = "[poltergeist] 0x2222 quiet 90s" };
     const host = fake.host();
@@ -1896,7 +2001,7 @@ test "an empty box is an answer, not a failure" {
     // plainly rather than as an error it would have to interpret.
     var b: Bus = .init(testing.allocator, .{});
     defer b.deinit();
-    try b.setSupervisor(boss);
+    try b.addSupervisor(boss);
 
     var fake: FakeHost = .{};
     const host = fake.host();
@@ -2079,4 +2184,41 @@ test "setting a work mode still requires a terminal under supervision" {
             .mode = "clock_off",
         } }),
     );
+}
+
+test "a group belongs to the supervisor that made it" {
+    // With one supervisor this could not come up. With several, any of
+    // them could otherwise destroy another's group or pull terminals out
+    // of it, and the first anybody would know is that a conversation had
+    // stopped working.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.addSupervisor(other);
+
+    var fake: FakeHost = .{ .group_owner = boss };
+
+    // The one that made it may rearrange it.
+    _ = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .group_set_brief = .{ .group = "build", .text = "what this is for" },
+    });
+
+    // The other supervisor may not, however senior it feels.
+    const refused = try dispatch(testing.allocator, &b, fake.host(), other, .{
+        .group_destroy = .{ .group = "build" },
+    });
+    try testing.expectEqualStrings("NotYours", refused.failed.code);
+}
+
+test "talking in a group you were added to is not rearranging it" {
+    // Membership and ownership are different things: the point of a group
+    // is that the terminals in it can talk, and only the arranging is the
+    // supervisor's.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    var fake: FakeHost = .{ .group_owner = other };
+
+    _ = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+        .group_post = .{ .group = "build", .text = "signature is settled" },
+    });
 }

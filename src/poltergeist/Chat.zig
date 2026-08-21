@@ -245,6 +245,17 @@ pub fn setBrief(
 ///
 /// The caller decides who may see this. It is the supervisor's memo to
 /// itself, and `read` deliberately does not carry it.
+/// Who made this group.
+///
+/// With several supervisors in a window, a group belongs to the one that
+/// made it: otherwise any supervisor could destroy another's group, or
+/// pull terminals out of it, and the first anybody would know is that a
+/// conversation had stopped working.
+pub fn createdBy(self: *const Chat, name: []const u8) Error!Id {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    return group.created_by;
+}
+
 pub fn briefOf(self: *const Chat, name: []const u8) Error![]const u8 {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     return group.brief;
