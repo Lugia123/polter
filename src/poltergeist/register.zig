@@ -290,3 +290,144 @@ fn readSkill(
         .limited(1024 * 1024),
     ) catch null;
 }
+
+// -- tests ------------------------------------------------------------------
+
+const testing = std.testing;
+
+/// Lay out a resources directory holding one skill, and a home to install
+/// into. Returns both paths, owned by `arena`.
+fn scratch(arena: Allocator, io: std.Io) !struct { home: []const u8, resources: []const u8 } {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+
+    const root = try std.fmt.allocPrint(arena, "/tmp/polter-skills-{x}", .{&raw});
+    const home = try std.fmt.allocPrint(arena, "{s}/home", .{root});
+    const resources = try std.fmt.allocPrint(arena, "{s}/resources", .{root});
+    const skills = try std.fmt.allocPrint(arena, "{s}/poltergeist", .{resources});
+
+    try std.Io.Dir.cwd().createDirPath(io, home);
+    try std.Io.Dir.cwd().createDirPath(io, skills);
+
+    var d = try std.Io.Dir.cwd().openDir(io, skills, .{});
+    defer d.close(io);
+
+    var f = try d.createFile(io, "supervising.md", .{});
+    defer f.close(io);
+    try f.writeStreamingAll(io,
+        \\---
+        \\name: supervising
+        \\version: 1
+        \\description: mind the terminals
+        \\---
+        \\
+        \\Body goes here.
+        \\
+    );
+
+    return .{ .home = home, .resources = resources };
+}
+
+test "a skill is installed where the runtime looks, frontmatter and all" {
+    // Written after the first version shipped bodies without frontmatter:
+    // the directory listing looked right and the runtime loaded none of
+    // them, because a skill without frontmatter is not a skill.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dirs = try scratch(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, std.fs.path.dirname(dirs.home).?) catch {};
+
+    ensureSkills(alloc, io, &.{"supervising"}, null, dirs.resources, dirs.home);
+
+    const path = try std.fmt.allocPrint(
+        alloc,
+        "{s}/.claude/skills/polter-supervising/SKILL.md",
+        .{dirs.home},
+    );
+    const written = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(64 * 1024)) catch
+        return error.NothingInstalled;
+
+    // The name has to match the directory, or the runtime lists it under
+    // something the user cannot type.
+    try testing.expect(std.mem.indexOf(u8, written, "name: polter-supervising") != null);
+    try testing.expect(std.mem.startsWith(u8, written, "---"));
+    try testing.expect(std.mem.indexOf(u8, written, "Body goes here.") != null);
+}
+
+test "an unchanged skill is left alone" {
+    // This runs at every start. Rewriting a file the runtime may be
+    // reading, for no reason, is asking for the one race that makes a
+    // skill vanish mid-session.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dirs = try scratch(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, std.fs.path.dirname(dirs.home).?) catch {};
+
+    ensureSkills(alloc, io, &.{"supervising"}, null, dirs.resources, dirs.home);
+
+    const path = try std.fmt.allocPrint(
+        alloc,
+        "{s}/.claude/skills/polter-supervising/SKILL.md",
+        .{dirs.home},
+    );
+    const first = try std.Io.Dir.cwd().statFile(io, path, .{});
+
+    ensureSkills(alloc, io, &.{"supervising"}, null, dirs.resources, dirs.home);
+    const second = try std.Io.Dir.cwd().statFile(io, path, .{});
+
+    try testing.expectEqual(first.mtime, second.mtime);
+}
+
+test "the user's own copy is what gets installed" {
+    // Editing one file should change Polter everywhere, not in one of two
+    // places -- the same order `skill_read` resolves in.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dirs = try scratch(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, std.fs.path.dirname(dirs.home).?) catch {};
+
+    const config = try std.fmt.allocPrint(alloc, "{s}/config", .{dirs.home});
+    const mine = try std.fmt.allocPrint(alloc, "{s}/polter/skills", .{config});
+    try std.Io.Dir.cwd().createDirPath(io, mine);
+
+    var d = try std.Io.Dir.cwd().openDir(io, mine, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "supervising.md", .{});
+    defer f.close(io);
+    try f.writeStreamingAll(io,
+        \\---
+        \\name: supervising
+        \\---
+        \\
+        \\My own wording.
+        \\
+    );
+
+    ensureSkills(alloc, io, &.{"supervising"}, config, dirs.resources, dirs.home);
+
+    const path = try std.fmt.allocPrint(
+        alloc,
+        "{s}/.claude/skills/polter-supervising/SKILL.md",
+        .{dirs.home},
+    );
+    const written = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(64 * 1024));
+    try testing.expect(std.mem.indexOf(u8, written, "My own wording.") != null);
+}

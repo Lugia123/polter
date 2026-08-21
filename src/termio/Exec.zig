@@ -632,10 +632,15 @@ const Subprocess = struct {
         // then we get it ourselves.
         var env = cfg.env;
 
-        // If we have a resources dir then set our env var
+        // If we have a resources dir then set our env var.
+        //
+        // Named for us, not for Ghostty: a terminal opened here should tell
+        // anything it launches where *Polter's* resources are. Sharing the
+        // name meant a Polter launched from a Ghostty terminal -- or the
+        // other way round -- silently read the other one's.
         if (cfg.resources_dir) |dir| {
-            log.info("found Ghostty resources dir: {s}", .{dir});
-            try env.put("GHOSTTY_RESOURCES_DIR", dir);
+            log.info("found Polter resources dir: {s}", .{dir});
+            try env.put("POLTER_RESOURCES_DIR", dir);
         }
 
         // Set our TERM var. This is a bit complicated because we want to use

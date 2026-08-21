@@ -32,6 +32,20 @@ pub const ResourcesDir = struct {
     }
 };
 
+/// Whether a directory actually holds our resources.
+///
+/// One marker is enough, and the skills are the right one: they ship with
+/// every build, they are ours alone, and their absence is exactly the
+/// failure this is here to catch.
+fn looksLikeOurs(alloc: Allocator, dir: []const u8) bool {
+    const probe = std.fs.path.join(alloc, &.{ dir, "poltergeist" }) catch return false;
+    defer alloc.free(probe);
+
+    var d = std.Io.Dir.cwd().openDir(global.io(), probe, .{}) catch return false;
+    d.close(global.io());
+    return true;
+}
+
 /// Gets the directory to the bundled resources directory, if it
 /// exists (not all platforms or packages have it). The output is
 /// owned by the caller.
@@ -39,7 +53,13 @@ pub const ResourcesDir = struct {
 /// This is highly Ghostty-specific and can likely be generalized at
 /// some point but we can cross that bridge if we ever need to.
 pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
-    // Use the GHOSTTY_RESOURCES_DIR environment variable in release builds.
+    // Use the POLTER_RESOURCES_DIR environment variable in release builds.
+    //
+    // **Our own name, not Ghostty's.** Both can be installed on one
+    // machine, and both set this for the terminals they spawn -- so
+    // launching Polter from a Ghostty terminal had Polter reading
+    // Ghostty's skills, plugins and terminfo. It found none of ours and
+    // said nothing, because an empty resources directory is not an error.
     //
     // In debug builds we try using terminfo detection first instead, since
     // if debug Ghostty is launched by an older version of Ghostty, it
@@ -49,12 +69,17 @@ pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
     // Note: we ALWAYS want to allocate here because the result is always
     // freed, do not try to use internal_os.getenv or posix getenv.
     if (comptime builtin.mode != .Debug) env: {
-        const dir = global.environ().getAlloc(alloc, "GHOSTTY_RESOURCES_DIR") catch |err| switch (err) {
+        const dir = global.environ().getAlloc(alloc, "POLTER_RESOURCES_DIR") catch |err| switch (err) {
             error.EnvironmentVariableMissing => break :env,
             else => return err,
         };
 
-        if (dir.len > 0) return .{ .app_path = dir };
+        // Checked, not merely taken. A stale value left in the
+        // environment by an older install points at a directory that no
+        // longer holds anything of ours, and an empty resources directory
+        // fails silently: skills that do not load, plugins that are not
+        // there, and nothing anywhere saying why.
+        if (dir.len > 0 and looksLikeOurs(alloc, dir)) return .{ .app_path = dir };
     }
 
     // This is the sentinel value we look for in the path to know
@@ -111,7 +136,7 @@ pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
     // If terminfo detection failed in debug builds (somehow),
     // fallback and use the provided resources dir.
     if (comptime builtin.mode == .Debug) {
-        if (global.environ().getAlloc(alloc, "GHOSTTY_RESOURCES_DIR")) |dir| {
+        if (global.environ().getAlloc(alloc, "POLTER_RESOURCES_DIR")) |dir| {
             if (dir.len > 0) return .{ .app_path = dir };
         } else |err| switch (err) {
             error.InvalidWtf8, error.EnvironmentVariableMissing => {},
@@ -145,4 +170,38 @@ pub fn maybeDir(
     }
 
     return null;
+}
+
+const testing = std.testing;
+
+test "a resources dir belonging to something else is not ours" {
+    // Both Polter and Ghostty can be installed on one machine, and each
+    // sets a resources directory for the terminals it spawns. Taking a
+    // path on faith had Polter reading the other one's skills and plugins,
+    // finding none of its own, and saying nothing -- an empty resources
+    // directory is not an error, it is just empty.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const io = global.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const root = try std.fmt.allocPrint(alloc, "/tmp/polter-res-{x}", .{&raw});
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    // Somebody else's: a directory with no skills of ours in it.
+    const theirs = try std.fmt.allocPrint(alloc, "{s}/theirs", .{root});
+    try std.Io.Dir.cwd().createDirPath(io, theirs);
+    try testing.expect(!looksLikeOurs(alloc, theirs));
+
+    // Ours.
+    const ours = try std.fmt.allocPrint(alloc, "{s}/ours", .{root});
+    const skills = try std.fmt.allocPrint(alloc, "{s}/poltergeist", .{ours});
+    try std.Io.Dir.cwd().createDirPath(io, skills);
+    try testing.expect(looksLikeOurs(alloc, ours));
+
+    // And a path that is not there at all.
+    try testing.expect(!looksLikeOurs(alloc, "/tmp/polter-no-such-resources-7f31"));
 }
