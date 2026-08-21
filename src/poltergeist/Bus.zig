@@ -122,6 +122,20 @@ pub const Entry = struct {
     /// mode existed to prevent.
     work_mode_by: Authority = .user,
 
+    /// How many scheduled hand-overs have carried this notice already.
+    ///
+    /// A hand-over is typed into the supervisor's terminal, and typing is
+    /// not proof of arrival: if the agent was mid-turn the text lands in
+    /// its input box and the return that should submit it does not take.
+    /// Clearing the box on the way out made that a silent loss -- the
+    /// notice was gone and nothing would say it again.
+    ///
+    /// So a hand-over holds the notice rather than consuming it, and only
+    /// the supervisor reading the box on its own account clears it. This
+    /// counts the repeats so a notice nobody ever reads does not repeat
+    /// for ever.
+    handed_over: u8 = 0,
+
     /// When this terminal last produced a notice, for rate limiting.
     last_notice_ms: ?u64 = null,
 
@@ -436,7 +450,30 @@ const max_listed = 5;
 /// Durations are recomputed here rather than stored at report time, so a
 /// notice that waited in the box says how long the terminal has been quiet
 /// *now*, not how long it had been when it first came up.
+/// How a caller is taking the box.
+pub const Take = enum {
+    /// The supervisor asked. It has the notices now, and they are gone.
+    consume,
+
+    /// The scheduled hand-over, typed into a terminal that may or may not
+    /// be in a state to receive it. Held for another round unless it has
+    /// been offered too many times already.
+    hand_over,
+};
+
+/// How many hand-overs a notice gets before it is dropped.
+///
+/// Bounded because each one pastes the same line into the supervisor's
+/// input box again: a notice nobody reads would otherwise stack up copies
+/// of itself for as long as the terminal is quiet. Three is enough to
+/// cover an agent busy through a couple of intervals.
+const max_hand_overs = 3;
+
 pub fn drain(self: *Bus, now_ms: u64, buf: []u8) ?[]u8 {
+    return self.take(now_ms, buf, .consume);
+}
+
+pub fn take(self: *Bus, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
     var listed: usize = 0;
     var total: usize = 0;
 
@@ -449,8 +486,21 @@ pub fn drain(self: *Bus, now_ms: u64, buf: []u8) ?[]u8 {
     while (it.next()) |kv| {
         const e = kv.value_ptr;
         const kind = e.pending orelse continue;
-        e.pending = null;
         total += 1;
+
+        switch (how) {
+            .consume => {
+                e.pending = null;
+                e.handed_over = 0;
+            },
+            .hand_over => {
+                e.handed_over +|= 1;
+                if (e.handed_over >= max_hand_overs) {
+                    e.pending = null;
+                    e.handed_over = 0;
+                }
+            },
+        }
 
         if (listed >= max_listed) continue;
 
@@ -497,7 +547,7 @@ pub fn drainIfDue(self: *Bus, now_ms: u64, buf: []u8) ?[]u8 {
         if (now_ms -| last < self.config.notice_interval_ms) return null;
     }
 
-    const line = self.drain(now_ms, buf) orelse return null;
+    const line = self.take(now_ms, buf, .hand_over) orelse return null;
     self.last_delivery_ms = now_ms;
     return line;
 }
@@ -1024,4 +1074,66 @@ test "a standing instruction from the user outlives the supervisor's wishes" {
     // The user can always lift their own.
     try b.setWorkMode(hand, .clock_off, .user);
     try b.clockOff(hand, .supervisor);
+}
+
+test "a scheduled hand-over holds the notice, because typing is not arrival" {
+    // The failure this fixes: the hand-over is typed into the supervisor's
+    // terminal, and if that agent was mid-turn the text lands in its input
+    // box while the return that should submit it does not take. Clearing
+    // the box on the way out made that a silent loss -- the notice was
+    // gone and nothing would ever say it again.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+    _ = b.report(worker, quiet(200_000), 1_000);
+
+    var buf: [512]u8 = undefined;
+
+    // Handed over, and still there to hand over again.
+    const first = b.take(1_000, &buf, .hand_over) orelse return error.NothingToSay;
+    try testing.expect(std.mem.indexOf(u8, first, "quiet") != null);
+
+    var buf2: [512]u8 = undefined;
+    const second = b.take(2_000, &buf2, .hand_over) orelse return error.NothingToSay;
+    try testing.expect(std.mem.indexOf(u8, second, "quiet") != null);
+}
+
+test "the supervisor reading the box clears it, because that is arrival" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+    _ = b.report(worker, quiet(200_000), 1_000);
+
+    var buf: [512]u8 = undefined;
+    _ = b.take(1_000, &buf, .consume) orelse return error.NothingToSay;
+
+    // Nothing left: what it read, it has.
+    var buf2: [512]u8 = undefined;
+    try testing.expect(b.take(2_000, &buf2, .consume) == null);
+}
+
+test "a notice nobody reads stops repeating rather than stacking up" {
+    // Each hand-over pastes the same line into the supervisor's input box
+    // again, so an unread notice would otherwise pile copies of itself up
+    // for as long as the terminal stays quiet.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.setSupervisor(boss);
+    try b.watch(worker);
+    _ = b.report(worker, quiet(200_000), 1_000);
+
+    var buf: [512]u8 = undefined;
+    var handed: usize = 0;
+    var at: u64 = 1_000;
+    while (b.take(at, &buf, .hand_over) != null) : (at += 1_000) {
+        handed += 1;
+        if (handed > 10) break;
+    }
+
+    try testing.expectEqual(@as(usize, 3), handed);
 }
