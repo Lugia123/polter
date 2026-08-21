@@ -73,6 +73,7 @@
                 <outlet property="menuPoltergeistWorkMode" destination="pg5-Wm-Cy1" id="pg5-Ou-Tl1"/>
                 <outlet property="menuLanguage" destination="pg7-La-Ng1" id="pg7-Ou-Tl1"/>
                 <outlet property="menuPlugins" destination="pg8-Pl-Ug1" id="pg8-Ou-Tl1"/>
+                <outlet property="menuReopenTab" destination="rt1-Re-Op1" id="rt1-Ou-Tl1"/>
                 <outlet property="menuToggleFullScreen" destination="8kY-Pi-KaY" id="yQg-6V-OO6"/>
                 <outlet property="menuToggleVisibility" destination="DOX-wA-ilh" id="iBj-Bc-2bq"/>
                 <outlet property="menuUndo" destination="r83-CV-syt" id="bU9-0b-xgQ"/>
@@ -173,6 +174,12 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="m54-Is-iLE"/>
+                            <menuItem title="Reopen Closed Tab" keyEquivalent="T" id="rt1-Re-Op1">
+                                <connections>
+                                    <action selector="reopenClosedTab:" target="-1" id="rt1-Re-Op2"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem isSeparatorItem="YES" id="rt2-Sp-Ar1"/>
                             <menuItem title="Split Right" id="VUR-Ld-nLx">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>

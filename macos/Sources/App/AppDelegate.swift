@@ -82,6 +82,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuPoltergeistWorkMode: NSMenuItem?
     @IBOutlet private var menuLanguage: NSMenuItem?
     @IBOutlet private var menuPlugins: NSMenuItem?
+    @IBOutlet private var menuReopenTab: NSMenuItem?
 
     @IBOutlet private var menuEqualizeSplits: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerUp: NSMenuItem?
@@ -242,6 +243,28 @@ class AppDelegate: NSObject,
             submenu.addItem(entry)
         }
         item.submenu = submenu
+    }
+
+    /// Open the most recently closed terminal again, where it was.
+    ///
+    /// Walks back through this run's closures and then keeps going into the
+    /// previous session, which is what somebody pressing this repeatedly
+    /// means -- and what every browser has taught them to expect.
+    @IBAction func reopenClosedTab(_ sender: Any?) {
+        guard let entry = ClosedTabs.shared.take() else { return }
+
+        var config = Ghostty.SurfaceConfiguration()
+        config.workingDirectory = entry.directory
+        config.context = GHOSTTY_SURFACE_CONTEXT_TAB
+
+        // Onto the focused window when there is one, and into a new window
+        // when there is not -- which is the case right after a restart,
+        // when this is most likely to be reached for.
+        let controller = NSApp.keyWindow?.windowController as? BaseTerminalController
+        NotificationCenter.default.post(
+            name: Ghostty.Notification.ghosttyNewTab,
+            object: controller?.focusedSurface,
+            userInfo: [Ghostty.Notification.NewSurfaceConfigKey: config])
     }
 
     @IBAction func selectLanguage(_ sender: Any?) {
@@ -1383,6 +1406,11 @@ extension AppDelegate {
 extension AppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        // Greyed out when nothing is left to come back, so the item says
+        // whether there is anything rather than doing nothing when pressed.
+        case #selector(reopenClosedTab(_:)):
+            return ClosedTabs.shared.canReopen
+
         case #selector(setAsDefaultTerminal(_:)):
             return NSWorkspace.shared.defaultTerminal != Bundle.main.bundleURL
 

@@ -516,6 +516,13 @@ class BaseTerminalController: NSWindowController,
     ///
     /// This does no confirmation and assumes confirmation is already done.
     private func removeSurfaceNode(_ node: SplitTree<Ghostty.SurfaceView>.Node) {
+        // Remembered before it goes, so it can be opened again where it
+        // was. Taken here rather than from a close notification because
+        // this is the last moment the surface still knows its directory.
+        for surface in node {
+            ClosedTabs.shared.remember(directory: surface.pwd)
+        }
+
         // Move focus if the closed surface was focused and we have a next target
         let nextFocus: Ghostty.SurfaceView? = if node.contains(
             where: { $0 == focusedSurface }
