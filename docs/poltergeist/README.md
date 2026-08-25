@@ -134,7 +134,8 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | [supervisor.md](supervisor.md) | R3、R4、R6 | 监督关系、上班 / 下班、监工模式、确认策略、停掉监控       | 无限工作模式的禁下班约束放程序侧而非提示词                                         |
 | [mcp.md](mcp.md)               | R7、R8     | MCP 工具面、sidecar、身份识别、skill 体系、不管任务的边界 | sidecar 而非把 MCP 塞进核心；现成 IPC 不可复用（`src/apprt/embedded.zig:349-360`） |
 | [chatui.md](chatui.md)         | R9         | 群聊与私信界面的承载方式                                  | 原生 UI（参照 command palette）对比 imgui（参照 `src/inspector/Inspector.zig`）    |
-| [plugins.md](plugins.md)       | R3 的一半  | 插件体系（先做通知）：进程式插件、凭据、给以后留位置       | 进程边界换崩溃隔离与语言无关，代价是每次通知一次 fork/exec |
+| [plugins.md](plugins.md)       | R3 的一半  | 插件宿主：进程式插件、两种生命周期、凭据、权限声明         | 进程边界换崩溃隔离与语言无关，代价是每次通知一次 fork/exec |
+| [storage.md](storage.md)      | —          | 存档：本地日志是事实来源，插件是它的跟读者              | 常驻进程 + 游标；一个插件多后端；权限声明 |
 | [tabs.md](tabs.md)             | R10        | tab 合并与状态标记                                        | macOS 用 NSWindow tabbing，GTK 用 libadwaita，两套各写一份                         |
 
 ## 分阶段路线
