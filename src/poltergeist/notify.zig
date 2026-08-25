@@ -185,6 +185,21 @@ pub const Delivery = struct {
     failed: usize = 0,
 };
 
+/// How many of these are plugins of one kind.
+///
+/// The plugin list holds every kind now. A resident archive is not a
+/// notification channel, and counting it as one would have the supervisor
+/// told a message went somewhere it did not -- and, when it is the only
+/// plugin installed, would hide the fact that there is nowhere to send at
+/// all.
+pub fn count(plugins: []const Plugin.Manifest, kind: Plugin.Kind) usize {
+    var n: usize = 0;
+    for (plugins) |manifest| {
+        if (manifest.kind == kind) n += 1;
+    }
+    return n;
+}
+
 /// Send an event through every configured plugin.
 ///
 /// **All of them, not the first that works.** The scenario is one where a
@@ -210,6 +225,12 @@ pub fn send(
     defer alloc.free(rendered);
 
     for (plugins) |manifest| {
+        // One process per call is the notify contract. An archive plugin is
+        // resident and expects a stream; handing it a single event and
+        // reading its exit code would start a second copy of it every time
+        // somebody is nudged, and count the copy that died as a delivery.
+        if (manifest.kind != .notify) continue;
+
         const params = params_for(ctx, alloc, manifest.key) catch &.{};
 
         switch (Plugin.call(manifest, alloc, io, env, rendered, params)) {
@@ -301,4 +322,83 @@ test "the body says which kind it is, and names the terminal" {
     // Nothing secret goes through here; parameters are added later, after
     // they have been resolved.
     try testing.expect(std.mem.indexOf(u8, rendered, "params") == null);
+}
+
+test "an archive plugin is not a notification channel" {
+    // It is resident and expects a stream of batches. Running it once per
+    // nudge would fork a second copy of the archive and then report its
+    // death as a failed notification -- or its exit as a delivered one.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const marker = try std.fmt.allocPrint(alloc, "/tmp/polter-notify-{x}", .{&raw});
+
+    const dir = try std.fmt.allocPrint(alloc, "{s}.d", .{marker});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "run.sh", .{ .permissions = .fromMode(0o755) });
+    try f.writeStreamingAll(io, try std.fmt.allocPrint(
+        alloc,
+        "#!/bin/sh\ntouch {s}\n",
+        .{marker},
+    ));
+    f.close(io);
+
+    const exec = try std.fmt.allocPrint(alloc, "{s}/run.sh", .{dir});
+    const plugins = [_]Plugin.Manifest{
+        .{ .key = "chat-archive", .kind = .archive, .exec = exec },
+    };
+
+    try testing.expectEqual(@as(usize, 0), count(&plugins, .notify));
+    try testing.expectEqual(@as(usize, 1), count(&plugins, .archive));
+
+    const none = struct {
+        fn params(
+            ctx: *anyopaque,
+            a: Allocator,
+            key: []const u8,
+        ) anyerror![]const Plugin.Param {
+            _ = ctx;
+            _ = a;
+            _ = key;
+            return &.{};
+        }
+    };
+
+    var ctx: usize = 0;
+    const delivery = send(
+        alloc,
+        io,
+        &env,
+        &plugins,
+        none.params,
+        @ptrCast(&ctx),
+        .{ .reason = .authorisation, .title = "t", .body = "b" },
+    );
+
+    // Not delivered, and not counted as a failure either: it was never a
+    // channel, so there was nothing here to succeed or fail.
+    try testing.expectEqual(@as(usize, 0), delivery.delivered);
+    try testing.expectEqual(@as(usize, 0), delivery.failed);
+
+    // And it did not run at all.
+    try testing.expect(std.Io.Dir.cwd().readFileAlloc(
+        io,
+        marker,
+        alloc,
+        .limited(16),
+    ) == error.FileNotFound);
 }

@@ -10,9 +10,11 @@
 //! See `docs/poltergeist/README.md` for the design, and
 //! `docs/poltergeist/sensing.md` for why the sensing layer is this thin.
 
+pub const Archive = @import("Archive.zig");
 pub const Bus = @import("Bus.zig");
 pub const Chat = @import("Chat.zig");
 pub const ChatLog = @import("ChatLog.zig");
+pub const Cursor = @import("Cursor.zig");
 pub const Fingerprint = @import("Fingerprint.zig");
 pub const register = @import("register.zig");
 pub const rpc = @import("rpc.zig");
@@ -20,6 +22,7 @@ pub const Sampler = @import("Sampler.zig");
 pub const Server = @import("Server.zig");
 pub const Plugin = @import("Plugin.zig");
 pub const notify = @import("notify.zig");
+pub const reap = @import("reap.zig");
 pub const secret = @import("secret.zig");
 pub const Session = @import("Session.zig");
 pub const skill = @import("skill.zig");
@@ -38,12 +41,15 @@ pub const screen = @import("screen.zig");
 // Adding an import above means adding a line here.
 test {
     _ = @import("server_test.zig");
+    _ = Archive;
     _ = Bus;
     _ = Chat;
     _ = ChatLog;
+    _ = Cursor;
     _ = Fingerprint;
     _ = notify;
     _ = Plugin;
+    _ = reap;
     _ = register;
     _ = rpc;
     _ = Sampler;

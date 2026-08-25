@@ -35,7 +35,7 @@ const log = std.log.scoped(.poltergeist);
 /// Chat here is agents pasting code and logs at each other, so this is far
 /// larger than the 512KB the ssh cache settles for. A night of it should
 /// fit without rotating at all.
-const max_bytes: u64 = 8 * 1024 * 1024;
+const rotate_bytes: u64 = 8 * 1024 * 1024;
 
 /// Most messages one `history` call will ever hand back.
 ///
@@ -60,6 +60,13 @@ const scan_chunk_bytes: usize = 128 * 1024;
 /// How much of the end of a file `recoverSeq` reads looking for a seq.
 const tail_probe_bytes: usize = 64 * 1024;
 
+/// The window a forward read pulls in at once.
+///
+/// Larger than the 64KB buffer `append` writes through, so a whole line
+/// always fits and a window with no newline in it means bad data rather
+/// than a line the reader is simply too small to see.
+const tail_chunk_bytes: usize = 128 * 1024;
+
 alloc: Allocator,
 io: std.Io,
 
@@ -81,6 +88,43 @@ pub const Error = Allocator.Error || error{
     XdgLookupFailed,
     OpenFailed,
 };
+
+/// A place in the log, as a reader that has to come back to it needs it.
+///
+/// `seq` is the only field that means anything: it survives rotation, it is
+/// what the plugin confirms, and it is what a scan can always find again.
+/// `offset` and `inode` are a shortcut and nothing more -- they are checked
+/// before they are believed, and a mark whose shortcut does not check out
+/// is still a perfectly good mark.
+pub const Mark = struct {
+    /// Everything up to and including this seq is behind the reader.
+    seq: u64 = 0,
+
+    /// A byte offset, in the file `inode` names, at or before the first
+    /// unread line. Zero when there is no hint.
+    ///
+    /// At or *before*, deliberately. A plugin that confirms half a batch
+    /// leaves the cursor in the middle of a window; recording the start of
+    /// that window keeps the hint honest and costs one batch of skipping
+    /// instead of a scan of the whole file.
+    offset: u64 = 0,
+
+    /// Which file `offset` was measured in. Zero when there is no hint.
+    ///
+    /// Without it an offset cannot be trusted at all: rotation renames the
+    /// current generation aside and starts a new file at zero, so a bare
+    /// offset afterwards points at an arbitrary byte of a different file
+    /// while looking entirely legal.
+    inode: u64 = 0,
+};
+
+/// Where the log lives under a state directory. Caller owns it.
+///
+/// Exported because the archive reads the same file from another thread and
+/// must not learn the layout a second time.
+pub fn defaultPath(alloc: Allocator, state_dir: []const u8) Allocator.Error![]const u8 {
+    return std.fs.path.join(alloc, &.{ state_dir, "chat", "chat.jsonl" });
+}
 
 /// The highest seq the log has handed out, or 0 for a log nothing has been
 /// written into.
@@ -107,8 +151,7 @@ pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Error!ChatLog {
         },
     };
 
-    const path = std.fs.path.join(alloc, &.{ dir, "chat.jsonl" }) catch
-        return error.OutOfMemory;
+    const path = defaultPath(alloc, state_dir) catch return error.OutOfMemory;
     errdefer alloc.free(path);
 
     const file = openAppend(io, path) catch return error.OpenFailed;
@@ -232,6 +275,25 @@ fn parseLine(arena: Allocator, bytes: []const u8) ?Line {
     }) catch null;
 }
 
+/// The same, except that an allocator which failed is not a line that will
+/// not parse.
+///
+/// The backwards walk can afford to conflate those two: it drops the line
+/// out of a page somebody is scrolling, and the same page is asked for
+/// again a moment later. A forward read cannot. It moves the cursor past
+/// every line it decides is unusable, so a line called unreadable because
+/// memory was short for an instant is a message no archive is ever handed
+/// and nothing anywhere says so -- the one failure this whole design is
+/// built to make impossible.
+fn parseLineStrict(arena: Allocator, bytes: []const u8) Allocator.Error!?Line {
+    return std.json.parseFromSliceLeaky(Line, arena, bytes, .{
+        .ignore_unknown_fields = true,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => null,
+    };
+}
+
 pub fn deinit(self: *ChatLog) void {
     self.file.close(self.io);
     self.alloc.free(self.path);
@@ -342,7 +404,7 @@ pub fn append(
 /// spans both generations, which is what lets a reader walk out of the new
 /// file and into the old one without the numbers going backwards.
 fn rotateIfFull(self: *ChatLog) void {
-    if (self.written < max_bytes) return;
+    if (self.written < rotate_bytes) return;
 
     const old = std.fmt.allocPrint(self.alloc, "{s}.1", .{self.path}) catch return;
     defer self.alloc.free(old);
@@ -448,6 +510,437 @@ pub fn freePage(alloc: Allocator, page: Page) void {
         alloc.free(e.text);
     }
     alloc.free(page.entries);
+}
+
+/// A forward read of the log, from a mark onwards.
+///
+/// **Its own file handle, deliberately.** The writer's handle is not safe
+/// to share: `rotateIfFull` closes and replaces it, so a reader holding a
+/// copy would read from a closed descriptor -- or, worse, from whatever the
+/// kernel handed that number to next. The writer's `written` is not safe to
+/// read either; it is a plain field on another thread. Neither is needed
+/// here: positional reads carry their own offset, and the end of the file
+/// is whatever the kernel says it is at the moment of the read.
+///
+/// What is shared is only the bytes, and POSIX makes a write on one
+/// descriptor visible to a read on another. A line half written is still
+/// possible, so nothing past the last newline is ever consumed -- the same
+/// invariant `patchTornTail` keeps for the writer.
+pub const Tail = struct {
+    pub const Error = Allocator.Error || error{OpenFailed};
+
+    alloc: Allocator,
+    io: std.Io,
+
+    /// The current generation's path -- `chat.jsonl`, never `.1`. Owned.
+    path: []const u8,
+
+    /// Open read-only on whichever generation is being drained.
+    file: std.Io.File,
+
+    /// `file`'s inode, so a rotation can be told from a quiet minute.
+    inode: u64,
+
+    /// Byte offset of the first unread line in `file`.
+    offset: u64,
+
+    /// The highest seq handed out, and by the same token the line below
+    /// which nothing is handed out again.
+    ///
+    /// Every line whose seq is zero or is at or below this one is dropped
+    /// while `offset` moves past it as usual. One rule doing three jobs:
+    /// it skips the lines the mark had already been read past, it drops
+    /// the lines an older Polter wrote with no seq at all, and -- the
+    /// reason it is written as `<=` rather than as a separate cursor --
+    /// it makes the numbers handed out strictly increasing. The archive
+    /// needs that last one: `advance(before, through, ack)` treats an
+    /// acknowledgement below `before` as a plugin claiming something it
+    /// cannot know and kills the child for it, so a batch whose `through`
+    /// came out lower than the last confirmed one would start a loop of
+    /// killing and respawning that nothing breaks out of.
+    ///
+    /// The price is that a log whose numbering really does go backwards --
+    /// hand-edited, or rebuilt from scratch under a cursor that outlived
+    /// it -- has that stretch dropped in silence. That is the cheaper of
+    /// the two, the other being a permanent spawn storm.
+    seq: u64,
+
+    /// One window of file, reused. Owned, `tail_chunk_bytes` long.
+    buf: []u8,
+
+    /// True once `file` is the current generation. False while draining the
+    /// rotated one, which is the only time a switch is still ahead.
+    current: bool,
+
+    /// Reading fails the way writing does: once out loud, then quietly.
+    warned: bool = false,
+
+    /// Said at most once, because a reader that has fallen a whole
+    /// generation behind will notice again on every batch.
+    behind_warned: bool = false,
+
+    /// The seq the first line of a freshly switched-into generation ought
+    /// to carry. Set when a rotation is rolled through, cleared by the
+    /// first line read out of the new file. Kept as a field rather than a
+    /// local because the switch and the line that follows it can fall in
+    /// two different `next` calls, whenever a batch fills up in between.
+    behind_expect: ?u64 = null,
+
+    pub fn deinit(self: *Tail) void {
+        self.file.close(self.io);
+        self.alloc.free(self.path);
+        self.alloc.free(self.buf);
+        self.* = undefined;
+    }
+
+    /// Where the read has got to, ready to be written down.
+    pub fn mark(self: *const Tail) Mark {
+        return .{
+            .seq = self.seq,
+            .offset = self.offset,
+            .inode = self.inode,
+        };
+    }
+
+    /// The next entries, oldest first.
+    ///
+    /// Stops at `limit` entries, at `max_bytes` of `text` accumulated, or
+    /// at the end of what has been written -- whichever comes first. An
+    /// empty page with `exhausted = true` is the ordinary answer for a
+    /// quiet minute, not a failure.
+    ///
+    /// Entries belong to `alloc`; free the page with `ChatLog.freePage`.
+    pub fn next(
+        self: *Tail,
+        alloc: Allocator,
+        limit: usize,
+        max_bytes: usize,
+    ) Allocator.Error!Page {
+        // The same answer `history` gives: a caller that asked for nothing
+        // has been told nothing about where the end is.
+        if (limit == 0) return .{ .entries = &.{}, .exhausted = false };
+
+        var out: std.ArrayListUnmanaged(Entry) = .empty;
+        errdefer {
+            // Not `freePage`: the list's buffer is longer than its
+            // contents, and handing the allocator the short slice is not a
+            // free it can make sense of.
+            for (out.items) |e| {
+                alloc.free(e.group);
+                alloc.free(e.author);
+                alloc.free(e.text);
+            }
+            out.deinit(alloc);
+        }
+
+        var arena: std.heap.ArenaAllocator = .init(alloc);
+        defer arena.deinit();
+
+        var taken: usize = 0;
+
+        while (true) {
+            // Asked at the top of the loop rather than before each append,
+            // so that every call consumes at least one line. Checking on
+            // the way in would let one paste larger than `max_bytes` sit
+            // there forever: empty page, cursor unmoved, no log line, and
+            // an archive that is running and doing nothing.
+            if (out.items.len >= limit or taken >= max_bytes)
+                return .{ .entries = try out.toOwnedSlice(alloc), .exhausted = false };
+
+            const n = self.file.readPositionalAll(self.io, self.buf, self.offset) catch |err| {
+                // Reported as "nothing new" rather than as a failure, so a
+                // transient error heals itself on the next poll. The warn
+                // is the only sign a permanent one leaves, which is why it
+                // names the file as well as the error.
+                self.warnOnce(err);
+                return .{ .entries = try out.toOwnedSlice(alloc), .exhausted = true };
+            };
+
+            if (n == 0) {
+                if (!self.current) {
+                    // Draining the generation rotation moved aside, and
+                    // now drained. Roll into the one being appended to.
+                    const f = std.Io.Dir.openFileAbsolute(self.io, self.path, .{}) catch |err| {
+                        // `rotateIfFull` may not have managed to make the
+                        // new file either. Leave every field where it is,
+                        // which leaves the position where it is, and try
+                        // again on the next call.
+                        self.warnOnce(err);
+                        return .{ .entries = try out.toOwnedSlice(alloc), .exhausted = true };
+                    };
+                    self.file.close(self.io);
+                    self.file = f;
+                    self.inode = inodeOf(self.io, f);
+                    self.offset = 0;
+                    self.current = true;
+                    self.behind_expect = self.seq + 1;
+                    continue;
+                }
+
+                const st = std.Io.Dir.cwd().statFile(self.io, self.path, .{}) catch
+                    return .{ .entries = try out.toOwnedSlice(alloc), .exhausted = true };
+
+                // A zero inode means we never managed to find out which
+                // file we are reading. Every comparison then says "it
+                // rotated", and that would re-read the whole generation
+                // every time the end is reached -- the same messages sent
+                // again twice a second. Not knowing means not concluding.
+                if (self.inode == 0 or @as(u64, @intCast(st.inode)) == self.inode)
+                    return .{ .entries = try out.toOwnedSlice(alloc), .exhausted = true };
+
+                // It rotated. The handle we hold followed the bytes
+                // through the rename, so it now names `.1`; finish it.
+                self.current = false;
+                continue;
+            }
+
+            const win = self.buf[0..n];
+            const nl = std.mem.lastIndexOfScalar(u8, win, '\n') orelse {
+                // A whole window and not one newline. `append` writes
+                // through a buffer half this size, so it cannot have
+                // written a line this long.
+                if (n < self.buf.len) {
+                    // Short of a window, so this is simply a line still
+                    // being written. Wait for the rest of it.
+                    return .{ .entries = try out.toOwnedSlice(alloc), .exhausted = true };
+                }
+                if (!self.warned) {
+                    self.warned = true;
+                    log.warn(
+                        "chat log: {s} holds a line longer than a window; skipping past it",
+                        .{self.path},
+                    );
+                }
+                // Stepping over it rather than stopping: the next newline
+                // in the file puts the read back on a line boundary by
+                // itself, and stopping would wedge the archive for good.
+                self.offset += n;
+                continue;
+            };
+
+            // Everything after the last newline is left where it is, and
+            // that single rule is what makes reading a file another thread
+            // is appending to safe. A line's only bare '\n' is the one
+            // that ends it, because `append` renders through
+            // `std.json.Stringify` and so every newline inside a group, an
+            // author or a message body has been escaped into two
+            // characters. So a newline means that line was finished, and a
+            // write torn in half can only ever leave a prefix behind. It
+            // is the invariant `patchTornTail` keeps for the writer, and
+            // it breaks the moment anybody puts unescaped bytes in a line.
+            var rest = win[0 .. nl + 1];
+            while (rest.len > 0) {
+                const e = std.mem.indexOfScalar(u8, rest, '\n').?;
+                const line = rest[0..e];
+                rest = rest[e + 1 ..];
+                const line_end = self.offset + e + 1;
+
+                _ = arena.reset(.retain_capacity);
+                const parsed = try parseLineStrict(arena.allocator(), line) orelse {
+                    self.offset = line_end;
+                    continue;
+                };
+
+                // No seq is no cursor, and a seq already handed out is a
+                // message already sent. Either way the line is dropped and
+                // the offset moves past it: standing still here is the one
+                // failure that never recovers.
+                if (parsed.seq == 0 or parsed.seq <= self.seq) {
+                    self.offset = line_end;
+                    continue;
+                }
+
+                if (self.behind_expect) |want| {
+                    self.behind_expect = null;
+                    if (parsed.seq > want and !self.behind_warned) {
+                        self.behind_warned = true;
+                        log.warn(
+                            "chat log: the archive fell behind a rotation; " ++
+                                "expected={d} got={d}",
+                            .{ want, parsed.seq },
+                        );
+                    }
+                }
+
+                // A `from` that will not parse reads as zero rather than
+                // dropping the line. `history` is right to drop it -- it
+                // identifies a terminal by it -- but here dropping would
+                // keep a real message out of the archive for good over a
+                // field nothing downstream is even given.
+                const from = std.fmt.parseUnsigned(Bus.Id, parsed.from, 0) catch 0;
+
+                // Braced so that the three strings stop being this block's
+                // business the moment the list has taken them on. Left in
+                // the enclosing scope their `errdefer`s would still be
+                // armed at the `toOwnedSlice` below, and an allocator that
+                // failed there would free each string twice: once from
+                // here, and once more from the page-wide `errdefer` that
+                // by then owns the very same entry.
+                {
+                    const group = try alloc.dupe(u8, parsed.group);
+                    errdefer alloc.free(group);
+                    const author = try alloc.dupe(u8, parsed.author);
+                    errdefer alloc.free(author);
+                    const text = try alloc.dupe(u8, parsed.text);
+                    errdefer alloc.free(text);
+
+                    try out.append(alloc, .{
+                        .seq = parsed.seq,
+                        .at_ms = parsed.at_ms,
+                        .group = group,
+                        .from = from,
+                        .author = author,
+                        .summary = parsed.summary,
+                        .text = text,
+                    });
+                }
+
+                // The bytes are only counted as read once the whole entry
+                // is in the page. Run out of memory at any step above and
+                // the offset is still at the start of this line: the
+                // errdefer clears the half-built page, the caller treats
+                // it as a failure and comes back from the cursor, and not
+                // one message is lost.
+                self.offset = line_end;
+                self.seq = @max(self.seq, parsed.seq);
+                taken += parsed.text.len;
+
+                if (out.items.len >= limit or taken >= max_bytes)
+                    return .{ .entries = try out.toOwnedSlice(alloc), .exhausted = false };
+            }
+        }
+    }
+
+    /// Say it once. A quiet minute is asked about twice a second, and a
+    /// line per attempt would be the only thing in the log.
+    fn warnOnce(self: *Tail, err: anyerror) void {
+        if (self.warned) return;
+        self.warned = true;
+        log.warn("chat log: could not follow {s} err={}", .{ self.path, err });
+    }
+};
+
+/// A generation, opened and positioned, on its way into a `Tail`.
+const Hit = struct {
+    file: std.Io.File,
+    inode: u64,
+    offset: u64,
+};
+
+/// Which file this is, or zero for "we could not find out".
+///
+/// Zero is a real answer rather than a failure, and everything that
+/// compares inodes is written to know it: an unknown inode must never let
+/// a comparison conclude that a rotation happened.
+fn inodeOf(io: std.Io, file: std.Io.File) u64 {
+    return if (file.stat(io)) |st| @intCast(st.inode) else |_| 0;
+}
+
+/// Open `candidate` and check the hint against it, or nothing.
+///
+/// Opened first and asked about afterwards, rather than `statFile` then
+/// open: two path lookups can have a rename between them, and then the
+/// inode that was compared is not the inode that will be read.
+fn openHinted(io: std.Io, candidate: []const u8, from: Mark) ?Hit {
+    const file = std.Io.Dir.openFileAbsolute(io, candidate, .{}) catch return null;
+
+    const st = file.stat(io) catch {
+        file.close(io);
+        return null;
+    };
+    if (@as(u64, @intCast(st.inode)) != from.inode or from.offset > st.size) {
+        file.close(io);
+        return null;
+    }
+
+    // The byte before the first unread line is the newline that ended the
+    // one before it. Anything else means the offset was measured against
+    // something this file no longer holds.
+    var b: [1]u8 = undefined;
+    const n = file.readPositionalAll(io, &b, from.offset - 1) catch {
+        file.close(io);
+        return null;
+    };
+    if (n != 1 or b[0] != '\n') {
+        file.close(io);
+        return null;
+    }
+
+    return .{ .file = file, .inode = from.inode, .offset = from.offset };
+}
+
+/// Open a forward read positioned just after `from`.
+///
+/// The hint in `from` is used only when it checks out: the file it names is
+/// still one of the two generations, the offset is inside it, and the byte
+/// before it ends a line. Otherwise the log is walked from the oldest
+/// generation, skipping everything at or below `from.seq` -- always
+/// correct, and paid once per start rather than once per batch.
+pub fn tail(
+    alloc: Allocator,
+    io: std.Io,
+    path: []const u8,
+    from: Mark,
+) Tail.Error!Tail {
+    const owned = try alloc.dupe(u8, path);
+    errdefer alloc.free(owned);
+
+    const buf = try alloc.alloc(u8, tail_chunk_bytes);
+    errdefer alloc.free(buf);
+
+    const rotated = try std.fmt.allocPrint(alloc, "{s}.1", .{path});
+    defer alloc.free(rotated);
+
+    var hit: ?Hit = null;
+    var current = true;
+
+    // A hint, but only once it has been made to prove itself. Trying the
+    // rotated generation as well is free and buys a real case: a Polter
+    // that was down while the log rotated picks up where it left off
+    // instead of walking the whole thing.
+    if (from.inode != 0 and from.offset != 0) {
+        if (openHinted(io, path, from)) |h| {
+            hit = h;
+            current = true;
+        } else if (openHinted(io, rotated, from)) |h| {
+            hit = h;
+            current = false;
+        }
+    }
+
+    // No hint worth having -- a first start, or one the log has moved on
+    // from. Walk from the oldest generation there is and let `next` drop
+    // everything at or below `from.seq` on the way past. Always right, and
+    // paid once per start rather than once per batch.
+    if (hit == null) {
+        if (std.Io.Dir.openFileAbsolute(io, rotated, .{})) |f| {
+            hit = .{ .file = f, .inode = inodeOf(io, f), .offset = 0 };
+            current = false;
+        } else |_| {}
+    }
+    if (hit == null) {
+        if (std.Io.Dir.openFileAbsolute(io, path, .{})) |f| {
+            hit = .{ .file = f, .inode = inodeOf(io, f), .offset = 0 };
+            current = true;
+        } else |err| {
+            log.warn("chat log: could not follow {s} err={}", .{ path, err });
+            return error.OpenFailed;
+        }
+    }
+
+    const h = hit.?;
+    return .{
+        .alloc = alloc,
+        .io = io,
+        .path = owned,
+        .file = h.file,
+        .inode = h.inode,
+        .offset = h.offset,
+        .seq = from.seq,
+        .buf = buf,
+        .current = current,
+        .behind_expect = null,
+    };
 }
 
 /// Why a walk stopped, which is the same question as whether the caller
@@ -1170,4 +1663,573 @@ test "a line longer than the window stops the walk instead of spinning on it" {
     try testing.expectEqual(@as(usize, 1), page.entries.len);
     try testing.expectEqualStrings("reachable", page.entries[0].text);
     try testing.expect(!page.exhausted);
+}
+
+test "a tail reads forward from nothing and hands back what was written" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 0xdeadbeef, "worker-core", 1000, false, "one");
+    _ = l.append("research", 0xdeadbeef, "other", 1001, false, "two");
+    _ = l.append("build", 0xdeadbeef, "worker-core", 1002, true, "three");
+
+    var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
+    defer t.deinit();
+
+    const page = try t.next(testing.allocator, 10, 1 << 20);
+    defer ChatLog.freePage(testing.allocator, page);
+
+    try testing.expectEqual(@as(usize, 3), page.entries.len);
+    try testing.expect(page.exhausted);
+
+    try testing.expectEqual(@as(u64, 1), page.entries[0].seq);
+    try testing.expectEqual(@as(u64, 2), page.entries[1].seq);
+    try testing.expectEqual(@as(u64, 3), page.entries[2].seq);
+
+    try testing.expectEqualStrings("one", page.entries[0].text);
+    try testing.expectEqualStrings("two", page.entries[1].text);
+    try testing.expectEqualStrings("three", page.entries[2].text);
+
+    // Every group, unfiltered: deciding who may see what is the archive's
+    // job, and it cannot make that decision about lines it never sees.
+    try testing.expectEqualStrings("build", page.entries[0].group);
+    try testing.expectEqualStrings("research", page.entries[1].group);
+    try testing.expectEqualStrings("other", page.entries[1].author);
+
+    try testing.expectEqual(@as(i64, 1002), page.entries[2].at_ms);
+    try testing.expectEqual(@as(Bus.Id, 0xdeadbeef), page.entries[0].from);
+    try testing.expect(!page.entries[0].summary);
+    try testing.expect(page.entries[2].summary);
+
+    try testing.expectEqual(@as(u64, 3), t.seq);
+}
+
+test "a tail that has caught up says so and picks up the next line later" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "worker", 1000, false, "one");
+    _ = l.append("build", 1, "worker", 1001, false, "two");
+
+    var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
+    defer t.deinit();
+
+    {
+        const page = try t.next(testing.allocator, 10, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 2), page.entries.len);
+        try testing.expect(page.exhausted);
+    }
+
+    // A quiet minute is an ordinary answer, not a failure.
+    {
+        const page = try t.next(testing.allocator, 10, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 0), page.entries.len);
+        try testing.expect(page.exhausted);
+    }
+
+    // And a read-only handle sees bytes another handle wrote after it was
+    // opened, which is the whole basis for not sharing the writer's.
+    _ = l.append("build", 1, "worker", 1002, false, "three");
+    {
+        const page = try t.next(testing.allocator, 10, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqual(@as(u64, 3), page.entries[0].seq);
+        try testing.expectEqualStrings("three", page.entries[0].text);
+    }
+}
+
+test "a tail stops at the limit and resumes exactly there" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    for (0..5) |i| {
+        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi");
+    }
+
+    var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
+    defer t.deinit();
+
+    for ([_]u64{ 1, 3 }) |first| {
+        const page = try t.next(testing.allocator, 2, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 2), page.entries.len);
+        try testing.expectEqual(first, page.entries[0].seq);
+        try testing.expectEqual(first + 1, page.entries[1].seq);
+        try testing.expect(!page.exhausted);
+    }
+    {
+        const page = try t.next(testing.allocator, 2, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqual(@as(u64, 5), page.entries[0].seq);
+        try testing.expect(page.exhausted);
+    }
+
+    // A budget smaller than a single message still buys one message. The
+    // alternative is an archive that returns an empty page forever the
+    // first time somebody pastes something large.
+    var t2 = try ChatLog.tail(testing.allocator, io, l.path, .{});
+    defer t2.deinit();
+    const page = try t2.next(testing.allocator, 100, 1);
+    defer ChatLog.freePage(testing.allocator, page);
+    try testing.expectEqual(@as(usize, 1), page.entries.len);
+    try testing.expectEqual(@as(u64, 1), page.entries[0].seq);
+}
+
+test "a half written line is not a line yet" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "worker", 1000, false, "one");
+    _ = l.append("build", 1, "worker", 1001, false, "two");
+
+    var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
+    defer t.deinit();
+
+    {
+        const page = try t.next(testing.allocator, 10, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 2), page.entries.len);
+    }
+
+    // What a write torn in half leaves on the disk. `written` is not moved
+    // on, because the writer has not finished either.
+    const whole = "{\"seq\":3,\"at_ms\":1002,\"group\":\"build\"," ++
+        "\"from\":\"0x0000000000000001\",\"author\":\"worker\",\"text\":\"three\"}\n";
+    const half = whole[0..30];
+    try l.file.writePositionalAll(io, half, l.written);
+
+    {
+        const page = try t.next(testing.allocator, 10, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 0), page.entries.len);
+        try testing.expect(page.exhausted);
+    }
+
+    try l.file.writePositionalAll(io, whole[30..], l.written + half.len);
+    l.written += whole.len;
+
+    {
+        const page = try t.next(testing.allocator, 10, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqual(@as(u64, 3), page.entries[0].seq);
+        try testing.expectEqualStrings("three", page.entries[0].text);
+    }
+}
+
+test "a tail rolls out of the rotated generation into the new one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const path = try defaultPath(alloc, dir);
+    const rotated = try std.fmt.allocPrint(alloc, "{s}.1", .{path});
+
+    var t: Tail = undefined;
+    var old_inode: u64 = 0;
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("build", 1, "worker", 1000, false, "one");
+        _ = l.append("build", 1, "worker", 1001, false, "two");
+
+        t = try ChatLog.tail(testing.allocator, io, path, .{});
+        old_inode = t.inode;
+
+        const page = try t.next(testing.allocator, 10, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 2), page.entries.len);
+
+        // Written after the read caught up and before the rename: these
+        // bytes are only reachable through the handle already open on
+        // them, which is why the end of a generation has to be read before
+        // anything is concluded from an inode.
+        _ = l.append("build", 1, "worker", 1002, false, "three");
+    }
+    defer t.deinit();
+
+    try std.Io.Dir.renameAbsolute(path, rotated, io);
+
+    var l2 = try ChatLog.open(testing.allocator, io, dir);
+    defer l2.deinit();
+    try testing.expectEqual(@as(u64, 4), l2.append("build", 1, "worker", 1003, false, "four"));
+
+    const page = try t.next(testing.allocator, 10, 1 << 20);
+    defer ChatLog.freePage(testing.allocator, page);
+
+    try testing.expectEqual(@as(usize, 2), page.entries.len);
+    try testing.expectEqual(@as(u64, 3), page.entries[0].seq);
+    try testing.expectEqualStrings("three", page.entries[0].text);
+    try testing.expectEqual(@as(u64, 4), page.entries[1].seq);
+    try testing.expectEqualStrings("four", page.entries[1].text);
+
+    // The numbering did not go backwards over the switch, and the mark now
+    // names the generation being appended to.
+    try testing.expectEqual(@as(u64, 4), t.seq);
+    try testing.expect(t.current);
+    try testing.expect(t.mark().inode != old_inode);
+    try testing.expect(t.mark().inode != 0);
+}
+
+test "a mark taken and reopened lands on the same line" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    for (0..4) |i| {
+        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi");
+    }
+
+    var m: Mark = undefined;
+    {
+        var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
+        defer t.deinit();
+
+        const page = try t.next(testing.allocator, 2, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(u64, 2), page.entries[1].seq);
+        m = t.mark();
+    }
+    try testing.expect(m.offset != 0);
+
+    var t = try ChatLog.tail(testing.allocator, io, l.path, m);
+    defer t.deinit();
+
+    // The hint was believed, rather than a scan happening to land right.
+    try testing.expectEqual(m.offset, t.offset);
+    try testing.expectEqual(m.inode, t.inode);
+
+    const page = try t.next(testing.allocator, 10, 1 << 20);
+    defer ChatLog.freePage(testing.allocator, page);
+    try testing.expectEqual(@as(usize, 2), page.entries.len);
+    try testing.expectEqual(@as(u64, 3), page.entries[0].seq);
+    try testing.expectEqual(@as(u64, 4), page.entries[1].seq);
+}
+
+test "a mark whose offset points at nonsense still finds the place" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    for (0..4) |i| {
+        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi");
+    }
+
+    var m: Mark = undefined;
+    {
+        var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
+        defer t.deinit();
+        const page = try t.next(testing.allocator, 2, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        m = t.mark();
+    }
+
+    const spoiled = [_]Mark{
+        // Inside a line rather than after one.
+        .{ .seq = m.seq, .offset = m.offset - 3, .inode = m.inode },
+        // Measured against some other file entirely.
+        .{ .seq = m.seq, .offset = m.offset, .inode = 999_999 },
+    };
+
+    for (spoiled) |bad| {
+        var t = try ChatLog.tail(testing.allocator, io, l.path, bad);
+        defer t.deinit();
+
+        // The hint was refused, so the walk starts at the front.
+        try testing.expectEqual(@as(u64, 0), t.offset);
+
+        // And being right never depended on the hint being right.
+        const page = try t.next(testing.allocator, 10, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 2), page.entries.len);
+        try testing.expectEqual(@as(u64, 3), page.entries[0].seq);
+        try testing.expectEqual(@as(u64, 4), page.entries[1].seq);
+    }
+}
+
+test "a mark from a file that has since rotated is not believed" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const path = try defaultPath(alloc, dir);
+    const rotated = try std.fmt.allocPrint(alloc, "{s}.1", .{path});
+
+    var m: Mark = undefined;
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("build", 1, "worker", 1000, false, "one");
+        _ = l.append("build", 1, "worker", 1001, false, "two");
+        _ = l.append("build", 1, "worker", 1002, false, "three");
+
+        var t = try ChatLog.tail(testing.allocator, io, path, .{});
+        defer t.deinit();
+        const page = try t.next(testing.allocator, 2, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(u64, 2), page.entries[1].seq);
+        m = t.mark();
+    }
+
+    // One rotation. The hint still names a file that is there, so it is
+    // still worth having -- it just names the one moved aside.
+    try std.Io.Dir.renameAbsolute(path, rotated, io);
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("build", 1, "worker", 1003, false, "four");
+        _ = l.append("build", 1, "worker", 1004, false, "five");
+
+        var t = try ChatLog.tail(testing.allocator, io, path, m);
+        defer t.deinit();
+        try testing.expectEqual(m.offset, t.offset);
+        try testing.expect(!t.current);
+
+        const page = try t.next(testing.allocator, 10, 1 << 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 3), page.entries.len);
+        try testing.expectEqual(@as(u64, 3), page.entries[0].seq);
+        try testing.expectEqual(@as(u64, 4), page.entries[1].seq);
+        try testing.expectEqual(@as(u64, 5), page.entries[2].seq);
+    }
+
+    // A second rotation writes over the generation the hint was measured
+    // in. Now neither file matches, and the only honest thing left to do
+    // is walk from the oldest generation there is.
+    try std.Io.Dir.renameAbsolute(path, rotated, io);
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    _ = l.append("build", 1, "worker", 1005, false, "six");
+
+    var t = try ChatLog.tail(testing.allocator, io, path, m);
+    defer t.deinit();
+    try testing.expectEqual(@as(u64, 0), t.offset);
+
+    const page = try t.next(testing.allocator, 10, 1 << 20);
+    defer ChatLog.freePage(testing.allocator, page);
+
+    // Four and five out of the rotated generation, six out of the current
+    // one, and nothing at or below the mark repeated.
+    try testing.expectEqual(@as(usize, 3), page.entries.len);
+    try testing.expectEqual(@as(u64, 4), page.entries[0].seq);
+    try testing.expectEqual(@as(u64, 5), page.entries[1].seq);
+    try testing.expectEqual(@as(u64, 6), page.entries[2].seq);
+}
+
+test "a line with no seq is skipped without stalling the read" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "worker", 1000, false, "one");
+
+    // What an older Polter left behind, and what a stray editor might.
+    const legacy = "{\"at_ms\":1001,\"group\":\"build\",\"from\":\"0x0000000000000001\"," ++
+        "\"author\":\"worker\",\"text\":\"legacy\"}\n";
+    try l.file.writePositionalAll(io, legacy, l.written);
+    l.written += legacy.len;
+
+    const junk = "not json at all\n";
+    try l.file.writePositionalAll(io, junk, l.written);
+    l.written += junk.len;
+
+    _ = l.append("build", 1, "worker", 1002, false, "three");
+
+    var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
+    defer t.deinit();
+
+    const page = try t.next(testing.allocator, 10, 1 << 20);
+    defer ChatLog.freePage(testing.allocator, page);
+
+    // Two, and the second of them is the proof that the offset moved past
+    // the unusable lines rather than stopping on them.
+    try testing.expectEqual(@as(usize, 2), page.entries.len);
+    try testing.expectEqual(@as(u64, 1), page.entries[0].seq);
+    try testing.expectEqual(@as(u64, 2), page.entries[1].seq);
+    try testing.expectEqualStrings("three", page.entries[1].text);
+    try testing.expect(page.exhausted);
+}
+
+test "defaultPath is where open puts the file" {
+    // The archive works out the path itself, from another thread, so the
+    // two ways of naming the file have to be the same one.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const path = try defaultPath(alloc, dir);
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    try testing.expectEqualStrings(path, l.path);
+
+    _ = l.append("build", 1, "worker", 1000, false, "one");
+
+    const st = try std.Io.Dir.cwd().statFile(io, path, .{});
+    try testing.expect(st.size > 0);
+}
+
+test "a tail on a log that is not there says so" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    // An archive can be switched on before anybody has said anything. It
+    // has to be told that plainly, because the answer is "come back in a
+    // moment", not "there is nothing to archive" -- and the two look the
+    // same from an empty page.
+    const path = try defaultPath(alloc, dir);
+    try testing.expectError(
+        error.OpenFailed,
+        ChatLog.tail(testing.allocator, io, path, .{}),
+    );
+
+    // And once there is a log, the same call finds it.
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    var t = try ChatLog.tail(testing.allocator, io, path, .{});
+    t.deinit();
+}
+
+/// One forward read, start to finish, on whatever allocator it is handed.
+fn tailOnePage(alloc: Allocator, io: std.Io, path: []const u8) !void {
+    var t = try ChatLog.tail(alloc, io, path, .{});
+    defer t.deinit();
+
+    // A limit below what is there, so the page is finished by
+    // `toOwnedSlice` rather than by running out of file: that is the one
+    // exit where a half-built page and its strings are both still live.
+    const page = try t.next(alloc, 3, 1 << 20);
+    ChatLog.freePage(alloc, page);
+}
+
+test "a forward read that runs out of memory leaves nothing behind" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    for (0..5) |i| {
+        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi");
+    }
+
+    // Every allocation in the path failed in turn. The page is built one
+    // string at a time out of a file that is being appended to, so a leak
+    // here would be a slow one that nothing else in the suite could see.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        tailOnePage,
+        .{ io, l.path },
+    );
 }

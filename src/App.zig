@@ -80,6 +80,16 @@ poltergeist_recall: poltergeistpkg.Session.Recall = .{},
 /// night has nothing to read, which is the case the whole feature is for.
 chat_log: ?poltergeistpkg.ChatLog = null,
 
+/// The resident archive plugins, one thread each. Empty unless one is
+/// installed and switched on, which is the ordinary case.
+poltergeist_archives: std.ArrayListUnmanaged(*poltergeistpkg.Archive) = .empty,
+
+/// Whether the archives have been looked for. Testing the list instead
+/// would not do: with no archive plugin installed it stays empty for ever,
+/// and every config reload would re-read every plugin's settings file to
+/// find that out again.
+poltergeist_archives_started: bool = false,
+
 /// Baseline for the monotonic clock the bus is given. Taken on the first
 /// report rather than at startup so it costs nothing when unused.
 poltergeist_epoch: ?std.Io.Timestamp = null,
@@ -230,6 +240,14 @@ pub fn deinit(self: *App) void {
     self.surfaces.deinit(self.alloc);
 
     if (self.poltergeist_server) |*srv| srv.deinit();
+
+    // First, and joined before anything else is freed. Strictly each of
+    // these borrows nothing from the app -- it copied what it needed and
+    // opened its own handle on the log -- but the order says plainly who
+    // has to have stopped before the rest of this runs.
+    for (self.poltergeist_archives.items) |archive| archive.destroy();
+    self.poltergeist_archives.deinit(self.alloc);
+
     if (self.chat_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
@@ -280,6 +298,15 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
     self.poltergeist_notify_window =
         poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
     self.ensurePlugins();
+
+    // Here for the ordering, not for the reload. The archives are looked
+    // for exactly once, and the two things that have to have happened
+    // first -- the log opening and the plugin list being read -- arrive in
+    // whichever order the apprt happens to produce; this is the second of
+    // the two places that notices they both have. Once they have been
+    // looked for it does nothing, so a plugin installed while Polter is
+    // running still waits for a restart, the same as a notification one.
+    self.ensureArchive();
 
     // Moved into each plugin's own file, so that one plugin's state lives in
     // one place and a settings UI can own it. Said plainly rather than
@@ -459,7 +486,10 @@ pub fn ensurePlugins(self: *App) void {
     self.poltergeist_plugins = found.items;
     self.poltergeist_plugin_arena = arena;
 
-    log.info("poltergeist: {d} notification plugin(s) ready", .{found.items.len});
+    log.info("poltergeist: {d} notification and {d} archive plugin(s) ready", .{
+        poltergeistpkg.notify.count(found.items, .notify),
+        poltergeistpkg.notify.count(found.items, .archive),
+    });
 }
 
 /// Where plugins live, nearest first.
@@ -683,6 +713,117 @@ pub fn ensureChatLog(self: *App, want: bool) void {
             self.poltergeist_recall = .open(self.alloc, io, p);
         }
     }
+
+    // The log has just opened, which is the earliest moment there is
+    // anything for an archive plugin to follow.
+    self.ensureArchive();
+}
+
+/// Start the resident archive plugins, if any are installed and switched on.
+///
+/// One thread and one child process each, for as long as the app is up.
+/// They copy the chat log somewhere that outlives it; the log stays the
+/// only source of truth and a plugin that dies loses nothing, because the
+/// cursor it wrote down does not move. See `poltergeist/Archive.zig` and
+/// `docs/poltergeist/storage.md`.
+///
+/// Nothing here fails quietly. A plugin that will not start, or that
+/// declares no groups and so has nothing to be given, is named in a
+/// warning -- an archive that silently does not run is the one failure the
+/// whole feature is supposed to be proof against.
+pub fn ensureArchive(self: *App) void {
+    if (self.poltergeist_archives_started) return;
+
+    // Nothing is being written down, so there is nothing to copy.
+    if (self.chat_log == null) return;
+
+    // Asked for rather than assumed, and this matters: on the first surface
+    // `ensureChatLog` runs *before* `ensurePlugins`, so the plugin list
+    // would still be empty here and every archive would silently never
+    // start. Loading is guarded on its own arena and costs nothing the
+    // second time, which is cheaper than depending on somebody else's call
+    // order.
+    self.ensurePlugins();
+    if (self.poltergeist_plugin_arena == null) return;
+
+    // Set before the loop, not after: a failure part way through must not
+    // leave this to be tried again and start a second copy of everything
+    // that did work.
+    self.poltergeist_archives_started = true;
+
+    const io = global.io();
+
+    var environ_map = global.environMap() catch |err| {
+        log.warn("poltergeist: no environment for the archive err={}", .{err});
+        return;
+    };
+    defer environ_map.deinit();
+
+    var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+    defer scratch.deinit();
+    const alloc = scratch.allocator();
+
+    const state_dir = internal_os.xdg.state(
+        io,
+        alloc,
+        &environ_map,
+        .{ .subdir = "polter" },
+    ) catch |err| {
+        log.warn("poltergeist: no state directory for the archive err={}", .{err});
+        return;
+    };
+
+    for (self.poltergeist_plugins) |manifest| {
+        if (manifest.kind != .archive) continue;
+
+        if (manifest.wants.empty()) {
+            log.warn(
+                "poltergeist: plugin {s} declares no groups, so it is not " ++
+                    "started; add \"wants\": {{\"groups\": [\"*\"]}} to its plugin.json",
+                .{manifest.key},
+            );
+            continue;
+        }
+
+        // Read again rather than remembered: `ensurePlugins` looks only at
+        // whether a plugin is switched on and throws its parameters away.
+        // A resident plugin's database lives in those.
+        const settings = self.pluginSettings(alloc, io, &environ_map, manifest.key);
+
+        // A fresh map each, and deliberately no `defer`: `start` takes the
+        // environment over the moment it is called, on its failure paths
+        // too.
+        const env = global.environMap() catch continue;
+
+        const archive = poltergeistpkg.Archive.start(self.alloc, io, .{
+            .key = manifest.key,
+            .exec = manifest.exec,
+            .timeout_ms = manifest.timeout_ms,
+            .groups = manifest.wants.groups,
+            .params = settings.params,
+            .state_dir = state_dir,
+            .environ = env,
+        }) catch |err| {
+            log.warn(
+                "poltergeist: plugin {s} would not start err={}",
+                .{ manifest.key, err },
+            );
+            continue;
+        };
+
+        self.poltergeist_archives.append(self.alloc, archive) catch {
+            // Never orphan a running thread over a failed append.
+            archive.destroy();
+            continue;
+        };
+    }
+
+    // Only when there is something to say, so the ordinary install -- which
+    // has no archive plugin at all -- stays quiet.
+    if (self.poltergeist_archives.items.len > 0) log.info(
+        "poltergeist: {d} archive plugin(s) running",
+        .{self.poltergeist_archives.items.len},
+    );
 }
 
 /// Open the agent socket if the config wants it and it is not open yet.
@@ -1310,7 +1451,11 @@ fn notifyUser(
         event,
         self.poltergeist_notify_window,
         localMinuteNow(),
-        self.poltergeist_plugins.len,
+
+        // The notification channels alone. The list holds every kind now,
+        // and an installed archive plugin counted here would have this say
+        // a message went somewhere it did not.
+        poltergeistpkg.notify.count(self.poltergeist_plugins, .notify),
     )) {
         .nowhere_to_send => return alloc.dupe(
             u8,

@@ -33,6 +33,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
+const reap = @import("reap.zig");
+
 const log = std.log.scoped(.poltergeist);
 
 /// Longest a resolver may take. Unlocking a vault can prompt the user, so
@@ -162,6 +164,21 @@ fn runCapturing(
         return error.Unresolved;
     };
 
+    // The bound this module promises, actually applied. Neither of the two
+    // waits below has a clock of its own: `streamRemaining` returns when
+    // the pipe closes and `wait` when the process ends, so a resolver that
+    // simply never finishes -- a keychain dialog nobody is at the machine
+    // to answer, an `op` blocked on a terminal that is not there -- holds
+    // this thread for as long as the machine is up. That thread is not
+    // always a one-shot notification any more: the resident archive
+    // re-resolves on every restart, and its shutdown joins this.
+    //
+    // Armed before the read rather than after it, because the read is the
+    // half that blocks first; killing the child is what closes the pipe and
+    // ends it.
+    var reaper: reap.Reaper = .init(io, "secret resolver", child.id, timeout_ms);
+    const clock = std.Thread.spawn(.{}, reap.Reaper.run, .{&reaper}) catch null;
+
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
 
@@ -175,8 +192,21 @@ fn runCapturing(
 
     const term = child.wait(io) catch |err| {
         log.warn("secret: resolver would not finish err={}", .{err});
+        reaper.retire();
+        if (clock) |t| t.join();
         return error.Unresolved;
     };
+
+    reaper.retire();
+    if (clock) |t| t.join();
+
+    // Said plainly rather than folded into "did not exit normally": a
+    // resolver that ran out of time and one that crashed want different
+    // things done about them.
+    if (reaper.killed()) {
+        log.warn("secret: resolver gave up after {d}ms", .{timeout_ms});
+        return error.Unresolved;
+    }
 
     switch (term) {
         .exited => |code| if (code != 0) {

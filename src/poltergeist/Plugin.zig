@@ -27,6 +27,7 @@ const Plugin = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const reap = @import("reap.zig");
 const secret = @import("secret.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -40,12 +41,68 @@ const default_timeout_ms: u64 = 10 * std.time.ms_per_s;
 
 /// What a plugin is for.
 ///
-/// Only one value today. The field exists so that the host can tell kinds
-/// apart before there is a second one -- adding a variant should not mean
-/// discovering that every manifest has to be rewritten.
+/// The kind decides the lifetime, and the lifetimes are not alike enough to
+/// share one: what separates them is how dense the events are.
 pub const Kind = enum {
-    /// Sends a message somewhere the user will see it.
+    /// Sends a message somewhere the user will see it. One process per
+    /// notification: a few an hour, so a fork each costs nothing that
+    /// matters, and a plugin that hangs takes only its own notification
+    /// down with it.
     notify,
+
+    /// Follows the chat log and copies it somewhere else. **Resident**:
+    /// the events are continuous, and rebuilding a database connection per
+    /// message is not a thing that can be done. It is handed a stream of
+    /// batches on stdin and answers each one, rather than being started and
+    /// judged by an exit code. See `Archive.zig` and
+    /// `docs/poltergeist/storage.md`.
+    archive,
+};
+
+/// What a plugin says it needs.
+///
+/// **Declared so the host has something to refuse against**, not as a
+/// certificate of good behaviour. Only `groups` is enforced, and it is
+/// enforced completely: the batches a plugin is fed are built from this
+/// list, and a plugin has no second channel to the log. `network` and
+/// `exec` are declaration and disclosure only -- they are what a user reads
+/// before installing, and what an audit has to go on. They are **not** a
+/// sandbox and nothing here stops a plugin doing either. Saying that
+/// plainly is the point: `"network": false` must never be read as "it
+/// cannot reach the network". Real isolation has to be designed together
+/// with signing; see `docs/poltergeist/plugins.md`.
+pub const Wants = struct {
+    /// Which chat groups may appear in what this plugin is given. A single
+    /// element `"*"` means all of them. Empty means none, which is what a
+    /// manifest that declares nothing gets.
+    ///
+    /// Borrowed from the arena the manifest was loaded into. Anything that
+    /// outlives one pass over the plugin directory has to copy these: the
+    /// arena is rebuilt whole every time the plugin list is.
+    groups: []const []const u8 = &.{},
+
+    network: bool = false,
+
+    exec: []const []const u8 = &.{},
+
+    /// Whether `name` is a group this plugin asked for.
+    ///
+    /// Whole-string equality, and `"*"` counts only as an entire element.
+    /// No wildcard language, because one needs escaping rules and group
+    /// names come out of a chat window and may hold anything.
+    pub fn allows(self: Wants, name: []const u8) bool {
+        for (self.groups) |g| {
+            if (std.mem.eql(u8, g, "*")) return true;
+            if (std.mem.eql(u8, g, name)) return true;
+        }
+        return false;
+    }
+
+    /// True when nothing was asked for. An archive that wants nothing has
+    /// nothing to do, and the host says so rather than running it empty.
+    pub fn empty(self: Wants) bool {
+        return self.groups.len == 0;
+    }
 };
 
 /// A plugin as declared by its manifest.
@@ -64,6 +121,10 @@ pub const Manifest = struct {
     exec: []const u8,
 
     timeout_ms: u64 = default_timeout_ms,
+
+    /// Everything declared in `wants`. Absent from the manifest reads as
+    /// wanting nothing; see `Wants`.
+    wants: Wants = .{},
 };
 
 /// Load a plugin's manifest from a directory.
@@ -136,6 +197,7 @@ pub fn load(
             .integer => |n| if (n > 0) @intCast(n) else default_timeout_ms,
             else => default_timeout_ms,
         },
+        .wants = wantsOf(arena, key, obj),
     };
 }
 
@@ -144,6 +206,88 @@ fn stringField(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
         .string => |v| v,
         else => null,
     };
+}
+
+/// What the manifest declares under `wants`.
+///
+/// A `wants` that will not read is not worth failing the load over: one
+/// typo would make a whole plugin vanish, which is harder for its author to
+/// notice than a plugin being handed nothing. It reads as asking for
+/// nothing instead -- the direction that cannot give somebody messages they
+/// never asked for.
+fn wantsOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Wants {
+    const w = switch (obj.get("wants") orelse return .{}) {
+        .object => |o| o,
+        else => {
+            log.warn(
+                "plugin {s}: wants is not an object, so it is read as asking for nothing",
+                .{key},
+            );
+            return .{};
+        },
+    };
+    return .{
+        .groups = stringsOf(arena, key, w, "groups"),
+        .network = switch (w.get("network") orelse .null) {
+            .bool => |b| b,
+            else => false,
+        },
+        .exec = stringsOf(arena, key, w, "exec"),
+    };
+}
+
+/// The strings in one array field, passing over whatever is not one.
+///
+/// An entry of the wrong type does not void the rest: a declaration that can
+/// be read in part is still a declaration, and the part that reads is what
+/// its author meant. Running out of memory ends the list early for the same
+/// reason that is safe -- a list cut short asks for less than was written
+/// down, never for more.
+fn stringsOf(
+    arena: Allocator,
+    key: []const u8,
+    obj: std.json.ObjectMap,
+    name: []const u8,
+) []const []const u8 {
+    const items = switch (obj.get(name) orelse return &.{}) {
+        .array => |a| a.items,
+        else => {
+            log.warn(
+                "plugin {s}: wants.{s} is not a list, so it is read as naming nothing",
+                .{ key, name },
+            );
+            return &.{};
+        },
+    };
+
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    var skipped: usize = 0;
+    for (items) |item| {
+        const s = switch (item) {
+            .string => |v| v,
+            else => {
+                skipped += 1;
+                continue;
+            },
+        };
+        out.append(arena, s) catch {
+            // Cut short rather than voided, because a shorter list asks for
+            // less than was written down and never for more. Said out loud
+            // all the same: a declaration that quietly means something
+            // narrower than its author wrote is the one kind of narrowing
+            // nobody can debug.
+            log.warn(
+                "plugin {s}: ran out of memory reading wants.{s}, so only the first {d} of {d} are honoured",
+                .{ key, name, out.items.len, items.len },
+            );
+            break;
+        };
+    }
+    if (skipped > 0) log.warn(
+        "plugin {s}: passed over {d} entries in wants.{s} that are not text",
+        .{ key, skipped, name },
+    );
+    return out.items;
 }
 
 /// One parameter as configured. The value may be a reference; see
@@ -405,92 +549,29 @@ pub fn run(
 
     // Waiting has no timeout of its own, so the clock runs on another
     // thread. It signals the child; the wait below then returns on its own
-    // because the process is gone.
-    //
-    // A signal rather than `Child.kill`, which also reaps -- and reaping
-    // from over here would leave the `wait` below with no child to wait
-    // for. One reaper, one waiter.
-    var killer: Killer = .{
-        .pid = child.id,
-        .io = io,
-        .deadline_ms = manifest.timeout_ms,
-        .key = manifest.key,
-    };
-    const thread = std.Thread.spawn(.{}, Killer.run, .{&killer}) catch null;
+    // because the process is gone. Why a signal and not `Child.kill`, and
+    // why the reaper holds a lock, are both in `reap.zig` -- the same
+    // machinery keeps the resident archive plugin in line.
+    var reaper: reap.Reaper = .init(io, manifest.key, child.id, manifest.timeout_ms);
+    const thread = std.Thread.spawn(.{}, reap.Reaper.run, .{&reaper}) catch null;
 
     const term = child.wait(io) catch |err| {
         log.warn("plugin {s}: could not wait err={}", .{ manifest.key, err });
-        killer.retire();
+        reaper.retire();
         if (thread) |t| t.join();
         return .unstartable;
     };
 
-    killer.retire();
+    reaper.retire();
     if (thread) |t| t.join();
 
-    if (killer.fired.load(.acquire)) return .timed_out;
+    if (reaper.killed()) return .timed_out;
 
     return switch (term) {
         .exited => |code| if (code == 0) .done else .refused,
         else => .refused,
     };
 }
-
-/// Signals the child once the deadline passes, unless the wait finished
-/// first.
-///
-/// Polls rather than sleeping out the whole deadline, so a plugin that
-/// finishes in 50ms does not leave a thread parked for ten seconds.
-///
-/// The lock is what makes signalling safe: `retire` is called once the
-/// waiter has reaped, and takes the same lock, so a signal is either sent
-/// while the process is definitely alive or not sent at all. Without it
-/// there is a window where the pid has been reaped and reissued, and the
-/// signal would land on somebody else's process.
-const Killer = struct {
-    pid: ?std.process.Child.Id,
-    io: std.Io,
-    deadline_ms: u64,
-    key: []const u8,
-
-    mutex: std.Io.Mutex = .init,
-    fired: std.atomic.Value(bool) = .init(false),
-
-    const tick_ms: u64 = 50;
-
-    /// The child has been reaped; there is no longer anything to signal.
-    fn retire(self: *Killer) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.pid = null;
-    }
-
-    fn run(self: *Killer) void {
-        var waited: u64 = 0;
-        while (waited < self.deadline_ms) {
-            {
-                self.mutex.lockUncancelable(self.io);
-                defer self.mutex.unlock(self.io);
-                if (self.pid == null) return;
-            }
-            std.Io.sleep(self.io, .fromMilliseconds(tick_ms), .awake) catch return;
-            waited += tick_ms;
-        }
-
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        const pid = self.pid orelse return;
-
-        log.warn(
-            "plugin {s}: gave up after {d}ms",
-            .{ self.key, self.deadline_ms },
-        );
-        self.fired.store(true, .release);
-        std.posix.kill(pid, std.posix.SIG.KILL) catch |err| {
-            log.warn("plugin {s}: could not stop it err={}", .{ self.key, err });
-        };
-    }
-};
 
 // -- tests ------------------------------------------------------------------
 
@@ -516,6 +597,25 @@ fn scriptFor(arena: Allocator, io: std.Io, body: []const u8) ![]const u8 {
     f.close(io);
 
     return std.fmt.allocPrint(arena, "{s}/run.sh", .{dir});
+}
+
+/// Write a throwaway `plugin.json` and give back its directory, owned by
+/// `arena`. The caller deletes it.
+fn manifestFor(arena: Allocator, io: std.Io, json: []const u8) ![]const u8 {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+
+    const dir = try std.fmt.allocPrint(arena, "/tmp/polter-man-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+
+    var f = try d.createFile(io, "plugin.json", .{});
+    try f.writeStreamingAll(io, json);
+    f.close(io);
+
+    return dir;
 }
 
 test "a plugin that exits zero has done the job" {
@@ -891,4 +991,182 @@ test "switched off means off, however many parameters are set" {
 
     try testing.expect(!settings.enabled);
     try testing.expectEqual(@as(usize, 1), settings.params.len);
+}
+
+test "a manifest may declare an archive" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"chat-archive","kind":"archive","exec":"archive.sh"}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    try testing.expectEqual(Kind.archive, m.kind);
+    try testing.expect(m.wants.empty());
+}
+
+test "what a manifest wants is read back" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"chat-archive","kind":"archive","exec":"a.sh",
+        \\ "wants":{"groups":["build","ops"],"network":true,"exec":["psql"]}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    try testing.expectEqual(@as(usize, 2), m.wants.groups.len);
+    try testing.expectEqualStrings("build", m.wants.groups[0]);
+    try testing.expectEqualStrings("ops", m.wants.groups[1]);
+    try testing.expect(m.wants.network);
+    try testing.expectEqual(@as(usize, 1), m.wants.exec.len);
+    try testing.expectEqualStrings("psql", m.wants.exec[0]);
+
+    try testing.expect(m.wants.allows("build"));
+    try testing.expect(m.wants.allows("ops"));
+    try testing.expect(!m.wants.allows("secrets"));
+    try testing.expect(!m.wants.empty());
+}
+
+test "a manifest that declares nothing wants nothing" {
+    // The one change that would quietly void the whole feature is reading
+    // silence as `["*"]` because an archive "is not getting anything". That
+    // hands every group to the one manifest that never asked for a single
+    // one, which is the entire thing the declaration exists to stop. A
+    // plugin that is fed nothing is loud about it -- `Archive.start`
+    // refuses and the user is told which line to add.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"chat-archive","kind":"archive","exec":"a.sh"}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    try testing.expect(m.wants.empty());
+    try testing.expect(!m.wants.allows("build"));
+    try testing.expect(!m.wants.allows("*"));
+    try testing.expect(!m.wants.network);
+    try testing.expectEqual(@as(usize, 0), m.wants.exec.len);
+}
+
+test "a star means every group" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"chat-archive","kind":"archive","exec":"a.sh","wants":{"groups":["*"]}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    try testing.expect(m.wants.allows("build"));
+    try testing.expect(m.wants.allows("anything at all"));
+    try testing.expect(!m.wants.empty());
+}
+
+test "a wants that will not parse wants nothing" {
+    // Both of these load. A typo in one field may not delete a plugin: its
+    // author would find a plugin that vanished harder to explain than a
+    // plugin that is handed nothing and says so in the log.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const not_object = try manifestFor(alloc, io,
+        \\{"key":"chat-archive","kind":"archive","exec":"a.sh","wants":7}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, not_object) catch {};
+
+    const m = try load(alloc, io, not_object);
+    try testing.expect(m.wants.empty());
+
+    const bare_string = try manifestFor(alloc, io,
+        \\{"key":"chat-archive","kind":"archive","exec":"a.sh","wants":{"groups":"build"}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, bare_string) catch {};
+
+    // A bare string is not a list of one group. Somebody who got the type
+    // wrong has not said which groups they want, and reading it as `build`
+    // is the same widening as reading silence as `*`, only smaller.
+    const b = try load(alloc, io, bare_string);
+    try testing.expect(b.wants.empty());
+    try testing.expect(!b.wants.allows("build"));
+}
+
+test "a group not asked for is not allowed" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"chat-archive","kind":"archive","exec":"a.sh","wants":{"groups":["build"]}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    try testing.expect(m.wants.allows("build"));
+    try testing.expect(!m.wants.allows("ops"));
+
+    // Whole names, never prefixes: a group called `build` must not drag in
+    // one called `build2`, and matching by prefix would.
+    try testing.expect(!m.wants.allows("bui"));
+    try testing.expect(!m.wants.allows("build2"));
+    try testing.expect(!m.wants.allows(""));
+}
+
+test "junk in the groups list is skipped, not fatal" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"chat-archive","kind":"archive","exec":"a.sh",
+        \\ "wants":{"groups":["build",7,"ops"]}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    try testing.expectEqual(@as(usize, 2), m.wants.groups.len);
+    try testing.expectEqualStrings("build", m.wants.groups[0]);
+    try testing.expectEqualStrings("ops", m.wants.groups[1]);
+    try testing.expect(m.wants.allows("build"));
+    try testing.expect(m.wants.allows("ops"));
+    try testing.expect(!m.wants.allows("7"));
 }
