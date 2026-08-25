@@ -299,8 +299,17 @@ const Chat = struct {
     io: std.Io,
     host: *Host,
 
-    /// The messages and member names being shown. Reset on each refresh.
+    /// Names and member lists, rebuilt on each refresh.
     arena: std.heap.ArenaAllocator,
+
+    /// Messages, which outlive a refresh.
+    ///
+    /// Separate from `arena` because the conversation accumulates: each
+    /// poll asks only for what is new, so anything already shown has to
+    /// still be here. Resetting this with the rest is what left the view
+    /// frozen on the first screenful once replies started being capped --
+    /// every poll asked from zero and got the same oldest batch back.
+    store: std.heap.ArenaAllocator,
 
     /// Strings made while drawing one frame, and nothing else.
     ///
@@ -366,6 +375,7 @@ const Chat = struct {
             .io = io,
             .host = host,
             .arena = .init(alloc),
+            .store = .init(alloc),
             .frame = .init(alloc),
             .tty = try .init(io, tty_buf),
             .vx = undefined,
@@ -391,6 +401,7 @@ const Chat = struct {
         self.group_rows.deinit(self.alloc);
         self.frame.deinit();
         self.arena.deinit();
+        self.store.deinit();
     }
 
     fn run(self: *Chat) !void {
@@ -440,14 +451,24 @@ const Chat = struct {
         }
     }
 
+    /// How much of a conversation the view keeps in hand.
+    ///
+    /// Scrolling further back than this is what paging through the log is
+    /// for; holding everything for a session that runs for days is not.
+    const keep_messages = 500;
+
     /// Ask the host what is new.
     ///
-    /// The whole state is rebuilt from the reply rather than patched,
-    /// because a half-updated view is worse than one that is a moment
-    /// behind, and the amount of data here is small.
+    /// **Only what is new.** The first version rebuilt everything from
+    /// `since: 0` on every poll, which was harmless while a reply carried
+    /// the whole conversation -- and became a frozen screen the moment
+    /// replies were capped, because every poll asked from the beginning
+    /// and got the same oldest batch back. The `cursor` this advances was
+    /// there from the start and had never been used.
     fn refresh(self: *Chat) !void {
         _ = self.arena.reset(.retain_capacity);
         const arena = self.arena.allocator();
+        const store = self.store.allocator();
 
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
         var briefs: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -460,10 +481,21 @@ const Chat = struct {
             }
         }
 
+        // Carried over by name: the id of a group is its name, and what
+        // has to survive is the cursor and everything already read.
+        var kept: std.ArrayListUnmanaged(Group) = .empty;
+        defer kept.deinit(self.alloc);
+        try kept.appendSlice(self.alloc, self.groups.items);
         self.groups.clearRetainingCapacity();
-        for (names.items, 0..) |name, gi| {
-            var group: Group = .{ .name = name, .brief = briefs.items[gi] };
 
+        for (names.items, 0..) |name, gi| {
+            var group: Group = for (kept.items) |old| {
+                if (std.mem.eql(u8, old.name, name)) break old;
+            } else .{ .name = try store.dupe(u8, name) };
+
+            group.brief = briefs.items[gi];
+
+            group.members.clearRetainingCapacity();
             {
                 var buf: [256]u8 = undefined;
                 const line = try std.fmt.bufPrint(
@@ -474,30 +506,55 @@ const Chat = struct {
                 const v = try self.host.callJson(arena, line);
                 for (arrayField(v, "members") catch &.{}) |item| {
                     const title = stringField(item, "title") orelse continue;
-                    try group.members.append(arena, title);
+                    try group.members.append(store, try store.dupe(u8, title));
                 }
             }
 
-            {
+            // Asked repeatedly while the host says there is more, so a
+            // backlog is caught up in one refresh rather than one capped
+            // batch per poll interval.
+            var rounds: usize = 0;
+            while (rounds < 32) : (rounds += 1) {
                 var buf: [256]u8 = undefined;
                 const line = try std.fmt.bufPrint(
                     &buf,
-                    "{{\"method\":\"group_read\",\"params\":{{\"group\":\"{s}\",\"since\":0}}}}",
-                    .{name},
+                    "{{\"method\":\"group_read\",\"params\":{{\"group\":\"{s}\",\"since\":{d}}}}}",
+                    .{ name, group.cursor },
                 );
                 const v = try self.host.callJson(arena, line);
+
+                var read: usize = 0;
                 for (arrayField(v, "messages") catch &.{}) |item| {
                     const from = stringField(item, "from") orelse "";
-                    try group.messages.append(arena, .{
-                        .author = stringField(item, "author") orelse "?",
+                    const seq: u64 = @intCast(intField(item, "seq") orelse 0);
+
+                    try group.messages.append(store, .{
+                        .author = try store.dupe(u8, stringField(item, "author") orelse "?"),
                         .at_ms = intField(item, "at_ms") orelse 0,
                         .summary = boolField(item, "summary") orelse false,
-                        .text = stringField(item, "text") orelse "",
+                        .text = try store.dupe(u8, stringField(item, "text") orelse ""),
 
                         // The user is id 0; `Surface.id` is never zero.
                         .from_user = std.mem.eql(u8, from, "0x0000000000000000"),
                     });
+
+                    if (seq > group.cursor) group.cursor = seq;
+                    read += 1;
                 }
+
+                if (read == 0) break;
+                if (!(boolField(v, "more") orelse false)) break;
+            }
+
+            // Oldest first, because the newest is what has to stay.
+            if (group.messages.items.len > keep_messages) {
+                const drop = group.messages.items.len - keep_messages;
+                std.mem.copyForwards(
+                    Message,
+                    group.messages.items[0 .. group.messages.items.len - drop],
+                    group.messages.items[drop..],
+                );
+                group.messages.shrinkRetainingCapacity(keep_messages);
             }
 
             try self.groups.append(self.alloc, group);

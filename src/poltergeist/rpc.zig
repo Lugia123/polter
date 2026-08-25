@@ -185,17 +185,25 @@ pub const read_budget_bytes: usize = 96 * 1024;
 /// lost, it only arrives in instalments. Handing back the newest instead
 /// would strand everything before them behind a cursor that had already
 /// moved past.
-pub fn capMessages(lines: []const ChatLine) []const ChatLine {
+pub fn capMessages(lines: []const ChatLine) struct {
+    lines: []const ChatLine,
+    more: bool,
+} {
     var used: usize = 0;
     for (lines, 0..) |line, i| {
         used += line.text.len + line.author.len;
         if (used > read_budget_bytes) {
             // At least one, however big it is: returning none would have
             // the caller poll forever without its cursor ever moving.
-            return lines[0..@max(i, 1)];
+            //
+            // **And say that it was cut.** A capped batch is otherwise
+            // indistinguishable from the end of the conversation, and a
+            // reader stops one screenful in believing it has everything --
+            // which is what froze the conversations view for two days.
+            return .{ .lines = lines[0..@max(i, 1)], .more = true };
         }
     }
-    return lines;
+    return .{ .lines = lines, .more = false };
 }
 
 pub const History = @import("Chat.zig").History;
@@ -577,14 +585,14 @@ test "group_read asks for the group it was given" {
         .group_read = .{ .group = "research", .since = 7 },
     });
     defer {
-        for (res.messages) |m| {
+        for (res.messages.lines) |m| {
             testing.allocator.free(m.text);
             testing.allocator.free(m.author);
         }
-        testing.allocator.free(res.messages);
+        testing.allocator.free(res.messages.lines);
     }
     try testing.expectEqualStrings("research", fake.read_group.?);
-    try testing.expectEqual(@as(u64, 8), res.messages[0].seq);
+    try testing.expectEqual(@as(u64, 8), res.messages.lines[0].seq);
 }
 
 test "a watched terminal may only ask about itself" {
@@ -1484,7 +1492,8 @@ pub fn dispatch(
         .group_read => |p| {
             const lines = host.chatRead(alloc, p.group, caller, p.since) catch |err|
                 return chatFailure(err);
-            return .{ .messages = capMessages(lines) };
+            const capped = capMessages(lines);
+            return .{ .messages = .{ .lines = capped.lines, .more = capped.more } };
         },
     }
 }
@@ -2093,7 +2102,7 @@ test "a reply is capped so it cannot outgrow the line buffer" {
         .text = big,
     };
 
-    const kept = capMessages(&lines);
+    const kept = capMessages(&lines).lines;
     try testing.expect(kept.len < lines.len);
 
     var total: usize = 0;
@@ -2119,7 +2128,7 @@ test "one message larger than the whole budget is still delivered" {
         .text = huge,
     }};
 
-    try testing.expectEqual(@as(usize, 1), capMessages(&lines).len);
+    try testing.expectEqual(@as(usize, 1), capMessages(&lines).lines.len);
 }
 
 test "a reply that fits is passed through whole" {
@@ -2127,7 +2136,7 @@ test "a reply that fits is passed through whole" {
         .{ .seq = 1, .from = 1, .author = "a", .at_ms = 0, .summary = false, .text = "hello" },
         .{ .seq = 2, .from = 2, .author = "b", .at_ms = 0, .summary = false, .text = "there" },
     };
-    try testing.expectEqual(@as(usize, 2), capMessages(&lines).len);
+    try testing.expectEqual(@as(usize, 2), capMessages(&lines).lines.len);
 }
 
 test "set_watch works on a terminal nobody is watching, which is the point" {
@@ -2221,4 +2230,37 @@ test "talking in a group you were added to is not rearranging it" {
     _ = try dispatch(testing.allocator, &b, fake.host(), worker, .{
         .group_post = .{ .group = "build", .text = "signature is settled" },
     });
+}
+
+test "a capped reply says it was capped" {
+    // Without this a reader that gets the budget's worth stops there,
+    // believing it has the whole conversation. The conversations view did
+    // exactly that for two days: 324 messages in the log, 35 on screen,
+    // and every poll asking from the beginning and getting the same
+    // oldest batch back.
+    const big = "x" ** 8192;
+
+    var lines: [64]ChatLine = undefined;
+    for (&lines, 0..) |*line, i| line.* = .{
+        .seq = i,
+        .from = 1,
+        .author = "worker",
+        .at_ms = 0,
+        .summary = false,
+        .text = big,
+    };
+
+    const capped = capMessages(&lines);
+    try testing.expect(capped.lines.len < lines.len);
+    try testing.expect(capped.more);
+}
+
+test "a reply that fits says there is no more" {
+    const lines = [_]ChatLine{
+        .{ .seq = 1, .from = 1, .author = "a", .at_ms = 0, .summary = false, .text = "hello" },
+    };
+
+    const capped = capMessages(&lines);
+    try testing.expectEqual(@as(usize, 1), capped.lines.len);
+    try testing.expect(!capped.more);
 }

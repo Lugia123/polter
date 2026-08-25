@@ -327,7 +327,16 @@ pub const Response = union(enum) {
     text: []const u8,
     work_mode: Bus.WorkMode,
     skill: struct { name: []const u8, body: []const u8 },
-    messages: []const rpc.ChatLine,
+    messages: struct {
+        lines: []const rpc.ChatLine,
+
+        /// Whether the reply was cut short by the size budget.
+        ///
+        /// Without this a capped batch is indistinguishable from the end
+        /// of the conversation, and a reader stops one screenful in
+        /// believing it has everything -- which is exactly what happened.
+        more: bool = false,
+    },
     groups: []const rpc.ChatGroupInfo,
     members: []const rpc.ChatMember,
     failed: struct { code: []const u8, message: []const u8 },
@@ -414,12 +423,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             }
             try s.endArray();
         },
-        .messages => |list| {
+        .messages => |v| {
             try s.objectField("ok");
             try s.write(true);
+            try s.objectField("more");
+            try s.write(v.more);
             try s.objectField("messages");
             try s.beginArray();
-            for (list) |m| {
+            for (v.lines) |m| {
                 try s.beginObject();
                 try s.objectField("seq");
                 try s.write(m.seq);
