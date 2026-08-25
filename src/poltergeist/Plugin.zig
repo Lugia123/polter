@@ -1,6 +1,6 @@
 //! Running somebody else's script on our behalf.
 //!
-//! A plugin is a directory with a `plugin.yaml` and an executable. Polter
+//! A plugin is a directory with a `plugin.json` and an executable. Polter
 //! writes one line of JSON to the executable's stdin and reads its exit
 //! code. That is the whole contract.
 //!
@@ -38,6 +38,15 @@ const log = std.log.scoped(.poltergeist);
 /// will sit there, and the scenario this feature exists for is one where
 /// nobody is watching to notice.
 const default_timeout_ms: u64 = 10 * std.time.ms_per_s;
+
+/// Most parameters one manifest may declare.
+///
+/// The list is copied into every `plugin_list` reply, which an agent reads,
+/// so a bound on it is a bound on that reply. The manifest itself is only
+/// capped at 64KB, and that is room for hundreds of one-character property
+/// names -- a broken generator or a hostile file should not be able to
+/// spend somebody's context on them.
+const max_specs: usize = 64;
 
 /// What a plugin is for.
 ///
@@ -105,6 +114,38 @@ pub const Wants = struct {
     }
 };
 
+/// One parameter as the plugin declares it.
+///
+/// Read out of the manifest's `params` JSON Schema, which is where a
+/// plugin author already writes this down -- a second place to say it
+/// would drift from the first.
+pub const ParamSpec = struct {
+    name: []const u8,
+    title: []const u8 = "",
+    description: []const u8 = "",
+    required: bool = false,
+
+    /// Declared `"secret": true`. This is the plugin author saying "this
+    /// one is a credential", and it is the only thing that decides it --
+    /// guessing from the name would get `url` wrong in both directions.
+    /// The tool surface will not write a plaintext value into one.
+    secret: bool = false,
+
+    /// What a JSON Schema `enum` allows, empty when the value is open.
+    /// A closed set is the one case where a configured value may be shown
+    /// back to an agent: it cannot be holding a password.
+    choices: []const []const u8 = &.{},
+
+    /// Whether `value` is one this parameter takes. An open parameter
+    /// takes anything, so a spec with no `enum` allows everything -- the
+    /// alternative would have a missing annotation refuse every value.
+    pub fn allows(self: ParamSpec, value: []const u8) bool {
+        if (self.choices.len == 0) return true;
+        for (self.choices) |c| if (std.mem.eql(u8, c, value)) return true;
+        return false;
+    }
+};
+
 /// A plugin as declared by its manifest.
 ///
 /// Everything is owned by `arena`, which the loader hands over whole.
@@ -125,6 +166,17 @@ pub const Manifest = struct {
     /// Everything declared in `wants`. Absent from the manifest reads as
     /// wanting nothing; see `Wants`.
     wants: Wants = .{},
+
+    /// Everything declared under `params.properties`. Empty when the
+    /// manifest declares none, and that is meaningful: a plugin with no
+    /// declared parameters has none that the tool surface may set.
+    params: []const ParamSpec = &.{},
+
+    /// The parameter by that name, if the manifest declares one.
+    pub fn param(self: Manifest, name: []const u8) ?ParamSpec {
+        for (self.params) |p| if (std.mem.eql(u8, p.name, name)) return p;
+        return null;
+    }
 };
 
 /// Load a plugin's manifest from a directory.
@@ -173,6 +225,13 @@ pub fn load(
         log.warn("plugin: {s} has no key", .{path});
         return error.BadManifest;
     };
+    if (!isPlainName(key)) {
+        log.warn(
+            "plugin: {s} has the key {s}, which is not a plain name, so it is not loaded",
+            .{ path, key },
+        );
+        return error.BadKey;
+    }
 
     const kind_text = stringField(obj, "kind") orelse "notify";
     const kind = std.meta.stringToEnum(Kind, kind_text) orelse {
@@ -198,6 +257,7 @@ pub fn load(
             else => default_timeout_ms,
         },
         .wants = wantsOf(arena, key, obj),
+        .params = specsOf(arena, key, obj),
     };
 }
 
@@ -206,6 +266,30 @@ fn stringField(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
         .string => |v| v,
         else => null,
     };
+}
+
+/// Whether a key is a name and nothing more.
+///
+/// A key is not just an identifier: it is spelled straight into three file
+/// paths -- `<config>/polter/plugins/<key>.json` on both the reading and the
+/// writing side, and `<state>/polter/plugins/<key>.cursor`. A key holding a
+/// separator or a `..` therefore names a file outside the polter directories,
+/// and `Settings.write` creates the directories on the way to it. Checking it
+/// here is the one place that knows a key becomes a filename; the callers see
+/// a string and cannot tell.
+///
+/// The rule is deliberately narrower than "no traversal": a key is also what
+/// a person types into `plugin_configure` and reads in a listing, so anything
+/// that does not survive being written down plainly is refused too.
+fn isPlainName(key: []const u8) bool {
+    if (key.len == 0 or key.len > 64) return false;
+    if (std.mem.eql(u8, key, ".") or std.mem.eql(u8, key, "..")) return false;
+
+    for (key) |c| switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9', '-', '_', '.' => {},
+        else => return false,
+    };
+    return true;
 }
 
 /// What the manifest declares under `wants`.
@@ -227,13 +311,135 @@ fn wantsOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Wants {
         },
     };
     return .{
-        .groups = stringsOf(arena, key, w, "groups"),
+        .groups = stringsOf(arena, key, w, "groups", "wants.groups"),
         .network = switch (w.get("network") orelse .null) {
             .bool => |b| b,
             else => false,
         },
-        .exec = stringsOf(arena, key, w, "exec"),
+        .exec = stringsOf(arena, key, w, "exec", "wants.exec"),
     };
+}
+
+/// What the manifest declares under `params`.
+///
+/// The same rule as `wantsOf`: a schema that will not read leaves the
+/// plugin with no declared parameters rather than making the whole plugin
+/// vanish. The direction is safe here too -- an undeclared parameter is one
+/// the tool surface refuses to set, because a name that is not in the
+/// schema cannot be judged secret or not.
+fn specsOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) []const ParamSpec {
+    const schema = switch (obj.get("params") orelse return &.{}) {
+        .object => |o| o,
+        else => {
+            log.warn(
+                "plugin {s}: params is not an object, so it is read as declaring none",
+                .{key},
+            );
+            return &.{};
+        },
+    };
+
+    const properties = switch (schema.get("properties") orelse return &.{}) {
+        .object => |o| o,
+        else => {
+            log.warn(
+                "plugin {s}: params.properties is not an object, so it is read as declaring none",
+                .{key},
+            );
+            return &.{};
+        },
+    };
+
+    const required = stringsOf(arena, key, schema, "required", "params.required");
+
+    var out: std.ArrayListUnmanaged(ParamSpec) = .empty;
+    var it = properties.iterator();
+    while (it.next()) |kv| {
+        if (out.items.len >= max_specs) {
+            log.warn(
+                "plugin {s}: declares more than {d} parameters, and the rest are passed over",
+                .{ key, max_specs },
+            );
+            break;
+        }
+
+        const name = kv.key_ptr.*;
+
+        // A property with no name at all would round-trip: `Manifest.param`
+        // would match the empty string, `Settings.render` would write an
+        // object field with an empty name, and `paramsOf` would read it back
+        // as a real parameter nobody can refer to.
+        if (name.len == 0) {
+            log.warn(
+                "plugin {s}: params.properties has an unnamed entry and it is passed over",
+                .{key},
+            );
+            continue;
+        }
+
+        const field = switch (kv.value_ptr.*) {
+            .object => |o| o,
+            else => {
+                log.warn(
+                    "plugin {s}: params.properties.{s} is not an object and is passed over",
+                    .{ key, name },
+                );
+                continue;
+            },
+        };
+
+        out.append(arena, .{
+            .name = name,
+            .title = stringField(field, "title") orelse "",
+            .description = stringField(field, "description") orelse "",
+            .required = contains(required, name),
+
+            // Anything that is not `true` is not a declaration that this
+            // holds a credential. Missing is the common case and reads as
+            // false -- which is safe only because the listing side never
+            // shows a plaintext value whatever this says; see `rpc.Guard`.
+            .secret = switch (field.get("secret") orelse .null) {
+                .bool => |b| b,
+                else => false,
+            },
+            .choices = choicesOf(arena, key, name, field),
+        }) catch {
+            // Cut short rather than voided, for the same reason `stringsOf`
+            // does: a shorter list of declared parameters means fewer the
+            // tool surface will set, never more.
+            log.warn(
+                "plugin {s}: ran out of memory reading params, so only the first {d} are declared",
+                .{ key, out.items.len },
+            );
+            break;
+        };
+    }
+    return out.items;
+}
+
+/// A parameter's `enum`, labelled with the parameter it belongs to.
+///
+/// Built here rather than in `specsOf` so a failure to name the path never
+/// costs the declaration itself: a label that will not render leaves the
+/// generic one, and the choices are read either way.
+fn choicesOf(
+    arena: Allocator,
+    key: []const u8,
+    name: []const u8,
+    field: std.json.ObjectMap,
+) []const []const u8 {
+    var buf: [128]u8 = undefined;
+    const where = std.fmt.bufPrint(
+        &buf,
+        "params.properties.{s}.enum",
+        .{name},
+    ) catch "params.properties.<name>.enum";
+    return stringsOf(arena, key, field, "enum", where);
+}
+
+fn contains(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |h| if (std.mem.eql(u8, h, needle)) return true;
+    return false;
 }
 
 /// The strings in one array field, passing over whatever is not one.
@@ -248,13 +454,16 @@ fn stringsOf(
     key: []const u8,
     obj: std.json.ObjectMap,
     name: []const u8,
+    /// Where this field sits, for the warnings only. The lookup uses
+    /// `name`; a reader chasing one of these needs the whole path.
+    where: []const u8,
 ) []const []const u8 {
     const items = switch (obj.get(name) orelse return &.{}) {
         .array => |a| a.items,
         else => {
             log.warn(
-                "plugin {s}: wants.{s} is not a list, so it is read as naming nothing",
-                .{ key, name },
+                "plugin {s}: {s} is not a list, so it is read as naming nothing",
+                .{ key, where },
             );
             return &.{};
         },
@@ -277,15 +486,15 @@ fn stringsOf(
             // narrower than its author wrote is the one kind of narrowing
             // nobody can debug.
             log.warn(
-                "plugin {s}: ran out of memory reading wants.{s}, so only the first {d} of {d} are honoured",
-                .{ key, name, out.items.len, items.len },
+                "plugin {s}: ran out of memory reading {s}, so only the first {d} of {d} are honoured",
+                .{ key, where, out.items.len, items.len },
             );
             break;
         };
     }
     if (skipped > 0) log.warn(
-        "plugin {s}: passed over {d} entries in wants.{s} that are not text",
-        .{ key, skipped, name },
+        "plugin {s}: passed over {d} entries in {s} that are not text",
+        .{ key, skipped, where },
     );
     return out.items;
 }
@@ -392,6 +601,124 @@ pub const Settings = struct {
         s.endObject() catch return error.OutOfMemory;
 
         return out.toOwnedSlice();
+    }
+
+    /// Fold `changes` into these settings.
+    ///
+    /// A name in `changes` replaces whatever was there; a name that is not
+    /// mentioned is kept. **An empty value removes a parameter**, which is
+    /// how one is unset -- a configured value is never legitimately empty,
+    /// so there is nothing to confuse it with.
+    ///
+    /// Everything in the result belongs to `arena`, including the strings,
+    /// so it outlives both the settings that were read and the request the
+    /// changes came out of.
+    ///
+    /// `enabled` is carried over from `self` untouched. Whether a plugin is
+    /// switched on is not something merging parameters decides, and a caller
+    /// that forgets to set it on the result would write `enabled: false` back
+    /// over the plugin it was just asked to switch on.
+    pub fn merge(
+        self: Settings,
+        arena: Allocator,
+        changes: []const Param,
+    ) Allocator.Error!Settings {
+        var out: std.ArrayListUnmanaged(Param) = .empty;
+
+        for (self.params) |old| {
+            // The last mention wins, so a caller that names one parameter
+            // twice gets what it wrote last rather than an arbitrary one.
+            var replacement: ?[]const u8 = null;
+            for (changes) |c| {
+                if (std.mem.eql(u8, c.name, old.name)) replacement = c.value;
+            }
+
+            const value = replacement orelse old.value;
+            if (value.len == 0) continue;
+
+            try out.append(arena, .{
+                .name = try arena.dupe(u8, old.name),
+                .value = try arena.dupe(u8, value),
+            });
+        }
+
+        for (changes) |c| {
+            // Clearing something that was not set is not an error; it is
+            // already in the state that was asked for.
+            if (c.value.len == 0) continue;
+            if (hasParam(out.items, c.name)) continue;
+
+            try out.append(arena, .{
+                .name = try arena.dupe(u8, c.name),
+                .value = try arena.dupe(u8, c.value),
+            });
+        }
+
+        return .{ .enabled = self.enabled, .params = out.items };
+    }
+
+    /// Write these settings out, creating the directory if it is not there.
+    ///
+    /// Through a temporary file and a rename, and **the rename is the commit
+    /// point**: a `<path>.new` found on disk is a write that never reached
+    /// it. A settings file caught half written parses as nothing, and nothing
+    /// reads as "not configured", which reads as "off" -- a crash mid-write
+    /// would silently switch a plugin off and say nothing.
+    ///
+    /// **This rewrites the file whole, out of what `read` understood.** Only
+    /// `enabled` and string-valued parameters survive a round trip: a
+    /// hand-written file holding a number, a nested object, a comment-shaped
+    /// key or anything else loses it the first time this runs. Nothing new --
+    /// `read` and `render` have always been this pair -- but this is the
+    /// first thing that lets an agent trigger it, so a user has to be told
+    /// before they let one near a file they wrote.
+    pub fn write(
+        self: Settings,
+        alloc: Allocator,
+        io: std.Io,
+        path: []const u8,
+    ) !void {
+        const bytes = try self.render(alloc);
+        defer alloc.free(bytes);
+
+        const dir = std.fs.path.dirname(path) orelse ".";
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+
+        // Beside the real file, so the rename stays within one filesystem.
+        // A rename across filesystems is a copy, and a copy is the thing
+        // this is here to avoid.
+        const tmp = try std.fmt.allocPrint(alloc, "{s}.new", .{path});
+        defer alloc.free(tmp);
+
+        // Armed before anything creates the file, not after: a failure to
+        // create, write or close it would otherwise leave `<path>.new` lying
+        // beside the real file for good, because the only thing that removed
+        // it was declared after the block that could fail.
+        errdefer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+
+        {
+            var f = try std.Io.Dir.cwd().createFile(io, tmp, .{
+                // The parameters here are references far more often than
+                // they are secrets, but not always -- a hand-written file
+                // may hold a literal, and this rewrites such a file.
+                .permissions = .fromMode(0o600),
+            });
+            defer f.close(io);
+            try f.writeStreamingAll(io, bytes);
+        }
+
+        const cwd = std.Io.Dir.cwd();
+        try cwd.rename(tmp, cwd, path, io);
+    }
+
+    /// Whether a name is already in this list.
+    ///
+    /// Walked rather than indexed: a plugin has a handful of parameters,
+    /// and a map would be an allocation that can fail halfway through a
+    /// merge for no gain anybody would measure.
+    fn hasParam(params: []const Param, name: []const u8) bool {
+        for (params) |p| if (std.mem.eql(u8, p.name, name)) return true;
+        return false;
     }
 
     fn paramsOf(arena: Allocator, obj: std.json.ObjectMap) []const Param {
@@ -1169,4 +1496,312 @@ test "junk in the groups list is skipped, not fatal" {
     try testing.expect(m.wants.allows("build"));
     try testing.expect(m.wants.allows("ops"));
     try testing.expect(!m.wants.allows("7"));
+}
+
+test "a manifest keeps the parameters it declares" {
+    // The tool surface has to know what a plugin takes, and the plugin's
+    // author already writes it down here. Reading it a second time from
+    // somewhere else would be a second place to keep in step.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"chat-archive","kind":"archive","exec":"a.sh",
+        \\ "params":{"type":"object",
+        \\   "properties":{
+        \\     "backend":{"type":"string","title":"Where to write",
+        \\                "description":"postgres or file","enum":["postgres","file"]},
+        \\     "dsn":{"type":"string","title":"Postgres connection URI","secret":true},
+        \\     "schema":{"type":"string"}},
+        \\   "required":["backend"]}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    try testing.expectEqual(@as(usize, 3), m.params.len);
+
+    const backend = m.param("backend").?;
+    try testing.expectEqualStrings("Where to write", backend.title);
+    try testing.expectEqualStrings("postgres or file", backend.description);
+    try testing.expect(backend.required);
+    try testing.expect(!backend.secret);
+    try testing.expectEqual(@as(usize, 2), backend.choices.len);
+    try testing.expect(backend.allows("postgres"));
+    try testing.expect(backend.allows("file"));
+    try testing.expect(!backend.allows("sqlite"));
+
+    // Secret is the author's declaration and nothing else's guess: `dsn`
+    // says so, `schema` does not, and neither name would have told anybody.
+    const dsn = m.param("dsn").?;
+    try testing.expect(dsn.secret);
+    try testing.expect(!dsn.required);
+
+    // An open parameter takes anything. A missing `enum` must not read as
+    // an empty one, or every value would be refused.
+    const schema = m.param("schema").?;
+    try testing.expect(!schema.secret);
+    try testing.expectEqual(@as(usize, 0), schema.choices.len);
+    try testing.expect(schema.allows("public"));
+
+    try testing.expectEqual(@as(?ParamSpec, null), m.param("nothing-like-this"));
+
+    // And it keeps at most `max_specs` of them. Every declared parameter is
+    // copied into every `plugin_list` reply an agent reads, and the only
+    // other bound on that is the 64KB the manifest itself is read under --
+    // which is room for hundreds of one-character names.
+    {
+        var json: std.Io.Writer.Allocating = .init(alloc);
+        try json.writer.writeAll(
+            \\{"key":"many","kind":"notify","exec":"a.sh",
+            \\ "params":{"type":"object","properties":{
+        );
+        for (0..max_specs + 8) |i| {
+            if (i > 0) try json.writer.writeAll(",");
+            try json.writer.print("\"p{d}\":{{\"type\":\"string\"}}", .{i});
+        }
+        try json.writer.writeAll("}}}");
+
+        const capped = try manifestFor(alloc, io, json.written());
+        defer std.Io.Dir.cwd().deleteTree(io, capped) catch {};
+
+        const many = try load(alloc, io, capped);
+        try testing.expectEqual(max_specs, many.params.len);
+    }
+}
+
+test "a key that is not a plain name is not a plugin" {
+    // A key is spelled into three file paths, and one of them is now
+    // written rather than only read. A key of `../../../x` therefore names
+    // a settings file outside the polter directories, and `Settings.write`
+    // makes the directories on the way to it. Nothing downstream can tell:
+    // by then it is a string like any other.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const bad = [_][]const u8{
+        "../../../.ssh/authorized_keys",
+        "a/b",
+        "a\\\\b",
+        "..",
+        ".",
+        "with space",
+        "",
+    };
+
+    for (bad) |key| {
+        const json = try std.fmt.allocPrint(
+            alloc,
+            "{{\"key\":\"{s}\",\"kind\":\"notify\",\"exec\":\"a.sh\"}}",
+            .{key},
+        );
+        const dir = try manifestFor(alloc, io, json);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        // Refused at load, so nothing later has to remember to check: a
+        // plugin that will not load is one nothing can configure, start, or
+        // write a settings file for.
+        try testing.expectError(error.BadKey, load(alloc, io, dir));
+    }
+
+    // What an ordinary key looks like, so the rule cannot quietly tighten
+    // into refusing the plugins that ship with Polter.
+    for ([_][]const u8{ "chat-archive", "webhook", "feishu_v2", "a.b" }) |key| {
+        const json = try std.fmt.allocPrint(
+            alloc,
+            "{{\"key\":\"{s}\",\"kind\":\"notify\",\"exec\":\"a.sh\"}}",
+            .{key},
+        );
+        const dir = try manifestFor(alloc, io, json);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        const m = try load(alloc, io, dir);
+        try testing.expectEqualStrings(key, m.key);
+    }
+}
+
+test "a parameter with no name is not a parameter" {
+    // A property whose name is the empty string would round-trip as a real
+    // one: `Manifest.param("")` matches it, `Settings.render` writes an
+    // object field with an empty name, and `Settings.read` reads that back
+    // as configured. Nothing could ever refer to it, and the tool surface
+    // would be willing to set it.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"webhook","kind":"notify","exec":"send.sh",
+        \\ "params":{"type":"object","properties":{
+        \\   "":{"type":"string","secret":true},
+        \\   "url":{"type":"string"}}}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+
+    // Passed over, and the plugin still loads: one bad property is the same
+    // sort of typo as a bad `wants`, and it must not make the whole plugin
+    // vanish.
+    try testing.expectEqual(@as(usize, 1), m.params.len);
+    try testing.expectEqualStrings("url", m.params[0].name);
+    try testing.expectEqual(@as(?ParamSpec, null), m.param(""));
+}
+
+test "a manifest with no params schema declares no parameters" {
+    // Silence means none, and none means the tool surface may set none.
+    // The alternative -- reading silence as "anything goes" -- would let an
+    // agent write a name nobody can judge secret or not.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    {
+        const dir = try manifestFor(alloc, io,
+            \\{"key":"webhook","kind":"notify","exec":"send.sh"}
+        );
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        const m = try load(alloc, io, dir);
+        try testing.expectEqual(@as(usize, 0), m.params.len);
+        try testing.expectEqual(@as(?ParamSpec, null), m.param("url"));
+    }
+
+    // A schema that will not read leaves the plugin with no declared
+    // parameters rather than making the whole plugin vanish -- the same
+    // rule `wants` follows, and for the same reason.
+    {
+        const dir = try manifestFor(alloc, io,
+            \\{"key":"webhook","kind":"notify","exec":"send.sh","params":"oops"}
+        );
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        const m = try load(alloc, io, dir);
+        try testing.expectEqualStrings("webhook", m.key);
+        try testing.expectEqual(@as(usize, 0), m.params.len);
+    }
+
+    {
+        const dir = try manifestFor(alloc, io,
+            \\{"key":"webhook","kind":"notify","exec":"send.sh",
+            \\ "params":{"type":"object","properties":["url"]}}
+        );
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        const m = try load(alloc, io, dir);
+        try testing.expectEqual(@as(usize, 0), m.params.len);
+    }
+}
+
+test "settings merge keeps what was not named, and an empty value clears one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const before: Settings = .{ .enabled = true, .params = &.{
+        .{ .name = "backend", .value = "file" },
+        .{ .name = "dsn", .value = "env:OLD" },
+        .{ .name = "stream", .value = "laptop" },
+    } };
+
+    const after = try before.merge(alloc, &.{
+        .{ .name = "backend", .value = "postgres" },
+        .{ .name = "dsn", .value = "" },
+        .{ .name = "schema", .value = "public" },
+    });
+
+    // Whether it is switched on is not a parameter, and merging parameters
+    // does not touch it.
+    try testing.expect(after.enabled);
+
+    try testing.expectEqualStrings("postgres", valueOf(after, "backend").?);
+
+    // Cleared, not emptied: an unset parameter is absent from the file, so
+    // the plugin sees nothing there rather than a value that is nothing.
+    try testing.expectEqual(@as(?[]const u8, null), valueOf(after, "dsn"));
+
+    // Untouched names survive, which is what makes a configure call able to
+    // change one thing without knowing the rest.
+    try testing.expectEqualStrings("laptop", valueOf(after, "stream").?);
+
+    // A name that was not there is added rather than dropped.
+    try testing.expectEqualStrings("public", valueOf(after, "schema").?);
+
+    // And exactly once: a replaced parameter must not also be appended.
+    try testing.expectEqual(@as(usize, 3), after.params.len);
+
+    // Clearing something that was never set is not an error; it is already
+    // the state that was asked for.
+    const nothing = try after.merge(alloc, &.{.{ .name = "absent", .value = "" }});
+    try testing.expectEqual(@as(usize, 3), nothing.params.len);
+
+    // The result owns its strings, so it outlives whatever it was read out
+    // of and whatever the changes came in on.
+    const written = try after.render(alloc);
+    try testing.expect(std.mem.indexOf(u8, written, "postgres") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "env:OLD") == null);
+}
+
+fn valueOf(s: Settings, name: []const u8) ?[]const u8 {
+    for (s.params) |p| if (std.mem.eql(u8, p.name, name)) return p.value;
+    return null;
+}
+
+test "settings are written whole or not at all" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const root = try std.fmt.allocPrint(alloc, "/tmp/polter-wr-{x}", .{&raw});
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    // The directory does not exist yet, which is the ordinary case the
+    // first time anybody configures anything.
+    const path = try std.fmt.allocPrint(alloc, "{s}/plugins/chat-archive.json", .{root});
+
+    const settings: Settings = .{ .enabled = true, .params = &.{
+        .{ .name = "dsn", .value = "env:POLTER_PG" },
+    } };
+    try settings.write(alloc, io, path);
+
+    const back = Settings.read(alloc, io, path);
+    try testing.expect(back.enabled);
+    try testing.expectEqualStrings("env:POLTER_PG", valueOf(back, "dsn").?);
+
+    // Written again over itself, because that is what configuring twice
+    // does and a rename onto an existing file has to be allowed.
+    const second = try settings.merge(alloc, &.{.{ .name = "backend", .value = "postgres" }});
+    try second.write(alloc, io, path);
+
+    const again = Settings.read(alloc, io, path);
+    try testing.expectEqual(@as(usize, 2), again.params.len);
+
+    // Nothing half-written left behind.
+    try testing.expectError(
+        error.FileNotFound,
+        std.Io.Dir.cwd().access(io, try std.fmt.allocPrint(alloc, "{s}.new", .{path}), .{}),
+    );
 }

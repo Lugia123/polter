@@ -14,7 +14,8 @@
       "url": {
         "type": "string",
         "title": "Where to POST",
-        "description": "May be a reference: env:, file:, keychain: or cmd:"
+        "description": "A webhook URL is a credential: whoever holds it can speak as the user in that channel, and whoever changes it decides where the user's notices go instead. So give a reference -- env:, file: or keychain: -- to somewhere it has already been put. Editing this file by hand, a plain URL and cmd: both still work; it is the tool surface that will not write either.",
+        "secret": true
       }
     },
     "required": ["url"]

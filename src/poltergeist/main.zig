@@ -23,6 +23,7 @@ pub const Server = @import("Server.zig");
 pub const Plugin = @import("Plugin.zig");
 pub const notify = @import("notify.zig");
 pub const reap = @import("reap.zig");
+pub const report = @import("report.zig");
 pub const secret = @import("secret.zig");
 pub const Session = @import("Session.zig");
 pub const skill = @import("skill.zig");
@@ -50,6 +51,7 @@ test {
     _ = notify;
     _ = Plugin;
     _ = reap;
+    _ = report;
     _ = register;
     _ = rpc;
     _ = Sampler;

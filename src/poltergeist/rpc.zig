@@ -16,6 +16,8 @@ const std = @import("std");
 
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
+const Plugin = @import("Plugin.zig");
+const secret = @import("secret.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -127,6 +129,27 @@ pub const Method = enum {
     /// disk. Page with `log_seq`, which is the log's own number and the
     /// only cursor that survives a restart.
     group_history,
+
+    /// What plugins are installed, whether each is switched on, what it
+    /// takes, and -- for a resident one -- how it is getting on.
+    ///
+    /// Values are never handed back in plain text. A reference is shown as
+    /// the user wrote it, because where a secret lives is not the secret;
+    /// a literal is not shown at all.
+    plugin_list,
+
+    /// Write a plugin's settings for the user.
+    ///
+    /// What it will not write is the point: no `cmd:` reference, because
+    /// that is a command Polter runs later, outside whatever authorises
+    /// this call; and no plaintext into a parameter the plugin marks
+    /// secret. It also will not switch a plugin off.
+    plugin_configure,
+
+    /// Try a notification plugin for real, or say how a resident one is
+    /// getting on. Nothing is started for an archive plugin: two copies
+    /// would push the same cursor.
+    plugin_test,
 };
 
 pub const Request = union(Method) {
@@ -165,6 +188,14 @@ pub const Request = union(Method) {
     group_post: struct { group: []const u8, text: []const u8 },
     group_read: struct { group: []const u8, since: u64 = 0 },
     group_history: struct { group: []const u8, before_seq: u64 = 0, limit: u64 = 0 },
+
+    plugin_list: struct { key: []const u8 = "" },
+    plugin_configure: struct {
+        key: []const u8,
+        enable: ?bool = null,
+        params: []const Plugin.Param = &.{},
+    },
+    plugin_test: struct { key: []const u8 },
 };
 
 /// How much text one `group_read` reply may carry.
@@ -316,6 +347,17 @@ pub fn requiresSupervisor(method: Method) bool {
         .group_history,
         .group_members,
         => false,
+
+        // A new tool lands on the supervisor's side unless there is an
+        // argument for it not to, and for these three there is the
+        // opposite: setting up a plugin decides what leaves this machine
+        // and through what credential, and testing one puts a notification
+        // in front of the person. A watched terminal has no business in
+        // either.
+        .plugin_list,
+        .plugin_configure,
+        .plugin_test,
+        => true,
     };
 }
 
@@ -338,6 +380,14 @@ pub fn targetsTerminal(method: Method) bool {
         .group_history,
         .group_members,
         .group_set_brief,
+
+        // A plugin is a setting of this machine, not of any terminal. The
+        // one that names a terminal at all -- `plugin_test`, so the test
+        // notification can say who asked -- takes that from the caller,
+        // not from a parameter.
+        .plugin_list,
+        .plugin_configure,
+        .plugin_test,
         => false,
 
         // Both name another terminal, so both go through the self-target
@@ -379,6 +429,9 @@ pub fn target(req: Request) ?Bus.Id {
         .group_set_brief,
         .session_recall,
         .notify_user,
+        .plugin_list,
+        .plugin_configure,
+        .plugin_test,
         => null,
 
         inline .group_add, .group_remove => |v| v.id,
@@ -511,6 +564,13 @@ test "only what reaches another terminal needs the supervisor" {
             .group_add,
             .group_remove,
             .group_compact,
+
+            // Configuring a plugin decides what leaves this machine and
+            // under what credential; testing one puts something in front
+            // of the person. Neither is a watched terminal's to do.
+            .plugin_list,
+            .plugin_configure,
+            .plugin_test,
             => false,
         };
         try testing.expectEqual(!open, requiresSupervisor(m));
@@ -893,6 +953,330 @@ pub const ChatLine = struct {
     text: []const u8,
 };
 
+/// One plugin as `plugin_list` reports it.
+pub const PluginView = struct {
+    key: []const u8,
+    name: []const u8 = "",
+
+    /// `"notify"` or `"archive"`.
+    kind: []const u8,
+
+    enabled: bool = false,
+
+    /// Exactly what the manifest declared. Handed over unread so an agent
+    /// can tell the user what it is about to switch on.
+    groups: []const []const u8 = &.{},
+    network: bool = false,
+    exec: []const []const u8 = &.{},
+
+    params: []const PluginParamView = &.{},
+
+    /// Only for a resident plugin that is actually running: `starting`,
+    /// `feeding`, `backing_off`, `dormant`, `stopped`. Empty otherwise.
+    state: []const u8 = "",
+    cursor: u64 = 0,
+    failures: u32 = 0,
+
+    /// Why nothing is happening, when nothing is. Empty when it is fine.
+    note: []const u8 = "",
+};
+
+pub const PluginParamView = struct {
+    name: []const u8,
+    title: []const u8 = "",
+    required: bool = false,
+    secret: bool = false,
+    choices: []const []const u8 = &.{},
+
+    /// How the value is held: `unset`, `env:`, `file:`, `keychain:`,
+    /// `cmd:`, or `literal`. This is what says a value is there at all,
+    /// so that saying nothing about the value itself costs no information
+    /// anybody needs.
+    holds: []const u8 = "unset",
+
+    /// The value, and only when showing it cannot leak anything: a
+    /// reference is shown as written, and a literal only when `choices`
+    /// pins it to a fixed set. Empty in every other case.
+    shown: []const u8 = "",
+
+    /// Set when the file holds a parameter the manifest does not declare.
+    /// Shown rather than hidden: an audit has to see everything that is
+    /// in the file, including what should not be.
+    undeclared: bool = false,
+};
+
+/// How one parameter looks in a listing, given what the manifest declares
+/// and what the settings file holds.
+///
+/// Allocation-free: every slice borrows from `spec` or from `value`, both
+/// of which the host owns and which outlive the response it is building.
+///
+/// The host calls this rather than working the rules out again while it
+/// fills in a `PluginView`. A redaction rule that lives in two places is
+/// one that can be exhaustively tested in the copy that does not ship.
+pub fn viewOf(spec: Plugin.ParamSpec, value: []const u8) PluginParamView {
+    const held = secret.classify(value);
+
+    return .{
+        .name = spec.name,
+        .title = spec.title,
+        .required = spec.required,
+        .secret = spec.secret,
+        .choices = spec.choices,
+
+        // `secret.text` rather than a second list of prefix spellings, for
+        // the same reason `classify` is the only thing that recognises one.
+        .holds = if (value.len == 0)
+            "unset"
+        else if (held) |p|
+            secret.text(p)
+        else
+            "literal",
+
+        .shown = if (value.len == 0)
+            ""
+        else if (held != null)
+            // Every reference, `cmd:` included: reading back what the user
+            // wrote is not the same act as writing a new payload, and a
+            // supervisor cannot tell a wrong variable name from a right one
+            // without seeing it.
+            value
+        else if (spec.choices.len > 0 and spec.allows(value))
+            // A closed set cannot hold a password -- but only of a value
+            // actually in the set. An off-list literal reached the file by
+            // hand, which is precisely the case where nobody knows what is
+            // in it.
+            value
+        else
+            "",
+    };
+}
+
+/// How a parameter the manifest does not declare looks in a listing.
+///
+/// Judged against an empty spec on purpose: nothing may be assumed about a
+/// name the manifest has never heard of. `secret` therefore reads false,
+/// which cannot loosen anything -- the display rules never consult it.
+pub fn undeclaredView(name: []const u8, value: []const u8) PluginParamView {
+    var v = viewOf(.{ .name = name }, value);
+    v.undeclared = true;
+    return v;
+}
+
+/// What this surface will and will not write into a plugin's settings.
+///
+/// Pure, and the sentences are static: an agent reads them, so each one
+/// has to say what to do instead, and a test has to be able to compare
+/// them.
+pub const Guard = struct {
+    /// Where a `file:` reference may point: the user's polter config and
+    /// state directories, absolute and with `~` already expanded. The host
+    /// supplies them because only it knows them. **Empty refuses every
+    /// `file:` reference**, which is the safe direction when they could
+    /// not be worked out.
+    roots: []const []const u8 = &.{},
+
+    pub const max_value_bytes: usize = 4096;
+    pub const max_params: usize = 32;
+
+    pub const Verdict = union(enum) {
+        allowed,
+        refused: []const u8,
+    };
+
+    /// Every sentence this surface refuses with, named.
+    ///
+    /// Named rather than written where they are returned because two things
+    /// have to know *which* rule fired: `dispatch`, which appends the list
+    /// of takeable values to one of them and to no other, and a test, which
+    /// would otherwise be substring-matching a paragraph.
+    pub const refusal = struct {
+        pub const too_long = "that value is longer than 4096 bytes; " ++
+            "a configured value is a reference or a short string, never a document.";
+
+        pub const control = "that value has a control character in it. " ++
+            "A configured value is one line of text; write it on one line, " ++
+            "or put it in a file and give a file: reference.";
+
+        pub const cmd = "a cmd: reference is a command Polter runs later, " ++
+            "on its own, outside whatever authorises you now -- so this surface will not " ++
+            "write one. Use env:NAME, keychain:service/account, or file: under the polter " ++
+            "config directory to name something the user has already put there. If a cmd: " ++
+            "line is really what is wanted, the user writes that one themselves.";
+
+        pub const file_outside = "a file: reference written through this surface has to name a file under the " ++
+            "user's polter config or state directory -- that is where a file put there " ++
+            "to be a plugin's credential lives. Move it there, or use " ++
+            "keychain:service/account instead.";
+
+        /// Separate from `file_outside`, which would be telling somebody to
+        /// move a file that is already exactly where it belongs.
+        pub const file_tilde = "a file: reference written through this surface has to be an absolute path -- " ++
+            "a leading ~ is expanded later, when the plugin is called, and what it expands " ++
+            "to then is not something this check can know now. Write the path out in full, " ++
+            "under the user's polter config or state directory.";
+
+        pub const plaintext_secret = "this parameter holds a credential and will not be written " ++
+            "in plain text. Give a reference instead: env:NAME, keychain:service/account, " ++
+            "or file: under the polter config directory. If the user has not put the " ++
+            "secret anywhere yet, ask them to -- that is theirs to do, not yours.";
+
+        pub const not_a_choice = "that is not one of the values this parameter takes.";
+
+        pub const switching_off = "switching a plugin off is the user's to do. It is the channel " ++
+            "they hear about things on, and an agent quieting it is not a configuration " ++
+            "change. Say what you would switch off and why, and leave it to them.";
+
+        /// Shaped like `switching_off` because it is the same act. A plugin
+        /// whose required parameter is gone is a plugin that will not run.
+        pub const clearing_required = "clearing a parameter the plugin requires is switching it off by " ++
+            "another name, and that is the user's to do -- it is the channel they hear " ++
+            "about things on. Say what you would clear and why, and leave it to them.";
+
+        /// The third shape of the same act, and the quietest of them.
+        ///
+        /// `switching_off` and `clearing_required` both refuse making a
+        /// channel stop working by taking something away. Pointing a
+        /// credential that already works at somewhere else does it by
+        /// putting something in: `env:NOT_A_REAL_NAME` is a well-formed
+        /// reference, so every rule above it passes, and the failure
+        /// arrives hours later as a notification that quietly did not go.
+        /// Unattended is exactly when that channel is the only way the
+        /// person hears anything, and exactly when nobody is watching the
+        /// log line that says it failed to resolve.
+        pub const repointing = "this parameter already names where its credential lives, and " ++
+            "moving it somewhere else is the user's to do. A reference that resolves to " ++
+            "nothing fails at the moment the plugin is called, hours later and out of " ++
+            "sight, which is the same as switching the channel off. Say what you would " ++
+            "point it at and why, and leave the change to them.";
+    };
+
+    /// Whether `value` may be written into `spec`.
+    pub fn value(self: Guard, spec: Plugin.ParamSpec, v: []const u8) Verdict {
+        // Emptying a parameter the plugin cannot run without reaches the
+        // same place as `enabling(false)` by a route that never says so,
+        // and the refusal there would mean nothing if this one were open.
+        if (v.len == 0 and spec.required) return .{ .refused = refusal.clearing_required };
+
+        // Otherwise empty is how a parameter is unset, so it is not a value
+        // being written and none of the rules below are about it.
+        if (v.len == 0) return .allowed;
+
+        if (v.len > max_value_bytes) return .{ .refused = refusal.too_long };
+
+        for (v) |c| {
+            if (c < 0x20) return .{ .refused = refusal.control };
+        }
+
+        // Exhaustive over `secret.Prefix` on purpose. A fifth kind of
+        // reference cannot be added over there and quietly treated as an
+        // inert literal here: this stops compiling until somebody says
+        // what it is.
+        if (secret.classify(v)) |p| switch (p) {
+            .cmd => return .{ .refused = refusal.cmd },
+
+            .file => {
+                const path = secret.body(v, p);
+
+                // `roots` are absolute and containment is decided on the
+                // text, so a tilde can never match one -- and a rule that
+                // can never say yes has to say why rather than fall through
+                // to a sentence about moving the file somewhere it is.
+                if (std.mem.startsWith(u8, path, "~")) {
+                    return .{ .refused = refusal.file_tilde };
+                }
+                if (!self.underRoot(path)) return .{ .refused = refusal.file_outside };
+            },
+
+            // These two carry data out of somewhere the user has already
+            // put it. Neither introduces anything to run.
+            .env, .keychain => {},
+        };
+
+        // Only a literal can be a plaintext credential; a reference is an
+        // address, and an address is not the thing.
+        if (spec.secret and secret.classify(v) == null) {
+            return .{ .refused = refusal.plaintext_secret };
+        }
+
+        // A reference is not checked against the choices: what it resolves
+        // to is not known until the plugin is called, and refusing it here
+        // would mean guessing.
+        if (spec.choices.len > 0 and !spec.allows(v) and secret.classify(v) == null) {
+            return .{ .refused = refusal.not_a_choice };
+        }
+
+        return .allowed;
+    }
+
+    /// Whether the surface may set `enabled` to `to`.
+    ///
+    /// The asymmetry is the point, and it has a precedent: a supervisor may
+    /// put a terminal into an infinite work mode but may not lift the one
+    /// the user set. Switching a plugin on introduces no new code -- the
+    /// script was already on disk -- and points at the person hearing more.
+    /// Switching one off points at them hearing nothing.
+    pub fn enabling(to: bool) Verdict {
+        if (to) return .allowed;
+        return .{ .refused = refusal.switching_off };
+    }
+
+    /// Whether a credential that is already pointed somewhere may be
+    /// pointed somewhere else through this surface.
+    ///
+    /// The same asymmetry `enabling` draws, for the same reason. Setting a
+    /// credential that is not set yet is help: the channel does not work,
+    /// and afterwards it might. Moving one that is already working is not
+    /// help in the same sense -- the only thing it can do that the user
+    /// would notice is stop the channel -- and this surface cannot tell
+    /// the two apart, because whether a reference resolves is not knowable
+    /// until the plugin is called and a vault that is locked now may be
+    /// open then.
+    ///
+    /// `holds` comes from the listing rather than from the manifest: it is
+    /// the one part of this decision that depends on what is already
+    /// written down.
+    pub fn repointing(spec: Plugin.ParamSpec, holds: []const u8) Verdict {
+        if (!spec.secret) return .allowed;
+        if (std.mem.eql(u8, holds, "unset")) return .allowed;
+        return .{ .refused = refusal.repointing };
+    }
+
+    /// Whether a `file:` path is under one of `roots`.
+    ///
+    /// Decided on the text, not by asking the filesystem: the file may not
+    /// exist yet, and an answer that depends on what happens to be there
+    /// is an answer that changes between the check and the write.
+    /// A `..` component anywhere refuses, so containment cannot be walked
+    /// out of.
+    pub fn underRoot(self: Guard, path: []const u8) bool {
+        // No roots means they could not be worked out, and a guess at
+        // containment is worse than a refusal somebody can read about.
+        if (self.roots.len == 0) return false;
+
+        var parts = std.mem.splitScalar(u8, path, '/');
+        while (parts.next()) |part| {
+            if (std.mem.eql(u8, part, "..")) return false;
+        }
+
+        for (self.roots) |root| {
+            if (root.len == 0) continue;
+            const trimmed = if (root[root.len - 1] == '/')
+                root[0 .. root.len - 1]
+            else
+                root;
+
+            if (!std.mem.startsWith(u8, path, trimmed)) continue;
+
+            // A prefix is not containment: `/x/polterhouse` starts with
+            // `/x/polter` and is somewhere else entirely.
+            const rest = path[trimmed.len..];
+            if (rest.len > 1 and rest[0] == '/') return true;
+        }
+        return false;
+    }
+};
+
 /// A batch read back out of the log on disk.
 pub const ChatPage = struct {
     lines: []const ChatLine,
@@ -1148,6 +1532,53 @@ pub const Host = struct {
             before_seq: u64,
             limit: usize,
         ) anyerror!ChatPage,
+
+        /// Every plugin installed -- **including the ones switched off**,
+        /// because the question this answers is "what is here and is it
+        /// on". `key` empty means all of them. Returned memory belongs to
+        /// `alloc`.
+        pluginList: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            key: []const u8,
+        ) anyerror![]const PluginView,
+
+        /// The directories a `file:` reference written through this surface
+        /// may point into: the user's polter config and state directories,
+        /// absolute and with `~` already expanded.
+        ///
+        /// Empty when they cannot be worked out, and that refuses every
+        /// `file:` reference rather than guessing at containment.
+        pluginRoots: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+        ) anyerror![]const []const u8,
+
+        /// Write a plugin's settings file.
+        ///
+        /// Everything this surface refuses has already been refused; what
+        /// is left is the write and saying what it does and does not take
+        /// effect on. Returns a sentence for the agent.
+        pluginConfigure: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            key: []const u8,
+            enable: ?bool,
+            params: []const Plugin.Param,
+        ) anyerror![]const u8,
+
+        /// Send through one notification plugin for real, or say how a
+        /// resident one is getting on. Returns a sentence.
+        ///
+        /// `by` is here so the test notification's own wording can say
+        /// which terminal asked for it -- which is why the host writes that
+        /// wording and the tool takes no free text.
+        pluginTest: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            key: []const u8,
+            by: Bus.Id,
+        ) anyerror![]const u8,
     };
 
     fn readTerminal(
@@ -1309,6 +1740,40 @@ pub const Host = struct {
         limit: usize,
     ) anyerror!ChatPage {
         return self.vtable.chatHistory(self.ctx, alloc, group, id, before_seq, limit);
+    }
+
+    fn pluginList(
+        self: Host,
+        alloc: std.mem.Allocator,
+        key: []const u8,
+    ) anyerror![]const PluginView {
+        return self.vtable.pluginList(self.ctx, alloc, key);
+    }
+
+    fn pluginRoots(
+        self: Host,
+        alloc: std.mem.Allocator,
+    ) anyerror![]const []const u8 {
+        return self.vtable.pluginRoots(self.ctx, alloc);
+    }
+
+    fn pluginConfigure(
+        self: Host,
+        alloc: std.mem.Allocator,
+        key: []const u8,
+        enable: ?bool,
+        params: []const Plugin.Param,
+    ) anyerror![]const u8 {
+        return self.vtable.pluginConfigure(self.ctx, alloc, key, enable, params);
+    }
+
+    fn pluginTest(
+        self: Host,
+        alloc: std.mem.Allocator,
+        key: []const u8,
+        by: Bus.Id,
+    ) anyerror![]const u8 {
+        return self.vtable.pluginTest(self.ctx, alloc, key, by);
     }
 };
 
@@ -1594,6 +2059,174 @@ pub fn dispatch(
             const capped = capHistory(page.lines);
             return .{ .messages = .{ .lines = capped.lines, .more = page.more or capped.more } };
         },
+
+        .plugin_list => |p| {
+            const list = host.pluginList(alloc, p.key) catch |err| return switch (err) {
+                // An unknown key is not an empty listing. `[]` reads as
+                // "you have no plugins installed", which is a different
+                // thing to tell somebody and a much more alarming one.
+                error.NoSuchPlugin => hostFailure(
+                    "UnknownPlugin",
+                    try unknownPluginMessage(alloc, p.key),
+                ),
+                error.NotImplemented => hostFailure("NotImplemented", not_wired_up),
+                else => hostFailure("HostRefused", "could not read the plugin list"),
+            };
+            return .{ .plugins = list };
+        },
+
+        .plugin_configure => |p| {
+            // Order is what makes this whole-or-nothing: every check below
+            // returns before the host is touched, so a request refused
+            // anywhere leaves nothing half written. Nothing in the types
+            // enforces that; only this sequence does.
+            if (p.key.len == 0) return hostFailure(
+                "UnknownPlugin",
+                "a plugin key is needed; plugin_list shows what is installed.",
+            );
+
+            const list = host.pluginList(alloc, p.key) catch |err| return switch (err) {
+                error.NoSuchPlugin => hostFailure(
+                    "UnknownPlugin",
+                    try unknownPluginMessage(alloc, p.key),
+                ),
+                error.NotImplemented => hostFailure("NotImplemented", not_wired_up),
+                else => hostFailure("HostRefused", "could not read the plugin list"),
+            };
+
+            // By key rather than by taking the first: an empty key means
+            // *all of them* to `pluginList`, and `[0]` would quietly
+            // configure whichever plugin happened to come back.
+            const view = for (list) |v| {
+                if (std.mem.eql(u8, v.key, p.key)) break v;
+            } else return hostFailure(
+                "UnknownPlugin",
+                try unknownPluginMessage(alloc, p.key),
+            );
+
+            if (p.enable == null and p.params.len == 0) return hostFailure(
+                "NothingToDo",
+                "nothing to change: give enabled, or params, or both.",
+            );
+
+            if (p.params.len > Guard.max_params) return hostFailure(
+                "TooManyParameters",
+                "that is more parameters than any plugin has; send the ones that need changing.",
+            );
+
+            if (p.enable) |to| switch (Guard.enabling(to)) {
+                .allowed => {},
+                .refused => |msg| return hostFailure("Refused", msg),
+            };
+
+            // A manifest that declares no parameters has none this surface
+            // may set -- the same rule `wants` follows, where saying
+            // nothing is asking for nothing.
+            var declared: usize = 0;
+            for (view.params) |pv| {
+                if (!pv.undeclared) declared += 1;
+            }
+            if (p.params.len > 0 and declared == 0) return hostFailure(
+                "NoParameters",
+                try std.fmt.allocPrint(
+                    alloc,
+                    "{s} declares no parameters in its plugin.json, so there is nothing " ++
+                        "here to set. Only whether it is switched on can be changed.",
+                    .{p.key},
+                ),
+            );
+
+            // Roots that could not be read refuse every `file:` rather than
+            // guessing at containment, which is what the vtable already
+            // promises about an empty list.
+            const roots = host.pluginRoots(alloc) catch |err| blk: {
+                log.warn("poltergeist: could not work out the plugin directories err={}", .{err});
+                break :blk &[_][]const u8{};
+            };
+            const guard: Guard = .{ .roots = roots };
+
+            for (p.params) |change| {
+                const pv = declaredParam(view, change.name) orelse return hostFailure(
+                    "UnknownParameter",
+                    try std.fmt.allocPrint(alloc, "{s} has no parameter called {s}. It takes: {s}.", .{
+                        p.key,
+                        change.name,
+                        try declaredNames(alloc, view),
+                    }),
+                );
+
+                // Before `value`, because what is already there decides
+                // this one and nothing about the new value can change it.
+                switch (Guard.repointing(specFrom(pv), pv.holds)) {
+                    .allowed => {},
+                    .refused => |msg| return hostFailure(
+                        "Refused",
+                        try std.fmt.allocPrint(alloc, "{s}: {s}", .{ change.name, msg }),
+                    ),
+                }
+
+                switch (guard.value(specFrom(pv), change.value)) {
+                    .allowed => {},
+                    .refused => |msg| {
+                        // The one refusal that cannot say what to do next on
+                        // its own: which values are taken is the plugin's,
+                        // not the rule's. Compared by content, because a
+                        // sentence being one interned literal is not
+                        // something to build a decision on.
+                        const said = if (std.mem.eql(u8, msg, Guard.refusal.not_a_choice))
+                            try std.fmt.allocPrint(alloc, "{s}: {s} It takes: {s}.", .{
+                                change.name,
+                                msg,
+                                try joined(alloc, pv.choices),
+                            })
+                        else
+                            try std.fmt.allocPrint(alloc, "{s}: {s}", .{ change.name, msg });
+
+                        return hostFailure("Refused", said);
+                    },
+                }
+            }
+
+            const said = host.pluginConfigure(alloc, p.key, p.enable, p.params) catch |err|
+                return switch (err) {
+                    error.NoSuchPlugin => hostFailure(
+                        "UnknownPlugin",
+                        try unknownPluginMessage(alloc, p.key),
+                    ),
+                    error.NotImplemented => hostFailure("NotImplemented", not_wired_up),
+                    else => hostFailure("HostRefused", "the plugin's settings could not be written"),
+                };
+            return .{ .text = said };
+        },
+
+        .plugin_test => |p| {
+            if (p.key.len == 0) return hostFailure(
+                "UnknownPlugin",
+                "a plugin key is needed; plugin_list shows what is installed.",
+            );
+
+            // `caller` and no free text: the wording of a test notification
+            // is the host's, and it says which terminal asked for it. A
+            // tool that took a title and a body would be a way out to the
+            // person that `notify_user`'s own rules never saw.
+            const said = host.pluginTest(alloc, p.key, caller) catch |err| return switch (err) {
+                error.NoSuchPlugin => hostFailure(
+                    "UnknownPlugin",
+                    try unknownPluginMessage(alloc, p.key),
+                ),
+
+                // The minute is counted in the host, which is where there is
+                // somewhere to keep the last time. Dispatch is a free
+                // function and holds nothing between calls.
+                error.TooSoon => hostFailure(
+                    "TooSoon",
+                    "a plugin was tested less than a minute ago; wait before sending the person another one.",
+                ),
+                error.NotImplemented => hostFailure("NotImplemented", not_wired_up),
+                else => hostFailure("HostRefused", "the plugin could not be tested"),
+            };
+            return .{ .text = said };
+        },
     }
 }
 
@@ -1635,12 +2268,119 @@ fn chatFailure(err: anyerror) wire.Response {
     };
 }
 
+/// Said when the host has the tools but this build has not wired them up.
+///
+/// Kept distinct from `HostRefused` so a half-landed build says the true
+/// thing: "not built yet" and "tried and would not" ask for different next
+/// moves from whoever reads it.
+const not_wired_up = "the plugin tools are not wired up in this build yet";
+
+fn unknownPluginMessage(
+    alloc: std.mem.Allocator,
+    key: []const u8,
+) std.mem.Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(
+        alloc,
+        "no plugin called {s} is installed. plugin_list shows what is.",
+        .{key},
+    );
+}
+
+/// The spec a listed parameter came from, for handing back to `Guard`.
+///
+/// `holds` and `shown` are how the value looks once it is written down;
+/// none of the rules is about them.
+fn specFrom(v: PluginParamView) Plugin.ParamSpec {
+    return .{
+        .name = v.name,
+        .title = v.title,
+        .required = v.required,
+        .secret = v.secret,
+        .choices = v.choices,
+    };
+}
+
+/// The parameter by that name, but only if the manifest declares one.
+///
+/// Skipping the undeclared entries is the whole point of the loop. They are
+/// in the listing so that an audit sees everything the file holds; matching
+/// one here would let an agent set any name that already happens to be in
+/// there -- and an undeclared name carries no `secret` flag, so the
+/// plaintext rule would never apply to it.
+fn declaredParam(view: PluginView, name: []const u8) ?PluginParamView {
+    for (view.params) |p| {
+        if (p.undeclared) continue;
+        if (std.mem.eql(u8, p.name, name)) return p;
+    }
+    return null;
+}
+
+/// The names a plugin takes, for the message that has just refused one it
+/// does not. Declared only: a name that is in the file but not in the
+/// manifest is not something to suggest writing more of.
+fn declaredNames(
+    alloc: std.mem.Allocator,
+    view: PluginView,
+) std.mem.Allocator.Error![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    for (view.params) |p| {
+        if (p.undeclared) continue;
+        if (out.items.len > 0) try out.appendSlice(alloc, ", ");
+        try out.appendSlice(alloc, p.name);
+    }
+    return out.items;
+}
+
+fn joined(
+    alloc: std.mem.Allocator,
+    items: []const []const u8,
+) std.mem.Allocator.Error![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    for (items) |it| {
+        if (out.items.len > 0) try out.appendSlice(alloc, ", ");
+        try out.appendSlice(alloc, it);
+    }
+    return out.items;
+}
+
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
     return .{ .failed = .{ .code = code, .message = message } };
 }
 
 // -- dispatch tests ---------------------------------------------------------
 
+/// What the fake host reports as installed.
+///
+/// Two, because the rules have two shapes to be tried against: a plugin
+/// with one open, required parameter, and one declaring both a closed set
+/// and a parameter its author marked a credential.
+const fake_plugins = [_]PluginView{
+    .{
+        .key = "webhook",
+        .name = "Webhook",
+        .kind = "notify",
+        .params = &.{
+            .{ .name = "url", .required = true },
+        },
+    },
+    .{
+        .key = "chat-archive",
+        .name = "Chat archive",
+        .kind = "archive",
+        .params = &.{
+            .{
+                .name = "backend",
+                .required = true,
+                .choices = &.{ "postgres", "file" },
+                .holds = "literal",
+                .shown = "file",
+            },
+            .{ .name = "dsn", .secret = true },
+        },
+    },
+};
+
+const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 /// A host that records what it was asked to do and can be told to refuse.
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
@@ -1680,6 +2420,31 @@ const FakeHost = struct {
     /// Who the fake says made every group. Null means the usual boss.
     group_owner: ?Bus.Id = null,
 
+    /// What `pluginList` reports. Two plugins by default so the tests
+    /// exercise both shapes there are: a notification plugin with one
+    /// required parameter, and an archive one declaring both a closed set
+    /// and a credential.
+    plugins: []const PluginView = &fake_plugins,
+
+    /// Raised by every plugin call, for the failures that only the host can
+    /// know about -- an unknown key, a test asked for too soon.
+    plugin_error: ?anyerror = null,
+
+    /// The directories a `file:` reference may point into.
+    roots: []const []const u8 = &fake_roots,
+
+    /// What was actually written. Every refusal test asserts this is still
+    /// null: whole-or-nothing comes from dispatch's ordering alone, and
+    /// nothing in the types would notice a reordering.
+    configured: ?struct {
+        key: []const u8,
+        enable: ?bool,
+        params: []const Plugin.Param,
+    } = null,
+
+    /// The last plugin a test was asked for, and who asked.
+    tested: ?struct { key: []const u8, by: Bus.Id } = null,
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
@@ -1705,7 +2470,59 @@ const FakeHost = struct {
             .chatGroups = chatGroups,
             .chatRead = chatRead,
             .chatHistory = chatHistory,
+            .pluginList = pluginList,
+            .pluginRoots = pluginRoots,
+            .pluginConfigure = pluginConfigure,
+            .pluginTest = pluginTest,
         } };
+    }
+
+    fn pluginList(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        key: []const u8,
+    ) anyerror![]const PluginView {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.plugin_error) |err| return err;
+
+        // An empty key means all of them, which is the contract the vtable
+        // states and the reason dispatch may not take the first entry.
+        var out: std.ArrayListUnmanaged(PluginView) = .empty;
+        for (self.plugins) |v| {
+            if (key.len > 0 and !std.mem.eql(u8, v.key, key)) continue;
+            try out.append(alloc, v);
+        }
+        return out.items;
+    }
+
+    fn pluginRoots(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror![]const []const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return alloc.dupe([]const u8, self.roots);
+    }
+
+    fn pluginConfigure(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        key: []const u8,
+        enable: ?bool,
+        params: []const Plugin.Param,
+    ) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.plugin_error) |err| return err;
+        self.configured = .{ .key = key, .enable = enable, .params = params };
+        return alloc.dupe(u8, "written");
+    }
+
+    fn pluginTest(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        key: []const u8,
+        by: Bus.Id,
+    ) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.plugin_error) |err| return err;
+        self.tested = .{ .key = key, .by = by };
+        return alloc.dupe(u8, "tested");
     }
 
     fn chatOwner(ctx: *anyopaque, _: []const u8) anyerror!Bus.Id {
@@ -2600,4 +3417,493 @@ test "a history batch that fits says there is no more" {
     const capped = capHistory(&lines);
     try testing.expectEqual(@as(usize, 2), capped.lines.len);
     try testing.expect(!capped.more);
+}
+
+test {
+    // Zig only analyses what is referenced. Without this, a public
+    // declaration that nothing has called yet -- `Guard`, and the view
+    // types the plugin tools hand back -- would not be compiled at all, and
+    // the group picking it up would find out by breaking the build rather
+    // than by reading it here.
+    testing.refAllDecls(@This());
+}
+
+test "the plugin tools are the supervisor's" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    for ([_]Request{
+        .{ .plugin_list = .{} },
+        .{ .plugin_configure = .{ .key = "webhook", .enable = true } },
+        .{ .plugin_test = .{ .key = "webhook" } },
+    }) |req| {
+        // A watched terminal is turned away before anything else about the
+        // request is looked at.
+        const refused = try dispatch(alloc, &b, fake.host(), worker, req);
+        try testing.expectEqualStrings("NotPermitted", refused.failed.code);
+
+        // And the supervisor is not, whatever else becomes of the request.
+        const res = try dispatch(alloc, &b, fake.host(), boss, req);
+        const code = switch (res) {
+            .failed => |f| f.code,
+            else => "",
+        };
+        try testing.expect(!std.mem.eql(u8, "NotPermitted", code));
+    }
+}
+
+test "a cmd: reference is refused however it is written" {
+    const g: Guard = .{ .roots = &.{"/home/u/.config/polter"} };
+    const open: Plugin.ParamSpec = .{ .name = "url" };
+    const credential: Plugin.ParamSpec = .{ .name = "dsn", .secret = true };
+
+    try testing.expectEqualStrings(Guard.refusal.cmd, g.value(open, "cmd:x").refused);
+
+    // The bare prefix too: what makes it a command is the prefix, not there
+    // being something after it.
+    try testing.expectEqualStrings(Guard.refusal.cmd, g.value(open, "cmd:").refused);
+
+    // Case-sensitive, deliberately: `resolve` would send `CMD:x` as the
+    // five characters it is and never run it, so refusing it here would be
+    // refusing an inert literal. It is still caught the moment the
+    // parameter is one that holds a credential -- both halves pinned, so
+    // neither can drift into being an accident.
+    try testing.expect(g.value(open, "CMD:x") == .allowed);
+    try testing.expectEqualStrings(
+        Guard.refusal.plaintext_secret,
+        g.value(credential, "CMD:x").refused,
+    );
+
+    // End to end, and nothing reaches the settings file.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+        .key = "webhook",
+        .params = &.{.{ .name = "url", .value = "cmd:curl https://elsewhere" }},
+    } });
+    try testing.expectEqualStrings("Refused", res.failed.code);
+    try testing.expect(fake.configured == null);
+}
+
+test "a credential already pointed somewhere is not re-pointed here" {
+    // The third way to switch a channel off, and the quietest. `enabled:
+    // false` is refused and clearing a required parameter is refused, but
+    // `env:NOT_A_REAL_NAME` is a well-formed reference that passes every
+    // other rule and fails hours later, at the moment the plugin is
+    // called, with nobody watching.
+    const set: Plugin.ParamSpec = .{ .name = "dsn", .secret = true };
+    const open: Plugin.ParamSpec = .{ .name = "schema" };
+
+    try testing.expectEqualStrings(
+        Guard.refusal.repointing,
+        Guard.repointing(set, "env:").refused,
+    );
+    try testing.expectEqualStrings(
+        Guard.refusal.repointing,
+        Guard.repointing(set, "keychain:").refused,
+    );
+
+    // Setting one that is not set yet is the helpful direction, and stays
+    // open: the channel does not work now and might afterwards.
+    try testing.expect(Guard.repointing(set, "unset") == .allowed);
+
+    // And a parameter that holds no credential is nobody's channel.
+    try testing.expect(Guard.repointing(open, "literal") == .allowed);
+
+    // End to end, and nothing reaches the settings file.
+    const configured = [_]PluginView{.{
+        .key = "chat-archive",
+        .kind = "archive",
+        .params = &.{
+            .{ .name = "dsn", .secret = true, .holds = "env:", .shown = "env:POLTER_PG" },
+        },
+    }};
+
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .plugins = &configured };
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+        .key = "chat-archive",
+        .params = &.{.{ .name = "dsn", .value = "env:NOT_A_REAL_NAME" }},
+    } });
+    try testing.expectEqualStrings("Refused", res.failed.code);
+    try testing.expect(fake.configured == null);
+}
+
+test "a secret parameter will not take a plaintext value" {
+    const g: Guard = .{ .roots = &.{"/home/u/.config/polter"} };
+    const s: Plugin.ParamSpec = .{ .name = "dsn", .secret = true };
+
+    try testing.expectEqualStrings(
+        Guard.refusal.plaintext_secret,
+        g.value(s, "postgresql://u:pw@h:5432/db").refused,
+    );
+
+    // The three that name somewhere the user has already put the thing.
+    try testing.expect(g.value(s, "env:POLTER_PG") == .allowed);
+    try testing.expect(g.value(s, "keychain:polter/pg") == .allowed);
+    try testing.expect(g.value(s, "file:/home/u/.config/polter/pg.key") == .allowed);
+
+    // Ordering, pinned: `cmd:` is refused as a command before it is ever
+    // weighed as a way of holding a credential.
+    try testing.expectEqualStrings(Guard.refusal.cmd, g.value(s, "cmd:op read op://x").refused);
+}
+
+test "a file: reference has to be under the polter directories" {
+    const g: Guard = .{ .roots = &.{
+        "/home/u/.config/polter",
+        "/home/u/.local/state/polter",
+    } };
+    const p: Plugin.ParamSpec = .{ .name = "dsn", .secret = true };
+
+    try testing.expect(g.value(p, "file:/home/u/.config/polter/pg.key") == .allowed);
+    try testing.expect(g.value(p, "file:/home/u/.local/state/polter/pg.key") == .allowed);
+
+    try testing.expectEqualStrings(
+        Guard.refusal.file_outside,
+        g.value(p, "file:/etc/passwd").refused,
+    );
+
+    // A prefix is not containment.
+    try testing.expectEqualStrings(
+        Guard.refusal.file_outside,
+        g.value(p, "file:/home/u/.config/polterhouse/pg.key").refused,
+    );
+
+    // A `..` anywhere, so containment cannot be walked out of.
+    try testing.expectEqualStrings(
+        Guard.refusal.file_outside,
+        g.value(p, "file:/home/u/.config/polter/../../.ssh/id_rsa").refused,
+    );
+
+    // The root names a directory; a reference has to name a file in it.
+    try testing.expect(!g.underRoot("/home/u/.config/polter"));
+    try testing.expect(!g.underRoot("/home/u/.config/polter/"));
+
+    // No roots means they could not be worked out, and every reference is
+    // refused rather than guessed at.
+    const none: Guard = .{};
+    try testing.expect(!none.underRoot("/home/u/.config/polter/pg.key"));
+    try testing.expectEqualStrings(
+        Guard.refusal.file_outside,
+        none.value(p, "file:/home/u/.config/polter/pg.key").refused,
+    );
+
+    // A tilde gets its own sentence. `roots` are absolute and containment
+    // is decided on the text, so this can never be under one -- and
+    // `file_outside` would be telling somebody to move a file that is
+    // already exactly where it belongs.
+    try testing.expectEqualStrings(
+        Guard.refusal.file_tilde,
+        g.value(p, "file:~/.config/polter/pg.key").refused,
+    );
+}
+
+test "switching a plugin off is refused and switching one on is not" {
+    try testing.expect(Guard.enabling(true) == .allowed);
+    try testing.expectEqualStrings(Guard.refusal.switching_off, Guard.enabling(false).refused);
+
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    // A perfectly good parameter alongside the request to switch off. The
+    // whole request drops; there is no half of it that lands.
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+        .key = "webhook",
+        .enable = false,
+        .params = &.{.{ .name = "url", .value = "env:POLTER_WEBHOOK" }},
+    } });
+    try testing.expectEqualStrings("Refused", res.failed.code);
+    try testing.expect(fake.configured == null);
+}
+
+test "every reference prefix secret.zig knows is judged by the guard" {
+    // A fifth prefix added to `secret.zig` and nowhere else stops the
+    // build, because `Guard.value` switches exhaustively. This says the
+    // other half out loud: each one lands somewhere named, so nobody can
+    // add one and let it fall through as an inert literal.
+    const g: Guard = .{ .roots = &.{"/home/u/.config/polter"} };
+    const spec: Plugin.ParamSpec = .{ .name = "dsn", .secret = true };
+
+    inline for (comptime std.enums.values(secret.Prefix)) |p| {
+        const v = comptime std.fmt.comptimePrint("{s}x", .{secret.text(p)});
+        const verdict = g.value(spec, v);
+        switch (p) {
+            // Runs something later, on nobody's authority.
+            .cmd => try testing.expectEqualStrings(Guard.refusal.cmd, verdict.refused),
+
+            // Names a file, and where the file is decides it. `x` is not
+            // under any root.
+            .file => try testing.expectEqualStrings(Guard.refusal.file_outside, verdict.refused),
+
+            // Carry data out of somewhere the user already put it.
+            .env, .keychain => try testing.expect(verdict == .allowed),
+        }
+    }
+}
+
+test "a listing never shows a value that could be a secret" {
+    const open: Plugin.ParamSpec = .{ .name = "dsn" };
+
+    // Every reference is shown as written: where a secret lives is not the
+    // secret, and a supervisor cannot tell a wrong variable name from a
+    // right one without seeing it.
+    inline for (comptime std.enums.values(secret.Prefix)) |p| {
+        const v = comptime std.fmt.comptimePrint("{s}NAME", .{secret.text(p)});
+        const got = viewOf(open, v);
+        try testing.expectEqualStrings(secret.text(p), got.holds);
+        try testing.expectEqualStrings(v, got.shown);
+    }
+
+    // A literal with nothing pinning it says that it is there and no more.
+    const bare = viewOf(open, "postgresql://u:pw@h/db");
+    try testing.expectEqualStrings("literal", bare.holds);
+    try testing.expectEqualStrings("", bare.shown);
+
+    const enumerated: Plugin.ParamSpec = .{
+        .name = "backend",
+        .choices = &.{ "postgres", "file" },
+    };
+    const in_set = viewOf(enumerated, "postgres");
+    try testing.expectEqualStrings("literal", in_set.holds);
+    try testing.expectEqualStrings("postgres", in_set.shown);
+
+    // Off the list, so the closed set is not what is holding it. The only
+    // way it got into the file is by hand, which is the case where nobody
+    // knows what is in there.
+    try testing.expectEqualStrings("", viewOf(enumerated, "mysql://u:pw@h/db").shown);
+
+    // Marked a credential: never, whatever else is true of it.
+    const credential: Plugin.ParamSpec = .{ .name = "dsn", .secret = true };
+    try testing.expectEqualStrings("", viewOf(credential, "hunter2").shown);
+
+    const unset = viewOf(open, "");
+    try testing.expectEqualStrings("unset", unset.holds);
+    try testing.expectEqualStrings("", unset.shown);
+
+    // A name the manifest never declared is judged against nothing, so a
+    // literal in it is never shown -- and it is still listed, because an
+    // audit has to see what is in the file.
+    const stray = undeclaredView("whatever", "hunter2");
+    try testing.expect(stray.undeclared);
+    try testing.expectEqualStrings("literal", stray.holds);
+    try testing.expectEqualStrings("", stray.shown);
+}
+
+test "a parameter the manifest does not declare cannot be set" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    {
+        var fake: FakeHost = .{};
+        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .plugin_configure = .{
+            .key = "webhook",
+            .params = &.{.{ .name = "endpoint", .value = "env:POLTER_WEBHOOK" }},
+        } });
+        try testing.expectEqualStrings("UnknownParameter", res.failed.code);
+
+        // Saying what it does take is what stops the next attempt being a
+        // guess at another name.
+        try testing.expect(std.mem.indexOf(u8, res.failed.message, "url") != null);
+        try testing.expect(fake.configured == null);
+    }
+
+    {
+        // A manifest declaring none has none to set, the same rule `wants`
+        // follows: saying nothing is asking for nothing.
+        const bare = [_]PluginView{.{ .key = "bare", .kind = "notify" }};
+        var fake: FakeHost = .{ .plugins = &bare };
+        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .plugin_configure = .{
+            .key = "bare",
+            .params = &.{.{ .name = "url", .value = "env:POLTER_WEBHOOK" }},
+        } });
+        try testing.expectEqualStrings("NoParameters", res.failed.code);
+        try testing.expect(fake.configured == null);
+    }
+
+    {
+        // The hole worth naming: the name IS in the settings file, as an
+        // entry the manifest does not declare. Matching on the name alone
+        // would let it through -- and an undeclared name carries no
+        // `secret` flag, so the plaintext rule would never look at it.
+        const stray = [_]PluginView{.{
+            .key = "webhook",
+            .kind = "notify",
+            .params = &.{
+                .{ .name = "url", .required = true },
+                .{ .name = "smuggled", .holds = "literal", .undeclared = true },
+            },
+        }};
+        var fake: FakeHost = .{ .plugins = &stray };
+        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .plugin_configure = .{
+            .key = "webhook",
+            .params = &.{.{ .name = "smuggled", .value = "hunter2" }},
+        } });
+        try testing.expectEqualStrings("UnknownParameter", res.failed.code);
+        try testing.expect(fake.configured == null);
+    }
+}
+
+test "a control character in a value is refused" {
+    const g: Guard = .{};
+    const spec: Plugin.ParamSpec = .{ .name = "note" };
+
+    for ([_][]const u8{ "a\nb", "a\rb", "a\tb", "a\x00b", "a\x1bb" }) |v| {
+        try testing.expectEqualStrings(Guard.refusal.control, g.value(spec, v).refused);
+    }
+
+    // The length boundary, from both sides of it.
+    const fits = [_]u8{'x'} ** Guard.max_value_bytes;
+    try testing.expect(g.value(spec, &fits) == .allowed);
+
+    const over = [_]u8{'x'} ** (Guard.max_value_bytes + 1);
+    try testing.expectEqualStrings(Guard.refusal.too_long, g.value(spec, &over).refused);
+}
+
+test "a required parameter cannot be emptied through this surface" {
+    const g: Guard = .{};
+
+    try testing.expectEqualStrings(
+        Guard.refusal.clearing_required,
+        g.value(.{ .name = "url", .required = true }, "").refused,
+    );
+
+    // Not required, so an empty value still means what an empty value is
+    // for: take this one out again.
+    try testing.expect(g.value(.{ .name = "schema" }, "") == .allowed);
+
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    // Clearing `url` mutes the notification channel without ever asking to
+    // switch anything off, which is the whole reason this rule is here.
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+        .key = "webhook",
+        .params = &.{.{ .name = "url", .value = "" }},
+    } });
+    try testing.expectEqualStrings("Refused", res.failed.code);
+    try testing.expect(fake.configured == null);
+}
+
+test "a value the parameter does not take is refused with the ones it does" {
+    const g: Guard = .{};
+    const spec: Plugin.ParamSpec = .{
+        .name = "backend",
+        .choices = &.{ "postgres", "file" },
+    };
+
+    try testing.expectEqualStrings(Guard.refusal.not_a_choice, g.value(spec, "mysql").refused);
+    try testing.expect(g.value(spec, "postgres") == .allowed);
+
+    // A reference is not weighed against the set: what it resolves to is
+    // not known until the plugin is called, and refusing it here would be
+    // guessing at it.
+    try testing.expect(g.value(spec, "env:POLTER_BACKEND") == .allowed);
+
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+        .key = "chat-archive",
+        .params = &.{.{ .name = "backend", .value = "mysql" }},
+    } });
+    try testing.expectEqualStrings("Refused", res.failed.code);
+
+    // This is the one refusal that cannot say what to do next on its own:
+    // which values are taken belongs to the plugin, not to the rule. So
+    // dispatch appends them -- and it decides to by comparing the sentence
+    // by content, never by trusting two literals to be the same pointer.
+    try testing.expect(std.mem.indexOf(u8, res.failed.message, "backend") != null);
+    try testing.expect(std.mem.indexOf(u8, res.failed.message, "postgres, file") != null);
+    try testing.expect(fake.configured == null);
+}
+
+test "the shipped manifests mark their credentials, so the guard has something to refuse" {
+    // `Guard` only refuses a plaintext credential where the manifest says
+    // one is a credential, so every rule above is worth exactly what the
+    // shipped `plugin.json` files declare. Nothing else in the build reads
+    // them at compile time, which means an author dropping `"secret": true`
+    // would turn `plugin_configure` into a way to point the user's
+    // notification channel somewhere of an agent's choosing -- and every
+    // test in this file would still pass. This is the one that would not.
+    //
+    // Embedded rather than read at runtime: a test that goes to the
+    // filesystem passes when the file is missing, and missing is the
+    // failure being guarded against.
+    const shipped = [_]struct {
+        manifest: []const u8,
+        /// The parameters whose value is a credential, whatever they are
+        /// named. A webhook URL does not look like one and is: whoever
+        /// holds it speaks as the user, and whoever rewrites it decides
+        /// where the user's notices go instead.
+        credentials: []const []const u8,
+    }{
+        .{
+            .manifest = @embedFile("plugin_manifest_webhook"),
+            .credentials = &.{"url"},
+        },
+        .{
+            .manifest = @embedFile("plugin_manifest_chat_archive"),
+            .credentials = &.{"dsn"},
+        },
+    };
+
+    inline for (shipped) |s| {
+        var parsed = try std.json.parseFromSlice(
+            std.json.Value,
+            testing.allocator,
+            s.manifest,
+            .{},
+        );
+        defer parsed.deinit();
+
+        const properties = parsed.value.object
+            .get("params").?.object
+            .get("properties").?.object;
+
+        for (s.credentials) |name| {
+            const field = properties.get(name) orelse {
+                std.debug.print("a shipped manifest no longer declares {s}\n", .{name});
+                return error.CredentialParameterGone;
+            };
+
+            const marked = switch (field.object.get("secret") orelse .null) {
+                .bool => |b| b,
+                else => false,
+            };
+            try testing.expect(marked);
+
+            // And the rule that only fires because of it. A guard with no
+            // roots, so nothing but the marking is deciding this.
+            const g: Guard = .{};
+            const spec: Plugin.ParamSpec = .{ .name = name, .secret = marked };
+            try testing.expectEqualStrings(
+                Guard.refusal.plaintext_secret,
+                g.value(spec, "https://attacker.example/collect").refused,
+            );
+        }
+    }
 }

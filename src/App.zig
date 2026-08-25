@@ -52,6 +52,13 @@ chat: poltergeistpkg.Chat,
 /// it just leaves a terminal stopped until morning.
 poltergeist_notify_window: ?poltergeistpkg.notify.Window = null,
 
+/// When the last plugin test went out, on `poltergeistNow`'s clock.
+///
+/// Optional rather than a zero sentinel: that clock starts at zero, so a
+/// test in the app's first millisecond would stamp a 0 that reads back as
+/// "never tested", and the limit would not apply to the very first call.
+poltergeist_plugin_tested_ms: ?u64 = null,
+
 /// The notification plugins the config asked for, loaded once at startup.
 ///
 /// Everything they own lives in `plugin_arena`, which is why they are a
@@ -424,12 +431,12 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
     }
 }
 
-/// Load the notification plugins the config named.
-///
-/// Once, at startup. A plugin that will not load is skipped with a
-/// warning rather than taken as fatal: the terminal has to work whether
-/// or not a notification channel does.
 /// Find every plugin that is installed and switched on.
+///
+/// Once, at startup, and again whenever `reloadPlugins` throws the arena
+/// away. A plugin that will not load is skipped with a warning rather than
+/// taken as fatal: the terminal has to work whether or not a notification
+/// channel does.
 ///
 /// Enumerated rather than named in the config: a plugin's own file says
 /// whether it is on (`Plugin.Settings`), so there is nothing for the main
@@ -444,52 +451,141 @@ pub fn ensurePlugins(self: *App) void {
     if (self.poltergeist_plugin_arena != null) return;
 
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
-    errdefer arena.deinit();
     const alloc = arena.allocator();
 
     const io = global.io();
 
-    var environ_map = global.environMap() catch return;
+    var environ_map = global.environMap() catch {
+        arena.deinit();
+        return;
+    };
     defer environ_map.deinit();
 
-    var found: std.ArrayListUnmanaged(poltergeistpkg.Plugin.Manifest) = .empty;
-    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    const found = self.scanPlugins(alloc, io, &environ_map, false);
 
-    for (self.pluginSearchPath(alloc, io, &environ_map)) |base| {
+    // The manifests alone are kept. The settings are read again where they
+    // are used -- `ensureArchive` at the moment it starts a child, the
+    // notification path on every send -- because a parameter changed while
+    // Polter runs must take effect without a restart.
+    const manifests = alloc.alloc(poltergeistpkg.Plugin.Manifest, found.len) catch {
+        arena.deinit();
+        return;
+    };
+    for (found, 0..) |f, i| manifests[i] = f.manifest;
+
+    self.poltergeist_plugins = manifests;
+    self.poltergeist_plugin_arena = arena;
+
+    log.info("poltergeist: {d} notification and {d} archive plugin(s) ready", .{
+        poltergeistpkg.notify.count(manifests, .notify),
+        poltergeistpkg.notify.count(manifests, .archive),
+    });
+}
+
+/// One plugin as found on disk, together with what the user configured for
+/// it.
+///
+/// Kept as one thing because everything that walks the plugin directories
+/// wants both, and reading the settings a second time somewhere else is how
+/// the two come to disagree about what is switched on.
+const Installed = struct {
+    manifest: poltergeistpkg.Plugin.Manifest,
+    settings: poltergeistpkg.Plugin.Settings,
+};
+
+/// Every plugin in the search path, nearest first.
+///
+/// `keep_disabled` is the whole reason this is separate from
+/// `ensurePlugins`: what *runs* is only the plugins that are switched on,
+/// but the question `plugin_list` answers is "what is here and is it on",
+/// and a plugin that is off is exactly what somebody is asking about.
+///
+/// Everything returned belongs to `arena`.
+fn scanPlugins(
+    self: *App,
+    arena: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    keep_disabled: bool,
+) []const Installed {
+    var found: std.ArrayListUnmanaged(Installed) = .empty;
+
+    // Two dedupes, and they are not the same one twice. `dirs` is what makes
+    // a user's copy of a shipped plugin win: the search path is nearest
+    // first, so the second directory of a name is the one to drop.
+    var dirs: std.StringHashMapUnmanaged(void) = .empty;
+
+    // `keys` is the one that matters. Everything downstream keys on
+    // `manifest.key` and not on the directory: `pluginSettings` reads
+    // `<key>.json`, `archiveFor` looks one up by key, the cursor file is
+    // `<key>.cursor`. Two directories whose manifests claim one key would
+    // therefore share a settings file and start two archive copies pushing
+    // one cursor -- the single failure `docs/poltergeist/storage.md` spends
+    // a section ruling out.
+    var keys: std.StringHashMapUnmanaged([]const u8) = .empty;
+
+    for (self.pluginSearchPath(arena, io, environ_map)) |base| {
         var dir = std.Io.Dir.cwd().openDir(io, base, .{ .iterate = true }) catch continue;
         defer dir.close(io);
 
         var it = dir.iterate();
         while (it.next(io) catch null) |entry| {
             if (entry.kind != .directory) continue;
-            if (seen.contains(entry.name)) continue;
+            if (dirs.contains(entry.name)) continue;
 
-            const key = alloc.dupe(u8, entry.name) catch continue;
-            seen.put(alloc, key, {}) catch {};
+            const name = arena.dupe(u8, entry.name) catch continue;
+            dirs.put(arena, name, {}) catch {};
 
-            const path = std.fmt.allocPrint(alloc, "{s}/{s}", .{ base, key }) catch continue;
-            const manifest = poltergeistpkg.Plugin.load(alloc, io, path) catch |err| {
-                log.warn("poltergeist: plugin {s} would not load err={}", .{ key, err });
+            const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ base, name }) catch continue;
+            const manifest = poltergeistpkg.Plugin.load(arena, io, path) catch |err| {
+                log.warn("poltergeist: plugin {s} would not load err={}", .{ name, err });
                 continue;
             };
 
-            const settings = self.pluginSettings(alloc, io, &environ_map, manifest.key);
-            if (!settings.enabled) {
+            if (keys.get(manifest.key)) |first| {
+                log.warn(
+                    "poltergeist: {s} and {s} both claim the key {s}; the second is " ++
+                        "passed over, because two copies of one plugin would share " ++
+                        "its settings and its cursor",
+                    .{ first, path, manifest.key },
+                );
+                continue;
+            }
+            keys.put(arena, manifest.key, path) catch {};
+
+            const settings = self.pluginSettings(arena, io, environ_map, manifest.key);
+            if (!keep_disabled and !settings.enabled) {
                 log.debug("poltergeist: plugin {s} is installed but off", .{manifest.key});
                 continue;
             }
 
-            found.append(alloc, manifest) catch continue;
+            found.append(arena, .{
+                .manifest = manifest,
+                .settings = settings,
+            }) catch continue;
         }
     }
 
-    self.poltergeist_plugins = found.items;
-    self.poltergeist_plugin_arena = arena;
+    return found.items;
+}
 
-    log.info("poltergeist: {d} notification and {d} archive plugin(s) ready", .{
-        poltergeistpkg.notify.count(found.items, .notify),
-        poltergeistpkg.notify.count(found.items, .archive),
-    });
+/// Read the plugin directories again, because something about them changed.
+///
+/// Safe to do while archives are running, and that rests on two facts rather
+/// than on hope: `Archive.Options` says every field is copied, so a resident
+/// plugin borrows nothing from the arena being thrown away; and both readers
+/// of `poltergeist_plugins` -- `notifyUser` and `ensureArchive` -- run on the
+/// app thread, which is the thread this is called on.
+pub fn reloadPlugins(self: *App) void {
+    // Cleared before the arena goes, not after. `ensurePlugins` has early
+    // returns -- no environment, no memory -- and none of them assigns a new
+    // list; the other order would leave this slice pointing into freed
+    // memory for whichever notification came next.
+    self.poltergeist_plugins = &.{};
+    if (self.poltergeist_plugin_arena) |*a| a.deinit();
+    self.poltergeist_plugin_arena = null;
+
+    self.ensurePlugins();
 }
 
 /// Where plugins live, nearest first.
@@ -774,48 +870,11 @@ pub fn ensureArchive(self: *App) void {
     };
 
     for (self.poltergeist_plugins) |manifest| {
-        if (manifest.kind != .archive) continue;
-
-        if (manifest.wants.empty()) {
-            log.warn(
-                "poltergeist: plugin {s} declares no groups, so it is not " ++
-                    "started; add \"wants\": {{\"groups\": [\"*\"]}} to its plugin.json",
-                .{manifest.key},
-            );
-            continue;
-        }
-
         // Read again rather than remembered: `ensurePlugins` looks only at
         // whether a plugin is switched on and throws its parameters away.
         // A resident plugin's database lives in those.
         const settings = self.pluginSettings(alloc, io, &environ_map, manifest.key);
-
-        // A fresh map each, and deliberately no `defer`: `start` takes the
-        // environment over the moment it is called, on its failure paths
-        // too.
-        const env = global.environMap() catch continue;
-
-        const archive = poltergeistpkg.Archive.start(self.alloc, io, .{
-            .key = manifest.key,
-            .exec = manifest.exec,
-            .timeout_ms = manifest.timeout_ms,
-            .groups = manifest.wants.groups,
-            .params = settings.params,
-            .state_dir = state_dir,
-            .environ = env,
-        }) catch |err| {
-            log.warn(
-                "poltergeist: plugin {s} would not start err={}",
-                .{ manifest.key, err },
-            );
-            continue;
-        };
-
-        self.poltergeist_archives.append(self.alloc, archive) catch {
-            // Never orphan a running thread over a failed append.
-            archive.destroy();
-            continue;
-        };
+        _ = self.startArchive(manifest, settings, state_dir);
     }
 
     // Only when there is something to say, so the ordinary install -- which
@@ -824,6 +883,81 @@ pub fn ensureArchive(self: *App) void {
         "poltergeist: {d} archive plugin(s) running",
         .{self.poltergeist_archives.items.len},
     );
+}
+
+/// Start one resident archive plugin, unless there is a reason not to.
+///
+/// Returns whether this call started one. Everything that says no says so in
+/// the log first, except the two that are ordinary and quiet: a plugin that
+/// is not an archive, and a copy that is already running.
+///
+/// The duplicate check is not tidiness. Two copies of one plugin confirm
+/// into the same cursor file, and the cursor can then go backwards or skip
+/// -- the one failure `docs/poltergeist/storage.md` spends a section ruling
+/// out. This is the only path that starts one, so it is where the guarantee
+/// belongs.
+fn startArchive(
+    self: *App,
+    manifest: poltergeistpkg.Plugin.Manifest,
+    settings: poltergeistpkg.Plugin.Settings,
+    state_dir: []const u8,
+) bool {
+    if (manifest.kind != .archive) return false;
+
+    if (manifest.wants.empty()) {
+        log.warn(
+            "poltergeist: plugin {s} declares no groups, so it is not " ++
+                "started; add \"wants\": {{\"groups\": [\"*\"]}} to its plugin.json",
+            .{manifest.key},
+        );
+        return false;
+    }
+
+    // Nothing is being written down, so there is nothing to follow. Not a
+    // warning: this is the ordinary state before the first terminal exists.
+    if (self.chat_log == null) return false;
+
+    if (self.archiveFor(manifest.key) != null) return false;
+
+    // A fresh map each, and deliberately no `defer`: `start` takes the
+    // environment over the moment it is called, on its failure paths too.
+    const env = global.environMap() catch return false;
+
+    const archive = poltergeistpkg.Archive.start(self.alloc, global.io(), .{
+        .key = manifest.key,
+        .exec = manifest.exec,
+        .timeout_ms = manifest.timeout_ms,
+        .groups = manifest.wants.groups,
+        .params = settings.params,
+        .state_dir = state_dir,
+        .environ = env,
+    }) catch |err| {
+        log.warn(
+            "poltergeist: plugin {s} would not start err={}",
+            .{ manifest.key, err },
+        );
+        return false;
+    };
+
+    self.poltergeist_archives.append(self.alloc, archive) catch {
+        // Never orphan a running thread over a failed append.
+        archive.destroy();
+        return false;
+    };
+
+    return true;
+}
+
+/// The running copy of one archive plugin, if there is one.
+///
+/// Walked rather than mapped: there are single digits of these, and
+/// `Archive.key` is written once in `start` and never again, so reading it
+/// from here needs no lock.
+fn archiveFor(self: *App, key: []const u8) ?*poltergeistpkg.Archive {
+    for (self.poltergeist_archives.items) |archive| {
+        if (std.mem.eql(u8, archive.key, key)) return archive;
+    }
+    return null;
 }
 
 /// Open the agent socket if the config wants it and it is not open yet.
@@ -1073,7 +1207,405 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatGroups = chatGroups,
         .chatRead = chatRead,
         .chatHistory = chatHistory,
+        .pluginList = pluginList,
+        .pluginRoots = pluginRoots,
+        .pluginConfigure = pluginConfigure,
+        .pluginTest = pluginTest,
     } };
+}
+
+// -- the plugin tools' side of the host -------------------------------------
+//
+// All four run on the app thread: `poltergeistRequest` dispatches there, and
+// so do `notifyUser` and `ensureArchive`. That is what makes it safe for a
+// configure to throw the plugin arena away and read the directories again
+// while archives are running.
+//
+// The allocator handed in is the request's own arena, so everything scanned
+// can go straight into it and nothing has to be duplicated afterwards.
+
+/// Every plugin installed, switched on or not.
+///
+/// Off is not a reason to leave one out: "what is here and is it on" is the
+/// question this answers, and the plugin somebody is asking about is usually
+/// the one that is not doing anything.
+fn pluginList(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    key: []const u8,
+) anyerror![]const poltergeistpkg.rpc.PluginView {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const io = global.io();
+    var environ_map = try global.environMap();
+    defer environ_map.deinit();
+
+    var out: std.ArrayListUnmanaged(poltergeistpkg.rpc.PluginView) = .empty;
+
+    for (self.scanPlugins(alloc, io, &environ_map, true)) |installed| {
+        const manifest = installed.manifest;
+        if (key.len > 0 and !std.mem.eql(u8, key, manifest.key)) continue;
+
+        var params: std.ArrayListUnmanaged(poltergeistpkg.rpc.PluginParamView) = .empty;
+
+        // Every declared parameter, whether or not it has a value -- and the
+        // ones with no value matter more than the ones with. They are the
+        // only way `rpc.dispatch` learns that a parameter is `secret`, or
+        // what its `enum` allows, *before* an agent writes it for the first
+        // time. A listing that walked the configured values instead would
+        // drop that rule on exactly the write that most needs it.
+        for (manifest.params) |spec| {
+            try params.append(alloc, poltergeistpkg.rpc.viewOf(
+                spec,
+                configuredValue(installed.settings.params, spec.name),
+            ));
+        }
+
+        // Then whatever is in the file that the manifest does not declare.
+        // Shown rather than hidden, because an audit has to see the whole
+        // file. What these are **not** is a schema: their `secret: false`
+        // and empty `choices` are the absence of a declaration, not a
+        // declaration of absence, and nothing may read one as permission to
+        // write. `pluginConfigure` refuses every undeclared name outright.
+        for (installed.settings.params) |configured| {
+            if (manifest.param(configured.name) != null) continue;
+
+            try params.append(alloc, poltergeistpkg.rpc.undeclaredView(
+                configured.name,
+                configured.value,
+            ));
+        }
+
+        // Handed over exactly as the manifest declared them, unread: an
+        // agent has to be able to tell the user what it is about to switch
+        // on.
+        var view: poltergeistpkg.rpc.PluginView = .{
+            .key = manifest.key,
+            .name = manifest.name,
+            .kind = @tagName(manifest.kind),
+            .enabled = installed.settings.enabled,
+            .groups = manifest.wants.groups,
+            .network = manifest.wants.network,
+            .exec = manifest.wants.exec,
+            .params = params.items,
+        };
+
+        if (manifest.kind == .archive) {
+            // Left empty when no copy is running, rather than reported as
+            // zero. `wire.writePlugin` leaves the whole group out then, and
+            // an absent `cursor` reads as "not being measured" where a `0`
+            // would read as "measured, and it is nothing".
+            const status = if (self.archiveFor(manifest.key)) |a| a.status() else null;
+            if (status) |st| {
+                view.state = @tagName(st.state);
+                view.cursor = st.cursor;
+                view.failures = st.failures;
+            }
+
+            view.note = try poltergeistpkg.report.archiveNote(alloc, .{
+                .key = manifest.key,
+                .enabled = installed.settings.enabled,
+                .declares_groups = !manifest.wants.empty(),
+                .log_open = self.chat_log != null,
+                .status = status,
+            });
+        }
+
+        try out.append(alloc, view);
+    }
+
+    // A key that matched nothing comes back as an empty listing rather than
+    // an error: a listing that found nothing is still a listing, and
+    // `UnknownPlugin`'s "plugin_list shows what is" would be pointing this
+    // reply back at itself.
+    return out.items;
+}
+
+/// The value configured for a name, or empty when there is none.
+fn configuredValue(
+    params: []const poltergeistpkg.Plugin.Param,
+    name: []const u8,
+) []const u8 {
+    for (params) |p| if (std.mem.eql(u8, p.name, name)) return p.value;
+    return "";
+}
+
+/// Where a `file:` reference written through the tool surface may point.
+///
+/// The user's polter config and state directories. Both come back absolute
+/// with `~` already resolved, because `xdg` builds them out of `HOME` --
+/// which is the precondition `rpc.Guard.roots` documents for itself.
+///
+/// The subdirectory is `polter`, not `polter/plugins`: a credential file
+/// dropped beside the settings is the case this exists for.
+///
+/// **The state directory is the wide half of this, and knowingly so.**
+/// `$XDG_STATE_HOME/polter` is where `chat/chat.jsonl` and the per-plugin
+/// cursors live, so a `file:` reference naming the chat log would hand its
+/// first line to a notification plugin as a parameter value. That is what a
+/// `file:` reference *is* -- it moves a file's contents into a parameter --
+/// and `roots` is the only thing deciding which files. It is written this
+/// way because `docs/poltergeist/mcp.md` names both directories twice; if
+/// that is revisited, the two narrowings on the table are dropping the state
+/// root entirely, or replacing it with a `secrets` subdirectory meant only
+/// for credentials.
+///
+/// An allocation failure or a missing environment returns an **empty slice,
+/// not an error**: empty makes `Guard.underRoot` refuse every `file:`
+/// reference, and refusing is the right direction when containment could not
+/// be worked out.
+fn pluginRoots(_: *anyopaque, alloc: Allocator) anyerror![]const []const u8 {
+    const io = global.io();
+
+    var environ_map = global.environMap() catch return &.{};
+    defer environ_map.deinit();
+
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+
+    if (internal_os.xdg.config(io, alloc, &environ_map, .{ .subdir = "polter" })) |base| {
+        out.append(alloc, base) catch return &.{};
+    } else |_| {}
+
+    if (internal_os.xdg.state(io, alloc, &environ_map, .{ .subdir = "polter" })) |base| {
+        out.append(alloc, base) catch return &.{};
+    } else |_| {}
+
+    return out.items;
+}
+
+/// Write a plugin's settings file, and say what that does and does not take
+/// effect on.
+///
+/// The order below is the design, not an implementation detail: the plugin
+/// is resolved first so an unknown name costs nothing, the two refusals come
+/// before anything is written, and the write happens before anything is
+/// started so that what starts is what is on disk.
+fn pluginConfigure(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    key: []const u8,
+    enable: ?bool,
+    params: []const poltergeistpkg.Plugin.Param,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const io = global.io();
+    var environ_map = try global.environMap();
+    defer environ_map.deinit();
+
+    const installed = self.installedPlugin(alloc, io, &environ_map, key) orelse
+        return error.NoSuchPlugin;
+    const manifest = installed.manifest;
+
+    // `rpc.Guard.enabling` already refuses this with the sentence an agent
+    // reads. This is the second lock, on the thing that actually writes: a
+    // plugin is the channel the person hears about things on, and no path
+    // through this file may quiet it.
+    if (enable) |e| if (!e) return error.WillNotDisable;
+
+    for (params) |change| {
+        // Independent of whatever dispatch checked, and it is this check
+        // that closes the undeclared-name hole for good: a name the schema
+        // does not carry cannot be judged secret, so it cannot be written.
+        _ = manifest.param(change.name) orelse return error.UnknownParameter;
+
+        // Over the requested changes **only**, never over the merged result.
+        // A user who hand-wrote `"dsn": "cmd:op read ..."` -- the form the
+        // documentation recommends -- must still be able to have `backend`
+        // set; `merge` carries their line through untouched, and carrying an
+        // existing line through is not writing a new one. Checking the merge
+        // instead would make every properly configured plugin permanently
+        // unconfigurable, and it would look like a refusal rather than a bug.
+        if (poltergeistpkg.secret.classify(change.value)) |prefix| {
+            if (prefix == .cmd) return error.WillNotWriteCmd;
+        }
+    }
+
+    var next = try installed.settings.merge(alloc, params);
+
+    // `merge` deliberately leaves this alone; deciding it is the caller's.
+    next.enabled = installed.settings.enabled or (enable orelse false);
+    const switched_on = next.enabled and !installed.settings.enabled;
+
+    // Keyed on `manifest.key` rather than the directory name, and written
+    // into the user's config: that is where `pluginSettings` reads from, so
+    // a shipped plugin's settings land beside the user's own.
+    const base = internal_os.xdg.config(
+        io,
+        alloc,
+        &environ_map,
+        .{ .subdir = "polter/plugins" },
+    ) catch return error.NoConfigDir;
+
+    const path = try std.fmt.allocPrint(alloc, "{s}/{s}.json", .{ base, manifest.key });
+    try next.write(alloc, io, path);
+
+    self.reloadPlugins();
+
+    var started: poltergeistpkg.report.Started = .not_an_archive;
+    if (manifest.kind == .archive) {
+        started = if (self.archiveFor(manifest.key) != null)
+            .already_running
+        else if (switched_on and self.startArchiveNow(alloc, io, &environ_map, manifest.key))
+            .started_now
+        else
+            .not_started;
+    }
+
+    const said = try poltergeistpkg.report.configured(
+        alloc,
+        manifest.key,
+        manifest.kind,
+        switched_on,
+        params.len > 0,
+        started,
+    );
+    if (started != .not_started) return said;
+
+    // Why it is not running is `archiveNote`'s to say, so it is said in one
+    // place and never written out twice.
+    const note = try poltergeistpkg.report.archiveNote(alloc, .{
+        .key = manifest.key,
+        .enabled = next.enabled,
+        .declares_groups = !manifest.wants.empty(),
+        .log_open = self.chat_log != null,
+        .status = null,
+    });
+    if (note.len == 0) return said;
+
+    return std.fmt.allocPrint(alloc, "{s} {s}", .{ said, note });
+}
+
+/// Start the archive plugin called `key`, taking the manifest out of the
+/// list as it stands **now**.
+///
+/// After a reload, so what gets started is what was just written rather than
+/// what was read before the write.
+fn startArchiveNow(
+    self: *App,
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) bool {
+    const state_dir = internal_os.xdg.state(
+        io,
+        alloc,
+        environ_map,
+        .{ .subdir = "polter" },
+    ) catch |err| {
+        log.warn("poltergeist: no state directory for the archive err={}", .{err});
+        return false;
+    };
+
+    for (self.poltergeist_plugins) |manifest| {
+        if (!std.mem.eql(u8, manifest.key, key)) continue;
+        const settings = self.pluginSettings(alloc, io, environ_map, manifest.key);
+        return self.startArchive(manifest, settings, state_dir);
+    }
+    return false;
+}
+
+/// The installed plugin with this key, switched on or not.
+fn installedPlugin(
+    self: *App,
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) ?Installed {
+    for (self.scanPlugins(alloc, io, environ_map, true)) |installed| {
+        if (std.mem.eql(u8, installed.manifest.key, key)) return installed;
+    }
+    return null;
+}
+
+/// Prove a plugin works before the night it is needed.
+///
+/// A notification plugin is really sent through, going round `notify.decide`
+/// on purpose: quiet hours do not apply, because the point of a test is that
+/// it goes out, and the tool's own description says so. Every word of what
+/// goes out is written here -- the schema has no free-text field, and that
+/// is what keeps this from being an unconstrained outbound channel with the
+/// constrained one (`notify_user`) sitting next to it as the long way round.
+///
+/// An archive plugin has **nothing started for it**. See
+/// `poltergeist/report.zig` for why, and for the sentence that says so.
+fn pluginTest(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    key: []const u8,
+    by: poltergeistpkg.Bus.Id,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const io = global.io();
+    var environ_map = try global.environMap();
+    defer environ_map.deinit();
+
+    // Resolved first, so an unknown name does not spend the budget below.
+    const installed = self.installedPlugin(alloc, io, &environ_map, key) orelse
+        return error.NoSuchPlugin;
+
+    // Global rather than per key: this protects the person, not the plugin,
+    // and a person with four channels configured is one person. The archive
+    // branch spends it too, as specified.
+    const now = self.poltergeistNow();
+    if (self.poltergeist_plugin_tested_ms) |last| {
+        if (now -| last < std.time.ms_per_min) return error.TooSoon;
+    }
+    self.poltergeist_plugin_tested_ms = now;
+
+    if (installed.manifest.kind == .archive) {
+        return poltergeistpkg.report.archiveStatus(alloc, .{
+            .key = installed.manifest.key,
+            .enabled = installed.settings.enabled,
+            .declares_groups = !installed.manifest.wants.empty(),
+            .log_open = self.chat_log != null,
+            .status = if (self.archiveFor(installed.manifest.key)) |a| a.status() else null,
+        });
+    }
+
+    // The terminal's name goes in the field `notifyUser` already puts it in,
+    // and nowhere else. A tab title is something the agent in that terminal
+    // can set, so splicing it into the body would open a path from an agent
+    // to the wording of a notification -- and this tool exists precisely
+    // because its wording is not the agent's.
+    var name_buf: [256]u8 = undefined;
+    var name_fixed: std.heap.FixedBufferAllocator = .init(&name_buf);
+    const terminal_name = if (by != 0)
+        self.chatMemberTitle(name_fixed.allocator(), by) catch ""
+    else
+        "";
+
+    const event: poltergeistpkg.notify.Event = .{
+        .reason = .scheduling,
+        .title = "Polter test",
+        .body = "A test of this notification channel, asked for through Polter's " ++
+            "plugin_test tool. Nothing is wrong. If this reached you, the channel works.",
+        .terminal = by,
+        .terminal_name = terminal_name,
+        .at_ms = self.poltergeist_epoch_wall_ms + @as(i64, @intCast(now)),
+    };
+
+    // The one plugin that was named, not `notify.send`, which would fan the
+    // test out to every channel the user has.
+    const rendered = try poltergeistpkg.notify.body(alloc, event);
+    const outcome = poltergeistpkg.Plugin.call(
+        installed.manifest,
+        alloc,
+        io,
+        &environ_map,
+        rendered,
+        installed.settings.params,
+    );
+
+    return poltergeistpkg.report.notified(
+        alloc,
+        installed.manifest.key,
+        installed.settings.enabled,
+        outcome,
+    );
 }
 
 fn poltergeistRead(

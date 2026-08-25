@@ -1,0 +1,54 @@
+{
+  "key": "chat-archive",
+  "name": "Chat archive",
+  "kind": "archive",
+  "version": "1.0.0",
+  "description": "Follows the chat log and copies it somewhere that outlives this machine. One plugin, several backends: postgres today, and a plain file that needs nothing installed.",
+
+  "exec": "archive.py",
+  "timeout_ms": 30000,
+
+  "wants": {
+    "groups": ["*"],
+    "network": true,
+    "exec": ["psql"]
+  },
+
+  "params": {
+    "type": "object",
+    "properties": {
+      "backend": {
+        "type": "string",
+        "title": "Where to write",
+        "description": "postgres needs psql on PATH and a dsn. file needs nothing and writes newline-delimited JSON under the polter state directory.",
+        "enum": ["postgres", "file"],
+        "default": "file"
+      },
+      "dsn": {
+        "type": "string",
+        "title": "Postgres connection URI",
+        "description": "postgresql://user:password@host:5432/dbname -- a credential, so give a reference: env:, file: or keychain:.",
+        "secret": true
+      },
+      "schema": {
+        "type": "string",
+        "title": "Postgres schema",
+        "description": "Lowercase identifier, default public.",
+        "default": "public"
+      },
+      "stream": {
+        "type": "string",
+        "title": "Which log this is",
+        "description": "Part of the primary key, so two machines writing to one database do not collide, and so a wiped local log can start over. Letters, digits, dot, dash, underscore.",
+        "default": "default"
+      },
+      "file_name": {
+        "type": "string",
+        "title": "File to write (file backend)",
+        "description": "A bare filename, no directories. It is written under $XDG_STATE_HOME/polter/archive/.",
+        "default": "chat.jsonl"
+      }
+    },
+    "required": ["backend"]
+  }
+}

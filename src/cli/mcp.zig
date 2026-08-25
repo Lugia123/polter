@@ -322,6 +322,27 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "plugin_list",
+        .description = "What plugins are installed, whether each is switched on, what parameters it takes, and -- for the chat archive, which runs all the time -- how far it has got and whether it is healthy. Configured values are not handed back in the clear: a reference (env:, file:, keychain:, cmd:) is shown as the user wrote it, because where a secret lives is not the secret; a value typed in plainly is reported as being set and nothing more. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"key":{"type":"string","description":"Just this one; omit for all of them"}},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "plugin_configure",
+        .description = "Set up a plugin for the user: switch it on, and set its parameters. Give a credential as a reference to somewhere the user has already put it -- env:NAME, keychain:service/account, or file: naming a file under their polter config directory -- never as the secret itself; a parameter the plugin marks secret will refuse a plaintext value and tell you so. A cmd: reference is refused outright: it is a command Polter would run later on its own, outside whatever authorises you now, so writing one is not yours to do -- describe the line and let the user write it. Switching a plugin off is refused for the same reason: it is the channel they hear about things on. Read the reply -- it says whether the change is live or waits for a restart. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"key":{"type":"string"},"enabled":{"type":"boolean","description":"Switch it on. Switching one off is refused."},"params":{"type":"object","description":"Parameter name to value. An empty string clears one.","additionalProperties":{"type":"string"}}},"required":["key"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "plugin_test",
+        .description = "Prove a plugin works before the night it is needed. For a notification plugin this really sends one, with wording of Polter's own, at whatever hour it is -- so use it once, deliberately. For the chat archive nothing is started: it is already running and holding the cursor, a second copy would push the same cursor, and the protocol has no dry run to offer instead -- what comes back is how the running one is getting on, which is the answer to \"why is nothing being archived\". Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "set_quiescence_threshold",
         .description = "How long a terminal must be still before it is reported. Supervisor only.",
         .schema =

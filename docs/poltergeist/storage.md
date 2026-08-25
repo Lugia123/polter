@@ -1,11 +1,12 @@
 # 存档：把对话留下来
 
-> 最后更新对应的 git commit：`c4d10f4d2`
+> 最后更新对应的 git commit：`601026f3c`
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**已实现**。日志序号与往回翻见 `ChatLog`、`group_history`、
-> `ChatLine.log_seq`；常驻存档见 `src/poltergeist/Archive.zig`、
-> `Cursor.zig`、`reap.zig`。**尚未实现的只剩后端本身**（pg 那个插件），
-> 见「一个插件，多个后端」。宿主那一层见 [plugins.md](plugins.md)。
+> `ChatLine.log_seq`；常驻存档的宿主一侧见 `src/poltergeist/Archive.zig`、
+> `Cursor.zig`、`reap.zig`；插件本身在 `plugins/chat-archive/`（两个后端，
+> 见下）；工具面在 `App.pluginList` / `pluginConfigure` / `pluginTest`。
+> 宿主那一层见 [plugins.md](plugins.md)。**本章若与代码不一致，以代码为准。**
 
 ## 本章覆盖什么
 
@@ -85,10 +86,33 @@ deadline 改成"现在"（`hurry`，而且**是黏的**——之后再起的子�
 常驻插件的 stdin 是一条**行分隔的 JSON 流**，一行一批：
 
 ```json
-{"cursor":1042,"through":1049,"messages":[{"seq":1043,"group":"build","author":"…","text":"…"}]}
+{"cursor":1042,"through":1049,"messages":[{"seq":1043,"at_ms":1786819271275,"group":"build","author":"worker-core","text":"…"},{"seq":1047,"at_ms":1786819274901,"group":"build","author":"…","summary":true,"text":"…"}]}
 ```
 
 `cursor` 是**这一批之前**已确认到哪里，`messages` 里每条带自己的 `seq`。
+`summary` **只在为真时出现**（`Archive.zig:530-533`），缺失即假。**没有 `from`
+字段**，这是故意的（`:522-526`）：那是终端 id，插件拿它没用，而它会把"哪个
+窗口说的话"带出机器。
+
+单批上限 256 条 / 256KB（`max_batch` / `max_batch_bytes`，`:58-59`）。
+
+**握手行**（`renderHello`，`:494`）在流的最前面，整个会话只出现一次：
+
+```json
+{"hello":1,"plugin":"chat-archive","cursor":1042,"groups":["*"],"params":{"backend":"postgres","dsn":"已解析出来的明文"}}
+```
+
+`params` **只在这里出现**，批次行里没有，插件必须在握手时记住它。里面的值
+已经过 `secret.resolve` 解析，插件拿到的是真 DSN 而不是 `cmd:…`。每次子进程
+重起都重新解析、重新握手（`:838-849`）——**一个锁上的密码库因此在下一次
+重起时就会失败，而不是永远用着半年前取出来的那份**。
+
+**心跳**：一行 `messages` 为空、`cursor == through ==` 已确认位置的批次，
+默认每 30 秒一次（`heartbeat_ms_default`，`:56`）。宿主对心跳答复的判据
+**只有一条：`parseAck` 不能返回 null**（`:951-954`）——能解析成 JSON 对象
+就算数，`ok` 的值根本不读。写下来是因为它是实打实的许可：**插件可以不碰
+数据库就答一次心跳**，心跳要的是"进程还在、还在听"，为它探一次库会把一次
+网络抖动变成一次重启。
 
 `through` 是**这一批看过的最后一个 seq**，不一定等于最后一条 `messages`
 的 `seq`。它是为群过滤加的：一个只要 `build` 的插件，遇到一整窗都是 `ops`
@@ -97,7 +121,7 @@ deadline 改成"现在"（`hurry`，而且**是黏的**——之后再起的子�
 恒等于最后一条的 `seq`；忽略 `through` 只确认最后一条也仍然正确，只是会把
 被过滤掉的尾巴白看一遍。
 
-插件写回一行确认：
+插件写回一行确认，**上限 64KB**（`ack_max_bytes`，`:60`）：
 
 ```json
 {"ok":true,"cursor":1043}
@@ -106,18 +130,39 @@ deadline 改成"现在"（`hurry`，而且**是黏的**——之后再起的子�
 **确认里带游标而不只是 `ok`**：插件可能只写成功了前半批。带上它实际
 落库到哪里，剩下的下一轮自然重发。
 
-四条判读规则，都在 `Archive.advance`：
+#### 批次确认怎么判（`Archive.advance`，`:392-417`）
 
 | 插件回的 | 怎么判 | 为什么 |
 | --- | --- | --- |
-| `ok` 缺失或为假 | 原地不动，下一轮重发 | 没说成了就是没成，和一次性插件看退出码同一条规矩 |
-| `ok:true`，`cursor` 缺失 | 整批收下 | 让最简单的插件保持最简单：读一行，回 `{"ok":true}` |
-| `cursor` 大于 `through` | **杀掉重起** | 它没有第二条通道能拿到日志，所以不可能存过没给它的东西。认下这个数，中间那些消息再也不会被发给任何人，而且没有任何迹象——正是这套设计要防的那一种失败 |
-| `cursor` 等于批前那个值 | 当作"原地不动"，走退避 | `ok:true` 加"我还在原地"，信息量和 `ok:false` 一样。当成进展会清零软失败计数并立刻再来一轮，而"没有新消息"那条才是带 sleep 的路——于是一个把收到的 `cursor` 原样抄回去的插件（最容易写错的一种）能让这条线程满速空转 |
+| `ok` 缺失或为假 | 原地不动，下一轮重发；连续 3 次（`max_soft`）之后退避 | 没说成了就是没成，和一次性插件看退出码同一条规矩 |
+| `ok:true`，`cursor` 缺失 | 整批收下，`to = through` | 让最简单的插件保持最简单：读一行，回 `{"ok":true}` |
+| `ok:true`，`cursor` **大于** `through` | **杀掉重起** | 它没有第二条通道能拿到日志，所以不可能存过没给它的东西。认下这个数，中间那些消息再也不会被发给任何人，而且没有任何迹象——正是这套设计要防的那一种失败 |
+| `ok:true`，`cursor` **小于**批前那个值 | **杀掉重起** | 批次里往回等于凭空推翻一件已经确认过的事。想往回只有握手那一个场合 |
+| `ok:true`，`cursor` **等于**批前那个值 | 当作"原地不动"，走退避 | `ok:true` 加"我还在原地"，信息量和 `ok:false` 一样。当成进展会清零软失败计数并立刻再来一轮，而"没有新消息"那条才是带 sleep 的路——于是一个把收到的 `cursor` 原样抄回去的插件（最容易写错的一种）能让这条线程满速空转 |
 
-**握手那一行是例外**：它的 `cursor` 允许往回（"我的库只到 900，从 901 发给我"）。
-那是插件在陈述自己的状态，按 seq 重发是幂等的，也正是"插件是日志的跟读者"
-这个模型的自然结论。往前则和批次确认一样拒绝。
+#### 握手确认怎么判（`:872-896`）
+
+| 插件回的 | 怎么判 | 为什么 |
+| --- | --- | --- |
+| `ok:false` | **不是失当**：杀掉子进程、退避重起 | 连不上库的插件在这里说出来，拿到的是和"根本起不来"一样的耐心重试 |
+| `ok:true`，`cursor` **小于**宿主给的 | **接受**，游标回拨，重开 tail 重放 | 插件在陈述自己的状态——"我的库只到 900，从 901 发给我"。按 seq 重发是幂等的，也正是"插件是日志的跟读者"这个模型的自然结论 |
+| `ok:true`，`cursor` **大于**宿主给的 | **杀掉重起** | 和过大的批次确认是同一个断言，拒绝的理由也同一条 |
+| `ok:true`，无 `cursor` | 保持宿主的游标 | |
+| 任意 | 非 JSON、一行超过 64KB、stdout 关闭 → 杀掉重起 | |
+
+#### `timeout_ms` 界定的是一次交换，不是一整段会话
+
+**写一行 + 读一行，就这么多。**两次交换之间宿主调 `unhurried()`（`:635`）
+把 deadline 撤掉，因为常驻插件的正常状态就是长时间无事可做。所以
+`timeout_ms` **不需要覆盖心跳间隔**，也不该按"一整晚"去设——它该是"这个
+后端做完一批最慢要多久"。把它写成一段会话的预算，会让每个插件作者都设得
+高出一个量级，而那正好废掉了超时。
+
+#### stdout 是协议通道
+
+插件写到 stdout 的**任何非确认行都会被判成失当并杀掉进程**。所以一个要
+起子命令的插件，必须把那个子命令的 stdout 接到管道上自己读，**绝不能让它
+继承**。stderr 是继承的，落进 Polter 的日志——那才是插件说话的地方。
 
 ### 游标存在哪
 
@@ -152,6 +197,111 @@ deadline 改成"现在"（`hurry`，而且**是黏的**——之后再起的子�
 ```
 
 以后加 mysql 是**给它加一个后端**，不是多一个插件。
+
+## chat-archive：这个插件长什么样
+
+`plugins/chat-archive/`，随构建装进 resources，用户不需要装任何东西。
+
+**python3，只用标准库。**不用 psycopg2、不用 jq、不用 pip。理由按重要性：
+
+1. **它必须真的解析 JSON，而 shell 做不对。**要读的是 `messages` 数组——嵌套
+   对象、转义引号、CJK 的 `\uXXXX`、正文里可能含 `}`。用 `sed` 读它必然在
+   某些输入上读错，而**读错的后果是回一个它其实没存的 cursor**，正是整套
+   游标设计要防的那个静默的洞。
+2. `jq` 能救 shell，但它是第三个依赖，而且不在 stock macOS 里。`psql` 是
+   清单已经声明的依赖，装了 pg 客户端的机器上 `python3` 几乎必然在。
+3. 只用标准库意味着没有 venv、没有 pip、没有版本漂移。
+
+**两个后端**：`postgres`（要 `psql` 和一个 `dsn`）与 `file`（什么都不要，
+在 state 目录下写 NDJSON）。第二个不是凑数——**一个后端不构成对"后端"这个
+接口的证明**，而且它让一个不碰数据库的人也能验证整条链路。
+
+### 表结构
+
+```sql
+CREATE TABLE IF NOT EXISTS <schema>.polter_chat (
+  stream text NOT NULL, seq bigint NOT NULL, at_ms bigint NOT NULL,
+  "group" text NOT NULL, author text NOT NULL,
+  summary boolean NOT NULL DEFAULT false, text text NOT NULL,
+  stored_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (stream, seq)
+);
+```
+
+**主键的两半都是承重的：**
+
+- **`seq`** 是消息在这个系统里唯一的身份。把它做进主键，**幂等就不是一段
+  代码，而是一条数据库约束**——重发写不进第二行，不依赖插件记得去查。写法
+  只有一种：`INSERT … ON CONFLICT (stream, seq) DO NOTHING`。
+- **`stream`** 不是可有可无的。两种情况会让 `seq` 单独失去唯一性：dotfiles
+  同步到第二台机器，两台的 `chat.jsonl` 都从 1 数起；或者用户清了
+  `$XDG_STATE_HOME`，本机日志从 1 重来。没有 `stream`，这两种情况下
+  `DO NOTHING` 会**静默丢掉新消息**——最坏的一种失败。
+
+**`DO NOTHING` 而不是 `DO UPDATE`**：`group_compact` 会把某个 seq 的正文改
+写成摘要并继承那条的 seq。若一次握手回拨让插件重新看到一个已存过的 seq，
+`DO UPDATE` 会用摘要覆盖掉原文——**存档因此丢掉它存在的理由**。`DO NOTHING`
+留下先到的那份，也就是更完整的那份。
+
+**没有任何标识符来自配置**：表名固定 `polter_chat`，`schema` 是唯一例外且被
+`^[a-z_][a-z0-9_]{0,62}$` 强校验后双引号包起来。标识符没有参数绑定，只能拼
+进 SQL 文本，把它开给配置就是开一条注入。
+
+### DSN 绝不进 argv
+
+Linux 上 `/proc/PID/cmdline` 全局可读，`ps` 一眼就看得见。所以 DSN 被拆成
+libpq 环境变量（`PGHOST`/`PGPASSWORD`/…），`psql` 不带任何连接参数。解析失败
+时 stderr 只说"不是 URI 也不是 conninfo"，**绝不回显值的任何片段**。
+
+### 一条长活的连接，不是一批一条
+
+稳态下 `poll_idle_ms=500`，一次对话里一批往往就是一条消息——**按批起 psql
+等于按消息起 psql**，正是本章开头否掉的做法。做法是一个长活的 `psql -f -`
+会话，SQL 从 stdin 流进去，`\echo <<polter:ok:N>>` 哨兵在 stdout 上划分工作
+单元；`ON_ERROR_STOP=1` 让任何 SQL 错误直接结束它，插件读到 EOF 就回
+`{"ok":false}` 并把句柄置空，下一批重连。**状态机因此只有两态。**
+
+整批 JSON 原样 `COPY` 进一张临时表，让 postgres 自己用 `jsonb_array_elements`
+拆——这样**没有一个字符串需要我们自己做 SQL 转义**。
+
+### 分块与部分确认
+
+一批 100 行一块、一块一个事务：全成回 `{"ok":true}`；前 k 块成功回
+`{"ok":true,"cursor":<第 k 块最后一条的 seq>}`；一块都没成回 `{"ok":false}`。
+那个 seq 取自 `messages` 自身，所以按定义 ≤ `through` 且 > 批前 `cursor`。
+
+**"绝不回一个超过 `through` 的 cursor"是结构性的**，不是靠小心：插件手里
+唯一的 seq 来源就是这一批 `messages`；握手只走 `min()` 且只在严格小于时才
+写出去；写出去之前还有一道断言，断言不成立就降级成不带 cursor 的答复。
+**宁可慢，绝不撒谎。**
+
+### 不依赖数据库的自检
+
+- `archive.py --self-test` —— 用 `file` 后端在临时目录跑完整协议循环，逐条
+  断言：幂等重放、心跳不碰后端、握手回拨、群过滤后的 `through`、假后端谎报
+  `through+5` 被降级、异常之后循环还活着、CJK 与转义逐字节往返。
+- `archive.py --self-test --backend postgres` —— **自己在临时目录生成一个假的
+  `psql` 前置到 `PATH`**，断言生成的 SQL 含 `ON CONFLICT (stream, seq) DO NOTHING`、
+  COPY 那一行是单行、**假 psql 记下的 argv 里不含 DSN 的任何片段**。
+- `archive.py --print-schema` —— 把 DDL 打到 stdout，供没有 DDL 权限的角色
+  找 DBA 手工建表。
+
+## 工具面对存档插件做什么，不做什么
+
+| 动作 | 发生什么 |
+| --- | --- |
+| `plugin_configure` 改参数，且实例在跑 | **写文件，不重启**。参数下次 Polter 启动时生效，回复里明说 |
+| `plugin_configure` 打开一个没有实例的存档插件 | **起一个**，起之前按 key 查重 |
+| `plugin_test` | **什么都不起**，只报 `status()` 与"为什么没在跑" |
+
+理由就是本章通篇在论证的那一条：**两个实例会确认进同一个游标文件**，游标
+可能因此倒退或跳过。查重有两道——`App.scanPlugins` 按 `manifest.key` 去重
+（两个目录声称同一个 key 时，后来者被 warn 掉），`App.startArchive` 起之前
+再按 key 查一次现有实例。两道都不能省：前一道防的是清单，后一道防的是时序。
+
+另一半理由在 [mcp.md](mcp.md)：协议里根本没有干跑通道，而**宿主没有任何
+办法强制别人写的脚本干跑**——加一个 `dry_run` 字段只是加一个作者可以不理的
+字段，那是宿主兑现不了的承诺。
 
 ## 往回翻
 

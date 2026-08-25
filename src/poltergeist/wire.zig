@@ -11,6 +11,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Bus = @import("Bus.zig");
+const Plugin = @import("Plugin.zig");
 const rpc = @import("rpc.zig");
 
 pub const ParseError = error{
@@ -188,6 +189,20 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .before_seq = try optionalU64(params, "before_seq", 0),
             .limit = try optionalU64(params, "limit", 0),
         } },
+
+        .plugin_list => .{ .plugin_list = .{
+            .key = (try optionalString(aa, params, "key")) orelse "",
+        } },
+
+        .plugin_configure => .{ .plugin_configure = .{
+            .key = try requireString(aa, params, "key"),
+            .enable = optionalBoolOrNull(params, "enabled"),
+            .params = try optionalParams(aa, params, "params"),
+        } },
+
+        .plugin_test => .{ .plugin_test = .{
+            .key = try requireString(aa, params, "key"),
+        } },
     };
 
     return value;
@@ -290,6 +305,53 @@ fn optionalBool(params: ?std.json.ObjectMap, key: []const u8, default: bool) boo
     };
 }
 
+/// `null` when the field is absent, so "not mentioned" and "set to false"
+/// stay different things -- a configure that only changes a parameter
+/// must not read as a request to switch the plugin off.
+fn optionalBoolOrNull(params: ?std.json.ObjectMap, key: []const u8) ?bool {
+    const p = params orelse return null;
+    const v = p.get(key) orelse return null;
+    return switch (v) {
+        .bool => |b| b,
+
+        // Not a bool is not a request either. Reading `"true"` as true
+        // would have a typo switch something on.
+        else => null,
+    };
+}
+
+/// The `params` object as name/value pairs.
+///
+/// Strings only, and a non-string is `BadParams` rather than skipped: a
+/// caller that wrote a number meant something by it, and dropping the
+/// field silently would have it believe a value was set.
+fn optionalParams(
+    aa: Allocator,
+    params: ?std.json.ObjectMap,
+    key: []const u8,
+) ParseError![]const Plugin.Param {
+    const p = params orelse return &.{};
+    const v = p.get(key) orelse return &.{};
+    const obj = switch (v) {
+        .object => |o| o,
+        else => return error.BadParams,
+    };
+
+    var out: std.ArrayListUnmanaged(Plugin.Param) = .empty;
+    var it = obj.iterator();
+    while (it.next()) |kv| {
+        const value = switch (kv.value_ptr.*) {
+            .string => |str| str,
+            else => return error.BadParams,
+        };
+        try out.append(aa, .{
+            .name = try aa.dupe(u8, kv.key_ptr.*),
+            .value = try aa.dupe(u8, value),
+        });
+    }
+    return out.items;
+}
+
 /// What a terminal looks like in `terminal_list`.
 ///
 /// Durations and bookkeeping, never screen contents. The supervisor calls
@@ -345,6 +407,7 @@ pub const Response = union(enum) {
     },
     groups: []const rpc.ChatGroupInfo,
     members: []const rpc.ChatMember,
+    plugins: []const rpc.PluginView,
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -461,6 +524,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             }
             try s.endArray();
         },
+        .plugins => |list| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("plugins");
+            try s.beginArray();
+            for (list) |v| try writePlugin(&s, v);
+            try s.endArray();
+        },
         .failed => |f| {
             try s.objectField("ok");
             try s.write(false);
@@ -481,6 +552,94 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
 fn writeId(s: *std.json.Stringify, id: Bus.Id) std.Io.Writer.Error!void {
     var buf: [18]u8 = undefined;
     try s.write(std.fmt.bufPrint(&buf, "0x{x:0>16}", .{id}) catch unreachable);
+}
+
+fn writePlugin(s: *std.json.Stringify, v: rpc.PluginView) std.Io.Writer.Error!void {
+    try s.beginObject();
+
+    try s.objectField("key");
+    try s.write(v.key);
+    try s.objectField("name");
+    try s.write(v.name);
+    try s.objectField("kind");
+    try s.write(v.kind);
+    try s.objectField("enabled");
+    try s.write(v.enabled);
+
+    // Written back exactly as the manifest declared it, so an agent can
+    // tell the user what it is about to switch on rather than describing
+    // it from memory.
+    try s.objectField("wants");
+    try s.beginObject();
+    try s.objectField("groups");
+    try s.beginArray();
+    for (v.groups) |g| try s.write(g);
+    try s.endArray();
+    try s.objectField("network");
+    try s.write(v.network);
+    try s.objectField("exec");
+    try s.beginArray();
+    for (v.exec) |e| try s.write(e);
+    try s.endArray();
+    try s.endObject();
+
+    try s.objectField("params");
+    try s.beginArray();
+    for (v.params) |p| {
+        try s.beginObject();
+        try s.objectField("name");
+        try s.write(p.name);
+        try s.objectField("title");
+        try s.write(p.title);
+        try s.objectField("required");
+        try s.write(p.required);
+        try s.objectField("secret");
+        try s.write(p.secret);
+
+        try s.objectField("choices");
+        try s.beginArray();
+        for (p.choices) |c| try s.write(c);
+        try s.endArray();
+
+        // `holds` always: it is what says whether a value is there at all,
+        // and it is what makes saying nothing about the value itself cost
+        // nobody anything they needed.
+        try s.objectField("holds");
+        try s.write(p.holds);
+
+        // `shown` only when there is something it is safe to show. An empty
+        // field would invite the question of what it would have said.
+        if (p.shown.len > 0) {
+            try s.objectField("shown");
+            try s.write(p.shown);
+        }
+        if (p.undeclared) {
+            try s.objectField("undeclared");
+            try s.write(true);
+        }
+        try s.endObject();
+    }
+    try s.endArray();
+
+    // Left out entirely rather than sent as zero, the same rule `quiet_ms`
+    // follows: absent reads as "not being measured", where `0` reads as
+    // "measured, and it is zero right now". A plugin that is not running
+    // has no cursor, and claiming it is at zero would say it had archived
+    // nothing when it may have archived everything.
+    if (v.state.len > 0) {
+        try s.objectField("state");
+        try s.write(v.state);
+        try s.objectField("cursor");
+        try s.write(v.cursor);
+        try s.objectField("failures");
+        try s.write(v.failures);
+    }
+    if (v.note.len > 0) {
+        try s.objectField("note");
+        try s.write(v.note);
+    }
+
+    try s.endObject();
 }
 
 fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error!void {
@@ -811,4 +970,144 @@ test "a history reply carries the log cursor beside the group seq" {
     const out = w.buffered();
     try testing.expect(std.mem.indexOf(u8, out, "\"log_seq\":10431") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"seq\":0") != null);
+}
+
+test "a configure that only sets a parameter does not read as switching off" {
+    {
+        var p = try parse(
+            \\{"method":"plugin_configure","params":{"key":"webhook","params":{"url":"env:U"}}}
+        );
+        defer p.deinit();
+
+        // Null, not false. A request that says nothing about `enabled` must
+        // not reach the guard as a request to switch the plugin off.
+        try testing.expect(p.value.plugin_configure.enable == null);
+        try testing.expectEqualStrings("url", p.value.plugin_configure.params[0].name);
+        try testing.expectEqualStrings("env:U", p.value.plugin_configure.params[0].value);
+    }
+
+    {
+        var p = try parse(
+            \\{"method":"plugin_configure","params":{"key":"webhook","enabled":false}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(false, p.value.plugin_configure.enable.?);
+    }
+
+    {
+        // A string where a bool was meant is a typo, and a typo switches
+        // nothing either way.
+        var p = try parse(
+            \\{"method":"plugin_configure","params":{"key":"webhook","enabled":"true"}}
+        );
+        defer p.deinit();
+        try testing.expect(p.value.plugin_configure.enable == null);
+    }
+
+    // A number where a value was meant is refused rather than dropped: the
+    // caller meant something by it, and skipping the field would have it
+    // believe a value had been set.
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"plugin_configure","params":{"key":"webhook","params":{"n":1}}}
+    ));
+}
+
+test "a plugin listing round-trips" {
+    // A few kilobytes, so on the heap: a listing carries every manifest's
+    // declarations and is the one reply with no size cap of its own.
+    const buf = try testing.allocator.alloc(u8, 16 * 1024);
+    defer testing.allocator.free(buf);
+    var w: std.Io.Writer = .fixed(buf);
+
+    const archive_params = [_]rpc.PluginParamView{
+        .{
+            .name = "backend",
+            .title = "Where to write",
+            .required = true,
+            .choices = &.{ "postgres", "file" },
+            .holds = "literal",
+            .shown = "postgres",
+        },
+        .{
+            .name = "dsn",
+            .title = "Postgres connection URI",
+            .secret = true,
+            .holds = "env:",
+            .shown = "env:POLTER_PG",
+        },
+    };
+    const notify_params = [_]rpc.PluginParamView{.{
+        .name = "leftover",
+        .holds = "literal",
+        .undeclared = true,
+    }};
+
+    const list = [_]rpc.PluginView{
+        .{
+            .key = "chat-archive",
+            .name = "Chat archive",
+            .kind = "archive",
+            .enabled = true,
+            .groups = &.{"*"},
+            .network = true,
+            .exec = &.{"psql"},
+            .params = &archive_params,
+            .state = "feeding",
+            .cursor = 1049,
+            .failures = 0,
+            .note = "nothing is wrong",
+        },
+        .{
+            .key = "webhook",
+            .name = "Webhook",
+            .kind = "notify",
+            .params = &notify_params,
+        },
+    };
+
+    try writeResponse(&w, .{ .plugins = &list });
+    const out = w.buffered();
+
+    try testing.expectEqual(@as(usize, 1), count(out, "\n"));
+    try testing.expect(out[out.len - 1] == '\n');
+
+    // The running one only. An absent cursor is what stops `0` being read
+    // as "it has archived nothing".
+    try testing.expectEqual(@as(usize, 1), count(out, "\"state\""));
+    try testing.expectEqual(@as(usize, 1), count(out, "\"cursor\""));
+    try testing.expectEqual(@as(usize, 1), count(out, "\"failures\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"cursor\":1049") != null);
+    try testing.expectEqual(@as(usize, 1), count(out, "\"note\""));
+
+    // `holds` for every parameter, since it is what says a value is there
+    // at all.
+    try testing.expectEqual(@as(usize, 3), count(out, "\"holds\""));
+
+    // `shown` for the two it is safe to show, and not for the undeclared
+    // literal.
+    try testing.expectEqual(@as(usize, 2), count(out, "\"shown\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"shown\":\"env:POLTER_PG\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"shown\":\"postgres\"") != null);
+
+    try testing.expectEqual(@as(usize, 1), count(out, "\"undeclared\":true"));
+
+    // What the manifest asked for, handed over unread so an agent can say
+    // what it is about to switch on.
+    try testing.expect(std.mem.indexOf(
+        u8,
+        out,
+        "\"wants\":{\"groups\":[\"*\"],\"network\":true,\"exec\":[\"psql\"]}",
+    ) != null);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        out,
+        "\"wants\":{\"groups\":[],\"network\":false,\"exec\":[]}",
+    ) != null);
+}
+
+fn count(haystack: []const u8, needle: []const u8) usize {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, i, needle)) |at| : (i = at + needle.len) n += 1;
+    return n;
 }

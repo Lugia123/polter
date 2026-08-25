@@ -61,33 +61,75 @@ pub fn resolve(
     env: *const std.process.Environ.Map,
     value: []const u8,
 ) Error![]const u8 {
-    if (prefixed(value, "env:")) |name| {
-        const found = env.get(name) orelse {
-            log.warn("secret: no environment variable {s}", .{name});
-            return error.Unresolved;
-        };
-        return alloc.dupe(u8, found);
-    }
-
-    if (prefixed(value, "file:")) |path| {
-        return firstLineOf(alloc, io, path);
-    }
-
-    if (prefixed(value, "keychain:")) |spec| {
-        return fromKeychain(alloc, io, spec);
-    }
-
-    if (prefixed(value, "cmd:")) |command| {
-        return fromCommand(alloc, io, command);
-    }
-
     // No prefix: it is the value. Most parameters are not secret at all.
-    return alloc.dupe(u8, value);
+    const prefix = classify(value) orelse return alloc.dupe(u8, value);
+    const rest = body(value, prefix);
+
+    return switch (prefix) {
+        .env => blk: {
+            const found = env.get(rest) orelse {
+                log.warn("secret: no environment variable {s}", .{rest});
+                break :blk error.Unresolved;
+            };
+            break :blk alloc.dupe(u8, found);
+        },
+        .file => firstLineOf(alloc, io, env, rest),
+        .keychain => fromKeychain(alloc, io, rest),
+        .cmd => fromCommand(alloc, io, rest),
+    };
 }
 
-fn prefixed(value: []const u8, prefix: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, value, prefix)) return null;
-    return value[prefix.len..];
+/// Every kind of reference there is. The list is closed on purpose: the
+/// tool surface decides what it will write by matching against it, so a
+/// prefix added here and nowhere else would be a hole that opens quietly.
+pub const Prefix = enum { env, file, keychain, cmd };
+
+pub fn text(p: Prefix) []const u8 {
+    return switch (p) {
+        .env => "env:",
+        .file => "file:",
+        .keychain => "keychain:",
+        .cmd => "cmd:",
+    };
+}
+
+/// Which reference this is, or null when the value is a literal.
+///
+/// Case-sensitive, because `resolve` is: `CMD:x` is a literal and gets
+/// sent as the eight characters it is, never run.
+pub fn classify(value: []const u8) ?Prefix {
+    inline for (comptime std.enums.values(Prefix)) |p| {
+        if (std.mem.startsWith(u8, value, text(p))) return p;
+    }
+    return null;
+}
+
+/// The part after the prefix.
+pub fn body(value: []const u8, p: Prefix) []const u8 {
+    return value[text(p).len..];
+}
+
+/// Expand a leading `~/` against HOME. Only leading, and only `~/`:
+/// `~user/` needs a passwd lookup and nobody has asked for one.
+///
+/// A path with nothing to expand comes back as a copy rather than as
+/// itself, so every caller frees on the same terms and none of them has to
+/// know which case it got.
+fn expandTilde(
+    alloc: Allocator,
+    env: *const std.process.Environ.Map,
+    path: []const u8,
+) Allocator.Error![]const u8 {
+    if (!std.mem.startsWith(u8, path, "~/")) return alloc.dupe(u8, path);
+
+    // No HOME is left alone rather than guessed at. A path that resolves to
+    // something other than what was written is worse than one that plainly
+    // does not resolve.
+    const home = env.get("HOME") orelse return alloc.dupe(u8, path);
+    if (home.len == 0) return alloc.dupe(u8, path);
+
+    const trimmed = if (home[home.len - 1] == '/') home[0 .. home.len - 1] else home;
+    return std.fmt.allocPrint(alloc, "{s}{s}", .{ trimmed, path[1..] });
 }
 
 /// The first line of a file, whitespace trimmed.
@@ -95,7 +137,17 @@ fn prefixed(value: []const u8, prefix: []const u8) ?[]const u8 {
 /// First line rather than whole file because key files conventionally end
 /// with a newline, and sending that newline along has broken more than one
 /// integration in a way that is very hard to see.
-fn firstLineOf(alloc: Allocator, io: std.Io, path: []const u8) Error![]const u8 {
+fn firstLineOf(
+    alloc: Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+    raw: []const u8,
+) Error![]const u8 {
+    // `~/` is how the documented examples are written, and a shell is not
+    // involved to expand it for us.
+    const path = try expandTilde(alloc, env, raw);
+    defer alloc.free(path);
+
     const bytes = std.Io.Dir.cwd().readFileAlloc(
         io,
         path,
@@ -380,5 +432,94 @@ test "a file that is not there fails rather than yielding the path" {
             &env,
             "file:/tmp/polter-no-such-key-9c1f",
         ),
+    );
+}
+
+test "classify knows every prefix resolve does" {
+    // The tool surface decides what it will write by matching against
+    // `Prefix`. If `resolve` grew a fifth kind of reference and this list
+    // did not, that surface would go on treating it as an inert literal and
+    // write it without a word. So the two are checked against each other
+    // here rather than trusted to stay in step.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+
+    for (std.enums.values(Prefix)) |p| {
+        const written = try std.fmt.allocPrint(
+            alloc,
+            "{s}polter-test-nothing-9c1f/none",
+            .{text(p)},
+        );
+
+        try testing.expectEqual(p, classify(written).?);
+        try testing.expectEqualStrings(
+            "polter-test-nothing-9c1f/none",
+            body(written, p),
+        );
+
+        // And `resolve` really does treat it as a reference: a prefix it
+        // did not know would come back as the literal it is.
+        try testing.expectError(
+            error.Unresolved,
+            resolve(alloc, io, &env, written),
+        );
+    }
+
+    // A literal is a literal, and the match is case-sensitive -- `CMD:` is
+    // four characters of somebody's password, not a command to run.
+    try testing.expectEqual(@as(?Prefix, null), classify("https://example.com/hook"));
+    try testing.expectEqual(@as(?Prefix, null), classify("CMD:echo hi"));
+    try testing.expectEqual(@as(?Prefix, null), classify("cmd"));
+}
+
+test "a file: reference expands a leading tilde" {
+    // `docs/poltergeist/plugins.md` writes the example as
+    // `file:~/.config/polter/feishu.key`, and until this it did not work:
+    // nothing expands `~` here, so the path was taken literally and the
+    // reference failed for everybody who copied the documented line.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const home = try std.fmt.allocPrint(alloc, "/tmp/polter-home-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, home);
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, home, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "feishu.key", .{ .permissions = .fromMode(0o600) });
+    try f.writeStreamingAll(io, "the-key\n");
+    f.close(io);
+
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    try env.put("HOME", home);
+
+    try testing.expectEqualStrings(
+        "the-key",
+        try resolve(alloc, io, &env, "file:~/feishu.key"),
+    );
+
+    // With no HOME the path is left as written rather than guessed at, so
+    // it fails plainly instead of resolving to something else.
+    var homeless: std.process.Environ.Map = .init(testing.allocator);
+    defer homeless.deinit();
+    try testing.expectError(
+        error.Unresolved,
+        resolve(alloc, io, &homeless, "file:~/feishu.key"),
     );
 }

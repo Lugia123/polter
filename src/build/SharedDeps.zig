@@ -178,6 +178,21 @@ pub fn add(
     // Every exe gets build options populated
     step.root_module.addOptions("build_options", self.options);
 
+    // The plugin manifests Polter ships, so a test can read what they
+    // declare. `plugin_configure` only refuses a plaintext credential where
+    // a manifest marks the parameter `"secret": true`, which makes these
+    // files load-bearing for a security rule that lives in Zig -- and
+    // nothing else in the build looks inside them. Embedded rather than
+    // opened at run time because a test that goes to the filesystem passes
+    // when the file has gone missing, and gone missing is the failure worth
+    // catching.
+    step.root_module.addAnonymousImport("plugin_manifest_webhook", .{
+        .root_source_file = b.path("plugins/webhook/plugin.json"),
+    });
+    step.root_module.addAnonymousImport("plugin_manifest_chat_archive", .{
+        .root_source_file = b.path("plugins/chat-archive/plugin.json"),
+    });
+
     // Every exe needs the terminal options
     self.config.terminalOptions(.ghostty, optimize).add(b, step.root_module);
 
