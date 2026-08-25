@@ -315,6 +315,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "group_history",
+        .description = "Read further back in a group than it still holds, out of the log on disk. `group_read` hands you what is current; this hands you what came before it. Page with `log_seq`: pass the smallest one you have seen as `before_seq` and you get the batch before that. `more: false` means you have reached the beginning of what was kept. The per-group `seq` is 0 here -- the log does not record it.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"before_seq":{"type":"integer"},"limit":{"type":"integer"}},"required":["group"]}
+        ,
+    },
+    .{
         .name = "set_quiescence_threshold",
         .description = "How long a terminal must be still before it is reported. Supervisor only.",
         .schema =

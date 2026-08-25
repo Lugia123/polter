@@ -122,6 +122,11 @@ pub const Method = enum {
     /// Say something to a group, or read what has been said.
     group_post,
     group_read,
+
+    /// Read further back than the group still holds, out of the log on
+    /// disk. Page with `log_seq`, which is the log's own number and the
+    /// only cursor that survives a restart.
+    group_history,
 };
 
 pub const Request = union(Method) {
@@ -159,6 +164,7 @@ pub const Request = union(Method) {
     group_list,
     group_post: struct { group: []const u8, text: []const u8 },
     group_read: struct { group: []const u8, since: u64 = 0 },
+    group_history: struct { group: []const u8, before_seq: u64 = 0, limit: u64 = 0 },
 };
 
 /// How much text one `group_read` reply may carry.
@@ -201,6 +207,37 @@ pub fn capMessages(lines: []const ChatLine) struct {
             // reader stops one screenful in believing it has everything --
             // which is what froze the conversations view for two days.
             return .{ .lines = lines[0..@max(i, 1)], .more = true };
+        }
+    }
+    return .{ .lines = lines, .more = false };
+}
+
+/// How many messages one `group_history` reply carries when the caller does
+/// not say, and the most it will carry however loudly it asks.
+const default_history_limit: usize = 50;
+const max_history_limit: usize = 200;
+
+/// Keep the newest messages that fit the budget.
+///
+/// The mirror of `capMessages`, and the direction is the whole point: a
+/// history caller pages *backwards*, so what it carries on from is the
+/// oldest line it was handed. Dropping from the old end leaves the range
+/// contiguous with what it already holds; dropping from the new end would
+/// leave a hole it can never ask for again.
+pub fn capHistory(lines: []const ChatLine) struct {
+    lines: []const ChatLine,
+    more: bool,
+} {
+    var used: usize = 0;
+    var i: usize = lines.len;
+    while (i > 0) {
+        i -= 1;
+        used += lines[i].text.len + lines[i].author.len;
+        if (used > read_budget_bytes) {
+            // At least one, however big it is, for the same reason
+            // `capMessages` keeps one: a reply of nothing tells the caller
+            // it has reached the beginning when it has not.
+            return .{ .lines = lines[@min(i + 1, lines.len - 1)..], .more = true };
         }
     }
     return .{ .lines = lines, .more = false };
@@ -276,6 +313,7 @@ pub fn requiresSupervisor(method: Method) bool {
         .group_list,
         .group_post,
         .group_read,
+        .group_history,
         .group_members,
         => false,
     };
@@ -297,6 +335,7 @@ pub fn targetsTerminal(method: Method) bool {
         .group_list,
         .group_post,
         .group_read,
+        .group_history,
         .group_members,
         .group_set_brief,
         => false,
@@ -335,6 +374,7 @@ pub fn target(req: Request) ?Bus.Id {
         .group_list,
         .group_post,
         .group_read,
+        .group_history,
         .group_members,
         .group_set_brief,
         .session_recall,
@@ -446,6 +486,7 @@ test "only what reaches another terminal needs the supervisor" {
             .group_list,
             .group_post,
             .group_read,
+            .group_history,
             .group_members,
             => true,
 
@@ -726,6 +767,7 @@ test "targetsTerminal agrees with target" {
     try testing.expect(!targetsTerminal(.terminal_list));
     try testing.expect(targetsTerminal(.terminal_read));
     try testing.expect(targetsTerminal(.set_quiescence_threshold));
+    try testing.expect(!targetsTerminal(.group_history));
 }
 
 test "every error has a message that says what to do" {
@@ -826,6 +868,12 @@ const max_text_bytes = 128 * 1024;
 /// One message as it goes out on the wire.
 pub const ChatLine = struct {
     seq: u64,
+
+    /// Where this sits in the log on disk, or 0 when it was never written
+    /// down. This is the cursor `group_history` pages by; `seq` is the
+    /// group's own count and does not survive a restart.
+    log_seq: u64 = 0,
+
     from: Bus.Id,
 
     /// What the terminal that said this was called at the time, which is
@@ -843,6 +891,14 @@ pub const ChatLine = struct {
     summary: bool,
 
     text: []const u8,
+};
+
+/// A batch read back out of the log on disk.
+pub const ChatPage = struct {
+    lines: []const ChatLine,
+
+    /// Whether there is older still to ask for.
+    more: bool,
 };
 
 /// One member of a group.
@@ -1076,6 +1132,22 @@ pub const Host = struct {
             id: Bus.Id,
             since: u64,
         ) anyerror![]const ChatLine,
+
+        /// Messages older than `before_seq` in `group`, out of the log on
+        /// disk.
+        ///
+        /// The host is the one that knows whether `id` is in the group at
+        /// all and how far back its view is allowed to reach; this surface
+        /// only asks. Both the slice and the strings inside it must belong
+        /// to `alloc`.
+        chatHistory: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            group: []const u8,
+            id: Bus.Id,
+            before_seq: u64,
+            limit: usize,
+        ) anyerror!ChatPage,
     };
 
     fn readTerminal(
@@ -1226,6 +1298,17 @@ pub const Host = struct {
         since: u64,
     ) anyerror![]const ChatLine {
         return self.vtable.chatRead(self.ctx, alloc, group, id, since);
+    }
+
+    fn chatHistory(
+        self: Host,
+        alloc: std.mem.Allocator,
+        group: []const u8,
+        id: Bus.Id,
+        before_seq: u64,
+        limit: usize,
+    ) anyerror!ChatPage {
+        return self.vtable.chatHistory(self.ctx, alloc, group, id, before_seq, limit);
     }
 };
 
@@ -1495,6 +1578,22 @@ pub fn dispatch(
             const capped = capMessages(lines);
             return .{ .messages = .{ .lines = capped.lines, .more = capped.more } };
         },
+
+        .group_history => |p| {
+            const want: usize = if (p.limit == 0)
+                default_history_limit
+            else
+                @intCast(@min(p.limit, @as(u64, max_history_limit)));
+
+            const page = host.chatHistory(alloc, p.group, caller, p.before_seq, want) catch |err|
+                return chatFailure(err);
+
+            // Two ways there can be more: the log said so, or the budget
+            // cut the batch short. Either leaves something older that the
+            // caller has not been handed.
+            const capped = capHistory(page.lines);
+            return .{ .messages = .{ .lines = capped.lines, .more = page.more or capped.more } };
+        },
     }
 }
 
@@ -1554,6 +1653,11 @@ const FakeHost = struct {
     read_group: ?[]const u8 = null,
     quiet_ms: u64 = 0,
 
+    /// What the last `group_history` asked for, and what the fake says
+    /// about there being older still.
+    history_asked: ?struct { group: []const u8, before_seq: u64, limit: usize } = null,
+    history_more: bool = false,
+
     /// What `notices` hands back, and how many times it was asked.
     notices: []const u8 = "",
     drained: usize = 0,
@@ -1600,6 +1704,7 @@ const FakeHost = struct {
             .chatMembers = chatMembers,
             .chatGroups = chatGroups,
             .chatRead = chatRead,
+            .chatHistory = chatHistory,
         } };
     }
 
@@ -1755,6 +1860,37 @@ const FakeHost = struct {
             .text = try alloc.dupe(u8, "hello"),
         };
         return one;
+    }
+
+    fn chatHistory(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        group: []const u8,
+        _: Bus.Id,
+        before_seq: u64,
+        limit: usize,
+    ) anyerror!ChatPage {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.NotAMember;
+        self.history_asked = .{
+            .group = group,
+            .before_seq = before_seq,
+            .limit = limit,
+        };
+
+        const one = try alloc.alloc(ChatLine, 1);
+        one[0] = .{
+            // No group seq: the log never recorded one, and the real host
+            // does not invent one either.
+            .seq = 0,
+            .log_seq = if (before_seq == 0) 999 else before_seq - 1,
+            .from = 0x9999,
+            .author = try alloc.dupe(u8, "a terminal"),
+            .at_ms = 0,
+            .summary = false,
+            .text = try alloc.dupe(u8, "said earlier"),
+        };
+        return .{ .lines = one, .more = self.history_more };
     }
 
     fn readSkill(
@@ -2262,5 +2398,206 @@ test "a reply that fits says there is no more" {
 
     const capped = capMessages(&lines);
     try testing.expectEqual(@as(usize, 1), capped.lines.len);
+    try testing.expect(!capped.more);
+}
+
+/// Run one `group_history` against the fake and free what comes back.
+///
+/// The fake hands back a single line, so the reply is always the whole
+/// allocation rather than a tail of it -- `capHistory` returns a subslice,
+/// and the testing allocator cannot free one of those.
+fn historyOnce(
+    b: *Bus,
+    fake: *FakeHost,
+    caller: Bus.Id,
+    req: Request,
+) !void {
+    const res = try dispatch(testing.allocator, b, fake.host(), caller, req);
+    for (res.messages.lines) |m| {
+        testing.allocator.free(m.text);
+        testing.allocator.free(m.author);
+    }
+    testing.allocator.free(res.messages.lines);
+}
+
+test "group_history is open to a terminal already in the group" {
+    // The tool that reads a conversation backwards is the same kind of act
+    // as reading it forwards, and the view the user themselves types into
+    // is not a supervisor either. Making this one supervisor-only would
+    // shut the person at the keyboard out of their own scrollback.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+        .group_history = .{ .group = "build" },
+    });
+    defer {
+        for (res.messages.lines) |m| {
+            testing.allocator.free(m.text);
+            testing.allocator.free(m.author);
+        }
+        testing.allocator.free(res.messages.lines);
+    }
+    try testing.expect(res == .messages);
+}
+
+test "a terminal outside the group is told so rather than handed the log" {
+    // Being open to every terminal is not the same as being open to every
+    // caller: the file on disk holds every group at once, so the one place
+    // membership is checked has to be the host, and its refusal has to
+    // reach the agent as words it can act on.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .refuse = true };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+        .group_history = .{ .group = "build", .before_seq = 10432 },
+    });
+    try testing.expectEqualStrings("NotAMember", res.failed.code);
+    try testing.expect(res.failed.message.len > 0);
+}
+
+test "group_history asks for the cursor and limit it was given" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    try historyOnce(&b, &fake, worker, .{
+        .group_history = .{ .group = "build", .before_seq = 10432, .limit = 50 },
+    });
+
+    try testing.expectEqualStrings("build", fake.history_asked.?.group);
+    try testing.expectEqual(@as(u64, 10432), fake.history_asked.?.before_seq);
+    try testing.expectEqual(@as(usize, 50), fake.history_asked.?.limit);
+}
+
+test "a history request with no limit gets the default" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    try historyOnce(&b, &fake, worker, .{ .group_history = .{ .group = "build" } });
+    try testing.expectEqual(default_history_limit, fake.history_asked.?.limit);
+}
+
+test "a limit past the ceiling is brought down to it" {
+    // An agent that asks for five thousand messages is not going to read
+    // them, and the reply would not fit down the line anyway.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    try historyOnce(&b, &fake, worker, .{
+        .group_history = .{ .group = "build", .limit = 5000 },
+    });
+    try testing.expectEqual(max_history_limit, fake.history_asked.?.limit);
+}
+
+test "a history message carries no group seq" {
+    // Inventing one would be worse than leaving it empty: an agent would
+    // hand it straight back as `group_compact`'s `through`, and that
+    // number counts something else entirely.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+        .group_history = .{ .group = "build", .before_seq = 42 },
+    });
+    defer {
+        for (res.messages.lines) |m| {
+            testing.allocator.free(m.text);
+            testing.allocator.free(m.author);
+        }
+        testing.allocator.free(res.messages.lines);
+    }
+
+    try testing.expectEqual(@as(u64, 0), res.messages.lines[0].seq);
+    try testing.expect(res.messages.lines[0].log_seq != 0);
+}
+
+test "a host that says there is more is believed even when nothing was capped" {
+    // One short line is nowhere near the budget, so the only thing that
+    // can say there is older still is the log itself.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .history_more = true };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+        .group_history = .{ .group = "build" },
+    });
+    defer {
+        for (res.messages.lines) |m| {
+            testing.allocator.free(m.text);
+            testing.allocator.free(m.author);
+        }
+        testing.allocator.free(res.messages.lines);
+    }
+
+    try testing.expect(res.messages.more);
+}
+
+test "capHistory keeps the newest, because a history caller pages backwards" {
+    // The mistake this catches passes a length check: cap the batch from
+    // the wrong end and the caller's next `before_seq` points past the
+    // stretch it was just handed, leaving a hole nothing will ever fill.
+    const big = "x" ** 8192;
+
+    var lines: [64]ChatLine = undefined;
+    for (&lines, 0..) |*line, i| line.* = .{
+        .seq = 0,
+        .log_seq = 1000 + i,
+        .from = 1,
+        .author = "worker",
+        .at_ms = 0,
+        .summary = false,
+        .text = big,
+    };
+
+    const capped = capHistory(&lines);
+    try testing.expect(capped.lines.len < lines.len);
+    try testing.expect(capped.more);
+
+    // The newest survived and the oldest was the part dropped.
+    try testing.expectEqual(
+        lines[lines.len - 1].log_seq,
+        capped.lines[capped.lines.len - 1].log_seq,
+    );
+    try testing.expect(capped.lines[0].log_seq > lines[0].log_seq);
+}
+
+test "one history message larger than the whole budget is still delivered" {
+    const huge = "y" ** (128 * 1024);
+    const lines = [_]ChatLine{.{
+        .seq = 0,
+        .log_seq = 7,
+        .from = 1,
+        .author = "worker",
+        .at_ms = 0,
+        .summary = false,
+        .text = huge,
+    }};
+
+    try testing.expectEqual(@as(usize, 1), capHistory(&lines).lines.len);
+}
+
+test "an empty history batch is the beginning, not a cut one" {
+    // The walk backwards ends here, and the budget has nothing to say
+    // about it. Claiming `more` on nothing would have the view ask again
+    // for the same emptiness every time somebody holds page-up.
+    const capped = capHistory(&.{});
+    try testing.expectEqual(@as(usize, 0), capped.lines.len);
+    try testing.expect(!capped.more);
+}
+
+test "a history batch that fits says there is no more" {
+    const lines = [_]ChatLine{
+        .{ .seq = 0, .log_seq = 1, .from = 1, .author = "a", .at_ms = 0, .summary = false, .text = "hello" },
+        .{ .seq = 0, .log_seq = 2, .from = 2, .author = "b", .at_ms = 0, .summary = false, .text = "there" },
+    };
+
+    const capped = capHistory(&lines);
+    try testing.expectEqual(@as(usize, 2), capped.lines.len);
     try testing.expect(!capped.more);
 }

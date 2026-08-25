@@ -931,6 +931,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatMembers = chatMembers,
         .chatGroups = chatGroups,
         .chatRead = chatRead,
+        .chatHistory = chatHistory,
     } };
 }
 
@@ -1090,6 +1091,17 @@ fn chatAdd(
     const footing = self.footingOf(fixed.allocator(), id);
 
     try self.chat.add(group, id, history, footing);
+
+    // `history: none` means nothing from before now, and "before now"
+    // includes the file. The group in memory cannot say where that reaches
+    // -- after a restart it is empty while `chat.jsonl` still holds last
+    // night under the same name -- so the one thing holding the log says
+    // it. Without this the terminal is kept out by `group_read` and handed
+    // all of it by `group_history`.
+    if (history == .none) {
+        if (self.chat_log) |*l| self.chat.setLogFloor(group, id, l.head());
+    }
+
     self.saveSession();
 }
 
@@ -1164,13 +1176,13 @@ fn chatCompact(
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const at = self.poltergeistNow();
-    _ = try self.chat.compact(group, through, summary, by, at);
+    const seq = try self.chat.compact(group, through, summary, by, at);
 
     // Written after the messages it replaced, not over them. Compaction
     // frees the agents' context; it is not an instruction to forget, and
     // the record of a night is worth more than the shape it was in when
     // the supervisor tidied up.
-    self.logChat(group, by, at, true, summary);
+    self.logChat(group, seq, by, at, true, summary);
 }
 
 fn chatPost(
@@ -1181,7 +1193,7 @@ fn chatPost(
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const at = self.poltergeistNow();
-    _ = try self.chat.post(group, from, text, at);
+    const seq = try self.chat.post(group, from, text, at);
 
     // A terminal's title moves with its work, so the record follows it.
     // Speaking is the right moment: it is infrequent, and a terminal that
@@ -1190,7 +1202,7 @@ fn chatPost(
 
     // Written down after the model accepted it, so the record holds what
     // was actually said rather than what somebody tried to say.
-    self.logChat(group, from, at, false, text);
+    self.logChat(group, seq, from, at, false, text);
 
     self.tellTerminalsAboutMessages();
 }
@@ -1200,9 +1212,15 @@ fn chatPost(
 /// The author's name is resolved here rather than at read time because a
 /// terminal's title changes, and worse, the terminal goes away: a record
 /// written tonight has to still say who spoke when it is read tomorrow.
+///
+/// `seq` is the group's own count for the message, carried in only so the
+/// line it became on disk can be tied back to it. With no log, or with a
+/// write that failed, the message keeps `log_seq = 0` -- which is what a
+/// reader paging backwards has to see to know the trail stops there.
 fn logChat(
     self: *App,
     group: []const u8,
+    seq: u64,
     from: poltergeistpkg.Bus.Id,
     at_ms: u64,
     summary: bool,
@@ -1214,7 +1232,7 @@ fn logChat(
     var fixed: std.heap.FixedBufferAllocator = .init(&buf);
     const author = self.chatMemberTitle(fixed.allocator(), from) catch "";
 
-    l.append(
+    const log_seq = l.append(
         group,
         from,
         author,
@@ -1222,6 +1240,7 @@ fn logChat(
         summary,
         text,
     );
+    if (log_seq != 0) self.chat.setLogSeq(group, seq, log_seq);
 }
 
 fn chatGroups(
@@ -1504,6 +1523,7 @@ fn chatRead(
         // Copied for the same reason: the log trims itself as it grows.
         out[i] = .{
             .seq = m.seq,
+            .log_seq = m.log_seq,
             .from = m.from,
             .author = try self.chatMemberTitle(alloc, m.from),
 
@@ -1518,6 +1538,71 @@ fn chatRead(
     }
 
     return out;
+}
+
+/// Read further back than the group still holds, out of the log on disk.
+fn chatHistory(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    group: []const u8,
+    id: poltergeistpkg.Bus.Id,
+    before_seq: u64,
+    limit: usize,
+) anyerror!poltergeistpkg.rpc.ChatPage {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    // One question, not two. Whether this terminal is in the group and how
+    // far back it may look are the same fact, and asking only the first
+    // would hand a terminal added with `history: none` exactly what it was
+    // added not to see. `NoSuchGroup` and `NotAMember` travel up as they
+    // are; the tool surface turns them into sentences an agent can act on.
+    const floor = try self.chat.floorOf(group, id);
+
+    // No log on disk, so there is nothing behind the group to page back
+    // into.
+    const l = if (self.chat_log) |*v| v else return .{ .lines = &.{}, .more = false };
+
+    // This member's view has a floor, but nothing says which line on disk
+    // that floor sits at -- the messages it was barred from predate the
+    // log, or were never written down. Since the bound cannot be proved,
+    // give less rather than risk giving more.
+    if (floor.seq > 0 and floor.log_seq == 0) return .{ .lines = &.{}, .more = false };
+
+    const page = try l.history(alloc, group, before_seq, limit);
+
+    // Entries come back oldest first, so anything barred is a prefix.
+    var k: usize = 0;
+    while (k < page.entries.len and page.entries[k].seq <= floor.log_seq) k += 1;
+    const visible = page.entries[k..];
+
+    const out = try alloc.alloc(poltergeistpkg.rpc.ChatLine, visible.len);
+    for (visible, 0..) |e, i| {
+        out[i] = .{
+            // The log never recorded the group's own count. Inventing one
+            // would be handed straight back as `group_compact`'s `through`,
+            // which counts something else entirely.
+            .seq = 0,
+            .log_seq = e.seq,
+            .from = e.from,
+
+            // The name the log recorded, not what the tab says now: the
+            // terminal that spoke is very likely closed, and the record is
+            // the only place that name still exists.
+            .author = e.author,
+
+            // Already wall-clock. Adding the epoch here -- as `chatRead`
+            // must, because the in-memory log is monotonic -- would put
+            // these messages decades into the future.
+            .at_ms = e.at_ms,
+
+            .summary = e.summary,
+            .text = e.text,
+        };
+    }
+
+    // Once anything was filtered out, everything older is barred too, so
+    // there is nothing further to offer this member.
+    return .{ .lines = out, .more = if (k > 0) false else !page.exhausted };
 }
 
 /// Tell every terminal that has messages waiting that it has them.

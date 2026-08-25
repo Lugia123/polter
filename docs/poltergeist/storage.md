@@ -2,7 +2,9 @@
 
 > 最后更新对应的 git commit：`c4d10f4d2`
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**设计，尚未实现**。宿主那一层见 [plugins.md](plugins.md)。
+> 状态：**日志序号与往回翻已实现**（`ChatLog` 的 `seq`、`group_history`、
+> `ChatLine.log_seq`）；**常驻存档插件与游标确认仍是设计**。宿主那一层见
+> [plugins.md](plugins.md)。
 
 ## 本章覆盖什么
 
@@ -120,9 +122,14 @@
 
 `chat.jsonl` 已经存着全部，所以**往上翻不需要任何插件**。
 
-`group_history(group, before_seq, limit)` 从日志倒着读，`before_seq` 就是
-上一节那个日志序号。界面滚到内存边界（当前保留最近 500 条）时，拿手里最
-老那条的 `log_seq` 往下要，接缝是精确的，不靠比对文本。
+`group_history(group, before_seq, limit)` 现在就在工具面上：它从日志倒着
+读，`before_seq` 是上一节那个日志序号，回来的一批按时间升序，和 `group_read`
+共用同一个 `messages` 形状，读的人一套解析代码就够。
+
+**这一批的 `seq` 恒为 0。**日志没有记过群内序号，所以这一批只能拿 `log_seq`
+翻页；把 0 或者任何编出来的号当成 `group_compact` 的 `through` 递回去，删掉
+的会是另一段。界面滚到内存边界（当前保留最近 500 条）时，拿手里最老那条的
+`log_seq` 往下要，接缝是精确的，不靠比对文本；`more` 为 false 就是到底了。
 
 **插件在这里的角色是日志被轮转掉之后**——8 MB 就轮转且只留一代，那时
 候才需要问外部存储要更老的。也就是说：

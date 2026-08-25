@@ -260,6 +260,14 @@ fn intField(v: std.json.Value, name: []const u8) ?i64 {
     };
 }
 
+/// A sequence number out of a reply, and never a negative one: these
+/// count, and a negative is only ever there because the reply is
+/// malformed -- which this file survives rather than asserts about.
+fn u64Field(v: std.json.Value, name: []const u8) u64 {
+    const n = intField(v, name) orelse return 0;
+    return if (n < 0) 0 else @intCast(n);
+}
+
 fn boolField(v: std.json.Value, name: []const u8) ?bool {
     const obj = switch (v) {
         .object => |o| o,
@@ -273,6 +281,12 @@ fn boolField(v: std.json.Value, name: []const u8) ?bool {
 
 /// One message, copied out of a reply so it outlives the read buffer.
 const Message = struct {
+    /// Where this landed in the log on disk, or 0 for a message that was
+    /// never written down. Zero is the end of the road for paging back:
+    /// there is nothing to join onto, and joining onto the wrong thing is
+    /// worse than stopping.
+    log_seq: u64 = 0,
+
     author: []const u8,
     at_ms: i64,
     summary: bool,
@@ -292,6 +306,18 @@ const Group = struct {
 
     /// Highest seq seen, so each poll asks only for what is new.
     cursor: u64 = 0,
+
+    /// How many messages at the front of `messages` were paged back out of
+    /// the log rather than read forward off the socket.
+    ///
+    /// The trim in `refresh` is told about it, because trimming to a fixed
+    /// `keep_messages` would throw these away on the next poll -- half a
+    /// second after the reader pulled them in.
+    history_count: usize = 0,
+
+    /// Set when the host said there is nothing older. Stops the view asking
+    /// again on every frame somebody spends sitting at the top.
+    history_done: bool = false,
 };
 
 const Chat = struct {
@@ -332,6 +358,13 @@ const Chat = struct {
     /// Rows, not messages: one report from an agent can be forty rows, and
     /// scrolling by message stepped over a screenful at a time.
     scroll: usize = 0,
+
+    /// Whether the top of the conversation was on screen last frame.
+    ///
+    /// Recorded while drawing and acted on in the loop: how far back you
+    /// *can* scroll depends on the width the text was just wrapped to, and
+    /// drawing is not the place to talk to a socket.
+    at_top: bool = false,
 
     /// Where each group's name was drawn last frame, so a click can be
     /// turned back into a group. Rebuilt every frame because the list
@@ -441,6 +474,13 @@ const Chat = struct {
                 };
             }
 
+            // After the events, because scrolling to the top is an event,
+            // and before the draw, because a frame has to be redrawable and
+            // a socket call is not.
+            if (self.at_top) self.fetchHistory() catch |err| {
+                self.err = @errorName(err);
+            };
+
             try self.draw();
             try self.vx.render(writer);
             try writer.flush();
@@ -456,6 +496,14 @@ const Chat = struct {
     /// Scrolling further back than this is what paging through the log is
     /// for; holding everything for a session that runs for days is not.
     const keep_messages = 500;
+
+    /// The most a group holds once the log has been paged into it. The
+    /// point of a ceiling at all is that a window left open for days should
+    /// not become a way to load the whole log into memory.
+    const max_held = 5000;
+
+    /// How many older messages to ask for at a time.
+    const history_batch = 100;
 
     /// Ask the host what is new.
     ///
@@ -526,9 +574,10 @@ const Chat = struct {
                 var read: usize = 0;
                 for (arrayField(v, "messages") catch &.{}) |item| {
                     const from = stringField(item, "from") orelse "";
-                    const seq: u64 = @intCast(intField(item, "seq") orelse 0);
+                    const seq = u64Field(item, "seq");
 
                     try group.messages.append(store, .{
+                        .log_seq = u64Field(item, "log_seq"),
                         .author = try store.dupe(u8, stringField(item, "author") orelse "?"),
                         .at_ms = intField(item, "at_ms") orelse 0,
                         .summary = boolField(item, "summary") orelse false,
@@ -546,15 +595,23 @@ const Chat = struct {
                 if (!(boolField(v, "more") orelse false)) break;
             }
 
-            // Oldest first, because the newest is what has to stay.
-            if (group.messages.items.len > keep_messages) {
-                const drop = group.messages.items.len - keep_messages;
+            // Oldest first, because the newest is what has to stay -- with
+            // room for what was paged back in on top of what is live.
+            // Cutting to `keep_messages` regardless is the bug this shape
+            // exists to avoid: the reader scrolls up, the next poll throws
+            // away what they just pulled, and the view drops back down on
+            // its own. Whatever comes off the front comes off the history
+            // first, so the count follows it down.
+            const trim = planTrim(group.messages.items.len, group.history_count);
+            if (trim.drop > 0) {
+                const keep = group.messages.items.len - trim.drop;
                 std.mem.copyForwards(
                     Message,
-                    group.messages.items[0 .. group.messages.items.len - drop],
-                    group.messages.items[drop..],
+                    group.messages.items[0..keep],
+                    group.messages.items[trim.drop..],
                 );
-                group.messages.shrinkRetainingCapacity(keep_messages);
+                group.messages.shrinkRetainingCapacity(keep);
+                group.history_count = trim.history;
             }
 
             try self.groups.append(self.alloc, group);
@@ -562,6 +619,116 @@ const Chat = struct {
 
         if (self.current >= self.groups.items.len) self.current = 0;
         self.err = null;
+    }
+
+    /// What a poll has to throw away, and what that leaves of the history.
+    const Trim = struct { drop: usize, history: usize };
+
+    fn planTrim(len: usize, history: usize) Trim {
+        const limit = @min(keep_messages + history, max_held);
+        if (len <= limit) return .{ .drop = 0, .history = history };
+        const drop = len - limit;
+        return .{ .drop = drop, .history = history - @min(history, drop) };
+    }
+
+    /// Where the next batch of history joins on, given what a group holds.
+    const Seam = union(enum) {
+        /// Nothing to join onto yet. An empty group gets a seam as soon as
+        /// its first message arrives, so this is not `stop`.
+        wait,
+
+        /// The oldest message never reached the disk -- the log is off, or
+        /// it predates the log keeping a seq. Nothing joins on here.
+        stop,
+
+        /// Ask for what came before this.
+        before: u64,
+    };
+
+    fn seamOf(msgs: []const Message) Seam {
+        if (msgs.len == 0) return .wait;
+        const seq = msgs[0].log_seq;
+        return if (seq == 0) .stop else .{ .before = seq };
+    }
+
+    /// Pull one batch of older messages out of the log on disk.
+    ///
+    /// One batch per pass, however long somebody holds page-up: the point
+    /// is to stay ahead of the eye, not to reach the beginning of the log
+    /// in one go.
+    ///
+    /// `log_seq` is the seam, not `seq`: the group's own count restarts at
+    /// 1 every time Polter does, so paging by it reads the wrong run.
+    fn fetchHistory(self: *Chat) !void {
+        if (self.groups.items.len == 0) return;
+        const group = &self.groups.items[self.current];
+        if (group.history_done) return;
+
+        // The ceiling is not something to fetch into and then throw away.
+        // Without this the trim in `refresh` discards each batch about as
+        // fast as it lands and the next pass asks for the same hundred
+        // again -- a socket call, and a backwards walk of the log on disk,
+        // every frame for as long as somebody rests at the top. Left
+        // unset, `history_done` lets this resume if the group is ever
+        // trimmed back below the ceiling: there *is* older, we just have
+        // nowhere to put it.
+        if (group.messages.items.len >= max_held) return;
+
+        const before = switch (seamOf(group.messages.items)) {
+            .wait => return,
+            .stop => {
+                group.history_done = true;
+                return;
+            },
+            .before => |v| v,
+        };
+
+        // Its own arena: `self.arena` holds the briefs and is reset by the
+        // next poll, and `store` is where anything kept has to end up.
+        var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+        defer scratch.deinit();
+        const temp = scratch.allocator();
+        const store = self.store.allocator();
+
+        var buf: [256]u8 = undefined;
+        const line = try std.fmt.bufPrint(
+            &buf,
+            "{{\"method\":\"group_history\",\"params\":{{\"group\":\"{s}\",\"before_seq\":{d},\"limit\":{d}}}}}",
+            .{ group.name, before, history_batch },
+        );
+        const v = try self.host.callJson(temp, line);
+
+        var batch: std.ArrayListUnmanaged(Message) = .empty;
+        for (arrayField(v, "messages") catch &.{}) |item| {
+            const from = stringField(item, "from") orelse "";
+            try batch.append(temp, .{
+                .log_seq = u64Field(item, "log_seq"),
+                .author = try store.dupe(u8, stringField(item, "author") orelse "?"),
+
+                // Already wall clock, the same as `group_read` hands over.
+                .at_ms = intField(item, "at_ms") orelse 0,
+                .summary = boolField(item, "summary") orelse false,
+                .text = try store.dupe(u8, stringField(item, "text") orelse ""),
+
+                // The user is id 0; `Surface.id` is never zero.
+                .from_user = std.mem.eql(u8, from, "0x0000000000000000"),
+            });
+        }
+
+        // Oldest first on the wire, so the batch goes in as one run and
+        // keeps the order it arrived in. `scroll` counts rows up from the
+        // bottom, so adding above the reader leaves them looking at exactly
+        // what they were looking at -- nothing here touches it. Nor
+        // `cursor`: that one counts forward through what is live, and these
+        // carry no number in its scale.
+        try group.messages.insertSlice(store, 0, batch.items);
+        group.history_count += batch.items.len;
+
+        // A short batch is not the end -- the host caps by bytes as well as
+        // by count and says so in `more`. An empty one is, whatever `more`
+        // claims, or the loop asks forever for nothing.
+        if (batch.items.len == 0) group.history_done = true;
+        if (!(boolField(v, "more") orelse false)) group.history_done = true;
     }
 
     fn update(self: *Chat, event: Event) !void {
@@ -628,6 +795,11 @@ const Chat = struct {
         // A group you have just opened should show what was said last, not
         // wherever you happened to be reading in the previous one.
         self.scroll = 0;
+
+        // And what was on screen was the *other* group's top. Carried over,
+        // it spends a read on the log for a group the reader has not
+        // scrolled back in at all.
+        self.at_top = false;
     }
 
     fn onMouse(self: *Chat, m: vaxis.Mouse) void {
@@ -676,6 +848,11 @@ const Chat = struct {
     const c_dim: vaxis.Color = .{ .index = 8 };
 
     fn draw(self: *Chat) !void {
+        // Cleared here so every path that ends without laying the messages
+        // out -- no room, no groups, a pane too narrow -- leaves it false
+        // rather than leaving last frame's answer standing.
+        self.at_top = false;
+
         const win = self.vx.window();
 
         // A window with no room in it is not a window to draw into. This
@@ -917,6 +1094,18 @@ const Chat = struct {
         var rows: std.ArrayListUnmanaged(layout.Row) = .empty;
         defer rows.deinit(alloc);
 
+        // Said once, at the top of what there is, so that reaching the
+        // beginning is something the reader sees rather than infers from
+        // scrolling that has stopped doing anything. Appended while `rows`
+        // is still empty, which is what inserting at the front means here.
+        if (group.history_done) {
+            try rows.append(alloc, .{
+                .text = "── 没有更早的了 ──",
+                .kind = .notice,
+                .message = 0,
+            });
+        }
+
         for (group.messages.items, 0..) |m, mi| {
             const stamp = formatTime(alloc, m.at_ms);
             const header = std.fmt.allocPrint(alloc, "{s}  {s}{s}", .{
@@ -957,6 +1146,7 @@ const Chat = struct {
         if (self.scroll > max_scroll) self.scroll = max_scroll;
 
         const first = rows.items.len -| visible -| self.scroll;
+        self.at_top = first == 0;
         const last = @min(rows.items.len, first + visible);
 
         for (rows.items[first..last], 0..) |row, i| {
@@ -980,6 +1170,16 @@ const Chat = struct {
                         .{ .text = row.text },
                         .{ .row_offset = y, .col_offset = 3 },
                     );
+                },
+
+                // Deliberately outside the `.header` arm's lookup into
+                // `group.messages`: this row belongs to no message, and on
+                // a group with none that index would be out of bounds.
+                .notice => {
+                    _ = win.printSegment(.{
+                        .text = row.text,
+                        .style = .{ .fg = c_dim, .italic = true },
+                    }, .{ .row_offset = y, .col_offset = 1 });
                 },
             }
         }
@@ -1048,6 +1248,75 @@ fn formatTime(alloc: Allocator, at_ms: i64) []const u8 {
     ) catch "";
 }
 
+// -- tests ------------------------------------------------------------------
+
+const testing = std.testing;
+
 test {
     _ = layout;
+}
+
+test "a poll leaves the live messages capped where it always did" {
+    const t = Chat.planTrim(600, 0);
+    try testing.expectEqual(@as(usize, 100), t.drop);
+    try testing.expectEqual(@as(usize, 0), t.history);
+}
+
+test "a poll does not eat what the reader just paged in" {
+    // The whole point of `history_count`: four hundred pulled back out of
+    // the log sit above the live five hundred and survive the next poll.
+    const t = Chat.planTrim(900, 400);
+    try testing.expectEqual(@as(usize, 0), t.drop);
+    try testing.expectEqual(@as(usize, 400), t.history);
+
+    try testing.expectEqual(@as(usize, 0), Chat.planTrim(600, 200).drop);
+}
+
+test "a new message pushes the oldest history out, and the count follows" {
+    const t = Chat.planTrim(901, 400);
+    try testing.expectEqual(@as(usize, 1), t.drop);
+    try testing.expectEqual(@as(usize, 399), t.history);
+}
+
+test "the hard ceiling wins over the history" {
+    const t = Chat.planTrim(6000, 5000);
+    try testing.expectEqual(@as(usize, 1000), t.drop);
+    try testing.expectEqual(@as(usize, 4000), t.history);
+}
+
+test "trimming more than there is history leaves none of it" {
+    const t = Chat.planTrim(6000, 100);
+    try testing.expectEqual(@as(usize, 5400), t.drop);
+    try testing.expectEqual(@as(usize, 0), t.history);
+}
+
+/// A message with nothing in it but the seam, which is all `seamOf` reads.
+fn seamFixture(log_seq: u64) Message {
+    return .{
+        .log_seq = log_seq,
+        .author = "",
+        .at_ms = 0,
+        .summary = false,
+        .text = "",
+        .from_user = false,
+    };
+}
+
+test "an empty group has no seam to join onto" {
+    // Not `stop`: a group that is empty because nothing has arrived yet
+    // gets a seam the moment something does, and marking it done here
+    // would bar it from the log for the rest of the session.
+    try testing.expect(std.meta.activeTag(Chat.seamOf(&.{})) == .wait);
+}
+
+test "a message that never reached the disk ends the walk" {
+    const msgs = [_]Message{seamFixture(0)};
+    try testing.expect(std.meta.activeTag(Chat.seamOf(&msgs)) == .stop);
+}
+
+test "the next batch joins onto the oldest message held" {
+    const msgs = [_]Message{ seamFixture(41), seamFixture(42) };
+    const seam = Chat.seamOf(&msgs);
+    try testing.expect(std.meta.activeTag(seam) == .before);
+    try testing.expectEqual(@as(u64, 41), seam.before);
 }

@@ -113,6 +113,7 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 | `notices()`                 | 无         | 尚未被看过的情况，一行文本；空表示没有            | 总管     |
 | `terminal_read(id, lines?)` | 终端与行数 | 可见屏幕或最近 N 行纯文本                          | 总管     |
 | `group_read(group, since?)` | 群名与游标 | 消息数组                                           | 成员     |
+| `group_history(group, before_seq?, limit?)` | 群名与日志游标 | 群里已经不留的更早消息，取自磁盘日志；这一批的 `seq` 恒为 0，翻页只能用 `log_seq` | 成员 |
 | `group_list()`              | 无         | 自己所在的群名，已排序                             | 全部     |
 
 `terminal_list` **列出所有开着的终端，不只是被监督的那些**。这一条是被真机测出来的：原来它只遍历 bus 里有登记的终端，而重启后按定义什么都没被监督 —— 于是这个列表在它唯一有用的场景（恢复）里永远是空的，[supervisor.md](supervisor.md) 写的恢复三步**写得出、做不到**。
@@ -173,7 +174,10 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 ### 权限矩阵与它的理由
 
 - **总管**：全部工具，含两个不在上面两张表里的只读工具 `get_work_mode(id)` 与 `skill_read(name)`。
-- **被监督终端**：`me`、`skill_read`，以及在它已被拉进的群里 `group_list` / `group_post` / `group_read`。**别的一个都没有** —— 没有 `terminal_send`，没有 `terminal_read`，没有 `clock_out`，也没有 `get_work_mode`。这份白名单是穷举的：新增工具默认落在总管一侧，要放给被监督终端必须显式改 `src/poltergeist/rpc.zig` 的 `requiresSupervisor`，那里有一条测试逐个方法核对。
+- **被监督终端**：`me`、`skill_read`，以及在它已被拉进的群里 `group_list` / `group_post` / `group_read` / `group_history` / `group_members`。**别的一个都没有** —— 没有 `terminal_send`，没有 `terminal_read`，没有 `clock_out`，也没有 `get_work_mode`。这份白名单是穷举的：新增工具默认落在总管一侧，要放给被监督终端必须显式改 `src/poltergeist/rpc.zig` 的 `requiresSupervisor`，那里有一条测试逐个方法核对。
+- **`group_history` 不比 `group_read` 多给什么。**磁盘上那一份日志把所有群写在同一个文件里，所以「翻得到什么」不能由文件决定：宿主先问出这个成员的视野下界（成员资格与下界是同一个事实，一次问出），再把比下界更老的那一段掐掉。`history: none` 加进来的终端因此翻不到它被特意挡在外面的内容 —— 挡在读的这一侧，而不是指望它不去问。
+
+  这里有一处**只在重启后才暴露**的坑，是真机流程逼出来的：下界原本取「群里现存最新那条消息的日志序号」，而重启后总管按恢复流程用同一个群名重新建群、再 `group_add`，此刻群在内存里是空的，下界因此是 0，等于没有下界 —— `group_read` 挡得住，`group_history` 却把昨晚整场对话都给了。群这个模型看不到日志走到哪儿，所以它自己修不了；由持有日志的宿主在 `add` 之后把日志当前的头传进来当下界（`Chat.setLogFloor`），且只抬不降。
 - **`skill_read` 对所有终端开放**（本章早先写作总管专属，与实现相反，已按实现更正）。理由：skill 是说明书不是权限，读它不构成对任何终端的影响；而被监督终端读不到它，就无从知道自己为什么被叫。
 - `me()` 里那个 `work_mode` 与 `get_work_mode(id)` 不冲突：前者只报**自己**的模式（服务端按 token 反查，不接受入参），后者能问**任意终端**的模式。被监督终端知道自己在哪种模式下工作是必要的，知道别人的则不是。
 - 角色在配置里指定，不能由 AI 自己声明 —— 服务端按 token → surface_id → 配置查角色。

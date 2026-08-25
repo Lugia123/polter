@@ -44,6 +44,12 @@ pub const History = enum {
 pub const Message = struct {
     /// Monotonic within its group, so one cursor per group is enough.
     seq: u64,
+
+    /// Where this landed in the on-disk log, or 0 for a message that
+    /// was never written down -- the log is off, or the write failed.
+    /// Zero means the view cannot page back past this one.
+    log_seq: u64 = 0,
+
     from: Id,
     at_ms: u64,
 
@@ -86,6 +92,15 @@ const Member = struct {
 
     /// Highest seq this member has been shown.
     cursor: u64 = 0,
+
+    /// The log seq of the newest message this member is barred from, or 0
+    /// when nothing is barred.
+    ///
+    /// `floor` says the same thing in the group's own numbering, and that
+    /// one cannot bound a walk over the log: the two counters are not
+    /// comparable. Without this, a terminal added with `history: none`
+    /// could read through `group_history` exactly what it was kept out of.
+    log_floor: u64 = 0,
 
     /// When it was last told this group had messages, for rate limiting.
     last_told_ms: ?u64 = null,
@@ -285,10 +300,22 @@ pub fn add(
     errdefer owned.deinit(self.alloc);
 
     try group.members.put(self.alloc, id, switch (history) {
-        // Nothing before now, and nothing waiting.
+        // Nothing before now, and nothing waiting. The same line drawn
+        // twice: once in the group's numbering, once in the log's, because
+        // reading back through the log is bounded by the latter and there
+        // is no converting between them.
         .none => .{
             .floor = group.head(),
             .cursor = group.head(),
+
+            // Only as far as what the group still holds. The file very
+            // often holds more -- after a restart the group is empty while
+            // last night is still on disk -- and the model cannot see that
+            // far. `setLogFloor` is how the host finishes this off.
+            .log_floor = if (group.log.items.len > 0)
+                group.log.items[group.log.items.len - 1].log_seq
+            else
+                0,
             .footing = owned,
         },
 
@@ -333,6 +360,21 @@ pub fn isMember(self: *const Chat, name: []const u8, id: Id) bool {
     return group.members.contains(id);
 }
 
+/// Where a member's view of a group begins, in both numberings.
+pub const Floor = struct { seq: u64 = 0, log_seq: u64 = 0 };
+
+/// Where this member's view of the group begins, in both numberings.
+///
+/// One call rather than two, because membership and how far back the
+/// member may look are the same fact: a reader that asked "is it in the
+/// group" and stopped there would hand a terminal added with
+/// `history: none` everything it was added specifically not to see.
+pub fn floorOf(self: *const Chat, name: []const u8, id: Id) Error!Floor {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    const m = group.members.get(id) orelse return error.NotAMember;
+    return .{ .seq = m.floor, .log_seq = m.log_floor };
+}
+
 pub fn exists(self: *const Chat, name: []const u8) bool {
     return self.groups.contains(name);
 }
@@ -359,6 +401,54 @@ pub fn post(
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     if (!group.members.contains(from)) return error.NotAMember;
     return self.append(group, from, text, now_ms, false);
+}
+
+/// Record where a message landed in the log.
+///
+/// The host calls this after appending, because only it has the file.
+/// Nothing here can fail and nothing here allocates: a message that
+/// has already been trimmed or compacted away is simply not there any
+/// more, which is not a mistake, it is later.
+pub fn setLogSeq(self: *Chat, name: []const u8, seq: u64, log_seq: u64) void {
+    const group = self.groups.getPtr(name) orelse return;
+
+    // From the back, because this is almost always the message that was
+    // just posted.
+    var i = group.log.items.len;
+    while (i > 0) {
+        i -= 1;
+        const m = &group.log.items[i];
+        if (m.seq > seq) continue;
+        if (m.seq == seq) m.log_seq = log_seq;
+        break;
+    }
+
+    // Keep the invariant the log floor is defined by: it is the log seq of
+    // the newest message the member is barred from. A member held back at
+    // or past this message has just learnt where that bar sits on disk.
+    var it = group.members.valueIterator();
+    while (it.next()) |m| {
+        if (m.floor < seq) continue;
+        m.log_floor = @max(m.log_floor, log_seq);
+    }
+}
+
+/// Bar a member from everything the log already held when it joined.
+///
+/// `add` draws the line at the newest message the group still has, which
+/// is the best the model can do and is not far enough: after a restart the
+/// group is empty and the line falls to zero, while `chat.jsonl` still
+/// holds every word of last night under the same group name. A terminal
+/// added with `history: none` would be kept out of that in `group_read`
+/// and handed all of it by `group_history`.
+///
+/// So the host, which is the only one holding the file, says where the log
+/// had got to. Never lowers an existing bar: two callers can only ever
+/// know about more that is hidden, never less.
+pub fn setLogFloor(self: *Chat, name: []const u8, id: Id, log_seq: u64) void {
+    const group = self.groups.getPtr(name) orelse return;
+    const m = group.members.getPtr(id) orelse return;
+    m.log_floor = @max(m.log_floor, log_seq);
 }
 
 /// `text` cut to at most `limit` bytes without splitting a character.
@@ -464,6 +554,7 @@ pub fn compact(
     // Both ends of the range being replaced, read before the texts go.
     const first_seq = group.log.items[0].seq;
     const seq = group.log.items[cut - 1].seq;
+    const cut_log_seq = group.log.items[cut - 1].log_seq;
     for (group.log.items[0..cut]) |m| self.alloc.free(m.text);
 
     if (cut > 1) {
@@ -503,6 +594,7 @@ pub fn compact(
             // Hiding it costs them a recap; showing it would hand over the
             // history they were deliberately not given.
             m.floor = seq;
+            m.log_floor = @max(m.log_floor, cut_log_seq);
         }
     }
 
@@ -1304,4 +1396,107 @@ test "a closed terminal keeps the footing it had" {
     // effect that would follow if it did.
     try chat.setFooting("build", a, .{});
     try testing.expectEqualStrings("", chat.footingOf("build", a).?.cwd);
+}
+
+test "a posted message learns where it landed on disk" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{});
+
+    const seq = try chat.post("build", a, "hello", 100);
+
+    {
+        const got = try chat.read(testing.allocator, "build", boss, 0);
+        defer testing.allocator.free(got);
+        try testing.expectEqual(@as(u64, 0), got[0].log_seq);
+    }
+
+    chat.setLogSeq("build", seq, 10432);
+
+    {
+        const got = try chat.read(testing.allocator, "build", boss, 0);
+        defer testing.allocator.free(got);
+        try testing.expectEqual(@as(u64, 10432), got[0].log_seq);
+    }
+}
+
+test "a member added without history is barred in both numberings" {
+    // Two counters saying the same thing, because neither can bound the
+    // other: `floor` bounds a walk over what the group still holds, and
+    // `log_floor` bounds a walk over the file.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    const seq = try chat.post("build", boss, "before you arrived", 100);
+    chat.setLogSeq("build", seq, 500);
+
+    try chat.add("build", a, .none, .{});
+
+    const floor = try chat.floorOf("build", a);
+    try testing.expectEqual(seq, floor.seq);
+    try testing.expectEqual(@as(u64, 500), floor.log_seq);
+
+    // And somebody who was given the history is bounded by nothing.
+    try testing.expectEqual(Floor{ .seq = 0, .log_seq = 0 }, try chat.floorOf("build", boss));
+}
+
+test "a message logged after a member joined raises that member's log floor" {
+    // The host appends and backfills in that order, so the group is told
+    // about the log seq after the fact. The bar has to move with it or a
+    // `.none` member could read past its own floor.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    const seq = try chat.post("build", boss, "before you arrived", 100);
+    try chat.add("build", a, .none, .{});
+
+    try testing.expectEqual(@as(u64, 0), (try chat.floorOf("build", a)).log_seq);
+    chat.setLogSeq("build", seq, 500);
+    try testing.expectEqual(@as(u64, 500), (try chat.floorOf("build", a)).log_seq);
+}
+
+test "joining an empty group is not the same as joining an empty log" {
+    // The case this exists for is a restart: the supervisor makes the
+    // group again under the name the notes gave it, and adds a terminal
+    // with no history. The group is empty, so `add` can only draw the line
+    // at zero -- and zero is no line at all while the file still holds
+    // last night under that same name.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    try testing.expectEqual(@as(u64, 0), (try chat.floorOf("build", a)).log_seq);
+
+    // What the host does about it, knowing where the file had got to.
+    chat.setLogFloor("build", a, 10432);
+    try testing.expectEqual(@as(u64, 10432), (try chat.floorOf("build", a)).log_seq);
+}
+
+test "the log floor is a bar, and a bar is never lowered" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    const seq = try chat.post("build", boss, "before you arrived", 100);
+    chat.setLogSeq("build", seq, 500);
+    try chat.add("build", a, .none, .{});
+
+    // Already barred as far as 500 by what the group itself holds. A host
+    // saying the log stops earlier than that does not open it back up.
+    chat.setLogFloor("build", a, 300);
+    try testing.expectEqual(@as(u64, 500), (try chat.floorOf("build", a)).log_seq);
+}
+
+test "a member given the history has no log floor to raise" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{});
+    try testing.expectEqual(@as(u64, 0), (try chat.floorOf("build", a)).log_seq);
 }

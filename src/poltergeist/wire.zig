@@ -182,6 +182,12 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
             .since = try optionalU64(params, "since", 0),
         } },
+
+        .group_history => .{ .group_history = .{
+            .group = try requireString(aa, params, "group"),
+            .before_seq = try optionalU64(params, "before_seq", 0),
+            .limit = try optionalU64(params, "limit", 0),
+        } },
     };
 
     return value;
@@ -434,6 +440,13 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.beginObject();
                 try s.objectField("seq");
                 try s.write(m.seq);
+
+                // Both readings of a conversation come out in this one
+                // shape, so a reader needs one parser: `group_read` fills
+                // in `seq` and `group_history` fills in `log_seq`, and
+                // each writes zero where it has nothing to say.
+                try s.objectField("log_seq");
+                try s.write(m.log_seq);
                 try s.objectField("from");
                 try writeId(&s, m.from);
                 try s.objectField("author");
@@ -757,4 +770,45 @@ test "an unwatched terminal is placed, but not measured" {
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"quiet_ms\""));
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"rounds\""));
     try testing.expect(std.mem.indexOf(u8, out, "\"quiet_ms\":90000") != null);
+}
+
+test "group_history parses its cursor and its limit" {
+    var p = try parse(
+        \\{"method":"group_history","params":{"group":"build","before_seq":10432,"limit":50}}
+    );
+    defer p.deinit();
+    try testing.expectEqualStrings("build", p.value.group_history.group);
+    try testing.expectEqual(@as(u64, 10432), p.value.group_history.before_seq);
+    try testing.expectEqual(@as(u64, 50), p.value.group_history.limit);
+}
+
+test "a history request may omit the cursor and the limit" {
+    // Zero means "from the newest", and the ceiling on a batch is applied
+    // where the batch is fetched, not here.
+    var p = try parse(
+        \\{"method":"group_history","params":{"group":"build"}}
+    );
+    defer p.deinit();
+    try testing.expectEqual(@as(u64, 0), p.value.group_history.before_seq);
+    try testing.expectEqual(@as(u64, 0), p.value.group_history.limit);
+}
+
+test "a history reply carries the log cursor beside the group seq" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const lines = [_]rpc.ChatLine{.{
+        .seq = 0,
+        .log_seq = 10431,
+        .from = 0x2222,
+        .author = "worker-core",
+        .at_ms = 1756000000000,
+        .summary = false,
+        .text = "signature is settled",
+    }};
+    try writeResponse(&w, .{ .messages = .{ .lines = &lines, .more = true } });
+
+    const out = w.buffered();
+    try testing.expect(std.mem.indexOf(u8, out, "\"log_seq\":10431") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"seq\":0") != null);
 }

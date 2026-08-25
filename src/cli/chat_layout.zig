@@ -34,6 +34,10 @@ pub const Row = struct {
 
         /// The blank line between messages.
         gap,
+
+        /// A line the view says itself, rather than one somebody said. It
+        /// belongs to no message, so `message` means nothing on this row.
+        notice,
     };
 };
 
