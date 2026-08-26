@@ -184,6 +184,8 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .since = try optionalU64(params, "since", 0),
         } },
 
+        .stand_down => .stand_down,
+
         .group_history => .{ .group_history = .{
             .group = try requireString(aa, params, "group"),
             .before_seq = try optionalU64(params, "before_seq", 0),

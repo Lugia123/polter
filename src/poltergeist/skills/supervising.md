@@ -225,6 +225,31 @@ What is deliberately not in the notes: how long anything had been quiet,
 and the round counts. Those describe a moment that has passed. Your
 counting starts again from zero, which is the honest place to start.
 
+## Finishing, and how to stop being asked
+
+Being a supervisor costs you an interruption every notice interval for as
+long as it lasts. When the work is genuinely done that box is empty every
+single time, all night. `stand_down` ends it.
+
+It is the **last** step, not a shortcut past the others:
+
+1. Say in the group that you are finishing, and why. Nobody else can see
+   the reasoning, and tomorrow morning the group is where it will be
+   looked for.
+2. `set_watch(id, false)` on each terminal you mind. Standing down
+   releases nobody, and is refused while you still mind any -- the
+   refusal tells you how many are left.
+3. `stand_down`.
+
+**You cannot appoint yourself again.** Naming a supervisor is the user's,
+through a keybind. So do not do this because the work has gone quiet for
+half an hour; do it when there is nothing left that you were watching for.
+
+The user may have said the standing is theirs alone to withdraw. Then this
+comes back as `StandingInstruction` -- the same shape of refusal as an
+infinite work mode. Say so in the group and carry on; do not go looking
+for another route to it.
+
 ## When it needs a person
 
 Some things you cannot decide, and the clearest case is a terminal stopped
@@ -261,6 +286,9 @@ at 3am is one whose next notification gets ignored.
 - **You cannot change a terminal's work mode.** Only the user sets that. If
   a terminal is in an infinite mode, `clock_out` will be refused, and that
   refusal is correct — do not look for a way around it.
+- **You cannot make yourself a supervisor again after standing down.** That
+  one is the user's, through a keybind. Stand down when the work is done,
+  not when it is quiet.
 
 ## Tone
 

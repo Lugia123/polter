@@ -150,6 +150,15 @@ pub const Method = enum {
     /// getting on. Nothing is started for an archive plugin: two copies
     /// would push the same cursor.
     plugin_test,
+
+    /// Stop being a supervisor.
+    ///
+    /// What a supervisor is left with once the work is done is an empty box
+    /// handed to it every interval for the rest of the night. This ends
+    /// that. Refused while the caller still minds a terminal -- each one
+    /// has to be let go first -- and refused outright when the user has
+    /// said the standing is theirs alone to withdraw.
+    stand_down,
 };
 
 pub const Request = union(Method) {
@@ -196,6 +205,8 @@ pub const Request = union(Method) {
         params: []const Plugin.Param = &.{},
     },
     plugin_test: struct { key: []const u8 },
+
+    stand_down,
 };
 
 /// How much text one `group_read` reply may carry.
@@ -357,6 +368,10 @@ pub fn requiresSupervisor(method: Method) bool {
         .plugin_list,
         .plugin_configure,
         .plugin_test,
+
+        // Only a supervisor has anything to stand down from. `Bus` says so
+        // again for itself rather than trusting this to have run.
+        .stand_down,
         => true,
     };
 }
@@ -388,6 +403,9 @@ pub fn targetsTerminal(method: Method) bool {
         .plugin_list,
         .plugin_configure,
         .plugin_test,
+
+        // It names the caller, and the caller is not a parameter.
+        .stand_down,
         => false,
 
         // Both name another terminal, so both go through the self-target
@@ -432,6 +450,7 @@ pub fn target(req: Request) ?Bus.Id {
         .plugin_list,
         .plugin_configure,
         .plugin_test,
+        .stand_down,
         => null,
 
         inline .group_add, .group_remove => |v| v.id,
@@ -571,10 +590,72 @@ test "only what reaches another terminal needs the supervisor" {
             .plugin_list,
             .plugin_configure,
             .plugin_test,
+            .stand_down,
             => false,
         };
         try testing.expectEqual(!open, requiresSupervisor(m));
     }
+}
+
+test "standing down is refused until every terminal has been let go" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    {
+        const res = try dispatch(alloc, &b, fake.host(), boss, .stand_down);
+        try testing.expectEqualStrings("StillMinding", res.failed.code);
+        try testing.expect(b.isSupervisor(boss));
+
+        // The host is not told about a refusal: nothing changed, so there
+        // is no tab to redraw and no note to write.
+        try testing.expect(fake.stood_down == null);
+    }
+
+    b.unwatch(worker);
+
+    {
+        const res = try dispatch(alloc, &b, fake.host(), boss, .stand_down);
+        try testing.expectEqual(wire.Response.ok, res);
+        try testing.expect(!b.isSupervisor(boss));
+        try testing.expectEqual(@as(?Bus.Id, boss), fake.stood_down);
+    }
+}
+
+test "a supervisor the user has pinned cannot stand itself down" {
+    var b: Bus = .init(testing.allocator, .{ .stand_down_allowed = false });
+    defer b.deinit();
+    try b.addSupervisor(boss);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .stand_down);
+
+    // The same distinct code an infinite work mode refuses with, and for
+    // the same reason: "not permitted" reads as the caller having got
+    // something wrong, and this is the user having spoken.
+    try testing.expectEqualStrings("StandingInstruction", res.failed.code);
+    try testing.expect(b.isSupervisor(boss));
+    try testing.expect(fake.stood_down == null);
+}
+
+test "a watched terminal cannot stand down from a standing it never had" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    // Stopped by `authorize`, before the bus is ever asked.
+    const res = try dispatch(arena.allocator(), &b, fake.host(), worker, .stand_down);
+    try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    try testing.expect(fake.stood_down == null);
 }
 
 test "a watched terminal can talk in a group but cannot arrange one" {
@@ -1361,6 +1442,16 @@ pub const Host = struct {
             watching: bool,
         ) anyerror!void,
 
+        /// A supervisor has just stopped being one.
+        ///
+        /// The bus entry is already changed by the time this is called;
+        /// what the host does with it is everything outside the bus -- the
+        /// tab mark that says who is in charge, and the session notes that
+        /// tomorrow will be read back from. Nothing can fail here: the
+        /// standing is already gone, and a note that did not save is not a
+        /// reason to pretend otherwise.
+        stoodDown: *const fn (ctx: *anyopaque, id: Bus.Id) void,
+
         /// Every terminal the app has open, minded or not.
         ///
         /// The bus only knows terminals somebody put under watch, and
@@ -1604,6 +1695,10 @@ pub const Host = struct {
 
     fn setWatching(self: Host, id: Bus.Id, watching: bool) anyerror!void {
         return self.vtable.setWatching(self.ctx, id, watching);
+    }
+
+    fn stoodDown(self: Host, id: Bus.Id) void {
+        return self.vtable.stoodDown(self.ctx, id);
     }
 
     fn drainNotices(self: Host, alloc: std.mem.Allocator, to: Bus.Id) anyerror![]const u8 {
@@ -1954,6 +2049,47 @@ pub fn dispatch(
                 bus.unwatch(p.id);
             }
 
+            return .ok;
+        },
+
+        .stand_down => {
+            bus.standDown(caller) catch |err| switch (err) {
+                // Not reachable through `authorize`, which has already
+                // asked the same question. Answered anyway, because a rule
+                // that only holds while somebody else remembers to check
+                // is not a rule the bus is keeping.
+                error.NotASupervisor => return hostFailure(
+                    "NotASupervisor",
+                    "you are not a supervisor, so there is nothing to stand down from.",
+                ),
+
+                // Deliberately not `NotPermitted`, for the same reason
+                // `StandingInstruction` is not: one reads as the caller
+                // having made a mistake, and this is the user having said
+                // something that is not the supervisor's to unsay.
+                error.NotPermitted => return hostFailure(
+                    "StandingInstruction",
+                    "the user has said that being a supervisor is theirs to withdraw, " ++
+                        "not yours. Say in the group that you have finished and why, and " ++
+                        "leave the standing to them.",
+                ),
+
+                // The count rather than a bare refusal: what to do next is
+                // to go and release them, and how many there are is how
+                // much of it is left.
+                error.StillMinding => return hostFailure(
+                    "StillMinding",
+                    try std.fmt.allocPrint(
+                        alloc,
+                        "you are still minding {d} terminal(s). Standing down releases " ++
+                            "nobody -- let each one go with set_watch(id, false) first, so " ++
+                            "that each release is a thing you decided, then stand down.",
+                        .{bus.mindCount(caller)},
+                    ),
+                ),
+            };
+
+            host.stoodDown(caller);
             return .ok;
         },
 
@@ -2398,6 +2534,9 @@ const FakeHost = struct {
     history_asked: ?struct { group: []const u8, before_seq: u64, limit: usize } = null,
     history_more: bool = false,
 
+    /// Which terminal told the host it had stood down, if any did.
+    stood_down: ?Bus.Id = null,
+
     /// What `notices` hands back, and how many times it was asked.
     notices: []const u8 = "",
     drained: usize = 0,
@@ -2452,6 +2591,7 @@ const FakeHost = struct {
             .quietMs = quietMs,
             .openTerminals = openTerminals,
             .setWatching = setWatching,
+            .stoodDown = stoodDown,
             .drainNotices = drainNotices,
             .setThreshold = setThreshold,
             .readSkill = readSkill,
@@ -2749,6 +2889,11 @@ const FakeHost = struct {
     ) anyerror![]const Place {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return alloc.dupe(Place, self.open);
+    }
+
+    fn stoodDown(ctx: *anyopaque, id: Bus.Id) void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.stood_down = id;
     }
 
     fn setWatching(ctx: *anyopaque, _: Bus.Id, watching: bool) anyerror!void {

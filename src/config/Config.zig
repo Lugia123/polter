@@ -1370,6 +1370,26 @@ command: ?Command = null,
 /// Turn it off if you would rather nothing was written down. The contents
 /// are whatever the agents paste at each other, which is to say your code,
 /// your paths and your stack traces.
+/// Whether a supervisor may take itself off duty.
+///
+/// A supervisor is woken on `poltergeist-notice-interval` for as long as it
+/// is one. When the work it was minding is finished that wake-up costs
+/// context and buys nothing, every interval, all night -- so by default a
+/// supervisor that has finished can say so and stop being one.
+///
+/// It cannot do that as a shortcut. Standing down is refused while it still
+/// minds any terminal, so it has to let each one go first, deliberately and
+/// one at a time; only then may it step down itself. Nor can it appoint
+/// itself again afterwards -- naming a supervisor is yours alone, through
+/// the `poltergeist_supervisor` keybind.
+///
+/// Set this to false if being a supervisor should be a standing
+/// instruction that only you can withdraw, the way an infinite work mode
+/// is. The cost of false is the wake-ups continuing after there is
+/// anything to wake up for; the cost of true is a supervisor that decides
+/// too early that the night is over, and stops watching while you sleep.
+@"poltergeist-supervisor-stand-down": bool = true,
+
 @"poltergeist-chat-log": bool = true,
 
 /// Which notification plugins to use when the user has to be told

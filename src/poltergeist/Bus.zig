@@ -205,17 +205,25 @@ pub const Config = struct {
     /// urgent in the next sixty seconds. The supervisor can always look
     /// sooner: reading the box itself is not on this schedule.
     notice_interval_ms: u64 = std.time.ms_per_min,
+
+    /// Whether a supervisor may take itself off duty.
+    ///
+    /// Off means the standing is the user's alone to give and to take
+    /// back, the way an infinite work mode is. On means a supervisor that
+    /// has finished can stop being one -- and stop being woken every
+    /// interval for a box that will now always be empty.
+    stand_down_allowed: bool = true,
 };
 
 alloc: Allocator,
 config: Config,
 entries: std.AutoHashMapUnmanaged(Id, Entry) = .empty,
 
-/// The current supervisor, if one has been named.
-///
-/// One at a time. Two supervisors watching the same terminal would each
-/// nudge it without knowing about the other, and the terminal on the
-/// receiving end has no way to tell the difference.
+/// There may be several supervisors, each minding its own piece of work.
+/// What is one at a time is the other direction: a watched terminal has at
+/// most one minder, because two of them nudging one input box is, to the
+/// agent in it, being given orders by two people who cannot see each
+/// other.
 pub fn init(alloc: Allocator, config: Config) Bus {
     return .{ .alloc = alloc, .config = config };
 }
@@ -292,6 +300,50 @@ pub fn removeSupervisor(self: *Bus, id: Id) void {
             if (other.role == .watched) other.role = .none;
         }
     }
+}
+
+/// How many terminals `id` is minding.
+pub fn mindCount(self: *const Bus, id: Id) usize {
+    var n: usize = 0;
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const w = kv.value_ptr.watched_by orelse continue;
+        if (w == id) n += 1;
+    }
+    return n;
+}
+
+pub const StandDownError = error{
+    NotASupervisor,
+    NotPermitted,
+    StillMinding,
+};
+
+/// Take a supervisor off duty at its own request.
+///
+/// Separate from `removeSupervisor`, which is the user's route through the
+/// keybind and asks nobody's permission. This one is the agent's, and it
+/// is refused in two cases that route is not:
+///
+/// **While it still minds terminals.** `removeSupervisor` releases them,
+/// which is right when a person does it -- they can see the window. Doing
+/// it for an agent would turn one call into a silent release of every
+/// terminal it was responsible for, and the terminals themselves are never
+/// told. So each one has to be let go first, deliberately and one at a
+/// time, and standing down is only ever the last step of a wind-down
+/// rather than a shortcut past it.
+///
+/// **When the user has said not to.** Being a supervisor is a standing
+/// instruction in the same sense an infinite work mode is, and the same
+/// asymmetry applies: the program holds the line rather than a prompt,
+/// because a prompt is what gets compacted out of context at 4am.
+pub fn standDown(self: *Bus, id: Id) StandDownError!void {
+    const e = self.entries.getPtr(id) orelse return error.NotASupervisor;
+    if (e.role != .supervisor) return error.NotASupervisor;
+    if (!self.config.stand_down_allowed) return error.NotPermitted;
+    if (self.mindCount(id) > 0) return error.StillMinding;
+
+    self.removeSupervisor(id);
 }
 
 /// Whether this terminal is minding others.
@@ -557,6 +609,14 @@ pub fn drain(self: *Bus, to: Id, now_ms: u64, buf: []u8) ?[]u8 {
 /// reports -- twice the interruption and half of it about terminals they
 /// cannot even read.
 pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
+    // Only a supervisor has a box. Said here rather than left to the
+    // caller, because the rule below hands an unclaimed terminal's report
+    // to whoever is asking -- so a terminal that has just stood down would
+    // otherwise keep being handed exactly the reports it stopped being
+    // responsible for, which is the one thing standing down is for.
+    const minder = self.entries.get(to) orelse return null;
+    if (minder.role != .supervisor) return null;
+
     var listed: usize = 0;
     var total: usize = 0;
 
@@ -1266,4 +1326,69 @@ test "a notice nobody reads stops repeating rather than stacking up" {
     }
 
     try testing.expectEqual(@as(usize, 3), handed);
+}
+
+test "a supervisor that has let everybody go may stand itself down" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.register(worker);
+    try b.watch(worker, boss);
+
+    // Not while it is still responsible for somebody. Standing down
+    // releases nothing, so the release has to have happened already.
+    try testing.expectError(error.StillMinding, b.standDown(boss));
+    try testing.expect(b.isSupervisor(boss));
+
+    b.unwatch(worker);
+    try b.standDown(boss);
+
+    try testing.expect(!b.isSupervisor(boss));
+}
+
+test "standing down stops the interval it was being woken on" {
+    // The whole point of the tool: an empty box handed over every minute
+    // for the rest of the night is what a finished supervisor is left with.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.register(worker);
+    try b.watch(worker, boss);
+    _ = b.report(worker, quiet(200_000), 1000);
+
+    var buf: [512]u8 = undefined;
+    try testing.expect(b.drainIfDue(boss, 1000, &buf) != null);
+
+    b.unwatch(worker);
+    try b.standDown(boss);
+
+    // Nothing is delivered to a terminal that is no longer minding anyone,
+    // whatever is in the box.
+    _ = b.report(worker, quiet(300_000), 200_000);
+    try testing.expect(b.drainIfDue(boss, 200_000, &buf) == null);
+}
+
+test "a user who says a supervisor may not stand down is obeyed" {
+    var b: Bus = .init(testing.allocator, .{ .stand_down_allowed = false });
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try testing.expectError(error.NotPermitted, b.standDown(boss));
+    try testing.expect(b.isSupervisor(boss));
+
+    // And the keybind is unaffected: the setting binds the agent, not the
+    // person at the keyboard.
+    b.removeSupervisor(boss);
+    try testing.expect(!b.isSupervisor(boss));
+}
+
+test "a terminal that was never a supervisor cannot stand down from it" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.register(worker);
+    try testing.expectError(error.NotASupervisor, b.standDown(worker));
+    try testing.expectError(error.NotASupervisor, b.standDown(0xdead));
 }

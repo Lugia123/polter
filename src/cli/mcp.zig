@@ -359,6 +359,22 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "stand_down",
+        .description = "Stop being a supervisor, once the work you were minding is " ++
+            "finished. Being one costs you an interruption every notice interval for as " ++
+            "long as it lasts, and after the work is done that box is empty every time. " ++
+            "Let each terminal go first with set_watch(id, false) -- this releases " ++
+            "nobody, and is refused while you still mind any. Say in the group that you " ++
+            "are finishing and why, before you do it: afterwards you cannot appoint " ++
+            "yourself again, only the user can. The user may also have said the standing " ++
+            "is theirs alone to withdraw, in which case this comes back as " ++
+            "StandingInstruction and the answer is to say so, not to look for another " ++
+            "way. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{}}
+        ,
+    },
+    .{
         .name = "set_work_mode",
         .description = "Change what a terminal's work mode asks of it: clock_off, " ++
             "infinite_directed or infinite_sequential. You may put a terminal into an " ++

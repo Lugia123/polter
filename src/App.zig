@@ -301,6 +301,8 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
 
     self.poltergeist.config.notice_interval_ms =
         config.@"poltergeist-notice-interval".duration / std.time.ns_per_ms;
+    self.poltergeist.config.stand_down_allowed =
+        config.@"poltergeist-supervisor-stand-down";
 
     self.poltergeist_notify_window =
         poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
@@ -1189,6 +1191,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .quietMs = poltergeistQuiet,
         .openTerminals = poltergeistOpenTerminals,
         .setWatching = poltergeistSetWatching,
+        .stoodDown = poltergeistStoodDown,
         .drainNotices = poltergeistDrainNotices,
         .setThreshold = poltergeistThreshold,
         .readSkill = poltergeistSkill,
@@ -1666,6 +1669,22 @@ fn poltergeistSetWatching(
             "watching what you type.");
     }
 
+    self.saveSession();
+}
+
+/// A supervisor has just taken itself off duty.
+///
+/// The bus has already forgotten the standing; what is left is everything
+/// outside it. The tab mark is refreshed for the same reason the keybind
+/// refreshes it -- a terminal that is no longer in charge should stop
+/// saying it is at once, not whenever something else happens to redraw.
+/// And the arrangement is written down, because a supervisor that stood
+/// down last night is not one tomorrow's recall should describe as still
+/// minding anybody.
+fn poltergeistStoodDown(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    _ = id;
+    self.refreshPoltergeistTabs();
     self.saveSession();
 }
 
