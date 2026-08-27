@@ -187,6 +187,10 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .stand_down => .stand_down,
         .terminal_actions => .terminal_actions,
 
+        .config_get => .{ .config_get = .{
+            .key = (try optionalString(aa, params, "key")) orelse "",
+        } },
+
         .terminal_open => .{ .terminal_open = .{
             .cwd = (try optionalString(aa, params, "cwd")) orelse "",
             .watch = optionalBool(params, "watch", false),

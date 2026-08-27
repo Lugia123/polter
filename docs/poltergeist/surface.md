@@ -2,8 +2,7 @@
 
 > 最后更新对应的 git commit：`3d1841296`
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**第一至三件已实现**（`terminal_action` / `terminal_actions` /
-> `terminal_open`）；第四、五件仍是规划。
+> 状态：**全部落地**。第四件查下来是多余的，第五件只做了一半，理由见下。
 > GTK 侧的 `new_tab` 载荷**只做过静态核对，没编译过**——本机没有 gtk-4 与
 > adwaita 的开发库。
 
@@ -107,18 +106,33 @@ surface，动作返回时若已经多出来一个就报它的 id，没有就报�
 tab 还在路上，`terminal_list` 过一会儿就有。在这里等下去会把 socket 线程挂在
 UI 线程要做的事情上。
 
-### 四、`terminal_set_title(id, title)`
+### 四、`terminal_set_title(id, title)` —— **不做，已经有了**
 
-`Action` 里有 `set_title`，但它作用于**当前**终端。总管要给别的终端贴标签，
-需要一个带 id 的入口。四个 `0x…` 的十六进制 id 和四个一样的目录，靠名字才分得清。
+原来的判断是「`Action` 里的 `set_title` 只作用于当前终端」。**那是错的**：
+`terminal_action` 本来就带 id，作用的就是那个终端。而 `Binding.Action` 里
+`set_surface_title` 和 `set_tab_title` 都是带字符串载荷的动作，`parse` 把第一个
+冒号之后的整段当值，空格照收。
 
-一处要小心：标题会进 `terminal_list`，而那个输出会进另一个 agent 的上下文，
-所以按普通文本截断转义，不让它变成注入通道。
+所以 `terminal_action(id, "set_surface_title:worker A")` 已经能做这件事，
+再加一个工具就是本章红线第一条说的「第二套词汇」。
 
-### 五、`config_get(key)` 与 `config_reload()`
+**但两者的区别要写进 skill**：`terminal_list` 读的是 surface title
+（`rt_surface.getTitle()`），所以总管要给自己看的标签得用 `set_surface_title`；
+`set_tab_title` 改的是屏幕上那个 tab 的名字，给人看的，进不了列表。
 
-读配置让总管知道自己被什么约束着——通知时段几点到几点、允不允许卸任——从而把话
-说清楚，而不是撞上一个它不理解的拒绝。改完配置能重载，省掉一次重启。
+### 五、`config_get(key)` ✅，`config_reload` **不做，已经有了**
+
+`reload_config` 本来就是键位动作，`terminal_action(id, "reload_config")` 即可。
+
+`config_get` 是真新的。落地时改了取值方式：**App 并不保存 Config**——它在
+`updateConfig` 里取走需要的几项就不再持有，而跨重载存一个 `*const Config`
+是悬垂读，且时机最差（配置重载那一刻）。所以在 `updateConfig` 里把整份配置
+按 `+show-config` 的格式渲染成文本存下来，`config_get` 从文本里按行取。
+几十 KB、每次重载一次，而且不可能悬垂。
+
+按行而不是按值取，是因为**一个键可以出现多次**（`poltergeist-notify` 每条渠道
+一行），只返回第一条会静默丢掉其余的。匹配要求整个键名后面跟 ` =`，
+否则 `poltergeist-watch` 会匹配上以后可能出现的 `poltergeist-watch-harder`。
 
 ## 权限：都在总管这一侧
 

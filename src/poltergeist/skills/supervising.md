@@ -75,6 +75,13 @@ now.
 Nothing arrives when nothing has happened. Silence means every terminal is
 working, not that the mechanism has stopped.
 
+**If a terminal is reported too eagerly, move its own threshold** with
+`set_quiescence_threshold(id, ms)`. A terminal running a twenty-minute build
+writes nothing for twenty minutes and is not stuck; raising its threshold is
+better than learning to ignore it, because ignoring one is how you come to
+ignore the next. It is per terminal, and it only changes when you are told --
+it says nothing about what the user wants and carries no weight beyond that.
+
 That is the whole of it. Ghostty does not read the screen and has no
 opinion about what the terminal is doing. The two durations differ in a
 useful way:
@@ -145,10 +152,16 @@ later, which is the thing the mode exists to prevent. The refusal comes
 back as `StandingInstruction`; when you see it, say so rather than trying
 another route.
 
-Each mode has a skill of its own (`mode-clock-out`,
-`mode-infinite-directed`, `mode-infinite-sequential`) describing what it
-asks of the terminal. The terminal is told to read its own when you change
-it, so you do not need to explain the mode to it.
+`get_work_mode(id)` says what a terminal is on now, which is worth asking
+before changing it: moving one between the two infinite modes is allowed and
+lifting a user's is not, and the refusal reads better if you knew which you
+were doing.
+
+Each mode has a skill of its own (`mode-clock-out`, `mode-infinite-directed`,
+`mode-infinite-sequential`) describing what it asks of the terminal, and
+`skill_read(name)` is how you read one -- yours included, if this one has
+scrolled out of your context. The terminal is told to read its own when you
+change it, so you do not need to explain the mode to it.
 
 ## Say what each group is for, before you forget
 
@@ -168,6 +181,28 @@ a tidy sentence.
 
 Keep it current when the situation changes. A brief describing a phase
 that finished two hours ago is worse than none.
+
+## Talking in a group, and keeping it readable
+
+`group_post(group, text)` says something; `group_read(group, since)` reads what
+you have not seen; `group_members(group)` says who is in it. Those are the
+tools the rule above means by "through the group tools" -- if you find yourself
+reaching for some other way to reach another session, it is one of these you
+wanted.
+
+`group_history(group, before_seq, limit)` goes further back than the group
+still holds. The group keeps a working set and drops the oldest as it grows;
+the log on disk keeps everything. Page with `log_seq`, not `seq` -- the
+per-group `seq` starts again from 1 every time Polter does, so paging by it
+reads the wrong night. `more: false` means you have reached the beginning of
+what was kept.
+
+`group_compact(group, through, summary)` replaces everything up to `through`
+with one line you write. Use it when a group has filled with detail nobody
+needs any more: it frees the members' context, which is the scarce thing here.
+**It is not deletion** -- the log on disk keeps what was said, and the summary
+is written after the messages rather than over them, so tomorrow morning can
+still read the night as it happened.
 
 ## After a restart: read the notes, then look
 
@@ -268,6 +303,11 @@ The ones that come up in this job:
 - **`goto_split:left`**, **`new_split:right`**, **`toggle_split_zoom`** --
   layout. The person at the keyboard arranged what they are looking at;
   rearranging it while they are away is not a favour.
+- **`set_surface_title:worker A`** -- give a terminal a name. Four hex ids and
+  four identical directories are not something you will tell apart in eight
+  hours' time, and this is what `terminal_list` reports back to you.
+  **`set_tab_title` is a different thing**: it names the tab on screen for the
+  person, and does not reach the list you read.
 - **`copy_to_clipboard`**, **`paste_from_clipboard`** -- the clipboard is
   shared with the person. Whatever you put there is what their next paste
   produces, in whatever window they happen to be in.
@@ -287,7 +327,10 @@ It is the **last** step, not a shortcut past the others:
 
 1. Say in the group that you are finishing, and why. Nobody else can see
    the reasoning, and tomorrow morning the group is where it will be
-   looked for.
+   looked for. **Leave the group standing.** `group_destroy` is for a group
+   made by mistake, not for one whose work is done: destroying it is how the
+   arrangement stops being recallable tomorrow, and `group_remove(group, id)`
+   is enough when one terminal is finished and the others are not.
 2. `set_watch(id, false)` on each terminal you mind. Standing down
    releases nobody, and is refused while you still mind any -- the
    refusal tells you how many are left.
@@ -325,9 +368,34 @@ actually went anywhere. If it says nobody was told -- no channel
 configured, or every channel failed -- then waiting for an answer is
 waiting for nothing. Say so in the group and carry on as best you can.
 
+**If there is nowhere to send, you can set somewhere up.** `plugin_list` shows
+what is installed and whether it is switched on; `plugin_configure` turns one
+on and fills in what it needs; `plugin_test` sends one real notification so
+the person finds out now rather than at 3am. Two rules that will refuse you,
+and both are the user's to lift rather than yours to route around: a parameter
+that holds a credential will not take a plain value, only a reference to
+somewhere the user has already put it (`env:NAME`, `keychain:service/account`),
+and a `cmd:` reference will not be written at all, because that is a command
+Polter runs later, outside whatever authorises you now. Say what you would
+write and let them write it.
+
 Do not use it for things that can wait until morning. A notification at
 3am spends something you cannot get back, and a supervisor that cries wolf
 at 3am is one whose next notification gets ignored.
+
+## What you are working under
+
+`config_get(key)` reads the user's settings; with no key it hands back all of
+them. Worth doing **before** you are refused something rather than after:
+
+- `poltergeist-notify-window` -- the hours you may not disturb anybody.
+- `poltergeist-supervisor-stand-down` -- whether you may take yourself off
+  duty at all.
+- `poltergeist-notice-interval` -- how often you are handed the box, which is
+  also how stale the durations in it can be.
+
+Read only. Changing a setting is the user's, and `reload_config` through
+`terminal_action` is how a change they made takes effect without a restart.
 
 ## Two things you cannot do, and should not try
 

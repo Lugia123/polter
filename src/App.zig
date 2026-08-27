@@ -52,6 +52,16 @@ chat: poltergeistpkg.Chat,
 /// it just leaves a terminal stopped until morning.
 poltergeist_notify_window: ?poltergeistpkg.notify.Window = null,
 
+/// The whole configuration, rendered the way `+show-config` renders it, so
+/// that an agent can be told what it is working under.
+///
+/// A snapshot rather than a pointer to the live config. The apprt owns that
+/// config and replaces it on reload; holding the pointer across one would be
+/// a dangling read at the worst moment, and copying the struct means owning
+/// every string inside it. Text costs a few tens of kilobytes once per
+/// reload and cannot dangle.
+poltergeist_config_text: []const u8 = "",
+
 /// When the last plugin test went out, on `poltergeistNow`'s clock.
 ///
 /// Optional rather than a zero sentinel: that clock starts at zero, so a
@@ -255,6 +265,7 @@ pub fn deinit(self: *App) void {
     for (self.poltergeist_archives.items) |archive| archive.destroy();
     self.poltergeist_archives.deinit(self.alloc);
 
+    if (self.poltergeist_config_text.len > 0) self.alloc.free(self.poltergeist_config_text);
     if (self.chat_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
@@ -306,6 +317,7 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
 
     self.poltergeist_notify_window =
         poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
+    self.refreshPoltergeistConfigText(config);
     self.ensurePlugins();
 
     // Here for the ordering, not for the reload. The archives are looked
@@ -1192,6 +1204,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .quietMs = poltergeistQuiet,
         .openTerminals = poltergeistOpenTerminals,
         .openTerminal = poltergeistOpenTerminal,
+        .configText = poltergeistConfigText,
         .setWatching = poltergeistSetWatching,
         .stoodDown = poltergeistStoodDown,
         .drainNotices = poltergeistDrainNotices,
@@ -1743,6 +1756,59 @@ fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
 /// is named. If none has, that is not a failure -- the tab is still opening
 /// -- and the caller is told to go and look. Waiting on it here would park
 /// the socket thread on something the UI thread has to finish.
+/// Re-render the configuration as text.
+///
+/// Failure leaves the previous text in place rather than clearing it: an
+/// agent reading a slightly stale value is better off than one told there is
+/// no configuration at all, and the next reload will try again.
+fn refreshPoltergeistConfigText(self: *App, config: *const Config) void {
+    const fmt: configpkg.FileFormatter = .{ .alloc = self.alloc, .config = config };
+
+    var out: std.Io.Writer.Allocating = .init(self.alloc);
+    defer out.deinit();
+    fmt.format(&out.writer) catch |err| {
+        log.warn("poltergeist: could not render the config err={}", .{err});
+        return;
+    };
+
+    const text = out.toOwnedSlice() catch return;
+    if (self.poltergeist_config_text.len > 0) self.alloc.free(self.poltergeist_config_text);
+    self.poltergeist_config_text = text;
+}
+
+/// The configuration, or the lines of it that begin with `key`.
+///
+/// Lines rather than a value, because a key may appear more than once --
+/// `poltergeist-notify` is written once per channel -- and handing back the
+/// first would quietly lose the rest.
+fn poltergeistConfigText(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    key: []const u8,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.poltergeist_config_text.len == 0) return error.NoConfig;
+    if (key.len == 0) return alloc.dupe(u8, self.poltergeist_config_text);
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(alloc);
+
+    var it = std.mem.splitScalar(u8, self.poltergeist_config_text, '\n');
+    while (it.next()) |line| {
+        // The whole key, not a prefix of it: `poltergeist-watch` must not
+        // match `poltergeist-watch-something` that upstream adds later.
+        if (!std.mem.startsWith(u8, line, key)) continue;
+        const rest = line[key.len..];
+        if (!std.mem.startsWith(u8, rest, " =")) continue;
+
+        try out.appendSlice(alloc, line);
+        try out.append(alloc, '\n');
+    }
+
+    if (out.items.len == 0) return error.NoSuchKey;
+    return out.items;
+}
+
 fn poltergeistOpenTerminal(
     ctx: *anyopaque,
     alloc: Allocator,

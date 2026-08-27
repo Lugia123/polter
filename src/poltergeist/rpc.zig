@@ -152,6 +152,13 @@ pub const Method = enum {
     /// would push the same cursor.
     plugin_test,
 
+    /// What the user has configured, or the lines of it for one key.
+    ///
+    /// Read only. The point is that a supervisor can tell what it is working
+    /// under -- the hours it may not disturb anybody, whether it may take
+    /// itself off duty -- rather than discovering it by being refused.
+    config_get,
+
     /// Open a terminal in this window, starting in a chosen directory.
     ///
     /// Separate from `terminal_action` and its `new_tab` because a tab
@@ -228,6 +235,7 @@ pub const Request = union(Method) {
     },
     plugin_test: struct { key: []const u8 },
 
+    config_get: struct { key: []const u8 = "" },
     terminal_open: struct { cwd: []const u8 = "", watch: bool = false },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
@@ -408,6 +416,10 @@ pub fn requiresSupervisor(method: Method) bool {
         // Putting another terminal in the window is arranging the work,
         // which is the supervisor's half of the job.
         .terminal_open,
+
+        // The settings it is working under are the supervisor's business;
+        // a watched terminal has `me` for the parts that concern it.
+        .config_get,
         => true,
     };
 }
@@ -448,6 +460,9 @@ pub fn targetsTerminal(method: Method) bool {
 
         // It makes a terminal rather than naming one.
         .terminal_open,
+
+        // Names a setting, not a terminal.
+        .config_get,
         => false,
 
         // Both name another terminal, so both go through the self-target
@@ -501,6 +516,7 @@ pub fn target(req: Request) ?Bus.Id {
         .stand_down,
         .terminal_actions,
         .terminal_open,
+        .config_get,
         => null,
 
         inline .group_add, .group_remove => |v| v.id,
@@ -644,10 +660,57 @@ test "only what reaches another terminal needs the supervisor" {
             .terminal_action,
             .terminal_actions,
             .terminal_open,
+            .config_get,
             => false,
         };
         try testing.expectEqual(!open, requiresSupervisor(m));
     }
+}
+
+test "a setting can be asked for by name, and a wrong name says so" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    {
+        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .config_get = .{
+            .key = "poltergeist-watch",
+        } });
+        try testing.expectEqualStrings("poltergeist-watch = false\n", res.text);
+    }
+
+    {
+        // No key is everything, which is how an agent finds out what the
+        // names are without being told them.
+        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .config_get = .{} });
+        try testing.expect(std.mem.indexOf(u8, res.text, "poltergeist-notify") != null);
+    }
+
+    {
+        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .config_get = .{
+            .key = "not-a-setting",
+        } });
+        try testing.expectEqualStrings("NoSuchKey", res.failed.code);
+    }
+}
+
+test "a key matches the whole name, not a prefix of it" {
+    // `poltergeist-watch` must not answer with `poltergeist-watch-harder`
+    // if upstream ever adds one: an agent reading a setting it did not ask
+    // for is worse than one told there is no such key.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .config = "poltergeist-watch-harder = true\n" };
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .config_get = .{
+        .key = "poltergeist-watch",
+    } });
+    try testing.expectEqualStrings("NoSuchKey", res.failed.code);
 }
 
 test "opening a terminal names it when it is there, and does not pretend when it is not" {
@@ -811,6 +874,7 @@ test "a watched terminal cannot reach into another terminal's window" {
         .{ .terminal_action = .{ .id = boss, .action = "new_tab" } },
         .terminal_actions,
         .{ .terminal_open = .{ .cwd = "/tmp" } },
+        .{ .config_get = .{} },
     }) |req| {
         const res = try dispatch(arena.allocator(), &b, fake.host(), worker, req);
         try testing.expectEqualStrings("NotPermitted", res.failed.code);
@@ -1648,6 +1712,17 @@ pub const Host = struct {
             submit: bool,
         ) anyerror!void,
 
+        /// The configuration as text, or the lines for one key.
+        ///
+        /// Text rather than a parsed value: the settings have thirty-odd
+        /// types between them and an agent reading `09:00-22:00` needs no
+        /// more structure than the config file itself gives it.
+        configText: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            key: []const u8,
+        ) anyerror![]const u8,
+
         /// Open a terminal in `by`'s window, starting in `cwd`.
         ///
         /// Answers with the new terminal's id when one has appeared by the
@@ -1935,6 +2010,14 @@ pub const Host = struct {
 
     fn performAction(self: Host, id: Bus.Id, action: []const u8) anyerror!void {
         return self.vtable.performAction(self.ctx, id, action);
+    }
+
+    fn configText(
+        self: Host,
+        alloc: std.mem.Allocator,
+        key: []const u8,
+    ) anyerror![]const u8 {
+        return self.vtable.configText(self.ctx, alloc, key);
     }
 
     fn openTerminal(
@@ -2258,6 +2341,32 @@ pub fn dispatch(
             host.sendText(p.id, p.text, p.submit) catch
                 return hostFailure("SendFailed", "could not type into that terminal");
             return .ok;
+        },
+
+        .config_get => |p| {
+            const text = host.configText(alloc, p.key) catch |err| return switch (err) {
+                error.NoSuchKey => hostFailure(
+                    "NoSuchKey",
+                    try std.fmt.allocPrint(
+                        alloc,
+                        "there is no setting called {s}. Ask with no key at all to see " ++
+                            "every one of them.",
+                        .{p.key},
+                    ),
+                ),
+                error.NoConfig => hostFailure(
+                    "NoConfig",
+                    "the configuration has not been read yet.",
+                ),
+                else => hostFailure("ConfigFailed", "could not read the configuration"),
+            };
+
+            // The whole file is tens of kilobytes and there is no cursor to
+            // page it with, so a request for all of it is cut to the same
+            // budget a conversation gets rather than filling somebody's
+            // context with defaults they did not ask about.
+            if (text.len > read_budget_bytes) return .{ .text = text[0..read_budget_bytes] };
+            return .{ .text = text };
         },
 
         .terminal_open => |p| {
@@ -2883,6 +2992,10 @@ const FakeHost = struct {
     open_result: ?Bus.Id = null,
     open_error: ?anyerror = null,
 
+    /// What the fake calls its configuration.
+    config: []const u8 = "poltergeist-watch = false\npoltergeist-notify = feishu\n",
+    config_error: ?anyerror = null,
+
     /// What `notices` hands back, and how many times it was asked.
     notices: []const u8 = "",
     drained: usize = 0,
@@ -2936,6 +3049,7 @@ const FakeHost = struct {
             .sendText = send,
             .performAction = performAction,
             .openTerminal = openTerminal,
+            .configText = configText,
             .quietMs = quietMs,
             .openTerminals = openTerminals,
             .setWatching = setWatching,
@@ -3237,6 +3351,27 @@ const FakeHost = struct {
     ) anyerror![]const Place {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return alloc.dupe(Place, self.open);
+    }
+
+    fn configText(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        key: []const u8,
+    ) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.config_error) |err| return err;
+        if (key.len == 0) return alloc.dupe(u8, self.config);
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        var it = std.mem.splitScalar(u8, self.config, '\n');
+        while (it.next()) |line| {
+            if (!std.mem.startsWith(u8, line, key)) continue;
+            if (!std.mem.startsWith(u8, line[key.len..], " =")) continue;
+            try out.appendSlice(alloc, line);
+            try out.append(alloc, '\n');
+        }
+        if (out.items.len == 0) return error.NoSuchKey;
+        return out.items;
     }
 
     fn openTerminal(

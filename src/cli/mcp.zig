@@ -359,6 +359,19 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "config_get",
+        .description = "What the user has configured. Give a key to see just that setting " ++
+            "-- `poltergeist-notice-interval`, `poltergeist-notify-window`, " ++
+            "`poltergeist-supervisor-stand-down` -- or no key at all to see everything " ++
+            "(long, and cut off at the same budget a conversation gets). Read only; " ++
+            "changing settings is the user's. Worth reading before you are refused " ++
+            "something: the hours you may not disturb anybody, and whether you may take " ++
+            "yourself off duty, are both in here. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"key":{"type":"string","description":"Omit for all of them"}}}
+        ,
+    },
+    .{
         .name = "terminal_open",
         .description = "Open a terminal in this window, starting in a directory you " ++
             "choose. Use this rather than terminal_action(new_tab): a tab opened that way " ++
