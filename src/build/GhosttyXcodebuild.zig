@@ -3,6 +3,7 @@ const Ghostty = @This();
 const std = @import("std");
 const builtin = @import("builtin");
 const RunStep = std.Build.Step.Run;
+const PolterVersion = @import("PolterVersion.zig");
 const Config = @import("Config.zig");
 const Docs = @import("GhosttyDocs.zig");
 const I18n = @import("GhosttyI18n.zig");
@@ -75,6 +76,21 @@ pub fn init(
             xc_config,
         });
 
+        // Polter's own version, not Ghostty's. Passed as build settings
+        // rather than written into the project file so that the number
+        // follows the repository -- the project file would have to be
+        // edited, and committed, on every single commit.
+        //
+        // `POLTER_COMMIT` reaches the bundle through `$(POLTER_COMMIT)` in
+        // the Info.plist. Empty is fine and means the About window leaves
+        // the row out.
+        const vsn = PolterVersion.detect(b);
+        step.addArgs(&.{
+            b.fmt("MARKETING_VERSION={s}", .{vsn.string}),
+            b.fmt("CURRENT_PROJECT_VERSION={d}", .{vsn.count}),
+            b.fmt("POLTER_COMMIT={s}", .{vsn.commit}),
+        });
+
         // If we have a specific architecture, we need to pass it
         // to xcodebuild.
         if (xc_arch) |arch| step.addArgs(&.{ "-arch", arch });
@@ -143,11 +159,15 @@ pub fn init(
         disable_save_state.expectExitCode(0);
         disable_save_state.step.dependOn(&build.step);
 
-        const open = RunStep.create(b, "run Ghostty app");
+        const open = RunStep.create(b, "run Polter app");
         open.has_side_effects = true;
         open.cwd = b.path("");
+
+        // The binary is named for the product. This said `ghostty` until
+        // the rename, which made `zig build run` fail with a path that does
+        // not exist -- silently, because nobody runs it on macOS.
         open.addArgs(&.{b.fmt(
-            "{s}/Contents/MacOS/ghostty",
+            "{s}/Contents/MacOS/polter",
             .{app_path},
         )});
 

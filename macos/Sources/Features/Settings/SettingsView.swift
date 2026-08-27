@@ -6,7 +6,13 @@ struct SettingsView: View {
 
     var body: some View {
         HStack {
-            Image("AppIconImage")
+            // The running application's icon, not the `AppIconImage` asset.
+            // That asset is still upstream's ghost -- it came in with
+            // "New Ghostty icon" and was never replaced -- so this window
+            // was showing Ghostty's icon inside Polter. Asking the running
+            // app means there is one source of truth and nothing to keep in
+            // step by hand.
+            ghosttyIconImage()
                 .resizable()
                 .scaledToFit()
                 .frame(width: 128, height: 128)

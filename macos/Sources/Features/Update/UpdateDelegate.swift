@@ -7,13 +7,21 @@ extension UpdateDriver: SPUUpdaterDelegate {
             return nil
         }
 
-        // Sparkle supports a native concept of "channels" but it requires that
-        // you share a single appcast file. We don't want to do that so we
-        // do this instead.
-        switch appDelegate.ghostty.config.autoUpdateChannel {
-        case .tip: return "https://tip.files.ghostty.org/appcast.xml"
-        case .stable: return "https://release.files.ghostty.org/appcast.xml"
-        }
+        // **Polter has no update feed, and must not borrow Ghostty's.**
+        //
+        // These two URLs serve Ghostty. Sparkle compares versions and
+        // installs what it finds, so pointing Polter at them means every
+        // Ghostty release looks like an upgrade -- especially now that this
+        // build calls itself 0.1.x -- and accepting one would replace Polter
+        // with a different program, silently, under `auto-update = download`.
+        // The user asked for a terminal that minds their agents and would
+        // get one that has never heard of them.
+        //
+        // Returning nil is Sparkle's way of saying there is nothing to
+        // check. When Polter publishes its own appcast this is where its
+        // URL goes; until then the honest answer is none.
+        _ = appDelegate
+        return nil
     }
 
     /// Called when an update is scheduled to install silently,

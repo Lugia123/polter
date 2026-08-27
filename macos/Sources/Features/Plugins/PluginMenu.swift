@@ -43,9 +43,16 @@ final class PluginMenu: NSObject, NSMenuDelegate {
         for plugin in plugins {
             let settings = PluginSettings.load(key: plugin.key)
 
-            let item = NSMenuItem(title: plugin.name, action: nil, keyEquivalent: "")
+            // What it is for, beside its name. Two kinds are installed by
+            // default and their names do not say which is which -- and one
+            // of them, once on, is a process that stays running.
+            let item = NSMenuItem(
+                title: "\(plugin.name) — \(plugin.kind.summary)",
+                action: nil,
+                keyEquivalent: "")
+
             // The tick is on the plugin itself rather than on a line inside
-            // it: whether notifications go out is the thing you want to see
+            // it: whether it is doing anything is the thing you want to see
             // without opening anything.
             item.state = settings.enabled ? .on : .off
             item.submenu = submenu(for: plugin, settings: settings)

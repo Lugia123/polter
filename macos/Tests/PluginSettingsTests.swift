@@ -46,7 +46,8 @@ struct PluginSettingsTests {
             directory: URL(fileURLWithPath: "/tmp"),
             parameters: [
                 .init(name: "url", title: "Where to POST", help: "", required: true),
-            ])
+            ],
+            kind: .notify)
 
         #expect(!PluginSettings(enabled: true, params: [:]).isComplete(for: plugin))
         #expect(!PluginSettings(enabled: true, params: ["url": "   "]).isComplete(for: plugin))

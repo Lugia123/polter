@@ -1,7 +1,7 @@
 import Foundation
 import OSLog
 
-/// One notification plugin as it appears to the settings UI.
+/// One plugin as it appears to the settings UI.
 ///
 /// The core reads these same files for itself (`src/poltergeist/Plugin.zig`);
 /// this is a second reader, not a second source of truth. Nothing here is
@@ -20,7 +20,28 @@ struct Plugin: Identifiable {
     /// What it needs configured, straight out of its `plugin.json`.
     let parameters: [Parameter]
 
+    /// What the plugin is for. The two differ in how they run, and the
+    /// difference is worth showing: a notification plugin is started for one
+    /// message and is gone, an archive plugin is started once and stays.
+    let kind: Kind
+
     var id: String { key }
+
+    enum Kind: String {
+        case notify
+        case archive
+
+        /// Said in the list, because "switched on" means something different
+        /// for each: a notification channel that has never been used looks
+        /// exactly like one that is broken, while an archive that is on is a
+        /// process that is running right now.
+        var summary: String {
+            switch self {
+            case .notify: return "Notifies you"
+            case .archive: return "Keeps the conversations"
+            }
+        }
+    }
 
     /// One configurable value, described by the plugin's own JSON Schema.
     struct Parameter: Identifiable {
@@ -124,16 +145,20 @@ struct PluginCatalog {
               let key = root["key"] as? String
         else { return nil }
 
-        // Only notification plugins for now. A manifest declaring a kind this
-        // build does not know is skipped rather than shown as something the
-        // user could configure and then find does nothing.
-        guard (root["kind"] as? String) == "notify" else { return nil }
+        // A manifest declaring a kind this build does not know is skipped
+        // rather than shown as something the user could configure and then
+        // find does nothing. This said `== "notify"` until `archive` existed
+        // on the core side, which is why `chat-archive` shipped inside the
+        // bundle and never appeared in the list.
+        guard let kind = (root["kind"] as? String).flatMap(Plugin.Kind.init(rawValue:))
+        else { return nil }
 
         return Plugin(
             key: key,
             name: (root["name"] as? String) ?? key,
             directory: directory,
-            parameters: parameters(from: root["params"] as? [String: Any]))
+            parameters: parameters(from: root["params"] as? [String: Any]),
+            kind: kind)
     }
 
     private static func parameters(from schema: [String: Any]?) -> [Plugin.Parameter] {

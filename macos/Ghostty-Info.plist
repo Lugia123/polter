@@ -46,10 +46,8 @@
 			</array>
 		</dict>
 	</array>
-	<key>GhosttyBuild</key>
-	<string></string>
-	<key>GhosttyCommit</key>
-	<string></string>
+	<key>PolterCommit</key>
+	<string>$(POLTER_COMMIT)</string>
 	<key>LSEnvironment</key>
 	<dict>
 		<key>GHOSTTY_MAC_LAUNCH_SOURCE</key>

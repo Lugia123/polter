@@ -24,8 +24,28 @@ struct PluginSettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(plugin.name).font(.title2)
 
+            // The two kinds are switched on for different reasons and stop
+            // at different moments, so the same sentence would be wrong for
+            // one of them.
             Toggle(isOn: $settings.enabled) {
-                Text("Send notifications through this plugin")
+                switch plugin.kind {
+                case .notify:
+                    Text("Send notifications through this plugin")
+                case .archive:
+                    Text("Copy the conversations somewhere that outlives this machine")
+                }
+            }
+
+            if plugin.kind == .archive {
+                Text("This one runs for as long as Polter does, following the "
+                     + "chat log and copying it onward. The log on disk stays "
+                     + "the record either way: a plugin that stops, or cannot "
+                     + "reach where it writes, catches up afterwards rather "
+                     + "than losing anything. Changing this takes effect the "
+                     + "next time Polter starts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if plugin.parameters.isEmpty {
@@ -44,8 +64,8 @@ struct PluginSettingsView: View {
             // documentation nobody has open while typing a password in.
             Text("A value may be a reference instead of the thing itself: "
                  + "env:NAME, file:/path, keychain:service/account, or "
-                 + "cmd:… for a password manager. It is resolved when the "
-                 + "notification is sent, and never stored here.")
+                 + "cmd:… for a password manager. It is resolved at the "
+                 + "moment the plugin is called, and never stored here.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

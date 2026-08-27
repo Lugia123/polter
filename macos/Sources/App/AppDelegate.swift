@@ -1095,7 +1095,12 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func showHelp(_ sender: Any) {
-        guard let url = URL(string: "https://ghostty.org/docs") else { return }
+        // Polter's own docs. Upstream's describe a terminal that has no
+        // supervisors, no groups and no plugins, which is most of what
+        // somebody opening Help here is looking for.
+        guard let url = URL(
+            string: "https://github.com/Lugia123/polter/tree/main/docs/poltergeist"
+        ) else { return }
         NSWorkspace.shared.open(url)
     }
 

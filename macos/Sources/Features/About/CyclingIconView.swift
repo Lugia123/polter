@@ -2,7 +2,13 @@ import SwiftUI
 import GhosttyKit
 import Combine
 
-/// A view that cycles through Ghostty's official icon variants.
+/// The application's icon, in the About window.
+///
+/// Named for what it used to do: upstream cycles Ghostty's official icon
+/// variants here. Polter has one icon, so `AboutViewModel.icons` is empty
+/// and this shows the icon the application is actually running under. The
+/// cycling is left in place rather than deleted, because a set of Polter
+/// variants would only have to be listed to bring it back.
 struct CyclingIconView: View {
     @EnvironmentObject var viewModel: AboutViewModel
 
@@ -16,7 +22,11 @@ struct CyclingIconView: View {
         .onHover { hovering in
             viewModel.isHovering = hovering
         }
+        // Both do nothing while there is one icon, and neither is worth
+        // showing as a control that does not respond: a tap that never
+        // changes anything reads as a bug.
         .onTapGesture {
+            guard viewModel.currentIcon != nil else { return }
             viewModel.advanceToNextIcon()
         }
         .contextMenu {

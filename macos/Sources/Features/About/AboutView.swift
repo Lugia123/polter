@@ -3,12 +3,16 @@ import SwiftUI
 struct AboutView: View {
     @Environment(\.openURL) var openURL
 
-    private let githubURL = URL(string: "https://github.com/ghostty-org/ghostty")
-    private let docsURL = URL(string: "https://ghostty.org/docs")
+    // Polter's own, not upstream's. Sending somebody to ghostty-org from
+    // this window offers them an issue tracker that has never heard of the
+    // thing they are looking at.
+    private let githubURL = URL(string: "https://github.com/Lugia123/polter")
+    private let docsURL = URL(string: "https://github.com/Lugia123/polter/tree/main/docs/poltergeist")
+    private let upstreamURL = URL(string: "https://github.com/ghostty-org/ghostty")
 
     /// Read the commit from the bundle.
     private var build: String? { Bundle.main.infoDictionary?["CFBundleVersion"] as? String }
-    private var commit: String? { Bundle.main.infoDictionary?["GhosttyCommit"] as? String }
+    private var commit: String? { Bundle.main.infoDictionary?["PolterCommit"] as? String }
     private var version: String? { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String }
 
     private enum VersionConfig {
@@ -30,15 +34,10 @@ struct AboutView: View {
             self = .other(version)
         }
 
-        var url: URL? {
-            switch self {
-            case .stable(let version):
-                let slug = version.replacingOccurrences(of: ".", with: "-")
-                return URL(string: "https://ghostty.org/docs/install/release-notes/\(slug)")
-            default:
-                return nil
-            }
-        }
+        // No release notes to link to. Upstream's would describe a
+        // different program, and a version row that quietly opens somebody
+        // else's changelog is worse than one that is not a link at all.
+        var url: URL? { nil }
     }
 
     private var versionConfig: VersionConfig { VersionConfig(version: version) }
@@ -78,10 +77,10 @@ struct AboutView: View {
 
             VStack(alignment: .center, spacing: 32) {
                 VStack(alignment: .center, spacing: 8) {
-                    Text("Ghostty")
+                    Text("Polter")
                         .bold()
                         .font(.title)
-                    Text("Fast, native, feature-rich terminal \nemulator pushing modern features.")
+                    Text("A terminal that minds the agents running in it. \nBuilt on Ghostty.")
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .font(.caption)
@@ -119,6 +118,11 @@ struct AboutView: View {
                     }
                     if let url = githubURL {
                         Button("GitHub") {
+                            openURL(url)
+                        }
+                    }
+                    if let url = upstreamURL {
+                        Button("Ghostty") {
                             openURL(url)
                         }
                     }
