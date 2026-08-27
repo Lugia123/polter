@@ -185,6 +185,12 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         } },
 
         .stand_down => .stand_down,
+        .terminal_actions => .terminal_actions,
+
+        .terminal_action => .{ .terminal_action = .{
+            .id = try requireId(params),
+            .action = try requireString(aa, params, "action"),
+        } },
 
         .group_history => .{ .group_history = .{
             .group = try requireString(aa, params, "group"),
@@ -410,6 +416,7 @@ pub const Response = union(enum) {
     groups: []const rpc.ChatGroupInfo,
     members: []const rpc.ChatMember,
     plugins: []const rpc.PluginView,
+    actions: []const rpc.actions.Entry,
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -532,6 +539,27 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.objectField("plugins");
             try s.beginArray();
             for (list) |v| try writePlugin(&s, v);
+            try s.endArray();
+        },
+        .actions => |list| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("actions");
+            try s.beginArray();
+            for (list) |a| {
+                try s.beginObject();
+                try s.objectField("name");
+                try s.write(a.name);
+
+                // Only when it is true. There are 278 of these and most
+                // take nothing, so writing `false` 250 times would be a
+                // quarter of the reply saying nothing.
+                if (a.takes_value) {
+                    try s.objectField("takes_value");
+                    try s.write(true);
+                }
+                try s.endObject();
+            }
             try s.endArray();
         },
         .failed => |f| {

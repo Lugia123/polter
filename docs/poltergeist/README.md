@@ -136,6 +136,7 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | [chatui.md](chatui.md)         | R9         | 群聊与私信界面的承载方式                                  | 原生 UI（参照 command palette）对比 imgui（参照 `src/inspector/Inspector.zig`）    |
 | [plugins.md](plugins.md)       | R3 的一半  | 插件宿主：进程式插件、两种生命周期、凭据、权限声明         | 进程边界换崩溃隔离与语言无关，代价是每次通知一次 fork/exec |
 | [storage.md](storage.md)      | —          | 存档：本地日志是事实来源，插件是它的跟读者              | 常驻进程 + 游标；一个插件多后端；权限声明 |
+| [surface.md](surface.md)      | —          | 菜单栏逐条盘点：哪些该经 MCP 开放给 AI，哪些故意不给    | 判据是「会不会让读到一段文字变成在这台机器上做一件事」 |
 | [tabs.md](tabs.md)             | R10        | tab 合并与状态标记                                        | macOS 用 NSWindow tabbing，GTK 用 libadwaita，两套各写一份                         |
 
 ## 分阶段路线

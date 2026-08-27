@@ -17,6 +17,7 @@ const std = @import("std");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
+pub const actions = @import("actions.zig");
 const secret = @import("secret.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -151,6 +152,19 @@ pub const Method = enum {
     /// would push the same cursor.
     plugin_test,
 
+    /// Do to a terminal what the menu bar does: any of the terminal's own
+    /// keybinding actions, by the name the config file uses.
+    ///
+    /// One tool rather than fifty, because the menu already funnels into one
+    /// dispatcher and this is that dispatcher. An agent and a person
+    /// therefore take the same code path.
+    terminal_action,
+
+    /// Every action `terminal_action` will take, and which of them want a
+    /// value. A tool face that cannot be enumerated is one an agent has to
+    /// guess at.
+    terminal_actions,
+
     /// Stop being a supervisor.
     ///
     /// What a supervisor is left with once the work is done is an empty box
@@ -205,6 +219,9 @@ pub const Request = union(Method) {
         params: []const Plugin.Param = &.{},
     },
     plugin_test: struct { key: []const u8 },
+
+    terminal_action: struct { id: Bus.Id, action: []const u8 },
+    terminal_actions,
 
     stand_down,
 };
@@ -372,6 +389,12 @@ pub fn requiresSupervisor(method: Method) bool {
         // Only a supervisor has anything to stand down from. `Bus` says so
         // again for itself rather than trusting this to have run.
         .stand_down,
+
+        // Reaching into another terminal's window, and reading the list of
+        // ways to do it. A watched terminal has its own terminal and no
+        // business in anybody else's.
+        .terminal_action,
+        .terminal_actions,
         => true,
     };
 }
@@ -406,6 +429,9 @@ pub fn targetsTerminal(method: Method) bool {
 
         // It names the caller, and the caller is not a parameter.
         .stand_down,
+
+        // A catalogue, not an errand.
+        .terminal_actions,
         => false,
 
         // Both name another terminal, so both go through the self-target
@@ -413,6 +439,12 @@ pub fn targetsTerminal(method: Method) bool {
         // a feature.
         .set_watch,
         .set_work_mode,
+        => true,
+
+        // Names a terminal, and unlike the two above there is nothing odd
+        // about naming your own: a supervisor opening a tab or changing its
+        // own font size is an ordinary thing to want.
+        .terminal_action,
         => true,
 
         // These name a terminal to put in or take out of a group. Checked
@@ -451,6 +483,7 @@ pub fn target(req: Request) ?Bus.Id {
         .plugin_configure,
         .plugin_test,
         .stand_down,
+        .terminal_actions,
         => null,
 
         inline .group_add, .group_remove => |v| v.id,
@@ -591,10 +624,106 @@ test "only what reaches another terminal needs the supervisor" {
             .plugin_configure,
             .plugin_test,
             .stand_down,
+            .terminal_action,
+            .terminal_actions,
             => false,
         };
         try testing.expectEqual(!open, requiresSupervisor(m));
     }
+}
+
+test "an action goes through to the terminal exactly as it was written" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_action = .{
+        .id = worker,
+        .action = "goto_split:left",
+    } });
+    try testing.expectEqual(wire.Response.ok, res);
+
+    // Value and all. Splitting it here and rejoining it in the host would
+    // be two chances to get the same string wrong.
+    try testing.expectEqualStrings("goto_split:left", fake.acted.?.action);
+    try testing.expectEqual(worker, fake.acted.?.id);
+}
+
+test "an action nobody has heard of is named as such, not blamed on the terminal" {
+    // Two different mistakes wanting two different answers: a name that
+    // does not exist is the caller's typo, and a terminal that would not do
+    // it is the terminal's business. One message for both sends somebody
+    // looking at the wrong thing.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_action = .{
+        .id = worker,
+        .action = "make_me_a_sandwich",
+    } });
+    try testing.expectEqualStrings("UnknownAction", res.failed.code);
+
+    // And the host was never troubled with it.
+    try testing.expect(fake.acted == null);
+
+    const empty = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_action = .{
+        .id = worker,
+        .action = "",
+    } });
+    try testing.expectEqualStrings("BadParams", empty.failed.code);
+}
+
+test "a known action with an unusable value is the value's fault" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .action_error = error.InvalidAction };
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_action = .{
+        .id = worker,
+        .action = "goto_split:sideways",
+    } });
+    try testing.expectEqualStrings("BadParams", res.failed.code);
+}
+
+test "the actions can be listed, and the list is the union itself" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .terminal_actions);
+    try testing.expectEqual(actions.all.len, res.actions.len);
+
+    // Not a handful somebody typed out. Ninety-two at the time of writing,
+    // against a menu bar of about sixty once its section headings are
+    // dropped -- the vocabulary is a superset of the menu, which is the
+    // whole reason this is one tool and not fifty.
+    try testing.expect(res.actions.len > 50);
+}
+
+test "a watched terminal cannot reach into another terminal's window" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    for ([_]Request{
+        .{ .terminal_action = .{ .id = boss, .action = "new_tab" } },
+        .terminal_actions,
+    }) |req| {
+        const res = try dispatch(arena.allocator(), &b, fake.host(), worker, req);
+        try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    }
+    try testing.expect(fake.acted == null);
 }
 
 test "standing down is refused until every terminal has been let go" {
@@ -1427,6 +1556,19 @@ pub const Host = struct {
             submit: bool,
         ) anyerror!void,
 
+        /// Do one of the terminal's own keybinding actions to it.
+        ///
+        /// `action` is the string the config file uses, value and all --
+        /// `new_tab`, `goto_split:left`. Parsing it belongs to the host,
+        /// which is the side that has the parser; this surface only checks
+        /// that the name is one that exists, so that a typo comes back as a
+        /// typo rather than as "the terminal refused".
+        performAction: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+            action: []const u8,
+        ) anyerror!void,
+
         /// How long that terminal's screen has been unchanged.
         quietMs: *const fn (ctx: *anyopaque, id: Bus.Id) u64,
 
@@ -1683,6 +1825,10 @@ pub const Host = struct {
 
     fn sendText(self: Host, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
         return self.vtable.sendText(self.ctx, id, text, submit);
+    }
+
+    fn performAction(self: Host, id: Bus.Id, action: []const u8) anyerror!void {
+        return self.vtable.performAction(self.ctx, id, action);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -1998,6 +2144,51 @@ pub fn dispatch(
                 return hostFailure("SendFailed", "could not type into that terminal");
             return .ok;
         },
+
+        .terminal_action => |p| {
+            if (p.action.len == 0) return hostFailure(
+                "BadParams",
+                "an action is needed; terminal_actions lists them.",
+            );
+
+            // Checked here so an unknown name is answered as an unknown
+            // name. Left to the parser it would come back as a refusal from
+            // the terminal, which reads as "it would not do that" rather
+            // than "there is no such thing".
+            if (!actions.known(actions.nameOf(p.action))) return hostFailure(
+                "UnknownAction",
+                try std.fmt.allocPrint(
+                    alloc,
+                    "there is no action called {s}. terminal_actions lists them, " ++
+                        "and the names are the ones the config file uses.",
+                    .{actions.nameOf(p.action)},
+                ),
+            );
+
+            host.performAction(p.id, p.action) catch |err| return switch (err) {
+                error.UnknownTerminal => failure(error.UnknownTerminal),
+
+                // The name exists, so this is the value: `goto_split` with
+                // no direction, `increase_font_size:lots`.
+                error.InvalidAction => hostFailure(
+                    "BadParams",
+                    try std.fmt.allocPrint(
+                        alloc,
+                        "{s} did not parse. Actions take their value after a colon, " ++
+                            "written the way the config file writes it.",
+                        .{p.action},
+                    ),
+                ),
+
+                else => hostFailure(
+                    "ActionFailed",
+                    "the terminal would not do that just now",
+                ),
+            };
+            return .ok;
+        },
+
+        .terminal_actions => return .{ .actions = actions.all },
 
         .clock_out => |p| {
             bus.clockOff(p.id, .supervisor) catch |err| return switch (err) {
@@ -2537,6 +2728,10 @@ const FakeHost = struct {
     /// Which terminal told the host it had stood down, if any did.
     stood_down: ?Bus.Id = null,
 
+    /// The last action asked for, and what the fake does with it.
+    acted: ?struct { id: Bus.Id, action: []const u8 } = null,
+    action_error: ?anyerror = null,
+
     /// What `notices` hands back, and how many times it was asked.
     notices: []const u8 = "",
     drained: usize = 0,
@@ -2588,6 +2783,7 @@ const FakeHost = struct {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
             .sendText = send,
+            .performAction = performAction,
             .quietMs = quietMs,
             .openTerminals = openTerminals,
             .setWatching = setWatching,
@@ -2889,6 +3085,12 @@ const FakeHost = struct {
     ) anyerror![]const Place {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return alloc.dupe(Place, self.open);
+    }
+
+    fn performAction(ctx: *anyopaque, id: Bus.Id, action: []const u8) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.action_error) |err| return err;
+        self.acted = .{ .id = id, .action = action };
     }
 
     fn stoodDown(ctx: *anyopaque, id: Bus.Id) void {

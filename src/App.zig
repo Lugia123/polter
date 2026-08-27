@@ -1188,6 +1188,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
     return .{ .ctx = self, .vtable = &.{
         .readTerminal = poltergeistRead,
         .sendText = poltergeistSend,
+        .performAction = poltergeistPerformAction,
         .quietMs = poltergeistQuiet,
         .openTerminals = poltergeistOpenTerminals,
         .setWatching = poltergeistSetWatching,
@@ -1649,6 +1650,36 @@ fn poltergeistSend(
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
     try surface.typePoltergeistText(text, submit);
+}
+
+/// Do one of the terminal's own keybinding actions to it.
+///
+/// The same two calls the menu bar makes -- parse the string, hand it to
+/// `performBindingAction` -- so an agent asking for `new_tab` and a person
+/// pressing the key for it end up in exactly the same place. There is no
+/// second implementation to drift.
+///
+/// The surface must be found before the action is parsed: an id that names
+/// nothing is a different mistake from an action that does not parse, and
+/// the two want different answers from the agent that made them.
+fn poltergeistPerformAction(
+    ctx: *anyopaque,
+    id: poltergeistpkg.Bus.Id,
+    action: []const u8,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
+
+    const parsed = input.Binding.Action.parse(action) catch |err| {
+        log.warn("poltergeist: action {s} would not parse err={}", .{ action, err });
+        return error.InvalidAction;
+    };
+
+    // The return says whether the terminal took it. False is not a failure
+    // of ours -- `toggle_split_zoom` on a window with no splits does
+    // nothing, and rightly -- but the agent asked for something to happen,
+    // so it is told that nothing did.
+    if (!(try surface.performBindingAction(parsed))) return error.ActionIgnored;
 }
 
 fn poltergeistSetWatching(

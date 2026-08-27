@@ -225,6 +225,34 @@ What is deliberately not in the notes: how long anything had been quiet,
 and the round counts. Those describe a moment that has passed. Your
 counting starts again from zero, which is the honest place to start.
 
+## The terminal itself does things, and you can ask it to
+
+Everything on Polter's menu bar is a keybinding action, and `terminal_action`
+takes any of them by the name the config file uses. `terminal_actions` lists
+them; read that rather than guessing, because a name that does not exist comes
+back as `UnknownAction` -- your typo, not the terminal refusing.
+
+The ones that come up in this job:
+
+- **`new_tab`** -- another terminal to put work in. **It opens in the same
+  directory as the terminal you asked from**, so ask from one that is already
+  where you want to be, or `terminal_send` a `cd` afterwards. The new terminal
+  is not yours until you `set_watch` it.
+- **`close_surface`** -- shuts one. Be slow with this. A terminal with
+  unsaved work in it looks exactly like an idle one, and you cannot tell
+  which you are looking at from a screenful of text.
+- **`goto_split:left`**, **`new_split:right`**, **`toggle_split_zoom`** --
+  layout. The person at the keyboard arranged what they are looking at;
+  rearranging it while they are away is not a favour.
+- **`copy_to_clipboard`**, **`paste_from_clipboard`** -- the clipboard is
+  shared with the person. Whatever you put there is what their next paste
+  produces, in whatever window they happen to be in.
+
+None of this is forbidden. It is all one keystroke away for the person sitting
+there, and Polter is a terminal for agents to work in. But you are acting in
+somebody's working session while they are not watching, so the question before
+each one is the same: **would they have pressed this key?**
+
 ## Finishing, and how to stop being asked
 
 Being a supervisor costs you an interruption every notice interval for as

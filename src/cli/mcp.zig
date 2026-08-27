@@ -359,6 +359,29 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "terminal_action",
+        .description = "Do to a terminal what the menu bar does. `action` is a Ghostty " ++
+            "keybinding action, written exactly as a config file writes it: `new_tab`, " ++
+            "`close_surface`, `toggle_fullscreen`, `copy_to_clipboard`, " ++
+            "`increase_font_size:1`, `goto_split:left`, `new_split:right`, " ++
+            "`inspector:toggle`. Everything on the menu bar is one of these, and so is " ++
+            "everything else a key could be bound to. Call terminal_actions for the list " ++
+            "-- guessing at a name gets you UnknownAction, which is a typo, not a refusal " ++
+            "by the terminal. A new tab opens in the same directory as the terminal you " ++
+            "asked from, which is worth thinking about before you ask. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"action":{"type":"string"}},"required":["id","action"]}
+        ,
+    },
+    .{
+        .name = "terminal_actions",
+        .description = "Every action terminal_action will take, and which of them want a " ++
+            "value after a colon. Read this before guessing at a name. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{}}
+        ,
+    },
+    .{
         .name = "stand_down",
         .description = "Stop being a supervisor, once the work you were minding is " ++
             "finished. Being one costs you an interruption every notice interval for as " ++

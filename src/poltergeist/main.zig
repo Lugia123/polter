@@ -13,6 +13,7 @@
 pub const Archive = @import("Archive.zig");
 pub const Bus = @import("Bus.zig");
 pub const Chat = @import("Chat.zig");
+pub const actions = @import("actions.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const Cursor = @import("Cursor.zig");
 pub const Fingerprint = @import("Fingerprint.zig");
@@ -42,6 +43,7 @@ pub const screen = @import("screen.zig");
 // Adding an import above means adding a line here.
 test {
     _ = @import("server_test.zig");
+    _ = actions;
     _ = Archive;
     _ = Bus;
     _ = Chat;
