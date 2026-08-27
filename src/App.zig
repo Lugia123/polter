@@ -1191,6 +1191,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .performAction = poltergeistPerformAction,
         .quietMs = poltergeistQuiet,
         .openTerminals = poltergeistOpenTerminals,
+        .openTerminal = poltergeistOpenTerminal,
         .setWatching = poltergeistSetWatching,
         .stoodDown = poltergeistStoodDown,
         .drainNotices = poltergeistDrainNotices,
@@ -1729,6 +1730,66 @@ fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
 /// The chat interface is left out: it is a window onto the conversation,
 /// not a terminal anybody could resume, and listing it would put a thing
 /// the supervisor cannot act on into the list it uses to decide.
+/// Open a terminal in the same window, starting in `cwd`.
+///
+/// The tab is opened from the caller's own terminal, so it lands in the
+/// caller's window -- which is the only window Poltergeist has any view of.
+///
+/// **The id comes back by looking, not by being told.** Creating a surface
+/// goes out through the apprt and comes back in when the runtime gets round
+/// to it; on macOS that is a notification, delivered synchronously today and
+/// under no obligation to stay that way. So the surfaces are counted before
+/// and after, and if a new one has appeared by the time the action returns it
+/// is named. If none has, that is not a failure -- the tab is still opening
+/// -- and the caller is told to go and look. Waiting on it here would park
+/// the socket thread on something the UI thread has to finish.
+fn poltergeistOpenTerminal(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    cwd: []const u8,
+    by: poltergeistpkg.Bus.Id,
+) anyerror!?poltergeistpkg.Bus.Id {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(by) orelse return error.UnknownTerminal;
+
+    // Checked here so a directory that is not there is refused rather than
+    // quietly ignored. The apprt logs and carries on -- which is right for a
+    // config file read at startup and wrong for a request somebody is
+    // waiting on an answer to.
+    var dir_z: [:0]const u8 = "";
+    if (cwd.len > 0) {
+        if (!std.fs.path.isAbsolute(cwd)) return error.NotAbsolute;
+
+        var dir = std.Io.Dir.openDirAbsolute(global.io(), cwd, .{}) catch
+            return error.NoSuchDirectory;
+        defer dir.close(global.io());
+
+        const stat = dir.stat(global.io()) catch return error.NoSuchDirectory;
+        if (stat.kind != .directory) return error.NotADirectory;
+
+        dir_z = try alloc.dupeZ(u8, cwd);
+    }
+
+    var before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
+    defer before.deinit(alloc);
+    for (self.surfaces.items) |v| try before.put(alloc, v.core().id, {});
+
+    const rt_app = self.poltergeist_rt_app orelse return error.NoRuntime;
+    _ = rt_app.performAction(
+        .{ .surface = surface },
+        .new_tab,
+        .{ .working_directory = dir_z },
+    ) catch return error.OpenFailed;
+
+    for (self.surfaces.items) |v| {
+        const id = v.core().id;
+        if (before.contains(id)) continue;
+        if (self.isChatSurface(id)) continue;
+        return id;
+    }
+    return null;
+}
+
 fn poltergeistOpenTerminals(
     ctx: *anyopaque,
     alloc: Allocator,

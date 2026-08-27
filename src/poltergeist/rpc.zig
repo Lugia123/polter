@@ -152,6 +152,14 @@ pub const Method = enum {
     /// would push the same cursor.
     plugin_test,
 
+    /// Open a terminal in this window, starting in a chosen directory.
+    ///
+    /// Separate from `terminal_action` and its `new_tab` because a tab
+    /// opened that way starts where the terminal that opened it is standing.
+    /// Four pieces of work in four directories cannot be set up that way at
+    /// all.
+    terminal_open,
+
     /// Do to a terminal what the menu bar does: any of the terminal's own
     /// keybinding actions, by the name the config file uses.
     ///
@@ -220,6 +228,7 @@ pub const Request = union(Method) {
     },
     plugin_test: struct { key: []const u8 },
 
+    terminal_open: struct { cwd: []const u8 = "", watch: bool = false },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
 
@@ -395,6 +404,10 @@ pub fn requiresSupervisor(method: Method) bool {
         // business in anybody else's.
         .terminal_action,
         .terminal_actions,
+
+        // Putting another terminal in the window is arranging the work,
+        // which is the supervisor's half of the job.
+        .terminal_open,
         => true,
     };
 }
@@ -432,6 +445,9 @@ pub fn targetsTerminal(method: Method) bool {
 
         // A catalogue, not an errand.
         .terminal_actions,
+
+        // It makes a terminal rather than naming one.
+        .terminal_open,
         => false,
 
         // Both name another terminal, so both go through the self-target
@@ -484,6 +500,7 @@ pub fn target(req: Request) ?Bus.Id {
         .plugin_test,
         .stand_down,
         .terminal_actions,
+        .terminal_open,
         => null,
 
         inline .group_add, .group_remove => |v| v.id,
@@ -626,10 +643,84 @@ test "only what reaches another terminal needs the supervisor" {
             .stand_down,
             .terminal_action,
             .terminal_actions,
+            .terminal_open,
             => false,
         };
         try testing.expectEqual(!open, requiresSupervisor(m));
     }
+}
+
+test "opening a terminal names it when it is there, and does not pretend when it is not" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    {
+        // The runtime got to it before the call returned.
+        var fake: FakeHost = .{ .open_result = 0x3333 };
+        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .terminal_open = .{
+            .cwd = "/tmp/work",
+        } });
+        try testing.expectEqual(@as(?Bus.Id, 0x3333), res.opened.id);
+        try testing.expectEqualStrings("/tmp/work", fake.opened.?.cwd);
+
+        // Opened from the caller's own terminal, which is what puts it in
+        // the caller's window.
+        try testing.expectEqual(boss, fake.opened.?.by);
+
+        // Not asked for, so not claimed.
+        try testing.expect(!res.opened.watching);
+        try testing.expect(!b.minds(boss, 0x3333));
+    }
+
+    {
+        // It has not appeared yet. Null rather than an error: the tab is on
+        // its way, and saying it failed would have the caller open a second.
+        var fake: FakeHost = .{ .open_result = null };
+        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .terminal_open = .{} });
+        try testing.expect(res.opened.id == null);
+        try testing.expect(!res.opened.watching);
+    }
+}
+
+test "a terminal opened to be minded is claimed on the way" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open_result = 0x4444 };
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_open = .{
+        .cwd = "/tmp/work",
+        .watch = true,
+    } });
+
+    try testing.expect(res.opened.watching);
+    try testing.expect(b.minds(boss, 0x4444));
+}
+
+test "a directory that is not there stops the terminal being opened" {
+    // Refused rather than opened somewhere else in silence: a terminal that
+    // quietly started in the wrong place is one the supervisor will hand
+    // work to believing it is somewhere it is not.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var missing: FakeHost = .{ .open_error = error.NoSuchDirectory };
+    const gone = try dispatch(arena.allocator(), &b, missing.host(), boss, .{ .terminal_open = .{
+        .cwd = "/no/such/place",
+    } });
+    try testing.expectEqualStrings("NoSuchDirectory", gone.failed.code);
+
+    var relative: FakeHost = .{ .open_error = error.NotAbsolute };
+    const rel = try dispatch(arena.allocator(), &b, relative.host(), boss, .{ .terminal_open = .{
+        .cwd = "work",
+    } });
+    try testing.expectEqualStrings("BadParams", rel.failed.code);
 }
 
 test "an action goes through to the terminal exactly as it was written" {
@@ -719,6 +810,7 @@ test "a watched terminal cannot reach into another terminal's window" {
     for ([_]Request{
         .{ .terminal_action = .{ .id = boss, .action = "new_tab" } },
         .terminal_actions,
+        .{ .terminal_open = .{ .cwd = "/tmp" } },
     }) |req| {
         const res = try dispatch(arena.allocator(), &b, fake.host(), worker, req);
         try testing.expectEqualStrings("NotPermitted", res.failed.code);
@@ -1556,6 +1648,20 @@ pub const Host = struct {
             submit: bool,
         ) anyerror!void,
 
+        /// Open a terminal in `by`'s window, starting in `cwd`.
+        ///
+        /// Answers with the new terminal's id when one has appeared by the
+        /// time it returns, and null when the runtime has not got to it yet.
+        /// Null is not a failure: the tab is on its way and `terminal_list`
+        /// will have it. Blocking here would park this thread on work the
+        /// UI thread has to do.
+        openTerminal: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            cwd: []const u8,
+            by: Bus.Id,
+        ) anyerror!?Bus.Id,
+
         /// Do one of the terminal's own keybinding actions to it.
         ///
         /// `action` is the string the config file uses, value and all --
@@ -1829,6 +1935,15 @@ pub const Host = struct {
 
     fn performAction(self: Host, id: Bus.Id, action: []const u8) anyerror!void {
         return self.vtable.performAction(self.ctx, id, action);
+    }
+
+    fn openTerminal(
+        self: Host,
+        alloc: std.mem.Allocator,
+        cwd: []const u8,
+        by: Bus.Id,
+    ) anyerror!?Bus.Id {
+        return self.vtable.openTerminal(self.ctx, alloc, cwd, by);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -2143,6 +2258,36 @@ pub fn dispatch(
             host.sendText(p.id, p.text, p.submit) catch
                 return hostFailure("SendFailed", "could not type into that terminal");
             return .ok;
+        },
+
+        .terminal_open => |p| {
+            const opened = host.openTerminal(alloc, p.cwd, caller) catch |err| return switch (err) {
+                error.NotAbsolute => hostFailure(
+                    "BadParams",
+                    "a working directory has to be an absolute path.",
+                ),
+                error.NoSuchDirectory, error.NotADirectory => hostFailure(
+                    "NoSuchDirectory",
+                    "there is no directory there. A terminal opened into nowhere would " ++
+                        "start somewhere else without saying so, which is worse than not " ++
+                        "opening it.",
+                ),
+                else => hostFailure("OpenFailed", "could not open a terminal"),
+            };
+
+            // Claimed straight away when asked for, because a supervisor
+            // opening a terminal has almost always opened it to mind it, and
+            // the alternative is a second call that can fail on its own.
+            var watching = false;
+            if (opened) |id| {
+                if (p.watch) {
+                    bus.watch(id, caller) catch {};
+                    host.setWatching(id, true) catch {};
+                    watching = bus.minds(caller, id);
+                }
+            }
+
+            return .{ .opened = .{ .id = opened, .watching = watching } };
         },
 
         .terminal_action => |p| {
@@ -2732,6 +2877,12 @@ const FakeHost = struct {
     acted: ?struct { id: Bus.Id, action: []const u8 } = null,
     action_error: ?anyerror = null,
 
+    /// The last terminal asked for, what the fake hands back, and how it
+    /// can be made to refuse.
+    opened: ?struct { cwd: []const u8, by: Bus.Id } = null,
+    open_result: ?Bus.Id = null,
+    open_error: ?anyerror = null,
+
     /// What `notices` hands back, and how many times it was asked.
     notices: []const u8 = "",
     drained: usize = 0,
@@ -2784,6 +2935,7 @@ const FakeHost = struct {
             .readTerminal = read,
             .sendText = send,
             .performAction = performAction,
+            .openTerminal = openTerminal,
             .quietMs = quietMs,
             .openTerminals = openTerminals,
             .setWatching = setWatching,
@@ -3085,6 +3237,18 @@ const FakeHost = struct {
     ) anyerror![]const Place {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return alloc.dupe(Place, self.open);
+    }
+
+    fn openTerminal(
+        ctx: *anyopaque,
+        _: std.mem.Allocator,
+        cwd: []const u8,
+        by: Bus.Id,
+    ) anyerror!?Bus.Id {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.open_error) |err| return err;
+        self.opened = .{ .cwd = cwd, .by = by };
+        return self.open_result;
     }
 
     fn performAction(ctx: *anyopaque, id: Bus.Id, action: []const u8) anyerror!void {

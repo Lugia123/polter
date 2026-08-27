@@ -695,6 +695,12 @@ typedef struct {
   const char* pwd;
 } ghostty_action_pwd_s;
 
+// Where a new tab should start. Empty means "wherever it would have
+// started anyway", which is what a keybinding or a menu item passes.
+typedef struct {
+  const char* working_directory;
+} ghostty_action_new_tab_s;
+
 // apprt.action.OpenConfig
 typedef enum {
   // Open the config in the OS default editor.
@@ -999,6 +1005,7 @@ typedef union {
   ghostty_action_set_title_s set_tab_title;
   ghostty_action_prompt_title_e prompt_title;
   ghostty_action_pwd_s pwd;
+  ghostty_action_new_tab_s new_tab;
   ghostty_action_mouse_shape_e mouse_shape;
   ghostty_action_mouse_visibility_e mouse_visibility;
   ghostty_action_mouse_over_link_s mouse_over_link;

@@ -225,6 +225,30 @@ What is deliberately not in the notes: how long anything had been quiet,
 and the round counts. Those describe a moment that has passed. Your
 counting starts again from zero, which is the honest place to start.
 
+## Making the terminals you need
+
+`terminal_open(cwd, watch)` puts a terminal in this window, starting where you
+say. Use it rather than `terminal_action(id, "new_tab")`: a tab opened that way
+starts wherever the terminal that opened it is standing, so four pieces of work
+in four directories cannot be set up that way at all.
+
+`cwd` has to be an absolute path that exists. One that is not there is refused
+-- a terminal that quietly started somewhere else is one you would hand work to
+believing it was somewhere it is not.
+
+`watch: true` claims it the moment it exists, which is almost always what you
+want: a terminal you opened is one you opened in order to mind.
+
+**The reply may not carry an id.** Making a terminal goes out to the window
+system and comes back when it gets round to it. If it was ready before the call
+returned you are given its id; if not, the tab is still opening and
+`terminal_list` will have it in a moment. That is not a failure and **not a
+reason to open another one** -- opening a second because the first did not
+answer is how you end up with eight terminals and four jobs.
+
+Nothing runs in it. It is a shell in a directory; what works in it is whatever
+the person or you type into it afterwards.
+
 ## The terminal itself does things, and you can ask it to
 
 Everything on Polter's menu bar is a keybinding action, and `terminal_action`

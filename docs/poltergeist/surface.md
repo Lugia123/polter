@@ -2,8 +2,10 @@
 
 > 最后更新对应的 git commit：`3d1841296`
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**第一、二件已实现**（`terminal_action` / `terminal_actions`，
-> 见 `src/poltergeist/actions.zig`）；第三至五件仍是规划。
+> 状态：**第一至三件已实现**（`terminal_action` / `terminal_actions` /
+> `terminal_open`）；第四、五件仍是规划。
+> GTK 侧的 `new_tab` 载荷**只做过静态核对，没编译过**——本机没有 gtk-4 与
+> adwaita 的开发库。
 
 ## 本章覆盖什么
 
@@ -85,7 +87,7 @@ ghostty_surface_binding_action(surface, "inspector:toggle", …)
 （`BadParams`），**终端没接受**才是终端的事（`ActionFailed`）。原来这三种会挤成
 一句"它不肯这么做"，害人往错的方向查。
 
-### 三、`terminal_open(cwd, watch?)` —— 唯一需要另铺路的
+### 三、`terminal_open(cwd, watch?)` —— 唯一需要另铺路的 ✅
 
 `new_tab` 是无参动作（`Action` 里它的类型是 `void`），开出来的 tab 继承的是
 父终端的目录，**没有办法指定**。而「四个终端各在各的目录」正是触发这一章的需求。
@@ -95,6 +97,15 @@ GTK 那个穷举 `switch` 按发布记录以前漏过三轮，改的时候要专
 
 `watch` 为真时顺手 `set_watch` 认领，省掉一次往返——总管开一个终端，多半就是
 为了管它。
+
+落地时改了 apprt 的 `new_tab`：它从无参变成带一个 `working_directory`，空串
+表示「照原来那样继承」——键位和菜单传的都是空串，人按 ⌘T 的行为一个字没变。
+
+**返回的 id 是「看」出来的，不是被告知的。** 造 surface 要出到 apprt 再回来，
+macOS 上走的是通知，今天是同步投递但没有任何东西保证它一直是。所以前后各数一次
+surface，动作返回时若已经多出来一个就报它的 id，没有就报空。**空不是失败**——
+tab 还在路上，`terminal_list` 过一会儿就有。在这里等下去会把 socket 线程挂在
+UI 线程要做的事情上。
 
 ### 四、`terminal_set_title(id, title)`
 

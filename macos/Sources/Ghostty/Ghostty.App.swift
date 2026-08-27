@@ -476,7 +476,7 @@ extension Ghostty {
                 newWindow(app, target: target)
 
             case GHOSTTY_ACTION_NEW_TAB:
-                newTab(app, target: target)
+                newTab(app, target: target, action: action.action.new_tab)
 
             case GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CHAT:
                 openChat(app, target: target)
@@ -818,13 +818,30 @@ extension Ghostty {
             }
         }
 
-        private static func newTab(_ app: ghostty_app_t, target: ghostty_target_s) {
+        private static func newTab(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            action: ghostty_action_new_tab_s
+        ) {
+            // Empty means "wherever a new tab would have gone anyway", which
+            // is what a keybinding and a menu item both send. Only Poltergeist
+            // names a directory, because only it has somewhere to put a
+            // terminal that no existing terminal is already sitting in.
+            let requested: String? = action.working_directory.flatMap {
+                let s = String(cString: $0)
+                return s.isEmpty ? nil : s
+            }
+
             switch target.tag {
             case GHOSTTY_TARGET_APP:
+                var config = SurfaceConfiguration()
+                config.workingDirectory = requested
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewTab,
                     object: nil,
-                    userInfo: [:]
+                    userInfo: requested == nil ? [:] : [
+                        Notification.NewSurfaceConfigKey: config,
+                    ]
                 )
 
             case GHOSTTY_TARGET_SURFACE:
@@ -841,11 +858,18 @@ extension Ghostty {
                     return
                 }
 
+                // Inherited first, then overridden: everything else about
+                // the new tab -- font size, environment, the rest -- should
+                // still come from the terminal it was opened beside.
+                var config = SurfaceConfiguration(
+                    from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_TAB))
+                if let requested { config.workingDirectory = requested }
+
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewTab,
                     object: surfaceView,
                     userInfo: [
-                        Notification.NewSurfaceConfigKey: SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_TAB)),
+                        Notification.NewSurfaceConfigKey: config,
                     ]
                 )
 

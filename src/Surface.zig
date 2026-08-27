@@ -5544,10 +5544,13 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             v,
         ),
 
+        // Nothing for the directory: a tab opened from a keybinding or the
+        // menu inherits this terminal's, which is what somebody pressing the
+        // key expects. Only Poltergeist names one.
         .new_tab => return try self.rt_app.performAction(
             .{ .surface = self },
             .new_tab,
-            {},
+            .{},
         ),
 
         .close_tab => |v| return try self.rt_app.performAction(

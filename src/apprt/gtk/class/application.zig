@@ -728,7 +728,15 @@ pub const Application = extern struct {
 
             .new_split => return Action.newSplit(target, value),
 
-            .new_tab => return Action.newTab(target, .none),
+            // GTK already had somewhere to put a directory, so the one
+            // Poltergeist names goes straight through. Empty means the tab
+            // starts wherever it would have.
+            .new_tab => return Action.newTab(target, .{
+                .working_directory = if (value.working_directory.len > 0)
+                    value.working_directory
+                else
+                    null,
+            }),
 
             .new_window => try Action.newWindow(
                 self,
@@ -1214,7 +1222,7 @@ pub const Application = extern struct {
         self.syncActionAccelerator("win.toggle-command-palette", .toggle_command_palette);
         self.syncActionAccelerator("win.close", .{ .close_window = {} });
         self.syncActionAccelerator("win.new-window", .{ .new_window = {} });
-        self.syncActionAccelerator("win.new-tab", .{ .new_tab = {} });
+        self.syncActionAccelerator("win.new-tab", .{ .new_tab = .{} });
         self.syncActionAccelerator("win.close-tab::this", .{ .close_tab = .this });
         self.syncActionAccelerator("tab.close::this", .{ .close_tab = .this });
         self.syncActionAccelerator("win.split-right", .{ .new_split = .right });

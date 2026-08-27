@@ -87,7 +87,7 @@ pub const Action = union(Key) {
     /// Open a new tab. If the target is a surface it should be opened in
     /// the same window as the surface. If the target is the app then
     /// the tab should be opened in a new window.
-    new_tab,
+    new_tab: NewTab,
 
     /// Closes the tab belonging to the currently focused split, or all other
     /// tabs, depending on the mode.
@@ -763,6 +763,40 @@ pub const SetTitle = struct {
         writer: *std.Io.Writer,
     ) !void {
         try writer.print("{s}{{ {s} }}", .{ @typeName(@This()), value.title });
+    }
+};
+
+/// Where a new tab should start.
+///
+/// Empty means "wherever a new tab would have started anyway", which is what
+/// the keybinding and the menu item both pass: a tab opened by a person
+/// inherits the directory of the terminal they opened it from, and that is
+/// the behaviour to leave alone.
+///
+/// It is here because that inheritance is the only way a tab could get a
+/// directory, and Poltergeist needs to put one somewhere the supervisor
+/// chose rather than somewhere a terminal already happens to be.
+pub const NewTab = struct {
+    working_directory: [:0]const u8 = "",
+
+    // Sync with: ghostty_action_new_tab_s
+    pub const C = extern struct {
+        working_directory: [*:0]const u8,
+    };
+
+    pub fn cval(self: NewTab) C {
+        return .{
+            .working_directory = self.working_directory.ptr,
+        };
+    }
+
+    pub fn format(
+        value: @This(),
+        comptime _: []const u8,
+        _: std.fmt.Options,
+        writer: *std.Io.Writer,
+    ) !void {
+        try writer.print("{s}{{ {s} }}", .{ @typeName(@This()), value.working_directory });
     }
 };
 

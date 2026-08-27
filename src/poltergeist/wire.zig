@@ -187,6 +187,11 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .stand_down => .stand_down,
         .terminal_actions => .terminal_actions,
 
+        .terminal_open => .{ .terminal_open = .{
+            .cwd = (try optionalString(aa, params, "cwd")) orelse "",
+            .watch = optionalBool(params, "watch", false),
+        } },
+
         .terminal_action => .{ .terminal_action = .{
             .id = try requireId(params),
             .action = try requireString(aa, params, "action"),
@@ -417,6 +422,12 @@ pub const Response = union(enum) {
     members: []const rpc.ChatMember,
     plugins: []const rpc.PluginView,
     actions: []const rpc.actions.Entry,
+    opened: struct {
+        /// Null when the runtime has not made it yet. Not an error: the tab
+        /// is coming and `terminal_list` will have it.
+        id: ?Bus.Id,
+        watching: bool,
+    },
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -540,6 +551,20 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.beginArray();
             for (list) |v| try writePlugin(&s, v);
             try s.endArray();
+        },
+        .opened => |v| {
+            try s.objectField("ok");
+            try s.write(true);
+
+            // Present only when there is one. An `id: null` would read as
+            // "the terminal has no id", when what happened is that it does
+            // not exist yet.
+            if (v.id) |id| {
+                try s.objectField("id");
+                try writeId(&s, id);
+            }
+            try s.objectField("watching");
+            try s.write(v.watching);
         },
         .actions => |list| {
             try s.objectField("ok");

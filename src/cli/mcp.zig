@@ -359,6 +359,21 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "terminal_open",
+        .description = "Open a terminal in this window, starting in a directory you " ++
+            "choose. Use this rather than terminal_action(new_tab): a tab opened that way " ++
+            "starts wherever the terminal that opened it is standing, so four pieces of " ++
+            "work in four directories cannot be set up that way at all. `cwd` must be an " ++
+            "absolute path that exists -- a directory that is not there is refused rather " ++
+            "than opened somewhere else quietly. Pass watch: true to mind it from the " ++
+            "moment it exists. The reply carries `id` when the terminal was ready before " ++
+            "the call returned; when it is missing the tab is still opening and " ++
+            "terminal_list will have it in a moment. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"}},"required":["cwd"]}
+        ,
+    },
+    .{
         .name = "terminal_action",
         .description = "Do to a terminal what the menu bar does. `action` is a Ghostty " ++
             "keybinding action, written exactly as a config file writes it: `new_tab`, " ++
