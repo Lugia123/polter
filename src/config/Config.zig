@@ -1354,6 +1354,33 @@ command: ?Command = null,
 /// interruption.
 @"poltergeist-notice-interval": Duration = .{ .duration = std.time.ns_per_min },
 
+/// Whether a supervisor may take itself off duty.
+///
+/// A supervisor is woken on `poltergeist-notice-interval` for as long as it
+/// is one. When the work it was minding is finished that wake-up costs
+/// context and buys nothing, every interval, all night -- so by default a
+/// supervisor that has finished can say so and stop being one.
+///
+/// It cannot do that as a shortcut. Standing down is refused while it still
+/// minds any terminal, so it has to let each one go first, deliberately and
+/// one at a time; only then may it step down itself.
+///
+/// It may put itself forward again afterwards, with `become_supervisor`.
+/// What standing down guards against is a supervisor quietly carrying on
+/// collecting an empty box all night, and coming back is the opposite of
+/// quietly: it is one deliberate act that leaves a record in the group.
+/// (A terminal somebody else is watching may never do this, whether or not
+/// it once stood down -- it already has a supervisor, and text arriving in
+/// it must not be able to rearrange who may reach whom.)
+///
+/// Set this to false if being a supervisor should be a standing
+/// instruction that only you can withdraw, the way holding a terminal to
+/// its work is. The cost of false is the wake-ups continuing after there
+/// is anything to wake up for; the cost of true is a supervisor that
+/// decides too early that the night is over, and stops watching while you
+/// sleep.
+@"poltergeist-supervisor-stand-down": bool = true,
+
 /// Write what the terminals say to each other to disk.
 ///
 /// The conversation in memory is a working set: it trims as it grows, and
@@ -1384,43 +1411,8 @@ command: ?Command = null,
 /// Turn it off if you would rather nothing was written down. The contents
 /// are whatever the agents paste at each other, which is to say your code,
 /// your paths and your stack traces.
-/// Whether a supervisor may take itself off duty.
-///
-/// A supervisor is woken on `poltergeist-notice-interval` for as long as it
-/// is one. When the work it was minding is finished that wake-up costs
-/// context and buys nothing, every interval, all night -- so by default a
-/// supervisor that has finished can say so and stop being one.
-///
-/// It cannot do that as a shortcut. Standing down is refused while it still
-/// minds any terminal, so it has to let each one go first, deliberately and
-/// one at a time; only then may it step down itself.
-///
-/// It may put itself forward again afterwards, with `become_supervisor`.
-/// What standing down guards against is a supervisor quietly carrying on
-/// collecting an empty box all night, and coming back is the opposite of
-/// quietly: it is one deliberate act that leaves a record in the group.
-/// (A terminal somebody else is watching may never do this, whether or not
-/// it once stood down -- it already has a supervisor, and text arriving in
-/// it must not be able to rearrange who may reach whom.)
-///
-/// Set this to false if being a supervisor should be a standing
-/// instruction that only you can withdraw, the way holding a terminal to
-/// its work is. The cost of false is the wake-ups continuing after there
-/// is anything to wake up for; the cost of true is a supervisor that
-/// decides too early that the night is over, and stops watching while you
-/// sleep.
-@"poltergeist-supervisor-stand-down": bool = true,
-
 @"poltergeist-chat-log": bool = true,
 
-/// Which notification plugins to use when the user has to be told
-/// something.
-///
-/// Repeat this to use more than one; each is an independent route, and all
-/// of them are tried. Redundancy is the point -- the case this exists for
-/// is one where nobody finds out for hours that a channel was broken.
-///
-/// A plugin is a directory holding a `plugin.yaml` and an executable,
 /// Deprecated, and does nothing.
 ///
 /// Whether a plugin is switched on now lives in the plugin's own file,
