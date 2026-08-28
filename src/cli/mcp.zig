@@ -163,9 +163,9 @@ const Host = struct {
 /// Every tool this exposes, with the request it maps to.
 ///
 /// The list is deliberately short and matches `src/poltergeist/rpc.zig`
-/// exactly. In particular there is no tool for changing a work mode and
-/// none for answering another agent's permission prompt; see that file for
-/// why neither will be added.
+/// exactly. In particular there is no tool for holding a terminal to its
+/// work or letting one go, and none for answering another agent's
+/// permission prompt; see that file for why neither will be added.
 const tools = [_]Tool{
     .{
         .name = "me",
@@ -232,7 +232,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "clock_out",
-        .description = "Mark a terminal as done for the day, so its going quiet stops being reported. Refused for terminals in an infinite work mode. Supervisor only.",
+        .description = "Mark a terminal as done for the day, so its going quiet stops being reported. Refused for a terminal the user is holding to its work. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"id":{"type":"string"},"reason":{"type":"string"}},"required":["id"]}
         ,
@@ -245,17 +245,10 @@ const tools = [_]Tool{
         ,
     },
     .{
-        .name = "get_work_mode",
-        .description = "What work mode a terminal runs under. Only the user can change it. Supervisor only.",
-        .schema =
-        \\{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}
-        ,
-    },
-    .{
         .name = "skill_read",
-        .description = "Read one of Poltergeist's skills: the text describing how to supervise, how to read a terminal, or how a particular work mode should be handled. Start with `supervising`.",
+        .description = "Read one of Poltergeist's skills: the text describing how to supervise, or how to read a terminal. Start with `supervising`.",
         .schema =
-        \\{"type":"object","properties":{"name":{"type":"string","description":"supervising, reading-a-terminal, mode-clock-out, mode-infinite-directed or mode-infinite-sequential"}},"required":["name"]}
+        \\{"type":"object","properties":{"name":{"type":"string","description":"supervising or reading-a-terminal"}},"required":["name"]}
         ,
     },
     .{
@@ -426,13 +419,15 @@ const tools = [_]Tool{
         ,
     },
     .{
-        .name = "set_work_mode",
-        .description = "Change what a terminal's work mode asks of it: clock_off, " ++
-            "infinite_directed or infinite_sequential. You may put a terminal into an " ++
-            "infinite mode and move it between them. An infinite mode the *user* set is a " ++
-            "standing instruction and only they can lift it. Supervisor only.",
+        .name = "become_supervisor",
+        .description = "Put yourself forward as a supervisor, when you can see work " ++
+            "that needs somebody co-ordinating it and nobody is. Takes no arguments: " ++
+            "it is about you. Allowed if nobody is minding you. Refused if you are " ++
+            "being watched -- you already have a supervisor, it would not hear of " ++
+            "this, and text arriving in a watched terminal must not be able to " ++
+            "rearrange who may reach whom; ask your supervisor or the user instead.",
         .schema =
-        \\{"type":"object","properties":{"id":{"type":"string"},"mode":{"type":"string","enum":["clock_off","infinite_directed","infinite_sequential"]}},"required":["id","mode"]}
+        \\{"type":"object","properties":{}}
         ,
     },
 };
@@ -655,10 +650,9 @@ test "no tool offers to answer another agent's prompt" {
     // another agent's safety model (R2), so there is none -- and this is
     // the test that should object if one appears.
     //
-    // Changing a work mode *is* offered now: arranging work is the
-    // supervisor's job. What protects the ban on clocking off an
-    // infinite-mode terminal moved into the bus, which refuses to lift an
-    // infinite mode the user set. See `Bus.setWorkMode`.
+    // Holding a terminal to its work is not offered at all: it is the
+    // user's word, set from the menu, and the supervisor decides afresh on
+    // every wake-up whether there is more worth doing. See `Bus.setHeld`.
     for (tools) |t| {
         try std.testing.expect(std.mem.indexOf(u8, t.name, "approve") == null);
         try std.testing.expect(std.mem.indexOf(u8, t.name, "permission") == null);

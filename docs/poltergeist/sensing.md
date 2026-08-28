@@ -15,7 +15,7 @@
 
 ## 本章不覆盖什么
 
-- 总管收到静止事件之后怎么办、监工模式、确认策略、通知时间段、停掉监控 —— 见 [supervisor.md](supervisor.md)。
+- 总管收到静止事件之后怎么办、按住、确认策略、通知时间段、停掉监控 —— 见 [supervisor.md](supervisor.md)。
 - 总管怎么把屏幕内容拉过去看（取屏工具）、身份识别、Skill 体系 —— 见 [mcp.md](mcp.md)。
 - 群聊与私信界面 —— 见 [chatui.md](chatui.md)。
 - tab 合并与 tab 状态标记 —— 见 [tabs.md](tabs.md)。

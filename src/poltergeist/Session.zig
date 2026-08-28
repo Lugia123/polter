@@ -43,7 +43,9 @@ pub const Member = struct {
 
     /// What it was doing here, so the supervisor can put it back.
     role: Bus.Role = .none,
-    work_mode: Bus.WorkMode = .clock_off,
+
+    /// Whether the user was holding it to its work.
+    held: bool = false,
 };
 
 /// One group as it was last night.
@@ -161,8 +163,8 @@ fn writeJson(s: *std.json.Stringify, snapshot: Snapshot) !void {
             }
             try s.objectField("role");
             try s.write(@tagName(m.role));
-            try s.objectField("work_mode");
-            try s.write(@tagName(m.work_mode));
+            try s.objectField("held");
+            try s.write(m.held);
             try s.endObject();
         }
         try s.endArray();
@@ -246,7 +248,7 @@ pub fn parse(arena: Allocator, bytes: []const u8) ?Snapshot {
                     .cwd = str(mo.get("cwd")) orelse "",
                     .title = str(mo.get("title")) orelse "",
                     .role = enumOf(Bus.Role, mo.get("role")) orelse .none,
-                    .work_mode = enumOf(Bus.WorkMode, mo.get("work_mode")) orelse .clock_off,
+                    .held = boolOf(mo.get("held")) orelse false,
                 }) catch return null;
             },
             else => {},
@@ -352,6 +354,13 @@ fn enumOf(comptime T: type, v: ?std.json.Value) ?T {
     return std.meta.stringToEnum(T, str(v) orelse return null);
 }
 
+fn boolOf(v: ?std.json.Value) ?bool {
+    return switch (v orelse return null) {
+        .bool => |x| x,
+        else => null,
+    };
+}
+
 // -- tests ------------------------------------------------------------------
 
 const testing = std.testing;
@@ -382,7 +391,7 @@ test "what is written comes back" {
             .cwd = "/work/repo",
             .title = "✳ Write retry.py",
             .role = .watched,
-            .work_mode = .infinite_directed,
+            .held = true,
         },
         .{ .cwd = "/work/repo", .title = "✳ tests", .role = .watched },
     };
@@ -400,10 +409,7 @@ test "what is written comes back" {
     try testing.expectEqual(@as(usize, 2), back.groups[0].members.len);
     try testing.expectEqualStrings("/work/repo", back.groups[0].members[0].cwd);
     try testing.expectEqual(Bus.Role.watched, back.groups[0].members[0].role);
-    try testing.expectEqual(
-        Bus.WorkMode.infinite_directed,
-        back.groups[0].members[0].work_mode,
-    );
+    try testing.expect(back.groups[0].members[0].held);
 
     // A group nobody said anything about still round-trips.
     try testing.expectEqualStrings("research", back.groups[1].name);
@@ -470,7 +476,7 @@ test "a member the host knew nothing about still gets written" {
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
     const path = try defaultPath(alloc, dir);
-    const members = [_]Member{.{ .role = .watched, .work_mode = .infinite_sequential }};
+    const members = [_]Member{.{ .role = .watched, .held = true }};
     const groups = [_]Group{.{ .name = "build", .members = &members }};
 
     write(alloc, io, path, .{ .groups = &groups });
@@ -478,10 +484,55 @@ test "a member the host knew nothing about still gets written" {
     const back = read(alloc, io, path) orelse return error.NothingRead;
     try testing.expectEqual(@as(usize, 1), back.groups[0].members.len);
     try testing.expectEqualStrings("", back.groups[0].members[0].cwd);
-    try testing.expectEqual(
-        Bus.WorkMode.infinite_sequential,
-        back.groups[0].members[0].work_mode,
-    );
+    try testing.expect(back.groups[0].members[0].held);
+}
+
+test "last night's file from a build that had work modes still reads" {
+    // Fields are picked out by name rather than deserialised into a
+    // struct, so a key this build no longer knows is simply not looked
+    // at. Worth a test rather than a comment: it is the difference
+    // between an upgrade that keeps somebody's arrangement and one that
+    // silently throws the whole file away.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-sess-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const path = try defaultPath(alloc, dir);
+    const old =
+        \\{"version":1,"groups":[{"name":"build","brief":"昨晚那摊活",
+        \\"members":[{"cwd":"/work/repo","title":"✳ retry.py","role":"watched",
+        \\"work_mode":"infinite_directed"}]}],"terminals":[]}
+    ;
+    {
+        var f = try std.Io.Dir.cwd().createFile(io, path, .{});
+        defer f.close(io);
+        var buf: [512]u8 = undefined;
+        var w = f.writer(io, &buf);
+        try w.interface.writeAll(old);
+        try w.interface.flush();
+    }
+
+    const back = read(alloc, io, path) orelse return error.NothingRead;
+    try testing.expectEqual(@as(usize, 1), back.groups.len);
+    try testing.expectEqualStrings("build", back.groups[0].name);
+    try testing.expectEqualStrings("昨晚那摊活", back.groups[0].brief);
+    try testing.expectEqual(@as(usize, 1), back.groups[0].members.len);
+    try testing.expectEqualStrings("/work/repo", back.groups[0].members[0].cwd);
+    try testing.expectEqualStrings("✳ retry.py", back.groups[0].members[0].title);
+    try testing.expectEqual(Bus.Role.watched, back.groups[0].members[0].role);
+
+    // The one field it cannot know: a hold is the user's live word about a
+    // terminal, and last night's file has nothing to say about it.
+    try testing.expect(!back.groups[0].members[0].held);
 }
 
 test "writing twice leaves one file, not two halves" {

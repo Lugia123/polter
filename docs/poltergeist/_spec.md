@@ -39,7 +39,7 @@
 
 - `README.md` — 总览与索引，不展开任何一章细节。
 - `sensing.md` — 感知层。
-- `supervisor.md` — 总管与监工模式。
+- `supervisor.md` — 总管与「按住」。
 - `mcp.md` — MCP 工具面与 skill 体系。
 - `chatui.md` — 群聊与私信界面。
 - `tabs.md` — tab 合并与状态标记。
@@ -115,11 +115,12 @@ Ghostty 侧沿用 `docs/_conventions.md` 的既有译法：表面（surface）�
 | 静止待判     | quiescent        | 静止时长达到阈值、已通知总管、尚未收到总管结论。程序侧去重用             |
 | 等确认       | pending-confirm  | 总管认为需要人确认、正按确认策略处理中                                   |
 | 下班         | off-duty         | 总管判定该终端无需继续工作后打的标记。tab 上写「下班休息」               |
-| 监工模式     | supervision mode | 每个被监督终端各自设定的模式，是「下班模式」与「无限工作模式」的上位概念 |
-| 下班模式     | clock-out mode   | 允许打下班标记的监工模式                                                 |
-| 无限工作模式 | endless mode     | 禁止打下班标记的监工模式                                                 |
-| 定向无限     | endless-directed | 无限工作模式子型 (i)：在用户设定的大方向下持续工作                       |
-| 接续无限     | endless-chained  | 无限工作模式子型 (ii)：做完一个任务切下一个                              |
+| 按住         | held             | 用户立起的一个布尔：这个终端不许停。**只有用户能设**，程序据此拒绝 `clock_out` |
+
+**已废弃的一组词，不要再用。** 「监工模式 / 下班模式 / 无限工作模式 / 定向无限 /
+接续无限」这五个词对应的三态 `WorkMode` 已整套删除，换成上面那一个布尔。留在这
+里是为了让读到旧文档或旧提交的人知道它们指的是什么、以及去哪儿看为什么没了
+（[README.md](README.md) 的 P5、P6）——**不是可选的同义说法。**
 
 **「四态」一词必须带限定语。** 本批文档里只有一个四态状态机：上班 / 静止待判 / 等确认 / 下班（归 [supervisor.md](supervisor.md)），它是程序侧的去重与超时簿记。被本次修订推翻的那个 working / thinking / idle / stalled 是**感知层的语义推断**，写它时必须写全四个英文值并注明「旧稿」，不得简称「四态」。
 
@@ -147,7 +148,7 @@ Ghostty 侧沿用 `docs/_conventions.md` 的既有译法：表面（surface）�
 | 通知时间段 | notification window | 允许打扰用户的时段，如 09:00–22:00                                                                 |
 | 确认策略   | confirmation policy | 需要人确认时二选一：总管代理决策 / 通知用户                                                        |
 | 停掉监控   | stop monitoring     | 唯一的停止动作。**禁止写「一键开关」「全局开关」「急停键」**                                       |
-| Skill 体系 | skill system        | 监工模式的实现载体                                                                                 |
+| Skill 体系 | skill system        | 总管怎么判断的实现载体                                                                             |
 | 边界       | boundary            | 指 R8：Poltergeist 不管理任务                                                                      |
 
 ## 交叉引用与去重
@@ -157,7 +158,7 @@ Ghostty 侧沿用 `docs/_conventions.md` 的既有译法：表面（surface）�
 | 主题                                                              | 归属章                         |
 | ----------------------------------------------------------------- | ------------------------------ |
 | 屏幕静止怎么测、成本、阈值、为什么不做语义判断                    | [sensing.md](sensing.md)       |
-| 监督关系、上班 / 下班、监工模式、确认策略、通知时间段、停掉监控   | [supervisor.md](supervisor.md) |
+| 监督关系、上班 / 下班、按住、确认策略、通知时间段、停掉监控       | [supervisor.md](supervisor.md) |
 | MCP 工具清单、sidecar、身份识别、skill 集成与维护、不管任务的边界 | [mcp.md](mcp.md)               |
 | 群聊 / 私信界面的承载方式选型                                     | [chatui.md](chatui.md)         |
 | tab 合并、tab 状态标记、macOS/GTK 差异                            | [tabs.md](tabs.md)             |

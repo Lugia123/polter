@@ -14,7 +14,7 @@
 ## 本章不覆盖什么
 
 - 已有工具的语义 —— 见 [mcp.md](mcp.md)。
-- 群聊、监督、工作模式 —— 见 [supervisor.md](supervisor.md)。
+- 群聊、监督、按住 —— 见 [supervisor.md](supervisor.md)。
 - 插件配置那一套的安全论证 —— 见 [mcp.md](mcp.md)。**那一条仍然成立**，理由见本章末。
 
 ## 这一章是怎么来的

@@ -126,7 +126,6 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         } },
 
         .clock_in => .{ .clock_in = .{ .id = try requireId(params) } },
-        .get_work_mode => .{ .get_work_mode = .{ .id = try requireId(params) } },
 
         .set_quiescence_threshold => .{ .set_quiescence_threshold = .{
             .id = try requireId(params),
@@ -136,11 +135,6 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .set_watch => .{ .set_watch = .{
             .id = try requireId(params),
             .watch = optionalBool(params, "watch", true),
-        } },
-
-        .set_work_mode => .{ .set_work_mode = .{
-            .id = try requireId(params),
-            .mode = try requireString(aa, params, "mode"),
         } },
 
         .skill_read => .{ .skill_read = .{
@@ -185,6 +179,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         } },
 
         .stand_down => .stand_down,
+        .become_supervisor => .become_supervisor,
         .terminal_actions => .terminal_actions,
 
         .config_get => .{ .config_get = .{
@@ -378,7 +373,11 @@ pub const TerminalInfo = struct {
     id: Bus.Id,
     role: Bus.Role = .none,
     duty: Bus.Duty = .off,
-    work_mode: Bus.WorkMode = .clock_off,
+
+    /// Whether the user is holding this terminal to its work, so it may
+    /// not be clocked off.
+    held: bool = false,
+
     watching: bool = false,
 
     /// Where it is working, and what its tab says.
@@ -410,7 +409,6 @@ pub const Response = union(enum) {
     me: TerminalInfo,
     terminals: []const TerminalInfo,
     text: []const u8,
-    work_mode: Bus.WorkMode,
     skill: struct { name: []const u8, body: []const u8 },
     messages: struct {
         lines: []const rpc.ChatLine,
@@ -464,12 +462,6 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.write(true);
             try s.objectField("text");
             try s.write(t);
-        },
-        .work_mode => |m| {
-            try s.objectField("ok");
-            try s.write(true);
-            try s.objectField("work_mode");
-            try s.write(@tagName(m));
         },
         .skill => |k| {
             try s.objectField("ok");
@@ -711,8 +703,8 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
     try s.write(@tagName(info.role));
     try s.objectField("duty");
     try s.write(@tagName(info.duty));
-    try s.objectField("work_mode");
-    try s.write(@tagName(info.work_mode));
+    try s.objectField("held");
+    try s.write(info.held);
     try s.objectField("watching");
     try s.write(info.watching);
 
@@ -826,26 +818,37 @@ test "unknown and missing methods are refused" {
     ));
 }
 
-test "set_work_mode parses, and an unknown mode is refused where it is handled" {
-    // This used to be refused outright: the ban on clocking off an
-    // infinite-mode terminal depended on the mode being unreachable from
-    // here. The supervisor arranges work now, and the rule moved into the
-    // bus, which will not lift an infinite mode the user set.
-    //
-    // The wire layer's job is narrower: name and shape. Whether the string
-    // is a mode this build knows is decided where the request is handled,
-    // so that the answer can say what the choices are.
+test "become_supervisor takes no parameters at all" {
+    // It names the caller, and the caller is not something a request gets
+    // to choose. A version of this that took an id would be a terminal
+    // promoting *another* terminal, which is a different and much larger
+    // power than the one being added.
     var p = try parse(
-        \\{"method":"set_work_mode","params":{"id":1,"mode":"infinite_directed"}}
+        \\{"method":"become_supervisor"}
     );
     defer p.deinit();
-    try testing.expectEqualStrings("infinite_directed", p.value.set_work_mode.mode);
+    try testing.expectEqual(rpc.Method.become_supervisor, p.value);
 
-    var nonsense = try parse(
-        \\{"method":"set_work_mode","params":{"id":1,"mode":"whenever"}}
+    // Params that came along anyway are ignored rather than refused: the
+    // shape is "no parameters", not "an empty object required".
+    var extra = try parse(
+        \\{"method":"become_supervisor","params":{"id":"0x2222"}}
     );
-    defer nonsense.deinit();
-    try testing.expectEqualStrings("whenever", nonsense.value.set_work_mode.mode);
+    defer extra.deinit();
+    try testing.expectEqual(rpc.Method.become_supervisor, extra.value);
+}
+
+test "the work mode methods are gone from the wire" {
+    // Removed rather than left parsing and failing later: a method name
+    // this build no longer honours should be unknown at the door, so an
+    // agent asking gets told the name is wrong instead of a puzzling
+    // refusal from somewhere deeper in.
+    try testing.expectError(error.UnknownMethod, parse(
+        \\{"method":"set_work_mode","params":{"id":1,"mode":"infinite_directed"}}
+    ));
+    try testing.expectError(error.UnknownMethod, parse(
+        \\{"method":"get_work_mode","params":{"id":1}}
+    ));
 }
 
 test "set_watch defaults to watching, because that is what it is for" {
@@ -898,7 +901,7 @@ test "a response carries ids as the same text the host exports" {
         .id = 0x2222,
         .role = .watched,
         .duty = .on,
-        .work_mode = .clock_off,
+        .held = false,
         .quiet_ms = 1234,
         .watching = true,
         .rounds = 3,
@@ -915,13 +918,13 @@ test "a failure says what went wrong" {
     var w: std.Io.Writer = .fixed(&buf);
 
     try writeResponse(&w, .{ .failed = .{
-        .code = "WorkModeForbids",
-        .message = rpc.errorMessage(error.WorkModeForbids),
+        .code = "TerminalHeld",
+        .message = rpc.errorMessage(error.TerminalHeld),
     } });
 
     const out = w.buffered();
     try testing.expect(std.mem.indexOf(u8, out, "\"ok\":false") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "infinite work mode") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "holding this terminal") != null);
 }
 
 test "a response is one line" {
@@ -929,8 +932,8 @@ test "a response is one line" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 1, .role = .supervisor, .duty = .on, .work_mode = .clock_off, .quiet_ms = 0, .watching = false, .rounds = 0 },
-        .{ .id = 2, .role = .watched, .duty = .off, .work_mode = .infinite_directed, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
+        .{ .id = 1, .role = .supervisor, .duty = .on, .held = false, .quiet_ms = 0, .watching = false, .rounds = 0 },
+        .{ .id = 2, .role = .watched, .duty = .off, .held = true, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
     };
     try writeResponse(&w, .{ .terminals = &list });
 

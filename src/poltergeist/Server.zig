@@ -21,8 +21,10 @@
 const Server = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const net = std.Io.net;
+const posix = std.posix;
 
 const Bus = @import("Bus.zig");
 const rpc = @import("rpc.zig");
@@ -182,9 +184,10 @@ pub fn init(
     const owned = try alloc.dupe(u8, path);
     errdefer alloc.free(owned);
 
-    // A socket left behind by a previous run would make listen fail. It is
-    // ours by construction -- the path carries our pid -- so removing it is
-    // safe and saves the user a puzzling failure after a crash.
+    // A socket left behind by a previous run would make listen fail. The
+    // path is freshly random per run, so a collision means the file is a
+    // leftover rather than someone else's live socket, and removing it
+    // saves the user a puzzling failure after a crash.
     std.Io.Dir.cwd().deleteFile(io, owned) catch {};
 
     const addr = net.UnixAddress.init(owned) catch return error.PathTooLong;
@@ -632,6 +635,151 @@ fn refuse(
 /// leaked into a path other processes can list, and two Ghostty processes
 /// -- or one restarted after a crash that left its socket behind -- cannot
 /// collide.
+/// The names this sweep will consider. `defaultPath` writes them, and
+/// nothing else in the state directory looks like this.
+const socket_prefix = "polter-";
+const socket_suffix = ".sock";
+
+fn isSocketName(name: []const u8) bool {
+    return name.len > socket_prefix.len + socket_suffix.len and
+        std.mem.startsWith(u8, name, socket_prefix) and
+        std.mem.endsWith(u8, name, socket_suffix);
+}
+
+/// What a probe of a socket path found.
+const Liveness = enum {
+    /// The kernel refused the connection: the file is a socket and there is
+    /// no listener behind it. This is the only answer that permits deleting.
+    dead,
+
+    /// Someone answered, or the answer was not one we understand. Either
+    /// way the file stays.
+    keep,
+};
+
+/// Ask the kernel whether anything is listening on `path`.
+///
+/// The judgement has to be "nobody answers", never "the file is old". A
+/// running Polter's socket is an ordinary zero-byte file with an ordinary
+/// mtime, indistinguishable on disk from a socket left by a process that
+/// died in August. The only thing that tells them apart is connecting.
+///
+/// The default is to keep. Deleting a live instance's socket would cut
+/// every agent it hosts off from the app mid-sentence, while keeping a dead
+/// file costs nothing but a line in a directory listing -- so anything we
+/// do not positively understand counts as alive.
+///
+/// This connects and immediately closes, which a live server sees as a
+/// client that hung up before the handshake: `handshake` reads no line,
+/// returns null, and the connection thread exits without logging or
+/// answering. No request is submitted and nothing is left held.
+fn probe(path: []const u8) Liveness {
+    // Windows has unix sockets but not this syscall surface. It has also
+    // never accumulated the sockets this sweep exists to remove, since a
+    // socket file there is not left behind the same way.
+    if (builtin.os.tag == .windows) return .keep;
+    if (!net.has_unix_sockets) return .keep;
+
+    var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
+    addr.family = posix.AF.UNIX;
+
+    // No room for the path and its terminator means this cannot be an
+    // address anyone bound, so there is nothing to ask about.
+    if (path.len + 1 > addr.path.len) return .keep;
+    @memcpy(addr.path[0..path.len], path);
+    const addr_len: posix.socklen_t =
+        @intCast(@offsetOf(posix.sockaddr.un, "path") + path.len + 1);
+
+    const fd = posix.system.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+    if (posix.errno(fd) != .SUCCESS) return .keep;
+    const sock: posix.socket_t = @intCast(fd);
+    defer _ = posix.system.close(sock);
+
+    while (true) {
+        const rc = posix.system.connect(sock, @ptrCast(&addr), addr_len);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return .keep,
+            .INTR => continue,
+
+            // Nobody is behind the path. Note `NOENT` is not in this list:
+            // the file went away between the listing and the probe, so
+            // there is nothing left to delete and no reason to try.
+            .CONNREFUSED => return .dead,
+
+            // Everything else -- a permission error, a socket type we did
+            // not expect, an errno this platform spells differently -- is
+            // an answer we cannot read, and an unreadable answer is not
+            // evidence that the far end is gone.
+            else => return .keep,
+        }
+    }
+}
+
+/// Remove the sockets in `dir_path` that nothing is listening on.
+///
+/// Run once at startup, before this process binds its own path. A socket
+/// file does not disappear when the process that bound it dies, so a
+/// machine that has run Polter a few dozen times accumulates a few dozen
+/// of them, and the state directory stops being somewhere a person can
+/// find `chat/` or `session.json`.
+///
+/// Failures are logged and skipped rather than reported: a state directory
+/// that could not be tidied is not a reason to refuse to open the socket.
+pub fn sweepStale(alloc: Allocator, io: std.Io, dir_path: []const u8) void {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
+        log.debug("poltergeist: no state directory to sweep err={}", .{err});
+        return;
+    };
+    defer dir.close(io);
+
+    // Names are collected first and deleted after. Removing entries while
+    // the directory cursor is still walking them is not defined to be
+    // safe, and the cost of being wrong is skipping a name -- which here
+    // would mean skipping the live one's neighbours, silently.
+    var stale: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (stale.items) |name| alloc.free(name);
+        stale.deinit(alloc);
+    }
+
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (!isSocketName(entry.name)) continue;
+
+        // `readdir` can report `unknown` on some filesystems, so confirm
+        // with a stat. Symlinks are not followed: a link that happens to
+        // point at a live socket is still not a file we put here.
+        const kind = if (entry.kind != .unknown) entry.kind else k: {
+            const st = dir.statFile(io, entry.name, .{
+                .follow_symlinks = false,
+            }) catch continue;
+            break :k st.kind;
+        };
+        if (kind != .unix_domain_socket) continue;
+
+        var buf: [net.UnixAddress.max_len]u8 = undefined;
+        const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{
+            dir_path,
+            entry.name,
+        }) catch continue;
+        if (probe(full) != .dead) continue;
+
+        const owned = alloc.dupe(u8, entry.name) catch continue;
+        stale.append(alloc, owned) catch {
+            alloc.free(owned);
+            continue;
+        };
+    }
+
+    for (stale.items) |name| {
+        dir.deleteFile(io, name) catch |err| {
+            log.warn("poltergeist: could not remove a dead socket name={s} err={}", .{ name, err });
+            continue;
+        };
+        log.info("poltergeist: removed a dead socket name={s}", .{name});
+    }
+}
+
 pub fn defaultPath(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error![]u8 {
     var raw: [8]u8 = undefined;
     io.random(&raw);

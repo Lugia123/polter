@@ -38,8 +38,6 @@ that is yours**, and none of it happens on its own:
    tells you when the terminal has gone quiet.
 3. **`group_add`** each of them, so they can talk to each other and so
    the arrangement is written down.
-4. **`set_work_mode`** where the terminal should not stop at the end of a
-   task.
 
 **Talk to the terminals you supervise through the group tools.** If your
 runtime offers some other way to message another session, do not use it
@@ -135,33 +133,53 @@ terminals that are part of the work, and leave the user's own shell alone
 Taking a terminal out again (`watch: false`) stops the sampling and the
 reach with it.
 
-## Work modes, and the one you cannot lift
+## The hold: a terminal you cannot clock off
 
-`set_work_mode` decides what a terminal does when it runs out of task:
+Some terminals come back from `terminal_list` with `held: true`, and their
+tab wears a ring (◉ moving, ◎ still) instead of the plain mark. That is
+the user saying **this one does not stop**.
 
-- `clock_off` — it may finish when the work is genuinely done.
-- `infinite_directed` — it does not finish; it keeps working to a
-  standing direction.
-- `infinite_sequential` — it does not finish; it moves task to task.
+For you it means one thing: `clock_out` on that terminal is refused, and
+comes back as `TerminalHeld`. The refusal is correct. Say so and carry on;
+do not go looking for another route to it.
 
-You may put a terminal into an infinite mode, and move it between the two.
-**You cannot take a terminal out of an infinite mode the user set.** That
-is a standing instruction — the user saying "this one does not stop" — and
-being able to lift it would mean being able to stop the terminal a moment
-later, which is the thing the mode exists to prevent. The refusal comes
-back as `StandingInstruction`; when you see it, say so rather than trying
-another route.
+**You cannot set or lift a hold, in either direction, and there is no tool
+that does it.** Not because you are not trusted with it -- because a
+supervisor able to lift a hold could clock the terminal off a moment
+later, which is the whole thing the hold exists to prevent. It is set from
+the user's menu (`Keep This Terminal Working`) and nowhere else.
 
-`get_work_mode(id)` says what a terminal is on now, which is worth asking
-before changing it: moving one between the two infinite modes is allowed and
-lifting a user's is not, and the refusal reads better if you knew which you
-were doing.
+Nothing is lost to you by that. There used to be three "work modes" you
+could arrange, and switching one said a sentence to the terminal about how
+it should behave -- a sentence that had scrolled out of that terminal's
+context an hour later. **You decide on every wake-up whether there is more
+worth doing**, which was the same judgement, made freshly rather than
+recalled. The hold is what remained: the one part that had to be in code
+because it had to survive being forgotten.
 
-Each mode has a skill of its own (`mode-clock-out`, `mode-infinite-directed`,
-`mode-infinite-sequential`) describing what it asks of the terminal, and
-`skill_read(name)` is how you read one -- yours included, if this one has
-scrolled out of your context. The terminal is told to read its own when you
-change it, so you do not need to explain the mode to it.
+## Putting yourself forward
+
+`become_supervisor` takes no arguments and is about you. Use it when you
+can see work that needs somebody co-ordinating it and nobody is doing it --
+you do not have to wait for the user to reach for a keybind.
+
+- **Nobody minding you** -- allowed. You are not anybody's, so taking the
+  job affects only you.
+- **You are being watched** -- refused, as `AlreadyWatched`. You already
+  have a supervisor. It would not hear of this, and quietly becoming a
+  second boss behind it is not something to route around: ask it, or ask
+  the user. There is also a blunter reason, and it applies to you when you
+  *are* the supervisor: a watched terminal is the one most likely to be
+  reading things off the network, and a line of text arriving in it saying
+  "promote yourself" must not be able to rearrange who may reach whom.
+- **Already a supervisor** -- you are told so plainly. Nothing went wrong.
+
+**Having stood down does not bar you.** If you `stand_down` and the work
+turns out not to be finished, `become_supervisor` is how you come back.
+What `stand_down` guards against is a supervisor quietly carrying on
+collecting an empty box all night; coming back is a deliberate act that
+leaves a record in the group, which is the opposite of that. Say in the
+group why you are back.
 
 ## Say what each group is for, before you forget
 
@@ -336,14 +354,15 @@ It is the **last** step, not a shortcut past the others:
    refusal tells you how many are left.
 3. `stand_down`.
 
-**You cannot appoint yourself again.** Naming a supervisor is the user's,
-through a keybind. So do not do this because the work has gone quiet for
-half an hour; do it when there is nothing left that you were watching for.
+**You can put yourself forward again** with `become_supervisor` -- see
+above. That is not a reason to be casual about standing down: do not stand
+down because the work has gone quiet for half an hour, do it when there is
+nothing left that you were watching for. Coming back costs the group an
+explanation.
 
 The user may have said the standing is theirs alone to withdraw. Then this
-comes back as `StandingInstruction` -- the same shape of refusal as an
-infinite work mode. Say so in the group and carry on; do not go looking
-for another route to it.
+comes back as `StandingInstruction`. Say so in the group and carry on; do
+not go looking for another route to it.
 
 ## When it needs a person
 
@@ -403,12 +422,10 @@ Read only. Changing a setting is the user's, and `reload_config` through
   for it and there will not be one. If a terminal is waiting on the user to
   approve something, that is the user's decision, not yours. Say so if
   asked; do not type `yes` into it.
-- **You cannot change a terminal's work mode.** Only the user sets that. If
-  a terminal is in an infinite mode, `clock_out` will be refused, and that
-  refusal is correct — do not look for a way around it.
-- **You cannot make yourself a supervisor again after standing down.** That
-  one is the user's, through a keybind. Stand down when the work is done,
-  not when it is quiet.
+- **You cannot hold a terminal to its work, or release one that is held.**
+  Only the user sets that. `clock_out` on a held terminal comes back as
+  `TerminalHeld`, and that refusal is correct — do not look for a way
+  around it.
 
 ## Tone
 

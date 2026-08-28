@@ -12,15 +12,13 @@
 //! the frontmatter; the body is handed to the AI untouched.
 //!
 //! Note what the frontmatter does *not* carry: whether a terminal may clock
-//! off. That is a hard constraint and lives only in `Bus.WorkMode`. Skill
+//! off. That is a hard constraint and lives only in `Bus.Entry.held`. Skill
 //! files are user-editable, and a constraint readable from one would be a
 //! constraint a user could weaken by accident while editing prose.
 //!
 //! Pure: text in, values out. See `docs/poltergeist/mcp.md`.
 
 const std = @import("std");
-
-const Bus = @import("Bus.zig");
 
 pub const ParseError = error{
     /// No frontmatter, or it is not closed.
@@ -41,19 +39,6 @@ pub const ParseError = error{
 pub const Meta = struct {
     name: []const u8,
     version: u32 = 1,
-
-    /// Which work mode this skill is for, if it is a mode skill. Null for
-    /// the two skills every supervisor reads.
-    mode: ?Bus.WorkMode = null,
-
-    /// How many rounds of being told a terminal is quiet should pass before
-    /// the supervisor considers clocking it off. Zero when it does not
-    /// apply.
-    ///
-    /// Counted by the program and reported in `terminal_list`, because a
-    /// count is the first thing a long session forgets. The judgement of
-    /// whether there is anything left to do stays with the supervisor.
-    max_rounds: u16 = 0,
 
     description: []const u8 = "",
 };
@@ -129,12 +114,6 @@ pub fn parse(source: []const u8) ParseError!Skill {
         } else if (std.mem.eql(u8, key, "version")) {
             meta.version = std.fmt.parseUnsigned(u32, value, 10) catch
                 return error.BadField;
-        } else if (std.mem.eql(u8, key, "mode")) {
-            meta.mode = std.meta.stringToEnum(Bus.WorkMode, value) orelse
-                return error.BadField;
-        } else if (std.mem.eql(u8, key, "max_rounds")) {
-            meta.max_rounds = std.fmt.parseUnsigned(u16, value, 10) catch
-                return error.BadField;
         } else if (std.mem.eql(u8, key, "description")) {
             meta.description = value;
         }
@@ -150,19 +129,7 @@ pub fn parse(source: []const u8) ParseError!Skill {
 pub const builtin_names = [_][]const u8{
     "supervising",
     "reading-a-terminal",
-    "mode-clock-out",
-    "mode-infinite-directed",
-    "mode-infinite-sequential",
 };
-
-/// Which mode skill goes with a work mode.
-pub fn modeSkill(mode: Bus.WorkMode) []const u8 {
-    return switch (mode) {
-        .clock_off => "mode-clock-out",
-        .infinite_directed => "mode-infinite-directed",
-        .infinite_sequential => "mode-infinite-sequential",
-    };
-}
 
 // -- tests ------------------------------------------------------------------
 
@@ -170,11 +137,9 @@ const testing = std.testing;
 
 const sample =
     \\---
-    \\name: mode-clock-out
+    \\name: reading-a-terminal
     \\version: 2
-    \\mode: clock_off
-    \\max_rounds: 5
-    \\description: 下班模式
+    \\description: 读一个终端
     \\---
     \\First line of prose.
     \\
@@ -183,11 +148,9 @@ const sample =
 
 test "a skill parses into its fields and its prose" {
     const s = try parse(sample);
-    try testing.expectEqualStrings("mode-clock-out", s.meta.name);
+    try testing.expectEqualStrings("reading-a-terminal", s.meta.name);
     try testing.expectEqual(@as(u32, 2), s.meta.version);
-    try testing.expectEqual(Bus.WorkMode.clock_off, s.meta.mode.?);
-    try testing.expectEqual(@as(u16, 5), s.meta.max_rounds);
-    try testing.expectEqualStrings("下班模式", s.meta.description);
+    try testing.expectEqualStrings("读一个终端", s.meta.description);
     try testing.expectEqualStrings(
         "First line of prose.\n\nSecond paragraph.",
         s.body,
@@ -208,8 +171,7 @@ test "defaults apply to everything but the name" {
         \\body
     );
     try testing.expectEqual(@as(u32, 1), s.meta.version);
-    try testing.expect(s.meta.mode == null);
-    try testing.expectEqual(@as(u16, 0), s.meta.max_rounds);
+    try testing.expectEqualStrings("", s.meta.description);
 }
 
 test "a file without a name is incomplete" {
@@ -236,8 +198,7 @@ test "allow_clock_out is refused rather than ignored" {
     // the file anyway would leave them believing it.
     const written_by_a_hopeful_user =
         \\---
-        \\name: mode-infinite-directed
-        \\mode: infinite_directed
+        \\name: supervising
         \\allow_clock_out: true
         \\---
         \\body
@@ -269,17 +230,13 @@ test "unknown fields are ignored so newer files still load" {
 }
 
 test "a bad value is refused rather than guessed at" {
+    // A number that is not one. `version` is the only numeric field left;
+    // this used to be `max_rounds`, which was removed because nothing read
+    // it. The path being guarded is the parse failure, not the field.
     try testing.expectError(error.BadField, parse(
         \\---
         \\name: x
-        \\mode: sideways
-        \\---
-        \\body
-    ));
-    try testing.expectError(error.BadField, parse(
-        \\---
-        \\name: x
-        \\max_rounds: lots
+        \\version: lots
         \\---
         \\body
     ));
@@ -303,7 +260,6 @@ test "a name cannot walk out of the skills directory" {
     try testing.expect(!isValidName("UPPER"));
 
     try testing.expect(isValidName("supervising"));
-    try testing.expect(isValidName("mode-clock-out"));
     try testing.expect(isValidName("reading-a-terminal"));
 }
 
@@ -313,27 +269,20 @@ test "a BOM and leading blank lines do not stop it loading" {
     try testing.expectEqualStrings("body", s.body);
 }
 
-test "every work mode has a skill and every mode skill is builtin" {
-    for (std.enums.values(Bus.WorkMode)) |m| {
-        const name = modeSkill(m);
-        try testing.expect(isValidName(name));
-
-        var found = false;
-        for (builtin_names) |b| {
-            if (std.mem.eql(u8, b, name)) found = true;
-        }
-        try testing.expect(found);
+test "the mode skills are gone, and nothing still names one" {
+    // Work modes were a ceremony: switching one said a sentence to the
+    // terminal and then that sentence was pushed out of context. The
+    // supervisor decides afresh on every wake-up whether there is more
+    // worth doing, which was the same judgement. What survived is the
+    // hold, and it is a boolean in code with a mark in the tab -- not a
+    // skill anybody has to read.
+    try testing.expectEqual(@as(usize, 2), builtin_names.len);
+    for (builtin_names) |name| {
+        try testing.expect(!std.mem.startsWith(u8, name, "mode-"));
     }
-}
 
-test "the two general skills are not mode skills" {
-    // If one of these ever gained a mode it would start being loaded per
-    // terminal rather than once, which is not what they are for.
-    for ([_][]const u8{ "supervising", "reading-a-terminal" }) |name| {
-        for (std.enums.values(Bus.WorkMode)) |m| {
-            try testing.expect(!std.mem.eql(u8, modeSkill(m), name));
-        }
-    }
+    // The prose is guarded too, by the test below that lists the tools no
+    // skill may name -- `set_work_mode` and `get_work_mode` are on it.
 }
 
 pub const PathError = error{BadName} || std.mem.Allocator.Error;
@@ -368,9 +317,6 @@ pub fn resourcePath(
 const builtin_sources = if (@import("builtin").is_test) [_][]const u8{
     @embedFile("skills/supervising.md"),
     @embedFile("skills/reading-a-terminal.md"),
-    @embedFile("skills/mode-clock-out.md"),
-    @embedFile("skills/mode-infinite-directed.md"),
-    @embedFile("skills/mode-infinite-sequential.md"),
 } else {};
 
 test "every shipped skill parses" {
@@ -389,34 +335,24 @@ test "every shipped skill parses" {
     }
 }
 
-test "each mode skill declares the mode it is for" {
-    for (builtin_sources, builtin_names) |source, name| {
-        const s = try parse(source);
-
-        if (std.mem.startsWith(u8, name, "mode-")) {
-            const mode = s.meta.mode orelse {
-                std.debug.print("\n{s} is a mode skill with no mode\n", .{name});
-                return error.TestUnexpectedResult;
-            };
-            try testing.expectEqualStrings(name, modeSkill(mode));
-        } else {
-            // The two general skills are read once, not per terminal.
-            try testing.expect(s.meta.mode == null);
-        }
-    }
-}
-
 test "the shipped skills do not promise what the tools cannot do" {
     // A skill that tells a supervisor to approve something on another
     // agent's behalf would be describing a tool that does not exist, and
     // the AI would go looking for it.
     //
-    // `set_work_mode` used to be on this list and is not any more: the
-    // supervisor arranges work now, and the skill says so. What guards the
-    // ban on clocking off an infinite-mode terminal moved into the bus,
-    // which refuses to lift an infinite mode the user set.
+    // The work mode tools are on the list for the same reason even though
+    // they were removed rather than never built: prose outlives the code
+    // it describes, and a skill still naming one would send the AI looking
+    // for a tool that is not there. The hold that replaced them is the
+    // user's from the menu, so there is nothing here to offer either.
     for (builtin_sources, builtin_names) |source, name| {
-        for ([_][]const u8{ "approve(", "grant_permission", "answer_prompt" }) |forbidden| {
+        for ([_][]const u8{
+            "approve(",
+            "grant_permission",
+            "answer_prompt",
+            "set_work_mode",
+            "get_work_mode",
+        }) |forbidden| {
             if (std.mem.indexOf(u8, source, forbidden) != null) {
                 std.debug.print("\n{s} mentions {s}\n", .{ name, forbidden });
                 return error.TestUnexpectedResult;
@@ -439,7 +375,7 @@ test "the supervising skill names the tools it tells you to use" {
         "group_set_brief",
         "group_add",
         "set_watch",
-        "set_work_mode",
+        "become_supervisor",
         "session_recall",
         "terminal_list",
     }) |tool| {
@@ -450,12 +386,50 @@ test "the supervising skill names the tools it tells you to use" {
     }
 }
 
-test "the clock-out skill is the only one that sets max_rounds" {
-    for (builtin_sources, builtin_names) |source, name| {
-        const s = try parse(source);
-        const expects_rounds = std.mem.eql(u8, name, "mode-clock-out");
-        try testing.expectEqual(expects_rounds, s.meta.max_rounds > 0);
+test "every field the frontmatter carries has somewhere it goes" {
+    // There used to be a `max_rounds`, and a test named "the clock-out
+    // skill is the only one that sets max_rounds" watching over it. When
+    // that skill was deleted the test kept passing -- its condition simply
+    // became false for every remaining name, and the assertion quietly
+    // turned into "none of them set it". A check that stops checking is
+    // worse than no check: the green light reads the same either way.
+    //
+    // Chasing that turned up the real problem. `max_rounds` had no
+    // consumer anywhere: parsed, range-checked, then dropped. That is
+    // worse than refusing it the way `allow_clock_out` is refused, because
+    // a user writing `max_rounds: 5` in their own skill would be told
+    // nothing and would believe they had configured something.
+    //
+    // The three that remain each go somewhere, and the somewhere differs:
+    //
+    //   name         checked against the file it is in, and rewritten when
+    //                the skill is installed for an agent runtime
+    //   description  travels out in the installed frontmatter; it is what
+    //                makes a runtime pick the skill up
+    //   version      likewise; it is the file's own, not something this
+    //                program branches on
+    //
+    // This is a list, not a derivation -- nothing can prove a field is
+    // read. It is here so that adding a fourth field is a deliberate act:
+    // the build stops, and whoever is adding it has to say where theirs
+    // goes before it can ship.
+    const accounted_for = [_][]const u8{ "name", "version", "description" };
+    inline for (@typeInfo(Meta).@"struct".fields) |f| {
+        comptime var found = false;
+        inline for (accounted_for) |known| {
+            if (comptime std.mem.eql(u8, f.name, known)) found = true;
+        }
+        if (!found) @compileError("Meta." ++ f.name ++ " is not accounted for: " ++
+            "say where it goes, or take it out -- a field that is parsed " ++
+            "and dropped tells the user it did something");
     }
+
+    // And the other half of the same rule: nothing named here has been
+    // removed from the struct while its name was left behind.
+    try testing.expectEqual(
+        accounted_for.len,
+        @typeInfo(Meta).@"struct".fields.len,
+    );
 }
 
 test "a path is built from a name, or refused" {
@@ -466,9 +440,9 @@ test "a path is built from a name, or refused" {
         p,
     );
 
-    const r = try resourcePath(testing.allocator, "/usr/share/ghostty", "mode-clock-out");
+    const r = try resourcePath(testing.allocator, "/usr/share/ghostty", "reading-a-terminal");
     defer testing.allocator.free(r);
-    try testing.expectEqualStrings("/usr/share/ghostty/poltergeist/mode-clock-out.md", r);
+    try testing.expectEqualStrings("/usr/share/ghostty/poltergeist/reading-a-terminal.md", r);
 }
 
 test "a name that could escape the directory never becomes a path" {

@@ -1,8 +1,9 @@
 //! Who is watching whom, and what each watched terminal is allowed to do.
 //!
-//! One bus per app. It holds the roles, the duty state, and the work mode of
-//! every terminal Poltergeist knows about, and it decides whether a
-//! quiescence report is worth putting in front of the supervisor.
+//! One bus per app. It holds the role and the duty state of every terminal
+//! Poltergeist knows about, and whether the user is holding one to its
+//! work, and it decides whether a quiescence report is worth putting in
+//! front of the supervisor.
 //!
 //! What it does *not* do is decide what a quiet terminal means. That is the
 //! supervisor AI's job, and this file exists partly to keep that boundary
@@ -49,38 +50,12 @@ pub const Duty = enum {
     off,
 };
 
-pub const WorkMode = enum {
-    /// The supervisor may clock this terminal off once its skill says
-    /// there is no more worth doing.
-    clock_off,
-
-    /// Keep working within a standing direction the user set. Never clocks
-    /// off.
-    infinite_directed,
-
-    /// Finish one task, move to the next. Never clocks off.
-    infinite_sequential,
-
-    /// Whether the program refuses to clock this terminal off.
-    ///
-    /// This is enforced here rather than written into the supervisor's
-    /// prompt on purpose: a prompt gets pushed out of a long session's
-    /// context, and running unattended overnight is exactly when that
-    /// happens. Code does not forget.
-    pub fn forbidsClockOff(self: WorkMode) bool {
-        return switch (self) {
-            .clock_off => false,
-            .infinite_directed, .infinite_sequential => true,
-        };
-    }
-};
-
 /// Who is asking for a change. Some changes are the user's alone.
 pub const Authority = enum { user, supervisor };
 
 pub const ClockOffError = error{
-    /// The terminal's work mode forbids clocking off.
-    WorkModeForbids,
+    /// The user is holding this terminal to its work.
+    TerminalHeld,
 
     /// The bus has never heard of this terminal.
     UnknownTerminal,
@@ -89,12 +64,12 @@ pub const ClockOffError = error{
     NotPermitted,
 };
 
-pub const SetModeError = error{
+pub const SetHeldError = error{
     UnknownTerminal,
 
-    /// The supervisor may not change a work mode. Otherwise the rule that
-    /// infinite modes cannot clock off would be worth nothing: the
-    /// supervisor would simply switch the mode first and then clock off.
+    /// The hold is the user's alone. Otherwise it would be worth nothing:
+    /// the supervisor would simply lift it and then clock the terminal
+    /// off a moment later, which is the thing the hold exists to prevent.
     NotPermitted,
 };
 
@@ -111,16 +86,19 @@ pub const NoticeKind = enum { quiescent, still_quiescent, resumed };
 pub const Entry = struct {
     role: Role = .none,
     duty: Duty = .on,
-    work_mode: WorkMode = .clock_off,
 
-    /// Who put it in that mode.
+    /// The user is holding this terminal to its work: it may not be
+    /// clocked off.
     ///
-    /// Kept because the supervisor may change a mode but may not undo a
-    /// standing instruction from the user: an infinite mode the *user* set
-    /// is the user saying "this one does not stop", and an agent that could
-    /// lift it could then clock the terminal off, which is the thing the
-    /// mode existed to prevent.
-    work_mode_by: Authority = .user,
+    /// Enforced here rather than written into the supervisor's prompt on
+    /// purpose: a prompt gets pushed out of a long session's context, and
+    /// running unattended overnight is exactly when that happens. Code
+    /// does not forget.
+    ///
+    /// Only the user sets this, and a held terminal wears a ring in its
+    /// tab for as long as the hold lasts -- a guarantee stated once and
+    /// never shown again feels the same as no guarantee at all.
+    held: bool = false,
 
     /// Which supervisor is minding this terminal.
     ///
@@ -162,8 +140,18 @@ pub const Entry = struct {
     /// How long the screen had been unchanged as of the last report, and
     /// when that report arrived. Together these give the current figure
     /// exactly; see `Bus.quietMs`.
+    ///
+    /// `last_event_ms` is null until the first report arrives, and that
+    /// distinction matters more than it looks. It used to default to zero,
+    /// which made `now - 0` -- the whole time the program had been running
+    /// -- the answer for a terminal nothing had ever sampled. A terminal
+    /// opened a minute ago and working flat out was reported as still for
+    /// half a day, and the supervisor's entire judgement is built on this
+    /// number: it would go and interrupt a terminal that was fine, or
+    /// write it off as dead. Never measured and measured-as-very-quiet
+    /// call for opposite actions, so they must not share a value.
     last_quiet_ms: u64 = 0,
-    last_event_ms: u64 = 0,
+    last_event_ms: ?u64 = null,
 
     /// How many times the supervisor has been told this terminal is quiet
     /// since it last came back to work.
@@ -209,7 +197,7 @@ pub const Config = struct {
     /// Whether a supervisor may take itself off duty.
     ///
     /// Off means the standing is the user's alone to give and to take
-    /// back, the way an infinite work mode is. On means a supervisor that
+    /// back, the way a hold on a terminal is. On means a supervisor that
     /// has finished can stop being one -- and stop being woken every
     /// interval for a box that will now always be empty.
     stand_down_allowed: bool = true,
@@ -258,9 +246,22 @@ pub fn get(self: *const Bus, id: Id) ?Entry {
 /// would have produced a `resumed` report, so the absence of one since the
 /// last report means it has not changed since either. Adding the elapsed
 /// time is therefore the true figure, not an estimate.
+///
+/// Zero for a terminal nothing has sampled yet, which is the honest
+/// direction to be wrong in: zero moves the supervisor to do nothing, and
+/// a large number moves it to act on evidence it does not have.
 pub fn quietMs(self: *const Bus, id: Id, now_ms: u64) u64 {
     const e = self.entries.get(id) orelse return 0;
-    return e.last_quiet_ms + (now_ms -| e.last_event_ms);
+    const since = e.last_event_ms orelse return 0;
+    return e.last_quiet_ms + (now_ms -| since);
+}
+
+/// Whether anything has ever sampled this terminal. A caller that can say
+/// "not known" should say that rather than pass `quietMs`'s zero on as a
+/// measurement.
+pub fn observed(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    return e.last_event_ms != null;
 }
 
 /// Name the supervisor. Naming a new one steps the previous one down.
@@ -334,8 +335,8 @@ pub const StandDownError = error{
 /// rather than a shortcut past it.
 ///
 /// **When the user has said not to.** Being a supervisor is a standing
-/// instruction in the same sense an infinite work mode is, and the same
-/// asymmetry applies: the program holds the line rather than a prompt,
+/// instruction in the same sense a hold on a terminal is, and for the same
+/// reason it lives here: the program holds the line rather than a prompt,
 /// because a prompt is what gets compacted out of context at 4am.
 pub fn standDown(self: *Bus, id: Id) StandDownError!void {
     const e = self.entries.getPtr(id) orelse return error.NotASupervisor;
@@ -344,6 +345,13 @@ pub fn standDown(self: *Bus, id: Id) StandDownError!void {
     if (self.mindCount(id) > 0) return error.StillMinding;
 
     self.removeSupervisor(id);
+}
+
+/// What standing a terminal has. A terminal the bus has never heard of is
+/// unclaimed, which is what it is: nobody is minding it.
+pub fn roleOf(self: *const Bus, id: Id) Role {
+    const e = self.entries.get(id) orelse return .none;
+    return e.role;
 }
 
 /// Whether this terminal is minding others.
@@ -396,45 +404,25 @@ pub fn unwatch(self: *Bus, id: Id) void {
     }
 }
 
-/// Set a terminal's work mode. The user only -- see `SetModeError`.
-pub fn setWorkMode(
+/// Hold a terminal to its work, or let it go. The user only -- see
+/// `SetHeldError`.
+pub fn setHeld(
     self: *Bus,
     id: Id,
-    mode: WorkMode,
+    held: bool,
     who: Authority,
-) SetModeError!void {
+) SetHeldError!void {
+    if (who != .user) return error.NotPermitted;
     const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
-
-    // The supervisor may arrange work modes -- that is scheduling, and
-    // scheduling is its job. What it may not do is lift an infinite mode
-    // the user set: that mode is the user saying "this one does not stop",
-    // and lifting it would let the supervisor clock the terminal off a
-    // moment later, which is exactly what the mode existed to prevent.
-    //
-    // Moving *between* infinite modes is allowed, and so is putting a
-    // terminal into one. Only taking the standing instruction away is not.
-    const user_standing = e.work_mode.forbidsClockOff() and e.work_mode_by == .user;
-
-    if (who != .user and user_standing and !mode.forbidsClockOff()) {
-        return error.NotPermitted;
-    }
-
-    e.work_mode = mode;
-
-    // Attribution sticks to the user while their instruction is still in
-    // force. Otherwise the supervisor could launder it: move the terminal
-    // from one infinite mode to the other -- allowed, it still does not
-    // stop -- and claim the mode as its own on the way, then lift it a
-    // moment later. A test caught exactly that.
-    if (who == .user or !user_standing) e.work_mode_by = who;
+    e.held = held;
 }
 
-/// Clock a terminal off. The supervisor only, and never in a work mode that
-/// forbids it.
+/// Clock a terminal off. The supervisor only, and never one the user is
+/// holding to its work.
 pub fn clockOff(self: *Bus, id: Id, who: Authority) ClockOffError!void {
     if (who != .supervisor) return error.NotPermitted;
     const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
-    if (e.work_mode.forbidsClockOff()) return error.WorkModeForbids;
+    if (e.held) return error.TerminalHeld;
     e.duty = .off;
 }
 
@@ -522,15 +510,31 @@ pub const TabMark = enum {
     /// Done for the day.
     off_duty,
 
+    /// Held to its work by the user, and working.
+    held_on_duty,
+
+    /// Held to its work by the user, and the screen has stopped moving.
+    held_quiet,
+
     /// The terminal minding the others.
     supervisor,
 
+    /// The ring is the hold. It is the same shape family as the plain
+    /// marks on purpose: a held terminal is still doing one of the two
+    /// things any watched terminal does, and the ring says the hold is on
+    /// top of that rather than instead of it.
+    ///
+    /// There is no held-and-off-duty mark because there is no such state:
+    /// `clockOff` refuses a held terminal, so a hold and a clock-off
+    /// cannot both be true at once.
     pub fn prefix(self: TabMark) []const u8 {
         return switch (self) {
             .none => "",
             .on_duty => "\u{25CF} ",
             .quiet => "\u{25CB} ",
             .off_duty => "\u{1F4A4} ",
+            .held_on_duty => "\u{25C9} ",
+            .held_quiet => "\u{25CE} ",
             .supervisor => "\u{2691} ",
         };
     }
@@ -550,9 +554,8 @@ pub fn tabMark(self: *const Bus, id: Id, now_ms: u64, quiet_after_ms: u64) TabMa
         .watched => switch (e.duty) {
             .off => .off_duty,
             .on => if (self.quietMs(id, now_ms) >= quiet_after_ms)
-                .quiet
-            else
-                .on_duty,
+                if (e.held) .held_quiet else .quiet
+            else if (e.held) .held_on_duty else .on_duty,
         },
     };
 }
@@ -909,46 +912,53 @@ test "a clocked off terminal stops being reported" {
     try testing.expect(b.report(worker, quiet(180_000), 20_000));
 }
 
-test "infinite work modes cannot be clocked off" {
+test "a held terminal cannot be clocked off" {
     var b = testBus();
     defer b.deinit();
 
     try b.addSupervisor(boss);
     try b.watch(worker, boss);
 
-    for ([_]WorkMode{ .infinite_directed, .infinite_sequential }) |mode| {
-        try b.setWorkMode(worker, mode, .user);
-        try testing.expectError(
-            error.WorkModeForbids,
-            b.clockOff(worker, .supervisor),
-        );
-        try testing.expectEqual(Duty.on, b.get(worker).?.duty);
-    }
+    try b.setHeld(worker, true, .user);
+    try testing.expectError(
+        error.TerminalHeld,
+        b.clockOff(worker, .supervisor),
+    );
+    try testing.expectEqual(Duty.on, b.get(worker).?.duty);
 
-    // And the mode that does allow it still does.
-    try b.setWorkMode(worker, .clock_off, .user);
+    // Released, it clocks off like any other.
+    try b.setHeld(worker, false, .user);
     try b.clockOff(worker, .supervisor);
     try testing.expectEqual(Duty.off, b.get(worker).?.duty);
 }
 
-test "the supervisor cannot change a work mode to get around the ban" {
+test "the supervisor cannot lift a hold to get around the ban" {
     var b = testBus();
     defer b.deinit();
 
     try b.addSupervisor(boss);
     try b.watch(worker, boss);
-    try b.setWorkMode(worker, .infinite_directed, .user);
+    try b.setHeld(worker, true, .user);
 
-    // The obvious way around the rule: switch the mode, then clock off.
+    // The obvious way around the rule: lift the hold, then clock off.
     try testing.expectError(
         error.NotPermitted,
-        b.setWorkMode(worker, .clock_off, .supervisor),
+        b.setHeld(worker, false, .supervisor),
     );
-    try testing.expectEqual(WorkMode.infinite_directed, b.get(worker).?.work_mode);
+    try testing.expect(b.get(worker).?.held);
     try testing.expectError(
-        error.WorkModeForbids,
+        error.TerminalHeld,
         b.clockOff(worker, .supervisor),
     );
+
+    // Nor may it put one on: the hold is the user's word about this
+    // terminal, in either direction.
+    try b.setHeld(worker, false, .user);
+    try testing.expectError(
+        error.NotPermitted,
+        b.setHeld(worker, true, .supervisor),
+    );
+    try testing.expect(!b.get(worker).?.held);
 }
 
 test "only the supervisor clocks terminals off" {
@@ -1008,10 +1018,10 @@ test "register is idempotent and keeps existing state" {
 
     try b.addSupervisor(boss);
     try b.watch(worker, boss);
-    try b.setWorkMode(worker, .infinite_directed, .user);
+    try b.setHeld(worker, true, .user);
 
     try b.register(worker);
-    try testing.expectEqual(WorkMode.infinite_directed, b.get(worker).?.work_mode);
+    try testing.expect(b.get(worker).?.held);
     try testing.expectEqual(Role.watched, b.get(worker).?.role);
 }
 
@@ -1021,13 +1031,37 @@ test "unknown terminals are rejected rather than silently created" {
 
     try testing.expectError(
         error.UnknownTerminal,
-        b.setWorkMode(0xdead, .clock_off, .user),
+        b.setHeld(0xdead, true, .user),
     );
     try b.addSupervisor(boss);
     try testing.expectError(
         error.UnknownTerminal,
         b.clockOff(0xdead, .supervisor),
     );
+}
+
+test "a terminal nothing has sampled is not reported as quiet for ever" {
+    // The bug: `last_event_ms` defaulted to zero, so the answer for a
+    // terminal nothing had sampled was `now - 0` -- how long the program
+    // had been up. A terminal opened a minute ago came back as still for
+    // half a day, and the supervisor acts on this number.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    try testing.expect(!b.observed(worker));
+    try testing.expectEqual(@as(u64, 0), b.quietMs(worker, 46_292_971));
+
+    // And its tab says it is working, not that it has stopped.
+    try testing.expectEqual(TabMark.on_duty, b.tabMark(worker, 46_292_971, 120_000));
+
+    // One report in, and it counts from there rather than from zero.
+    _ = b.report(worker, quiet(60_000), 100_000);
+    try testing.expect(b.observed(worker));
+    try testing.expectEqual(@as(u64, 60_000), b.quietMs(worker, 100_000));
+    try testing.expectEqual(@as(u64, 90_000), b.quietMs(worker, 130_000));
 }
 
 test "an unwatched terminal's tab says nothing" {
@@ -1079,13 +1113,77 @@ test "a clocked off terminal reads as off duty even while quiet" {
     try testing.expectEqual(TabMark.off_duty, b.tabMark(worker, 600_000, 1000));
 }
 
+test "a held terminal wears a ring, moving or still" {
+    // The whole reason the hold is a mark and not a one-off message: the
+    // user has to be able to see, at any moment, which terminals the
+    // program is holding to their work.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    _ = b.report(worker, quiet(60_000), 60_000);
+
+    // Not held: the plain pair.
+    try testing.expectEqual(TabMark.on_duty, b.tabMark(worker, 60_000, 120_000));
+    try testing.expectEqual(TabMark.quiet, b.tabMark(worker, 180_000, 120_000));
+
+    // Held: the same two states, ringed.
+    try b.setHeld(worker, true, .user);
+    try testing.expectEqual(TabMark.held_on_duty, b.tabMark(worker, 60_000, 120_000));
+    try testing.expectEqual(TabMark.held_quiet, b.tabMark(worker, 180_000, 120_000));
+
+    // Releasing it puts the plain pair back.
+    try b.setHeld(worker, false, .user);
+    try testing.expectEqual(TabMark.on_duty, b.tabMark(worker, 60_000, 120_000));
+    try testing.expectEqual(TabMark.quiet, b.tabMark(worker, 180_000, 120_000));
+}
+
+test "there is no held-and-off-duty mark, because there is no such state" {
+    // The fourth combination the ring might have needed does not exist:
+    // the hold is exactly what stops a terminal being clocked off, so a
+    // held terminal can only ever be moving or still.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    // Clocked off first, then held: the hold does not resurrect it, and
+    // the mark stays honest about the duty.
+    try b.clockOff(worker, .supervisor);
+    try b.setHeld(worker, true, .user);
+    try testing.expectEqual(TabMark.off_duty, b.tabMark(worker, 0, 1000));
+
+    // Back on duty, the ring shows.
+    try b.clockOn(worker);
+    try testing.expectEqual(TabMark.held_on_duty, b.tabMark(worker, 0, 1000));
+
+    // And from here it cannot go off duty again while the hold stands.
+    try testing.expectError(error.TerminalHeld, b.clockOff(worker, .supervisor));
+}
+
 test "every mark but none has a marker, and none has nothing" {
     try testing.expectEqualStrings("", TabMark.none.prefix());
-    for ([_]TabMark{ .on_duty, .quiet, .off_duty, .supervisor }) |m| {
+    for ([_]TabMark{
+        .on_duty,
+        .quiet,
+        .off_duty,
+        .held_on_duty,
+        .held_quiet,
+        .supervisor,
+    }) |m| {
         try testing.expect(m.prefix().len > 0);
         // Trailing space, because it sits in front of a title.
         try testing.expect(m.prefix()[m.prefix().len - 1] == ' ');
     }
+
+    // Every marker is distinct: two terminals in different states must not
+    // look the same in the tab bar.
+    const all = std.enums.values(TabMark);
+    for (all, 0..) |a, i| for (all[i + 1 ..]) |c| {
+        try testing.expect(!std.mem.eql(u8, a.prefix(), c.prefix()));
+    };
 }
 
 test "reading the box clears it" {
@@ -1215,54 +1313,40 @@ test "a terminal the supervisor never watched is not in the box" {
     try testing.expect(bus.drain(boss, 1000, &buf) == null);
 }
 
-test "the supervisor may arrange work modes, which is scheduling" {
-    // Deciding what a terminal should be doing is the supervisor's job. It
-    // was refused this outright, which meant the user had to reach for the
-    // keyboard for every terminal -- while the supervisor was trusted to
-    // read those same terminals and type into them.
+test "the hold is the user's alone -- the supervisor cannot touch it" {
+    // Arranging work is the supervisor's job, but the hold is not work
+    // arrangement: it is the user's standing word that this terminal does
+    // not stop. If the supervisor could set it, it could clear it, and the
+    // one thing the hold exists to prevent would be back.
+    //
+    // Nothing is lost by refusing it either way -- the supervisor decides
+    // afresh on every wake-up whether there is more worth doing, which is
+    // what a mode switch used to say and then forget.
     var b = testBus();
     defer b.deinit();
 
     const hand: Id = 0xbeef;
     try b.watch(hand, boss);
 
-    // Into an infinite mode, and between them.
-    try b.setWorkMode(hand, .infinite_directed, .supervisor);
-    try testing.expectEqual(WorkMode.infinite_directed, b.get(hand).?.work_mode);
-
-    try b.setWorkMode(hand, .infinite_sequential, .supervisor);
-    try testing.expectEqual(WorkMode.infinite_sequential, b.get(hand).?.work_mode);
-
-    // And back out of one it set itself: no standing instruction from the
-    // user is being undone here.
-    try b.setWorkMode(hand, .clock_off, .supervisor);
-    try testing.expectEqual(WorkMode.clock_off, b.get(hand).?.work_mode);
-}
-
-test "a standing instruction from the user outlives the supervisor's wishes" {
-    var b = testBus();
-    defer b.deinit();
-
-    const hand: Id = 0xbeef;
-    try b.watch(hand, boss);
-
-    // The user says this one does not stop.
-    try b.setWorkMode(hand, .infinite_directed, .user);
-
-    // The supervisor may move it to the other infinite mode -- still not
-    // stopping -- but may not lift the instruction.
-    try b.setWorkMode(hand, .infinite_sequential, .supervisor);
     try testing.expectError(
         error.NotPermitted,
-        b.setWorkMode(hand, .clock_off, .supervisor),
+        b.setHeld(hand, true, .supervisor),
     );
+    try testing.expect(!b.get(hand).?.held);
+
+    try b.setHeld(hand, true, .user);
+    try testing.expectError(
+        error.NotPermitted,
+        b.setHeld(hand, false, .supervisor),
+    );
+    try testing.expect(b.get(hand).?.held);
 
     // And the terminal still cannot be clocked off, which is what the
-    // instruction was for.
-    try testing.expectError(error.WorkModeForbids, b.clockOff(hand, .supervisor));
+    // hold was for.
+    try testing.expectError(error.TerminalHeld, b.clockOff(hand, .supervisor));
 
     // The user can always lift their own.
-    try b.setWorkMode(hand, .clock_off, .user);
+    try b.setHeld(hand, false, .user);
     try b.clockOff(hand, .supervisor);
 }
 

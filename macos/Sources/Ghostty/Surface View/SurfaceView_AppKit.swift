@@ -1637,8 +1637,8 @@ extension Ghostty {
             item.setImageIfDesired(systemSymbolName: "eyeglasses")
             item = menu.addItem(withTitle: String(localized: "Supervise This Terminal", comment: "右键菜单：监督此终端"), action: #selector(poltergeistToggleWatch(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "binoculars")
-            item = menu.addItem(withTitle: String(localized: "Cycle This Terminal's Work Mode", comment: "右键菜单：切换工作模式"), action: #selector(poltergeistCycleWorkMode(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "clock.arrow.circlepath")
+            item = menu.addItem(withTitle: String(localized: "Keep This Terminal Working", comment: "右键菜单：按住不许下班"), action: #selector(poltergeistToggleHeld(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "pin")
 
             return menu
         }
@@ -1788,8 +1788,8 @@ extension Ghostty {
             poltergeistAction("poltergeist_toggle_watch")
         }
 
-        @objc func poltergeistCycleWorkMode(_ sender: Any) {
-            poltergeistAction("poltergeist_cycle_work_mode")
+        @objc func poltergeistToggleHeld(_ sender: Any) {
+            poltergeistAction("poltergeist_toggle_held")
         }
 
         private func poltergeistAction(_ action: String) {

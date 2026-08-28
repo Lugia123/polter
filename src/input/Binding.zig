@@ -705,14 +705,14 @@ pub const Action = union(enum) {
     /// itself with the `set_watch` tool.
     poltergeist_toggle_watch,
 
-    /// Cycle this terminal's work mode: clock-off, then the two infinite
-    /// modes, then back.
+    /// Hold this terminal to its work, or let it go.
     ///
-    /// A supervisor may arrange work modes too, but it may not lift an
-    /// infinite mode *you* set: that is a standing instruction, and being
-    /// able to lift it would mean being able to clock the terminal off a
-    /// moment later -- which is what the mode exists to prevent.
-    poltergeist_cycle_work_mode,
+    /// A held terminal cannot be clocked off, by a supervisor or by
+    /// anything else, and its tab wears a ring for as long as the hold
+    /// lasts. Yours alone: a supervisor that could lift it could clock the
+    /// terminal off a moment later, which is the thing the hold exists to
+    /// prevent.
+    poltergeist_toggle_held,
 
     /// Show or hide the window with what the terminals have said to each
     /// other.
@@ -1506,7 +1506,7 @@ pub const Action = union(enum) {
             .toggle_readonly,
             .poltergeist_supervisor,
             .poltergeist_toggle_watch,
-            .poltergeist_cycle_work_mode,
+            .poltergeist_toggle_held,
             .poltergeist_toggle_chat,
             .resize_split,
             .equalize_splits,

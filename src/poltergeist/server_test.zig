@@ -338,3 +338,176 @@ test "the server can be torn down with a connection sitting idle" {
     // does not happen the join in `stop` never returns.
     f.server.stop();
 }
+
+// -- sweeping dead sockets --------------------------------------------------
+
+/// A state directory with sockets in it, plus the files a real one carries.
+///
+/// Every socket here is a real one, bound with `listen`. A plain file
+/// standing in for a socket would prove nothing: the whole point of the
+/// sweep is that it asks the kernel whether anyone is behind the path, and
+/// only a real listener can answer yes.
+const SweepDir = struct {
+    threaded: std.Io.Threaded,
+    io: std.Io,
+    path: []u8,
+    dir: std.Io.Dir,
+
+    /// Kept listening for the length of the test, so a probe of its path
+    /// connects. This is the one that must survive.
+    live: net.Server,
+
+    fn setup(self: *SweepDir) !void {
+        const alloc = testing.allocator;
+
+        self.threaded = .init(alloc, .{});
+        errdefer self.threaded.deinit();
+        const io = self.threaded.io();
+        self.io = io;
+
+        // Short: a socket path has far less room than a file path, and
+        // these paths have a directory and a file name still to come.
+        var raw: [5]u8 = undefined;
+        io.random(&raw);
+        self.path = try std.fmt.allocPrint(alloc, "/tmp/pg-sweep-{x}", .{&raw});
+        errdefer alloc.free(self.path);
+
+        try std.Io.Dir.cwd().createDirPath(io, self.path);
+        errdefer std.Io.Dir.cwd().deleteTree(io, self.path) catch {};
+
+        self.dir = try std.Io.Dir.cwd().openDir(io, self.path, .{ .iterate = true });
+        errdefer self.dir.close(io);
+
+        // Two sockets nobody is behind any more: bound, then abandoned
+        // without unlinking, which is exactly what a crash leaves.
+        try self.abandon("polter-dead1.sock");
+        try self.abandon("polter-dead2.sock");
+
+        // A socket nobody is behind, but not one of ours by name.
+        try self.abandon("other-tool.sock");
+
+        // The files a state directory actually holds.
+        try self.touch("session.json");
+        try self.dir.createDirPath(io, "chat");
+
+        // A plain file wearing our name. Nothing is listening on it
+        // because nothing can be: it is not a socket. It must be left
+        // alone all the same -- the name is not what makes it ours.
+        try self.touch("polter-notasocket.sock");
+
+        self.live = try self.listen("polter-live.sock");
+    }
+
+    fn deinit(self: *SweepDir) void {
+        self.live.deinit(self.io);
+        self.dir.close(self.io);
+        std.Io.Dir.cwd().deleteTree(self.io, self.path) catch {};
+        testing.allocator.free(self.path);
+        self.threaded.deinit();
+    }
+
+    fn full(self: *SweepDir, buf: []u8, name: []const u8) ![]u8 {
+        return std.fmt.bufPrint(buf, "{s}/{s}", .{ self.path, name });
+    }
+
+    fn listen(self: *SweepDir, name: []const u8) !net.Server {
+        var buf: [128]u8 = undefined;
+        const addr = try net.UnixAddress.init(try self.full(&buf, name));
+        return addr.listen(self.io, .{});
+    }
+
+    /// Bind a socket and drop the listener, leaving the file behind.
+    fn abandon(self: *SweepDir, name: []const u8) !void {
+        var server = try self.listen(name);
+        server.deinit(self.io);
+    }
+
+    fn touch(self: *SweepDir, name: []const u8) !void {
+        const file = try self.dir.createFile(self.io, name, .{});
+        file.close(self.io);
+    }
+
+    fn exists(self: *SweepDir, name: []const u8) bool {
+        _ = self.dir.statFile(self.io, name, .{ .follow_symlinks = false }) catch
+            return false;
+        return true;
+    }
+};
+
+test "sweeping removes sockets nothing is listening on" {
+    var d: SweepDir = undefined;
+    try d.setup();
+    defer d.deinit();
+
+    try testing.expect(d.exists("polter-dead1.sock"));
+    try testing.expect(d.exists("polter-dead2.sock"));
+
+    Server.sweepStale(testing.allocator, d.io, d.path);
+
+    try testing.expect(!d.exists("polter-dead1.sock"));
+    try testing.expect(!d.exists("polter-dead2.sock"));
+}
+
+test "sweeping leaves a socket someone is still listening on" {
+    // The one that matters. A live Polter's socket sits in this directory
+    // next to the dead ones, and deleting it would cut every agent that
+    // terminal is hosting off from the app.
+    var d: SweepDir = undefined;
+    try d.setup();
+    defer d.deinit();
+
+    Server.sweepStale(testing.allocator, d.io, d.path);
+
+    try testing.expect(d.exists("polter-live.sock"));
+
+    // Still listening, not merely still on disk: a client can connect.
+    var buf: [128]u8 = undefined;
+    const addr = try net.UnixAddress.init(try d.full(&buf, "polter-live.sock"));
+    const stream = try addr.connect(d.io);
+    stream.close(d.io);
+}
+
+test "sweeping does not touch anything that is not one of our sockets" {
+    var d: SweepDir = undefined;
+    try d.setup();
+    defer d.deinit();
+
+    Server.sweepStale(testing.allocator, d.io, d.path);
+
+    try testing.expect(d.exists("session.json"));
+    try testing.expect(d.exists("chat"));
+    try testing.expect(d.exists("other-tool.sock"));
+    try testing.expect(d.exists("polter-notasocket.sock"));
+}
+
+test "sweeping a directory that is not there does nothing and says nothing" {
+    var d: SweepDir = undefined;
+    try d.setup();
+    defer d.deinit();
+
+    var buf: [128]u8 = undefined;
+    const missing = try d.full(&buf, "no-such-subdirectory");
+    Server.sweepStale(testing.allocator, d.io, missing);
+}
+
+test "a server removes its own socket when it goes away" {
+    // A socket file outliving the process that bound it is how sixty of
+    // them piled up in the state directory. The ordinary exit path has to
+    // take its own with it.
+    var d: SweepDir = undefined;
+    try d.setup();
+    defer d.deinit();
+
+    var buf: [128]u8 = undefined;
+    const path = try d.full(&buf, "polter-mine.sock");
+
+    var fake: Fixture.Fake = .{ .io = d.io };
+    var server: Server = try .init(testing.allocator, d.io, path, .{
+        .ctx = &fake,
+        .func = Fixture.Fake.submit,
+    });
+    try testing.expect(d.exists("polter-mine.sock"));
+
+    server.deinit();
+    try testing.expect(!d.exists("polter-mine.sock"));
+}

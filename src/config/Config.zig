@@ -1285,17 +1285,6 @@ command: ?Command = null,
 /// Set it to `false` for a plain terminal that opens no socket at all.
 @"poltergeist-mcp": bool = true,
 
-/// Watch this terminal for quiescence.
-///
-/// This is the sensing half of Poltergeist. When enabled, Ghostty samples
-/// the visible screen periodically and measures how long it has gone
-/// unchanged. It does not read, interpret, or act on what is on the screen.
-///
-/// Ghostty never decides what a still screen *means* -- whether the program
-/// is thinking, waiting, finished, or wedged. That judgement belongs to the
-/// supervising agent, which looks at the screen itself.
-///
-/// The default is `false`: nothing is watched unless you ask for it.
 /// Register Polter as an MCP server with Claude Code, so that agents in
 /// any directory can reach it.
 ///
@@ -1313,6 +1302,17 @@ command: ?Command = null,
 /// not installed. Set it to `false` to manage the registration yourself.
 @"poltergeist-register-mcp": bool = true,
 
+/// Watch this terminal for quiescence.
+///
+/// This is the sensing half of Poltergeist. When enabled, Ghostty samples
+/// the visible screen periodically and measures how long it has gone
+/// unchanged. It does not read, interpret, or act on what is on the screen.
+///
+/// Ghostty never decides what a still screen *means* -- whether the program
+/// is thinking, waiting, finished, or wedged. That judgement belongs to the
+/// supervising agent, which looks at the screen itself.
+///
+/// The default is `false`: nothing is watched unless you ask for it.
 @"poltergeist-watch": bool = false,
 
 /// How long the visible screen must go unchanged before this terminal is
@@ -1364,8 +1364,22 @@ command: ?Command = null,
 ///
 /// The log is append-only and nothing removes anything from it: messages
 /// trimmed or compacted away in memory are still in the file. It lives in
-/// `$XDG_STATE_HOME/polter/chat/`, is created owner-only, and rotates once
-/// past 8MB keeping one older generation.
+/// `$XDG_STATE_HOME/polter/chat/` and is created owner-only.
+///
+/// It is written in two shapes, under that same directory, and they differ
+/// in what they cost you:
+///
+///   * `chat.jsonl` -- one flat file that rotates past 8MB keeping one
+///     older generation, so it is bounded at roughly 16MB. This one is for
+///     the machine, and it forgets: past two generations, gone.
+///   * `<group>/<date>.jsonl` -- one directory per group, one file per
+///     day. This is the one to grep the morning after, and **it is never
+///     rotated and never trimmed**. It is therefore unbounded: it grows
+///     for as long as the agents keep talking. A day past 8MB carries on
+///     in a `.partN` file beside it rather than moving anything aside.
+///
+/// The second is the fuller of the two by design, so do not read the 16MB
+/// as a cap on what this option costs on disk.
 ///
 /// Turn it off if you would rather nothing was written down. The contents
 /// are whatever the agents paste at each other, which is to say your code,
@@ -1379,15 +1393,22 @@ command: ?Command = null,
 ///
 /// It cannot do that as a shortcut. Standing down is refused while it still
 /// minds any terminal, so it has to let each one go first, deliberately and
-/// one at a time; only then may it step down itself. Nor can it appoint
-/// itself again afterwards -- naming a supervisor is yours alone, through
-/// the `poltergeist_supervisor` keybind.
+/// one at a time; only then may it step down itself.
+///
+/// It may put itself forward again afterwards, with `become_supervisor`.
+/// What standing down guards against is a supervisor quietly carrying on
+/// collecting an empty box all night, and coming back is the opposite of
+/// quietly: it is one deliberate act that leaves a record in the group.
+/// (A terminal somebody else is watching may never do this, whether or not
+/// it once stood down -- it already has a supervisor, and text arriving in
+/// it must not be able to rearrange who may reach whom.)
 ///
 /// Set this to false if being a supervisor should be a standing
-/// instruction that only you can withdraw, the way an infinite work mode
-/// is. The cost of false is the wake-ups continuing after there is
-/// anything to wake up for; the cost of true is a supervisor that decides
-/// too early that the night is over, and stops watching while you sleep.
+/// instruction that only you can withdraw, the way holding a terminal to
+/// its work is. The cost of false is the wake-ups continuing after there
+/// is anything to wake up for; the cost of true is a supervisor that
+/// decides too early that the night is over, and stops watching while you
+/// sleep.
 @"poltergeist-supervisor-stand-down": bool = true,
 
 @"poltergeist-chat-log": bool = true,

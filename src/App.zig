@@ -698,7 +698,8 @@ fn findPluginDir(
 /// Write down what tomorrow needs, now.
 ///
 /// Called after anything that changes the arrangement -- a group made, a
-/// member added or removed, a brief written, a role or work mode changed.
+/// member added or removed, a brief written, a role changed, a terminal
+/// held to its work or let go.
 /// Not at exit: the cases this exists for are the machine shutting down
 /// and Polter being killed, and neither of those runs an exit path.
 ///
@@ -752,7 +753,7 @@ fn sessionSnapshot(
                 .cwd = footing.cwd,
                 .title = footing.title,
                 .role = if (entry) |e| e.role else .none,
-                .work_mode = if (entry) |e| e.work_mode else .clock_off,
+                .held = if (entry) |e| e.held else false,
             });
         }
 
@@ -1076,6 +1077,12 @@ fn syncPoltergeistServer(self: *App, want: bool) !void {
         error.PathAlreadyExists => {},
         else => return err,
     };
+
+    // A socket file outlives the process that bound it, so a machine that has
+    // run Polter a few dozen times has a few dozen of them. Sweeping before we
+    // bind our own means we never probe ourselves, and only sockets nothing is
+    // listening on are removed -- a live instance's is left alone.
+    poltergeistpkg.Server.sweepStale(self.alloc, io, state_dir);
 
     const path = try poltergeistpkg.Server.defaultPath(self.alloc, io, state_dir);
     defer self.alloc.free(path);

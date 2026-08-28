@@ -15,6 +15,14 @@
 //! anybody already has, recoverable if the tail is torn off by a crash, and
 //! writable without reading anything back.
 //!
+//! It is written twice, into two shapes with different jobs. `chat.jsonl`
+//! is the **stream**: one flat file, rotated by size, which the archive
+//! follows by seq and which therefore has to stay boring. `<group>/<date>
+//! .jsonl` is the **record**: what a person greps the next morning and what
+//! `group_history` pages through, never rotated and never trimmed. The
+//! record is the fuller of the two, because the stream forgets. See the
+//! section beginning "the record" below, and `docs/poltergeist/storage.md`.
+//!
 //! Kept out of `Chat.zig` so that the model stays pure -- no allocation
 //! beyond its registry, no clock, no filesystem. The host owns the side
 //! effects, which is also why it can be turned off entirely.
@@ -67,10 +75,25 @@ const tail_probe_bytes: usize = 64 * 1024;
 /// than a line the reader is simply too small to see.
 const tail_chunk_bytes: usize = 128 * 1024;
 
+/// The most one day's file in the record holds before that day carries on
+/// in a `.partN` file beside it.
+///
+/// The same number as `rotate_bytes` and for an unrelated reason: nothing
+/// in the record is ever moved aside or overwritten, so this bounds how
+/// large a single file somebody opens in `less` gets, not how much disk
+/// the record takes. See "the record" below.
+const day_bytes: u64 = 8 * 1024 * 1024;
+
+/// Longest a group's directory name may get once encoded.
+const max_segment: usize = 200;
+
 alloc: Allocator,
 io: std.Io,
 
-/// Where the current log lives. Owned.
+/// `<state>/chat`. Owned. Both shapes live under it.
+dir: []const u8,
+
+/// Where the current stream generation lives. Owned.
 path: []const u8,
 
 file: std.Io.File,
@@ -83,6 +106,9 @@ written: u64,
 /// and per process, so two nights of one file hold two `build/seq=7`
 /// and anything paging by it reads the wrong run.
 next_seq: u64,
+
+/// The record: `<group>/<YYYY-MM-DD>.jsonl` under `dir`.
+tree: Tree,
 
 pub const Error = Allocator.Error || error{
     XdgLookupFailed,
@@ -141,7 +167,7 @@ pub fn head(self: *const ChatLog) u64 {
 pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Error!ChatLog {
     const dir = std.fs.path.join(alloc, &.{ state_dir, "chat" }) catch
         return error.OutOfMemory;
-    defer alloc.free(dir);
+    errdefer alloc.free(dir);
 
     std.Io.Dir.cwd().createDirPath(io, dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
@@ -164,16 +190,22 @@ pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Error!ChatLog {
     var self: ChatLog = .{
         .alloc = alloc,
         .io = io,
+        .dir = dir,
         .path = path,
         .file = file,
         .written = written,
         .next_seq = 1,
+        .tree = .{ .alloc = alloc, .io = io, .dir = dir },
     };
 
     // In that order: the tail has to be whole before anything tries to
     // read a line out of it.
     self.patchTornTail();
     self.next_seq = self.recoverSeq() + 1;
+
+    // Last, because it reads the stream back and writes into the record,
+    // and both want the tail whole and the numbering settled first.
+    self.backfill();
     return self;
 }
 
@@ -295,8 +327,10 @@ fn parseLineStrict(arena: Allocator, bytes: []const u8) Allocator.Error!?Line {
 }
 
 pub fn deinit(self: *ChatLog) void {
+    self.tree.deinit();
     self.file.close(self.io);
     self.alloc.free(self.path);
+    self.alloc.free(self.dir);
     self.* = undefined;
 }
 
@@ -395,6 +429,12 @@ pub fn append(
         return 0;
     };
     self.written += line.len;
+
+    // The record second, and only once the stream has taken it. The stream
+    // is what hands out seq and what the archive follows; the record is
+    // what people read. Writing it the other way round would let a full
+    // disk under `chat/<group>/` cost a message rather than cost legibility.
+    self.tree.write(group, at_ms, line);
     return seq;
 }
 
@@ -451,8 +491,15 @@ pub const Page = struct {
 
 /// Messages in `group` older than `before_seq`, newest end first.
 ///
-/// Reading fails the way writing does -- quietly. A page that stops
-/// short says `exhausted = false`, and the caller asks again later.
+/// Read out of the record rather than out of the stream, for two reasons.
+/// One group's days are its own files, so a quiet group buried under
+/// another one's traffic costs nothing to page through -- the old walk had
+/// to read past everybody else's megabytes to find it. And the record goes
+/// back further than the stream's two generations do, so paging up does
+/// not hit a wall at whatever the last rotation happened to cut.
+///
+/// Reading fails the way writing does -- quietly. A page that stops short
+/// says `exhausted = false`, and the caller asks again later.
 pub fn history(
     self: *ChatLog,
     alloc: Allocator,
@@ -485,16 +532,39 @@ pub fn history(
         w.found.deinit(alloc);
     }
 
-    // This generation first, then the one rotation moved aside. `written`
-    // rather than a fresh stat: it is where this process's last line ended,
-    // and it is the offset the next append will use.
+    var days = try self.tree.days(alloc, group);
+    defer days.deinit(alloc);
+
+    // Newest day first, and within a day its last part first: the same
+    // direction the walk inside each file goes.
     var exhausted = true;
-    var stop = try w.generation(self.file, self.written);
-    if (stop != .enough) {
-        if (stop == .gave_up) exhausted = false;
-        stop = try self.walkRotated(&w);
+    for (days.items) |d| {
+        const path = try self.tree.partPath(alloc, group, d.day, d.part);
+        defer alloc.free(path);
+
+        // A file that was listed a moment ago and will not open now is a
+        // gap in the middle of the range, and a gap is the one thing the
+        // caller must not be told is the beginning.
+        const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch {
+            exhausted = false;
+            continue;
+        };
+        defer file.close(self.io);
+
+        const st = file.stat(self.io) catch {
+            exhausted = false;
+            continue;
+        };
+
+        switch (try w.generation(file, st.size)) {
+            .enough => {
+                exhausted = false;
+                break;
+            },
+            .gave_up => exhausted = false,
+            .start_of_file => {},
+        }
     }
-    if (stop != .start_of_file) exhausted = false;
 
     // Collected newest first because backwards is the only direction a
     // file can be walked; handed back oldest first because that is the
@@ -1051,6 +1121,13 @@ const Walk = struct {
             // to be asked from.
             if (parsed.seq == 0) continue;
             if (w.before_seq != 0 and parsed.seq >= w.before_seq) continue;
+
+            // Not redundant, even though the file being walked is one
+            // group's own directory. A directory name is a filing decision
+            // and `group` is what the line says about itself: two names
+            // longer than `max_segment` share a directory when their
+            // hashes collide, and a file put there by hand can say
+            // anything at all. The line is what is believed.
             if (!std.mem.eql(u8, parsed.group, w.group)) continue;
             const from = std.fmt.parseUnsigned(Bus.Id, parsed.from, 0) catch continue;
 
@@ -1091,23 +1168,572 @@ const Walk = struct {
     }
 };
 
-/// The generation rotation moved aside, if it is still there.
-///
-/// Not being there is the ordinary case rather than a failure -- most
-/// logs never grow enough to rotate at all -- so it counts as having
-/// walked off the front, not as having given up.
-fn walkRotated(self: *ChatLog, w: *Walk) Allocator.Error!Stop {
-    const old = try std.fmt.allocPrint(w.alloc, "{s}.1", .{self.path});
-    defer w.alloc.free(old);
+// -- the record -------------------------------------------------------------
+//
+// Two shapes, and the difference between them is the whole of this half of
+// the file.
+//
+// `chat.jsonl` is the **stream**. One flat file, rotated by size, two
+// generations. It is what the archive follows, and everything that makes
+// following it cheap -- one file, one offset, one inode -- rests on it
+// staying that shape. Being bounded, it forgets.
+//
+// `<group>/<YYYY-MM-DD>.jsonl` is the **record**. It is what a person greps
+// at nine the next morning and what `group_history` pages through. Nothing
+// in it is ever rotated, renamed or removed, so it reaches back further
+// than the stream does: the record, not the stream, is the more complete of
+// the two. Which is why "if the record breaks, replay the stream" is a
+// promise made nowhere here -- it would only ever be true of the last 16MB.
+//
+// Why group and day, rather than size. A group is the unit a person already
+// thinks in ("that Kairos business last night"), and a day is the only
+// boundary that is naturally bounded -- a group can live for months, a day
+// cannot. The boundaries size-based rotation produces mean nothing to
+// anybody: no one has ever wanted to read the second generation.
+//
+// The record has no size ceiling, and that is what "nothing is ever
+// removed" means when written out. The machine this was built on holds
+// 2.8MB of chat from a fortnight, so the honest thing is to say the number
+// rather than to build a mechanism for it.
 
-    const file = std.Io.Dir.openFileAbsolute(self.io, old, .{}) catch |err| switch (err) {
-        error.FileNotFound => return .start_of_file,
-        else => return .gave_up,
+/// The record: one directory per group, one file per day, under `dir`.
+const Tree = struct {
+    alloc: Allocator,
+    io: std.Io,
+
+    /// `<state>/chat`. Borrowed from the `ChatLog` that owns it.
+    dir: []const u8,
+
+    /// The day file being appended to, if any.
+    ///
+    /// One at a time rather than one per group: messages arrive one at a
+    /// time, and the open a group switch costs is nothing beside the work
+    /// that produced the message.
+    cur: ?Cur = null,
+
+    /// Reading and writing fail the way the stream's do: once out loud,
+    /// then quietly.
+    warned: bool = false,
+
+    const Cur = struct {
+        /// The raw group name, so that a switch is noticed without
+        /// encoding every message's group a second time. Owned.
+        group: []const u8,
+        day: u32,
+        part: u32,
+        file: std.Io.File,
+        written: u64,
     };
+
+    /// One file in a group's directory, as its name says it is.
+    const DayFile = struct {
+        day: u32,
+        part: u32,
+
+        /// Newest first, which is the direction `history` walks.
+        fn newestFirst(_: void, a: DayFile, b: DayFile) bool {
+            if (a.day != b.day) return a.day > b.day;
+            return a.part > b.part;
+        }
+    };
+
+    const Days = std.ArrayListUnmanaged(DayFile);
+
+    const Opened = struct { file: std.Io.File, written: u64 };
+
+    /// A wall against a day that never stops. Eight gigabytes in one group
+    /// on one day is not a case worth carrying code for; past it the last
+    /// part simply keeps growing, which loses nothing.
+    const max_parts: u32 = 1000;
+
+    fn deinit(self: *Tree) void {
+        self.close();
+        self.* = undefined;
+    }
+
+    fn close(self: *Tree) void {
+        if (self.cur) |*c| {
+            c.file.close(self.io);
+            self.alloc.free(c.group);
+        }
+        self.cur = null;
+    }
+
+    /// Put one already-rendered line into its group's file for the day.
+    ///
+    /// Handed the bytes `append` has just written to the stream rather than
+    /// rendering them again: the two files then hold the same line byte for
+    /// byte, and there is no second renderer to drift.
+    ///
+    /// **Every failure here is a warning and nothing else, deliberately.**
+    /// The stream is what the archive follows and what hands out seq; a full
+    /// disk or an unwritable directory must not turn "the record is worse
+    /// off" into "the message is gone". It is also why a later reader should
+    /// not "fix" this by propagating the error: a gap left here is found and
+    /// filled by `backfill` on the next start, because how far the record
+    /// goes is measured off the files rather than remembered.
+    fn write(self: *Tree, group: []const u8, at_ms: i64, line: []const u8) void {
+        self.ensure(group, dayOf(at_ms), line.len) catch |err| {
+            self.warnOnce(err);
+            return;
+        };
+
+        const c = &self.cur.?;
+        c.file.writePositionalAll(self.io, line, c.written) catch |err| {
+            self.warnOnce(err);
+            // Closed rather than kept: reopening on the next message is
+            // the cheapest thing that can recover a handle which has gone
+            // bad underneath us.
+            self.close();
+            return;
+        };
+        c.written += line.len;
+    }
+
+    /// Leave `cur` open on the file this message belongs in.
+    fn ensure(self: *Tree, group: []const u8, day: u32, want: usize) !void {
+        if (self.cur) |*c| {
+            if (c.day == day and std.mem.eql(u8, c.group, group)) {
+                if (c.written + want <= day_bytes) return;
+
+                // The day is not over, so the day does not end here. It
+                // carries on in the part beside it, and nothing is moved
+                // aside or dropped to make room.
+                const opened = try self.openPart(group, day, c.part + 1);
+                c.file.close(self.io);
+                c.file = opened.file;
+                c.part += 1;
+                c.written = opened.written;
+                return;
+            }
+        }
+
+        self.close();
+
+        // How far into the day the parts have got. Probed rather than
+        // assumed, because a restart in the middle of a busy day has to
+        // land on the end of it and not on top of its beginning.
+        var part: u32 = 1;
+        var opened = try self.openPart(group, day, part);
+        while (opened.written + want > day_bytes and part < max_parts) {
+            opened.file.close(self.io);
+            part += 1;
+            opened = try self.openPart(group, day, part);
+        }
+        errdefer opened.file.close(self.io);
+
+        const owned = try self.alloc.dupe(u8, group);
+        self.cur = .{
+            .group = owned,
+            .day = day,
+            .part = part,
+            .file = opened.file,
+            .written = opened.written,
+        };
+    }
+
+    /// Open one part for appending, making the group's directory if it is
+    /// not there yet.
+    fn openPart(self: *Tree, group: []const u8, day: u32, part: u32) !Opened {
+        const path = try self.partPath(self.alloc, group, day, part);
+        defer self.alloc.free(path);
+
+        if (std.fs.path.dirname(path)) |parent| {
+            std.Io.Dir.cwd().createDirPath(self.io, parent) catch |err| switch (err) {
+                error.PathAlreadyExists => {},
+                else => return err,
+            };
+        }
+
+        const file = try openAppend(self.io, path);
+        errdefer file.close(self.io);
+
+        var written = if (file.stat(self.io)) |st| st.size else |_| 0;
+
+        // The same invariant the stream keeps, for the same reason: a
+        // newline ends a line and nothing else does, so a run that died
+        // mid-write does not get its half line joined onto the next one.
+        if (written > 0) {
+            var last: [1]u8 = undefined;
+            const n = file.readPositionalAll(self.io, &last, written - 1) catch 0;
+            if (n == 1 and last[0] != '\n') {
+                file.writePositionalAll(self.io, "\n", written) catch {};
+                written += 1;
+            }
+        }
+
+        return .{ .file = file, .written = written };
+    }
+
+    /// `<dir>/<encoded group>/<YYYY-MM-DD>.jsonl`, or `.partN.jsonl` past
+    /// the first. Caller owns it.
+    fn partPath(
+        self: *const Tree,
+        alloc: Allocator,
+        group: []const u8,
+        day: u32,
+        part: u32,
+    ) Allocator.Error![]u8 {
+        const seg = try encodeGroup(alloc, group);
+        defer alloc.free(seg);
+
+        var buf: [64]u8 = undefined;
+        return std.fs.path.join(alloc, &.{ self.dir, seg, nameOf(&buf, .{
+            .day = day,
+            .part = part,
+        }) });
+    }
+
+    /// What a day file is called.
+    fn nameOf(buf: *[64]u8, d: DayFile) []const u8 {
+        var ymd: [16]u8 = undefined;
+        return (if (d.part <= 1)
+            std.fmt.bufPrint(buf, "{s}.jsonl", .{dayName(&ymd, d.day)})
+        else
+            std.fmt.bufPrint(buf, "{s}.part{d}.jsonl", .{ dayName(&ymd, d.day), d.part })) catch
+            unreachable;
+    }
+
+    /// `YYYY-MM-DD` out of the packed `YYYYMMDD` a day is carried as.
+    ///
+    /// Packed as one integer rather than carried as a string because it is
+    /// also the sort key `history` walks by, and comparing two `u32` needs
+    /// nothing to own or free.
+    fn dayName(buf: *[16]u8, day: u32) []const u8 {
+        return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+            day / 10000,
+            (day / 100) % 100,
+            day % 100,
+        }) catch unreachable;
+    }
+
+    /// The day file `name` is, or null when it is not one.
+    fn parseDayFile(name: []const u8) ?DayFile {
+        if (!std.mem.endsWith(u8, name, ".jsonl")) return null;
+        const stem = name[0 .. name.len - ".jsonl".len];
+        if (stem.len < 10) return null;
+
+        const day = parseDay(stem[0..10]) orelse return null;
+        const rest = stem[10..];
+        if (rest.len == 0) return .{ .day = day, .part = 1 };
+
+        if (!std.mem.startsWith(u8, rest, ".part")) return null;
+        const n = std.fmt.parseUnsigned(u32, rest[".part".len..], 10) catch return null;
+
+        // `.part1` is not a name this writes, so a file called that came
+        // from somewhere else and would sort into the same place as the
+        // day's first part.
+        if (n < 2) return null;
+        return .{ .day = day, .part = n };
+    }
+
+    /// `YYYY-MM-DD` back into the packed integer, or null.
+    fn parseDay(s: []const u8) ?u32 {
+        if (s.len != 10 or s[4] != '-' or s[7] != '-') return null;
+        const y = std.fmt.parseUnsigned(u32, s[0..4], 10) catch return null;
+        const m = std.fmt.parseUnsigned(u32, s[5..7], 10) catch return null;
+        const d = std.fmt.parseUnsigned(u32, s[8..10], 10) catch return null;
+        if (m < 1 or m > 12 or d < 1 or d > 31) return null;
+        return y * 10000 + m * 100 + d;
+    }
+
+    /// Every day file a group has, newest first. Caller owns the list.
+    fn days(self: *const Tree, alloc: Allocator, group: []const u8) Allocator.Error!Days {
+        const seg = try encodeGroup(alloc, group);
+        defer alloc.free(seg);
+        return self.daysIn(alloc, seg);
+    }
+
+    /// The same, for a directory name that is already encoded.
+    fn daysIn(self: *const Tree, alloc: Allocator, seg: []const u8) Allocator.Error!Days {
+        var out: Days = .empty;
+        errdefer out.deinit(alloc);
+
+        const path = try std.fs.path.join(alloc, &.{ self.dir, seg });
+        defer alloc.free(path);
+
+        // A group nothing was ever said in has no directory, and that is
+        // an answer rather than a failure: it has no days.
+        var d = std.Io.Dir.cwd().openDir(self.io, path, .{ .iterate = true }) catch return out;
+        defer d.close(self.io);
+
+        var it = d.iterate();
+        while (it.next(self.io) catch null) |entry| {
+            if (entry.kind == .directory) continue;
+            const parsed = parseDayFile(entry.name) orelse continue;
+            try out.append(alloc, parsed);
+        }
+
+        std.mem.sort(DayFile, out.items, {}, DayFile.newestFirst);
+        return out;
+    }
+
+    /// The highest seq the record already holds, or null when that cannot
+    /// be worked out.
+    ///
+    /// Null is a real answer and the callers are written to know it. The
+    /// only thing that reads this is `backfill`, and filling in from a
+    /// floor nobody is sure of would write a second copy of messages that
+    /// are already there. A record short by a stretch is fixed by the next
+    /// start; a record holding everything twice is fixed by nothing.
+    fn head(self: *Tree) ?u64 {
+        var d = std.Io.Dir.cwd().openDir(self.io, self.dir, .{ .iterate = true }) catch
+            return null;
+        defer d.close(self.io);
+
+        var best: u64 = 0;
+        var it = d.iterate();
+        while (it.next(self.io) catch null) |entry| {
+            // `readdir` reports `unknown` on some filesystems, and the flat
+            // stream files live in this directory too.
+            const kind = if (entry.kind != .unknown) entry.kind else k: {
+                const st = d.statFile(self.io, entry.name, .{
+                    .follow_symlinks = false,
+                }) catch continue;
+                break :k st.kind;
+            };
+            if (kind != .directory) continue;
+
+            const got = self.groupHead(entry.name) orelse return null;
+            best = @max(best, got);
+        }
+        return best;
+    }
+
+    /// The highest seq in one group's newest day file, or null when it
+    /// holds lines but none that can be read.
+    ///
+    /// The newest file is enough: the record is written in seq order, so a
+    /// group's largest number is always in its last file.
+    fn groupHead(self: *Tree, seg: []const u8) ?u64 {
+        var list = self.daysIn(self.alloc, seg) catch return null;
+        defer list.deinit(self.alloc);
+
+        // A directory with no day files in it is not part of the record.
+        if (list.items.len == 0) return 0;
+
+        var buf: [64]u8 = undefined;
+        const path = std.fs.path.join(self.alloc, &.{
+            self.dir,
+            seg,
+            nameOf(&buf, list.items[0]),
+        }) catch return null;
+        defer self.alloc.free(path);
+
+        const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch return null;
+        defer file.close(self.io);
+
+        const end = if (file.stat(self.io)) |st| st.size else |_| return null;
+        if (end == 0) return 0;
+        return tailSeq(self.alloc, self.io, file, end);
+    }
+
+    fn warnOnce(self: *Tree, err: anyerror) void {
+        if (self.warned) return;
+        self.warned = true;
+        log.warn("chat log: could not write the record under {s} err={}", .{ self.dir, err });
+    }
+};
+
+/// A group name as one path segment, and nothing else.
+///
+/// Every byte outside `[A-Za-z0-9._-]` becomes `%XX`, and a leading `.` is
+/// escaped as well -- which is what disposes of `.`, `..` and hidden
+/// directories in one rule rather than three special cases.
+///
+/// **Injective, and that is the requirement.** Replacing the awkward bytes
+/// with `_` would be shorter and would put `a/b` and `a_b` in the same
+/// directory, silently interleaving two groups' records. Percent-encoding
+/// keeps every distinct name distinct while leaving the ordinary ones
+/// exactly as they were: `kairos-15r` stays `kairos-15r`.
+///
+/// `Chat.isValidName` already holds group names to 48 bytes of
+/// `[a-z0-9-]`, so nothing arriving through the model needs any of this.
+/// It is here for what does not arrive that way -- a line read back out of
+/// a hand-edited file, or a caller that went around the model -- because a
+/// path built out of somebody else's string is exactly the kind of thing
+/// that should not depend on a check made in another file.
+fn encodeGroup(alloc: Allocator, group: []const u8) Allocator.Error![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.ensureTotalCapacity(alloc, group.len + 24);
+
+    var truncated = false;
+    for (group, 0..) |c, i| {
+        // Whole units only, so the cut below can never land inside a `%XX`
+        // and turn one name into a prefix of another.
+        if (out.items.len + 3 > max_segment - 20) {
+            truncated = true;
+            break;
+        }
+
+        const plain = switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '-', '_' => true,
+            // A leading dot is the whole of what makes `.` and `..`, so it
+            // is the one position where a dot is not plain.
+            '.' => i != 0,
+            else => false,
+        };
+
+        if (plain) {
+            try out.append(alloc, c);
+        } else {
+            const hex = "0123456789ABCDEF";
+            try out.appendSlice(alloc, &[_]u8{ '%', hex[c >> 4], hex[c & 0xf] });
+        }
+    }
+
+    if (truncated) {
+        // `%%` cannot come out of the loop above -- every `%` it writes is
+        // followed by two hex digits -- so this marks a shortened name
+        // unambiguously, and the hash keeps two long names apart.
+        var buf: [20]u8 = undefined;
+        const tag = std.fmt.bufPrint(&buf, "%%{x:0>16}", .{
+            std.hash.Wyhash.hash(0, group),
+        }) catch unreachable;
+        try out.appendSlice(alloc, tag);
+    }
+
+    // An empty name would be no segment at all, which would put the file
+    // straight into `chat/` beside the stream. One byte that the loop
+    // cannot produce says "empty" without colliding with anything.
+    if (out.items.len == 0) try out.append(alloc, '%');
+
+    return out.toOwnedSlice(alloc);
+}
+
+/// `struct tm`, declared here because the standard library has no binding
+/// for it and no timezone handling of its own.
+///
+/// Declared in full even though three fields are read: `localtime_r` writes
+/// into whatever it is given, so a struct short by a field is a buffer
+/// overrun. The first nine are POSIX; the last two are a BSD extension that
+/// both macOS and glibc have.
+const Tm = extern struct {
+    sec: c_int,
+    min: c_int,
+    hour: c_int,
+    mday: c_int,
+    mon: c_int,
+    year: c_int,
+    wday: c_int,
+    yday: c_int,
+    isdst: c_int,
+    gmtoff: c_long,
+    zone: ?[*:0]const u8,
+};
+
+extern "c" fn localtime_r(timep: *const i64, result: *Tm) ?*Tm;
+
+/// Which day a message belongs to, packed as `YYYYMMDD`.
+///
+/// The reader's own day rather than UTC, for the same reason the chat
+/// window shows local times: somebody asking what happened last night means
+/// their night. A file dated eight hours off is worse than no date at all,
+/// because it looks right.
+///
+/// UTC is the fallback rather than the rule -- if libc will not say, a day
+/// that may be off by one still beats no file to write into.
+fn dayOf(at_ms: i64) u32 {
+    const secs: i64 = @divFloor(at_ms, std.time.ms_per_s);
+
+    var tm: Tm = undefined;
+    if (localtime_r(&secs, &tm) != null) {
+        const y: i64 = @as(i64, tm.year) + 1900;
+        const m: i64 = @as(i64, tm.mon) + 1;
+        const d: i64 = tm.mday;
+        if (y >= 0 and y <= 9999 and m >= 1 and m <= 12 and d >= 1 and d <= 31)
+            return @intCast(y * 10000 + m * 100 + d);
+    }
+
+    const epoch: std.time.epoch.EpochSeconds = .{ .secs = @intCast(@max(secs, 0)) };
+    const yd = epoch.getEpochDay().calculateYearDay();
+    const md = yd.calculateMonthDay();
+    return @as(u32, yd.year) * 10000 +
+        @as(u32, md.month.numeric()) * 100 +
+        md.day_index + 1;
+}
+
+/// Fill the record in from the stream, if it has fallen behind.
+///
+/// The record can only ever lag by a suffix: both are written in one call,
+/// stream first, in seq order. So everything the record is missing is above
+/// the highest seq it holds, which makes `Tree.head` an exact starting
+/// point rather than an estimate -- and that in turn is what makes this
+/// safe to run on every start. A marker file saying "already done" can be
+/// wrong; a number measured off the files themselves cannot be.
+///
+/// Steady state is one 64KB read per group directory and nothing written.
+///
+/// What it cannot fill in is what the stream has already forgotten: the
+/// stream rotates at 8MB and keeps two generations. That is not a hole this
+/// can close, and it is the reason the record rather than the stream is the
+/// fuller of the two.
+fn backfill(self: *ChatLog) void {
+    const floor = self.tree.head() orelse {
+        log.warn(
+            "chat log: could not tell how far the record goes; not filling it in",
+            .{},
+        );
+        return;
+    };
+    if (floor >= self.head()) return;
+
+    const old = std.fmt.allocPrint(self.alloc, "{s}.1", .{self.path}) catch return;
+    defer self.alloc.free(old);
+
+    // Oldest generation first, so the record is written in the same order a
+    // live run writes it.
+    self.replay(old, floor);
+    self.replay(self.path, floor);
+}
+
+/// Copy every line of one stream generation above `floor` into the record.
+///
+/// A file that is not there is the ordinary case, not a failure: most logs
+/// never rotate.
+fn replay(self: *ChatLog, path: []const u8, floor: u64) void {
+    const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch return;
     defer file.close(self.io);
 
-    const end = if (file.stat(self.io)) |st| st.size else |_| return .gave_up;
-    return w.generation(file, end);
+    const buf = self.alloc.alloc(u8, tail_chunk_bytes) catch return;
+    defer self.alloc.free(buf);
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+
+    var offset: u64 = 0;
+    while (true) {
+        const n = file.readPositionalAll(self.io, buf, offset) catch return;
+        if (n == 0) return;
+
+        const win = buf[0..n];
+        const nl = std.mem.lastIndexOfScalar(u8, win, '\n') orelse {
+            // Short of a window with no newline is a torn tail, which is
+            // not a line yet. A full window with none is a line longer
+            // than `append` can write; step over it rather than spin.
+            if (n < buf.len) return;
+            offset += n;
+            continue;
+        };
+
+        var rest = win[0 .. nl + 1];
+        while (rest.len > 0) {
+            const e = std.mem.indexOfScalar(u8, rest, '\n').?;
+            const line = rest[0 .. e + 1];
+            rest = rest[e + 1 ..];
+
+            _ = arena.reset(.retain_capacity);
+            const parsed = parseLine(arena.allocator(), line[0..e]) orelse continue;
+            if (parsed.seq == 0 or parsed.seq <= floor) continue;
+
+            // The line goes across as it was written, not re-rendered:
+            // the record then holds the stream's own bytes.
+            self.tree.write(parsed.group, parsed.at_ms, line);
+        }
+
+        offset += nl + 1;
+    }
 }
 
 const testing = std.testing;
@@ -1420,47 +2046,6 @@ test "asking for nothing reads nothing" {
     try testing.expect(!page.exhausted);
 }
 
-test "history walks out of the current file and into the rotated one" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const dir = try testDir(alloc, io);
-    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
-
-    const path = try std.fs.path.join(alloc, &.{ dir, "chat", "chat.jsonl" });
-    const rotated = try std.fmt.allocPrint(alloc, "{s}.1", .{path});
-
-    {
-        var l = try ChatLog.open(testing.allocator, io, dir);
-        defer l.deinit();
-        _ = l.append("build", 1, "worker", 1000, false, "one");
-        _ = l.append("build", 1, "worker", 1001, false, "two");
-    }
-
-    try std.Io.Dir.renameAbsolute(path, rotated, io);
-
-    var l = try ChatLog.open(testing.allocator, io, dir);
-    defer l.deinit();
-    try testing.expectEqual(@as(u64, 3), l.append("build", 1, "worker", 1002, false, "three"));
-
-    const page = try l.history(testing.allocator, "build", 0, 10);
-    defer ChatLog.freePage(testing.allocator, page);
-
-    try testing.expectEqual(@as(usize, 3), page.entries.len);
-    try testing.expectEqual(@as(u64, 1), page.entries[0].seq);
-    try testing.expectEqual(@as(u64, 2), page.entries[1].seq);
-    try testing.expectEqual(@as(u64, 3), page.entries[2].seq);
-    try testing.expectEqualStrings("one", page.entries[0].text);
-
-    // Both generations were walked all the way to their front.
-    try testing.expect(page.exhausted);
-}
-
 test "a line with no seq is not a line a cursor can point at" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -1482,8 +2067,8 @@ test "a line with no seq is not a line a cursor can point at" {
     // group, with no number to page by.
     const legacy = "{\"at_ms\":1001,\"group\":\"build\",\"from\":\"0x0000000000000001\"," ++
         "\"author\":\"worker\",\"text\":\"legacy\"}\n";
-    try l.file.writePositionalAll(io, legacy, l.written);
-    l.written += legacy.len;
+    const day = try testDayPath(alloc, &l, "build", 1000);
+    try testGraft(&l, io, day, legacy);
 
     _ = l.append("build", 1, "worker", 1002, false, "three");
 
@@ -1586,52 +2171,13 @@ test "a log nothing was ever said into is already at its beginning" {
     try testing.expect(other.exhausted);
 }
 
-test "an empty current file is walked through rather than stopped at" {
-    // Restarting in the moment after a rotation: everything that was said
-    // is in the generation moved aside and the file being appended to is
-    // still zero bytes long. A walk that took that for the beginning would
-    // report the whole night as gone.
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const dir = try testDir(alloc, io);
-    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
-
-    const path = try std.fs.path.join(alloc, &.{ dir, "chat", "chat.jsonl" });
-    const rotated = try std.fmt.allocPrint(alloc, "{s}.1", .{path});
-
-    {
-        var l = try ChatLog.open(testing.allocator, io, dir);
-        defer l.deinit();
-        testSeed(&l);
-    }
-    try std.Io.Dir.renameAbsolute(path, rotated, io);
-
-    var l = try ChatLog.open(testing.allocator, io, dir);
-    defer l.deinit();
-    try testing.expectEqual(@as(u64, 0), l.written);
-
-    const page = try l.history(testing.allocator, "build", 0, 10);
-    defer ChatLog.freePage(testing.allocator, page);
-
-    try testing.expectEqual(@as(usize, 3), page.entries.len);
-    try testing.expectEqualStrings("one", page.entries[0].text);
-    try testing.expectEqualStrings("three", page.entries[2].text);
-    try testing.expect(page.exhausted);
-}
-
 test "a line longer than the window stops the walk instead of spinning on it" {
     // The seam is where a backwards walk can fail to move, and a walk that
     // does not move never returns. A line the window cannot see both ends
     // of is the one way that happens -- `append` cannot write one, but a
-    // foreign hand editing the file can. It has to end the generation, and
-    // it has to leave the caller told there is more rather than told it has
-    // reached the beginning.
+    // foreign hand editing the file can. It has to end the walk of that day
+    // file, and it has to leave the caller told there is more rather than
+    // told it has reached the beginning.
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1651,8 +2197,8 @@ test "a line longer than the window stops the walk instead of spinning on it" {
     const giant = try alloc.alloc(u8, scan_chunk_bytes + 64 * 1024);
     @memset(giant, 'x');
     giant[giant.len - 1] = '\n';
-    try l.file.writePositionalAll(io, giant, l.written);
-    l.written += giant.len;
+    const day = try testDayPath(alloc, &l, "build", 1000);
+    try testGraft(&l, io, day, giant);
 
     _ = l.append("build", 1, "worker", 1002, false, "reachable");
 
@@ -2232,4 +2778,414 @@ test "a forward read that runs out of memory leaves nothing behind" {
         tailOnePage,
         .{ io, l.path },
     );
+}
+
+/// The record file a message written at `at_ms` into `group` lands in.
+fn testDayPath(
+    alloc: Allocator,
+    l: *ChatLog,
+    group: []const u8,
+    at_ms: i64,
+) ![]u8 {
+    return l.tree.partPath(alloc, group, dayOf(at_ms), 1);
+}
+
+/// Append bytes to a record file behind the log's back, the way a foreign
+/// hand or an older Polter would have left them.
+///
+/// The tree's open handle is closed first: it carries its own idea of
+/// where the end is, and the next `append` would write over anything put
+/// there without telling it.
+fn testGraft(l: *ChatLog, io: std.Io, path: []const u8, bytes: []const u8) !void {
+    l.tree.close();
+
+    const f = try std.Io.Dir.openFileAbsolute(io, path, .{ .mode = .read_write });
+    defer f.close(io);
+
+    const end = (try f.stat(io)).size;
+    try f.writePositionalAll(io, bytes, end);
+}
+
+test "a group name is one path segment and cannot be anything else" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Everything a group name could be that a path must not become.
+    const nasty: []const []const u8 = &.{
+        "..",
+        ".",
+        "../../etc/passwd",
+        "a/b",
+        "/absolute",
+        "trailing/",
+        "..\\windows",
+        "with space",
+        "with\nnewline",
+        "with\x00nul",
+        "",
+        ".hidden",
+    };
+
+    for (nasty) |name| {
+        const seg = try encodeGroup(alloc, name);
+
+        // No separator of any kind, so it cannot be more than one segment.
+        try testing.expect(std.mem.indexOfScalar(u8, seg, '/') == null);
+        try testing.expect(std.mem.indexOfScalar(u8, seg, '\\') == null);
+
+        // Not the two names that mean somewhere else, and never hidden.
+        try testing.expect(!std.mem.eql(u8, seg, "."));
+        try testing.expect(!std.mem.eql(u8, seg, ".."));
+        try testing.expect(seg.len > 0 and seg[0] != '.');
+
+        // Nothing a filesystem or a person has to guess at.
+        for (seg) |c| try testing.expect(c > 0x20 and c < 0x7f);
+    }
+
+    // An ordinary name comes through untouched, which is the other half of
+    // the requirement: the record is meant to be read by a person.
+    const plain = try encodeGroup(alloc, "kairos-15r");
+    try testing.expectEqualStrings("kairos-15r", plain);
+}
+
+test "two group names that differ end up in two directories" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The reason the encoding is percent and not "replace the awkward
+    // bytes with an underscore": these two would land in one directory
+    // under that rule, and two groups' records would interleave with
+    // nothing anywhere saying so.
+    const a = try encodeGroup(alloc, "a/b");
+    const b = try encodeGroup(alloc, "a_b");
+    try testing.expect(!std.mem.eql(u8, a, b));
+
+    // Same for the pair that a "strip the dots" rule would collapse.
+    const c = try encodeGroup(alloc, "..");
+    const d = try encodeGroup(alloc, ".");
+    try testing.expect(!std.mem.eql(u8, c, d));
+}
+
+test "a group name that means somewhere else writes here anyway" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    const escape = "../../pwned";
+    _ = l.append(escape, 1, "worker", 1000, false, "hello");
+
+    // The whole path, and it starts inside the record and stays there.
+    const path = try testDayPath(alloc, &l, escape, 1000);
+    const inside = try std.fs.path.join(alloc, &.{ dir, "chat" });
+    try testing.expect(std.mem.startsWith(u8, path, inside));
+
+    // Not one *component* below the record is `.` or `..`. Asked
+    // component by component rather than by searching the whole string
+    // for `..`: `../../pwned` encodes to `%2E.%2F..%2Fpwned`, which holds
+    // two dots in a row and is nonetheless one perfectly ordinary
+    // directory name. What matters is where the path goes, not what it
+    // spells.
+    var parts = std.mem.splitScalar(u8, path[inside.len..], '/');
+    while (parts.next()) |part| {
+        try testing.expect(!std.mem.eql(u8, part, "."));
+        try testing.expect(!std.mem.eql(u8, part, ".."));
+    }
+
+    // And the message really went there rather than somewhere quieter.
+    const st = try std.Io.Dir.cwd().statFile(io, path, .{});
+    try testing.expect(st.size > 0);
+
+    // Reading it back finds it under the name it was said in, not under
+    // the mangled one: the directory is a filing decision, the `group`
+    // field is what the message says about itself.
+    const page = try l.history(testing.allocator, escape, 0, 10);
+    defer ChatLog.freePage(testing.allocator, page);
+    try testing.expectEqual(@as(usize, 1), page.entries.len);
+    try testing.expectEqualStrings("hello", page.entries[0].text);
+}
+
+test "a day of its own gets a file of its own, and paging crosses the two" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    // Two days apart, so the boundary falls between them whatever the
+    // machine's timezone happens to be.
+    const day_ms: i64 = 24 * 60 * 60 * 1000;
+    const first: i64 = 1_787_900_000_000;
+    const second: i64 = first + 2 * day_ms;
+    try testing.expect(dayOf(first) != dayOf(second));
+
+    _ = l.append("build", 1, "worker", first, false, "yesterday");
+    _ = l.append("build", 1, "worker", second, false, "today one");
+    _ = l.append("build", 1, "worker", second, false, "today two");
+
+    // Two files, named for the two days.
+    var days = try l.tree.days(alloc, "build");
+    defer days.deinit(alloc);
+    try testing.expectEqual(@as(usize, 2), days.items.len);
+    try testing.expectEqual(dayOf(second), days.items[0].day);
+    try testing.expectEqual(dayOf(first), days.items[1].day);
+
+    // And a page walks out of the newer file and into the older one
+    // without a seam: oldest first, nothing missing, nothing twice.
+    const page = try l.history(testing.allocator, "build", 0, 10);
+    defer ChatLog.freePage(testing.allocator, page);
+    try testing.expectEqual(@as(usize, 3), page.entries.len);
+    try testing.expectEqualStrings("yesterday", page.entries[0].text);
+    try testing.expectEqualStrings("today one", page.entries[1].text);
+    try testing.expectEqualStrings("today two", page.entries[2].text);
+    try testing.expect(page.exhausted);
+
+    // Paging by the cursor lands on the same seam from the other side.
+    const older = try l.history(testing.allocator, "build", 2, 10);
+    defer ChatLog.freePage(testing.allocator, older);
+    try testing.expectEqual(@as(usize, 1), older.entries.len);
+    try testing.expectEqualStrings("yesterday", older.entries[0].text);
+    try testing.expect(older.exhausted);
+}
+
+test "compacting a group leaves the messages the summary stands for" {
+    // The point of the record: the working set in memory is trimmed and
+    // compacted on purpose, and none of that is allowed to reach here.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "worker", 1000, false, "one");
+    _ = l.append("build", 1, "worker", 1001, false, "two");
+    _ = l.append("build", 1, "worker", 1002, false, "three");
+
+    // What `group_compact` writes: a summary standing in for the three
+    // above, which memory now holds instead of them.
+    _ = l.append("build", 1, "supervisor", 1003, true, "three things happened");
+
+    const page = try l.history(testing.allocator, "build", 0, 10);
+    defer ChatLog.freePage(testing.allocator, page);
+
+    // All four, in the order they were said. The summary was written
+    // after the messages, not over them.
+    try testing.expectEqual(@as(usize, 4), page.entries.len);
+    try testing.expectEqualStrings("one", page.entries[0].text);
+    try testing.expectEqualStrings("two", page.entries[1].text);
+    try testing.expectEqualStrings("three", page.entries[2].text);
+    try testing.expectEqualStrings("three things happened", page.entries[3].text);
+    try testing.expect(!page.entries[2].summary);
+    try testing.expect(page.entries[3].summary);
+}
+
+test "a record that has fallen behind the stream is filled in on the next start" {
+    // The upgrade case, and the recovery case, are the same case: a stream
+    // holding messages the record does not.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        testSeed(&l);
+    }
+
+    // Everything the previous Polter wrote is in the stream, and the
+    // record is not there at all -- which is exactly what an install that
+    // predates the record looks like.
+    const build_dir = try std.fs.path.join(alloc, &.{ dir, "chat", "build" });
+    const research_dir = try std.fs.path.join(alloc, &.{ dir, "chat", "research" });
+    try std.Io.Dir.cwd().deleteTree(io, build_dir);
+    try std.Io.Dir.cwd().deleteTree(io, research_dir);
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    const page = try l.history(testing.allocator, "build", 0, 10);
+    defer ChatLog.freePage(testing.allocator, page);
+    try testing.expectEqual(@as(usize, 3), page.entries.len);
+    try testing.expectEqualStrings("one", page.entries[0].text);
+    try testing.expectEqualStrings("three", page.entries[2].text);
+    try testing.expect(page.exhausted);
+
+    // The other group came across too, and into its own directory.
+    const other = try l.history(testing.allocator, "research", 0, 10);
+    defer ChatLog.freePage(testing.allocator, other);
+    try testing.expectEqual(@as(usize, 2), other.entries.len);
+    try testing.expectEqualStrings("x", other.entries[0].text);
+}
+
+test "filling in twice does not write anything twice" {
+    // The reason `backfill` measures rather than remembers: it runs on
+    // every start, so running it against a record that is already up to
+    // date has to be free of consequence.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        testSeed(&l);
+    }
+
+    // Three more opens, each of which runs the fill-in against a record
+    // that has nothing missing.
+    for (0..3) |_| {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+
+        const page = try l.history(testing.allocator, "build", 0, 20);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 3), page.entries.len);
+    }
+}
+
+test "a day past the cap carries on in a part beside it" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    const big = try alloc.alloc(u8, 60 * 1024);
+    @memset(big, 'x');
+
+    _ = l.append("build", 1, "worker", 1000, false, "first");
+
+    // Past the day's cap, all inside one day.
+    var written: u64 = 0;
+    while (written < day_bytes + 64 * 1024) : (written += big.len) {
+        _ = l.append("build", 1, "worker", 1000, false, big);
+    }
+
+    _ = l.append("build", 1, "worker", 1000, false, "last");
+
+    // The day did not end and nothing was moved aside: it carried on in
+    // the part beside it.
+    var days = try l.tree.days(alloc, "build");
+    defer days.deinit(alloc);
+    try testing.expectEqual(@as(usize, 2), days.items.len);
+    try testing.expectEqual(dayOf(1000), days.items[0].day);
+    try testing.expectEqual(@as(u32, 2), days.items[0].part);
+    try testing.expectEqual(@as(u32, 1), days.items[1].part);
+
+    // The newest part is read first, so the last thing said comes back
+    // even though it is not in the file the day is named for.
+    const page = try l.history(testing.allocator, "build", 0, 1);
+    defer ChatLog.freePage(testing.allocator, page);
+    try testing.expectEqual(@as(usize, 1), page.entries.len);
+    try testing.expectEqualStrings("last", page.entries[0].text);
+
+    // Paging back past the part boundary comes back empty and says there
+    // is more, which is the honest answer rather than a loss: the first
+    // part is four times one page's scanning budget, so reaching its
+    // front takes several calls.
+    const oldest = try l.history(testing.allocator, "build", 2, 1);
+    defer ChatLog.freePage(testing.allocator, oldest);
+    try testing.expectEqual(@as(usize, 0), oldest.entries.len);
+    try testing.expect(!oldest.exhausted);
+
+    // And the first thing said is still at the front of the first part.
+    // Read off the file rather than through `history` for the reason
+    // above -- what is being asserted here is that nothing was dropped to
+    // make room, and the file is where that is visible.
+    const first_path = try l.tree.partPath(alloc, "build", dayOf(1000), 1);
+    const f = try std.Io.Dir.openFileAbsolute(io, first_path, .{});
+    defer f.close(io);
+
+    var head_buf: [512]u8 = undefined;
+    const n = try f.readPositionalAll(io, &head_buf, 0);
+    try testing.expect(std.mem.indexOf(u8, head_buf[0..n], "\"first\"") != null);
+}
+
+test "the record is not disturbed by the stream rotating" {
+    // The two shapes are bounded differently on purpose: the stream keeps
+    // two generations, the record keeps everything. A rotation must not
+    // take anything out of the record's reach.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const path = try std.fs.path.join(alloc, &.{ dir, "chat", "chat.jsonl" });
+    const rotated = try std.fmt.allocPrint(alloc, "{s}.1", .{path});
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        testSeed(&l);
+    }
+    try std.Io.Dir.renameAbsolute(path, rotated, io);
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    // The stream's current generation is empty, and the record does not
+    // care: it was never reading the stream.
+    try testing.expectEqual(@as(u64, 0), l.written);
+
+    const page = try l.history(testing.allocator, "build", 0, 10);
+    defer ChatLog.freePage(testing.allocator, page);
+    try testing.expectEqual(@as(usize, 3), page.entries.len);
+    try testing.expectEqualStrings("one", page.entries[0].text);
+    try testing.expectEqualStrings("three", page.entries[2].text);
+    try testing.expect(page.exhausted);
 }

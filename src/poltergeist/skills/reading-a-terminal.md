@@ -38,8 +38,15 @@ guessing, leave it. A wrong answer here is worse than a delay.
 The agent believes it is done. Signs: a summary; a final diff or test
 result; a return to an idle prompt with no pending work.
 
-**This is when the terminal's work mode decides what happens next.** Read
-the mode skill for that terminal.
+**This is where you decide whether there is more worth doing.** Nothing
+decides it for you — you are the one who knows what the work was. If there
+is, say what is next; if there is not, `clock_out` stops it being reported
+again.
+
+One case is decided already: a terminal the user is holding to its work
+(`held: true`, a ring in its tab) cannot be clocked off, and `clock_out`
+comes back as `TerminalHeld`. That terminal being finished means it needs
+the next thing, not the end of the day.
 
 ## Stuck or failed
 

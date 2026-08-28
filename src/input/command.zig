@@ -564,10 +564,10 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Report this terminal to the supervisor when its screen goes quiet."),
         }},
 
-        .poltergeist_cycle_work_mode => comptime &.{.{
-            .action = .poltergeist_cycle_work_mode,
-            .title = i18n.N_("Cycle This Terminal's Work Mode"),
-            .description = i18n.N_("Clock-off, keep working on a standing direction, or move task to task. Only you can set this; a supervisor cannot."),
+        .poltergeist_toggle_held => comptime &.{.{
+            .action = .poltergeist_toggle_held,
+            .title = i18n.N_("Keep This Terminal Working"),
+            .description = i18n.N_("Do not let a supervisor clock this terminal off. Its tab wears a ring while the hold lasts. Only you can set this; a supervisor cannot."),
         }},
 
         .poltergeist_toggle_chat => comptime &.{.{

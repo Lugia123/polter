@@ -5745,44 +5745,32 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             return true;
         },
 
-        .poltergeist_cycle_work_mode => {
+        .poltergeist_toggle_held => {
             const bus = &self.app.poltergeist;
-            const current = if (bus.get(self.id)) |e| e.work_mode else .clock_off;
-            const next: @TypeOf(current) = switch (current) {
-                .clock_off => .infinite_directed,
-                .infinite_directed => .infinite_sequential,
-                .infinite_sequential => .clock_off,
-            };
+            const next = if (bus.get(self.id)) |e| !e.held else true;
 
             // `.user`: this is a keypress. The bus refuses this from
-            // anywhere else, which is the whole point.
-            bus.setWorkMode(self.id, next, .user) catch |err| switch (err) {
+            // anywhere else, which is the whole point -- a supervisor able
+            // to lift the hold could clock the terminal off a moment
+            // later.
+            bus.setHeld(self.id, next, .user) catch |err| switch (err) {
                 error.UnknownTerminal => {
                     try bus.register(self.id);
-                    try bus.setWorkMode(self.id, next, .user);
+                    try bus.setHeld(self.id, next, .user);
                 },
                 error.NotPermitted => unreachable,
             };
 
-            log.info("poltergeist: work mode is now {s}", .{@tagName(next)});
+            log.info("poltergeist: hold is now {}", .{next});
 
-            // Each mode has a skill saying what it asks of this terminal,
-            // and the terminal is the only one that can act on it. Naming
-            // the skill is the whole delivery mechanism -- there is no
-            // other way for it to find out the rules changed.
-            self.app.tellSurface(self.id, switch (next) {
-                .clock_off => "[Polter] Your work mode is now clock-off: you " ++
-                    "may finish when the work is genuinely done. Read the " ++
-                    "`mode-clock-out` skill with skill_read and follow it.",
-                .infinite_directed => "[Polter] Your work mode is now " ++
-                    "infinite-directed: you do not finish, you keep working " ++
-                    "to a standing direction. Read the " ++
-                    "`mode-infinite-directed` skill with skill_read and follow it.",
-                .infinite_sequential => "[Polter] Your work mode is now " ++
-                    "infinite-sequential: you do not finish, you move from " ++
-                    "one task to the next. Read the " ++
-                    "`mode-infinite-sequential` skill with skill_read and follow it.",
-            });
+            // Nothing is said to the terminal, on purpose. The work modes
+            // this replaced announced themselves once and were then pushed
+            // out of the session's context, which made a standing
+            // guarantee feel exactly like no guarantee at all. The tab
+            // mark is the announcement now, and it does not scroll away.
+            // Refreshed here rather than left to the next sampler tick,
+            // because a terminal nobody is sampling would never get one.
+            self.updatePoltergeistTabMark();
 
             return true;
         },

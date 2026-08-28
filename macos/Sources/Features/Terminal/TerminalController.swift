@@ -1434,9 +1434,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_watch")
     }
 
-    @IBAction func poltergeistCycleWorkMode(_ sender: Any?) {
+    @IBAction func poltergeistToggleHeld(_ sender: Any?) {
         guard let surface = focusedSurface?.surface else { return }
-        ghostty.poltergeistAction(surface: surface, "poltergeist_cycle_work_mode")
+        ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_held")
     }
 
     // MARK: - TerminalViewDelegate

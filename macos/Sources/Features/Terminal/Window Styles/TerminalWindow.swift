@@ -711,7 +711,7 @@ extension TerminalWindow {
     private static let agentSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentSeparator")
     private static let agentSupervisorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentSupervisor")
     private static let agentWatchIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentWatch")
-    private static let agentWorkModeIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentWorkMode")
+    private static let agentHeldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentHeld")
 
     func configureTabContextMenuIfNeeded(_ menu: NSMenu) {
         guard isTabContextMenu(menu) else { return }
@@ -776,7 +776,7 @@ extension TerminalWindow {
             Self.agentSeparatorIdentifier,
             Self.agentSupervisorIdentifier,
             Self.agentWatchIdentifier,
-            Self.agentWorkModeIdentifier,
+            Self.agentHeldIdentifier,
         ])
 
         let separator = NSMenuItem.separator()
@@ -794,11 +794,11 @@ extension TerminalWindow {
              "binoculars",
              #selector(TerminalController.poltergeistToggleWatch(_:)),
              Self.agentWatchIdentifier),
-            (String(localized: "Cycle This Terminal's Work Mode",
-                    comment: "标签页右键菜单：切换工作模式"),
-             "clock.arrow.circlepath",
-             #selector(TerminalController.poltergeistCycleWorkMode(_:)),
-             Self.agentWorkModeIdentifier),
+            (String(localized: "Keep This Terminal Working",
+                    comment: "标签页右键菜单：按住不许下班"),
+             "pin",
+             #selector(TerminalController.poltergeistToggleHeld(_:)),
+             Self.agentHeldIdentifier),
         ]
 
         for (title, symbol, action, identifier) in entries {

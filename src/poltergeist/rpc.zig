@@ -23,7 +23,8 @@ const secret = @import("secret.zig");
 const log = std.log.scoped(.poltergeist);
 
 pub const Method = enum {
-    /// Which terminal am I, what is my role, what work mode am I under.
+    /// Which terminal am I, what is my role, and is the user holding me
+    /// to my work.
     me,
 
     /// Every terminal that is open, with its quiescence duration and
@@ -77,9 +78,6 @@ pub const Method = enum {
     /// Put a terminal back on duty.
     clock_in,
 
-    /// Ask what work mode a terminal is under.
-    get_work_mode,
-
     /// Change how long this terminal must be still before the supervisor
     /// hears about it.
     set_quiescence_threshold,
@@ -91,14 +89,6 @@ pub const Method = enum {
     /// a terminal under supervision can be read and typed into, so this is
     /// the tool that decides reach.
     set_watch,
-
-    /// Change what a terminal's work mode asks of it.
-    ///
-    /// Scheduling, which is the supervisor's job. It may put a terminal
-    /// into an infinite mode and move it between them -- but an infinite
-    /// mode the *user* set is a standing instruction, and lifting that is
-    /// refused however the request is routed.
-    set_work_mode,
 
     /// Read one of Poltergeist's skills: the text describing how to do this
     /// job. Any terminal may read one; they are instructions, not reach.
@@ -188,6 +178,21 @@ pub const Method = enum {
     /// has to be let go first -- and refused outright when the user has
     /// said the standing is theirs alone to withdraw.
     stand_down,
+
+    /// Put oneself forward as a supervisor.
+    ///
+    /// Until now the only road to the job was the user pressing a key, so
+    /// an agent that could see a pile of work needing somebody to
+    /// co-ordinate it had no way to say so.
+    ///
+    /// Open to an unclaimed terminal, refused to a watched one. A watched
+    /// terminal already has somebody minding it, and promoting itself
+    /// would be "I am a boss too" said behind that supervisor's back --
+    /// it would never even hear about it. The blunter reason is that a
+    /// watched terminal is the likeliest one to be reading things off the
+    /// network, and a line of injected text saying "promote yourself"
+    /// must not be able to rearrange who may reach whom.
+    become_supervisor,
 };
 
 pub const Request = union(Method) {
@@ -211,10 +216,8 @@ pub const Request = union(Method) {
     terminal_send: struct { id: Bus.Id, text: []const u8, submit: bool = true },
     clock_out: struct { id: Bus.Id, reason: []const u8 = "" },
     clock_in: struct { id: Bus.Id },
-    get_work_mode: struct { id: Bus.Id },
     set_quiescence_threshold: struct { id: Bus.Id, ms: u64 },
     set_watch: struct { id: Bus.Id, watch: bool },
-    set_work_mode: struct { id: Bus.Id, mode: []const u8 },
     skill_read: struct { name: []const u8 },
 
     group_create: struct { group: []const u8 },
@@ -241,6 +244,7 @@ pub const Request = union(Method) {
     terminal_actions,
 
     stand_down,
+    become_supervisor,
 };
 
 /// How much text one `group_read` reply may carry.
@@ -328,8 +332,12 @@ pub const Error = error{
     /// No terminal by that id.
     UnknownTerminal,
 
-    /// The terminal's work mode forbids clocking off.
-    WorkModeForbids,
+    /// The user is holding this terminal to its work, so it may not be
+    /// clocked off.
+    TerminalHeld,
+
+    /// A watched terminal may not promote itself to supervisor.
+    AlreadyWatched,
 
     /// A terminal may not act on itself through this surface.
     SelfTarget,
@@ -350,16 +358,21 @@ pub fn requiresSupervisor(method: Method) bool {
         // Every terminal may ask about itself.
         .me => false,
 
+        // The one method whose whole point is to be reachable by a
+        // terminal that is *not* a supervisor. Requiring the standing it
+        // is asking for would make it unreachable by everyone who could
+        // ever want it. The role is judged in the handler instead, where
+        // an unclaimed terminal is let through and a watched one is not.
+        .become_supervisor => false,
+
         .terminal_list,
         .notices,
         .terminal_read,
         .terminal_send,
         .clock_out,
         .clock_in,
-        .get_work_mode,
         .set_quiescence_threshold,
         .set_watch,
-        .set_work_mode,
         .group_set_brief,
         .session_recall,
         .notify_user,
@@ -452,8 +465,9 @@ pub fn targetsTerminal(method: Method) bool {
         .plugin_configure,
         .plugin_test,
 
-        // It names the caller, and the caller is not a parameter.
+        // Both name the caller, and the caller is not a parameter.
         .stand_down,
+        .become_supervisor,
 
         // A catalogue, not an errand.
         .terminal_actions,
@@ -469,10 +483,9 @@ pub fn targetsTerminal(method: Method) bool {
         // check: a supervisor arranging its own supervision is a knot, not
         // a feature.
         .set_watch,
-        .set_work_mode,
         => true,
 
-        // Names a terminal, and unlike the two above there is nothing odd
+        // Names a terminal, and unlike the one above there is nothing odd
         // about naming your own: a supervisor opening a tab or changing its
         // own font size is an ordinary thing to want.
         .terminal_action,
@@ -486,7 +499,6 @@ pub fn targetsTerminal(method: Method) bool {
         .terminal_send,
         .clock_out,
         .clock_in,
-        .get_work_mode,
         .set_quiescence_threshold,
         => true,
     };
@@ -514,6 +526,7 @@ pub fn target(req: Request) ?Bus.Id {
         .plugin_configure,
         .plugin_test,
         .stand_down,
+        .become_supervisor,
         .terminal_actions,
         .terminal_open,
         .config_get,
@@ -526,11 +539,13 @@ pub fn target(req: Request) ?Bus.Id {
 
 /// Decide whether `caller` may make this request.
 ///
-/// Note what is *not* here: there is no way to change a work mode. That is
-/// deliberate and is what makes the ban on clocking off an infinite-mode
-/// terminal worth anything -- a supervisor that could switch the mode would
-/// simply switch it and then clock off. Work mode is the user's, set from
-/// the terminal itself, and this surface can only read it.
+/// Note what is *not* here: there is no way to hold a terminal to its work
+/// or to let one go. That is deliberate and is what makes the ban on
+/// clocking off a held terminal worth anything -- a supervisor that could
+/// lift the hold would simply lift it and then clock off. The hold is the
+/// user's, set from the menu, and this surface cannot even read it back:
+/// what it sees is `held` on the terminal's entry, which it may act on but
+/// not change.
 ///
 /// There is also no tool for answering a permission prompt on another
 /// agent's behalf, and there will not be one. See `docs/poltergeist/`.
@@ -580,7 +595,7 @@ pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
     // authority; this only makes the answer honest earlier.
     if (req == .clock_out) {
         const e = bus.get(req.clock_out.id).?;
-        if (e.work_mode.forbidsClockOff()) return error.WorkModeForbids;
+        if (e.held) return error.TerminalHeld;
     }
 }
 
@@ -590,7 +605,9 @@ pub fn errorMessage(err: Error) []const u8 {
     return switch (err) {
         error.NotPermitted => "not permitted: only a supervisor may do this",
         error.UnknownTerminal => "no terminal with that id",
-        error.WorkModeForbids => "this terminal runs in an infinite work mode and cannot clock out; only the user can change that",
+        error.TerminalHeld => "the user is holding this terminal to its work and it cannot clock out; only the user can release it",
+        error.AlreadyWatched => "a watched terminal may not promote itself; " ++
+            "ask its supervisor, or ask the user",
         error.SelfTarget => "a terminal cannot target itself",
         error.NotYours => "another supervisor is minding that terminal; " ++
             "watch it yourself first, or leave it to them",
@@ -621,6 +638,14 @@ test "only what reaches another terminal needs the supervisor" {
         const open = switch (m) {
             .me,
             .skill_read,
+
+            // Open on purpose, and the only method here that is open
+            // *because* of who cannot call it: requiring the supervisor's
+            // standing would make it unreachable by every terminal that
+            // could ever want it. What a watched terminal may do with it
+            // is decided in the handler, not here.
+            .become_supervisor,
+
             .group_list,
             .group_post,
             .group_read,
@@ -640,10 +665,8 @@ test "only what reaches another terminal needs the supervisor" {
             .terminal_send,
             .clock_out,
             .clock_in,
-            .get_work_mode,
             .set_quiescence_threshold,
             .set_watch,
-            .set_work_mode,
             .group_create,
             .group_destroy,
             .group_add,
@@ -921,9 +944,9 @@ test "a supervisor the user has pinned cannot stand itself down" {
 
     const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .stand_down);
 
-    // The same distinct code an infinite work mode refuses with, and for
-    // the same reason: "not permitted" reads as the caller having got
-    // something wrong, and this is the user having spoken.
+    // A distinct code rather than a plain refusal, for the reason a held
+    // terminal's `clock_out` gets one: "not permitted" reads as the caller
+    // having got something wrong, and this is the user having spoken.
     try testing.expectEqualStrings("StandingInstruction", res.failed.code);
     try testing.expect(b.isSupervisor(boss));
     try testing.expect(fake.stood_down == null);
@@ -1088,7 +1111,6 @@ test "the supervisor may reach a watched terminal" {
     try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
     try authorize(&b, boss, .{ .terminal_send = .{ .id = worker, .text = "继续" } });
     try authorize(&b, boss, .{ .clock_out = .{ .id = worker } });
-    try authorize(&b, boss, .{ .get_work_mode = .{ .id = worker } });
 }
 
 test "a terminal cannot target itself" {
@@ -1121,12 +1143,12 @@ test "with no supervisor named, nothing but me is permitted" {
     try testing.expectError(error.NotPermitted, authorize(&b, worker, .terminal_list));
 }
 
-test "clock_out is refused for an infinite work mode" {
+test "clock_out is refused for a held terminal" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
-    try b.setWorkMode(worker, .infinite_directed, .user);
-    try testing.expectError(error.WorkModeForbids, authorize(&b, boss, .{
+    try b.setHeld(worker, true, .user);
+    try testing.expectError(error.TerminalHeld, authorize(&b, boss, .{
         .clock_out = .{ .id = worker },
     }));
 
@@ -1135,33 +1157,25 @@ test "clock_out is refused for an infinite work mode" {
     try authorize(&b, boss, .{ .clock_in = .{ .id = worker } });
 }
 
-test "a work mode may be arranged here, but a user's standing one may not be lifted" {
-    // This surface used to have no way to change a work mode at all: the ban
-    // on clocking off an infinite-mode terminal is only worth something if
-    // the mode itself cannot be swapped out from under it.
-    //
-    // The supervisor arranges work now, so the rule moved rather than went
-    // away. The bus refuses to lift an infinite mode the *user* set -- and
-    // that refusal is what this test guards, because it is the only thing
-    // standing between "keep going" and an agent deciding otherwise.
+test "the hold cannot be reached from this surface at all" {
+    // There is deliberately no method for it. The ban on clocking off a
+    // held terminal is only worth something if the hold itself cannot be
+    // lifted from the same place -- and unlike the work modes this
+    // replaced, there is no scheduling story that wants it either: the
+    // supervisor decides on every wake-up whether there is more worth
+    // doing, which is the judgement a mode switch was standing in for.
+    for (std.enums.values(Method)) |m| {
+        const name = @tagName(m);
+        try testing.expect(std.mem.indexOf(u8, name, "held") == null);
+        try testing.expect(std.mem.indexOf(u8, name, "work_mode") == null);
+    }
+
+    // And the bus refuses it however the request is routed.
     var b = try testBus(testing.allocator);
     defer b.deinit();
-
-    // The supervisor may put a terminal into an infinite mode.
-    try authorize(&b, boss, .{ .set_work_mode = .{
-        .id = worker,
-        .mode = "infinite_directed",
-    } });
-
-    // But once the user has said it, only the user unsays it.
-    try b.setWorkMode(worker, .infinite_directed, .user);
     try testing.expectError(
         error.NotPermitted,
-        b.setWorkMode(worker, .clock_off, .supervisor),
-    );
-    try testing.expectError(
-        error.WorkModeForbids,
-        b.clockOff(worker, .supervisor),
+        b.setHeld(worker, true, .supervisor),
     );
 }
 
@@ -1200,8 +1214,10 @@ test "every error has a message that says what to do" {
     const errs = [_]Error{
         error.NotPermitted,
         error.UnknownTerminal,
-        error.WorkModeForbids,
+        error.TerminalHeld,
+        error.AlreadyWatched,
         error.SelfTarget,
+        error.NotYours,
     };
     for (errs) |e| {
         const msg = errorMessage(e);
@@ -1577,11 +1593,16 @@ pub const Guard = struct {
 
     /// Whether the surface may set `enabled` to `to`.
     ///
-    /// The asymmetry is the point, and it has a precedent: a supervisor may
-    /// put a terminal into an infinite work mode but may not lift the one
-    /// the user set. Switching a plugin on introduces no new code -- the
-    /// script was already on disk -- and points at the person hearing more.
-    /// Switching one off points at them hearing nothing.
+    /// The asymmetry is the point, and it has a precedent that still
+    /// holds: `clockOff` is the supervisor's alone and is refused for a
+    /// held terminal, while `clockOn` is open to either of them, because
+    /// coming back to work is not the dangerous direction. Both rules
+    /// guard the same direction -- the one that ends with somebody hearing
+    /// nothing.
+    ///
+    /// Switching a plugin on introduces no new code -- the script was
+    /// already on disk -- and points at the person hearing more. Switching
+    /// one off points at them hearing nothing.
     pub fn enabling(to: bool) Verdict {
         if (to) return .allowed;
         return .{ .refused = refusal.switching_off };
@@ -2446,7 +2467,7 @@ pub fn dispatch(
 
         .clock_out => |p| {
             bus.clockOff(p.id, .supervisor) catch |err| return switch (err) {
-                error.WorkModeForbids => failure(error.WorkModeForbids),
+                error.TerminalHeld => failure(error.TerminalHeld),
                 error.UnknownTerminal => failure(error.UnknownTerminal),
                 error.NotPermitted => failure(error.NotPermitted),
             };
@@ -2456,11 +2477,6 @@ pub fn dispatch(
         .clock_in => |p| {
             bus.clockOn(p.id) catch return failure(error.UnknownTerminal);
             return .ok;
-        },
-
-        .get_work_mode => |p| {
-            const e = bus.get(p.id) orelse return failure(error.UnknownTerminal);
-            return .{ .work_mode = e.work_mode };
         },
 
         .set_quiescence_threshold => |p| {
@@ -2538,27 +2554,24 @@ pub fn dispatch(
             return .ok;
         },
 
-        .set_work_mode => |p| {
-            const mode = std.meta.stringToEnum(Bus.WorkMode, p.mode) orelse
-                return hostFailure(
-                    "BadParams",
-                    "mode must be clock_off, infinite_directed or infinite_sequential",
+        .become_supervisor => return switch (bus.roleOf(caller)) {
+            // Already the job. Said plainly rather than refused: an agent
+            // told "not permitted" would go looking for what it did wrong.
+            .supervisor => wire.Response{ .text = "you are already a supervisor" },
+
+            // The hard one. Its supervisor is not consulted and would
+            // never learn of it, and a watched terminal is the likeliest
+            // place for a line of injected text to arrive -- so this is
+            // refused in code rather than left to anybody's judgement.
+            .watched => failure(error.AlreadyWatched),
+
+            .none => blk: {
+                bus.addSupervisor(caller) catch break :blk hostFailure(
+                    "PromoteFailed",
+                    "could not take up the supervisor's standing",
                 );
-
-            bus.setWorkMode(p.id, mode, .supervisor) catch |err| switch (err) {
-                error.UnknownTerminal => return failure(error.UnknownTerminal),
-
-                // Deliberately a distinct message. "Not permitted" alone
-                // reads as a bug in the caller; this is the user having
-                // said something the supervisor does not get to unsay.
-                error.NotPermitted => return hostFailure(
-                    "StandingInstruction",
-                    "the user put this terminal in an infinite work mode; " ++
-                        "only they can take it out of one",
-                ),
-            };
-
-            return .ok;
+                break :blk wire.Response{ .text = "you are a supervisor now" };
+            },
         },
 
         .skill_read => |p| {
@@ -2825,8 +2838,11 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         .id = id,
         .role = e.role,
         .duty = e.duty,
-        .work_mode = e.work_mode,
-        .quiet_ms = host.quietMs(id),
+        .held = e.held,
+        // Null rather than zero when nothing has ever sampled it. Zero
+        // here means "moving this instant", which is a claim, and a
+        // terminal nobody has looked at yet gives no grounds for one.
+        .quiet_ms = if (bus.observed(id)) host.quietMs(id) else null,
         .watching = e.role == .watched,
         .rounds = e.rounds,
     };
@@ -3460,17 +3476,17 @@ test "a host refusal comes back as a failure the agent can read" {
     try testing.expect(res.failed.message.len > 0);
 }
 
-test "clock_out through dispatch still obeys the work mode ban" {
+test "clock_out through dispatch still obeys the hold" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    try b.setWorkMode(worker, .infinite_sequential, .user);
+    try b.setHeld(worker, true, .user);
     const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
         .clock_out = .{ .id = worker },
     });
 
-    try testing.expectEqualStrings("WorkModeForbids", res.failed.code);
+    try testing.expectEqualStrings("TerminalHeld", res.failed.code);
     try testing.expectEqual(Bus.Duty.on, b.get(worker).?.duty);
 }
 
@@ -3535,11 +3551,38 @@ test "me works for a terminal that supervises nothing" {
     defer b.deinit();
     var fake: FakeHost = .{ .quiet_ms = 4242 };
 
+    // Sampled at least once, or the duration comes back null -- see the
+    // test below, which is about exactly that.
+    _ = b.report(worker, .{ .quiescent = .{
+        .quiet_ms = 4242,
+        .silent_ms = 4242,
+        .changed_rows = 0,
+        .total_rows = 24,
+    } }, 4242);
+
     const res = try dispatch(testing.allocator, &b, fake.host(), worker, .me);
     try testing.expectEqual(worker, res.me.id);
     try testing.expectEqual(Bus.Role.watched, res.me.role);
     try testing.expectEqual(@as(u64, 4242), res.me.quiet_ms);
     try testing.expect(res.me.watching);
+}
+
+test "a terminal nothing has sampled reports no duration, not a huge one" {
+    // It used to report how long the *program* had been running: the last
+    // event time defaulted to zero, so "now minus never" came back as
+    // hours. A terminal opened a minute ago and working flat out was
+    // described to its supervisor as still for half a day -- and quiet
+    // time is the whole basis on which a supervisor decides to intervene.
+    //
+    // Null, not zero: zero says "moving this instant", which is a claim,
+    // and nothing has looked at this terminal to make one.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .quiet_ms = 46_292_971 };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .me);
+    try testing.expectEqual(Bus.Role.watched, res.me.role);
+    try testing.expect(res.me.quiet_ms == null);
 }
 
 test "any terminal may read a skill" {
@@ -3569,16 +3612,137 @@ test "an unknown skill fails rather than returning nothing" {
     try testing.expectEqualStrings("NoSuchSkill", res.failed.code);
 }
 
-test "get_work_mode reads but nothing writes" {
+test "an unclaimed terminal may put itself forward as supervisor" {
+    // Until now the only road to the job was the user pressing a key, so
+    // an agent that could see work needing somebody to co-ordinate it had
+    // no way at all to say so.
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    var fake: FakeHost = .{};
+    try b.register(worker);
+
+    const res = try dispatch(
+        testing.allocator,
+        &b,
+        fake.host(),
+        worker,
+        .become_supervisor,
+    );
+    try testing.expect(res == .text);
+    try testing.expect(b.isSupervisor(worker));
+}
+
+test "a terminal the bus has never heard of may still put itself forward" {
+    // Being unknown is the most unclaimed a terminal can be. Refusing here
+    // would mean the tool only worked for terminals somebody had already
+    // taken an interest in, which is the opposite of who it is for.
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(
+        testing.allocator,
+        &b,
+        fake.host(),
+        0x5151,
+        .become_supervisor,
+    );
+    try testing.expect(res == .text);
+    try testing.expect(b.isSupervisor(0x5151));
+}
+
+test "a watched terminal may not put itself forward" {
+    // The hard one. Its supervisor is not consulted and would never learn
+    // of it; and a watched terminal is the likeliest place for injected
+    // text to arrive, so "promote yourself" must not be a sentence that
+    // rearranges who may reach whom.
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    try b.setWorkMode(worker, .infinite_directed, .user);
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
-        .get_work_mode = .{ .id = worker },
-    });
-    try testing.expectEqual(Bus.WorkMode.infinite_directed, res.work_mode);
+    const res = try dispatch(
+        testing.allocator,
+        &b,
+        fake.host(),
+        worker,
+        .become_supervisor,
+    );
+    try testing.expectEqualStrings("AlreadyWatched", res.failed.code);
+    try testing.expectEqual(Bus.Role.watched, b.get(worker).?.role);
+    try testing.expect(!b.isSupervisor(worker));
+
+    // And the message points somewhere it can actually go, rather than
+    // leaving it to guess.
+    try testing.expect(std.mem.indexOf(u8, res.failed.message, "supervisor") != null);
+}
+
+test "a supervisor putting itself forward is told so, not refused" {
+    // Refusing would read as "you did something wrong" and send the agent
+    // looking for another way in. It did nothing wrong; it is already
+    // what it was asking to be.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(
+        testing.allocator,
+        &b,
+        fake.host(),
+        boss,
+        .become_supervisor,
+    );
+    try testing.expect(res == .text);
+    try testing.expect(std.mem.indexOf(u8, res.text, "already") != null);
+    try testing.expect(b.isSupervisor(boss));
+}
+
+test "a supervisor that stood down may put itself forward again" {
+    // Decided deliberately. `stand_down` exists to end the empty box
+    // handed over every interval for the rest of the night; what it
+    // guards against is a supervisor quietly carrying on. Coming back is
+    // a deliberate act that leaves a record, which is the opposite of
+    // quietly carrying on -- so there is no "has stood down" mark, and
+    // nothing here to check for one.
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    var fake: FakeHost = .{};
+    try b.addSupervisor(boss);
+
+    const down = try dispatch(
+        testing.allocator,
+        &b,
+        fake.host(),
+        boss,
+        .stand_down,
+    );
+    try testing.expect(down == .ok);
+    try testing.expect(!b.isSupervisor(boss));
+    try testing.expectEqual(Bus.Role.none, b.roleOf(boss));
+
+    const up = try dispatch(
+        testing.allocator,
+        &b,
+        fake.host(),
+        boss,
+        .become_supervisor,
+    );
+    try testing.expect(up == .text);
+    try testing.expect(b.isSupervisor(boss));
+}
+
+test "become_supervisor is open to everyone, targets nobody, and names no id" {
+    // Three separate switches, each exhaustive, each with a different
+    // consequence if this method is filed under the wrong arm.
+    //
+    // `requiresSupervisor` true would make it unreachable by exactly the
+    // terminals it exists for. `targetsTerminal` true would send it
+    // through the self-target and existence checks meant for a request
+    // that names somebody else. `target` returning an id would mean it
+    // acted on a terminal the caller chose, which is a far larger power
+    // than the one being added: promoting *another* terminal.
+    try testing.expect(!requiresSupervisor(.become_supervisor));
+    try testing.expect(!targetsTerminal(.become_supervisor));
+    try testing.expect(target(.become_supervisor) == null);
 }
 
 test "reading the notices is the supervisor's alone" {
@@ -3778,19 +3942,16 @@ test "a supervisor cannot put itself under its own supervision" {
     );
 }
 
-test "setting a work mode still requires a terminal under supervision" {
-    // The exemption is `set_watch`'s alone. A work mode is a thing you say
-    // about a terminal you are minding, and the bus has nowhere to record
-    // it for one you are not.
+test "clocking out still requires a terminal under supervision" {
+    // The exemption is `set_watch`'s alone. Clocking a terminal off is a
+    // thing you say about a terminal you are minding, and the bus has
+    // nowhere to record it for one you are not.
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
     try testing.expectError(
         error.UnknownTerminal,
-        authorize(&b, boss, .{ .set_work_mode = .{
-            .id = 0x5151,
-            .mode = "clock_off",
-        } }),
+        authorize(&b, boss, .{ .clock_out = .{ .id = 0x5151 } }),
     );
 }
 

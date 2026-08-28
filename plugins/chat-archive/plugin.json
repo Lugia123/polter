@@ -3,7 +3,7 @@
   "name": "Chat archive",
   "kind": "archive",
   "version": "1.0.0",
-  "description": "Follows the chat log and copies it somewhere that outlives this machine. One plugin, several backends: postgres today, and a plain file that needs nothing installed.",
+  "description": "Follows the chat log and copies it somewhere that outlives this machine. One plugin, several backends: postgres, and an export to a JSONL file you name. Polter keeps its own readable local record either way -- this is for getting the chat elsewhere.",
 
   "exec": "archive.py",
   "timeout_ms": 30000,
@@ -20,9 +20,8 @@
       "backend": {
         "type": "string",
         "title": "Where to write",
-        "description": "postgres needs psql on PATH and a dsn. file needs nothing and writes newline-delimited JSON under the polter state directory.",
-        "enum": ["postgres", "file"],
-        "default": "file"
+        "description": "postgres needs psql on PATH and a dsn. file needs a path and appends newline-delimited JSON to it. Neither has a default: an archive should not pick a destination nobody asked for.",
+        "enum": ["postgres", "file"]
       },
       "dsn": {
         "type": "string",
@@ -42,11 +41,10 @@
         "description": "Part of the primary key, so two machines writing to one database do not collide, and so a wiped local log can start over. Letters, digits, dot, dash, underscore.",
         "default": "default"
       },
-      "file_name": {
+      "path": {
         "type": "string",
-        "title": "File to write (file backend)",
-        "description": "A bare filename, no directories. It is written under $XDG_STATE_HOME/polter/archive/.",
-        "default": "chat.jsonl"
+        "title": "File to export to (file backend)",
+        "description": "An absolute path ending in .jsonl, in a directory that already exists. Required by the file backend and deliberately without a default -- Polter already keeps a readable record under $XDG_STATE_HOME/polter/chat/, and a plugin writing a second copy of it adds nothing."
       }
     },
     "required": ["backend"]

@@ -38,7 +38,7 @@
 /* 右键菜单里的智能体动作 */
 "Make This Terminal a Supervisor" = "将此终端设为总管";
 "Supervise This Terminal" = "监督此终端";
-"Cycle This Terminal's Work Mode" = "切换此终端的工作模式";
+"Keep This Terminal Working" = "保持此终端工作";
 
 /* 插件 */
 "No plugins installed" = "没有已安装的插件";

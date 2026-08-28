@@ -1,6 +1,6 @@
 # Tab 合并与状态标记
 
-> 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
+> 最后更新对应的 git commit：`908f55b1f`（工作模式换成「按住」这一轮改动尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**已实现**（S4）。判定在 `src/poltergeist/Bus.zig` 的 `TabMark` 与 `tabMark`，写入在 `src/Surface.zig` 的 `updatePoltergeistTabMark`，刷新在 `src/App.zig` 的 `refreshPoltergeistTabs`。
 > 本章前半是选型推导；实际落地的样子见「实现」一节，两者不一致时以代码为准。
@@ -17,7 +17,7 @@
 ## 本章不覆盖什么
 
 - 静止怎么测、静止阈值取多少 —— 见 [sensing.md](sensing.md)。
-- 上班 / 下班由谁判定、监工模式语义、确认策略 —— 见 [supervisor.md](supervisor.md)。
+- 上班 / 下班由谁判定、「按住」是什么、确认策略 —— 见 [supervisor.md](supervisor.md)。
 - 总管通过什么工具改这个标记、skill 体系怎么维护 —— 见 [mcp.md](mcp.md)。
 - 群聊与私信界面的承载方式选型 —— 见 [chatui.md](chatui.md)。
 - 各章分工总表与整体架构 —— 见 [README.md](README.md)。
@@ -176,17 +176,33 @@ TerminalWindow.swift:163-171       blp 声明式绑定，范本 surface.blp:83-8
 
 实现是**组合**：`标记前缀 + 程序自己的标题`，标题从 `rt_surface.getTitle()` 取。没有标记时写回不带前缀的标题。
 
-### 五个状态
+### 七个标记
+
+`Bus.TabMark`（`src/poltergeist/Bus.zig`）的七个值，逐个对上：
 
 | 标记   | 含义                                       |
 | ------ | ------------------------------------------ |
 | （无） | 不在监督范围内 —— tab 只显示程序自己的标题 |
 | ●      | 上班中                                     |
 | ○      | 静止（屏幕停了超过阈值）                   |
+| ◉      | 被用户按住，且在动                         |
+| ◎      | 被用户按住，且静止                         |
 | 💤     | 下班休息                                   |
 | ⚑      | 总管                                       |
 
 **下班优先于静止。**一个已下班的终端当然是静止的，但「下班」是更有用的说法：它安静是因为被叫停了，不是因为卡住了。
+
+**按住的组合只有两种，不是三种。** 「被按住」和「已下班」这个组合到不了：
+`Bus.clockOff` 遇到 `held` 就返回 `TerminalHeld`，所以一个被按住的终端只可能
+在动或静止。`TabMark` 里因此没有第三个环——**没有这个标记，是因为没有这个状态**，
+不是因为漏画了。
+
+**为什么按住要在 tab 上常驻一个环，而不是切换时提示一句。** 旧实现里切换工作
+模式会往终端注入一句提示，然后那句话就随上下文被挤走了。一个只在设定那一刻存在
+的状态，等于没有状态；而挂机过夜正是上下文最容易被冲掉的场景。环解决的正是这
+个：只要按住还在，它就一直在视野里。同样的理由，菜单项**没有**做成勾选态——
+勾只在拉开菜单那一刻看得见，解决不了「持续可见」这个问题（旁边的
+`Supervise This Terminal` 也没有勾，不加反而一致）。
 
 ### 不重复写
 
@@ -200,7 +216,13 @@ TerminalWindow.swift:163-171       blp 声明式绑定，范本 surface.blp:83-8
 - **`on_duty`（上班中）** — 已纳入监督关系、正在工作。它是被监督终端的默认状态。
 - **`quiescent`（静止待判）** — 屏幕在阈值时长内没有变化、已通知总管。它是传感器的直接输出加一次去重簿记，不含任何语义判断。
 - **`pending_confirm`（等确认）** — 总管认为需要人确认，正按确认策略处理中。这个值必须存在：[supervisor.md](supervisor.md) 规定确认请求要同时在群聊与 tab 标记上留痕，因为 macOS 侧的桌面通知在聚焦时 3 秒即被移除，不是合格的确认渠道。
-- **`off_duty`（下班休息）** — 总管判定该终端无需继续工作后打的标记。只有下班模式的终端可能进入这个值；无限工作模式在程序层面禁止下班，语义见 [supervisor.md](supervisor.md)。
+- **`off_duty`（下班休息）** — 总管判定该终端无需继续工作后打的标记。被用户按住的终端进不了这个值：`clockOff` 在程序层面拒绝，语义见 [supervisor.md](supervisor.md)。
+
+**这份五值提案与落地的 `TabMark` 已经不是一回事，以代码为准。** 实际的 `TabMark`
+是七值：提案里的 `quiescent` 落地叫 `quiet`，`pending_confirm` 至今未实现，另外
+多出 `supervisor`、`held_on_duty`、`held_quiet` 三个。这里保留提案原文是因为下面
+那段「为什么一次定齐比后续追加便宜」的论证仍然成立——而它恰好被后来的事实印证了
+一半：加 `held` 那两个值时，确实要同步 `include/ghostty.h` 与两端 switch。
 
 理由是枚举扩展的真实成本落在 `include/ghostty.h` 同步与两端 switch 上（出处见上节第 4 跳），一次定齐比后续追加便宜；而渲染侧留白是零成本的 —— 首版可以只画 `off_duty` 与 `pending_confirm`，`none` 与 `on_duty` 不画，照 `TerminalTabColor.none` 隐藏指示器的做法（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:688-698`）。
 
@@ -271,7 +293,7 @@ R4 规定全系统只有「停掉监控」一个停止动作，因此本设计�
 
 - [README.md](README.md) —— 总览、原则与各章分工。
 - [sensing.md](sensing.md) —— 静止怎么测，`quiescent` 是否上 tab 的输入方。
-- [supervisor.md](supervisor.md) —— 上班 / 下班由谁判定，监工模式。
+- [supervisor.md](supervisor.md) —— 上班 / 下班由谁判定，「按住」。
 - [mcp.md](mcp.md) —— 总管通过什么工具改标记、触发合并。
 - [chatui.md](chatui.md) —— 逻辑分组列表的界面承载方式。
 - [\_spec.md](_spec.md) —— 本批文档的写作规范与术语表。

@@ -40,11 +40,15 @@ import urllib.parse
 
 BACKENDS = ("postgres", "file")
 
+# No default for `backend` and none for `path`, and that absence is the
+# design. A `chat-archive` switched on with no parameters used to mean "write
+# newline-delimited JSON under the state directory" -- the same shape, in
+# another place, as the record Polter itself is already keeping. Silently
+# duplicating the core's work is not what a plugin is for, and an archive that
+# has to be asked where to write cannot do it by accident.
 DEFAULTS = {
-    "backend": "file",
     "schema": "public",
     "stream": "default",
-    "file_name": "chat.jsonl",
 }
 
 # `\A ... \Z` rather than `^ ... $` on purpose: `$` also matches just before a
@@ -52,7 +56,22 @@ DEFAULTS = {
 # psql's `\set`, where it becomes a second line of script.
 RE_SCHEMA = re.compile(r"\A[a-z_][a-z0-9_]{0,62}\Z")
 RE_STREAM = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
-RE_FILE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+# An export destination: absolute, plain components, and ending in `.jsonl`.
+#
+# The suffix is not decoration. `path` is a parameter an agent can write and
+# what gets written through it is chat text, so an unrestricted path is a way
+# from "configure an archive plugin" to appending into ~/.zshrc or
+# ~/.ssh/authorized_keys. Requiring the name to end `.jsonl` costs a user
+# nothing -- it is what they are producing -- and takes every file that
+# matters out of reach. Absolute because a relative path would be resolved
+# against whatever directory Polter happened to be started from, which is not
+# a place anybody chose.
+#
+# `..` needs no separate check and does not get one: every component has to
+# begin with a letter or a digit, so a component that is `..` -- or `.`, or
+# anything hidden -- is not one this pattern can accept. A second check
+# would look like it was carrying weight while never once firing.
+RE_EXPORT = re.compile(r"\A(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\.jsonl\Z")
 
 # The host refuses a line longer than this and kills the child for it.
 ACK_MAX = 64 * 1024
@@ -210,12 +229,12 @@ class ConfigError(Exception):
 
 
 class Config(object):
-    def __init__(self, backend, dsn, schema, stream, file_name, psql):
+    def __init__(self, backend, dsn, schema, stream, export_path, psql):
         self.backend = backend
         self.dsn = dsn
         self.schema = schema
         self.stream = stream
-        self.file_name = file_name
+        self.export_path = export_path
         self.psql = psql
 
 
@@ -230,7 +249,7 @@ def resolve_config(params):
     # enum is enforced by the tool surface and only against literals: a value
     # written as `env:BACKEND` passes that check and arrives here as whatever
     # the environment happened to hold.
-    backend = get("backend") or DEFAULTS["backend"]
+    backend = get("backend")
     if backend not in BACKENDS:
         raise ConfigError(
             "the backend parameter is not one this plugin has. It takes "
@@ -253,14 +272,33 @@ def resolve_config(params):
             "digit, dot, dash or underscore, or it is longer than 64."
         )
 
-    file_name = get("file_name") or DEFAULTS["file_name"]
-    if not RE_FILE.match(file_name):
-        raise ConfigError(
-            "the file_name parameter has to be a bare filename: letters, "
-            "digits, dot, dash and underscore, not starting with a dot, at "
-            "most 64 characters. It cannot name a directory -- the directory "
-            "is this plugin's to choose."
-        )
+    export_path = get("path")
+    if backend == "file":
+        if not export_path:
+            raise ConfigError(
+                "the file backend needs a path parameter, and there is none. "
+                "It has no default on purpose: Polter already keeps a "
+                "readable local record of its own, and a plugin quietly "
+                "writing a second copy of it somewhere is not an archive. "
+                "Name the file you want exported."
+            )
+        if not RE_EXPORT.match(export_path):
+            raise ConfigError(
+                "the path parameter has to be an absolute path whose "
+                "components are letters, digits, dot, dash and underscore, "
+                "and whose last component ends in .jsonl. That is what this "
+                "plugin writes, and the restriction is what keeps a "
+                "parameter an agent can set from naming a file that is not "
+                "one."
+            )
+        parent = os.path.dirname(export_path)
+        if not os.path.isdir(parent):
+            raise ConfigError(
+                "the directory the path parameter names is not there. It is "
+                "not created here: making directories at a path somebody "
+                "else chose is a wider thing to be able to do than writing "
+                "the file that was asked for."
+            )
 
     dsn = params.get("dsn", "")
     if not isinstance(dsn, str):
@@ -289,7 +327,7 @@ def resolve_config(params):
                 "Polter from a shell where psql works."
             )
 
-    return Config(backend, dsn, schema, stream, file_name, psql)
+    return Config(backend, dsn, schema, stream, export_path, psql)
 
 
 # ---------------------------------------------------------------------------
@@ -409,40 +447,32 @@ def make_backend(config):
 
 
 # ---------------------------------------------------------------------------
-# 6. The file backend
+# 6. The file backend: an export to a file somebody named
 # ---------------------------------------------------------------------------
 
 
-def state_dir():
-    """Where Polter itself keeps state; see src/os/xdg.zig."""
-    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "state"
-    )
-    return os.path.join(base, "polter", "archive")
-
-
 class FileBackend(object):
-    """Newline-delimited JSON under the polter state directory.
+    """Newline-delimited JSON, appended to the file the `path` parameter names.
 
-    The directory is this plugin's to choose and the configured name only ever
-    contributes its last component. That is not tidiness: `file_name` is a
-    parameter an agent can write, and a parameter that can express a path is a
-    path from "configure an archive plugin" to appending chat text into
-    ~/.zshrc or ~/.ssh/authorized_keys. Only this file knows what the parameter
-    is for, so this is where the ability is closed off.
+    **It writes nowhere by default, and that is the whole of what changed
+    about it.** It used to put a file under the state directory whenever the
+    plugin was switched on, which was the same shape of data, one directory
+    away from the record Polter keeps for itself. Keeping a readable local
+    copy is the core's job -- whether there is a record at all must not depend
+    on whether some plugin is enabled -- and this plugin's job is getting the
+    chat somewhere else: a database, a share, a directory that syncs.
+
+    So the destination is required and is checked in `resolve_config`, which
+    is also where the reasoning about what `path` may be lives.
     """
 
     def __init__(self, config):
         self.config = config
-        self.path = os.path.join(state_dir(), config.file_name)
+        self.path = config.export_path
         self.fd = None
         self.written_through = 0
 
     def open(self):
-        d = os.path.dirname(self.path)
-        if not os.path.isdir(d):
-            os.makedirs(d, 0o700)
-
         fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             size = os.lseek(fd, 0, os.SEEK_END)
@@ -1225,16 +1255,25 @@ def _claiming(seq):
 def self_test(with_postgres):
     global _ACK_LOG
 
-    # First, before anything else can open a file: nothing in here may touch
-    # the real state directory, where the user's own archive lives.
+    # First, before anything else can open a file: every destination in here
+    # is under a fresh temporary directory.
+    #
+    # This used to also point `XDG_STATE_HOME` at the temporary directory,
+    # because the file backend derived its own path from it. It no longer
+    # derives anything -- the destination is a parameter now -- so that line
+    # went with it rather than staying on as a guard against nothing.
     tmp = tempfile.mkdtemp(prefix="polter-chat-archive-")
-    os.environ["XDG_STATE_HOME"] = tmp
+    exports = os.path.join(tmp, "exports")
+    os.makedirs(exports, 0o700)
     _ACK_LOG = []
 
-    def params(name, backend="file"):
-        return {"backend": backend, "file_name": name, "stream": "selftest"}
+    def _p(name):
+        return os.path.join(exports, name)
 
-    p1 = os.path.join(tmp, "polter", "archive", "t1.jsonl")
+    def params(name, backend="file"):
+        return {"backend": backend, "path": _p(name), "stream": "selftest"}
+
+    p1 = _p("t1.jsonl")
 
     # 1
     s = Session()
@@ -1388,7 +1427,7 @@ def self_test(with_postgres):
 
     # 11
     odd = "\u4e2d\u6587 \"quoted\" back\\slash\nsecond line\ttab \u00e9"
-    p11 = os.path.join(tmp, "polter", "archive", "t11.jsonl")
+    p11 = _p("t11.jsonl")
     s = Session()
     s.handle(_hello_line(0, params("t11.jsonl")))
     s.handle(_batch_line(0, 1, [_msg(1, text=odd)]))
@@ -1423,38 +1462,66 @@ def self_test(with_postgres):
             manifest["kind"],
             manifest["exec"],
             manifest["wants"]["groups"],
-            props["backend"].get("default"),
             props["schema"].get("default"),
             props["stream"].get("default"),
-            props["file_name"].get("default"),
+            # No default for either, and the manifest has to agree: a default
+            # here is what would let the plugin pick a destination nobody
+            # asked for, which is the thing this backend stopped doing.
+            props["backend"].get("default"),
+            props["path"].get("default"),
             props["dsn"].get("secret") is True,
             tuple(props["backend"].get("enum", ())),
+            tuple(manifest["params"].get("required", ())),
         ),
         (
             "chat-archive",
             "archive",
             "archive.py",
             ["*"],
-            DEFAULTS["backend"],
             DEFAULTS["schema"],
             DEFAULTS["stream"],
-            DEFAULTS["file_name"],
+            None,
+            None,
             True,
             BACKENDS,
+            ("backend",),
         ),
     )
 
     # 14
     bad = ["../x", "a/b", ".hidden", "a`b", "x" * 200, "ok\n", "", "/etc/passwd"]
     leaks = []
-    for pattern in (RE_SCHEMA, RE_STREAM, RE_FILE):
+    for pattern in (RE_SCHEMA, RE_STREAM):
         for v in bad:
             if pattern.match(v):
                 leaks.append(v)
+
+    # The export path takes its own list: it is the one parameter that is
+    # meant to hold slashes, so "refuses a path" is not what is being asked
+    # of it. What is being asked is that it only ever names a `.jsonl` --
+    # every entry below is a file somebody would mind having chat appended
+    # to, and the last two are the shapes that get past a naive suffix test.
+    for v in bad + [
+        "relative/x.jsonl",
+        "/home/u/.ssh/authorized_keys",
+        "/home/u/.zshrc",
+        "/home/u/x.jsonl.sh",
+        "/home/u/.jsonl",
+    ]:
+        if RE_EXPORT.match(v):
+            leaks.append(v)
+
+    # And the positive half, because a pattern that matches nothing would
+    # pass every line above while making the backend unusable.
     _eq(
-        "the name patterns refuse a path",
-        (leaks, bool(RE_STREAM.match("default")), bool(RE_SCHEMA.match("public"))),
-        ([], True, True),
+        "the name patterns refuse a path, and the export path refuses a file",
+        (
+            leaks,
+            bool(RE_STREAM.match("default")),
+            bool(RE_SCHEMA.match("public")),
+            bool(RE_EXPORT.match("/home/u/archive/chat.jsonl")),
+        ),
+        ([], True, True, True),
     )
 
     # 15 -- the one failure that looks healthy. A wiped state directory, or
@@ -1496,24 +1563,32 @@ def self_test(with_postgres):
 
     # 16 -- case 14 pins the patterns; this pins that `resolve_config` is
     # wired to them, which is the half that can rot without anything saying
-    # so. Take the `file_name` check out and every other case here stays
-    # green while `file_name: "../x.jsonl"` writes outside the directory this
-    # plugin picked -- and writing outside it is the whole of what that
-    # parameter is stopped from doing, because it is a parameter an agent can
-    # set and the text being written is the chat log.
+    # so. Take the `path` check out and every other case here stays green
+    # while `path: "/home/u/.ssh/authorized_keys"` gets chat text appended
+    # to it -- `path` is a parameter an agent can set, and what is written
+    # through it is the chat log.
+    #
+    # Two of the cases below are about the absence of a default rather than
+    # about a bad value: no `path` at all, and a `path` whose directory is
+    # not there. Both used to be answered by picking somewhere, and both
+    # have to be refusals now.
     #
     # The exit code is pinned too. These do not come right by being retried,
     # and exit 2 is what puts the sentence in front of somebody instead of a
     # patient retry that never ends.
-    escaped = os.path.join(tmp, "polter", "zqescaped.jsonl")
+    escaped = os.path.join(tmp, "zqescaped.jsonl")
     codes = []
     said = []
     for bad in (
         {"backend": "zqbackend"},
         {"backend": "postgres"},
         {"backend": "file", "schema": "zqSCHEMA"},
-        {"backend": "file", "stream": "zqstream'x"},
-        {"backend": "file", "file_name": "../zqescaped.jsonl"},
+        {"backend": "file", "stream": "zqstream'x", "path": _p("t1.jsonl")},
+        {"backend": "file", "path": os.path.join(exports, "..", "zqescaped.jsonl")},
+        # No destination at all, which used to mean "the state directory".
+        {"backend": "file"},
+        # A directory nobody made. Refused rather than created.
+        {"backend": "file", "path": os.path.join(tmp, "zqnodir", "x.jsonl")},
     ):
         cap = _Capture()
         saved = sys.stderr
@@ -1538,7 +1613,7 @@ def self_test(with_postgres):
             [len(t.strip().split("\n")) for t in said],
             [t for t in said if "zq" in t],
         ),
-        ([2, 2, 2, 2, 2], False, [1, 1, 1, 1, 1], []),
+        ([2, 2, 2, 2, 2, 2, 2], False, [1, 1, 1, 1, 1, 1, 1], []),
     )
 
     if with_postgres:
