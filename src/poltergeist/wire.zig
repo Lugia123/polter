@@ -78,6 +78,18 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
     const method = std.meta.stringToEnum(rpc.Method, method_name) orelse
         return error.UnknownMethod;
 
+    // A parameter this method does not know is a mistake, and silence turns
+    // it into a different call. `set_watch` was asked to let a terminal go
+    // with the key spelled `watching`; the key was dropped, `watch` fell to
+    // a default of true, and the reply said `ok` while the terminal was
+    // taken hold of instead. **The caller had no way to find out.**
+    //
+    // The permitted names come from the payload struct at compile time
+    // rather than a list kept beside it, because a list is wrong the first
+    // time a field is added and wrong silently -- the same reason the action
+    // catalogue is generated rather than typed out.
+    try rejectUnknownParams(method, obj.get("params") orelse .null);
+
     const params: ?std.json.ObjectMap = switch (obj.get("params") orelse .null) {
         .object => |o| o,
         .null => null,
@@ -132,10 +144,16 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .ms = try requireU64(params, "ms"),
         } },
 
-        .set_watch => .{ .set_watch = .{
-            .id = try requireId(params),
-            .watch = optionalBool(params, "watch", true),
-        } },
+        .set_watch => .{
+            .set_watch = .{
+                .id = try requireId(params),
+                // No default. The type says this field is required, and the
+                // two directions are not equally consequential: a call that
+                // failed to say which one it meant used to take hold of a
+                // terminal, which is the harder half to undo.
+                .watch = try requireBool(params, "watch"),
+            },
+        },
 
         .skill_read => .{ .skill_read = .{
             .name = try requireString(aa, params, "name"),
@@ -208,7 +226,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
 
         .plugin_configure => .{ .plugin_configure = .{
             .key = try requireString(aa, params, "key"),
-            .enable = optionalBoolOrNull(params, "enabled"),
+            .enabled = optionalBoolOrNull(params, "enabled"),
             .params = try optionalParams(aa, params, "params"),
         } },
 
@@ -243,6 +261,49 @@ fn requireString(
     key: []const u8,
 ) ParseError![]const u8 {
     return (try optionalString(aa, params, key)) orelse error.BadParams;
+}
+
+/// Whether every key in `params` is a field of this method's payload.
+///
+/// Void payloads take no parameters at all; a caller sending some has
+/// misunderstood the method, and saying so is cheaper than ignoring them.
+fn rejectUnknownParams(method: rpc.Method, params: std.json.Value) ParseError!void {
+    const obj = switch (params) {
+        .object => |o| o,
+        .null => return,
+        else => return error.BadParams,
+    };
+
+    switch (method) {
+        inline else => |m| {
+            const Payload = @FieldType(rpc.Request, @tagName(m));
+            if (Payload == void) {
+                if (obj.count() > 0) return error.BadParams;
+                return;
+            }
+
+            const fields = @typeInfo(Payload).@"struct".fields;
+            var it = obj.iterator();
+            key: while (it.next()) |entry| {
+                inline for (fields) |f| {
+                    if (std.mem.eql(u8, f.name, entry.key_ptr.*)) continue :key;
+                }
+                return error.BadParams;
+            }
+        },
+    }
+}
+
+/// A boolean that has to be there.
+///
+/// Separate from `optionalBool` on purpose: a default is a decision about
+/// what silence means, and for some fields silence has no honest reading.
+fn requireBool(params: ?std.json.ObjectMap, key: []const u8) ParseError!bool {
+    const p = params orelse return error.BadParams;
+    return switch (p.get(key) orelse return error.BadParams) {
+        .bool => |b| b,
+        else => error.BadParams,
+    };
 }
 
 fn optionalString(
@@ -829,13 +890,23 @@ test "become_supervisor takes no parameters at all" {
     defer p.deinit();
     try testing.expectEqual(rpc.Method.become_supervisor, p.value);
 
-    // Params that came along anyway are ignored rather than refused: the
-    // shape is "no parameters", not "an empty object required".
-    var extra = try parse(
+    // Params that came along anyway are refused. The comment here used to
+    // say they were ignored because "the shape is no parameters, not an
+    // empty object required" -- true of the shape, and the wrong thing to
+    // do with it. `become_supervisor` acts on the caller; a request naming
+    // an `id` has misunderstood it badly enough that carrying on and
+    // promoting the caller instead would be answering a question nobody
+    // asked.
+    try testing.expectError(error.BadParams, parseRequest(testing.allocator,
         \\{"method":"become_supervisor","params":{"id":"0x2222"}}
+    ));
+
+    // An empty object is still no parameters.
+    var empty = try parse(
+        \\{"method":"become_supervisor","params":{}}
     );
-    defer extra.deinit();
-    try testing.expectEqual(rpc.Method.become_supervisor, extra.value);
+    defer empty.deinit();
+    try testing.expectEqual(rpc.Method.become_supervisor, empty.value);
 }
 
 test "the work mode methods are gone from the wire" {
@@ -851,18 +922,49 @@ test "the work mode methods are gone from the wire" {
     ));
 }
 
-test "set_watch defaults to watching, because that is what it is for" {
-    var on = try parse(
-        \\{"method":"set_watch","params":{"id":1}}
-    );
-    defer on.deinit();
-    try testing.expect(on.value.set_watch.watch);
+test "a parameter the method does not know is refused, not ignored" {
+    // The bug this exists for: `set_watch` was asked to release a terminal
+    // with the key spelled `watching`. The key was dropped, `watch` fell to
+    // a default of true, and the reply said ok while the terminal had been
+    // taken hold of instead -- the opposite of what was asked, reported as
+    // success.
+    try testing.expectError(error.BadParams, parseRequest(testing.allocator,
+        \\{"method":"set_watch","params":{"id":1,"watching":false}}
+    ));
 
-    var off = try parse(
+    // The same misspelling on any other method, so this is not one guard
+    // bolted onto one bug.
+    try testing.expectError(error.BadParams, parseRequest(testing.allocator,
+        \\{"method":"terminal_send","params":{"id":1,"text":"hi","subimt":false}}
+    ));
+
+    // A method that takes nothing at all takes nothing at all.
+    try testing.expectError(error.BadParams, parseRequest(testing.allocator,
+        \\{"method":"notices","params":{"id":1}}
+    ));
+
+    // And the correct spellings still parse, so the guard is not simply
+    // refusing everything.
+    var ok = try parseRequest(testing.allocator,
         \\{"method":"set_watch","params":{"id":1,"watch":false}}
     );
-    defer off.deinit();
-    try testing.expect(!off.value.set_watch.watch);
+    defer ok.deinit();
+    try testing.expect(!ok.value.set_watch.watch);
+}
+
+test "set_watch will not guess which direction was meant" {
+    // It used to default to watching. Both directions are now spelled out,
+    // because they are not equally easy to undo: letting go of a terminal
+    // that should have been held costs a missed report, taking hold of one
+    // that should have been released attaches a supervisor to somebody
+    // else's work.
+    try testing.expectError(error.BadParams, parseRequest(testing.allocator,
+        \\{"method":"set_watch","params":{"id":1}}
+    ));
+
+    try testing.expectError(error.BadParams, parseRequest(testing.allocator,
+        \\{"method":"set_watch","params":{"id":1,"watch":"yes"}}
+    ));
 }
 
 test "a wrongly typed optional field is refused, not ignored" {
@@ -885,9 +987,21 @@ test "malformed input is refused rather than guessed at" {
     try testing.expectError(error.Malformed, parse(""));
 }
 
-test "unknown extra fields are ignored" {
+test "an unknown parameter is refused, and the envelope's own keys are not parameters" {
+    // This test used to be called "unknown extra fields are ignored" and
+    // asserted the opposite. It was not describing an oversight -- it was
+    // holding the behaviour in place, which is how `set_watch` came to
+    // take hold of a terminal when it was asked to let one go: the key was
+    // spelled `watching`, it was dropped on the floor, and `watch` fell to
+    // a default. A test can pin a defect as firmly as it can catch one.
+    try testing.expectError(error.BadParams, parseRequest(testing.allocator,
+        \\{"method":"me","params":{"unexpected":1}}
+    ));
+
+    // `id` and `jsonrpc` sit beside `params`, not inside it, and are the
+    // transport's business rather than the method's.
     var p = try parse(
-        \\{"method":"me","params":{"unexpected":1},"id":99,"jsonrpc":"2.0"}
+        \\{"method":"me","id":99,"jsonrpc":"2.0"}
     );
     defer p.deinit();
     try testing.expect(p.value == .me);
@@ -1043,7 +1157,7 @@ test "a configure that only sets a parameter does not read as switching off" {
 
         // Null, not false. A request that says nothing about `enabled` must
         // not reach the guard as a request to switch the plugin off.
-        try testing.expect(p.value.plugin_configure.enable == null);
+        try testing.expect(p.value.plugin_configure.enabled == null);
         try testing.expectEqualStrings("url", p.value.plugin_configure.params[0].name);
         try testing.expectEqualStrings("env:U", p.value.plugin_configure.params[0].value);
     }
@@ -1053,7 +1167,7 @@ test "a configure that only sets a parameter does not read as switching off" {
             \\{"method":"plugin_configure","params":{"key":"webhook","enabled":false}}
         );
         defer p.deinit();
-        try testing.expectEqual(false, p.value.plugin_configure.enable.?);
+        try testing.expectEqual(false, p.value.plugin_configure.enabled.?);
     }
 
     {
@@ -1063,7 +1177,7 @@ test "a configure that only sets a parameter does not read as switching off" {
             \\{"method":"plugin_configure","params":{"key":"webhook","enabled":"true"}}
         );
         defer p.deinit();
-        try testing.expect(p.value.plugin_configure.enable == null);
+        try testing.expect(p.value.plugin_configure.enabled == null);
     }
 
     // A number where a value was meant is refused rather than dropped: the

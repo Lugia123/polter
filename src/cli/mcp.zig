@@ -346,9 +346,11 @@ const tools = [_]Tool{
         .name = "set_watch",
         .description = "Put a terminal under your supervision, or take it out again. " ++
             "A terminal you watch is one you can read and type into, so this is the tool " ++
-            "that decides your reach. Supervisor only.",
+            "that decides your reach. `watch` is required and must be spelled exactly that: " ++
+            "a parameter this tool does not know is refused rather than ignored. " ++
+            "Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"id":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to true"}},"required":["id"]}
+        \\{"type":"object","properties":{"id":{"type":"string"},"watch":{"type":"boolean","description":"true takes hold of it, false lets it go. Required: there is no default, because the two are not equally easy to undo."}},"required":["id","watch"]}
         ,
     },
     .{
@@ -641,6 +643,64 @@ test "the tool list matches the host's method names" {
             if (std.mem.eql(u8, t.name, @tagName(m))) found = true;
         }
         try std.testing.expect(found);
+    }
+}
+
+test "every parameter a schema advertises is one the parser accepts" {
+    const rpc = @import("../poltergeist/rpc.zig");
+
+    // The parser now refuses a parameter the method does not know, which
+    // is what makes a misspelled key an error instead of a different call.
+    // That guard is only safe if the names it permits are the names the
+    // schemas hand out -- otherwise every correct request looks misspelled.
+    //
+    // The mismatch this exists for was real: `plugin_configure` advertised
+    // `enabled` while the payload field was `enable`, so switching a plugin
+    // on became BadParams the moment the guard went in. One test happened
+    // to cover it. This covers all of them, which is the difference between
+    // finding out now and finding out from a user.
+    for (tools) |t| {
+        const method = std.meta.stringToEnum(rpc.Method, t.name).?;
+
+        // Pull the property names out of the schema's `"properties":{...}`.
+        // Reading the schema rather than a second list of names, because a
+        // second list is the thing that drifts.
+        const props_at = std.mem.indexOf(u8, t.schema, "\"properties\":{") orelse continue;
+        var rest = t.schema[props_at + "\"properties\":{".len ..];
+
+        while (std.mem.indexOfScalar(u8, rest, '"')) |open| {
+            const after = rest[open + 1 ..];
+            const close = std.mem.indexOfScalar(u8, after, '"') orelse break;
+            const name = after[0..close];
+
+            // Only the keys at the top of `properties`, which are followed
+            // by `:{`. Anything else is inside one property's own object.
+            const tail = after[close + 1 ..];
+            if (tail.len >= 2 and tail[0] == ':' and tail[1] == '{') {
+                try std.testing.expect(fieldOf(rpc.Request, method, name));
+
+                // Skip that property's body so its own keys ("type",
+                // "description") are not read as parameter names.
+                const depth_end = std.mem.indexOfScalar(u8, tail, '}') orelse break;
+                rest = tail[depth_end + 1 ..];
+                continue;
+            }
+            rest = tail;
+        }
+    }
+}
+
+/// Whether `name` is a field of this method's payload.
+fn fieldOf(comptime Req: type, method: anytype, name: []const u8) bool {
+    switch (method) {
+        inline else => |m| {
+            const Payload = @FieldType(Req, @tagName(m));
+            if (Payload == void) return false;
+            inline for (@typeInfo(Payload).@"struct".fields) |f| {
+                if (std.mem.eql(u8, f.name, name)) return true;
+            }
+            return false;
+        },
     }
 }
 

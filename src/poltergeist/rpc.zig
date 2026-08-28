@@ -233,7 +233,12 @@ pub const Request = union(Method) {
     plugin_list: struct { key: []const u8 = "" },
     plugin_configure: struct {
         key: []const u8,
-        enable: ?bool = null,
+
+        // Named for the wire key exactly. The parser derives which
+        // parameters a method accepts from these field names, so a field
+        // called `enable` reading a key called `enabled` would make every
+        // correct request look like it carried an unknown parameter.
+        enabled: ?bool = null,
         params: []const Plugin.Param = &.{},
     },
     plugin_test: struct { key: []const u8 },
@@ -2698,7 +2703,7 @@ pub fn dispatch(
                 try unknownPluginMessage(alloc, p.key),
             );
 
-            if (p.enable == null and p.params.len == 0) return hostFailure(
+            if (p.enabled == null and p.params.len == 0) return hostFailure(
                 "NothingToDo",
                 "nothing to change: give enabled, or params, or both.",
             );
@@ -2708,7 +2713,7 @@ pub fn dispatch(
                 "that is more parameters than any plugin has; send the ones that need changing.",
             );
 
-            if (p.enable) |to| switch (Guard.enabling(to)) {
+            if (p.enabled) |to| switch (Guard.enabling(to)) {
                 .allowed => {},
                 .refused => |msg| return hostFailure("Refused", msg),
             };
@@ -2781,7 +2786,7 @@ pub fn dispatch(
                 }
             }
 
-            const said = host.pluginConfigure(alloc, p.key, p.enable, p.params) catch |err|
+            const said = host.pluginConfigure(alloc, p.key, p.enabled, p.params) catch |err|
                 return switch (err) {
                     error.NoSuchPlugin => hostFailure(
                         "UnknownPlugin",
@@ -4245,7 +4250,7 @@ test "the plugin tools are the supervisor's" {
 
     for ([_]Request{
         .{ .plugin_list = .{} },
-        .{ .plugin_configure = .{ .key = "webhook", .enable = true } },
+        .{ .plugin_configure = .{ .key = "webhook", .enabled = true } },
         .{ .plugin_test = .{ .key = "webhook" } },
     }) |req| {
         // A watched terminal is turned away before anything else about the
@@ -4431,7 +4436,7 @@ test "switching a plugin off is refused and switching one on is not" {
     // whole request drops; there is no half of it that lands.
     const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
         .key = "webhook",
-        .enable = false,
+        .enabled = false,
         .params = &.{.{ .name = "url", .value = "env:POLTER_WEBHOOK" }},
     } });
     try testing.expectEqualStrings("Refused", res.failed.code);
