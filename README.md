@@ -126,12 +126,24 @@ set or lift it; a supervisor asking to clock that terminal off is refused.
 ### If the tools are not there
 
 If the agent says it has no `polter` tools, the registration did not
-happen. Polter runs `claude mcp add --scope user polter -- <polter> +mcp`
-at startup when `poltergeist-register-mcp` is on (it is by default), so the
-usual causes are that `claude` was not on `PATH` when Polter started, or
-that `poltergeist-mcp` was turned off. Restart Polter with `claude` on
+happen. At startup, when `poltergeist-register-mcp` is on (it is by
+default), Polter runs `claude mcp add --scope user polter -e
+POLTER_REGISTERED=<version> -- <path to polter> +mcp`, and only when the
+existing entry does not already point at this build. So the usual causes
+are that `claude` was not on `PATH` when Polter started, or that
+`poltergeist-mcp` was turned off. Restart Polter with `claude` on
 `PATH`, or register it yourself; see
 [Which agents this works with](#which-agents-this-works-with).
+
+**The registration names one build, and the last one to start wins.** It is
+rewritten whenever the entry does not name the running executable, and the
+path it writes is that executable's own -- so starting a build from a work
+tree silently repoints your user-scoped `polter` entry at it, and the
+installed app's registration is gone until you next start the installed
+app. That is what you want while developing and not what you want
+afterwards. If a build you no longer have is registered, start the one you
+mean to keep, or set `poltergeist-register-mcp = false` and manage the
+entry yourself with `claude mcp`.
 
 ### The settings worth knowing about
 

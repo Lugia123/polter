@@ -5,6 +5,8 @@
 > 状态：**已实现**。宿主在 `src/poltergeist/Plugin.zig`（清单、设置、调用、
 > 超时），常驻那一类在 `Archive.zig`，凭据解析在 `secret.zig`，工具面在
 > `rpc.zig` 与 `src/App.zig`。随构建装出去的两个插件在 `plugins/`。
+> **想照着写一个插件**（含不启动 Polter 的自测），见
+> [writing-a-plugin.md](writing-a-plugin.md)；本章是契约，那篇是教程。
 > 本章讲的是**插件宿主**——所有种类的插件共用的那一层。第一类是
 > `notify`（一次一进程），第二类是 `archive`（常驻），后者多出来的
 > 东西在 [storage.md](storage.md)。
@@ -74,11 +76,14 @@ plugins/
     send.py
 ```
 
-三处查找，后者覆盖前者（与 skill 体系同一套规矩，见 [mcp.md](mcp.md)）：
+**两处查找，近的赢**（`App.pluginSearchPath`，`src/App.zig:606`；与 skill 体系同一套规矩，见 [mcp.md](mcp.md)——`register.readSkill` 的注释原话是「the user's own copy first」）：
 
-1. 随 Polter 安装的：`<resources>/polter/plugins/`
-2. 用户自己的：`$XDG_CONFIG_HOME/polter/plugins/`
-3. 配置里显式指定的目录
+1. 用户自己的：`$XDG_CONFIG_HOME/polter/plugins/`
+2. 随 Polter 安装的：`<resources>/ghostty/polter/plugins/`
+
+按目录名去重，**先看到的赢**，所以用户放一个同名目录就能顶掉我们发的插件，不用动 app bundle。
+
+> 本章早先的稿子写的是「三处查找，后者覆盖前者」，**两处都不对**：第三处「配置里显式指定的目录」从来没有实现过，而覆盖方向是近的赢、不是后者赢。
 
 ### `plugin.json`
 
@@ -137,7 +142,7 @@ Polter 起进程，往 stdin 写**一行 JSON**，然后关闭 stdin：
 
 ```json
 {
-  "event": "confirmation_needed",
+  "event": "authorisation",
   "title": "worker-core 需要确认",
   "body": "它停在一个工具授权提示上，已经 12 分钟。",
   "terminal": "0x9491465653644ed0",
@@ -157,7 +162,16 @@ Polter 起进程，往 stdin 写**一行 JSON**，然后关闭 stdin：
 - **stdout 被忽略**。插件不该有话对宿主说；它的职责是把消息送出去。
 - **超时即杀**。一个连不上网的插件会一直挂着，而挂机场景里没人会去发现它。
 
-事件类型先只有一个 `confirmation_needed`（R3 的通知分支）。将来加事件只加 `event` 的取值，不改协议形状 —— 插件收到不认识的 `event` 应当直接退出 0 并忽略。
+**`event` 只有两个取值**，来自 `notify.Reason`（`src/poltergeist/notify.zig:31-47`），由 `notify.body`（同文件 `:149-160`）写出去：
+
+| `event` | 什么意思 | 通知时间段管不管它 |
+| --- | --- | --- |
+| `"scheduling"` | 继续 / 换方向 / 收工 —— 这类总管自己也能答的问题 | **管**。落在 `poltergeist-notify-window` 之外时根本不会发给插件，而是留给总管去决定（`notify.decide` 返回 `leave_to_supervisor`） |
+| `"authorisation"` | 有人停在一个工具授权提示上 | **不管**。`Reason.respectsWindow` 对它返回 false，所以**任何时候都发** —— 没人能替别人按那个 yes，选择不是「吵醒你还是替你决定」，而是「吵醒你还是让终端干等到天亮」 |
+
+将来加事件只加 `event` 的取值，不改协议形状 —— 插件收到不认识的 `event` 应当直接退出 0 并忽略。
+
+> 本章早先的稿子说「事件类型先只有一个 `confirmation_needed`」，示例 JSON 里也写的是它。**代码里从来没有过这个取值**，照抄会写出一个永远匹配不上的分支。（`Plugin.zig` 的测试里出现的 `{"event":"confirmation_needed"}` 只是一个任意的 body 字符串，不是协议。）
 
 ### 失败怎么办
 
@@ -299,14 +313,18 @@ $XDG_CONFIG_HOME/polter/plugins/feishu.json     ← 开关 + 参数，0600
 
 ## 给以后留位置
 
-`kind` 字段现在只有 `notify` 一个取值，但插件宿主要按「多种 kind」来写：
+`Plugin.Kind`（`src/poltergeist/Plugin.zig:55-69`）现在有两个取值，都已落地。宿主仍按「多种 kind」写，剩下两个只留位置：
 
 | kind | 什么时候被调用 | 生命周期 | 状态 |
 | --- | --- | --- | --- |
-| `notify` | Polter 决定要通知用户时 | 一次一进程 | 一期做 |
-| `archive` | 群聊日志有新消息、且游标落后时 | 常驻 | 二期做，见 [storage.md](storage.md) |
-| `sensor` | 采样时，报告一个自定义的「还活着吗」判据 | 未定 | 留位置 |
-| `action` | 总管通过 MCP 请求执行一个动作 | 未定 | 留位置 |
+| `notify` | Polter 决定要通知用户时 | 一次一进程 | **已实现**，`Plugin.zig` |
+| `archive` | 群聊日志有新消息、且游标落后时 | 常驻 | **已实现**，`Archive.zig` + `Cursor.zig`，见 [storage.md](storage.md) |
+| `sensor` | 采样时，报告一个自定义的「还活着吗」判据 | 未定 | 留位置，**没有代码** |
+| `action` | 总管通过 MCP 请求执行一个动作 | 未定 | 留位置，**没有代码** |
+
+**不认识的 `kind` 是跳过这个插件并警告，不是致命错**（`Plugin.zig:236-241`）。这是故意的：一份为将来的 kind 写的清单，在今天的构建上应当被跳过，而不是让启动失败。
+
+> 本章早先的稿子说「`kind` 字段现在只有 `notify` 一个取值」，表里把 `archive` 记作「二期做」。二期已经做完了，而本章开头自己就写着 archive 已实现 —— 表和正文对不上。
 
 **共用的**：发现、清单解析、参数与凭据管理、启用/禁用、超时与失败处理。
 **各自的**：stdin 的 JSON 形状、退出码的含义、宿主在什么时机调用。
