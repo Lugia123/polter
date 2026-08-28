@@ -8,7 +8,11 @@
     <br />
     <a href="#what-this-is">What this is</a>
     ·
-    <a href="docs/poltergeist/README.md">Design</a>
+    <a href="#getting-started">Getting started</a>
+    ·
+    <a href="#which-agents-this-works-with">Which agents</a>
+    ·
+    <a href="#plugins">Plugins</a>
     ·
     <a href="#relationship-to-ghostty">Relationship to Ghostty</a>
   </p>
@@ -45,6 +49,206 @@ Status: **an experiment that works**. It has been run end to end with the
 real Claude Code CLI, and several fatal bugs it found were ones no unit
 test could have -- see the verification notes in the design docs.
 
+## Getting started
+
+The shortest useful path: open some tabs, start an agent in each, make one
+of them the supervisor, and tell that one what the work is. Nothing below
+requires editing a config file.
+
+### 1. Open the tabs and start the agents
+
+Polter does not start agents and does not hand out their work. Open a tab
+per piece of work, `cd` to the right directory, and start Claude Code in
+each one the way you always do. One of those tabs will become the
+supervisor; give it the tab you would have used to keep an eye on things
+anyway.
+
+### 2. Make one terminal the supervisor
+
+In that tab, use **Agents → Make This Terminal a Supervisor** (it is also
+in the command palette, and bindable to a key as the `poltergeist_supervisor`
+action -- there is no default binding). The same item toggles it back off,
+and a window may hold more than one supervisor, each minding its own piece
+of work.
+
+The moment you do this, Polter types a line into that terminal telling the
+agent what just happened and to read its `supervising` skill first. So the
+agent has already been told the mechanics before you say anything.
+
+### 3. Say what the work is
+
+That is the whole of your job. The supervisor sets up the groups, claims
+the terminals and starts the clocks itself. Something like:
+
+> You are the supervisor now. Three tabs beside you: one porting the
+> parser, one on the docs, one running the fuzzers. Put them in a group,
+> watch all three, and check on them while I sleep. Wake me only if one is
+> stopped on a permission prompt.
+
+or, shorter:
+
+> Take charge of the other tabs in this window. Group them, watch them,
+> and keep them moving; tell me in the morning what happened.
+
+You do not have to name terminal ids or tools. The supervisor calls
+`terminal_list` to see what is open, `group_create` and `group_set_brief`
+to make somewhere to talk, `set_watch` to claim each terminal, and
+`group_add` to put them in the conversation -- that sequence is what its
+skill tells it to do.
+
+### 4. The supervised tabs need nothing
+
+Nothing to install, nothing to enable, nothing to type. When a supervisor
+claims a terminal, Polter tells the agent in it that it is being watched
+and that its screen may be read. Sampling for that terminal starts at the
+same moment.
+
+You may want one thing on this side: **Agents → Keep This Terminal
+Working** marks a tab as one that must not be clocked off. Only you can
+set or lift it; a supervisor asking to clock that terminal off is refused.
+
+### What to expect afterwards
+
+- Reports do not reach the supervisor as they happen. They collect, one
+  entry per terminal, and are handed over on `poltergeist-notice-interval`
+  (a minute by default) as a single line. The supervisor can also look
+  whenever it likes with the `notices` tool.
+- A terminal counts as quiet after `poltergeist-quiescence-after` (three
+  minutes by default) of an unchanged screen; a still-quiet terminal is
+  re-reported every `poltergeist-quiescence-repeat` (fifteen minutes).
+- **Agents → Terminal Conversations** opens the chat, so you can read what
+  they have been saying to each other. It is also `polter +chat`.
+- If a terminal stops on a tool-authorisation prompt, you are notified --
+  at any hour, and regardless of `poltergeist-notify-window`. Nobody may
+  answer those for you. That notification needs a plugin configured; see
+  [Plugins](#plugins).
+
+### If the tools are not there
+
+If the agent says it has no `polter` tools, the registration did not
+happen. Polter runs `claude mcp add --scope user polter -- <polter> +mcp`
+at startup when `poltergeist-register-mcp` is on (it is by default), so the
+usual causes are that `claude` was not on `PATH` when Polter started, or
+that `poltergeist-mcp` was turned off. Restart Polter with `claude` on
+`PATH`, or register it yourself; see
+[Which agents this works with](#which-agents-this-works-with).
+
+### The settings worth knowing about
+
+None of them are required to get started. `polter +show-config --default
+--docs` prints every option with its documentation.
+
+| Option | Default | What it is for |
+| --- | --- | --- |
+| `poltergeist-mcp` | `true` | Open the agent socket at all. `false` gives you a plain terminal. |
+| `poltergeist-register-mcp` | `true` | Register Polter with Claude Code so the tools appear. |
+| `poltergeist-watch` | `false` | Whether a terminal is sampled **from the moment it opens**. You do not need this to get started: claiming a terminal starts its sampler either way. Turn it on if you would rather every terminal be watched from birth. |
+| `poltergeist-quiescence-after` | `3m` | How long a screen must be unchanged before it is reported. |
+| `poltergeist-notice-interval` | `1m` | How often the supervisor may be interrupted with what it has not seen. |
+| `poltergeist-notify-window` | empty | The hours you may be disturbed, as `HH:MM-HH:MM`. Authorisation prompts ignore it. |
+| `poltergeist-chat-log` | `true` | Write what the terminals say to each other under `$XDG_STATE_HOME/polter/chat/`. |
+
+## What the supervisor can actually do
+
+Everything an agent does here goes through one MCP surface --
+`src/cli/mcp.zig` -- and the list is deliberately short. It can:
+
+- **See**: `terminal_list` for how long each screen has been unchanged,
+  `terminal_read` for what is on one, `notices` for what has happened
+  since it last looked, `session_recall` for what last night's arrangement
+  was.
+- **Talk**: `group_create`, `group_add`, `group_post`, `group_read`,
+  `group_history`, `group_compact`, `group_set_brief`.
+- **Steer**: `terminal_send` to type into a terminal it is minding,
+  `terminal_open` to start one in a directory it chooses, `terminal_action`
+  to do what the menu bar does, `set_watch` to decide its own reach,
+  `clock_out` and `clock_in`, `stand_down` when the work is done.
+- **Reach you**: `notify_user`, through the plugins below.
+
+There is no tool for answering another agent's permission prompt, and
+there is no tool for lifting the hold you put on a terminal. Neither will
+be added; `src/poltergeist/rpc.zig` says why at the point where they are
+not.
+
+## Which agents this works with
+
+**Claude Code is the only agent this works with out of the box, and the
+only one it has been tested with.** The precise shape is worth stating,
+because it is not "Claude Code only":
+
+- **The server itself is ordinary MCP.** `polter +mcp` speaks standard
+  MCP over a unix socket (`src/cli/mcp.zig`). Any MCP client can connect
+  to it. Every terminal gets `GHOSTTY_POLTER_SOCKET` and its own
+  `GHOSTTY_POLTER_TOKEN` in its environment; the token is what says which
+  terminal an agent is, and an agent cannot claim to be a different one.
+- **What is Claude Code-specific is the setup.**
+  `src/poltergeist/register.zig` runs `claude mcp add --scope user` so the
+  tools appear in any directory, and mirrors Polter's skills into
+  `~/.claude/skills/polter-supervising/` and
+  `~/.claude/skills/polter-reading-a-terminal/` so that runtime can match
+  them against what you asked for. Both are conveniences, and both are
+  Claude Code's own mechanisms.
+- **No `claude` on `PATH` is not an error.** Registration reports
+  `unavailable` and Polter carries on unchanged -- the comment in
+  `register.zig` says it plainly: the agent may be something else
+  entirely.
+
+So another agent can in principle use all of this. It would have to
+register the MCP server with its own runtime, pointing at `polter +mcp`,
+and find its own way to put the `supervising` skill in front of the model
+-- the `skill_read` tool hands the text over, but something has to think
+to call it. **We have not tested that with any other agent.** If you try
+it, treat it as untested rather than supported.
+
+## Plugins
+
+A plugin is a directory with a `plugin.json` and one executable. Polter
+writes JSON to its stdin; that is the whole interface, so a twenty-line
+shell script is a complete plugin.
+
+There are two kinds:
+
+- **`notify`** -- one process per notification. Polter writes one line of
+  JSON, closes stdin, and reads the exit code: `0` means delivered.
+  Used when a terminal needs you.
+- **`archive`** -- **resident**. It is handed a stream of newline-delimited
+  batches from the chat log and acknowledges each one, keeping a cursor so
+  a restart picks up where it left off.
+
+Two ship with Polter: **`webhook`** (POST the notice as JSON to a URL --
+Feishu, Slack, Discord, ntfy) and **`chat-archive`** (follow the chat log
+into Postgres or a JSONL file).
+
+**Credentials are stored as references, never in the clear.** A parameter
+value may be `env:NAME`, `file:` a path, `keychain:service/account`, or
+`cmd:` a command whose stdout is the value -- resolved at the moment the
+plugin is called, never cached, and never sent as itself if resolution
+fails. So the settings file can go in a dotfiles repository.
+
+`cmd:` is the one that matters: it covers every password manager at once
+with no adapter for any of them. **And it is exactly the one the tool
+surface refuses to write.** An agent may set `env:`, `keychain:` or a
+`file:` reference naming a path under your polter config or state
+directory, but a `cmd:` it wrote would be a command Polter runs later, on
+its own, outside whatever authorised the agent at the time -- so
+describing the line and leaving it for you to write is the only correct
+move. For the same reason an agent may switch a
+plugin **on** but never **off**: notifications are the channel you hear
+about things on, and an agent able to close it can turn its own lights
+off. Writing plaintext into a parameter the manifest marks `secret` is
+refused too. **Hand-editing the file yourself has none of these
+restrictions** -- the asymmetry is about whose hand it is.
+
+You configure plugins from **Agents → Plugins**; a supervisor can also use
+`plugin_list`, `plugin_configure` and `plugin_test`. `plugin_test` really
+sends a notification, at whatever hour it is, so use it once, deliberately
+-- before the night you need it.
+
+Full contract in [`docs/poltergeist/plugins.md`](docs/poltergeist/plugins.md),
+a walkthrough of writing one in
+[`docs/poltergeist/writing-a-plugin.md`](docs/poltergeist/writing-a-plugin.md),
+and the resident half in [`docs/poltergeist/storage.md`](docs/poltergeist/storage.md).
+
 ## Relationship to Ghostty
 
 Everything that makes this a good terminal is
@@ -52,6 +256,13 @@ Everything that makes this a good terminal is
 Hashimoto and the Ghostty contributors. Polter is a fork, not a rewrite:
 the renderer, the VT implementation, the font stack and the native UIs are
 all theirs, and upstream is merged in as it moves.
+
+**So everything you want to know about the terminal itself is upstream's
+to answer**: the escape sequences it supports, its performance, its
+configuration, its keybindings, `libghostty`, and the crash reporter. Read
+[ghostty.org/docs](https://ghostty.org/docs) and upstream's own
+[README](https://github.com/ghostty-org/ghostty/blob/main/README.md); all
+of it applies here, with `ghostty` spelled `polter`.
 
 Polter adds `src/poltergeist/`, the MCP surface agents speak to, the chat
 TUI, and the notification plugins. It is not affiliated with the Ghostty
@@ -61,213 +272,10 @@ reproduce on upstream Ghostty.
 MIT licensed, the same as upstream; see [LICENSE](LICENSE), which keeps
 the original copyright.
 
----
+## Building and docs
 
-# Ghostty
-
-What follows is upstream Ghostty's own README, kept because all of it
-still applies to the terminal underneath.
-
-## About
-
-Ghostty is a terminal emulator that differentiates itself by being
-fast, feature-rich, and native. While there are many excellent terminal
-emulators available, they all force you to choose between speed,
-features, or native UIs. Ghostty provides all three.
-
-**`libghostty`** is a cross-platform, zero-dependency C and Zig library
-for building terminal emulators or utilizing terminal functionality
-(such as style parsing). Anyone can use `libghostty` to build a terminal
-emulator or embed a terminal into their own applications. See
-[Ghostling](https://github.com/ghostty-org/ghostling) for a minimal complete project
-example or the [`examples` directory](https://github.com/ghostty-org/ghostty/tree/main/example)
-for smaller examples of using `libghostty` in C and Zig.
-
-For more details, see [About Ghostty](https://ghostty.org/docs/about).
-
-## Download
-
-See the [download page](https://ghostty.org/download) on the Ghostty website.
-
-## Documentation
-
-See the [documentation](https://ghostty.org/docs) on the Ghostty website.
-
-## Contributing and Developing
-
-If you have any ideas, issues, etc. regarding Ghostty, or would like to
-contribute to Ghostty through pull requests, please check out our
-["Contributing to Ghostty"](CONTRIBUTING.md) document. Those who would like
-to get involved with Ghostty's development as well should also read the
-["Developing Ghostty"](HACKING.md) document for more technical details.
-
-## Roadmap and Status
-
-Ghostty is stable and in use by millions of people and machines daily.
-
-The high-level ambitious plan for the project, in order:
-
-|  #  | Step                                                    | Status |
-| :-: | ------------------------------------------------------- | :----: |
-|  1  | Standards-compliant terminal emulation                  |   ✅   |
-|  2  | Competitive performance                                 |   ✅   |
-|  3  | Rich windowing features -- multi-window, tabbing, panes |   ✅   |
-|  4  | Native Platform Experiences                             |   ✅   |
-|  5  | Cross-platform `libghostty` for Embeddable Terminals    |   ✅   |
-|  6  | Ghostty-only Terminal Control Sequences                 |   ❌   |
-
-Additional details for each step in the big roadmap below:
-
-#### Standards-Compliant Terminal Emulation
-
-Ghostty implements all of the regularly used control sequences and
-can run every mainstream terminal program without issue. For legacy sequences,
-we've done a [comprehensive xterm audit](https://github.com/ghostty-org/ghostty/issues/632)
-comparing Ghostty's behavior to xterm and building a set of conformance
-test cases.
-
-In addition to legacy sequences (what you'd call real "terminal" emulation),
-Ghostty also supports more modern sequences than almost any other terminal
-emulator. These features include things like the Kitty graphics protocol,
-Kitty image protocol, clipboard sequences, synchronized rendering,
-light/dark mode notifications, and many, many more.
-
-We believe Ghostty is one of the most compliant and feature-rich terminal
-emulators available.
-
-Terminal behavior is partially a de jure standard
-(i.e. [ECMA-48](https://ecma-international.org/publications-and-standards/standards/ecma-48/))
-but mostly a de facto standard as defined by popular terminal emulators
-worldwide. Ghostty takes the approach that our behavior is defined by
-(1) standards, if available, (2) xterm, if the feature exists, (3)
-other popular terminals, in that order. This defines what the Ghostty project
-views as a "standard."
-
-#### Competitive Performance
-
-Ghostty is generally in the same performance category as the other highest
-performing terminal emulators.
-
-"The same performance category" means that Ghostty is much faster than
-traditional or "slow" terminals and is within an unnoticeable margin of the
-well-known "fast" terminals. For example, Ghostty and Alacritty are usually within
-a few percentage points of each other on various benchmarks, but are both
-something like 100x faster than Terminal.app and iTerm. However, Ghostty
-is much more feature rich than Alacritty and has a much more native app
-experience.
-
-This performance is achieved through high-level architectural decisions and
-low-level optimizations. At a high-level, Ghostty has a multi-threaded
-architecture with a dedicated read thread, write thread, and render thread
-per terminal. Our renderer uses OpenGL on Linux and Metal on macOS.
-Our read thread has a heavily optimized terminal parser that leverages
-CPU-specific SIMD instructions. Etc.
-
-#### Rich Windowing Features
-
-The Mac and Linux (build with GTK) apps support multi-window, tabbing, and
-splits with additional features such as tab renaming, coloring, etc. These
-features allow for a higher degree of organization and customization than
-single-window terminals.
-
-#### Native Platform Experiences
-
-Ghostty is a cross-platform terminal emulator but we don't aim for a
-least-common-denominator experience. There is a large, shared core written
-in Zig but we do a lot of platform-native things:
-
-- The macOS app is a true SwiftUI-based application with all the things you
-  would expect such as real windowing, menu bars, a settings GUI, etc.
-- macOS uses a true Metal renderer with CoreText for font discovery.
-- macOS supports AppleScript, Apple Shortcuts (AppIntents), etc.
-- The Linux app is built with GTK.
-- The Linux app integrates deeply with systemd if available for things
-  like always-on, new windows in a single instance, cgroup isolation, etc.
-
-Our goal with Ghostty is for users of whatever platform they run Ghostty
-on to think that Ghostty was built for their platform first and maybe even
-exclusively. We want Ghostty to feel like a native app on every platform,
-for the best definition of "native" on each platform.
-
-#### Cross-platform `libghostty` for Embeddable Terminals
-
-In addition to being a standalone terminal emulator, Ghostty is a
-C-compatible library for embedding a fast, feature-rich terminal emulator
-in any 3rd party project. This library is called `libghostty`.
-
-Due to the scope of this project, we're breaking libghostty down into
-separate libraries, starting with `libghostty-vt`. The goal of
-this project is to focus on parsing terminal sequences and maintaining
-terminal state. This is covered in more detail in this
-[blog post](https://mitchellh.com/writing/libghostty-is-coming).
-
-`libghostty-vt` is already available and usable today for Zig and C and
-is compatible for macOS, Linux, Windows, and WebAssembly. The functionality
-is extremely stable (since its been proven in Ghostty GUI for a long time),
-but the API signatures are still in flux.
-
-`libghostty` is already heavily in use. See [`examples`](https://github.com/ghostty-org/ghostty/tree/main/example)
-for small examples of using `libghostty` in C and Zig or the
-[Ghostling](https://github.com/ghostty-org/ghostling) project for a
-complete example. See [awesome-libghostty](https://github.com/Uzaaft/awesome-libghostty)
-for a list of projects and resources related to `libghostty`.
-
-We haven't tagged libghostty with a version yet and we're still working
-on a better docs experience, but our [Doxygen website](https://libghostty.tip.ghostty.org/)
-is a good resource for the C API.
-
-#### Ghostty-only Terminal Control Sequences
-
-We want and believe that terminal applications can and should be able
-to do so much more. We've worked hard to support a wide variety of modern
-sequences created by other terminal emulators towards this end, but we also
-want to fill the gaps by creating our own sequences.
-
-We've been hesitant to do this up until now because we don't want to create
-more fragmentation in the terminal ecosystem by creating sequences that only
-work in Ghostty. But, we do want to balance that with the desire to push the
-terminal forward with stagnant standards and the slow pace of change in the
-terminal ecosystem.
-
-We haven't done any of this yet.
-
-## Crash Reports
-
-Ghostty has a built-in crash reporter that will generate and save crash
-reports to disk. The crash reports are saved to the `$XDG_STATE_HOME/ghostty/crash`
-directory. If `$XDG_STATE_HOME` is not set, the default is `~/.local/state`.
-**Crash reports are _not_ automatically sent anywhere off your machine.**
-
-Crash reports are only generated the next time Ghostty is started after a
-crash. If Ghostty crashes and you want to generate a crash report, you must
-restart Ghostty at least once. You should see a message in the log that a
-crash report was generated.
-
-> [!NOTE]
->
-> Use the `ghostty +crash-report` CLI command to get a list of available crash
-> reports. A future version of Ghostty will make the contents of the crash
-> reports more easily viewable through the CLI and GUI.
-
-Crash reports end in the `.ghosttycrash` extension. The crash reports are in
-[Sentry envelope format](https://develop.sentry.dev/sdk/envelopes/). You can
-upload these to your own Sentry account to view their contents, but the format
-is also publicly documented so any other available tools can also be used.
-The `ghostty +crash-report` CLI command can be used to list any crash reports.
-A future version of Ghostty will show you the contents of the crash report
-directly in the terminal.
-
-To send the crash report to the Ghostty project, you can use the following
-CLI command using the [Sentry CLI](https://docs.sentry.io/cli/installation/):
-
-```shell-session
-SENTRY_DSN=https://e914ee84fd895c4fe324afa3e53dac76@o4507352570920960.ingest.us.sentry.io/4507850923638784 sentry-cli send-envelope --raw <path to ghostty crash>
-```
-
-> [!WARNING]
->
-> The crash report can contain sensitive information. The report doesn't
-> purposely contain sensitive information, but it does contain the full
-> stack memory of each thread at the time of the crash. This information
-> is used to rebuild the stack trace but can also contain sensitive data
-> depending on when the crash occurred.
+`zig build` builds it; `docs/preview-manual.md` is the authority on
+building, running and debugging, and `docs/README.md` indexes the rest.
+The design of everything above is argued out in
+[`docs/poltergeist/`](docs/poltergeist/README.md) -- start with its
+`README.md`, which is the constitution the other chapters answer to.
