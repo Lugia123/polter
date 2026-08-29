@@ -1,50 +1,59 @@
-//! Feeding the chat log to a resident plugin, one batch at a time.
+//! Feeding live events to a resident plugin, one batch at a time.
 //!
-//! The local append-only log is the only source of truth and the plugin is
-//! nothing but a reader of it. That one sentence is where every choice here
-//! comes from: a plugin that dies for an hour loses nothing, because the
-//! cursor did not move; a database that will not answer produces no
-//! backpressure, because nothing waits on it; there is no retry queue and
-//! no buffer, because the log already is the queue and re-sending is just
-//! re-reading. See `docs/poltergeist/storage.md`.
+//! **A plugin is handed what happens, not the core's own files.** What it
+//! keeps is an extra copy, made from a live subscription (`Feed.zig`);
+//! the core's stream, record and rotation are a core feature that stands
+//! complete whether or not any plugin exists, and are never a plugin's
+//! data source. This file therefore names no path, opens no log and keeps
+//! no cursor file: change how the core stores things and nothing here has
+//! to move. See `docs/poltergeist/storage.md`.
+//!
+//! What that costs, said plainly: a plugin that is away for an hour misses
+//! the hour. Its subscription is bounded, so past the bound the oldest
+//! events are dropped and counted, and the count is said out loud. The
+//! core's own record is untouched by any of it -- the thing a person or an
+//! agent reads back is complete either way, which is the half that
+//! matters. The old design bought "a plugin loses nothing" by making the
+//! plugin a reader of the core's log file, and that price turned out to be
+//! the design itself.
 //!
 //! **Resident, unlike `notify`.** Chat is continuous, and rebuilding a
 //! database connection per message is not a thing that can be done. The
 //! price is a process to look after -- it will hang, it will die, it has to
 //! be restarted and collected -- which is what most of this file is.
 //!
-//! **Polled, never woken.** The side that writes the log is the side that
-//! must not be made to wait for anything, and the cheapest way to guarantee
-//! that is for it to have no idea this exists: no queue, no condition
-//! variable, no shared counter, nothing to lock. Half a second of latency
-//! on a database write is not a thing anybody can perceive; a millisecond
-//! added to the keystroke that produced the message is.
+//! **Polled, never woken.** The side that produced the event is the side
+//! that must not be made to wait for anything, and the cheapest way to
+//! guarantee that is for it to have nothing here to wait on: it drops a
+//! copy into a queue and returns. Half a second of latency on a database
+//! write is not a thing anybody can perceive; a millisecond added to the
+//! keystroke that produced the message is.
 //!
-//! **Its own read-only handle on the log**, and never the writer's. See
-//! `ChatLog.Tail` for why sharing that descriptor is a bug waiting for the
-//! next rotation.
+//! **Taking a batch is not removing it.** Events stay in the subscription
+//! until the plugin says it stored them, so a refusal, a hang or a death
+//! mid-batch is answered by handing over the same batch again. There is
+//! still no second buffer anywhere -- the subscription is the queue, the
+//! way the log used to be.
 //!
 //! There is no general "resident host" layer under this. That kind has
 //! exactly one member today, and an interface guessed from one sample is
-//! harder to change than no interface at all; for an archive, keeping the
-//! process alive and feeding it by cursor are not two jobs but one. What
-//! *was* pulled out is `reap.zig`, because stopping a child is genuinely
-//! shared with the one-shot lifetime.
+//! harder to change than no interface at all. What *was* pulled out is
+//! `reap.zig`, because stopping a child is genuinely shared with the
+//! one-shot lifetime.
 
 const Archive = @This();
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const ChatLog = @import("ChatLog.zig");
-const Cursor = @import("Cursor.zig");
+const Feed = @import("Feed.zig");
 const Plugin = @import("Plugin.zig");
 const reap = @import("reap.zig");
 const secret = @import("secret.zig");
 
 const log = std.log.scoped(.poltergeist);
 
-/// How long a quiet minute waits before looking at the log again.
+/// How long a quiet minute waits before looking for events again.
 const poll_idle_ms_default: u64 = 500;
 
 /// Silence after which the plugin is given an empty batch anyway.
@@ -113,8 +122,9 @@ pub const Options = struct {
     groups: []const []const u8,
     params: []const Plugin.Param,
 
-    /// `$XDG_STATE_HOME/polter`.
-    state_dir: []const u8,
+    /// Where the events come from. Borrowed, and it has to outlive the
+    /// archive: `destroy` unsubscribes from it.
+    feed: *Feed,
 
     /// Taken over whole, on the failure paths too. See `start`.
     environ: std.process.Environ.Map,
@@ -126,11 +136,8 @@ pub const Error = Allocator.Error || error{
     /// The manifest asked for no groups, so there is nothing to feed it.
     WantsNothing,
 
-    /// No cursor file could be made.
-    NoCursor,
-
-    /// The log is not there to read.
-    NoLog,
+    /// The feed would not take another subscriber.
+    NoSubscription,
 
     /// The thread would not start.
     NoThread,
@@ -148,6 +155,11 @@ pub const Status = struct {
 
     /// Restarts since the last child that settled.
     failures: u32,
+
+    /// Events this plugin was never handed, because it was too far behind
+    /// when they arrived. Zero is the ordinary reading; anything else is
+    /// this plugin's copy having a hole in it, and the core's record not.
+    dropped: u64 = 0,
 };
 
 alloc: Allocator,
@@ -160,7 +172,6 @@ exec: []const u8,
 timeout_ms: u64,
 groups: []const []const u8,
 params: []const Plugin.Param,
-log_path: []const u8,
 environ: std.process.Environ.Map,
 
 timing: Timing,
@@ -170,7 +181,11 @@ timing: Timing,
 /// the buffer is the limit rather than a hint.
 ack_buf: []u8,
 
-cursor: Cursor,
+/// Where events come from, and this plugin's own place in them. The feed
+/// is borrowed; the subscription belongs to it and is given back in
+/// `destroy`.
+feed: *Feed,
+sub: *Feed.Subscription,
 
 /// Set false by `stop`. The only thing the thread reads from outside.
 running: std.atomic.Value(bool) = .init(true),
@@ -187,6 +202,7 @@ thread: ?std.Thread = null,
 state: std.atomic.Value(State) = .init(.starting),
 confirmed: std.atomic.Value(u64) = .init(0),
 failures: std.atomic.Value(u32) = .init(0),
+dropped: std.atomic.Value(u64) = .init(0),
 
 /// Start feeding one archive plugin.
 ///
@@ -229,20 +245,14 @@ pub fn start(alloc: Allocator, io: std.Io, opts: Options) Error!*Archive {
         .value = try a.dupe(u8, src.value),
     };
 
-    const log_path = try ChatLog.defaultPath(a, opts.state_dir);
     const ack_buf = try a.alloc(u8, ack_max_bytes);
 
-    // A clear refusal at the call site beats a thread backing off for ever
-    // against a path that was never going to exist. The thread still copes
-    // if the file goes away afterwards.
-    if (std.Io.Dir.cwd().statFile(io, log_path, .{})) |_| {} else |_| {
-        return error.NoLog;
-    }
-
-    var cursor = Cursor.open(alloc, io, opts.state_dir, opts.key) catch {
-        return error.NoCursor;
-    };
-    errdefer cursor.deinit();
+    // Before the thread, so that the events of the very first message a
+    // plugin could possibly be shown are already being kept for it. A
+    // subscription starts empty by definition: what came before it is in
+    // the core's record, and reading that is not a plugin's job.
+    const sub = opts.feed.subscribe(.{}) catch return error.NoSubscription;
+    errdefer opts.feed.unsubscribe(sub);
 
     self.* = .{
         .alloc = alloc,
@@ -253,11 +263,11 @@ pub fn start(alloc: Allocator, io: std.Io, opts: Options) Error!*Archive {
         .timeout_ms = opts.timeout_ms,
         .groups = groups,
         .params = params,
-        .log_path = log_path,
         .environ = environ,
         .timing = opts.timing,
         .ack_buf = ack_buf,
-        .cursor = cursor,
+        .feed = opts.feed,
+        .sub = sub,
 
         // The arena's copy of the key, never the caller's: the reaper logs
         // from another thread, long after the manifest it came from has
@@ -292,8 +302,10 @@ pub fn stop(self: *Archive) void {
 
 /// Free everything. `stop` first.
 pub fn destroy(self: *Archive) void {
+    // The thread first, and only then the subscription: giving it back
+    // frees the queue the thread reads from.
     self.stop();
-    self.cursor.deinit();
+    self.feed.unsubscribe(self.sub);
     self.environ.deinit();
     self.arena.deinit();
     self.alloc.destroy(self);
@@ -304,6 +316,7 @@ pub fn status(self: *const Archive) Status {
         .state = self.state.load(.acquire),
         .cursor = self.confirmed.load(.acquire),
         .failures = self.failures.load(.acquire),
+        .dropped = self.dropped.load(.acquire),
     };
 }
 
@@ -375,10 +388,11 @@ pub const Advance = union(enum) {
 /// The rule the whole design rests on, on its own so it can be read.
 ///
 /// A cursor is a promise made to everybody: everything at or below it has
-/// been stored. The plugin has no channel to the log but this one, so it
-/// cannot have stored something it was never given -- and accepting a
-/// number larger than what was sent would mean the messages in between are
-/// never handed to anyone again, with nothing anywhere to show for it.
+/// been stored. The plugin has no channel to these events but this one, so
+/// it cannot have stored something it was never given -- and accepting a
+/// number larger than what was sent would mean the events in between are
+/// dropped from the queue with nobody having stored them, and nothing
+/// anywhere to show for it.
 /// That silent hole is the exact failure the whole design exists to
 /// prevent, so it is not ignored: the child is killed and restarted,
 /// because a plugin that reports doing what it cannot do has no
@@ -420,7 +434,7 @@ pub fn renderBatch(
     alloc: Allocator,
     cursor: u64,
     through: u64,
-    entries: []const ChatLog.Entry,
+    events: []const Feed.Event,
     groups: []const []const u8,
 ) Allocator.Error![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -430,7 +444,7 @@ pub fn renderBatch(
 
     // The writer allocates, so the only way any of this fails is running
     // out of memory; saying that once beats saying it at every field.
-    writeBatch(&s, cursor, through, entries, groups) catch return error.OutOfMemory;
+    writeBatch(&s, cursor, through, events, groups) catch return error.OutOfMemory;
     out.writer.writeByte('\n') catch return error.OutOfMemory;
 
     return out.toOwnedSlice();
@@ -440,7 +454,7 @@ fn writeBatch(
     s: *std.json.Stringify,
     cursor: u64,
     through: u64,
-    entries: []const ChatLog.Entry,
+    events: []const Feed.Event,
     groups: []const []const u8,
 ) std.Io.Writer.Error!void {
     try s.beginObject();
@@ -456,34 +470,37 @@ fn writeBatch(
     // allowed or not.
     const wants: Plugin.Wants = .{ .groups = groups };
 
-    for (entries) |e| {
-        if (!wants.allows(e.group)) continue;
+    // Switched over rather than assumed, so that the day a second kind of
+    // event exists it is a branch that has to be written here rather than
+    // a field silently rendered as though it were a message.
+    for (events) |ev| switch (ev) {
+        .chat => |e| {
+            if (!wants.allows(e.group)) continue;
 
-        try s.beginObject();
-        try s.objectField("seq");
-        try s.write(e.seq);
-        try s.objectField("at_ms");
-        try s.write(e.at_ms);
-        try s.objectField("group");
-        try s.write(e.group);
-        try s.objectField("author");
-        try s.write(e.author);
+            try s.beginObject();
+            try s.objectField("seq");
+            try s.write(e.seq);
+            try s.objectField("at_ms");
+            try s.write(e.at_ms);
+            try s.objectField("group");
+            try s.write(e.group);
+            try s.objectField("author");
+            try s.write(e.author);
 
-        // `from` is deliberately not here. It is a `Bus.Id`, a handle valid
-        // for one run of one process; a column of those in somebody's
-        // database is a foreign key to nothing, and it would invite joins
-        // that are wrong the next morning. `author` was resolved to a name
-        // when the line was written and still means the same thing then.
+            // There is no `from` to leave out any more: a `Bus.Id` is a
+            // handle valid for one run of one process, and `Feed.Chat`
+            // does not carry one at all.
 
-        if (e.summary) {
-            try s.objectField("summary");
-            try s.write(true);
-        }
+            if (e.summary) {
+                try s.objectField("summary");
+                try s.write(true);
+            }
 
-        try s.objectField("text");
-        try s.write(e.text);
-        try s.endObject();
-    }
+            try s.objectField("text");
+            try s.write(e.text);
+            try s.endObject();
+        },
+    };
 
     try s.endArray();
     try s.endObject();
@@ -557,9 +574,15 @@ fn writeHello(
 /// Asked before a line is rendered, so that a window belonging entirely to
 /// somebody else costs no pipe at all; see the empty-window rule in
 /// `docs/poltergeist/storage.md`.
-fn anyAllowed(entries: []const ChatLog.Entry, groups: []const []const u8) bool {
+fn anyAllowed(events: []const Feed.Event, groups: []const []const u8) bool {
     const wants: Plugin.Wants = .{ .groups = groups };
-    for (entries) |e| if (wants.allows(e.group)) return true;
+    for (events) |ev| {
+        // An event with no group of its own is nobody's by group, and the
+        // null is here so that a future kind has to say what it is rather
+        // than falling into everybody's batch by omission.
+        const g = ev.group() orelse continue;
+        if (wants.allows(g)) return true;
+    }
     return false;
 }
 
@@ -662,7 +685,7 @@ fn readLine(reader: *std.Io.File.Reader) Line {
 ///
 /// Killing rather than ignoring: a plugin that reports doing what it cannot
 /// do has no later acknowledgement worth believing, and restarting is
-/// cheap because the log holds everything it will need again.
+/// cheap because everything it never confirmed is still queued for it.
 fn violation(self: *Archive, why: []const u8, line: []const u8) void {
     log.warn(
         "plugin {s}: {s}, so it is being stopped; it said: {s}",
@@ -689,8 +712,8 @@ fn violation(self: *Archive, why: []const u8, line: []const u8) void {
 ///
 /// **No grace period, on purpose.** An acknowledgement means the plugin has
 /// already stored what it acknowledged; anything it had not written down is
-/// something it never confirmed, and that will be handed to its replacement
-/// from the cursor. There is nothing here worth flushing.
+/// something it never confirmed, and that is still in the subscription to
+/// be handed to its replacement. There is nothing here worth flushing.
 fn collect(
     self: *Archive,
     child: *?std.process.Child,
@@ -741,7 +764,6 @@ fn main(self: *Archive) void {
     const io = self.io;
     const a = self.alloc;
 
-    var tail: ?ChatLog.Tail = null;
     var child: ?std.process.Child = null;
     var keeper: ?std.Thread = null;
     var reader: ?std.Io.File.Reader = null;
@@ -751,9 +773,15 @@ fn main(self: *Archive) void {
         .ms = self.timing.backoff_start_ms,
     };
 
-    var resume_at = self.cursor.read();
-    var confirmed: u64 = resume_at.seq;
-    self.confirmed.store(confirmed, .release);
+    // Nothing is confirmed at the start of a run, and there is no file
+    // anywhere that says otherwise. A subscription begins at the moment it
+    // is made, so "where did the last run get to" is not a question this
+    // has an answer to or needs one: what came before is in the core's
+    // record, and the plugin's own store already holds whatever it stored
+    // last time -- by seq, so a message it sees twice is one it writes
+    // once.
+    var confirmed: u64 = 0;
+    var dropped_said: u64 = 0;
 
     var soft: u32 = 0;
     var spawned_at: std.Io.Timestamp = .now(io, .awake);
@@ -785,19 +813,6 @@ fn main(self: *Archive) void {
                         break :step .failure;
                     };
                     values.append(scratch, v) catch break :step .failure;
-                }
-
-                // Kept across a restart on purpose: the plugin dying is not
-                // the log moving, and reopening would pay for a scan that
-                // buys nothing.
-                if (tail == null) {
-                    tail = ChatLog.tail(a, io, self.log_path, resume_at) catch {
-                        log.warn(
-                            "plugin {s}: could not follow the log, trying again later",
-                            .{self.key},
-                        );
-                        break :step .failure;
-                    };
                 }
 
                 child = std.process.spawn(io, .{
@@ -877,35 +892,29 @@ fn main(self: *Archive) void {
                 // one that would not start at all.
                 if (!ack.ok) {
                     log.warn(
-                        "plugin {s}: it will not take the log yet, trying again later",
+                        "plugin {s}: it will not take events yet, trying again later",
                         .{self.key},
                     );
                     break :step .failure;
                 }
 
-                // A cursor in the greeting may go backwards, and only
-                // backwards. It is the plugin stating its own state -- "my
-                // database only has up to 900, send me 901 onwards" -- and
-                // replaying is idempotent by seq. Forwards is the same
-                // claim as an over-large batch acknowledgement, and is
-                // refused for the same reason.
+                // A cursor in the greeting is the plugin stating its own
+                // state -- "my database already has up to 5000" -- and it
+                // is taken as information and nothing else. It used to
+                // mean "rewind and send me that again", which only made
+                // sense while the host was reading a file it could seek
+                // in. Nothing is replayed now: the host holds exactly the
+                // events this subscription has not been given credit for
+                // and not one more, in either direction. Neither is it
+                // misconduct in any direction -- a plugin whose store runs
+                // further than this run's cursor is the ordinary state of
+                // every restart.
                 if (ack.cursor) |at| {
-                    if (at > confirmed) {
-                        self.violation("it greeted us from further on than it was sent", line);
-                        break :step .failure;
-                    }
-                    if (at < confirmed) {
-                        confirmed = at;
-                        self.confirmed.store(at, .release);
-                        resume_at = .{ .seq = at };
-                        self.cursor.write(resume_at);
-
-                        if (tail) |*t| t.deinit();
-                        tail = null;
-                        tail = ChatLog.tail(a, io, self.log_path, resume_at) catch {
-                            break :step .failure;
-                        };
-                    }
+                    if (at != confirmed) log.info(
+                        "plugin {s}: it says it has up to seq {d}; " ++
+                            "it will be sent what happens from now on",
+                        .{ self.key, at },
+                    );
                 }
 
                 last_send = .now(io, .awake);
@@ -913,20 +922,30 @@ fn main(self: *Archive) void {
             }
 
             // -- 2. one batch ----------------------------------------------
-            if (tail == null) break :step .failure;
-            const t = &tail.?;
+            //
+            // Taken, not removed: everything here stays in the
+            // subscription until `commit`, which is what makes a refusal
+            // or a death mid-batch cost nothing but the same batch again.
+            const batch = self.sub.take(a, max_batch, max_batch_bytes) catch
+                break :step .failure;
+            defer Feed.freeBatch(a, batch);
 
-            // The invariant the whole thing stands on. Every path that
-            // moves one of these moves the other: a full acknowledgement, a
-            // partial one, a window nobody is allowed to see, a replay
-            // asked for in the greeting.
-            std.debug.assert(t.mark().seq == confirmed);
+            // Said out loud, once per new hole rather than once per event:
+            // this plugin's copy is missing something the core's record is
+            // not, and an extra copy quietly missing things is the one
+            // thing worse than one that says so.
+            const st = self.sub.stats();
+            if (st.dropped > dropped_said) {
+                log.warn(
+                    "plugin {s}: {d} event(s) went by while it was behind and " ++
+                        "were not kept for it; Polter's own record has them",
+                    .{ self.key, st.dropped - dropped_said },
+                );
+                dropped_said = st.dropped;
+                self.dropped.store(st.dropped, .release);
+            }
 
-            const before_mark = t.mark();
-            const page = t.next(a, max_batch, max_batch_bytes) catch break :step .failure;
-            defer ChatLog.freePage(a, page);
-
-            if (page.entries.len == 0) {
+            if (batch.len == 0) {
                 const idle = last_send.durationTo(.now(io, .awake)).toMilliseconds();
                 if (idle >= self.timing.heartbeat_ms) {
                     const beat = renderBatch(
@@ -968,20 +987,19 @@ fn main(self: *Archive) void {
                 break :step .carry_on;
             }
 
-            const through = page.entries[page.entries.len - 1].seq;
+            const through = batch[batch.len - 1].seq();
 
-            if (!anyAllowed(page.entries, self.groups)) {
+            if (!anyAllowed(batch, self.groups)) {
                 // Not a breach of "the cursor moves only on what was
                 // acknowledged": that rule is about never stepping over a
                 // message the plugin has not stored, and a message it is
                 // not allowed to see is not one it has anything to store.
                 // The loop does not sleep here, which looks like a spin --
-                // it is bounded by the size of the log, one pass, and ends
-                // the moment the tail catches up.
+                // it is bounded by what is queued, and ends the moment the
+                // queue is empty.
                 confirmed = through;
                 self.confirmed.store(through, .release);
-                resume_at = t.mark();
-                self.cursor.write(resume_at);
+                self.sub.commit(through);
                 break :step .carry_on;
             }
 
@@ -989,7 +1007,7 @@ fn main(self: *Archive) void {
                 a,
                 confirmed,
                 through,
-                page.entries,
+                batch,
                 self.groups,
             ) catch break :step .failure;
             defer a.free(line);
@@ -1031,17 +1049,11 @@ fn main(self: *Archive) void {
                 },
 
                 .stay => {
-                    // It said "not now", which it is allowed to say. The
-                    // cursor does not move and the tail goes back to the
-                    // start of this batch: there is no retry queue and no
-                    // buffered copy, because re-sending is just re-reading.
-                    resume_at = before_mark;
-                    t.deinit();
-                    tail = null;
-                    tail = ChatLog.tail(a, io, self.log_path, resume_at) catch {
-                        break :step .failure;
-                    };
-
+                    // It said "not now", which it is allowed to say.
+                    // Nothing is committed, so the same events are still
+                    // queued and the next turn offers them again -- there
+                    // is no retry queue and no second copy, because the
+                    // subscription never let go of them.
                     soft += 1;
                     if (soft >= max_soft) {
                         soft = 0;
@@ -1054,31 +1066,12 @@ fn main(self: *Archive) void {
                     self.confirmed.store(at, .release);
                     soft = 0;
 
-                    if (at == through) {
-                        // The whole batch: the tail is standing exactly
-                        // where the cursor is, so the hint is exact.
-                        resume_at = t.mark();
-                        self.cursor.write(resume_at);
-                    } else {
-                        // Half of it. The hint is the *start* of the batch,
-                        // not where the tail has read to: `Mark.offset`
-                        // promises to be at or before the first unread
-                        // line, and the tail's own offset is past messages
-                        // nobody has stored. Repositioning then skips one
-                        // batch instead of scanning the file.
-                        resume_at = .{
-                            .seq = at,
-                            .offset = before_mark.offset,
-                            .inode = before_mark.inode,
-                        };
-                        self.cursor.write(resume_at);
-
-                        t.deinit();
-                        tail = null;
-                        tail = ChatLog.tail(a, io, self.log_path, resume_at) catch {
-                            break :step .failure;
-                        };
-                    }
+                    // Whether it stored the batch or half of it, the
+                    // arithmetic is the same one line: forget what it
+                    // confirmed, keep the rest. What is kept is offered
+                    // again on the next turn, from memory, with nothing
+                    // read back off a disk.
+                    self.sub.commit(at);
 
                     const up = spawned_at.durationTo(.now(io, .awake)).toMilliseconds();
                     if (up >= self.timing.settle_ms) backoff.settled();
@@ -1096,21 +1089,12 @@ fn main(self: *Archive) void {
         reader = null;
         self.collect(&child, &keeper);
 
-        // A child that died between the read and its acknowledgement
-        // leaves the tail standing past the cursor. Handing that tail to
-        // the next child would give it the batch *after* the one nobody
-        // confirmed, and the messages in between would never be offered to
-        // anybody again -- the silent hole this whole design exists to
-        // prevent. Only a tail still level with the cursor is worth
-        // keeping, and that is the ordinary case: a heartbeat that found a
-        // corpse, or a greeting that failed.
-        if (tail) |*t| {
-            if (t.mark().seq != confirmed) {
-                t.deinit();
-                tail = null;
-            }
-        }
-
+        // Nothing to put back. A child that died between being handed a
+        // batch and acknowledging it confirmed nothing, so nothing was
+        // committed, so the whole batch is still queued exactly where it
+        // was -- the replacement is offered it as though the first child
+        // had never existed. The old design had to notice this case and
+        // rewind a file position; here there is no position to rewind.
         if (!self.running.load(.acquire)) break;
 
         self.failures.store(backoff.failures + 1, .release);
@@ -1133,16 +1117,12 @@ fn main(self: *Archive) void {
     reader = null;
     self.collect(&child, &keeper);
 
-    if (tail) |*t| {
-        // The seq alone, with no hint at all. By now the tail has usually
-        // read past the confirmed point, and its offset would name a place
-        // beyond messages nobody has stored -- a hint that would silently
-        // skip them at the next start. One full scan is the price, and it
-        // cannot lose anything.
-        self.cursor.write(.{ .seq = confirmed });
-        t.deinit();
-    }
-
+    // Nothing is written down on the way out. There is no file that says
+    // where this plugin got to, because there is nothing for such a file
+    // to point into: the next run subscribes afresh and is handed what
+    // happens then. Whatever was queued and unconfirmed goes with the
+    // subscription -- it is an extra copy that was never made, and the
+    // core's record has all of it.
     self.state.store(.stopped, .release);
 }
 
@@ -1257,11 +1237,11 @@ test "a backoff gives up after ten tries, and a child that settles clears it" {
 
 /// A window with two groups in it, the last message belonging to the group
 /// nobody in these tests asked for.
-const mixed: []const ChatLog.Entry = &.{
-    .{ .seq = 3, .at_ms = 1000, .group = "build", .from = 7, .author = "worker-core", .summary = false, .text = "one" },
-    .{ .seq = 4, .at_ms = 1001, .group = "ops", .from = 7, .author = "worker-ops", .summary = false, .text = "two" },
-    .{ .seq = 5, .at_ms = 1002, .group = "build", .from = 7, .author = "worker-core", .summary = true, .text = "three" },
-    .{ .seq = 6, .at_ms = 1003, .group = "ops", .from = 7, .author = "worker-ops", .summary = false, .text = "four" },
+const mixed: []const Feed.Event = &.{
+    .{ .chat = .{ .seq = 3, .at_ms = 1000, .group = "build", .author = "worker-core", .text = "one" } },
+    .{ .chat = .{ .seq = 4, .at_ms = 1001, .group = "ops", .author = "worker-ops", .text = "two" } },
+    .{ .chat = .{ .seq = 5, .at_ms = 1002, .group = "build", .author = "worker-core", .summary = true, .text = "three" } },
+    .{ .chat = .{ .seq = 6, .at_ms = 1003, .group = "ops", .author = "worker-ops", .text = "four" } },
 };
 
 test "a batch reaches through the messages that were filtered out" {
@@ -1393,28 +1373,47 @@ fn scriptFor(arena: Allocator, io: std.Io, body: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}/run.sh", .{dir});
 }
 
-/// A throwaway state directory with a chat log in it, owned by `arena`.
-///
-/// Seeded through `ChatLog` itself rather than by writing lines by hand:
-/// what the archive has to cope with is the file the writer actually
-/// produces, not our idea of it.
-fn feedable(arena: Allocator, io: std.Io, seed: bool) ![]const u8 {
+/// A throwaway directory for a test plugin to write into, owned by
+/// `arena`. Nothing of Polter's lives in it any more: an archive opens no
+/// file of its own.
+fn scratchDir(arena: Allocator, io: std.Io) ![]const u8 {
     var raw: [6]u8 = undefined;
     io.random(&raw);
 
     const dir = try std.fmt.allocPrint(arena, "/tmp/polter-arch-{x}", .{&raw});
     try std.Io.Dir.cwd().createDirPath(io, dir);
-
-    var l = try ChatLog.open(testing.allocator, io, dir);
-    defer l.deinit();
-
-    if (seed) {
-        _ = l.append("build", 7, "worker-core", 1000, false, "one");
-        _ = l.append("ops", 7, "worker-ops", 1001, false, "two");
-        _ = l.append("build", 7, "worker-core", 1002, true, "three");
-    }
-
     return dir;
+}
+
+/// The three messages every feeding test uses, published live.
+///
+/// Published *after* `start`, which is not a detail: a subscription begins
+/// when it is made, so anything said before there was a plugin is not the
+/// plugin's to see. That is the whole shape of the change -- there is no
+/// backlog in a file for it to be caught up from.
+fn saySomething(feed: *Feed) void {
+    feed.publish(.{ .chat = .{
+        .seq = 1,
+        .at_ms = 1000,
+        .group = "build",
+        .author = "worker-core",
+        .text = "one",
+    } });
+    feed.publish(.{ .chat = .{
+        .seq = 2,
+        .at_ms = 1001,
+        .group = "ops",
+        .author = "worker-ops",
+        .text = "two",
+    } });
+    feed.publish(.{ .chat = .{
+        .seq = 3,
+        .at_ms = 1002,
+        .group = "build",
+        .author = "worker-core",
+        .summary = true,
+        .text = "three",
+    } });
 }
 
 /// How many lines a file the plugin wrote holds, treating "not there yet"
@@ -1463,6 +1462,9 @@ test "an archive that was asked for no groups is not started" {
 
     // Handed over without a `defer`, exactly as `App` does it. If `start`
     // did not free it on the way out, the leak turns up here.
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
+
     var env: std.process.Environ.Map = .init(testing.allocator);
     try env.put("POLTER_TEST", "1");
 
@@ -1472,7 +1474,7 @@ test "an archive that was asked for no groups is not started" {
         .timeout_ms = 1000,
         .groups = &.{},
         .params = &.{},
-        .state_dir = "/nonexistent",
+        .feed = &feed,
         .environ = env,
     }));
 }
@@ -1486,7 +1488,10 @@ test "stopping an archive twice is stopping it once" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const dir = try feedable(alloc, io, false);
+    const dir = try scratchDir(alloc, io);
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
     const exec = try scriptFor(alloc, io,
@@ -1504,7 +1509,7 @@ test "stopping an archive twice is stopping it once" {
         .timeout_ms = 5 * std.time.ms_per_s,
         .groups = &.{"*"},
         .params = &.{},
-        .state_dir = dir,
+        .feed = &feed,
         .environ = env,
         .timing = .{ .poll_idle_ms = 20 },
     });
@@ -1521,7 +1526,7 @@ test "stopping an archive twice is stopping it once" {
     try testing.expectEqual(State.stopped, a.status().state);
 }
 
-test "a plugin is fed what was written down and the cursor follows it" {
+test "a plugin is fed what happens and the cursor follows it" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1530,7 +1535,10 @@ test "a plugin is fed what was written down and the cursor follows it" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const dir = try feedable(alloc, io, true);
+    const dir = try scratchDir(alloc, io);
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
     const got = try std.fmt.allocPrint(alloc, "{s}/got.jsonl", .{dir});
@@ -1551,11 +1559,15 @@ test "a plugin is fed what was written down and the cursor follows it" {
         .timeout_ms = 5 * std.time.ms_per_s,
         .groups = &.{"*"},
         .params = &.{},
-        .state_dir = dir,
+        .feed = &feed,
         .environ = env,
         .timing = .{ .poll_idle_ms = 20, .heartbeat_ms = 10 * std.time.ms_per_s },
     });
     defer a.destroy();
+
+    // After the plugin exists, never before: a subscription starts empty,
+    // and there is no file for it to be caught up from.
+    saySomething(&feed);
 
     try testing.expect(waitForLines(alloc, io, got, 1, 5000));
 
@@ -1581,13 +1593,16 @@ test "a plugin that confirms half a batch is sent the rest again" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const dir = try feedable(alloc, io, true);
+    const dir = try scratchDir(alloc, io);
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
     // Never gets past the first message, whatever it is sent. Everything
-    // after it is unconfirmed and must keep coming back -- there is no
-    // retry queue anywhere, so if it does come back it can only be because
-    // the log was read again from the cursor.
+    // after it is unconfirmed and must keep coming back -- nothing is
+    // committed, so what comes back can only be the subscription still
+    // holding what nobody stored.
     const got = try std.fmt.allocPrint(alloc, "{s}/got.jsonl", .{dir});
     const exec = try scriptFor(alloc, io, try std.fmt.allocPrint(alloc,
         \\#!/bin/sh
@@ -1606,11 +1621,15 @@ test "a plugin that confirms half a batch is sent the rest again" {
         .timeout_ms = 5 * std.time.ms_per_s,
         .groups = &.{"*"},
         .params = &.{},
-        .state_dir = dir,
+        .feed = &feed,
         .environ = env,
         .timing = .{ .poll_idle_ms = 20, .heartbeat_ms = 10 * std.time.ms_per_s },
     });
     defer a.destroy();
+
+    // After the plugin exists, never before: a subscription starts empty,
+    // and there is no file for it to be caught up from.
+    saySomething(&feed);
 
     try testing.expect(waitForLines(alloc, io, got, 2, 5000));
 
@@ -1631,12 +1650,15 @@ test "a plugin that answers with nonsense is stopped and started again" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const dir = try feedable(alloc, io, false);
+    const dir = try scratchDir(alloc, io);
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
     // One line per start, so that "it was started again" is something the
     // test can see rather than infer. The nonsense comes back on a
-    // heartbeat, which is why this one needs no messages in the log.
+    // heartbeat, which is why this one needs no messages at all.
     const starts = try std.fmt.allocPrint(alloc, "{s}/starts", .{dir});
     const exec = try scriptFor(alloc, io, try std.fmt.allocPrint(alloc,
         \\#!/bin/sh
@@ -1655,7 +1677,7 @@ test "a plugin that answers with nonsense is stopped and started again" {
         .timeout_ms = 5 * std.time.ms_per_s,
         .groups = &.{"*"},
         .params = &.{},
-        .state_dir = dir,
+        .feed = &feed,
         .environ = env,
         .timing = .{
             .poll_idle_ms = 10,
@@ -1680,12 +1702,14 @@ test "a plugin that dies before answering is sent the same batch again" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const dir = try feedable(alloc, io, true);
+    const dir = try scratchDir(alloc, io);
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    // Takes a batch and dies holding it, which is the window the tail can
-    // be left standing past the cursor in: it has been read out of the log
-    // but nobody has stored it.
+    // Takes a batch and dies holding it, which is the case a queue has to
+    // get right: the events were handed over, and nobody stored them.
     const got = try std.fmt.allocPrint(alloc, "{s}/got.jsonl", .{dir});
     const exec = try scriptFor(alloc, io, try std.fmt.allocPrint(alloc,
         \\#!/bin/sh
@@ -1704,7 +1728,7 @@ test "a plugin that dies before answering is sent the same batch again" {
         .timeout_ms = 5 * std.time.ms_per_s,
         .groups = &.{"*"},
         .params = &.{},
-        .state_dir = dir,
+        .feed = &feed,
         .environ = env,
         .timing = .{
             .poll_idle_ms = 20,
@@ -1714,11 +1738,16 @@ test "a plugin that dies before answering is sent the same batch again" {
     });
     defer a.destroy();
 
+    // After the plugin exists, never before: a subscription starts empty,
+    // and there is no file for it to be caught up from.
+    saySomething(&feed);
+
     try testing.expect(waitForLines(alloc, io, got, 2, 10_000));
 
-    // Every one of them the same batch, from the same cursor. A tail kept
-    // across the restart would have sent the next window instead, and the
-    // three messages nobody stored would be gone with nothing to show it.
+    // Every one of them the same batch, from the same cursor. A queue that
+    // dropped what it handed over would have sent the next batch instead,
+    // and the three messages nobody stored would be gone with nothing to
+    // show it.
     const batches = contentsOf(alloc, io, got);
     var it = std.mem.tokenizeScalar(u8, batches, '\n');
     var seen: usize = 0;
@@ -1741,7 +1770,10 @@ test "a plugin with nothing to do is not killed for having nothing to do" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const dir = try feedable(alloc, io, true);
+    const dir = try scratchDir(alloc, io);
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
     // One line per start. A well behaved plugin that answers everything it
@@ -1767,11 +1799,15 @@ test "a plugin with nothing to do is not killed for having nothing to do" {
         .timeout_ms = 200,
         .groups = &.{"*"},
         .params = &.{},
-        .state_dir = dir,
+        .feed = &feed,
         .environ = env,
         .timing = .{ .poll_idle_ms = 20, .heartbeat_ms = 400 },
     });
     defer a.destroy();
+
+    // After the plugin exists, never before: a subscription starts empty,
+    // and there is no file for it to be caught up from.
+    saySomething(&feed);
 
     try testing.expect(waitForLines(alloc, io, starts, 1, 5000));
 

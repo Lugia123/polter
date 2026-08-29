@@ -22,6 +22,7 @@ const windows = internal_os.windows;
 const configpkg = @import("../config.zig");
 const ProcessInfo = @import("../pty.zig").ProcessInfo;
 const compat_file = @import("../lib/compat/file.zig");
+const poltergeist = @import("../poltergeist/main.zig");
 
 const log = std.log.scoped(.io_exec);
 
@@ -48,6 +49,15 @@ renderer_state: *renderer.State,
 /// pty bytes seen since Poltergeist last sampled. Written by the reader
 /// thread, drained by the sampler on the writer thread.
 poltergeist_bytes: std.atomic.Value(u64) = .init(0),
+
+/// What this terminal has printed, kept on disk. See `poltergeist-terminal-log`.
+///
+/// Owned here rather than by the app, and touched only from the IO thread,
+/// because that is the thread the lines are produced on: a transcript shared
+/// across terminals would need a lock on the one path that must not acquire
+/// one. Null when the option is off, or when there is no state directory to
+/// write into.
+poltergeist_transcript: ?poltergeist.Transcript = null,
 
 /// A handle to wake up the renderer. This hints to the renderer that
 /// a repaint should happen.
@@ -180,6 +190,10 @@ pub const DerivedConfig = struct {
     poltergeist_quiescence_ms: u64,
     poltergeist_repeat_ms: u64,
 
+    /// Whether to write down what this terminal prints. See
+    /// `poltergeist-terminal-log`.
+    poltergeist_terminal_log: bool,
+
     pub fn init(
         alloc_gpa: Allocator,
         config: *const configpkg.Config,
@@ -219,6 +233,7 @@ pub const DerivedConfig = struct {
             .poltergeist_watch = config.@"poltergeist-watch",
             .poltergeist_quiescence_ms = config.@"poltergeist-quiescence-after".duration / std.time.ns_per_ms,
             .poltergeist_repeat_ms = config.@"poltergeist-quiescence-repeat".duration / std.time.ns_per_ms,
+            .poltergeist_terminal_log = config.@"poltergeist-terminal-log",
 
             // This has to be last so that we copy AFTER the arena allocations
             // above happen (Zig assigns in order).
@@ -325,11 +340,59 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
             .handler = handler,
         }),
         .thread_enter_state = thread_enter_state,
+        .poltergeist_transcript = openTranscript(
+            alloc,
+            opts.config.poltergeist_terminal_log,
+            opts.surface_mailbox.surface.id,
+        ),
+    };
+}
+
+/// Open this terminal's transcript, or answer null and say why.
+///
+/// Never fatal: a terminal that cannot be written down is still a terminal.
+fn openTranscript(
+    alloc: Allocator,
+    want: bool,
+    id: u64,
+) ?poltergeist.Transcript {
+    if (!want) return null;
+
+    const io = global.io();
+    var environ_map = global.environMap() catch return null;
+    defer environ_map.deinit();
+
+    const state_dir = internal_os.xdg.state(
+        io,
+        alloc,
+        &environ_map,
+        .{ .subdir = "polter" },
+    ) catch |err| {
+        log.warn("poltergeist: no state directory for the transcript err={}", .{err});
+        return null;
+    };
+    defer alloc.free(state_dir);
+
+    // The title is empty this early -- the shell has not set one yet -- so
+    // the readable half of the directory name is added at the first line
+    // written. See `Transcript.rename`.
+    return poltergeist.Transcript.open(alloc, io, state_dir, id, "") catch |err| {
+        log.warn("poltergeist: could not open the transcript err={}", .{err});
+        return null;
     };
 }
 
 pub fn deinit(self: *Termio) void {
     self.backend.deinit();
+
+    // Before the terminal goes: this is the last chance to write down the
+    // rows still on the active screen, and the pin has to be handed back to
+    // a page list that still exists.
+    if (self.poltergeist_transcript) |*t| {
+        t.deinit(self.terminal.screens.get(.primary));
+        self.poltergeist_transcript = null;
+    }
+
     self.terminal.deinit(self.alloc);
     self.config.deinit();
     self.mailbox.deinit(self.alloc);
@@ -717,6 +780,24 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
         }
     } else {
         self.terminal_stream.nextSlice(buf);
+    }
+
+    // Put whatever has scrolled off the screen into this terminal's
+    // transcript. See `poltergeist-terminal-log`.
+    //
+    // On the hot path deliberately, and cheap on it deliberately: an
+    // ordinary read that is not yet due pays one subtract and one branch,
+    // and `now` is the timestamp this function had already taken. What work
+    // does happen is proportional to output that was actually committed, so
+    // a program redrawing itself forever costs nothing here -- which is the
+    // whole reason the committed lines are recorded rather than the bytes.
+    if (self.poltergeist_transcript) |*t| transcript: {
+        const primary = self.terminal.screens.get(.primary) orelse break :transcript;
+        t.note(
+            primary,
+            self.terminal.getTitle() orelse "",
+            @divFloor(now.nanoseconds, std.time.ns_per_ms),
+        );
     }
 
     // If our stream handling caused messages to be sent to the mailbox

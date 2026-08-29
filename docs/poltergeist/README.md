@@ -21,6 +21,7 @@
 - 怎么动手写一个插件（含自测） —— 见 [writing-a-plugin.md](writing-a-plugin.md)。
 - 群聊与私信界面的承载方式选型 —— 见 [chatui.md](chatui.md)。
 - tab 合并与状态标记的平台差异 —— 见 [tabs.md](tabs.md)。
+- 终端里跑了什么、输出了什么怎么留痕 —— 见 [transcript.md](transcript.md)。
 - 写作规范与术语表 —— 见 [\_spec.md](_spec.md)。
 - Ghostty 现有架构、屏幕数据结构、apprt 与配置、构建与调试命令 —— 分别见 [architecture.md](../architecture.md)、[terminal-core.md](../terminal-core.md)、[platform-and-config.md](../platform-and-config.md)、[preview-manual.md](../preview-manual.md)。
 
@@ -169,10 +170,11 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | [mcp.md](mcp.md)               | R7、R8     | MCP 工具面、sidecar、身份识别、skill 体系、不管任务的边界 | sidecar 而非把 MCP 塞进核心；现成 IPC 不可复用（`src/apprt/embedded.zig:349-360`） |
 | [chatui.md](chatui.md)         | R9         | 群聊与私信界面的承载方式                                  | 原生 UI（参照 command palette）对比 imgui（参照 `src/inspector/Inspector.zig`）    |
 | [plugins.md](plugins.md)       | R3 的一半  | 插件宿主：进程式插件、两种生命周期、凭据、权限声明         | 进程边界换崩溃隔离与语言无关，代价是每次通知一次 fork/exec |
-| [storage.md](storage.md)      | —          | 存档：本地日志是事实来源，插件是它的跟读者              | 常驻进程 + 游标；一个插件多后端；权限声明 |
-| [writing-a-plugin.md](writing-a-plugin.md) | — | 照着做的插件开发指南：从零一个 notify、不启动 Polter 怎么自测、archive 的常驻与游标、常见错误 | 自测藏进插件自己（`--self-test`），因为拿到插件的人不该为验它先装一套东西 |
+| [storage.md](storage.md)      | —          | 存档：核心的存储是核心功能，插件订阅实时事件另存一份     | 常驻进程 + 实时事件通道（`Feed.zig`）；一个插件多后端；权限声明 |
+| [writing-a-plugin.md](writing-a-plugin.md) | — | 照着做的插件开发指南：从零一个 notify、不启动 Polter 怎么自测、archive 的常驻与确认协议、常见错误 | 自测藏进插件自己（`--self-test`），因为拿到插件的人不该为验它先装一套东西 |
 | [surface.md](surface.md)      | —          | 菜单栏逐条盘点：哪些该经 MCP 开放给 AI，哪些故意不给    | 判据是「会不会让读到一段文字变成在这台机器上做一件事」 |
 | [gaps.md](gaps.md)            | —          | 作为 AI 原生终端还差什么：感知、记录、双向渠道、成本、注入 | 未实现的设计讨论；记录那一条是重点 |
+| [boundary.md](boundary.md)    | —          | 什么是功能、什么是扩展：核心存储不作为插件的数据源，预装不是特权 | 拆掉耦合而不是给耦合打补丁；`.claude` 产出退成插件，失败必须发给用户而非 agent |
 | [tabs.md](tabs.md)             | R10        | tab 合并与状态标记                                        | macOS 用 NSWindow tabbing，GTK 用 libadwaita，两套各写一份                         |
 
 ## 分阶段路线

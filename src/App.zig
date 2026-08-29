@@ -97,6 +97,15 @@ poltergeist_recall: poltergeistpkg.Session.Recall = .{},
 /// night has nothing to read, which is the case the whole feature is for.
 chat_log: ?poltergeistpkg.ChatLog = null,
 
+/// What happened, handed to plugins as it happens.
+///
+/// Deliberately not the chat log. The log is a core feature -- it is
+/// complete on its own and nothing about it changes because a plugin
+/// exists or does not -- and it is never a plugin's data source. A plugin
+/// subscribes here and keeps an extra copy of what it is handed. See
+/// `poltergeist/Feed.zig`.
+poltergeist_feed: poltergeistpkg.Feed,
+
 /// The resident archive plugins, one thread each. Empty unless one is
 /// installed and switched on, which is the ordinary case.
 poltergeist_archives: std.ArrayListUnmanaged(*poltergeistpkg.Archive) = .empty,
@@ -247,6 +256,7 @@ pub fn init(
         .font_grid_set = font_grid_set,
         .config_conditional_state = .{},
         .poltergeist = .init(alloc, .{}),
+        .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
     };
 }
@@ -264,6 +274,10 @@ pub fn deinit(self: *App) void {
     // has to have stopped before the rest of this runs.
     for (self.poltergeist_archives.items) |archive| archive.destroy();
     self.poltergeist_archives.deinit(self.alloc);
+
+    // After them, and that order is the whole of it: each archive gives
+    // its subscription back as it is destroyed.
+    self.poltergeist_feed.deinit();
 
     if (self.poltergeist_config_text.len > 0) self.alloc.free(self.poltergeist_config_text);
     if (self.chat_log) |*l| l.deinit();
@@ -531,11 +545,10 @@ fn scanPlugins(
 
     // `keys` is the one that matters. Everything downstream keys on
     // `manifest.key` and not on the directory: `pluginSettings` reads
-    // `<key>.json`, `archiveFor` looks one up by key, the cursor file is
-    // `<key>.cursor`. Two directories whose manifests claim one key would
-    // therefore share a settings file and start two archive copies pushing
-    // one cursor -- the single failure `docs/poltergeist/storage.md` spends
-    // a section ruling out.
+    // `<key>.json` and `archiveFor` looks one up by key. Two directories
+    // whose manifests claim one key would therefore share a settings file
+    // and start two resident copies of one plugin, each subscribing and
+    // each storing every message -- see `docs/poltergeist/storage.md`.
     var keys: std.StringHashMapUnmanaged([]const u8) = .empty;
 
     for (self.pluginSearchPath(arena, io, environ_map)) |base| {
@@ -637,7 +650,22 @@ fn pluginSearchPath(
     return out.items;
 }
 
-/// One plugin's own settings file.
+/// One plugin's own settings file, nearest first.
+///
+/// The user's `<config>/polter/plugins/<key>.json` is looked at first, and a
+/// `settings.json` sitting inside the plugin's own directory after it -- so a
+/// plugin a release ships can arrive already configured, while anything the
+/// user has said about it wins for good. Only the first file found is read;
+/// `Plugin.Settings.readFirst` says why the two are not merged, and the short
+/// version is that merging cannot tell "switched off" from "never
+/// configured", which would let an upgrade switch a plugin back on.
+///
+/// The fallback walks the whole search path rather than the bundle alone,
+/// because a plugin directory dropped into the config directory by hand is
+/// installed the same way and may carry the same file.
+///
+/// Nothing here writes: the settings file `plugin_configure` writes is still
+/// the one in the config directory and only that one.
 fn pluginSettings(
     self: *App,
     alloc: Allocator,
@@ -645,17 +673,30 @@ fn pluginSettings(
     environ_map: *const std.process.Environ.Map,
     key: []const u8,
 ) poltergeistpkg.Plugin.Settings {
-    _ = self;
+    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
 
-    const base = internal_os.xdg.config(
+    if (internal_os.xdg.config(
         io,
         alloc,
         environ_map,
         .{ .subdir = "polter/plugins" },
-    ) catch return .{};
+    )) |base| {
+        if (std.fmt.allocPrint(alloc, "{s}/{s}.json", .{ base, key })) |path| {
+            paths.append(alloc, path) catch {};
+        } else |_| {}
+    } else |_| {}
 
-    const path = std.fmt.allocPrint(alloc, "{s}/{s}.json", .{ base, key }) catch return .{};
-    return poltergeistpkg.Plugin.Settings.read(alloc, io, path);
+    for (self.pluginSearchPath(alloc, io, environ_map)) |base| {
+        if (std.fmt.allocPrint(
+            alloc,
+            "{s}/{s}/settings.json",
+            .{ base, key },
+        )) |path| {
+            paths.append(alloc, path) catch {};
+        } else |_| {}
+    }
+
+    return poltergeistpkg.Plugin.Settings.readFirst(alloc, io, paths.items);
 }
 
 fn findPluginDir(
@@ -874,22 +915,12 @@ pub fn ensureArchive(self: *App) void {
     defer scratch.deinit();
     const alloc = scratch.allocator();
 
-    const state_dir = internal_os.xdg.state(
-        io,
-        alloc,
-        &environ_map,
-        .{ .subdir = "polter" },
-    ) catch |err| {
-        log.warn("poltergeist: no state directory for the archive err={}", .{err});
-        return;
-    };
-
     for (self.poltergeist_plugins) |manifest| {
         // Read again rather than remembered: `ensurePlugins` looks only at
         // whether a plugin is switched on and throws its parameters away.
         // A resident plugin's database lives in those.
         const settings = self.pluginSettings(alloc, io, &environ_map, manifest.key);
-        _ = self.startArchive(manifest, settings, state_dir);
+        _ = self.startArchive(manifest, settings);
     }
 
     // Only when there is something to say, so the ordinary install -- which
@@ -915,7 +946,6 @@ fn startArchive(
     self: *App,
     manifest: poltergeistpkg.Plugin.Manifest,
     settings: poltergeistpkg.Plugin.Settings,
-    state_dir: []const u8,
 ) bool {
     if (manifest.kind != .archive) return false;
 
@@ -944,7 +974,7 @@ fn startArchive(
         .timeout_ms = manifest.timeout_ms,
         .groups = manifest.wants.groups,
         .params = settings.params,
-        .state_dir = state_dir,
+        .feed = &self.poltergeist_feed,
         .environ = env,
     }) catch |err| {
         log.warn(
@@ -1513,20 +1543,10 @@ fn startArchiveNow(
     environ_map: *const std.process.Environ.Map,
     key: []const u8,
 ) bool {
-    const state_dir = internal_os.xdg.state(
-        io,
-        alloc,
-        environ_map,
-        .{ .subdir = "polter" },
-    ) catch |err| {
-        log.warn("poltergeist: no state directory for the archive err={}", .{err});
-        return false;
-    };
-
     for (self.poltergeist_plugins) |manifest| {
         if (!std.mem.eql(u8, manifest.key, key)) continue;
         const settings = self.pluginSettings(alloc, io, environ_map, manifest.key);
-        return self.startArchive(manifest, settings, state_dir);
+        return self.startArchive(manifest, settings);
     }
     return false;
 }
@@ -2089,15 +2109,35 @@ fn logChat(
     var fixed: std.heap.FixedBufferAllocator = .init(&buf);
     const author = self.chatMemberTitle(fixed.allocator(), from) catch "";
 
+    const at_wall_ms = self.poltergeist_epoch_wall_ms + @as(i64, @intCast(at_ms));
+
     const log_seq = l.append(
         group,
         from,
         author,
-        self.poltergeist_epoch_wall_ms + @as(i64, @intCast(at_ms)),
+        at_wall_ms,
         summary,
         text,
     );
     if (log_seq != 0) self.chat.setLogSeq(group, seq, log_seq);
+
+    // Handed to whoever is listening, after the record and never instead
+    // of it: the record is what is read back, and a plugin keeps an extra
+    // copy of what it is told. `publish` cannot fail and does not wait, so
+    // nothing a plugin does is felt on this path.
+    //
+    // The seq is the one the record stamped on the message. It is an
+    // identity and not a position in any file -- it is what lets a plugin
+    // store the same message twice and end up with one row -- so with no
+    // record there is no identity to hand out, and nothing is published.
+    if (log_seq != 0) self.poltergeist_feed.publish(.{ .chat = .{
+        .seq = log_seq,
+        .at_ms = at_wall_ms,
+        .group = group,
+        .author = author,
+        .summary = summary,
+        .text = text,
+    } });
 }
 
 fn chatGroups(

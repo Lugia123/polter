@@ -1,9 +1,10 @@
 # 插件体系
 
-> 最后更新对应的 git commit：`601026f3c`
+> 最后更新对应的 git commit：`816b348eb`（插件改吃实时事件、`Cursor.zig` 退场这一轮改动尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**已实现**。宿主在 `src/poltergeist/Plugin.zig`（清单、设置、调用、
-> 超时），常驻那一类在 `Archive.zig`，凭据解析在 `secret.zig`，工具面在
+> 超时），常驻那一类在 `Archive.zig`，喂给它的实时事件通道在 `Feed.zig`，
+> 凭据解析在 `secret.zig`，工具面在
 > `rpc.zig` 与 `src/App.zig`。随构建装出去的两个插件在 `plugins/`。
 > **想照着写一个插件**（含不启动 Polter 的自测），见
 > [writing-a-plugin.md](writing-a-plugin.md)；本章是契约，那篇是教程。
@@ -27,7 +28,7 @@
 - 什么时候该通知用户（确认策略与通知时间段）—— 见 [supervisor.md](supervisor.md)。本章只管「决定要通知之后，怎么送出去」。
 - 静止怎么测 —— 见 [sensing.md](sensing.md)。
 - MCP 工具面 —— 见 [mcp.md](mcp.md)。插件不是给 AI 用的工具，是宿主的出口。
-- 存档插件为什么要常驻、游标怎么走、往回翻怎么做 —— 见 [storage.md](storage.md)。
+- 存档插件为什么要常驻、事件怎么送到它手上、往回翻怎么做 —— 见 [storage.md](storage.md)。
 
 ## 一句话概括
 
@@ -134,7 +135,9 @@ plugins/
 
 分界线是**事件的疏密**。通知一小时几条，每次 fork/exec 的开销在这个尺度上不存在；存档是连续的，每条消息重建一次数据库连接显然不行。
 
-**共用的仍然是宿主那一层**：发现、清单解析、参数与凭据解析、超时与杀进程、退出码语义。常驻多出来的只有「进程要被看着、挂了要重起、退出时要收」，以及游标——都在 [storage.md](storage.md)。
+**共用的仍然是宿主那一层**：发现、清单解析、参数与凭据解析、超时与杀进程、退出码语义。常驻多出来的只有「进程要被看着、挂了要重起、退出时要收」，以及一条实时事件通道上的确认协议——都在 [storage.md](storage.md)。
+
+**两类插件拿到的都不是核心的文件。** `notify` 拿到的是一次事件，`archive` 订阅的是一串事件（`Feed.zig`）。核心的存储是核心功能，独立完整，不因插件存在或缺席而改变，**也不作为插件的数据源**；插件存的是额外的一份记录。
 
 ### 一次性插件的调用协议
 
@@ -318,7 +321,7 @@ $XDG_CONFIG_HOME/polter/plugins/feishu.json     ← 开关 + 参数，0600
 | kind | 什么时候被调用 | 生命周期 | 状态 |
 | --- | --- | --- | --- |
 | `notify` | Polter 决定要通知用户时 | 一次一进程 | **已实现**，`Plugin.zig` |
-| `archive` | 群聊日志有新消息、且游标落后时 | 常驻 | **已实现**，`Archive.zig` + `Cursor.zig`，见 [storage.md](storage.md) |
+| `archive` | 有新消息发生时（实时事件） | 常驻 | **已实现**，`Archive.zig` + `Feed.zig`，见 [storage.md](storage.md) |
 | `sensor` | 采样时，报告一个自定义的「还活着吗」判据 | 未定 | 留位置，**没有代码** |
 | `action` | 总管通过 MCP 请求执行一个动作 | 未定 | 留位置，**没有代码** |
 

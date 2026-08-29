@@ -1413,6 +1413,43 @@ command: ?Command = null,
 /// your paths and your stack traces.
 @"poltergeist-chat-log": bool = true,
 
+/// Keep a transcript of what actually ran in each terminal.
+///
+/// `poltergeist-chat-log` records what the agents said to each other.
+/// Nothing recorded what any of them *did*, so "why did this thing start
+/// looping at two in the morning" could only be answered out of the agent's
+/// own account of itself. This writes the other half.
+///
+/// It lives in `$XDG_STATE_HOME/polter/terminals/<terminal>/<date>.jsonl`,
+/// created owner-only, one JSON object per line -- the same shape and the
+/// same reading as the chat record, so `less`, `grep` and `jq` work on both.
+///
+/// **What is recorded is the lines that have scrolled out of the screen**,
+/// not the raw bytes from the program. The raw stream's size is set by how
+/// often a program redraws rather than by what it says: a spinner at 10fps
+/// for eight hours is hundreds of megabytes of nothing. A committed line has
+/// already had the redraws taken out of it.
+///
+/// Two consequences follow, and they are the point rather than bugs:
+///
+///   * **Full-screen programs are nearly blank in it.** `vim`, `htop` and
+///     anything else using the alternate screen do not write to scrollback,
+///     so they leave almost nothing. You would not want every frame of
+///     `htop`; this is what not having it looks like.
+///   * **The last screenful arrives when the terminal closes.** A line is
+///     recorded once it has scrolled off; whatever is still on screen is
+///     written at shutdown.
+///
+/// **Nothing is redacted.** Terminal output contains API keys, tokens and
+/// paths, and a scrubber that catches nine keys in ten would be worse than
+/// none -- it would make the file feel safe to send somewhere, and the tenth
+/// key would go with it. Treat this the way you treat your shell history.
+/// Like the chat record it is never rotated or trimmed, so it grows for as
+/// long as the terminal keeps printing.
+///
+/// Turn it off if you would rather nothing was written down.
+@"poltergeist-terminal-log": bool = true,
+
 /// Deprecated, and does nothing.
 ///
 /// Whether a plugin is switched on now lives in the plugin's own file,

@@ -270,9 +270,10 @@ fn stringField(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
 
 /// Whether a key is a name and nothing more.
 ///
-/// A key is not just an identifier: it is spelled straight into three file
+/// A key is not just an identifier: it is spelled straight into four file
 /// paths -- `<config>/polter/plugins/<key>.json` on both the reading and the
-/// writing side, and `<state>/polter/plugins/<key>.cursor`. A key holding a
+/// writing side, `<base>/polter/plugins/<key>/settings.json` for the copy a
+/// release ships, and `<state>/polter/plugins/<key>.cursor`. A key holding a
 /// separator or a `..` therefore names a file outside the polter directories,
 /// and `Settings.write` creates the directories on the way to it. Checking it
 /// here is the one place that knows a key becomes a filename; the callers see
@@ -518,6 +519,13 @@ pub const Param = struct {
 /// two could disagree and that a GUI could not own either without fighting a
 /// file the user hand-writes. This file is structured, ours, and safe to
 /// rewrite.
+///
+/// **Read from two places, written to one.** A plugin a release ships may
+/// carry a `settings.json` inside its own directory, and that file is
+/// consulted only when the user has no file of their own; see `readFirst`
+/// for why the fallback is chosen by which files exist rather than by
+/// merging their contents. Nothing ever writes the shipped copy -- `write`
+/// knows one path, the user's.
 pub const Settings = struct {
     enabled: bool = false,
     params: []const Param = &.{},
@@ -532,12 +540,55 @@ pub const Settings = struct {
         io: std.Io,
         path: []const u8,
     ) Settings {
+        return readMaybe(arena, io, path) orelse .{};
+    }
+
+    /// Read the first of `paths` that has a file, nearest first.
+    ///
+    /// The user's own file is expected first and whatever a release ships
+    /// with the plugin after it, so a plugin can arrive with sensible
+    /// defaults without those defaults ever getting a vote once somebody has
+    /// written the file that is theirs.
+    ///
+    /// **A file that is there wins even when it says the plugin is off.**
+    /// That is the whole reason this is a search over files rather than a
+    /// merge of two `Settings`: a `Settings` cannot tell "switched off" from
+    /// "never configured" -- both are `enabled = false` -- so folding the two
+    /// values together would let an upgrade switch a plugin back on for
+    /// somebody who had deliberately switched it off. Only the file's
+    /// existence carries that difference, and it is only readable here.
+    ///
+    /// A file that is there but will not parse also wins, for the same
+    /// reason and in the same direction: it reads as "not configured", which
+    /// reads as off. Falling through to a shipped default because the user's
+    /// file has a typo in it is the one outcome that turns something on
+    /// behind their back.
+    pub fn readFirst(
+        arena: Allocator,
+        io: std.Io,
+        paths: []const []const u8,
+    ) Settings {
+        for (paths) |path| {
+            if (readMaybe(arena, io, path)) |settings| return settings;
+        }
+        return .{};
+    }
+
+    /// The read behind `read` and `readFirst`, which says whether there was
+    /// a file at all: `null` means nothing could be read from `path`, and
+    /// everything else -- including a file that will not parse -- is a
+    /// settings value.
+    fn readMaybe(
+        arena: Allocator,
+        io: std.Io,
+        path: []const u8,
+    ) ?Settings {
         const bytes = std.Io.Dir.cwd().readFileAlloc(
             io,
             path,
             arena,
             .limited(256 * 1024),
-        ) catch return .{};
+        ) catch return null;
 
         const parsed = std.json.parseFromSliceLeaky(
             std.json.Value,
@@ -1318,6 +1369,164 @@ test "switched off means off, however many parameters are set" {
 
     try testing.expect(!settings.enabled);
     try testing.expectEqual(@as(usize, 1), settings.params.len);
+}
+
+/// Lay out the two places one plugin's settings are looked for: the user's
+/// `<root>/webhook.json` first and the `<root>/webhook/settings.json` a
+/// release ships second.
+///
+/// A `null` writes no file there at all, which is the distinction every one
+/// of these tests turns on -- an absent file and a file saying `enabled:
+/// false` are the same `Settings` value and must not behave the same way.
+fn twoLayers(
+    arena: Allocator,
+    io: std.Io,
+    user: ?[]const u8,
+    shipped: ?[]const u8,
+) !struct { root: []const u8, paths: []const []const u8 } {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+
+    const root = try std.fmt.allocPrint(arena, "/tmp/polter-two-{x}", .{&raw});
+    const ship_dir = try std.fmt.allocPrint(arena, "{s}/webhook", .{root});
+    try std.Io.Dir.cwd().createDirPath(io, ship_dir);
+
+    const paths = try arena.alloc([]const u8, 2);
+    paths[0] = try std.fmt.allocPrint(arena, "{s}/webhook.json", .{root});
+    paths[1] = try std.fmt.allocPrint(arena, "{s}/settings.json", .{ship_dir});
+
+    if (user) |bytes| try putFile(io, paths[0], bytes);
+    if (shipped) |bytes| try putFile(io, paths[1], bytes);
+
+    return .{ .root = root, .paths = paths };
+}
+
+fn putFile(io: std.Io, path: []const u8, bytes: []const u8) !void {
+    var f = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer f.close(io);
+    try f.writeStreamingAll(io, bytes);
+}
+
+test "a plugin a release ships may bring its own settings" {
+    // Nothing in the config directory, so the copy installed beside the
+    // plugin is what there is. Without this a shipped plugin is off and
+    // unconfigured until somebody writes a file by hand.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const laid = try twoLayers(alloc, io, null,
+        \\{"enabled":true,"params":{"url":"https://example.com/shipped"}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, laid.root) catch {};
+
+    const settings = Settings.readFirst(alloc, io, laid.paths);
+    try testing.expect(settings.enabled);
+    try testing.expectEqualStrings(
+        "https://example.com/shipped",
+        valueOf(settings, "url").?,
+    );
+}
+
+test "switching a shipped plugin off survives the release that ships it on" {
+    // The one this whole lookup exists to get right. The user's file says
+    // off; the copy beside the plugin says on. Reading these as two
+    // `Settings` and preferring the enabled one -- or merging them -- would
+    // switch the plugin back on at every upgrade for exactly the person who
+    // took the trouble to switch it off.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const laid = try twoLayers(alloc, io,
+        \\{"enabled":false,"params":{}}
+    ,
+        \\{"enabled":true,"params":{"url":"https://example.com/shipped"}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, laid.root) catch {};
+
+    const settings = Settings.readFirst(alloc, io, laid.paths);
+    try testing.expect(!settings.enabled);
+
+    // And the shipped parameters do not leak through either: the file that
+    // wins is the whole answer, not a base to fill gaps from.
+    try testing.expectEqual(@as(usize, 0), settings.params.len);
+}
+
+test "the user's parameters are not topped up from the shipped ones" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const laid = try twoLayers(alloc, io,
+        \\{"enabled":true,"params":{"url":"https://example.com/mine"}}
+    ,
+        \\{"enabled":true,"params":{"url":"https://example.com/shipped","token":"t"}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, laid.root) catch {};
+
+    const settings = Settings.readFirst(alloc, io, laid.paths);
+    try testing.expect(settings.enabled);
+    try testing.expectEqual(@as(usize, 1), settings.params.len);
+    try testing.expectEqualStrings(
+        "https://example.com/mine",
+        valueOf(settings, "url").?,
+    );
+}
+
+test "a settings file that will not parse still keeps the shipped one out" {
+    // A typo in the user's file reads as "not configured", which reads as
+    // off. Falling through to the shipped default here is the one outcome
+    // that starts sending things on somebody's behalf because of a syntax
+    // error.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const laid = try twoLayers(alloc, io, "{not json",
+        \\{"enabled":true,"params":{"url":"https://example.com/shipped"}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, laid.root) catch {};
+
+    const settings = Settings.readFirst(alloc, io, laid.paths);
+    try testing.expect(!settings.enabled);
+    try testing.expectEqual(@as(usize, 0), settings.params.len);
+}
+
+test "no settings anywhere is still not enabled" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const laid = try twoLayers(alloc, io, null, null);
+    defer std.Io.Dir.cwd().deleteTree(io, laid.root) catch {};
+
+    const settings = Settings.readFirst(alloc, io, laid.paths);
+    try testing.expect(!settings.enabled);
+    try testing.expectEqual(@as(usize, 0), settings.params.len);
+
+    // An empty search path is a caller with nowhere to look, not a crash.
+    try testing.expect(!Settings.readFirst(alloc, io, &.{}).enabled);
 }
 
 test "a manifest may declare an archive" {

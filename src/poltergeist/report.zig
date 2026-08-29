@@ -32,7 +32,9 @@ pub const ArchiveFacts = struct {
     declares_groups: bool,
 
     /// Whether the chat log has been opened, which happens on the first
-    /// terminal. Before that there is nothing for an archive to follow.
+    /// terminal. Before that nothing is recorded, so nothing is published
+    /// to a plugin either: the seq a message is stored under is the one
+    /// the record stamped on it.
     log_open: bool,
 
     /// The running copy, when there is one.
@@ -43,14 +45,15 @@ pub const ArchiveFacts = struct {
 /// `archiveNote`'s -- a listing is not the place to re-argue the design.
 const nothing_started =
     " Nothing was started for this: an archive plugin is resident, a second copy " ++
-    "would push the same cursor, and the protocol has no dry run for it to use instead.";
+    "would subscribe and store every message all over again, and the protocol has " ++
+    "no dry run for it to use instead.";
 
 /// What `plugin_test` says about an archive plugin -- see `mcp.md` §2.5.
 ///
 /// Nothing is started to produce this, and the sentence says so. An archive
-/// plugin is resident and holds the cursor; a second copy would confirm into
-/// the same file, and the protocol has no dry run to offer instead. So the
-/// answer to "does it work" is the running copy's own account of itself.
+/// plugin is resident; a second copy would be a second subscriber storing
+/// everything twice, and the protocol has no dry run to offer instead. So
+/// the answer to "does it work" is the running copy's own account of itself.
 pub fn archiveStatus(alloc: Allocator, facts: ArchiveFacts) Allocator.Error![]const u8 {
     return sentence(alloc, facts, nothing_started);
 }
@@ -79,7 +82,7 @@ fn sentence(
 ) Allocator.Error![]const u8 {
     if (!facts.enabled) return std.fmt.allocPrint(
         alloc,
-        "{s} is installed but switched off, so nothing is following the log. " ++
+        "{s} is installed but switched off, so nothing is being archived. " ++
             "plugin_configure with enabled: true switches it on.{s}",
         .{ facts.key, tail },
     );
@@ -100,10 +103,10 @@ fn sentence(
             .{ facts.key, tail },
         );
 
-        // Not in the spec's table, and reachable: `Archive.start` fails on a
-        // cursor file it cannot make, a log it cannot read, or a thread that
-        // will not start, and until now that produced a `log.warn` nobody
-        // reads and a plugin that looked switched on and did nothing.
+        // Not in the spec's table, and reachable: `Archive.start` fails on
+        // a subscription or a thread it cannot make, and until now that
+        // produced a `log.warn` nobody reads and a plugin that looked
+        // switched on and did nothing.
         return std.fmt.allocPrint(
             alloc,
             "{s} is switched on and the log is open, but no copy of it is running: " ++
@@ -208,14 +211,14 @@ pub fn configured(
             .already_running => std.fmt.allocPrint(
                 alloc,
                 "{s}. {s} is already running with the settings it started with. " ++
-                    "Nothing was restarted -- a second copy would push the same cursor " ++
+                    "Nothing was restarted -- a second copy would store everything twice " ++
                     "-- so this takes effect the next time Polter starts.",
                 .{ what, key },
             ),
 
             .started_now => std.fmt.allocPrint(
                 alloc,
-                "{s}. {s} is now following the log.",
+                "{s}. {s} is now being fed events as they happen.",
                 .{ what, key },
             ),
 
@@ -350,7 +353,7 @@ test "an archive plugin is never started to test it" {
         try testing.expect(said.len > 0);
         try testing.expect(std.mem.indexOf(u8, said, "chat-archive") != null);
         try testing.expect(std.mem.indexOf(u8, said, "Nothing was started for this") != null);
-        try testing.expect(std.mem.indexOf(u8, said, "second copy would push the same cursor") != null);
+        try testing.expect(std.mem.indexOf(u8, said, "second copy would subscribe and store every message") != null);
     }
 
     // The running copy's own account of itself is the answer, so the numbers
@@ -456,7 +459,7 @@ test "what a configure changes now and what waits for a restart" {
         const said = try configured(alloc, "chat-archive", .archive, false, true, .already_running);
         defer alloc.free(said);
         try testing.expect(std.mem.indexOf(u8, said, "next time Polter starts") != null);
-        try testing.expect(std.mem.indexOf(u8, said, "same cursor") != null);
+        try testing.expect(std.mem.indexOf(u8, said, "store everything twice") != null);
         try testing.expect(std.mem.indexOf(u8, said, "live now") == null);
     }
 
@@ -464,7 +467,7 @@ test "what a configure changes now and what waits for a restart" {
     {
         const said = try configured(alloc, "chat-archive", .archive, true, false, .started_now);
         defer alloc.free(said);
-        try testing.expect(std.mem.indexOf(u8, said, "now following the log") != null);
+        try testing.expect(std.mem.indexOf(u8, said, "now being fed events") != null);
     }
 
     // When it did not start, this says only what was written: the caller
@@ -473,7 +476,7 @@ test "what a configure changes now and what waits for a restart" {
         const said = try configured(alloc, "chat-archive", .archive, true, false, .not_started);
         defer alloc.free(said);
         try testing.expect(std.mem.indexOf(u8, said, "switched on") != null);
-        try testing.expect(std.mem.indexOf(u8, said, "following the log") == null);
+        try testing.expect(std.mem.indexOf(u8, said, "being fed events") == null);
         try testing.expect(std.mem.indexOf(u8, said, "next time Polter starts") == null);
     }
 }

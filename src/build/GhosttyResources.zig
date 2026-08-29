@@ -146,6 +146,12 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     // plugin we ship without touching the bundle. Without this step the
     // plugins in the repository are examples nobody can run -- the lookup
     // path exists and nothing is ever installed into it.
+    //
+    // A plugin directory may also hold a `settings.json`, which is the
+    // defaults it ships with. It rides along here because the exclusion
+    // below is `.md` and nothing else; a user's own
+    // `<config>/polter/plugins/<key>.json` still wins over it, including
+    // when that file switches the plugin off. See `Plugin.Settings`.
     {
         const install_step = b.addInstallDirectory(.{
             .source_dir = b.path("plugins"),
