@@ -382,6 +382,35 @@ there, and Polter is a terminal for agents to work in. But you are acting in
 somebody's working session while they are not watching, so the question before
 each one is the same: **would they have pressed this key?**
 
+**One family is refused, and it is Polter's own.** Every action whose name
+starts with `poltergeist_` -- `poltergeist_toggle_watch`,
+`poltergeist_toggle_held`, `poltergeist_toggle_shielded`,
+`poltergeist_supervisor`, `poltergeist_toggle_chat` -- comes back from
+`terminal_action` as `NotPermitted`. They are real actions, so they are not a
+typo; they are simply not on this surface, and `terminal_actions` does not
+offer them either. Know it before you spend a turn on it.
+
+The reason is not that they are dangerous. It is that **each of them already
+has a tool here that carries the rules, and the keybinding would be a second
+road to the same state with none of them**:
+
+| the switch | what it would reach | what actually carries the rules |
+| --- | --- | --- |
+| `poltergeist_toggle_watch` | putting a terminal under supervision | `set_watch`, which is yours and refuses a terminal another supervisor has claimed |
+| `poltergeist_supervisor` | standing | `become_supervisor`, which refuses a terminal that is already watched |
+| `poltergeist_toggle_held` | the hold | nothing here. The user's alone |
+| `poltergeist_toggle_shielded` | the shield | nothing here. The user's alone |
+
+The hold is the one that shows why it had to close. With the family open, an
+agent could run `poltergeist_toggle_held` on a terminal the user was holding
+and clock it off a moment later -- word for word the thing the hold exists to
+prevent. That was not a hypothetical: it was confirmed working on a real
+machine, the refusal saying "only the user can release it" one call before the
+release went through.
+
+So when one of these is what you want, and there is no tool for it: say what
+you want and let the person press it.
+
 ## Finishing, and how to stop being asked
 
 Being a supervisor costs you an interruption every notice interval for as
@@ -448,6 +477,56 @@ write and let them write it.
 Do not use it for things that can wait until morning. A notification at
 3am spends something you cannot get back, and a supervisor that cries wolf
 at 3am is one whose next notification gets ignored.
+
+## Plugins: what one is, and how to read the listing
+
+A plugin is a program the user has installed beside Polter. It subscribes to
+events, and **it calls the same tools you do, over the same wire protocol**.
+There is no second, smaller vocabulary for plugins: what it may ask for is a
+subset of your own surface, declared in its manifest and enforced.
+
+Two things follow that concern you directly:
+
+- **A plugin is never a supervisor.** Everything on your side of the line --
+  `set_watch`, the group tools, `notify_user`, the clock, the three plugin
+  tools -- is refused to it, with the same error and the same sentence an
+  ordinary terminal gets. What it may do is what an *unmarked* terminal may
+  do: list, read and operate a terminal that carries no mark, and read a
+  skill. **A terminal you have watched is out of its reach** for exactly the
+  reason it is out of an unmarked agent's, and a shielded one is refused to
+  it as it is to you.
+- **It can put something on the user's screen without going through you.** A
+  plugin says `tell` on its own line and the person sees the text -- it is
+  part of the protocol rather than a tool, so it is not on your surface and
+  not something you can send. A message appearing that you did not send is
+  therefore not necessarily a fault; check what is installed before you go
+  looking for one.
+
+`plugin_list()` is yours, and the shape is worth knowing before you read one:
+
+- **There is no `kind` field.** What a plugin *is* comes out of
+  `wants.events`, and that is a **list** -- one plugin may subscribe to
+  several, which a single `kind` could not express. To ask "is this a
+  notification channel", ask whether `terminal.quiet` is in `wants.events`.
+- **`wants.calls`** is the tool methods it declared, and it is the whole of
+  what it may ask for rather than a hint: a call it did not declare is
+  refused before anything else is considered. Read it to the user before you
+  switch something on -- it is the most honest description of what a plugin
+  will do.
+- **`state`, `cursor` and `failures` are absent unless a resident plugin is
+  actually running.** Absent, not zero -- the same convention `quiet_ms`
+  follows, and for the same reason: `0` would read as "measured, and it is
+  zero", which is the opposite of "nothing is measuring it".
+- **`note` appears when something is wrong** and says what, in a sentence.
+  When a plugin is not doing its job, read this before you theorise.
+- Values are never handed back in the clear. A reference is shown as the user
+  wrote it (`env:NAME`); a plain value is reported only as being set.
+
+**Every plugin has its own log**, at
+`~/.local/state/polter/plugins/<key>.log` -- the plugin's own output and
+Polter's verdicts on it, interleaved under one clock. That is where the
+answer lives when `plugin_test` says a notification went nowhere. You cannot
+read it with these tools; tell the person the path.
 
 ## What you are working under
 

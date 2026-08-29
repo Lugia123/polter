@@ -129,6 +129,7 @@ pub fn parse(source: []const u8) ParseError!Skill {
 pub const builtin_names = [_][]const u8{
     "supervising",
     "reading-a-terminal",
+    "operating-a-terminal",
 };
 
 // -- tests ------------------------------------------------------------------
@@ -276,7 +277,7 @@ test "the mode skills are gone, and nothing still names one" {
     // worth doing, which was the same judgement. What survived is the
     // hold, and it is a boolean in code with a mark in the tab -- not a
     // skill anybody has to read.
-    try testing.expectEqual(@as(usize, 2), builtin_names.len);
+    try testing.expectEqual(@as(usize, 3), builtin_names.len);
     for (builtin_names) |name| {
         try testing.expect(!std.mem.startsWith(u8, name, "mode-"));
     }
@@ -317,6 +318,7 @@ pub fn resourcePath(
 const builtin_sources = if (@import("builtin").is_test) [_][]const u8{
     @embedFile("skills/supervising.md"),
     @embedFile("skills/reading-a-terminal.md"),
+    @embedFile("skills/operating-a-terminal.md"),
 } else {};
 
 test "every shipped skill parses" {
@@ -391,6 +393,91 @@ test "the supervising skill names the tools it tells you to use" {
             return error.TestUnexpectedResult;
         }
     }
+}
+
+/// Whether a shipped skill's prose names this tool.
+///
+/// Backtick-anchored, and that is not fussiness. `me` is a real method name
+/// and also an English word: a plain substring search would count every
+/// sentence in every file as a mention of it, and the check below would
+/// pass for a tool nothing had ever written down. The skills already write
+/// a tool exactly one way -- `` `terminal_list` ``, `` `terminal_keys()` ``,
+/// `` `group_post(group, text)` `` -- so requiring the opening backtick, and
+/// refusing a longer identifier running on after the name, matches the prose
+/// as it stands rather than asking anyone to write it differently.
+fn namesTool(source: []const u8, tool: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, source, i, tool)) |at| {
+        i = at + 1;
+        if (at == 0 or source[at - 1] != '`') continue;
+
+        // `terminal_action` must not be satisfied by `terminal_actions`.
+        const after = at + tool.len;
+        if (after < source.len) switch (source[after]) {
+            'a'...'z', '0'...'9', '_' => continue,
+            else => {},
+        };
+        return true;
+    }
+    return false;
+}
+
+test "every tool an unmarked terminal may call is named in some skill" {
+    // The other direction from the test above, and the one that was
+    // missing. That one stops a skill promising a tool that does not exist.
+    // Nothing stopped the reverse: opening a tool to ordinary terminals and
+    // shipping no prose about it, which is how `terminal_send`,
+    // `terminal_key` and the rest came to be reachable by an agent that had
+    // been handed only a skill addressed to supervisors.
+    //
+    // **The list is derived, not typed.** `requiresSupervisor` is an
+    // exhaustive switch over `Method` with no `else`, so a method added
+    // later does not compile until somebody has put it on one side or the
+    // other -- and if they put it on the open side, this test is what asks
+    // where it is written down. A hand-kept mirror of the open set would
+    // be missing the next one silently, which is the failure this
+    // repository has already shipped twice: the Swift `Plugin.Kind` list
+    // that missed `archive`, and then missed `provision`.
+    //
+    // `requiresSupervisor(m) == false` is exactly "a terminal carrying no
+    // mark may call this". Whether it may be *pointed* at a given terminal
+    // is the reach rule and is the target's business, not the method's.
+    const rpc = @import("rpc.zig");
+
+    inline for (@typeInfo(rpc.Method).@"enum".fields) |f| {
+        const method = @field(rpc.Method, f.name);
+        if (!rpc.requiresSupervisor(method)) {
+            const named = for (builtin_sources) |source| {
+                if (namesTool(source, f.name)) break true;
+            } else false;
+
+            if (!named) {
+                std.debug.print(
+                    "\n{s} is callable by an unmarked terminal and no shipped " ++
+                        "skill names it\n",
+                    .{f.name},
+                );
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
+
+test "naming a tool means naming it, not containing its letters" {
+    // The guard on the check above. Without the backtick anchor, `me`
+    // would be found in "some" and the whole thing would be green for
+    // prose that never mentioned a tool at all.
+    try testing.expect(namesTool("read it with `terminal_read`.", "terminal_read"));
+    try testing.expect(namesTool("`terminal_keys()` lists them", "terminal_keys"));
+    try testing.expect(namesTool("`group_post(group, text)` says", "group_post"));
+
+    try testing.expect(!namesTool("some sentences mention me somewhere", "me"));
+    try testing.expect(!namesTool("call terminal_read first", "terminal_read"));
+
+    // And the longer-name case: a file that only ever writes
+    // `terminal_actions` has not named `terminal_action`.
+    try testing.expect(!namesTool("`terminal_actions` lists them", "terminal_action"));
+    try testing.expect(namesTool("`terminal_actions` lists them", "terminal_actions"));
 }
 
 test "every field the frontmatter carries has somewhere it goes" {
