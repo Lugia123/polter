@@ -1657,7 +1657,6 @@ pub const CAPI = struct {
     }
 
     /// One message in the chat window.
-
     /// Read some arbitrary text from the surface.
     ///
     /// This is an expensive operation so it shouldn't be called too
