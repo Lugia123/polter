@@ -1,10 +1,10 @@
 # 总管、监督关系与「按住」
 
-> 最后更新对应的 git commit：`eaf10edef`（可达性规则改写这一轮改动尚在工作树里，未提交）
+> 最后更新对应的 git commit：`0592d045a`（可达性规则改写、`terminal_key`、护盾、`terminal_action` 的治理拒绝、终端转录这几轮改动部分尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**大部分已实现**。已落地：监督关系与上班/下班状态（`src/poltergeist/Bus.zig`）、「被按住的终端禁止下班」与「只有用户能按住」两条程序硬闸、静止通知注入（`src/Surface.zig` 的 `typePoltergeistText`）、三个键绑定 action（指定总管 / 切换监督 / 切换按住）、「连续 n 次」的 rounds 计数（随 `terminal_list` 给总管）、skill 体系（`src/poltergeist/skills/`）。
+> 状态：**大部分已实现**。已落地：监督关系与上班/下班状态（`src/poltergeist/Bus.zig`）、「被按住的终端禁止下班」与「只有用户能按住」两条程序硬闸、静止通知注入（`src/Surface.zig` 的 `typePoltergeistText`）、五个键绑定 action（`poltergeist_supervisor` / `poltergeist_toggle_watch` / `poltergeist_toggle_held` / `poltergeist_toggle_shielded` / `poltergeist_toggle_chat`，`src/input/Binding.zig:694-735`）、护盾 `Entry.shielded`（`src/poltergeist/Bus.zig:219`）、「连续 n 次」的 rounds 计数（随 `terminal_list` 给总管）、skill 体系（`src/poltergeist/skills/`）。
 > 真机验证过的：下班（`clock_out` → `duty: off` → tab 打 `💤`）、被按住的终端拒绝下班（`TerminalHeld`），以及总管**没有**放下按住的入口 —— `setHeld` 对 `who != .user` 一律 `NotPermitted`，工具面里也没有对应的方法，所以绕不过去。
-> **仍未实现**：确认策略与通知时间段（R3）。本章描述它的那一节是设计，不是现状。
+> **通知时间段已经落地**：`poltergeist-notify-window`（`src/config/Config.zig:1477`）解析成 `notify.Window`，`notify.decide` 据此放行或压下，而 `authorisation` 这一类不受时段约束（`src/poltergeist/notify.zig:146-148`）。**仍未实现**：R3 的另一半「总管代理决策 / 通知用户」按终端二选一——没有这个配置项，也没有 per-terminal 的逃生阀。本章描述那一半的段落是设计，不是现状。
 
 ## 本章覆盖什么
 
@@ -12,6 +12,7 @@
 - 监督关系模型：谁是总管、监督哪几个、关系存在哪一侧、允许几个总管、关系的生命周期。
 - 上班 / 静止待判 / 等确认 / 下班四态状态机，以及每条边由谁改写。
 - 「按住」：它是什么、为什么只有用户能设、程序层禁下班；以及「连续 n 次」怎么数。
+- 「护盾」：和按住并列的第二个用户专属标记，为什么它对总管也生效、为什么它没有折进 tab 标记的那个枚举。
 - 确认策略与通知时间段，以及通知窗口之外发生确认请求时的降级规则。
 - 停掉监控这一个动作，为什么不做成开关；以及本章的安全边界（含「明确不做自动点 yes」）。
 
@@ -26,7 +27,18 @@
 
 ## 一句话概括
 
-Poltergeist（能力层）在总管这一侧只维护三张表——谁监督谁、谁在上班、谁被用户按住了——外加一条通知通道；**什么时候该催、催什么，全部由总管 AI 自己看对方屏幕后判断**。程序只在两个地方硬性说不：被按住的终端不许被打下班标记，替用户按下工具授权不做。
+Poltergeist（能力层）在总管这一侧只维护四张表——谁监督谁、谁在上班、谁被用户按住了、谁被用户整个挡在工具面之外（`src/poltergeist/Bus.zig:219`）——外加一条通知通道；**什么时候该催、催什么，全部由总管 AI 自己看对方屏幕后判断**。
+
+程序硬性说不的地方现在有四处，而它们是同一条链上的四环：
+
+1. **被按住的终端不许被打下班标记**（`src/poltergeist/rpc.zig:873-877`，`TerminalHeld`）。
+2. **替用户按下工具授权不做**，工具面里根本没有这个方法。
+3. **被护盾挡住的终端谁都碰不了**，总管和插件也一样（`src/poltergeist/rpc.zig:814`，`Shielded`）。
+4. **`terminal_action` 不执行任何 `poltergeist_` 前缀的动作**（`src/poltergeist/actions.zig:67`）。
+
+第 4 条是补上去的，补的是一个真洞：这一族开着的时候，agent 可以先用键位动作
+`poltergeist_toggle_held` 掀掉用户的按住，再 `clock_out`——也就是第 1 条自己
+说它要防的那件事。**每开一扇新门，前面每一条都要重问一遍。**
 
 ## 设计目标与约束
 
@@ -39,7 +51,7 @@ Poltergeist（能力层）在总管这一侧只维护三张表——谁监督谁
 - **R2（不做自动点 yes）** —— 只在「安全边界」出现一次，写清不做和为什么。
 - **R8（不管任务）** —— 本章只在解释「两个无限子型对程序侧没有差别」时引用一次，落地见 [mcp.md](mcp.md)。
 
-这些关系全部建立在一个现成的可寻址单位上：每个 surface 有一个 `id: u64`（`src/Surface.zig:62`），其文档注释（`src/Surface.zig:57-61`）明说该 ID 就是给 IPC 用的，并以环境变量 `GHOSTTY_SURFACE_ID` 暴露给终端里跑的命令（`src/Surface.zig:651-655`，格式 `0x{x:0>16}`）。**本设计不引入第二套 ID。**
+这些关系全部建立在一个现成的可寻址单位上：每个 surface 有一个 `id: u64`（`src/Surface.zig:63`），其文档注释（`src/Surface.zig:58-62`）明说该 ID 就是给 IPC 用的，并以环境变量 `GHOSTTY_SURFACE_ID` 暴露给终端里跑的命令（`src/Surface.zig:677-681`，格式 `0x{x:0>16}`）。**本设计不引入第二套 ID。**
 
 ## 场景走查
 
@@ -69,23 +81,23 @@ Poltergeist（能力层）在总管这一侧只维护三张表——谁监督谁
 | 4 把不许停的终端按住   | `held` 位  | 本章「按住」           |
 | 5 停掉监控             | 一个动作   | 本章「停掉监控」       |
 
-第 2、3 步在现状代码里已有可直接复用的定位手段：`App.findSurfaceByID`（`src/App.zig:551-558`）按 64 位 ID 线性查找并返回 `?*Surface`，这正是「把用户指的那个终端换算成关系表里的一行」所需要的全部东西。
+第 2、3 步在现状代码里已有可直接复用的定位手段：`App.findSurfaceByID`（`src/App.zig:3410`）按 64 位 ID 线性查找并返回 `?*Surface`，这正是「把用户指的那个终端换算成关系表里的一行」所需要的全部东西。
 
 ## 监督关系模型
 
 ### 总管与被监督终端是什么
 
-总管是被用户打上标记的一个 surface；被监督终端是一组 surface。两者的身份都是 `Surface.id`（`src/Surface.zig:62`）。子进程侧已经能自报家门（`src/Surface.zig:651-655`），所以 sidecar 里跑的 MCP 客户端不需要额外的注册握手就能说清「我是哪个终端」。握手细节见 [mcp.md](mcp.md)。
+总管是被用户打上标记的一个 surface；被监督终端是一组 surface。两者的身份都是 `Surface.id`（`src/Surface.zig:63`）。子进程侧已经能自报家门（`src/Surface.zig:677-681`），所以 sidecar 里跑的 MCP 客户端不需要额外的注册握手就能说清「我是哪个终端」。握手细节见 [mcp.md](mcp.md)。
 
 ### 关系存在哪一侧
 
 **本设计选择：权威副本存在 Ghostty 进程内存（App 层），不落盘；sidecar 只做缓存与转发。**
 
-就地两条理由。其一，R10 要在 tab 上打状态标记，Ghostty 自己必须知道关系，否则每次画 tab 都要跨进程问一次。其二，surface 关闭时必须有人清理关系，而现状的 `App.deleteSurface`（`src/App.zig:214-243`）只清 `focused_surface` 并从 `surfaces` 列表里 `swapRemove`，不通知任何订阅方——这个清理钩子只能挂在 Ghostty 侧。
+就地两条理由。其一，R10 要在 tab 上打状态标记，Ghostty 自己必须知道关系，否则每次画 tab 都要跨进程问一次。其二，surface 关闭时必须有人清理关系，而现状的 `App.deleteSurface`（`src/App.zig:3070`）只清 `focused_surface` 并从 `surfaces` 列表里 `swapRemove`，不通知任何订阅方——这个清理钩子只能挂在 Ghostty 侧。
 
-「写进配置文件」这条路直接排除：`Surface.id` 是创建时用随机数发生器现摇的 u64（`src/Surface.zig:588-598`，循环直到非零），重启后完全不同，配置里写不出稳定引用；而 Ghostty 的配置条件状态是静态类型的 struct，目前只有 `theme` 与 `os` 两个键（`src/config/conditional.zig:9-16`），也表达不了运行时关系。
+「写进配置文件」这条路直接排除：`Surface.id` 是创建时用随机数发生器现摇的 u64（`src/Surface.zig:606-623`，循环直到非零），重启后完全不同，配置里写不出稳定引用；而 Ghostty 的配置条件状态是静态类型的 struct，目前只有 `theme` 与 `os` 两个键（`src/config/conditional.zig:9-16`），也表达不了运行时关系。
 
-「运行时状态放 Surface 字段而非配置」在现状里有先例：`Surface.updateConfig`（`src/Surface.zig:1739-1766`）只重建 `DerivedConfig`，不碰 `readonly` 这类运行时字段——配置重载因此不会把监督关系洗掉。完整对比见 T1。
+「运行时状态放 Surface 字段而非配置」在现状里有先例：`Surface.updateConfig`（`src/Surface.zig:1824-1851`）只重建 `DerivedConfig`，不碰 `readonly` 这类运行时字段——配置重载因此不会把监督关系洗掉。完整对比见 T1。
 
 ### 一个 Poltergeist 实例允许几个总管
 
@@ -111,10 +123,10 @@ Poltergeist（能力层）在总管这一侧只维护三张表——谁监督谁
 
 ### 生命周期
 
-- 被监督终端关闭 → 关系条目删除，总管收到一条「该终端消失」的通知。挂点是 `App.deleteSurface`（`src/App.zig:214-243`）。
+- 被监督终端关闭 → 关系条目删除，总管收到一条「该终端消失」的通知。挂点是 `App.deleteSurface`（`src/App.zig:3070`）。
 - 总管终端关闭 → 它名下所有关系一并失效，等价于对这一组执行了「停掉监控」。
-- 子进程退出但 surface 还在 → `Surface.child_exited`（`src/Surface.zig:150`）是与「静止」性质完全不同的信号，应单独通知总管，不要混进静止逻辑：静止说明「对方可能在等」，子进程退出说明「对方已经没了」。
-- 配置重载 → 不影响关系，依据同上（`src/Surface.zig:1739-1766`）。
+- 子进程退出但 surface 还在 → `Surface.child_exited`（`src/Surface.zig:151`）是与「静止」性质完全不同的信号，应单独通知总管，不要混进静止逻辑：静止说明「对方可能在等」，子进程退出说明「对方已经没了」。
+- 配置重载 → 不影响关系，依据同上（`src/Surface.zig:1824-1851`）。
 
 （未核实：用户是否有跨 Ghostty 重启恢复监督关系的需求，核实方式是向用户确认，或在 S1 阶段实测挂机过夜期间 Ghostty 是否会重启。本设计目前按「不持久化」处理。）
 
@@ -157,13 +169,21 @@ off-duty       -> on-duty     手动复工                                  仅�
 2. **总管** 经 MCP 改写其余各边。
 3. **用户** 随时可以手动改任何状态。
 
-一条例外要点名：`off-duty → on-duty` 的回边**总管不能自己走**。否则 `rounds` 会在下班与上班之间来回振荡，这个计数就失去意义了。总管若想把某个终端叫回来上班，必须走确认策略（代理决策或通知用户），从而在审计日志里留下一条可追溯的记录。
+**当初这里写的例外没有落地，而且是被明确否掉的。** 原话是「`off-duty → on-duty`
+的回边总管不能自己走」，理由是怕 `rounds` 在两个状态之间振荡。实现选了相反的
+方向：`clockOn` 谁都能走，注释写着理由——**回来上班不是危险的那个方向**
+（`src/poltergeist/Bus.zig:596-600`）。危险的是下班，所以 `clockOff` 有 `held`
+这道闸而 `clockOn` 什么闸都没有。
+
+原来那条论证的错处在于它把「计数好看」放在了「终端能不能继续干活」前面：一个被
+误判下班的终端如果连总管都叫不回来，唯一的出路是等人醒过来，而这正是挂机过夜要
+避免的。振荡的问题另有出路——`rounds` 是给总管读的数，不是硬闸。
 
 ### 下班不是 readonly
 
-`Surface.readonly`（`src/Surface.zig:168`）是现状里形状最接近的先例：一个运行时布尔字段，`toggle_readonly` 翻转后发 apprt action（`src/Surface.zig:5426-5434`），apprt 侧是 `Readonly = enum(c_int){ off, on }`（`src/apprt/action.zig:667-674`），macOS 渲染成 `ReadonlyBadge` 覆盖层（`macos/Sources/Ghostty/Surface View/SurfaceView.swift:86-91`）。
+`Surface.readonly`（`src/Surface.zig:169`）是现状里形状最接近的先例：一个运行时布尔字段，`toggle_readonly` 翻转后发 apprt action（`src/Surface.zig:5793-5801`），apprt 侧是 `Readonly = enum(c_int){ off, on }`（`src/apprt/action.zig:672-679`），macOS 渲染成 `ReadonlyBadge` 覆盖层（`macos/Sources/Ghostty/Surface View/SurfaceView.swift:86-91`）。
 
-**但它的语义完全不同，绝不能复用这个字段。** readonly 会在 `queueIo` 里把 `write_small` / `write_stable` / `write_alloc` 三类消息 `deinit` 后直接丢弃（`src/Surface.zig:872-885`），且不区分来源——用户自己敲的键也会被拦掉；它还会让 `needsConfirmQuit` 无条件返回真（`src/Surface.zig:950-952`），于是下班的终端会莫名其妙要求确认退出。
+**但它的语义完全不同，绝不能复用这个字段。** readonly 会在 `queueIo` 里把 `write_small` / `write_stable` / `write_alloc` 三类消息 `deinit` 后直接丢弃（`src/Surface.zig:949-961`），且不区分来源——用户自己敲的键也会被拦掉；它还会让 `needsConfirmQuit` 无条件返回真（`src/Surface.zig:1027-1029`），于是下班的终端会莫名其妙要求确认退出。
 
 而「下班」只意味着「总管不再催它」，用户随时应该能接手继续用。**本设计借 readonly 的实现形状，不复用它的字段。** 分两步落地的取舍见 T3。
 
@@ -183,9 +203,9 @@ off-duty       -> on-duty     手动复工                                  仅�
 总管，**够不够整个是总管的判断**。这比原设计更贴合 R1 的分工：程序供事实，AI 供
 判断。详见 [mcp.md](mcp.md)「『连续 n 次』由程序计数，判断交给 AI」。
 
-阈值这类仍然存在的配置用普通配置项即可；时长类配置可直接复用现成的 `Duration` 类型（`src/config/Config.zig:10047`，`parseCLI` 在 `:10085`，支持 `s` / `m` / `h` 等带单位写法）。静止阈值本身的默认值不属于本章，见 [sensing.md](sensing.md)。
+阈值这类仍然存在的配置用普通配置项即可；时长类配置可直接复用现成的 `Duration` 类型（`src/config/Config.zig:10263`，`parseCLI` 在 `:10085`，支持 `s` / `m` / `h` 等带单位写法）。静止阈值本身的默认值不属于本章，见 [sensing.md](sensing.md)。
 
-**一条已核实的实现约束**：要区分「用户手动输入」与「Poltergeist 自己注入」，现状拿不到。`Surface.textCallback`（`src/Surface.zig:3308`）没有来源参数，注入与粘贴走同一个入口；`Surface.keyCallback`（`src/Surface.zig:2674`）同样没有。所以注入路径必须自带来源标记，否则计数器会被自注入永久复位，「连续 n 次」永远数不满。具体签名怎么加属于实现细节，本章只写这条约束。
+**一条已核实的实现约束**：要区分「用户手动输入」与「Poltergeist 自己注入」，现状拿不到。`Surface.textCallback`（`src/Surface.zig:3672`）没有来源参数，注入与粘贴走同一个入口；`Surface.keyCallback`（`src/Surface.zig:2759`）同样没有。所以注入路径必须自带来源标记，否则计数器会被自注入永久复位，「连续 n 次」永远数不满。具体签名怎么加属于实现细节，本章只写这条约束。
 
 ### 按住是什么
 
@@ -225,11 +245,35 @@ Poltergeist 的差别只有一点——**任务从哪来**——而 R8 已经规
 
 理由两条。提示词会被长上下文稀释，这是第一条也是较弱的一条。更根本的是第二条：用户按住某个终端，就是明确表达了不想让它停；让 AI 去复核用户的硬性意图，是范畴错误。
 
-现状里有两处同形状的先例可以照抄：`startClipboardRequest` 在 `clipboard_read == .deny` 时直接 log 并 `return false`（`src/Surface.zig:5899-5905`）；`queueIo` 在 readonly 时直接丢弃写消息（`src/Surface.zig:872-885`）。两者都是「策略在边界执行，不信任请求方」。
+现状里有两处同形状的先例可以照抄：`startClipboardRequest` 在 `clipboard_read == .deny` 时直接 log 并 `return false`（`src/Surface.zig:6411-6424`）；`queueIo` 在 readonly 时直接丢弃写消息（`src/Surface.zig:949-961`）。两者都是「策略在边界执行，不信任请求方」。
 
 补一条实现细节：**拒绝必须返回可读理由**。静默失败会让总管反复重试，既烧 token 又污染审计日志。
 
 推翻条件：若实践中确实需要「用户在场时临时豁免」，正确做法是**用户**在界面上把按住松开（菜单 `Keep This Terminal Working`，或右键菜单里的同一项），而不是给 AI 开一个后门。
+
+## 护盾：和按住并列的第二个用户专属标记
+
+`held` 说的是「这个终端不许被下班」，`shielded` 说的是「这个终端谁都不许碰」
+（`src/poltergeist/Bus.zig:219`）。两个都只有用户能设——`setShielded` 和
+`setHeld` 一样要一个 `Authority`，非 `.user` 一律拒（`src/poltergeist/Bus.zig:565-575`）。
+菜单项是 **Keep Agents Out of This Terminal**（`macos/Sources/App/Base.lproj/MainMenu.xib:420`），
+键绑定动作是 `poltergeist_toggle_shielded`（`src/input/Binding.zig:731`）。
+
+**它对总管也生效，而这不是「更严一点」，是它成立的唯一方式。**
+`authorize` 把护盾放在整条可达性规则之前，任何调用方一律 `Shielded`
+（`src/poltergeist/rpc.zig:814`）。理由是具体的：`become_supervisor` 让任何无标记
+终端一次调用就能自己当总管，所以一道「只挡非总管」的护盾，被挡住的一方绕过它只
+需要多调一次工具。**一道能被一次调用绕开的闸，等于没有闸。**
+
+**它最有用的场景恰恰是一个什么标记都没有的终端。** 可达性规则说无标记终端谁都
+能碰——而用户自己那个读邮件、看日志的 tab 正是无标记的。护盾是用户在那条规则上
+唯一的手动否决权。所以它和 `held` 不一样：`held` 只对被监督的终端有意义，护盾对
+七种 tab 状态（含「什么都不是」）全都成立。
+
+**因此它没有折进 `TabMark`，而是自己一个前缀**（`src/poltergeist/Bus.zig:734`，
+🔒）。折进去要把七个值翻成十四个，其中 `none` 会不再表示「没什么好说的」——而
+两个标记本来就在说两件事：一个说这个终端在干什么，一个说谁可以碰它。形状差异的
+完整论证在 [tabs.md](tabs.md)。
 
 ## 确认策略与通知时间段
 
@@ -239,12 +283,19 @@ R3 给的是二选一：(a) 总管代理用户决策；(b) 通知用户。本设
 
 ### 通知时间段的配置形态
 
-**尚未实现。**以下为设计示意，这两个配置项在仓库中不存在。
+**时间段已经落地，二选一的策略没有。** 下面第二行是现状，第一行仍是设计示意——
+`polter-confirmation-policy` 这个键在仓库里不存在。
 
 ```ini
 polter-confirmation-policy = notify-user
-polter-notification-window = 09:00-22:00
+poltergeist-notify-window = 09:00-22:00
 ```
+
+`poltergeist-notify-window`（`src/config/Config.zig:1477`）在 `Surface` 启动时被解析成
+`notify.Window`，空串表示任何时候都可以打扰。`notify.decide` 是唯一读它的地方
+（`src/poltergeist/notify.zig:146-148`）。**「按被监督终端各设」那一半没有做**：
+现在只有一个全局的时段，`Bus.Entry` 上也没有 per-terminal 的确认策略字段
+（`src/poltergeist/Bus.zig:186-310`）。上一节写的「按终端各设」因此仍是设计。
 
 **为什么它不能做成配置条件（conditional）**：Ghostty 的条件状态是静态类型的 struct，目前只有 `theme` 与 `os` 两个键，`State.match` 按 `@tagName` 做字符串比较（`src/config/conditional.zig:9-36`）。把「当前时间」塞进去会让配置随时钟自己改变，与「静态状态」这个设计前提正面冲突。因此时间段只能是运行时判断，不进条件系统。
 
@@ -267,12 +318,18 @@ polter-notification-window = 09:00-22:00
 
 第二类没有第三个选项。程序不能替按，总管不能替按，那么要么把人叫来，要么它就停在那里 —— 而这恰恰是通知必须能推到手机上的原因，也是通知做成插件体系（[plugins.md](plugins.md)）的由来：桌面通知在人已经离开的机器上没有意义。
 
-**窗口外的规则因此按类别定，而不是按终端定**：
+**窗口外的规则因此按类别定，而不是按终端定 —— 这一条已经是现状。**
+`notify.Reason` 就是这两类（`src/poltergeist/notify.zig:39-53`），`notify_user` 的
+`reason` 参数只收这两个词，`decide` 按它分流（`src/poltergeist/notify.zig:146-148`）：
 
-- 调度决策 → 代理，群聊留痕。理由仍然成立：R5 的场景就是「人不在，机器继续」，把「人不在」解释成「停下来等」会让整套东西在最需要它的时段失效。
-- 工具授权 → **照发通知，不管时段**。这类事情停在那里的代价是一整夜白跑，而这已经越过了「别在半夜吵醒我」所要保护的东西。用户若真不想被吵，该关的是这个终端的监督，不是通知。
+- 调度决策 → 窗口外压下，留给总管代理，群聊留痕。理由仍然成立：R5 的场景就是「人不在，机器继续」，把「人不在」解释成「停下来等」会让整套东西在最需要它的时段失效。
+- 工具授权 → **照发通知，不管时段**（`respectsWindow()` 对它返回 false）。这类事情停在那里的代价是一整夜白跑，而这已经越过了「别在半夜吵醒我」所要保护的东西。用户若真不想被吵，该关的是这个终端的监督，不是通知。
 
-**逃生阀仍在**：某个被监督终端可以单独标为「任何确认都必须人来」，那样连调度决策也不代理。这是按终端设的，与上面的类别规则叠加。
+**当初写的那个逃生阀没有做。** 原话是「某个被监督终端可以单独标为『任何确认都
+必须人来』」——`Bus.Entry` 上没有这个字段（`src/poltergeist/Bus.zig:186-310`），
+工具面上也没有设它的方法。**论证保留在这里，因为它仍然是对的**：类别规则是全局
+的，而不同终端能容忍的自作主张程度不一样。缺的是一个 per-terminal 的策略字段，
+和上一节缺的是同一个东西。
 
 **与 R2 缝合的一句**：代理调度决策不会滑向自动点 yes —— 「替对方按下工具授权」根本不在能力集里，见下一节。这一点没有变，变的是承认了它留下的那个缺口，并给缺口配了一条出路。
 
@@ -280,11 +337,11 @@ polter-notification-window = 09:00-22:00
 
 以下五条全部已核实，直接决定通知怎么设计：
 
-- **限流是应用级而非 surface 级**。`showDesktopNotification` 的限流状态 `last_notification_time` / `last_notification_digest` 挂在 App 上（`src/App.zig:60-61`），逻辑是「每秒最多一条」加「相同内容 5 秒内抑制」（`src/Surface.zig:6038-6082`）。多个被监督终端同时告急时会互相挤掉，所以 Poltergeist 必须自己先合并再发一条。
-- **内容长度有硬上限**。跨线程 `desktop_notification` 消息的标题是 `[63:0]u8`、正文是 `[255:0]u8`（`src/apprt/surface.zig:55-61`）。所以确认请求的全文只能放群聊，通知里只放摘要。
+- **限流是应用级而非 surface 级**。`showDesktopNotification` 的限流状态 `last_notification_time` / `last_notification_digest` 挂在 App 上（`src/App.zig:218-219`），逻辑是「每秒最多一条」加「相同内容 5 秒内抑制」（`src/Surface.zig:6557-6600`）。多个被监督终端同时告急时会互相挤掉，所以 Poltergeist 必须自己先合并再发一条。
+- **内容长度有硬上限**。跨线程 `desktop_notification` 消息的标题是 `[63:0]u8`、正文是 `[255:0]u8`（`src/apprt/surface.zig:79-85`）。所以确认请求的全文只能放群聊，通知里只放摘要。
 - **macOS 侧的通知很短命**。默认 `requireFocus: true`（`macos/Sources/Ghostty/Ghostty.App.swift:1442-1461`），且当该 surface 处于聚焦状态时通知会在 3 秒后被 `removeDeliveredNotifications` 主动移除（`macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift:1807-1817`）。一个 3 秒就消失的通知不是合格的确认渠道 → **确认请求必须同时在群聊与 tab 标记上留痕**（承载方式见 [chatui.md](chatui.md) 与 [tabs.md](tabs.md)）。
-- **GTK 侧通知会互相替换**。notification ID 直接取正文字符串（`src/apprt/gtk/class/application.zig:2398-2401`），相同正文的后一条会顶掉前一条；默认动作是 `app.present-surface`（`src/apprt/gtk/class/application.zig:2393-2396`）。（未核实：GTK / 桌面通知守护进程是否也会自动清除已投递的通知，核实方式是读 `gio.Application.sendNotification` 的语义与具体桌面环境的实现。）
-- **用户可能整个关掉**。`desktop-notifications` 默认 true（`src/config/Config.zig:3786`）但可关。关掉之后「通知用户」这条策略等于失效，因此本设计应在该配置为 false 时拒绝把确认策略设为「通知用户」，并把理由说给用户，而不是默默降级。
+- **GTK 侧通知会互相替换**。notification ID 直接取正文字符串（`src/apprt/gtk/class/application.zig:2408-2410`），相同正文的后一条会顶掉前一条；默认动作是 `app.present-surface`（`src/apprt/gtk/class/application.zig:2402-2405`）。（未核实：GTK / 桌面通知守护进程是否也会自动清除已投递的通知，核实方式是读 `gio.Application.sendNotification` 的语义与具体桌面环境的实现。）
+- **用户可能整个关掉**。`desktop-notifications` 默认 true（`src/config/Config.zig:4002`）但可关。关掉之后「通知用户」这条策略等于失效，因此本设计应在该配置为 false 时拒绝把确认策略设为「通知用户」，并把理由说给用户，而不是默默降级。
 
 ## 停掉监控
 
@@ -300,12 +357,12 @@ polter-notification-window = 09:00-22:00
 
 **本设计选择：一个 app 作用域的键绑定 action。**
 
-理由：`Binding.Action` 的作用域是编译期两分类，由 `scope()` 静态返回（`src/input/Binding.zig:1353-1359`）。选 app 作用域之后，`command-palette-entry`（`src/config/Config.zig:2994`）就能免费把它变成命令面板条目，不必为这一个动作单写一套 UI。群聊界面上的按钮等 [chatui.md](chatui.md) 定稿后接到同一个动作上即可。
+理由：`Binding.Action` 的作用域是编译期两分类，由 `scope()` 静态返回（`src/input/Binding.zig:1420`）。选 app 作用域之后，`command-palette-entry`（`src/config/Config.zig:3210`）就能免费把它变成命令面板条目，不必为这一个动作单写一套 UI。群聊界面上的按钮等 [chatui.md](chatui.md) 定稿后接到同一个动作上即可。
 
 两条明确排除：
 
 - **CLI 触发不可行**。`ghostty +<action>` 是一组 CLI 动作（`src/cli/ghostty.zig:31`，注释在 `:28-30`），跑在另一个进程里——IPC 模块的顶部注释把自己定义成「从另一个进程与正在运行的 Ghostty 实例通信」（`src/apprt/ipc.zig:1-2`），要影响正在跑的实例只能走它；而 IPC 只定义了 `new_window` / `new_tab` / `toggle_quick_terminal` 三个动作（`src/apprt/ipc.zig:176-179`），且 embedded（macOS）apprt 的 `performIpc` 对这三个分支一律 `return false`（`src/apprt/embedded.zig:349-360`）。跨平台走不通。
-- **广播实现不合适**。`App.performAllAction` 能把 surface 作用域动作逐个广播给 `self.surfaces` 里的每个 surface（`src/App.zig:502-527`），旧稿的 `agent_stop_all` 正该这么做；但监督关系表在 App 层，停监控是一次 app 级操作，广播会把它变成 N 次独立操作，还会漏掉中途新建的 surface。
+- **广播实现不合适**。`App.performAllAction` 能把 surface 作用域动作逐个广播给 `self.surfaces` 里的每个 surface（`src/App.zig:3361`），旧稿的 `agent_stop_all` 正该这么做；但监督关系表在 App 层，停监控是一次 app 级操作，广播会把它变成 N 次独立操作，还会漏掉中途新建的 surface。
 
 ## 关掉再打开：让总管把摊子重新搭起来
 
@@ -410,57 +467,67 @@ R2 是硬约束：**Poltergeist 不替任何 agent 回答权限询问**。Claude
 
 ### 注入限流与竞态守卫
 
-注入走已有的粘贴通道：`Surface.textCallback`（`src/Surface.zig:3308`，文档注释在 `:3303-3307`）→ `completeClipboardPaste`（`src/Surface.zig:5914`），从而继承 bracketed paste 行为（bracketed 模式下走 bracketed paste，否则把换行过滤成 `\r`）。
+注入走已有的粘贴通道：`Surface.textCallback`（`src/Surface.zig:3672`，文档注释在 `:3303-3307`）→ `completeClipboardPaste`（`src/Surface.zig:6433`），从而继承 bracketed paste 行为（bracketed 模式下走 bracketed paste，否则把换行过滤成 `\r`）。
 
-**这里要纠正一条容易写过头的说法**：`textCallback` 传的是 `allow_unsafe = true`（`src/Surface.zig:3313`），而 `completeClipboardPaste` 里有 `if (allow_unsafe) break :unsafe false;`（`src/Surface.zig:5936-5938`）——这条路径继承的是**括号包裹，不是粘贴安全确认**。所以 Poltergeist 的注入必须自带长度上限与内容白名单，不能指望上游的粘贴保护替它兜底。
+**这里要纠正一条容易写过头的说法**：`textCallback` 传的是 `allow_unsafe = true`（`src/Surface.zig:3678`），而 `completeClipboardPaste` 里有 `if (allow_unsafe) break :unsafe false;`（`src/Surface.zig:6457`）——这条路径继承的是**括号包裹，不是粘贴安全确认**。所以 Poltergeist 的注入必须自带长度上限与内容白名单，不能指望上游的粘贴保护替它兜底。
 
 竞态守卫两条：
 
-- 注入前检查该 surface 是否聚焦（`Surface.focused`，`src/Surface.zig:155`，由 `focusCallback` 翻转，`src/Surface.zig:3348`）。聚焦说明用户可能正在打字，此时应推迟注入。
+- 注入前检查该 surface 是否聚焦（`Surface.focused`，`src/Surface.zig:156`，由 `focusCallback` 翻转，`src/Surface.zig:3712`）。聚焦说明用户可能正在打字，此时应推迟注入。
 - 注入回环：Poltergeist 自己注入的文本会立刻让屏幕变化，从而复位静止计时。注入必须打来源标记，与「连续 n 次」一节的实现约束是同一条。
 
 ### 审计日志
 
 每一次状态改写、每一次注入、每一次窗口外降级都要落审计日志，且可追溯到是哪个总管、哪一轮 skill 执行。
 
-**现状约束**：Ghostty 自身没有文件日志目的地——`GlobalState.Logging` 只有 `stderr` 与 `macos` 两个字段（`src/global.zig:395-402`），且目的地由环境变量 `GHOSTTY_LOG` 解析（`src/global.zig:148-155`），而这个变量在 surface 启动时被专门从子进程环境里摘掉（`src/Surface.zig:648-649`）。所以审计日志必须由 Poltergeist 自己写文件，落点归 [mcp.md](mcp.md) 的 sidecar。（本章不指定具体路径。）
+**现状约束**：Ghostty 自身没有文件日志目的地——`GlobalState.Logging` 只有 `stderr` 与 `macos` 两个字段（`src/global.zig:395-402`），且目的地由环境变量 `GHOSTTY_LOG` 解析（`src/global.zig:148-155`），而这个变量在 surface 启动时被专门从子进程环境里摘掉（`src/Surface.zig:674-675`）。所以审计日志必须由 Poltergeist 自己写文件。**落点现在定了，而且是三份而不是一份**，
+因为「留了什么痕」本来就是三种不同的东西：
+
+- **agent 之间说了什么** → `$XDG_STATE_HOME/polter/chat/`，开关 `poltergeist-chat-log`（`src/config/Config.zig:1414`），机制见 [storage.md](storage.md)。
+- **终端里真正跑了什么** → `$XDG_STATE_HOME/polter/terminals/<终端>/<日期>.jsonl`，开关 `poltergeist-terminal-log`（`src/config/Config.zig:1451`），见 [transcript.md](transcript.md)。
+- **插件身上发生了什么** → `$XDG_STATE_HOME/polter/plugins/<key>.log`（`src/poltergeist/PluginLog.zig`），见 [plugins.md](plugins.md)。
+
+**仍然没有的是「每一次状态改写」那一份。** `Bus.zig` 里一行日志都没有
+（全文件 0 处 `log.`），`set_watch` / `clock_out` / 窗口外降级发生了就是发生了，
+事后无从查证是哪个总管在哪一轮做的。上面三份都不是它——它们记的是**内容**，不是
+**谁在什么时候改了谁的状态**。这一条还欠着。
 
 ## 取舍记录
 
 | 方案                                                              | 成本                                                                                                                                                                                                                      | 为什么没选 / 为什么选                                                                                                                                                                                                                                                                            |
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **T1** 关系存总管 AI 上下文                                       | Ghostty 侧零改动                                                                                                                                                                                                          | 没选：tab 标记要 Ghostty 自己知道关系；`App.deleteSurface`（`src/App.zig:214-243`）不通知订阅方，清理钩子只能挂 Ghostty 侧；上下文一压缩关系静默丢失                                                                                                                                             |
-| **T1** 关系存配置文件                                             | 配置系统现成                                                                                                                                                                                                              | 没选：`Surface.id` 每次现摇（`src/Surface.zig:588-598`），写不出稳定引用；条件状态只有 theme/os（`src/config/conditional.zig:9-16`）                                                                                                                                                             |
+| **T1** 关系存总管 AI 上下文                                       | Ghostty 侧零改动                                                                                                                                                                                                          | 没选：tab 标记要 Ghostty 自己知道关系；`App.deleteSurface`（`src/App.zig:3070`）不通知订阅方，清理钩子只能挂 Ghostty 侧；上下文一压缩关系静默丢失                                                                                                                                             |
+| **T1** 关系存配置文件                                             | 配置系统现成                                                                                                                                                                                                              | 没选：`Surface.id` 每次现摇（`src/Surface.zig:606-623`），写不出稳定引用；条件状态只有 theme/os（`src/config/conditional.zig:9-16`）                                                                                                                                                             |
 | **T1** 只存 sidecar 内存                                          | 读写最方便，MCP 服务端就在那儿                                                                                                                                                                                            | 没选：surface 生死只有 Ghostty 知道，sidecar 会持有幽灵条目                                                                                                                                                                                                                                      |
 | **T1** Ghostty 内存权威 + sidecar 缓存                            | App 层新增一张表和一组增删查（新增代码，非改上游）                                                                                                                                                                        | **选**。分叉面小，清理钩子与 tab 标记都能就地拿到。推翻条件：若最终决定完全不改 Ghostty 核心，关系须移到 sidecar，代价是标记与清理都靠轮询补偿                                                                                                                                                   |
 | **T2** 全局单总管                                                 | 实现最简，零冲突                                                                                                                                                                                                          | 没选：R5 用户并行两摊，判据不同，逼一个总管来回切上下文                                                                                                                                                                                                                                          |
 | **T2** 任意多对多                                                 | 需要写冲突仲裁                                                                                                                                                                                                            | 没选：收益不明，成本确定                                                                                                                                                                                                                                                                         |
 | **T2** 多总管森林（选）                                           | 需要一条「至多一个总管」的约束检查                                                                                                                                                                                        | **选**。多总管解决并行；禁总管链因为模式是终端级的，递归后语义未定义。**「单归属从结构上排除竞态」这半条已作废**——归属现在只决定通知送给谁，可达性只看目标身上有没有标记，理由与四个验收场景见 [mcp.md](mcp.md)                                                                                                                                                                                                     |
-| **T3** 复用 `Surface.readonly`                                    | 几乎为零：字段、apprt action、macOS badge 全现成                                                                                                                                                                          | 没选：语义错。`queueIo` 会连用户按键一起丢（`src/Surface.zig:872-885`），`needsConfirmQuit` 永真（`src/Surface.zig:950-952`）                                                                                                                                                                    |
-| **T3** 新增独立状态位 + apprt action + badge                      | 新增 apprt action 必须同步 `include/ghostty.h`（`src/apprt/action.zig:432-434` 的 `checkGhosttyHEnum` 会强制）                                                                                                            | 语义正确，但有确定的上游分叉成本                                                                                                                                                                                                                                                                 |
-| **T3** 只用 `set_tab_title`（`src/apprt/action.zig:209`）写字符串 | 零 C API 改动、零核心字段                                                                                                                                                                                                 | 标题会被终端程序改写冲掉，状态不在核心里                                                                                                                                                                                                                                                         |
+| **T3** 复用 `Surface.readonly`                                    | 几乎为零：字段、apprt action、macOS badge 全现成                                                                                                                                                                          | 没选：语义错。`queueIo` 会连用户按键一起丢（`src/Surface.zig:949-961`），`needsConfirmQuit` 永真（`src/Surface.zig:1027-1029`）                                                                                                                                                                    |
+| **T3** 新增独立状态位 + apprt action + badge                      | 新增 apprt action 必须同步 `include/ghostty.h`（`src/apprt/action.zig:438` 的 `checkGhosttyHEnum` 会强制）                                                                                                            | 语义正确，但有确定的上游分叉成本                                                                                                                                                                                                                                                                 |
+| **T3** 只用 `set_tab_title`（`src/apprt/action.zig:213`）写字符串 | 零 C API 改动、零核心字段                                                                                                                                                                                                 | 标题会被终端程序改写冲掉，状态不在核心里                                                                                                                                                                                                                                                         |
 | **T3** 分两步（选）                                               | 两次实现                                                                                                                                                                                                                  | **选**。S2 先用 set_tab_title 验证整条流程（零分叉、可快速证伪），S4 再升级为独立状态位 + badge，与 [README.md](README.md) 的分阶段路线自洽                                                                                                                                                      |
 | **T4** 禁下班放 prompt 层                                         | 零代码                                                                                                                                                                                                                    | 没选：提示词会被长上下文稀释；更根本的是让 AI 复核用户硬性意图属于范畴错误                                                                                                                                                                                                                       |
-| **T4** 禁下班放程序层（选）                                       | MCP 工具入口加一次判断                                                                                                                                                                                                    | **选**。现状有两个同形状先例：`startClipboardRequest` deny 时 return false（`src/Surface.zig:5899-5905`）、`queueIo` readonly 时丢弃（`src/Surface.zig:872-885`）。拒绝必须带可读理由，否则总管反复重试                                                                                          |
+| **T4** 禁下班放程序层（选）                                       | MCP 工具入口加一次判断                                                                                                                                                                                                    | **选**。现状有两个同形状先例：`startClipboardRequest` deny 时 return false（`src/Surface.zig:6411-6424`）、`queueIo` readonly 时丢弃（`src/Surface.zig:949-961`）。拒绝必须带可读理由，否则总管反复重试                                                                                          |
 | **T4b** 连续 n 次由 AI 自己数                                     | 零代码                                                                                                                                                                                                                    | 没选：上下文压缩会弄丢计数，且无法审计                                                                                                                                                                                                                                                           |
-| **T4b** 由程序数（选）                                            | 需要区分自注入与人工输入，而 `textCallback`（`src/Surface.zig:3308`）与 `keyCallback`（`src/Surface.zig:2674`）都无来源参数                                                                                               | **选**。可审计、可复位。代价是注入路径必须自带来源标记                                                                                                                                                                                                                                           |
+| **T4b** 由程序数（选）                                            | 需要区分自注入与人工输入，而 `textCallback`（`src/Surface.zig:3672`）与 `keyCallback`（`src/Surface.zig:2759`）都无来源参数                                                                                               | **选**。可审计、可复位。代价是注入路径必须自带来源标记                                                                                                                                                                                                                                           |
 | **T5** 窗口外排队到窗口开启                                       | 不丢信息                                                                                                                                                                                                                  | 没选：被监督终端整夜卡死，早上一次性爆出积压，恰好摧毁 R5 场景二                                                                                                                                                                                                                                 |
 | **T5** 窗口外静默记录                                             | 最省事                                                                                                                                                                                                                    | 没选：排队的更差版本，信息还散落                                                                                                                                                                                                                                                                 |
 | **T5** 窗口外降级为代理 + 按终端逃生阀（选）                      | 需要全量审计与群聊留痕来对冲                                                                                                                                                                                              | **选**。整夜继续干活符合场景二；「排队 vs 代理」做成按终端二选一而非全局二选一                                                                                                                                                                                                                   |
-| **T6** 规则引擎 DSL（`agent-rule = on=... do=...`）               | 要在 `Config.zig` 里加一个 Repeatable 类型（parseCLI/clone/equal/formatEntry 四件套，形状见 `RepeatableLink`，`src/config/Config.zig:8642-8652`，其 parseCLI 至今返回 `error.NotImplemented`），且 DSL 一旦发布要长期兼容 | 没选：R1 已把语义判断整体移交总管 AI，规则引擎要判的东西不存在了。剩下要配的只有三个标量：静止阈值、确认策略、通知时间段（连续几轮的那个 n 后来也没有了，程序只报 `rounds`，判断归总管）；时长复用 `Duration`（`src/config/Config.zig:10047`）。推翻条件：若出现「不同项目要成套不同策略」，应引入 profile（一组标量的命名集合），仍不引入 DSL |
-| **T7** 停监控用 CLI `ghostty +polter-stop`                        | 需要新增 IPC 动作                                                                                                                                                                                                         | 没选：CLI 跑在独立进程（`src/cli/ghostty.zig:31`），IPC 只有三个动作（`src/apprt/ipc.zig:176-179`），macOS 侧三个分支全 `return false`（`src/apprt/embedded.zig:349-360`）                                                                                                                       |
-| **T7** 停监控用广播 action                                        | 机制现成（`App.performAllAction`，`src/App.zig:502-527`）                                                                                                                                                                 | 没选：关系表在 App 层，停监控是一次 app 级操作；广播变成 N 次，还会漏掉中途新建的 surface                                                                                                                                                                                                        |
-| **T7** app 作用域键绑定（选）                                     | 新增一个 Action 枚举成员                                                                                                                                                                                                  | **选**。作用域是编译期分类（`src/input/Binding.zig:1353-1359`），选 app 后 `command-palette-entry`（`src/config/Config.zig:2994`）免费提供入口                                                                                                                                                   |
+| **T6** 规则引擎 DSL（`agent-rule = on=... do=...`）               | 要在 `Config.zig` 里加一个 Repeatable 类型（parseCLI/clone/equal/formatEntry 四件套，形状见 `RepeatableLink`，`src/config/Config.zig:8858`，其 parseCLI 至今返回 `error.NotImplemented`），且 DSL 一旦发布要长期兼容 | 没选：R1 已把语义判断整体移交总管 AI，规则引擎要判的东西不存在了。剩下要配的只有三个标量：静止阈值、确认策略、通知时间段（连续几轮的那个 n 后来也没有了，程序只报 `rounds`，判断归总管）；时长复用 `Duration`（`src/config/Config.zig:10263`）。推翻条件：若出现「不同项目要成套不同策略」，应引入 profile（一组标量的命名集合），仍不引入 DSL |
+| **T7** 停监控用 CLI `ghostty +polter-stop`                        | 需要新增 IPC 动作                                                                                                                                                                                                         | 没选：CLI 跑在独立进程（`src/cli/ghostty.zig:33`），IPC 只有三个动作（`src/apprt/ipc.zig:176-179`），macOS 侧三个分支全 `return false`（`src/apprt/embedded.zig:349-360`）                                                                                                                       |
+| **T7** 停监控用广播 action                                        | 机制现成（`App.performAllAction`，`src/App.zig:3361`）                                                                                                                                                                 | 没选：关系表在 App 层，停监控是一次 app 级操作；广播变成 N 次，还会漏掉中途新建的 surface                                                                                                                                                                                                        |
+| **T7** app 作用域键绑定（选）                                     | 新增一个 Action 枚举成员                                                                                                                                                                                                  | **选**。作用域是编译期分类（`src/input/Binding.zig:1420`），选 app 后 `command-palette-entry`（`src/config/Config.zig:3210`）免费提供入口                                                                                                                                                   |
 | **T9** 只留「上班/下班」布尔 + 静止时长标量                       | 最简                                                                                                                                                                                                                      | 没选：没有 quiescent 就会每个采样周期重叫一次总管；没有 pending-confirm 就没地方管确认超时                                                                                                                                                                                                       |
 | **T9** 四态（选）                                                 | 多两个中间态                                                                                                                                                                                                              | **选**。两个中间态只做程序侧去重与超时簿记，语义判断仍归总管，不违反 R1。配套：`off-duty → on-duty` 回边总管不能自己走，否则计数振荡                                                                                                                                                             |
 
 ## 未决问题
 
-1. **总管与 sidecar 之间的通道形态未定**（Unix socket / stdio / 新增 CLI action + 新 IPC）。本章所有「总管经 MCP 改写状态」「MCP 工具入口直接拒绝下班」的落点都写成设计意图，通道定稿见 [mcp.md](mcp.md)。
+1. ~~总管与 sidecar 之间的通道形态~~ —— **已定并落地**：状态目录下的 unix socket，每个终端一份 token 经 `GHOSTTY_POLTER_TOKEN` 进环境（`src/config/Config.zig:1280-1286`、`src/poltergeist/Server.zig`），sidecar 是 `polter +mcp`（`src/cli/mcp.zig`）。
 2. **确认请求在群聊里的持久留痕形式**取决于界面承载方式选型（原生 UI / imgui / 独立窗口），见 [chatui.md](chatui.md)。本章只规定「必须留痕」这条约束，不预设界面形态。
-3. **监督关系是否需要跨 Ghostty 重启持久化**。本章倾向不持久化（依据 `src/Surface.zig:588-598` 的随机 ID），但这个需求的真伪没有验证过，核实方式见「生命周期」一节的标注。
-4. **GTK 侧是否存在与 macOS「聚焦时 3 秒自动移除通知」等价的行为**未核实，核实方式见「通知通道的现实约束」。另外 `v.rt_surface.gobj().sendDesktopNotification`（`src/apprt/gtk/class/application.zig:2375`）是 surface 目标的另一条路径，本章未读其实现，因此没有对它的行为作任何断言。
-5. **审计日志的落盘位置**（配置目录 / 状态目录 / XDG 路径）未调研，归 [mcp.md](mcp.md)。
+3. **监督关系是否需要跨 Ghostty 重启持久化**。本章倾向不持久化（依据 `src/Surface.zig:606-623` 的随机 ID），但这个需求的真伪没有验证过，核实方式见「生命周期」一节的标注。
+4. **GTK 侧是否存在与 macOS「聚焦时 3 秒自动移除通知」等价的行为**未核实，核实方式见「通知通道的现实约束」。另外 `v.rt_surface.gobj().sendDesktopNotification`（`src/apprt/gtk/class/application.zig:2384`）是 surface 目标的另一条路径，本章未读其实现，因此没有对它的行为作任何断言。
+5. **「谁在什么时候改了谁的状态」这一份审计日志仍然没有。** 内容侧的三份记录都已经落在状态目录（见「审计日志」一节），缺的是动作侧的那一份。
 
 ## 延伸阅读
 

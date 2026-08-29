@@ -1,8 +1,9 @@
 # Poltergeist 设计总览
 
-> 最后更新对应的 git commit：`908f55b1f`（工作模式换成「按住」这一轮改动尚在工作树里，未提交）
+> 最后更新对应的 git commit：`0592d045a`（可达性规则改写、`terminal_key`、护盾、终端转录、插件框架重写这几轮改动部分尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**S0–S4 全部落地并在真机上验证过**。见 `src/poltergeist/`、`src/cli/mcp.zig`、`src/cli/chat.zig`。界面绕过一圈：macOS 原生窗口做出来后被否掉，改回终端内 TUI，见 [chatui.md](chatui.md)「决策变更」。
+> 此后又落地了四件本文各节已就地更新的事：**可达性规则整个换掉**（只看被干涉那一方的标记，见 P5 与 [supervisor.md](supervisor.md)）、**护盾 `shielded`**、**终端转录**（[transcript.md](transcript.md)）、**插件框架重写**（[plugins.md](plugins.md)）。
 > 整条链路已用真实 Claude Code CLI 跑过一轮，并因此改掉了两个单元测试结构上发现不了的致命 bug —— 见「验证到什么程度」。GTK 侧的聊天窗口未做。
 
 ## 本章覆盖什么
@@ -18,7 +19,7 @@
 - 屏幕静止怎么测、成本多少、阈值怎么定 —— 见 [sensing.md](sensing.md)。
 - 监督关系、上班 / 下班、按住、确认策略、通知时间段 —— 见 [supervisor.md](supervisor.md)。
 - MCP 工具清单、sidecar、身份识别、skill 体系 —— 见 [mcp.md](mcp.md)。
-- 怎么动手写一个插件（含自测） —— 见 [writing-a-plugin.md](writing-a-plugin.md)。
+- 插件的一切（协议、声明、凭据、身份、怎么照着写一个）—— 见 [plugins.md](plugins.md)；随构建装出去的那两个插件各自的说明在 [plugin/](plugin/)。
 - 群聊与私信界面的承载方式选型 —— 见 [chatui.md](chatui.md)。
 - tab 合并与状态标记的平台差异 —— 见 [tabs.md](tabs.md)。
 - 终端里跑了什么、输出了什么怎么留痕 —— 见 [transcript.md](transcript.md)。
@@ -101,6 +102,21 @@ Claude Code 自己有自动模式，没必要重复造；更重要的是，替�
 （总管先改模式再让它下班）在新形状下不存在——不是因为守得更严，是因为**中间那
 一步没有了**。
 
+**后来加了第二个用户专属的布尔：`shielded`**（`src/poltergeist/Bus.zig:219`），
+菜单里是 **Keep Agents Out of This Terminal**。两个布尔管的不是一件事，不要混：
+`held` 说的是「这个终端不许被下班」，只对被监督的终端有意义；`shielded` 说的是
+「谁都不许碰这个终端」，**对总管也生效**（`src/poltergeist/rpc.zig:812`），而且
+它最有价值的场景恰恰是一个**谁也没监督过、什么标记都没有**的终端——用户自己那
+个读邮件的 tab。所以它没有折进 `TabMark`，而是自己一个前缀
+（`src/poltergeist/Bus.zig:734`）：一个标记说这个终端在干什么，一个说谁可以碰
+它，两件事分开读。
+
+**这两个布尔和「谁能碰谁」是同一条链上的三环。** 第三环是：`terminal_action`
+拒绝一切 `poltergeist_` 前缀的动作（`src/poltergeist/actions.zig:67`）。没有这一
+环，前两环都是白立的——一个 agent 可以用菜单动作把用户立起来的 `held` 掀掉，再
+把终端下班，而这正是 `held` 自己的文档说它要防的那件事。**开一扇新门就要把每个
+问题重问一遍。**
+
 ### P6 判断归 skill，配置不归（R7）
 
 **这条原则也改了。原来是「模式即 skill」——上面那几种模式本质就是几个不同的
@@ -169,11 +185,12 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | [supervisor.md](supervisor.md) | R3、R4、R6 | 监督关系、上班 / 下班、按住、确认策略、停掉监控           | 被按住的终端禁下班，这条约束放程序侧而非提示词                                     |
 | [mcp.md](mcp.md)               | R7、R8     | MCP 工具面、sidecar、身份识别、skill 体系、不管任务的边界 | sidecar 而非把 MCP 塞进核心；现成 IPC 不可复用（`src/apprt/embedded.zig:349-360`） |
 | [chatui.md](chatui.md)         | R9         | 群聊与私信界面的承载方式                                  | 原生 UI（参照 command palette）对比 imgui（参照 `src/inspector/Inspector.zig`）    |
-| [plugins.md](plugins.md)       | R3 的一半  | 插件宿主：进程式插件、两种生命周期、凭据、权限声明         | 进程边界换崩溃隔离与语言无关，代价是每次通知一次 fork/exec |
-| [storage.md](storage.md)      | —          | 存档：核心的存储是核心功能，插件订阅实时事件另存一份     | 常驻进程 + 实时事件通道（`Feed.zig`）；一个插件多后端；权限声明 |
-| [writing-a-plugin.md](writing-a-plugin.md) | — | 照着做的插件开发指南：从零一个 notify、不启动 Polter 怎么自测、archive 的常驻与确认协议、常见错误 | 自测藏进插件自己（`--self-test`），因为拿到插件的人不该为验它先装一套东西 |
+| [plugins.md](plugins.md)       | R3 的一半  | 插件的全部：一个常驻协议、订阅声明取代 `Kind`、插件与 agent 共用一个能力面、凭据、权限、照着写一个 | 拆掉 `Kind`（它同时管生命周期和契约，出过两次同一个 bug）；不写 SDK，让插件直接说 MCP 那套线协议 |
+| [plugin/](plugin/)             | —          | 随构建装出去的两个插件各自的说明（`archive`、`claude-code`） | 官方插件的说明和插件框架分开，改一个不牵动另一个 |
+| [storage.md](storage.md)      | —          | 核心自己的存储：流与记录两种形状、按天布局、往回翻       | 核心的存储是核心功能，不作为插件的数据源——插件那一半整个搬去了 plugins.md |
 | [surface.md](surface.md)      | —          | 菜单栏逐条盘点：哪些该经 MCP 开放给 AI，哪些故意不给    | 判据是「会不会让读到一段文字变成在这台机器上做一件事」 |
-| [gaps.md](gaps.md)            | —          | 作为 AI 原生终端还差什么：感知、记录、双向渠道、成本、注入 | 未实现的设计讨论；记录那一条是重点 |
+| [gaps.md](gaps.md)            | —          | 作为 AI 原生终端还差什么：感知、记录、双向渠道、成本、注入 | 记录那两条已落地，论证保留；还缺的排在「排序」一节 |
+| [transcript.md](transcript.md) | —         | 终端转录：录滚出去的行，按终端按天落盘                    | 录第 2 层而不是原始字节流，量由内容决定而不是由重绘决定 |
 | [boundary.md](boundary.md)    | —          | 什么是功能、什么是扩展：核心存储不作为插件的数据源，预装不是特权 | 拆掉耦合而不是给耦合打补丁；`.claude` 产出退成插件，失败必须发给用户而非 agent |
 | [tabs.md](tabs.md)             | R10        | tab 合并与状态标记                                        | macOS 用 NSWindow tabbing，GTK 用 libadwaita，两套各写一份                         |
 
@@ -254,16 +271,16 @@ poltergeist-mcp = true
 然后：
 
 1. 开两个终端，都跑起 agent。
-2. 在其中一个上执行命令面板的 **Make This Terminal the Supervisor**。
-3. 在另一个上执行 **Toggle Supervision of This Terminal**。
+2. 在其中一个上执行菜单 **Agents → Make This Terminal a Supervisor**（命令面板里也有）。
+3. 在另一个上执行 **Agents → Supervise This Terminal**。
 4. 让被监督那个静置超过 `poltergeist-quiescence-after`（默认 3 分钟）。
 5. 看总管终端有没有收到 `[poltergeist] terminal 0x... has gone quiet`。
 
-要试 MCP，把 `polter +mcp` 配给总管里的 agent 当 MCP server（socket 与 token 已经在它的环境变量里，不用配）。要试群聊，让总管调 `group_create` / `group_add`，再用命令面板的 **Show Terminal Conversations** 打开窗口。
+要试 MCP，把 `polter +mcp` 配给总管里的 agent 当 MCP server（socket 与 token 已经在它的环境变量里，不用配）。要试群聊，让总管调 `group_create` / `group_add`，再用 **Agents → Terminal Conversations** 打开界面（等同 `polter +chat`）。
 
 **没跑通的话**：先看日志（`GHOSTTY_LOG` 的用法见 [preview-manual.md](../preview-manual.md)），`poltergeist:` 前缀的行会说明它认为自己在做什么。
 
-## 安全边界## 安全边界
+## 安全边界
 
 - **明确不做自动点 yes**（P2）。理由见上：替对方按授权键等于废掉对方的安全模型，且 Claude Code 自己已有自动模式。
 - 注入路径复用现有的粘贴通道 `Surface.textCallback`（`src/Surface.zig:3308`）→ `completeClipboardPaste`（`src/Surface.zig:5914`），从而继承 bracketed paste 封装与控制字节剥除（`src/input/paste.zig:46-91`），不另开一条绕过既有编码的旁路。**但继承的不是不安全粘贴确认** —— 调用点传的是 `allow_unsafe = true`（`src/Surface.zig:3313`），确认分支据此直接放行（`src/Surface.zig:5936-5938`），所以长度上限与内容白名单必须由 Poltergeist 自带，见 [mcp.md](mcp.md)。
@@ -306,11 +323,11 @@ poltergeist-mcp = true
 
 1. 静止阈值的默认值取多少，以及是否需要按被监督程序类型给不同预设 —— 待实测数据。默认 3 分钟是猜的。
 2. ~~采样来源落在哪一层~~ —— **已定并落地**：termio 线程的 libxev 定时器，每秒一次（`src/termio/Thread.zig`）。选它而不是渲染线程，是因为窗口不可见时渲染线程根本不跑，而挂机过夜正是窗口不可见的时候。
-3. 关机/重启后恢复 —— **已定：程序保存材料，总管重建现场**（不做程序自动还原，理由是那要求程序判断「这个终端是不是上次那个」，与 P1 冲突）。设计见 [supervisor.md](supervisor.md)「关掉再打开」与 [mcp.md](mcp.md)「群带什么」。尚未实现。
+3. ~~关机/重启后恢复~~ —— **已定并落地**：程序保存材料，总管重建现场（不做程序自动还原，理由是那要求程序判断「这个终端是不是上次那个」，与 P1 冲突）。材料写在 `session.json`（`src/poltergeist/Session.zig:84`），总管用 `session_recall` 读回来（`src/poltergeist/rpc.zig:68`），而**没有任何东西照着它自动接线**。设计见 [supervisor.md](supervisor.md)「关掉再打开」与 [mcp.md](mcp.md)「群带什么」。
 4. Skill 体系的存放位置与更新方式 —— 已定并落地：内置在 resources 目录，用户副本在配置目录且优先。见 [mcp.md](mcp.md)。
 5. ~~GTK 侧的聊天窗口~~ —— **已作废**。界面改成终端内 TUI（`polter +chat`）之后，任何能开终端的平台就有聊天界面，不需要第二份实现。见 [chatui.md](chatui.md)「决策变更」。
-6. 确认策略与通知时间段（R3）—— 设计已定，**尚未实现**，见 [supervisor.md](supervisor.md)。其中「通知用户」这一半的送达方式改为插件体系，见 [plugins.md](plugins.md)。
-7. 群带任务说明与重建材料 —— 设计已定，**尚未实现**，见 [mcp.md](mcp.md)「群带什么」。
+6. ~~通知时间段（R3 的一半）~~ —— **已落地**：`poltergeist-notify-window`（`src/config/Config.zig:1477`）解析成 `notify.Window`，`notify.decide` 据此决定是送出还是压下（`src/poltergeist/notify.zig:146-148`），而 `authorisation` 这一类**不受时段约束**。送达那一步是插件（订阅 `terminal.quiet`），见 [plugins.md](plugins.md)。R3 的另一半「总管代理决策 / 通知用户」二选一仍然只是提示词层面的约定，**没有程序侧的配置项**。
+7. ~~群带任务说明~~ —— **已落地**：`group_set_brief` 写、`Chat.briefOf` 读（`src/poltergeist/Chat.zig:274`），一个群带一句它是干什么的。它**只是一段文字**，没有状态字段——那会是任务系统的开头，见 P7。
 8. 多群并行从未测过。真机两轮都只开了一个群。
 
 ## 延伸阅读

@@ -3,7 +3,7 @@
 > 最后更新对应的 git commit：`e172cd2ed`（第四节的多语言边车这一轮改动尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**四条决定都已拍板，也都落了地。**落地分散在 `Plugin.zig`、
-> `Archive.zig`、`provision.zig`、`Termio.zig` 的抽头，以及 macOS 设置界面的
+> `Resident.zig`、`provision.zig`、`Termio.zig` 的抽头，以及 macOS 设置界面的
 > `PluginLocale.swift`。各条末尾标注了它当前的状态。
 
 ## 本章覆盖什么
@@ -15,9 +15,10 @@
 
 ## 本章不覆盖什么
 
-- 插件宿主契约、清单格式、凭据引用、权限声明 —— 见 [plugins.md](plugins.md)。
-- 存档插件的协议、分块、部分确认 —— 见 [storage.md](storage.md)。
-- 怎么动手写一个插件 —— 见 [writing-a-plugin.md](writing-a-plugin.md)。
+- 插件的一切：常驻协议、清单格式、订阅声明、凭据引用、权限、身份、怎么照着写
+  一个 —— 见 [plugins.md](plugins.md)。随构建装出去的那两个插件各自的说明在
+  [plugin/](plugin/)。
+- 核心自己的存储：流与记录、按天布局、往回翻 —— 见 [storage.md](storage.md)。
 - 终端转录录哪一层、密钥立场 —— 见 [gaps.md](gaps.md) 第三节。
 - MCP 工具面覆盖到哪里 —— 见 [surface.md](surface.md)。
 
@@ -80,7 +81,7 @@
 - 记录插件（`plugins/archive/`）默认关 → 升级后用户的额外记录停止
 - `.claude` 插件默认关 → **升级后 Claude Code 直接失去 Polter 的工具面**
 
-而 `Plugin.Settings` 的 `enabled` 默认是 `false`，[storage.md](storage.md) 的
+而 `Plugin.Settings` 的 `enabled` 默认是 `false`，[plugins.md](plugins.md) 的
 红线 3 也写着「默认关闭」。
 
 ### 被否掉的做法：给插件模型加一个特权位
@@ -137,41 +138,45 @@
 ### 划法
 
 **核心产出数据**（有哪些 skill、它们的文件在哪、MCP 端点是哪个二进制、这是哪个
-构建），**插件把它翻译成某个 AI CLI 认识的形状**。落地是一个新的 `Kind`：
-`provision`，生命周期是「启动时一次性，但要喂输入数据」——和 `notify` 的一次性
-不同（那个喂的是一次「事件」，不是对程序本身的描述），和 `archive` 的常驻也不同
-（那个喂了但从不退出）。
+构建），**插件把它翻译成某个 AI CLI 认识的形状**。
 
-[plugins.md](plugins.md) 有一句「现在不要为 `sensor` 和 `action` 写任何代码，
+落地曾经是一个新的 `Kind`：`provision`，生命周期是「启动时一次性，但要喂输入
+数据」。**那个 `Kind` 已经不在了**——它同时决定生命周期和契约，于是三个取值就是
+三套契约，而 `provision` 自己就是被漏掉的第三个（装在 bundle 里、在跑，设置界面
+里根本看不见）。现在它是一个订阅：`"wants": {"events": ["provision"]}`，跑的是每
+个插件都跑的那一个常驻协议。见 [plugins.md](plugins.md) 第一、二节。
+
+从前 [plugins.md](plugins.md) 有一句「现在不要为 `sensor` 和 `action` 写任何代码，
 猜出来的接口比没有接口更难改」。这条对 `provision` **不适用**：它的调用契约不是
-猜的，那两个函数就是它的第一个实现。这和当初 `archive` 被放行是同一个理由。
+猜的，那两个函数就是它的第一个实现。这和当初存档被放行是同一个理由。
 
-**核心侧**是 `src/poltergeist/provision.zig`：拼出那一行 JSON、跑每个开着的
-`provision` 插件、把失败翻译成人能读的句子。`App.ensureMcpRegistered` 只负责取
-自己的路径、解析每个 skill 落在哪个副本（用户的那份优先，和 `skill_read` 同一
-个次序），然后把结果交出去。
+**核心侧**是 `src/poltergeist/provision.zig`：把这些东西装成一个事件发布到
+`Feed` 上。`App.ensureMcpRegistered` 只负责取自己的路径、解析每个 skill 落在哪个
+副本（用户的那份优先，和 `skill_read` 同一个次序），然后把结果交出去。
 
-插件读到的一行（`Plugin.call` 照例在旁边补一个 `params`）：
+插件读到的（一个批次里的一个事件，`params` 在握手行里给过了）：
 
 ```json
 {
-  "event": "provision",
+  "n": 3,
+  "kind": "provision",
   "exe": "/Applications/Polter.app/Contents/MacOS/ghostty",
   "version": "1.2.3",
   "version_key": "POLTER_REGISTERED",
   "home": "/Users/you",
-  "skills": [{ "name": "supervising", "path": "/…/poltergeist/supervising.md" }],
-  "params": { "scope": "user", "skills": "yes" }
+  "skills": [{ "name": "supervising", "path": "/…/poltergeist/supervising.md" }]
 }
 ```
 
 **给的是路径不是正文**：文件正是插件要拷贝或改写的那个东西，可能是很长的散文，
-而只想要名字的插件根本不必打开它。退出码 0 = 这个运行时现在知道 Polter 了。
+而只想要名字的插件根本不必打开它。一行 `{"ok":true}` = 这个运行时现在知道
+Polter 了。
 
-**第一个实现是 `plugins/claude-code/`**，就是原来那两个函数搬过去，一字不多：
-`claude mcp get` 比对 exe 与版本标记，不一致才 remove + add；skill 连 frontmatter
-整份写，`name:` 只在 frontmatter 里改写成 `polter-`，内容没变就不写。**机器上没有
-`claude` 时它退出 0**——那不是失败，那台机器上的 agent 可能压根是别的东西。
+**第一个实现是 `plugins/claude-code/`**（说明见 [plugin/claude-code.md](plugin/claude-code.md)），
+就是原来那两个函数搬过去，一字不多：`claude mcp get` 比对 exe 与版本标记，不一致
+才 remove + add；skill 连 frontmatter 整份写，`name:` 只在 frontmatter 里改写成
+`polter-`，内容没变就不写。**机器上没有 `claude` 时它回 `{"ok":true}`**——那不是
+失败，那台机器上的 agent 可能压根是别的东西。
 
 它**预装即开**：随插件目录带一份 `settings.json`（第二节那套两层查找），用户在
 配置目录里写的那份压过它，**包括写「关」**。
@@ -195,19 +200,42 @@ notice 是**打字**进终端，因此是说给里面跑着的东西听的；ale
 
 ### 两个曾经未决的问题，就地定了
 
-**打到哪个 surface。** provision 跑在**第一个 surface 正在被建**的时候——
-`Surface.init` 里，那一刻它自己都还不存在（`App.addSurface` 更早，那时核心
-surface 还没有）。所以消息**排在 `App.poltergeist_alerts` 里等**，由第一个走完
-`init` 的终端打印出来，打印完就清空。
+**打到哪个 surface。** provisioning 事件在**第一个 surface 正在被建**的时候发布
+——`Surface.init` 里，那一刻它自己都还不存在。所以要打给用户的消息**排在
+`App.poltergeist_alerts` 里等**，由第一个走完 `init` 的终端打印出来，打印完就清空。
 
 - **等，不是丢。**没有 surface 就等于没有用户；为了没有窗口把消息扔掉，正是这一
   节要终结的那种沉默。
 - **只打一次，不是每个新终端都打一遍。**一份报告，打在用户正看着的那个窗口里。
 
-**一个失败一个成功时用户看到几条。** **失败几个就几条，成功的一句不说。**
-两个 provision 插件失败就是两个运行时没有工具面，各自在不同的地方修；一句
-「2 个插件失败了」既没说是哪个也没说去哪修。而成功不出声，是因为每次启动都向
-用户汇报一遍的终端，就是汇报不再被读的终端。
+**插件常驻之后，这条路多了一段，但一段都没少。** `ensureMcpRegistered` 现在只是
+发布一个事件，它没有任何同步的答案可以排队——插件在自己的线程上、在这次调用早就
+返回之后才回话。**所以失败是从那条线程走回来的**：
+
+```text
+Resident 线程失败  →  Resident.tell  →  App.submitPoltergeistAlert
+                   →  mailbox（App.Message.poltergeist_alert）
+                   →  app 线程 App.poltergeistAlert  →  屏幕
+```
+
+走 mailbox 而不是直接碰 `poltergeist_alerts`，和 socket 线程交请求是同一条路：
+**屏幕归 app 线程**。而且是 `instant` 而不是 `forever`——没有人在等这一行，而一个
+挂在满 mailbox 上的常驻线程，就是一个没人在给它的子进程掐表的插件。
+
+**有终端就直接打，没有才排队。** 排队是「还没有窗口」那种情况的答案，而那种情况
+只在启动时存在；有了终端还压着，就意味着一个凌晨三点断掉的插件，要等到有人下次
+开标签页才被报出来。
+
+原来那条「失败几个就几条，成功的一句不说」的规矩一个字没改：两个 provisioning
+插件失败就是两个运行时没有工具面，各自在不同的地方修；一句「2 个插件失败了」既
+没说是哪个也没说去哪修。而成功不出声，是因为每次启动都向用户汇报一遍的终端，
+就是汇报不再被读的终端。
+
+**多出来的一条规矩是节流**，因为常驻会重试：一个起不来的插件每几毫秒失败一次。
+一条 `stopped` 行**每个插件每 `dormant_retry_ms` 最多一条**，中间的重试是同一句话
+再说一遍。转进休眠另算一条且不节流——它说的是新事情（「它放弃了，一刻钟才再试
+一次」），而且按构造本来就一刻钟才可能发生一次。理由与那次「两套机制只有一套
+被测到」的负对照，写在 `Resident.tell` 的注释里。
 
 还有一种情况也算「用户看得见」：`poltergeist-register-mcp` 开着，而**一个开着的
 `provision` 插件都没有**。什么都没失败，但用户要的那件事不会发生——照样出一条
@@ -292,10 +320,14 @@ plugins/archive/
 目录，也没有任何地方拿得到 locale**。要让工具面本地化，得先给它接一条现在
 不存在的线。
 
-设置界面今天只有 macOS 一处，`provision` 类插件还没进那个列表
-（`Plugin.Kind` 在 Swift 侧只认 `notify` 和 `archive`），所以
-`plugins/claude-code/` 不带边车文件——**带了也没有人读**，一份没有读者的翻译
-会在下一次改动里悄悄过期。
+设置界面今天只有 macOS 一处。`plugins/claude-code/` 不带边车文件——**带了也没有
+人读**，一份没有读者的翻译会在下一次改动里悄悄过期。
+
+> 从前它读不到的**原因**是 Swift 侧手抄了一份 `Plugin.Kind`，而那份只认
+> `notify` 和 `archive`，于是一个装在 bundle 里、正在跑的 provisioning 插件在
+> 设置界面里根本不存在。**那个枚举已经不在了**：核心侧不再有 kind，wire 上也
+> 不再有 `kind` 字段，插件是什么由 `wants.events` 说了算。见
+> [plugins.md](plugins.md) 第一节。
 
 ### 回退次序（原未决问题 3，就地定了）
 
@@ -358,7 +390,8 @@ en-GB       →  en-Latn-GB, en-Latn, en-GB, en
 
 ## 延伸阅读
 
-- [plugins.md](plugins.md) — 插件宿主契约与两种生命周期。
-- [storage.md](storage.md) — 存档插件的协议与权限声明。
+- [plugins.md](plugins.md) — 插件：一个常驻协议、订阅声明、权限与身份。
+- [plugin/](plugin/) — 随构建装出去的那两个插件各自的说明。
+- [storage.md](storage.md) — 核心自己的存储。
 - [gaps.md](gaps.md) — 还差什么，尤其第三节终端转录。
 - [\_spec.md](_spec.md) — 本批文档的写作规范。

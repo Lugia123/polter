@@ -77,17 +77,17 @@
 新增一个 CLI action 的改动点，逐跳列出：
 
 1. 新建 `src/cli/polter_chat.zig`（这条路最终没有走，该文件不存在）。help 文本写在 `run` 函数的文档注释里，不需另建文档文件（`src/cli/README.md:11-13`）。
-2. 在 `src/cli/ghostty.zig` 的 `Action` 枚举加成员（枚举定义在 `src/cli/ghostty.zig:31`，末尾成员 `@"toggle-quick-terminal"` 在 `:87`）。
-3. 在 `runMain` 的 switch 加一个分支（`src/cli/ghostty.zig:153-175`）。
+2. 在 `src/cli/ghostty.zig` 的 `Action` 枚举加成员（枚举定义在 `src/cli/ghostty.zig:33`，末尾成员 `@"toggle-quick-terminal"` 在 `:87`）。
+3. 在 `runMain` 的 switch 加一个分支（`src/cli/ghostty.zig:160-184`）。
 4. 在 `options` 的 switch 加一个分支（`src/cli/ghostty.zig:195-219`）。
 
-源文件名由枚举名 comptime 推导（`Action.file()`，`src/cli/ghostty.zig:179-190`），不用另外登记；shell 补全从 `@typeInfo(Action)` comptime 遍历生成（`src/extra/fish.zig:30`），零额外改动。合计 2 个文件 4 个改动点。
+源文件名由枚举名 comptime 推导（`Action.file()`，`src/cli/ghostty.zig:188-200`），不用另外登记；shell 补全从 `@typeInfo(Action)` comptime 遍历生成（`src/extra/fish.zig:30`），零额外改动。合计 2 个文件 4 个改动点。
 
 ### 为什么它天然满足中文需求
 
-CLI action 在 GUI 启动之前执行并直接 `std.process.exit`（`src/main_ghostty.zig:68-74`），所以 `+polter-chat` 就是一个普通的独立终端程序，跑在某个 Ghostty 表面里。字体栈、CJK 宽度、输入法全部由宿主表面负责——表面层已有 IME 预编辑通道 `preeditCallback`（`src/Surface.zig:2551`）。这是候选一相对候选三的决定性优势：中文支持是免费继承的，不用为聊天界面单独再实现一遍。
+CLI action 在 GUI 启动之前执行并直接 `std.process.exit`（`src/main_ghostty.zig:68-74`），所以 `+polter-chat` 就是一个普通的独立终端程序，跑在某个 Ghostty 表面里。字体栈、CJK 宽度、输入法全部由宿主表面负责——表面层已有 IME 预编辑通道 `preeditCallback`（`src/Surface.zig:2636`）。这是候选一相对候选三的决定性优势：中文支持是免费继承的，不用为聊天界面单独再实现一遍。
 
-它还能自己发 OSC 0/2 改标题，经 `handleMessage` 的 `.set_title` 分支转成 apprt action（`src/Surface.zig:976-992`），与 [tabs.md](tabs.md) 的标记机制天然衔接。
+它还能自己发 OSC 0/2 改标题，经 `handleMessage` 的 `.set_title` 分支转成 apprt action（`src/Surface.zig:1053`），与 [tabs.md](tabs.md) 的标记机制天然衔接。
 
 ### 怎么把它开成一个页签
 
@@ -107,14 +107,14 @@ CLI action 在 GUI 启动之前执行并直接 `std.process.exit`（`src/main_gh
 
 以既有的 `toggle_command_palette` 为标尺，加一个 apprt action 起步就要动这些地方：
 
-1. 核心 action 枚举成员 —— `src/apprt/action.zig:119`，C ABI 同步枚举 `src/apprt/action.zig:373`。
-2. C 头文件必须同步 —— `include/ghostty.h:917`。
-3. 核心侧分发 —— `src/Surface.zig:5488-5490`。
-4. 键绑定动作枚举 —— `src/input/Binding.zig:816`。
-5. 默认键位 —— `src/config/Config.zig:6983`。
-6. 命令面板自身的命令表 —— `src/input/command.zig:742`。
-7. GTK 落地 —— `src/apprt/gtk/class/application.zig:786`，加速键同步在 `:1213`。
-8. macOS 落地 —— `macos/Sources/Ghostty/Ghostty.App.swift:557-558`。
+1. 核心 action 枚举成员 —— `src/apprt/action.zig:119`，C ABI 同步枚举 `src/apprt/action.zig:377`。
+2. C 头文件必须同步 —— `include/ghostty.h:928`。
+3. 核心侧分发 —— `src/Surface.zig:6007-6009`。
+4. 键绑定动作枚举 —— `src/input/Binding.zig:877`。
+5. 默认键位 —— `src/config/Config.zig:7199`。
+6. 命令面板自身的命令表 —— `src/input/command.zig:772`。
+7. GTK 落地 —— `src/apprt/gtk/class/application.zig:794`，加速键同步在 `:1213`。
+8. macOS 落地 —— `macos/Sources/Ghostty/Ghostty.App.swift:571-572`。
 
 八处改动跨 Zig / C / Swift 三种语言，其中头文件枚举与 `src/apprt/action.zig` 的顺序是 ABI 契约——这是 rebase 上游时冲突面最大的一类改动，而 Poltergeist 是 fork，要长期跟上游。
 
@@ -252,14 +252,14 @@ CLI action 在 GUI 启动之前执行并直接 `std.process.exit`（`src/main_gh
 
 ### 入口：菜单，不能只有快捷键
 
-macOS 上四个 poltergeist 动作 —— 开群聊、指定总管、监督本终端、按住本终端 —— **都没有默认键绑定**。只在命令面板里挂一条不够：没绑过键的人打开命令面板也得先知道该搜什么词。
+macOS 上五个 poltergeist 动作 —— 开群聊、指定总管、监督本终端、按住本终端、把 agent 挡在本终端之外 —— **都没有默认键绑定**（`src/input/Binding.zig:694-735`）。只在命令面板里挂一条不够：没绑过键的人打开命令面板也得先知道该搜什么词。
 
-所以菜单栏上有一个 `Polter` 菜单，四条动作都在里面。**一个只有快捷键的功能，对于没设过那个快捷键的人来说等于不存在**；而这四条里有三条是使用 Poltergeist 的必经步骤。
+所以菜单栏上有一个 **Agents** 菜单，五条动作都在里面（`macos/Sources/App/Base.lproj/MainMenu.xib:391-435`）。**一个只有快捷键的功能，对于没设过那个快捷键的人来说等于不存在**；而这五条里有三条是使用 Poltergeist 的必经步骤。
 
 绑了键的人，菜单项右边会照常显示自己绑的那个键（走 `syncMenuShortcut`）。
 
 ```text
-用户按下 toggle_poltergeist_chat（键绑定或菜单）
+用户按下 poltergeist_toggle_chat（键绑定或菜单 Agents → Terminal Conversations）
         │
         ▼
 Polter 新开一个 surface，命令是 `polter +chat`
@@ -294,12 +294,14 @@ group_post 发的言显示为「你」
 
 不新增 C ABI。TUI 用的都是 [mcp.md](mcp.md) 已有的工具，只是补上数据层的三条欠债：
 
-| 需要 | 现状 | 要做什么 |
+**三条欠债现在都还上了**，表里留着是因为「为什么要还」这一列仍然成立：
+
+| 需要 | 当初的现状 | 现在 |
 | --- | --- | --- |
-| 群列表 | `group_list` 有 | — |
-| 消息 | `group_read` 有 | 时间戳改成墙钟毫秒 |
-| 谁在说话 | 只有 id | 让消息带上作者的终端标题 |
-| 群里有谁 | 没有 | 新增 `group_members`，返回 `{id, title}` |
+| 群列表 | `group_list` 有 | 不变 |
+| 消息 | `group_read` 有，时间戳是单调时钟 | 带 `at_ms` 墙钟毫秒（`src/poltergeist/wire.zig:617-618`） |
+| 谁在说话 | 只有 id | 消息带作者的终端标题（`src/poltergeist/wire.zig:567-568`） |
+| 群里有谁 | 没有 | `group_members` 是正式方法，非总管也调得到（`src/poltergeist/rpc.zig:46`、`src/poltergeist/rpc.zig:610-616`） |
 
 墙钟时间的做法：日志本身继续用单调时钟（测静止时长必须如此，系统时钟被校正时不能跳），但在**取第一个时间戳时把两个钟配一次对**，之后任何一条消息都能换算回墙钟。
 
@@ -355,7 +357,7 @@ group_post 发的言显示为「你」
 - 内存：每条会话一个环形缓冲，只保留最近 N 条，用于快速上翻。
 - 落盘：照 `src/cli/ssh-cache/DiskCache.zig` 的模板做——用 `xdg.state(...)` 加 `.{ .subdir = program }` 拿目录（`src/cli/ssh-cache/DiskCache.zig:32-37`），文档明确注明「在所有平台上都是 `${XDG_STATE_HOME}/ghostty/…`」（`src/cli/ssh-cache/DiskCache.zig:23`），文件以 0600 权限创建（`:56`），并设一个总量硬上限（该文件设的是 512KB，`:16`）。崩溃报告目录走的是同一套（`src/crash/dir.zig:8`）。
 
-Poltergeist 的聊天日志落在 `${XDG_STATE_HOME}/polter/chat/`。**要做** —— 这一条是挂机过夜场景的硬需求：人睡觉的时候 agent 在聊，第二天早上要能复盘昨晚发生了什么，而现在的实现是纯内存，Polter 一退出就全没了。
+Poltergeist 的聊天日志落在 `${XDG_STATE_HOME}/polter/chat/`。**已经做了**（`src/poltergeist/ChatLog.zig`，开关 `poltergeist-chat-log`，`src/config/Config.zig:1414`，默认开）。当初写「要做」的理由原样留着，因为它就是这件事的意义：人睡觉的时候 agent 在聊，第二天早上要能复盘昨晚发生了什么，而纯内存的实现 Polter 一退出就全没了。
 
 落盘归 `Chat.zig` 这一层，不归界面。理由是写入方是消息模型本身，而界面是纯消费者 —— 让界面负责持久化，就等于「不开界面就不留记录」，而挂机过夜恰恰是没人开着界面的时候。
 
@@ -363,9 +365,18 @@ Poltergeist 的聊天日志落在 `${XDG_STATE_HOME}/polter/chat/`。**要做** 
 
 ### 保留期与隐私边界
 
-默认按「天数 + 总量」双上限滚动淘汰，超出后按会话逐条丢弃最旧的。具体数值列入未决问题——`src/cli/ssh-cache/DiskCache.zig:16` 的 512KB 是 ssh 缓存的量级，照搬到会带大段代码的聊天正文没有依据。
+**当初写的是「按天数 + 总量双上限滚动淘汰」，落地时被否掉了，而且是反过来的。**
+实现分成两种形状（`src/poltergeist/ChatLog.zig`，完整论证归 [storage.md](storage.md)）：
 
-必须提供「不落盘」配置（只留内存，进程退出即消失）。理由同上：R5 的场景里 AI 会大量把仓库内容粘进群聊。
+- **流** `chat.jsonl` —— 8MB 轮转、留两代，给机器自己回填比对用（`src/poltergeist/ChatLog.zig:58`）。
+- **记录** `<群>/<日期>.jsonl` —— **从不轮转、从不裁剪**，给人和 AI 读。
+
+否掉「滚动淘汰」的理由是这一节自己那句话的反面：第二天早上要能复盘昨晚，而一个
+会自己丢东西的记录恰恰在「昨晚很热闹」的时候丢得最多。有界的那一份留给不需要
+完整的那一侧，读的人拿的是完整的那一份。
+
+「不落盘」配置有了：`poltergeist-chat-log`（`src/config/Config.zig:1414`）。理由同上：
+R5 的场景里 AI 会大量把仓库内容粘进群聊。
 
 ### 订阅方式
 
@@ -388,7 +399,7 @@ TUI 侧的取数节奏因此是它自己的事：按需拉取，不需要宿主�
 
 **同时划死三条边界**，否则这个界面会膨胀成控制台：
 
-- 用户发言**只进入聊天记录**，不直接写进任何终端的 pty。往终端注入文本是总管的动作（核心侧路径是 `Surface.textCallback()`，`src/Surface.zig:3308`），触发条件与授权归 [supervisor.md](supervisor.md) 与 [mcp.md](mcp.md)。
+- 用户发言**只进入聊天记录**，不直接写进任何终端的 pty。往终端注入文本是总管的动作（核心侧路径是 `Surface.textCallback()`，`src/Surface.zig:3672`），触发条件与授权归 [supervisor.md](supervisor.md) 与 [mcp.md](mcp.md)。
 - 界面里**不放停止按钮**。停掉监控是独立动作（R4），见 [supervisor.md](supervisor.md)。
 - 界面里**不显示、不编辑任务**（R8）。
 
@@ -396,8 +407,8 @@ TUI 侧的取数节奏因此是它自己的事：按需拉取，不需要宿主�
 
 | 方案                                     | 成本                                                                                                                                                                     | 为什么没选 / 为什么选                                                                                                                                                                                                                            |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 一：终端内 TUI（`ghostty +polter-chat`） | 2 文件 4 改动点注册（`src/cli/ghostty.zig:31`、`:153-175`、`:179-190`、`:195-219`）+ 一份几百行 vaxis 代码；折行与滚动自写                                               | **选它**。vaxis 已链进主 exe（`build.zig.zon:25-30`、`src/build/SharedDeps.zig:512-520`、`src/build/GhosttyExe.zig:34`），`src/cli/list_themes.zig:240-262` 是同构先例；中文显示与输入由宿主表面负责（`src/Surface.zig:2551`）；与上游分叉面最小 |
-| 二：两套原生 UI（仿 command palette）    | 一个 apprt action 起步 8 处改动跨 3 语言（`src/apprt/action.zig:119`、`include/ghostty.h:917`、`macos/Sources/Ghostty/Ghostty.App.swift:557-558` 等）+ 约 1600 行平台 UI | 每加一个界面元素改两处，维护翻倍；ABI 枚举顺序与上游 rebase 冲突面最大。留作二期，触发条件见「选型结论与分期」                                                                                                                                   |
+| 一：终端内 TUI（`ghostty +polter-chat`） | 2 文件 4 改动点注册（`src/cli/ghostty.zig:33`、`:153-175`、`:179-190`、`:195-219`）+ 一份几百行 vaxis 代码；折行与滚动自写                                               | **选它**。vaxis 已链进主 exe（`build.zig.zon:25-30`、`src/build/SharedDeps.zig:512-520`、`src/build/GhosttyExe.zig:34`），`src/cli/list_themes.zig:240-262` 是同构先例；中文显示与输入由宿主表面负责（`src/Surface.zig:2636`）；与上游分叉面最小 |
+| 二：两套原生 UI（仿 command palette）    | 一个 apprt action 起步 8 处改动跨 3 语言（`src/apprt/action.zig:119`、`include/ghostty.h:928`、`macos/Sources/Ghostty/Ghostty.App.swift:571-572` 等）+ 约 1600 行平台 UI | 每加一个界面元素改两处，维护翻倍；ABI 枚举顺序与上游 rebase 冲突面最大。留作二期，触发条件见「选型结论与分期」                                                                                                                                   |
 | 三：imgui（仿 inspector）                | UI 只写一份 Zig，两平台复用；要拉 `dcimgui`（`build.zig.zon:75`）                                                                                                        | 只加载 JetBrains Mono（`src/inspector/Inspector.zig:38-55`、`src/font/embedded.zig:16`），无 CJK；macOS 侧 `setMarkedText` 不转发预编辑（`macos/Sources/Ghostty/Surface View/InspectorView.swift:355-366`）。聊天要打中文，这条过不去            |
 | 四：轻量覆盖层                           | 最低                                                                                                                                                                     | 无滚动历史、无文本输入、自动消失（`macos/Sources/Ghostty/Surface View/SurfaceView.swift:75-107`）。降级为未读提示，归 [tabs.md](tabs.md)                                                                                                         |
 | 五：渲染器级 CPU 覆盖层                  | 低                                                                                                                                                                       | `src/renderer/Overlay.zig:1-12` 与 `:70-72` 表明它是纯绘制通道，零输入能力。排除                                                                                                                                                                 |
@@ -407,10 +418,10 @@ TUI 侧的取数节奏因此是它自己的事：按需拉取，不需要宿主�
 
 ## 未决问题
 
-1. 聊天日志的保留天数与总量上限具体取值——`src/cli/ssh-cache/DiskCache.zig:16` 的 512KB 不能直接照搬到会带大段代码的聊天正文。
-2. tail 的轮转策略：单文件滚动，还是按天分文件。
+1. ~~聊天日志的保留天数与总量上限~~ —— **已定**：流 8MB × 2 代（`src/poltergeist/ChatLog.zig:58`），记录不设上限。
+2. ~~tail 的轮转策略：单文件滚动，还是按天分文件~~ —— **已定：两个都做**，各服务一侧，见上「保留期与隐私边界」与 [storage.md](storage.md)。
 3. vaxis 的 CJK 折行与光标定位实际表现到什么程度（`src/build/uucode_config.zig:42-46` 已把 `east_asian_width` 喂给它，但未实测长段落）。
-4. 私信线程的命名：用 `Surface.id` 的十六进制（`src/Surface.zig:57-62`）可读性差，用 tab 标题别名又会随标题变化而漂移。
+4. 私信线程的命名：用 `Surface.id` 的十六进制（`src/Surface.zig:55-60`）可读性差，用 tab 标题别名又会随标题变化而漂移。
 5. 用户发言是否需要 `@` 指定终端，还是一律广播到群聊——这牵涉总管如何解读用户消息，主体归 [supervisor.md](supervisor.md)。
 
 ## 延伸阅读

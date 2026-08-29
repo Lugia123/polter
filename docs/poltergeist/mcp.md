@@ -26,7 +26,7 @@
 
 ## 一句话概括
 
-Poltergeist（能力层）的控制面是一个跟着 AI 进程跑的 sidecar：`polter +mcp` 作为 MCP server，靠宿主已注入的 `GHOSTTY_SURFACE_ID`（`src/Surface.zig:651-655`）认领身份，经本地 unix socket 连回宿主 Ghostty，把「读屏 / 注入 / 群聊私信 / 打下班标记」四类能力暴露给 AI；怎么判断落成 skill 文本，硬约束则落在程序里。
+Poltergeist（能力层）的控制面是一个跟着 AI 进程跑的 sidecar：`polter +mcp` 作为 MCP server，靠宿主已注入的 `GHOSTTY_SURFACE_ID`（`src/Surface.zig:677-681`）认领身份，经本地 unix socket 连回宿主 Ghostty，把「读屏 / 注入 / 群聊私信 / 打下班标记」四类能力暴露给 AI；怎么判断落成 skill 文本，硬约束则落在程序里。
 
 ## 设计目标与约束
 
@@ -49,9 +49,9 @@ Poltergeist（能力层）的控制面是一个跟着 AI 进程跑的 sidecar：
 
 拟按现有 CLI action 惯例落地，逐跳如下：
 
-1. 在 `Action` 枚举里加一项（`src/cli/ghostty.zig:31-87`，当前 19 项，从 `version` 到 `@"toggle-quick-terminal"`）。
-2. 在 `runMain` 的 switch 里加一条分发（`src/cli/ghostty.zig:153-174`）。
-3. 新建 `src/cli/mcp.zig` —— 文件路径由 `Action.file()` 从枚举名机械推导，把 `-` 换成 `_` 再加 `cli/` 前缀与 `.zig` 后缀（`src/cli/ghostty.zig:179-190`）。
+1. 在 `Action` 枚举里加一项（`src/cli/ghostty.zig:33-94`，当前 21 项，从 `version` 到 `mcp`——最后两项 `chat` 与 `mcp` 就是这样加进去的）。
+2. 在 `runMain` 的 switch 里加一条分发（`src/cli/ghostty.zig:160-184`）。
+3. 新建 `src/cli/mcp.zig` —— 文件路径由 `Action.file()` 从枚举名机械推导，把 `-` 换成 `_` 再加 `cli/` 前缀与 `.zig` 后缀（`src/cli/ghostty.zig:188-200`）。
 4. 帮助文本**不用手写注册**：`helpgen` 在构建期 `inline for` 遍历 `Action` 枚举字段、`@embedFile` 每个 action 源文件、找到名为 `run` 的函数并要求其前必须有 doc comment，否则直接报错（`src/helpgen.zig:82-100`）。这条规则写在 `src/cli/README.md:11-13`。
 5. 参数解析要求 action 以 `+` 开头且一次只能出现一个，否则返回 `MultipleActions` / `InvalidAction`（`src/cli/action.zig:47-51`）。
 
@@ -63,13 +63,13 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 
 ## 身份识别：现状代码已经解决了
 
-- `Surface.id: u64` 的 doc comment 直说它是给 IPC 用的唯一 ID，会以环境变量 `GHOSTTY_SURFACE_ID` 暴露给 surface 里运行的命令，且不得为零（`src/Surface.zig:57-62`）。
-- 注入点与格式：`0x{x:0>16}`（`src/Surface.zig:651-655`）；同一段代码先主动摘掉了 `GHOSTTY_LOG`（`src/Surface.zig:649`）。
+- `Surface.id: u64` 的 doc comment 直说它是给 IPC 用的唯一 ID，会以环境变量 `GHOSTTY_SURFACE_ID` 暴露给 surface 里运行的命令，且不得为零（`src/Surface.zig:55-60`）。
+- 注入点与格式：`0x{x:0>16}`（`src/Surface.zig:677-681`）；同一段代码先主动摘掉了 `GHOSTTY_LOG`（`src/Surface.zig:674-675`）。
 - **现成先例**：`ghostty +new-tab` 在未提供 `--surface-id` 时就是从该环境变量读、`parseUnsigned(u64, e, 0)`、失败回落 0（`src/cli/new_tab.zig:247-252`）。sidecar 认领身份照抄这段即可。
 
 **就地结论**：不新增环境变量，也不让 AI 自报家门。**身份来自宿主注入而非 AI 声明**，这条同时是后面权限矩阵的地基 —— AI 无法伪造自己是哪个终端。
 
-顺带一提既有注入：`GHOSTTY_RESOURCES_DIR`（`src/termio/Exec.zig:638`）、`GHOSTTY_BIN_DIR` 并把 ghostty 可执行文件目录追加进子进程 `PATH`（`src/termio/Exec.zig:692-711`）、`GHOSTTY_SHELL_FEATURES`（`src/termio/Exec.zig:770`）。`PATH` 那条的实际含义是：AI 进程里直接敲 `polter +mcp` 就能命中二进制，MCP 客户端配置不必写绝对路径。
+顺带一提既有注入：`GHOSTTY_RESOURCES_DIR`（`src/termio/Exec.zig:638`）、`GHOSTTY_BIN_DIR` 并把 ghostty 可执行文件目录追加进子进程 `PATH`（`src/termio/Exec.zig:692-711`）、`GHOSTTY_SHELL_FEATURES`（`src/termio/Exec.zig:775`）。`PATH` 那条的实际含义是：AI 进程里直接敲 `polter +mcp` 就能命中二进制，MCP 客户端配置不必写绝对路径。
 
 ## 传输层选型
 
@@ -86,11 +86,11 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 
 **本设计选择 (b) 自建 unix socket 服务端。**跨平台一份实现、请求-响应形状天生正确、与上游代码零耦合 —— 仓库 `src/` 下目前没有任何 `std.net` 代码（grep 无命中），这是纯新增而非改造上游文件，分叉面最小。
 
-被淘汰的三个及理由列在本章末尾的取舍记录。其中 (d)「复用 macOS 既有 AppleScript 通道」值得单独说明：仓库已有完整的 scripting 字典，`input text`（`macos/Ghostty.sdef:221`）与 `send key`（`macos/Ghostty.sdef:229`）两个命令齐备，终端枚举 `terminals`（`macos/Sources/Features/AppleScript/AppDelegate+AppleScript.swift:92`）与按唯一 ID 查找 `valueInTerminalsWithUniqueID:`（同文件 `:104`）也齐备，且 `input text` 最终落到 `surface.sendText`（`macos/Sources/Features/AppleScript/ScriptInputTextCommand.swift:38`）—— 与本设计的注入路径同源。淘汰它作为传输层的理由是：macOS-only（GTK 无对应物）、要经 `osascript` 往返、且**没有从宿主推给 sidecar 的方向**，静止通知推不出去。但它的配置闸门模式必须照抄，见下。
+被淘汰的三个及理由列在本章末尾的取舍记录。其中 (d)「复用 macOS 既有 AppleScript 通道」值得单独说明：仓库已有完整的 scripting 字典，`input text`（`macos/Polter.sdef:221`）与 `send key`（`macos/Polter.sdef:229`）两个命令齐备，终端枚举 `terminals`（`macos/Sources/Features/AppleScript/AppDelegate+AppleScript.swift:92`）与按唯一 ID 查找 `valueInTerminalsWithUniqueID:`（同文件 `:104`）也齐备，且 `input text` 最终落到 `surface.sendText`（`macos/Sources/Features/AppleScript/ScriptInputTextCommand.swift:38`）—— 与本设计的注入路径同源。淘汰它作为传输层的理由是：macOS-only（GTK 无对应物）、要经 `osascript` 往返、且**没有从宿主推给 sidecar 的方向**，静止通知推不出去。但它的配置闸门模式必须照抄，见下。
 
 **推翻条件**：若上游把 `apprt.ipc` 改造成带返回值的 RPC 并给 macOS 补齐实现，(b) 就应让位给 (a)，那时自建通道纯属重复。
 
-服务端线程挂在 Ghostty 进程内的哪一层尚未定（未核实：是否存在 app 级、与 surface 无关的可复用后台循环，核实方式是通读 `src/App.zig` 的 create / run 与各 apprt 的 run 实现；libxev 是否导出 socket accept 类型也需另行核实）。已确定的是回到主线程的入口：`App.Mailbox.push` 在入队后立即调用 `rt_app.wakeup()` 唤醒事件循环（`src/App.zig:617-623`）。
+服务端线程挂在 Ghostty 进程内的哪一层尚未定（未核实：是否存在 app 级、与 surface 无关的可复用后台循环，核实方式是通读 `src/App.zig` 的 create / run 与各 apprt 的 run 实现；libxev 是否导出 socket accept 类型也需另行核实）。已确定的是回到主线程的入口：`App.Mailbox.push` 在入队后立即调用 `rt_app.wakeup()` 唤醒事件循环（`src/App.zig:3499-3505`）。
 
 ### 鉴权
 
@@ -99,10 +99,10 @@ MCP 协议本身的帧格式、`initialize` 握手、`tools/list` 与 `tools/cal
 - socket 放在 XDG state 目录下 —— `internal_os.xdg` 已提供 `config` / `cache` / `state` 三个入口（`src/os/xdg.zig:22`、`:31`、`:40`）。
 - **实现与本章的出入：socket 文件没有 chmod 0600，而且是有意不做。** 本章早先写「权限 0600」，与实现相反。`Server.init` 里明确写着不做 chmod，理由是 **socket 文件权限在 Ghostty 支持的各个系统上执行得并不一致，把它当成边界是一种虚假的安心**。真正的边界是 token：每个终端 32 字节新鲜熵，常数时间比对，从调用方看得到的任何东西都推不出来。（`chat.jsonl` / `session.json` 那些**确实是** 0600——它们的内容本身就是要防的东西，而 socket 防的是「谁握着 token」。）
 
-- **一个顶层配置项作为准入闸门**。形态照抄 `macos-applescript`：一个 bool 配置项（`src/config/Config.zig:3489`），所有入口先过一次 gate，被拒时返回明确错误而不是静默失败（`macos/Sources/Features/AppleScript/AppDelegate+AppleScript.swift:300-316`，`validateScript` 置 `errAEEventNotPermitted` 并给出错误串）。理由：这是仓库里已被接受的「外部进程可以操控终端，但用户能否决」的先例，照抄比自创便宜，且用户已理解这个心智模型。
-- **照抄的是形态，不是默认值。**`macos-applescript` 自身默认 `true`（`src/config/Config.zig:3489`），本设计的闸门拟**默认关**：它放行的是「向用户所有终端注入文本」，默认关意味着未配置过的 Ghostty 与今天行为完全一致、不多出任何受攻击面；而 R5 的流程里用户本来就要显式指定总管与监督范围，多改一个配置项不构成额外负担。
+- **一个顶层配置项作为准入闸门**。形态照抄 `macos-applescript`：一个 bool 配置项（`src/config/Config.zig:3705`），所有入口先过一次 gate，被拒时返回明确错误而不是静默失败（`macos/Sources/Features/AppleScript/AppDelegate+AppleScript.swift:300-316`，`validateScript` 置 `errAEEventNotPermitted` 并给出错误串）。理由：这是仓库里已被接受的「外部进程可以操控终端，但用户能否决」的先例，照抄比自创便宜，且用户已理解这个心智模型。
+- **照抄的是形态，不是默认值。**`macos-applescript` 自身默认 `true`（`src/config/Config.zig:3705`），本设计的闸门拟**默认关**：它放行的是「向用户所有终端注入文本」，默认关意味着未配置过的 Ghostty 与今天行为完全一致、不多出任何受攻击面；而 R5 的流程里用户本来就要显式指定总管与监督范围，多改一个配置项不构成额外负担。
 - **这个闸门不是 R4 说的那种开关。**它是一次性准入授权（装没装、准不准外部进程连进来），不是运行时的启停；R4 针对的「停掉监控」是唯一的停止动作，归 [supervisor.md](supervisor.md)。两者可以并存：闸门开着，用户照样随时停掉监控。
-- **不做 `allow` / `ask` / `deny` 三态**。Ghostty 对剪贴板确实有三态，`clipboard-read` 默认 `ask`（`src/config/Config.zig:2454`），但挂机过夜是 Poltergeist 的主场景，`ask` 在无人值守时等于卡死。
+- **不做 `allow` / `ask` / `deny` 三态**。Ghostty 对剪贴板确实有三态，`clipboard-read` 默认 `ask`（`src/config/Config.zig:2670`），但挂机过夜是 Poltergeist 的主场景，`ask` 在无人值守时等于卡死。
 
 #### socket 文件的生老病死
 
@@ -140,13 +140,17 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | 工具                        | 参数       | 返回                                               | 可用角色 |
 | --------------------------- | ---------- | -------------------------------------------------- | -------- |
 | `me()`                      | 无         | 自己那一行终端信息（见下「终端信息带什么」）        | 全部     |
-| `terminal_list()`           | 无         | 每终端一行（见下「终端信息带什么」），被监督的另带 `quiet_ms` 与 `rounds` | 总管     |
+| `terminal_list()`           | 无         | 每终端一行（见下「终端信息带什么」），被监督的另带 `quiet_ms` 与 `rounds` | 全部     |
 | `notices()`                 | 无         | 尚未被看过的情况，一行文本；空表示没有            | 总管     |
 | `terminal_read(id, lines?)` | 终端与行数 | 可见屏幕或最近 N 行纯文本                          | 按可达性 |
 | `group_read(group, since?)` | 群名与游标 | 消息数组                                           | 成员     |
 | `group_history(group, before_seq?, limit?)` | 群名与日志游标 | 群里已经不留的更早消息，取自磁盘日志；这一批的 `seq` 恒为 0，翻页只能用 `log_seq` | 成员 |
 | `group_list()`              | 无         | 自己所在的群名，已排序                             | 全部     |
-| `plugin_list(key?)`         | 插件名，省略为全部 | 每插件一行：装没装、开没开、声明了什么、参数以什么形式配着；常驻的另带 `state` / `cursor` / `failures` | 总管 |
+| `group_members(group)`      | 群名       | 群里有谁，按 id 排                                 | 成员     |
+| `session_recall()`          | 无         | 上次关机前写下的现场材料，只读，没有任何东西照它接线 | 总管     |
+| `skill_read(name)`          | skill 名   | 那份 skill 的正文                                  | 全部     |
+| `config_get(key?)`          | 配置键，省略为全部 | 用户配了什么，只读                        | 总管     |
+| `plugin_list(key?)`         | 插件名，省略为全部 | 每插件一行：装没装、开没开、**订阅了什么**、声明调什么、参数以什么形式配着；有实例在跑的另带 `state` / `cursor` / `failures` | 总管 |
 
 **`plugin_list` 的脱敏规则，三条，穷尽：**
 
@@ -160,6 +164,11 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
    长得完全不像密码，但拿到它就能以用户的名义发东西），而回显是不可逆的——那一屏
    此刻可能正在被另一个 agent `terminal_read`。漏标的代价因此是丢掉写的那条
    规则，不是丢掉读的那条。
+
+**没有 `kind` 字段了。** 一个插件是什么由 `wants.events` 说了算，而那是一个
+**列表**——一个插件可以同时订阅两种事件，那在 `kind` 的世界里根本表达不出来。
+读的人要问「这是不是一条通知渠道」，就看 `terminal.quiet` 在不在里面。
+（macOS 设置界面手抄那个枚举、抄漏两次的经过见 [plugins.md](plugins.md) 第一节。）
 
 **字段缺席的约定与 `terminal_list` 同一条**：没有实例在跑的插件，
 `state` / `cursor` / `failures` **整个不出现**，而不是出现一个 0。理由和
@@ -182,6 +191,7 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `role` | `none` / `watched` / `supervisor` | 总在 |
 | `duty` | 上班 / 下班簿记状态 | 总在 |
 | `held` | 用户是否按住了它，见下一段 | 总在 |
+| `shielded` | 用户是否把它整个挡在工具面之外（`src/poltergeist/wire.zig:455`） | 总在 |
 | `watching` | 它是不是在盯着别人 | 总在 |
 | `cwd` / `title` | 在哪儿干活、tab 叫什么 | 总在 |
 | `quiet_ms` | 屏幕静止了多久 | 没人在量它时**整个字段不出现** |
@@ -226,7 +236,10 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `terminal_keys()`                              | 无                   | 修饰键名与键名两张表 | 全部     |
 | `terminal_action(id, action)`                  | 目标与键位动作名     | ok / 拒绝原因 | 按可达性 |
 | `terminal_actions()`                           | 无                   | 动作清单      | 全部     |
+| `terminal_open(cwd?, watch?)`                  | 起始目录与是否直接监督 | 新终端的 id | 仅总管   |
 | `clock_out(id, reason)`                        | 目标与理由           | ok / 拒绝原因 | 仅总管   |
+| `clock_in(id)`                                 | 目标                 | ok / 拒绝原因 | 仅总管   |
+| `notify_user(reason, title, body?, id?)`       | 类别（`scheduling` / `authorisation`）与正文 | 一句话：发布到了几条渠道 | 仅总管 |
 | `set_quiescence_threshold(id, duration)`       | 目标与时长           | ok / 拒绝原因 | 仅总管   |
 | `set_watch(id, watch?)`                        | 目标与是否监督       | ok / 拒绝原因 | 仅总管   |
 | `group_post(group, text)`                      | 群名与文本           | ok            | 成员     |
@@ -235,7 +248,7 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `group_remove(group, id)`                      | 群名与终端           | ok / 拒绝原因 | 仅总管   |
 | `group_compact(group, through, summary)`       | 群名/截止 seq/摘要   | ok / 拒绝原因 | 仅总管   |
 | `plugin_configure(key, enabled?, params?)`     | 插件名/开关/参数表   | 一句话：改了什么、什么时候生效 | 仅总管 |
-| `plugin_test(key)`                             | 插件名               | 一句话：通知真发了一条，或常驻插件此刻的状况 | 仅总管 |
+| `plugin_test(key)`                             | 插件名               | 一句话：测试通知已经发布出去了（**不是送达回执**），或这个插件此刻的状况 | 仅总管 |
 | `stand_down()`                                 | 无                   | ok / 拒绝原因 | 仅总管 |
 | `become_supervisor()`                          | 无                   | 一句话答复    | 全部     |
 
@@ -257,6 +270,20 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | 非总管     | `role == none`，或 bus 根本不认识 | **放行**                |
 | 任何人     | `shielded == true`                | 拒绝（`Shielded`），无例外 |
 
+**调用者也可以是一个插件**，走的是同一个 socket、同一套线协议、同一张表。
+它落在「非总管」那三行里，**而且永远落在那里**——`Bus.Caller` 是一个 union，
+插件那一支里根本没有 `Bus.Id`，所以它连冒充一个终端的形状都没有。完整论证在
+[plugins.md](plugins.md) 第三节；这里只记三条落在这张表上的结果：
+
+- **`shielded` 对它照样绝对**，和对总管一样。`rpc.zig` 里有一条专门的测试，把
+  四个操作终端的方法都对着一个 shielded 终端试一遍，然后**把护盾摘掉再试一次**
+  ——否则那条测试量的可能是别的东西在拒。
+- **它永远不是总管**，所以 `become_supervisor` 对它也是关着的。那是唯一一个
+  「本来就该被非总管调用」的方法，`requiresSupervisor` 对它为假，所以必须单独
+  关掉，否则「插件不是总管」这条默认只有一次调用那么深。
+- **它还多一道更窄的闸**：`wants.calls`，清单里没写的方法名在最前面就被拒
+  （`NotDeclared`）。这一道只会减，不会增——一次调用要同时过它和这张表。
+
 用户给的理由，照抄：**没被标记的终端，程序无从判断它是不是 agent，所以就不管这事。** 程序能看见的只有标记；标记意味着有人做过安排，而别人的安排不轮到外人去动。
 
 **「平级」这个概念不存在。** 一个被监管终端碰不到另一个被监管终端，不是因为两者平级——这里根本没有平级判断——**是因为对方身上有标记**。
@@ -272,6 +299,10 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 - `NotPermitted` —— **方法**本身不对你开放（`set_watch` / `clock_out` / `clock_in` / `set_quiescence_threshold` / 建群改群）。这些改的是监管安排本身，不是「操作终端」；放开 `set_watch` 等于给了一条比 `become_supervisor` 还松的收编路径。
 - `Supervised` —— 方法对你开放，是**目标**挡住的。答复里写明「未标记的终端你随便动；要动这个就先 `become_supervisor`」。
 - `Shielded` —— 用户把它挪出了工具面，谁都不行，去问键盘前面那个人。
+- `NotDeclared` —— 调用者是插件，而它的清单没有把这个方法写进 `wants.calls`。
+  答复指向 `plugin.json` 而不是权限：要改的是那一行，而不是身份。
+- `NotATerminal` —— 调用者是插件，而这个方法问的是「谁在问」（谁写的这条消息、
+  谁是这个群的成员、在谁的窗口里开标签页）。插件不是终端，所以那个问题没有答案。
 
 `UnknownTerminal` 不再由 `authorize` 判：**一个 bus 不认识的 id 恰恰是「无标记」这条放行分支**，在这里拒绝就等于拒绝掉这条规则要放行的全部对象。「这个 id 到底是不是个终端」归 host 答，因为 host 才知道。唯一的例外是 `group_add` —— 群成员是**存下来的记录**，打错一个字会留下一个永远不说话也永远不走的成员，所以那一处仍然查存在性：先问 bus，bus 不认识再问 host 的开启终端列表。
 
@@ -326,13 +357,13 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 可以改变谁够得着谁**。被拒时返回 `AlreadyWatched`，且**角色一个字节都不动**——
 守卫写在提升动作之前，不是之后。
 
-`set_quiescence_threshold` 是 [sensing.md](sensing.md) 那条「per-terminal 阈值只能是运行时状态、不能进 `Config.zig`」结论的工具面落点：全局默认值走配置项 `polter-quiescence-threshold`，单个终端的覆盖值由总管在运行时调。它只影响「多久之后通知总管」这一个调参，不表达用户意图，因此不需要 `held` 那种「只有用户能设」的限制。时长解析可直接复用 `Duration`（`src/config/Config.zig:10047`，`parseCLI` 在 `:10085`）。
+`set_quiescence_threshold` 是 [sensing.md](sensing.md) 那条「per-terminal 阈值只能是运行时状态、不能进 `Config.zig`」结论的工具面落点：全局默认值走配置项 `poltergeist-quiescence-after`（`src/config/Config.zig:1329`，默认 3 分钟；「还静止着就再报一次」的间隔是另一个 `poltergeist-quiescence-repeat`，`src/config/Config.zig:1338`），单个终端的覆盖值由总管在运行时调。它只影响「多久之后通知总管」这一个调参，不表达用户意图，因此不需要 `held` 那种「只有用户能设」的限制。时长解析可直接复用 `Duration`（`src/config/Config.zig:10263`，`parseCLI` 在 `:10301`）。
 
 ### terminal_read 的实现落点
 
-首选 `Surface.dumpText(alloc, sel)`（`src/Surface.zig:1930-1938`）：它自己加渲染状态锁再转调 `dumpTextLocked`（`src/Surface.zig:1942`），底层走 `Screen.selectionString`（`src/Surface.zig:1948`）。选它的理由是输入为一个 selection，能精确表达「可见屏幕」或「最近 N 行」，且不受渲染态截断影响。
+首选 `Surface.dumpText(alloc, sel)`（`src/Surface.zig:2015-2023`）：它自己加渲染状态锁再转调 `dumpTextLocked`（`src/Surface.zig:2027`），底层走 `Screen.selectionString`（`src/Surface.zig:2033`）。选它的理由是输入为一个 selection，能精确表达「可见屏幕」或「最近 N 行」，且不受渲染态截断影响。
 
-这条路径已经有 C 导出在跑：`ghostty_surface_read_text`（`src/apprt/embedded.zig:1641`），其 doc comment 明确写「这是昂贵操作，不应频繁调用，建议调用方缓存结果并对调用限流」（`src/apprt/embedded.zig:1636-1640`）—— 直接作为工具侧限流的依据，不用我们自己编。
+这条路径已经有 C 导出在跑：`ghostty_surface_read_text`（`src/apprt/embedded.zig:1665`），其 doc comment 明确写「这是昂贵操作，不应频繁调用，建议调用方缓存结果并对调用限流」（`src/apprt/embedded.zig:1660-1664`）—— 直接作为工具侧限流的依据，不用我们自己编。
 
 两个备选均淘汰：`RenderState.string()`（`src/terminal/render.zig:855`）的 NOTE 说明视口上下被截断的软换行不包含在结果内（`src/terminal/render.zig:852-854`），读出来会缺行；`Screen.dumpStringAlloc()`（`src/terminal/Screen.zig:3613`）的注释自称是「主要为单元测试的便利版本」（`src/terminal/Screen.zig:3611-3612`），且 `dumpString` 自述「一次写一个字节」（`src/terminal/Screen.zig:3571-3573`），不适合当热路径 API。
 
@@ -340,8 +371,35 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 
 ### 权限矩阵与它的理由
 
-- **总管**：全部工具，含一个不在上面两张表里的只读工具 `skill_read(name)`。
-- **被监督终端**：`me`、`skill_read`，以及在它已被拉进的群里 `group_list` / `group_post` / `group_read` / `group_history` / `group_members`。还有 `become_supervisor`——它调得到，但会被拒。**别的一个都没有** —— 没有 `terminal_send`，没有 `terminal_read`，也没有 `clock_out`。这份白名单是穷举的：新增工具默认落在总管一侧，要放给被监督终端必须显式改 `src/poltergeist/rpc.zig` 的 `requiresSupervisor`，那里有一条测试逐个方法核对。
+- **总管**：全部工具。
+
+- **谁都可以调的**：`me`、`skill_read`、`terminal_list`、`terminal_read`、
+  `terminal_send`、`terminal_action`、`terminal_actions`、`terminal_key`、
+  `terminal_keys`、`become_supervisor`，以及在它已被拉进的群里 `group_list` /
+  `group_post` / `group_read` / `group_history` / `group_members`
+  （`src/poltergeist/rpc.zig:568-588`）。
+
+  **这一行以前写的是「别的一个都没有」，那句话现在是反的。** 分界线换了：
+  `requiresSupervisor` 管的只剩「改变监督安排本身」的那几个方法——`set_watch`、
+  两个打卡、`set_quiescence_threshold`、建群改群、`notify_user`、`terminal_open`、
+  `config_get`、`session_recall`、`notices`、三个插件工具、`stand_down`。**操作一个
+  终端不在其中**，而调用能不能过，由**目标身上的标记**决定，不由调用者的身份决定
+  （`src/poltergeist/rpc.zig:522`、`src/poltergeist/rpc.zig:842-851`）。可达性规则本身归 [supervisor.md](supervisor.md)。
+
+  `terminal_list` 尤其要说：它曾经是总管专属，而 id 只有它给得出，所以关着它等于
+  把整条可达性规则一起关掉——一个 agent 只能操作「碰巧有人告诉过它 id」的终端，
+  也就是没有。它披露的是各终端的标记，方向是对的：让一个 agent**在动手之前**就知道
+  哪些终端碰不得（`src/poltergeist/rpc.zig:556-568`）。
+
+- **`terminal_action` 拒绝 Polter 自己的开关。** 凡是 `poltergeist_` 前缀的键位
+  动作一律不执行，也不出现在 `terminal_actions` 的清单里
+  （`src/poltergeist/actions.zig:44`、`src/poltergeist/actions.zig:67`）。修的是一个
+  真洞：这一族开着的时候，agent 可以先 `poltergeist_toggle_held` 掀掉用户的按住，
+  再 `clock_out`。理由与逐条核对见 [surface.md](surface.md)。
+
+  这份白名单仍然是穷举的：新增工具必须在 `requiresSupervisor` 里显式表态，不写就
+  编译不过。插件那一侧还有第二张同样穷举的表 `callableByPlugin`
+  （`src/poltergeist/rpc.zig:441`）。
 - **`stand_down` 只有总管调得动**，被监督终端调它返回 `NotPermitted` —— 它本来就没有这个身份可卸。`Bus.standDown` 自己再问一遍（`NotASupervisor`），因为一条只在别人记得检查时才成立的规则，不是这个 bus 在守的规则。
 - **`group_history` 不比 `group_read` 多给什么。**磁盘上那一份日志把所有群写在同一个文件里，所以「翻得到什么」不能由文件决定：宿主先问出这个成员的视野下界（成员资格与下界是同一个事实，一次问出），再把比下界更老的那一段掐掉。`history: none` 加进来的终端因此翻不到它被特意挡在外面的内容 —— 挡在读的这一侧，而不是指望它不去问。
 
@@ -481,13 +539,14 @@ R4 说「没有一键开关，只有停掉监控」，那说的是**用户**这�
 判据取自 `plugin_list` 已经在报的 `holds` 字段（`unset` 还是某种引用），
 所以它是唯一一条**依赖文件里已有内容**、而不是只看清单声明的规则。
 
-### 为什么 archive 的测试只报状态
+### 为什么测试从不起第二个实例
 
-`plugin_test` 打在一个存档插件上时**什么都不起**，只把 `status()` 与"为什么
-没在跑"说出来。三条理由，从短到长：
+`plugin_test` **什么都不起**，只把 `status()` 与"为什么没在跑"说出来。
+**每个插件都是常驻的**（[plugins.md](plugins.md) 第二节），所以这一条现在对
+所有插件成立，而不只是对存档那一类。三条理由，从短到长：
 
-1. **协议里没有干跑通道。**握手行的字段是 `hello`/`plugin`/`cursor`/`groups`/
-   `params`，没有"这是一次演习"。加一个字段只是加一个**作者可以不理**的字段
+1. **协议里没有干跑通道。**握手行的字段是 `hello`/`plugin`/`cursor`/`events`/
+   `groups`/`calls`/`socket`/`token`/`params`，没有"这是一次演习"。加一个字段只是加一个**作者可以不理**的字段
    ——一个不认识它的插件会照常连库、照常写。**宿主没有任何办法强制别人的脚本
    干跑**，所以"干跑模式"是一个宿主兑现不了的承诺，而兑现不了的承诺比没有承诺
    更糟：它会让人相信测试是安全的。
@@ -495,19 +554,29 @@ R4 说「没有一键开关，只有停掉监控」，那说的是**用户**这�
    `MAX(seq)`；随构建装出去的 `archive` 在握手时就把落点目录建出来。别人的
    插件在握手时会做什么，宿主不知道。
 3. **两个实例是两个订阅者**，同一条消息会被完整地存两遍，而且两个实例互相
-   不知道对方存在——正是 [storage.md](storage.md) 用一整节论证要防的那件事。
+   不知道对方存在——正是 [plugins.md](plugins.md) 用一整节论证要防的那件事。
 
-于是它回答的是**实际会被问出口的那个问题**——"为什么没有东西被存档"——答案
-出自 `status()`：在跑 / 退避中 / dormant / 装了没开 / 开了但 `wants` 是空的 /
-开了但日志还没打开 / 开了而且日志开着但起不来。每一句都说到"下一步该做什么"
-为止。
+于是它回答的是**实际会被问出口的那个问题**——"为什么什么都没发生"——答案
+出自 `status()`：在跑 / 退避中 / dormant / 装了没开 / 订阅了空 / 订阅了 chat
+却没写 groups / 开了但日志还没打开 / 开了而且日志开着但起不来。每一句都说到
+"下一步该做什么"为止。
 
-**同一个工具打在通知插件上则真的发一条**，什么点都会到人手上：它**故意绕开
-`notify.decide`**，不受安静时段约束——测试的意义就是它会出去。约束在别处：
-整个工具面 60 秒一次（保护的是人，不是插件），而且 **schema 里没有任何自由
-文本字段**，标题与正文全部由宿主撰写。最后这一句是承重的：**如果它接受调用方
-给的 title/body，它立刻就是一条不受任何约束的外发通道，而旁边那条受约束的
-（`notify_user`）会当场变成绕远路。**
+**一个订阅了 `terminal.quiet` 的插件则真的收到一条**，什么点都会到人手上：
+它**故意绕开 `notify.decide`**，不受安静时段约束——测试的意义就是它会出去。
+约束在别处：整个工具面 60 秒一次（保护的是人，不是插件），而且 **schema 里
+没有任何自由文本字段**，标题与正文全部由宿主撰写。最后这一句是承重的：**如果
+它接受调用方给的 title/body，它立刻就是一条不受任何约束的外发通道，而旁边那条
+受约束的（`notify_user`）会当场变成绕远路。**
+
+**两处变了，都要说：**
+
+1. **它不再是送达回执。** 通知从前是 fork 一个进程、读退出码；现在是发布一个
+   事件，插件在自己的线程上送。所以回话说的是**此刻确实知道的事**——发布出去了，
+   有几条渠道订阅了它，以及**这个插件此刻有没有子进程在跑**。最后那一样是从前
+   根本问不出来的：那个 fork 早就退出了。
+2. **它发给每一条渠道，不只是被点名的那个。** feed 没有办法只喂一个订阅者——
+   那正是它的设计：发布者不知道谁在听。回话把这件事说出来，而不是让人以为只
+   试了一个。
 
 ## 输入注入机制
 
@@ -516,9 +585,9 @@ R4 说「没有一键开关，只有停掉监控」，那说的是**用户**这�
 拟走的调用链，逐跳如下：
 
 1. `Surface.textCallback(text)`（`src/Surface.zig:3308`）。doc comment 写明：按剪贴板粘贴的同一套逻辑处理 —— bracketed 模式下做 bracketed paste，否则把换行过滤成 `\r`（`src/Surface.zig:3303-3307`）。
-2. → `completeClipboardPaste(data, allow_unsafe)`（`src/Surface.zig:5914`）。调用点传的 `allow_unsafe` 是 `true`（`src/Surface.zig:3313`）——**这条路径跳过不安全粘贴确认**。
+2. → `completeClipboardPaste(data, allow_unsafe)`（`src/Surface.zig:6433`）。调用点传的 `allow_unsafe` 是 `true`（`src/Surface.zig:3676`）——**这条路径跳过不安全粘贴确认**。
 3. → `input.paste.encode`，把 NUL / BS / ESC / DEL 以及 `0x03` VINTR、`0x1A` VSUSP 等一批控制字节统一替换成空格，且不论是否 bracketed 都执行（`src/input/paste.zig:46-91`）。
-4. → `queueIo` 逐段写入（`src/Surface.zig:5985-5990`）。readonly 的 surface 在这里被直接丢弃 `write_small` / `write_stable` / `write_alloc` 三类消息（`src/Surface.zig:872-885`）。
+4. → `queueIo` 逐段写入（`src/Surface.zig:6457`）。readonly 的 surface 在这里被直接丢弃 `write_small` / `write_stable` / `write_alloc` 三类消息（`src/Surface.zig:944-955`）。
 
 **就地结论**：选这条路径而不是自己往 pty 写，是为了自动继承第 3 跳的控制字节剥除 —— 否则注入文本里一个 `\x03` 就能给对面发 Ctrl+C。但要写准：继承的是 bracketed 封装与控制字节剥除，**不是**不安全粘贴确认弹窗。
 
@@ -530,7 +599,7 @@ R4 说「没有一键开关，只有停掉监控」，那说的是**用户**这�
 - 只有非 bracketed 时才把 `\n` 全部替换成 `\r`（`src/input/paste.zig:101-108`）。
 - 上游自己也这么说：`ghostty_surface_text` 的注释写「这被当作粘贴处理，因此不适合发转义序列；那种情况应该用单独的按键输入」（`src/apprt/embedded.zig:1819-1821`）。
 
-因此 `terminal_send(id, text, submit=true)` 拟做成两步：文本走 `textCallback`，回车合成一个 `input.KeyEvent` 走 `keyCallback`（`src/Surface.zig:2674`）→ `encodeKey`（`src/Surface.zig:3208`）。
+因此 `terminal_send(id, text, submit=true)` 拟做成两步：文本走 `textCallback`，回车合成一个 `input.KeyEvent` 走 `keyCallback`（`src/Surface.zig:2759`）→ `encodeKey`（`src/Surface.zig:3298`）。
 
 ### 原子性与竞态守卫
 
@@ -580,7 +649,7 @@ R4 说「没有一键开关，只有停掉监控」，那说的是**用户**这�
 
 **代价写实**：多一次工具往返，延迟从「注入即到」变成「注入通知 + 一次拉取」。挂机场景的尺度是分钟而非毫秒，可以接受。
 
-限流照抄现成写法：`showDesktopNotification`（`src/Surface.zig:6038`）用 Wyhash 摘要加时间戳实现「每秒最多一条」与「相同内容 5 秒内抑制」两道阈值（`src/Surface.zig:6045-6070`）。通知注入应复用同一形状。界面怎么呈现这些消息见 [chatui.md](chatui.md)。
+限流照抄现成写法：`showDesktopNotification`（`src/Surface.zig:6557`）用 Wyhash 摘要加时间戳实现「每秒最多一条」与「相同内容 5 秒内抑制」两道阈值（`src/Surface.zig:6564-6590`）。通知注入应复用同一形状。界面怎么呈现这些消息见 [chatui.md](chatui.md)。
 
 ## Skill 体系
 
@@ -598,12 +667,28 @@ R4 说「没有一键开关，只有停掉监控」，那说的是**用户**这�
 
 ### 一共几个，怎么分
 
-**2 个，都是通用的。**分法不按主题，按**什么会让它改变**：
+**3 个，都是通用的。**分法不按主题，按**什么会让它改变**：
 
-| skill                | 内容                                                         | 何时需要改                   | 何时被读       |
-| -------------------- | ------------------------------------------------------------ | ---------------------------- | -------------- |
-| `supervising`        | 总管行事总则：收到通知先做什么、何时袖手、怎么措辞、两条红线 | 监督策略变时                 | 成为总管时一次 |
-| `reading-a-terminal` | 怎么看一屏内容判断对方处于什么状态                           | **被监督的 AI CLI 改界面时** | 每次判断前     |
+| skill                 | 内容                                                         | 何时需要改                   | 何时被读       |
+| --------------------- | ------------------------------------------------------------ | ---------------------------- | -------------- |
+| `supervising`         | 总管行事总则：收到通知先做什么、何时袖手、怎么措辞、两条红线 | 监督策略变时                 | 成为总管时一次 |
+| `reading-a-terminal`  | 怎么看一屏内容判断对方处于什么状态                           | **被监督的 AI CLI 改界面时** | 每次判断前     |
+| `operating-a-terminal`| 不是总管的 agent 怎么碰别的终端：可达性、`terminal_key` 与 `terminal_send` 之别、重启一个服务、被治理的开关为什么拒你 | 上面那张「谁都可以调」的表变时 | 要碰别的终端前 |
+
+**第三份是补一个洞，不是加一个主题。**上面那张权限矩阵里「谁都可以调的」有十五个
+工具，而 `supervising` 第一句就是「You are supervising other terminals」——它整篇
+写给总管。一个没有标记的终端里的 agent 因此拿得到能力、拿不到说明书；用户的原话
+是「一个 AI 不一定要总管，开着另一个终端跑 `./start.sh`，改完代码 Ctrl+C 打断再
+重启——显式的操作有助于用户看到，而不是 agent 在后台执行」。这件事今天做得到，
+而在这份 skill 之前没有任何文字告诉它做得到。
+
+**这条洞是被测试盯住的**（`skill.zig` 的
+`every tool an unmarked terminal may call is named in some skill`）：判据从
+`rpc.requiresSupervisor` 这个穷举 switch 反推——`requiresSupervisor(m) == false`
+就是「无标记终端调得到」，逐个要求它在某份 skill 正文里被反引号点过名。**判据不是
+手抄的清单**，因为本仓手抄镜像清单栽过两次（Swift 的 `Plugin.Kind` 先漏 `archive`、
+再漏 `provision`）。原来只有正方向那条（skill 提到的工具必须真的存在），开一个能力
+而不写说明书不会红。
 
 **曾经还有三份 `mode-*`**，一种工作模式一份。它们随工作模式一起删掉了，理由不是
 「文件太多」，而是那三份 skill 在讲的东西**总管本来每一轮都在做**——核定目标、
@@ -611,7 +696,7 @@ R4 说「没有一键开关，只有停掉监控」，那说的是**用户**这�
 
 **为什么把 `reading-a-terminal` 单独拎出来。**它是整套东西里唯一会自然腐烂的部分 —— 被监督的 agent CLI 改一次界面，判断依据就失效一次。隔离之后，用户换个 agent CLI 只需要改这一个文件，不必碰监督策略；反过来调整监督策略也不会碰坏识别逻辑。若按主题切（例如「判断类 / 动作类」），得不到这个性质。
 
-**为什么不再多切。**确认策略与通知时段（R3）看起来也够一个 skill，但它对应的程序机制尚未实现；为还不存在的行为写 skill 会让读它的 AI 以为自己能做到。等 R3 落地再加第 3 个。
+**为什么不再多切。**确认策略与通知时段（R3）看起来也够一个 skill，但它对应的程序机制尚未实现；为还不存在的行为写 skill 会让读它的 AI 以为自己能做到。切的判据始终是这个：**先有能力，才有说明书**——`operating-a-terminal` 之所以该有，正是因为它讲的那批工具早就开着了。
 
 ### frontmatter 里没有 allow_clock_out
 
@@ -661,11 +746,11 @@ R6 要求「连续 n 次执行后判断没必要再继续」。次数正是长�
 
 ### 存放位置与优先级
 
-照搬 themes 的两层结构：`themepkg.Location = { user, resources }`，注释明说枚举顺序即优先级、从上到下（`src/config/theme.zig:8-12`）；user 层由 `internal_os.xdg.config` 拼出、subdir 为 `ghostty/themes`（`src/config/theme.zig:30-35`）。
+照搬 themes 的两层结构：`themepkg.Location = { user, resources }`，注释明说枚举顺序即优先级、从上到下（`src/config/theme.zig:8-12`）；user 层由 `internal_os.xdg.config` 拼出、subdir 为 `polter/themes`（`src/config/theme.zig:31-33`；fork 改过名，上游写的是 `ghostty/themes`）。
 
 **本设计选择**：内置默认 skill 放 resources 层，用户自定义放 `$XDG_CONFIG_HOME/ghostty/polter/skills/`，同名时 user 覆盖内置。三条理由：与 themes 完全同构，用户已有心智模型；user 目录可进 dotfiles 仓库，天然版本化；内置层随二进制升级，用户层不被覆盖。
 
-**为什么不塞进 `src/config/Config.zig`**：该文件已 11120 行，且配置项是扁平 KV，而 skill 主体是多段自然语言 —— 塞进去要么变成超长单行字符串，要么要发明一套多行块语法。配置里只留一个指向 skill 名字的键。**为什么不编译进二进制**：R7 要求可维护、用户能改能加，编译进去直接违背。
+**为什么不塞进 `src/config/Config.zig`**：该文件已 11336 行，且配置项是扁平 KV，而 skill 主体是多段自然语言 —— 塞进去要么变成超长单行字符串，要么要发明一套多行块语法。配置里只留一个指向 skill 名字的键。**为什么不编译进二进制**：R7 要求可维护、用户能改能加，编译进去直接违背。
 
 ### 结构示意
 
@@ -759,7 +844,7 @@ skill 里要求总管 `group_create` 之后**立刻** `group_set_brief` —— �
 
 任务由其他系统 / 载体承载（看板、文件、issue 追踪器），AI 自己去读。
 
-**代价写实**：总管看不到任务全貌，它能拿到的只有屏幕内容（`terminal_read`，底层是 `Surface.dumpText`，`src/Surface.zig:1930`）与聊天记录（`group_read` / `dm_read`），所以总管的判断天然是「就地可见」的判断，做不了跨任务的全局调度。
+**代价写实**：总管看不到任务全貌，它能拿到的只有屏幕内容（`terminal_read`，底层是 `Surface.dumpText`，`src/Surface.zig:2015`）与聊天记录（`group_read` / `group_history`；私信最终没有做成独立工具，一对一的对话是一个只有两个成员的群），所以总管的判断天然是「就地可见」的判断，做不了跨任务的全局调度。
 
 **为什么仍然值得**：任务载体种类繁多且每家 schema 不同，做进来必然做成半吊子；更糟的是会和用户已有的任务工具打架 —— 同一个任务出现在两处、状态不同步，用户要维护两份真相。把这条边界画死，Poltergeist 就永远只是一层能力，不会长成一个竞品任务系统。这条边界同时是工具面稳定性的来源：只要不碰任务，工具清单就不会随任务系统的演进而膨胀。
 
@@ -772,10 +857,10 @@ skill 里要求总管 `group_create` 之后**立刻** `group_set_brief` —— �
 | 传输 (a) 扩展 `apprt.ipc` 并补 macOS       | 要给 union 加返回值通道；同步 `include/ghostty.h` 的 C ABI（`src/apprt/ipc.zig:57-71`） | macOS 三分支全 false（`src/apprt/embedded.zig:349-360`）；且它是单向命令通道，形状不对                            |
 | **选**：传输 (b) 自建 unix socket          | 自管监听 / 鉴权 / 生命周期 / 崩溃清理；`src/` 现无 `std.net` 代码                       | 跨平台一份实现；请求-响应形状天生正确；与上游零耦合，分叉面最小                                                   |
 | 传输 (c) 文件系统 / 命名管道               | 轮询有延迟，或上 inotify / FSEvents 变两套平台代码                                      | 并发写、残留文件、权限位都要自己兜，省下的复杂度会换个形式还回来                                                  |
-| 传输 (d) 复用 macOS AppleScript            | 已有 `input text` / `send key`（`macos/Ghostty.sdef:221`、`:229`）                      | macOS-only；需 osascript 往返；**没有宿主 → sidecar 的推送方向**                                                  |
-| **选**：鉴权用 bool 准入闸门（默认关）     | 一个配置项 + 各入口 gate                                                                | 照抄 `macos-applescript`（`src/config/Config.zig:3489`）的形态；默认值反过来取关，未配置的 Ghostty 不多出受攻击面 |
-| 鉴权用 `allow` / `ask` / `deny` 三态       | 与 `clipboard-read`（`src/config/Config.zig:2454`）同构                                 | 挂机过夜无人值守时 `ask` 等于卡死                                                                                 |
-| **选**：读屏用 `Surface.dumpText`          | 自带渲染锁，输入是 selection（`src/Surface.zig:1930`）                                  | 能精确表达「最近 N 行」；不受渲染态截断影响                                                                       |
+| 传输 (d) 复用 macOS AppleScript            | 已有 `input text` / `send key`（`macos/Polter.sdef:221`、`:229`）                      | macOS-only；需 osascript 往返；**没有宿主 → sidecar 的推送方向**                                                  |
+| **选**：鉴权用 bool 准入闸门（默认关）     | 一个配置项 + 各入口 gate                                                                | 照抄 `macos-applescript`（`src/config/Config.zig:3705`）的形态；默认值反过来取关，未配置的 Ghostty 不多出受攻击面 |
+| 鉴权用 `allow` / `ask` / `deny` 三态       | 与 `clipboard-read`（`src/config/Config.zig:2670`）同构                                 | 挂机过夜无人值守时 `ask` 等于卡死                                                                                 |
+| **选**：读屏用 `Surface.dumpText`          | 自带渲染锁，输入是 selection（`src/Surface.zig:2015`）                                  | 能精确表达「最近 N 行」；不受渲染态截断影响                                                                       |
 | 读屏用 `RenderState.string`                | 现成                                                                                    | 视口上下被截断的软换行不含在内（`src/terminal/render.zig:852-854`），会缺行                                       |
 | 读屏用 `Screen.dumpStringAlloc`            | 现成                                                                                    | 注释自称主要供单元测试（`src/terminal/Screen.zig:3611-3612`），且一次写一字节                                     |
 | **选**：注入走 `textCallback` 粘贴通道     | 多一跳编码                                                                              | 自动继承控制字节剥除（`src/input/paste.zig:46-91`），`\x03` 不会变 Ctrl+C                                         |
@@ -783,7 +868,7 @@ skill 里要求总管 `group_create` 之后**立刻** `group_set_brief` —— �
 | **选**：消息只注入通知                     | 多一次工具往返（先注入通知，再等对方拉取）                                              | 不吃对方上下文；主动拉取本身带判断力                                                                              |
 | 消息注入正文                               | 零往返                                                                                  | 长正文灌爆对方上下文；替 AI 做了「现在必须处理」的决定                                                            |
 | **选**：skill 存 user + resources 双层     | 一套查找逻辑                                                                            | 与 themes 同构（`src/config/theme.zig:8-12`）；可进 dotfiles；升级不覆盖                                          |
-| skill 塞进 `src/config/Config.zig`         | 该文件已 11120 行；扁平 KV                                                              | 多段自然语言塞不进 KV，要么超长单行要么发明多行块语法                                                             |
+| skill 塞进 `src/config/Config.zig`         | 该文件已 11336 行；扁平 KV                                                              | 多段自然语言塞不进 KV，要么超长单行要么发明多行块语法                                                             |
 | skill 编译进二进制                         | 最省运行时                                                                              | 直接违背 R7「可维护、用户能改能加」                                                                               |
 | **选**：判断在提示词、约束在程序           | 两处维护                                                                                | 语义判断会随 UI 改版烂掉；而提示词会被长会话冲掉，程序不会                                                        |
 | 监督判断做成纯程序状态机                   | 可测试                                                                                  | 「没必要再继续」是语义判断，写死判据随被监督程序改版失效                                                          |
@@ -792,11 +877,13 @@ skill 里要求总管 `group_create` 之后**立刻** `group_set_brief` —— �
 | **选**：不提供任何任务工具                 | 总管做不了跨任务全局调度                                                                | 任务载体 schema 各异必成半吊子；与用户已有工具打架会产生两份真相                                                  |
 | **选**：工具面拒绝写 `cmd:` 引用           | 用 1Password 的用户得自己把那一行写进文件（agent 可以把它念给用户）                     | `cmd:` 是唯一一种引入**新代码**的引用，其余三种只搬运用户已经放好的数据；写一条等于让 Polter 在授权结束之后自己去跑 |
 | **选**：关闭插件只能由用户做               | 总管收拾不了一个吵闹的通知渠道                                                          | 通知是挂机时用户**唯一**的知情通道，能掐掉它等于能给自己关灯；与 `held` 那条"只有用户能设"同形                     |
-| **选**：`plugin_test` 对存档插件不起第二个实例 | 测不出"这个 dsn 到底连不连得上"，只能报正在跑的那个实例的状况                        | 协议无干跑字段且宿主强制不了；握手本身有副作用；两个实例会把每条消息各存一遍                                       |
+| **选**：`plugin_test` 从不起第二个实例         | 测不出"这个 dsn 到底连不连得上"，只能报正在跑的那个实例的状况                        | 协议无干跑字段且宿主强制不了；握手本身有副作用；两个实例会把每件事各处理一遍                                       |
+| **选**：插件用同一个工具面、同一套线协议，而不是一份 SDK | 插件能做的事从此跟着工具面走，加一个方法就多一个插件能调的东西 | 一份手写的 SDK 就是第二份清单，而第二份清单会漂移——`Kind` 那个 bug 出过两次，两次都是清单漏了一项。见 [plugins.md](plugins.md) 第三节 |
+| **选**：插件永远不是总管，且 `shielded` 对它绝对 | 一个插件够不着被监管的终端，也够不着护盾终端，哪怕用户信任它 | 方向：放宽容易收紧难。授权的路留着，形状和 `held`/`shielded` 一样——**只有用户能设**。而 `terminal_action` 刚证明过第二扇门会漏掉第一扇门的所有闸 |
 
 ## 未决问题
 
-1. 服务端线程在 Ghostty 进程内挂在哪一层 —— 是否存在可复用的 app 级后台循环，还是需要新起一条线程再经 `App.Mailbox.push`（`src/App.zig:617-623`）回主线程。
+1. 服务端线程在 Ghostty 进程内挂在哪一层 —— 是否存在可复用的 app 级后台循环，还是需要新起一条线程再经 `App.Mailbox.push`（`src/App.zig:3499-3505`）回主线程。
 2. sidecar 的进程模型 —— 每个 AI 进程起一个实例（stdio transport），还是一个常驻实例多路复用。本设计倾向前者且不负责其生命周期（由 AI 客户端按其 MCP 配置拉起），但仓库内无可参照先例。
 3. 文本与回车两步的原子提交是否需要新增批量写入原语（见「原子性与竞态守卫」）。
 4. 「最近 N 行」的 selection / pin 构造方式。

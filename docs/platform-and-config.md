@@ -274,7 +274,7 @@ macOS 的全局键绑定用 `CGEventTap` 实现，`GlobalEventTap` 是单例并�
 
 ### AppleScript 与 App Intents
 
-`macos/Ghostty.sdef:5-297` 的 Ghostty Suite 含 4 个 class（`application`/`window`/`tab`/`terminal`）、1 个 record-type（`surface configuration`）、4 个 enumeration（split direction/input action/mouse button/scroll momentum）和 16 条 command；`:298` 之后是 Standard Suite。
+`macos/Polter.sdef:5-297` 的 Ghostty Suite 含 4 个 class（`application`/`window`/`tab`/`terminal`）、1 个 record-type（`surface configuration`）、4 个 enumeration（split direction/input action/mouse button/scroll momentum）和 16 条 command；`:298` 之后是 Standard Suite。
 
 `macos/AGENTS.md:19-23` 硬性规定 sdef 顶层定义顺序必须是 Classes → Records → Enums → Commands。入口与对象访问器要用 `NSApp.isAppleScriptEnabled` 与 `NSApp.validateScript(command:)` 守卫（`macos/AGENTS.md:16-18`，实际用法可见 `macos/Sources/Features/AppleScript/ScriptTerminal.swift:37`），整体受配置项 `macos-applescript` 控制，默认 `true`（`src/config/Config.zig:3489`）。测试时 `osascript` 必须用 app bundle 的绝对路径而不是应用名，以免打到错误的应用（`macos/AGENTS.md:24-34`）。
 

@@ -24,7 +24,7 @@
 
 ## 一句话概括
 
-Poltergeist 不发明新的 tab 机制。它需要的只是「把一个 per-surface 的枚举状态送到 tab 上并画出来」，而 Ghostty 里已经有 `readonly`（`src/apprt/action.zig:349-350`）和 `progress_report`（`src/apprt/action.zig:327`）两条把核心状态送到两端各自渲染的完整范本；本章的工作是选一条复用，并说清为什么不走「改标题」这条看起来更便宜的路。
+Poltergeist 不发明新的 tab 机制。它需要的只是「把一个 per-surface 的枚举状态送到 tab 上并画出来」，而 Ghostty 里已经有 `readonly`（`src/apprt/action.zig:354`）和 `progress_report`（`src/apprt/action.zig:331`）两条把核心状态送到两端各自渲染的完整范本；本章的工作是选一条复用，并说清为什么不走「改标题」这条看起来更便宜的路。
 
 ## 设计目标与约束
 
@@ -32,7 +32,7 @@ Poltergeist 不发明新的 tab 机制。它需要的只是「把一个 per-surf
 
 - **R5** —— 窗口是用户自己逐个打开、按屏幕布局摆好的，窗口位置属于用户的工作记忆，Poltergeist 不得擅自重排。
 - **R4** —— 全系统只有「停掉监控」一个停止动作，因此 tab 标记只表达状态，不承担任何开关职责，点它不等于开关监督。
-- **R8** —— 标记只表达工作状态，不表达任务内容；tab 上不出现任务名、进度百分比这类任务信息。注意 Ghostty 现有的 `progress_report`（`src/apprt/action.zig:326-327`）恰恰是「把任务进度送上界面」的通道，本设计明确不复用它的语义，只借它的实现形状。
+- **R8** —— 标记只表达工作状态，不表达任务内容；tab 上不出现任务名、进度百分比这类任务信息。注意 Ghostty 现有的 `progress_report`（`src/apprt/action.zig:330-331`）恰恰是「把任务进度送上界面」的通道，本设计明确不复用它的语义，只借它的实现形状。
 
 ## macOS 侧现状：一个 tab 就是一个窗口
 
@@ -88,7 +88,7 @@ macOS 上每个 tab 实际是一个独立 `NSWindow`，靠 AppKit 的 tab 组机
 
 关键在于 **Ghostty 自己表达瞬时状态用的不是 override，而是「合成期前缀」**：`computeTitle` 在响铃且 `bell-features` 含 `title` 时拼 `"🔔 "`（`:902-909`），而且 `applyTitleToWindow` 对 override 也照样过一遍 `computeTitle`（`:919-924`），所以前缀作用在 override 之外、不占 override 通道。
 
-override 通道被谁占着：`set_tab_title` apprt action 直接写 `controller.titleOverride`（`macos/Sources/Ghostty/Ghostty.App.swift:1671-1680`）、内联重命名提交也写同一字段（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:821-828`）、窗口状态恢复还要写回它（`macos/Sources/Features/Terminal/TerminalRestorable.swift:172`）。另外窗口标题的 didSet 会把标题同步进 `tab.attributedTitle`（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:394-406`），所以改窗口标题即改 tab 标题，两者不是独立通道。
+override 通道被谁占着：`set_tab_title` apprt action 直接写 `controller.titleOverride`（`macos/Sources/Ghostty/Ghostty.App.swift:1749-1755`）、内联重命名提交也写同一字段（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:821-828`）、窗口状态恢复还要写回它（`macos/Sources/Features/Terminal/TerminalRestorable.swift:172`）。另外窗口标题的 didSet 会把标题同步进 `tab.attributedTitle`（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:394-406`），所以改窗口标题即改 tab 标题，两者不是独立通道。
 
 ### GTK
 
@@ -119,24 +119,24 @@ override 通道被谁占着：`set_tab_title` apprt action 直接写 `controller
 | 3    | 借用 GTK 的 `needs-attention`           | 淘汰           |
 | 4    | 新增 apprt action，两端各自渲染         | 推荐           |
 
-**候选 1 淘汰**，因为它抢用户命名车道 —— 两端的 override 字段都已被用户重命名与 `set_tab_title` 占用（`macos/Sources/Ghostty/Ghostty.App.swift:1671-1680`、`src/apprt/gtk/class/application.zig:3087-3106`）。Poltergeist 每刷新一次状态就抹掉一次用户起的名字，而用户一旦自己改名，状态标记又会消失。这是功能缺陷，不是审美问题。
+**候选 1 淘汰**，因为它抢用户命名车道 —— 两端的 override 字段都已被用户重命名与 `set_tab_title` 占用（`macos/Sources/Ghostty/Ghostty.App.swift:1749-1755`、`src/apprt/gtk/class/application.zig:3087-3106`）。Poltergeist 每刷新一次状态就抹掉一次用户起的名字，而用户一旦自己改名，状态标记又会消失。这是功能缺陷，不是审美问题。
 
 **候选 2 保留为降级路径。** 它不抢车道，是 Ghostty 表达瞬时状态的既有做法（GTK 的 `closureComputedTitle` 拼 `"🔔 "` / `"🔍 "` 前缀在 `src/apprt/gtk/class/tab.zig:526-534`，macOS 的 `computeTitle` 拼 `"🔔 "` 在 `macos/Sources/Features/Terminal/BaseTerminalController.swift:902-909`）。但要诚实写明它**不是零成本**：GTK 侧要改 `closureComputedTitle` 的签名（`src/apprt/gtk/class/tab.zig:482-490`）、`src/apprt/gtk/ui/1.5/tab.blp:11-18` 的绑定、并给 `Tab` 加属性；macOS 侧要改 `computeTitle` 与它的触发源。它省下的只是 `include/ghostty.h` 同步、`CValue` 与两端 action 分发那一层。
 
 **候选 3 淘汰**，三条独立死因已在 GTK 现状一节列出：布尔（`src/apprt/gtk/class/tab.zig:459`）/ 被响铃占用（`:445-460`）/ 选中即清（`src/apprt/gtk/class/window.zig:1690-1692`）。
 
-**候选 4 推荐。** 范本齐全（`readonly` 那一支在 `src/apprt/action.zig:349-350`），ABI 风险可控，展开见下一节。macOS 侧仿 `tabColorIndicator`（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:28-32`）加指示器不是独立候选，而是候选 4 在 macOS 侧的渲染载体。
+**候选 4 推荐。** 范本齐全（`readonly` 那一支在 `src/apprt/action.zig:354`），ABI 风险可控，展开见下一节。macOS 侧仿 `tabColorIndicator`（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:28-32`）加指示器不是独立候选，而是候选 4 在 macOS 侧的渲染载体。
 
 ## 推荐方案的完整链路
 
 照 `readonly` 的形状描述，逐跳给出：
 
-1. 核心侧加一个 per-surface 字段。范本是 `readonly: bool = false`（`src/Surface.zig:164-168`），本设计取一个小枚举而非布尔。
-2. 状态变更时立刻发 apprt action。范本是 `.toggle_readonly` 分支翻转字段后 `performAction(.readonly, on/off)`（`src/Surface.zig:5426-5434`）。
-3. 在 `Action` 里加一支，载荷是 `enum(c_int)`。范本是 `readonly: Readonly`（`src/apprt/action.zig:349-350`）与 `pub const Readonly = enum(c_int) { off, on }`（`:667-674`）。
-4. 必须同步 `include/ghostty.h`。`Action.Key` 有 `checkGhosttyHEnum(Key, "GHOSTTY_ACTION_")` 测试（`src/apprt/action.zig:432-434`），载荷枚举各自也有一个（如 `:671-673`）；对照现有条目是 `include/ghostty.h:972` 的 `GHOSTTY_ACTION_READONLY`、`:666-668` 的 `ghostty_action_readonly_e`、`:1016` 的联合体成员。
-5. `CValue` 是按 `Key` 枚举 comptime 生成的 extern union（`src/apprt/action.zig:437-459`），并带 `@sizeOf(CValue) == 24` 的 ABI 断言（`:467-476`）。**这就是本设计把载荷定成小枚举而不是结构体的理由** —— `enum(c_int)` 不会撑破断言，结构体可能会。
-6. macOS 落点二选一：照 `setReadonly` 发 NotificationCenter 通知（`macos/Sources/Ghostty/Ghostty.App.swift:1086-1109`），或照 `progressReport` 直接写 `surfaceView` 属性（`:2055-2062`）。渲染挂到 `tab.accessoryView` 那个 NSStackView（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:163-171`）；`readonly` 现有的徽章画在 SurfaceView 叠层里（`macos/Sources/Ghostty/Surface View/SurfaceView.swift:86-90`），本设计要的是 tab 上而非 surface 上。
+1. 核心侧加一个 per-surface 字段。范本是 `readonly: bool = false`（`src/Surface.zig:165-169`），本设计取一个小枚举而非布尔。
+2. 状态变更时立刻发 apprt action。范本是 `.toggle_readonly` 分支翻转字段后 `performAction(.readonly, on/off)`（`src/Surface.zig:5793-5801`）。
+3. 在 `Action` 里加一支，载荷是 `enum(c_int)`。范本是 `readonly: Readonly`（`src/apprt/action.zig:354`）与 `pub const Readonly = enum(c_int) { off, on }`（`:667-674`）。
+4. 必须同步 `include/ghostty.h`。`Action.Key` 有 `checkGhosttyHEnum(Key, "GHOSTTY_ACTION_")` 测试（`src/apprt/action.zig:438`），载荷枚举各自也有一个（如 `:671-673`）；对照现有条目是 `include/ghostty.h:984` 的 `GHOSTTY_ACTION_READONLY`、`:666-668` 的 `ghostty_action_readonly_e`、`:1016` 的联合体成员。
+5. `CValue` 是按 `Key` 枚举 comptime 生成的 extern union（`src/apprt/action.zig:443-465`），并带 `@sizeOf(CValue) == 24` 的 ABI 断言（`:467-476`）。**这就是本设计把载荷定成小枚举而不是结构体的理由** —— `enum(c_int)` 不会撑破断言，结构体可能会。
+6. macOS 落点二选一：照 `setReadonly` 发 NotificationCenter 通知（`macos/Sources/Ghostty/Ghostty.App.swift:1162`），或照 `progressReport` 直接写 `surfaceView` 属性（`:2055-2062`）。渲染挂到 `tab.accessoryView` 那个 NSStackView（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:163-171`）；`readonly` 现有的徽章画在 SurfaceView 叠层里（`macos/Sources/Ghostty/Surface View/SurfaceView.swift:86-90`），本设计要的是 tab 上而非 surface 上。
 7. GTK 落点：做成 `Surface` 的 gobject 属性，getter 直读核心字段、setter 只发 notify（`src/apprt/gtk/class/surface.zig:1211-1223`，属性定义在 `:426-443`），UI 由 blp 声明式绑定（范本 `src/apprt/gtk/ui/1.2/surface.blp:83-86`），再由 `Tab` 汇总到页上。
 8. 是否自动褪去：`progress_report` 在 macOS 侧有 15 秒自动清除定时器（`macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift:22-37`），可作为参照。本设计倾向「下班」标记不自动褪去（它是判定结果，不是瞬时事件），静止类标记若上界面则应自动褪去。
 
@@ -238,9 +238,16 @@ TerminalWindow.swift:163-171       blp 声明式绑定，范本 surface.blp:83-8
 | `🔒 ◉`     | 护住 + 被按住 + 在动   |
 | `🔒 ⚑`     | 护住 + 总管            |
 
-判定在 `Bus.shield_prefix` 与 `Bus.isShielded`，拼接在
-`Surface.updatePoltergeistTabMark`。菜单项同样没有做成勾选态，理由与按住那节
-完全一致。
+判定在 `Bus.shield_prefix`（`src/poltergeist/Bus.zig:734`）与 `Bus.isShielded`
+（`src/poltergeist/Bus.zig:582`），拼接在 `Surface.updatePoltergeistTabMark`
+（`src/Surface.zig:3425`）。
+
+用户从菜单 **Keep Agents Out of This Terminal** 设它
+（`macos/Sources/App/Base.lproj/MainMenu.xib:420`，右键菜单里的同一项在
+`macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift:1642`），键绑定动作是
+`poltergeist_toggle_shielded`（`src/input/Binding.zig:731`）。**菜单项同样没有做成
+勾选态**，理由与按住那节完全一致：勾只有拉开菜单那一刻才看得见，而这一节要解决的
+就是「常驻可见」——那是 🔒 的活，不是勾的活。
 
 ### 分屏：标记退化，护盾不退化
 
@@ -344,7 +351,7 @@ R4 规定全系统只有「停掉监控」一个停止动作，因此本设计�
 - （未核实：`mergeAllWindows` 在 `tabbingMode` 为 `.disallowed` 或窗口处于原生全屏时的行为。核实方式是配置相关选项后手工点系统菜单项观察。）Ghostty 自己加 tab 时会先检查 `tabbingMode != .disallowed`（`macos/Sources/Features/Terminal/TerminalController.swift:455`），但 `mergeAllWindows` 是 AppKit 实现的，Ghostty 只覆盖了收尾。
 - （未核实：tab 徽章需要什么样的可访问性处理。核实方式是 grep `accessibilityLabel` 在 `macos/Sources/Features/Terminal/` 下的用法。）现有的 `TabColorIndicatorView` 是纯装饰的 SwiftUI Circle，没有任何 accessibility 修饰（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:684-700`），也就是说现有先例本身没做 a11y。
 - （未核实：GTK 侧是否存在与 macOS `relabelTabs()` 等价的、合并后需要手工修复的状态。核实方式是 grep `goto_tab` 在 `src/apprt/gtk/` 下的处理，看 tab bar 是否显示序号。）
-- （未核实：新增 apprt action 后 `include/ghostty/` 下的 libghostty-vt 头文件是否也要同步。核实方式是跑 `zig build test -Dtest-filter="ghostty.h"` 看还有哪些 `checkGhosttyHEnum` 命中。）已核实的是 `include/ghostty.h` 与 `src/apprt/action.zig:432-434` 的强制测试。
+- （未核实：新增 apprt action 后 `include/ghostty/` 下的 libghostty-vt 头文件是否也要同步。核实方式是跑 `zig build test -Dtest-filter="ghostty.h"` 看还有哪些 `checkGhosttyHEnum` 命中。）已核实的是 `include/ghostty.h` 与 `src/apprt/action.zig:438` 的强制测试。
 - 状态标记要不要进 macOS 窗口状态恢复：`tabColor` 与 `titleOverride` 都进了 `TerminalRestorableState`（`macos/Sources/Features/Terminal/TerminalRestorable.swift:73-78`），且 `version: Int { 7 }` / `minimumVersion: Int { 5 }`（`:61-62`）说明加字段要升版本号。但「上班 / 下班」是运行时状态，重启后监督关系是否还成立取决于 [supervisor.md](supervisor.md) 的设计，本章不单方面决定。
 
 ## 延伸阅读

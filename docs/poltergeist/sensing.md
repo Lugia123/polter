@@ -1,8 +1,9 @@
 # 感知层：屏幕静止检测
 
-> 最后更新对应的 git commit：`f81dcadc8`（`f81dcadc82ea2afdcf2dc92929037701122f05b5`，2026-08-14）
+> 最后更新对应的 git commit：`0592d045a`（若干轮改动尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**S0 已实现**（`src/poltergeist/`，接线在 `src/termio/Thread.zig`）。本章其余部分是设计推导，实现与设计的出入记在「实现与本章的出入」一节。
+> 状态：**已实现**。采样器是 termio 线程上的一个独立子结构 `Thread.Quiescence`（`src/termio/Thread.zig:132`，起停在 `src/termio/Thread.zig:485-493`），度数在 `src/poltergeist/Watcher.zig`，事件与判定在 `src/poltergeist/Sampler.zig`。本章其余部分是设计推导，实现与设计的出入记在「实现与本章的出入」与各节的注里。
+> 同一侧还挂了一件本章不管的事：终端转录（`src/termio/Termio.zig:844-851`），它和采样器共用同一把渲染锁，归 [transcript.md](transcript.md)。
 
 ## 本章覆盖什么
 
@@ -23,15 +24,15 @@
 
 ## 一句话概括
 
-感知层是**传感器**：每个被监督终端（核心侧就是一个 `Surface`，其 `id` 见 `src/Surface.zig:57-62`）配一个采样器，只产出「距离上一次可见网格内容变化过了多久」这一个标量，达到静止阈值就发一次事件。屏幕上写的是什么、对方是在思考还是在等输入，一概不判断 —— 那是总管的活（见 [supervisor.md](supervisor.md)）。
+感知层是**传感器**：每个被监督终端（核心侧就是一个 `Surface`，其 `id` 见 `src/Surface.zig:58-63`）配一个采样器，只产出「距离上一次可见网格内容变化过了多久」这一个标量，达到静止阈值就发一次事件。屏幕上写的是什么、对方是在思考还是在等输入，一概不判断 —— 那是总管的活（见 [supervisor.md](supervisor.md)）。
 
 ## 设计目标与约束
 
 对应 R1。以下五条是硬约束，本章所有取舍都回溯到这里。
 
-1. **不可见 surface 必须照样工作。** R5 的主场景是挂机过夜，而 `renderCallback` 在不可见时直接 `return .disarm`（`src/renderer/Thread.zig:646-648`），`drawFrame` 同样直接返回（`src/renderer/Thread.zig:528-529`）。可见性由 `Surface.occlusionCallback`（`src/Surface.zig:3319`）翻转：macOS 来自 `windowDidChangeOcclusionState` → `syncSurfaceTreeOcclusionState`（`macos/Sources/Features/Terminal/BaseTerminalController.swift:1281-1293`）经 `ghostty_surface_set_occlusion`（`src/apprt/embedded.zig:1759-1761`）；GTK 来自 `glareaUnmap` → `updateOcclusion`（`src/apprt/gtk/class/surface.zig:3385-3391`、`3402-3408`）。
+1. **不可见 surface 必须照样工作。** R5 的主场景是挂机过夜，而 `renderCallback` 在不可见时直接 `return .disarm`（`src/renderer/Thread.zig:646-648`），`drawFrame` 同样直接返回（`src/renderer/Thread.zig:528-529`）。可见性由 `Surface.occlusionCallback`（`src/Surface.zig:3683`）翻转：macOS 来自 `windowDidChangeOcclusionState` → `syncSurfaceTreeOcclusionState`（`macos/Sources/Features/Terminal/BaseTerminalController.swift:1288-1296`）经 `ghostty_surface_set_occlusion`（`src/apprt/embedded.zig:1783`）；GTK 来自 `glareaUnmap` → `updateOcclusion`（`src/apprt/gtk/class/surface.zig:3385-3391`、`3402-3408`）。
 2. **不能干扰渲染正确性。** 见「为什么不能自己读写 dirty 标志」。
-3. **不能新起线程。** 每个 surface 已有两条 libxev 循环：termio 线程（`src/termio/Thread.zig:279`）与渲染线程（`src/renderer/Thread.zig:279`）。再加一条等于每个终端多一份栈与调度成本。
+3. **不能新起线程。** 每个 surface 已有两条 libxev 循环：termio 线程（`src/termio/Thread.zig:294`）与渲染线程（`src/renderer/Thread.zig:279`）。再加一条等于每个终端多一份栈与调度成本。
 4. **跨平台一份实现。** 感知层落在核心 Zig 侧，不进 apprt；apprt 差异只出现在事件送到界面之后（见 [tabs.md](tabs.md)）。
 5. **与上游分叉面尽量小。** 优先「新增文件 + 少量既有文件插桩」，不改渲染热路径的语义。
 
@@ -54,10 +55,10 @@ spinner 在转，恰恰说明对方在动。把它剔掉，等于把「在动」
 
 ### 结构化信号只当可选增强，且默认关
 
-Ghostty 已解析了几路语义零歧义的信号：OSC 9 / 777 桌面通知 `show_desktop_notification`（`src/terminal/osc.zig:95`）、OSC 9;4 进度 `conemu_progress_report`（`src/terminal/osc.zig:124`）→ apprt action `progress_report`（`src/apprt/action.zig:327`）、OSC 133 语义提示符（`src/terminal/osc/parsers/semantic_prompt.zig:23-32`）。三条都不够用：
+Ghostty 已解析了几路语义零歧义的信号：OSC 9 / 777 桌面通知 `show_desktop_notification`（`src/terminal/osc.zig:95`）、OSC 9;4 进度 `conemu_progress_report`（`src/terminal/osc.zig:124`）→ apprt action `progress_report`（`src/apprt/action.zig:331`）、OSC 133 语义提示符（`src/terminal/osc/parsers/semantic_prompt.zig:23-32`）。三条都不够用：
 
 - **覆盖不全。** 最贴题的一路 —— OSC 9;5「等待输入」`conemu_wait_input`（`src/terminal/osc.zig:127`）—— 解析出来后落到 `log.debug("unimplemented OSC callback")`（`src/terminal/stream.zig:2551-2566`），没有任何消费者。
-- **语义对不上。** OSC 133 只对 `end_input_start_output` 与 `end_command` 两个动作发 surface 消息（`src/termio/stream_handler.zig:995-1010`），`Surface` 再计时后发 `command_finished`（`src/Surface.zig:1141-1170`，载荷 `src/apprt/action.zig:993-1009`）。它标的是「一条 shell 命令结束」，而 AI CLI 是长驻进程，一轮对话结束不会触发它。
+- **语义对不上。** OSC 133 只对 `end_input_start_output` 与 `end_command` 两个动作发 surface 消息（`src/termio/stream_handler.zig:995-1010`），`Surface` 再计时后发 `command_finished`（`src/Surface.zig:1226-1256`，载荷 `src/apprt/action.zig:1032-1048`）。它标的是「一条 shell 命令结束」，而 AI CLI 是长驻进程，一轮对话结束不会触发它。
 - **多一路信号就多一路口径要维护。** S0 的目标是先验证单一静止量够不够用，故默认关。开关是 `polter-structured-signals`（见配置一节）。
 
 ## 六条候选取法
@@ -93,7 +94,7 @@ Ghostty 已解析了几路语义零歧义的信号：OSC 9 / 777 桌面通知 `s
 
 ### 候选 E：字节静默计时
 
-在 `Termio.processOutputLocked`（`src/termio/Termio.zig:656`）开头打一个时间戳。该函数第一行就是 `queueRender()`（`src/termio/Termio.zig:658` → `src/termio/stream_handler.zig:99-101`），紧接着 `src/termio/Termio.zig:664-676` 就有现成的「时间戳 + 500 ms 节流」写法可照抄（字段 `last_cursor_reset: ?std.Io.Timestamp` 在 `src/termio/Termio.zig:70`）。成本是一次 store，锁已由调用方持有（`src/termio/Termio.zig:650-652`）。
+在 `Termio.processOutputLocked`（`src/termio/Termio.zig:782`）开头打一个时间戳。**落地时装的不是时间戳，是一个原子字节计数**（`self.poltergeist_bytes.fetchAdd`，`src/termio/Termio.zig:792`）：读线程加、写线程读，一个 `fetchAdd` 比一个时间戳更便宜，而「多久没吐字节」由采样那一侧从计数是否变化推出来（`src/poltergeist/Watcher.zig:31-32`）。该函数第一行就是 `queueRender()`（`src/termio/Termio.zig:795` → `src/termio/stream_handler.zig:99-101`），紧接着 `src/termio/Termio.zig:801-813` 就有现成的「时间戳 + 500 ms 节流」写法可照抄（字段 `last_cursor_reset: ?std.Io.Timestamp` 在 `src/termio/Termio.zig:84`）。成本是一次 store，锁已由调用方持有（`src/termio/Termio.zig:771-772`）。
 
 **在无人交互的前提下，pty 字节是可见网格内容变化的唯一来源，所以「一段时间没有字节」是「屏幕静止」的充分条件。** 已核实的例外全部由用户或配置驱动、挂机过夜时不发生：视口滚动（`PageList.scroll`，`src/terminal/PageList.zig:3195`）、选区（`Screen.Dirty.selection`，`src/terminal/Screen.zig:93`）、输入法预编辑与调色板（`Terminal.Dirty.preedit` / `palette`，`src/terminal/Terminal.zig:224`、`:214`）。闪烁文本不构成例外：`style.flags.blink`（`src/terminal/style.zig:34`）在 `src/renderer/` 下 grep 不到任何消费者，Ghostty 不动画闪烁文本。
 
@@ -129,9 +130,9 @@ Ghostty 已解析了几路语义零歧义的信号：OSC 9 / 777 桌面通知 `s
 
 ### 定时器挂哪
 
-挂 termio 线程既有的 libxev 循环（`src/termio/Thread.zig:279`），新增第四个 `xev.Timer`，照既有三个 timer 的写法（声明 `src/termio/Thread.zig:60`、`:65`、`:72`；init 在 `:104`、`:108`、`:112`；deinit 在 `:128-130`）。理由：
+挂 termio 线程既有的 libxev 循环（`src/termio/Thread.zig:294`），新增第四个 `xev.Timer`，照既有三个 timer 的写法（声明 `src/termio/Thread.zig:108`、`:65`、`:72`；init 在 `:104`、`:108`、`:112`；deinit 在 `:128-130`）。理由：
 
-- Termio 同时持有终端本体（`src/termio/Termio.zig:43`）、渲染状态指针（`src/termio/Termio.zig:46`）与上报用的 `surface_mailbox`（`src/termio/Termio.zig:56`），采样所需对象全在同一结构内。
+- Termio 同时持有终端本体（`src/termio/Termio.zig:44`）、渲染状态指针（`src/termio/Termio.zig:47`）与上报用的 `surface_mailbox`（`src/termio/Termio.zig:70`），采样所需对象全在同一结构内。
 - 候选 E 的时间戳插桩点本来就在同一线程的 `processOutputLocked` 里，粗筛与确认同线程，`last_output` 不需要跨线程同步。
 - 该线程的存活与可见性无关；只有 `updateFrame` 受可见性影响。
 
@@ -139,7 +140,7 @@ Ghostty 已解析了几路语义零歧义的信号：OSC 9 / 777 桌面通知 `s
 
 ### 为什么不挂 app 线程
 
-没有周期性 app tick 可用：GTK 是每次主循环迭代调一次 `core_app.tick`（`src/apprt/gtk/class/application.zig:562-566`），频率由事件决定；macOS 只在 wakeup 时经 `DispatchQueue.main.async` 调 `appTick`（`macos/Sources/Ghostty/Ghostty.App.swift:401-409`、`:107-110`，C 入口 `src/apprt/embedded.zig:1444-1448`）。想要固定节拍必须自带定时器，那就不如挂在离数据最近的 per-surface 循环上。
+没有周期性 app tick 可用：GTK 是每次主循环迭代调一次 `core_app.tick`（`src/apprt/gtk/class/application.zig:562-566`），频率由事件决定；macOS 只在 wakeup 时经 `DispatchQueue.main.async` 调 `appTick`（`macos/Sources/Ghostty/Ghostty.App.swift:419`、`:107-110`，C 入口 `src/apprt/embedded.zig:1467`）。想要固定节拍必须自带定时器，那就不如挂在离数据最近的 per-surface 循环上。
 
 ### 采样回调的算法
 
@@ -156,11 +157,22 @@ Ghostty 已解析了几路语义零歧义的信号：OSC 9 / 777 桌面通知 `s
 
 实现落在 `src/poltergeist/Sampler.zig` 的 `observe` 与 `noteActivity`，第 1 步未实现（理由见下节），第 2 步对应 `noteActivity`，第 3 步对应 `src/poltergeist/screen.zig` 的 `sample`，第 4、5 步对应 `observe`。
 
-**去抖是边沿触发**：一次静止只报一次，直到指纹再变才复位。这样总管不会被同一段静止反复叫醒。
+**去抖当初写的是纯边沿触发**：一次静止只报一次，直到指纹再变才复位。**落地时加了
+第三个事件**：`still_quiescent`（`src/poltergeist/Sampler.zig:70-79`），按
+`poltergeist-quiescence-repeat`（默认 15 分钟，`src/config/Config.zig:1338`）
+周期重报一次。
+
+改这一条的理由是：纯边沿触发下，一个整夜没动的终端只在第一次被提到，而总管的上下文
+会把那一句挤掉——**报过一次等于没报**，挂机过夜恰恰是最容易发生这件事的场景。
+
+**限制总管被打扰的频率因此换了个地方去做。** 它不再靠「一次静止只说一次」，而是靠
+`poltergeist-notice-interval`（`src/config/Config.zig:1355`）：报告不即时送达，攒在
+一个箱子里按间隔一次交出去。这个位置更对——阈值是每个终端各自的钟，十个终端就是十倍
+的噪音，而总管只有一块屏幕。
 
 ### 屏幕指纹为什么用 Wyhash
 
-仓库里已经在用：`Surface.showDesktopNotification`（`src/Surface.zig:6038`）用 `std.hash.Wyhash`（`src/Surface.zig:6041`）对 title+body 做摘要，配合时间戳实现「每秒最多一条」「相同内容 5 秒内抑制」（`src/Surface.zig:6045-6070`）。零新依赖，且那段限流结构正好是静止事件上报限流要的形状，可以一并照搬。
+仓库里已经在用：`Surface.showDesktopNotification`（`src/Surface.zig:6557`）用 `std.hash.Wyhash`（`src/Surface.zig:6560`）对 title+body 做摘要，配合时间戳实现「每秒最多一条」「相同内容 5 秒内抑制」（`src/Surface.zig:6564-6590`）。零新依赖，且那段限流结构正好是静止事件上报限流要的形状，可以一并照搬。
 
 ## 干扰项与廉价对策
 
@@ -188,7 +200,7 @@ S0 落地时有三处与上面的推导不一致，记在这里而不是偷偷�
 
 本章推荐 E+F 分工，实现只做了 F。粗筛那条门是「最近有输出 → 跳过采样」，它成立，但把它装上之后，一个正在干活的终端几乎每一拍都会走粗筛路径，于是整套机制退化成「pty 静默多久」——而滚动、选区、IME 预编辑都会改变屏幕却不产生任何 pty 字节，这些恰恰是有人在场的信号，退化后全看不见了。
 
-代价是每秒一次全屏哈希。200×60 的屏幕是 96 KB，Wyhash 一次约几十微秒，1 Hz 下可以忽略，不值得为它牺牲正确性。字节数仍然每拍上报（`silent_ms`），总管照样能自己分辨「一直在刷但没变化」和「彻底没动静」。
+代价是每秒一次全屏哈希。200×60 的屏幕是 96 KB，Wyhash 一次约几十微秒，1 Hz 下可以忽略，不值得为它牺牲正确性。每拍上报的不是字节数本身而是**由它推出来的时长** `silent_ms`：字节计数在 `Watcher.pending_bytes`（`src/poltergeist/Watcher.zig:31-32`）里累加，采完一拍就清零，只用来推 `last_byte_ms`。总管拿到的是两个时长，照样能自己分辨「一直在刷但没变化」和「彻底没动静」。
 
 **2. `tryLock` 失败按「有活动」处理，这条实现了，而且是必须的。**
 
@@ -202,10 +214,22 @@ S0 落地时有三处与上面的推导不一致，记在这里而不是偷偷�
 
 ### 事件字段只有四个
 
-- **terminal id** — 直接用 `Surface.id`（`src/Surface.zig:57-62`），它已以 `GHOSTTY_SURFACE_ID` 注入子进程环境（`src/Surface.zig:651-655`），两侧对得上号。
-- **quiescence duration** — 静止时长。
-- **changed rows ratio** — 上一次变化时的变化行数比例。
-- **screen fingerprint** — 供总管侧判重。
+当初列的四个是 terminal id / quiescence duration / changed rows ratio /
+screen fingerprint。**落地的四个不是这四个**（`src/poltergeist/Sampler.zig:49-68`）：
+
+- **`quiet_ms`** — 屏幕静止了多久。这一个原样留下了。
+- **`silent_ms`** — pty 有多久没吐字节了。**新加的**，而且它正是「spinner 在转」
+  和「彻底没动静」的分界：前者 `quiet_ms` 大而 `silent_ms` 小。两个数都给总管，
+  是因为分辨这两种情况本来就是它的活。
+- **`changed_rows` / `total_rows`** — 两个计数，不是一个比例。给分子分母而不是给
+  商，总管想要比例自己除得出来，而从一个商里回推不出「是整屏重绘还是一行在跳」。
+- **没有 screen fingerprint。** 指纹只在 `Watcher` 内部用来和上一拍比对，从不外传。
+  它对总管唯一的用处是判重，而判重已经由事件本身的三个取值（`quiescent` /
+  `still_quiescent` / `resumed`）做掉了——多给一个哈希，只是多给一样它得自己想
+  办法解释的东西。
+- **terminal id 也不在 `Report` 里。** 它是外面那一层的事：`Report` 是「这一个终端
+  的度数」，谁在报由调用方带着。`Surface.id`（`src/Surface.zig:58-63`）仍然是那个
+  id，已以 `GHOSTTY_SURFACE_ID` 注入子进程环境（`src/Surface.zig:677-681`）。
 
 **不带屏幕内容。** 三条理由：其一，时效性 —— 总管拉取时拿到的是当下的屏幕，而事件里的快照是阈值触发那一刻的旧影；其二，事件要过 mailbox、可能落日志、可能进群聊，塞进几 KB 屏幕文本会同时放大体积与隐私面；其三，感知层带内容就等于替总管决定了「该看多少」。取屏接口本章只提一句存在（`Screen.dumpString()` 在 `src/terminal/Screen.zig:3574`，渲染态版 `RenderState.string()` 在 `src/terminal/render.zig:855`），怎么暴露给总管归 [mcp.md](mcp.md)。
 
@@ -213,9 +237,9 @@ S0 落地时有三处与上面的推导不一致，记在这里而不是偷偷�
 
 ### 上报路径
 
-1. 采样定时器回调（termio 线程）→ `surface_mailbox`（`src/termio/Termio.zig:56`），推送写法照 `surfaceMessageWriter`（`src/termio/stream_handler.zig:115-126`），它先试 `.instant` 再退回 `.forever`。
-2. `Surface` 侧处理该消息 —— 现有的 `.start_command` / `.stop_command` 就是在 `src/Surface.zig:1141-1170` 这样处理的。
-3. 需要跨到 app 线程时走 `App.Mailbox.push`，它在推入后会顺带 `rt_app.wakeup()`（`src/App.zig:617-621`）—— 这正是没有周期 tick 时把事件送上去的办法。
+1. 采样定时器回调（termio 线程）→ `surface_mailbox`（`src/termio/Termio.zig:70`），推送写法照 `surfaceMessageWriter`（`src/termio/stream_handler.zig:115-126`），它先试 `.instant` 再退回 `.forever`。
+2. `Surface` 侧处理该消息 —— 现有的 `.start_command` / `.stop_command` 就是在 `src/Surface.zig:1226-1256` 这样处理的。
+3. 需要跨到 app 线程时走 `App.Mailbox.push`，它在推入后会顺带 `rt_app.wakeup()`（`src/App.zig:3499-3506`）—— 这正是没有周期 tick 时把事件送上去的办法。
 
 ### 配置项
 
@@ -239,9 +263,9 @@ poltergeist-quiescence-repeat = 15m  # 仍在静止时隔多久再报一次
 
 两个 `Duration` 换算成毫秒时取 `@max(采样间隔, ...)` 下限。整除会把亚毫秒值变成 0，而阈值为 0 会让每个终端在第二次采样就「静止」，重复间隔为 0 会让日志每秒刷一行。
 
-字段风格照仓库里语义最接近的一条 —— `notify-on-command-finish-after`（`src/config/Config.zig:1261`，类型 `Duration` 定义在 `src/config/Config.zig:10047`，消费点 `src/apprt/gtk/class/surface.zig:1176`），那也是一条「超过某时长就通知」的配置。默认值 `2m` / `1s` 是**设计建议**，不是实测结论，待 README 未决问题 1 在 S0 阶段定夺。
+字段风格照仓库里语义最接近的一条 —— `notify-on-command-finish-after`（`src/config/Config.zig:1261`，类型 `Duration` 定义在 `src/config/Config.zig:10263`，消费点 `src/apprt/gtk/class/surface.zig:1176`），那也是一条「超过某时长就通知」的配置。当初写的默认值 `2m` / `1s` 是设计建议；**落地取的是 `3m` / `15m`**（`src/config/Config.zig:1329`、`src/config/Config.zig:1338`），和本节上面那张表一致。`1s` 那个数当时说的是「重复间隔」，而一秒一条的重复间隔会把总管的箱子塞满——三个终端就是每秒三行。这两个数仍然是猜的，实测数据仍然没有，README 未决问题 1 还开着。
 
-**每终端可配怎么落地**：R6 要求每个被监督终端各自设定，但 Ghostty 的 per-surface 配置全部由全局 Config 派生（`Surface.DerivedConfig` 的赋值块，含三个 notify-on-command-finish 系列字段，见 `src/Surface.zig:420-422`），没有「某个 surface 单独写配置文件」的机制。所以 per-terminal 的阈值覆盖必须是**运行时状态**，参照 `Surface.readonly`（`src/Surface.zig:164-168`）那种 per-surface 布尔的做法，由总管在运行时设定；工具面归 [mcp.md](mcp.md)。这一层区分不写清，实现者会去 `Config.zig` 里造一堆 per-surface 字段，走上死路。
+**每终端可配怎么落地**：R6 要求每个被监督终端各自设定，但 Ghostty 的 per-surface 配置全部由全局 Config 派生（`Surface.DerivedConfig` 的赋值块，含三个 notify-on-command-finish 系列字段，见 `src/Surface.zig:439-441`），没有「某个 surface 单独写配置文件」的机制。所以 per-terminal 的阈值覆盖必须是**运行时状态**，参照 `Surface.readonly`（`src/Surface.zig:165-169`）那种 per-surface 布尔的做法，由总管在运行时设定；工具面归 [mcp.md](mcp.md)。**这一条已经落地**：工具是 `set_quiescence_threshold`（总管专属，`src/poltergeist/rpc.zig:546`），落到 `Watcher.setConfig`（`src/termio/Thread.zig:405-407`），`Config.zig` 里一个 per-surface 字段都没加。这一层区分不写清，实现者会去 `Config.zig` 里造一堆 per-surface 字段，走上死路。
 
 ### 尺度参照
 
@@ -268,14 +292,14 @@ poltergeist-quiescence-repeat = 15m  # 仍在静止时隔多久再报一次
 | D `compressionActivity`    | O(1)，单调不清零                              | 没选。只在 PageList 结构性操作里自增（`src/terminal/PageList.zig:4575`），原地改写单元格不变 → 假阴性                                                                                                  |
 | E 字节静默（选）           | 一次 store，锁已持有                          | 选作粗筛。总是有效、与可见性无关；例外全是用户交互驱动，挂机场景不发生                                                                                                                                 |
 | F 屏幕指纹（选）           | O(rows×cols)，1 Hz                            | 选作确认。不受可见性影响、不与渲染器争 dirty，顺带得到变化行数                                                                                                                                         |
-| 定时器挂 termio 线程（选） | 复用既有 libxev 循环                          | 选。数据全在 `Termio` 内（`src/termio/Termio.zig:43`、`:46`、`:56`），且与 E 的插桩点同线程                                                                                                            |
+| 定时器挂 termio 线程（选） | 复用既有 libxev 循环                          | 选。数据全在 `Termio` 内（`src/termio/Termio.zig:44`、`:46`、`:56`），且与 E 的插桩点同线程                                                                                                            |
 | 定时器挂渲染线程           | 有 `Compression` 同构先例                     | 没选。数据不在手边，且该线程的节拍受可见性与焦点影响                                                                                                                                                   |
-| 定时器挂 app 线程          | 零新定时器                                    | 没选。GTK 与 macOS 都没有周期 tick（`src/apprt/gtk/class/application.zig:562-566`、`macos/Sources/Ghostty/Ghostty.App.swift:401-409`）                                                                 |
+| 定时器挂 app 线程          | 零新定时器                                    | 没选。GTK 与 macOS 都没有周期 tick（`src/apprt/gtk/class/application.zig:562-566`、`macos/Sources/Ghostty/Ghostty.App.swift:419`）                                                                     |
 | 新起采样线程               | 每 surface 一条线程                           | 没选。栈与调度成本换不来任何东西                                                                                                                                                                       |
 | 事件带屏幕摘要             | 几 KB / 次                                    | 没选。快照会过期，且放大通道体积与隐私面。推翻条件：实测发现总管几乎每次都立刻拉取且拉取成为瓶颈，届时作为配置项而非默认                                                                               |
 | 结构化信号默认开           | 多一路口径                                    | 没选。OSC 9;5 无消费者（`src/terminal/stream.zig:2551-2566`），OSC 133 标的是 shell 命令结束（`src/termio/stream_handler.zig:995-1010`）。推翻条件：某个被监督程序开始老实发 OSC 9;5，可对该终端默认开 |
 | 变化行数比例只上报、不判断 | rows × u64                                    | 选。一旦据此判断就变成变相的 spinner 剔除，违反 R1                                                                                                                                                     |
-| Wyhash 做屏幕指纹          | 零新依赖                                      | 选。仓库已在用（`src/Surface.zig:6040`），且其限流写法可整段照搬                                                                                                                                       |
+| Wyhash 做屏幕指纹          | 零新依赖                                      | 选。仓库已在用（`src/Surface.zig:6560`），且其限流写法可整段照搬                                                                                                                                       |
 
 ## 未决问题
 
@@ -283,7 +307,7 @@ poltergeist-quiescence-repeat = 15m  # 仍在静止时隔多久再报一次
 2. 屏幕指纹的实际耗时未做基准（见上文标注）。若实测发现 1 Hz 指纹在超大视口（如 400×100）上有可测开销，把采样周期改为随静止时长指数退避。
 3. 多个被监督终端时，采样定时器是各自一份还是共用一个节拍。各自一份写起来简单（每个 termio 线程一个），共用节拍省定时器但要跨线程协调。
 4. 视口之外（scrollback 里有变化但视口没变）是否需要单独计量。本设计选择只看视口，因为总管看到的也只是视口。
-5. macOS 背景 tab 的可见性取值。（未核实：macOS 原生 NSWindow tabbing 下非活动 tab 的 `occlusionState` 运行时报什么未实测，核实方式是开两个 tab 并在 `syncSurfaceTreeOcclusionState`（`macos/Sources/Features/Terminal/BaseTerminalController.swift:1285-1293`）处观察 `visible` 取值。）GTK 侧是确定的：非活动 tab 的 GLArea 被 unmap，`visible` 变 false（`src/apprt/gtk/class/surface.zig:3385-3391`）。这条不影响结论 —— 推荐方案不依赖可见性，只是「最坏情况有多坏」的描述会变。
+5. macOS 背景 tab 的可见性取值。（未核实：macOS 原生 NSWindow tabbing 下非活动 tab 的 `occlusionState` 运行时报什么未实测，核实方式是开两个 tab 并在 `syncSurfaceTreeOcclusionState`（`macos/Sources/Features/Terminal/BaseTerminalController.swift:1292`）处观察 `visible` 取值。）GTK 侧是确定的：非活动 tab 的 GLArea 被 unmap，`visible` 变 false（`src/apprt/gtk/class/surface.zig:3385-3391`）。这条不影响结论 —— 推荐方案不依赖可见性，只是「最坏情况有多坏」的描述会变。
 
 ## 延伸阅读
 
