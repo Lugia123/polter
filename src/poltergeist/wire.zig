@@ -663,6 +663,18 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                     try s.objectField("takes_value");
                     try s.write(true);
                 }
+
+                // The mirror of the line above, and sparse for the mirror
+                // reason: fifteen of these are refused at the caller's own
+                // terminal and the rest are not, so the fifteen are what
+                // is worth saying. Present-and-false rather than
+                // present-and-true because the absent case has to be the
+                // permissive one -- a reader that does not know this key
+                // must not read its absence as a refusal.
+                if (!a.self_safe) {
+                    try s.objectField("self_safe");
+                    try s.write(false);
+                }
                 try s.endObject();
             }
             try s.endArray();

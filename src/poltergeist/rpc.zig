@@ -364,7 +364,9 @@ pub const Error = error{
     /// A watched terminal may not promote itself to supervisor.
     AlreadyWatched,
 
-    /// A terminal may not act on itself through this surface.
+    /// A terminal aimed a call at itself that would come back to it, or
+    /// would take it away before the reply could. Not every self-aimed
+    /// call is one of those -- see `selfPermitted`.
     SelfTarget,
 
     /// Something that belongs to another supervisor: a group it made, or a
@@ -743,6 +745,30 @@ pub fn target(req: Request) ?Bus.Id {
     };
 }
 
+/// Whether a request that names the caller's own terminal is nonetheless
+/// allowed through.
+///
+/// One method is, and only in part. `terminal_action` is a whole menu
+/// behind a single name, and the menu is not of one kind: `new_split`
+/// says nothing back to the caller and `close_surface` removes it. Which
+/// is which is `actions.selfSafe`, and it is a judgement -- the union
+/// carries no bit for it -- so that is where it is written down, once,
+/// exhaustively.
+///
+/// **The `else` here is deny, and that is the difference between this and
+/// the fallthrough it is fixing.** `target`'s `inline else => |v| v.id`
+/// silently *widened* what reached the self-target gate, which is how
+/// `terminal_action` got refused without anybody deciding it should be.
+/// A method added later and forgotten here is refused at its own terminal:
+/// wrong, but wrong in the direction that costs a turn and nothing else,
+/// and the caller is told plainly rather than surprised.
+pub fn selfPermitted(req: Request) bool {
+    return switch (req) {
+        .terminal_action => |v| actions.selfSafe(actions.nameOf(v.action)),
+        else => false,
+    };
+}
+
 /// Decide whether `caller` may make this request.
 ///
 /// Note what is *not* here: there is no way to hold a terminal to its work
@@ -793,12 +819,34 @@ pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
     }
 
     if (target(req)) |id| {
-        // The supervisor reaching into itself is always a mistake, and an
-        // agent typing into its own terminal through this surface would be
-        // a loop with no natural end. A plugin is no terminal, so there is
-        // nothing here for it to be: it never matches, and it is judged
-        // entirely by the target's mark below.
-        if (caller.isTerminal(id)) return error.SelfTarget;
+        // **What this gate refuses is a call that comes back to the
+        // caller, or one that takes the caller away mid-call.**
+        //
+        // The first is the loop: `terminal_send` and `terminal_key` put
+        // bytes on your own stdin and `terminal_read` hands them back, so
+        // an agent aimed at itself types, reads what it typed, and types
+        // again with no natural end. `set_watch` is the same knot in the
+        // supervision arrangement rather than in text.
+        //
+        // The second is not a loop at all. `close_surface` on yourself
+        // does happen -- and then the socket the reply was going down is
+        // gone, so the caller learns nothing about a call that succeeded.
+        //
+        // Neither is true of most of `terminal_action`, and that is the
+        // correction here. A menu item is a one-off with nothing to say
+        // back, and `new_split:right` on your own id is a terminal giving
+        // itself a second pane to run a server in -- a thing agents
+        // actually want and had no way to get. `terminal_action` was
+        // never judged against the rule above: it carries an `id`, and
+        // `target` ends in `inline else => |v| v.id`, so it arrived at
+        // this gate by falling through rather than by anybody deciding.
+        // `selfPermitted` is where the deciding happens, and for actions
+        // it is `actions.selfSafe`.
+        //
+        // A plugin is no terminal, so there is nothing here for it to be:
+        // it never matches, and it is judged entirely by the target's mark
+        // below.
+        if (caller.isTerminal(id) and !selfPermitted(req)) return error.SelfTarget;
 
         // The shield first, because it is the one answer that does not
         // depend on who is asking. See `Bus.Entry.shielded`: a shield that
@@ -914,7 +962,11 @@ pub fn errorMessage(err: Error) []const u8 {
         error.TerminalHeld => "the user is holding this terminal to its work and it cannot clock out; only the user can release it",
         error.AlreadyWatched => "a watched terminal may not promote itself; " ++
             "ask its supervisor, or ask the user",
-        error.SelfTarget => "a terminal cannot target itself",
+        error.SelfTarget => "not at your own terminal: reading your own screen, typing " ++
+            "into your own input and closing yourself are a loop or a reply you would " ++
+            "never receive. terminal_action is the exception -- most actions are fine " ++
+            "on your own id, new_split included, and terminal_actions marks the ones " ++
+            "that are not with self_safe: false",
         error.NotYours => "that one is another supervisor's: it made the group, or it " ++
             "has already claimed that terminal's notices. Leave it to them, or ask the user",
         error.Supervised => "that terminal is marked -- it is a supervisor, or somebody " ++
@@ -1763,7 +1815,7 @@ test "the supervisor may reach a watched terminal" {
     try authorize(&b, term(boss), .{ .clock_out = .{ .id = worker } });
 }
 
-test "a terminal cannot target itself" {
+test "a terminal cannot aim a call back at itself" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
@@ -1773,6 +1825,129 @@ test "a terminal cannot target itself" {
     try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
         .terminal_read = .{ .id = boss },
     }));
+    try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
+        .terminal_key = .{ .id = boss, .key = "ctrl+c" },
+    }));
+}
+
+test "a terminal may split itself, but not close itself" {
+    // The correction. `terminal_action` used to be refused at the caller's
+    // own id along with everything else, not because anybody decided it
+    // should be but because `target` hands back its `id` from a
+    // fallthrough prong. Splitting your own tab to get a pane to run
+    // something in is the case the user asked for and it now goes through.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    for ([_][]const u8{
+        "new_split:right",
+        "new_split:down",
+        "goto_split:left",
+        "toggle_split_zoom",
+        "resize_split:up,10",
+        "equalize_splits",
+        "new_tab",
+        "set_surface_title:builder",
+    }) |name| {
+        authorize(&b, term(boss), .{
+            .terminal_action = .{ .id = boss, .action = name },
+        }) catch |err| {
+            std.debug.print("\n{s} should be allowed at one's own id, got {t}\n", .{ name, err });
+            return error.TestUnexpectedResult;
+        };
+    }
+
+    // And the ones that are still refused, for the two separate reasons.
+    // These are the negative half: without them the test above would pass
+    // just as well against a gate that had been deleted outright.
+    for ([_][]const u8{
+        // Would come back to the caller.
+        "text:hello",
+        "csi:5A",
+        "esc:a",
+        "cursor_key",
+        "paste_from_clipboard",
+        "paste_from_selection",
+        "write_screen_file:paste",
+        "write_scrollback_file:paste",
+        "write_selection_file:paste",
+
+        // Would take the caller away mid-call.
+        "close_surface",
+        "close_tab",
+        "close_window",
+        "close_all_windows",
+        "quit",
+        "crash",
+    }) |name| {
+        try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
+            .terminal_action = .{ .id = boss, .action = name },
+        }));
+
+        // The same action at somebody else's terminal is not this
+        // gate's business, and never was: a supervisor closing a worker's
+        // terminal is an ordinary errand. The refusal is about *whose*.
+        try authorize(&b, term(boss), .{
+            .terminal_action = .{ .id = worker, .action = name },
+        });
+    }
+}
+
+test "an unmarked terminal may split itself too" {
+    // Not a supervisor's privilege. This one carries no mark and nobody
+    // is watching it, so it walks the reach rule's open path -- the point
+    // being that the self-target gate is what used to stop it, and
+    // nothing else does.
+    const unmarked: Bus.Id = 0x5151;
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+
+    try authorize(&b, term(unmarked), .{
+        .terminal_action = .{ .id = unmarked, .action = "new_split:right" },
+    });
+    try testing.expectError(error.SelfTarget, authorize(&b, term(unmarked), .{
+        .terminal_action = .{ .id = unmarked, .action = "close_surface" },
+    }));
+}
+
+test "aiming a governed action at yourself is answered as governed, not as self" {
+    // Ordering, and it is the whole reason the family sits on the true
+    // side of `selfSafeTag`. `SelfTarget` would send the caller reading
+    // about loops; what it needs to hear is which tool carries the rules
+    // instead. So `authorize` lets it past and the handler refuses it.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    try authorize(&b, term(boss), .{
+        .terminal_action = .{ .id = boss, .action = "poltergeist_toggle_held" },
+    });
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = boss, .action = "poltergeist_toggle_held" },
+    });
+    try testing.expectEqualStrings("NotPermitted", res.failed.code);
+}
+
+test "a typo aimed at yourself is a typo, not a self-target" {
+    // `selfSafe` answers true for a name that is not an action at all, so
+    // the caller is told about its spelling rather than about loops.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    try authorize(&b, term(boss), .{
+        .terminal_action = .{ .id = boss, .action = "new_splt:right" },
+    });
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = boss, .action = "new_splt:right" },
+    });
+    try testing.expectEqualStrings("UnknownAction", res.failed.code);
 }
 
 test "an unknown target is the host's question, not this one's" {

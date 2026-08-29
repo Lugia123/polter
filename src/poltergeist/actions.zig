@@ -34,7 +34,199 @@ pub const Entry = struct {
     /// `goto_split` does, and asking for one without the other is the
     /// commonest way to get it wrong.
     takes_value: bool,
+
+    /// Whether an agent may point this at its own terminal. See
+    /// `selfSafe`; it is the same answer, read off the same switch.
+    ///
+    /// Listed rather than left to be discovered, and the argument is the
+    /// opposite of the one that keeps the governed family *out* of the
+    /// catalogue. A governed action is refused to everyone, so an entry
+    /// for it would only ever cost a turn. These are refused to nobody --
+    /// `close_tab` on somebody else's terminal is an ordinary thing to
+    /// ask -- so they belong in the catalogue, and what an agent needs is
+    /// the one extra bit that says "not at yourself". Being told before
+    /// trying is a turn saved; being told after is a turn spent.
+    self_safe: bool,
 };
+
+/// Whether an agent may point this action at its own terminal.
+///
+/// **The line is: does the call come back to the caller.** Two ways it
+/// can, and both are refused:
+///
+///   - **It writes into the caller's own input.** `text`, `csi`, `esc`,
+///     `cursor_key` and the two pastes put bytes on the caller's stdin,
+///     which its own harness then reads, which is `terminal_send` pointed
+///     at yourself under another name. An agent that types and then reads
+///     what it typed is a loop with no natural end. The `write_*_file`
+///     three are here for the same reason and it is easy to miss: their
+///     `paste` variant pastes the path in.
+///   - **It takes the caller away mid-call.** `close_surface` and the
+///     rest are not a loop at all -- they destroy the socket the reply was
+///     going to go back down, so the caller learns nothing about a call
+///     that did happen. `crash` is the whole app.
+///
+/// Everything else is a one-off with nothing to say back, and this is not
+/// a grudging remainder: `new_split:right` on your own id is a terminal
+/// giving itself a second pane to run a server in, which is the case this
+/// function exists to allow.
+///
+/// **Exhaustive, with no `else`, and that is the expensive half of the
+/// decision.** Ninety-three prongs is a wall, and a wall is what tempts
+/// the next person to collapse it into `else => true`. It is worth the
+/// wall anyway, for two reasons a shorter shape does not have:
+///
+///   - An action upstream adds does not compile until somebody has said
+///     which side it is on, by name, in the error message. A deny-list
+///     with `else => true` would default the new one to safe -- silently,
+///     which is exactly how the Swift `Plugin.Kind` list missed `archive`
+///     and then missed `provision`.
+///   - The prongs are tags, not strings, so a rename upstream breaks the
+///     build rather than quietly moving an action to the safe side.
+///
+/// The shape weighed against it was a small deny-list matched by name with
+/// a comptime digest of the union's field names to catch drift. It is
+/// fifteen lines instead of ninety-three, and it fails loudly -- but it
+/// fails saying "something changed" rather than naming the action, and it
+/// cannot tell an addition from a rename. That is the wrong kind of loud.
+///
+/// **If you are here to add a prong: that is the question this switch
+/// exists to ask you.** Not "which list is longer", but: if an agent aims
+/// this at its own terminal, does anything come back to it, and is it
+/// still there to receive it?
+pub fn selfSafeTag(tag: std.meta.Tag(inputpkg.Binding.Action)) bool {
+    return switch (tag) {
+        // Writes into the caller's own input.
+        .text,
+        .csi,
+        .esc,
+        .cursor_key,
+        .paste_from_clipboard,
+        .paste_from_selection,
+        .write_scrollback_file,
+        .write_screen_file,
+        .write_selection_file,
+        => false,
+
+        // Takes the caller away before the reply can reach it.
+        .close_surface,
+        .close_tab,
+        .close_window,
+        .close_all_windows,
+        .quit,
+        .crash,
+        => false,
+
+        // Polter's own controls. Safe *here* only in the sense that this
+        // is not the check that stops them: `governed` does, in the
+        // handler, with an answer that says which of them to use instead.
+        // Refusing them here as well would hand back `SelfTarget` and
+        // send the caller looking at the wrong thing.
+        .poltergeist_supervisor,
+        .poltergeist_toggle_watch,
+        .poltergeist_toggle_held,
+        .poltergeist_toggle_shielded,
+        .poltergeist_toggle_chat,
+
+        // The splits, which are the point of all this.
+        .new_split,
+        .goto_split,
+        .toggle_split_zoom,
+        .resize_split,
+        .equalize_splits,
+
+        // And the rest: menu items that do a thing and say nothing back.
+        .ignore,
+        .unbind,
+        .reset,
+        .copy_to_clipboard,
+        .copy_url_to_clipboard,
+        .copy_title_to_clipboard,
+        .increase_font_size,
+        .decrease_font_size,
+        .reset_font_size,
+        .set_font_size,
+        .search,
+        .search_selection,
+        .navigate_search,
+        .start_search,
+        .end_search,
+        .clear_screen,
+        .select_all,
+        .scroll_to_top,
+        .scroll_to_bottom,
+        .scroll_to_selection,
+        .scroll_to_row,
+        .scroll_page_up,
+        .scroll_page_down,
+        .scroll_page_fractional,
+        .scroll_page_lines,
+        .adjust_selection,
+        .jump_to_prompt,
+        .new_window,
+        .new_tab,
+        .previous_tab,
+        .next_tab,
+        .last_tab,
+        .goto_tab,
+        .move_tab,
+        .move_tab_to_new_window,
+        .toggle_tab_overview,
+        .prompt_surface_title,
+        .prompt_tab_title,
+        .prompt_window_title,
+        .set_surface_title,
+        .set_tab_title,
+        .set_window_title,
+        .goto_window,
+        .toggle_readonly,
+        .reset_window_size,
+        .inspector,
+        .show_gtk_inspector,
+        .show_on_screen_keyboard,
+        .open_config,
+        .reload_config,
+        .toggle_maximize,
+        .toggle_fullscreen,
+        .toggle_window_decorations,
+        .toggle_window_float_on_top,
+        .toggle_secure_input,
+        .toggle_mouse_reporting,
+        .toggle_command_palette,
+        .toggle_quick_terminal,
+        .toggle_visibility,
+        .toggle_background_opacity,
+        .check_for_updates,
+        .undo,
+        .redo,
+        .end_key_sequence,
+        .activate_key_table,
+        .activate_key_table_once,
+        .deactivate_key_table,
+        .deactivate_all_key_tables,
+        => true,
+    };
+}
+
+/// `selfSafeTag` by name, for the caller that has a wire string rather
+/// than a tag. Pass the bare name; `nameOf` strips any `:value`.
+///
+/// **A name that is not an action at all answers `true`**, which looks
+/// like the wrong direction until you ask what the refusal would say. A
+/// typo is not a self-target problem, and answering `SelfTarget` to one
+/// sends the caller reading about loops instead of at its own spelling.
+/// Let it through and the handler says "there is no action called ...",
+/// which is the true answer. Nothing is performed either way.
+pub fn selfSafe(name: []const u8) bool {
+    const Tag = std.meta.Tag(inputpkg.Binding.Action);
+    const fields = @typeInfo(inputpkg.Binding.Action).@"union".fields;
+    inline for (fields) |field| {
+        if (std.mem.eql(u8, field.name, name)) {
+            return selfSafeTag(@field(Tag, field.name));
+        }
+    }
+    return true;
+}
 
 /// The prefix on every action that operates Poltergeist itself.
 ///
@@ -80,6 +272,7 @@ pub fn governed(name: []const u8) bool {
 /// catalogue is what an agent picks from, and an entry that is always
 /// refused is an invitation to spend a turn finding that out.
 pub const all: []const Entry = blk: {
+    const Tag = std.meta.Tag(inputpkg.Binding.Action);
     const fields = @typeInfo(inputpkg.Binding.Action).@"union".fields;
     var out: [fields.len]Entry = undefined;
     var n: usize = 0;
@@ -88,6 +281,7 @@ pub const all: []const Entry = blk: {
         out[n] = .{
             .name = field.name,
             .takes_value = field.type != void,
+            .self_safe = selfSafeTag(@field(Tag, field.name)),
         };
         n += 1;
     }
@@ -205,5 +399,77 @@ test "a governed action is real, but is not in the catalogue" {
 
     // And it is not offered, because a catalogue entry that is always
     // refused costs a turn to discover.
+    for (all) |e| try testing.expect(!governed(e.name));
+}
+
+test "the actions that come back to the caller are refused at its own id" {
+    const testing = std.testing;
+
+    // The two families, by name, so a rename that moved one to the safe
+    // side is caught here as well as by the compiler.
+    for ([_][]const u8{
+        "text",              "csi",                   "esc",
+        "cursor_key",        "paste_from_clipboard",  "paste_from_selection",
+        "write_screen_file", "write_scrollback_file", "write_selection_file",
+        "close_surface",     "close_tab",             "close_window",
+        "close_all_windows", "quit",                  "crash",
+    }) |name| {
+        if (selfSafe(name)) {
+            std.debug.print("\n{s} should not be self-safe\n", .{name});
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // And the ones this was opened for. `new_split` is the whole errand:
+    // a terminal giving itself a pane to run something in.
+    for ([_][]const u8{
+        "new_split",         "goto_split",        "toggle_split_zoom",
+        "resize_split",      "equalize_splits",   "new_tab",
+        "new_window",        "set_surface_title", "reload_config",
+        "toggle_fullscreen",
+    }) |name| {
+        if (!selfSafe(name)) {
+            std.debug.print("\n{s} should be self-safe\n", .{name});
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // The value after the colon is not part of the answer; strip it the
+    // way the caller does.
+    try testing.expect(selfSafe(nameOf("new_split:right")));
+    try testing.expect(!selfSafe(nameOf("write_screen_file:paste")));
+}
+
+test "a name that is no action at all is left for the handler to explain" {
+    const testing = std.testing;
+
+    // True, deliberately: a typo is not a self-target problem, and
+    // answering `SelfTarget` to one sends the caller reading about loops
+    // rather than at its own spelling. Nothing gets performed either way
+    // -- `known` refuses it one step later.
+    try testing.expect(selfSafe("new_splt"));
+    try testing.expect(!known("new_splt"));
+}
+
+test "the catalogue carries the same answer the gate uses" {
+    const testing = std.testing;
+
+    // One source, not two. The failure this repository has shipped twice
+    // is a second list that agreed with the first until it did not, so
+    // the entry is built from `selfSafeTag` rather than restated.
+    var refused: usize = 0;
+    for (all) |e| {
+        try testing.expectEqual(selfSafe(e.name), e.self_safe);
+        if (!e.self_safe) refused += 1;
+    }
+
+    // Fifteen at the time of writing, and the shape that matters is that
+    // it is a handful out of eighty-eight rather than the other way
+    // round: the catalogue is mostly usable at one's own terminal.
+    try testing.expect(refused > 0);
+    try testing.expect(refused * 4 < all.len);
+
+    // The governed family is not in the catalogue at all, so nothing here
+    // depends on which side of `selfSafeTag` it sits.
     for (all) |e| try testing.expect(!governed(e.name));
 }
