@@ -810,7 +810,7 @@ zig build test -Demit-macos-app=false -Demit-xcframework=false -Dtest-filter=zzz
 `terminal_open(watch: true)` 之后，新终端里出现的是：
 
 ```
-(base) lugia@... ghostty % [Polter] A supervisor is now watching this terminal
+(base) user@host ghostty % [Polter] A supervisor is now watching this terminal
     and will be told when your screen has been still for a while...
 zsh: no matches found: [Polter]
 ```
