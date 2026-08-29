@@ -5,15 +5,13 @@ description: 你不是总管，但要碰同一窗口里的另一个终端：先�
 ---
 
 You are an agent working in one terminal, and there is another terminal in
-this window you need to touch. You are not supervising anybody and you do
-not need to be. This skill is what you may do, what will refuse you, and
-why.
+this window you need to touch. You are not supervising anybody and do not
+need to be. This is what you may do, what will refuse you, and why.
 
-The case it was built for: you are changing code, and a server is running
-in the terminal next door. You interrupt it, you start it again, and the
-person can watch both things happen on a screen instead of them going on
-inside a background process nobody can see. Doing it in the open is the
-point — not a limitation to work around.
+The case it was built for: you are changing code and a server is running
+next door. You interrupt it, start it again, and the person watches both
+happen on a screen instead of inside a background process nobody can see.
+Doing it in the open is the point, not a limitation to work around.
 
 ## Look before you reach: `terminal_list`
 
@@ -49,8 +47,13 @@ you:
   supervisors get `Shielded` too, and there is no tool anywhere that lifts
   it. Do not look for another route. **Ask the person**, and say which
   terminal and what you wanted to do with it.
-- **Yourself** is not a target: acting on your own id through these tools
-  comes back as `SelfTarget`. Type in your own terminal by typing.
+- **Yourself** is a target for some things and not others. What is refused
+  with `SelfTarget` is anything that would come back to you or take you
+  away mid-call: `terminal_read`, `terminal_send` and `terminal_key` at
+  your own id (you would type, read what you typed, and type again), and
+  the handful of actions that close you or paste into you. **Everything
+  else on `terminal_action` works at your own id**, splits included — see
+  below, it is the useful one.
 
 The refusals are distinct on purpose. `Supervised` means the target is
 marked, `Shielded` means the user said no, `NotPermitted` means the tool is
@@ -80,6 +83,48 @@ pointed back at `terminal_send`, because a character is text.
 uses. `terminal_actions()` lists them all, with which of them want a
 `:value` after the name.
 
+## Giving yourself a split
+
+**You can split your own tab**, and it is the cheapest way to get a second
+terminal to run something in without taking one that belongs to somebody
+else:
+
+```
+terminal_action(my_own_id, "new_split:right")
+```
+
+`my_own_id` is what `me()` gave you. A moment later `terminal_list()` has
+one more terminal: a new id, carrying no mark, opened in your directory.
+That one is **not you** — drive it with `terminal_send` and `terminal_read`
+like any other. `new_split:down`, `goto_split:left`, `toggle_split_zoom`,
+`resize_split` and `equalize_splits` all work at your own id too, as does
+`new_tab` if you would rather it were out of sight than beside you.
+
+Three things worth knowing before you do it. The person is looking at this
+tab, so a pane appearing in it is something they will see — which is
+usually the point, and occasionally rude. The new pane starts as a shell in
+a directory with nothing running in it; whatever is supposed to happen in
+there, you have to send.
+
+And **the pane is not ready the moment you have its id.** A
+`terminal_send` fired immediately after `new_split` returns comes back as
+`SendFailed`; the identical call two seconds later goes through, because
+the pty behind the pane is still coming up. `terminal_read` it first and
+send once you can see a prompt. Do not read that first refusal as the pane
+being broken, and do not open a second one.
+
+**What is refused at your own id** is the handful that would come back to
+you or end you mid-call: the ones that write into your own input (`text`,
+`csi`, `esc`, `cursor_key`, the two pastes, and the three `write_*_file`,
+whose `paste` form pastes the path in) and the ones that take you away
+before the reply arrives (`close_surface`, `close_tab`, `close_window`,
+`close_all_windows`, `quit`, `crash`).
+
+All of them are perfectly ordinary at *another* terminal; the refusal is
+about whose. **`terminal_actions()` marks each one `self_safe: false`** —
+read the flag there rather than this list, and spend no turn on
+`SelfTarget`.
+
 ## Restarting something after a change
 
 The whole shape, in order. Suppose `./start.sh` is running next door.
@@ -98,10 +143,9 @@ The whole shape, in order. Suppose `./start.sh` is running next door.
    than dying on the change you just made. If it failed, you are the one who
    changed the code — read the error and fix it; do not restart it in a loop.
 
-Two things to keep in mind through all of it. **It is not your terminal**:
-if a person is sitting at it, you are typing over them. And **you cannot
-answer a prompt on its behalf** — if the screen is waiting on a permission
-question, that is the user's to answer and there is no tool that answers it.
+Two things throughout. **It is not your terminal**: if a person is sitting
+at it, you are typing over them. And **you cannot answer a prompt on its
+behalf** — a permission question is the user's, and no tool answers it.
 
 ## Polter's own switches are not actions
 
@@ -124,29 +168,38 @@ with no rules on it at all:
 | hold a terminal to its work, or let it go | `poltergeist_toggle_held` | nothing. The user's alone, from their menu |
 | shield a terminal, or unshield one | `poltergeist_toggle_shielded` | nothing. The user's alone |
 
-The hold is the one that shows why. With the family open, an agent could
-run `poltergeist_toggle_held` on a terminal the user was holding and clock
-it off a moment later — which is, word for word, the thing the hold exists
-to prevent. That was not a worry about what might happen; it was confirmed
-working on a real machine before the check existed.
+The hold shows why. With the family open, an agent could run
+`poltergeist_toggle_held` on a terminal the user was holding and clock it
+off a moment later — word for word the thing the hold exists to prevent.
+Not a worry about what might happen: it was confirmed working on a real
+machine before the check existed.
 
 So when one of these is what you want: say what you want and let the person
 press it. That is the same answer as for a shielded terminal, and for the
 same reason.
 
+## If somebody puts you in a group
+
+A supervisor may `group_add` you. Then `group_read(group, since)` is how you
+see what was said, `group_post(group, text)` how you answer, and
+`group_members(group)` and `group_list()` who and where. `group_history` pages
+further back than the group still holds.
+
+**Keep what you post short.** A post wakes every member and lands in every
+member's context, so it costs its length times the membership — and context
+is the thing that actually runs out here. Say the state, the blocker, and
+what you need; leave out your reasoning and your acknowledgements. If
+somebody asked for the full detail, that is different: give it in full.
+
 ## Reading the rest
 
-`skill_read(name)` hands you any of Polter's skills, and they are
-instructions rather than reach — every terminal may read one, watched or
-not. The two worth knowing about from here:
+`skill_read(name)` hands you any of Polter's skills — instructions, not
+reach, so every terminal may read one. Two matter from here:
+**`reading-a-terminal`**, how to tell from a screen whether an agent is
+thinking, waiting on the user, finished or dead, before you decide it is
+stuck; and **`supervising`**, what a supervisor may do that you may not and
+how the marks in `terminal_list` got there.
 
-- **`reading-a-terminal`** — how to tell, from what is on a screen, whether
-  what you are looking at is thinking, waiting on the user, finished, or
-  dead. Read it before you decide a terminal is stuck.
-- **`supervising`** — what a supervisor may do that you may not, and how
-  the marks you see in `terminal_list` got there. Read it if you were told
-  to mind other terminals, or if you want to know why something refused you.
-
-If the work turns out to need standing — several terminals, kept track of
-over hours, told about when they go quiet — `become_supervisor` is open to
-you, and `supervising` is then the skill to follow.
+If the work turns out to need standing — several terminals, tracked over
+hours, reported on when they go quiet — `become_supervisor` is open to you,
+and `supervising` is then the skill to follow.

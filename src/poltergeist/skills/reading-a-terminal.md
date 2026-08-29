@@ -11,6 +11,10 @@ what you see, fix this file rather than working around it.
 You get here after `terminal_read`. You are looking at one screen and
 deciding which of a handful of situations it is.
 
+Most of this is judgement and applies whoever you are. The exception is
+`clock_out` below: it belongs to a supervisor, and an unmarked terminal
+calling it gets `NotPermitted`. Everything else here you can act on.
+
 ## Thinking
 
 The agent is working and simply has not printed anything conclusive yet.
