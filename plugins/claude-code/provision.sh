@@ -173,4 +173,67 @@ printf '%s\n' "$skills" | sed 's/},{/}\
   fi
 done || status=1
 
-exit "$status"
+[ "$status" = 0 ] || exit "$status"
+
+# --- skills that are no longer shipped --------------------------------------
+#
+# Installing without removing is not synchronising. A skill deleted from
+# Polter went on living in every machine that had ever been given it: the
+# three `mode-*` skills went with the work modes they described, and months
+# later were still in `~/.claude/skills/`, still being matched against what
+# users asked for, still telling agents to call a tool that no longer
+# exists. Nothing anywhere would ever have taken them away.
+#
+# **The `polter-` prefix is treated as this plugin's namespace**, not merely
+# as a way of avoiding collisions. That is a wider claim on the user's
+# directory than "we will not overwrite your files", and it is made
+# deliberately: the alternative -- deleting only entries carrying a marker
+# we started writing today -- cannot remove the three skills that prompted
+# this, which is to say it cannot fix the bug it was written for.
+#
+# Three checks narrow the claim to what this plugin actually writes. A
+# directory holding anything besides a single `SKILL.md`, or whose
+# frontmatter names something other than itself, is somebody else's and is
+# left alone even under the prefix.
+#
+# Pruning only ever runs after a clean install pass, and only when the line
+# actually parsed into a list of skills: an empty list is far more likely to
+# be a parse that failed than a release that ships nothing, and acting on it
+# would delete every skill on the machine.
+
+shipped=$(printf '%s\n' "$skills" | sed 's/},{/}\
+{/g' | sed -n 's/.*"name":"\([^"]*\)".*/polter-\1/p')
+
+[ -n "$shipped" ] || exit 0
+
+for dir in "$home/.claude/skills"/polter-*; do
+  [ -d "$dir" ] || continue
+
+  base=${dir##*/}
+
+  printf '%s\n' "$shipped" | grep -qxF "$base" && continue
+
+  # Exactly one entry, and it is the file this plugin writes. A skill that
+  # grew a `references/` or a script is not one of ours.
+  [ "$(ls -A "$dir")" = "SKILL.md" ] || continue
+
+  # And it calls itself what its directory calls it, which is a thing this
+  # plugin guarantees on the way in.
+  declared=$(awk '
+    NR == 1 && $0 == "---" { fm = 1; next }
+    fm == 1 && $0 == "---" { exit }
+    fm == 1 && /^name: / { sub(/^name: /, ""); print; exit }
+  ' "$dir/SKILL.md")
+  [ "$declared" = "$base" ] || continue
+
+  # Failure is not fatal. A skill that could not be removed is stale, which
+  # is what it already was; taking the user's whole tool surface down over
+  # it would be the worse trade.
+  if rm -rf "$dir"; then
+    echo "claude-code: removed $base, which Polter no longer ships" >&2
+  else
+    echo "claude-code: could not remove the stale skill $base" >&2
+  fi
+done
+
+exit 0
