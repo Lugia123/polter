@@ -41,7 +41,7 @@ final class PluginMenu: NSObject, NSMenuDelegate {
         }
 
         for plugin in plugins {
-            let settings = PluginSettings.load(key: plugin.key)
+            let settings = PluginSettings.load(for: plugin)
 
             // What it is for, beside its name. Two kinds are installed by
             // default and their names do not say which is which -- and one
@@ -139,9 +139,15 @@ final class PluginMenu: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
-        guard let key = sender.representedObject as? String else { return }
+        guard let key = sender.representedObject as? String,
+              let plugin = PluginCatalog.installed().first(where: { $0.key == key })
+        else { return }
 
-        var settings = PluginSettings.load(key: key)
+        // Started from what is in effect, not from the user's file alone:
+        // switching off a plugin that a release ships switched on has to
+        // write "off", and reading only the user's file would see "never
+        // configured" and toggle it to on.
+        var settings = PluginSettings.load(for: plugin)
         settings.enabled.toggle()
         do {
             try settings.save(key: key)

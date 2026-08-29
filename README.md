@@ -218,18 +218,25 @@ A plugin is a directory with a `plugin.json` and one executable. Polter
 writes JSON to its stdin; that is the whole interface, so a twenty-line
 shell script is a complete plugin.
 
-There are two kinds:
+There are three kinds:
 
 - **`notify`** -- one process per notification. Polter writes one line of
   JSON, closes stdin, and reads the exit code: `0` means delivered.
   Used when a terminal needs you.
-- **`archive`** -- **resident**. It is handed a stream of newline-delimited
-  batches from the chat log and acknowledges each one, keeping a cursor so
-  a restart picks up where it left off.
+- **`archive`** -- **resident**. It subscribes to chat as it happens and
+  acknowledges each batch. It is never handed Polter's own files: the
+  record on disk is kept whether a plugin is installed or not, and what a
+  plugin writes is an extra copy.
+- **`provision`** -- once at startup, handed a description of this build
+  (which binary, which skills, where they are) to translate into whatever
+  one AI CLI reads.
 
-Two ship with Polter: **`webhook`** (POST the notice as JSON to a URL --
-Feishu, Slack, Discord, ntfy) and **`chat-archive`** (follow the chat log
-into Postgres or a JSONL file).
+Two ship with Polter: **`archive`** (keeps an extra copy of the chat, one
+file per day, all groups in one timeline -- point it at a synced folder and
+it outlives this machine) and **`claude-code`** (registers Polter's MCP
+endpoint with Claude Code and mirrors the skills into `~/.claude/skills`).
+Notification channels are yours to drop in: there are dozens of them and
+shipping any one would date immediately.
 
 **Credentials are stored as references, never in the clear.** A parameter
 value may be `env:NAME`, `file:` a path, `keychain:service/account`, or

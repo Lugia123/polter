@@ -14,13 +14,49 @@ struct PluginSettings: Equatable {
         subsystem: Bundle.main.bundleIdentifier!,
         category: "plugins")
 
-    /// Read what is on disk. Missing or unreadable is "not configured",
-    /// which is the same as off: a plugin nobody has set up should not be
-    /// sending anything.
+    /// Read what the user has said. Missing or unreadable is "not
+    /// configured", which is the same as off: a plugin nobody has set up
+    /// should not be sending anything.
+    ///
+    /// This one looks only at the user's file. Anything showing a plugin's
+    /// state wants `load(for:)`, which also sees the defaults a release
+    /// ships with.
     static func load(key: String) -> PluginSettings {
-        guard let url = PluginCatalog.settingsURL(for: key),
-              let data = try? Data(contentsOf: url),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let url = PluginCatalog.settingsURL(for: key) else {
+            return PluginSettings()
+        }
+        return read(url) ?? PluginSettings()
+    }
+
+    /// Read two places, nearest first: the user's file, and failing that the
+    /// `settings.json` the plugin's own directory may carry.
+    ///
+    /// The same two-step the core does (`Plugin.Settings.readFirst`), and it
+    /// has to be the same or the menu would show a plugin as off while the
+    /// core is running it. **The file that exists wins whole, including when
+    /// it says off**: merging the two cannot tell "switched off" from "never
+    /// configured" -- both are `enabled == false` -- so it would switch a
+    /// plugin back on for somebody who had deliberately switched it off. A
+    /// user's file that will not parse wins too, in the same direction, for
+    /// the same reason.
+    ///
+    /// Nothing ever writes the shipped copy; `save` knows one path.
+    static func load(for plugin: Plugin) -> PluginSettings {
+        if let url = PluginCatalog.settingsURL(for: plugin.key),
+           let settings = read(url) {
+            return settings
+        }
+        let shipped = plugin.directory.appendingPathComponent("settings.json")
+        return read(shipped) ?? PluginSettings()
+    }
+
+    /// One file, or `nil` when there was no file to read at all. A file that
+    /// is there but will not parse is a `PluginSettings`, not a `nil`: it
+    /// reads as "not configured", and it stops the search.
+    private static func read(_ url: URL) -> PluginSettings? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let root = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
         else { return PluginSettings() }
 
         // The older shape was the parameters alone, with whether the plugin

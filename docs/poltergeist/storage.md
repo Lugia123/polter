@@ -1,13 +1,12 @@
 # 存档：把对话留下来
 
-> 最后更新对应的 git commit：`816b348eb`（插件改吃实时事件、`Cursor.zig` 退场这一轮改动尚在工作树里，未提交）
+> 最后更新对应的 git commit：`e172cd2ed`（`archive` 插件接手、`chat-archive` 退场这一轮改动尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**已实现**。流与记录两种形状、群名编码、按天分文件与回填都在
 > `ChatLog`（`Tree`、`encodeGroup`、`dayOf`、`backfill`）；日志序号与往回翻见
 > `ChatLog.history`、`group_history`、`ChatLine.log_seq`；插件拿到的实时事件通道在
 > `src/poltergeist/Feed.zig`，常驻存档的宿主一侧见 `Archive.zig`、`reap.zig`；
-> 插件本身在 `plugins/chat-archive/`（两个后端，
-> 见下）；工具面在 `App.pluginList` / `pluginConfigure` / `pluginTest`。
+> 插件本身在 `plugins/archive/`（见下）；工具面在 `App.pluginList` / `pluginConfigure` / `pluginTest`。
 > 宿主那一层见 [plugins.md](plugins.md)。**本章若与代码不一致，以代码为准。**
 
 ## 本章覆盖什么
@@ -172,8 +171,10 @@
 按它翻页。群内那个 `seq` 原样不动，继续只在 `Chat` 内部当成员游标用。
 
 **它是身份，不是位置。** 插件拿到它不是为了拿它回文件里定位——插件根本
-不打开那个文件——而是因为**幂等就此不是一段代码而是一条数据库约束**：
-同一条消息见两次，`ON CONFLICT (stream, seq) DO NOTHING` 之后仍然只有一行。
+不打开那个文件——而是因为**幂等有了一个可以挂的东西**：一个 pg 后端的插件
+可以把它做进主键，`ON CONFLICT (stream, seq) DO NOTHING` 之后同一条消息见
+两次仍然只有一行；随构建装出去的 `archive` 更简单，它记着自己确认到哪，
+`seq` 不比那个大的直接跳过。
 正因为它是核心记下这条消息时盖上去的号，所以**日志没开就没有这个号**，
 此时什么也不发布（`App.logChat`）。
 
@@ -220,13 +221,24 @@ deadline 改成"现在"（`hurry`，而且**是黏的**——之后再起的子�
 **握手行**（`renderHello`）在流的最前面，整个会话只出现一次：
 
 ```json
-{"hello":1,"plugin":"chat-archive","cursor":1042,"groups":["*"],"params":{"backend":"postgres","dsn":"已解析出来的明文"}}
+{"hello":1,"plugin":"archive","cursor":1042,"groups":["*"],"params":{"dir":"/Volumes/backup/polter","sign_key":"已解析出来的明文"}}
 ```
 
 `params` **只在这里出现**，批次行里没有，插件必须在握手时记住它。里面的值
 已经过 `secret.resolve` 解析，插件拿到的是真 DSN 而不是 `cmd:…`。每次子进程
 重起都重新解析、重新握手——**一个锁上的密码库因此在下一次
 重起时就会失败，而不是永远用着半年前取出来的那份**。
+
+**握手也要回一行确认，和批次一样。**宿主在写这一行**之前**就把期限装上了
+（`Archive.zig` 里 `renderHello` 前面那句 `allow(timeout_ms)`），写完就等一行
+回答；`parseAck` 解析不出对象是失当（当场杀），`ok` 为 false 是「现在还不行」
+（耐心重试）。**什么都不回是最糟的一种**：`timeout_ms` 到点被杀、退避、重起、
+再被杀，外面看是一个每 `timeout_ms` + 退避重复一次的重启循环，插件自己看却像
+在闲等下一批。随构建装出去的 `archive` 有一版就是这样——它读了握手就直接去等
+批次了。挡住这件事的回归测试在 `Archive.zig`（「the archive plugin we ship
+answers the greeting the host really writes」）：它拿 `renderHello` 真正写出来
+的字节去喂**我们真正装出去的那个脚本**。手写一行握手喂进去只能证明插件和写测试
+的人想的一样。
 
 握手行里的 `cursor` **在一次新的 Polter 运行里恒为 0**：订阅从建立的那一刻
 开始，宿主手里没有任何更早的东西，也没有一个文件记着上次到哪。这不是丢了
@@ -304,15 +316,15 @@ deadline 改成"现在"（`hurry`，而且**是黏的**——之后再起的子�
 Polter 这边：
 
 - **一次运行之内**：订阅队列里还没被 `commit` 掉的那些事件，在内存里
-- **跨运行**：插件自己的库里已经有哪些 `seq`——那是插件自己的事，而
-  `(stream, seq)` 主键让它重复看到一条也只存一行
+- **跨运行**：插件自己那边已经有哪些 `seq`——那是插件自己的事，而 `seq`
+  是身份，所以它有办法自己判重（数据库里做成主键，文件里比一个数）
 
 所以 Polter 关掉时什么都不写，起来时什么都不读。**一个不存在的文件不会
 撒谎**，而一个被 dotfiles 同步到另一台机器上的游标文件会。
 
 ## 一个插件，多个后端
 
-**「聊天存档」是一个插件，pg 只是它当前用的后端。**
+**「聊天存档」是一个插件，落到哪儿只是它的一个参数。**
 
 不是 `archive-pg`、`archive-mysql`、`archive-minio` 三个。理由有两条：
 
@@ -327,112 +339,94 @@ Polter 这边：
 {
   "enabled": true,
   "params": {
-    "backend": "postgres",
-    "dsn": "cmd:op read op://Private/polter-pg"
+    "dir": "/Volumes/backup/polter",
+    "sign_key": "cmd:op read op://Private/polter-archive"
   }
 }
 ```
 
-以后加 mysql 是**给它加一个后端**，不是多一个插件。
+以后加 mysql 是**给它加一个后端**（多一个参数取值），不是多一个插件。
 
-## chat-archive：这个插件长什么样
+## archive：这个插件长什么样
 
-`plugins/chat-archive/`，随构建装进 resources，用户不需要装任何东西。
+`plugins/archive/`，随构建装进 resources，用户不需要装任何东西，而且**预装即开**
+——目录里带一份 `settings.json`（`{"enabled": true, "params": {}}`），用户配置目录
+里那份压过它，包括写着「关」。为什么这不是插件模型里的一个特权位，见
+[boundary.md](boundary.md) 第二节。
 
-**python3，只用标准库。**不用 psycopg2、不用 jq、不用 pip。理由按重要性：
+**它写的是额外的一份。**核心的流和记录不因它开没开而改变，**也不给它供数据**：
+它订阅的是 `Feed.zig` 上的实时事件，不认识任何路径。所以它掉线只丢它自己那一份。
+
+### 按天，不按群
+
+核心的记录是 `<群>/<日期>.jsonl`，回答「那摊活说了什么」。这一份是
+`<日期>.jsonl`，**所有群一条时间线**，回答「那天晚上按顺序发生了什么」。
+
+这个差别是承重的。[gaps.md](gaps.md) 里那条反对——插件不该在另一个路径上再写
+一份形状一模一样的平文件，那是把核心已经在做的事重做一遍——**依然成立**，
+`chat-archive` 的 `file` 后端就是死在它上面的。避开它的办法不是不写，是**写
+另一种切法**：一个 `tail -f` 就能看完一晚上的文件，核心那边没有。
+
+落点缺省是 `~/.local/state/polter/archive`（有 `XDG_STATE_HOME` 就在它下面）。
+**那是一个起点，不是兜底**——「本地有没有一份能读的记录」永远是核心的事，
+和这个插件开不开无关；缺省存在只是为了让「把它指到同步盘/移动硬盘上」是改一个
+值，而不是先想一个路径出来。
+
+### python3，只用标准库
+
+不用 pip、不用 venv、不用第三方库。理由按重要性：
 
 1. **它必须真的解析 JSON，而 shell 做不对。**要读的是 `messages` 数组——嵌套
    对象、转义引号、CJK 的 `\uXXXX`、正文里可能含 `}`。用 `sed` 读它必然在
    某些输入上读错，而**读错的后果是回一个它其实没存的 cursor**，正是整套
    确认机制要防的那个静默的洞。
-2. `jq` 能救 shell，但它是第三个依赖，而且不在 stock macOS 里。`psql` 是
-   清单已经声明的依赖，装了 pg 客户端的机器上 `python3` 几乎必然在。
-3. 只用标准库意味着没有 venv、没有 pip、没有版本漂移。
+2. `jq` 能救 shell，但它是一个依赖，而且不在 stock macOS 里；`python3` 在。
+3. 只用标准库意味着没有版本漂移，插件被拷到别人机器上仍然能跑。
 
-**两个后端**：`postgres`（要 `psql` 和一个 `dsn`）与 `file`（什么都不要，
-把 NDJSON 追加到**用户点名的一个路径**）。第二个不是凑数——**一个后端不构成对
-"后端"这个接口的证明**，而且它让一个不碰数据库的人也能验证整条链路。
+### 先答应，再说别的
 
-**`file` 后端没有默认落点，这是它和从前唯一实质的区别。** 它以前只要被打开就在
-`$XDG_STATE_HOME/polter/archive/` 下写一份 NDJSON——和上面那份记录同一种形状，
-差一个目录。核心已经在本地留一份能读的了，插件再默默写第二份不增加任何东西，
-还制造一种错觉：让人以为「有没有记录」取决于这个插件开没开。
+握手行被当成第一条要确认的行：`greet()` 解析它、把落点目录建出来，然后
+**立刻回一行** `{"ok":true}`；建不出来就回 `{"ok":false}` 再 exit 2——宿主
+读到 false 是「等会儿再试」，而**读不到任何东西是「它挂了」**。
 
-`path` 参数的三条限制，理由是同一条——**它是工具面能写的参数，而被写进去的是
-聊天正文**：绝对路径（相对路径会按 Polter 的启动目录解析，那不是任何人选的
-地方）、`.jsonl` 结尾（挡住 `~/.zshrc`、`~/.ssh/authorized_keys` 这类文件；对
-真要导出的人零成本）、父目录必须已存在（在别人选的路径上造目录，比写一个被点名
-的文件是更大的能力）。
+### 确认之前先落盘
 
-### 表结构
+一批写完 `flush` + `fsync` 再回 `{"ok":true}`。**确认是一句承诺，而关于还在
+缓冲区里的字节的承诺，这个进程自己退出一次就能毁掉。**写到一半失败时只确认
+已经落盘的那一条（`{"ok":true,"cursor":N}`，那个 N 取自这一批的 `messages`，
+按定义 ≤ `through`），一条都没落就回 `{"ok":false}`——**宁可重发，绝不撒谎**。
 
-```sql
-CREATE TABLE IF NOT EXISTS <schema>.polter_chat (
-  stream text NOT NULL, seq bigint NOT NULL, at_ms bigint NOT NULL,
-  "group" text NOT NULL, author text NOT NULL,
-  summary boolean NOT NULL DEFAULT false, text text NOT NULL,
-  stored_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (stream, seq)
-);
+`seq` 还兼作去重键：宿主会重发一个没收到确认的批次，插件记着自己确认到哪，
+`seq <= acked` 的直接跳过。这就是「重复是常态，去重是你的事」在文件后端上的
+全部实现。
+
+### `sign_key`：可选的凭据
+
+填了它，每行带一个 HMAC-SHA256，签的是这一行**除 `hmac` 外**的规范形式
+（键排序、无多余空格）。这不是加密——正文照样是明文——而是**让被改过的副本
+说得出自己被改过**。这一份常常落在比 state 目录更没人管的地方（同步盘、移动
+硬盘、公司共享），而一份没人能验的记录，在真需要拿它当证据的那天等于没有。
+
+**它是清单里唯一标了 `"secret": true` 的参数**，因为拿到这个密钥的人可以改写
+存档再重新签一遍。工具面据此拒绝往里写明文（见 [mcp.md](mcp.md)）。它同时是
+本仓那条「工具面拒绝明文凭据」的安全测试**唯一的验证对象**
+（`src/build/SharedDeps.zig` 把这份清单编进二进制，`rpc.zig` 里那条测试读它）
+——所以这个标注掉了，不只是这个插件变松，是那条规则失去被检验的对象。测试自己
+也会在名单空掉时失败，理由写在那条测试里。
+
+### 不依赖任何外部东西的自检
+
+```console
+$ ./archive.py --self-test
+ok
+$ echo "EXIT=$?"
+EXIT=0
 ```
 
-**主键的两半都是承重的：**
-
-- **`seq`** 是消息在这个系统里唯一的身份。把它做进主键，**幂等就不是一段
-  代码，而是一条数据库约束**——重发写不进第二行，不依赖插件记得去查。写法
-  只有一种：`INSERT … ON CONFLICT (stream, seq) DO NOTHING`。
-- **`stream`** 不是可有可无的。两种情况会让 `seq` 单独失去唯一性：dotfiles
-  同步到第二台机器，两台的 `chat.jsonl` 都从 1 数起；或者用户清了
-  `$XDG_STATE_HOME`，本机日志从 1 重来。没有 `stream`，这两种情况下
-  `DO NOTHING` 会**静默丢掉新消息**——最坏的一种失败。
-
-**`DO NOTHING` 而不是 `DO UPDATE`**：`group_compact` 会把某个 seq 的正文改
-写成摘要并继承那条的 seq。若一次握手回拨让插件重新看到一个已存过的 seq，
-`DO UPDATE` 会用摘要覆盖掉原文——**存档因此丢掉它存在的理由**。`DO NOTHING`
-留下先到的那份，也就是更完整的那份。
-
-**没有任何标识符来自配置**：表名固定 `polter_chat`，`schema` 是唯一例外且被
-`^[a-z_][a-z0-9_]{0,62}$` 强校验后双引号包起来。标识符没有参数绑定，只能拼
-进 SQL 文本，把它开给配置就是开一条注入。
-
-### DSN 绝不进 argv
-
-Linux 上 `/proc/PID/cmdline` 全局可读，`ps` 一眼就看得见。所以 DSN 被拆成
-libpq 环境变量（`PGHOST`/`PGPASSWORD`/…），`psql` 不带任何连接参数。解析失败
-时 stderr 只说"不是 URI 也不是 conninfo"，**绝不回显值的任何片段**。
-
-### 一条长活的连接，不是一批一条
-
-稳态下 `poll_idle_ms=500`，一次对话里一批往往就是一条消息——**按批起 psql
-等于按消息起 psql**，正是本章开头否掉的做法。做法是一个长活的 `psql -f -`
-会话，SQL 从 stdin 流进去，`\echo <<polter:ok:N>>` 哨兵在 stdout 上划分工作
-单元；`ON_ERROR_STOP=1` 让任何 SQL 错误直接结束它，插件读到 EOF 就回
-`{"ok":false}` 并把句柄置空，下一批重连。**状态机因此只有两态。**
-
-整批 JSON 原样 `COPY` 进一张临时表，让 postgres 自己用 `jsonb_array_elements`
-拆——这样**没有一个字符串需要我们自己做 SQL 转义**。
-
-### 分块与部分确认
-
-一批 100 行一块、一块一个事务：全成回 `{"ok":true}`；前 k 块成功回
-`{"ok":true,"cursor":<第 k 块最后一条的 seq>}`；一块都没成回 `{"ok":false}`。
-那个 seq 取自 `messages` 自身，所以按定义 ≤ `through` 且 > 批前 `cursor`。
-
-**"绝不回一个超过 `through` 的 cursor"是结构性的**，不是靠小心：插件手里
-唯一的 seq 来源就是这一批 `messages`；握手只走 `min()` 且只在严格小于时才
-写出去；写出去之前还有一道断言，断言不成立就降级成不带 cursor 的答复。
-**宁可慢，绝不撒谎。**
-
-### 不依赖数据库的自检
-
-- `archive.py --self-test` —— 用 `file` 后端导出到临时目录，跑完整协议循环，逐条
-  断言：幂等重放、心跳不碰后端、握手回拨、群过滤后的 `through`、假后端谎报
-  `through+5` 被降级、异常之后循环还活着、CJK 与转义逐字节往返。
-- `archive.py --self-test --backend postgres` —— **自己在临时目录生成一个假的
-  `psql` 前置到 `PATH`**，断言生成的 SQL 含 `ON CONFLICT (stream, seq) DO NOTHING`、
-  COPY 那一行是单行、**假 psql 记下的 argv 里不含 DSN 的任何片段**。
-- `archive.py --print-schema` —— 把 DDL 打到 stdout，供没有 DDL 权限的角色
-  找 DBA 手工建表。
+全部在一个 `mkdtemp()` 之下跑，跑完不留东西。逐条断言：整批确认、重发的批次
+不重复写、心跳不写文件、群过滤后的 `through` 照样推进、跨午夜的一批分进两个
+文件、写到一半只确认落盘的那一条、一条都没落回 `{"ok":false}`、签名能被校验
+也能因为改了正文而对不上、以及**清单里写的缺省值和代码里用的是同一个**。
 
 ## 工具面对存档插件做什么，不做什么
 
@@ -489,12 +483,12 @@ key。插件是别人写的代码跑在你机器上——**「这个插件能读
 
 ```json
 {
-  "key": "chat-archive",
+  "key": "archive",
   "kind": "archive",
   "wants": {
     "groups": ["*"],
-    "network": true,
-    "exec": ["psql"]
+    "network": false,
+    "exec": []
   }
 }
 ```

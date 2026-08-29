@@ -1,6 +1,6 @@
 # 写一个插件
 
-> 最后更新对应的 git commit：`816b348eb`（插件改吃实时事件、`Cursor.zig` 退场这一轮改动尚在工作树里，未提交）
+> 最后更新对应的 git commit：`e172cd2ed`（多语言边车、`archive` 插件接手这一轮改动尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**已实现**，本篇每条事实都对着代码核过。宿主在
 > `src/poltergeist/Plugin.zig`，常驻那一类在 `Archive.zig` 与 `Feed.zig`，
@@ -11,7 +11,7 @@
 
 - 从零写一个最小可用的 `notify` 插件：每个文件的完整内容。
 - **不启动 Polter 怎么测自己的插件** —— 手工喂一行，以及
-  `plugins/chat-archive/archive.py` 的 `--self-test` 那种范式。
+  `plugins/archive/archive.py` 的 `--self-test` 那种范式。
 - `archive` 插件与 `notify` 的差别：常驻、订阅实时事件、确认与重发。
 - 常见错误，以及每一个在宿主侧的确切表现。
 
@@ -21,7 +21,7 @@
   的设计理由）—— 见 [plugins.md](plugins.md)。本篇是照着做的教程，那篇是规范。
 - 存档插件的确认规则、往回翻、空窗口规则 —— 见 [storage.md](storage.md)。
 - 工具面为什么这么拒 —— 见 [mcp.md](mcp.md)。
-- 仓库里那两个插件的目录约定 —— 见 [../../plugins/README.md](../../plugins/README.md)。
+- 仓库里那几个插件的目录约定 —— 见 [../../plugins/README.md](../../plugins/README.md)。
 
 ## 一句话概括
 
@@ -251,12 +251,13 @@ EXIT=1
 ### 2.2 第二层：插件自带 `--self-test`
 
 手工喂一行验不了的是**分支**：凭据缺了怎样、下游抛异常怎样、重复的输入怎样。
-仓库里的 `plugins/chat-archive/archive.py` 给了范式，**推荐照抄这个形状**：
+仓库里的 `plugins/archive/archive.py` 给了范式，**推荐照抄这个形状**：
 
-- 它有一个 `--self-test`（`archive.py:1140`），无参数时才说协议
+- 它有一个 `--self-test`（`archive.py:274`），无参数时才说协议
   （`main` 的第一行就是 `if not argv: return run()`）；
-- 自测**只驱动纯逻辑那一半**，把真正落地的那一半换成桩
-  （`archive.py` 里叫 `_Stub` / `_Thrower` / `_claiming`）；
+- 它**把逻辑那一半和落地那一半分成两个类**（`Session` 和 `Journal`），自测驱动
+  前者，需要制造失败时换掉后者（`Failing` / `AllFailing` 两个子类，一个在第二条
+  消息上抛 `OSError`，一个从不成功）；
 - 每条断言有名字，失败时打印 `expected` / `got` 并**以非 0 退出**——所以它能直接
   进 CI；
 - 所有落地目标都在一个 `tempfile.mkdtemp()` 之下，**在任何文件被打开之前**就先建
@@ -356,8 +357,8 @@ stderr 仍然是 inherit 的，那才是插件说话的地方。
 Polter 先写一行（`Archive.renderHello`）：
 
 ```json
-{"hello":1,"plugin":"chat-archive","cursor":0,"groups":["*"],
- "params":{"backend":"file","path":"/Users/you/archive/chat.jsonl"}}
+{"hello":1,"plugin":"archive","cursor":0,"groups":["*"],
+ "params":{"dir":"/Volumes/backup/polter"}}
 ```
 
 （真实的握手是**一行**，这里为了排版折了行。）
@@ -368,31 +369,34 @@ Polter 先写一行（`Archive.renderHello`）：
   0**：插件订阅的是从此刻开始发生的事件，宿主手里没有更早的东西，也没有任何
   文件记着上次到哪。这不代表你要从头存一遍——你自己的库里有什么，只有你知道。
 - **`params` 在整场对话里只出现这一次**，后面每一批都不再重复。
+- **你必须回它一行确认**，和回一个批次一模一样：`{"ok":true}` 是「我准备好了」，
+  `{"ok":false}` 是「现在还不行，等会儿再叫我」。
 
-> **示例里的 `params` 要写成真能跑通的一组。** 上面这行早先只有
-> `{"backend":"file"}`，而 `chat-archive` 的 `file` 后端**要求 `path`**：绝对路径、
-> 各段只含字母数字点杠下划线、以 `.jsonl` 结尾、**父目录必须已经存在**
-> （`archive.py` 的 `resolve_config`，`RE_EXPORT` 在 `archive.py:74`）。缺了它
-> `resolve_config` 抛 `ConfigError`，`Session` 接住之后写一行 stderr 并
-> **`sys.exit(2)`——在回出任何握手确认之前就退了**。
+> **不回，是这类插件最容易犯也最难看出来的一个错。**宿主在写握手**之前**就装上了
+> 期限（`Archive.zig` 里 `renderHello` 前面那句 `allow(timeout_ms)`），写完就
+> **等一行**。你要是读了握手就直接去等下一批，宿主等满 `timeout_ms` 把你杀掉、
+> 退避、重起、再杀——**每 `timeout_ms` + 退避一轮，永远不停**。而从你的进程里看，
+> 这和「安静地等着有人说话」长得一模一样：你什么错都没报，日志里只有宿主那句
+> `plugin <key>: out of time, stopping it`。
 >
-> 值得注意的是**宿主这边不拦**：清单里 `required` 只有 `backend`，所以用户或
-> `plugin_configure` 真的可以只配一个 `backend`，Polter 也真的会把上面那种残缺
-> 的握手写出去，然后插件当场 exit 2。**是插件在拒，不是 Polter 不写。**
+> 仓库里装出去的 `archive` 就这么错过一版。**它的 `--self-test` 全绿**，因为自测
+> 驱动的是「收到批次怎么办」，而**手工喂一行握手也验不出来**——喂的人和写插件的
+> 是同一个人，喂的是他以为的形状。真正接住它的是 `Archive.zig` 里那条测试：拿
+> `renderHello` 真正写出来的字节去跑**真正装出去的那个脚本**。
+> **验一个协议实现，两头都不能是自己写的。**
+
+> **示例里的 `params` 要写成真能跑通的一组。**一个残缺的握手示例不会被任何人
+> 发现，直到有人照抄它去搭测试桩、拿到一个非 0 退出，而示例里没有任何东西提示
+> 他缺了什么。**示例代码是会被执行的文档**，按能跑通来写。
 >
-> 这条之所以值得单独记：那一行的作用是展示**握手行的形状**，读者不会去校验它的
-> `params` 合不合法——正因为如此，一个不可能跑通的示例不会被任何人发现，直到有人
-> 照抄它去搭测试桩，拿到一个 exit 2，而示例里没有任何东西提示他缺了什么。
-> **示例代码是会被执行的文档**，按能跑通来写。
->
-> 同一件事的另一半，写 archive 插件时必须知道：**宿主只把用户配了的键写进
-> `params`，不补 schema 里的 `default`。** `Archive` 拿到的 `params` 就是
-> `<key>.json` 里那份（`src/App.zig:946` 的 `.params = settings.params`），
-> `Plugin.zig` 里没有任何读 schema `default` 的代码。所以上面这行里没有
-> `stream` —— `chat-archive` 的 `"stream": "default"` 是**插件自己**在
-> `resolve_config` 里补的（`archive.py` 的 `DEFAULTS`）。
-> **清单里写 `default` 是给设置界面和读清单的人看的，不是给宿主执行的；
-> 缺省值要在你自己的代码里兜。**
+> 写 archive 插件时必须知道的另一半：**宿主只把用户配了的键写进 `params`，
+> 不补 schema 里的 `default`。** `Archive` 拿到的 `params` 就是 `<key>.json`
+> 里那份（`src/App.zig` 的 `.params = settings.params`），`Plugin.zig` 里没有
+> 任何读 schema `default` 的代码。所以上面这行里就算没有 `dir`，插件也不会
+> 收到清单里写的那个缺省——`archive.py` 自己在 `directory_from` 里兜
+> （常量 `DEFAULT_DIR`，而它的自测有一条专门断言这个常量和清单里的 `default`
+> 是同一个）。**清单里写 `default` 是给设置界面和读清单的人看的，不是给宿主
+> 执行的；缺省值要在你自己的代码里兜。**
 
 之后每一批（`Archive.writeBatch`，`Archive.zig:439`）：
 
@@ -433,9 +437,10 @@ Polter 先写一行（`Archive.renderHello`）：
 ### 3.4 重复是常态，去重是你的事
 
 一批可能被重放（进程死在写确认之前，宿主并不知道它成没成）。
-`archive.py` 的自测第 3 条是「a replayed batch is acknowledged and stored once」
-——**照抄这条**。做法是让 `seq` 参与主键；`chat-archive` 还把 `stream` 参数放进
-主键，这样两台机器写同一个库不会撞，本地日志被清掉之后也能从头再来。
+`archive.py` 的自测里有一条「a resent batch is acknowledged again / but nothing
+is written twice」——**照抄这条**。做法看你存在哪：写数据库就让 `seq` 参与主键
+（再放一个 `stream` 之类的参数进去，两台机器写同一个库才不会撞）；写文件就像
+`archive.py` 那样记着自己确认到哪，`seq` 不比它大的直接跳过。
 
 `from` 字段**故意不在批次里**：它是 `Bus.Id`，只在一次进程运行内有效，存进数据库
 就是一个指向不存在的东西的外键，还会引来第二天就错的 join。`author` 在日志被写下
@@ -453,9 +458,43 @@ Polter 先写一行（`Archive.renderHello`）：
 - **`wants` 必须写。** 没有 `wants` 的清单等于什么都不要，而且不是悄悄不干活：
   存档插件会**根本不启动**，并被点名警告。缺省当成 `["*"]` 会让一份什么都没声明
   的清单拿到全部群，权限声明存在的意义当场归零。
-- **`wants` 是插件级而不是后端级的，所以写并集。** `chat-archive` 选 `file` 后端
-  时既不联网也不起 `psql`，声明仍然照最大能力写——会随配置缩水的声明，审计没法拿
-  它当依据。
+- **`wants` 是插件级而不是配置级的，所以写并集。**一个既能写本地文件又能推 pg 的
+  插件，即使今天配的是文件那条路，声明也要照最大能力写——会随配置缩水的声明，
+  审计没法拿它当依据。
+
+---
+
+## 三点五、给人看的那几句话怎么翻译
+
+清单里的 `name`、`description`、参数的 `title` 与 `description` 用英文写，
+**清单本身不动**；要别的语言就在插件目录里放一个边车文件：
+
+```text
+say/
+  plugin.json
+  say.py
+  i18n/zh-Hans.json
+```
+
+```json
+{
+  "name": "念出来",
+  "description": "用系统的语音把通知念出来。",
+  "params": { "voice": { "title": "用哪个声音" } }
+}
+```
+
+三件事记住就够：
+
+- **只覆盖要覆盖的那几个字段。**没写的回落到清单，也就是英文。
+- **文件名是语言标签**，`zh-Hans.json` / `ja.json` / `pt-BR.json`。匹配从具体
+  到笼统（`zh-Hans-CN` → `zh-Hans` → `zh-CN` → `zh`），**script 排在 region
+  前面**，一台说 `zh_CN` 的机器也会找到 `zh-Hans.json`。**第一个存在的文件整份
+  赢，不合并**——所以别指望往 `zh.json` 里补一句能影响 `zh-Hans.json` 的读者。
+- **只有设置界面读它。**`plugin_list` 给 agent 的是清单原文，任何机器上都一样
+  ——所以**不要把行为写进翻译里**：翻译改的是措辞，不是这个参数是什么意思。
+
+理由与完整规则见 [boundary.md](boundary.md) 第四节。
 
 ---
 
@@ -568,5 +607,6 @@ stderr**，别让 traceback 走到底——traceback 也会让退出码非 0，�
 - [ ] `wants` 写的是**并集**，不是当前配置能用到的那部分。
 - [ ] 所有异常都被接住并转成非 0 退出码 + 一行 stderr。
 - [ ] `archive`：stdout 上除了确认行没有任何东西；子进程的 stdout 没有 inherit。
-- [ ] `archive`：空批次（心跳）被正常确认；重放的批次只存一次；确认里的 `cursor` 绝不超过这一批的 `through`。
+- [ ] `archive`：**握手那一行也回了确认**；空批次（心跳）被正常确认；重放的批次只存一次；确认里的 `cursor` 绝不超过这一批的 `through`。
 - [ ] 改完清单看过 Polter 日志有没有 warn。
+- [ ] 有边车翻译的话：文件名是语言标签，覆盖的字段是清单里真的有的那些。

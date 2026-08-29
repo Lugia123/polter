@@ -17,12 +17,23 @@ struct PluginSettingsView: View {
     init(plugin: Plugin, onSave: (() -> Void)? = nil) {
         self.plugin = plugin
         self.onSave = onSave
-        _settings = State(initialValue: PluginSettings.load(key: plugin.key))
+        _settings = State(initialValue: PluginSettings.load(for: plugin))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(plugin.name).font(.title2)
+
+            // The plugin's own sentence about itself, in the reader's
+            // language when it ships one. A form built out of a stranger's
+            // schema is a list of fields with nothing saying what the thing
+            // is for.
+            if !plugin.summary.isEmpty {
+                Text(plugin.summary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             // The two kinds are switched on for different reasons and stop
             // at different moments, so the same sentence would be wrong for

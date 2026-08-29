@@ -4658,9 +4658,10 @@ test "the shipped manifests mark their credentials, so the guard has something t
     // one is a credential, so every rule above is worth exactly what the
     // shipped `plugin.json` files declare. Nothing else in the build reads
     // them at compile time, which means an author dropping `"secret": true`
-    // would turn `plugin_configure` into a way to point the user's
-    // notification channel somewhere of an agent's choosing -- and every
-    // test in this file would still pass. This is the one that would not.
+    // would turn `plugin_configure` into a way to put a long-lived
+    // credential of an agent's choosing on the user's disk in plaintext --
+    // and every test in this file would still pass. This is the one that
+    // would not.
     //
     // Embedded rather than read at runtime: a test that goes to the
     // filesystem passes when the file is missing, and missing is the
@@ -4668,20 +4669,23 @@ test "the shipped manifests mark their credentials, so the guard has something t
     const shipped = [_]struct {
         manifest: []const u8,
         /// The parameters whose value is a credential, whatever they are
-        /// named. A webhook URL does not look like one and is: whoever
-        /// holds it speaks as the user, and whoever rewrites it decides
-        /// where the user's notices go instead.
+        /// named. A signing key does not look like a password and is one:
+        /// whoever holds it can rewrite the archive and sign it again, so
+        /// every line in it goes back to saying whatever they like.
         credentials: []const []const u8,
     }{
         .{
-            .manifest = @embedFile("plugin_manifest_webhook"),
-            .credentials = &.{"url"},
-        },
-        .{
-            .manifest = @embedFile("plugin_manifest_chat_archive"),
-            .credentials = &.{"dsn"},
+            .manifest = @embedFile("plugin_manifest_archive"),
+            .credentials = &.{"sign_key"},
         },
     };
+
+    // A list with nothing in it would make everything below pass by not
+    // running, which is worse than having no test at all: a security check
+    // that cannot fail reads, from the outside, exactly like one that keeps
+    // passing. When the last shipped plugin holding a credential goes, this
+    // is what says so.
+    try testing.expect(shipped.len > 0);
 
     inline for (shipped) |s| {
         var parsed = try std.json.parseFromSlice(

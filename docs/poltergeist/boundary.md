@@ -1,10 +1,10 @@
 # 边界：什么是功能，什么是扩展
 
-> 最后更新对应的 git commit：`816b348eb`
+> 最后更新对应的 git commit：`e172cd2ed`（第四节的多语言边车这一轮改动尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
-> 状态：**本轮决策记录，实现进行中。** 四条决定都已拍板，落地分散在
-> `Plugin.zig`、`Archive.zig`、`provision.zig` 与 `Termio.zig` 的抽头。
-> 各条末尾标注了它当前的状态。
+> 状态：**四条决定都已拍板，也都落了地。**落地分散在 `Plugin.zig`、
+> `Archive.zig`、`provision.zig`、`Termio.zig` 的抽头，以及 macOS 设置界面的
+> `PluginLocale.swift`。各条末尾标注了它当前的状态。
 
 ## 本章覆盖什么
 
@@ -77,7 +77,7 @@
 
 有两个插件必须默认就是开的，否则它们承担的职责会静默消失：
 
-- 记录插件默认关 → 升级后用户的额外记录停止
+- 记录插件（`plugins/archive/`）默认关 → 升级后用户的额外记录停止
 - `.claude` 插件默认关 → **升级后 Claude Code 直接失去 Polter 的工具面**
 
 而 `Plugin.Settings` 的 `enabled` 默认是 `false`，[storage.md](storage.md) 的
@@ -217,17 +217,16 @@ surface 还没有）。所以消息**排在 `App.poltergeist_alerts` 里等**，
 
 ## 四、多语言：设置界面本地化，工具面固定英文
 
-### 现状是没有
+### 曾经是没有
 
 `plugin.json` 里的 `name`、`description`、每个参数的 `title` 与 `description`
-全是硬编码英文（见 `plugins/webhook/plugin.json` 与
-`plugins/chat-archive/plugin.json`）。而 Polter 自己走 gettext（`po/`、
-`src/os/i18n.zig`），插件的字符串进不了那套流程——第三方插件不在我们的翻译里。
+全是硬编码英文。而 Polter 自己走 gettext（`po/`、`src/os/i18n.zig`），插件的
+字符串进不了那套流程——第三方插件不在我们的翻译里。
 
 ### 形态：per-locale 边车文件
 
 ```text
-plugins/chat-archive/
+plugins/archive/
   plugin.json          清单本身不变，值仍是字符串，英文兜底
   i18n/zh-Hans.json    只覆盖需要翻译的那几个字段
 ```
@@ -235,6 +234,20 @@ plugins/chat-archive/
 不把清单字段改成 `{"en": …, "zh-Hans": …}` 这种对象：那会让
 `"description"` 时而是字符串时而是对象，污染所有解析路径，而且第三方工具读
 `plugin.json` 就此失效。边车文件可以单独交给译者、单独增删。
+
+边车文件比清单**扁一层**：
+
+```json
+{
+  "name": "存档",
+  "description": "…",
+  "params": { "dir": { "title": "…", "description": "…" } }
+}
+```
+
+`params` 直接是参数名到那几句话，不重复清单的 `params.properties` 嵌套——
+**边车不是 schema 的第二份拷贝**，里面没有 `type`、没有 `required`、没有 `enum`。
+译者打开它看到的就是要翻的那几句。
 
 ### 关键决定：工具面不本地化
 
@@ -246,7 +259,49 @@ plugins/chat-archive/
 所以：**设置界面走边车文件，MCP 一侧一律用清单原文。** 人看到母语，agent 看到的
 东西和这台机器的语言设置无关。
 
-**状态：未实现。**
+**这条不是靠自觉，是靠位置**：读边车的代码只有 Swift 那一侧
+（`macos/Sources/Features/Plugins/PluginLocale.swift`），Zig 的宿主
+（`Plugin.load` → `Plugin.Manifest` → `plugin_list`）**从不打开 `i18n/`
+目录，也没有任何地方拿得到 locale**。要让工具面本地化，得先给它接一条现在
+不存在的线。
+
+设置界面今天只有 macOS 一处，`provision` 类插件还没进那个列表
+（`Plugin.Kind` 在 Swift 侧只认 `notify` 和 `archive`），所以
+`plugins/claude-code/` 不带边车文件——**带了也没有人读**，一份没有读者的翻译
+会在下一次改动里悄悄过期。
+
+### 回退次序（原未决问题 3，就地定了）
+
+用户的偏好语言按顺序展开成一条从具体到笼统的梯子，第一个**存在的文件**赢：
+
+```text
+zh-Hans-CN  →  zh-Hans-CN, zh-Hans, zh-CN, zh
+zh_CN.UTF-8 →  zh-Hans-CN, zh-Hans, zh-CN, zh
+zh          →  zh-Hans, zh
+en-GB       →  en-Latn-GB, en-Latn, en-GB, en
+```
+
+三条决定：
+
+1. **script 排在 region 前面。**`zh-Hans` 比 `zh-CN` 先试——读者读不了的是
+   另一套字，而 region 只换用词。一个译者只交一个文件时交的是
+   `zh-Hans.json`，它必须够得着一台说 `zh_CN` 的机器。
+2. **没写 script 就问出来。**`zh_CN` 是 POSIX 写法，本身不含 script，所以交给
+   `Locale` 去补（补出 `Hans`），而不是在代码里放一张 region→script 的表——
+   那张表会过期，而且只会有中文两行。顺手，`_`、`.UTF-8`、`@euro` 和大小写
+   （`ZH-hans`）也是它规范掉的。
+3. **第一个存在的文件整份赢，不合并。**不拿 `zh-Hans` 去盖 `zh`：合并之后，
+   往其中一个文件加一个键会悄悄改变另一个文件读者看到的东西，而两个译者谁都
+   看不到合并后的结果。边车没写的字段回落到清单，也就是英文——**一层说得清的
+   兜底，而不是一条链**。一个存在但解析不了的边车同样结束查找（回落到清单），
+   理由和 `Settings.readFirst` 那条一样：把一个人的语法错误显示成另一种语言，
+   比显示英文更难查。
+
+候选在拼成文件名之前先被验一遍「是不是一个语言标签」，理由和 Zig 那边的
+`isPlainName` 一样：一个从别处拿来的字符串马上要变成路径。
+
+**状态：已实现**（`PluginLocale` / `PluginText`，落在 `PluginCatalog.read`；
+随插件目录装出去的边车见 `plugins/archive/i18n/zh-Hans.json`）。
 
 ## 取舍记录
 
@@ -262,14 +317,17 @@ plugins/chat-archive/
 | 多个插件失败合成一条摘要                   | 少几行字                                   | **没选。** 两个失败是两处要修的地方，一句「2 个失败了」既没说哪个也没说去哪修     |
 | 清单字段改成 locale 对象                   | 改所有解析路径                             | **没选。** 同一字段时而字符串时而对象，且第三方工具读不了 `plugin.json` 了        |
 | 工具面也本地化                             | 与设置界面共用一套                         | **没选。** agent 行为会随机器 locale 变化，不可复现                               |
+| 边车按 region 优先匹配（`zh-CN` 先于 `zh-Hans`） | 一样                                 | **没选。** 读者读不了的是另一套字，region 只换用词；只交一个文件的译者交的是 `zh-Hans` |
+| 代码里放一张 region→script 的表            | 两行中文                                   | **没选。** 表会过期，而 `Locale` 本来就答得出 `zh_CN` 隐含 `Hans`                |
+| 边车逐层合并（`zh-Hans` 盖在 `zh` 上）     | 多一次合并                                 | **没选。** 加一个键会悄悄改变另一个文件读者看到的东西，两个译者都看不到结果       |
 
 ## 未决问题
 
-1. 边车文件的 locale 匹配规则（`zh-Hans` / `zh_CN` / `zh` 的回退次序）尚未定。
+**这一批没有了。**
 
-> 原来这里的头两条——「`provision` 失败打到哪个 surface」和「一个失败一个成功
-> 时看到几条」——已经在第三节里就地定了并落了地，所以从这张单子上划掉，而不是
-> 留在这里和正文说两遍。
+> 原来这里有三条。头两条——「`provision` 失败打到哪个 surface」和「一个失败一个
+> 成功时看到几条」——在第三节里就地定了并落了地；第三条「边车文件的 locale 回退
+> 次序」在第四节里定了并落了地。都从这张单子上划掉，而不是留在这里和正文说两遍。
 
 ## 延伸阅读
 

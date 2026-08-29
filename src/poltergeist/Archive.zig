@@ -1322,6 +1322,122 @@ test "an acknowledgement that is not an object is not an acknowledgement" {
     try testing.expect(parseAck(alloc, "{\"ok\":true,\"cursor\":-1}").?.cursor == null);
 }
 
+test "the archive plugin we ship answers the greeting the host really writes" {
+    // The regression this file exists to keep: `Archive` arms a deadline,
+    // writes `renderHello`, and **waits for a line back**. A plugin that
+    // reads the greeting and then waits for a batch never answers, is
+    // killed on `timeout_ms`, restarted, and killed again -- from the
+    // outside, a restart loop every `timeout_ms` + backoff, and from
+    // inside the plugin, indistinguishable from sitting idle. The shipped
+    // `plugins/archive/archive.py` did exactly that for one revision.
+    //
+    // So this runs **the script we ship** against **the bytes we send**.
+    // Neither half can be stubbed: a hand-written handshake proves the
+    // plugin agrees with whoever wrote the test, and a fake plugin proves
+    // the host agrees with itself. Embedded rather than read off disk,
+    // for the reason the manifest is: a test that goes to the filesystem
+    // passes once the file is gone.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-shipped-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const store = try std.fmt.allocPrint(alloc, "{s}/store", .{dir});
+
+    {
+        var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+        defer d.close(io);
+        var f = try d.createFile(io, "archive.py", .{ .permissions = .fromMode(0o755) });
+        try f.writeStreamingAll(io, @embedFile("plugin_archive_py"));
+        f.close(io);
+    }
+
+    const exec = try std.fmt.allocPrint(alloc, "{s}/archive.py", .{dir});
+
+    var child = std.process.spawn(io, .{
+        .argv = &.{exec},
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .inherit,
+    }) catch return error.SkipZigTest; // no python3 on this machine
+
+    // The clock is the assertion's other half: without it, a plugin that
+    // never answers hangs this test instead of failing it, and a test that
+    // hangs is a test nobody keeps.
+    var reaper: reap.Reaper = .init(io, "archive", child.id, 15 * std.time.ms_per_s);
+    const keeper = std.Thread.spawn(.{}, reap.Reaper.run, .{&reaper}) catch null;
+    defer {
+        reaper.retire();
+        if (keeper) |t| t.join();
+    }
+
+    const params: []const Plugin.Param = &.{.{ .name = "dir", .value = store }};
+    const hello = try renderHello(alloc, "archive", 0, &.{"*"}, params, &.{store});
+
+    const stdin = child.stdin.?;
+    var reader = child.stdout.?.readerStreaming(io, try alloc.alloc(u8, 64 * 1024));
+
+    try stdin.writeStreamingAll(io, hello);
+
+    const greeting = switch (readLine(&reader)) {
+        .got => |l| l,
+        else => {
+            _ = child.wait(io) catch {};
+            return error.PluginNeverAnsweredTheGreeting;
+        },
+    };
+    const ack = parseAck(alloc, greeting) orelse {
+        _ = child.wait(io) catch {};
+        return error.GreetingWasNotAnAcknowledgement;
+    };
+    try testing.expect(ack.ok);
+
+    // And one real batch, because an answer to the greeting alone would
+    // still leave "it acknowledges but stores nothing" possible.
+    const events: []const Feed.Event = &.{.{ .chat = .{
+        .seq = 11,
+        .at_ms = 1786819271275,
+        .group = "build",
+        .author = "worker-core",
+        .text = "hello",
+    } }};
+    const batch = try renderBatch(alloc, 0, 11, events, &.{"*"});
+    try stdin.writeStreamingAll(io, batch);
+
+    const answered = switch (readLine(&reader)) {
+        .got => |l| l,
+        else => {
+            _ = child.wait(io) catch {};
+            return error.PluginNeverAnsweredTheBatch;
+        },
+    };
+    try testing.expect(parseAck(alloc, answered).?.ok);
+
+    stdin.close(io);
+    child.stdin = null;
+    _ = child.wait(io) catch {};
+
+    try testing.expect(!reaper.killed());
+
+    // It said yes, so something must be on disk under the directory the
+    // greeting named.
+    var d = try std.Io.Dir.cwd().openDir(io, store, .{ .iterate = true });
+    defer d.close(io);
+    var it = d.iterate();
+    var files: usize = 0;
+    while (try it.next(io)) |_| files += 1;
+    try testing.expectEqual(@as(usize, 1), files);
+}
+
 test "the opening line carries the cursor, the groups and the resolved values" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();

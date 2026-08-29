@@ -1,11 +1,12 @@
 # 插件体系
 
-> 最后更新对应的 git commit：`816b348eb`（插件改吃实时事件、`Cursor.zig` 退场这一轮改动尚在工作树里，未提交）
+> 最后更新对应的 git commit：`e172cd2ed`（多语言边车、`archive` 插件接手、`webhook` 与 `chat-archive` 退场这一轮改动尚在工作树里，未提交）
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**已实现**。宿主在 `src/poltergeist/Plugin.zig`（清单、设置、调用、
 > 超时），常驻那一类在 `Archive.zig`，喂给它的实时事件通道在 `Feed.zig`，
 > 凭据解析在 `secret.zig`，工具面在
-> `rpc.zig` 与 `src/App.zig`。随构建装出去的两个插件在 `plugins/`。
+> `rpc.zig` 与 `src/App.zig`。随构建装出去的插件在 `plugins/`（`archive`
+> 和 `claude-code`）。
 > **想照着写一个插件**（含不启动 Polter 的自测），见
 > [writing-a-plugin.md](writing-a-plugin.md)；本章是契约，那篇是教程。
 > 本章讲的是**插件宿主**——所有种类的插件共用的那一层。第一类是
@@ -251,12 +252,12 @@ Polter 起进程，往 stdin 写**一行 JSON**，然后关闭 stdin：
 
 ```json
 {
-  "key": "chat-archive",
+  "key": "archive",
   "kind": "archive",
   "wants": {
     "groups": ["*"],
-    "network": true,
-    "exec": ["psql"]
+    "network": false,
+    "exec": []
   }
 }
 ```
@@ -267,9 +268,26 @@ Polter 起进程，往 stdin 写**一行 JSON**，然后关闭 stdin：
 2. **能声明才能审计。**用户装插件之前要能一眼看出它要读哪些群、要不要联网、要跑哪些外部命令。一份读不出这些的清单，等于要求用户先读一遍源码。
 3. **它同时是差异化。**Warp 让出来的信任市场是免费的。
 
-**`wants` 是按插件声明的，不是按后端。**`chat-archive` 有两个后端——`postgres` 要联网要起 `psql`，`file` 两样都不要——但它声明的是两者的**并集**。一份会随配置缩水的声明，审计没法拿它当依据：审计要看的是"它可能做什么"，不是"它今天配成了什么"。
+**`wants` 是按插件声明的，不是按配置。**一个既能写本地文件、又能推到 pg 的存档插件（曾经的 `chat-archive` 就是），要按两条路的**并集**声明——即使今天配的是那条既不联网也不起 `psql` 的。一份会随配置缩水的声明，审计没法拿它当依据：审计要看的是"它可能做什么"，不是"它今天配成了什么"。
 
 **声明不是自证清白，是让宿主有得拦。**`groups` 决定喂给它的批次里能出现哪些群的消息 —— 这一条是宿主自己过滤的，插件没有别的通道拿到别的群。`network` 与 `exec` 落地在进程环境上，不承诺是沙箱级别的隔离；一期它们的作用是**声明与告知**，真要做强制隔离得连签名一起设计（见下一节的理由）。**把这条差别写在这里，是为了不让「声明了 network: false」被当成「它上不了网」。**
+
+## 给人看的字符串：per-locale 边车
+
+清单里的 `name`、`description`、每个参数的 `title` 与 `description` 是英文，
+而且**清单本身不变**。要翻译就在插件目录里放边车文件：
+
+```text
+plugins/archive/
+  plugin.json          英文兜底，值仍是字符串
+  i18n/zh-Hans.json    只覆盖需要翻译的那几个字段
+```
+
+**只有设置界面读它，MCP 一侧一律用清单原文。**`plugin_list` 是给 agent 读的，
+两边都跟随 locale 会让同一个 agent 在中文机器和英文机器上看到不同的工具描述。
+文件格式、回退次序（`zh-Hans` / `zh_CN` / `zh` 怎么匹配）、以及这条分界为什么
+是靠"谁能打开 `i18n/`"而不是靠自觉来保证的，见
+[boundary.md](boundary.md) 第四节。
 
 ## 插件从哪来
 

@@ -178,19 +178,36 @@ pub fn add(
     // Every exe gets build options populated
     step.root_module.addOptions("build_options", self.options);
 
-    // The plugin manifests Polter ships, so a test can read what they
-    // declare. `plugin_configure` only refuses a plaintext credential where
-    // a manifest marks the parameter `"secret": true`, which makes these
-    // files load-bearing for a security rule that lives in Zig -- and
-    // nothing else in the build looks inside them. Embedded rather than
+    // The plugin manifests Polter ships that declare a credential, so a test
+    // can read what they declare. `plugin_configure` only refuses a plaintext
+    // credential where a manifest marks the parameter `"secret": true`, which
+    // makes these files load-bearing for a security rule that lives in Zig --
+    // and nothing else in the build looks inside them. Embedded rather than
     // opened at run time because a test that goes to the filesystem passes
     // when the file has gone missing, and gone missing is the failure worth
     // catching.
-    step.root_module.addAnonymousImport("plugin_manifest_webhook", .{
-        .root_source_file = b.path("plugins/webhook/plugin.json"),
+    //
+    // **A shipped plugin that holds a credential belongs in this list.**
+    // Dropping the last entry would leave that test asserting over nothing
+    // and passing for it, which is worse than not having the test: `archive`
+    // took this over from `webhook` and `chat-archive` when those two were
+    // removed, and the swap was checked by making the test fail on purpose
+    // first.
+    step.root_module.addAnonymousImport("plugin_manifest_archive", .{
+        .root_source_file = b.path("plugins/archive/plugin.json"),
     });
-    step.root_module.addAnonymousImport("plugin_manifest_chat_archive", .{
-        .root_source_file = b.path("plugins/chat-archive/plugin.json"),
+
+    // And the archive plugin itself, so a test can run the script we
+    // actually ship against the bytes `Archive.renderHello` actually
+    // writes. Everything short of that -- a hand-written handshake fed in
+    // by hand, a self-test inside the plugin -- agrees with whatever shape
+    // the author had in mind, and the shipped plugin missed the one thing
+    // the host requires (an acknowledgement of the greeting) while passing
+    // all of it. The host kills a plugin that does not answer, backs off,
+    // starts it again, for ever; preinstalled and switched on, that was
+    // every user's first run.
+    step.root_module.addAnonymousImport("plugin_archive_py", .{
+        .root_source_file = b.path("plugins/archive/archive.py"),
     });
 
     // Every exe needs the terminal options

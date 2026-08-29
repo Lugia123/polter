@@ -1,0 +1,34 @@
+{
+  "key": "archive",
+  "name": "Archive",
+  "kind": "archive",
+  "version": "1.0.0",
+  "description": "Keeps an extra copy of every chat message as one file per day, all groups in one timeline. Polter's own record is kept whether this is on or off and is not what this reads: the plugin is handed live events. Point it at a synced folder or an external disk and the copy outlives this machine.",
+
+  "exec": "archive.py",
+  "timeout_ms": 30000,
+
+  "wants": {
+    "groups": ["*"],
+    "network": false,
+    "exec": []
+  },
+
+  "params": {
+    "type": "object",
+    "properties": {
+      "dir": {
+        "type": "string",
+        "title": "Where the extra copy goes",
+        "description": "A directory, absolute or starting with ~/. One file per local day, named YYYY-MM-DD.jsonl, appended to. Default ~/.local/state/polter/archive ($XDG_STATE_HOME/polter/archive when that is set) -- somewhere you can point elsewhere, not somewhere anything falls back to.",
+        "default": "~/.local/state/polter/archive"
+      },
+      "sign_key": {
+        "type": "string",
+        "title": "Key to sign each line with",
+        "description": "Set it and every line carries an HMAC-SHA256 over the record, so a copy that has been edited says so. Whoever holds the key can rewrite the archive and sign it again, which is what makes it a credential: give a reference -- env:, file: or keychain: -- rather than the key itself. Leave it empty and the lines are plain JSON with nothing to verify.",
+        "secret": true
+      }
+    }
+  }
+}

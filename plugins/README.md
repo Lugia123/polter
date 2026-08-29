@@ -8,18 +8,23 @@ Polter 的出口。设计见 [docs/poltergeist/plugins.md](../docs/poltergeist/p
 
 ```text
 plugins/
-  webhook/
-    plugin.json     元数据：key、kind、参数 schema、要哪些权限
-    send.sh         可执行；Polter 把事件作为一行 JSON 写进它的 stdin
-  chat-archive/
-    plugin.json
-    archive.py      可执行；常驻，stdin 是一条行分隔的 JSON 流
-    README.md       .md 不进安装，只留在仓库里
+  archive/
+    plugin.json         元数据：key、kind、参数 schema、要哪些权限
+    archive.py          可执行；常驻，stdin 是一条行分隔的 JSON 流
+    settings.json       随目录一起装的缺省设置；用户配置目录里那份压过它
+    i18n/zh-Hans.json   设置界面上那几句话的翻译；清单本身不变
+    README.md           .md 不进安装，只留在仓库里
   claude-code/
     plugin.json
-    provision.sh    可执行；启动时跑一次
-    settings.json   随目录一起装的缺省设置；用户配置目录里那份压过它
+    provision.sh        可执行；启动时跑一次
+    settings.json
 ```
+
+仓库里现在装出去的就是这两个：`archive`（把群聊另存一份到文件系统，预装即开）
+和 `claude-code`（把 Polter 的 MCP 端点和 skill 装给 Claude Code）。**没有随构建
+装出去的 `notify` 插件**——通知渠道有几十种，内置任何一种都会立刻过时，所以那一类
+从第一天起就是用户自己放进 `$XDG_CONFIG_HOME/polter/plugins/` 的东西；照着写一个
+见 [writing-a-plugin.md](../docs/poltergeist/writing-a-plugin.md) 第一节。
 
 **清单是 `plugin.json`，不是 YAML。** Zig 标准库里没有 YAML，而手写一个 YAML 子集
 解析器要处理缩进、多行字符串、隐式类型转换 —— 每一样都是能悄悄解析错的地方，而清单
@@ -38,12 +43,19 @@ plugins/
 **只排除 `.md`**（`src/build/GhosttyResources.zig`）。所以：README 随便写，别往
 插件目录里放任何你不希望发给用户的可执行文件。
 
+> **删掉一个插件目录，装出去的那份不会跟着消失。**`addInstallDirectory` 只拷贝，
+> 从不删除——`zig-out/share/ghostty/polter/plugins/` 和已经装好的 app bundle 里
+> 都还留着上一次构建装进去的东西。所以一次增量构建之后，日志里照样会出现
+> `plugin <已删掉的 key> is installed but off`，而仓库里已经没有那个目录了。
+> **这不是代码 bug，是「装」和「删」不对称。**要真的没有：`rm -rf zig-out` 再构建，
+> 装 app 时也先删再拷（`rm -rf /Applications/Polter.app` 再 `cp -R`），而不是覆盖。
+
 ## 三种 `kind`
 
 | | 生命周期 | stdin | 宿主怎么判成败 |
 | --- | --- | --- | --- |
 | `notify` | 一次一进程 | **一行** JSON，写完即关 | 退出码 0 = 送达。stdout 被忽略 |
-| `archive` | **常驻**，随 Polter 结束 | 行分隔 JSON **流**，一行一批 | 每行回一行确认；**stdout 是协议通道** |
+| `archive` | **常驻**，随 Polter 结束 | 行分隔 JSON **流**，**第一行是握手**，之后一行一批 | 每行回一行确认，**握手那一行也算**；**stdout 是协议通道** |
 | `provision` | **启动时一次**，第一个终端开的时候 | **一行** JSON，写完即关 | 退出码 0 = 这个 AI CLI 现在知道 Polter 了。stdout 被忽略 |
 
 `notify` 与 `archive` 的分界线是事件的疏密。通知一小时几条，每次 fork/exec 的开销
@@ -54,6 +66,10 @@ plugins/
 把它翻译成某个 AI CLI 认识的形状。**它的失败会被打到用户的终端屏幕上**，因为这一步
 失败的后果就是 agent 没有工具面 —— agent 正是那个收不到消息的人。见
 [docs/poltergeist/boundary.md](../docs/poltergeist/boundary.md) 第三节。
+
+**握手不回确认 = 被杀了重起，无限循环。**宿主写握手之前就装上了 `timeout_ms`
+的期限，写完等一行。不回，它就每 `timeout_ms` + 退避被杀一次再起一次，而插件
+自己看像在闲等。挡住它的是 `Archive.zig` 里那条拿真握手字节跑真脚本的测试。
 
 **`archive` 的 stdout 只能出现确认行。**写进去的任何别的东西都会被判成失当并杀掉
 进程 —— 所以插件起的子进程（比如 `psql`）必须自己接管道读，绝不能 inherit。
@@ -95,8 +111,8 @@ stderr 是 inherit 的，进 Polter 日志，那才是插件说话的地方。
 并且被点名警告，连该补的那一行都抄给用户。缺省当成 `["*"]` 会让一份什么都没声明的
 清单拿到全部群，权限声明存在的意义当场归零。
 
-`wants` 是**插件级**而不是后端级的，所以写并集。`chat-archive` 选 `file` 后端时既
-不联网也不起 psql，声明仍然照最大能力写 —— 缩水的声明会让审计失效。
+`wants` 是**插件级**而不是配置级的，所以写并集。一个既能写本地文件又能推 pg 的
+插件，即使今天配的是文件那条路，声明也要照最大能力写 —— 缩水的声明会让审计失效。
 
 ### `params`
 
@@ -146,6 +162,32 @@ $XDG_CONFIG_HOME/polter/plugins/<key>.json      {"enabled": bool, "params": {…
 带的缺省，只在用户没有自己那份文件时才生效。**用户那份存在就赢，包括它写的是「关」**
 （两者不合并：合并分不清「关掉了」和「从没配过」，升级就会把用户关掉的东西打开）。
 运行时永不写发行那份。`plugins/claude-code/settings.json` 就是靠这个预装即开。
+
+## `i18n/`：给人看的那几句话
+
+清单是英文，**而且不动**。要翻译就在插件目录里放边车文件，一个 locale 一个：
+
+```text
+plugins/archive/i18n/zh-Hans.json
+```
+
+```json
+{
+  "name": "存档",
+  "description": "…",
+  "params": { "dir": { "title": "…", "description": "…" } }
+}
+```
+
+- 只覆盖要覆盖的字段，没写的回落到清单（英文）。
+- 文件名是语言标签，匹配从具体到笼统（`zh-Hans-CN` → `zh-Hans` → `zh-CN` → `zh`），
+  **script 排在 region 前面**，`zh_CN` 的机器也会找到 `zh-Hans.json`。
+  **第一个存在的文件整份赢，不合并。**
+- **只有设置界面读它**：`plugin_list` 给 agent 的一律是清单原文，否则同一个 agent
+  在中文机器和英文机器上会看到不同的工具描述。
+- `i18n/*.json` 不是 `.md`，所以**会随插件目录一起装出去**。
+
+规则与理由见 [docs/poltergeist/boundary.md](../docs/poltergeist/boundary.md) 第四节。
 
 ## 什么能被工具面改，什么不能
 

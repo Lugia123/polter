@@ -12,7 +12,16 @@ struct Plugin: Identifiable {
     let key: String
 
     /// For a person reading a list of them.
+    ///
+    /// This and everything else a person reads here may have come from a
+    /// per-locale sidecar beside the manifest rather than from the manifest
+    /// itself; see `PluginLocale`. The tool surface does not do this, on
+    /// purpose -- an agent reads the manifest verbatim on every machine.
     let name: String
+
+    /// What the plugin is for, in a sentence, as its manifest puts it.
+    /// Empty when the manifest says nothing.
+    let summary: String
 
     /// Where the plugin itself lives.
     let directory: URL
@@ -153,15 +162,27 @@ struct PluginCatalog {
         guard let kind = (root["kind"] as? String).flatMap(Plugin.Kind.init(rawValue:))
         else { return nil }
 
+        // The person's language, if the plugin ships it. Read here rather
+        // than at display time so that everything below sees one answer.
+        let text = PluginText.load(
+            from: directory,
+            preferring: Locale.preferredLanguages)
+
         return Plugin(
             key: key,
-            name: (root["name"] as? String) ?? key,
+            name: text.name ?? (root["name"] as? String) ?? key,
+            summary: text.summary ?? (root["description"] as? String) ?? "",
             directory: directory,
-            parameters: parameters(from: root["params"] as? [String: Any]),
+            parameters: parameters(
+                from: root["params"] as? [String: Any],
+                translated: text),
             kind: kind)
     }
 
-    private static func parameters(from schema: [String: Any]?) -> [Plugin.Parameter] {
+    private static func parameters(
+        from schema: [String: Any]?,
+        translated text: PluginText = .none
+    ) -> [Plugin.Parameter] {
         guard let schema,
               let properties = schema["properties"] as? [String: Any]
         else { return [] }
@@ -173,10 +194,11 @@ struct PluginCatalog {
         // order.
         return properties.keys.sorted().compactMap { name in
             guard let spec = properties[name] as? [String: Any] else { return nil }
+            let field = text.fields[name]
             return Plugin.Parameter(
                 name: name,
-                title: (spec["title"] as? String) ?? name,
-                help: (spec["description"] as? String) ?? "",
+                title: field?.title ?? (spec["title"] as? String) ?? name,
+                help: field?.help ?? (spec["description"] as? String) ?? "",
                 required: required.contains(name))
         }
     }
