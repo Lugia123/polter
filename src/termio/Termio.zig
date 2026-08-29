@@ -796,7 +796,7 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
         t.note(
             primary,
             self.terminal.getTitle() orelse "",
-            @divFloor(now.nanoseconds, std.time.ns_per_ms),
+            @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms)),
         );
     }
 
