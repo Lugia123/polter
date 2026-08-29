@@ -37,17 +37,24 @@ final class PluginMenu: NSObject, NSMenuDelegate {
             menu.addItem(empty)
             menu.addItem(.separator())
             menu.addItem(revealItem())
+            menu.addItem(logsItem())
             return
         }
 
         for plugin in plugins {
             let settings = PluginSettings.load(for: plugin)
 
-            // What it is for, beside its name. Two kinds are installed by
-            // default and their names do not say which is which -- and one
-            // of them, once on, is a process that stays running.
+            // What it is for, beside its name, when this build has a phrase
+            // for what it subscribes to: the shipped plugins' names do not
+            // say which is which, and they stay running once on. A plugin
+            // subscribing to something this build has no phrase for is
+            // listed under its name alone -- it is still installed and still
+            // configurable, and hiding it was the bug this replaced. The
+            // settings window shows the raw subscription either way.
+            let title = plugin.subtitle.map { "\(plugin.name) — \($0)" }
+                ?? plugin.name
             let item = NSMenuItem(
-                title: "\(plugin.name) — \(plugin.kind.summary)",
+                title: title,
                 action: nil,
                 keyEquivalent: "")
 
@@ -61,6 +68,7 @@ final class PluginMenu: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(revealItem())
+        menu.addItem(logsItem())
     }
 
     private func submenu(for plugin: Plugin, settings: PluginSettings) -> NSMenu {
@@ -93,6 +101,29 @@ final class PluginMenu: NSObject, NSMenuDelegate {
         }
         menu.addItem(toggle)
 
+        // This plugin's own file, which holds both what it printed and what
+        // Polter did to it. One item per plugin because that is the shape of
+        // the question -- "what happened to this one" -- and the answer is
+        // one file rather than a directory to hunt through.
+        let showLog = NSMenuItem(
+            title: String(localized: "Show Log", comment: "插件菜单：打开这个插件的日志"),
+            action: #selector(revealLog(_:)),
+            keyEquivalent: "")
+        showLog.target = self
+        showLog.representedObject = plugin.key
+
+        // Disabled rather than hidden when there is nothing yet: an item
+        // that comes and goes teaches nobody where the logs are, and "this
+        // plugin has not written anything" is itself worth reading off a
+        // menu.
+        if PluginCatalog.logURL(for: plugin.key) == nil {
+            showLog.isEnabled = false
+            showLog.title = String(
+                localized: "Show Log (nothing written yet)",
+                comment: "插件菜单：这个插件还没有日志")
+        }
+        menu.addItem(showLog)
+
         return menu
     }
 
@@ -104,6 +135,30 @@ final class PluginMenu: NSObject, NSMenuDelegate {
             action: #selector(revealFolder(_:)),
             keyEquivalent: "")
         item.target = self
+        return item
+    }
+
+    /// The directory every plugin's log is in.
+    ///
+    /// Beside "Open Plugins Folder" and not instead of it: one of them holds
+    /// what the user wrote, the other what Polter observed, and somebody
+    /// looking for either is helped by seeing both named.
+    private func logsItem() -> NSMenuItem {
+        let item = NSMenuItem(
+            title: String(
+                localized: "Open Plugin Logs",
+                comment: "插件菜单：打开插件日志目录"),
+            action: #selector(revealLogs(_:)),
+            keyEquivalent: "")
+        item.target = self
+
+        if let dir = PluginCatalog.logDirectory,
+           !FileManager.default.fileExists(atPath: dir.path) {
+            item.isEnabled = false
+            item.title = String(
+                localized: "Open Plugin Logs (nothing written yet)",
+                comment: "插件菜单：还没有任何插件日志")
+        }
         return item
     }
 
@@ -172,5 +227,25 @@ final class PluginMenu: NSObject, NSMenuDelegate {
     @objc private func revealFolder(_ sender: Any?) {
         guard let dir = PluginCatalog.userDirectory else { return }
         NSWorkspace.shared.activateFileViewerSelecting([dir])
+    }
+
+    @objc private func revealLogs(_ sender: Any?) {
+        guard let dir = PluginCatalog.logDirectory,
+              FileManager.default.fileExists(atPath: dir.path)
+        else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([dir])
+    }
+
+    /// Reveal one plugin's log rather than open it.
+    ///
+    /// Selecting it in the Finder instead of handing it to whatever claims
+    /// `.log`: the file is a plugin's own output, which may be anything at
+    /// all, and choosing what opens it is the user's to make once rather
+    /// than ours to make for them every time.
+    @objc private func revealLog(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String,
+              let url = PluginCatalog.logURL(for: key)
+        else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 }

@@ -1,7 +1,6 @@
 {
   "key": "archive",
   "name": "Archive",
-  "kind": "archive",
   "version": "1.0.0",
   "description": "Keeps an extra copy of every chat message as one file per day, all groups in one timeline. Polter's own record is kept whether this is on or off and is not what this reads: the plugin is handed live events. Point it at a synced folder or an external disk and the copy outlives this machine.",
 
@@ -9,6 +8,8 @@
   "timeout_ms": 30000,
 
   "wants": {
+    "events": ["chat"],
+    "calls": [],
     "groups": ["*"],
     "network": false,
     "exec": []

@@ -41,5 +41,26 @@
 "Switch Off" = "Switch Off";
 "Switch On (needs settings first)" = "Switch On (needs settings first)";
 "Open Plugins Folder" = "Open Plugins Folder";
+"Open Plugin Logs" = "Open Plugin Logs";
+"Open Plugin Logs (nothing written yet)" = "Open Plugin Logs (nothing written yet)";
+"Show Log" = "Show Log";
+"Show Log (nothing written yet)" = "Show Log (nothing written yet)";
 "Restart Polter to apply" = "Restart Polter to apply";
 "Plugins are loaded when Polter starts." = "Plugins are loaded when Polter starts.";
+
+"Keeps the conversations" = "Keeps the conversations";
+"Notifies you" = "Notifies you";
+"Sets your agent up to reach Polter" = "Sets your agent up to reach Polter";
+
+"Let this plugin run" = "Let this plugin run";
+"It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way. Changing this takes effect the next time Polter starts." = "It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way. Changing this takes effect the next time Polter starts.";
+"What it is handed: %@" = "What it is handed: %@";
+"This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it." = "This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it.";
+"This plugin has nothing to configure." = "This plugin has nothing to configure.";
+"A value may be a reference instead of the thing itself: env:NAME, file:/path, keychain:service/account, or cmd:… for a password manager. It is resolved at the moment the plugin is called, and never stored here." = "A value may be a reference instead of the thing itself: env:NAME, file:/path, keychain:service/account, or cmd:… for a password manager. It is resolved at the moment the plugin is called, and never stored here.";
+"Prefer a reference here so the secret stays out of this file." = "Prefer a reference here so the secret stays out of this file.";
+"%@ — not one of the choices" = "%@ — not one of the choices";
+"Not set" = "Not set";
+"Cancel" = "Cancel";
+"Save" = "Save";
+"Could not save: %@" = "Could not save: %@";

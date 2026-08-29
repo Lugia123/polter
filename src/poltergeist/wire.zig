@@ -704,8 +704,6 @@ fn writePlugin(s: *std.json.Stringify, v: rpc.PluginView) std.Io.Writer.Error!vo
     try s.write(v.key);
     try s.objectField("name");
     try s.write(v.name);
-    try s.objectField("kind");
-    try s.write(v.kind);
     try s.objectField("enabled");
     try s.write(v.enabled);
 
@@ -714,6 +712,14 @@ fn writePlugin(s: *std.json.Stringify, v: rpc.PluginView) std.Io.Writer.Error!vo
     // it from memory.
     try s.objectField("wants");
     try s.beginObject();
+    try s.objectField("events");
+    try s.beginArray();
+    for (v.events) |e| try s.write(e);
+    try s.endArray();
+    try s.objectField("calls");
+    try s.beginArray();
+    for (v.calls) |c| try s.write(c);
+    try s.endArray();
     try s.objectField("groups");
     try s.beginArray();
     for (v.groups) |g| try s.write(g);
@@ -1282,7 +1288,8 @@ test "a plugin listing round-trips" {
         .{
             .key = "chat-archive",
             .name = "Chat archive",
-            .kind = "archive",
+            .events = &.{"chat"},
+            .calls = &.{"terminal_read"},
             .enabled = true,
             .groups = &.{"*"},
             .network = true,
@@ -1296,7 +1303,7 @@ test "a plugin listing round-trips" {
         .{
             .key = "webhook",
             .name = "Webhook",
-            .kind = "notify",
+            .events = &.{"terminal.quiet"},
             .params = &notify_params,
         },
     };
@@ -1329,16 +1336,27 @@ test "a plugin listing round-trips" {
 
     // What the manifest asked for, handed over unread so an agent can say
     // what it is about to switch on.
+    // **`events` is where `kind` went**, and it is a list because a plugin
+    // may subscribe to more than one -- which under `kind` took two plugins
+    // to express. A reader asking "is this a notification channel" looks for
+    // `terminal.quiet` in here.
     try testing.expect(std.mem.indexOf(
         u8,
         out,
-        "\"wants\":{\"groups\":[\"*\"],\"network\":true,\"exec\":[\"psql\"]}",
+        "\"wants\":{\"events\":[\"chat\"],\"calls\":[\"terminal_read\"]," ++
+            "\"groups\":[\"*\"],\"network\":true,\"exec\":[\"psql\"]}",
     ) != null);
     try testing.expect(std.mem.indexOf(
         u8,
         out,
-        "\"wants\":{\"groups\":[],\"network\":false,\"exec\":[]}",
+        "\"wants\":{\"events\":[\"terminal.quiet\"],\"calls\":[]," ++
+            "\"groups\":[],\"network\":false,\"exec\":[]}",
     ) != null);
+
+    // And there is no `kind` anywhere in the reply. The macOS settings list
+    // read that field twice and missed a value both times; there is nothing
+    // left to miss a value of.
+    try testing.expect(std.mem.indexOf(u8, out, "\"kind\"") == null);
 }
 
 fn count(haystack: []const u8, needle: []const u8) usize {

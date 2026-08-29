@@ -63,7 +63,7 @@ pub const token_len = token_bytes * 2;
 /// the arena. Nothing else touches it.
 pub const Pending = struct {
     alloc: Allocator,
-    caller: Bus.Id,
+    caller: Bus.Caller,
     request: rpc.Request,
 
     /// Owns everything the request points at, so it stays valid for as long
@@ -136,9 +136,18 @@ submit: Submit,
 path: []u8,
 listener: net.Server,
 
-/// Token to terminal. Written by the app thread when a surface starts,
-/// read by connection threads, hence the lock.
-tokens: std.StringHashMapUnmanaged(Bus.Id) = .empty,
+/// Token to caller. Written by the app thread when a surface starts or a
+/// plugin is spawned, read by connection threads, hence the lock.
+///
+/// **Both kinds of caller live in one map on purpose.** A token is a token;
+/// what it stands for is the value, and there is exactly one place that
+/// turns bytes on a socket into an identity. Two maps would be two
+/// handshake paths, and the second one is where the check gets forgotten.
+///
+/// The key is owned here. So is everything inside a plugin value -- its key
+/// and its declared calls -- because the manifest arena those came out of
+/// is rebuilt every time the plugin directories are read.
+tokens: std.StringHashMapUnmanaged(Bus.Caller) = .empty,
 tokens_mutex: std.Io.Mutex = .init,
 
 /// Requests handed to the app thread and not yet answered.
@@ -212,8 +221,11 @@ pub fn init(
 pub fn deinit(self: *Server) void {
     self.stop();
 
-    var it = self.tokens.keyIterator();
-    while (it.next()) |k| self.alloc.free(k.*);
+    var it = self.tokens.iterator();
+    while (it.next()) |kv| {
+        self.alloc.free(kv.key_ptr.*);
+        freeCaller(self.alloc, kv.value_ptr.*);
+    }
     self.tokens.deinit(self.alloc);
     self.inflight.deinit(self.alloc);
 
@@ -287,6 +299,89 @@ fn untrackInflight(self: *Server, p: *Pending) void {
 /// owned by the server and is freed by `revokeTokens` or `deinit`, so a
 /// caller that needs to keep it must copy it first.
 pub fn issueToken(self: *Server, id: Bus.Id) Allocator.Error![]const u8 {
+    return self.mint(.{ .terminal = id });
+}
+
+/// Mint a token for a plugin, to be put in the hello line it is greeted
+/// with.
+///
+/// The plugin gets the same socket, the same first line and the same
+/// vocabulary an agent gets. That is the whole design: there is no
+/// plugin-shaped tool surface to keep in step with the agent-shaped one,
+/// because there is only one surface. What differs is what the *identity*
+/// can do, and that is decided by `rpc.authorize`, not here.
+///
+/// `calls` is `wants.calls` from the manifest. It is copied, because the
+/// arena it came from is thrown away and rebuilt whenever the plugin
+/// directories are read -- which happens while plugins are running.
+pub fn issuePluginToken(
+    self: *Server,
+    key: []const u8,
+    calls: []const []const u8,
+) Allocator.Error![]const u8 {
+    const owned_key = try self.alloc.dupe(u8, key);
+    errdefer self.alloc.free(owned_key);
+
+    const owned_calls = try self.alloc.alloc([]const u8, calls.len);
+    var made: usize = 0;
+    errdefer {
+        for (owned_calls[0..made]) |c| self.alloc.free(c);
+        self.alloc.free(owned_calls);
+    }
+    for (calls, owned_calls) |src, *dst| {
+        dst.* = try self.alloc.dupe(u8, src);
+        made += 1;
+    }
+
+    return self.mint(.{ .plugin = .{ .key = owned_key, .calls = owned_calls } });
+}
+
+/// Forget a plugin's tokens, so a socket held open past the plugin's life
+/// cannot go on acting as it.
+pub fn revokePluginTokens(self: *Server, key: []const u8) void {
+    self.tokens_mutex.lockUncancelable(self.io);
+    defer self.tokens_mutex.unlock(self.io);
+
+    var stale: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer stale.deinit(self.alloc);
+
+    var it = self.tokens.iterator();
+    while (it.next()) |kv| {
+        const p = switch (kv.value_ptr.*) {
+            .plugin => |p| p,
+            .terminal => continue,
+        };
+        if (std.mem.eql(u8, p.key, key)) stale.append(self.alloc, kv.key_ptr.*) catch {};
+    }
+
+    for (stale.items) |k| {
+        if (self.tokens.fetchRemove(k)) |kv| {
+            self.alloc.free(kv.key);
+            freeCaller(self.alloc, kv.value);
+        }
+    }
+}
+
+fn freeCaller(alloc: Allocator, caller: Bus.Caller) void {
+    switch (caller) {
+        .terminal => {},
+        .plugin => |p| {
+            alloc.free(p.key);
+            for (p.calls) |c| alloc.free(c);
+            alloc.free(p.calls);
+        },
+    }
+}
+
+/// The shared half of both token paths: fresh entropy, hex, and one entry
+/// in the one map.
+///
+/// **`caller` is taken over.** Whatever it owns is freed by
+/// `revokePluginTokens` or `deinit`, including on the failure path here --
+/// a caller that hands over a heap-allocated identity must never write a
+/// `defer` for it.
+fn mint(self: *Server, caller: Bus.Caller) Allocator.Error![]const u8 {
+    errdefer freeCaller(self.alloc, caller);
     var raw: [token_bytes]u8 = undefined;
 
     // Fresh entropy from the OS. Falling back to the process-local
@@ -303,7 +398,7 @@ pub fn issueToken(self: *Server, id: Bus.Id) Allocator.Error![]const u8 {
 
     self.tokens_mutex.lockUncancelable(self.io);
     defer self.tokens_mutex.unlock(self.io);
-    try self.tokens.put(self.alloc, hex, id);
+    try self.tokens.put(self.alloc, hex, caller);
 
     return hex;
 }
@@ -319,17 +414,25 @@ pub fn revokeTokens(self: *Server, id: Bus.Id) void {
 
     var it = self.tokens.iterator();
     while (it.next()) |kv| {
-        if (kv.value_ptr.* == id) stale.append(self.alloc, kv.key_ptr.*) catch {};
+        if (kv.value_ptr.isTerminal(id)) stale.append(self.alloc, kv.key_ptr.*) catch {};
     }
 
     for (stale.items) |k| {
-        _ = self.tokens.remove(k);
-        self.alloc.free(k);
+        if (self.tokens.fetchRemove(k)) |kv| {
+            self.alloc.free(kv.key);
+            freeCaller(self.alloc, kv.value);
+        }
     }
 }
 
-/// Which terminal a token belongs to, if any.
-fn authenticate(self: *Server, token: []const u8) ?Bus.Id {
+/// Which caller a token belongs to, if any.
+///
+/// A terminal or a plugin. What it will never be is a *claim*: the caller
+/// does not say who it is, it holds a secret this process issued, and this
+/// is where the secret is turned into an identity. A plugin therefore
+/// cannot name a terminal, because there is nowhere in the protocol for it
+/// to name one.
+fn authenticate(self: *Server, token: []const u8) ?Bus.Caller {
     if (token.len != token_len) return null;
 
     self.tokens_mutex.lockUncancelable(self.io);
@@ -338,7 +441,7 @@ fn authenticate(self: *Server, token: []const u8) ?Bus.Id {
     // Constant time against every issued token. The threat here is small --
     // a local socket with owner-only permissions -- but comparing in
     // constant time costs nothing at this scale.
-    var found: ?Bus.Id = null;
+    var found: ?Bus.Caller = null;
     var it = self.tokens.iterator();
     while (it.next()) |kv| {
         const match = std.crypto.timing_safe.eql(
@@ -507,7 +610,7 @@ fn handshake(
     self: *Server,
     reader: *net.Stream.Reader,
     writer: *net.Stream.Writer,
-) ?Bus.Id {
+) ?Bus.Caller {
     const line = (reader.interface.takeDelimiter('\n') catch return null) orelse return null;
 
     const token = parseAuthToken(self.alloc, line) orelse {
@@ -565,7 +668,7 @@ fn parseAuthToken(alloc: Allocator, line: []const u8) ?[]const u8 {
 fn serveOne(
     self: *Server,
     writer: *net.Stream.Writer,
-    caller: Bus.Id,
+    caller: Bus.Caller,
     line: []const u8,
 ) !void {
     // The request is parsed straight into the pending's arena, so anything

@@ -98,6 +98,21 @@ poltergeist_registered: bool = false,
 /// the window the user is looking at. Each line is owned.
 poltergeist_alerts: std.ArrayListUnmanaged([]const u8) = .empty,
 
+/// `<state>/polter/plugins`, where every plugin's log file goes. Owned.
+///
+/// **Worked out once and kept**, rather than passed down to whoever starts a
+/// resident: there are two callers that start one -- everything at launch,
+/// and one plugin at a time when an agent switches it on -- and a directory
+/// computed separately by each of them is two answers to "where do the logs
+/// live". Null means it has not been asked for yet; an empty string means it
+/// was asked for and there is nowhere, which is what makes a plugin fall
+/// back to inheriting standard error.
+///
+/// Empty is a literal rather than an allocation, which `deinit` may free
+/// without knowing the difference: freeing a zero-length slice is defined to
+/// do nothing.
+poltergeist_log_dir: ?[]const u8 = null,
+
 /// What the previous run left behind. See `Session.Recall`, which reads
 /// the file as it is constructed so that this run cannot overwrite the
 /// material before anybody asks for it.
@@ -122,13 +137,13 @@ poltergeist_feed: poltergeistpkg.Feed,
 
 /// The resident archive plugins, one thread each. Empty unless one is
 /// installed and switched on, which is the ordinary case.
-poltergeist_archives: std.ArrayListUnmanaged(*poltergeistpkg.Archive) = .empty,
+poltergeist_residents: std.ArrayListUnmanaged(*poltergeistpkg.Resident) = .empty,
 
 /// Whether the archives have been looked for. Testing the list instead
 /// would not do: with no archive plugin installed it stays empty for ever,
 /// and every config reload would re-read every plugin's settings file to
 /// find that out again.
-poltergeist_archives_started: bool = false,
+poltergeist_residents_started: bool = false,
 
 /// Baseline for the monotonic clock the bus is given. Taken on the first
 /// report rather than at startup so it costs nothing when unused.
@@ -286,8 +301,8 @@ pub fn deinit(self: *App) void {
     // these borrows nothing from the app -- it copied what it needed and
     // opened its own handle on the log -- but the order says plainly who
     // has to have stopped before the rest of this runs.
-    for (self.poltergeist_archives.items) |archive| archive.destroy();
-    self.poltergeist_archives.deinit(self.alloc);
+    for (self.poltergeist_residents.items) |archive| archive.destroy();
+    self.poltergeist_residents.deinit(self.alloc);
 
     // After them, and that order is the whole of it: each archive gives
     // its subscription back as it is destroyed.
@@ -300,6 +315,7 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
     for (self.poltergeist_alerts.items) |line| self.alloc.free(line);
     self.poltergeist_alerts.deinit(self.alloc);
+    if (self.poltergeist_log_dir) |d| self.alloc.free(d);
     self.chat_surfaces.deinit(self.alloc);
     self.chat.deinit();
     self.poltergeist.deinit();
@@ -357,7 +373,7 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
     // the two places that notices they both have. Once they have been
     // looked for it does nothing, so a plugin installed while Polter is
     // running still waits for a restart, the same as a notification one.
-    self.ensureArchive();
+    self.ensureResidents();
 
     // Moved into each plugin's own file, so that one plugin's state lives in
     // one place and a settings UI can own it. Said plainly rather than
@@ -508,7 +524,7 @@ pub fn ensurePlugins(self: *App) void {
     const found = self.scanPlugins(alloc, io, &environ_map, false);
 
     // The manifests alone are kept. The settings are read again where they
-    // are used -- `ensureArchive` at the moment it starts a child, the
+    // are used -- `ensureResidents` at the moment it starts a child, the
     // notification path on every send -- because a parameter changed while
     // Polter runs must take effect without a restart.
     const manifests = alloc.alloc(poltergeistpkg.Plugin.Manifest, found.len) catch {
@@ -520,10 +536,16 @@ pub fn ensurePlugins(self: *App) void {
     self.poltergeist_plugins = manifests;
     self.poltergeist_plugin_arena = arena;
 
-    log.info("poltergeist: {d} notification and {d} archive plugin(s) ready", .{
-        poltergeistpkg.notify.count(manifests, .notify),
-        poltergeistpkg.notify.count(manifests, .archive),
-    });
+    log.info(
+        "poltergeist: {d} plugin(s) ready -- {d} on chat, {d} on notifications, " ++
+            "{d} on provisioning",
+        .{
+            manifests.len,
+            poltergeistpkg.notify.count(manifests, .chat),
+            poltergeistpkg.notify.count(manifests, .terminal_quiet),
+            poltergeistpkg.notify.count(manifests, .provision),
+        },
+    );
 }
 
 /// One plugin as found on disk, together with what the user configured for
@@ -564,7 +586,7 @@ fn scanPlugins(
     // `<key>.json` and `archiveFor` looks one up by key. Two directories
     // whose manifests claim one key would therefore share a settings file
     // and start two resident copies of one plugin, each subscribing and
-    // each storing every message -- see `docs/poltergeist/storage.md`.
+    // each storing every message -- see `docs/poltergeist/plugins.md`.
     var keys: std.StringHashMapUnmanaged([]const u8) = .empty;
 
     for (self.pluginSearchPath(arena, io, environ_map)) |base| {
@@ -574,6 +596,14 @@ fn scanPlugins(
         var it = dir.iterate();
         while (it.next(io) catch null) |entry| {
             if (entry.kind != .directory) continue;
+
+            // A leading underscore means "this directory is not a plugin".
+            // `plugins/_sdk/` is the thin client a plugin author copies
+            // from; it has no manifest by design, and warning about it on
+            // every scan would train people to ignore the one warning that
+            // means a real plugin failed to load.
+            if (entry.name.len > 0 and entry.name[0] == '_') continue;
+
             if (dirs.contains(entry.name)) continue;
 
             const name = arena.dupe(u8, entry.name) catch continue;
@@ -617,7 +647,7 @@ fn scanPlugins(
 /// Safe to do while archives are running, and that rests on two facts rather
 /// than on hope: `Archive.Options` says every field is copied, so a resident
 /// plugin borrows nothing from the arena being thrown away; and both readers
-/// of `poltergeist_plugins` -- `notifyUser` and `ensureArchive` -- run on the
+/// of `poltergeist_plugins` -- `notifyUser` and `ensureResidents` -- run on the
 /// app thread, which is the thread this is called on.
 pub fn reloadPlugins(self: *App) void {
     // Cleared before the arena goes, not after. `ensurePlugins` has early
@@ -884,26 +914,24 @@ pub fn ensureChatLog(self: *App, want: bool) void {
 
     // The log has just opened, which is the earliest moment there is
     // anything for an archive plugin to follow.
-    self.ensureArchive();
+    self.ensureResidents();
 }
 
-/// Start the resident archive plugins, if any are installed and switched on.
+/// Start every plugin that is installed, switched on, and subscribed to
+/// something.
 ///
 /// One thread and one child process each, for as long as the app is up.
-/// They copy the chat log somewhere that outlives it; the log stays the
-/// only source of truth and a plugin that dies loses nothing, because the
-/// cursor it wrote down does not move. See `poltergeist/Archive.zig` and
-/// `docs/poltergeist/storage.md`.
+/// There is no longer a kind to select on: what starts is what has a
+/// non-empty `wants.events`, and what a plugin then receives is whichever
+/// of those events it asked for. See `poltergeist/Resident.zig` for what
+/// being resident costs and `docs/poltergeist/plugins.md` for the protocol.
 ///
 /// Nothing here fails quietly. A plugin that will not start, or that
-/// declares no groups and so has nothing to be given, is named in a
-/// warning -- an archive that silently does not run is the one failure the
+/// subscribes to nothing and so has nothing to be given, is named in a
+/// warning -- a plugin that silently does not run is the one failure the
 /// whole feature is supposed to be proof against.
-pub fn ensureArchive(self: *App) void {
-    if (self.poltergeist_archives_started) return;
-
-    // Nothing is being written down, so there is nothing to copy.
-    if (self.chat_log == null) return;
+pub fn ensureResidents(self: *App) void {
+    if (self.poltergeist_residents_started) return;
 
     // Asked for rather than assumed, and this matters: on the first surface
     // `ensureChatLog` runs *before* `ensurePlugins`, so the plugin list
@@ -917,7 +945,7 @@ pub fn ensureArchive(self: *App) void {
     // Set before the loop, not after: a failure part way through must not
     // leave this to be tried again and start a second copy of everything
     // that did work.
-    self.poltergeist_archives_started = true;
+    self.poltergeist_residents_started = true;
 
     const io = global.io();
 
@@ -936,15 +964,57 @@ pub fn ensureArchive(self: *App) void {
         // whether a plugin is switched on and throws its parameters away.
         // A resident plugin's database lives in those.
         const settings = self.pluginSettings(alloc, io, &environ_map, manifest.key);
-        _ = self.startArchive(manifest, settings);
+        _ = self.startResident(manifest, settings);
     }
 
     // Only when there is something to say, so the ordinary install -- which
     // has no archive plugin at all -- stays quiet.
-    if (self.poltergeist_archives.items.len > 0) log.info(
+    if (self.poltergeist_residents.items.len > 0) log.info(
         "poltergeist: {d} archive plugin(s) running",
-        .{self.poltergeist_archives.items.len},
+        .{self.poltergeist_residents.items.len},
     );
+}
+
+/// Where every plugin's log file goes, made if it is not there.
+///
+/// Made here rather than by each resident, because every resident would
+/// otherwise race to make the same directory on the first start. Empty when
+/// there is no state directory to be had -- the one case where a plugin runs
+/// with its standard error inherited the way it used to be, into Polter's
+/// own, which inside a packaged app is nowhere anybody can read.
+fn pluginLogDir(self: *App) []const u8 {
+    if (self.poltergeist_log_dir) |d| return d;
+
+    const io = global.io();
+    self.poltergeist_log_dir = dir: {
+        var environ_map = global.environMap() catch break :dir "";
+        defer environ_map.deinit();
+
+        const state = internal_os.xdg.state(
+            io,
+            self.alloc,
+            &environ_map,
+            .{ .subdir = "polter" },
+        ) catch |err| {
+            log.warn("poltergeist: no state directory for the plugin logs err={}", .{err});
+            break :dir "";
+        };
+        defer self.alloc.free(state);
+
+        const dir = poltergeistpkg.PluginLog.dirIn(self.alloc, state) catch break :dir "";
+
+        std.Io.Dir.cwd().createDirPath(io, dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => {
+                log.warn("poltergeist: could not make {s} err={}", .{ dir, err });
+                self.alloc.free(dir);
+                break :dir "";
+            },
+        };
+        break :dir dir;
+    };
+
+    return self.poltergeist_log_dir.?;
 }
 
 /// Start one resident archive plugin, unless there is a reason not to.
@@ -955,43 +1025,74 @@ pub fn ensureArchive(self: *App) void {
 ///
 /// The duplicate check is not tidiness. Two copies of one plugin confirm
 /// into the same cursor file, and the cursor can then go backwards or skip
-/// -- the one failure `docs/poltergeist/storage.md` spends a section ruling
+/// -- the one failure `docs/poltergeist/plugins.md` spends a section ruling
 /// out. This is the only path that starts one, so it is where the guarantee
 /// belongs.
-fn startArchive(
+fn startResident(
     self: *App,
     manifest: poltergeistpkg.Plugin.Manifest,
     settings: poltergeistpkg.Plugin.Settings,
 ) bool {
-    if (manifest.kind != .archive) return false;
-
     if (manifest.wants.empty()) {
         log.warn(
-            "poltergeist: plugin {s} declares no groups, so it is not " ++
-                "started; add \"wants\": {{\"groups\": [\"*\"]}} to its plugin.json",
+            "poltergeist: plugin {s} subscribes to nothing, so it is not " ++
+                "started; add \"wants\": {{\"events\": [\"chat\"]}} -- or whichever " ++
+                "events it is for -- to its plugin.json",
             .{manifest.key},
         );
         return false;
     }
 
-    // Nothing is being written down, so there is nothing to follow. Not a
-    // warning: this is the ordinary state before the first terminal exists.
-    if (self.chat_log == null) return false;
+    if (manifest.wants.groupless()) log.warn(
+        "poltergeist: plugin {s} subscribes to chat and names no groups, so it " ++
+            "will be started and handed nothing; add \"wants\": " ++
+            "{{\"groups\": [\"*\"]}} to its plugin.json",
+        .{manifest.key},
+    );
 
-    if (self.archiveFor(manifest.key) != null) return false;
+    if (self.residentFor(manifest.key) != null) return false;
 
     // A fresh map each, and deliberately no `defer`: `start` takes the
     // environment over the moment it is called, on its failure paths too.
     const env = global.environMap() catch return false;
 
-    const archive = poltergeistpkg.Archive.start(self.alloc, global.io(), .{
+    // The plugin's own token, minted here because this is the one place a
+    // child is started. Failing to mint one is not a reason not to run the
+    // plugin: it still gets its events, it simply has nowhere to call. That
+    // is the narrow direction, and it keeps a plugin that never calls
+    // anything working when the socket is not up.
+    const token = token: {
+        const server = if (self.poltergeist_server) |*srv| srv else break :token "";
+        break :token server.issuePluginToken(
+            manifest.key,
+            manifest.wants.calls,
+        ) catch |err| {
+            log.warn(
+                "poltergeist: plugin {s} gets no token err={}, so it will be fed " ++
+                    "events but cannot call anything",
+                .{ manifest.key, err },
+            );
+            break :token "";
+        };
+    };
+
+    const archive = poltergeistpkg.Resident.start(self.alloc, global.io(), .{
         .key = manifest.key,
         .exec = manifest.exec,
         .timeout_ms = manifest.timeout_ms,
-        .groups = manifest.wants.groups,
+        .wants = manifest.wants,
         .params = settings.params,
+        .socket = if (self.poltergeist_server) |*srv| srv.path else "",
+        .token = token,
         .feed = &self.poltergeist_feed,
         .environ = env,
+        .log_dir = self.pluginLogDir(),
+
+        // So that a plugin failing is not only a log line. `App` outlives
+        // every resident -- `deinit` stops and destroys them before it
+        // returns -- so the pointer is good for as long as the thread that
+        // holds it.
+        .alert = .{ .ctx = self, .func = submitPoltergeistAlert },
     }) catch |err| {
         log.warn(
             "poltergeist: plugin {s} would not start err={}",
@@ -1000,7 +1101,7 @@ fn startArchive(
         return false;
     };
 
-    self.poltergeist_archives.append(self.alloc, archive) catch {
+    self.poltergeist_residents.append(self.alloc, archive) catch {
         // Never orphan a running thread over a failed append.
         archive.destroy();
         return false;
@@ -1014,8 +1115,8 @@ fn startArchive(
 /// Walked rather than mapped: there are single digits of these, and
 /// `Archive.key` is written once in `start` and never again, so reading it
 /// from here needs no lock.
-fn archiveFor(self: *App, key: []const u8) ?*poltergeistpkg.Archive {
-    for (self.poltergeist_archives.items) |archive| {
+fn residentFor(self: *App, key: []const u8) ?*poltergeistpkg.Resident {
+    for (self.poltergeist_residents.items) |archive| {
         if (std.mem.eql(u8, archive.key, key)) return archive;
     }
     return null;
@@ -1075,6 +1176,13 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
 
     const home = environ_map.get("HOME") orelse return;
 
+    // Before anything is published, because a subscription starts empty by
+    // definition: an event handed to the feed before the plugins subscribe
+    // is an event nobody was listening for. `ensureChatLog` calls this too
+    // and it is idempotent -- said here so that provisioning does not
+    // depend on the order two calls in another file happen to be written.
+    self.ensureResidents();
+
     // Nothing switched on that would tell any runtime anything, while the
     // config says to register. Nothing failed -- there is simply no plugin
     // to do it, and that is a thing the user asked for that will not
@@ -1110,32 +1218,24 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
         skills.append(alloc, .{ .name = name, .path = path }) catch {};
     }
 
-    const result = poltergeistpkg.provision.run(
-        alloc,
-        io,
-        &environ_map,
-        self.poltergeist_plugins,
-        pluginParams,
-        self,
+    // Published, not run. There is no provisioning pass any more: a
+    // provisioning plugin is a resident subscribed to one event, and this
+    // is that event. `publish` copies everything into each subscriber's own
+    // queue, so the arena above may go away the moment this returns.
+    self.poltergeist_feed.publish(poltergeistpkg.provision.published(
         .{
             .exe = exe,
             .version = build_config.version_string,
             .home = home,
             .skills = skills.items,
         },
+        self.poltergeist_epoch_wall_ms + @as(i64, @intCast(self.poltergeistNow())),
+    ));
+
+    log.info(
+        "poltergeist: handed what Polter is to {d} provisioning plugin(s)",
+        .{poltergeistpkg.notify.count(self.poltergeist_plugins, .provision)},
     );
-
-    log.info("poltergeist: {d} runtime(s) provisioned, {d} failed", .{
-        result.provisioned,
-        result.failures.len,
-    });
-
-    // Copied out of the arena, which goes away with this function while
-    // the message waits for a terminal to exist.
-    for (result.failures) |line| {
-        const owned = self.alloc.dupe(u8, line) catch continue;
-        self.poltergeist_alerts.append(self.alloc, owned) catch self.alloc.free(owned);
-    }
 }
 
 /// The file one skill is actually in, the user's own copy first.
@@ -1186,15 +1286,7 @@ pub fn flushPoltergeistAlerts(self: *App, surface: *Surface) void {
 
     for (self.poltergeist_alerts.items) |line| {
         defer self.alloc.free(line);
-
-        var msg: apprt.surface.Message = .{ .poltergeist_alert = undefined };
-        const n = @min(line.len, msg.poltergeist_alert.len);
-        @memcpy(msg.poltergeist_alert[0..n], line[0..n]);
-        msg.poltergeist_alert[n] = 0;
-
-        surface.handleMessage(msg) catch |err| {
-            log.warn("poltergeist: could not show an alert err={}", .{err});
-        };
+        self.showPoltergeistAlert(surface, line);
     }
 
     self.poltergeist_alerts.clearAndFree(self.alloc);
@@ -1292,6 +1384,86 @@ fn submitPoltergeistRequest(
     if (self.poltergeist_rt_app) |rt| rt.wakeup();
 }
 
+/// Take a plugin's failure off its own thread and give it to the app.
+///
+/// Called from a resident's thread (`Resident.Alert`), so it does exactly
+/// one thing: copy the line and post it. It must not look at a surface --
+/// those belong to the app thread -- and it must not block, because this
+/// thread is the one keeping that plugin's child to its deadline.
+///
+/// **Pushed with `instant`, not `forever`**, which is the opposite of what
+/// `submitPoltergeistRequest` does, and for the opposite reason: nobody is
+/// waiting on this, and a resident parked on a full mailbox is a plugin
+/// nobody is holding to time. A mailbox that full means the app thread is
+/// already in trouble; the line is dropped and said in the log, which is
+/// where it was going anyway before this path existed.
+fn submitPoltergeistAlert(ctx: *anyopaque, line: []const u8) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    // Copied because the caller's buffer dies with the call. Freed by
+    // `poltergeistAlert`, or here if it never gets that far.
+    const owned = self.alloc.dupe(u8, line) catch {
+        log.warn("poltergeist: no memory to show a plugin failure: {s}", .{line});
+        return;
+    };
+
+    if (self.mailbox.push(
+        global.io(),
+        .{ .poltergeist_alert = owned },
+        .{ .instant = {} },
+    ) == 0) {
+        log.warn("poltergeist: could not queue a plugin failure: {s}", .{line});
+        self.alloc.free(owned);
+        return;
+    }
+
+    // Queuing is not delivering; the app loop sleeps until something wakes
+    // it. Same reason as `submitPoltergeistRequest`, and it matters more
+    // here: nothing else is going to happen on an idle machine at 3am,
+    // which is exactly when this line is worth having.
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
+/// Show one plugin failure. Runs on the app thread.
+///
+/// **Straight to a terminal when there is one.** The queue is the answer to
+/// "there is no window yet", which is the case at startup and only then;
+/// once a terminal exists, holding the line back would mean a plugin that
+/// broke at 3am is reported the next time somebody opens a tab.
+///
+/// Takes ownership of `line`.
+fn poltergeistAlert(self: *App, line: []const u8) void {
+    if (self.surfaces.items.len > 0) {
+        defer self.alloc.free(line);
+        self.showPoltergeistAlert(self.surfaces.items[0].core(), line);
+        return;
+    }
+
+    // Queued rather than dropped: no surface means no user either, and a
+    // message thrown away for want of a window is the silence this whole
+    // path exists to end.
+    self.poltergeist_alerts.append(self.alloc, line) catch self.alloc.free(line);
+}
+
+/// Print one line where the person will see it.
+///
+/// `poltergeist_alert` and not `poltergeist_notice`, and the difference is
+/// the recipient: a notice is *typed into* a terminal, so it is addressed
+/// to whatever is running in there; an alert is *printed*, so the reader is
+/// the person and the agent does not take it as input.
+fn showPoltergeistAlert(self: *App, surface: *Surface, line: []const u8) void {
+    _ = self;
+
+    var msg: apprt.surface.Message = .{ .poltergeist_alert = undefined };
+    const n = @min(line.len, msg.poltergeist_alert.len - 1);
+    @memcpy(msg.poltergeist_alert[0..n], line[0..n]);
+    msg.poltergeist_alert[n] = 0;
+
+    surface.handleMessage(msg) catch |err| {
+        log.warn("poltergeist: could not show an alert err={}", .{err});
+    };
+}
+
 /// Answer one agent request. Runs on the app thread, which is the only
 /// thread that may touch the bus or a surface.
 fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void {
@@ -1318,10 +1490,14 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // an agent's sidecar. One more question decides whose request this is:
     // a surface this app opened for the chat speaks for the person at the
     // keyboard, and nothing else does.
-    const caller = if (self.isChatSurface(pending.caller))
-        poltergeistpkg.Chat.user_id
-    else
-        pending.caller;
+    // A chat surface is still a *terminal*, which is why this substitution
+    // is only ever made on one: a plugin has no surface, so there is
+    // nothing here it could be mistaken for -- least of all the user.
+    const caller: poltergeistpkg.Bus.Caller = caller: {
+        const id = pending.caller.terminalId() orelse break :caller pending.caller;
+        if (self.isChatSurface(id)) break :caller .{ .terminal = poltergeistpkg.Chat.user_id };
+        break :caller .{ .terminal = id };
+    };
 
     const response = poltergeistpkg.rpc.dispatch(
         pending.arena.allocator(),
@@ -1402,7 +1578,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
 // -- the plugin tools' side of the host -------------------------------------
 //
 // All four run on the app thread: `poltergeistRequest` dispatches there, and
-// so do `notifyUser` and `ensureArchive`. That is what makes it safe for a
+// so do `notifyUser` and `ensureResidents`. That is what makes it safe for a
 // configure to throw the plugin arena away and read the directories again
 // while archives are running.
 //
@@ -1464,37 +1640,48 @@ fn pluginList(
         // Handed over exactly as the manifest declared them, unread: an
         // agent has to be able to tell the user what it is about to switch
         // on.
+        // The events, as the wire names them. Rendered here rather than in
+        // `wire.zig` so that the one place that knows a `Plugin.Event`'s
+        // spelling is `Plugin.Event` itself.
+        const events = try alloc.alloc([]const u8, manifest.wants.events.len);
+        for (manifest.wants.events, events) |e, *dst| dst.* = e.wireName();
+
         var view: poltergeistpkg.rpc.PluginView = .{
             .key = manifest.key,
             .name = manifest.name,
-            .kind = @tagName(manifest.kind),
             .enabled = installed.settings.enabled,
+            .events = events,
+            .calls = manifest.wants.calls,
             .groups = manifest.wants.groups,
             .network = manifest.wants.network,
             .exec = manifest.wants.exec,
             .params = params.items,
         };
 
-        if (manifest.kind == .archive) {
-            // Left empty when no copy is running, rather than reported as
-            // zero. `wire.writePlugin` leaves the whole group out then, and
-            // an absent `cursor` reads as "not being measured" where a `0`
-            // would read as "measured, and it is nothing".
-            const status = if (self.archiveFor(manifest.key)) |a| a.status() else null;
-            if (status) |st| {
-                view.state = @tagName(st.state);
-                view.cursor = st.cursor;
-                view.failures = st.failures;
-            }
-
-            view.note = try poltergeistpkg.report.archiveNote(alloc, .{
-                .key = manifest.key,
-                .enabled = installed.settings.enabled,
-                .declares_groups = !manifest.wants.empty(),
-                .log_open = self.chat_log != null,
-                .status = status,
-            });
+        // Every plugin is resident now, so every plugin has a state worth
+        // reporting -- and this is exactly where a notification channel's
+        // health used to be invisible: it was a fork that had already
+        // exited, so there was nothing left to ask.
+        //
+        // Left empty when no copy is running, rather than reported as
+        // zero. `wire.writePlugin` leaves the whole group out then, and
+        // an absent `cursor` reads as "not being measured" where a `0`
+        // would read as "measured, and it is nothing".
+        const status = if (self.residentFor(manifest.key)) |a| a.status() else null;
+        if (status) |st| {
+            view.state = @tagName(st.state);
+            view.cursor = st.cursor;
+            view.failures = st.failures;
         }
+
+        view.note = try poltergeistpkg.report.residentNote(alloc, .{
+            .key = manifest.key,
+            .enabled = installed.settings.enabled,
+            .declares_events = !manifest.wants.empty(),
+            .groupless = manifest.wants.groupless(),
+            .log_open = self.chat_log != null,
+            .status = status,
+        });
 
         try out.append(alloc, view);
     }
@@ -1627,32 +1814,31 @@ fn pluginConfigure(
 
     self.reloadPlugins();
 
-    var started: poltergeistpkg.report.Started = .not_an_archive;
-    if (manifest.kind == .archive) {
-        started = if (self.archiveFor(manifest.key) != null)
-            .already_running
-        else if (switched_on and self.startArchiveNow(alloc, io, &environ_map, manifest.key))
-            .started_now
-        else
-            .not_started;
-    }
+    const started: poltergeistpkg.report.Started = if (manifest.wants.empty())
+        .subscribes_to_nothing
+    else if (self.residentFor(manifest.key) != null)
+        .already_running
+    else if (switched_on and self.startResidentNow(alloc, io, &environ_map, manifest.key))
+        .started_now
+    else
+        .not_started;
 
     const said = try poltergeistpkg.report.configured(
         alloc,
         manifest.key,
-        manifest.kind,
         switched_on,
         params.len > 0,
         started,
     );
     if (started != .not_started) return said;
 
-    // Why it is not running is `archiveNote`'s to say, so it is said in one
+    // Why it is not running is `residentNote`'s to say, so it is said in one
     // place and never written out twice.
-    const note = try poltergeistpkg.report.archiveNote(alloc, .{
+    const note = try poltergeistpkg.report.residentNote(alloc, .{
         .key = manifest.key,
         .enabled = next.enabled,
-        .declares_groups = !manifest.wants.empty(),
+        .declares_events = !manifest.wants.empty(),
+        .groupless = manifest.wants.groupless(),
         .log_open = self.chat_log != null,
         .status = null,
     });
@@ -1666,7 +1852,7 @@ fn pluginConfigure(
 ///
 /// After a reload, so what gets started is what was just written rather than
 /// what was read before the write.
-fn startArchiveNow(
+fn startResidentNow(
     self: *App,
     alloc: Allocator,
     io: std.Io,
@@ -1676,7 +1862,7 @@ fn startArchiveNow(
     for (self.poltergeist_plugins) |manifest| {
         if (!std.mem.eql(u8, manifest.key, key)) continue;
         const settings = self.pluginSettings(alloc, io, environ_map, manifest.key);
-        return self.startArchive(manifest, settings);
+        return self.startResident(manifest, settings);
     }
     return false;
 }
@@ -1697,15 +1883,17 @@ fn installedPlugin(
 
 /// Prove a plugin works before the night it is needed.
 ///
-/// A notification plugin is really sent through, going round `notify.decide`
-/// on purpose: quiet hours do not apply, because the point of a test is that
-/// it goes out, and the tool's own description says so. Every word of what
-/// goes out is written here -- the schema has no free-text field, and that
-/// is what keeps this from being an unconstrained outbound channel with the
-/// constrained one (`notify_user`) sitting next to it as the long way round.
+/// A plugin subscribed to `terminal.quiet` is really sent through, going
+/// round `notify.decide` on purpose: quiet hours do not apply, because the
+/// point of a test is that it goes out, and the tool's own description says
+/// so. Every word of what goes out is written here -- the schema has no
+/// free-text field, and that is what keeps this from being an unconstrained
+/// outbound channel with the constrained one (`notify_user`) sitting next
+/// to it as the long way round.
 ///
-/// An archive plugin has **nothing started for it**. See
-/// `poltergeist/report.zig` for why, and for the sentence that says so.
+/// **Nothing is ever started to test a plugin**, whatever it subscribes to.
+/// Every plugin is resident, and a second copy would be a second subscriber
+/// handed everything twice. See `poltergeist/report.zig` for the sentences.
 fn pluginTest(
     ctx: *anyopaque,
     alloc: Allocator,
@@ -1723,21 +1911,28 @@ fn pluginTest(
         return error.NoSuchPlugin;
 
     // Global rather than per key: this protects the person, not the plugin,
-    // and a person with four channels configured is one person. The archive
-    // branch spends it too, as specified.
+    // and a person with four channels configured is one person. The branch
+    // that only reports on a resident spends it too, as specified.
     const now = self.poltergeistNow();
     if (self.poltergeist_plugin_tested_ms) |last| {
         if (now -| last < std.time.ms_per_min) return error.TooSoon;
     }
     self.poltergeist_plugin_tested_ms = now;
 
-    if (installed.manifest.kind == .archive) {
-        return poltergeistpkg.report.archiveStatus(alloc, .{
+    // Every plugin is resident, so nothing is ever started to test one: a
+    // second copy would be a second subscriber handed everything twice. The
+    // answer to "does it work" is the running copy's own account of itself,
+    // which for a notification channel is a strictly better answer than the
+    // old one -- a test notification proved the fork worked at that
+    // instant, and said nothing about the night it was needed.
+    if (!installed.manifest.wants.subscribes(.terminal_quiet)) {
+        return poltergeistpkg.report.residentStatus(alloc, .{
             .key = installed.manifest.key,
             .enabled = installed.settings.enabled,
-            .declares_groups = !installed.manifest.wants.empty(),
+            .declares_events = !installed.manifest.wants.empty(),
+            .groupless = installed.manifest.wants.groupless(),
             .log_open = self.chat_log != null,
-            .status = if (self.archiveFor(installed.manifest.key)) |a| a.status() else null,
+            .status = if (self.residentFor(installed.manifest.key)) |a| a.status() else null,
         });
     }
 
@@ -1763,23 +1958,31 @@ fn pluginTest(
         .at_ms = self.poltergeist_epoch_wall_ms + @as(i64, @intCast(now)),
     };
 
-    // The one plugin that was named, not `notify.send`, which would fan the
-    // test out to every channel the user has.
-    const rendered = try poltergeistpkg.notify.body(alloc, event);
-    const outcome = poltergeistpkg.Plugin.call(
-        installed.manifest,
-        alloc,
-        io,
-        &environ_map,
-        rendered,
-        installed.settings.params,
+    // **The one plugin that was named is no longer a thing this can do.**
+    // A notification is published on the feed, and the feed has no way to
+    // address one subscriber -- by design: the whole point of it is that
+    // the publisher knows nothing about who is listening. So a test goes to
+    // every channel the user has switched on, and the reply says so rather
+    // than implying otherwise.
+    //
+    // What is *not* given up is that a test really goes out: this is a real
+    // event on the real path, which is the only kind of test worth having
+    // on the night it matters. `notify.decide` is deliberately skipped --
+    // quiet hours do not apply to a test, and the tool's own description
+    // says so.
+    self.poltergeist_feed.publish(poltergeistpkg.notify.published(event));
+
+    const channels = poltergeistpkg.notify.count(
+        self.poltergeist_plugins,
+        .terminal_quiet,
     );
 
-    return poltergeistpkg.report.notified(
+    return poltergeistpkg.report.tested(
         alloc,
         installed.manifest.key,
         installed.settings.enabled,
-        outcome,
+        channels,
+        if (self.residentFor(installed.manifest.key)) |a| a.status() else null,
     );
 }
 
@@ -2354,10 +2557,11 @@ fn notifyUser(
         self.poltergeist_notify_window,
         localMinuteNow(),
 
-        // The notification channels alone. The list holds every kind now,
-        // and an installed archive plugin counted here would have this say
-        // a message went somewhere it did not.
-        poltergeistpkg.notify.count(self.poltergeist_plugins, .notify),
+        // The plugins that subscribed to this, and nothing else. There is
+        // no kind to count any more, so there is no list of kinds to forget
+        // one from: a plugin is a notification channel exactly when its own
+        // manifest asked for `terminal.quiet`.
+        poltergeistpkg.notify.count(self.poltergeist_plugins, .terminal_quiet),
     )) {
         .nowhere_to_send => return alloc.dupe(
             u8,
@@ -2375,32 +2579,67 @@ fn notifyUser(
         .tell => {},
     }
 
-    var environ_map = try global.environMap();
-    defer environ_map.deinit();
+    self.poltergeist_feed.publish(poltergeistpkg.notify.published(event));
 
-    const result = poltergeistpkg.notify.send(
-        alloc,
-        global.io(),
-        &environ_map,
+    // **What the supervisor is told changed here, and it is a real loss.**
+    // A one-shot notifier was forked, and its exit code said whether the
+    // message went out; the answer could be "sent through 2 of 3". A
+    // resident one is handed the event and answers on its own thread, some
+    // time after this call has returned, so nothing here can wait for that
+    // without putting the app thread behind somebody's webhook.
+    //
+    // What is said instead is what *is* known at this instant, and it is
+    // not nothing: how many channels asked for this event, and how many of
+    // them have a child that is currently up. A plugin that is backing off
+    // or dormant is precisely the one whose message is not going anywhere,
+    // and that is the fact the supervisor needed the exit code for.
+    var running: usize = 0;
+    for (self.poltergeist_residents.items) |r| {
+        if (!self.pluginSubscribes(r.key, .terminal_quiet)) continue;
+        switch (r.status().state) {
+            .starting, .feeding => running += 1,
+            .backing_off, .dormant, .stopped => {},
+        }
+    }
+
+    const channels = poltergeistpkg.notify.count(
         self.poltergeist_plugins,
-        pluginParams,
-        self,
-        event,
+        .terminal_quiet,
     );
 
-    if (result.delivered == 0) {
-        return std.fmt.allocPrint(
-            alloc,
-            "nobody was told: all {d} channel(s) failed. Do not wait for an answer.",
-            .{result.failed},
-        );
-    }
+    if (running == 0) return std.fmt.allocPrint(
+        alloc,
+        "handed to {d} channel(s), and none of them has a plugin running right now " ++
+            "-- they are backing off or dormant, and plugin_list says which. Do not " ++
+            "wait for an answer.",
+        .{channels},
+    );
 
     return std.fmt.allocPrint(
         alloc,
-        "sent through {d} of {d} channel(s)",
-        .{ result.delivered, result.delivered + result.failed },
+        "handed to {d} of {d} channel(s) that are running. They deliver on their own " ++
+            "threads, so this is not a delivery receipt; plugin_list says how each is " ++
+            "getting on.",
+        .{ running, channels },
     );
+}
+
+/// Whether the plugin called `key` subscribed to `e`.
+///
+/// Asked of the manifest list rather than of the resident, because the
+/// resident's copy of `wants` is its own and this is the list the user's
+/// files produced. They agree; asking the one that can be re-read is what
+/// keeps them agreeing.
+fn pluginSubscribes(
+    self: *const App,
+    key: []const u8,
+    e: poltergeistpkg.Plugin.Event,
+) bool {
+    for (self.poltergeist_plugins) |m| {
+        if (!std.mem.eql(u8, m.key, key)) continue;
+        return m.wants.subscribes(e);
+    }
+    return false;
 }
 
 /// Minutes since local midnight.
@@ -2903,6 +3142,7 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
             .surface_message => |msg| try self.surfaceMessage(msg.surface, msg.message),
             .poltergeist_report => |msg| self.poltergeistReport(msg.from, msg.event),
             .poltergeist_request => |p| self.poltergeistRequest(p),
+            .poltergeist_alert => |line| self.poltergeistAlert(line),
             .redraw_surface => |surface| try self.redrawSurface(rt_app, surface),
 
             // If we're quitting, then we set the quit flag and stop
@@ -3220,6 +3460,13 @@ pub const Message = union(enum) {
     /// until this is answered and the server answers any that are left
     /// when it shuts down.
     poltergeist_request: *poltergeistpkg.Server.Pending,
+
+    /// A plugin has stopped working, in a sentence meant for the person.
+    ///
+    /// Routed through the app because the failure happens on a resident's
+    /// own thread and the screen belongs to this one. The line is owned and
+    /// is freed once it has been shown or queued.
+    poltergeist_alert: []const u8,
 
     /// Redraw a surface. This only has an effect for runtimes that
     /// use single-threaded draws. To redraw a surface for all runtimes,

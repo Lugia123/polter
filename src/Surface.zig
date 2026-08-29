@@ -611,7 +611,14 @@ pub fn init(
                     const rng = rng_impl.interface();
                     break :candidate rng.int(u64);
                 };
+                // Zero is DBus's null. The other one is the id Poltergeist
+                // uses for "not a terminal at all", which a plugin is; a
+                // surface that minted it would be reachable as a caller
+                // that is meant to name nobody. Both are one draw in 2^64,
+                // and both cost one comparison to make impossible rather
+                // than merely unlikely.
                 if (candidate == 0) continue;
+                if (candidate == poltergeistpkg.Bus.not_a_terminal) continue;
                 break :id candidate;
             }
         },

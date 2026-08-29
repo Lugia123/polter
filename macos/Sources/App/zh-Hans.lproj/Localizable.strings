@@ -41,16 +41,35 @@
 "Keep This Terminal Working" = "保持此终端工作";
 "Keep Agents Out of This Terminal" = "不让 agent 碰此终端";
 
-/* 插件 */
+/* 插件菜单 */
 "No plugins installed" = "没有已安装的插件";
 "Settings…" = "设置…";
 "Switch On" = "启用";
 "Switch Off" = "停用";
 "Switch On (needs settings first)" = "启用（需先完成设置）";
 "Open Plugins Folder" = "打开插件目录";
+"Open Plugin Logs" = "打开插件日志";
+"Open Plugin Logs (nothing written yet)" = "打开插件日志（还没有内容）";
+"Show Log" = "查看日志";
+"Show Log (nothing written yet)" = "查看日志（还没有内容）";
 "Restart Polter to apply" = "需重启 Polter 才生效";
 "Plugins are loaded when Polter starts." = "插件在 Polter 启动时加载。";
-"Send notifications through this plugin" = "通过此插件发送通知";
+
+/* 插件订阅了什么，一个事件一句 —— 菜单里跟在插件名后面，设置窗口里也用这几句 */
+"Keeps the conversations" = "保管群聊记录";
+"Notifies you" = "通知你";
+"Sets your agent up to reach Polter" = "让你的 agent 能连上 Polter";
+
+/* 插件设置窗口 */
+"Let this plugin run" = "让这个插件运行";
+"It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way. Changing this takes effect the next time Polter starts." = "它跟 Polter 一起运行，事件发生时就交给它。插件停了、或者写不进它要写的地方，事后会补上，不会丢东西 —— 抄的是 Polter 自己在磁盘上的记录，那份记录无论如何都在。改这一项要下次 Polter 启动才生效。";
+"What it is handed: %@" = "交给它的是：%@";
+"This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it." = "这个插件什么都没订阅，Polter 没有东西交给它，也不会启动它。";
 "This plugin has nothing to configure." = "此插件没有需要配置的项。";
-"A value may be a reference instead of the thing itself: env:NAME, file:/path, keychain:service/account, or cmd:… for a password manager. It is resolved when the notification is sent, and never stored here." = "值可以写成引用而不是内容本身：env:名称、file:/路径、keychain:服务/账户，或用 cmd:… 接密码管理器。引用在发送通知时才解析，不会存进这个文件。";
+"A value may be a reference instead of the thing itself: env:NAME, file:/path, keychain:service/account, or cmd:… for a password manager. It is resolved at the moment the plugin is called, and never stored here." = "值可以写成引用而不是内容本身：env:名称、file:/路径、keychain:服务/账户，或用 cmd:… 接密码管理器。引用在调用插件的那一刻才解析，不会存进这个文件。";
 "Prefer a reference here so the secret stays out of this file." = "这里建议填引用，别把密钥本身留在文件里。";
+"%@ — not one of the choices" = "%@ —— 不在可选项里";
+"Not set" = "未设置";
+"Cancel" = "取消";
+"Save" = "保存";
+"Could not save: %@" = "保存失败：%@";

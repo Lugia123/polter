@@ -1,7 +1,6 @@
 {
   "key": "claude-code",
   "name": "Claude Code",
-  "kind": "provision",
   "version": "1.0.0",
   "description": "Tells Claude Code that Polter is here: registers the MCP server under the user scope and mirrors Polter's skills into ~/.claude/skills/polter-*. Without it an agent has the socket and the token in its environment and no way to use either.",
 
@@ -9,6 +8,9 @@
   "timeout_ms": 20000,
 
   "wants": {
+    "events": ["provision"],
+    "calls": [],
+    "groups": [],
     "network": false,
     "exec": ["claude"]
   },

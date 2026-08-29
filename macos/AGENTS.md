@@ -10,6 +10,25 @@
   - Output: `macos/build/<configuration>/Ghostty.app` (e.g. `macos/build/Debug/Ghostty.app`)
 - Run unit tests directly with `macos/build.nu --action test`
 
+## Checking Swift when `swiftlint` is not installed
+
+`swiftc -typecheck -target arm64-apple-macos13.0` on the files you changed.
+Name the deployment target: without it, an API that only exists on macOS 14
+type-checks and then fails to run on the version this app supports.
+
+**Do not run it over all of `macos/Sources` and read the error count.** The
+tree has long-standing errors -- a parse error in `Ghostty.Shell.swift`, and
+unresolved SPM members in `AppDelegate.swift` -- and a parse error stops the
+compiler before it checks the files after it. So "26 errors, same as the
+baseline" is what you get whether your own files are clean or broken, and it
+looks exactly like having verified something. Type-check the directory you
+touched, on its own, where the count starts at zero and can move.
+
+`swiftc -typecheck` passing is also not the app building. Only `zig build`
+(with the app bundle, i.e. without `-Demit-macos-app=false`) compiles the
+Swift the way the app does; a change can type-check, pass tests, and still
+fail there.
+
 ## AppleScript
 
 - The AppleScript scripting definition is in `macos/Ghostty.sdef`.

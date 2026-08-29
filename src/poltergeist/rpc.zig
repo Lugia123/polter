@@ -380,9 +380,127 @@ pub const Error = error{
     Supervised,
 
     /// The user has put this terminal out of reach of the tool surface.
-    /// Refused to everyone, supervisors included.
+    /// Refused to everyone, supervisors and plugins included.
     Shielded,
+
+    /// The caller is a plugin, and this method's meaning depends on which
+    /// terminal is asking -- who authored it, who is in the group, whose
+    /// box of notices it is, which window a new tab opens in.
+    ///
+    /// Not a second rulebook for plugins. It is one fact about them said
+    /// once: a plugin is not a terminal, so there is no terminal for the
+    /// method to be about. See `callableByPlugin`.
+    NotATerminal,
+
+    /// The caller is a plugin and its manifest did not declare this method
+    /// in `wants.calls`.
+    ///
+    /// Refused **before** anything else is considered, and it can only ever
+    /// narrow: a call has to pass this and the reachability rule both, so
+    /// nothing a plugin declares can widen what it may do.
+    NotDeclared,
 };
+
+/// Whether a plugin may call this method at all.
+///
+/// **Exhaustive, with no `else`.** A method added later will not compile
+/// until somebody has said which side of this line it is on, which is the
+/// property the old `Kind` switch did not have: there, a forgotten case was
+/// a silent omission, and it happened twice.
+///
+/// The open set is the one that names no caller: reading and operating a
+/// terminal, reading the configuration, reading a skill, listing plugins.
+/// A plugin doing those is an ordinary unmarked caller and is judged by
+/// exactly the same reachability rule as an agent -- it may touch terminals
+/// that carry no mark, and a `shielded` terminal is refused to it the same
+/// way it is refused to a supervisor.
+///
+/// The closed set is closed for one of two reasons, and neither is "plugins
+/// are less trusted":
+///
+///   - **The method is a supervisor's.** A plugin is never a supervisor
+///     (`Bus.Caller`), so `requiresSupervisor` already refuses it -- with
+///     the same error and the same sentence an ordinary terminal gets, which
+///     is the parity being claimed. That covers `notify_user`, `set_watch`,
+///     the clock, the group tools and all three plugin tools.
+///   - **The method is about who is asking.** `group_post` needs an author
+///     and `group_read` needs a member; a plugin is in no group. `me`,
+///     `notices`, `stand_down` and `become_supervisor` are about a standing
+///     it does not have. `terminal_open` opens a tab in the caller's own
+///     window and a plugin has none.
+///
+/// What is left open is therefore reading and operating a terminal, reading
+/// the configuration, and reading a skill -- which is not a small surface:
+/// it is everything an unmarked agent may do, judged by the same rule.
+///
+/// Both of those have a route out that is not a special case: group
+/// membership for the first, and the user granting standing in the settings
+/// -- the way `held` and `shielded` are set -- for the second. Neither is
+/// built here, and saying so plainly beats a plugin author reading this list
+/// and guessing why.
+pub fn callableByPlugin(method: Method) bool {
+    return switch (method) {
+        // Seeing what is here, and operating it. Nothing in these depends
+        // on which terminal is asking; what may be reached depends on the
+        // *target's* mark, and that check is `authorize`'s and is the same
+        // one an agent goes through.
+        .terminal_list,
+        .terminal_read,
+        .terminal_send,
+        .terminal_action,
+        .terminal_actions,
+        .terminal_key,
+        .terminal_keys,
+
+        // Reading. The configuration and the skills are instructions and
+        // settings, not reach.
+        .config_get,
+        .skill_read,
+        => true,
+
+        // About the caller: its identity, its standing, its box, its window.
+        .me,
+        .notices,
+        .stand_down,
+        .become_supervisor,
+        .session_recall,
+        .terminal_open,
+
+        // About a membership a plugin does not have.
+        .group_members,
+        .group_list,
+        .group_post,
+        .group_read,
+        .group_history,
+
+        // The supervisor's own. `requiresSupervisor` refuses these to a
+        // plugin already; they are named here too so this list reads as the
+        // whole answer rather than half of one.
+        .group_set_brief,
+        .group_create,
+        .group_destroy,
+        .group_add,
+        .group_remove,
+        .group_compact,
+        .notify_user,
+        .clock_out,
+        .clock_in,
+        .set_quiescence_threshold,
+        .set_watch,
+
+        // The plugin tools. All three are the supervisor's already, so
+        // `requiresSupervisor` is what actually refuses them; they are named
+        // here so this list reads as the whole answer rather than half of
+        // one, and so that a later decision to open one to terminals does
+        // not open it to plugins by omission. A plugin that could rewrite
+        // another plugin's settings -- or its own -- would be a way round
+        // every check `plugin_configure` makes on behalf of the user.
+        .plugin_list,
+        .plugin_configure,
+        .plugin_test,
+        => false,
+    };
+}
 
 /// Whether a method needs the caller to be a supervisor.
 ///
@@ -637,24 +755,62 @@ pub fn target(req: Request) ?Bus.Id {
 ///
 /// There is also no tool for answering a permission prompt on another
 /// agent's behalf, and there will not be one. See `docs/poltergeist/`.
-pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
+pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
     const method: Method = req;
 
-    if (requiresSupervisor(method) and !bus.isSupervisor(caller)) {
+    // A plugin's own declaration first, because it is the narrowest gate
+    // and the cheapest: a call it never said it makes is refused before
+    // anything else is looked at. It cannot conflict with the rules below
+    // -- it only ever subtracts, and a call has to pass this *and* them.
+    if (caller.pluginKey()) |key| {
+        if (!declares(caller, method)) {
+            log.debug(
+                "plugin {s}: {t} is not in its wants.calls, so it is refused",
+                .{ key, method },
+            );
+            return error.NotDeclared;
+        }
+    }
+
+    // A plugin is never a supervisor, so this refuses every method that
+    // changes the supervision arrangement without a second list saying so.
+    //
+    // **Asked before the plugin-shaped refusal below**, on purpose: a
+    // supervisor's method is refused to a plugin for the same reason and
+    // with the same sentence it is refused to an ordinary terminal. That is
+    // the parity being claimed -- one rule, one answer -- and an earlier
+    // "you are not a terminal" would hide it behind a second explanation.
+    const supervisor = if (caller.terminalId()) |id| bus.isSupervisor(id) else false;
+    if (requiresSupervisor(method) and !supervisor) {
         return error.NotPermitted;
+    }
+
+    // Then the one fact about a plugin that is not a rule about plugins: it
+    // is not a terminal, so a method that is about which terminal is asking
+    // has nothing to be about.
+    if (caller.pluginKey() != null and !callableByPlugin(method)) {
+        return error.NotATerminal;
     }
 
     if (target(req)) |id| {
         // The supervisor reaching into itself is always a mistake, and an
         // agent typing into its own terminal through this surface would be
-        // a loop with no natural end.
-        if (id == caller) return error.SelfTarget;
+        // a loop with no natural end. A plugin is no terminal, so there is
+        // nothing here for it to be: it never matches, and it is judged
+        // entirely by the target's mark below.
+        if (caller.isTerminal(id)) return error.SelfTarget;
 
         // The shield first, because it is the one answer that does not
         // depend on who is asking. See `Bus.Entry.shielded`: a shield that
         // only held off non-supervisors would be worth nothing, because
         // `become_supervisor` lets any unmarked terminal promote itself in
         // a single call and then walk straight through it.
+        // Asked of everyone, and the plugin surface is exactly why it is
+        // asked here and not inside some caller-shaped branch: the last
+        // time a second way in was opened -- `terminal_action` -- it went
+        // in with no check at all and could reach past `set_watch`'s
+        // supervisor gate and lift a `held` the user had set. Every door
+        // reopens every question.
         if (bus.isShielded(id)) return error.Shielded;
 
         // **Reach is decided by the target, not by the relationship.**
@@ -683,7 +839,7 @@ pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
         // impossible and which is exactly the case the user wanted: a
         // plugin that only reloads on restart needs somebody able to stop
         // the other terminal and start it again.
-        if (!bus.isSupervisor(caller)) {
+        if (!supervisor) {
             switch (bus.roleOf(id)) {
                 .supervisor, .watched => return error.Supervised,
 
@@ -721,6 +877,20 @@ pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
     }
 }
 
+/// Whether a plugin caller declared `method` in its manifest.
+///
+/// A terminal declares nothing and is not asked. **The empty list refuses
+/// everything**, which is the direction a missing declaration has to fail
+/// in: a manifest with no `calls` is one whose author never thought about
+/// this, and the user reading it before installing was told the plugin calls
+/// nothing.
+fn declares(caller: Bus.Caller, method: Method) bool {
+    return switch (caller) {
+        .terminal => true,
+        .plugin => |p| p.mayCall(@tagName(method)),
+    };
+}
+
 /// Whether the app has a terminal by this id open.
 ///
 /// Only ever asked about an id the bus does not know, and only where a
@@ -752,12 +922,26 @@ pub fn errorMessage(err: Error) []const u8 {
             "Terminals carrying no mark are open to you. If co-ordinating is your job, " ++
             "call become_supervisor and try again; otherwise ask the user",
         error.Shielded => "the user has put that terminal out of reach of these tools, " ++
-            "and nothing here lifts that -- not being a supervisor, not anything. Ask " ++
-            "the person at the keyboard",
+            "and nothing here lifts that -- not being a supervisor, not being a plugin, " ++
+            "not anything. Ask the person at the keyboard",
+        error.NotATerminal => "this is a plugin, and that call is about which terminal is " ++
+            "asking -- who wrote the message, who is in the group, whose window a new tab " ++
+            "opens in. A plugin is not a terminal, so there is nothing for it to be. What " ++
+            "is open to a plugin is reading and operating terminals that carry no mark",
+        error.NotDeclared => "this plugin's manifest did not list that call in " ++
+            "\"wants\": {\"calls\": [...]}. Add it there and the user will see it before " ++
+            "they switch the plugin on; nothing here can grant it at run time",
     };
 }
 
 // -- tests ------------------------------------------------------------------
+
+/// A terminal caller, for the tests that were written before there was any
+/// other kind. `Bus.Caller` is a union now because a plugin is not a
+/// terminal; every one of these calls is about a terminal and says so.
+fn term(id: Bus.Id) Bus.Caller {
+    return .{ .terminal = id };
+}
 
 const testing = std.testing;
 
@@ -859,7 +1043,7 @@ test "a setting can be asked for by name, and a wrong name says so" {
     var fake: FakeHost = .{};
 
     {
-        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .config_get = .{
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .config_get = .{
             .key = "poltergeist-watch",
         } });
         try testing.expectEqualStrings("poltergeist-watch = false\n", res.text);
@@ -868,12 +1052,12 @@ test "a setting can be asked for by name, and a wrong name says so" {
     {
         // No key is everything, which is how an agent finds out what the
         // names are without being told them.
-        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .config_get = .{} });
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .config_get = .{} });
         try testing.expect(std.mem.indexOf(u8, res.text, "poltergeist-notify") != null);
     }
 
     {
-        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .config_get = .{
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .config_get = .{
             .key = "not-a-setting",
         } });
         try testing.expectEqualStrings("NoSuchKey", res.failed.code);
@@ -890,7 +1074,7 @@ test "a key matches the whole name, not a prefix of it" {
     defer arena.deinit();
     var fake: FakeHost = .{ .config = "poltergeist-watch-harder = true\n" };
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .config_get = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .config_get = .{
         .key = "poltergeist-watch",
     } });
     try testing.expectEqualStrings("NoSuchKey", res.failed.code);
@@ -906,7 +1090,7 @@ test "opening a terminal names it when it is there, and does not pretend when it
     {
         // The runtime got to it before the call returned.
         var fake: FakeHost = .{ .open_result = 0x3333 };
-        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .terminal_open = .{
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{
             .cwd = "/tmp/work",
         } });
         try testing.expectEqual(@as(?Bus.Id, 0x3333), res.opened.id);
@@ -925,7 +1109,7 @@ test "opening a terminal names it when it is there, and does not pretend when it
         // It has not appeared yet. Null rather than an error: the tab is on
         // its way, and saying it failed would have the caller open a second.
         var fake: FakeHost = .{ .open_result = null };
-        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .terminal_open = .{} });
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{} });
         try testing.expect(res.opened.id == null);
         try testing.expect(!res.opened.watching);
     }
@@ -938,7 +1122,7 @@ test "a terminal opened to be minded is claimed on the way" {
     defer arena.deinit();
     var fake: FakeHost = .{ .open_result = 0x4444 };
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_open = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_open = .{
         .cwd = "/tmp/work",
         .watch = true,
     } });
@@ -957,13 +1141,13 @@ test "a directory that is not there stops the terminal being opened" {
     defer arena.deinit();
 
     var missing: FakeHost = .{ .open_error = error.NoSuchDirectory };
-    const gone = try dispatch(arena.allocator(), &b, missing.host(), boss, .{ .terminal_open = .{
+    const gone = try dispatch(arena.allocator(), &b, missing.host(), term(boss), .{ .terminal_open = .{
         .cwd = "/no/such/place",
     } });
     try testing.expectEqualStrings("NoSuchDirectory", gone.failed.code);
 
     var relative: FakeHost = .{ .open_error = error.NotAbsolute };
-    const rel = try dispatch(arena.allocator(), &b, relative.host(), boss, .{ .terminal_open = .{
+    const rel = try dispatch(arena.allocator(), &b, relative.host(), term(boss), .{ .terminal_open = .{
         .cwd = "work",
     } });
     try testing.expectEqualStrings("BadParams", rel.failed.code);
@@ -976,7 +1160,7 @@ test "an action goes through to the terminal exactly as it was written" {
     defer arena.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_action = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_action = .{
         .id = worker,
         .action = "goto_split:left",
     } });
@@ -999,7 +1183,7 @@ test "an action nobody has heard of is named as such, not blamed on the terminal
     defer arena.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_action = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_action = .{
         .id = worker,
         .action = "make_me_a_sandwich",
     } });
@@ -1008,7 +1192,7 @@ test "an action nobody has heard of is named as such, not blamed on the terminal
     // And the host was never troubled with it.
     try testing.expect(fake.acted == null);
 
-    const empty = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_action = .{
+    const empty = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_action = .{
         .id = worker,
         .action = "",
     } });
@@ -1034,7 +1218,7 @@ test "Polter's own switches are refused, and never reach the terminal" {
         "poltergeist_toggle_watch",
         "poltergeist_supervisor",
     }) |name| {
-        const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
             .terminal_action = .{ .id = worker, .action = name },
         });
 
@@ -1060,7 +1244,7 @@ test "Polter's own switches are refused, and never reach the terminal" {
 
     // And an ordinary menu item still goes through, so this is a rule
     // about a family rather than a tool that stopped working.
-    const ok = try dispatch(arena.allocator(), &b, fake.host(), boss, .{
+    const ok = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
         .terminal_action = .{ .id = worker, .action = "new_tab" },
     });
     try testing.expectEqual(wire.Response.ok, ok);
@@ -1074,7 +1258,7 @@ test "a known action with an unusable value is the value's fault" {
     defer arena.deinit();
     var fake: FakeHost = .{ .action_error = error.InvalidAction };
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .terminal_action = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_action = .{
         .id = worker,
         .action = "goto_split:sideways",
     } });
@@ -1088,7 +1272,7 @@ test "the actions can be listed, and the list is the union itself" {
     defer arena.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .terminal_actions);
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .terminal_actions);
     try testing.expectEqual(actions.all.len, res.actions.len);
 
     // Not a handful somebody typed out. Ninety-two at the time of writing,
@@ -1113,7 +1297,7 @@ test "a watched terminal still cannot arrange the work" {
         .{ .terminal_open = .{ .cwd = "/tmp" } },
         .{ .config_get = .{} },
     }) |req| {
-        const res = try dispatch(arena.allocator(), &b, fake.host(), worker, req);
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(worker), req);
         try testing.expectEqualStrings("NotPermitted", res.failed.code);
     }
 
@@ -1121,7 +1305,7 @@ test "a watched terminal still cannot arrange the work" {
         arena.allocator(),
         &b,
         fake.host(),
-        worker,
+        term(worker),
         .{ .terminal_action = .{ .id = boss, .action = "new_tab" } },
     );
     try testing.expectEqualStrings("Supervised", marked.failed.code);
@@ -1129,7 +1313,7 @@ test "a watched terminal still cannot arrange the work" {
 
     // But the catalogue is open, because a tool you may call and whose
     // vocabulary you may not read is one you have to guess at.
-    const list = try dispatch(arena.allocator(), &b, fake.host(), worker, .terminal_actions);
+    const list = try dispatch(arena.allocator(), &b, fake.host(), term(worker), .terminal_actions);
     try testing.expect(list.actions.len > 50);
 }
 
@@ -1141,7 +1325,7 @@ test "a key goes to the host as written, and a key that is not one never gets th
     const alloc = arena.allocator();
     var fake: FakeHost = .{};
 
-    const ok = try dispatch(alloc, &b, fake.host(), boss, .{
+    const ok = try dispatch(alloc, &b, fake.host(), term(boss), .{
         .terminal_key = .{ .id = worker, .key = "ctrl+c" },
     });
     try testing.expect(ok == .ok);
@@ -1152,7 +1336,7 @@ test "a key goes to the host as written, and a key that is not one never gets th
     // a refusal by the terminal -- the same argument `terminal_action`
     // makes, and the same reason the host is never reached.
     fake.keyed = null;
-    const bad = try dispatch(alloc, &b, fake.host(), boss, .{
+    const bad = try dispatch(alloc, &b, fake.host(), term(boss), .{
         .terminal_key = .{ .id = worker, .key = "ctrl+nonsense" },
     });
     try testing.expectEqualStrings("BadKey", bad.failed.code);
@@ -1161,7 +1345,7 @@ test "a key goes to the host as written, and a key that is not one never gets th
     // A plain character is not refused for being dangerous. It is refused
     // because it would do nothing: `terminal_send` is where text goes, and
     // the message says so.
-    const plain = try dispatch(alloc, &b, fake.host(), boss, .{
+    const plain = try dispatch(alloc, &b, fake.host(), term(boss), .{
         .terminal_key = .{ .id = worker, .key = "a" },
     });
     try testing.expectEqualStrings("BadKey", plain.failed.code);
@@ -1181,7 +1365,7 @@ test "pressing a key is not typing text, and the two do not share a pipe" {
     defer arena.deinit();
     var fake: FakeHost = .{};
 
-    _ = try dispatch(arena.allocator(), &b, fake.host(), boss, .{
+    _ = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
         .terminal_key = .{ .id = worker, .key = "ctrl+c" },
     });
 
@@ -1206,7 +1390,7 @@ test "the key vocabulary can be listed, and comes off the input types" {
     defer arena.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .terminal_keys);
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .terminal_keys);
     try testing.expectEqual(keys.names.len, res.keys.names.len);
     try testing.expectEqual(keys.modifiers.len, res.keys.modifiers.len);
     try testing.expect(res.keys.names.len > 100);
@@ -1214,7 +1398,7 @@ test "the key vocabulary can be listed, and comes off the input types" {
     // Open to a watched terminal too, for the same reason
     // `terminal_actions` is: guessing at a name is how an agent gets a
     // refusal that reads like the terminal said no.
-    const also = try dispatch(arena.allocator(), &b, fake.host(), worker, .terminal_keys);
+    const also = try dispatch(arena.allocator(), &b, fake.host(), term(worker), .terminal_keys);
     try testing.expect(also.keys.names.len > 100);
 }
 
@@ -1227,7 +1411,7 @@ test "standing down is refused until every terminal has been let go" {
     var fake: FakeHost = .{};
 
     {
-        const res = try dispatch(alloc, &b, fake.host(), boss, .stand_down);
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .stand_down);
         try testing.expectEqualStrings("StillMinding", res.failed.code);
         try testing.expect(b.isSupervisor(boss));
 
@@ -1239,7 +1423,7 @@ test "standing down is refused until every terminal has been let go" {
     b.unwatch(worker);
 
     {
-        const res = try dispatch(alloc, &b, fake.host(), boss, .stand_down);
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .stand_down);
         try testing.expectEqual(wire.Response.ok, res);
         try testing.expect(!b.isSupervisor(boss));
         try testing.expectEqual(@as(?Bus.Id, boss), fake.stood_down);
@@ -1255,7 +1439,7 @@ test "a supervisor the user has pinned cannot stand itself down" {
     defer arena.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .stand_down);
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .stand_down);
 
     // A distinct code rather than a plain refusal, for the reason a held
     // terminal's `clock_out` gets one: "not permitted" reads as the caller
@@ -1274,7 +1458,7 @@ test "a watched terminal cannot stand down from a standing it never had" {
     var fake: FakeHost = .{};
 
     // Stopped by `authorize`, before the bus is ever asked.
-    const res = try dispatch(arena.allocator(), &b, fake.host(), worker, .stand_down);
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(worker), .stand_down);
     try testing.expectEqualStrings("NotPermitted", res.failed.code);
     try testing.expect(fake.stood_down == null);
 }
@@ -1285,7 +1469,7 @@ test "a watched terminal can talk in a group but cannot arrange one" {
     var fake: FakeHost = .{};
 
     // Talking: allowed.
-    const posted = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const posted = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .group_post = .{ .group = "build", .text = "build is green" },
     });
     try testing.expect(posted == .ok);
@@ -1300,7 +1484,7 @@ test "a watched terminal can talk in a group but cannot arrange one" {
         .{ .group_compact = .{ .group = "build", .through = 1, .summary = "x" } },
         .{ .group_destroy = .{ .group = "build" } },
     }) |req| {
-        const res = try dispatch(testing.allocator, &b, fake.host(), worker, req);
+        const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), req);
         try testing.expectEqualStrings("NotPermitted", res.failed.code);
     }
 }
@@ -1310,12 +1494,12 @@ test "the supervisor chooses what a terminal it adds can see" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    _ = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .group_add = .{ .group = "build", .id = worker, .history = .none },
     });
     try testing.expectEqual(History.none, fake.added.?.history);
 
-    _ = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .group_add = .{ .group = "build", .id = worker, .history = .all },
     });
     try testing.expectEqual(History.all, fake.added.?.history);
@@ -1331,7 +1515,7 @@ test "adding a terminal that does not exist is refused" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .group_add = .{ .group = "build", .id = 0xdead },
     });
     try testing.expectEqualStrings("UnknownTerminal", res.failed.code);
@@ -1340,7 +1524,7 @@ test "adding a terminal that does not exist is refused" {
     // case that used to be impossible: an ordinary tab nobody watches.
     const places = [_]Place{.{ .id = 0x7777 }};
     var open_host: FakeHost = .{ .open = &places };
-    const ok = try dispatch(testing.allocator, &b, open_host.host(), boss, .{
+    const ok = try dispatch(testing.allocator, &b, open_host.host(), term(boss), .{
         .group_add = .{ .group = "build", .id = 0x7777 },
     });
     try testing.expect(ok == .ok);
@@ -1357,7 +1541,7 @@ test "a supervisor can be pulled into another supervisor's group" {
     try b.addSupervisor(other);
     var fake: FakeHost = .{};
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .group_add = .{ .group = "build", .id = other },
     });
     try testing.expect(res == .ok);
@@ -1369,7 +1553,7 @@ test "compacting carries the summary the supervisor wrote" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    _ = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .group_compact = .{
             .group = "build",
             .through = 42,
@@ -1387,7 +1571,7 @@ test "what the chat log refuses comes back as something to act on" {
     defer b.deinit();
     var fake: FakeHost = .{ .refuse = true };
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .group_post = .{ .group = "nope", .text = "hello" },
     });
     try testing.expectEqualStrings("NoSuchGroup", res.failed.code);
@@ -1399,7 +1583,7 @@ test "group_list names the groups a terminal is in" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .group_list);
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .group_list);
     defer {
         for (res.groups) |g| {
             testing.allocator.free(g.name);
@@ -1416,7 +1600,7 @@ test "group_read asks for the group it was given" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .group_read = .{ .group = "research", .since = 7 },
     });
     defer {
@@ -1434,31 +1618,31 @@ test "a watched terminal cannot touch anything that carries a mark" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
-    try authorize(&b, worker, .me);
+    try authorize(&b, term(worker), .me);
 
     // Not a supervisor, so the arrangement tools are closed to it whoever
     // it names. `notices` stands for the group here because it is the
     // supervisor's own box; listing is not one of these and is checked
     // just below.
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .notices));
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .{
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .notices));
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .{
         .clock_out = .{ .id = worker },
     }));
 
     // But it may see what is here. Ids come from the listing, so a
     // terminal that cannot list cannot reach anything either -- closing
     // this would quietly close everything the reach rule opened.
-    try authorize(&b, worker, .terminal_list);
+    try authorize(&b, term(worker), .terminal_list);
 
     // And the tools that *are* open to it are refused here because of what
     // the target is, not because of what the caller is: `boss` is a
     // supervisor. Note the error -- `Supervised`, which says the target is
     // marked, rather than `NotPermitted`, which would say the method was
     // out of reach.
-    try testing.expectError(error.Supervised, authorize(&b, worker, .{
+    try testing.expectError(error.Supervised, authorize(&b, term(worker), .{
         .terminal_read = .{ .id = boss },
     }));
-    try testing.expectError(error.Supervised, authorize(&b, worker, .{
+    try testing.expectError(error.Supervised, authorize(&b, term(worker), .{
         .terminal_send = .{ .id = boss, .text = "hello" },
     }));
 
@@ -1466,7 +1650,7 @@ test "a watched terminal cannot touch anything that carries a mark" {
     // being exact about: **not** because the two are peers. There is no
     // such notion here. It is because the other one carries a mark.
     try b.watch(other, boss);
-    try testing.expectError(error.Supervised, authorize(&b, worker, .{
+    try testing.expectError(error.Supervised, authorize(&b, term(worker), .{
         .terminal_send = .{ .id = other, .text = "hello" },
     }));
 }
@@ -1488,15 +1672,15 @@ test "an unmarked terminal is open to a caller that is nobody in particular" {
     try b.register(other);
     try testing.expectEqual(Bus.Role.none, b.roleOf(other));
 
-    try authorize(&b, worker, .{ .terminal_read = .{ .id = other } });
-    try authorize(&b, worker, .{ .terminal_send = .{ .id = other, .text = "./start.sh" } });
-    try authorize(&b, worker, .{ .terminal_key = .{ .id = other, .key = "ctrl+c" } });
-    try authorize(&b, worker, .{ .terminal_action = .{ .id = other, .action = "new_tab" } });
+    try authorize(&b, term(worker), .{ .terminal_read = .{ .id = other } });
+    try authorize(&b, term(worker), .{ .terminal_send = .{ .id = other, .text = "./start.sh" } });
+    try authorize(&b, term(worker), .{ .terminal_key = .{ .id = other, .key = "ctrl+c" } });
+    try authorize(&b, term(worker), .{ .terminal_action = .{ .id = other, .action = "new_tab" } });
 
     // And a terminal the bus has never registered at all is the same case,
     // because it is the same fact: no marks. Whether the id names a
     // terminal is the host's question and the host answers it.
-    try authorize(&b, worker, .{ .terminal_read = .{ .id = 0xdead } });
+    try authorize(&b, term(worker), .{ .terminal_read = .{ .id = 0xdead } });
 }
 
 test "a shielded terminal is refused to everyone, supervisors included" {
@@ -1514,22 +1698,22 @@ test "a shielded terminal is refused to everyone, supervisors included" {
     // The caller here is a supervisor, which is as much standing as this
     // surface has to offer.
     try testing.expect(b.isSupervisor(boss));
-    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{
         .terminal_read = .{ .id = other },
     }));
-    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{
         .terminal_send = .{ .id = other, .text = "hello" },
     }));
-    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{
         .terminal_key = .{ .id = other, .key = "ctrl+c" },
     }));
-    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{
         .terminal_action = .{ .id = other, .action = "new_tab" },
     }));
-    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{
         .set_watch = .{ .id = other, .watch = true },
     }));
-    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{
         .clock_out = .{ .id = other },
     }));
 
@@ -1537,13 +1721,13 @@ test "a shielded terminal is refused to everyone, supervisors included" {
     // and the shield is the answer given -- it is the one that cannot be
     // argued with.
     try b.watch(other, boss);
-    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{
         .terminal_read = .{ .id = other },
     }));
 
     // Lifted by the user, and it is open again on the ordinary rule.
     try b.setShielded(other, false, .user);
-    try authorize(&b, boss, .{ .terminal_read = .{ .id = other } });
+    try authorize(&b, term(boss), .{ .terminal_read = .{ .id = other } });
 }
 
 test "a shield is not something a supervisor can take off" {
@@ -1573,20 +1757,20 @@ test "the supervisor may reach a watched terminal" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
-    try authorize(&b, boss, .terminal_list);
-    try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
-    try authorize(&b, boss, .{ .terminal_send = .{ .id = worker, .text = "继续" } });
-    try authorize(&b, boss, .{ .clock_out = .{ .id = worker } });
+    try authorize(&b, term(boss), .terminal_list);
+    try authorize(&b, term(boss), .{ .terminal_read = .{ .id = worker } });
+    try authorize(&b, term(boss), .{ .terminal_send = .{ .id = worker, .text = "继续" } });
+    try authorize(&b, term(boss), .{ .clock_out = .{ .id = worker } });
 }
 
 test "a terminal cannot target itself" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
-    try testing.expectError(error.SelfTarget, authorize(&b, boss, .{
+    try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
         .terminal_send = .{ .id = boss, .text = "loop" },
     }));
-    try testing.expectError(error.SelfTarget, authorize(&b, boss, .{
+    try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
         .terminal_read = .{ .id = boss },
     }));
 }
@@ -1600,10 +1784,10 @@ test "an unknown target is the host's question, not this one's" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
-    try authorize(&b, boss, .{ .terminal_read = .{ .id = 0xdead } });
+    try authorize(&b, term(boss), .{ .terminal_read = .{ .id = 0xdead } });
 
     var fake: FakeHost = .{ .refuse = true };
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .terminal_read = .{ .id = 0xdead },
     });
     try testing.expectEqualStrings("ReadFailed", res.failed.code);
@@ -1614,13 +1798,13 @@ test "with no supervisor named, the arrangement tools are still shut" {
     defer b.deinit();
     try b.watch(worker, boss);
 
-    try authorize(&b, worker, .me);
-    try authorize(&b, worker, .terminal_list);
+    try authorize(&b, term(worker), .me);
+    try authorize(&b, term(worker), .terminal_list);
 
     // Nobody holds the standing, so nothing that changes the arrangement
     // is available -- not even to the terminal that would benefit.
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .notices));
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .{
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .notices));
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .{
         .clock_in = .{ .id = worker },
     }));
 }
@@ -1630,13 +1814,13 @@ test "clock_out is refused for a held terminal" {
     defer b.deinit();
 
     try b.setHeld(worker, true, .user);
-    try testing.expectError(error.TerminalHeld, authorize(&b, boss, .{
+    try testing.expectError(error.TerminalHeld, authorize(&b, term(boss), .{
         .clock_out = .{ .id = worker },
     }));
 
     // Clocking a terminal back in is never refused: coming back to work is
     // not the dangerous direction.
-    try authorize(&b, boss, .{ .clock_in = .{ .id = worker } });
+    try authorize(&b, term(boss), .{ .clock_in = .{ .id = worker } });
 }
 
 test "the hold cannot be reached from this surface at all" {
@@ -1726,26 +1910,26 @@ test "letting a terminal go stops the reports and opens it to everyone" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
-    try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
+    try authorize(&b, term(boss), .{ .terminal_read = .{ .id = worker } });
 
     // A terminal that is not a supervisor cannot touch it while it is
     // marked.
     try b.addSupervisor(other);
     b.removeSupervisor(other);
-    try testing.expectError(error.Supervised, authorize(&b, other, .{
+    try testing.expectError(error.Supervised, authorize(&b, term(other), .{
         .terminal_read = .{ .id = worker },
     }));
 
     b.unwatch(worker);
     try testing.expectEqual(Bus.Role.none, b.roleOf(worker));
 
-    try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
-    try authorize(&b, other, .{ .terminal_read = .{ .id = worker } });
+    try authorize(&b, term(boss), .{ .terminal_read = .{ .id = worker } });
+    try authorize(&b, term(other), .{ .terminal_read = .{ .id = worker } });
 
     // The arrangement tools are still the supervisor's, though. Seeing
     // what is here is not one of them.
-    try authorize(&b, worker, .terminal_list);
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .notices));
+    try authorize(&b, term(worker), .terminal_list);
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .notices));
 }
 
 test "a supervisor stood down immediately loses its reach into marked terminals" {
@@ -1758,18 +1942,18 @@ test "a supervisor stood down immediately loses its reach into marked terminals"
     defer b.deinit();
     try b.addSupervisor(other);
 
-    try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
+    try authorize(&b, term(boss), .{ .terminal_read = .{ .id = worker } });
 
     b.removeSupervisor(boss);
     try b.watch(worker, other);
 
-    try testing.expectError(error.Supervised, authorize(&b, boss, .{
+    try testing.expectError(error.Supervised, authorize(&b, term(boss), .{
         .terminal_read = .{ .id = worker },
     }));
 
     // The arrangement tools go too, and with a different error, because
     // they are refused for a different reason: the method, not the target.
-    try testing.expectError(error.NotPermitted, authorize(&b, boss, .{
+    try testing.expectError(error.NotPermitted, authorize(&b, term(boss), .{
         .clock_out = .{ .id = worker },
     }));
 }
@@ -1791,18 +1975,18 @@ test "one supervisor may reach another's terminals, and the other supervisor too
     try b.addSupervisor(other);
 
     // A supervisor that is not minding `worker` may still reach it.
-    try authorize(&b, other, .{ .terminal_read = .{ .id = worker } });
-    try authorize(&b, other, .{ .terminal_send = .{ .id = worker, .text = "hello" } });
+    try authorize(&b, term(other), .{ .terminal_read = .{ .id = worker } });
+    try authorize(&b, term(other), .{ .terminal_send = .{ .id = worker, .text = "hello" } });
 
     // And the two supervisors may reach each other, which is the scenario
     // in as many words: stop the other one, then start it again.
-    try authorize(&b, boss, .{ .terminal_key = .{ .id = other, .key = "ctrl+c" } });
-    try authorize(&b, boss, .{ .terminal_send = .{ .id = other, .text = "./run.sh" } });
-    try authorize(&b, other, .{ .terminal_key = .{ .id = boss, .key = "ctrl+c" } });
+    try authorize(&b, term(boss), .{ .terminal_key = .{ .id = other, .key = "ctrl+c" } });
+    try authorize(&b, term(boss), .{ .terminal_send = .{ .id = other, .text = "./run.sh" } });
+    try authorize(&b, term(other), .{ .terminal_key = .{ .id = boss, .key = "ctrl+c" } });
 
     // The one that is minding it still can, and still gets the notices --
     // which is what `watched_by` is left meaning.
-    try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
+    try authorize(&b, term(boss), .{ .terminal_read = .{ .id = worker } });
     try testing.expect(b.minds(boss, worker));
     try testing.expect(!b.minds(other, worker));
 }
@@ -1817,11 +2001,11 @@ test "a supervisor may pull another supervisor into a group" {
     defer b.deinit();
     try b.addSupervisor(other);
 
-    try authorize(&b, boss, .{ .group_add = .{ .group = "build", .id = other } });
+    try authorize(&b, term(boss), .{ .group_add = .{ .group = "build", .id = other } });
 
     // Still the supervisor's tool, though: arranging who talks to whom did
     // not become everybody's.
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .{
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .{
         .group_add = .{ .group = "build", .id = other },
     }));
 }
@@ -1878,13 +2062,22 @@ pub const PluginView = struct {
     key: []const u8,
     name: []const u8 = "",
 
-    /// `"notify"` or `"archive"`.
-    kind: []const u8,
-
     enabled: bool = false,
 
     /// Exactly what the manifest declared. Handed over unread so an agent
     /// can tell the user what it is about to switch on.
+    ///
+    /// **`events` is what `kind` was**, and it is a list rather than one
+    /// word because a plugin may subscribe to several -- which under `kind`
+    /// took two plugins and a new enum member to express. A reader that
+    /// wants "is this a notification channel" asks whether `terminal.quiet`
+    /// is in here.
+    events: []const []const u8 = &.{},
+
+    /// Which tool methods the manifest says it calls. Enforced, so this is
+    /// the whole of what it may ask for, not a hint.
+    calls: []const []const u8 = &.{},
+
     groups: []const []const u8 = &.{},
     network: bool = false,
     exec: []const []const u8 = &.{},
@@ -2806,10 +2999,19 @@ pub fn dispatch(
     alloc: std.mem.Allocator,
     bus: *Bus,
     host: Host,
-    caller: Bus.Id,
+    who: Bus.Caller,
     req: Request,
 ) std.mem.Allocator.Error!wire.Response {
-    authorize(bus, caller, req) catch |err| return failure(err);
+    authorize(bus, who, req) catch |err| return failure(err);
+
+    // Everything below this line that names a terminal has already been
+    // refused for a plugin: `callableByPlugin` is exhaustive over `Method`
+    // and `authorize` turns a false into `NotATerminal` before anything
+    // gets here. This is that guarantee written down where it is *used*
+    // rather than only where it is decided -- a plugin that somehow reached
+    // one of those branches is refused again, and never quietly acts as
+    // terminal zero, which is the user.
+    const caller: Bus.Id = who.terminalId() orelse Bus.not_a_terminal;
 
     switch (req) {
         .me => return .{ .me = describe(bus, host, caller) },
@@ -3588,7 +3790,7 @@ const fake_plugins = [_]PluginView{
     .{
         .key = "webhook",
         .name = "Webhook",
-        .kind = "notify",
+        .events = &.{"terminal.quiet"},
         .params = &.{
             .{ .name = "url", .required = true },
         },
@@ -3596,7 +3798,7 @@ const fake_plugins = [_]PluginView{
     .{
         .key = "chat-archive",
         .name = "Chat archive",
-        .kind = "archive",
+        .events = &.{"chat"},
         .params = &.{
             .{
                 .name = "backend",
@@ -4081,7 +4283,7 @@ test "dispatch refuses an unauthorized request before touching the host" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .terminal_read = .{ .id = boss },
     });
 
@@ -4092,7 +4294,7 @@ test "dispatch refuses an unauthorized request before touching the host" {
     try testing.expectEqual(@as(usize, 0), fake.read_count);
 
     // And one the method itself is closed to, for the contrast.
-    const closed = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const closed = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .clock_out = .{ .id = boss },
     });
     try testing.expectEqualStrings("NotPermitted", closed.failed.code);
@@ -4103,13 +4305,13 @@ test "the supervisor can read and type into a watched terminal" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    const read = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    const read = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .terminal_read = .{ .id = worker },
     });
     defer testing.allocator.free(read.text);
     try testing.expectEqualStrings("screen contents", read.text);
 
-    const sent = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    const sent = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .terminal_send = .{ .id = worker, .text = "继续", .submit = true },
     });
     try testing.expect(sent == .ok);
@@ -4122,7 +4324,7 @@ test "a host refusal comes back as a failure the agent can read" {
     defer b.deinit();
     var fake: FakeHost = .{ .refuse = true };
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .terminal_send = .{ .id = worker, .text = "x" },
     });
     try testing.expectEqualStrings("SendFailed", res.failed.code);
@@ -4135,7 +4337,7 @@ test "clock_out through dispatch still obeys the hold" {
     var fake: FakeHost = .{};
 
     try b.setHeld(worker, true, .user);
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .clock_out = .{ .id = worker },
     });
 
@@ -4154,7 +4356,7 @@ test "terminal_list is sorted so two listings can be compared" {
     };
     var fake: FakeHost = .{ .open = &open };
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .terminal_list);
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
     defer testing.allocator.free(res.terminals);
 
     try testing.expect(res.terminals.len >= 4);
@@ -4184,7 +4386,7 @@ test "terminal_list says which terminals are out of reach before anything is ref
     };
     var fake: FakeHost = .{ .open = &open };
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .terminal_list);
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
     defer testing.allocator.free(res.terminals);
 
     var shielded: ?wire.TerminalInfo = null;
@@ -4212,7 +4414,7 @@ test "a terminal nobody is watching is still listed, with where it is" {
     };
     var fake: FakeHost = .{ .open = &open, .quiet_ms = 4242 };
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .terminal_list);
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
     defer testing.allocator.free(res.terminals);
 
     var found: ?wire.TerminalInfo = null;
@@ -4248,7 +4450,7 @@ test "me works for a terminal that supervises nothing" {
         .total_rows = 24,
     } }, 4242);
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .me);
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
     try testing.expectEqual(worker, res.me.id);
     try testing.expectEqual(Bus.Role.watched, res.me.role);
     try testing.expectEqual(@as(u64, 4242), res.me.quiet_ms);
@@ -4268,7 +4470,7 @@ test "a terminal nothing has sampled reports no duration, not a huge one" {
     defer b.deinit();
     var fake: FakeHost = .{ .quiet_ms = 46_292_971 };
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .me);
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
     try testing.expectEqual(Bus.Role.watched, res.me.role);
     try testing.expect(res.me.quiet_ms == null);
 }
@@ -4281,7 +4483,7 @@ test "any terminal may read a skill" {
     // A watched terminal can read how supervision works. These are
     // instructions, not reach, and refusing would mean an agent cannot find
     // out why it was nudged.
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .skill_read = .{ .name = "supervising" },
     });
     defer testing.allocator.free(res.skill.body);
@@ -4294,7 +4496,7 @@ test "an unknown skill fails rather than returning nothing" {
     defer b.deinit();
     var fake: FakeHost = .{ .refuse = true };
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .skill_read = .{ .name = "no-such-skill" },
     });
     try testing.expectEqualStrings("NoSuchSkill", res.failed.code);
@@ -4313,7 +4515,7 @@ test "an unclaimed terminal may put itself forward as supervisor" {
         testing.allocator,
         &b,
         fake.host(),
-        worker,
+        term(worker),
         .become_supervisor,
     );
     try testing.expect(res == .text);
@@ -4332,7 +4534,7 @@ test "a terminal the bus has never heard of may still put itself forward" {
         testing.allocator,
         &b,
         fake.host(),
-        0x5151,
+        term(0x5151),
         .become_supervisor,
     );
     try testing.expect(res == .text);
@@ -4352,7 +4554,7 @@ test "a watched terminal may not put itself forward" {
         testing.allocator,
         &b,
         fake.host(),
-        worker,
+        term(worker),
         .become_supervisor,
     );
     try testing.expectEqualStrings("AlreadyWatched", res.failed.code);
@@ -4376,7 +4578,7 @@ test "a supervisor putting itself forward is told so, not refused" {
         testing.allocator,
         &b,
         fake.host(),
-        boss,
+        term(boss),
         .become_supervisor,
     );
     try testing.expect(res == .text);
@@ -4400,7 +4602,7 @@ test "a supervisor that stood down may put itself forward again" {
         testing.allocator,
         &b,
         fake.host(),
-        boss,
+        term(boss),
         .stand_down,
     );
     try testing.expect(down == .ok);
@@ -4411,7 +4613,7 @@ test "a supervisor that stood down may put itself forward again" {
         testing.allocator,
         &b,
         fake.host(),
-        boss,
+        term(boss),
         .become_supervisor,
     );
     try testing.expect(up == .text);
@@ -4451,7 +4653,7 @@ test "notices hands back what is waiting and clears it" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    const res = try dispatch(arena.allocator(), &b, host, boss, .notices);
+    const res = try dispatch(arena.allocator(), &b, host, term(boss), .notices);
     try testing.expectEqualStrings("[poltergeist] 0x2222 quiet 90s", res.text);
     try testing.expectEqual(@as(usize, 1), fake.drained);
 }
@@ -4469,7 +4671,7 @@ test "an empty box is an answer, not a failure" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    const res = try dispatch(arena.allocator(), &b, host, boss, .notices);
+    const res = try dispatch(arena.allocator(), &b, host, term(boss), .notices);
     try testing.expectEqualStrings("", res.text);
 }
 
@@ -4489,12 +4691,12 @@ test "only the supervisor's listing carries the brief" {
     const alloc = arena.allocator();
 
     // The supervisor sees what it wrote.
-    const mine = try dispatch(alloc, &b, fake.host(), boss, .group_list);
+    const mine = try dispatch(alloc, &b, fake.host(), term(boss), .group_list);
     try testing.expect(mine.groups[0].brief.len > 0);
 
     // A member gets the group but not the note. Not an error -- asking
     // which groups you are in is a fair question.
-    const theirs = try dispatch(alloc, &b, fake.host(), worker, .group_list);
+    const theirs = try dispatch(alloc, &b, fake.host(), term(worker), .group_list);
     try testing.expectEqualStrings("build", theirs.groups[0].name);
     try testing.expectEqualStrings("", theirs.groups[0].brief);
 }
@@ -4507,7 +4709,7 @@ test "setting a brief reaches the host with what was written" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
         .group_set_brief = .{ .group = "build", .text = "写 retry 装饰器" },
     });
     try testing.expectEqual(wire.Response.ok, res);
@@ -4529,7 +4731,7 @@ test "the person at the keyboard sees the brief too" {
         arena.allocator(),
         &b,
         fake.host(),
-        Chat.user_id,
+        term(Chat.user_id),
         .group_list,
     );
     try testing.expect(res.groups[0].brief.len > 0);
@@ -4605,7 +4807,7 @@ test "set_watch works on a terminal nobody is watching, which is the point" {
     const stranger: Bus.Id = 0x5151;
     try testing.expect(b.get(stranger) == null);
 
-    try authorize(&b, boss, .{ .set_watch = .{ .id = stranger, .watch = true } });
+    try authorize(&b, term(boss), .{ .set_watch = .{ .id = stranger, .watch = true } });
 }
 
 test "only the supervisor may start watching a terminal" {
@@ -4614,7 +4816,7 @@ test "only the supervisor may start watching a terminal" {
 
     try testing.expectError(
         error.NotPermitted,
-        authorize(&b, worker, .{ .set_watch = .{ .id = 0x5151, .watch = true } }),
+        authorize(&b, term(worker), .{ .set_watch = .{ .id = 0x5151, .watch = true } }),
     );
 }
 
@@ -4626,7 +4828,7 @@ test "a supervisor cannot put itself under its own supervision" {
 
     try testing.expectError(
         error.SelfTarget,
-        authorize(&b, boss, .{ .set_watch = .{ .id = boss, .watch = true } }),
+        authorize(&b, term(boss), .{ .set_watch = .{ .id = boss, .watch = true } }),
     );
 }
 
@@ -4639,9 +4841,9 @@ test "clocking out a terminal the bus never heard of is refused by the bus" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    try authorize(&b, boss, .{ .clock_out = .{ .id = 0x5151 } });
+    try authorize(&b, term(boss), .{ .clock_out = .{ .id = 0x5151 } });
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .clock_out = .{ .id = 0x5151 },
     });
     try testing.expectEqualStrings("UnknownTerminal", res.failed.code);
@@ -4659,12 +4861,12 @@ test "a group belongs to the supervisor that made it" {
     var fake: FakeHost = .{ .group_owner = boss };
 
     // The one that made it may rearrange it.
-    _ = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .group_set_brief = .{ .group = "build", .text = "what this is for" },
     });
 
     // The other supervisor may not, however senior it feels.
-    const refused = try dispatch(testing.allocator, &b, fake.host(), other, .{
+    const refused = try dispatch(testing.allocator, &b, fake.host(), term(other), .{
         .group_destroy = .{ .group = "build" },
     });
     try testing.expectEqualStrings("NotYours", refused.failed.code);
@@ -4679,7 +4881,7 @@ test "talking in a group you were added to is not rearranging it" {
 
     var fake: FakeHost = .{ .group_owner = other };
 
-    _ = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .group_post = .{ .group = "build", .text = "signature is settled" },
     });
 }
@@ -4728,7 +4930,7 @@ fn historyOnce(
     caller: Bus.Id,
     req: Request,
 ) !void {
-    const res = try dispatch(testing.allocator, b, fake.host(), caller, req);
+    const res = try dispatch(testing.allocator, b, fake.host(), term(caller), req);
     for (res.messages.lines) |m| {
         testing.allocator.free(m.text);
         testing.allocator.free(m.author);
@@ -4745,7 +4947,7 @@ test "group_history is open to a terminal already in the group" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .group_history = .{ .group = "build" },
     });
     defer {
@@ -4767,7 +4969,7 @@ test "a terminal outside the group is told so rather than handed the log" {
     defer b.deinit();
     var fake: FakeHost = .{ .refuse = true };
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .group_history = .{ .group = "build", .before_seq = 10432 },
     });
     try testing.expectEqualStrings("NotAMember", res.failed.code);
@@ -4818,7 +5020,7 @@ test "a history message carries no group seq" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .group_history = .{ .group = "build", .before_seq = 42 },
     });
     defer {
@@ -4840,7 +5042,7 @@ test "a host that says there is more is believed even when nothing was capped" {
     defer b.deinit();
     var fake: FakeHost = .{ .history_more = true };
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{
         .group_history = .{ .group = "build" },
     });
     defer {
@@ -4942,11 +5144,11 @@ test "the plugin tools are the supervisor's" {
     }) |req| {
         // A watched terminal is turned away before anything else about the
         // request is looked at.
-        const refused = try dispatch(alloc, &b, fake.host(), worker, req);
+        const refused = try dispatch(alloc, &b, fake.host(), term(worker), req);
         try testing.expectEqualStrings("NotPermitted", refused.failed.code);
 
         // And the supervisor is not, whatever else becomes of the request.
-        const res = try dispatch(alloc, &b, fake.host(), boss, req);
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), req);
         const code = switch (res) {
             .failed => |f| f.code,
             else => "",
@@ -4984,7 +5186,7 @@ test "a cmd: reference is refused however it is written" {
     defer arena.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .plugin_configure = .{
         .key = "webhook",
         .params = &.{.{ .name = "url", .value = "cmd:curl https://elsewhere" }},
     } });
@@ -5020,7 +5222,7 @@ test "a credential already pointed somewhere is not re-pointed here" {
     // End to end, and nothing reaches the settings file.
     const configured = [_]PluginView{.{
         .key = "chat-archive",
-        .kind = "archive",
+        .events = &.{"chat"},
         .params = &.{
             .{ .name = "dsn", .secret = true, .holds = "env:", .shown = "env:POLTER_PG" },
         },
@@ -5032,7 +5234,7 @@ test "a credential already pointed somewhere is not re-pointed here" {
     defer arena.deinit();
     var fake: FakeHost = .{ .plugins = &configured };
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .plugin_configure = .{
         .key = "chat-archive",
         .params = &.{.{ .name = "dsn", .value = "env:NOT_A_REAL_NAME" }},
     } });
@@ -5121,7 +5323,7 @@ test "switching a plugin off is refused and switching one on is not" {
 
     // A perfectly good parameter alongside the request to switch off. The
     // whole request drops; there is no half of it that lands.
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .plugin_configure = .{
         .key = "webhook",
         .enabled = false,
         .params = &.{.{ .name = "url", .value = "env:POLTER_WEBHOOK" }},
@@ -5212,7 +5414,7 @@ test "a parameter the manifest does not declare cannot be set" {
 
     {
         var fake: FakeHost = .{};
-        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .plugin_configure = .{
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .plugin_configure = .{
             .key = "webhook",
             .params = &.{.{ .name = "endpoint", .value = "env:POLTER_WEBHOOK" }},
         } });
@@ -5227,9 +5429,9 @@ test "a parameter the manifest does not declare cannot be set" {
     {
         // A manifest declaring none has none to set, the same rule `wants`
         // follows: saying nothing is asking for nothing.
-        const bare = [_]PluginView{.{ .key = "bare", .kind = "notify" }};
+        const bare = [_]PluginView{.{ .key = "bare", .events = &.{"terminal.quiet"} }};
         var fake: FakeHost = .{ .plugins = &bare };
-        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .plugin_configure = .{
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .plugin_configure = .{
             .key = "bare",
             .params = &.{.{ .name = "url", .value = "env:POLTER_WEBHOOK" }},
         } });
@@ -5244,14 +5446,14 @@ test "a parameter the manifest does not declare cannot be set" {
         // `secret` flag, so the plaintext rule would never look at it.
         const stray = [_]PluginView{.{
             .key = "webhook",
-            .kind = "notify",
+            .events = &.{"terminal.quiet"},
             .params = &.{
                 .{ .name = "url", .required = true },
                 .{ .name = "smuggled", .holds = "literal", .undeclared = true },
             },
         }};
         var fake: FakeHost = .{ .plugins = &stray };
-        const res = try dispatch(alloc, &b, fake.host(), boss, .{ .plugin_configure = .{
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .plugin_configure = .{
             .key = "webhook",
             .params = &.{.{ .name = "smuggled", .value = "hunter2" }},
         } });
@@ -5296,7 +5498,7 @@ test "a required parameter cannot be emptied through this surface" {
 
     // Clearing `url` mutes the notification channel without ever asking to
     // switch anything off, which is the whole reason this rule is here.
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .plugin_configure = .{
         .key = "webhook",
         .params = &.{.{ .name = "url", .value = "" }},
     } });
@@ -5325,7 +5527,7 @@ test "a value the parameter does not take is refused with the ones it does" {
     defer arena.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{ .plugin_configure = .{
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .plugin_configure = .{
         .key = "chat-archive",
         .params = &.{.{ .name = "backend", .value = "mysql" }},
     } });
@@ -5409,4 +5611,234 @@ test "the shipped manifests mark their credentials, so the guard has something t
             );
         }
     }
+}
+
+// -- the plugin surface -----------------------------------------------------
+//
+// A plugin is the second door onto this tool surface, and the first one --
+// `terminal_action` -- went in with no permission check at all: it could
+// reach past `set_watch`'s supervisor gate and lift a `held` the user had
+// set. So every gate is asked again here, from the other side of the door,
+// rather than assumed to hold because it holds for terminals.
+
+/// A plugin caller that declared everything, for the tests about the rules
+/// that are *not* `wants.calls`.
+fn plug(calls: []const []const u8) Bus.Caller {
+    return .{ .plugin = .{ .key = "chat-archive", .calls = calls } };
+}
+
+test "a plugin is fed what it subscribed to and refused what it did not" {
+    // The whole of what `Kind` used to decide, and the thing that made it
+    // worth deleting: what a plugin is comes out of its own manifest, and
+    // there is no list of kinds anywhere for a fourth one to be missing
+    // from.
+    const notifier: Plugin.Wants = .{ .events = &.{.terminal_quiet} };
+    const archive: Plugin.Wants = .{ .events = &.{.chat}, .groups = &.{"*"} };
+    const both: Plugin.Wants = .{
+        .events = &.{ .chat, .terminal_quiet },
+        .groups = &.{"build"},
+    };
+
+    try testing.expect(notifier.subscribes(.terminal_quiet));
+    try testing.expect(!notifier.subscribes(.chat));
+    try testing.expect(!notifier.subscribes(.provision));
+
+    try testing.expect(archive.subscribes(.chat));
+    try testing.expect(!archive.subscribes(.terminal_quiet));
+
+    // One plugin, two subscriptions. Under `Kind` this was not expressible
+    // at all: it took two plugins, or a fourth enum member.
+    try testing.expect(both.subscribes(.chat));
+    try testing.expect(both.subscribes(.terminal_quiet));
+    try testing.expect(!both.subscribes(.provision));
+
+    // No `"*"` for events, deliberately. A group is a name the user made
+    // up and cannot be enumerated; the events are a closed set in
+    // `Plugin.Event`, so a star would mean "and everything added after I
+    // was written", which is a subscription to code that does not exist.
+    const starred: Plugin.Wants = .{ .events = &.{}, .groups = &.{"*"} };
+    try testing.expect(!starred.subscribes(.chat));
+    try testing.expect(starred.empty());
+}
+
+test "a plugin's calls are what its manifest declared, and nothing near them" {
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+
+    const unmarked: Bus.Id = 0x2222;
+    try b.register(unmarked);
+
+    // Declared, and it goes through: a plugin is an ordinary unmarked
+    // caller and reaches an unmarked terminal exactly as an agent does.
+    try authorize(&b, plug(&.{"terminal_read"}), .{
+        .terminal_read = .{ .id = unmarked },
+    });
+
+    // Not declared. Refused before anything else is even looked at, and
+    // the refusal names the manifest rather than the permissions -- the fix
+    // is a line in `plugin.json`, and a message about standing would send
+    // the author hunting in the wrong file.
+    try testing.expectError(error.NotDeclared, authorize(&b, plug(&.{"terminal_read"}), .{
+        .terminal_send = .{ .id = unmarked, .text = "rm -rf /" },
+    }));
+
+    // The empty list refuses everything. That is the direction a missing
+    // declaration has to fail in: the user read the manifest before
+    // switching this on and was told it calls nothing.
+    try testing.expectError(error.NotDeclared, authorize(&b, plug(&.{}), .{
+        .terminal_read = .{ .id = unmarked },
+    }));
+
+    // And a declaration can only ever narrow. Declaring a supervisor's
+    // method does not make a plugin a supervisor: it passes the manifest
+    // gate and is refused by the next one -- with the same error and the
+    // same sentence an ordinary terminal gets, which is the parity being
+    // claimed.
+    try testing.expectError(error.NotPermitted, authorize(&b, plug(&.{"set_watch"}), .{
+        .set_watch = .{ .id = unmarked, .watch = true },
+    }));
+}
+
+test "a plugin is never the boss, whatever it declares" {
+    // The adopted default, and the direction it was chosen for: widening is
+    // easy and narrowing after somebody has built on the wider rule is not.
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+
+    const chief: Bus.Id = 0x1111;
+    const minded: Bus.Id = 0x2222;
+    try b.register(chief);
+    try b.register(minded);
+    try b.addSupervisor(chief);
+    try b.watch(minded, chief);
+
+    // Every method that changes the supervision arrangement. A plugin has
+    // no terminal, so `bus.isSupervisor` has nothing to be true of, and
+    // each of these is refused without a second list saying "not plugins".
+    try testing.expectError(error.NotPermitted, authorize(&b, plug(&.{"set_watch"}), .{
+        .set_watch = .{ .id = minded, .watch = false },
+    }));
+    try testing.expectError(error.NotPermitted, authorize(&b, plug(&.{"clock_out"}), .{
+        .clock_out = .{ .id = minded },
+    }));
+    try testing.expectError(error.NotPermitted, authorize(&b, plug(&.{"notify_user"}), .{
+        .notify_user = .{ .reason = "authorisation", .title = "t" },
+    }));
+
+    // And it cannot promote itself out of that. `become_supervisor` is the
+    // one method whose whole point is to be reachable by a caller that is
+    // not a supervisor yet -- so it is not closed by `requiresSupervisor`,
+    // and it has to be closed here or the default above is one call deep.
+    try testing.expectError(error.NotATerminal, authorize(
+        &b,
+        plug(&.{"become_supervisor"}),
+        .become_supervisor,
+    ));
+
+    // A marked terminal is therefore out of reach: the reach rule opens
+    // marked terminals to supervisors only, and a plugin is never one.
+    // Both marks, because they are two different marks.
+    try testing.expectError(error.Supervised, authorize(&b, plug(&.{"terminal_read"}), .{
+        .terminal_read = .{ .id = minded },
+    }));
+    try testing.expectError(error.Supervised, authorize(&b, plug(&.{"terminal_read"}), .{
+        .terminal_read = .{ .id = chief },
+    }));
+
+    // What is open to it is what is open to any unmarked caller.
+    const nobody: Bus.Id = 0x3333;
+    try b.register(nobody);
+    try authorize(&b, plug(&.{"terminal_read"}), .{ .terminal_read = .{ .id = nobody } });
+}
+
+test "a shielded terminal is out of reach of a plugin too" {
+    // `shielded` is the user's, and it is absolute. It was already absolute
+    // against a supervisor; the reason to prove it separately here is that
+    // the last second door -- `terminal_action` -- went in with no check at
+    // all and could walk past `set_watch`'s gate and lift a `held`. Every
+    // door reopens every question.
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+
+    const guarded: Bus.Id = 0x4444;
+    try b.register(guarded);
+    try b.setShielded(guarded, true, .user);
+
+    // Every method that touches a terminal, not one of them. A shield that
+    // held off reading and not typing would be worth nothing.
+    try testing.expectError(error.Shielded, authorize(&b, plug(&.{"terminal_read"}), .{
+        .terminal_read = .{ .id = guarded },
+    }));
+    try testing.expectError(error.Shielded, authorize(&b, plug(&.{"terminal_send"}), .{
+        .terminal_send = .{ .id = guarded, .text = "hello" },
+    }));
+    try testing.expectError(error.Shielded, authorize(&b, plug(&.{"terminal_key"}), .{
+        .terminal_key = .{ .id = guarded, .key = "ctrl+c" },
+    }));
+
+    // `terminal_action` by name. This is the one that was found to be a
+    // bypass with no permission check whatsoever, and a plugin calling it
+    // is the same hole reopened from a new side.
+    try testing.expectError(error.Shielded, authorize(&b, plug(&.{"terminal_action"}), .{
+        .terminal_action = .{ .id = guarded, .action = "new_tab" },
+    }));
+
+    // And the shield is asked *before* the manifest gate is passed, which
+    // is to say it does not matter what the plugin declared: an undeclared
+    // call is refused for being undeclared, a declared one for the shield,
+    // and there is no order of the two that lets it through.
+    try testing.expectError(error.NotDeclared, authorize(&b, plug(&.{}), .{
+        .terminal_action = .{ .id = guarded, .action = "new_tab" },
+    }));
+
+    // Take the shield off and the same call goes through, so the test above
+    // is measuring the shield and not something else refusing anyway.
+    try b.setShielded(guarded, false, .user);
+    try authorize(&b, plug(&.{"terminal_action"}), .{
+        .terminal_action = .{ .id = guarded, .action = "new_tab" },
+    });
+}
+
+test "a plugin cannot be a terminal, and the methods that need one say so" {
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+
+    // Everything whose meaning is "who is asking": the author of a message,
+    // a member of a group, the owner of a box of notices, the window a new
+    // tab opens in. A plugin has no answer to any of them, and the refusal
+    // says that rather than letting it act as some terminal.
+    try testing.expectError(error.NotATerminal, authorize(&b, plug(&.{"me"}), .me));
+    try testing.expectError(error.NotATerminal, authorize(&b, plug(&.{"group_post"}), .{
+        .group_post = .{ .group = "build", .text = "hello" },
+    }));
+    try testing.expectError(error.NotATerminal, authorize(&b, plug(&.{"group_read"}), .{
+        .group_read = .{ .group = "build" },
+    }));
+    // `terminal_open` is a supervisor's method as well, so the supervisor
+    // rule reaches it first; `callableByPlugin` names it too, so a later
+    // decision to open it to ordinary terminals does not open it to plugins
+    // by omission -- which is precisely the shape of the bug this round
+    // exists to stop.
+    try testing.expectError(error.NotPermitted, authorize(&b, plug(&.{"terminal_open"}), .{
+        .terminal_open = .{ .cwd = "/tmp" },
+    }));
+    try testing.expect(!callableByPlugin(.terminal_open));
+
+    // Nor may it rewrite plugin settings -- its own included. That would be
+    // a way round every check `plugin_configure` makes on the user's
+    // behalf. It happens to be a supervisor's method as well, so the
+    // refusal is the supervisor one; `callableByPlugin` names it too, so it
+    // stays closed if that ever changes.
+    try testing.expectError(error.NotPermitted, authorize(&b, plug(&.{"plugin_configure"}), .{
+        .plugin_configure = .{ .key = "chat-archive", .enabled = true },
+    }));
+    try testing.expect(!callableByPlugin(.plugin_configure));
+    try testing.expect(!callableByPlugin(.plugin_list));
+    try testing.expect(!callableByPlugin(.plugin_test));
+
+    // The union is what makes this structural rather than a rule: there is
+    // no `Bus.Id` in a plugin caller, so there is nothing for it to name.
+    try testing.expect(plug(&.{}).terminalId() == null);
+    try testing.expect(!plug(&.{}).isTerminal(0));
+    try testing.expect(!plug(&.{}).isTerminal(Bus.not_a_terminal));
 }

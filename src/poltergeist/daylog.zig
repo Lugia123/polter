@@ -577,7 +577,102 @@ pub fn dayOf(at_ms: i64) u32 {
         md.day_index + 1;
 }
 
+/// `YYYY-MM-DD HH:MM:SS`, in the reader's own timezone.
+///
+/// Here rather than in the one file that needs it, because this file
+/// already owns the answer to "what does Polter call a moment in time on
+/// disk" -- `dayOf` names the day the same way, off the same `localtime_r`,
+/// for the same reason. A second formatter somewhere else would be a second
+/// answer, and the two would eventually disagree about the timezone, which
+/// is the one thing about a timestamp nobody checks.
+///
+/// Local rather than UTC, and `dayOf`'s reason applies unchanged: somebody
+/// reading a plugin's log at nine the next morning is asking what happened
+/// *last night*, and a line stamped eight hours off is worse than a line
+/// with no stamp at all, because it looks right.
+pub fn stamp(buf: *[19]u8, at_ms: i64) []const u8 {
+    const secs: i64 = @divFloor(at_ms, std.time.ms_per_s);
+
+    var tm: Tm = undefined;
+    if (localtime_r(&secs, &tm) != null) return render(buf, .{
+        .y = @as(i64, tm.year) + 1900,
+        .mo = @as(i64, tm.mon) + 1,
+        .d = tm.mday,
+        .h = tm.hour,
+        .mi = tm.min,
+        .s = tm.sec,
+    });
+
+    // Same fallback as `dayOf`: if libc will not say, a stamp that may be
+    // hours off still beats a line with nothing on it.
+    const day = dayOf(at_ms);
+    const in_day: i64 = @mod(secs, std.time.s_per_day);
+    return render(buf, .{
+        .y = day / 10000,
+        .mo = @mod(@divTrunc(day, 100), 100),
+        .d = @mod(day, 100),
+        .h = @divTrunc(in_day, std.time.s_per_hour),
+        .mi = @mod(@divTrunc(in_day, std.time.s_per_min), 60),
+        .s = @mod(in_day, 60),
+    });
+}
+
+/// The six numbers, clamped into the widths the format has room for.
+///
+/// Clamped rather than asserted: `bufPrint` into a buffer sized for four
+/// digits of year fails on a five-digit one, and the only thing to do with
+/// that failure at the point a log line is being written is to have made it
+/// impossible.
+fn render(buf: *[19]u8, at: struct { y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64 }) []const u8 {
+    const clamp = struct {
+        fn to(v: i64, hi: i64) u32 {
+            return @intCast(@min(@max(v, 0), hi));
+        }
+    };
+
+    return std.fmt.bufPrint(
+        buf,
+        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
+        .{
+            clamp.to(at.y, 9999),
+            clamp.to(at.mo, 12),
+            clamp.to(at.d, 31),
+            clamp.to(at.h, 23),
+            clamp.to(at.mi, 59),
+
+            // 60 and 61 are legal in `struct tm`, which has leap seconds.
+            clamp.to(at.s, 59),
+        },
+    ) catch unreachable;
+}
+
 const testing = std.testing;
+
+test "a stamp is a fixed nineteen characters, whatever the moment" {
+    // Fixed width is the point: these lines are read in a column, and a
+    // stamp that is sometimes eighteen characters makes every line after it
+    // in a `less` window land somewhere else.
+    for ([_]i64{
+        0,
+        1,
+        -1,
+        1_786_819_271_275,
+        std.math.maxInt(i32) * @as(i64, 1000),
+
+        // Past what four digits of year can hold, which is where a
+        // formatter that trusted its input would fail rather than clamp.
+        300_000_000_000_000,
+    }) |at_ms| {
+        var buf: [19]u8 = undefined;
+        const said = stamp(&buf, at_ms);
+        try testing.expectEqual(@as(usize, 19), said.len);
+        try testing.expectEqual(@as(u8, '-'), said[4]);
+        try testing.expectEqual(@as(u8, '-'), said[7]);
+        try testing.expectEqual(@as(u8, ' '), said[10]);
+        try testing.expectEqual(@as(u8, ':'), said[13]);
+        try testing.expectEqual(@as(u8, ':'), said[16]);
+    }
+}
 
 test "an ordinary name comes through a directory name unchanged" {
     const alloc = testing.allocator;

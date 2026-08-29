@@ -1,8 +1,15 @@
 //! Telling the person when something needs them.
 //!
 //! The decision of *whether* to tell them lives here; the sending is done
-//! by plugins (`Plugin.zig`), because the useful channels reach a phone
-//! and there are dozens of those with protocols that keep changing.
+//! by plugins, because the useful channels reach a phone and there are
+//! dozens of those with protocols that keep changing.
+//!
+//! **Nothing here forks a process any more.** A notification is published
+//! on the feed like anything else and picked up by whichever resident
+//! plugins subscribed to `terminal.quiet`; see `Resident.zig` for what that
+//! costs and what it buys. What did *not* move is the decision above: the
+//! hour, the two reasons, and "there is nowhere to send this" are still
+//! settled here and settled before anything is published.
 //!
 //! Two kinds of thing need a person, and they are not alike:
 //!
@@ -23,6 +30,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Bus = @import("Bus.zig");
+const Feed = @import("Feed.zig");
 const Plugin = @import("Plugin.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -142,110 +150,39 @@ pub fn decide(
     return .leave_to_supervisor;
 }
 
-/// Render an event as the JSON body a plugin receives.
+/// This event as the feed publishes it.
 ///
-/// Parameters are not here: `Plugin.call` adds those after resolving them,
-/// so nothing secret passes through this function at all.
-pub fn body(alloc: Allocator, event: Event) Allocator.Error![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-
-    var s: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
-    s.beginObject() catch return error.OutOfMemory;
-
-    s.objectField("event") catch return error.OutOfMemory;
-    s.write(switch (event.reason) {
-        .scheduling => "scheduling",
-        .authorisation => "authorisation",
-    }) catch return error.OutOfMemory;
-
-    s.objectField("title") catch return error.OutOfMemory;
-    s.write(event.title) catch return error.OutOfMemory;
-    s.objectField("body") catch return error.OutOfMemory;
-    s.write(event.body) catch return error.OutOfMemory;
-
-    s.objectField("terminal") catch return error.OutOfMemory;
-    s.print("\"0x{x:0>16}\"", .{event.terminal}) catch return error.OutOfMemory;
-    s.objectField("terminal_name") catch return error.OutOfMemory;
-    s.write(event.terminal_name) catch return error.OutOfMemory;
-
-    s.objectField("at_ms") catch return error.OutOfMemory;
-    s.write(event.at_ms) catch return error.OutOfMemory;
-
-    s.endObject() catch return error.OutOfMemory;
-    return out.toOwnedSlice();
+/// Rendering the JSON is not here any more and is not anywhere twice: a
+/// notification is one kind of event on the one stream, and `Resident`
+/// writes every kind. This is the whole of what used to be `notify.body` --
+/// the fields, once, in the place that knows what a notification is.
+pub fn published(event: Event) Feed.Event {
+    return .{ .terminal_quiet = .{
+        .at_ms = event.at_ms,
+        .reason = switch (event.reason) {
+            .scheduling => "scheduling",
+            .authorisation => "authorisation",
+        },
+        .title = event.title,
+        .body = event.body,
+        .terminal = event.terminal,
+        .terminal_name = event.terminal_name,
+    } };
 }
 
-/// What came of trying to tell somebody.
-pub const Delivery = struct {
-    /// How many plugins said they did it.
-    delivered: usize = 0,
-
-    /// How many did not, for any reason.
-    failed: usize = 0,
-};
-
-/// How many of these are plugins of one kind.
+/// How many of these plugins asked to be handed `e`.
 ///
-/// The plugin list holds every kind now. A resident archive is not a
-/// notification channel, and counting it as one would have the supervisor
-/// told a message went somewhere it did not -- and, when it is the only
-/// plugin installed, would hide the fact that there is nowhere to send at
-/// all.
-pub fn count(plugins: []const Plugin.Manifest, kind: Plugin.Kind) usize {
+/// This replaces counting by kind, and the difference is the point: there
+/// is no kind to count, so there is no list of kinds to forget one from.
+/// A plugin is a notification channel exactly when it subscribed to
+/// `terminal.quiet` -- which is a thing its own manifest says, in the one
+/// place that decides what it is handed.
+pub fn count(plugins: []const Plugin.Manifest, e: Plugin.Event) usize {
     var n: usize = 0;
     for (plugins) |manifest| {
-        if (manifest.kind == kind) n += 1;
+        if (manifest.wants.subscribes(e)) n += 1;
     }
     return n;
-}
-
-/// Send an event through every configured plugin.
-///
-/// **All of them, not the first that works.** The scenario is one where a
-/// broken channel goes unnoticed for hours; two notifications is a much
-/// smaller cost than the one that never arrived. It also means one locked
-/// vault does not silence the rest.
-pub fn send(
-    alloc: Allocator,
-    io: std.Io,
-    env: *const std.process.Environ.Map,
-    plugins: []const Plugin.Manifest,
-    params_for: *const fn (
-        ctx: *anyopaque,
-        alloc: Allocator,
-        key: []const u8,
-    ) anyerror![]const Plugin.Param,
-    ctx: *anyopaque,
-    event: Event,
-) Delivery {
-    var result: Delivery = .{};
-
-    const rendered = body(alloc, event) catch return result;
-    defer alloc.free(rendered);
-
-    for (plugins) |manifest| {
-        // One process per call is the notify contract. An archive plugin is
-        // resident and expects a stream; handing it a single event and
-        // reading its exit code would start a second copy of it every time
-        // somebody is nudged, and count the copy that died as a delivery.
-        if (manifest.kind != .notify) continue;
-
-        const params = params_for(ctx, alloc, manifest.key) catch &.{};
-
-        switch (Plugin.call(manifest, alloc, io, env, rendered, params)) {
-            .done => result.delivered += 1,
-            else => |outcome| {
-                result.failed += 1;
-                log.warn(
-                    "notify: {s} did not deliver ({t})",
-                    .{ manifest.key, outcome },
-                );
-            },
-        }
-    }
-
-    return result;
 }
 
 // -- tests ------------------------------------------------------------------
@@ -304,8 +241,8 @@ test "with nothing configured there is nowhere to send" {
     try testing.expectEqual(Verdict.nowhere_to_send, decide(e, null, 3 * 60, 0));
 }
 
-test "the body says which kind it is, and names the terminal" {
-    const rendered = try body(testing.allocator, .{
+test "a published notification carries the reason, the terminal and its name" {
+    const ev = published(.{
         .reason = .authorisation,
         .title = "worker-core 需要确认",
         .body = "它停在一个工具授权提示上",
@@ -313,92 +250,43 @@ test "the body says which kind it is, and names the terminal" {
         .terminal_name = "✳ Write retry.py",
         .at_ms = 1786819271275,
     });
-    defer testing.allocator.free(rendered);
 
-    try testing.expect(std.mem.indexOf(u8, rendered, "\"event\":\"authorisation\"") != null);
-    try testing.expect(std.mem.indexOf(u8, rendered, "0x9491465653644ed0") != null);
-    try testing.expect(std.mem.indexOf(u8, rendered, "✳ Write retry.py") != null);
+    try testing.expectEqual(Plugin.Event.terminal_quiet, ev.kind());
+    try testing.expectEqualStrings("authorisation", ev.terminal_quiet.reason);
+    try testing.expectEqual(@as(u64, 0x9491465653644ed0), ev.terminal_quiet.terminal);
+    try testing.expectEqualStrings("✳ Write retry.py", ev.terminal_quiet.terminal_name);
 
-    // Nothing secret goes through here; parameters are added later, after
-    // they have been resolved.
-    try testing.expect(std.mem.indexOf(u8, rendered, "params") == null);
+    // A notification is in no group, and that must not read as "in every
+    // group": `Resident.forThisPlugin` lets it through on the strength of
+    // the subscription alone.
+    try testing.expect(ev.group() == null);
 }
 
-test "an archive plugin is not a notification channel" {
-    // It is resident and expects a stream of batches. Running it once per
-    // nudge would fork a second copy of the archive and then report its
-    // death as a failed notification -- or its exit as a delivered one.
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var env: std.process.Environ.Map = .init(testing.allocator);
-    defer env.deinit();
-
-    var raw: [6]u8 = undefined;
-    io.random(&raw);
-    const marker = try std.fmt.allocPrint(alloc, "/tmp/polter-notify-{x}", .{&raw});
-
-    const dir = try std.fmt.allocPrint(alloc, "{s}.d", .{marker});
-    try std.Io.Dir.cwd().createDirPath(io, dir);
-    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
-
-    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
-    defer d.close(io);
-    var f = try d.createFile(io, "run.sh", .{ .permissions = .fromMode(0o755) });
-    try f.writeStreamingAll(io, try std.fmt.allocPrint(
-        alloc,
-        "#!/bin/sh\ntouch {s}\n",
-        .{marker},
-    ));
-    f.close(io);
-
-    const exec = try std.fmt.allocPrint(alloc, "{s}/run.sh", .{dir});
+test "what a plugin is handed is what it subscribed to, and nothing else" {
+    // The whole of what `Kind` used to decide. An archive is not a
+    // notification channel -- not because it is called an archive, but
+    // because its manifest never asked for `terminal.quiet`.
     const plugins = [_]Plugin.Manifest{
-        .{ .key = "chat-archive", .kind = .archive, .exec = exec },
+        .{
+            .key = "chat-archive",
+            .exec = "/nonexistent",
+            .wants = .{ .events = &.{.chat}, .groups = &.{"*"} },
+        },
+        .{
+            .key = "feishu",
+            .exec = "/nonexistent",
+            .wants = .{ .events = &.{.terminal_quiet} },
+        },
+        .{
+            // One plugin, two subscriptions. Under `Kind` this needed two
+            // plugins and a new enum member to even be expressible.
+            .key = "both",
+            .exec = "/nonexistent",
+            .wants = .{ .events = &.{ .chat, .terminal_quiet }, .groups = &.{"*"} },
+        },
     };
 
-    try testing.expectEqual(@as(usize, 0), count(&plugins, .notify));
-    try testing.expectEqual(@as(usize, 1), count(&plugins, .archive));
-
-    const none = struct {
-        fn params(
-            ctx: *anyopaque,
-            a: Allocator,
-            key: []const u8,
-        ) anyerror![]const Plugin.Param {
-            _ = ctx;
-            _ = a;
-            _ = key;
-            return &.{};
-        }
-    };
-
-    var ctx: usize = 0;
-    const delivery = send(
-        alloc,
-        io,
-        &env,
-        &plugins,
-        none.params,
-        @ptrCast(&ctx),
-        .{ .reason = .authorisation, .title = "t", .body = "b" },
-    );
-
-    // Not delivered, and not counted as a failure either: it was never a
-    // channel, so there was nothing here to succeed or fail.
-    try testing.expectEqual(@as(usize, 0), delivery.delivered);
-    try testing.expectEqual(@as(usize, 0), delivery.failed);
-
-    // And it did not run at all.
-    try testing.expect(std.Io.Dir.cwd().readFileAlloc(
-        io,
-        marker,
-        alloc,
-        .limited(16),
-    ) == error.FileNotFound);
+    try testing.expectEqual(@as(usize, 2), count(&plugins, .terminal_quiet));
+    try testing.expectEqual(@as(usize, 2), count(&plugins, .chat));
+    try testing.expectEqual(@as(usize, 0), count(&plugins, .provision));
 }

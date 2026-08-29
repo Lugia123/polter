@@ -27,9 +27,6 @@ const Plugin = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const reap = @import("reap.zig");
-const secret = @import("secret.zig");
-
 const log = std.log.scoped(.poltergeist);
 
 /// Longest a plugin may take before it is killed.
@@ -48,56 +45,105 @@ const default_timeout_ms: u64 = 10 * std.time.ms_per_s;
 /// spend somebody's context on them.
 const max_specs: usize = 64;
 
-/// What a plugin is for.
+/// One kind of thing that happens, as a manifest may subscribe to it.
 ///
-/// The kind decides the lifetime, and the lifetimes are not alike enough to
-/// share one: what separates them is how dense the events are.
-pub const Kind = enum {
-    /// Sends a message somewhere the user will see it. One process per
-    /// notification: a few an hour, so a fork each costs nothing that
-    /// matters, and a plugin that hangs takes only its own notification
-    /// down with it.
-    notify,
+/// **This is not `Kind`.** What a plugin *is* used to be one of three
+/// values that each decided a lifetime and a contract at once, so every
+/// place that switched on it had three branches and a fourth would be
+/// forgotten -- which happened twice, the second time in the comment left
+/// by the first. There is one lifetime and one contract now, and what
+/// separates two plugins is only which of these they asked for. A plugin
+/// that asks for two gets both on one stream; a plugin that asks for none
+/// is not started, because there would be nothing to hand it.
+///
+/// The names here are the wire names, spelled with a dot where the Zig
+/// identifier cannot have one. Every member has to exist as something
+/// `Feed` can actually publish: a name a manifest may write and nothing
+/// will ever send is a subscription that looks live and is not.
+pub const Event = enum {
+    /// Something was said in a chat group. This is what `archive` was.
+    chat,
 
-    /// Follows the chat log and copies it somewhere else. **Resident**:
-    /// the events are continuous, and rebuilding a database connection per
-    /// message is not a thing that can be done. It is handed a stream of
-    /// batches on stdin and answers each one, rather than being started and
-    /// judged by an exit code. See `Archive.zig` and
-    /// `docs/poltergeist/storage.md`.
-    archive,
+    /// A terminal has gone quiet and somebody should be told. This is what
+    /// `notify` was.
+    terminal_quiet,
 
-    /// Turns what Polter is into whatever one AI CLI reads: registers the
-    /// MCP endpoint, puts the skills where that runtime looks for them.
-    /// **Once at startup, and fed** -- which is what separates it from the
-    /// other two rather than a third guess at a lifetime. `notify` is also
-    /// one process, but it is handed an occasion, not a description of the
-    /// program; `archive` is also fed, but it never exits. This one is
-    /// given a single line describing what exists, and its exit code says
-    /// whether the runtime now knows about it. See `provision.zig`.
+    /// Here is what Polter is; make an agent runtime able to see it. This
+    /// is what `provision` was.
     provision,
+
+    /// The name a manifest writes.
+    pub fn wireName(self: Event) []const u8 {
+        return switch (self) {
+            .chat => "chat",
+            .terminal_quiet => "terminal.quiet",
+            .provision => "provision",
+        };
+    }
+
+    /// The event that name refers to, or null when it is not one of ours.
+    ///
+    /// Null rather than an error: a manifest written for a later build may
+    /// name an event this one has never heard of, and the safe reading of
+    /// that is "this build will not send it" -- not "this plugin does not
+    /// load".
+    pub fn parse(text: []const u8) ?Event {
+        inline for (@typeInfo(Event).@"enum".fields) |f| {
+            const e: Event = @enumFromInt(f.value);
+            if (std.mem.eql(u8, e.wireName(), text)) return e;
+        }
+        return null;
+    }
 };
 
 /// What a plugin says it needs.
 ///
 /// **Declared so the host has something to refuse against**, not as a
-/// certificate of good behaviour. Only `groups` is enforced, and it is
-/// enforced completely: the batches a plugin is fed are built from this
-/// list, and a plugin has no second channel to the log. `network` and
-/// `exec` are declaration and disclosure only -- they are what a user reads
-/// before installing, and what an audit has to go on. They are **not** a
-/// sandbox and nothing here stops a plugin doing either. Saying that
-/// plainly is the point: `"network": false` must never be read as "it
-/// cannot reach the network". Real isolation has to be designed together
-/// with signing; see `docs/poltergeist/plugins.md`.
+/// certificate of good behaviour. That stance is unchanged; what changed is
+/// how many of these are refusals rather than disclosures.
+///
+/// `events`, `groups` and `calls` are **enforced**, completely:
+///
+///   - `events` decides what the plugin is handed. It is not fed a kind it
+///     did not ask for, so a chat archive never sees a notification and a
+///     notifier never sees the chat log.
+///   - `groups` decides which chat groups may appear in what it is handed,
+///     and a plugin has no second channel to the log.
+///   - `calls` decides which tool methods it may call. See `mayCall`.
+///
+/// `network` and `exec` are declaration and disclosure only -- they are
+/// what a user reads before installing, and what an audit has to go on.
+/// They are **not** a sandbox and nothing here stops a plugin doing either.
+/// Saying that plainly is the point: `"network": false` must never be read
+/// as "it cannot reach the network". Real isolation has to be designed
+/// together with signing; see `docs/poltergeist/plugins.md`.
+///
+/// The line between the two halves is not how dangerous the thing is. It is
+/// **whether the host stands on the path**. Every event goes through
+/// `Feed`, every group through the batch writer, every tool call through
+/// the socket this process is listening on -- those are chokepoints, and a
+/// declaration at a chokepoint that is not enforced is a decision to hold a
+/// gate open. A plugin's own `connect(2)` passes through nothing of ours,
+/// so there is no gate there to hold either way.
+///
+/// Everything borrowed here comes from the arena the manifest was loaded
+/// into. Anything that outlives one pass over the plugin directory has to
+/// copy it: the arena is rebuilt whole every time the plugin list is.
 pub const Wants = struct {
-    /// Which chat groups may appear in what this plugin is given. A single
-    /// element `"*"` means all of them. Empty means none, which is what a
-    /// manifest that declares nothing gets.
+    /// Which kinds of event this plugin is handed. Empty means none, which
+    /// is what a manifest that declares nothing gets -- and a plugin with
+    /// nothing to be handed is not started at all.
+    events: []const Event = &.{},
+
+    /// Which tool methods this plugin may call over the socket, by name.
     ///
-    /// Borrowed from the arena the manifest was loaded into. Anything that
-    /// outlives one pass over the plugin directory has to copy these: the
-    /// arena is rebuilt whole every time the plugin list is.
+    /// Empty means none: a plugin that declares no calls gets a token and a
+    /// socket path all the same, and every method it tries is refused. That
+    /// is the direction a missing declaration has to fail in.
+    calls: []const []const u8 = &.{},
+
+    /// Which chat groups may appear in what this plugin is given. A single
+    /// element `"*"` means all of them. Empty means none.
     groups: []const []const u8 = &.{},
 
     network: bool = false,
@@ -117,10 +163,51 @@ pub const Wants = struct {
         return false;
     }
 
-    /// True when nothing was asked for. An archive that wants nothing has
-    /// nothing to do, and the host says so rather than running it empty.
+    /// Whether this plugin asked to be handed `e`.
+    ///
+    /// **No `"*"` here, deliberately**, and this is the one place the two
+    /// enforced lists differ. A group is a name the user made up and there
+    /// is no way to enumerate the ones that do not exist yet, so `"*"` is
+    /// the only way to say "whatever I am in". The events are a closed set
+    /// written down in this file: a plugin can name every one it wants, and
+    /// a `"*"` would mean "and every one added after I was written", which
+    /// is a subscription to code that does not exist.
+    pub fn subscribes(self: Wants, e: Event) bool {
+        for (self.events) |w| if (w == e) return true;
+        return false;
+    }
+
+    /// Whether this plugin declared that it calls `method`.
+    ///
+    /// **Checked, not merely listed**, and it is checked *before* the
+    /// ordinary authorisation. The two cannot conflict, because this one
+    /// never grants: a call has to pass this list **and** the reachability
+    /// rule, so what a plugin declares can only ever narrow what it may do.
+    /// A method nobody has heard of is refused here, which is also the
+    /// answer for a method name that is simply misspelled in the manifest.
+    ///
+    /// Exact names, no wildcard. The declaration is what a user reads
+    /// before installing, and `"*"` would make that reading worthless
+    /// exactly where it matters most.
+    pub fn mayCall(self: Wants, method: []const u8) bool {
+        for (self.calls) |c| if (std.mem.eql(u8, c, method)) return true;
+        return false;
+    }
+
+    /// True when nothing was asked for, so there is nothing to hand over.
+    /// The host says so rather than running a plugin it would then feed
+    /// silence for ever.
     pub fn empty(self: Wants) bool {
-        return self.groups.len == 0;
+        return self.events.len == 0;
+    }
+
+    /// True when this plugin subscribes to something group-shaped and named
+    /// no groups, which is a manifest that will be fed nothing it is
+    /// waiting for. Worth saying out loud, and not worth refusing over: the
+    /// same plugin may be subscribed to `provision` as well, and that half
+    /// works.
+    pub fn groupless(self: Wants) bool {
+        return self.subscribes(.chat) and self.groups.len == 0;
     }
 };
 
@@ -165,8 +252,6 @@ pub const Manifest = struct {
 
     /// For a person reading a list of them.
     name: []const u8 = "",
-
-    kind: Kind,
 
     /// Absolute path to the executable.
     exec: []const u8,
@@ -243,14 +328,16 @@ pub fn load(
         return error.BadKey;
     }
 
-    const kind_text = stringField(obj, "kind") orelse "notify";
-    const kind = std.meta.stringToEnum(Kind, kind_text) orelse {
-        // Not an error worth failing the whole load over -- a newer plugin
-        // for a kind this build does not know about should be skipped,
-        // not fatal.
-        log.warn("plugin {s}: unknown kind {s}", .{ key, kind_text });
-        return error.UnknownKind;
-    };
+    // There is no `kind` any more. A manifest that still carries one is not
+    // refused over it -- it is simply a field nothing reads -- but it is
+    // said out loud once, because a plugin whose author believes `kind` is
+    // still what starts it will otherwise sit there declaring nothing and
+    // never being fed.
+    if (stringField(obj, "kind")) |stale| log.warn(
+        "plugin {s}: \"kind\": \"{s}\" is not read any more; what a plugin is " ++
+            "handed comes from \"wants\": {{\"events\": [...]}}",
+        .{ key, stale },
+    );
 
     const exec_rel = stringField(obj, "exec") orelse {
         log.warn("plugin {s}: no exec", .{key});
@@ -260,7 +347,6 @@ pub fn load(
     return .{
         .key = key,
         .name = stringField(obj, "name") orelse key,
-        .kind = kind,
         .exec = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, exec_rel }),
         .timeout_ms = switch (obj.get("timeout_ms") orelse std.json.Value{ .null = {} }) {
             .integer => |n| if (n > 0) @intCast(n) else default_timeout_ms,
@@ -322,6 +408,8 @@ fn wantsOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Wants {
         },
     };
     return .{
+        .events = eventsOf(arena, key, w),
+        .calls = stringsOf(arena, key, w, "calls", "wants.calls"),
         .groups = stringsOf(arena, key, w, "groups", "wants.groups"),
         .network = switch (w.get("network") orelse .null) {
             .bool => |b| b,
@@ -329,6 +417,51 @@ fn wantsOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Wants {
         },
         .exec = stringsOf(arena, key, w, "exec", "wants.exec"),
     };
+}
+
+/// What the manifest declares under `wants.events`.
+///
+/// A name this build does not know is passed over with a warning rather
+/// than voiding the list, for the same reason a malformed `wants` reads as
+/// asking for nothing: the direction that cannot hand somebody events they
+/// never asked for. A manifest written against a later build therefore
+/// keeps whichever of its subscriptions this build can honour, and is told
+/// about the rest.
+fn eventsOf(arena: Allocator, key: []const u8, w: std.json.ObjectMap) []const Event {
+    const names = stringsOf(arena, key, w, "events", "wants.events");
+
+    var out: std.ArrayListUnmanaged(Event) = .empty;
+    for (names) |name| {
+        const e = Event.parse(name) orelse {
+            log.warn(
+                "plugin {s}: wants.events names {s}, which this build never sends, " ++
+                    "so nothing is subscribed for it",
+                .{ key, name },
+            );
+            continue;
+        };
+
+        // Named twice is asked for once. Nothing downstream would break on
+        // a duplicate -- `subscribes` stops at the first match -- but the
+        // list is read back out to the user and to `plugin_list`, and a
+        // listing that says `chat, chat` reads as a bug in the host.
+        if (contains2(out.items, e)) continue;
+
+        out.append(arena, e) catch {
+            log.warn(
+                "plugin {s}: ran out of memory reading wants.events, so only the " ++
+                    "first {d} are subscribed",
+                .{ key, out.items.len },
+            );
+            break;
+        };
+    }
+    return out.items;
+}
+
+fn contains2(haystack: []const Event, needle: Event) bool {
+    for (haystack) |h| if (h == needle) return true;
+    return false;
 }
 
 /// What the manifest declares under `params`.
@@ -824,141 +957,13 @@ pub const Outcome = enum {
     unresolved,
 };
 
-/// Resolve `params` and run the plugin with them.
+/// Whether `key` is a name and nothing more; see `isPlainName`.
 ///
-/// `body` is the part of the JSON that is the same whatever the plugin --
-/// the event, the message, which terminal. This wraps it with a `params`
-/// object built by resolving each configured value, and hands the whole
-/// thing over on stdin.
-///
-/// Resolution happens **here, once, at the moment of the call**. Nothing
-/// is cached: a vault that has locked since this morning must fail, and a
-/// cache would hide that it locked at all.
-pub fn call(
-    manifest: Manifest,
-    alloc: Allocator,
-    io: std.Io,
-    env: *const std.process.Environ.Map,
-    body: []const u8,
-    params: []const Param,
-) Outcome {
-    // The params object is rendered on its own, so the JSON writer owns a
-    // complete value and its state machine stays honest. Splicing into a
-    // half-written object is what it asserts against, and rightly.
-    var rendered: std.Io.Writer.Allocating = .init(alloc);
-    defer rendered.deinit();
-
-    {
-        var s: std.json.Stringify = .{ .writer = &rendered.writer, .options = .{} };
-        s.beginObject() catch return .unstartable;
-        for (params) |p| {
-            const value = secret.resolve(alloc, io, env, p.value) catch {
-                log.warn(
-                    "plugin {s}: could not resolve {s}, not running it",
-                    .{ manifest.key, p.name },
-                );
-                return .unresolved;
-            };
-            defer alloc.free(value);
-
-            s.objectField(p.name) catch return .unstartable;
-            s.write(value) catch return .unstartable;
-        }
-        s.endObject() catch return .unstartable;
-    }
-
-    // `body` is already an object; params go in beside its fields rather
-    // than under them, so a plugin author reads one flat thing.
-    const trimmed = std.mem.trim(u8, body, " \t\r\n");
-    const inner = if (trimmed.len >= 2 and trimmed[0] == '{' and trimmed[trimmed.len - 1] == '}')
-        std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\r\n")
-    else
-        "";
-
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-
-    out.writer.writeAll("{") catch return .unstartable;
-    if (inner.len > 0) {
-        out.writer.writeAll(inner) catch return .unstartable;
-        out.writer.writeAll(",") catch return .unstartable;
-    }
-    out.writer.writeAll("\"params\":") catch return .unstartable;
-    out.writer.writeAll(rendered.written()) catch return .unstartable;
-    out.writer.writeAll("}") catch return .unstartable;
-
-    return run(manifest, alloc, io, out.written());
-}
-
-/// Run a plugin, giving it `input` on stdin.
-///
-/// Never returns an error. Every way this can go wrong is a way a
-/// *notification* fails, and a failed notification must not propagate into
-/// whatever was being reported -- the terminals go on talking either way.
-///
-/// `input` normally holds resolved credentials, which is why it goes on
-/// stdin rather than into the environment or the argument list: both of
-/// those are readable by any process the plugin itself starts, and by
-/// anyone running `ps`.
-pub fn run(
-    manifest: Manifest,
-    alloc: Allocator,
-    io: std.Io,
-    input: []const u8,
-) Outcome {
-    var child = std.process.spawn(io, .{
-        .argv = &.{manifest.exec},
-        .stdin = .pipe,
-
-        // Ignored rather than captured: a plugin has nothing to tell us
-        // that the exit code does not already say, and reading a pipe we
-        // do not care about is one more thing that can block.
-        .stdout = .ignore,
-
-        // Inherited so that whatever a plugin complains about lands
-        // wherever Polter's own output goes. Its author put it there to be
-        // read.
-        .stderr = .inherit,
-    }) catch |err| {
-        log.warn("plugin {s}: could not start err={}", .{ manifest.key, err });
-        return .unstartable;
-    };
-
-    // Write, then close: a plugin reading to end-of-input has to see one.
-    if (child.stdin) |stdin| {
-        stdin.writeStreamingAll(io, input) catch |err| {
-            log.warn("plugin {s}: could not write err={}", .{ manifest.key, err });
-        };
-        stdin.close(io);
-        child.stdin = null;
-    }
-
-    _ = alloc;
-
-    // Waiting has no timeout of its own, so the clock runs on another
-    // thread. It signals the child; the wait below then returns on its own
-    // because the process is gone. Why a signal and not `Child.kill`, and
-    // why the reaper holds a lock, are both in `reap.zig` -- the same
-    // machinery keeps the resident archive plugin in line.
-    var reaper: reap.Reaper = .init(io, manifest.key, child.id, manifest.timeout_ms);
-    const thread = std.Thread.spawn(.{}, reap.Reaper.run, .{&reaper}) catch null;
-
-    const term = child.wait(io) catch |err| {
-        log.warn("plugin {s}: could not wait err={}", .{ manifest.key, err });
-        reaper.retire();
-        if (thread) |t| t.join();
-        return .unstartable;
-    };
-
-    reaper.retire();
-    if (thread) |t| t.join();
-
-    if (reaper.killed()) return .timed_out;
-
-    return switch (term) {
-        .exited => |code| if (code == 0) .done else .refused,
-        else => .refused,
-    };
+/// Exposed because the resident host writes the key into a log line and a
+/// hello line, and because the tool surface checks a key before it goes
+/// looking for a directory.
+pub fn plainName(key: []const u8) bool {
+    return isPlainName(key);
 }
 
 // -- tests ------------------------------------------------------------------
@@ -967,24 +972,6 @@ const testing = std.testing;
 
 test {
     testing.refAllDecls(@This());
-}
-
-/// Write a throwaway script and give back its path, owned by `arena`.
-fn scriptFor(arena: Allocator, io: std.Io, body: []const u8) ![]const u8 {
-    var raw: [6]u8 = undefined;
-    io.random(&raw);
-
-    const dir = try std.fmt.allocPrint(arena, "/tmp/polter-plug-{x}", .{&raw});
-    try std.Io.Dir.cwd().createDirPath(io, dir);
-
-    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
-    defer d.close(io);
-
-    var f = try d.createFile(io, "run.sh", .{ .permissions = .fromMode(0o755) });
-    try f.writeStreamingAll(io, body);
-    f.close(io);
-
-    return std.fmt.allocPrint(arena, "{s}/run.sh", .{dir});
 }
 
 /// Write a throwaway `plugin.json` and give back its directory, owned by
@@ -1004,197 +991,6 @@ fn manifestFor(arena: Allocator, io: std.Io, json: []const u8) ![]const u8 {
     f.close(io);
 
     return dir;
-}
-
-test "a plugin that exits zero has done the job" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const path = try scriptFor(alloc, io, "#!/bin/sh\nexit 0\n");
-    const outcome = run(
-        .{ .key = "ok", .kind = .notify, .exec = path },
-        alloc,
-        io,
-        "{}",
-    );
-    try testing.expectEqual(Outcome.done, outcome);
-}
-
-test "a plugin that exits non-zero has refused" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const path = try scriptFor(alloc, io, "#!/bin/sh\nexit 3\n");
-    const outcome = run(
-        .{ .key = "nope", .kind = .notify, .exec = path },
-        alloc,
-        io,
-        "{}",
-    );
-    try testing.expectEqual(Outcome.refused, outcome);
-}
-
-test "what goes in on stdin is what the plugin reads" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var raw: [6]u8 = undefined;
-    io.random(&raw);
-    const out = try std.fmt.allocPrint(alloc, "/tmp/polter-in-{x}", .{&raw});
-
-    const body = try std.fmt.allocPrint(
-        alloc,
-        "#!/bin/sh\ncat > {s}\nexit 0\n",
-        .{out},
-    );
-    const path = try scriptFor(alloc, io, body);
-
-    const outcome = run(
-        .{ .key = "echo", .kind = .notify, .exec = path },
-        alloc,
-        io,
-        "{\"event\":\"confirmation_needed\"}",
-    );
-    try testing.expectEqual(Outcome.done, outcome);
-
-    const got = try std.Io.Dir.cwd().readFileAlloc(io, out, alloc, .limited(4096));
-    try testing.expectEqualStrings("{\"event\":\"confirmation_needed\"}", got);
-}
-
-test "a plugin that hangs is killed rather than waited on" {
-    // The case this matters for: nobody is watching. A plugin that cannot
-    // reach the network would otherwise sit there until morning.
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const path = try scriptFor(alloc, io, "#!/bin/sh\nsleep 30\n");
-    const outcome = run(
-        .{ .key = "hang", .kind = .notify, .exec = path, .timeout_ms = 300 },
-        alloc,
-        io,
-        "{}",
-    );
-    try testing.expectEqual(Outcome.timed_out, outcome);
-}
-
-test "a plugin that is not there is not a crash" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-
-    const outcome = run(
-        .{ .key = "ghost", .kind = .notify, .exec = "/nonexistent/plugin" },
-        alloc,
-        threaded.io(),
-        "{}",
-    );
-    try testing.expectEqual(Outcome.unstartable, outcome);
-}
-
-test "resolved parameters arrive as plain values" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var env: std.process.Environ.Map = .init(testing.allocator);
-    defer env.deinit();
-    try env.put("POLTER_TEST_KEY", "s3cret");
-
-    var raw: [6]u8 = undefined;
-    io.random(&raw);
-    const out = try std.fmt.allocPrint(alloc, "/tmp/polter-call-{x}", .{&raw});
-
-    const body = try std.fmt.allocPrint(alloc, "#!/bin/sh\ncat > {s}\n", .{out});
-    const path = try scriptFor(alloc, io, body);
-
-    const outcome = call(
-        .{ .key = "feishu", .kind = .notify, .exec = path },
-        alloc,
-        io,
-        &env,
-        "{\"event\":\"confirmation_needed\"}",
-        &.{
-            .{ .name = "webhook", .value = "https://example/hook" },
-            .{ .name = "signing_key", .value = "env:POLTER_TEST_KEY" },
-        },
-    );
-    try testing.expectEqual(Outcome.done, outcome);
-
-    const got = try std.Io.Dir.cwd().readFileAlloc(io, out, alloc, .limited(4096));
-
-    // The event survives, the literal survives, and the reference has
-    // become the value it points at -- not the reference.
-    try testing.expect(std.mem.indexOf(u8, got, "\"event\":\"confirmation_needed\"") != null);
-    try testing.expect(std.mem.indexOf(u8, got, "\"webhook\":\"https://example/hook\"") != null);
-    try testing.expect(std.mem.indexOf(u8, got, "\"signing_key\":\"s3cret\"") != null);
-    try testing.expect(std.mem.indexOf(u8, got, "env:") == null);
-}
-
-test "a parameter that will not resolve stops the call" {
-    // The plugin must not run at all. Running it with the reference in
-    // place would send `cmd:...` to Feishu as though it were the key.
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var env: std.process.Environ.Map = .init(testing.allocator);
-    defer env.deinit();
-
-    var raw: [6]u8 = undefined;
-    io.random(&raw);
-    const marker = try std.fmt.allocPrint(alloc, "/tmp/polter-ran-{x}", .{&raw});
-
-    const body = try std.fmt.allocPrint(alloc, "#!/bin/sh\ntouch {s}\n", .{marker});
-    const path = try scriptFor(alloc, io, body);
-
-    const outcome = call(
-        .{ .key = "feishu", .kind = .notify, .exec = path },
-        alloc,
-        io,
-        &env,
-        "{}",
-        &.{.{ .name = "signing_key", .value = "env:POLTER_TEST_ABSENT" }},
-    );
-    try testing.expectEqual(Outcome.unresolved, outcome);
-
-    // Nothing ran: the plugin would have created this if it had.
-    try testing.expect(std.Io.Dir.cwd().readFileAlloc(
-        io,
-        marker,
-        alloc,
-        .limited(16),
-    ) == error.FileNotFound);
 }
 
 test "a manifest is read, and its exec made absolute" {
@@ -1217,14 +1013,13 @@ test "a manifest is read, and its exec made absolute" {
 
     var f = try d.createFile(io, "plugin.json", .{});
     try f.writeStreamingAll(io,
-        \\{"key":"feishu","name":"飞书","kind":"notify","exec":"send.sh","timeout_ms":5000}
+        \\{"key":"feishu","name":"飞书","exec":"send.sh","timeout_ms":5000}
     );
     f.close(io);
 
     const m = try load(alloc, io, dir);
     try testing.expectEqualStrings("feishu", m.key);
     try testing.expectEqualStrings("飞书", m.name);
-    try testing.expectEqual(Kind.notify, m.kind);
     try testing.expectEqual(@as(u64, 5000), m.timeout_ms);
 
     // Absolute, so running it never depends on where Polter happens to be.
@@ -1232,9 +1027,11 @@ test "a manifest is read, and its exec made absolute" {
     try testing.expectEqualStrings(want, m.exec);
 }
 
-test "a manifest for a kind this build does not know is skipped, not fatal" {
-    // A newer plugin should be passed over quietly. Refusing to start
-    // because one directory mentions a future feature would be worse.
+test "an event this build never sends is passed over, not fatal" {
+    // A manifest written against a later build should keep whichever of its
+    // subscriptions this build can honour. Refusing to load the whole plugin
+    // because one name is from the future would be worse, and the direction
+    // is the safe one: it is fed less than it asked for, never more.
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1243,19 +1040,35 @@ test "a manifest for a kind this build does not know is skipped, not fatal" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var raw: [6]u8 = undefined;
-    io.random(&raw);
-    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-man-{x}", .{&raw});
-    try std.Io.Dir.cwd().createDirPath(io, dir);
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"future","exec":"x","wants":{"events":["chat","weather"]}}
+    );
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
-    defer d.close(io);
-    var f = try d.createFile(io, "plugin.json", .{});
-    try f.writeStreamingAll(io, "{\"key\":\"future\",\"kind\":\"sensor\",\"exec\":\"x\"}");
-    f.close(io);
+    const m = try load(alloc, io, dir);
+    try testing.expectEqual(@as(usize, 1), m.wants.events.len);
+    try testing.expect(m.wants.subscribes(.chat));
+}
 
-    try testing.expectError(error.UnknownKind, load(alloc, io, dir));
+test "a manifest that still carries a kind loads, and kind decides nothing" {
+    // The whole point of taking `Kind` out: a plugin is what it subscribes
+    // to. A manifest left over from the three-kind world is not refused --
+    // it is simply one that subscribes to nothing and is therefore not run.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestFor(alloc, io,
+        \\{"key":"old","exec":"x"}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    try testing.expect(m.wants.empty());
 }
 
 test "a manifest missing what it needs is refused" {
@@ -1539,7 +1352,7 @@ test "no settings anywhere is still not enabled" {
     try testing.expect(!Settings.readFirst(alloc, io, &.{}).enabled);
 }
 
-test "a manifest may declare an archive" {
+test "a manifest declares what it is by what it subscribes to" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1549,13 +1362,17 @@ test "a manifest may declare an archive" {
     const io = threaded.io();
 
     const dir = try manifestFor(alloc, io,
-        \\{"key":"chat-archive","kind":"archive","exec":"archive.sh"}
+        \\{"key":"chat-archive","exec":"archive.sh","wants":{"events":["chat"]}}
     );
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
     const m = try load(alloc, io, dir);
-    try testing.expectEqual(Kind.archive, m.kind);
-    try testing.expect(m.wants.empty());
+    try testing.expect(m.wants.subscribes(.chat));
+    try testing.expect(!m.wants.subscribes(.terminal_quiet));
+    try testing.expect(!m.wants.empty());
+
+    // Subscribed to chat and naming no groups: it will be fed nothing.
+    try testing.expect(m.wants.groupless());
 }
 
 test "what a manifest wants is read back" {
@@ -1568,8 +1385,9 @@ test "what a manifest wants is read back" {
     const io = threaded.io();
 
     const dir = try manifestFor(alloc, io,
-        \\{"key":"chat-archive","kind":"archive","exec":"a.sh",
-        \\ "wants":{"groups":["build","ops"],"network":true,"exec":["psql"]}}
+        \\{"key":"chat-archive","exec":"a.sh",
+        \\ "wants":{"events":["chat"],"calls":["group_post"],
+        \\          "groups":["build","ops"],"network":true,"exec":["psql"]}}
     );
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
@@ -1585,6 +1403,13 @@ test "what a manifest wants is read back" {
     try testing.expect(m.wants.allows("ops"));
     try testing.expect(!m.wants.allows("secrets"));
     try testing.expect(!m.wants.empty());
+
+    try testing.expect(m.wants.subscribes(.chat));
+    try testing.expect(m.wants.mayCall("group_post"));
+
+    // Declared exactly, and nothing near it. A plugin that may post is not
+    // thereby a plugin that may read.
+    try testing.expect(!m.wants.mayCall("group_read"));
 }
 
 test "a manifest that declares nothing wants nothing" {
@@ -1603,7 +1428,7 @@ test "a manifest that declares nothing wants nothing" {
     const io = threaded.io();
 
     const dir = try manifestFor(alloc, io,
-        \\{"key":"chat-archive","kind":"archive","exec":"a.sh"}
+        \\{"key":"chat-archive","exec":"a.sh"}
     );
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
@@ -1625,7 +1450,7 @@ test "a star means every group" {
     const io = threaded.io();
 
     const dir = try manifestFor(alloc, io,
-        \\{"key":"chat-archive","kind":"archive","exec":"a.sh","wants":{"groups":["*"]}}
+        \\{"key":"chat-archive","exec":"a.sh","wants":{"events":["chat"],"groups":["*"]}}
     );
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
@@ -1633,6 +1458,7 @@ test "a star means every group" {
     try testing.expect(m.wants.allows("build"));
     try testing.expect(m.wants.allows("anything at all"));
     try testing.expect(!m.wants.empty());
+    try testing.expect(!m.wants.groupless());
 }
 
 test "a wants that will not parse wants nothing" {
@@ -1648,7 +1474,7 @@ test "a wants that will not parse wants nothing" {
     const io = threaded.io();
 
     const not_object = try manifestFor(alloc, io,
-        \\{"key":"chat-archive","kind":"archive","exec":"a.sh","wants":7}
+        \\{"key":"chat-archive","exec":"a.sh","wants":7}
     );
     defer std.Io.Dir.cwd().deleteTree(io, not_object) catch {};
 
@@ -1656,7 +1482,7 @@ test "a wants that will not parse wants nothing" {
     try testing.expect(m.wants.empty());
 
     const bare_string = try manifestFor(alloc, io,
-        \\{"key":"chat-archive","kind":"archive","exec":"a.sh","wants":{"groups":"build"}}
+        \\{"key":"chat-archive","exec":"a.sh","wants":{"groups":"build"}}
     );
     defer std.Io.Dir.cwd().deleteTree(io, bare_string) catch {};
 
@@ -1678,7 +1504,7 @@ test "a group not asked for is not allowed" {
     const io = threaded.io();
 
     const dir = try manifestFor(alloc, io,
-        \\{"key":"chat-archive","kind":"archive","exec":"a.sh","wants":{"groups":["build"]}}
+        \\{"key":"chat-archive","exec":"a.sh","wants":{"groups":["build"]}}
     );
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
@@ -1703,7 +1529,7 @@ test "junk in the groups list is skipped, not fatal" {
     const io = threaded.io();
 
     const dir = try manifestFor(alloc, io,
-        \\{"key":"chat-archive","kind":"archive","exec":"a.sh",
+        \\{"key":"chat-archive","exec":"a.sh",
         \\ "wants":{"groups":["build",7,"ops"]}}
     );
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
@@ -1730,7 +1556,7 @@ test "a manifest keeps the parameters it declares" {
     const io = threaded.io();
 
     const dir = try manifestFor(alloc, io,
-        \\{"key":"chat-archive","kind":"archive","exec":"a.sh",
+        \\{"key":"chat-archive","exec":"a.sh",
         \\ "params":{"type":"object",
         \\   "properties":{
         \\     "backend":{"type":"string","title":"Where to write",
@@ -1776,7 +1602,7 @@ test "a manifest keeps the parameters it declares" {
     {
         var json: std.Io.Writer.Allocating = .init(alloc);
         try json.writer.writeAll(
-            \\{"key":"many","kind":"notify","exec":"a.sh",
+            \\{"key":"many","exec":"a.sh",
             \\ "params":{"type":"object","properties":{
         );
         for (0..max_specs + 8) |i| {
@@ -1820,7 +1646,7 @@ test "a key that is not a plain name is not a plugin" {
     for (bad) |key| {
         const json = try std.fmt.allocPrint(
             alloc,
-            "{{\"key\":\"{s}\",\"kind\":\"notify\",\"exec\":\"a.sh\"}}",
+            "{{\"key\":\"{s}\",\"exec\":\"a.sh\"}}",
             .{key},
         );
         const dir = try manifestFor(alloc, io, json);
@@ -1837,7 +1663,7 @@ test "a key that is not a plain name is not a plugin" {
     for ([_][]const u8{ "chat-archive", "webhook", "feishu_v2", "a.b" }) |key| {
         const json = try std.fmt.allocPrint(
             alloc,
-            "{{\"key\":\"{s}\",\"kind\":\"notify\",\"exec\":\"a.sh\"}}",
+            "{{\"key\":\"{s}\",\"exec\":\"a.sh\"}}",
             .{key},
         );
         const dir = try manifestFor(alloc, io, json);
@@ -1863,7 +1689,7 @@ test "a parameter with no name is not a parameter" {
     const io = threaded.io();
 
     const dir = try manifestFor(alloc, io,
-        \\{"key":"webhook","kind":"notify","exec":"send.sh",
+        \\{"key":"webhook","exec":"send.sh",
         \\ "params":{"type":"object","properties":{
         \\   "":{"type":"string","secret":true},
         \\   "url":{"type":"string"}}}}
@@ -1894,7 +1720,7 @@ test "a manifest with no params schema declares no parameters" {
 
     {
         const dir = try manifestFor(alloc, io,
-            \\{"key":"webhook","kind":"notify","exec":"send.sh"}
+            \\{"key":"webhook","exec":"send.sh"}
         );
         defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
@@ -1908,7 +1734,7 @@ test "a manifest with no params schema declares no parameters" {
     // rule `wants` follows, and for the same reason.
     {
         const dir = try manifestFor(alloc, io,
-            \\{"key":"webhook","kind":"notify","exec":"send.sh","params":"oops"}
+            \\{"key":"webhook","exec":"send.sh","params":"oops"}
         );
         defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
@@ -1919,7 +1745,7 @@ test "a manifest with no params schema declares no parameters" {
 
     {
         const dir = try manifestFor(alloc, io,
-            \\{"key":"webhook","kind":"notify","exec":"send.sh",
+            \\{"key":"webhook","exec":"send.sh",
             \\ "params":{"type":"object","properties":["url"]}}
         );
         defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};

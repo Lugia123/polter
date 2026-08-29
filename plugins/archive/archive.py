@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Keep an extra copy of the chat, one file per day, all groups in one timeline.
 
-This is the reference `archive` plugin: the smallest thing that honours the
-whole resident contract. One line of JSON in, one line of JSON out -- the host
+This is the reference plugin: the smallest thing that honours the whole
+resident contract. One line of JSON in, one line of JSON out -- the host
 greets us once with `{"hello":1,...,"params":{...}}` and then hands us batches,
 and **every line it writes gets exactly one acknowledgement, the handshake
 included**. That last clause is not a detail: the host arms a deadline before
-it writes the greeting and waits for a line back (`Archive.zig`, around the
+it writes the greeting and waits for a line back (`Resident.zig`, around the
 `allow(timeout_ms)` before `renderHello`). A plugin that reads the greeting and
 then sits waiting for a batch is killed on `timeout_ms`, restarted, and killed
 again -- a restart loop that looks, from the plugin's side, exactly like idling.
 This file did that for one revision; the regression test that would have caught
-it is in `Archive.zig` and it runs this very script against the bytes
+it is in `Resident.zig` and it runs this very script against the bytes
 `renderHello` really produces.
 
 **What it is not.** It is not where Polter's records live. The core writes its
@@ -33,7 +33,15 @@ it is on disk, so nothing here ever names a seq that did not come out of the
 batch in hand -- a number the host cannot have sent us is the silent hole the
 whole design exists to prevent.
 
-Design: docs/poltergeist/storage.md. The host side is src/poltergeist/Archive.zig.
+**What it subscribes to.** `"wants": {"events": ["chat"]}` in plugin.json, and
+that is the whole of what makes this an archive rather than a notifier. There
+is no `kind` field any more: a plugin is what it asked to be handed. The batch
+this reads therefore carries `kind` on every event, and everything that is not
+a `chat` is passed over here -- the host will not send one, but a plugin that
+trusts the host to filter is a plugin that breaks the day somebody adds an
+event to its subscription.
+
+Design: docs/poltergeist/plugins.md. The host side is src/poltergeist/Resident.zig.
 
 **Only acknowledgements may go to stdout.** Anything else is judged misconduct
 and the process is killed. Diagnostics go to stderr, which is Polter's log.
@@ -55,8 +63,14 @@ import time
 # repoint, which is the whole use of this plugin.
 DEFAULT_DIR = "~/.local/state/polter/archive"
 
-# The fields of a message, in the order the host sends them. `summary` is
+# The fields of a chat event, in the order the host sends them. `summary` is
 # carried only when it is true, the same as on the wire.
+#
+# `n` is deliberately not among them. It is this event's place in the host's
+# one stream -- the number the cursor counts in, valid for one run of Polter --
+# and a column of those in an archive is a foreign key to nothing. `seq` is the
+# identity the core stamped on the message when it recorded it, and that still
+# means the same thing tomorrow.
 FIELDS = ("seq", "at_ms", "group", "author", "text")
 
 
@@ -157,32 +171,44 @@ class Session:
         through = batch.get("through")
         if not isinstance(through, int):
             through = self.acked
-        messages = batch.get("messages")
-        if not isinstance(messages, list):
-            messages = []
+        events = batch.get("events")
+        if not isinstance(events, list):
+            events = []
 
         written = None
         try:
-            for message in messages:
-                if not isinstance(message, dict):
+            for event in events:
+                if not isinstance(event, dict):
                     continue
-                seq = message.get("seq")
-                if not isinstance(seq, int):
+
+                # Everything on this stream carries its kind, and a plugin
+                # that assumes otherwise is one that breaks the day its
+                # subscription grows. The host will not send us anything we
+                # did not ask for; this is the half of that guarantee that
+                # lives on our side of the pipe.
+                if event.get("kind") != "chat":
+                    continue
+
+                # `n`, not `seq`. The cursor counts in the host's stream
+                # order, which is the only order that spans kinds; `seq` is
+                # the chat log's own identity and is what gets stored.
+                n = event.get("n")
+                if not isinstance(n, int):
                     continue
                 # Seen already. The host resends a batch it never heard an
                 # acknowledgement for, and this is the whole of the defence
                 # against that arriving twice in the file.
-                if seq <= self.acked:
+                if n <= self.acked:
                     continue
-                self.journal.write(message)
-                written = seq
+                self.journal.write(event)
+                written = n
             self.journal.commit()
         except (OSError, ValueError) as err:
             sys.stderr.write("archive: could not write: %s\n" % err)
             if written is None:
                 return {"ok": False}
             # Some of it landed. Say how far, and never further: the only
-            # seqs in reach came out of this batch, and one above `through`
+            # numbers in reach came out of this batch, and one above `through`
             # would be claiming to have stored something never sent.
             if written > through:
                 sys.stderr.write("archive: refusing to claim past the batch\n")
@@ -312,18 +338,20 @@ def self_test():
 
     root = tempfile.mkdtemp(prefix="polter-archive-selftest-")
     try:
-        def message(seq, at_ms=1786819271275, group="build", text="hello"):
+        def message(n, at_ms=1786819271275, group="build", text="hello"):
             return {
-                "seq": seq,
+                "n": n,
+                "kind": "chat",
+                "seq": n * 10,
                 "at_ms": at_ms,
                 "group": group,
                 "author": "worker-core",
                 "text": text,
             }
 
-        def batch(cursor, through, messages):
+        def batch(cursor, through, events):
             return json.dumps(
-                {"cursor": cursor, "through": through, "messages": messages}
+                {"cursor": cursor, "through": through, "events": events}
             )
 
         def lines_in(directory, day):
@@ -338,14 +366,16 @@ def self_test():
         # The handshake, first, because getting this one wrong is not a
         # wrong answer -- it is no answer, and the host kills and restarts a
         # plugin that gives none, for as long as it keeps giving none. The
-        # bytes below are the shape `Archive.renderHello` writes; the test
-        # that feeds this script the *real* ones lives in `Archive.zig`.
+        # bytes below are the shape `Resident.renderHello` writes; the test
+        # that feeds this script the *real* ones lives in `Resident.zig`.
         greeted = os.path.join(root, "greeted")
         session, reply = greet(json.dumps({
             "hello": 1,
             "plugin": "archive",
             "cursor": 0,
+            "events": ["chat"],
             "groups": ["*"],
+            "calls": [],
             "params": {"dir": greeted},
         }))
         check("the handshake is acknowledged, not just read", reply, {"ok": True})
@@ -365,7 +395,7 @@ def self_test():
         check("a first line that is not JSON is refused out loud",
               greet("not json")[1], {"ok": False})
         check("and so is a first line that is not a handshake",
-              greet('{"cursor":0,"through":1,"messages":[]}')[1], {"ok": False})
+              greet('{"cursor":0,"through":1,"events":[]}')[1], {"ok": False})
 
         plain = os.path.join(root, "plain")
         session = Session(Journal(plain))
@@ -406,6 +436,21 @@ def self_test():
         )
         check("nothing new landed", len(lines_in(plain, day)), 2)
 
+        # An event of a kind we never subscribed to. The host will not send
+        # one; this proves the plugin does not store it if it ever does.
+        kinds = os.path.join(root, "kinds")
+        mixed = Session(Journal(kinds))
+        check(
+            "an event of another kind is acknowledged and not stored",
+            mixed.handle(batch(0, 2, [
+                {"n": 1, "kind": "terminal.quiet", "at_ms": 1786819271275,
+                 "reason": "authorisation", "title": "t", "body": "b"},
+                message(2),
+            ])),
+            {"ok": True},
+        )
+        check("only the chat event landed", len(lines_in(kinds, day)), 1)
+
         check(
             "garbage on stdin is refused, not raised",
             Session(Journal(os.path.join(root, "junk"))).handle("not json"),
@@ -427,7 +472,7 @@ def self_test():
         # answer says how far it got and no further.
         class Failing(Journal):
             def write(self, message):
-                if message.get("seq") == 3:
+                if message.get("n") == 3:
                     raise OSError("no space left on device")
                 Journal.write(self, message)
 

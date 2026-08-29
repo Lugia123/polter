@@ -100,7 +100,13 @@ struct PluginSettings: Equatable {
     /// and guessing would mean refusing to save something that works.
     func isComplete(for plugin: Plugin) -> Bool {
         for parameter in plugin.parameters where parameter.required {
-            let value = params[parameter.name] ?? ""
+            // A switch that is off is an answer. Emptiness cannot mean
+            // "unanswered" for a boolean, so requiring one to be non-empty
+            // would mean a required flag could only be satisfied by turning
+            // it on -- which is not what `required` says.
+            if parameter.control == .flag { continue }
+
+            let value = params[parameter.name] ?? parameter.defaultValue ?? ""
             if value.trimmingCharacters(in: .whitespaces).isEmpty { return false }
         }
         return true

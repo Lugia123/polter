@@ -29,6 +29,106 @@ const Sampler = @import("Sampler.zig");
 /// so agents and the bus agree on names without inventing a second scheme.
 pub const Id = u64;
 
+/// An id no terminal has.
+///
+/// Used where a `Bus.Id` has to be produced for a caller that is not a
+/// terminal -- a plugin -- so that a mistake reads as "nobody" rather than
+/// as somebody. It is deliberately **not** zero: zero is the user
+/// (`Chat.user_id`), and a plugin that slipped into a branch expecting a
+/// terminal would then be acting as the person at the keyboard, which is
+/// the single worst thing it could be mistaken for.
+///
+/// `Surface` refuses to mint this value, the same way and for the same
+/// reason it refuses to mint zero.
+pub const not_a_terminal: Id = std.math.maxInt(Id);
+
+/// Who is making a call.
+///
+/// A terminal proves which one it is by holding that terminal's token; a
+/// plugin proves it is that plugin the same way, on the same socket, with a
+/// token of its own. What it cannot do is *be* a terminal, and that is the
+/// whole reason this is a union rather than a reserved range of `Id`: there
+/// is no `Bus.Id` a plugin holds, so there is nothing for it to claim. An
+/// impersonation is not refused here; it has no shape to be written in.
+///
+/// **The adopted default is that a plugin is never a supervisor.** Every
+/// method that changes the supervision arrangement is a supervisor's, so
+/// every one of them is closed to a plugin without a second list saying so;
+/// and under the reachability rule a plugin may touch only terminals that
+/// carry no mark. The direction is deliberate -- widening is easy, and
+/// narrowing after somebody has built on the wider rule is not. The route
+/// to a plugin that *is* trusted further is the same one `held` and
+/// `shielded` already take: the user sets it, in the settings, and nothing
+/// the plugin says has a vote.
+///
+/// `shielded` is absolute against this the same way it is absolute against
+/// a supervisor. That is worth saying separately because the last time a
+/// second door was opened -- `terminal_action` -- it went in with no
+/// permission check at all, and could walk around `set_watch`'s supervisor
+/// gate and lift a `held` the user had set. Every door reopens every
+/// question.
+pub const Caller = union(enum) {
+    /// A terminal, by the id `Surface` already assigns and already exports
+    /// as `GHOSTTY_SURFACE_ID`.
+    terminal: Id,
+
+    /// A plugin, by its manifest key and what that manifest declared it
+    /// calls. Borrowed for the life of the call.
+    plugin: Plugin,
+
+    /// A plugin as the tool surface sees it.
+    ///
+    /// The declared calls travel with the identity rather than being looked
+    /// up: the manifest arena is rebuilt every time the plugin directories
+    /// are read, and a check that went and re-read a file mid-request could
+    /// answer differently for two calls on one connection.
+    pub const Plugin = struct {
+        key: []const u8,
+
+        /// Exactly `wants.calls` from the manifest, in the order it was
+        /// written. Empty refuses everything.
+        calls: []const []const u8 = &.{},
+
+        /// Whether the manifest declared this method by name. Exact
+        /// strings, no wildcard: the declaration is what a user reads
+        /// before installing, and `"*"` would make that reading worthless
+        /// exactly where it matters most.
+        pub fn mayCall(self: Plugin, method: []const u8) bool {
+            for (self.calls) |c| if (std.mem.eql(u8, c, method)) return true;
+            return false;
+        }
+    };
+
+    /// The terminal this is, or null when it is not one.
+    ///
+    /// Null is what every caller that needs to name a terminal has to
+    /// handle, and handling it is the refusal: a plugin has no terminal to
+    /// post as, to open a tab in, to be watched, or to be handed a
+    /// supervisor's box of notices.
+    pub fn terminalId(self: Caller) ?Id {
+        return switch (self) {
+            .terminal => |id| id,
+            .plugin => null,
+        };
+    }
+
+    /// Whether this is the terminal `id`.
+    pub fn isTerminal(self: Caller, id: Id) bool {
+        return switch (self) {
+            .terminal => |mine| mine == id,
+            .plugin => false,
+        };
+    }
+
+    /// The plugin this is, or null when it is a terminal.
+    pub fn pluginKey(self: Caller) ?[]const u8 {
+        return switch (self) {
+            .terminal => null,
+            .plugin => |p| p.key,
+        };
+    }
+};
+
 pub const Role = enum {
     /// Known to the bus but neither supervising nor supervised.
     none,
