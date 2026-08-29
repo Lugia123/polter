@@ -228,6 +228,18 @@ pub fn configured(
             // note is what explains that.
             .not_started, .not_an_archive => std.fmt.allocPrint(alloc, "{s}.", .{what}),
         },
+
+        // Provisioning runs once, while the first terminal is being built.
+        // Nothing re-runs it, so a setting changed now is a setting the
+        // next launch reads -- said plainly, because the alternative is a
+        // supervisor that switches one on and reports tools that will not
+        // appear until a restart nobody mentioned.
+        .provision => std.fmt.allocPrint(
+            alloc,
+            "{s}. A provisioning plugin runs once, as the first terminal opens, " ++
+                "so this takes effect the next time Polter starts.",
+            .{what},
+        ),
     };
 }
 

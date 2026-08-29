@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "params": {
+    "scope": "user",
+    "skills": "yes"
+  }
+}

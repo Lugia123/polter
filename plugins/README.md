@@ -15,6 +15,10 @@ plugins/
     plugin.json
     archive.py      可执行；常驻，stdin 是一条行分隔的 JSON 流
     README.md       .md 不进安装，只留在仓库里
+  claude-code/
+    plugin.json
+    provision.sh    可执行；启动时跑一次
+    settings.json   随目录一起装的缺省设置；用户配置目录里那份压过它
 ```
 
 **清单是 `plugin.json`，不是 YAML。** Zig 标准库里没有 YAML，而手写一个 YAML 子集
@@ -34,15 +38,22 @@ plugins/
 **只排除 `.md`**（`src/build/GhosttyResources.zig`）。所以：README 随便写，别往
 插件目录里放任何你不希望发给用户的可执行文件。
 
-## 两种 `kind`
+## 三种 `kind`
 
 | | 生命周期 | stdin | 宿主怎么判成败 |
 | --- | --- | --- | --- |
 | `notify` | 一次一进程 | **一行** JSON，写完即关 | 退出码 0 = 送达。stdout 被忽略 |
 | `archive` | **常驻**，随 Polter 结束 | 行分隔 JSON **流**，一行一批 | 每行回一行确认；**stdout 是协议通道** |
+| `provision` | **启动时一次**，第一个终端开的时候 | **一行** JSON，写完即关 | 退出码 0 = 这个 AI CLI 现在知道 Polter 了。stdout 被忽略 |
 
-分界线是事件的疏密。通知一小时几条，每次 fork/exec 的开销在这个尺度上不存在；
-存档是连续的，每条消息重建一次数据库连接显然不行。
+`notify` 与 `archive` 的分界线是事件的疏密。通知一小时几条，每次 fork/exec 的开销
+在这个尺度上不存在；存档是连续的，每条消息重建一次数据库连接显然不行。
+
+`provision` 与 `notify` 的分界线是**喂的是什么**：通知拿到的是一次事件，provision
+拿到的是对 Polter 本身的描述（哪个二进制、哪个构建、有哪些 skill、文件在哪），
+把它翻译成某个 AI CLI 认识的形状。**它的失败会被打到用户的终端屏幕上**，因为这一步
+失败的后果就是 agent 没有工具面 —— agent 正是那个收不到消息的人。见
+[docs/poltergeist/boundary.md](../docs/poltergeist/boundary.md) 第三节。
 
 **`archive` 的 stdout 只能出现确认行。**写进去的任何别的东西都会被判成失当并杀掉
 进程 —— 所以插件起的子进程（比如 `psql`）必须自己接管道读，绝不能 inherit。
@@ -60,7 +71,7 @@ stderr 是 inherit 的，进 Polter 日志，那才是插件说话的地方。
 | --- | --- |
 | `key` | 必填，且只能是一个平实的名字。**写成和目录名一样** —— 宿主不校验这一条，但查重按目录名，而下游全按 `key`（设置是 `<key>.json`，宿主查重也按它），不一致就得到一个设置文件叫着另一个名字的插件。两个目录声称同一个 `key` 时后一个被跳过并警告：两份拷贝会共用设置，而且会把每条消息各存一遍 |
 | `name` | 给人看的名字，缺省等于 `key` |
-| `kind` | `notify`（缺省）或 `archive`。不认识的 kind → 跳过这个插件，不是致命错 |
+| `kind` | `notify`（缺省）、`archive` 或 `provision`。不认识的 kind → 跳过这个插件，不是致命错 |
 | `version` / `description` | 给读这个目录的人看的；宿主今天不解析它们 |
 | `exec` | 必填。相对目录名，被拼成绝对路径后**直接当 argv[0]**（没有 shell 兜底，shebang 必须自己成立，文件必须有执行位） |
 | `timeout_ms` | 正整数，缺省 10000。**它只界定一次交换**（写一行 + 读一行），不是整个会话的寿命 —— 交换之间宿主会把 deadline 撤掉 |
@@ -131,7 +142,10 @@ $XDG_CONFIG_HOME/polter/plugins/<key>.json      {"enabled": bool, "params": {…
 插件自己的库里（按 `seq` 幂等）。一个不存在的文件不会被 dotfiles 同步到另一台
 机器上去撒谎。
 
-**没有 `<key>.json` 就是没开。**
+**没有 `<key>.json` 就是没开** —— 除非插件目录里自带一份 `settings.json`：那是发行
+带的缺省，只在用户没有自己那份文件时才生效。**用户那份存在就赢，包括它写的是「关」**
+（两者不合并：合并分不清「关掉了」和「从没配过」，升级就会把用户关掉的东西打开）。
+运行时永不写发行那份。`plugins/claude-code/settings.json` 就是靠这个预装即开。
 
 ## 什么能被工具面改，什么不能
 

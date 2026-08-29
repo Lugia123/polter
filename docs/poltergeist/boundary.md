@@ -3,7 +3,7 @@
 > 最后更新对应的 git commit：`816b348eb`
 > 校验方式：`git log -1 --format='%H %h %ad %s'`
 > 状态：**本轮决策记录，实现进行中。** 四条决定都已拍板，落地分散在
-> `Plugin.zig`、`Archive.zig`、`register.zig` 与 `Termio.zig` 的抽头。
+> `Plugin.zig`、`Archive.zig`、`provision.zig` 与 `Termio.zig` 的抽头。
 > 各条末尾标注了它当前的状态。
 
 ## 本章覆盖什么
@@ -96,7 +96,7 @@
 
 清单（`plugin.json`）和 skill **早就是两层查找**：配置目录的副本压过发行目录里
 的那份（`src/build/GhosttyResources.zig:142-158` 安装发行侧那一份，
-`register.zig` 的 `readSkill` 做同样的事）。settings 缺的就是这一层。
+`App.skillSource` 做同样的事）。settings 缺的就是这一层。
 
 补上之后：
 
@@ -124,52 +124,96 @@
 
 ## 三、`.claude` 产出退成插件，且失败必须对用户可见
 
-### 现状是硬编码的 Claude Code
+### 曾经是硬编码的 Claude Code
 
-启动时两处：
+启动时两处，都在 `src/poltergeist/register.zig`（**这个文件已经不存在了**）：
 
-1. `register.ensure`（`src/App.zig:1014` 调用）→ 跑 `claude mcp add --scope user polter`
-2. `register.ensureSkills`（`src/App.zig:1034` 调用）→ 把 skill 拷进 `~/.claude/skills/polter-*/`
+1. `register.ensure` → 跑 `claude mcp add --scope user polter`
+2. `register.ensureSkills` → 把 skill 拷进 `~/.claude/skills/polter-*/`
 
 两处都只认 Claude Code 一种运行时。这和「Polter 是通用的 AI 原生终端」直接矛盾：
 换一个 agent CLI，这两步不但没用，而且**没有任何位置可以让别人补上**。
 
 ### 划法
 
-**核心产出数据**（有哪些 skill、MCP 端点在哪、token 是什么），**插件把它翻译成
-某个 AI CLI 认识的形状**。这需要一个新的 `Kind`（暂称 `provision`），生命周期是
-「启动时一次性，但要喂输入数据」——和 `notify` 的一次性不同，和 `archive` 的常驻
-也不同。
+**核心产出数据**（有哪些 skill、它们的文件在哪、MCP 端点是哪个二进制、这是哪个
+构建），**插件把它翻译成某个 AI CLI 认识的形状**。落地是一个新的 `Kind`：
+`provision`，生命周期是「启动时一次性，但要喂输入数据」——和 `notify` 的一次性
+不同（那个喂的是一次「事件」，不是对程序本身的描述），和 `archive` 的常驻也不同
+（那个喂了但从不退出）。
 
 [plugins.md](plugins.md) 有一句「现在不要为 `sensor` 和 `action` 写任何代码，
 猜出来的接口比没有接口更难改」。这条对 `provision` **不适用**：它的调用契约不是
-猜的，现有的两个函数就是它的第一个实现。这和当初 `archive` 被放行是同一个理由。
+猜的，那两个函数就是它的第一个实现。这和当初 `archive` 被放行是同一个理由。
 
-### 失败必须对用户可见，而且这条不能等
+**核心侧**是 `src/poltergeist/provision.zig`：拼出那一行 JSON、跑每个开着的
+`provision` 插件、把失败翻译成人能读的句子。`App.ensureMcpRegistered` 只负责取
+自己的路径、解析每个 skill 落在哪个副本（用户的那份优先，和 `skill_read` 同一
+个次序），然后把结果交出去。
 
-现在这一步的失败一律只有日志：
+插件读到的一行（`Plugin.call` 照例在旁边补一个 `params`）：
 
-```text
-src/poltergeist/register.zig:86   log.warn("poltergeist: could not register the MCP server", .{})
-src/poltergeist/register.zig:196  log.warn("poltergeist: no source for skill {s}", .{name})
-src/poltergeist/register.zig:231  log.warn("poltergeist: could not make {s} err={}", .{ dir, err })
-src/poltergeist/register.zig:239  log.warn("poltergeist: could not write skill {s} err={}", .{ name, err })
+```json
+{
+  "event": "provision",
+  "exe": "/Applications/Polter.app/Contents/MacOS/ghostty",
+  "version": "1.2.3",
+  "version_key": "POLTER_REGISTERED",
+  "home": "/Users/you",
+  "skills": [{ "name": "supervising", "path": "/…/poltergeist/supervising.md" }],
+  "params": { "scope": "user", "skills": "yes" }
+}
 ```
 
+**给的是路径不是正文**：文件正是插件要拷贝或改写的那个东西，可能是很长的散文，
+而只想要名字的插件根本不必打开它。退出码 0 = 这个运行时现在知道 Polter 了。
+
+**第一个实现是 `plugins/claude-code/`**，就是原来那两个函数搬过去，一字不多：
+`claude mcp get` 比对 exe 与版本标记，不一致才 remove + add；skill 连 frontmatter
+整份写，`name:` 只在 frontmatter 里改写成 `polter-`，内容没变就不写。**机器上没有
+`claude` 时它退出 0**——那不是失败，那台机器上的 agent 可能压根是别的东西。
+
+它**预装即开**：随插件目录带一份 `settings.json`（第二节那套两层查找），用户在
+配置目录里写的那份压过它，**包括写「关」**。
+
+### 失败必须对用户可见
+
+曾经这一步的失败一律只有 `log.warn`（四处，都随 `register.zig` 一起没了）。
 `log.warn` 用户看不见。而 `notify_user` 那条路是把字符串**返回给 agent** 的，
 这里用不了——**用不了的理由恰恰是这件事的要害**：
 
 > **这一步失败的后果就是 agent 没有工具面。所以失败信息永远不能只发给 agent——
 > 它正是那个收不到的人。必须发给用户。**
 
-现有唯一到得了用户的路是 `surface_message`（`src/App.zig:2717` 分发，
-`App.surfaceMessage`）。
+走的是 `surface_message`（`App.surfaceMessage` 分发）新加的一个成员
+`poltergeist_alert`。**它和 `poltergeist_notice` 是两件事，区别就在收信人**：
+notice 是**打字**进终端，因此是说给里面跑着的东西听的；alert 是**打印**到屏幕上，
+所以看见的是人，agent 不会把它当成输入收走。
 
-这和本仓刚修掉的 `set_watch` 是同一个形状：**做了相反的事，还回了个 ok。** 那次
-是参数被静默丢弃，这次是整个启动步骤静默失败，两次都是「没有报错告知」。所以
-报错口要和 `provision` 同一轮做出来，不能留到它咬人的时候。
+这和本仓修掉的 `set_watch` 是同一个形状：**做了相反的事，还回了个 ok。** 那次
+是参数被静默丢弃，这次是整个启动步骤静默失败。
 
-**状态：未实现。**
+### 两个曾经未决的问题，就地定了
+
+**打到哪个 surface。** provision 跑在**第一个 surface 正在被建**的时候——
+`Surface.init` 里，那一刻它自己都还不存在（`App.addSurface` 更早，那时核心
+surface 还没有）。所以消息**排在 `App.poltergeist_alerts` 里等**，由第一个走完
+`init` 的终端打印出来，打印完就清空。
+
+- **等，不是丢。**没有 surface 就等于没有用户；为了没有窗口把消息扔掉，正是这一
+  节要终结的那种沉默。
+- **只打一次，不是每个新终端都打一遍。**一份报告，打在用户正看着的那个窗口里。
+
+**一个失败一个成功时用户看到几条。** **失败几个就几条，成功的一句不说。**
+两个 provision 插件失败就是两个运行时没有工具面，各自在不同的地方修；一句
+「2 个插件失败了」既没说是哪个也没说去哪修。而成功不出声，是因为每次启动都向
+用户汇报一遍的终端，就是汇报不再被读的终端。
+
+还有一种情况也算「用户看得见」：`poltergeist-register-mcp` 开着，而**一个开着的
+`provision` 插件都没有**。什么都没失败，但用户要的那件事不会发生——照样出一条
+（`provision.nothingInstalled`）。
+
+**状态：已实现。**
 
 ## 四、多语言：设置界面本地化，工具面固定英文
 
@@ -214,15 +258,18 @@ plugins/chat-archive/
 | settings 两层查找，发行侧带默认            | 多一次文件查找                             | **选了。** 代码路径对所有插件相同，「预装」变成关于装了什么的事                   |
 | `.claude` 产出留在核心                     | 零成本                                     | **没选。** 换一个 agent CLI 就没有任何位置可以补上，与「通用 AI 原生终端」矛盾    |
 | 启动失败发给 agent                         | 复用 `notify_user`                         | **没选。** 这一步失败的后果就是 agent 收不到消息，它正是那个收不到的人            |
+| 启动失败排队等第一个终端                   | 多一个列表和一次清空                       | **选了。** 没有 surface 就等于没有用户；为了没有窗口丢掉消息正是要终结的那种沉默  |
+| 多个插件失败合成一条摘要                   | 少几行字                                   | **没选。** 两个失败是两处要修的地方，一句「2 个失败了」既没说哪个也没说去哪修     |
 | 清单字段改成 locale 对象                   | 改所有解析路径                             | **没选。** 同一字段时而字符串时而对象，且第三方工具读不了 `plugin.json` 了        |
 | 工具面也本地化                             | 与设置界面共用一套                         | **没选。** agent 行为会随机器 locale 变化，不可复现                               |
 
 ## 未决问题
 
-1. `provision` 插件失败时，`surface_message` 打到哪个 surface——启动那一刻可能
-   一个 surface 都还没有。
-2. 一个 `provision` 插件失败而另一个成功时，用户该看到几条消息。
-3. 边车文件的 locale 匹配规则（`zh-Hans` / `zh_CN` / `zh` 的回退次序）尚未定。
+1. 边车文件的 locale 匹配规则（`zh-Hans` / `zh_CN` / `zh` 的回退次序）尚未定。
+
+> 原来这里的头两条——「`provision` 失败打到哪个 surface」和「一个失败一个成功
+> 时看到几条」——已经在第三节里就地定了并落了地，所以从这张单子上划掉，而不是
+> 留在这里和正文说两遍。
 
 ## 延伸阅读
 

@@ -66,6 +66,16 @@ pub const Kind = enum {
     /// judged by an exit code. See `Archive.zig` and
     /// `docs/poltergeist/storage.md`.
     archive,
+
+    /// Turns what Polter is into whatever one AI CLI reads: registers the
+    /// MCP endpoint, puts the skills where that runtime looks for them.
+    /// **Once at startup, and fed** -- which is what separates it from the
+    /// other two rather than a third guess at a lifetime. `notify` is also
+    /// one process, but it is handed an occasion, not a description of the
+    /// program; `archive` is also fed, but it never exits. This one is
+    /// given a single line describing what exists, and its exit code says
+    /// whether the runtime now knows about it. See `provision.zig`.
+    provision,
 };
 
 /// What a plugin says it needs.

@@ -839,6 +839,13 @@ pub fn init(
         .shell => {},
     };
 
+    // Anything startup provisioning failed at has been waiting for a
+    // terminal to say it in -- it runs above, before this surface exists,
+    // and what it reports is that the agent about to start here has no
+    // tools. Last in `init`, because there is nothing to print into until
+    // the terminal is sized and its IO is running.
+    app.flushPoltergeistAlerts(self);
+
     // We are no longer the first surface
     app.first = false;
 }
@@ -1158,6 +1165,10 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
 
         .poltergeist_notice => |*notice| try self.typePoltergeistNotice(
             std.mem.sliceTo(notice, 0),
+        ),
+
+        .poltergeist_alert => |*alert| try self.showPoltergeistAlert(
+            std.mem.sliceTo(alert, 0),
         ),
 
         .renderer_health => |health| self.updateRendererHealth(health),
@@ -3440,6 +3451,41 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
         error.ChildExited, error.UserPresent, error.UnsafeText => {},
         else => return err,
     };
+}
+
+/// Put a line on the screen for the person to read.
+///
+/// **Printed, not typed.** `typePoltergeistNotice` sends text down the pty
+/// as if the user had typed it, which addresses whatever is running in the
+/// terminal; this writes into the screen, so it is the person who sees it
+/// and nothing is handed to the agent as input. The one thing this carries
+/// is that Polter could not give the agent its tools, and an agent with no
+/// tools is the wrong party to tell.
+///
+/// Written under the renderer lock, on the app thread, the same as every
+/// other message that touches terminal state from here.
+fn showPoltergeistAlert(self: *Surface, text: []const u8) !void {
+    if (text.len == 0) return;
+
+    // `printString` decodes UTF-8 and errors on anything else. The text is
+    // ours and is ASCII, but it is not worth taking down a terminal over
+    // being wrong about that one day.
+    if (!std.unicode.utf8ValidateSlice(text)) {
+        log.warn("poltergeist: refusing to print an alert that is not UTF-8", .{});
+        return;
+    }
+
+    {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        defer self.renderer_state.mutex.unlock(global.io());
+
+        // The trailing newline is a carriage return too, so whatever the
+        // shell prints next starts at column zero rather than after this.
+        try self.io.terminal.printString(text);
+        try self.io.terminal.printString("\n");
+    }
+
+    try self.queueRender();
 }
 
 /// Change how long this terminal must be still before it is reported.

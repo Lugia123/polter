@@ -84,6 +84,20 @@ poltergeist_session_path: ?[]const u8 = null,
 /// it cannot go stale while we are the thing it points at.
 poltergeist_registered: bool = false,
 
+/// Things the user has to be told, waiting for a terminal to say them in.
+///
+/// Provisioning runs while the very first surface is being built, which is
+/// before there is any surface to write on -- and the failure it can report
+/// is *the agent has no tools*, so the one party that must not be the only
+/// recipient is the agent. So they queue here and the first terminal that
+/// finishes starting up prints them. Queued rather than dropped: no surface
+/// means no user either, and a message thrown away for want of a window is
+/// the same silence this replaced.
+///
+/// Drained on first delivery, not repeated per terminal -- one report, in
+/// the window the user is looking at. Each line is owned.
+poltergeist_alerts: std.ArrayListUnmanaged([]const u8) = .empty,
+
 /// What the previous run left behind. See `Session.Recall`, which reads
 /// the file as it is constructed so that this run cannot overwrite the
 /// material before anybody asks for it.
@@ -284,6 +298,8 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
+    for (self.poltergeist_alerts.items) |line| self.alloc.free(line);
+    self.poltergeist_alerts.deinit(self.alloc);
     self.chat_surfaces.deinit(self.alloc);
     self.chat.deinit();
     self.poltergeist.deinit();
@@ -1022,12 +1038,25 @@ pub fn ensurePoltergeistServer(self: *App, rt_app: *apprt.App, want: bool) void 
 /// Make sure an agent's runtime knows these tools exist.
 ///
 /// The socket and the token are in every terminal's environment already;
-/// this is what makes the tools appear in a session at all. See
-/// `poltergeist/register.zig` for why it goes through `claude mcp` rather
-/// than editing the file.
+/// this is what makes the tools appear in a session at all -- and it is
+/// done by a plugin, because "which shape does a runtime read" is the one
+/// question that has a different answer for every agent CLI. The core's
+/// side is the data: this binary, this build, these skills and where their
+/// files are. See `poltergeist/provision.zig` and
+/// `docs/poltergeist/boundary.md` section 3.
+///
+/// Whatever fails here is put on a terminal's screen rather than into the
+/// log. What fails is the agent's tool surface, so the agent is exactly the
+/// party that cannot be told about it.
 pub fn ensureMcpRegistered(self: *App, want: bool) void {
     if (!want or self.poltergeist_registered) return;
     self.poltergeist_registered = true;
+
+    // Provisioning is a plugin now, so the plugin list has to have been
+    // read. Idempotent, and `Surface.init` calls it again a few lines
+    // later anyway -- said here so that this does not depend on the order
+    // two calls in another file happen to be written in.
+    self.ensurePlugins();
 
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena.deinit();
@@ -1041,34 +1070,134 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
         return;
     }];
 
-    const outcome = poltergeistpkg.register.ensure(
-        alloc,
-        io,
-        exe,
-        build_config.version_string,
-    );
-
-    log.info("poltergeist: mcp registration {t}", .{outcome});
-
-    // The tools are only half of it. A skill the runtime has never heard
-    // of is one it cannot match against what the user asked for, which is
-    // how a supervisor ends up reaching for its own subagent tool instead.
     var environ_map = global.environMap() catch return;
     defer environ_map.deinit();
 
     const home = environ_map.get("HOME") orelse return;
 
+    // Nothing switched on that would tell any runtime anything, while the
+    // config says to register. Nothing failed -- there is simply no plugin
+    // to do it, and that is a thing the user asked for that will not
+    // happen, which is the same silence this whole path exists to end.
+    if (poltergeistpkg.notify.count(self.poltergeist_plugins, .provision) == 0) {
+        const line = poltergeistpkg.provision.nothingInstalled(self.alloc) catch return;
+        self.poltergeist_alerts.append(self.alloc, line) catch self.alloc.free(line);
+        return;
+    }
+
+    // The skills are half of it. One the runtime has never heard of is one
+    // it cannot match against what the user asked for, which is how a
+    // supervisor ends up reaching for its own subagent tool instead. The
+    // user's own copy is what gets handed over, the same order
+    // `skill_read` resolves in: editing one file should change Polter's
+    // behaviour everywhere, not in one of two places.
+    var skills: std.ArrayListUnmanaged(poltergeistpkg.provision.Skill) = .empty;
     const config_dir = internal_os.xdg.config(io, alloc, &environ_map, .{}) catch null;
     const resources = internal_os.resourcesDir(alloc) catch null;
 
-    poltergeistpkg.register.ensureSkills(
+    for (poltergeistpkg.skill.builtin_names) |name| {
+        const path = self.skillSource(
+            alloc,
+            io,
+            name,
+            config_dir,
+            if (resources) |r| r.app_path else null,
+        ) orelse {
+            log.warn("poltergeist: no source for skill {s}", .{name});
+            continue;
+        };
+
+        skills.append(alloc, .{ .name = name, .path = path }) catch {};
+    }
+
+    const result = poltergeistpkg.provision.run(
         alloc,
         io,
-        &poltergeistpkg.skill.builtin_names,
-        config_dir,
-        if (resources) |r| r.app_path else null,
-        home,
+        &environ_map,
+        self.poltergeist_plugins,
+        pluginParams,
+        self,
+        .{
+            .exe = exe,
+            .version = build_config.version_string,
+            .home = home,
+            .skills = skills.items,
+        },
     );
+
+    log.info("poltergeist: {d} runtime(s) provisioned, {d} failed", .{
+        result.provisioned,
+        result.failures.len,
+    });
+
+    // Copied out of the arena, which goes away with this function while
+    // the message waits for a terminal to exist.
+    for (result.failures) |line| {
+        const owned = self.alloc.dupe(u8, line) catch continue;
+        self.poltergeist_alerts.append(self.alloc, owned) catch self.alloc.free(owned);
+    }
+}
+
+/// The file one skill is actually in, the user's own copy first.
+///
+/// A path and not the text: a plugin is the thing that copies or rewrites
+/// it, the file may be a lot of prose, and a plugin that only wants the
+/// name never has to open it. Existence is checked here rather than left to
+/// the plugin so that "we ship no such skill" is our warning and not a
+/// mysterious failure in somebody's script.
+fn skillSource(
+    self: *App,
+    alloc: Allocator,
+    io: std.Io,
+    name: []const u8,
+    config_dir: ?[]const u8,
+    resources_dir: ?[]const u8,
+) ?[]const u8 {
+    _ = self;
+
+    if (config_dir) |dir| {
+        if (std.fmt.allocPrint(
+            alloc,
+            "{s}/polter/skills/{s}.md",
+            .{ dir, name },
+        )) |path| {
+            if (std.Io.Dir.cwd().statFile(io, path, .{})) |_| return path else |_| {}
+        } else |_| {}
+    }
+
+    const dir = resources_dir orelse return null;
+    const path = std.fmt.allocPrint(
+        alloc,
+        "{s}/poltergeist/{s}.md",
+        .{ dir, name },
+    ) catch return null;
+
+    if (std.Io.Dir.cwd().statFile(io, path, .{})) |_| return path else |_| {}
+    return null;
+}
+
+/// Put everything that has been waiting on a terminal that now exists.
+///
+/// Called from the end of `Surface.init`, which is the first moment there
+/// is anywhere to write: `addSurface` runs before the core surface exists
+/// at all. Drained, so a second window does not repeat it.
+pub fn flushPoltergeistAlerts(self: *App, surface: *Surface) void {
+    if (self.poltergeist_alerts.items.len == 0) return;
+
+    for (self.poltergeist_alerts.items) |line| {
+        defer self.alloc.free(line);
+
+        var msg: apprt.surface.Message = .{ .poltergeist_alert = undefined };
+        const n = @min(line.len, msg.poltergeist_alert.len);
+        @memcpy(msg.poltergeist_alert[0..n], line[0..n]);
+        msg.poltergeist_alert[n] = 0;
+
+        surface.handleMessage(msg) catch |err| {
+            log.warn("poltergeist: could not show an alert err={}", .{err});
+        };
+    }
+
+    self.poltergeist_alerts.clearAndFree(self.alloc);
 }
 
 /// Open or close the agent socket to match the config.

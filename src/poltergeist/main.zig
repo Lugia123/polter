@@ -18,7 +18,7 @@ pub const ChatLog = @import("ChatLog.zig");
 pub const Feed = @import("Feed.zig");
 pub const daylog = @import("daylog.zig");
 pub const Fingerprint = @import("Fingerprint.zig");
-pub const register = @import("register.zig");
+pub const provision = @import("provision.zig");
 pub const rpc = @import("rpc.zig");
 pub const Sampler = @import("Sampler.zig");
 pub const Server = @import("Server.zig");
@@ -57,7 +57,7 @@ test {
     _ = Plugin;
     _ = reap;
     _ = report;
-    _ = register;
+    _ = provision;
     _ = rpc;
     _ = Sampler;
     _ = secret;

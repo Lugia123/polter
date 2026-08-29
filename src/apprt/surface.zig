@@ -24,6 +24,22 @@ pub const Message = union(enum) {
     /// and a fixed buffer keeps this off the allocator on the app thread.
     poltergeist_notice: [255:0]u8,
 
+    /// A line for Poltergeist to put on this terminal's screen, for the
+    /// user to read.
+    ///
+    /// Not `poltergeist_notice`, and the difference is who it is for: a
+    /// notice is *typed* into the terminal and therefore addressed to
+    /// whatever is running in it. This is printed, so the person sees it
+    /// and the agent is not handed it as input. Startup provisioning
+    /// fails by taking the agent's tools away, which makes the agent the
+    /// one recipient that cannot be relied on -- see
+    /// `poltergeist/provision.zig`.
+    ///
+    /// Same fixed size and NUL termination, for the same reason: these are
+    /// short by construction and this keeps them off the allocator on the
+    /// app thread.
+    poltergeist_alert: [255:0]u8,
+
     /// Set the title of the surface.
     /// TODO: we should change this to a "WriteReq" style structure in
     /// the termio message so that we can more efficiently send strings

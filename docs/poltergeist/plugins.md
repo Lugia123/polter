@@ -77,7 +77,7 @@ plugins/
     send.py
 ```
 
-**两处查找，近的赢**（`App.pluginSearchPath`，`src/App.zig:606`；与 skill 体系同一套规矩，见 [mcp.md](mcp.md)——`register.readSkill` 的注释原话是「the user's own copy first」）：
+**两处查找，近的赢**（`App.pluginSearchPath`，`src/App.zig:606`；与 skill 体系同一套规矩，见 [mcp.md](mcp.md)——`App.skillSource` 的注释原话是「the user's own copy first」）：
 
 1. 用户自己的：`$XDG_CONFIG_HOME/polter/plugins/`
 2. 随 Polter 安装的：`<resources>/ghostty/polter/plugins/`
@@ -132,8 +132,11 @@ plugins/
 | --- | --- | --- | --- |
 | `notify` | 一次一进程 | 一行 JSON，写完即关 | 送达或超时 |
 | `archive` | **常驻** | 行分隔 JSON 流，一行一批 | 随 Polter 结束 |
+| `provision` | **启动时一次**（第一个终端开的时候） | 一行 JSON，写完即关 | 装好或超时 |
 
-分界线是**事件的疏密**。通知一小时几条，每次 fork/exec 的开销在这个尺度上不存在；存档是连续的，每条消息重建一次数据库连接显然不行。
+`notify` 与 `archive` 的分界线是**事件的疏密**。通知一小时几条，每次 fork/exec 的开销在这个尺度上不存在；存档是连续的，每条消息重建一次数据库连接显然不行。
+
+`provision` 与 `notify` 的分界线不是疏密，是**喂的是什么**：`notify` 拿到的是一次「事件」，`provision` 拿到的是**对这个程序本身的描述**（哪个二进制、哪个构建、有哪些 skill、文件在哪），把它翻译成某个 AI CLI 认识的形状。它一样是一次一进程、一样看退出码，所以宿主那一层一行没改。
 
 **共用的仍然是宿主那一层**：发现、清单解析、参数与凭据解析、超时与杀进程、退出码语义。常驻多出来的只有「进程要被看着、挂了要重起、退出时要收」，以及一条实时事件通道上的确认协议——都在 [storage.md](storage.md)。
 
@@ -322,6 +325,7 @@ $XDG_CONFIG_HOME/polter/plugins/feishu.json     ← 开关 + 参数，0600
 | --- | --- | --- | --- |
 | `notify` | Polter 决定要通知用户时 | 一次一进程 | **已实现**，`Plugin.zig` |
 | `archive` | 有新消息发生时（实时事件） | 常驻 | **已实现**，`Archive.zig` + `Feed.zig`，见 [storage.md](storage.md) |
+| `provision` | 启动时一次，第一个终端开的时候 | 一次一进程，喂结构化输入 | **已实现**，`provision.zig` + `plugins/claude-code/`，见 [boundary.md](boundary.md) 第三节 |
 | `sensor` | 采样时，报告一个自定义的「还活着吗」判据 | 未定 | 留位置，**没有代码** |
 | `action` | 总管通过 MCP 请求执行一个动作 | 未定 | 留位置，**没有代码** |
 
@@ -332,7 +336,7 @@ $XDG_CONFIG_HOME/polter/plugins/feishu.json     ← 开关 + 参数，0600
 **共用的**：发现、清单解析、参数与凭据管理、启用/禁用、超时与失败处理。
 **各自的**：stdin 的 JSON 形状、退出码的含义、宿主在什么时机调用。
 
-所以实现时要把这两层分开：一个「插件宿主」只认识 `plugin.json` 和「起进程、喂 JSON、看退出码」；`notify` 的具体契约是宿主之上的一层。**现在不要为 `sensor` 和 `action` 写任何代码** —— 它们的调用契约取决于还没发生的需求，猜出来的接口比没有接口更难改。`archive` 不在此列：它的需求已经发生（群聊要能往回翻、要能同步到外部库），契约也已经写下来了。
+所以实现时要把这两层分开：一个「插件宿主」只认识 `plugin.json` 和「起进程、喂 JSON、看退出码」；`notify` 的具体契约是宿主之上的一层。**现在不要为 `sensor` 和 `action` 写任何代码** —— 它们的调用契约取决于还没发生的需求，猜出来的接口比没有接口更难改。`archive` 不在此列：它的需求已经发生（群聊要能往回翻、要能同步到外部库），契约也已经写下来了。**`provision` 也不在此列**：它的调用契约不是猜的，核心里那两个硬编码 Claude Code 的函数（`register.ensure` / `ensureSkills`，现已随 `register.zig` 一起退场）就是它的第一个实现——契约是照着已经在跑的东西定的。
 
 ## 与既有原则的关系
 
