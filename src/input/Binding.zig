@@ -714,6 +714,22 @@ pub const Action = union(enum) {
     /// prevent.
     poltergeist_toggle_held,
 
+    /// Put this terminal out of reach of the tool surface, or bring it
+    /// back.
+    ///
+    /// Reach is otherwise decided by what the *target* is marked as, and a
+    /// terminal carrying no mark at all is open to any agent in any other
+    /// terminal -- it may read this screen and type into it. That is what
+    /// Polter is, and this is the way out of it: a shielded terminal is
+    /// refused to everybody, supervisors included, because
+    /// `become_supervisor` is one unguarded tool call away and a shield
+    /// with a published bypass is the same exposure plus a false belief.
+    ///
+    /// Yours alone, for the same reason the hold is. Its tab wears a lock
+    /// for as long as the shield stands, so a guarantee set once does not
+    /// have to be remembered.
+    poltergeist_toggle_shielded,
+
     /// Show or hide the window with what the terminals have said to each
     /// other.
     poltergeist_toggle_chat,
@@ -1507,6 +1523,7 @@ pub const Action = union(enum) {
             .poltergeist_supervisor,
             .poltergeist_toggle_watch,
             .poltergeist_toggle_held,
+            .poltergeist_toggle_shielded,
             .poltergeist_toggle_chat,
             .resize_split,
             .equalize_splits,

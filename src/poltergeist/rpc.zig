@@ -18,6 +18,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
 pub const actions = @import("actions.zig");
+pub const keys = @import("keys.zig");
 const secret = @import("secret.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -170,6 +171,23 @@ pub const Method = enum {
     /// guess at.
     terminal_actions,
 
+    /// Press a key in a terminal: `ctrl+c`, `escape`, `ctrl+shift+k`.
+    ///
+    /// Separate from `terminal_send` because the two go down different
+    /// pipes and must keep doing so. `terminal_send` pastes, and the paste
+    /// path replaces every control byte with a space -- that is xterm's
+    /// guard against commands hidden inside pasted text, and relaxing it
+    /// would put every existing `terminal_send` call site up for review
+    /// again. So "type text" stays sanitised for ever, and "press a key"
+    /// is its own verb with its own authorisation.
+    terminal_key,
+
+    /// Every key `terminal_key` will take: the modifier names and the key
+    /// names, straight off the input types. The same argument as
+    /// `terminal_actions` -- a vocabulary an agent cannot enumerate is one
+    /// it has to guess at.
+    terminal_keys,
+
     /// Stop being a supervisor.
     ///
     /// What a supervisor is left with once the work is done is an empty box
@@ -247,6 +265,8 @@ pub const Request = union(Method) {
     terminal_open: struct { cwd: []const u8 = "", watch: bool = false },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
+    terminal_key: struct { id: Bus.Id, key: []const u8 },
+    terminal_keys,
 
     stand_down,
     become_supervisor,
@@ -347,17 +367,40 @@ pub const Error = error{
     /// A terminal may not act on itself through this surface.
     SelfTarget,
 
-    /// Another supervisor is minding that terminal.
+    /// Something that belongs to another supervisor: a group it made, or a
+    /// terminal it has already claimed the notices of.
+    ///
+    /// No longer the reach refusal. Reach is `Supervised` now, and the two
+    /// were worth splitting: this one is answered by "that is somebody
+    /// else's", and that one by "you are not a supervisor".
     NotYours,
+
+    /// The target carries a supervision mark and the caller is not a
+    /// supervisor.
+    Supervised,
+
+    /// The user has put this terminal out of reach of the tool surface.
+    /// Refused to everyone, supervisors included.
+    Shielded,
 };
 
-/// Whether a method needs the caller to be the supervisor.
+/// Whether a method needs the caller to be a supervisor.
 ///
-/// The shape is a star, not a mesh: the supervisor may reach every watched
-/// terminal, and a watched terminal may reach nobody. Peer-to-peer control
-/// would mean an agent could be steered by another agent that the user
-/// never put in charge of it, and the terminal on the receiving end cannot
-/// tell the difference between that and the user typing.
+/// This is about the *method*, not the target -- who may be reached is
+/// `authorize`'s reach rule, and the two used to be tangled together.
+///
+/// The line that is left here is narrow and specific: **a method that
+/// changes the supervision arrangement itself is the supervisor's.**
+/// `set_watch`, `clock_out`, `clock_in`, `set_quiescence_threshold`, the
+/// group tools -- these decide who is minded, who is on duty, and who hears
+/// about it. Operating a terminal is not on that list any more: reading a
+/// screen, typing into one, pressing a key, doing a menu action are open,
+/// and the reach rule alone decides which terminal they may be pointed at.
+///
+/// The reason for keeping the arrangement tools closed is concrete. If
+/// `set_watch` were open, any terminal could claim any other and there
+/// would be a second, looser road to standing than `become_supervisor` --
+/// which at least refuses a terminal that is already being watched.
 pub fn requiresSupervisor(method: Method) bool {
     return switch (method) {
         // Every terminal may ask about itself.
@@ -370,18 +413,61 @@ pub fn requiresSupervisor(method: Method) bool {
         // an unclaimed terminal is let through and a watched one is not.
         .become_supervisor => false,
 
-        .terminal_list,
+        // The supervisor's own box of reports. Nothing else fills it and
+        // nobody else has one, so there is nothing here for a terminal
+        // without the standing to read.
         .notices,
-        .terminal_read,
-        .terminal_send,
+
+        // The four that change the supervision arrangement rather than
+        // operating a terminal. `set_watch` is the load-bearing one: open
+        // it and a terminal nobody put in charge of anything could collect
+        // other terminals, which is a wider standing than
+        // `become_supervisor` grants and with none of its checks.
         .clock_out,
         .clock_in,
         .set_quiescence_threshold,
         .set_watch,
+
         .group_set_brief,
         .session_recall,
         .notify_user,
         => true,
+
+        // Seeing what is here. Open, because the rule above is about
+        // methods that *change* the supervision arrangement and this one
+        // changes nothing -- it was left on the closed side by inheritance
+        // rather than by that rule, and the two disagreed.
+        //
+        // Closed, it also made the rest of this pointless: reaching a
+        // terminal takes its id, ids come from here, and an agent that
+        // cannot list has none. It could operate exactly the terminals it
+        // had been told about by other means, which is nothing.
+        //
+        // What it discloses is the marks, and that is the right direction:
+        // an agent can see which terminals are a supervisor's, watched, or
+        // shielded, and therefore which it must not touch -- before it
+        // tries, rather than by being refused.
+        .terminal_list,
+
+        // Operating a terminal. Open, and what decides whether the call
+        // goes through is the target's own mark -- see `authorize`. The
+        // user's case is an agent in one tab that has to stop and restart
+        // a server running in another, watched by nobody, in front of the
+        // person rather than hidden in a background process. Requiring the
+        // supervisor's standing for that made the standing a formality to
+        // be claimed rather than a role.
+        .terminal_read,
+        .terminal_send,
+        .terminal_action,
+        .terminal_key,
+
+        // The catalogues that go with them. A tool an agent may call but
+        // whose vocabulary it may not list is a tool it has to guess at,
+        // and a guess comes back as `UnknownAction`, which reads as a
+        // refusal by the terminal rather than as a typo.
+        .terminal_actions,
+        .terminal_keys,
+        => false,
 
         // Skills are instructions, not reach. A watched terminal reading
         // how supervision works learns nothing it could not be told, and
@@ -424,12 +510,6 @@ pub fn requiresSupervisor(method: Method) bool {
         // Only a supervisor has anything to stand down from. `Bus` says so
         // again for itself rather than trusting this to have run.
         .stand_down,
-
-        // Reaching into another terminal's window, and reading the list of
-        // ways to do it. A watched terminal has its own terminal and no
-        // business in anybody else's.
-        .terminal_action,
-        .terminal_actions,
 
         // Putting another terminal in the window is arranging the work,
         // which is the supervisor's half of the job.
@@ -474,8 +554,9 @@ pub fn targetsTerminal(method: Method) bool {
         .stand_down,
         .become_supervisor,
 
-        // A catalogue, not an errand.
+        // Catalogues, not errands.
         .terminal_actions,
+        .terminal_keys,
 
         // It makes a terminal rather than naming one.
         .terminal_open,
@@ -494,6 +575,7 @@ pub fn targetsTerminal(method: Method) bool {
         // about naming your own: a supervisor opening a tab or changing its
         // own font size is an ordinary thing to want.
         .terminal_action,
+        .terminal_key,
         => true,
 
         // These name a terminal to put in or take out of a group. Checked
@@ -533,6 +615,7 @@ pub fn target(req: Request) ?Bus.Id {
         .stand_down,
         .become_supervisor,
         .terminal_actions,
+        .terminal_keys,
         .terminal_open,
         .config_get,
         => null,
@@ -567,41 +650,89 @@ pub fn authorize(bus: *const Bus, caller: Bus.Id, req: Request) Error!void {
         // a loop with no natural end.
         if (id == caller) return error.SelfTarget;
 
-        // Being *a* supervisor is not being *this terminal's* supervisor.
-        // With several of them in a window, reach follows who is minding
-        // what: otherwise one supervisor could read and type into another
-        // one's workers, which is the thing the star topology exists to
-        // prevent -- it just has more than one centre now.
+        // The shield first, because it is the one answer that does not
+        // depend on who is asking. See `Bus.Entry.shielded`: a shield that
+        // only held off non-supervisors would be worth nothing, because
+        // `become_supervisor` lets any unmarked terminal promote itself in
+        // a single call and then walk straight through it.
+        if (bus.isShielded(id)) return error.Shielded;
+
+        // **Reach is decided by the target, not by the relationship.**
         //
-        // `set_watch` is how a terminal gets an owner, so it is the one
-        // thing that cannot require having one already.
-        if (method != .set_watch) {
-            // A terminal the bus has never heard of is a different mistake
-            // from one somebody else is minding, and saying so is the
-            // difference between "check your id" and "that one is not
-            // yours".
-            if (bus.get(id) == null) return error.UnknownTerminal;
-            if (!bus.minds(caller, id)) return error.NotYours;
+        // A supervisor may reach any Polter terminal. Anyone else may
+        // reach a terminal that carries no mark -- one the bus has never
+        // heard of, or one it knows and has filed as `none`.
+        //
+        // The reasoning is the user's and it is worth writing down,
+        // because it inverts what this used to do. An unmarked terminal is
+        // one the program knows nothing about: it cannot tell whether an
+        // agent is running in there or a person is reading their mail, and
+        // it is not going to guess. So it does not take a position. What
+        // it *can* see is a mark, and a mark means somebody arranged
+        // something -- this terminal is supervising, or somebody is
+        // watching it -- and rearranging another party's arrangement is
+        // not a stranger's to do.
+        //
+        // Note what is *not* being expressed: there is no notion of peers
+        // here. One watched terminal cannot touch another watched
+        // terminal, and the reason is not that they are equals. It is that
+        // the other one is marked.
+        //
+        // And note what this gives up. Two supervisors can now interrupt
+        // and restart each other, which the old ownership rule made
+        // impossible and which is exactly the case the user wanted: a
+        // plugin that only reloads on restart needs somebody able to stop
+        // the other terminal and start it again.
+        if (!bus.isSupervisor(caller)) {
+            switch (bus.roleOf(id)) {
+                .supervisor, .watched => return error.Supervised,
+
+                // Unmarked, or unknown to the bus, which `roleOf` reports
+                // as the same thing because it is the same thing: no marks.
+                .none => {},
+            }
         }
 
-        // Everything else here acts on a terminal already under
-        // supervision -- except the tool that *puts* one there. Requiring
-        // `set_watch`'s target to be known already made it refuse every
-        // terminal it was for, which is all of them: a terminal you are
-        // about to start watching is by definition not being watched.
+        // Deliberately no existence check here any more. It used to refuse
+        // an id the bus had never registered, which under the old rule was
+        // safe because reach required a relationship the bus recorded.
+        // Under this rule an unregistered terminal is the *open* case, so
+        // refusing it here would refuse precisely the terminals the rule
+        // exists to allow.
         //
-        // Whether the id is a terminal at all is still checked, by the
-        // host, which is the side that knows.
-
+        // Whether the id names a terminal at all is the host's question,
+        // and the host is the side that knows -- it answers
+        // `UnknownTerminal` when it does not. `set_watch` always worked
+        // this way and needed a special case to say so; now everything
+        // does and the special case is gone.
     }
 
     // Refuse a clock-out the bus would refuse anyway, so the sidecar gets
     // the real reason instead of a generic failure. The bus is still the
     // authority; this only makes the answer honest earlier.
+    //
+    // Conditional on the entry existing, which it need not: a clock-out
+    // naming a terminal the bus has never seen is answered by the bus
+    // itself with `UnknownTerminal`.
     if (req == .clock_out) {
-        const e = bus.get(req.clock_out.id).?;
-        if (e.held) return error.TerminalHeld;
+        if (bus.get(req.clock_out.id)) |e| {
+            if (e.held) return error.TerminalHeld;
+        }
     }
+}
+
+/// Whether the app has a terminal by this id open.
+///
+/// Only ever asked about an id the bus does not know, and only where a
+/// mistake would be recorded rather than answered -- see `group_add`. A
+/// host that cannot say is treated as not saying no: inventing a refusal
+/// out of an allocation failure would be worse than letting the call
+/// through, because the caller would go and correct an id that was right.
+fn isOpenTerminal(alloc: std.mem.Allocator, host: Host, id: Bus.Id) bool {
+    const places = host.openTerminals(alloc) catch return true;
+    defer alloc.free(places);
+    for (places) |place| if (place.id == id) return true;
+    return false;
 }
 
 /// A stable string for each error, for the sidecar to hand back to the
@@ -614,8 +745,15 @@ pub fn errorMessage(err: Error) []const u8 {
         error.AlreadyWatched => "a watched terminal may not promote itself; " ++
             "ask its supervisor, or ask the user",
         error.SelfTarget => "a terminal cannot target itself",
-        error.NotYours => "another supervisor is minding that terminal; " ++
-            "watch it yourself first, or leave it to them",
+        error.NotYours => "that one is another supervisor's: it made the group, or it " ++
+            "has already claimed that terminal's notices. Leave it to them, or ask the user",
+        error.Supervised => "that terminal is marked -- it is a supervisor, or somebody " ++
+            "is watching it -- and only a supervisor may reach a marked terminal. " ++
+            "Terminals carrying no mark are open to you. If co-ordinating is your job, " ++
+            "call become_supervisor and try again; otherwise ask the user",
+        error.Shielded => "the user has put that terminal out of reach of these tools, " ++
+            "and nothing here lifts that -- not being a supervisor, not anything. Ask " ++
+            "the person at the keyboard",
     };
 }
 
@@ -635,10 +773,15 @@ fn testBus(alloc: std.mem.Allocator) !Bus {
     return b;
 }
 
-test "only what reaches another terminal needs the supervisor" {
-    // Two lines, not one. Arranging who talks to whom is the supervisor's,
-    // the same way arranging who is watched is. Talking inside a group it
-    // was already put in is not: the recipient has to come and fetch it.
+test "only what changes the arrangement needs the supervisor" {
+    // The line this draws moved, and this switch is where it is written
+    // down. It used to be "anything that reaches another terminal"; it is
+    // now "anything that changes the supervision arrangement". Reading a
+    // screen and typing into one crossed over, and which terminal they may
+    // be pointed at is `authorize`'s reach rule instead.
+    //
+    // Exhaustive on purpose: a method added without an opinion does not
+    // compile.
     for (std.enums.values(Method)) |m| {
         const open = switch (m) {
             .me,
@@ -656,6 +799,23 @@ test "only what reaches another terminal needs the supervisor" {
             .group_read,
             .group_history,
             .group_members,
+
+            // Operating a terminal, and the catalogues that go with it.
+            // Open since the reach rule moved to the target: which
+            // terminal these may be pointed at is decided by what that
+            // terminal is marked as, not by the caller's standing.
+            .terminal_read,
+            .terminal_send,
+            .terminal_action,
+            .terminal_actions,
+            .terminal_key,
+            .terminal_keys,
+
+            // Seeing what is here. Reaching a terminal takes its id and
+            // ids come from here, so closing this closed everything above
+            // it too -- and it changes no arrangement, which is the only
+            // thing the closed side is for.
+            .terminal_list,
             => true,
 
             // Writing what a group is for is arranging, not talking.
@@ -664,10 +824,7 @@ test "only what reaches another terminal needs the supervisor" {
             .session_recall,
             .notify_user,
 
-            .terminal_list,
             .notices,
-            .terminal_read,
-            .terminal_send,
             .clock_out,
             .clock_in,
             .set_quiescence_threshold,
@@ -685,8 +842,6 @@ test "only what reaches another terminal needs the supervisor" {
             .plugin_configure,
             .plugin_test,
             .stand_down,
-            .terminal_action,
-            .terminal_actions,
             .terminal_open,
             .config_get,
             => false,
@@ -860,6 +1015,58 @@ test "an action nobody has heard of is named as such, not blamed on the terminal
     try testing.expectEqualStrings("BadParams", empty.failed.code);
 }
 
+test "Polter's own switches are refused, and never reach the terminal" {
+    // The hold's documentation says it is worth nothing if the supervisor
+    // can lift it and clock the terminal off a moment later. With the
+    // keybinding family open through this tool, that sequence worked --
+    // confirmed on a real machine: `clock_out` answered "only the user can
+    // release it", `terminal_action` lifted the hold, and the next
+    // `clock_out` went through.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    for ([_][]const u8{
+        "poltergeist_toggle_held",
+        "poltergeist_toggle_shielded",
+        "poltergeist_toggle_watch",
+        "poltergeist_supervisor",
+    }) |name| {
+        const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .{
+            .terminal_action = .{ .id = worker, .action = name },
+        });
+
+        // Checked as a tag before the code is read. Reading `.failed` off
+        // an `ok` response is a panic, and a panic says how this broke
+        // rather than what went wrong -- which, for the test standing
+        // guard over a permission rule, is the wrong half.
+        if (res != .failed) {
+            std.debug.print("{s} was not refused\n", .{name});
+            return error.GovernedActionWentThrough;
+        }
+        try testing.expectEqualStrings("NotPermitted", res.failed.code);
+
+        // Refused here, so the host never sees it. A check that let the
+        // call through and undid it afterwards would still have pressed
+        // the switch.
+        try testing.expect(fake.acted == null);
+    }
+
+    // Said as "not this one", not as "no such thing" -- the action is real
+    // and a caller told otherwise goes hunting for a typo it did not make.
+    try testing.expect(actions.known("poltergeist_toggle_held"));
+
+    // And an ordinary menu item still goes through, so this is a rule
+    // about a family rather than a tool that stopped working.
+    const ok = try dispatch(arena.allocator(), &b, fake.host(), boss, .{
+        .terminal_action = .{ .id = worker, .action = "new_tab" },
+    });
+    try testing.expectEqual(wire.Response.ok, ok);
+    try testing.expect(fake.acted != null);
+}
+
 test "a known action with an unusable value is the value's fault" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -891,23 +1098,124 @@ test "the actions can be listed, and the list is the union itself" {
     try testing.expect(res.actions.len > 50);
 }
 
-test "a watched terminal cannot reach into another terminal's window" {
+test "a watched terminal still cannot arrange the work" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     var fake: FakeHost = .{};
 
+    // These stayed closed when reading and typing opened up. Opening a tab
+    // and reading the settings are the supervisor's half of the job, and
+    // `terminal_action` on a *marked* terminal is refused for the other
+    // reason -- what the target is.
     for ([_]Request{
-        .{ .terminal_action = .{ .id = boss, .action = "new_tab" } },
-        .terminal_actions,
         .{ .terminal_open = .{ .cwd = "/tmp" } },
         .{ .config_get = .{} },
     }) |req| {
         const res = try dispatch(arena.allocator(), &b, fake.host(), worker, req);
         try testing.expectEqualStrings("NotPermitted", res.failed.code);
     }
+
+    const marked = try dispatch(
+        arena.allocator(),
+        &b,
+        fake.host(),
+        worker,
+        .{ .terminal_action = .{ .id = boss, .action = "new_tab" } },
+    );
+    try testing.expectEqualStrings("Supervised", marked.failed.code);
     try testing.expect(fake.acted == null);
+
+    // But the catalogue is open, because a tool you may call and whose
+    // vocabulary you may not read is one you have to guess at.
+    const list = try dispatch(arena.allocator(), &b, fake.host(), worker, .terminal_actions);
+    try testing.expect(list.actions.len > 50);
+}
+
+test "a key goes to the host as written, and a key that is not one never gets there" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    const ok = try dispatch(alloc, &b, fake.host(), boss, .{
+        .terminal_key = .{ .id = worker, .key = "ctrl+c" },
+    });
+    try testing.expect(ok == .ok);
+    try testing.expectEqualStrings("ctrl+c", fake.keyed.?.key);
+    try testing.expectEqual(worker, fake.keyed.?.id);
+
+    // Checked here so a spelling mistake is answered as one rather than as
+    // a refusal by the terminal -- the same argument `terminal_action`
+    // makes, and the same reason the host is never reached.
+    fake.keyed = null;
+    const bad = try dispatch(alloc, &b, fake.host(), boss, .{
+        .terminal_key = .{ .id = worker, .key = "ctrl+nonsense" },
+    });
+    try testing.expectEqualStrings("BadKey", bad.failed.code);
+    try testing.expect(fake.keyed == null);
+
+    // A plain character is not refused for being dangerous. It is refused
+    // because it would do nothing: `terminal_send` is where text goes, and
+    // the message says so.
+    const plain = try dispatch(alloc, &b, fake.host(), boss, .{
+        .terminal_key = .{ .id = worker, .key = "a" },
+    });
+    try testing.expectEqualStrings("BadKey", plain.failed.code);
+    try testing.expect(std.mem.indexOf(u8, plain.failed.message, "terminal_send") != null);
+    try testing.expect(fake.keyed == null);
+}
+
+test "pressing a key is not typing text, and the two do not share a pipe" {
+    // The distinction the tool exists for. `terminal_send` goes through
+    // the paste path, which replaces 0x03 and ESC with spaces -- xterm's
+    // guard against commands hidden inside a paste. Widening it would put
+    // every `terminal_send` call site up for review again, so the key
+    // press is a second verb with its own authorisation instead.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    _ = try dispatch(arena.allocator(), &b, fake.host(), boss, .{
+        .terminal_key = .{ .id = worker, .key = "ctrl+c" },
+    });
+
+    // It went down the key path, not the text one.
+    try testing.expect(fake.sent == null);
+    try testing.expect(fake.keyed != null);
+
+    // And the stripping table really would have eaten it, which is the
+    // premise the whole design rests on rather than something to assume.
+    // 0x03 is Ctrl-C; `encode` replaces it with a space, so the terminal
+    // on the other end would have seen a space.
+    const inputpkg = @import("../input.zig");
+    var buf: [3]u8 = .{ 'a', 0x03, 'b' };
+    const parts = inputpkg.paste.encode(@as([]u8, &buf), .{ .bracketed = false });
+    try testing.expectEqualStrings("a b", parts[1]);
+}
+
+test "the key vocabulary can be listed, and comes off the input types" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), boss, .terminal_keys);
+    try testing.expectEqual(keys.names.len, res.keys.names.len);
+    try testing.expectEqual(keys.modifiers.len, res.keys.modifiers.len);
+    try testing.expect(res.keys.names.len > 100);
+
+    // Open to a watched terminal too, for the same reason
+    // `terminal_actions` is: guessing at a name is how an agent gets a
+    // refusal that reads like the terminal said no.
+    const also = try dispatch(arena.allocator(), &b, fake.host(), worker, .terminal_keys);
+    try testing.expect(also.keys.names.len > 100);
 }
 
 test "standing down is refused until every terminal has been let go" {
@@ -1014,6 +1322,11 @@ test "the supervisor chooses what a terminal it adds can see" {
 }
 
 test "adding a terminal that does not exist is refused" {
+    // The check moved out of `authorize` when the reach rule changed --
+    // an unregistered id is the *open* case there now -- and landed in
+    // the handler, where it asks the bus and then the host. It has to
+    // survive somewhere: a group is a record, so a mistyped id becomes a
+    // member that never speaks and that nothing ever mentions again.
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var fake: FakeHost = .{};
@@ -1022,6 +1335,33 @@ test "adding a terminal that does not exist is refused" {
         .group_add = .{ .group = "build", .id = 0xdead },
     });
     try testing.expectEqualStrings("UnknownTerminal", res.failed.code);
+
+    // But an id the host knows and the bus does not is fine, which is the
+    // case that used to be impossible: an ordinary tab nobody watches.
+    const places = [_]Place{.{ .id = 0x7777 }};
+    var open_host: FakeHost = .{ .open = &places };
+    const ok = try dispatch(testing.allocator, &b, open_host.host(), boss, .{
+        .group_add = .{ .group = "build", .id = 0x7777 },
+    });
+    try testing.expect(ok == .ok);
+}
+
+test "a supervisor can be pulled into another supervisor's group" {
+    // Blocked outright until now, and not by anything about groups.
+    // `group_add` names a terminal, so it went through the reach check,
+    // and `minds(boss, other)` is false for every supervisor -- a
+    // supervisor has no minder. Two supervisors therefore had no way to be
+    // put in one conversation.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.addSupervisor(other);
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .group_add = .{ .group = "build", .id = other },
+    });
+    try testing.expect(res == .ok);
+    try testing.expectEqual(other, fake.added.?.id);
 }
 
 test "compacting carries the summary the supervisor wrote" {
@@ -1090,22 +1430,143 @@ test "group_read asks for the group it was given" {
     try testing.expectEqual(@as(u64, 8), res.messages.lines[0].seq);
 }
 
-test "a watched terminal may only ask about itself" {
+test "a watched terminal cannot touch anything that carries a mark" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
     try authorize(&b, worker, .me);
 
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .terminal_list));
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .{
-        .terminal_read = .{ .id = boss },
-    }));
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .{
-        .terminal_send = .{ .id = boss, .text = "hello" },
-    }));
+    // Not a supervisor, so the arrangement tools are closed to it whoever
+    // it names. `notices` stands for the group here because it is the
+    // supervisor's own box; listing is not one of these and is checked
+    // just below.
+    try testing.expectError(error.NotPermitted, authorize(&b, worker, .notices));
     try testing.expectError(error.NotPermitted, authorize(&b, worker, .{
         .clock_out = .{ .id = worker },
     }));
+
+    // But it may see what is here. Ids come from the listing, so a
+    // terminal that cannot list cannot reach anything either -- closing
+    // this would quietly close everything the reach rule opened.
+    try authorize(&b, worker, .terminal_list);
+
+    // And the tools that *are* open to it are refused here because of what
+    // the target is, not because of what the caller is: `boss` is a
+    // supervisor. Note the error -- `Supervised`, which says the target is
+    // marked, rather than `NotPermitted`, which would say the method was
+    // out of reach.
+    try testing.expectError(error.Supervised, authorize(&b, worker, .{
+        .terminal_read = .{ .id = boss },
+    }));
+    try testing.expectError(error.Supervised, authorize(&b, worker, .{
+        .terminal_send = .{ .id = boss, .text = "hello" },
+    }));
+
+    // A second watched terminal is refused too, and the reason is worth
+    // being exact about: **not** because the two are peers. There is no
+    // such notion here. It is because the other one carries a mark.
+    try b.watch(other, boss);
+    try testing.expectError(error.Supervised, authorize(&b, worker, .{
+        .terminal_send = .{ .id = other, .text = "hello" },
+    }));
+}
+
+test "an unmarked terminal is open to a caller that is nobody in particular" {
+    // The rule in one test, and the user's sentence for it: a terminal
+    // carrying no mark is one the program cannot tell anything about -- it
+    // has no way to know whether an agent is in there -- so it does not
+    // take a position and lets the call through.
+    //
+    // The case it exists for: an agent in one tab running `./start.sh` in
+    // another, interrupting it and starting it again after a change, where
+    // the person can see it happen rather than it going on inside a
+    // background process.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    // Registered and unmarked.
+    try b.register(other);
+    try testing.expectEqual(Bus.Role.none, b.roleOf(other));
+
+    try authorize(&b, worker, .{ .terminal_read = .{ .id = other } });
+    try authorize(&b, worker, .{ .terminal_send = .{ .id = other, .text = "./start.sh" } });
+    try authorize(&b, worker, .{ .terminal_key = .{ .id = other, .key = "ctrl+c" } });
+    try authorize(&b, worker, .{ .terminal_action = .{ .id = other, .action = "new_tab" } });
+
+    // And a terminal the bus has never registered at all is the same case,
+    // because it is the same fact: no marks. Whether the id names a
+    // terminal is the host's question and the host answers it.
+    try authorize(&b, worker, .{ .terminal_read = .{ .id = 0xdead } });
+}
+
+test "a shielded terminal is refused to everyone, supervisors included" {
+    // The one absolute in here. It has to be absolute because
+    // `become_supervisor` is open to any unmarked terminal: a shield that
+    // only stopped non-supervisors would be one call away from being
+    // walked around, and a protection with a published bypass is worse
+    // than none.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try b.register(other);
+    try b.setShielded(other, true, .user);
+
+    // The caller here is a supervisor, which is as much standing as this
+    // surface has to offer.
+    try testing.expect(b.isSupervisor(boss));
+    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+        .terminal_read = .{ .id = other },
+    }));
+    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+        .terminal_send = .{ .id = other, .text = "hello" },
+    }));
+    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+        .terminal_key = .{ .id = other, .key = "ctrl+c" },
+    }));
+    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+        .terminal_action = .{ .id = other, .action = "new_tab" },
+    }));
+    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+        .set_watch = .{ .id = other, .watch = true },
+    }));
+    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+        .clock_out = .{ .id = other },
+    }));
+
+    // A shielded terminal that is also being watched is still shielded,
+    // and the shield is the answer given -- it is the one that cannot be
+    // argued with.
+    try b.watch(other, boss);
+    try testing.expectError(error.Shielded, authorize(&b, boss, .{
+        .terminal_read = .{ .id = other },
+    }));
+
+    // Lifted by the user, and it is open again on the ordinary rule.
+    try b.setShielded(other, false, .user);
+    try authorize(&b, boss, .{ .terminal_read = .{ .id = other } });
+}
+
+test "a shield is not something a supervisor can take off" {
+    // Stated here as well as in `Bus`, because the two halves have to
+    // agree: the surface refuses to reach a shielded terminal, and the bus
+    // refuses to unshield one for anybody but the user. Either half alone
+    // would be a guarantee with a door in it.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try b.register(other);
+    try b.setShielded(other, true, .user);
+
+    try testing.expectError(
+        error.NotPermitted,
+        b.setShielded(other, false, .supervisor),
+    );
+    try testing.expect(b.isShielded(other));
+
+    // And there is no method for it either, so there is nothing to route.
+    for (std.enums.values(Method)) |m| {
+        try testing.expect(std.mem.indexOf(u8, @tagName(m), "shield") == null);
+    }
 }
 
 test "the supervisor may reach a watched terminal" {
@@ -1130,22 +1591,38 @@ test "a terminal cannot target itself" {
     }));
 }
 
-test "an unknown target is rejected" {
+test "an unknown target is the host's question, not this one's" {
+    // This used to refuse an id the bus had never registered. It cannot
+    // any more without contradicting the rule: an unregistered terminal
+    // carries no mark, and no mark is precisely the open case. So the
+    // check moved to the host, which is the side that knows whether an id
+    // is a terminal at all, and answers `UnknownTerminal` when it is not.
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
-    try testing.expectError(error.UnknownTerminal, authorize(&b, boss, .{
+    try authorize(&b, boss, .{ .terminal_read = .{ .id = 0xdead } });
+
+    var fake: FakeHost = .{ .refuse = true };
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
         .terminal_read = .{ .id = 0xdead },
-    }));
+    });
+    try testing.expectEqualStrings("ReadFailed", res.failed.code);
 }
 
-test "with no supervisor named, nothing but me is permitted" {
+test "with no supervisor named, the arrangement tools are still shut" {
     var b: Bus = .init(testing.allocator, .{});
     defer b.deinit();
     try b.watch(worker, boss);
 
     try authorize(&b, worker, .me);
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .terminal_list));
+    try authorize(&b, worker, .terminal_list);
+
+    // Nobody holds the standing, so nothing that changes the arrangement
+    // is available -- not even to the terminal that would benefit.
+    try testing.expectError(error.NotPermitted, authorize(&b, worker, .notices));
+    try testing.expectError(error.NotPermitted, authorize(&b, worker, .{
+        .clock_in = .{ .id = worker },
+    }));
 }
 
 test "clock_out is refused for a held terminal" {
@@ -1223,6 +1700,8 @@ test "every error has a message that says what to do" {
         error.AlreadyWatched,
         error.SelfTarget,
         error.NotYours,
+        error.Supervised,
+        error.Shielded,
     };
     for (errs) |e| {
         const msg = errorMessage(e);
@@ -1234,63 +1713,117 @@ test "every error has a message that says what to do" {
     }
 }
 
-test "letting a terminal go gives up reaching it" {
-    // This used to say the opposite: unwatching stopped the reports but
-    // left the supervisor able to read the terminal, because with one
-    // supervisor reach was global and watching was only about noise.
+test "letting a terminal go stops the reports and opens it to everyone" {
+    // Twice rewritten, and the history is the point. First it said
+    // unwatching stopped the reports but left the supervisor able to read
+    // the terminal. Then it said the opposite -- reach followed who was
+    // minding what, so letting go was giving up.
     //
-    // With several, reach follows who is minding what -- so letting a
-    // terminal go is giving it up, and that is the point. Otherwise a
-    // supervisor could unwatch a terminal to stop hearing about it and
-    // still type into it, which is not a coherent thing to offer.
+    // Now neither. Letting go takes the mark off, and a terminal with no
+    // mark is open to anybody, which is exactly what an ordinary shell in
+    // an ordinary tab should be. The supervisor keeps its reach because
+    // supervisors reach everything; what it loses is the notices.
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
     try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
 
-    b.unwatch(worker);
-    try testing.expectError(error.NotYours, authorize(&b, boss, .{
+    // A terminal that is not a supervisor cannot touch it while it is
+    // marked.
+    try b.addSupervisor(other);
+    b.removeSupervisor(other);
+    try testing.expectError(error.Supervised, authorize(&b, other, .{
         .terminal_read = .{ .id = worker },
     }));
 
-    // And it still cannot act on anyone.
-    try testing.expectError(error.NotPermitted, authorize(&b, worker, .terminal_list));
+    b.unwatch(worker);
+    try testing.expectEqual(Bus.Role.none, b.roleOf(worker));
+
+    try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
+    try authorize(&b, other, .{ .terminal_read = .{ .id = worker } });
+
+    // The arrangement tools are still the supervisor's, though. Seeing
+    // what is here is not one of them.
+    try authorize(&b, worker, .terminal_list);
+    try testing.expectError(error.NotPermitted, authorize(&b, worker, .notices));
 }
 
-test "a supervisor stood down immediately loses its reach" {
-    // Naming a second supervisor used to stand the first one down, and
-    // this test proved the reach went with it. Supervisors are peers now,
-    // so standing one down is its own act.
+test "a supervisor stood down immediately loses its reach into marked terminals" {
+    // What standing down costs, now that reach is the target's mark: not
+    // the ability to touch anything, but the ability to touch anything
+    // that is marked. The terminals it was minding are released along with
+    // it, so this has to mark one under somebody else to have a marked
+    // terminal left to be refused by.
     var b = try testBus(testing.allocator);
     defer b.deinit();
+    try b.addSupervisor(other);
 
     try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
 
     b.removeSupervisor(boss);
-    try testing.expectError(error.NotPermitted, authorize(&b, boss, .{
+    try b.watch(worker, other);
+
+    try testing.expectError(error.Supervised, authorize(&b, boss, .{
         .terminal_read = .{ .id = worker },
+    }));
+
+    // The arrangement tools go too, and with a different error, because
+    // they are refused for a different reason: the method, not the target.
+    try testing.expectError(error.NotPermitted, authorize(&b, boss, .{
+        .clock_out = .{ .id = worker },
     }));
 }
 
-test "one supervisor cannot reach another's terminals" {
-    // The property that makes several supervisors safe. Without it, naming
-    // a second supervisor would hand it every worker in the window --
-    // including ones the user put under somebody else.
+test "one supervisor may reach another's terminals, and the other supervisor too" {
+    // The exact reversal of what this file used to assert, and it is the
+    // change the user asked for. It read: "the property that makes several
+    // supervisors safe -- without it, naming a second supervisor would
+    // hand it every worker in the window."
+    //
+    // What that cost was the case for having two supervisors at all. Two
+    // agents co-ordinating a build cannot restart each other, and a plugin
+    // that only takes effect on restart cannot be reloaded without the
+    // person doing it by hand. Ownership stays for notices and for groups;
+    // it is no longer a fence.
     var b = try testBus(testing.allocator);
     defer b.deinit();
 
     try b.addSupervisor(other);
 
-    // `other` is a supervisor, but it is not minding `worker`.
-    try testing.expectError(error.NotYours, authorize(&b, other, .{
-        .terminal_read = .{ .id = worker },
-    }));
-    try testing.expectError(error.NotYours, authorize(&b, other, .{
-        .terminal_send = .{ .id = worker, .text = "hello" },
-    }));
+    // A supervisor that is not minding `worker` may still reach it.
+    try authorize(&b, other, .{ .terminal_read = .{ .id = worker } });
+    try authorize(&b, other, .{ .terminal_send = .{ .id = worker, .text = "hello" } });
 
-    // And the one that is minding it still can.
+    // And the two supervisors may reach each other, which is the scenario
+    // in as many words: stop the other one, then start it again.
+    try authorize(&b, boss, .{ .terminal_key = .{ .id = other, .key = "ctrl+c" } });
+    try authorize(&b, boss, .{ .terminal_send = .{ .id = other, .text = "./run.sh" } });
+    try authorize(&b, other, .{ .terminal_key = .{ .id = boss, .key = "ctrl+c" } });
+
+    // The one that is minding it still can, and still gets the notices --
+    // which is what `watched_by` is left meaning.
     try authorize(&b, boss, .{ .terminal_read = .{ .id = worker } });
+    try testing.expect(b.minds(boss, worker));
+    try testing.expect(!b.minds(other, worker));
+}
+
+test "a supervisor may pull another supervisor into a group" {
+    // This was blocked by the reach rule rather than by anything about
+    // groups: `group_add` names a terminal, so it went through the same
+    // check, and `minds(boss, other)` is false for a supervisor -- a
+    // supervisor has no minder. So a supervisor could never be added to
+    // anything, and two of them had no way to talk.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.addSupervisor(other);
+
+    try authorize(&b, boss, .{ .group_add = .{ .group = "build", .id = other } });
+
+    // Still the supervisor's tool, though: arranging who talks to whom did
+    // not become everybody's.
+    try testing.expectError(error.NotPermitted, authorize(&b, worker, .{
+        .group_add = .{ .group = "build", .id = other },
+    }));
 }
 
 test "a terminal already minded is not quietly taken over" {
@@ -1776,6 +2309,20 @@ pub const Host = struct {
             action: []const u8,
         ) anyerror!void,
 
+        /// Press a key in a terminal, as if the person at the keyboard had.
+        ///
+        /// `key` is a keybinding trigger written the way the config file
+        /// writes one -- `ctrl+c`, `escape`, `ctrl+shift+k`. Parsed on both
+        /// sides for different reasons: here, so a spelling mistake is
+        /// answered as a spelling mistake rather than as a refusal by the
+        /// terminal; and by the host, which is the side holding the
+        /// keyboard path.
+        sendKey: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+            key: []const u8,
+        ) anyerror!void,
+
         /// How long that terminal's screen has been unchanged.
         quietMs: *const fn (ctx: *anyopaque, id: Bus.Id) u64,
 
@@ -2032,6 +2579,10 @@ pub const Host = struct {
 
     fn sendText(self: Host, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
         return self.vtable.sendText(self.ctx, id, text, submit);
+    }
+
+    fn sendKey(self: Host, id: Bus.Id, key: []const u8) anyerror!void {
+        return self.vtable.sendKey(self.ctx, id, key);
     }
 
     fn performAction(self: Host, id: Bus.Id, action: []const u8) anyerror!void {
@@ -2445,6 +2996,26 @@ pub fn dispatch(
                 ),
             );
 
+            // Poltergeist's own switches are the user's, and each has a
+            // tool here that carries the rules. Left open, this was a
+            // second road to all of them with nothing on it: an agent
+            // could lift a hold with `poltergeist_toggle_held` and clock
+            // the terminal off a moment later -- the exact sequence the
+            // hold's own documentation calls the thing it exists to
+            // prevent, and one that was confirmed working on a real
+            // machine before this check existed.
+            if (actions.governed(actions.nameOf(p.action))) return hostFailure(
+                "NotPermitted",
+                try std.fmt.allocPrint(
+                    alloc,
+                    "{s} is one of Polter's own controls, and this surface does " ++
+                        "not press it. Watching is set_watch, standing is " ++
+                        "become_supervisor, and the hold and the shield are the " ++
+                        "user's alone -- ask the person at the keyboard.",
+                    .{actions.nameOf(p.action)},
+                ),
+            );
+
             host.performAction(p.id, p.action) catch |err| return switch (err) {
                 error.UnknownTerminal => failure(error.UnknownTerminal),
 
@@ -2469,6 +3040,45 @@ pub fn dispatch(
         },
 
         .terminal_actions => return .{ .actions = actions.all },
+
+        .terminal_key => |p| {
+            // Checked here so that a spelling mistake is answered as one.
+            // Same argument as `terminal_action`: left to the host it
+            // would come back as "the terminal would not do that", which
+            // reads as a refusal rather than as a typo.
+            _ = keys.parse(p.key) catch |err| return hostFailure(
+                "BadKey",
+                keys.refusal(err),
+            );
+
+            host.sendKey(p.id, p.key) catch |err| return switch (err) {
+                error.UnknownTerminal,
+                error.NoSuchTerminal,
+                => failure(error.UnknownTerminal),
+
+                // The terminal's child process is gone, so there is
+                // nothing on the other end of the keyboard. Said plainly,
+                // because "press ctrl+c" on a terminal whose process
+                // already exited is a supervisor working from a stale
+                // picture, and the fix is to go and read the screen.
+                error.ChildExited => hostFailure(
+                    "ChildExited",
+                    "that terminal's process has already exited, so there is nothing " ++
+                        "there to press a key at. Read it to see what happened.",
+                ),
+
+                else => hostFailure(
+                    "KeyFailed",
+                    "the terminal would not take that key just now",
+                ),
+            };
+            return .ok;
+        },
+
+        .terminal_keys => return .{ .keys = .{
+            .modifiers = keys.modifiers,
+            .names = keys.names,
+        } },
 
         .clock_out => |p| {
             bus.clockOff(p.id, .supervisor) catch |err| return switch (err) {
@@ -2598,6 +3208,23 @@ pub fn dispatch(
 
         .group_add => |p| {
             if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
+
+            // A typo here used to be caught by `authorize`, which refused
+            // any id the bus had never registered. It cannot any more: the
+            // reach rule treats an unregistered terminal as the open case,
+            // so refusing one there would refuse exactly what the rule
+            // exists to allow.
+            //
+            // The check has to stay somewhere, though, because group
+            // membership is a record that outlives the call: a mistyped id
+            // added to a group is a member that never speaks and never
+            // leaves, and nothing would ever say so. So it is asked of the
+            // two sides that could know -- the bus, and failing that the
+            // host's list of open terminals.
+            if (bus.get(p.id) == null and !isOpenTerminal(alloc, host, p.id)) {
+                return failure(error.UnknownTerminal);
+            }
+
             host.chatAdd(p.group, p.id, p.history) catch |err| return chatFailure(err);
             return .ok;
         },
@@ -2844,6 +3471,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         .role = e.role,
         .duty = e.duty,
         .held = e.held,
+        .shielded = e.shielded,
         // Null rather than zero when nothing has ever sampled it. Zero
         // here means "moving this instant", which is a claim, and a
         // terminal nobody has looked at yet gives no grounds for one.
@@ -3007,6 +3635,10 @@ const FakeHost = struct {
     acted: ?struct { id: Bus.Id, action: []const u8 } = null,
     action_error: ?anyerror = null,
 
+    /// The last key asked for, and what the fake does with it.
+    keyed: ?struct { id: Bus.Id, key: []const u8 } = null,
+    key_error: ?anyerror = null,
+
     /// The last terminal asked for, what the fake hands back, and how it
     /// can be made to refuse.
     opened: ?struct { cwd: []const u8, by: Bus.Id } = null,
@@ -3068,6 +3700,7 @@ const FakeHost = struct {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
             .sendText = send,
+            .sendKey = sendKey,
             .performAction = performAction,
             .openTerminal = openTerminal,
             .configText = configText,
@@ -3407,6 +4040,12 @@ const FakeHost = struct {
         return self.open_result;
     }
 
+    fn sendKey(ctx: *anyopaque, id: Bus.Id, k: []const u8) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.key_error) |err| return err;
+        self.keyed = .{ .id = id, .key = k };
+    }
+
     fn performAction(ctx: *anyopaque, id: Bus.Id, action: []const u8) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.action_error) |err| return err;
@@ -3446,8 +4085,17 @@ test "dispatch refuses an unauthorized request before touching the host" {
         .terminal_read = .{ .id = boss },
     });
 
-    try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    // `Supervised`, not `NotPermitted`: the method is open to this caller
+    // and the target is what refused it. The two answers send an agent
+    // somewhere different, which is the reason for having both.
+    try testing.expectEqualStrings("Supervised", res.failed.code);
     try testing.expectEqual(@as(usize, 0), fake.read_count);
+
+    // And one the method itself is closed to, for the contrast.
+    const closed = try dispatch(testing.allocator, &b, fake.host(), worker, .{
+        .clock_out = .{ .id = boss },
+    });
+    try testing.expectEqualStrings("NotPermitted", closed.failed.code);
 }
 
 test "the supervisor can read and type into a watched terminal" {
@@ -3513,6 +4161,41 @@ test "terminal_list is sorted so two listings can be compared" {
     for (res.terminals[1..], 0..) |info, i| {
         try testing.expect(res.terminals[i].id < info.id);
     }
+}
+
+test "terminal_list says which terminals are out of reach before anything is refused" {
+    // Not a duplicate of the wire test. That one proves the field reaches
+    // the JSON once something puts it in `TerminalInfo`; this one proves
+    // `describe` puts it there, which is the step that can be dropped
+    // without a single test noticing -- the two halves are in different
+    // files and neither is enough on its own.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try b.watch(0x5151, boss);
+    try b.setShielded(0x5151, true, .user);
+
+    const open = [_]Place{
+        .{ .id = boss },
+        .{ .id = 0x5151 },
+        // Never registered with the bus at all: `describe` takes its early
+        // exit for this one, so the default has to be the open case.
+        .{ .id = 0x7272 },
+    };
+    var fake: FakeHost = .{ .open = &open };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .terminal_list);
+    defer testing.allocator.free(res.terminals);
+
+    var shielded: ?wire.TerminalInfo = null;
+    var stranger: ?wire.TerminalInfo = null;
+    for (res.terminals) |info| {
+        if (info.id == 0x5151) shielded = info;
+        if (info.id == 0x7272) stranger = info;
+    }
+
+    try testing.expect((shielded orelse return error.NotListed).shielded);
+    try testing.expect(!(stranger orelse return error.NotListed).shielded);
 }
 
 test "a terminal nobody is watching is still listed, with where it is" {
@@ -3947,17 +4630,21 @@ test "a supervisor cannot put itself under its own supervision" {
     );
 }
 
-test "clocking out still requires a terminal under supervision" {
-    // The exemption is `set_watch`'s alone. Clocking a terminal off is a
-    // thing you say about a terminal you are minding, and the bus has
-    // nowhere to record it for one you are not.
+test "clocking out a terminal the bus never heard of is refused by the bus" {
+    // `authorize` no longer refuses an unregistered id -- see the reach
+    // rule -- so the refusal has to come from the side that has somewhere
+    // to record the answer, and it does. Checked through `dispatch` rather
+    // than through `authorize`, because that is where the answer now is.
     var b = try testBus(testing.allocator);
     defer b.deinit();
+    var fake: FakeHost = .{};
 
-    try testing.expectError(
-        error.UnknownTerminal,
-        authorize(&b, boss, .{ .clock_out = .{ .id = 0x5151 } }),
-    );
+    try authorize(&b, boss, .{ .clock_out = .{ .id = 0x5151 } });
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), boss, .{
+        .clock_out = .{ .id = 0x5151 },
+    });
+    try testing.expectEqualStrings("UnknownTerminal", res.failed.code);
 }
 
 test "a group belongs to the supervisor that made it" {

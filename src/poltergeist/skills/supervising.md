@@ -12,17 +12,41 @@ does not.
 ## You may not be the only one
 
 There can be several supervisors in a window, each minding its own piece
-of work. **You reach only the terminals you are minding.** Another
-supervisor's are not yours: `terminal_read` and `terminal_send` answer
-`NotYours`, and so does trying to rearrange a group somebody else made.
+of work. **As a supervisor you may reach any terminal here**, including
+another supervisor's workers and the other supervisors themselves. That
+is on purpose: two supervisors co-ordinating one build sometimes have to
+stop and restart each other, and there is no other way to reload
+something that only takes effect on a restart.
 
-That is deliberate. A supervisor able to type into every terminal in the
-window could steer workers the user put under somebody else, and the
-agent on the receiving end cannot tell one supervisor from another.
+Reach being wide does not make it yours to use freely. Two supervisors
+typing into one agent is, to that agent, being given orders by two people
+at once. **Before you touch a terminal somebody else is minding, say so
+in a group both of you are in.** `terminal_list` shows who is minding
+what.
 
-If a terminal you want is already claimed, `set_watch` answers `NotYours`
-rather than taking it. Say so and leave it; do not go looking for another
-route to it.
+What is still not yours: a group somebody else made. Destroying it,
+adding to it or changing its brief answers `NotYours`. And if a terminal
+you want to *mind* is already claimed, `set_watch` answers `NotYours`
+rather than taking it — its notices belong to one box, not two. Say so
+and leave the claim alone; you can still read and type into it if the
+work needs it.
+
+## What you may reach, and what refuses you
+
+Reach is decided by the terminal you are pointing at, not by your
+relationship to it:
+
+- **You are a supervisor**, so every terminal here is reachable by you.
+- **A terminal carrying no mark** — nobody supervising it, nobody
+  watching it — is reachable by *anyone*, supervisor or not. That is how
+  an agent in one tab can run something in another and interrupt it.
+- **A shielded terminal is reachable by nobody**, and that includes you.
+  It answers `Shielded`. The user put it out of reach and nothing in
+  these tools lifts that. Do not look for another route; ask the person.
+
+The refusals say which of these happened: `NotPermitted` means the tool
+is not yours to call at all, `Supervised` means the target carries a mark
+and the caller is not a supervisor, `Shielded` means the user said no.
 
 ## Set the work up yourself. Nobody else will.
 
@@ -31,11 +55,11 @@ that is yours**, and none of it happens on its own:
 
 1. **`group_create`** a group for the work, then **`group_set_brief`**
    immediately — see below for why immediately.
-2. **`set_watch`** each terminal that is part of the work. This is the
-   step that makes a terminal readable and writable **by you**: until you
-   watch it, `terminal_read` refuses it, and if another supervisor got
-   there first it stays refused. It is also what starts the clock that
-   tells you when the terminal has gone quiet.
+2. **`set_watch`** each terminal that is part of the work. This is what
+   starts the clock that tells you when a terminal has gone quiet, and
+   what routes its notices to your box. It also marks the terminal, which
+   puts it out of reach of every terminal that is not a supervisor. It is
+   *not* what lets you read it — you could already do that.
 3. **`group_add`** each of them, so they can talk to each other and so
    the arrangement is written down.
 
@@ -121,17 +145,40 @@ sampling it, so there is no duration to report. Do not read a missing
 `quiet_ms` as zero -- zero would mean it was busy this instant, which is
 the opposite of not knowing.
 
-## Watching, and what it grants you
+## Watching, and what it does
 
-`set_watch` puts a terminal under your eye or takes it out again. Be
-clear-eyed about what it does: **a terminal you watch is one you can read
-and type into.** Watching is not observation, it is reach. Watch the
-terminals that are part of the work, and leave the user's own shell alone
-— it is open in the same window and looks exactly like the others in
-`terminal_list`.
+`set_watch` puts a terminal under your eye or takes it out again. Two
+things follow from it, and neither is "now I can read it":
 
-Taking a terminal out again (`watch: false`) stops the sampling and the
-reach with it.
+1. **You get told when it goes quiet.** Nothing samples an unwatched
+   terminal, so it has no `quiet_ms` at all.
+2. **It gets a mark**, which puts it out of reach of everything that is
+   not a supervisor.
+
+Watch the terminals that are part of the work, and leave the user's own
+shell alone — it is open in the same window and looks exactly like the
+others in `terminal_list`. Watching it would put it in your box and mark
+it, neither of which is what the person wants from their own shell.
+
+Taking a terminal out again (`watch: false`) stops the sampling and takes
+the mark off. It does not take your reach away: you are a supervisor.
+
+## Interrupting something: `terminal_key`
+
+`terminal_send` types text, and only text. Control characters are
+stripped out of it on the way in — a security measure against commands
+hidden in pasted text — so you cannot interrupt anything with it however
+you spell it.
+
+**`terminal_key(id, "ctrl+c")` is how you interrupt.** The key is written
+the way a Ghostty keybinding is written: `ctrl+c`, `escape`, `ctrl+z`,
+`f2`, `arrow_down`. `terminal_keys()` lists every name; read it rather
+than guessing. A plain character is refused and pointed back at
+`terminal_send`, because a character is text.
+
+The usual shape is: `terminal_key(id, "ctrl+c")`, read the screen to see
+that it actually stopped, then `terminal_send` the command that starts it
+again. Do not send the second before you have seen the first take.
 
 ## The hold: a terminal you cannot clock off
 

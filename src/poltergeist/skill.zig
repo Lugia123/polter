@@ -378,6 +378,13 @@ test "the supervising skill names the tools it tells you to use" {
         "become_supervisor",
         "session_recall",
         "terminal_list",
+
+        // Added with the tool. An interrupt is the one thing
+        // `terminal_send` cannot do -- the paste path strips the control
+        // bytes -- so a skill that never names this leaves a supervisor
+        // trying to spell Ctrl-C into a text field.
+        "terminal_key",
+        "terminal_keys",
     }) |tool| {
         if (std.mem.indexOf(u8, supervising, tool) == null) {
             std.debug.print("\nsupervising never mentions {s}\n", .{tool});

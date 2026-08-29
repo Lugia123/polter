@@ -570,6 +570,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Do not let a supervisor clock this terminal off. Its tab wears a ring while the hold lasts. Only you can set this; a supervisor cannot."),
         }},
 
+        .poltergeist_toggle_shielded => comptime &.{.{
+            .action = .poltergeist_toggle_shielded,
+            .title = i18n.N_("Keep Agents Out of This Terminal"),
+            .description = i18n.N_("Stop every agent, supervisors included, from reading this terminal or typing into it. Its tab wears a lock while the shield stands. Only you can set this."),
+        }},
+
         .poltergeist_toggle_chat => comptime &.{.{
             .action = .poltergeist_toggle_chat,
             .title = i18n.N_("Terminal Conversations"),

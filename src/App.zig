@@ -1366,6 +1366,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
     return .{ .ctx = self, .vtable = &.{
         .readTerminal = poltergeistRead,
         .sendText = poltergeistSend,
+        .sendKey = poltergeistSendKey,
         .performAction = poltergeistPerformAction,
         .quietMs = poltergeistQuiet,
         .openTerminals = poltergeistOpenTerminals,
@@ -1820,6 +1821,22 @@ fn poltergeistSend(
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
     try surface.typePoltergeistText(text, submit);
+}
+
+/// Press a key in a terminal.
+///
+/// The surface is found first and the key parsed inside it, for the same
+/// reason `poltergeistPerformAction` looks the surface up before parsing:
+/// an id that names nothing and a key that does not parse are different
+/// mistakes and want different answers.
+fn poltergeistSendKey(
+    ctx: *anyopaque,
+    id: poltergeistpkg.Bus.Id,
+    key: []const u8,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+    try surface.sendPoltergeistKey(key);
 }
 
 /// Do one of the terminal's own keybinding actions to it.

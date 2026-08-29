@@ -218,14 +218,22 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_read",
-        .description = "Read the visible screen of another terminal. Scrollback is not available. Supervisor only.",
+        .description = "Read the visible screen of another terminal. Scrollback is not " ++
+            "available. You may read any terminal that carries no Polter mark; a " ++
+            "terminal that is a supervisor, or that somebody is watching, is only " ++
+            "reachable by a supervisor. A terminal the user has shielded is reachable " ++
+            "by nobody.",
         .schema =
         \\{"type":"object","properties":{"id":{"type":"string","description":"Terminal id, as shown by terminal_list"}},"required":["id"]}
         ,
     },
     .{
         .name = "terminal_send",
-        .description = "Type into another terminal, exactly as the user would. Supervisor only.",
+        .description = "Type text into another terminal, exactly as the user would. " ++
+            "Text only: control characters are stripped on the way in, so this cannot " ++
+            "press ctrl+c or escape however they are spelled -- terminal_key does that. " ++
+            "Same reach rule as terminal_read: unmarked terminals are open to anyone, " ++
+            "marked ones to supervisors, shielded ones to nobody.",
         .schema =
         \\{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"},"submit":{"type":"boolean","description":"Press return afterwards; defaults to true"}},"required":["id","text"]}
         ,
@@ -345,10 +353,12 @@ const tools = [_]Tool{
     .{
         .name = "set_watch",
         .description = "Put a terminal under your supervision, or take it out again. " ++
-            "A terminal you watch is one you can read and type into, so this is the tool " ++
-            "that decides your reach. `watch` is required and must be spelled exactly that: " ++
-            "a parameter this tool does not know is refused rather than ignored. " ++
-            "Supervisor only.",
+            "Watching it is what makes its quiet spells arrive in your notices, and it " ++
+            "also marks the terminal: once watched, no terminal that is not a supervisor " ++
+            "can reach it. It is not what lets *you* read it -- any supervisor may read " ++
+            "and type into any terminal, watched or not. `watch` is required and must be " ++
+            "spelled exactly that: a parameter this tool does not know is refused rather " ++
+            "than ignored. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"id":{"type":"string"},"watch":{"type":"boolean","description":"true takes hold of it, false lets it go. Required: there is no default, because the two are not equally easy to undo."}},"required":["id","watch"]}
         ,
@@ -391,7 +401,8 @@ const tools = [_]Tool{
             "everything else a key could be bound to. Call terminal_actions for the list " ++
             "-- guessing at a name gets you UnknownAction, which is a typo, not a refusal " ++
             "by the terminal. A new tab opens in the same directory as the terminal you " ++
-            "asked from, which is worth thinking about before you ask. Supervisor only.",
+            "asked from, which is worth thinking about before you ask. Same reach rule as " ++
+            "terminal_read.",
         .schema =
         \\{"type":"object","properties":{"id":{"type":"string"},"action":{"type":"string"}},"required":["id","action"]}
         ,
@@ -399,7 +410,29 @@ const tools = [_]Tool{
     .{
         .name = "terminal_actions",
         .description = "Every action terminal_action will take, and which of them want a " ++
-            "value after a colon. Read this before guessing at a name. Supervisor only.",
+            "value after a colon. Read this before guessing at a name.",
+        .schema =
+        \\{"type":"object","properties":{}}
+        ,
+    },
+    .{
+        .name = "terminal_key",
+        .description = "Press a key in another terminal, as if the person at the " ++
+            "keyboard had. `key` is a Ghostty keybinding trigger, written exactly as a " ++
+            "config file writes one: `ctrl+c`, `escape`, `ctrl+z`, `ctrl+shift+k`, " ++
+            "`f2`, `arrow_down`. This is how you interrupt something -- terminal_send " ++
+            "cannot, because the text it types has its control characters stripped on " ++
+            "the way in. Ordinary characters are refused here for the same reason in " ++
+            "reverse: `a` is text and belongs in terminal_send. Call terminal_keys for " ++
+            "the vocabulary. Same reach rule as terminal_read.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"key":{"type":"string"}},"required":["id","key"]}
+        ,
+    },
+    .{
+        .name = "terminal_keys",
+        .description = "The vocabulary terminal_key accepts: every modifier name and " ++
+            "every key name, joined with `+`. Read this rather than guessing at a name.",
         .schema =
         \\{"type":"object","properties":{}}
         ,
@@ -721,14 +754,35 @@ test "no tool offers to answer another agent's prompt" {
 }
 
 test "the tools that decide reach say so in their own description" {
-    // Somebody reading the tool list should not have to infer that watching
-    // a terminal is what makes it readable.
+    // Reach is the target's mark, not the relationship, and nobody should
+    // have to infer that from being refused. Two things have to be said
+    // out loud: that watching a terminal marks it (so `set_watch` is still
+    // a reach decision, in the other direction -- it takes the terminal out
+    // of everyone else's reach), and that the tools which touch another
+    // terminal are governed by that mark.
+    var seen_watch = false;
+    var seen_reach = false;
     for (tools) |t| {
-        if (!std.mem.eql(u8, t.name, "set_watch")) continue;
-        try std.testing.expect(std.mem.indexOf(u8, t.description, "read") != null);
-        return;
+        if (std.mem.eql(u8, t.name, "set_watch")) {
+            seen_watch = true;
+            try std.testing.expect(std.mem.indexOf(u8, t.description, "reach") != null);
+        }
+        for ([_][]const u8{
+            "terminal_read",
+            "terminal_send",
+            "terminal_action",
+            "terminal_key",
+        }) |name| {
+            if (!std.mem.eql(u8, t.name, name)) continue;
+            seen_reach = true;
+            try std.testing.expect(
+                std.mem.indexOf(u8, t.description, "mark") != null or
+                    std.mem.indexOf(u8, t.description, "reach") != null,
+            );
+        }
     }
-    return error.ToolMissing;
+    try std.testing.expect(seen_watch);
+    try std.testing.expect(seen_reach);
 }
 
 test "every tool describes itself and carries a schema" {

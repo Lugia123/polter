@@ -80,6 +80,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuPoltergeistSupervisor: NSMenuItem?
     @IBOutlet private var menuPoltergeistWatch: NSMenuItem?
     @IBOutlet private var menuPoltergeistHeld: NSMenuItem?
+    @IBOutlet private var menuPoltergeistShield: NSMenuItem?
     @IBOutlet private var menuLanguage: NSMenuItem?
     @IBOutlet private var menuPlugins: NSMenuItem?
     @IBOutlet private var menuReopenTab: NSMenuItem?
@@ -1330,13 +1331,14 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "inspector:toggle", menuItem: self.menuTerminalInspector)
         syncMenuShortcut(config, action: "toggle_command_palette", menuItem: self.menuCommandPalette)
 
-        // None of these four ship with a default binding, so ordinarily the
+        // None of these five ship with a default binding, so ordinarily the
         // menu shows no shortcut at all -- which is the point of them being
         // in the menu. If somebody does bind one, it shows up here.
         syncMenuShortcut(config, action: "poltergeist_toggle_chat", menuItem: self.menuPoltergeistChat)
         syncMenuShortcut(config, action: "poltergeist_supervisor", menuItem: self.menuPoltergeistSupervisor)
         syncMenuShortcut(config, action: "poltergeist_toggle_watch", menuItem: self.menuPoltergeistWatch)
         syncMenuShortcut(config, action: "poltergeist_toggle_held", menuItem: self.menuPoltergeistHeld)
+        syncMenuShortcut(config, action: "poltergeist_toggle_shielded", menuItem: self.menuPoltergeistShield)
 
         syncMenuShortcut(config, action: "toggle_secure_input", menuItem: self.menuSecureInput)
 

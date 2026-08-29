@@ -712,6 +712,7 @@ extension TerminalWindow {
     private static let agentSupervisorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentSupervisor")
     private static let agentWatchIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentWatch")
     private static let agentHeldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentHeld")
+    private static let agentShieldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentShield")
 
     func configureTabContextMenuIfNeeded(_ menu: NSMenu) {
         guard isTabContextMenu(menu) else { return }
@@ -777,6 +778,7 @@ extension TerminalWindow {
             Self.agentSupervisorIdentifier,
             Self.agentWatchIdentifier,
             Self.agentHeldIdentifier,
+            Self.agentShieldIdentifier,
         ])
 
         let separator = NSMenuItem.separator()
@@ -799,6 +801,11 @@ extension TerminalWindow {
              "pin",
              #selector(TerminalController.poltergeistToggleHeld(_:)),
              Self.agentHeldIdentifier),
+            (String(localized: "Keep Agents Out of This Terminal",
+                    comment: "标签页右键菜单：护盾，任何 agent 都不许碰"),
+             "lock",
+             #selector(TerminalController.poltergeistToggleShielded(_:)),
+             Self.agentShieldIdentifier),
         ]
 
         for (title, symbol, action, identifier) in entries {

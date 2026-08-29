@@ -14,6 +14,7 @@ pub const Archive = @import("Archive.zig");
 pub const Bus = @import("Bus.zig");
 pub const Chat = @import("Chat.zig");
 pub const actions = @import("actions.zig");
+pub const keys = @import("keys.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const Feed = @import("Feed.zig");
 pub const daylog = @import("daylog.zig");
@@ -46,6 +47,7 @@ pub const screen = @import("screen.zig");
 test {
     _ = @import("server_test.zig");
     _ = actions;
+    _ = keys;
     _ = Archive;
     _ = Bus;
     _ = Chat;

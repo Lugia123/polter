@@ -100,13 +100,44 @@ pub const Entry = struct {
     /// never shown again feels the same as no guarantee at all.
     held: bool = false,
 
-    /// Which supervisor is minding this terminal.
+    /// The user has put this terminal out of reach: nothing may read it or
+    /// type into it through the tool surface, whoever is asking.
     ///
-    /// Supervision is reach: a terminal you watch is one you can read and
-    /// type into. With more than one supervisor in a window that has to
-    /// have an owner, or every supervisor could steer every other's
-    /// workers -- which is the thing the star topology exists to prevent,
-    /// just with several centres instead of one.
+    /// **Absolute on purpose, and that is the whole design.** Reach is
+    /// otherwise decided by what the *target* is marked as -- a supervisor
+    /// may touch anything, and anyone may touch a terminal carrying no
+    /// mark at all. But `become_supervisor` lets any unmarked terminal
+    /// promote itself with no gate whatsoever, so a shield that only held
+    /// off non-supervisors would be one tool call from being walked
+    /// around. A protection with a published bypass is worse than none: it
+    /// is the same exposure, plus somebody believing otherwise.
+    ///
+    /// Only the user sets it, like `held`, and for the same reason -- a
+    /// guarantee the watched party can lift is not a guarantee. The two
+    /// are not the same thing and neither implies the other: `held` says
+    /// "you may not stop working", this says "nobody may touch you".
+    shielded: bool = false,
+
+    /// Which supervisor is minding this terminal -- that is, **which one
+    /// gets told when it goes quiet**.
+    ///
+    /// Routing, and nothing else. This used to be the reach rule as well:
+    /// a terminal you watch was a terminal you could read and type into,
+    /// and the comment here said that without an owner every supervisor
+    /// could steer every other's workers, "which is the thing the star
+    /// topology exists to prevent".
+    ///
+    /// That rule is gone, deliberately. Reach is now decided by what the
+    /// *target* is marked as, not by who is minding it: a supervisor may
+    /// reach any Polter terminal, and anyone may reach a terminal carrying
+    /// no mark. Two supervisors interrupting each other and restarting each
+    /// other -- to reload a plugin, say -- is a thing the user asked for,
+    /// and the old rule made it impossible. See `rpc.authorize`.
+    ///
+    /// What is still true is that a terminal has at most one minder, so its
+    /// notices go to one box rather than being duplicated into several.
+    /// `Entry.shielded` is the mark that takes a terminal out of reach, and
+    /// it is the user's alone.
     ///
     /// Null for a terminal nobody is minding, and for the supervisors
     /// themselves.
@@ -360,7 +391,15 @@ pub fn isSupervisor(self: *const Bus, id: Id) bool {
     return e.role == .supervisor;
 }
 
-/// Whether `caller` is the supervisor minding `id`.
+/// Whether `caller` is the supervisor minding `id` -- the one its notices
+/// go to.
+///
+/// **Not a reach test.** It used to be one, and `rpc.authorize` used to
+/// call it to decide whether a request could touch a terminal at all. Reach
+/// is now decided by the target's own mark; this answers a narrower
+/// question, and the places that still ask it -- letting a terminal go,
+/// reporting whether a freshly opened tab was claimed -- want that narrower
+/// question.
 pub fn minds(self: *const Bus, caller: Id, id: Id) bool {
     const e = self.entries.get(id) orelse return false;
     return e.watched_by != null and e.watched_by.? == caller;
@@ -377,9 +416,14 @@ pub fn watch(self: *Bus, id: Id, by: ?Id) WatchError!void {
     const e = self.entries.getPtr(id).?;
     if (e.role == .supervisor) return;
 
-    // Two supervisors typing into one input box is the same thing, to the
-    // agent in it, as being given orders by two people at once. Refused
-    // rather than silently taken over.
+    // One minder per terminal, so its notices land in one box rather than
+    // being duplicated into several. Refused rather than silently taken
+    // over: a supervisor that quietly lost a terminal it thought it was
+    // minding would go on waiting for reports that now go elsewhere.
+    //
+    // This is no longer what stops two supervisors typing into the same
+    // input box -- reach does not come from here any more. It is about who
+    // hears about it.
     if (by) |claimant| {
         if (e.watched_by) |owner| {
             if (owner != claimant) return error.AlreadyWatched;
@@ -415,6 +459,29 @@ pub fn setHeld(
     if (who != .user) return error.NotPermitted;
     const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
     e.held = held;
+}
+
+/// Put a terminal out of reach of the tool surface, or bring it back. The
+/// user only, for the reason written on `Entry.shielded`.
+pub fn setShielded(
+    self: *Bus,
+    id: Id,
+    shielded: bool,
+    who: Authority,
+) SetHeldError!void {
+    if (who != .user) return error.NotPermitted;
+    const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
+    e.shielded = shielded;
+}
+
+/// Whether the tool surface may reach this terminal at all.
+///
+/// Asked of the target alone. A terminal the bus has never registered is
+/// not shielded -- it carries no marks of any kind, which is exactly the
+/// case the reach rule treats as open.
+pub fn isShielded(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    return e.shielded;
 }
 
 /// Clock a terminal off. The supervisor only, and never one the user is
@@ -539,6 +606,32 @@ pub const TabMark = enum {
         };
     }
 };
+
+/// What a shielded terminal's tab wears, in front of whatever `TabMark`
+/// says about it.
+///
+/// **A second prefix rather than more `TabMark` values, and that is a
+/// decision, not a shortcut.** The ring is folded into `TabMark` because a
+/// hold is not independent of what it is put on: it only applies to a
+/// watched terminal, `clockOff` refuses a held one so held-and-off-duty
+/// cannot happen, and the ring is the disc with its middle changed --
+/// same glyph family, saying "still doing one of those two things, and
+/// now pinned to it".
+///
+/// The shield is none of that. It is orthogonal to all seven values,
+/// `none` included -- and `none` is the case it matters most for, because
+/// the terminal a user most wants out of reach is their own shell, which
+/// nobody has watched and which therefore carries no mark at all. Folding
+/// it in would mean fourteen values with none of them unreachable, a
+/// `none` that no longer means "nothing to say", and seven new glyphs for
+/// a family that has two. Composing two prefixes says the true thing
+/// instead: one mark for what the terminal is doing, one for who may
+/// touch it, and they are read separately because they are separate.
+///
+/// It leads rather than trails: it is a fact about the whole terminal
+/// regardless of what that terminal is up to, and a column of tabs is
+/// scanned down its left edge.
+pub const shield_prefix = "\u{1F512} ";
 
 /// How this terminal's tab should be marked, given how long it has been
 /// quiet.
@@ -1186,6 +1279,32 @@ test "every mark but none has a marker, and none has nothing" {
     };
 }
 
+test "the shield marker is its own, and reads in front of any other" {
+    // It is composed with a `TabMark` rather than being one, so the thing
+    // to prove is that the composition stays readable: it must not be
+    // mistakable for a state marker, and it must not vanish when there is
+    // no state marker to sit in front of.
+    try testing.expect(shield_prefix.len > 0);
+    try testing.expect(shield_prefix[shield_prefix.len - 1] == ' ');
+
+    for (std.enums.values(TabMark)) |m| {
+        try testing.expect(!std.mem.eql(u8, shield_prefix, m.prefix()));
+    }
+
+    // Shield plus the unmarked case is still a visible mark. This is the
+    // case the whole feature is for -- a shell nobody watches -- and if
+    // the composition collapsed to nothing here it would be invisible
+    // exactly where it is needed.
+    var buf: [64]u8 = undefined;
+    const composed = try std.fmt.bufPrint(
+        &buf,
+        "{s}{s}",
+        .{ shield_prefix, TabMark.none.prefix() },
+    );
+    try testing.expect(composed.len > 0);
+    try testing.expectEqualStrings(shield_prefix, composed);
+}
+
 test "reading the box clears it" {
     // The point of the box: what has been shown once is not shown again.
     var bus = testBus();
@@ -1475,4 +1594,69 @@ test "a terminal that was never a supervisor cannot stand down from it" {
     try b.register(worker);
     try testing.expectError(error.NotASupervisor, b.standDown(worker));
     try testing.expectError(error.NotASupervisor, b.standDown(0xdead));
+}
+
+test "only the user may shield a terminal, and it starts unshielded" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    // A terminal carries no marks until somebody puts one on it, and the
+    // reach rule reads an unmarked terminal as open.
+    try testing.expect(!b.isShielded(worker));
+
+    // The supervisor is refused, which is the point: reach is decided by
+    // what the target is marked as, and a party that could clear the mark
+    // would be deciding its own reach.
+    try testing.expectError(
+        error.NotPermitted,
+        b.setShielded(worker, true, .supervisor),
+    );
+    try testing.expect(!b.isShielded(worker));
+
+    try b.setShielded(worker, true, .user);
+    try testing.expect(b.isShielded(worker));
+
+    try b.setShielded(worker, false, .user);
+    try testing.expect(!b.isShielded(worker));
+}
+
+test "shielding a supervisor is allowed, and says nothing about holding it" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+
+    // Supervisors are terminals too. One left running overnight is exactly
+    // the thing a user might want nobody else typing into.
+    try b.setShielded(boss, true, .user);
+    try testing.expect(b.isShielded(boss));
+
+    // The two marks are independent. `held` says "you may not stop", this
+    // says "nobody may touch you", and neither implies the other -- a test
+    // rather than a comment because the pair is easy to conflate.
+    try testing.expect(!b.get(boss).?.held);
+    try b.setHeld(boss, true, .user);
+    try testing.expect(b.isShielded(boss) and b.get(boss).?.held);
+
+    try b.setShielded(boss, false, .user);
+    try testing.expect(!b.isShielded(boss) and b.get(boss).?.held);
+}
+
+test "a terminal the bus never registered is not shielded" {
+    var b = testBus();
+    defer b.deinit();
+
+    // Not an error and not shielded: it carries no marks at all, which is
+    // the open case. Reporting it as shielded would make every unknown id
+    // unreachable and turn a typo into a permission failure.
+    try testing.expect(!b.isShielded(0xDEAD));
+
+    // Setting it is still an error, because there is nothing to set it on.
+    try testing.expectError(
+        error.UnknownTerminal,
+        b.setShielded(0xDEAD, true, .user),
+    );
 }

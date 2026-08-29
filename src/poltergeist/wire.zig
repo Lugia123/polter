@@ -199,6 +199,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .stand_down => .stand_down,
         .become_supervisor => .become_supervisor,
         .terminal_actions => .terminal_actions,
+        .terminal_keys => .terminal_keys,
 
         .config_get => .{ .config_get = .{
             .key = (try optionalString(aa, params, "key")) orelse "",
@@ -212,6 +213,11 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .terminal_action => .{ .terminal_action = .{
             .id = try requireId(params),
             .action = try requireString(aa, params, "action"),
+        } },
+
+        .terminal_key => .{ .terminal_key = .{
+            .id = try requireId(params),
+            .key = try requireString(aa, params, "key"),
         } },
 
         .group_history => .{ .group_history = .{
@@ -439,6 +445,15 @@ pub const TerminalInfo = struct {
     /// not be clocked off.
     held: bool = false,
 
+    /// Whether the user has put this terminal out of reach.
+    ///
+    /// Reported so it is known before it is hit. Every other reason a call
+    /// is refused can be worked out from this listing -- roles and watches
+    /// are all here -- so a shield that only showed up as a rejection
+    /// would be the one refusal an agent could not account for, and it
+    /// would go looking for a bug instead of reading a decision.
+    shielded: bool = false,
+
     watching: bool = false,
 
     /// Where it is working, and what its tab says.
@@ -485,6 +500,14 @@ pub const Response = union(enum) {
     members: []const rpc.ChatMember,
     plugins: []const rpc.PluginView,
     actions: []const rpc.actions.Entry,
+
+    /// The key vocabulary: what may go before the `+` and what may go
+    /// after it. Two lists rather than the cross product, which would be
+    /// thousands of lines saying nothing.
+    keys: struct {
+        modifiers: []const []const u8,
+        names: []const []const u8,
+    },
     opened: struct {
         /// Null when the runtime has not made it yet. Not an error: the tab
         /// is coming and `terminal_list` will have it.
@@ -644,6 +667,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             }
             try s.endArray();
         },
+        .keys => |v| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("modifiers");
+            try s.write(v.modifiers);
+            try s.objectField("keys");
+            try s.write(v.names);
+        },
         .failed => |f| {
             try s.objectField("ok");
             try s.write(false);
@@ -766,6 +797,8 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
     try s.write(@tagName(info.duty));
     try s.objectField("held");
     try s.write(info.held);
+    try s.objectField("shielded");
+    try s.write(info.shielded);
     try s.objectField("watching");
     try s.write(info.watching);
 
@@ -1053,6 +1086,33 @@ test "a response is one line" {
 
     const out = w.buffered();
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\n"));
+}
+
+test "a listing says which terminals are out of reach, and which are not" {
+    // Both halves. Always present, never omitted the way `quiet_ms` is:
+    // absent there means "not measured", but there is no not-measured for
+    // a shield, and a reader that had to infer `false` from a missing key
+    // would read every older host as unshielded -- which is the wrong way
+    // for this one to fail.
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const list = [_]TerminalInfo{
+        .{ .id = 0x11, .shielded = true },
+        .{ .id = 0x22, .role = .watched, .watching = true },
+    };
+    try writeResponse(&w, .{ .terminals = &list });
+
+    const out = w.buffered();
+    try testing.expect(std.mem.indexOf(u8, out, "\"shielded\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"shielded\":false") != null);
+
+    // And it is said about a terminal nobody watches, which is the one it
+    // is most often put on.
+    const first = std.mem.indexOf(u8, out, "\"0x0000000000000011\"").?;
+    const second = std.mem.indexOf(u8, out, "\"0x0000000000000022\"").?;
+    const shield = std.mem.indexOf(u8, out, "\"shielded\":true").?;
+    try testing.expect(shield > first and shield < second);
 }
 
 test "screen text goes out escaped, not raw" {

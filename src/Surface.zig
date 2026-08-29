@@ -185,6 +185,13 @@ last_bell_time: ?std.Io.Timestamp = null,
 /// rewrite the title on every event.
 poltergeist_tab_mark: poltergeistpkg.Bus.TabMark = .none,
 
+/// Whether the mark this surface last wrote carried the shield.
+///
+/// Kept beside the mark rather than inside it: the shield is composed with
+/// a `TabMark`, not one of its values, so the pair is what has to be
+/// compared to know the tab is already saying the right thing.
+poltergeist_tab_shielded: bool = false,
+
 /// When a real key event last arrived from the user.
 ///
 /// Poltergeist uses this to keep out of the way: it will not type a notice
@@ -3393,24 +3400,46 @@ const notice_quiet_keyboard_ms = 10 * std.time.ms_per_s;
 /// setting it to a bare status would throw away the title the program set
 /// -- which is the part somebody is actually reading. When there is nothing
 /// to mark, the title goes back unadorned.
+///
+/// Two marks are composed here, not one. The shield is not a `TabMark`
+/// value -- it is orthogonal to every one of them, the unmarked case
+/// included -- so it is written as its own prefix in front. See
+/// `Bus.shield_prefix` for why that beats doubling the enum.
+///
+/// **This is per-surface state written to a per-tab place, and splits break
+/// that.** Four splits share one tab and one title, and each of them calls
+/// this, so the last writer wins and a shielded split can end up wearing a
+/// sibling's mark. The shield still holds -- `Bus.isShielded` is asked per
+/// surface and the tool surface is refused per surface -- so what is lost
+/// is the confirmation, not the protection. The fix is a per-surface badge
+/// of the kind `readonly` already has, which is a `ghostty.h` change and
+/// both apprts; until then `terminal_list` is the answer that is right per
+/// surface. Same degradation `held` has had since it shipped.
 pub fn updatePoltergeistTabMark(self: *Surface) void {
     const mark = self.app.poltergeist.tabMark(
         self.id,
         self.app.poltergeistNow(),
         self.io.config.poltergeist_quiescence_ms,
     );
+    const shielded = self.app.poltergeist.isShielded(self.id);
 
     // Nothing has changed for this tab: leave it alone rather than
     // rewriting the same title every time anything happens.
-    if (mark == self.poltergeist_tab_mark) return;
+    if (mark == self.poltergeist_tab_mark and
+        shielded == self.poltergeist_tab_shielded) return;
     self.poltergeist_tab_mark = mark;
+    self.poltergeist_tab_shielded = shielded;
 
     // Unmarked means handing the tab back, not stamping it with what it
     // happens to say right now. A tab title is an override: writing the
     // current title into it would pin that text for good, and the
     // terminal's own later titles would never show again. An empty
     // override is the way to release it.
-    if (mark == .none) {
+    //
+    // The shield counts as a mark on its own. A terminal nobody watches
+    // has no `TabMark`, and that is exactly the terminal -- somebody's own
+    // shell -- this is most often put on.
+    if (mark == .none and !shielded) {
         self.setTabTitleOverride("");
         return;
     }
@@ -3418,8 +3447,12 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     const own = self.rt_surface.getTitle() orelse "";
     const title = std.fmt.allocPrintSentinel(
         self.alloc,
-        "{s}{s}",
-        .{ mark.prefix(), own },
+        "{s}{s}{s}",
+        .{
+            if (shielded) poltergeistpkg.Bus.shield_prefix else "",
+            mark.prefix(),
+            own,
+        },
         0,
     ) catch return;
     defer self.alloc.free(title);
@@ -3575,6 +3608,58 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
         .key = .enter,
         .utf8 = "\r",
     });
+}
+
+/// Press a key in this terminal as if the user had.
+///
+/// `spec` is a keybinding trigger written the way the config file writes
+/// one: `ctrl+c`, `escape`, `ctrl+shift+k`. It goes through `keyCallback`,
+/// which is the door a real keyboard comes in by -- the same one
+/// `typePoltergeistText` already uses for the return at the end of a
+/// notice. No second implementation, so no drift.
+///
+/// **This is not `typePoltergeistText` with a different payload**, and the
+/// three guards that function keeps do not all carry over. Each one, and
+/// what happens to it:
+///
+///   * **Child exited: kept, and it matters more here.** A terminal whose
+///     process has gone is showing the user why, and any key at all takes
+///     that away down `keyCallback`'s "any key closes the window" path.
+///     Pressing ctrl+c at it would close the window rather than interrupt
+///     anything.
+///
+///   * **A line break in the text: does not apply.** There is no text.
+///     That guard exists because a newline inside a paste submits a line
+///     the caller never said to submit; a key press is one key, named
+///     explicitly, and `enter` being nameable is the caller saying so.
+///
+///   * **The user has just touched the keyboard: deliberately dropped.**
+///     This is the one worth arguing. A notice is unsolicited -- it
+///     arrives on a timer and would land in the middle of somebody's
+///     half-typed sentence and submit it, and skipping costs nothing
+///     because the sampler will say the same thing again. A key press is
+///     neither: an agent asked for this key, at this moment, and the whole
+///     point of the case it was added for is that the user is sitting
+///     there watching. "Stop the server and start it again so I can see
+///     it" is a thing done in front of somebody, not behind them. Deferring
+///     it would mean the tool silently does nothing exactly when it is
+///     being used as intended.
+pub fn sendPoltergeistKey(self: *Surface, spec: []const u8) !void {
+    const trigger = try poltergeistpkg.keys.parse(spec);
+
+    if (self.child_exited) {
+        log.info("poltergeist: key dropped, the child process has exited", .{});
+        return error.ChildExited;
+    }
+
+    // `keyCallback` stamps `last_key_time`, and this key is ours rather
+    // than the user's. Leaving the stamp would have Poltergeist mistake
+    // its own key press for somebody being at the keyboard -- and then
+    // hold back the next notice on account of it.
+    const stamp = self.last_key_time;
+    defer self.last_key_time = stamp;
+
+    _ = try self.keyCallback(poltergeistpkg.keys.event(trigger));
 }
 
 pub fn textCallback(self: *Surface, text: []const u8) !void {
@@ -5816,6 +5901,39 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // mark is the announcement now, and it does not scroll away.
             // Refreshed here rather than left to the next sampler tick,
             // because a terminal nobody is sampling would never get one.
+            self.updatePoltergeistTabMark();
+
+            return true;
+        },
+
+        .poltergeist_toggle_shielded => {
+            const bus = &self.app.poltergeist;
+            const next = !bus.isShielded(self.id);
+
+            // `.user`: this is a keypress. The bus refuses it from anywhere
+            // else, and that refusal is the feature -- reach is decided by
+            // what the target is marked as, so a party that could clear the
+            // mark would be deciding its own reach.
+            bus.setShielded(self.id, next, .user) catch |err| switch (err) {
+                // Registering first is not a detail. The terminal this is
+                // most often used on is one nobody ever watched, so it has
+                // no entry at all, and without this the escape hatch would
+                // fail precisely in the case it exists for.
+                error.UnknownTerminal => {
+                    try bus.register(self.id);
+                    try bus.setShielded(self.id, next, .user);
+                },
+                error.NotPermitted => unreachable,
+            };
+
+            log.info("poltergeist: shield is now {}", .{next});
+
+            // Nothing is typed into the terminal, for the reason written
+            // on the hold: a guarantee announced once scrolls away, and a
+            // state that exists only at the moment it was set is no state
+            // at all. The lock on the tab is the announcement, and it does
+            // not scroll. Refreshed here rather than waiting for a sampler
+            // tick, because a terminal nobody samples never gets one.
             self.updatePoltergeistTabMark();
 
             return true;

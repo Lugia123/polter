@@ -1414,7 +1414,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     // MARK: - Poltergeist
     //
-    // These four are in the menu because until they were, the only way to
+    // These five are in the menu because until they were, the only way to
     // reach any of them was a keybind nobody had set: they ship with no
     // default binding, so a feature with no menu item was a feature with
     // no way in at all.
@@ -1437,6 +1437,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @IBAction func poltergeistToggleHeld(_ sender: Any?) {
         guard let surface = focusedSurface?.surface else { return }
         ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_held")
+    }
+
+    @IBAction func poltergeistToggleShielded(_ sender: Any?) {
+        guard let surface = focusedSurface?.surface else { return }
+        ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_shielded")
     }
 
     // MARK: - TerminalViewDelegate

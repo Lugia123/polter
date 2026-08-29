@@ -33,6 +33,7 @@
 "Make This Terminal a Supervisor" = "Make This Terminal a Supervisor";
 "Supervise This Terminal" = "Supervise This Terminal";
 "Keep This Terminal Working" = "Keep This Terminal Working";
+"Keep Agents Out of This Terminal" = "Keep Agents Out of This Terminal";
 
 "No plugins installed" = "No plugins installed";
 "Settings…" = "Settings…";

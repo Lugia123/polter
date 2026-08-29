@@ -71,6 +71,7 @@
                 <outlet property="menuPoltergeistSupervisor" destination="pg3-Su-Pv1" id="pg3-Ou-Tl1"/>
                 <outlet property="menuPoltergeistWatch" destination="pg4-Wa-Tc1" id="pg4-Ou-Tl1"/>
                 <outlet property="menuPoltergeistHeld" destination="pg5-Wm-Cy1" id="pg5-Ou-Tl1"/>
+                <outlet property="menuPoltergeistShield" destination="pg9-Sh-Ld1" id="pg9-Ou-Tl1"/>
                 <outlet property="menuLanguage" destination="pg7-La-Ng1" id="pg7-Ou-Tl1"/>
                 <outlet property="menuPlugins" destination="pg8-Pl-Ug1" id="pg8-Ou-Tl1"/>
                 <outlet property="menuReopenTab" destination="rt1-Re-Op1" id="rt1-Ou-Tl1"/>
@@ -414,6 +415,12 @@
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="poltergeistToggleHeld:" target="-1" id="pg5-Wm-Cy2"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Keep Agents Out of This Terminal" id="pg9-Sh-Ld1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="poltergeistToggleShielded:" target="-1" id="pg9-Sh-Ld2"/>
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="pg6-Sp-Ar1"/>

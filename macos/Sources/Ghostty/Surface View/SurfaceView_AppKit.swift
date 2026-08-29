@@ -1639,6 +1639,8 @@ extension Ghostty {
             item.setImageIfDesired(systemSymbolName: "binoculars")
             item = menu.addItem(withTitle: String(localized: "Keep This Terminal Working", comment: "右键菜单：按住不许下班"), action: #selector(poltergeistToggleHeld(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "pin")
+            item = menu.addItem(withTitle: String(localized: "Keep Agents Out of This Terminal", comment: "右键菜单：护盾，任何 agent 都不许碰"), action: #selector(poltergeistToggleShielded(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "lock")
 
             return menu
         }
@@ -1775,7 +1777,7 @@ extension Ghostty {
 
         // MARK: Poltergeist
         //
-        // These three are in the context menu because they are all about
+        // These four are in the context menu because they are all about
         // *this* terminal, which is the one the menu was opened on. Opening
         // the conversations is not -- it belongs to the app, so it stays in
         // the Agents menu and out of here.
@@ -1790,6 +1792,10 @@ extension Ghostty {
 
         @objc func poltergeistToggleHeld(_ sender: Any) {
             poltergeistAction("poltergeist_toggle_held")
+        }
+
+        @objc func poltergeistToggleShielded(_ sender: Any) {
+            poltergeistAction("poltergeist_toggle_shielded")
         }
 
         private func poltergeistAction(_ action: String) {

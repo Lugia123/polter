@@ -39,6 +39,7 @@
 "Make This Terminal a Supervisor" = "将此终端设为总管";
 "Supervise This Terminal" = "监督此终端";
 "Keep This Terminal Working" = "保持此终端工作";
+"Keep Agents Out of This Terminal" = "不让 agent 碰此终端";
 
 /* 插件 */
 "No plugins installed" = "没有已安装的插件";
