@@ -1479,6 +1479,13 @@ pub const ReadThread = struct {
             gather_thread.setName(global.io(), "io-gather") catch {};
         }
 
+        // This stage is the last thing that will ever hand this terminal
+        // any output, so its exit is the moment the transcript's final
+        // screenful belongs to -- the pty has hung up. Teardown is too
+        // late: with `-e` the process ends at the same instant the window
+        // does. See `Termio.finishTranscript`.
+        defer io.finishTranscript();
+
         // This thread is the parse stage. We consume batches in ring
         // order until the gather stage reports the stream is over and
         // the ring is drained.
@@ -1498,11 +1505,12 @@ pub const ReadThread = struct {
             // the tail below, so it is safe to read outside the lock.
             io.processOutput(batch);
 
-            {
+            const drained = drained: {
                 pipeline.mutex.lockUncancelable(global.io());
                 pipeline.tail = (pipeline.tail + 1) % buffer_count;
                 pipeline.count -= 1;
-                const wake = pipeline.count == 0 and
+                const empty = pipeline.count == 0;
+                const wake = empty and
                     pipeline.bridging and
                     pipeline.idle_write_fd >= 0;
                 pipeline.mutex.unlock(global.io());
@@ -1515,11 +1523,19 @@ pub const ReadThread = struct {
                 if (wake) {
                     _ = posix.system.write(pipeline.idle_write_fd, "i", 1);
                 }
-            }
+
+                break :drained empty;
+            };
 
             // Batch boundary: hand the renderer state mutex off if
             // the renderer is waiting. See renderer.State.lockDemand.
             io.renderer_state.yieldToDemand(global.io());
+
+            // Out of batches, so this is the end of a run of output: the
+            // one moment at which the terminal transcript can be told that
+            // there will be no further read to carry its held-back lines
+            // to disk. See `Termio.flushTranscript`.
+            if (drained) io.flushTranscript();
         }
     }
 
@@ -1790,6 +1806,10 @@ pub const ReadThread = struct {
         };
         defer crash.sentry.thread_state = null;
 
+        // The same as the posix stage: this loop ending is the pty hanging
+        // up, and so the last moment the final screenful can be recorded.
+        defer io.finishTranscript();
+
         var buf: [1024]u8 = undefined;
         while (true) {
             while (true) {
@@ -1808,6 +1828,12 @@ pub const ReadThread = struct {
                 }
 
                 @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
+
+                // No batch ring here, so every read is the end of a run as
+                // far as this loop can tell. Less coalescing than the posix
+                // stage gets; the alternative is the transcript recording
+                // nothing at all, which is what it did before this existed.
+                io.flushTranscript();
 
                 // See threadMainPosix: hand the renderer state mutex
                 // off if the renderer is waiting, since this loop

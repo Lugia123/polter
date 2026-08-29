@@ -728,6 +728,56 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
     self.processOutputLocked(buf);
 }
 
+/// Tell the transcript that the run of output is over.
+///
+/// Called by the reader stage when it has no batch left to parse, which is
+/// the only signal anywhere that a burst has ended. Without it the tap in
+/// `processOutputLocked` records nothing at all for the common shape of a
+/// terminal's life -- print a screenful, then wait -- because its rate
+/// limit is a leading edge and nothing but a pty read ever calls it. See
+/// `Transcript.flush`.
+///
+/// Cheap when there is nothing to do: the lock is taken for as long as it
+/// takes to find that the pin is still where the last flush left it.
+pub fn flushTranscript(self: *Termio) void {
+    if (self.poltergeist_transcript == null) return;
+
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+
+    // `|*t|` and not `orelse`: the flush mutates the transcript's pin and
+    // its clock, so it has to reach the field itself rather than a copy of
+    // it that is thrown away on the next line.
+    if (self.poltergeist_transcript) |*t| {
+        const primary = self.terminal.screens.get(.primary) orelse return;
+        const now: std.Io.Timestamp = .now(global.io(), .awake);
+        t.flush(
+            primary,
+            self.terminal.getTitle() orelse "",
+            @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms)),
+        );
+    }
+}
+
+/// Tell the transcript that this terminal will never print again.
+///
+/// Called when the reader stage exits, which happens when the pty hangs
+/// up. That is the last moment at which the rows still on the active
+/// screen -- which have never scrolled out, and so have never been
+/// recorded -- can be written down while anything is still alive to write
+/// them. See `Transcript.finish` for why `deinit` was not that moment.
+pub fn finishTranscript(self: *Termio) void {
+    if (self.poltergeist_transcript == null) return;
+
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+
+    if (self.poltergeist_transcript) |*t| {
+        const primary = self.terminal.screens.get(.primary) orelse return;
+        t.finish(primary, self.terminal.getTitle() orelse "");
+    }
+}
+
 /// Process output from readdata but the lock is already held.
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
     // Count pty output for Poltergeist. This runs on the reader thread while

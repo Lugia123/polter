@@ -133,6 +133,16 @@ last_mono_ms: i64 = 0,
 /// terminal is not reallocating on every one.
 scratch: std.ArrayListUnmanaged(u8) = .empty,
 
+/// Whether the record has been closed by `finish`.
+///
+/// The last screenful can only be written once. Recording it twice would
+/// not be harmless: at the very bottom of the page list there is no row
+/// below the last one, so `record` leaves the pin *on* it rather than past
+/// it, and a second pass repeats that row. Two ends can both plausibly
+/// arrive -- the pty hangs up and then the surface is torn down -- so
+/// whichever gets here first is the one that closes the record.
+closed: bool = false,
+
 /// Read and write failures are said once and then swallowed, like the chat
 /// log's: a full disk must not be allowed to disturb the terminal it is
 /// only supposed to be watching.
@@ -233,10 +243,11 @@ pub fn open(
 /// screenful, which by definition has never scrolled out.
 pub fn deinit(self: *Transcript, screen: ?*const terminal.Screen) void {
     if (screen) |s| {
-        // `.screen` rather than `.history`: at shutdown there is no later
-        // moment in which the active rows would scroll out, so this is
-        // where they are recorded or nowhere.
-        self.record(s, nowMs(self.io), .screen);
+        // The other order: a surface torn down while its child is still
+        // running never reaches `finish`, and here the teardown really is
+        // the last chance. When the pty already hung up this does nothing,
+        // which is the point of the flag it goes through.
+        self.finish(s, "");
         if (self.pin) |p| {
             // Casting away const: untracking mutates the page list's own
             // bookkeeping, not the screen's contents, and the caller has
@@ -264,6 +275,10 @@ pub fn deinit(self: *Transcript, screen: ?*const terminal.Screen) void {
 /// The work that does happen is proportional to output actually committed,
 /// never to bytes seen -- a program redrawing itself forever commits
 /// nothing and so costs nothing here.
+///
+/// This is only the leading edge of the rate limit, and on its own it is
+/// not enough: see `flush` for why, and for what closes the window this
+/// opens.
 pub fn note(
     self: *Transcript,
     screen: *const terminal.Screen,
@@ -279,6 +294,68 @@ pub fn note(
     self.rename(title);
 
     self.record(screen, nowMs(self.io), .history);
+}
+
+/// The trailing edge of the same throttle: write down whatever `note`
+/// held back, now that no more output is coming.
+///
+/// `note` is the *leading* edge of a rate limit and it is only ever called
+/// from a pty read, which together make a hole big enough to swallow the
+/// whole feature: a terminal that prints in one burst and then goes quiet
+/// gets one `note` at the start of the burst -- when nothing has scrolled
+/// yet and there is nothing to record -- and every later read inside the
+/// 250ms window is turned away. Output then stops, so no further read ever
+/// arrives, so nothing calls `note` again, and every committed line sits in
+/// the scrollback unwritten until the terminal closes. `seq 1 400` at a
+/// shell prompt is exactly that shape, and it produced a transcript
+/// directory that was never even created.
+///
+/// So the reader stage calls this when it runs out of batches, which is the
+/// one moment that means "the burst is over". Unthrottled deliberately:
+/// being called at all already says there is nothing left to coalesce with,
+/// and the whole point is to close the window `note` opened. Idle costs
+/// nothing -- a terminal with no output has no batches to run out of, and a
+/// flush with nothing committed since the last one walks no rows and writes
+/// no bytes.
+pub fn flush(
+    self: *Transcript,
+    screen: *const terminal.Screen,
+    title: []const u8,
+    mono_ms: i64,
+) void {
+    self.last_mono_ms = mono_ms;
+    self.rename(title);
+    self.record(screen, nowMs(self.io), .history);
+}
+
+/// This terminal will never print again: write down the last screenful.
+///
+/// The rows still on the active screen have never scrolled out, so nothing
+/// in the ordinary path will ever reach them. `deinit` was meant to be
+/// their one chance, and on a real machine it is not one: the process
+/// exits before anything unwinds. `ghostty -e` sets
+/// `quit-after-last-window-closed` with no delay, so the window closing and
+/// the process ending are the same instant; Cmd-Q, a crash and a kill are
+/// the same story. Every terminal was losing its last screenful.
+///
+/// So the record is closed at the moment that actually means the terminal
+/// is finished -- the pty hanging up, which is a thing that happens to a
+/// live program rather than a thing that happens while one is being torn
+/// down. `deinit` comes through here too, for the other order: a surface
+/// closed while its child is still running never sees a hangup, and there
+/// the teardown really is the last chance. Whichever arrives first closes
+/// the record and the other does nothing -- see `closed` for why that has
+/// to be a flag rather than something the pin can decide.
+pub fn finish(self: *Transcript, screen: *const terminal.Screen, title: []const u8) void {
+    if (self.closed) return;
+    self.closed = true;
+
+    self.rename(title);
+
+    // `.screen` and not `.history`: there is no later moment in which
+    // these rows would scroll out, so this is where they are recorded or
+    // nowhere.
+    self.record(screen, nowMs(self.io), .screen);
 }
 
 /// Write every row from the pin up to the bottom of `upto` into the file.
@@ -775,6 +852,109 @@ test "the throttle keeps a burst off the disk but never loses the line" {
     defer alloc.free(after);
     try testing.expect(std.mem.indexOf(u8, after, "\"three\"") != null);
     try testing.expect(std.mem.indexOf(u8, after, "\"four\"") != null);
+}
+
+test "a burst that ends and goes quiet still reaches the file" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer alloc.free(dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var s = try terminal.Screen.init(io, alloc, .{
+        .cols = 20,
+        .rows = 3,
+        .max_scrollback_bytes = 1 << 20,
+    });
+    defer s.deinit();
+
+    var t = try Transcript.open(alloc, io, dir, 1, "quiet");
+    defer t.deinit(null);
+
+    const at = nowMs(io);
+
+    // The shape a real terminal actually has, and the one that recorded a
+    // grand total of zero bytes on a real machine: the first read arrives
+    // before anything has scrolled, so the one `note` the throttle lets
+    // through has nothing to write. Every read of the burst that follows
+    // lands inside the same 250ms window and is turned away.
+    t.note(&s, "quiet", 10_000);
+    try testing.expectError(error.FileNotFound, readDay(alloc, io, &t, at));
+
+    try s.testWriteString("one\ntwo\nthree\nfour\nfive");
+    t.note(&s, "quiet", 10_000 + 1);
+    try testing.expectError(error.FileNotFound, readDay(alloc, io, &t, at));
+
+    // And then the output stops. Nothing will ever call `note` again --
+    // only a pty read does, and there are no more -- so without a trailing
+    // edge those lines sit in the scrollback until the terminal closes.
+    t.flush(&s, "quiet", 10_000 + 2);
+
+    const got = try readDay(alloc, io, &t, at);
+    defer alloc.free(got);
+    try testing.expect(std.mem.indexOf(u8, got, "\"one\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"two\"") != null);
+
+    // A second flush with nothing new does not write the same lines again:
+    // the pin is where the first one left it.
+    t.flush(&s, "quiet", 10_000 + 3);
+    const again = try readDay(alloc, io, &t, at);
+    defer alloc.free(again);
+    try testing.expectEqualStrings(got, again);
+}
+
+test "the last screenful lands when the pty hangs up, not at teardown" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer alloc.free(dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var s = try terminal.Screen.init(io, alloc, .{
+        .cols = 20,
+        .rows = 3,
+        .max_scrollback_bytes = 1 << 20,
+    });
+    defer s.deinit();
+
+    var t = try Transcript.open(alloc, io, dir, 1, "hangup");
+    defer t.deinit(null);
+
+    const at = nowMs(io);
+
+    try s.testWriteString("one\ntwo\nthree\nfour\nfive");
+    t.flush(&s, "hangup", 10_000);
+
+    // The ordinary path can only ever have the rows that scrolled out.
+    const during = try readDay(alloc, io, &t, at);
+    defer alloc.free(during);
+    try testing.expect(std.mem.indexOf(u8, during, "\"one\"") != null);
+    try testing.expect(std.mem.indexOf(u8, during, "\"five\"") == null);
+
+    // The pty hangs up. Nothing is being torn down -- the terminal is
+    // still perfectly alive -- and the last screenful has to be on disk
+    // anyway, because on this machine the process ends before teardown
+    // ever runs.
+    t.finish(&s, "hangup");
+
+    const got = try readDay(alloc, io, &t, at);
+    defer alloc.free(got);
+    try testing.expect(std.mem.indexOf(u8, got, "\"four\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"five\"") != null);
+
+    // And the teardown that may or may not follow writes nothing twice --
+    // at the bottom of the page list the pin stops *on* the last row, so
+    // without the flag a second pass would repeat it.
+    t.finish(&s, "hangup");
+    const again = try readDay(alloc, io, &t, at);
+    defer alloc.free(again);
+    try testing.expectEqualStrings(got, again);
 }
 
 test "a program on the alternate screen leaves the transcript alone" {
