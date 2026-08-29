@@ -62,6 +62,7 @@
 "pg3-Su-Pv1.title" = "将此终端设为总管";
 "pg4-Wa-Tc1.title" = "监督此终端";
 "pg5-Wm-Cy1.title" = "保持此终端工作";
+"pg9-Sh-Ld1.title" = "不让 agent 碰此终端";
 
 /* 窗口 */
 "aUF-d1-5bR.title" = "窗口";
