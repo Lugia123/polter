@@ -172,7 +172,7 @@
 而只想要名字的插件根本不必打开它。一行 `{"ok":true}` = 这个运行时现在知道
 Polter 了。
 
-**第一个实现是 `plugins/claude-code/`**（说明见 [plugin/claude-code.md](plugin/claude-code.md)），
+**第一个实现是 `plugins/claude-code/`**（说明见 [plugin/provisioning.md](plugin/provisioning.md)），
 就是原来那两个函数搬过去，一字不多：`claude mcp get` 比对 exe 与版本标记，不一致
 才 remove + add；skill 连 frontmatter 整份写，`name:` 只在 frontmatter 里改写成
 `polter-`，内容没变就不写。**机器上没有 `claude` 时它回 `{"ok":true}`**——那不是

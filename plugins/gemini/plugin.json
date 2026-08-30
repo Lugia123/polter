@@ -1,0 +1,34 @@
+{
+  "key": "gemini",
+  "name": "Gemini CLI",
+  "version": "1.0.0",
+  "description": "Registers Polter's MCP server with Google's Gemini CLI and mirrors Polter's skills into ~/.gemini/skills/polter-*.",
+  "exec": "provision.sh",
+  "timeout_ms": 20000,
+  "wants": {
+    "events": [
+      "provision"
+    ],
+    "calls": [],
+    "groups": [],
+    "network": false,
+    "exec": [
+      "gemini"
+    ]
+  },
+  "params": {
+    "type": "object",
+    "properties": {
+      "skills": {
+        "type": "string",
+        "title": "Install skills as well",
+        "description": "yes mirrors Polter's skills into this host's skills directory. Polter's skill_read has to be thought of first; a host's own skills are matched against what the user asked for, which is the whole difference. no registers the MCP server and nothing else.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "yes"
+      }
+    }
+  }
+}

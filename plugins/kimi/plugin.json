@@ -1,0 +1,19 @@
+{
+  "key": "kimi",
+  "name": "Kimi CLI",
+  "version": "1.0.0",
+  "description": "Registers Polter's MCP server with Moonshot's Kimi CLI. Skills are not installed: the directory has not been confirmed, and Polter's guidance stays reachable through skill_read and the tool map in the MCP handshake.",
+  "exec": "provision.sh",
+  "timeout_ms": 20000,
+  "wants": {
+    "events": [
+      "provision"
+    ],
+    "calls": [],
+    "groups": [],
+    "network": false,
+    "exec": [
+      "kimi"
+    ]
+  }
+}

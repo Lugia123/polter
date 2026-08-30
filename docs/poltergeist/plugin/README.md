@@ -1,13 +1,13 @@
 # 随构建装出去的插件
 
 一个插件一篇。**协议、清单格式、权限声明、凭据、怎么照着写一个**，全在
-[../plugins.md](../plugins.md)；这里只讲这两个插件各自是什么、参数是什么、
+[../plugins.md](../plugins.md)；这里只讲装出去的插件各自是什么、参数是什么、
 怎么在不启动 Polter 的情况下验它。
 
 | | 订阅 | 做什么 |
 | --- | --- | --- |
 | [archive.md](archive.md) | `chat` | 把每条群聊消息另存一份到文件系统，一天一个文件，所有群一条时间线 |
-| [claude-code.md](claude-code.md) | `provision` | 把 Polter 的 MCP 端点和 skill 装给 Claude Code |
+| [provisioning.md](provisioning.md) | `provision` | **八个**：把 Polter 的 MCP 端点和 skill 装给 Claude Code / Codex / Gemini / Qwen Code / Kimi / iFlow / opencode / DeepSeek-TUI。一份实现，八份声明；**默认只开 Claude Code** |
 
 **没有随构建装出去的通知插件。** 通知渠道有几十种，内置任何一种都会立刻过时，
 所以那一类从第一天起就是用户自己放进 `$XDG_CONFIG_HOME/polter/plugins/` 的东西；

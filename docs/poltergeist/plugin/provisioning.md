@@ -1,10 +1,80 @@
-# claude-code
+# 供给插件（八个，一份实现）
 
-**订阅 `provision`**：把 Polter 的 MCP 端点注册给 Claude Code，并把 Polter 的
-skill 镜像到 `~/.claude/skills/polter-*`。
+`claude-code` `codex` `gemini` `qwen-code` `kimi` `iflow` `opencode` `deepseek`
 
-代码在 `plugins/claude-code/`。协议全文见 [../plugins.md](../plugins.md) 第二节，
-这一步为什么是插件而不是核心的一部分见 [../boundary.md](../boundary.md) 第三节。
+八个插件做的是同一件事，实现只有一份：`plugins/_sdk/provision.sh`。每个插件本身
+是一份**声明**——去 PATH 上找哪个二进制、这家怎么注册 MCP、它把 skill 放在哪。
+`plugins/claude-code/provision.sh` 五十来行，其余的更短。
+
+**为什么各家仍是独立插件而不是一个带宿主表的插件**：合成一个的话，第一个失败会
+连坐其余七个，而且 `wants.exec` 得声明全部八个二进制——等于每台机器都在声明它用
+不到的七个 CLI。共用的是实现，不是身份。各自有自己的开关、自己的日志、自己在插件
+界面里的一行。
+
+选型、各家的落点、以及为什么不做纯 IDE 的那些，见
+[../provisioning.md](../provisioning.md)。
+
+## 默认只有 Claude Code 是开的
+
+`enabled` 本来就默认 `false`，八个插件各自带一份 `settings.json` 把意图写在文件
+里。只有 `claude-code` 那份是 `true`。
+
+代价是实打实的：**一个装了 Codex 的人打开 Polter，什么也不会发生，而且没有任何东
+西告诉他本可以发生什么。** 这是个已知的缺口，补法在 [../provisioning.md](../provisioning.md)
+第六节（探测到二进制就提示一次），**还没做**。
+
+## 三种状态，写在日志里
+
+`claude-code` 曾经在二进制不在 PATH 上时静默退出 0。一个插件时那是对的；八个之
+后，日志里「你没装这个 CLI」和「装了但注册失败」长得一模一样——而那正是 Dock 启
+动那个 bug 藏了几个月的地方。所以状态是有名字的，`grep` 得到：
+
+| 日志 | 意思 | 用户会看到什么 |
+| --- | --- | --- |
+| `status=absent` | 二进制不在 PATH 上 | 什么都不用做，**不是问题** |
+| `status=provisioned` | 真写了东西 | 没写就不出声，避免八行空话 |
+| `status=failed step=<mcp\|skills>` | 二进制在，某一步没成 | **通知**，说清哪一步 |
+
+只有 `failed` 会主动找到人，走 `polter_tell`，所以它必须写在本批次的应答之前。
+
+## 两族：调命令的，和改文件的
+
+| 族 | 怎么注册 | 谁 |
+| --- | --- | --- |
+| 有 `x mcp add` | 调命令，不碰文件 | claude-code, codex, gemini, qwen-code, kimi, iflow |
+| 只能改 JSON | 读→改→原子换 | opencode, deepseek |
+
+**这两件不是同一件事换个帽子。** 有子命令的 CLI 自己拥有那个文件——格式、加锁、
+迁移都是它的事；没有子命令的，这些就成了我们的债。所以第二族走
+`polter_json_edit`，它保证三条：
+
+1. **解析不了就绝不写。** 因为读不懂而覆盖别人的配置，是唯一不可挽回、且确实是我
+   们的错的那种结局。
+2. **原子替换。** 临时文件写好再 `rename`。写了一半的配置是一个起不来的 CLI。
+3. **文件不存在等于空对象，不是错误。** 装了 CLI 但从没配过的第一次。
+
+解析用 `python3`。用 `sed` 手搓 JSON 编辑，就是一份配置在凌晨三点长出一个多余逗
+号的过程，而这是用户的文件。没有 `python3` 时**大声失败**，不退而求其次：一个拿
+不到 Polter 工具的 agent 只是失望，一个被写坏的配置是一台坏掉的机器。
+
+## 三家形状不一样，抄错就静默失效
+
+- **Codex**：TOML，表名是 `mcp_servers`（**下划线**），别家是 JSON 的 `mcpServers`。
+- **opencode**：键是 `mcp`，条目里 `command` 是**数组**，不是 `command` 字符串加
+  `args`。
+- **Qwen Code / iFlow 都是 gemini-cli 的 fork**，所以和 Gemini CLI 同形。这不是可
+  以高兴的巧合——**上游一变，这三家一起坏**。修好一个的人应该去看另外两个。
+
+## skill 装不了不是失败
+
+`qwen-code` `kimi` `iflow` `opencode` `deepseek` 的 skill 目录**没有核实过**，所以
+`host_skills_dir` 返回空，那一步跳过。**这是降级，不是失败**：
+
+- skill 正文本来就能通过 `skill_read` 这个 MCP 工具拿到；
+- `initialize` 的 `instructions` 里那张工具族地图是协议字段，**任何 MCP 客户端都吃**。
+
+往猜出来的目录里写文件，比一个字都不写更糟——那是留在别人机器上的垃圾，而且没人
+会来收。核实了再填，别提前填。
 
 ## 为什么需要它
 
@@ -48,7 +118,7 @@ this -> {"ok":true}
 | `scope` | `user`（缺省）把 server 写进 `~/.claude.json`，对每个目录都生效；`local` 只写这台机器的项目条目。**`user` 才是做这件事的意义**——项目 scope 恰恰是本来就能用的那种情况 |
 | `skills` | `yes`（缺省）把 Polter 的 skill 镜像进 `~/.claude/skills/polter-*`；`no` 只注册 MCP server |
 
-## 没有 `claude` 不是失败
+## 没有那个二进制不是失败
 
 `command -v claude` 找不到就直接回 `{"ok":true}`。这台机器上的 agent 可能是别的
 东西，Polter 两种情况下都一样工作。回 false 会让每一个不用 Claude Code 的用户，
@@ -63,7 +133,7 @@ this -> {"ok":true}
 参数或协议变了而路径没变的构建——**而那是每一次原地升级**。`POLTER_REGISTERED`
 这个 env 标记就是让「是另一个构建写的」变成看得见的东西。
 
-## `polter-` 前缀是这个插件的命名空间
+## `polter-` 前缀是这一族的命名空间
 
 装而不删不叫同步。**一个从 Polter 里删掉的 skill 会继续活在每一台曾经装过它的
 机器上**：三个 `mode-*` skill 随着它们描述的工作模式一起消失了，几个月后仍然躺在
