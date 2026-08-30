@@ -779,8 +779,9 @@ const Chat = struct {
 
     /// Where the next batch of history joins on, given what a group holds.
     const Seam = union(enum) {
-        /// Nothing to join onto yet. An empty group gets a seam as soon as
-        /// its first message arrives, so this is not `stop`.
+        /// Unused, kept so the union still says that "nothing to fetch
+        /// yet" is a state this could be in. Holding nothing used to mean
+        /// this; see `seamOf` for why it no longer can.
         wait,
 
         /// The oldest message never reached the disk -- the log is off, or
@@ -791,8 +792,25 @@ const Chat = struct {
         before: u64,
     };
 
+    /// **Holding nothing means asking for the newest, not waiting.**
+    ///
+    /// This used to answer `wait`, on the reasoning that an empty group
+    /// gets a seam as soon as its first message arrives. That is true
+    /// within one run of Polter and false across a restart, which is the
+    /// case that matters: the group comes back with its name and its note
+    /// and no messages (`Chat.restoreShell`), while the log on disk still
+    /// holds every word of it. The seam could only ever come from a live
+    /// message, so until somebody posted, the whole history was
+    /// unreachable -- the user opened last night's group and read a blank
+    /// screen with the record sitting on disk beside it.
+    ///
+    /// Zero is not a sentinel invented here: `before_seq == 0` is already
+    /// "no lower bound, newest first" in `ChatLog.history`. A group that
+    /// genuinely has nothing behind it gets an empty batch back and
+    /// `history_done`, which is the same answer `wait` gave, one call
+    /// later.
     fn seamOf(msgs: []const Message) Seam {
-        if (msgs.len == 0) return .wait;
+        if (msgs.len == 0) return .{ .before = 0 };
         const seq = msgs[0].log_seq;
         return if (seq == 0) .stop else .{ .before = seq };
     }
@@ -1873,11 +1891,21 @@ fn seamFixture(log_seq: u64) Message {
     };
 }
 
-test "an empty group has no seam to join onto" {
-    // Not `stop`: a group that is empty because nothing has arrived yet
-    // gets a seam the moment something does, and marking it done here
-    // would bar it from the log for the rest of the session.
-    try testing.expect(std.meta.activeTag(Chat.seamOf(&.{})) == .wait);
+test "a group holding nothing asks for the newest, not for nothing" {
+    // **This test used to assert `wait`, and that was the bug.**
+    //
+    // Waiting for a live message to establish the seam is right within one
+    // run and wrong across a restart, which is the case that matters: the
+    // group comes back with no messages in memory and its whole log still
+    // on disk, so the seam never arrives and the history is unreachable.
+    // The user opened last night's group and read a blank screen.
+    //
+    // Zero already means "no lower bound, newest first" to
+    // `ChatLog.history`, so this asks for the newest batch rather than
+    // inventing a state.
+    const seam = Chat.seamOf(&.{});
+    try testing.expect(std.meta.activeTag(seam) == .before);
+    try testing.expectEqual(@as(u64, 0), seam.before);
 }
 
 test "a message that never reached the disk ends the walk" {
