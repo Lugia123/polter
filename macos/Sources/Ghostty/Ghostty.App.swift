@@ -1289,6 +1289,20 @@ extension Ghostty {
                 guard let surfaceView = self.surfaceView(from: surface) else { return false }
                 guard let prefix = v.prefix else { return false }
                 surfaceView.poltergeistMark = String(cString: prefix, encoding: .utf8) ?? ""
+
+                // The meaning as well as the glyphs. A menu item cannot
+                // tick itself from a rendered string, and the first
+                // version of this action sent one -- the cost of that was
+                // written down at the time and this is it coming due.
+                switch v.role {
+                case GHOSTTY_POLTERGEIST_ROLE_SUPERVISOR:
+                    surfaceView.poltergeistRole = .supervisor
+                case GHOSTTY_POLTERGEIST_ROLE_WATCHED:
+                    surfaceView.poltergeistRole = .watched
+                default:
+                    surfaceView.poltergeistRole = .none
+                }
+                surfaceView.poltergeistShielded = v.shielded
                 return true
 
             default:

@@ -683,9 +683,18 @@ typedef struct {
   const char* title;
 } ghostty_action_set_title_s;
 
+// apprt.action.PoltergeistMark.Role
+typedef enum {
+  GHOSTTY_POLTERGEIST_ROLE_NONE,
+  GHOSTTY_POLTERGEIST_ROLE_SUPERVISOR,
+  GHOSTTY_POLTERGEIST_ROLE_WATCHED,
+} ghostty_action_poltergeist_role_e;
+
 // apprt.action.PoltergeistMark.C
 typedef struct {
   const char* prefix;
+  ghostty_action_poltergeist_role_e role;
+  bool shielded;
 } ghostty_action_poltergeist_mark_s;
 
 // apprt.action.PromptTitle

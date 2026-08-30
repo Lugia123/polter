@@ -120,6 +120,15 @@ extension Ghostty {
         /// every time it is rendered, the same way the bell prefix works.
         @Published var poltergeistMark: String = ""
 
+        /// What this terminal is in Poltergeist's arrangement, so a menu
+        /// item can show whether it is already what it offers to make it.
+        /// Sent beside the glyphs rather than derived from them: reading a
+        /// state back out of a rendered string is how a tick ends up
+        /// disagreeing with the thing it is ticking.
+        enum PoltergeistRole { case none, supervisor, watched }
+        @Published var poltergeistRole: PoltergeistRole = .none
+        @Published var poltergeistShielded: Bool = false
+
         /// A clipboard confirmation waiting to be handled by its controller.
         @Published var pendingClipboardConfirmation: ClipboardConfirmationRequest? {
             didSet {
@@ -1644,14 +1653,19 @@ extension Ghostty {
             item = menu.addItem(withTitle: String(localized: "Change Terminal Title...", comment: "右键菜单：修改终端标题"), action: #selector(changeTitle(_:)), keyEquivalent: "")
 
             menu.addItem(.separator())
+            // Ticked when the terminal already is what the item offers to
+            // make it. Without this an item that has been used reads
+            // exactly like one that has not, and the only way to find out
+            // whether the last click landed is to click again.
             item = menu.addItem(withTitle: String(localized: "Make This Terminal a Supervisor", comment: "右键菜单：设为总管"), action: #selector(poltergeistSupervisor(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "eyeglasses")
+            item.state = poltergeistRole == .supervisor ? .on : .off
             item = menu.addItem(withTitle: String(localized: "Supervise This Terminal", comment: "右键菜单：监督此终端"), action: #selector(poltergeistToggleWatch(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "binoculars")
-            item = menu.addItem(withTitle: String(localized: "Keep This Terminal Working", comment: "右键菜单：按住不许下班"), action: #selector(poltergeistToggleHeld(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "pin")
+            item.state = poltergeistRole == .watched ? .on : .off
             item = menu.addItem(withTitle: String(localized: "Keep Agents Out of This Terminal", comment: "右键菜单：护盾，任何 agent 都不许碰"), action: #selector(poltergeistToggleShielded(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "lock")
+            item.state = poltergeistShielded ? .on : .off
 
             return menu
         }

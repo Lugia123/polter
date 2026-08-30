@@ -796,11 +796,6 @@ extension TerminalWindow {
              "binoculars",
              #selector(TerminalController.poltergeistToggleWatch(_:)),
              Self.agentWatchIdentifier),
-            (String(localized: "Keep This Terminal Working",
-                    comment: "标签页右键菜单：按住不许下班"),
-             "pin",
-             #selector(TerminalController.poltergeistToggleHeld(_:)),
-             Self.agentHeldIdentifier),
             (String(localized: "Keep Agents Out of This Terminal",
                     comment: "标签页右键菜单：护盾，任何 agent 都不许碰"),
              "lock",
@@ -808,11 +803,23 @@ extension TerminalWindow {
              Self.agentShieldIdentifier),
         ]
 
+        // Ticked when the terminal already is what the entry offers to make
+        // it. An item that has been used has to read differently from one
+        // that has not, or the only way to learn whether the last click
+        // landed is to click it again.
+        let surface = target?.focusedSurface
         for (title, symbol, action, identifier) in entries {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.identifier = identifier
             item.target = target
             item.setImageIfDesired(systemSymbolName: symbol)
+            if identifier == Self.agentSupervisorIdentifier {
+                item.state = surface?.poltergeistRole == .supervisor ? .on : .off
+            } else if identifier == Self.agentWatchIdentifier {
+                item.state = surface?.poltergeistRole == .watched ? .on : .off
+            } else if identifier == Self.agentShieldIdentifier {
+                item.state = (surface?.poltergeistShielded ?? false) ? .on : .off
+            }
             menu.addItem(item)
         }
     }

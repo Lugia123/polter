@@ -822,15 +822,39 @@ pub const SetTitle = struct {
 /// Empty means this tab has nothing to add.
 pub const PoltergeistMark = struct {
     prefix: [:0]const u8,
+    role: Role,
+    shielded: bool,
+
+    /// What this terminal is in the arrangement.
+    ///
+    /// Sent alongside the rendered prefix rather than instead of it. The
+    /// glyphs stay the core's, because a table of them copied into each
+    /// apprt is a table that drifts; but a menu item cannot tick itself
+    /// from a string, and neither can a badge choose a colour from one.
+    /// The first version sent the prefix alone and wrote the cost down --
+    /// "an apprt cannot see the meaning" -- and this is that cost coming
+    /// due, so the answer is to send both rather than to re-render the
+    /// glyphs out here.
+    ///
+    /// Sync with: ghostty_action_poltergeist_role_e
+    pub const Role = enum(c_int) {
+        none = 0,
+        supervisor = 1,
+        watched = 2,
+    };
 
     // Sync with: ghostty_action_poltergeist_mark_s
     pub const C = extern struct {
         prefix: [*:0]const u8,
+        role: Role,
+        shielded: bool,
     };
 
     pub fn cval(self: PoltergeistMark) C {
         return .{
             .prefix = self.prefix.ptr,
+            .role = self.role,
+            .shielded = self.shielded,
         };
     }
 
@@ -840,7 +864,7 @@ pub const PoltergeistMark = struct {
         _: std.fmt.Options,
         writer: *std.Io.Writer,
     ) !void {
-        try writer.print("{s}{{ {s} }}", .{ @typeName(@This()), value.title });
+        try writer.print("{s}{{ {s} }}", .{ @typeName(@This()), value.prefix });
     }
 };
 

@@ -191,6 +191,7 @@ poltergeist_tab_mark: poltergeistpkg.Bus.TabMark = .none,
 /// a `TabMark`, not one of its values, so the pair is what has to be
 /// compared to know the tab is already saying the right thing.
 poltergeist_tab_shielded: bool = false,
+poltergeist_tab_role: poltergeistpkg.Bus.Role = .none,
 
 /// When a real key event last arrived from the user.
 ///
@@ -3513,13 +3514,16 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
         self.io.config.poltergeist_quiescence_ms,
     );
     const shielded = self.app.poltergeist.isShielded(self.id);
+    const role = self.app.poltergeist.roleOf(self.id);
 
     // Nothing has changed for this tab: leave it alone rather than
     // resending the same mark every time anything happens.
     if (mark == self.poltergeist_tab_mark and
-        shielded == self.poltergeist_tab_shielded) return;
+        shielded == self.poltergeist_tab_shielded and
+        role == self.poltergeist_tab_role) return;
     self.poltergeist_tab_mark = mark;
     self.poltergeist_tab_shielded = shielded;
+    self.poltergeist_tab_role = role;
 
     // Unmarked is an empty prefix, not an empty title. This no longer
     // touches the title at all, so a tab the user renamed keeps its name
@@ -3530,7 +3534,15 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     _ = self.rt_app.performAction(
         .{ .surface = self },
         .poltergeist_mark,
-        .{ .prefix = prefix },
+        .{
+            .prefix = prefix,
+            .role = switch (role) {
+                .none => .none,
+                .supervisor => .supervisor,
+                .watched => .watched,
+            },
+            .shielded = shielded,
+        },
     ) catch |err| {
         log.warn("poltergeist: could not mark the tab err={}", .{err});
     };

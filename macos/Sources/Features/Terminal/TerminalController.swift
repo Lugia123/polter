@@ -1839,6 +1839,23 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        // The menu bar's own copies of the agent items. AppKit asks this
+        // just before the menu opens, which is the only moment the answer
+        // is worth anything -- the item is built once in the xib and would
+        // otherwise read the same whether the terminal already is what it
+        // offers to make it or not.
+        case #selector(poltergeistSupervisor(_:)):
+            item.state = focusedSurface?.poltergeistRole == .supervisor ? .on : .off
+            return true
+
+        case #selector(poltergeistToggleWatch(_:)):
+            item.state = focusedSurface?.poltergeistRole == .watched ? .on : .off
+            return true
+
+        case #selector(poltergeistToggleShielded(_:)):
+            item.state = (focusedSurface?.poltergeistShielded ?? false) ? .on : .off
+            return true
+
         case #selector(closeTabsOnTheRight):
             guard let window, let tabGroup = window.tabGroup else { return false }
             guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return false }

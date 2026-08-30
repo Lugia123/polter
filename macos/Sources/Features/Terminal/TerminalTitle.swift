@@ -20,24 +20,21 @@ enum TerminalTitle {
     ///   - bell: whether to show the bell prefix. The caller has already
     ///     applied the config that decides whether the bell shows in the
     ///     title at all.
-    ///   - poltergeistMark: the mark, already rendered by the core, or ""
     ///     when there is nothing to say. It ends in its own space.
     ///
-    /// The mark leads. It is a fact about the whole terminal regardless of
-    /// what that terminal is up to, and a column of tabs is read down its
-    /// left edge; the bell is a passing event, so it sits closer to the
-    /// title it happened in.
+    /// The Poltergeist mark is deliberately absent: it has a slot of its
+    /// own on the tab (`NSWindowTab.accessoryView`) because sharing this
+    /// string with the program in the terminal meant it was erased on
+    /// every rename and doubled whenever a composed title came back
+    /// through. The bell stays -- it is a passing event about this title,
+    /// not a standing fact about the terminal.
     static func compose(
         title: String,
-        bell: Bool,
-        poltergeistMark: String
+        bell: Bool
     ) -> String {
         var result = title
         if bell {
             result = "🔔 \(result)"
-        }
-        if !poltergeistMark.isEmpty {
-            result = "\(poltergeistMark)\(result)"
         }
         return result
     }

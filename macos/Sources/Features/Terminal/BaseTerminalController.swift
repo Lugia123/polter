@@ -900,11 +900,18 @@ class BaseTerminalController: NSWindowController,
             // so every title change recomposes with the mark still on. A
             // program renaming itself can no longer erase it.
             titleSurface.$title
-                .combineLatest(titleSurface.$bell, titleSurface.$poltergeistMark)
+                .combineLatest(titleSurface.$bell)
                 .map { [weak self] in
-                    self?.computeTitle(title: $0, bell: $1, poltergeistMark: $2) ?? ""
+                    self?.computeTitle(title: $0, bell: $1) ?? ""
                 }
                 .sink { [weak self] in self?.titleDidChange(to: $0) }
+                .store(in: &focusedSurfaceCancellables)
+
+            // The mark is not part of the title at all any more; it has a
+            // slot of its own on the tab. So it is a separate subscription
+            // and it never touches `lastComputedTitle`.
+            titleSurface.$poltergeistMark
+                .sink { [weak self] in self?.applyPoltergeistMarkToTab($0) }
                 .store(in: &focusedSurfaceCancellables)
         } else {
             // There is no surface to listen to titles for.
@@ -914,13 +921,38 @@ class BaseTerminalController: NSWindowController,
 
     private func computeTitle(
         title: String,
-        bell: Bool,
-        poltergeistMark: String
+        bell: Bool
     ) -> String {
         TerminalTitle.compose(
             title: title,
-            bell: bell && ghostty.config.bellFeatures.contains(.title),
-            poltergeistMark: poltergeistMark)
+            bell: bell && ghostty.config.bellFeatures.contains(.title))
+    }
+
+    /// Put the mark in the tab's own accessory slot.
+    ///
+    /// **`NSWindowTab.accessoryView` is a place the title is not**, which
+    /// is the whole point. Composing the mark into the title string meant
+    /// sharing one field with the program running in the terminal: it
+    /// renames itself on `cd`, the composed string goes back through the
+    /// same pipe, and the mark is either erased or applied twice. That is
+    /// not a race to be tightened, it is two owners for one value.
+    ///
+    /// A tab with nothing to say gets its accessory taken away rather than
+    /// an empty view left in place, so the tab bar's own spacing is what a
+    /// tab without a mark looks like.
+    private func applyPoltergeistMarkToTab(_ mark: String) {
+        guard let window else { return }
+        let trimmed = mark.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            window.tab.accessoryView = nil
+            return
+        }
+
+        let label = NSTextField(labelWithString: trimmed)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.alignment = .center
+        label.sizeToFit()
+        window.tab.accessoryView = label
     }
 
     private func titleDidChange(to: String) {
@@ -937,8 +969,7 @@ class BaseTerminalController: NSWindowController,
         if let titleOverride {
             window.title = computeTitle(
                 title: titleOverride,
-                bell: focusedSurface?.bell ?? false,
-                poltergeistMark: focusedSurface?.poltergeistMark ?? "")
+                bell: focusedSurface?.bell ?? false)
             return
         }
 
