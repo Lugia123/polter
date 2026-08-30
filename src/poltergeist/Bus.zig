@@ -572,6 +572,24 @@ pub fn setShielded(
     if (who != .user) return error.NotPermitted;
     const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
     e.shielded = shielded;
+
+    // **Shielding takes a terminal out of being watched, and leaves a
+    // supervisor supervising.** The two look symmetrical and are not.
+    //
+    // Being watched is being reachable: the arrangement exists so that a
+    // supervisor is told this terminal has gone quiet and can then go and
+    // look at it. Shield it and the second half is gone, so what is left
+    // is a supervisor being woken about a terminal it may not touch --
+    // an interruption with no move behind it. Better to say plainly that
+    // it is no longer being minded.
+    //
+    // Supervising is the other direction. A supervisor is the party that
+    // reaches, and the shield is about being reached; the two do not meet.
+    // A shielded supervisor still minds everything it minded a moment ago
+    // and simply cannot be typed into itself -- which is the whole reason
+    // somebody would shield the terminal they are running the night from.
+    // Clearing the role here would not protect it, it would stop it.
+    if (shielded and e.role == .watched) self.unwatch(id);
 }
 
 /// Whether the tool surface may reach this terminal at all.
@@ -1759,4 +1777,55 @@ test "a terminal the bus never registered is not shielded" {
         error.UnknownTerminal,
         b.setShielded(0xDEAD, true, .user),
     );
+}
+
+test "shielding a watched terminal stops it being watched" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    try testing.expectEqual(Role.watched, b.roleOf(worker));
+
+    try b.setShielded(worker, true, .user);
+
+    // Not merely unreachable -- no longer minded. A supervisor woken about
+    // a terminal it may not touch is being interrupted with no move behind
+    // the interruption.
+    try testing.expectEqual(Role.none, b.roleOf(worker));
+    try testing.expect(b.isShielded(worker));
+    try testing.expect(b.get(worker).?.watched_by == null);
+}
+
+test "shielding a supervisor leaves it supervising" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    try b.setShielded(boss, true, .user);
+
+    // The shield is about being reached; supervising is reaching. Clearing
+    // the role would not protect this terminal, it would stop it -- and
+    // the terminal somebody shields is the one running the night.
+    try testing.expectEqual(Role.supervisor, b.roleOf(boss));
+    try testing.expect(b.isShielded(boss));
+    try testing.expectEqual(Role.watched, b.roleOf(worker));
+    try testing.expect(b.minds(boss, worker));
+}
+
+test "unshielding does not put a terminal back under supervision" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    try b.setShielded(worker, true, .user);
+    try b.setShielded(worker, false, .user);
+
+    // Coming out from behind the shield is not an instruction to resume
+    // anything. Who minds what is the supervisor's arrangement to make,
+    // and guessing it back would be this code deciding on its behalf.
+    try testing.expectEqual(Role.none, b.roleOf(worker));
 }
