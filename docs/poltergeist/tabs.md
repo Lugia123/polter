@@ -114,18 +114,22 @@ override 通道被谁占着：`set_tab_title` apprt action 直接写 `controller
 
 | 候选 | 做法                                    | 判断           |
 | ---- | --------------------------------------- | -------------- |
-| 1    | 写 tab 标题 override（`set_tab_title`） | 淘汰           |
-| 2    | 走两端已有的「合成期前缀」通道          | 保留为降级路径 |
+| 1    | 写 tab 标题 override（`set_tab_title`） | 淘汰（试过，坏了） |
+| 2    | 走两端已有的「合成期前缀」通道          | 落地：macOS 渲染侧 |
 | 3    | 借用 GTK 的 `needs-attention`           | 淘汰           |
-| 4    | 新增 apprt action，两端各自渲染         | 推荐           |
+| 4    | 新增 apprt action，两端各自渲染         | 落地：传输侧   |
 
 **候选 1 淘汰**，因为它抢用户命名车道 —— 两端的 override 字段都已被用户重命名与 `set_tab_title` 占用（`macos/Sources/Ghostty/Ghostty.App.swift:1749-1755`、`src/apprt/gtk/class/application.zig:3087-3106`）。Poltergeist 每刷新一次状态就抹掉一次用户起的名字，而用户一旦自己改名，状态标记又会消失。这是功能缺陷，不是审美问题。
+
+> 第一版落地还是走了候选 1 的字段（拼接而非纯替换，以为躲得开），上面这句
+> 「用户一旦自己改名，状态标记又会消失」于是原样发生了 —— 而且不止用户改名，
+> 终端里的程序用 OSC 0/2 改标题也一样。见「实现」一节。
 
 **候选 2 保留为降级路径。** 它不抢车道，是 Ghostty 表达瞬时状态的既有做法（GTK 的 `closureComputedTitle` 拼 `"🔔 "` / `"🔍 "` 前缀在 `src/apprt/gtk/class/tab.zig:526-534`，macOS 的 `computeTitle` 拼 `"🔔 "` 在 `macos/Sources/Features/Terminal/BaseTerminalController.swift:902-909`）。但要诚实写明它**不是零成本**：GTK 侧要改 `closureComputedTitle` 的签名（`src/apprt/gtk/class/tab.zig:482-490`）、`src/apprt/gtk/ui/1.5/tab.blp:11-18` 的绑定、并给 `Tab` 加属性；macOS 侧要改 `computeTitle` 与它的触发源。它省下的只是 `include/ghostty.h` 同步、`CValue` 与两端 action 分发那一层。
 
 **候选 3 淘汰**，三条独立死因已在 GTK 现状一节列出：布尔（`src/apprt/gtk/class/tab.zig:459`）/ 被响铃占用（`:445-460`）/ 选中即清（`src/apprt/gtk/class/window.zig:1690-1692`）。
 
-**候选 4 推荐。** 范本齐全（`readonly` 那一支在 `src/apprt/action.zig:354`），ABI 风险可控，展开见下一节。macOS 侧仿 `tabColorIndicator`（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:28-32`）加指示器不是独立候选，而是候选 4 在 macOS 侧的渲染载体。
+**候选 4 推荐，现已落地**（传输部分；macOS 侧的渲染载体取的是候选 2，见「实现」一节）。范本齐全（`readonly` 那一支在 `src/apprt/action.zig:354`），ABI 风险可控，展开见下一节。macOS 侧仿 `tabColorIndicator`（`macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift:28-32`）加指示器不是独立候选，而是候选 4 在 macOS 侧的渲染载体。
 
 ## 推荐方案的完整链路
 
@@ -140,7 +144,7 @@ override 通道被谁占着：`set_tab_title` apprt action 直接写 `controller
 7. GTK 落点：做成 `Surface` 的 gobject 属性，getter 直读核心字段、setter 只发 notify（`src/apprt/gtk/class/surface.zig:1211-1223`，属性定义在 `:426-443`），UI 由 blp 声明式绑定（范本 `src/apprt/gtk/ui/1.2/surface.blp:83-86`），再由 `Tab` 汇总到页上。
 8. 是否自动褪去：`progress_report` 在 macOS 侧有 15 秒自动清除定时器（`macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift:22-37`），可作为参照。本设计倾向「下班」标记不自动褪去（它是判定结果，不是瞬时事件），静止类标记若上界面则应自动褪去。
 
-下图把上面八跳画成一张图，每一格右侧标的是它的现成范本出处。实际落地比这张图短得多 —— 复用了既有的 `set_tab_title`，两端一行未改，见「实现」一节：
+下图把上面八跳画成一张图，每一格右侧标的是它的现成范本出处。第一版落地抄了近路 —— 复用既有的 `set_tab_title`，两端一行未改 —— 那条近路后来被它自己的缺陷推翻了，现在走的就是这张图，见「实现」一节：
 
 ```text
 core Surface 字段                      范本 src/Surface.zig:164-168 (readonly)
@@ -166,15 +170,57 @@ TerminalWindow.swift:163-171       blp 声明式绑定，范本 surface.blp:83-8
 
 ## 实现
 
-### 复用既有通道，两端都不用改
+### 走过一次近路，被它自己的缺陷推翻
 
-落地用的是仓库里已有的 `set_tab_title` action（`src/apprt/action.zig:213`），macOS 与 GTK 两侧**一行都没改** —— 两端本来就实现了这个 action。这是本章选型里最省的一条路，也是它被选中的原因。
+第一版落地复用了仓库里已有的 `set_tab_title` action，两端一行未改：核心把
+`标记前缀 + 程序自己的标题` 拼成一个字符串写进 tab 标题覆盖字段。它是本章里最省
+的一条路，也正因为省而被选中。
 
-### 组合，不是替换
+**它坏在上面「候选 1 淘汰」那一段早就写明的地方，只是当时以为拼接躲得开。**
+tab 标题覆盖只有一个字段，而它有两个写者：Poltergeist 写一次，终端里跑的程序通过
+OSC 0/2 改标题时又写一次。谁最后写谁赢 —— 程序一改名字，标记就没了。而且拼进去
+的标题是标记变化那一刻的快照，程序之后改了名，覆盖里挂的还是旧那份。**一个字段
+两个所有者是结构问题，不是时序问题**：加锁、重试、改刷新频率都修不好，因为无论谁
+赢，输的那一方的信息都已经不在任何地方了。
 
-`set_tab_title` 是**覆盖**：写进去什么，tab 就显示什么。所以不能写一个纯状态串进去 —— 那会把程序自己设的标题扔掉，而那才是人真正在看的内容。
+拼接躲不开的原因也可以一句话讲清：拼接解决的是「不要扔掉程序的标题」，没解决
+「不要和程序抢同一个字段」。前者是内容问题，后者是所有权问题。
 
-实现是**组合**：`标记前缀 + 程序自己的标题`，标题从 `rt_surface.getTitle()` 取。没有标记时写回不带前缀的标题。
+### 现在：候选 4 的 action，候选 2 的渲染
+
+落地成两半，正好是上表里的两个候选各出一半：
+
+- **传输走候选 4。** 新的 `poltergeist_mark` action（`src/apprt/action.zig`，
+  载荷 `PoltergeistMark`），照 `readonly` 那一套穿四层：`include/ghostty.h` 的
+  `ghostty_action_poltergeist_mark_s` 与 `GHOSTTY_ACTION_POLTERGEIST_MARK`、
+  `src/apprt/action.zig` 的 `Action` 一支与 `Action.Key` 一值、`embedded.zig`
+  （comptime 生成 `CValue`，无需逐 action 改）、两端 apprt 的分发。
+- **macOS 侧的渲染走候选 2。** 标记落在 `SurfaceView.poltergeistMark`
+  （`macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift`）这个自己的
+  per-surface 字段上，然后在**渲染标题的那一刻**被拼到标题前面 ——
+  `TerminalTitle.compose`（`macos/Sources/Features/Terminal/TerminalTitle.swift`），
+  由 `BaseTerminalController` 的 `$title / $bell / $poltergeistMark` 三路
+  `combineLatest` 触发。这正是响铃 `🔔` 已经在走的通道。
+
+**关键差别不在「拼不拼」，而在拼在哪一端、什么时候拼。** 从前是核心先拼好、写进
+一个共用字段，之后程序一改名就把成品冲掉；现在标记和标题各占一个字段，每次标题
+变化都重新拼一次。改名字触发的是**重算**，不是**覆盖**。
+
+`PoltergeistMark` 的载荷是**渲染好的前缀字符串**，不是背后的状态。这一条是有意的：
+要说的本来是两件事 —— 终端在干什么（`Bus.TabMark`，七个值）和谁可以碰它
+（`Bus.isShielded`，和七个值全部正交的一个布尔）—— 它们在核心里始终是两个独立的
+值，没有被折成十四值枚举；跨过 C 边界的只是它们的合成结果。这样字形表和「护盾在
+前」这条规则只有一处（`src/poltergeist/Bus.zig`，理由也写在那里），而不是每个
+apprt 各存一份七行表等着漂移。上面第 5 跳担心的 ABI 断言不受影响：载荷是一个指针，
+`@sizeOf(CValue) == 24` 不变。
+
+### GTK 暂时不画
+
+GTK 侧进了 `performAction` 的 unimplemented 分支（`src/apprt/gtk/class/application.zig`），
+和 `toggle_poltergeist_chat` 同一处 —— Poltergeist 的界面至今是 macOS-only，标记
+是它的一部分。要捡起来时形状已经写在上面第 7 跳：`Surface` 加 gobject 属性、
+`Tab` 汇总、blp 声明式绑定。**不要把旧的拼标题做法留给 GTK 当降级路径** —— 那正是
+这一节推翻掉的东西。在那之前 GTK 侧 per-surface 的准确答案在 `terminal_list` 里。
 
 ### 七个标记
 
@@ -239,8 +285,10 @@ TerminalWindow.swift:163-171       blp 声明式绑定，范本 surface.blp:83-8
 | `🔒 ⚑`     | 护住 + 总管            |
 
 判定在 `Bus.shield_prefix`（`src/poltergeist/Bus.zig:734`）与 `Bus.isShielded`
-（`src/poltergeist/Bus.zig:582`），拼接在 `Surface.updatePoltergeistTabMark`
-（`src/Surface.zig:3425`）。
+（`src/poltergeist/Bus.zig:582`），两者合成前缀在
+`Surface.poltergeistMarkPrefix`（`src/Surface.zig`），前缀作为
+`poltergeist_mark` action 的载荷送出，macOS 侧再由 `TerminalTitle.compose` 拼到
+标题前面。
 
 用户从菜单 **Keep Agents Out of This Terminal** 设它
 （`macos/Sources/App/Base.lproj/MainMenu.xib:420`，右键菜单里的同一项在
@@ -249,23 +297,31 @@ TerminalWindow.swift:163-171       blp 声明式绑定，范本 surface.blp:83-8
 勾选态**，理由与按住那节完全一致：勾只有拉开菜单那一刻才看得见，而这一节要解决的
 就是「常驻可见」——那是 🔒 的活，不是勾的活。
 
-### 分屏：标记退化，护盾不退化
+### 分屏：竞态没了，但一个 tab 仍然只有一格位置
 
-**这是一个已知的失效场景，写在这里是因为它不该被当成 bug 反复重新发现。**
+**这一节写过一次「最后写的那个赢」，那部分已经不成立了，改掉是因为留着比没有更糟。**
 
-一个 tab 只有一个标题，而四个分屏 surface 各有自己的 `Surface.id`、各自调用
-`updatePoltergeistTabMark`、各自写这一个标题——最后写的那个赢。所以分屏里给某
-一格设了护盾，tab 上可能挂着的是隔壁那格的标记。
+从前四个分屏 surface 各有自己的 `Surface.id`、各自调用 `updatePoltergeistTabMark`、
+各自往同一个 tab 标题里写 —— 最后写的那个赢，所以给某一格设了护盾，tab 上挂的
+可能是隔壁那格的标记。**这个竞态随 per-surface 字段一起消失了**：每个 surface 的
+标记现在各存各的（`SurfaceView.poltergeistMark`），谁也覆盖不了谁。
 
-要紧的是它**丢的是什么**：护盾本身是 per-surface 判定的（`Bus.isShielded(id)`
+**但退化没有完全消失，只是换了性质。** 一个 tab 只有一个标题，macOS 侧的标题跟的是
+**当前聚焦的那个分屏**（`focusedSurfaceDidChange` 订阅聚焦 surface 的三路
+publisher）。所以四格分屏里，tab 上显示的是聚焦那格的标记，切换焦点会跟着变。
+这从「不确定是哪一格」变成了「确定是聚焦那一格」—— 是一条**可预测的规则**，不再
+是竞态，但仍然不是四格同时可见。
+
+要紧的仍然是它**丢的是什么**：护盾本身是 per-surface 判定的（`Bus.isShielded(id)`
 按 surface 问，工具面按 surface 拒），所以丢掉的是**确认**，不是**保护**。设了
 护盾的终端，无论 tab 上写着什么，都仍然碰不到。
 
-为什么不修：真正的修法是做一个 per-surface 的徽章，照 `readonly` 那一套
+要让四格同时可见，剩下的一步是在 surface 自己身上画徽章，照 `readonly` 那一套
 （`src/apprt/gtk/ui/1.2/surface.blp:84` 的 `reveal-child: bind template.readonly`
-和 macOS 侧 `SurfaceView` 的徽章）。那要穿 `include/ghostty.h` +
-`src/apprt/embedded.zig` + 两端渲染，正是 gaps.md 给菜单勾选态算过的那三层成本。
-在那之前，per-surface 的准确答案在 `terminal_list` 的 `shielded` 字段里。
+和 `macos/Sources/Ghostty/Surface View/SurfaceView.swift:86-90` 的徽章叠层）。
+穿 C 边界那三层已经修好了 —— `poltergeist_mark` action 就在那儿 —— 剩下的只是
+macOS 侧多一个叠层视图。在那之前，per-surface 的准确答案在 `terminal_list` 的
+`shielded` 字段里。
 
 **按住从落地那天起就是同样的退化**，护盾没有让情况变坏，只是第一次把它写下来。
 

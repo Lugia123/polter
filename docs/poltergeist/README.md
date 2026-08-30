@@ -192,6 +192,7 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | [gaps.md](gaps.md)            | —          | 作为 AI 原生终端还差什么：感知、记录、双向渠道、成本、注入 | 记录那两条已落地，论证保留；还缺的排在「排序」一节 |
 | [transcript.md](transcript.md) | —         | 终端转录：录滚出去的行，按终端按天落盘                    | 录第 2 层而不是原始字节流，量由内容决定而不是由重绘决定 |
 | [boundary.md](boundary.md)    | —          | 什么是功能、什么是扩展：核心存储不作为插件的数据源，预装不是特权 | 拆掉耦合而不是给耦合打补丁；`.claude` 产出退成插件，失败必须发给用户而非 agent |
+| [tasks.md](tasks.md)          | —          | 任务面板：存「谁在做哪件事」不存那件事；取消先说话再消失；通知按收件人的角色分 | 改写了 P7 的一半（P5 的同一个论证：只在设定那一刻存在的状态等于没有状态）；被监管的终端不因群消息被叫醒 |
 | [tabs.md](tabs.md)             | R10        | tab 合并与状态标记                                        | macOS 用 NSWindow tabbing，GTK 用 libadwaita，两套各写一份                         |
 
 ## 分阶段路线
@@ -323,7 +324,11 @@ poltergeist-mcp = true
 
 1. 静止阈值的默认值取多少，以及是否需要按被监督程序类型给不同预设 —— 待实测数据。默认 3 分钟是猜的。
 2. ~~采样来源落在哪一层~~ —— **已定并落地**：termio 线程的 libxev 定时器，每秒一次（`src/termio/Thread.zig`）。选它而不是渲染线程，是因为窗口不可见时渲染线程根本不跑，而挂机过夜正是窗口不可见的时候。
-3. ~~关机/重启后恢复~~ —— **已定并落地**：程序保存材料，总管重建现场（不做程序自动还原，理由是那要求程序判断「这个终端是不是上次那个」，与 P1 冲突）。材料写在 `session.json`（`src/poltergeist/Session.zig:84`），总管用 `session_recall` 读回来（`src/poltergeist/rpc.zig:68`），而**没有任何东西照着它自动接线**。设计见 [supervisor.md](supervisor.md)「关掉再打开」与 [mcp.md](mcp.md)「群带什么」。
+3. ~~关机/重启后恢复~~ —— **已定并落地，后来把线画准了一次**：程序保存材料，总管重建现场（不做程序自动还原，理由是那要求程序判断「这个终端是不是上次那个」，与 P1 冲突）。材料写在 `session.json`（`src/poltergeist/Session.zig:84`），总管用 `session_recall` 读回来（`src/poltergeist/rpc.zig:68`），而**没有任何东西照着它自动接线**。设计见 [supervisor.md](supervisor.md)「关掉再打开」与 [mcp.md](mcp.md)「群带什么」。
+
+   **补充（群壳自动恢复）**：上面那条理由**只对成员成立**。「屏幕上这个终端是不是昨晚那个」是判断，而**群名是一个字符串**，把字符串放回去不需要判断任何东西。所以线画在这里：**程序恢复不需要判断的部分（群名 + 简介），总管恢复需要判断的部分（谁是昨晚那个终端）**。重启后群壳回来，里面只有屏幕前的人，一个终端都没有——而「把终端加回去」正是「唤起这个群」的确切含义。落地在 `src/poltergeist/GroupLog.zig`，群列表从**已有的记录目录** `<state>/chat/<群>/` 推导（因此永不过期、也不会把 `session.json` 撑大），简介放同一个目录下的 `group.json`。
+
+   触发这次修正的是不一致而不是想法：任务面板落地时是**自动恢复**的（[tasks.md](tasks.md) 第八节），于是重启后任务回来了、而它们所属的那个群不存在。
 4. Skill 体系的存放位置与更新方式 —— 已定并落地：内置在 resources 目录，用户副本在配置目录且优先。见 [mcp.md](mcp.md)。
 5. ~~GTK 侧的聊天窗口~~ —— **已作废**。界面改成终端内 TUI（`polter +chat`）之后，任何能开终端的平台就有聊天界面，不需要第二份实现。见 [chatui.md](chatui.md)「决策变更」。
 6. ~~通知时间段（R3 的一半）~~ —— **已落地**：`poltergeist-notify-window`（`src/config/Config.zig:1477`）解析成 `notify.Window`，`notify.decide` 据此决定是送出还是压下（`src/poltergeist/notify.zig:146-148`），而 `authorisation` 这一类**不受时段约束**。送达那一步是插件（订阅 `terminal.quiet`），见 [plugins.md](plugins.md)。R3 的另一半「总管代理决策 / 通知用户」二选一仍然只是提示词层面的约定，**没有程序侧的配置项**。
