@@ -882,8 +882,92 @@ pub fn target(req: Request) ?Bus.Id {
 /// and the caller is told plainly rather than surprised.
 pub fn selfPermitted(req: Request) bool {
     return switch (req) {
+        // **Never asked.** `authorize` reaches this only once `target`
+        // has handed back an id, and none of these names a terminal.
+        //
+        // They are written out anyway, because the `else` that used to
+        // stand here is what this function got wrong twice. `target`
+        // ends in `inline else => |v| v.id`, so *every* request with an
+        // `id` field arrives at the self-target gate whether or not
+        // anybody meant it to -- `terminal_action` did, and then
+        // `group_add` did. With no `else` a method added later cannot
+        // fall in unnoticed: it will not compile until somebody puts it
+        // on one of the sides below.
+        .me,
+        .terminal_list,
+        .notices,
+        .session_recall,
+        .notify_user,
+        .skill_read,
+        .config_get,
+        .group_create,
+        .group_destroy,
+        .group_compact,
+        .group_list,
+        .group_post,
+        .group_read,
+        .group_history,
+        .group_members,
+        .group_set_brief,
+        .plugin_list,
+        .plugin_configure,
+        .plugin_test,
+        .stand_down,
+        .become_supervisor,
+        .terminal_open,
+        .terminal_actions,
+        .terminal_keys,
+        .task_create,
+        .task_close,
+        .task_cancel,
+        .task_progress,
+        .task_list,
+
+        // **Refused: the call comes back round to the caller.** These put
+        // bytes on your own stdin and hand them back to you, so an agent
+        // aimed at itself types, reads what it typed, and types again
+        // with no natural end.
+        .terminal_read,
+        .terminal_send,
+        .terminal_key,
+
+        // **Refused: the same knot, tied in the arrangement rather than
+        // in text.** A supervisor arranging its own supervision.
+        .set_watch,
+
+        // **Refused, and only because that is what it did yesterday.**
+        // Duty belongs to a supervisor and is set on the terminal being
+        // minded, so a terminal is not the one to set its own -- but that
+        // reading has not been tested against a case, and this switch is
+        // not the place to change behaviour nobody complained about.
+        .clock_in,
+        .clock_out,
+        .set_quiescence_threshold,
+        => false,
+
+        // **Allowed: naming yourself here is ordinary.**
+        //
+        // Putting yourself in a group is neither of the two things this
+        // gate exists to stop: nothing comes back at you and nothing
+        // takes you away. It is also the only way out of a real dead end.
+        // Terminal ids are new after a restart, so a restored group has
+        // only the person at the keyboard in it (`Chat.restoreShell`) and
+        // the supervisor's own id was never added -- while `group_post`
+        // checks membership. Refusing this left a supervisor able to set
+        // the group's brief, add other terminals and put work on its
+        // panel, but unable to say a word in it, with no call anywhere
+        // that could fix it.
+        //
+        // `task_assign` rides along for the same reason: a supervisor
+        // that also does a piece of the work is ordinary, and the panel
+        // is the place that is supposed to say so.
+        .group_add,
+        .group_remove,
+        .task_assign,
+        => true,
+
+        // Decided per action, exhaustively, in `actions.selfSafeTag`.
         .terminal_action => |v| actions.selfSafe(actions.nameOf(v.action)),
-        else => false,
     };
 }
 
@@ -7384,4 +7468,51 @@ test "a worker posting to its own group is not lectured" {
         .text = "done with mine",
     } });
     try testing.expectEqual(wire.Response.ok, res);
+}
+
+test "a supervisor can put itself back into a group it cannot otherwise speak in" {
+    // The dead end this came from, in one place. Terminal ids are new
+    // after a restart, so a restored group holds only the person at the
+    // keyboard (`Chat.restoreShell`) and the supervisor's own id is not in
+    // it -- while `Chat.post` checks membership. `group_add` was refused
+    // at one's own id purely because `target` hands its `id` back from a
+    // fallthrough prong, so there was no call anywhere that could repair
+    // it: the supervisor could set the group's brief, add other terminals
+    // and create tasks, and could not say one word.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try authorize(&b, term(boss), .{ .group_add = .{
+        .group = "kairos",
+        .id = boss,
+        .history = .all,
+    } });
+
+    // Leaving is the same shape and the same argument.
+    try authorize(&b, term(boss), .{ .group_remove = .{ .group = "kairos", .id = boss } });
+
+    // A supervisor doing a piece of the work itself is ordinary, and the
+    // panel is what is supposed to record that.
+    try authorize(&b, term(boss), .{ .task_assign = .{ .task = 1, .id = boss } });
+}
+
+test "putting yourself in a group is still not a way to type into yourself" {
+    // The gate is being narrowed, not opened. What it exists to stop is a
+    // call that comes back round at the caller, and widening it for the
+    // group tools must not carry those along.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
+        .terminal_send = .{ .id = boss, .text = "loop" },
+    }));
+    try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
+        .terminal_read = .{ .id = boss },
+    }));
+    try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
+        .terminal_key = .{ .id = boss, .key = "ctrl+c" },
+    }));
+    try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
+        .set_watch = .{ .id = boss, .watch = true },
+    }));
 }
