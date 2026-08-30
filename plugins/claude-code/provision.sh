@@ -1,379 +1,53 @@
 #!/bin/sh
 # Tell Claude Code that Polter is here.
 #
-# Polter puts a socket path and a token in every terminal's environment,
-# which is everything an agent needs to *reach* it. What that does not do is
-# make the tools appear: an MCP client only loads servers it has been
-# configured with, so an agent in a directory nobody registered has the
-# socket, the token, and no way to use either.
+# Polter puts a socket path and a token in every terminal's environment, which
+# is everything an agent needs to *reach* it. What that does not do is make the
+# tools appear: an MCP client only loads servers it has been configured with,
+# so an agent in a directory nobody registered has the socket, the token, and
+# no way to use either.
 #
-# This used to be Zig inside Polter itself. It is a plugin because "what
-# shape does a runtime read" has a different answer for every agent CLI, and
-# with it hard-coded there was nowhere for anybody to put the answer for
-# theirs. Polter's side is the data; this file is the translation.
-#
-# **It is resident, like every plugin now.** There is no `kind` any more:
-# `"wants": {"events": ["provision"]}` in plugin.json is the whole of what
-# makes this a provisioning plugin. So the shape is the one every plugin
-# has -- a greeting, then a line of events, then one acknowledgement per
-# line -- rather than a third contract of its own:
-#
-#   host -> {"hello":1,"plugin":"claude-code","cursor":0,
-#            "events":["provision"],"groups":[],"calls":[],
-#            "socket":"/…/polter-ab12.sock","token":"…",
-#            "params":{"scope":"user","skills":"yes"}}
-#   this -> {"ok":true}
-#   host -> {"cursor":0,"through":3,"events":[
-#              {"n":3,"kind":"provision","exe":"/path/to/polter",
-#               "version":"1.2.3","version_key":"POLTER_REGISTERED",
-#               "home":"/Users/you",
-#               "skills":[{"name":"supervising","path":"/…/supervising.md"}]}]}
-#   this -> {"ok":true}
-#
-# **What that cost, and it is a real one.** Exiting non-zero used to put a
-# sentence on the user's screen while the first terminal was still being
-# built. Nothing here is synchronous with a terminal opening any more, so a
-# refusal reaches the person through Polter's log, through `plugin_list`'s
-# note -- which says `backing_off` or `dormant` in so many words and which an
-# agent can read -- and through `plugin_test`. What is gone is the unprompted
-# line on the screen.
-#
-# What answering `{"ok":false}` still buys is the retry: the host backs off
-# and offers the same event again, where a one-shot that exited non-zero was
-# simply never run again until the next launch. A machine whose `claude` was
-# being upgraded at the moment Polter started used to lose provisioning for
-# the whole session.
-#
-# **Only acknowledgements may go to stdout.** Anything else is judged
-# misconduct and the process is killed. Diagnostics go to stderr, which is
-# Polter's log.
-
-# **POSIX `sh`, so POSIX platforms.** There is no Windows story here and
-# there is no need for one: Ghostty builds no application on Windows at all
-# (`apprt.Runtime.default` answers `.none` for it), so there is no plugin
-# host on Windows for this to fail in. If that ever changes, the answer for
-# this plugin is a sibling written in whatever Windows runs and a manifest
-# that picks between them -- not a `case` on the platform inside a script
-# that cannot be started there.
+# **The implementation lives in `_sdk/provision.sh`; this file is the
+# answers.** That split is the point: "what shape does a runtime read" has a
+# different answer for every agent CLI, and there are eight of them now. What
+# they need is identical -- register a server, mirror the skills -- and only
+# the shape differs, so only the shape belongs here. See
+# `docs/poltergeist/provisioning.md`.
 
 set -eu
 
-# One value out of the line. Every key used here appears once, which is what
-# makes this safe with sed rather than a JSON parser -- `sed` is greedy, so a
-# repeated key would silently give the last one.
-field() {
-  printf '%s' "$line" | sed -n "s/.*\"$1\":\"\\([^\"]*\\)\".*/\\1/p"
+. "$(dirname "$0")/../_sdk/provision.sh"
+
+POLTER_HOST_KEY=claude-code
+POLTER_HOST_LABEL="Claude Code"
+POLTER_HOST_BIN=claude
+
+# Registration goes through `claude mcp`, not through the file. The
+# user-scoped config is `~/.claude.json`, which holds that user's entire Claude
+# Code setup; parsing and re-serialising it to add one key would reformat the
+# whole thing and reorder every key in it. The tool that owns the file knows
+# how to edit it, so it is asked to.
+host_mcp_current() {
+  claude mcp get polter 2>/dev/null || true
 }
 
-# Everything the old one-shot did, now with a return code instead of an exit
-# code. Nothing inside it changed: the same read-before-write, the same
-# staleness marker, the same three checks before a stale skill is pruned.
-provision() {
-  line=$1
-
-  exe=$(field exe)
-  version=$(field version)
-  version_key=$(field version_key)
-  home=$(field home)
-
-  scope=$(field scope)
-  [ -n "$scope" ] || scope=user
-
-  want_skills=$(field skills)
-  [ -n "$want_skills" ] || want_skills=yes
-
-  if [ -z "$exe" ] || [ -z "$home" ]; then
-    echo "claude-code: the line from Polter had no exe or home in it" >&2
-    return 1
-  fi
-
-  # No Claude Code on this machine. **Not a failure**: the agent here may be
-  # something else entirely, and Polter works the same either way. Answering
-  # `{"ok":false}` would put this plugin into backoff and then dormancy, and
-  # `plugin_list` would report a broken plugin to every user who simply does
-  # not use Claude Code.
-  #
-  # **But it is said out loud now, and it was not.** This branch used to
-  # return silently, and that silence cost a whole class of user everything
-  # this plugin does: a Polter started from the Dock has only the system
-  # `PATH`, so `claude` installed in `~/.local/bin` was not on it, so this
-  # line was reached on a machine that uses Claude Code every day -- and the
-  # only trace anywhere was one `started` in the log. The host now widens the
-  # `PATH` to the login shell's (`src/poltergeist/login_path.zig`), which
-  # fixes the case that was found; this line is what makes the next one
-  # findable without a debugger. Stderr is the plugin's log, which
-  # `plugin_log` shows and a person can read.
-  if ! command -v claude >/dev/null 2>&1; then
-    echo "claude-code: no \`claude\` on PATH ($PATH), so nothing was" \
-      "registered and no skills were installed. Not an error if this" \
-      "machine's agent is something else." >&2
-    return 0
-  fi
-
-  # --- the MCP server ---------------------------------------------------------
-  #
-  # Registration goes through `claude mcp`, not through the file. The
-  # user-scoped config is ~/.claude.json, which holds that user's entire Claude
-  # Code setup; parsing and re-serialising it to add one key would reformat the
-  # whole thing and reorder every key in it. The tool that owns the file knows
-  # how to edit it, so it is asked to.
-
-  # Read before writing. This file is rewritten by Claude Code itself while it
-  # runs, and rewriting it at every launch for no reason is asking for the one
-  # race that eats somebody's settings.
-  #
-  # The path alone would catch a move or a reinstall elsewhere but not a build
-  # whose arguments or protocol changed while living at the same path -- which
-  # is every in-place upgrade. The marker is what makes "written by a different
-  # build" visible.
-  current=$(claude mcp get polter 2>/dev/null || true)
-
-  stale=yes
-  case "$current" in
-    *"$exe"*)
-      case "$current" in
-        *"$version"*) stale=no ;;
-      esac
-      ;;
-  esac
-
-  if [ "$stale" = yes ]; then
-    # `add` refuses a name that is already there, so a stale entry goes first.
-    # A failure here is ignored: the common case is that there was nothing to
-    # remove.
-    claude mcp remove --scope "$scope" polter >/dev/null 2>&1 || true
-
-    # `--` separates our arguments from the served command's, so a future flag
-    # on the served side cannot be read as one of ours.
-    if ! claude mcp add --scope "$scope" polter \
-        -e "$version_key=$version" \
-        -- "$exe" +mcp >/dev/null 2>&1; then
-      echo "claude-code: could not register the MCP server" >&2
-      return 1
-    fi
-  fi
-
-  [ "$want_skills" = yes ] || return 0
-
-  # --- the skills -------------------------------------------------------------
-  #
-  # Polter's skills are reachable through `skill_read`, which an agent has to
-  # think to call. Claude Code's own are found by the runtime and matched
-  # against what the user asked for -- which is why a supervisor told to mind
-  # some terminals reached for the subagent tool in its system prompt and never
-  # looked for `supervising` at all. Two mechanisms sharing a word; only one of
-  # them does any matching.
-  #
-  # Installed under `polter-`, so nothing the user wrote themselves is
-  # overwritten and `/polter-supervising` says where it came from.
-
-  skills=$(printf '%s' "$line" | sed -n 's/.*"skills":\[\([^]]*\)\].*/\1/p')
-  [ -n "$skills" ] || return 0
-
-  status=0
-
-  # One object per line, so the loop below reads a whole skill at a time. The
-  # trailing newline matters: `read` at end of input without one returns false
-  # and the loop body never runs, which looks exactly like "no skills".
-  printf '%s\n' "$skills" | sed 's/},{/}\
-  {/g' | while IFS= read -r item; do
-    name=$(printf '%s' "$item" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')
-    path=$(printf '%s' "$item" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
-
-    [ -n "$name" ] && [ -n "$path" ] || continue
-
-    if [ ! -r "$path" ]; then
-      echo "claude-code: no readable source for skill $name at $path" >&2
-      return 1
-    fi
-
-    dir="$home/.claude/skills/polter-$name"
-
-    # The whole file, frontmatter and all -- a Claude Code skill without
-    # frontmatter is not a skill it will load at all. An earlier version
-    # installed bodies alone and produced five files that looked right in a
-    # directory listing and did nothing.
-    #
-    # The name inside the frontmatter has to match the directory, or the
-    # runtime lists it under a name the user cannot type. Rewritten in the
-    # frontmatter only: a `name:` line in the prose is prose.
-    #
-    # **And it is stamped with the build that wrote it.** `version: 1` in
-    # these files is hand-written and never changes, so an installed skill
-    # could not say which Polter it came from; the only test available was
-    # comparing its text against the source, which says nothing at all when
-    # a release changed no prose. That is the same gap `POLTER_REGISTERED`
-    # exists for on the MCP side, and the reason is quoted rather than
-    # reinvented: a path alone catches a move or a reinstall elsewhere but
-    # not a build whose contents changed while living at the same path --
-    # which is every in-place upgrade.
-    #
-    # **This closes its own loop.** The stamp is part of the file's
-    # contents, so a new build changes the contents, so the "written only
-    # when it differs" test below fires by itself and the stamp is brought
-    # up to date. Nothing separate has to notice that an install went
-    # stale -- and a separate staleness check maintained by hand is the
-    # next thing that would rot.
-    #
-    # **The cost, so nobody reads it as a bug.** Every new build rewrites
-    # all three skills once, on the first launch after the upgrade, even
-    # when not a word of prose changed. It did come from a different
-    # build, so that is the honest answer; it is three writes per upgrade.
-    #
-    # Only the installed copy is stamped. The file under
-    # `src/poltergeist/skills/` and the one in the bundle stay byte for
-    # byte identical, because a diff between them is how anybody checks
-    # what a release actually shipped.
-    rendered=$(awk -v build="$version" '
-      NR == 1 && $0 == "---" { fm = 1; print; next }
-      fm == 1 && $0 == "---" {
-        if (build != "") print "polter-build: " build
-        fm = 0
-        print
-        next
-      }
-      fm == 1 && /^polter-build: / { next }
-      fm == 1 && /^name: / { sub(/^name: /, "name: polter-"); print; next }
-      { print }
-    ' "$path")
-
-    # Written only when it differs. This runs at every start, and rewriting a
-    # file the runtime may be reading, for no reason, is asking for the one
-    # race that makes a skill vanish mid-session.
-    if [ -f "$dir/SKILL.md" ]; then
-      if [ "$rendered" = "$(cat "$dir/SKILL.md")" ]; then
-        continue
-      fi
-    fi
-
-    if ! mkdir -p "$dir"; then
-      echo "claude-code: could not make $dir" >&2
-      return 1
-    fi
-
-    if ! printf '%s\n' "$rendered" > "$dir/SKILL.md"; then
-      echo "claude-code: could not write the skill $name" >&2
-      return 1
-    fi
-  done || status=1
-
-  [ "$status" = 0 ] || return "$status"
-
-  # --- skills that are no longer shipped --------------------------------------
-  #
-  # Installing without removing is not synchronising. A skill deleted from
-  # Polter went on living in every machine that had ever been given it: the
-  # three `mode-*` skills went with the work modes they described, and months
-  # later were still in `~/.claude/skills/`, still being matched against what
-  # users asked for, still telling agents to call a tool that no longer
-  # exists. Nothing anywhere would ever have taken them away.
-  #
-  # **The `polter-` prefix is treated as this plugin's namespace**, not merely
-  # as a way of avoiding collisions. That is a wider claim on the user's
-  # directory than "we will not overwrite your files", and it is made
-  # deliberately: the alternative -- deleting only entries carrying a marker
-  # we started writing today -- cannot remove the three skills that prompted
-  # this, which is to say it cannot fix the bug it was written for.
-  #
-  # Three checks narrow the claim to what this plugin actually writes. A
-  # directory holding anything besides a single `SKILL.md`, or whose
-  # frontmatter names something other than itself, is somebody else's and is
-  # left alone even under the prefix.
-  #
-  # Pruning only ever runs after a clean install pass, and only when the line
-  # actually parsed into a list of skills: an empty list is far more likely to
-  # be a parse that failed than a release that ships nothing, and acting on it
-  # would delete every skill on the machine.
-
-  shipped=$(printf '%s\n' "$skills" | sed 's/},{/}\
-  {/g' | sed -n 's/.*"name":"\([^"]*\)".*/polter-\1/p')
-
-  [ -n "$shipped" ] || return 0
-
-  for dir in "$home/.claude/skills"/polter-*; do
-    [ -d "$dir" ] || continue
-
-    base=${dir##*/}
-
-    printf '%s\n' "$shipped" | grep -qxF "$base" && continue
-
-    # Exactly one entry, and it is the file this plugin writes. A skill that
-    # grew a `references/` or a script is not one of ours.
-    [ "$(ls -A "$dir")" = "SKILL.md" ] || continue
-
-    # And it calls itself what its directory calls it, which is a thing this
-    # plugin guarantees on the way in.
-    declared=$(awk '
-      NR == 1 && $0 == "---" { fm = 1; next }
-      fm == 1 && $0 == "---" { exit }
-      fm == 1 && /^name: / { sub(/^name: /, ""); print; exit }
-    ' "$dir/SKILL.md")
-    [ "$declared" = "$base" ] || continue
-
-    # Failure is not fatal. A skill that could not be removed is stale, which
-    # is what it already was; taking the user's whole tool surface down over
-    # it would be the worse trade.
-    if rm -rf "$dir"; then
-      echo "claude-code: removed $base, which Polter no longer ships" >&2
-    else
-      echo "claude-code: could not remove the stale skill $base" >&2
-    fi
-  done
-
-  return 0
-}
-
-# --- the protocol -----------------------------------------------------------
+# `add` refuses a name that is already there, so a stale entry goes first. A
+# failure on the remove is ignored: the common case is that there was nothing
+# to remove.
 #
-# One acknowledgement per line the host writes, the greeting included. The
-# host arms a deadline before each write and waits for a line back; a plugin
-# that reads the greeting and then sits waiting for a batch is killed on
-# `timeout_ms`, restarted, and killed again -- a restart loop that looks,
-# from the plugin's side, exactly like idling.
+# `--` separates our arguments from the served command's, so a future flag on
+# the served side cannot be read as one of ours.
+host_mcp_register() {
+  version=$1 version_key=$2 exe=$3 scope=$4
 
-# `printf` and nothing else on stdout, ever. Both `dash` and `bash` flush the
-# shell's own output after each builtin, so a line written here is a line the
-# host can read -- there is nothing to flush by hand and no way to do it in
-# POSIX sh if there were.
-ack() {
-  printf '{"ok":%s}\n' "$1"
+  claude mcp remove --scope "$scope" polter >/dev/null 2>&1 || true
+  claude mcp add --scope "$scope" polter \
+    -e "$version_key=$version" \
+    -- "$exe" +mcp
 }
 
-IFS= read -r hello || exit 0
+host_skills_dir() {
+  printf '%s/.claude/skills' "$home"
+}
 
-case "$hello" in
-  *'"hello"'*) ack true ;;
-  *)
-    echo "claude-code: the first line was not a handshake" >&2
-    ack false
-    exit 2
-    ;;
-esac
-
-# The events. `provision` is the only kind this subscribes to, so anything
-# else is passed over -- the host will not send one, and a plugin that trusts
-# the host to filter is a plugin that breaks the day its subscription grows.
-#
-# An empty batch is a heartbeat: it proves this process is still here, and it
-# gets the same yes as anything else.
-while IFS= read -r batch; do
-  [ -n "$batch" ] || continue
-
-  case "$batch" in
-    *'"kind":"provision"'*) ;;
-    *)
-      ack true
-      continue
-      ;;
-  esac
-
-  if provision "$batch"; then
-    ack true
-  else
-    # "Not now", not misconduct. The host backs off and offers the same
-    # event again, which is the whole thing being resident buys here.
-    ack false
-  fi
-done
-
-exit 0
+polter_provision_main

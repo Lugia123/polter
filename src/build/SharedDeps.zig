@@ -221,6 +221,15 @@ pub fn add(
         .root_source_file = b.path("plugins/claude-code/provision.sh"),
     });
 
+    // And the library it sources. A host plugin is a declaration now -- the
+    // binary to look for, how that CLI registers a server, where it keeps
+    // skills -- and every line of the behaviour the test above asserts over
+    // lives here instead. Embedding only the declaration would run a script
+    // whose first statement fails.
+    step.root_module.addAnonymousImport("plugin_sdk_provision_sh", .{
+        .root_source_file = b.path("plugins/_sdk/provision.sh"),
+    });
+
     // Every exe needs the terminal options
     self.config.terminalOptions(.ghostty, optimize).add(b, step.root_module);
 

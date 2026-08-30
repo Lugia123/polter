@@ -3211,7 +3211,11 @@ fn runShippedClaudeCode(
     dir: []const u8,
     version: []const u8,
 ) !void {
-    const exec = try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{dir});
+    // Laid out the way the bundle lays it out, because the plugin now finds
+    // its library by walking `../_sdk` from its own directory. A flat temp
+    // directory would resolve that to the parent of the temp directory and
+    // the script would fail on its first statement.
+    const exec = try std.fmt.allocPrint(alloc, "{s}/claude-code/provision.sh", .{dir});
     const home = try std.fmt.allocPrint(alloc, "{s}/home", .{dir});
     const bin = try std.fmt.allocPrint(alloc, "{s}/bin", .{dir});
     const source = try std.fmt.allocPrint(alloc, "{s}/mine.md", .{dir});
@@ -3338,11 +3342,21 @@ test "an installed skill says which build wrote it, and only changes when that d
         var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
         defer d.close(io);
 
-        // The script we ship, embedded for the reason the manifest is: a
-        // test that reads it off disk passes once the file has gone.
-        var f = try d.createFile(io, "provision.sh", .{ .permissions = .fromMode(0o755) });
+        // The script we ship and the library it sources, both embedded for
+        // the reason the manifest is: a test that reads them off disk passes
+        // once the files have gone. Two of them now -- the plugin is a
+        // declaration and the behaviour asserted below is all in the library,
+        // so embedding only the declaration would test a script that dies on
+        // its first line.
+        try d.createDirPath(io, "claude-code");
+        var f = try d.createFile(io, "claude-code/provision.sh", .{ .permissions = .fromMode(0o755) });
         try f.writeStreamingAll(io, @embedFile("plugin_claude_code_sh"));
         f.close(io);
+
+        try d.createDirPath(io, "_sdk");
+        var sdk = try d.createFile(io, "_sdk/provision.sh", .{ .permissions = .fromMode(0o644) });
+        try sdk.writeStreamingAll(io, @embedFile("plugin_sdk_provision_sh"));
+        sdk.close(io);
 
         try d.createDirPath(io, "bin");
         var c = try d.createFile(io, "bin/claude", .{ .permissions = .fromMode(0o755) });
