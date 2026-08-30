@@ -490,6 +490,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_CLOSE_WINDOW:
                 closeWindow(app, target: target)
 
+            case GHOSTTY_ACTION_POLTERGEIST_CLOSE:
+                return poltergeistClose(app, target: target, v: action.action.poltergeist_close)
+
             case GHOSTTY_ACTION_TOGGLE_FULLSCREEN:
                 toggleFullscreen(app, target: target, mode: action.action.toggle_fullscreen)
 
@@ -609,6 +612,10 @@ extension Ghostty {
 
             case GHOSTTY_ACTION_READONLY:
                 setReadonly(app, target: target, v: action.action.readonly)
+
+            case GHOSTTY_ACTION_POLTERGEIST_MARK:
+                return setPoltergeistMark(
+                    app, target: target, v: action.action.poltergeist_mark)
 
             case GHOSTTY_ACTION_CHECK_FOR_UPDATES:
                 checkForUpdates(app)
@@ -1029,6 +1036,81 @@ extension Ghostty {
             }
         }
 
+        /// Close a tab or window because Polter's tool surface asked.
+        ///
+        /// **Not routed through `NotificationCenter` like `closeTab` above,
+        /// and that is the point of the whole action.** A notification is a
+        /// shout into the room: it reaches whichever controller owns the
+        /// surface, which is fine when nothing has to come back, and no use at
+        /// all here because something does. The core needs to know whether the
+        /// tab closed or a dialog went up, and it needs to know before this
+        /// call returns -- that answer exists nowhere later.
+        ///
+        /// So the controller is found by hand, the same way the notification
+        /// observers pick themselves out (`surfaceTree.contains(target)`), and
+        /// asked directly. The outcome goes back through `v.result`, which the
+        /// core initialised to `unsupported`: every path that cannot answer
+        /// leaves it alone and is honestly reported as "nothing happened",
+        /// which is the failure mode this replaces.
+        private static func poltergeistClose(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_poltergeist_close_s
+        ) -> Bool {
+            guard let out = v.result else { return false }
+
+            let scope: TerminalController.ToolCloseScope
+            switch v.scope {
+            case GHOSTTY_ACTION_POLTERGEIST_CLOSE_SCOPE_THIS_TAB:
+                scope = .thisTab
+            case GHOSTTY_ACTION_POLTERGEIST_CLOSE_SCOPE_OTHER_TABS:
+                scope = .otherTabs
+            case GHOSTTY_ACTION_POLTERGEIST_CLOSE_SCOPE_TABS_TO_THE_RIGHT:
+                scope = .tabsToTheRight
+            case GHOSTTY_ACTION_POLTERGEIST_CLOSE_SCOPE_WINDOW:
+                scope = .window
+            default:
+                assertionFailure()
+                return false
+            }
+
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("poltergeist close does nothing with an app target")
+                return false
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return false }
+                guard let surfaceView = self.surfaceView(from: surface) else { return false }
+                guard let controller = NSApp.windows
+                    .compactMap({ $0.windowController as? TerminalController })
+                    .first(where: { $0.surfaceTree.contains(surfaceView) })
+                else {
+                    // A surface with no terminal controller -- the quick
+                    // terminal, say. It has no tabs to speak of, so there is
+                    // nothing here to do and `unsupported` says so.
+                    return false
+                }
+
+                switch controller.closeFromTool(scope: scope, confirm: v.confirm) {
+                case .closed:
+                    out.pointee = GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_CLOSED
+                case .awaitingConfirmation:
+                    out.pointee = GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_AWAITING_CONFIRMATION
+                case .unsupported:
+                    // Left at the value the core initialised it to, and said
+                    // out loud rather than falling through, so that adding a
+                    // case to `ToolCloseResult` is a compile error here.
+                    out.pointee = GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_UNSUPPORTED
+                }
+                return true
+
+            default:
+                assertionFailure()
+                return false
+            }
+        }
+
         private static func closeAllWindows(_ app: ghostty_app_t, target: ghostty_target_s) {
             guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else { return }
             appDelegate.closeAllWindows(nil)
@@ -1181,6 +1263,37 @@ extension Ghostty {
 
             default:
                 assertionFailure()
+            }
+        }
+
+        /// Store Poltergeist's mark on the surface it is about.
+        ///
+        /// **Stored, not rendered here, and not written into the title.**
+        /// The mark used to travel as a tab title override with the mark
+        /// spliced on the front, which meant it shared one field with the
+        /// title the program sets through OSC 0/2 -- so a program that
+        /// renamed itself wiped its own mark. It lives on the surface now
+        /// and is composed in front of the title whenever the title is
+        /// rendered, so a rename recomposes rather than overwrites.
+        private static func setPoltergeistMark(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_poltergeist_mark_s) -> Bool {
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("poltergeist mark does nothing with an app target")
+                return false
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return false }
+                guard let surfaceView = self.surfaceView(from: surface) else { return false }
+                guard let prefix = v.prefix else { return false }
+                surfaceView.poltergeistMark = String(cString: prefix, encoding: .utf8) ?? ""
+                return true
+
+            default:
+                assertionFailure()
+                return false
             }
         }
 

@@ -45,6 +45,28 @@ poltergeist: poltergeistpkg.Bus,
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
 
+/// Who is doing which piece of work, per group.
+///
+/// Beside the chat rather than inside it: a task is not a message, and the
+/// two have different lifetimes -- a group's messages are trimmed as they
+/// grow and its tasks are not. Both are pure models the app holds and
+/// drives; see `poltergeist/Tasks.zig` for what it deliberately does not
+/// store.
+tasks: poltergeistpkg.Tasks,
+
+/// The panel on disk, so the morning has one. Null when there is no state
+/// directory, which is the same condition that leaves `chat_log` null.
+task_log: ?poltergeistpkg.TaskLog = null,
+
+/// The group shells on disk, so the list has last night's groups in it.
+///
+/// The same state directory and the same condition as `chat_log`, because
+/// it is the same directory: a group's shell is written beside the record
+/// it already has. What comes back is the name and the note, never the
+/// members -- see `poltergeist/GroupLog.zig` for why that is where the
+/// line falls rather than a compromise.
+group_log: ?poltergeistpkg.GroupLog = null,
+
 /// When it is acceptable to disturb the user. Null means any hour.
 ///
 /// Only scheduling questions respect it; an authorisation prompt goes out
@@ -287,6 +309,7 @@ pub fn init(
         .poltergeist = .init(alloc, .{}),
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
+        .tasks = .init(alloc, .{}),
     };
 }
 
@@ -310,6 +333,8 @@ pub fn deinit(self: *App) void {
 
     if (self.poltergeist_config_text.len > 0) self.alloc.free(self.poltergeist_config_text);
     if (self.chat_log) |*l| l.deinit();
+    if (self.task_log) |*l| l.deinit();
+    if (self.group_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
@@ -318,6 +343,7 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_log_dir) |d| self.alloc.free(d);
     self.chat_surfaces.deinit(self.alloc);
     self.chat.deinit();
+    self.tasks.deinit();
     self.poltergeist.deinit();
 
     // Clean up our font group cache
@@ -812,7 +838,8 @@ fn sessionSnapshot(
     self: *App,
     alloc: Allocator,
 ) Allocator.Error!poltergeistpkg.Session.Snapshot {
-    const names = try self.chat.groupsFor(alloc, poltergeistpkg.Chat.user_id);
+    const live = try self.liveTerminals(alloc);
+    const names = try self.chat.groupsFor(alloc, poltergeistpkg.Chat.user_id, live);
 
     var groups: std.ArrayListUnmanaged(poltergeistpkg.Session.Group) = .empty;
     for (names) |name| {
@@ -912,9 +939,105 @@ pub fn ensureChatLog(self: *App, want: bool) void {
         }
     }
 
+    // The panel, out of the same state directory and in the same shape --
+    // one directory per group, one file per day. **Read back immediately**,
+    // because a panel that is only written is the blank screen at nine the
+    // next morning that this whole thing exists to prevent.
+    if (poltergeistpkg.TaskLog.open(self.alloc, io, state_dir)) |l| {
+        self.task_log = l;
+        if (self.task_log) |*t| t.restore(&self.tasks);
+    } else |err| {
+        log.warn("poltergeist: could not open the task log err={}", .{err});
+    }
+
+    // And the groups those tasks are filed under. **Before this, the panel
+    // came back and the group it belongs to did not** -- last night's tasks
+    // on screen under a group that no longer existed. The shells go back
+    // first-class, out of the record directories that are already there.
+    //
+    // Names and notes only. Nobody is put back in a group; who was in it is
+    // a judgement about which terminal on screen is which, and that is the
+    // supervisor's to make out of `session_recall`. See `GroupLog.zig`.
+    if (poltergeistpkg.GroupLog.open(self.alloc, io, state_dir)) |l| {
+        self.group_log = l;
+        self.restoreChatGroups();
+    } else |err| {
+        log.warn("poltergeist: could not open the group log err={}", .{err});
+    }
+
     // The log has just opened, which is the earliest moment there is
     // anything for an archive plugin to follow.
     self.ensureResidents();
+}
+
+/// Put last night's group shells back into the chat.
+///
+/// Each one is a name, a note, and when anything was last said in it.
+/// Nobody is added: a restored group has only the person at the keyboard
+/// in it, which makes it inactive, which is exactly the state "there is a
+/// group here and nobody is working in it" should look like. A supervisor
+/// taking it up again is what `group_add` is for, and that is the step
+/// that needs a judgement nobody else can make.
+///
+/// A shell whose name the chat will not accept, or that is already there,
+/// is skipped. Both are answers rather than failures: the first is a
+/// directory somebody made by hand, and the second means what is in memory
+/// is newer than what is on disk.
+fn restoreChatGroups(self: *App) void {
+    const gl = if (self.group_log) |*v| v else return;
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const shells = gl.restore(alloc) catch |err| {
+        log.warn("poltergeist: could not read the group list err={}", .{err});
+        return;
+    };
+
+    // Newest first, and stopped short of the ceiling.
+    //
+    // **The list on disk never expires and `Chat.max_groups` is 32.** Left
+    // alone, a machine with a few weeks of history would come up with every
+    // slot filled by whatever order the filesystem happened to hand the
+    // directories back in, and the first `group_create` of the morning
+    // would be refused -- a supervisor unable to make a group, for a reason
+    // nothing on screen explains.
+    //
+    // So the room is left on purpose and the groups that lose are the ones
+    // last spoken in, which is the same order the list is shown in. The
+    // older ones are still on disk with every word in them; what they are
+    // short of is a way to be picked out again, and that is worth writing
+    // down rather than leaving to be discovered.
+    std.mem.sort(poltergeistpkg.GroupLog.Shell, shells, {}, newestShellFirst);
+
+    const ceiling = self.chat.config.max_groups -| restore_reserve;
+
+    var back: usize = 0;
+    for (shells) |shell| {
+        if (back >= ceiling) break;
+        self.chat.restoreShell(shell.name, shell.brief, shell.last_ms) catch continue;
+        back += 1;
+    }
+
+    if (back > 0) log.info("poltergeist: {d} group(s) back from last night", .{back});
+    if (shells.len > back) log.info(
+        "poltergeist: {d} older group(s) left on disk, room kept for new ones",
+        .{shells.len - back},
+    );
+}
+
+/// How many of `Chat.max_groups` are held back from the restore, so the
+/// supervisor can always make groups on a machine with a long history.
+const restore_reserve: usize = 8;
+
+fn newestShellFirst(
+    _: void,
+    a: poltergeistpkg.GroupLog.Shell,
+    b: poltergeistpkg.GroupLog.Shell,
+) bool {
+    if (a.last_ms != b.last_ms) return a.last_ms > b.last_ms;
+    return std.mem.order(u8, a.name, b.name) == .lt;
 }
 
 /// Start every plugin that is installed, switched on, and subscribed to
@@ -1572,6 +1695,13 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .pluginRoots = pluginRoots,
         .pluginConfigure = pluginConfigure,
         .pluginTest = pluginTest,
+        .taskCreate = taskCreate,
+        .taskAssign = taskAssign,
+        .taskClose = taskClose,
+        .taskOwner = taskOwner,
+        .taskCancel = taskCancel,
+        .taskProgress = taskProgress,
+        .taskList = taskList,
     } };
 }
 
@@ -2056,6 +2186,7 @@ fn poltergeistPerformAction(
     ctx: *anyopaque,
     id: poltergeistpkg.Bus.Id,
     action: []const u8,
+    confirm_close: bool,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
@@ -2065,11 +2196,107 @@ fn poltergeistPerformAction(
         return error.InvalidAction;
     };
 
+    // The actions that do not go through `performBindingAction`, and they
+    // are all one family: the closes. Both halves of the reason are things
+    // `performBindingAction` cannot do. It closes the way the user closes,
+    // which always asks -- so a supervisor closing a worker it is minding
+    // got a dialog nobody was there to press. And it answers `true` the
+    // moment the request is handed to the runtime, so a close that raised a
+    // dialog came back as `{"ok":true}` for a terminal that was still open.
+    //
+    // `confirm_close` is carried down from the tool surface, which is the
+    // side that knows the target's mark, and each of these paths says on the
+    // way back whether a dialog went up. Everything else still goes through
+    // the shared path, which is the point of this whole surface.
+    switch (parsed) {
+        // The surface closes itself: `closeFromTool` is the same two lines
+        // as `close` with the answer to both halves.
+        .close_surface => {
+            if (surface.closeFromTool(confirm_close)) return error.CloseAwaitingConfirm;
+            return;
+        },
+
+        // A tab and a window are the apprt's to close and the apprt's to
+        // ask about -- a surface knows whether *it* needs confirming, and
+        // nothing in the core knows which surfaces share a tab. So the
+        // question and the answer both go out through `poltergeist_close`
+        // rather than being decided here. See `apprt.action.PoltergeistClose`.
+        //
+        // `readonly` is folded in here rather than in `rpc.zig` for the same
+        // reason it is in `Surface.toolCloseAsks`: it is this surface's
+        // state, and the tool surface has no way to read it. The apprt folds
+        // in the rest of the tab on top of this, because a tab is more
+        // surfaces than the one that was named.
+        .close_tab => |mode| return self.poltergeistClose(surface, .{
+            .scope = switch (mode) {
+                .this => .this_tab,
+                .other => .other_tabs,
+                .right => .tabs_to_the_right,
+            },
+            .confirm = poltergeistpkg.actions.confirmsCloseProtected(
+                confirm_close,
+                surface.readonly,
+            ),
+        }),
+
+        .close_window => return self.poltergeistClose(surface, .{
+            .scope = .window,
+            .confirm = poltergeistpkg.actions.confirmsCloseProtected(
+                confirm_close,
+                surface.readonly,
+            ),
+        }),
+
+        else => {},
+    }
+
     // The return says whether the terminal took it. False is not a failure
     // of ours -- `toggle_split_zoom` on a window with no splits does
     // nothing, and rightly -- but the agent asked for something to happen,
     // so it is told that nothing did.
     if (!(try surface.performBindingAction(parsed))) return error.ActionIgnored;
+}
+
+/// Ask the apprt to close a tab or a window for the tool surface, and turn
+/// what it says back into the two answers this surface has.
+///
+/// The `result` cell starts at `.unsupported` and is passed by pointer, so
+/// an apprt that does not implement this -- GTK today -- leaves it there and
+/// the caller is told nothing happened. Reading `performAction`'s `bool`
+/// alone would not do: it says "I handled this action", which is true of a
+/// close that put a dialog up and true of a close that went through, and
+/// telling those two apart is the whole reason this action exists.
+fn poltergeistClose(
+    self: *App,
+    surface: *Surface,
+    req: struct {
+        scope: apprt.action.PoltergeistClose.Scope,
+        confirm: bool,
+    },
+) anyerror!void {
+    _ = self;
+
+    var result: apprt.action.PoltergeistClose.Result = .unsupported;
+    const handled = try surface.rt_app.performAction(
+        .{ .surface = surface },
+        .poltergeist_close,
+        .{
+            .scope = req.scope,
+            .confirm = req.confirm,
+            .result = &result,
+        },
+    );
+
+    // An apprt that says it did not handle the action has not written the
+    // cell either, and both readings lead to the same place; checked anyway
+    // so that a future apprt returning `false` after writing `closed` is a
+    // contradiction that resolves the safe way.
+    if (!handled) return error.ActionIgnored;
+
+    // The three-way answer, decided next to the enum rather than here --
+    // nothing in this file is reached by a test, and a rule written in an
+    // untested place is a rule nobody can check. See `Result.toolAnswer`.
+    return result.toolAnswer();
 }
 
 fn poltergeistSetWatching(
@@ -2282,6 +2509,12 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
     // The person at the keyboard has no terminal of their own, so there
     // is nothing to record about where they are working.
     try self.chat.add(group, poltergeistpkg.Chat.user_id, .all, .{});
+
+    // Written down now rather than when something is first said in it: a
+    // group made at midnight and never spoken in would otherwise leave no
+    // directory at all, and would not be in the list in the morning.
+    if (self.group_log) |*l| l.note(group, "");
+
     self.saveSession();
 }
 
@@ -2295,10 +2528,193 @@ pub fn refreshPoltergeistTabs(self: *App) void {
     }
 }
 
+/// The ids of the terminals that are open right now. Borrowed from
+/// `alloc`.
+///
+/// The other half of every "is anybody in this group" question. A group's
+/// membership list says who was put in it; this says which of those the
+/// app still has, and `Chat.isActive` is where the two meet. It lives here
+/// rather than in `poltergeist/Chat.zig` because that file is the model
+/// and does not know what a window is.
+fn liveTerminals(
+    self: *const App,
+    alloc: Allocator,
+) Allocator.Error![]const poltergeistpkg.Bus.Id {
+    const out = try alloc.alloc(
+        poltergeistpkg.Bus.Id,
+        self.surfaces.items.len,
+    );
+    for (self.surfaces.items, 0..) |rt_surface, i| out[i] = rt_surface.core().id;
+    return out;
+}
+
+/// Whether a group has any terminal in it that is still open.
+///
+/// Out of memory answers yes. The only caller refuses on yes, and being
+/// unable to work out whether a destruction would reach anybody is not a
+/// reason to go ahead with it.
+fn chatGroupActive(self: *App, group: []const u8) bool {
+    const live = self.liveTerminals(self.alloc) catch return true;
+    defer self.alloc.free(live);
+    return self.chat.isActive(group, live);
+}
+
 fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
+
+    // **A group with terminals working in it is not deleted.**
+    //
+    // The test is whether removing it would reach anybody. An empty group
+    // is a name and a file and nobody to disturb, so letting it go costs
+    // nothing. A group with terminals in it is a conversation they are
+    // in: destroying it takes them out of it without telling them, and
+    // the panel their tasks are on goes with it. Take the members out
+    // first -- `group_remove` -- and then it is an empty group like any
+    // other.
+    //
+    // Asked here rather than in the chat view, so that it holds for an
+    // agent calling `group_destroy` as well as for somebody pressing `d`.
+    // The view has no way to know this and does not need one; it shows
+    // whatever the host says.
+    //
+    // Checked before existence would be, so ask that first: "no group by
+    // that name" is the more useful answer for a name that is not there.
+    if (!self.chat.exists(group)) return error.NoSuchGroup;
+    if (self.chatGroupActive(group)) return error.GroupActive;
+
     try self.chat.destroy(group);
+
+    // The panel goes with the group. A task belongs to a group, so tasks
+    // outliving it would be work in a place nobody can look at -- and the
+    // conversations view draws the panel per group, so there would be
+    // nowhere to draw them.
+    self.tasks.forgetGroup(group);
+
+    // **Off the list, not off the disk.** Every word said in this group is
+    // still in `<state>/chat/<group>/` and nothing here goes near it; all
+    // that changes is that the group stops being offered in the list. The
+    // record red line in `docs/poltergeist/gaps.md` is what this is: the
+    // record is never what gets deleted.
+    if (self.group_log) |*l| l.forget(group);
+
     self.saveSession();
+}
+
+// -- the panel ---------------------------------------------------------------
+//
+// All of these run on the app thread, the same as the chat's half of the
+// host: `poltergeistRequest` dispatches there.
+
+/// Wall-clock milliseconds, for the record on disk.
+///
+/// The panel model has no clock -- time arrives as a parameter everywhere
+/// in `poltergeist/` -- and the record is filed by local day, so this is
+/// where the two meet.
+fn taskWallMs(self: *App) i64 {
+    return self.poltergeist_epoch_wall_ms + @as(i64, @intCast(self.poltergeistNow()));
+}
+
+/// Write one thing that happened, if there is anywhere to write it.
+fn logTask(self: *App, op: poltergeistpkg.TaskLog.Op, id: u64) void {
+    const l = if (self.task_log) |*v| v else return;
+    const task = self.tasks.get(id) orelse return;
+    l.append(self.taskWallMs(), op, task);
+}
+
+fn taskCreate(
+    ctx: *anyopaque,
+    group: []const u8,
+    title: []const u8,
+) anyerror!u64 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    // A task in a group nobody made would be work in a place with no
+    // members and no panel to draw it on.
+    if (!self.chat.exists(group)) return error.NoSuchGroup;
+
+    const id = try self.tasks.create(group, title);
+    self.logTask(.created, id);
+    return id;
+}
+
+fn taskAssign(ctx: *anyopaque, task: u64, id: poltergeistpkg.Bus.Id) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.tasks.assign(task, id);
+    self.logTask(.assigned, task);
+}
+
+fn taskClose(ctx: *anyopaque, task: u64) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.tasks.close(task);
+    self.logTask(.closed, task);
+}
+
+/// Who has a task and what it is called.
+///
+/// Asked by `rpc.dispatch` just before it types a cancellation into that
+/// terminal. **The ordering -- tell the worker, then take the task off its
+/// list -- lives there rather than here**, because there is where it can be
+/// tested: this file has no tests, and a rule that only exists in a comment
+/// in an untested file is a rule until somebody tidies it.
+fn taskOwner(ctx: *anyopaque, task: u64) anyerror!poltergeistpkg.rpc.TaskOwner {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const t = self.tasks.get(task) orelse return error.NoSuchTask;
+    return .{ .owner = t.owner, .title = t.title };
+}
+
+/// Mark a task cancelled. The worker has already been told; see above.
+fn taskCancel(ctx: *anyopaque, task: u64) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.tasks.cancel(task);
+    self.logTask(.cancelled, task);
+}
+
+fn taskProgress(
+    ctx: *anyopaque,
+    task: u64,
+    by: poltergeistpkg.Bus.Id,
+    progress: []const u8,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const value = std.meta.stringToEnum(
+        poltergeistpkg.Tasks.Progress,
+        progress,
+    ) orelse return error.BadProgress;
+
+    try self.tasks.setProgress(task, by, value);
+    self.logTask(.progressed, task);
+}
+
+fn taskList(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    group: []const u8,
+    who: poltergeistpkg.Bus.Id,
+    whole_panel: bool,
+) anyerror![]const poltergeistpkg.rpc.TaskView {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (!self.chat.exists(group)) return error.NoSuchGroup;
+
+    // The two filters, and they are two functions rather than one with a
+    // flag through it. See `poltergeist/Tasks.zig`.
+    const list = if (whole_panel)
+        try self.tasks.inGroup(alloc, group)
+    else
+        try self.tasks.forWorker(alloc, group, who);
+    defer alloc.free(list);
+
+    const out = try alloc.alloc(poltergeistpkg.rpc.TaskView, list.len);
+    for (list, 0..) |t, i| out[i] = .{
+        .id = t.id,
+        // Copied: the reply is written by the connection thread after this
+        // returns, and the panel can change in between.
+        .title = try alloc.dupe(u8, t.title),
+        .owner = t.owner,
+        .state = @tagName(t.state),
+        .progress = @tagName(t.progress),
+    };
+    return out;
 }
 
 fn chatAdd(
@@ -2496,7 +2912,10 @@ fn chatGroups(
 ) anyerror![]const []const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
 
-    const names = try self.chat.groupsFor(alloc, id);
+    const live = try self.liveTerminals(alloc);
+    defer alloc.free(live);
+
+    const names = try self.chat.groupsFor(alloc, id, live);
     errdefer alloc.free(names);
 
     // Copied, not borrowed: the reply is written by the connection thread
@@ -2689,6 +3108,12 @@ fn chatSetBrief(
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.chat.setBrief(group, text);
+
+    // Taken back out of the chat rather than written from `text`, so what
+    // lands on disk is what the chat actually kept -- trimmed, and cut to
+    // the length it enforces.
+    if (self.group_log) |*l| l.note(group, self.chat.briefOf(group) catch text);
+
     self.saveSession();
 }
 
@@ -2703,7 +3128,10 @@ fn chatGroupInfo(
 ) anyerror![]poltergeistpkg.rpc.ChatGroupInfo {
     const self: *App = @ptrCast(@alignCast(ctx));
 
-    const names = try self.chat.groupsFor(alloc, id);
+    const live = try self.liveTerminals(alloc);
+    defer alloc.free(live);
+
+    const names = try self.chat.groupsFor(alloc, id, live);
     defer alloc.free(names);
 
     const out = try alloc.alloc(poltergeistpkg.rpc.ChatGroupInfo, names.len);
@@ -2898,16 +3326,44 @@ fn chatHistory(
 fn tellTerminalsAboutMessages(self: *App) void {
     const now_ms = self.poltergeistNow();
 
+    // Worked out once for the whole sweep rather than per surface: it is
+    // the same answer every time round, and the list does not move while
+    // this runs.
+    const live = self.liveTerminals(self.alloc) catch return;
+    defer self.alloc.free(live);
+
     for (self.surfaces.items) |rt_surface| {
         const surface = rt_surface.core();
 
-        const names = self.chat.groupsFor(self.alloc, surface.id) catch continue;
+        const names = self.chat.groupsFor(self.alloc, surface.id, live) catch continue;
         defer self.alloc.free(names);
 
+        // **A terminal somebody is minding is not the group's to
+        // interrupt.** Its supervisor directs it by typing into its input
+        // box, which is a channel a notice cannot compete with; three
+        // workers reporting used to interrupt all three, and none of them
+        // needed to know what the others were doing.
+        //
+        // Asked of the *reader's* mark rather than of who spoke, so there
+        // is one rule and no special case for the person at the keyboard:
+        // the user carries no mark, is minded by nobody, and is told.
+        // A terminal with no mark is told for the same reason -- nobody is
+        // directing it, so the group is the only channel it has.
+        const watched = self.poltergeist.roleOf(surface.id) == .watched;
+
         for (names) |name| {
+            // Still the whole count, deliberately. Not being woken is not
+            // being kept out: whatever this terminal has waiting is what
+            // `group_read` will hand it, and the notice says so honestly.
             const count = self.chat.unread(name, surface.id);
             if (count == 0) continue;
-            if (!self.chat.shouldNotify(name, surface.id, now_ms, chat_notice_gap_ms)) {
+            if (!self.chat.shouldNotify(
+                name,
+                surface.id,
+                now_ms,
+                chat_notice_gap_ms,
+                watched,
+            )) {
                 continue;
             }
 

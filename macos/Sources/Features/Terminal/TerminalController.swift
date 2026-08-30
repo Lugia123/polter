@@ -1372,6 +1372,170 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
     }
 
+    // MARK: Closing for Polter's tool surface
+
+    /// What Polter's tool surface asked to close.
+    enum ToolCloseScope {
+        case thisTab
+        case otherTabs
+        case tabsToTheRight
+        case window
+    }
+
+    /// What actually happened, which is the half the core could not work out
+    /// for itself. `terminal_action` used to answer `{"ok":true}` for a tab
+    /// that was still sitting there behind a dialog, because the only thing
+    /// coming back from here was "the action was dispatched".
+    enum ToolCloseResult {
+        case closed
+        case awaitingConfirmation
+
+        /// This controller could not act -- no window to speak of. Kept
+        /// separate from `closed` on purpose: "nothing happened" reported as
+        /// "done" is the exact bug this whole path exists to fix, and a
+        /// degenerate controller is not a licence to tell that lie in small.
+        case unsupported
+    }
+
+    /// Close a tab or window because an agent asked, not because a person did.
+    ///
+    /// **Deliberately a separate method from `closeTab(_:)` and
+    /// `closeWindow(_:)` rather than a parameter on them.** The confirmation
+    /// those raise guards the user against their own misclick, and the way to
+    /// be certain this change did not weaken it is for their code to be the
+    /// code it was. Nothing above is edited; this is a second door with its
+    /// own lock. The duplication is the guarantee.
+    ///
+    /// `confirm` false means the target carries a Polter mark: nobody is
+    /// sitting at that tab, so the dialog would strand the caller behind a box
+    /// it can neither see nor press. It is a licence to skip a question, never
+    /// a reason to ask a new one.
+    func closeFromTool(scope: ToolCloseScope, confirm: Bool) -> ToolCloseResult {
+        switch scope {
+        case .thisTab:
+            // The same fall-through the menu item takes: a lone tab is a
+            // window, and closing it as a tab would close the window anyway.
+            guard (window?.tabGroup?.windows.count ?? 0) > 1 else {
+                return closeFromTool(scope: .window, confirm: confirm)
+            }
+
+            guard toolCloseAsks(surfaceTree, confirm: confirm) else {
+                closeTabImmediately()
+                return .closed
+            }
+
+            confirmClose(
+                messageText: "Close Tab?",
+                informativeText: "The terminal still has a running process. If you close the tab the process will be killed."
+            ) {
+                self.closeTabImmediately()
+            }
+            return .awaitingConfirmation
+
+        case .otherTabs:
+            guard let window else { return .unsupported }
+            guard let tabGroup = window.tabGroup, tabGroup.windows.count > 1 else {
+                // Nothing to close is not a dialog and not a failure: the
+                // state the caller asked for is the state it is already in.
+                return .closed
+            }
+
+            let others = tabGroup.windows
+                .filter { $0 != window }
+                .compactMap { $0.windowController as? TerminalController }
+            guard others.contains(where: { self.toolCloseAsks($0.surfaceTree, confirm: confirm) }) else {
+                closeOtherTabsImmediately()
+                return .closed
+            }
+
+            confirmClose(
+                messageText: "Close Other Tabs?",
+                informativeText: "At least one other tab still has a running process. If you close the tab the process will be killed."
+            ) {
+                self.closeOtherTabsImmediately()
+            }
+            return .awaitingConfirmation
+
+        case .tabsToTheRight:
+            guard let window,
+                  let tabGroup = window.tabGroup,
+                  let currentIndex = tabGroup.windows.firstIndex(of: window)
+            else { return .unsupported }
+
+            let toClose = tabGroup.windows.enumerated()
+                .filter { $0.offset > currentIndex }
+                .compactMap { $0.element.windowController as? TerminalController }
+            guard !toClose.isEmpty else { return .closed }
+
+            guard toClose.contains(where: { self.toolCloseAsks($0.surfaceTree, confirm: confirm) }) else {
+                closeTabsOnTheRightImmediately()
+                return .closed
+            }
+
+            confirmClose(
+                messageText: "Close Tabs on the Right?",
+                informativeText: "At least one tab to the right still has a running process. If you close the tab the process will be killed."
+            ) {
+                self.closeTabsOnTheRightImmediately()
+            }
+            return .awaitingConfirmation
+
+        case .window:
+            guard let window else { return .unsupported }
+
+            // Every tab in the group goes, so every tab in the group gets a
+            // say -- the same sweep `closeWindow(_:)` makes.
+            let windows: [NSWindow] = window.tabGroup?.windows ?? [window]
+            let controllers = windows.compactMap { $0.windowController as? TerminalController }
+            guard let confirmController = controllers.first(
+                where: { self.toolCloseAsks($0.surfaceTree, confirm: confirm) }
+            ) else {
+                closeWindowImmediately()
+                return .closed
+            }
+
+            confirmController.confirmClose(
+                messageText: "Close Window?",
+                informativeText: "All terminal sessions in this window will be terminated.",
+            ) {
+                self.closeWindowImmediately()
+            }
+            return .awaitingConfirmation
+        }
+    }
+
+    /// Whether a tool close of `surfaces` still puts the dialog up.
+    ///
+    /// Two bits, and the second is the one worth reading twice.
+    ///
+    /// `needsConfirmQuit` is unchanged and comes first: no running process,
+    /// no question, for the user and for an agent alike.
+    ///
+    /// Then `confirm`, which is the mark. False means skip the question --
+    /// **except** where the user has put this terminal in readonly. That lock
+    /// is the person at the keyboard saying "something is running in here,
+    /// don't let anything type into it"; it is the same family as `held` and
+    /// `shielded`, and the rule for that family is that the tool surface
+    /// respects it. A terminal that is *both* watched and readonly is not the
+    /// weak case for asking, it is the strong one: the user locked it because
+    /// an agent can reach it. So the lock is checked across the whole set
+    /// being closed, not just the surface the agent named -- a tab is more
+    /// surfaces than the one that was aimed at, and closing the tab kills all
+    /// of them.
+    ///
+    /// The core makes the same join for the surface it was pointed at, in
+    /// `poltergeist.actions.confirmsCloseProtected`. This is not that check
+    /// repeated for safety; it is the part of the set the core cannot see.
+    private func toolCloseAsks<S: Sequence>(
+        _ surfaces: S,
+        confirm: Bool
+    ) -> Bool where S.Element == Ghostty.SurfaceView {
+        let all = Array(surfaces)
+        guard all.contains(where: { $0.needsConfirmQuit }) else { return false }
+        if confirm { return true }
+        return all.contains(where: { $0.readonly })
+    }
+
     @IBAction func returnToDefaultSize(_ sender: Any?) {
         guard let window, let defaultSize else { return }
         defaultSize.apply(to: window)

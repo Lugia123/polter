@@ -817,6 +817,31 @@ pub const Application = extern struct {
             .undo,
             .redo,
             .toggle_poltergeist_chat,
+
+            // Poltergeist's own UI is macOS-only so far, and the tab mark
+            // is part of it. GTK keeps its tabs unmarked rather than
+            // getting a half-built one: rendering this means a `Surface`
+            // gobject property, a `Tab` binding and a blp change, which is
+            // the shape `readonly` already has and is what to copy when
+            // this is picked up. `terminal_list` answers per surface in
+            // the meantime.
+            .poltergeist_mark,
+
+            // Closing a tab or window for the tool surface without the
+            // dialog, and saying which happened. Unimplemented here rather
+            // than half-implemented, and the honest answer is cheap: the
+            // caller initialises `result` to `.unsupported` and this prong
+            // leaves it there, so an agent asking GTK to close a tab is told
+            // it did not happen. That is already better than what it had --
+            // the bug being fixed is a close that answered `ok` and left the
+            // tab open.
+            //
+            // Picking it up means going where `tab.close` and `win.close`
+            // land -- `split_tree.zig`, which asks `needsConfirmQuit` and
+            // raises the dialog itself -- and giving both a path that skips
+            // the dialog and reports back. The macOS side is the shape to
+            // copy.
+            .poltergeist_close,
             => {
                 log.warn("unimplemented action={}", .{action});
                 return false;

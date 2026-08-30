@@ -109,6 +109,17 @@ extension Ghostty {
         /// True when the bell is active. This is set inactive on focus or event.
         @Published private(set) var bell: Bool = false
 
+        /// What Poltergeist has to say about this surface, already rendered
+        /// by the core, or empty when it has nothing to say.
+        ///
+        /// **Its own field, on purpose.** This used to arrive as a tab title
+        /// override with the mark spliced onto the front, which put it in a
+        /// field the program in the terminal also writes through OSC 0/2 --
+        /// so renaming the terminal erased the mark. Kept here it survives
+        /// any number of renames: the title is composed with this in front
+        /// every time it is rendered, the same way the bell prefix works.
+        @Published var poltergeistMark: String = ""
+
         /// A clipboard confirmation waiting to be handled by its controller.
         @Published var pendingClipboardConfirmation: ClipboardConfirmationRequest? {
             didSet {

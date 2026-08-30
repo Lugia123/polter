@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const inputpkg = @import("../input.zig");
+const Bus = @import("Bus.zig");
 
 /// One action an agent may ask for.
 pub const Entry = struct {
@@ -307,6 +308,105 @@ pub fn known(name: []const u8) bool {
     return false;
 }
 
+/// Who asked for a surface to close.
+///
+/// **This is the whole of the fix, and the union is the fix's shape.** The
+/// close-confirmation used to be decided by `Surface.needsConfirmQuit`
+/// alone, which knows what is running inside the terminal and nothing about
+/// who is doing the closing. That was right while there was only one way to
+/// close a terminal. There are two now, and they want different answers.
+pub const CloseAsker = union(enum) {
+    /// The person at the keyboard: a menu item, a keybinding, the tab's
+    /// close button.
+    user,
+
+    /// The tool surface, aimed at a terminal carrying this mark.
+    tool: Bus.Role,
+};
+
+/// Whether a close from `by` still puts the confirmation in front of the
+/// user.
+///
+/// **The confirmation is a guard against the user's own misclick.** That is
+/// the whole reason it exists, and it is why the answer for `.user` is
+/// `true` with no second thought and no look at the mark. A rule phrased as
+/// "watched terminals do not confirm" would read the same on this page and
+/// be a different program: the user clicking close on a worker that is
+/// mid-build would lose the one question that was there to catch them. That
+/// is not moving the guard, it is deleting it.
+///
+/// **From the tool surface it is the target's mark that answers**, which is
+/// the same judgement `rpc.authorize` already makes about reach and is
+/// deliberately not a new idea:
+///
+///   - `.watched` and `.supervisor` are terminals somebody arranged. A
+///     supervisor closing one is the arrangement working -- it is what it
+///     was made a supervisor to do -- and there is nobody at that tab to
+///     answer a dialog anyway. The dialog does not protect them, it strands
+///     the caller behind a box it cannot see or press.
+///
+///   - `.none` is a terminal the program knows nothing about. It cannot
+///     tell an agent from a person reading their mail, so it does not
+///     guess: the confirmation is the only protection an unmarked terminal
+///     has from a tool call, and it keeps it.
+///
+/// A `shielded` terminal never reaches here at all -- `rpc.authorize`
+/// refuses the whole call before any of this -- so there is no prong for it
+/// and there must not be one.
+pub fn confirmsClose(by: CloseAsker) bool {
+    return switch (by) {
+        .user => true,
+
+        .tool => |role| switch (role) {
+            .watched, .supervisor => false,
+            .none => true,
+        },
+    };
+}
+
+/// The same question again with the *target's* own protections folded back
+/// in, and the second half of the rule: **the mark waives the dialog, the
+/// user's lock puts it back.**
+///
+/// `asker` is `confirmsClose` already answered -- who is closing. `protected`
+/// is one bit about what is being closed: whether the person at the keyboard
+/// has put a lock on this terminal that a tool call has no business lifting.
+/// Today that bit is `Surface.readonly`, which is the user reaching over and
+/// saying "something is running in here, do not type into it". It belongs to
+/// the same family as `held` and `shielded` -- all three are set by the user,
+/// in the UI, about one terminal -- and that family has one rule: the tool
+/// surface respects it. `shielded` is enforced in `rpc.authorize`, `held` in
+/// the `governed` refusal, and this is `readonly`'s.
+///
+/// **It is `or`, and the asymmetry is the point.** A mark says "nobody is
+/// sitting at this tab to press a button", which is a good reason to drop a
+/// dialog. A lock says "the user decided this terminal is delicate", which is
+/// not cancelled by the terminal also being supervised -- if anything the two
+/// together are the exact case worth stopping for: a readonly terminal under
+/// supervision is one the user locked *because* an agent can reach it. So the
+/// two combine by keeping the dialog, never by dropping it.
+///
+/// **Two booleans rather than a `Surface`, on purpose.** `confirmsClose` above
+/// is policy and nothing else: it takes who asked and answers, it imports
+/// `Bus.Role` and no surface, and it is testable in this file without an
+/// allocator or a running terminal. Handing it a `*Surface` -- or reading
+/// `readonly` off one inside it -- would trade that for a function that can
+/// only be exercised by standing up a terminal, which is how a rule stops
+/// being checked. The bit comes in as a bit; the caller that owns the
+/// surface is the one that reads it. See `Surface.toolCloseAsks`, which is
+/// that caller.
+///
+/// The position rejected was folding this into `CloseAsker` -- a `protected`
+/// field on the `.tool` prong. It cannot work and the reason is structural
+/// rather than aesthetic: `CloseAsker` is built in `rpc.zig`, on the tool
+/// surface's thread, from `Bus.roleOf`. The bus does not carry `readonly` and
+/// should not start to -- it would be a second copy of a fact the surface
+/// already owns, kept in step by hand, and the class of bug that produces is
+/// the one where the copy is stale exactly when it matters.
+pub fn confirmsCloseProtected(asker: bool, protected: bool) bool {
+    return asker or protected;
+}
+
 /// The action name out of a request, which may or may not carry a value.
 pub fn nameOf(action: []const u8) []const u8 {
     const colon = std.mem.indexOfScalar(u8, action, ':') orelse return action;
@@ -472,4 +572,76 @@ test "the catalogue carries the same answer the gate uses" {
     // The governed family is not in the catalogue at all, so nothing here
     // depends on which side of `selfSafeTag` it sits.
     for (all) |e| try testing.expect(!governed(e.name));
+}
+
+test "the close confirmation follows who asked, and the user is always asked" {
+    const testing = std.testing;
+
+    // **The half easiest to write out of existence.** The user is asked,
+    // full stop -- and `.user` carries no role for the answer to depend
+    // on, which is the guarantee rather than a value this test happens to
+    // check. A rule phrased as "watched terminals do not confirm" would
+    // have taken a role here and quietly deleted the misclick guard.
+    try testing.expect(confirmsClose(.user));
+    try testing.expectEqual(void, @FieldType(CloseAsker, "user"));
+
+    // From the tool surface, the mark answers -- exhaustively, so a role
+    // added to `Bus.Role` has to be given a side here by name.
+    for (std.enums.values(Bus.Role)) |role| {
+        const want = switch (role) {
+            .watched, .supervisor => false,
+            .none => true,
+        };
+        if (confirmsClose(.{ .tool = role }) != want) {
+            std.debug.print("\ntool close on {t}: wanted {}\n", .{ role, want });
+            return error.ToolCloseConfirmWrong;
+        }
+    }
+}
+
+test "a lock on the target puts back the dialog the mark waived" {
+    const testing = std.testing;
+
+    // The case the mark rule got wrong on its own: a terminal that is both
+    // supervised *and* readonly. The mark says nobody is at that tab; the
+    // lock says the user made this one delicate on purpose. Closing it
+    // silently is the readonly flag being spent on something it was never
+    // for, so the lock wins.
+    for (std.enums.values(Bus.Role)) |role| {
+        const asked = confirmsClose(.{ .tool = role });
+        try testing.expect(confirmsCloseProtected(asked, true));
+    }
+
+    // Unlocked, it is exactly `confirmsClose` again -- the fold adds
+    // nothing when there is nothing to add, which is what makes it safe to
+    // put on the path every tool close takes.
+    for (std.enums.values(Bus.Role)) |role| {
+        const asked = confirmsClose(.{ .tool = role });
+        try testing.expectEqual(asked, confirmsCloseProtected(asked, false));
+    }
+
+    // And the user is unmoved either way: `.user` was already `true`, so
+    // there is no combination of the two bits that takes the misclick guard
+    // away from the person at the keyboard.
+    for ([_]bool{ true, false }) |protected| {
+        try testing.expect(confirmsCloseProtected(confirmsClose(.user), protected));
+    }
+
+    // Written out because `or` and `and` are one character apart and only
+    // one of them is this rule. `and` would pass every assertion above that
+    // uses a `true` asker; this is the pair that tells them apart.
+    try testing.expect(confirmsCloseProtected(false, true));
+    try testing.expect(!confirmsCloseProtected(false, false));
+}
+
+test "the user's close is the identity, so that path is unchanged by construction" {
+    const testing = std.testing;
+
+    // `Surface.close` reads `confirmsClose(.user) and needsConfirmQuit()`.
+    // This is the claim that makes the `and` a no-op there: whatever
+    // `needsConfirmQuit` says is what the user still gets. Written as a
+    // test rather than as a comment because the comment cannot fail.
+    for ([_]bool{ true, false }) |needs| {
+        try testing.expectEqual(needs, confirmsClose(.user) and needs);
+    }
 }

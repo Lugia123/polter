@@ -185,11 +185,40 @@ see what was said, `group_post(group, text)` how you answer, and
 `group_members(group)` and `group_list()` who and where. `group_history` pages
 further back than the group still holds.
 
-**Keep what you post short.** A post wakes every member and lands in every
-member's context, so it costs its length times the membership — and context
-is the thing that actually runs out here. Say the state, the blocker, and
-what you need; leave out your reasoning and your acknowledgements. If
-somebody asked for the full detail, that is different: give it in full.
+**If a supervisor is minding you, group messages will not wake you** — not
+your peers' reports and not your supervisor's own posts. Your supervisor
+reaches you by typing into this terminal, which is the channel that is meant
+to work. **You are not being kept out of anything**: it is all still unread,
+and `group_read` hands you every word of it whenever you choose to look.
+Between pieces of work is a good moment.
+
+**Keep what you post short.** A post lands in the context of every member who
+reads it, so it costs its length times however many do — and context is the
+thing that actually runs out here. Say the state, the blocker, and what you
+need; leave out your reasoning and your acknowledgements. If somebody asked
+for the full detail, that is different: give it in full.
+
+## Work you have been given: `task_list`, `task_progress`
+
+A supervisor may put work on a panel. `task_list(group)` hands you **your own
+tasks, still open, and nothing else** — not your peers', and not what has
+already been closed. One line each, with a number.
+
+`task_progress(task, progress)` moves one of yours along: `queued`,
+`working`, `blocked`, `done`. `blocked` is the one worth setting the moment
+it is true, because it is what a supervisor looks for. `done` says you
+believe it is finished; closing it is the supervisor's word after checking.
+
+Report in the group as well, naming the task number, so the supervisor does
+not have to read prose to work out which piece you mean.
+
+If a task of yours is cancelled you will be told here, in this terminal, in
+so many words. Stop when you are.
+
+**Answer in the group, not through your runtime's own cross-session
+messaging.** A `group_post` goes into Polter's chat log and onto the user's
+screen. A message sent out of band is in neither, so nobody — you after a
+restart, the supervisor, the user — can read that it was ever said.
 
 ## Reading the rest
 

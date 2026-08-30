@@ -871,6 +871,12 @@ pub fn deinit(self: *Surface) void {
     // is no id to read. Here `self` is the core surface by definition.
     self.app.poltergeist.unregister(self.id);
     self.app.chat.forget(self.id);
+
+    // The tasks stay, without an owner. What a terminal was working on is
+    // exactly what the morning wants to see, and a task whose owner has
+    // gone is one that needs somebody -- which is only visible if it is
+    // still on the panel.
+    self.app.tasks.forget(self.id);
     self.app.removeChatSurface(self.id);
     if (self.app.poltergeist_server) |*srv| srv.revokeTokens(self.id);
 
@@ -925,8 +931,78 @@ pub fn deinit(self: *Surface) void {
 
 /// Close this surface. This will trigger the runtime to start the
 /// close process, which should ultimately deinitialize this surface.
+///
+/// This is the person-at-the-keyboard path -- a menu item, a keybinding,
+/// the tab's close button -- and it is unchanged: `confirmsClose(.user)` is
+/// `true` for every terminal there is, so the `and` below is the identity
+/// and `needsConfirmQuit` still decides on its own. It is written out
+/// anyway so that the two answers to "does this close ask first" live in
+/// one switch instead of one switch and one silence. See
+/// `poltergeist.actions.confirmsClose`.
 pub fn close(self: *Surface) void {
-    self.rt_surface.close(self.needsConfirmQuit());
+    self.rt_surface.close(
+        poltergeistpkg.actions.confirmsClose(.user) and self.needsConfirmQuit(),
+    );
+}
+
+/// Close this surface on behalf of Poltergeist's tool surface, and say
+/// whether that put a confirmation in front of the user instead of closing
+/// it.
+///
+/// Separate from `close` rather than a parameter on it, because every one
+/// of `close`'s callers is the user and none of them has an answer to give.
+///
+/// **The return value is the second half of the bug.** `rt_surface.close`
+/// does not wait: it hands the runtime a request and comes straight back,
+/// so a close that raised a dialog and a close that actually closed are
+/// indistinguishable to the caller. That is how `terminal_action` came to
+/// answer `{"ok":true}` for a terminal still sitting there behind a box the
+/// agent cannot see. Whether the dialog went up is known right here and
+/// nowhere later, so it is returned right here.
+///
+/// `confirm` is `poltergeist.actions.confirmsClose` already answered, by
+/// the tool surface, which is the side that knows the target's mark. A
+/// surface reaching into the bus to ask about itself would put the rule in
+/// a second place, and the mark is not a surface's business anyway.
+///
+/// Note it is `and`, not `or`: saying "confirm" here does not add a dialog
+/// where there was none, it only declines to remove the one
+/// `needsConfirmQuit` was already going to raise.
+pub fn closeFromTool(self: *Surface, confirm: bool) bool {
+    const ask = self.toolCloseAsks(confirm);
+    self.rt_surface.close(ask);
+    return ask;
+}
+
+/// Whether a tool close carrying `confirm` puts the dialog up for this
+/// surface.
+///
+/// Split out of `closeFromTool` for one reason and it is not tidiness: this
+/// is the whole decision and it touches no runtime, so it can be asked of a
+/// surface in a test, while `closeFromTool` cannot -- `rt_surface.close`
+/// needs a live apprt. The rule and the wiring that carries `readonly` into
+/// it are checked at the bottom of this file because of this split. Inline
+/// it back and the readonly exception becomes a thing only a human reading
+/// the diff can confirm.
+///
+/// **`self.readonly` is read here because here is the first place that has
+/// it.** The mark half of the answer was decided on the tool surface, which
+/// knows the bus and not this terminal; the lock half is this terminal's own
+/// state and is nowhere else. `actions.confirmsCloseProtected` is the rule
+/// the two go through, and it says why the join is `or` and why it is not a
+/// field on `CloseAsker`.
+///
+/// Still `and needsConfirmQuit()` at the end, and that is unchanged: this
+/// function can decline to remove a dialog, never add one. A readonly
+/// surface makes `needsConfirmQuit` true on its own first line, so the two
+/// agree by construction -- but the `and` is what guarantees no future
+/// `protected` bit can conjure a confirmation out of a terminal that had
+/// nothing to confirm.
+fn toolCloseAsks(self: *Surface, confirm: bool) bool {
+    return poltergeistpkg.actions.confirmsCloseProtected(
+        confirm,
+        self.readonly,
+    ) and self.needsConfirmQuit();
 }
 
 /// Returns a mailbox that can be used to send messages to this surface.
@@ -3403,25 +3479,33 @@ const notice_quiet_keyboard_ms = 10 * std.time.ms_per_s;
 /// Put Poltergeist's mark on this terminal's tab, in front of whatever the
 /// program running here called itself.
 ///
-/// Composed rather than replaced. `set_tab_title` is an override, so
-/// setting it to a bare status would throw away the title the program set
-/// -- which is the part somebody is actually reading. When there is nothing
-/// to mark, the title goes back unadorned.
+/// **The mark travels in its own action and lives in its own field.** It
+/// used to be spliced into the tab title override and sent as
+/// `.set_tab_title`, which put it in a field that already had a writer:
+/// the program in the terminal, setting its title through OSC 0/2. Two
+/// writers, one field, last write wins -- so a program that renamed itself
+/// wiped the mark off its own tab, and the mark, being a snapshot of the
+/// title taken when the state last changed, could also pin a stale name.
+/// No amount of retrying fixes that; the field had two owners. Now the
+/// apprt keeps the mark per surface and composes it in front of the title
+/// each time the title is rendered, the way the bell prefix already works,
+/// so a rename recomposes rather than overwrites.
 ///
 /// Two marks are composed here, not one. The shield is not a `TabMark`
 /// value -- it is orthogonal to every one of them, the unmarked case
 /// included -- so it is written as its own prefix in front. See
-/// `Bus.shield_prefix` for why that beats doubling the enum.
+/// `Bus.shield_prefix` for why that beats doubling the enum. The
+/// composition is done here rather than in each apprt so the glyphs and
+/// the leading-shield rule have one home; see `apprt.action.PoltergeistMark`.
 ///
-/// **This is per-surface state written to a per-tab place, and splits break
-/// that.** Four splits share one tab and one title, and each of them calls
-/// this, so the last writer wins and a shielded split can end up wearing a
-/// sibling's mark. The shield still holds -- `Bus.isShielded` is asked per
-/// surface and the tool surface is refused per surface -- so what is lost
-/// is the confirmation, not the protection. The fix is a per-surface badge
-/// of the kind `readonly` already has, which is a `ghostty.h` change and
-/// both apprts; until then `terminal_list` is the answer that is right per
-/// surface. Same degradation `held` has had since it shipped.
+/// **Splits: one tab, one title, but no longer a race.** Four splits share
+/// a tab, and each has its own mark. Nothing is overwritten now -- each
+/// surface holds its own -- and the tab shows the focused split's mark,
+/// which is a rule rather than whichever surface happened to update last.
+/// The shield was never the thing at risk: `Bus.isShielded` is asked per
+/// surface and the tool surface is refused per surface, so what a split
+/// could lose was the confirmation, and `terminal_list` still answers per
+/// surface.
 pub fn updatePoltergeistTabMark(self: *Surface) void {
     const mark = self.app.poltergeist.tabMark(
         self.id,
@@ -3431,50 +3515,95 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     const shielded = self.app.poltergeist.isShielded(self.id);
 
     // Nothing has changed for this tab: leave it alone rather than
-    // rewriting the same title every time anything happens.
+    // resending the same mark every time anything happens.
     if (mark == self.poltergeist_tab_mark and
         shielded == self.poltergeist_tab_shielded) return;
     self.poltergeist_tab_mark = mark;
     self.poltergeist_tab_shielded = shielded;
 
-    // Unmarked means handing the tab back, not stamping it with what it
-    // happens to say right now. A tab title is an override: writing the
-    // current title into it would pin that text for good, and the
-    // terminal's own later titles would never show again. An empty
-    // override is the way to release it.
-    //
-    // The shield counts as a mark on its own. A terminal nobody watches
-    // has no `TabMark`, and that is exactly the terminal -- somebody's own
-    // shell -- this is most often put on.
-    if (mark == .none and !shielded) {
-        self.setTabTitleOverride("");
-        return;
-    }
+    // Unmarked is an empty prefix, not an empty title. This no longer
+    // touches the title at all, so a tab the user renamed keeps its name
+    // whether Poltergeist has anything to say about it or not.
+    var buf: [poltergeist_mark_prefix_max]u8 = undefined;
+    const prefix = poltergeistMarkPrefix(&buf, mark, shielded);
 
-    const own = self.rt_surface.getTitle() orelse "";
-    const title = std.fmt.allocPrintSentinel(
-        self.alloc,
-        "{s}{s}{s}",
-        .{
-            if (shielded) poltergeistpkg.Bus.shield_prefix else "",
-            mark.prefix(),
-            own,
-        },
-        0,
-    ) catch return;
-    defer self.alloc.free(title);
-
-    self.setTabTitleOverride(title);
-}
-
-fn setTabTitleOverride(self: *Surface, title: [:0]const u8) void {
     _ = self.rt_app.performAction(
         .{ .surface = self },
-        .set_tab_title,
-        .{ .title = title },
+        .poltergeist_mark,
+        .{ .prefix = prefix },
     ) catch |err| {
         log.warn("poltergeist: could not mark the tab err={}", .{err});
     };
+}
+
+/// Enough room for the widest mark: the shield in front of the widest
+/// `TabMark` prefix, plus the sentinel. Checked by a test rather than
+/// guessed, so a new glyph that does not fit fails there instead of
+/// truncating a tab.
+const poltergeist_mark_prefix_max = 32;
+
+/// Compose what the tab shows in front of the title out of the two things
+/// Poltergeist knows about a terminal.
+///
+/// The shield leads: it is a fact about the whole terminal regardless of
+/// what that terminal is up to, and a column of tabs is read down its left
+/// edge.
+fn poltergeistMarkPrefix(
+    buf: *[poltergeist_mark_prefix_max]u8,
+    mark: poltergeistpkg.Bus.TabMark,
+    shielded: bool,
+) [:0]const u8 {
+    return std.fmt.bufPrintZ(buf, "{s}{s}", .{
+        if (shielded) poltergeistpkg.Bus.shield_prefix else "",
+        mark.prefix(),
+    }) catch unreachable;
+}
+
+test "poltergeist mark prefix composes shield in front of the mark" {
+    const testing = std.testing;
+    var buf: [poltergeist_mark_prefix_max]u8 = undefined;
+
+    // Nothing to say is an empty prefix, not a space.
+    try testing.expectEqualStrings(
+        "",
+        poltergeistMarkPrefix(&buf, .none, false),
+    );
+
+    // A shielded terminal nobody watches is the common case, and it is
+    // exactly the one a single enum could not express.
+    try testing.expectEqualStrings(
+        poltergeistpkg.Bus.shield_prefix,
+        poltergeistMarkPrefix(&buf, .none, true),
+    );
+
+    try testing.expectEqualStrings(
+        poltergeistpkg.Bus.TabMark.supervisor.prefix(),
+        poltergeistMarkPrefix(&buf, .supervisor, false),
+    );
+}
+
+test "poltergeist mark prefix fits every combination" {
+    const testing = std.testing;
+    var buf: [poltergeist_mark_prefix_max]u8 = undefined;
+
+    // Every mark, shielded and not. The point is that `bufPrintZ` never
+    // overflows: the `unreachable` in the composer is only sound while
+    // that holds, so a new glyph that does not fit fails here.
+    for (std.enums.values(poltergeistpkg.Bus.TabMark)) |mark| {
+        for ([_]bool{ false, true }) |shielded| {
+            const got = poltergeistMarkPrefix(&buf, mark, shielded);
+            try testing.expect(got.len < poltergeist_mark_prefix_max);
+
+            // The shield always leads when it is on, and is never there
+            // when it is off -- including for `none`, where it is the
+            // whole prefix.
+            try testing.expectEqual(
+                shielded,
+                std.mem.startsWith(u8, got, poltergeistpkg.Bus.shield_prefix),
+            );
+            try testing.expect(std.mem.endsWith(u8, got, mark.prefix()));
+        }
+    }
 }
 
 /// Type a Poltergeist notice into this terminal as if the user had typed it.
@@ -6622,6 +6751,39 @@ fn presentSurface(self: *Surface) !void {
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.io.getProcessInfo(info);
+}
+
+test "a tool close never skips the dialog on a readonly terminal" {
+    const testing = std.testing;
+
+    // Same shape as the readonly test below: a `Surface` is far too big to
+    // stand up here, so only the fields the decision reads are set. That is
+    // safe precisely because `toolCloseAsks` was split out to touch nothing
+    // else -- if somebody gives it a third input this test crashes rather
+    // than passing, which is the right way round.
+    const surface = try testing.allocator.create(Surface);
+    defer testing.allocator.destroy(surface);
+
+    // Locked by the user. `confirm = false` is the tool surface saying "this
+    // one is marked, do not ask" -- and it is overruled. This is the bug:
+    // before, a watched *and* readonly terminal went away in silence.
+    surface.readonly = true;
+    try testing.expect(surface.toolCloseAsks(false));
+    try testing.expect(surface.toolCloseAsks(true));
+
+    // Not locked, and nothing running: no dialog either way. The floor, so
+    // that the `true` above is not just "this function returns true".
+    surface.readonly = false;
+    surface.child_exited = true;
+    try testing.expect(!surface.toolCloseAsks(false));
+    try testing.expect(!surface.toolCloseAsks(true));
+
+    // Not locked, something running: now the mark is what decides, which is
+    // the behaviour the previous change added and this one must not undo.
+    surface.child_exited = false;
+    surface.config.confirm_close_surface = .always;
+    try testing.expect(!surface.toolCloseAsks(false));
+    try testing.expect(surface.toolCloseAsks(true));
 }
 
 test "queueIo frees allocated writes in readonly mode" {

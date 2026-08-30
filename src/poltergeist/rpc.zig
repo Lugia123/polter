@@ -17,6 +17,7 @@ const std = @import("std");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
+const Tasks = @import("Tasks.zig");
 pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
 const secret = @import("secret.zig");
@@ -211,6 +212,49 @@ pub const Method = enum {
     /// network, and a line of injected text saying "promote yourself"
     /// must not be able to rearrange who may reach whom.
     become_supervisor,
+
+    /// Put a piece of work on the panel: a one-line title, in a group.
+    ///
+    /// The panel exists because a command typed into a terminal scrolls
+    /// off and gets compacted away, so by three in the morning the worker
+    /// no longer knows what it was set to do. What it holds is who is
+    /// doing what, never what the work is -- see
+    /// `docs/poltergeist/tasks.md` for the line and why it is drawn there.
+    task_create,
+
+    /// Hand a task to a terminal, or take it back with id `0`.
+    task_assign,
+
+    /// The work is done and checked. Nothing is sent to the worker: it
+    /// finished, it reported, and this is the supervisor agreeing.
+    task_close,
+
+    /// Call a task off.
+    ///
+    /// **The worker is told before the task leaves its list**, in as many
+    /// words, down the same path `terminal_send` uses. A task that merely
+    /// stopped being there would leave the worker carrying on with work
+    /// nobody wants -- it has no reason to look at the panel again -- and
+    /// a silent state change is the mistake this repository has already
+    /// shipped three times. The reply says who was told.
+    task_cancel,
+
+    /// Move your own task along: queued, working, blocked, done.
+    ///
+    /// Yours, and only while it is open. Open to any terminal because it
+    /// is a terminal reporting on itself, which changes no supervision
+    /// arrangement.
+    task_progress,
+
+    /// The tasks in a group.
+    ///
+    /// **Two different answers to two different questions.** A supervisor
+    /// is handed the group's whole panel, closed and cancelled work
+    /// included, because checking the night's work is what it is for. Any
+    /// other terminal is handed its own, still open, and nothing else --
+    /// which is the whole point: a worker's attention is not to be spent
+    /// on what its peers are doing.
+    task_list,
 };
 
 pub const Request = union(Method) {
@@ -270,6 +314,13 @@ pub const Request = union(Method) {
 
     stand_down,
     become_supervisor,
+
+    task_create: struct { group: []const u8, title: []const u8 },
+    task_assign: struct { task: u64, id: Bus.Id },
+    task_close: struct { task: u64 },
+    task_cancel: struct { task: u64 },
+    task_progress: struct { task: u64, progress: []const u8 },
+    task_list: struct { group: []const u8 },
 };
 
 /// How much text one `group_read` reply may carry.
@@ -500,6 +551,24 @@ pub fn callableByPlugin(method: Method) bool {
         .plugin_list,
         .plugin_configure,
         .plugin_test,
+
+        // The panel. Four of these are the supervisor's, so
+        // `requiresSupervisor` is what actually refuses them; they are
+        // named here for the same reason the plugin tools are, so this
+        // list reads as the whole answer.
+        //
+        // The other two are about who is asking and there is no answer for
+        // a plugin: `task_progress` moves *your own* task and a plugin owns
+        // none, and `task_list` hands a terminal its own work -- a plugin
+        // asking would either get nothing, which is a lie dressed as an
+        // answer, or the supervisor's whole panel, which is somebody
+        // else's arrangement.
+        .task_create,
+        .task_assign,
+        .task_close,
+        .task_cancel,
+        .task_progress,
+        .task_list,
         => false,
     };
 }
@@ -638,7 +707,31 @@ pub fn requiresSupervisor(method: Method) bool {
         // The settings it is working under are the supervisor's business;
         // a watched terminal has `me` for the parts that concern it.
         .config_get,
+
+        // Making, handing out, closing and calling off work is arranging
+        // the work, which is the same kind of decision as arranging who is
+        // minded -- the rule at the top of this function, applied. A
+        // terminal that could put tasks on other terminals would be
+        // supervising without ever having been made a supervisor, which is
+        // the exact hole `set_watch` is closed to prevent.
+        //
+        // `task_cancel` carries a second reason of its own: it types into
+        // another terminal. Whatever else it is, it is reach.
+        .task_create,
+        .task_assign,
+        .task_close,
+        .task_cancel,
         => true,
+
+        // Reporting on your own work, and reading what you were given.
+        // Neither changes the arrangement: the first moves a task the
+        // caller already owns, and the second is answered with the
+        // caller's own tasks. Closed, this would leave a worker unable to
+        // find out what it was set to do, which is the problem the panel
+        // was built for.
+        .task_progress,
+        .task_list,
+        => false,
     };
 }
 
@@ -683,6 +776,16 @@ pub fn targetsTerminal(method: Method) bool {
 
         // Names a setting, not a terminal.
         .config_get,
+
+        // These name a task, which is not a terminal. `task_cancel` does
+        // reach one -- it types the cancellation into the worker's
+        // terminal -- but it does so through the *task*, and the task's
+        // owner is not a parameter the caller gets to choose.
+        .task_create,
+        .task_close,
+        .task_cancel,
+        .task_progress,
+        .task_list,
         => false,
 
         // Both name another terminal, so both go through the self-target
@@ -699,9 +802,13 @@ pub fn targetsTerminal(method: Method) bool {
         => true,
 
         // These name a terminal to put in or take out of a group. Checked
-        // for existence so a typo fails rather than vanishing.
+        // for existence so a typo fails rather than vanishing. `task_assign`
+        // is the same shape and wants the same check for a sharper reason:
+        // a task handed to a mistyped id is a task nobody is doing and
+        // nobody can be told about when it is called off.
         .group_add,
         .group_remove,
+        .task_assign,
         .terminal_read,
         .terminal_send,
         .clock_out,
@@ -738,9 +845,20 @@ pub fn target(req: Request) ?Bus.Id {
         .terminal_keys,
         .terminal_open,
         .config_get,
+
+        // Named here rather than left to the `inline else` below, because
+        // that one reads `v.id` off whatever payload has one and these
+        // carry a task number instead. A method that reached the self-target
+        // gate by falling through is how `terminal_action` came to be
+        // refused without anybody deciding it should be.
+        .task_create,
+        .task_close,
+        .task_cancel,
+        .task_progress,
+        .task_list,
         => null,
 
-        inline .group_add, .group_remove => |v| v.id,
+        inline .group_add, .group_remove, .task_assign => |v| v.id,
         inline else => |v| v.id,
     };
 }
@@ -1052,6 +1170,11 @@ test "only what changes the arrangement needs the supervisor" {
             // it too -- and it changes no arrangement, which is the only
             // thing the closed side is for.
             .terminal_list,
+
+            // Reporting on your own work, and reading what you were
+            // given. Neither changes the arrangement.
+            .task_progress,
+            .task_list,
             => true,
 
             // Writing what a group is for is arranging, not talking.
@@ -1080,6 +1203,13 @@ test "only what changes the arrangement needs the supervisor" {
             .stand_down,
             .terminal_open,
             .config_get,
+
+            // Making, handing out, closing and calling off work is
+            // arranging the work.
+            .task_create,
+            .task_assign,
+            .task_close,
+            .task_cancel,
             => false,
         };
         try testing.expectEqual(!open, requiresSupervisor(m));
@@ -1301,6 +1431,134 @@ test "Polter's own switches are refused, and never reach the terminal" {
     });
     try testing.expectEqual(wire.Response.ok, ok);
     try testing.expect(fake.acted != null);
+}
+
+test "closing a terminal in the arrangement does not stop to ask" {
+    // The bug: a supervisor asked to close a worker it was minding, the
+    // terminal put up the same confirmation a misclicking user would get,
+    // and the supervisor sat there -- it cannot see a dialog and it cannot
+    // press one. `worker` is `watched` in `testBus`.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = worker, .action = "close_surface" },
+    });
+    try testing.expectEqual(wire.Response.ok, res);
+    try testing.expect(!fake.acted.?.confirm_close);
+
+    // The other marked kind, and the one easy to leave out because it is
+    // rarer: a supervisor is in the arrangement too.
+    try b.addSupervisor(other);
+    fake.acted = null;
+    const sup = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = other, .action = "close_surface" },
+    });
+    try testing.expectEqual(wire.Response.ok, sup);
+    try testing.expect(!fake.acted.?.confirm_close);
+}
+
+test "closing an unmarked terminal still asks, and the ask is not reported as done" {
+    // **The half of the rule that is easy to write out of existence.** A
+    // terminal carrying no mark is one the program knows nothing about --
+    // it cannot tell an agent from a person reading their mail -- and the
+    // confirmation is the only thing standing between it and a tool call.
+    // A fix phrased as "close_surface does not confirm" would pass the
+    // test above and delete this.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    // `other` is unmarked: `testBus` never registers it.
+    try testing.expectEqual(Bus.Role.none, b.roleOf(other));
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = other, .action = "close_surface" },
+    });
+    try testing.expectEqual(wire.Response.ok, res);
+    try testing.expect(fake.acted.?.confirm_close);
+
+    // And when the host says the dialog actually went up, the answer is
+    // not `ok`. This is the second bug: `rt_surface.close` returns as soon
+    // as the request is handed over, so before this the agent was told the
+    // terminal had closed while it sat there behind a box.
+    var asking: FakeHost = .{ .action_error = error.CloseAwaitingConfirm };
+    const waiting = try dispatch(arena.allocator(), &b, asking.host(), term(boss), .{
+        .terminal_action = .{ .id = other, .action = "close_surface" },
+    });
+    if (waiting != .failed) return error.AwaitingConfirmReportedAsDone;
+    try testing.expectEqualStrings("AwaitingConfirmation", waiting.failed.code);
+}
+
+test "closing a tab or a window answers the same way closing a surface does" {
+    // The two bugs `close_surface` had, still open on `close_tab` and
+    // `close_window` until now: the dialog went up where nobody could press
+    // it, and the call answered `{"ok":true}` for a tab that was still
+    // there. This is this surface's half of the fix -- the flag is computed
+    // and handed over for these two exactly as it is for `close_surface`,
+    // and a host saying the dialog went up is not reported as done.
+    //
+    // The other half is `App.poltergeistPerformAction` and the apprt, and
+    // **it has no test host**: nothing below this vtable is exercised by any
+    // test in this repository. Gutting that wiring entirely leaves the whole
+    // suite green. Do not read this test as covering it.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    for ([_][]const u8{ "close_tab", "close_window", "close_tab:other" }) |action| {
+        // Marked: no dialog, because there is nobody at that tab.
+        var fake: FakeHost = .{};
+        const marked = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+            .terminal_action = .{ .id = worker, .action = action },
+        });
+        try testing.expectEqual(wire.Response.ok, marked);
+        try testing.expect(!fake.acted.?.confirm_close);
+
+        // Unmarked: the dialog stays, same as a surface.
+        var plain: FakeHost = .{};
+        const unmarked = try dispatch(arena.allocator(), &b, plain.host(), term(boss), .{
+            .terminal_action = .{ .id = other, .action = action },
+        });
+        try testing.expectEqual(wire.Response.ok, unmarked);
+        try testing.expect(plain.acted.?.confirm_close);
+
+        // And the dialog going up is never `ok`. This is the one that
+        // matters most: an agent told `ok` walks away from a window that is
+        // still open, and everything it does next is built on that.
+        var asking: FakeHost = .{ .action_error = error.CloseAwaitingConfirm };
+        const waiting = try dispatch(arena.allocator(), &b, asking.host(), term(boss), .{
+            .terminal_action = .{ .id = other, .action = action },
+        });
+        if (waiting != .failed) return error.AwaitingConfirmReportedAsDone;
+        try testing.expectEqualStrings("AwaitingConfirmation", waiting.failed.code);
+    }
+}
+
+test "the confirm answer is about closing and nothing else carries it" {
+    // Every other action gets the flag too -- it is one parameter on one
+    // vtable entry -- and the value it gets is still the honest one for
+    // the target, so a future action that closes something cannot be
+    // handed "do not ask" by accident. What this pins is that a mark does
+    // not change what a non-closing action does: `new_tab` on a watched
+    // terminal is `new_tab`.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = worker, .action = "new_tab" },
+    });
+    try testing.expectEqual(wire.Response.ok, res);
+    try testing.expectEqualStrings("new_tab", fake.acted.?.action);
 }
 
 test "a known action with an unusable value is the value's fault" {
@@ -1538,6 +1796,49 @@ test "a watched terminal can talk in a group but cannot arrange one" {
     }) |req| {
         const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), req);
         try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    }
+}
+
+test "a group with terminals in it is not destroyed, and an empty one is" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    // The refusal. What is being checked is the sentence, because that
+    // sentence is the whole of what the person pressing `d` in the chat
+    // view sees: the view sends `group_destroy` and prints whatever comes
+    // back along the bottom.
+    {
+        var fake: FakeHost = .{ .group_active = true };
+        const res = try dispatch(
+            testing.allocator,
+            &b,
+            fake.host(),
+            term(boss),
+            .{ .group_destroy = .{ .group = "build" } },
+        );
+        try testing.expectEqualStrings("GroupActive", res.failed.code);
+        try testing.expect(std.mem.indexOf(
+            u8,
+            res.failed.message,
+            "group_remove",
+        ) != null);
+        try testing.expect(!fake.destroyed);
+    }
+
+    // The other half, and the reason this is one test rather than two: a
+    // refusal that refused everything would pass the half above on its
+    // own. An empty group goes.
+    {
+        var fake: FakeHost = .{};
+        const res = try dispatch(
+            testing.allocator,
+            &b,
+            fake.host(),
+            term(boss),
+            .{ .group_destroy = .{ .group = "build" } },
+        );
+        try testing.expect(res == .ok);
+        try testing.expect(fake.destroyed);
     }
 }
 
@@ -2598,6 +2899,29 @@ pub const ChatGroupInfo = struct {
     brief: []const u8,
 };
 
+/// One task as it goes out over the wire.
+///
+/// The state and the progress travel as their names rather than as
+/// numbers, so a reply is readable by a person and an agent alike and
+/// adding a value later does not renumber the ones already in use.
+/// Who has a task and what it is called, for the sentence a cancellation
+/// types into that terminal.
+///
+/// A named type rather than an anonymous one because it crosses a vtable,
+/// and two anonymous structs written the same way are two different types.
+pub const TaskOwner = struct {
+    owner: Bus.Id,
+    title: []const u8,
+};
+
+pub const TaskView = struct {
+    id: u64,
+    title: []const u8,
+    owner: Bus.Id,
+    state: []const u8,
+    progress: []const u8,
+};
+
 /// What the app must supply for a request to be carried out.
 ///
 /// An interface rather than a direct dependency on `App` so the dispatch
@@ -2671,10 +2995,25 @@ pub const Host = struct {
         /// which is the side that has the parser; this surface only checks
         /// that the name is one that exists, so that a typo comes back as a
         /// typo rather than as "the terminal refused".
+        ///
+        /// `confirm_close` is `actions.confirmsClose` already answered for
+        /// this target, and it is a parameter rather than something the
+        /// host works out for itself for one reason: it is the answer for
+        /// **a close asked for through this surface**, and the host cannot
+        /// tell that from a close the user asked for -- the two arrive at
+        /// `Surface.performBindingAction` identical, which is the bug this
+        /// carries the fix for. Ignored by every action that does not close
+        /// a surface.
+        ///
+        /// Answers `error.CloseAwaitingConfirm` when the close it was asked
+        /// for raised the confirmation instead of closing. Not a failure of
+        /// the request -- the close was asked for and the dialog is up --
+        /// but not a success either, and the caller has to be told which.
         performAction: *const fn (
             ctx: *anyopaque,
             id: Bus.Id,
             action: []const u8,
+            confirm_close: bool,
         ) anyerror!void,
 
         /// Press a key in a terminal, as if the person at the keyboard had.
@@ -2934,6 +3273,58 @@ pub const Host = struct {
             key: []const u8,
             by: Bus.Id,
         ) anyerror![]const u8,
+
+        /// Put a task on a group's panel. Answers with its number.
+        taskCreate: *const fn (
+            ctx: *anyopaque,
+            group: []const u8,
+            title: []const u8,
+        ) anyerror!u64,
+
+        /// Hand a task to a terminal, or take it back with `0`.
+        taskAssign: *const fn (
+            ctx: *anyopaque,
+            task: u64,
+            id: Bus.Id,
+        ) anyerror!void,
+
+        taskClose: *const fn (ctx: *anyopaque, task: u64) anyerror!void,
+
+        /// Who has a task, and what it is called.
+        ///
+        /// Asked before a cancellation, because the worker has to be told
+        /// and the message has to name the work. Fails with `NoSuchTask`
+        /// where there is none. The title belongs to the host.
+        taskOwner: *const fn (ctx: *anyopaque, task: u64) anyerror!TaskOwner,
+
+        /// Mark a task cancelled. **The worker has already been told**;
+        /// `dispatch` does the telling and only gets here if it worked.
+        taskCancel: *const fn (ctx: *anyopaque, task: u64) anyerror!void,
+
+        /// A worker moving its own task along. Refused for anyone else's.
+        taskProgress: *const fn (
+            ctx: *anyopaque,
+            task: u64,
+            by: Bus.Id,
+            progress: []const u8,
+        ) anyerror!void,
+
+        /// The tasks in a group.
+        ///
+        /// `whole_panel` decides which of the two questions is being
+        /// answered -- the group's entire panel, or `who`'s own open work.
+        /// Passed down rather than filtered afterwards, the same way
+        /// `chatGroupInfo` takes `want_brief`: what was never fetched
+        /// cannot be handed over by a later mistake.
+        ///
+        /// Returned memory belongs to `alloc`.
+        taskList: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            group: []const u8,
+            who: Bus.Id,
+            whole_panel: bool,
+        ) anyerror![]const TaskView,
     };
 
     fn readTerminal(
@@ -2953,8 +3344,13 @@ pub const Host = struct {
         return self.vtable.sendKey(self.ctx, id, key);
     }
 
-    fn performAction(self: Host, id: Bus.Id, action: []const u8) anyerror!void {
-        return self.vtable.performAction(self.ctx, id, action);
+    fn performAction(
+        self: Host,
+        id: Bus.Id,
+        action: []const u8,
+        confirm_close: bool,
+    ) anyerror!void {
+        return self.vtable.performAction(self.ctx, id, action, confirm_close);
     }
 
     fn configText(
@@ -3034,6 +3430,23 @@ pub const Host = struct {
     /// the wrong thing.
     fn ownsGroup(self: Host, group: []const u8, caller: Bus.Id) bool {
         const owner = self.chatOwner(group) catch return true;
+
+        // A group with no supervisor behind it is anyone's to take up.
+        //
+        // That is what a shell restored after a restart is: the record
+        // says a group called `build` existed and what it was for, and
+        // says nothing about which supervisor made it, because that was a
+        // `Surface.id` and those do not survive the process. `Chat`
+        // therefore hands it back owned by `user_id`, and the person at
+        // the keyboard is never a caller here.
+        //
+        // Read as an owner rather than as "no owner", this would refuse
+        // every supervisor the one operation the restore exists to allow:
+        // putting this morning's terminals into last night's group. The
+        // first supervisor to take it up would find it locked, and locked
+        // to nobody.
+        if (owner == Chat.user_id) return true;
+
         return owner == caller;
     }
 
@@ -3158,6 +3571,45 @@ pub const Host = struct {
         by: Bus.Id,
     ) anyerror![]const u8 {
         return self.vtable.pluginTest(self.ctx, alloc, key, by);
+    }
+
+    fn taskCreate(self: Host, group: []const u8, title: []const u8) anyerror!u64 {
+        return self.vtable.taskCreate(self.ctx, group, title);
+    }
+
+    fn taskAssign(self: Host, task: u64, id: Bus.Id) anyerror!void {
+        return self.vtable.taskAssign(self.ctx, task, id);
+    }
+
+    fn taskClose(self: Host, task: u64) anyerror!void {
+        return self.vtable.taskClose(self.ctx, task);
+    }
+
+    fn taskOwner(self: Host, task: u64) anyerror!TaskOwner {
+        return self.vtable.taskOwner(self.ctx, task);
+    }
+
+    fn taskCancel(self: Host, task: u64) anyerror!void {
+        return self.vtable.taskCancel(self.ctx, task);
+    }
+
+    fn taskProgress(
+        self: Host,
+        task: u64,
+        by: Bus.Id,
+        progress: []const u8,
+    ) anyerror!void {
+        return self.vtable.taskProgress(self.ctx, task, by, progress);
+    }
+
+    fn taskList(
+        self: Host,
+        alloc: std.mem.Allocator,
+        group: []const u8,
+        who: Bus.Id,
+        whole_panel: bool,
+    ) anyerror![]const TaskView {
+        return self.vtable.taskList(self.ctx, alloc, group, who, whole_panel);
     }
 };
 
@@ -3393,8 +3845,43 @@ pub fn dispatch(
                 ),
             );
 
-            host.performAction(p.id, p.action) catch |err| return switch (err) {
+            // **Who asked, decided here, because here is the only place
+            // that knows.** Everything below this line -- the host, the
+            // surface, `performBindingAction` -- sees a close and cannot
+            // tell it from the user's, by design: `actions.zig` opens by
+            // saying an agent and a person take the same code path, and
+            // that is right for the other ninety actions. Closing is the
+            // one where the two want different answers, so the difference
+            // is carried down from the one point that has it rather than
+            // rediscovered at the bottom.
+            //
+            // The target's mark answers it, not the caller's standing --
+            // the same judgement the reach rule above makes, and for the
+            // same reason. See `actions.confirmsClose`.
+            const confirm_close = actions.confirmsClose(.{ .tool = bus.roleOf(p.id) });
+
+            host.performAction(p.id, p.action, confirm_close) catch |err| return switch (err) {
                 error.UnknownTerminal => failure(error.UnknownTerminal),
+
+                // The close went in and the user is being asked. Said as a
+                // failure because the two answers this surface has are
+                // "done" and "not done", and a terminal still sitting
+                // there behind a dialog is not done. Answering `ok` here
+                // is what the agent was doing before, and it is worse than
+                // useless: it goes away satisfied while the thing it asked
+                // for waits on a person it cannot reach.
+                error.CloseAwaitingConfirm => hostFailure(
+                    "AwaitingConfirmation",
+                    "the close was asked for, something is still running, and the " ++
+                        "user has been asked to confirm -- so nothing has closed yet. " ++
+                        "Three ways to get here: the terminal carries no mark, so it " ++
+                        "keeps the confirmation an unmarked terminal is entitled to; " ++
+                        "or it is in readonly, which is the user locking it on purpose " ++
+                        "and is not something a mark waives; or you asked for a tab or " ++
+                        "window and one of the other terminals in it is in one of those " ++
+                        "two states. Nothing here can press that button. Either wait " ++
+                        "and check terminal_list, or ask the person at the keyboard.",
+                ),
 
                 // The name exists, so this is the value: `goto_split` with
                 // no direction, `increase_font_size:lots`.
@@ -3663,6 +4150,98 @@ pub fn dispatch(
             return .{ .messages = .{ .lines = capped.lines, .more = page.more or capped.more } };
         },
 
+        .task_create => |p| {
+            // The group's, so a supervisor cannot put work on a panel it
+            // does not own -- the same rule the rest of the group tools
+            // keep, for the same reason: two supervisors in one window
+            // must not be able to rearrange each other's arrangements.
+            if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
+
+            const id = host.taskCreate(p.group, p.title) catch |err| return taskFailure(err);
+            return .{ .task = id };
+        },
+
+        .task_assign => |p| {
+            // The same existence check `group_add` makes, and for a
+            // sharper reason: a task on a mistyped id is a task nobody is
+            // doing, and when it is called off there is nobody to tell.
+            if (p.id != 0 and bus.get(p.id) == null and !isOpenTerminal(alloc, host, p.id)) {
+                return failure(error.UnknownTerminal);
+            }
+
+            host.taskAssign(p.task, p.id) catch |err| return taskFailure(err);
+            return .ok;
+        },
+
+        .task_close => |p| {
+            host.taskClose(p.task) catch |err| return taskFailure(err);
+            return .ok;
+        },
+
+        .task_cancel => |p| {
+            // **Say it, then remove it, and this order is the whole of
+            // the tool.** A worker whose task simply stopped being on the
+            // panel has no reason to look at the panel again: it carries
+            // on with work nobody wants. That is a silent state change,
+            // and this repository has already shipped three.
+            //
+            // The order lives here rather than in the host on purpose.
+            // The host is the app, which has no tests of its own; this
+            // file is pure and its rules are checked exhaustively, so
+            // putting the sequence here is what makes "told first" a thing
+            // a test can hold onto rather than a comment somebody keeps.
+            const what = host.taskOwner(p.task) catch |err| return taskFailure(err);
+
+            var told: []const u8 = " Nobody was on it, so there was nobody to tell.";
+            if (what.owner != 0) {
+                const line = try std.fmt.allocPrint(
+                    alloc,
+                    "[polter] Task {d} (\"{s}\") has been cancelled. Stop working on it.",
+                    .{ p.task, what.title },
+                );
+
+                // **Nothing is cancelled if this fails.** Answering `ok`
+                // for a message nobody heard would have the supervisor
+                // stop thinking about work that is still being done, which
+                // is worse than refusing.
+                host.sendText(what.owner, line, true) catch |err|
+                    return taskFailure(err);
+
+                told = " The terminal working on it was told to stop.";
+            }
+
+            // Only now.
+            host.taskCancel(p.task) catch |err| return taskFailure(err);
+
+            // A sentence, not `ok`: the supervisor has to know whether
+            // anybody was actually told.
+            return .{ .text = try std.fmt.allocPrint(
+                alloc,
+                "Task {d} cancelled.{s}",
+                .{ p.task, told },
+            ) };
+        },
+
+        .task_progress => |p| {
+            host.taskProgress(p.task, caller, p.progress) catch |err|
+                return taskFailure(err);
+            return .ok;
+        },
+
+        .task_list => |p| {
+            // **The two filters, chosen here and nowhere else.** A
+            // supervisor is asking what the night's work looks like; a
+            // worker is asking what it is meant to be doing. The person at
+            // the keyboard reads the panel through the conversations view,
+            // which comes through this same call as the user -- id zero,
+            // never a supervisor on the bus -- so they are named here too.
+            const whole_panel = bus.isSupervisor(caller) or caller == Chat.user_id;
+
+            const list = host.taskList(alloc, p.group, caller, whole_panel) catch |err|
+                return taskFailure(err);
+            return .{ .tasks = list };
+        },
+
         .plugin_list => |p| {
             const list = host.pluginList(alloc, p.key) catch |err| return switch (err) {
                 // An unknown key is not an empty listing. `[]` reads as
@@ -3866,6 +4445,14 @@ fn failure(err: Error) wire.Response {
 fn chatFailure(err: anyerror) wire.Response {
     return switch (err) {
         error.NoSuchGroup => hostFailure("NoSuchGroup", "no group by that name"),
+        // An empty group has nobody in it to disturb; one with terminals
+        // in it is a conversation they are working in, and taking it away
+        // is something done to them rather than to a name. So the members
+        // come out first, deliberately, and this says how.
+        error.GroupActive => hostFailure(
+            "GroupActive",
+            "that group still has terminals in it. Take them out with group_remove first -- destroying it would drop them from a conversation without telling them.",
+        ),
         error.GroupExists => hostFailure("GroupExists", "a group by that name already exists"),
         error.NotAMember => hostFailure("NotAMember", "you are not in that group"),
         error.TooManyGroups => hostFailure("TooManyGroups", "there are already too many groups"),
@@ -3881,6 +4468,68 @@ fn chatFailure(err: anyerror) wire.Response {
 /// thing: "not built yet" and "tried and would not" ask for different next
 /// moves from whoever reads it.
 const not_wired_up = "the plugin tools are not wired up in this build yet";
+
+/// A panel failure, in the words the agent needs.
+///
+/// Separate from `chatFailure` rather than folded into it because the
+/// answers are different sentences: "that is not your task" is something a
+/// worker can act on, and "no group by that name" is not.
+fn taskFailure(err: anyerror) wire.Response {
+    return switch (err) {
+        error.NoSuchTask => hostFailure(
+            "NoSuchTask",
+            "no task by that number. task_list shows what there is.",
+        ),
+        error.NotYours => hostFailure(
+            "NotYours",
+            "that task is somebody else's. task_list shows yours.",
+        ),
+        error.NotOpen => hostFailure(
+            "NotOpen",
+            "that task is closed or was cancelled, so there is nothing to move.",
+        ),
+        error.BadTitle => hostFailure(
+            "BadTitle",
+            "a task needs a one-line title.",
+        ),
+        error.BadProgress => hostFailure(
+            "BadProgress",
+            "progress is one of: queued, working, blocked, done.",
+        ),
+        error.TooManyTasks => hostFailure(
+            "TooManyTasks",
+            "this panel is full. Close what is finished.",
+        ),
+        error.NoSuchGroup => hostFailure("NoSuchGroup", "no group by that name"),
+
+        // The one failure the caller has to act on. The task is still
+        // open, on purpose: a cancellation nobody heard is not a
+        // cancellation, and saying `ok` would have the supervisor stop
+        // thinking about work that is still being done.
+        // The worker's terminal is showing the user why its process
+        // died. Same answer as a terminal that is gone: it cannot be told,
+        // so the task is not cancelled.
+        error.ChildExited,
+        error.NoSuchTerminal,
+        error.OwnerGone,
+        => hostFailure(
+            "OwnerGone",
+            "the terminal working on that is gone, so it could not be told to stop. " ++
+                "The task is still open: assign it to nobody with task_assign if you " ++
+                "want it off somebody's list.",
+        ),
+        // Somebody is at that keyboard right now, so nothing was typed
+        // into it -- the same guard every other write to a terminal keeps.
+        // The task is untouched, and asking again in a moment works.
+        error.UserPresent => hostFailure(
+            "NotTold",
+            "somebody is typing in that terminal, so it was not told and the task " ++
+                "is still open. Try again in a moment.",
+        ),
+        error.NotImplemented => hostFailure("NotImplemented", not_wired_up),
+        else => hostFailure("HostRefused", "the panel could not do that"),
+    };
+}
 
 fn unknownPluginMessage(
     alloc: std.mem.Allocator,
@@ -3991,6 +4640,10 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 /// A host that records what it was asked to do and can be told to refuse.
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
+
+    /// Make typing fail the way a real terminal can: its process has gone,
+    /// or somebody is at the keyboard.
+    send_error: ?anyerror = null,
     set_to: ?struct { id: Bus.Id, ms: u64 } = null,
     read_count: usize = 0,
     refuse: bool = false,
@@ -4009,7 +4662,16 @@ const FakeHost = struct {
     stood_down: ?Bus.Id = null,
 
     /// The last action asked for, and what the fake does with it.
-    acted: ?struct { id: Bus.Id, action: []const u8 } = null,
+    ///
+    /// `confirm_close` is recorded rather than ignored because it is the
+    /// one thing about a close that this surface decides and the host only
+    /// carries out -- a test that watched the action string alone could not
+    /// tell "close it" from "close it, asking first".
+    acted: ?struct {
+        id: Bus.Id,
+        action: []const u8,
+        confirm_close: bool = true,
+    } = null,
     action_error: ?anyerror = null,
 
     /// The last key asked for, and what the fake does with it.
@@ -4073,6 +4735,19 @@ const FakeHost = struct {
     /// The last plugin a test was asked for, and who asked.
     tested: ?struct { key: []const u8, by: Bus.Id } = null,
 
+    /// A real panel, so the two filters can be watched disagreeing rather
+    /// than described. Null for the tests that do not care.
+    panel: ?*Tasks = null,
+
+    /// Stands in for a group that still has terminals working in it. The
+    /// crossing that decides this is the host's -- it is the only party
+    /// that knows which terminals are open -- so what is testable here is
+    /// what the agent is told when the answer comes back yes.
+    group_active: bool = false,
+
+    /// Whether a group was actually taken off the list.
+    destroyed: bool = false,
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
@@ -4107,6 +4782,13 @@ const FakeHost = struct {
             .pluginRoots = pluginRoots,
             .pluginConfigure = pluginConfigure,
             .pluginTest = pluginTest,
+            .taskCreate = taskCreate,
+            .taskAssign = taskAssign,
+            .taskClose = taskClose,
+            .taskOwner = taskOwner,
+            .taskCancel = taskCancel,
+            .taskProgress = taskProgress,
+            .taskList = taskList,
         } };
     }
 
@@ -4158,6 +4840,77 @@ const FakeHost = struct {
         return alloc.dupe(u8, "tested");
     }
 
+    fn taskCreate(ctx: *anyopaque, group: []const u8, title: []const u8) anyerror!u64 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        return panel.create(group, title);
+    }
+
+    fn taskAssign(ctx: *anyopaque, task: u64, id: Bus.Id) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        return panel.assign(task, id);
+    }
+
+    fn taskClose(ctx: *anyopaque, task: u64) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        return panel.close(task);
+    }
+
+    fn taskOwner(ctx: *anyopaque, task: u64) anyerror!TaskOwner {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        const t = panel.get(task) orelse return error.NoSuchTask;
+        return .{ .owner = t.owner, .title = t.title };
+    }
+
+    fn taskCancel(ctx: *anyopaque, task: u64) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        return panel.cancel(task);
+    }
+
+    fn taskProgress(
+        ctx: *anyopaque,
+        task: u64,
+        by: Bus.Id,
+        progress: []const u8,
+    ) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        const value = std.meta.stringToEnum(Tasks.Progress, progress) orelse
+            return error.BadProgress;
+        return panel.setProgress(task, by, value);
+    }
+
+    fn taskList(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        group: []const u8,
+        who: Bus.Id,
+        whole_panel: bool,
+    ) anyerror![]const TaskView {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+
+        const list = if (whole_panel)
+            try panel.inGroup(alloc, group)
+        else
+            try panel.forWorker(alloc, group, who);
+        defer alloc.free(list);
+
+        const out = try alloc.alloc(TaskView, list.len);
+        for (list, 0..) |t, i| out[i] = .{
+            .id = t.id,
+            .title = t.title,
+            .owner = t.owner,
+            .state = @tagName(t.state),
+            .progress = @tagName(t.progress),
+        };
+        return out;
+    }
+
     fn chatOwner(ctx: *anyopaque, _: []const u8) anyerror!Bus.Id {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.group_owner orelse boss;
@@ -4171,6 +4924,8 @@ const FakeHost = struct {
     fn chatDestroy(ctx: *anyopaque, _: []const u8) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
+        if (self.group_active) return error.GroupActive;
+        self.destroyed = true;
     }
 
     fn chatAdd(
@@ -4368,6 +5123,7 @@ const FakeHost = struct {
     fn send(ctx: *anyopaque, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.Refused;
+        if (self.send_error) |err| return err;
         self.sent = .{ .id = id, .text = text, .submit = submit };
     }
 
@@ -4423,10 +5179,15 @@ const FakeHost = struct {
         self.keyed = .{ .id = id, .key = k };
     }
 
-    fn performAction(ctx: *anyopaque, id: Bus.Id, action: []const u8) anyerror!void {
+    fn performAction(
+        ctx: *anyopaque,
+        id: Bus.Id,
+        action: []const u8,
+        confirm_close: bool,
+    ) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.action_error) |err| return err;
-        self.acted = .{ .id = id, .action = action };
+        self.acted = .{ .id = id, .action = action, .confirm_close = confirm_close };
     }
 
     fn stoodDown(ctx: *anyopaque, id: Bus.Id) void {
@@ -6016,4 +6777,494 @@ test "a plugin cannot be a terminal, and the methods that need one say so" {
     try testing.expect(plug(&.{}).terminalId() == null);
     try testing.expect(!plug(&.{}).isTerminal(0));
     try testing.expect(!plug(&.{}).isTerminal(Bus.not_a_terminal));
+}
+
+// -- the panel --------------------------------------------------------------
+
+/// A bus, a fake host and a real panel, wired together the way the app
+/// wires them.
+fn panelFixture(panel: *Tasks) FakeHost {
+    return .{ .panel = panel, .open = &.{
+        .{ .id = worker, .title = "worker" },
+        .{ .id = other, .title = "other" },
+    } };
+}
+
+test "making and handing out work is the supervisor's" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const made = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{
+        .group = "build",
+        .title = "get the core building",
+    } });
+    try testing.expectEqual(@as(u64, 1), made.task);
+
+    // The watched terminal may not make its own, nor hand one out, nor
+    // close or cancel one. Four separate calls because a single switch arm
+    // covering all four is exactly what a later edit splits.
+    for ([_]Request{
+        .{ .task_create = .{ .group = "build", .title = "mine" } },
+        .{ .task_assign = .{ .task = 1, .id = other } },
+        .{ .task_close = .{ .task = 1 } },
+        .{ .task_cancel = .{ .task = 1 } },
+    }) |req| {
+        const res = try dispatch(alloc, &b, fake.host(), term(worker), req);
+        try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    }
+}
+
+test "a worker sees its own open work and nothing else" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const mine = try panel.create("build", "mine");
+    try panel.assign(mine, worker);
+
+    const theirs = try panel.create("build", "theirs");
+    try panel.assign(theirs, other);
+
+    const shut = try panel.create("build", "shut");
+    try panel.assign(shut, worker);
+    try panel.close(shut);
+
+    {
+        const res = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_list = .{
+            .group = "build",
+        } });
+        try testing.expectEqual(@as(usize, 1), res.tasks.len);
+        try testing.expectEqualStrings("mine", res.tasks[0].title);
+    }
+
+    // And the supervisor sees all three, closed one included: the two are
+    // different questions and it must be possible to tell them apart from
+    // out here, not only inside the model.
+    {
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_list = .{
+            .group = "build",
+        } });
+        try testing.expectEqual(@as(usize, 3), res.tasks.len);
+    }
+
+    // So does the person at the keyboard, who is no supervisor on the bus.
+    {
+        const res = try dispatch(alloc, &b, fake.host(), term(Chat.user_id), .{ .task_list = .{
+            .group = "build",
+        } });
+        try testing.expectEqual(@as(usize, 3), res.tasks.len);
+    }
+}
+
+test "a closed task is gone from the worker and still on the panel" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "one");
+    try panel.assign(id, worker);
+
+    // Visible before.
+    {
+        const res = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_list = .{
+            .group = "build",
+        } });
+        try testing.expectEqual(@as(usize, 1), res.tasks.len);
+    }
+
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = id } });
+
+    {
+        const res = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_list = .{
+            .group = "build",
+        } });
+        try testing.expectEqual(@as(usize, 0), res.tasks.len);
+    }
+    {
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_list = .{
+            .group = "build",
+        } });
+        try testing.expectEqual(@as(usize, 1), res.tasks.len);
+        try testing.expectEqualStrings("closed", res.tasks[0].state);
+    }
+}
+
+test "cancelling says so to the worker before the task goes" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "never mind");
+    try panel.assign(id, worker);
+
+    try testing.expect(fake.sent == null);
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{
+        .task = id,
+    } });
+
+    // The whole rule, asserted rather than described: something was typed,
+    // it went to the terminal that had the task, it was submitted rather
+    // than left sitting in an input box, and it says what happened and
+    // which task.
+    try testing.expect(fake.sent != null);
+    try testing.expectEqual(worker, fake.sent.?.id);
+    try testing.expect(fake.sent.?.submit);
+    try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "cancelled") != null);
+    try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "never mind") != null);
+
+    try testing.expectEqual(Tasks.State.cancelled, panel.get(id).?.state);
+
+    // And the supervisor is told that somebody was told, rather than `ok`.
+    try testing.expect(std.mem.indexOf(u8, res.text, "told to stop") != null);
+}
+
+test "a cancellation the worker could not be told leaves the task standing" {
+    // The negative control for the one above. If the send fails and the
+    // task is cancelled anyway, the supervisor stops thinking about work
+    // that is still being done -- which is the silent state change the
+    // whole ordering exists to prevent, arriving by the back door.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    // The way a terminal whose process has gone answers.
+    fake.send_error = error.ChildExited;
+
+    const id = try panel.create("build", "never mind");
+    try panel.assign(id, worker);
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{
+        .task = id,
+    } });
+    try testing.expectEqualStrings("OwnerGone", res.failed.code);
+    try testing.expect(fake.sent == null);
+    try testing.expectEqual(Tasks.State.open, panel.get(id).?.state);
+}
+
+test "closing sends nothing, because the worker already reported" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "one");
+    try panel.assign(id, worker);
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = id } });
+    try testing.expect(fake.sent == null);
+}
+
+test "a worker may move its own task and is refused another's" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const mine = try panel.create("build", "mine");
+    try panel.assign(mine, worker);
+    const theirs = try panel.create("build", "theirs");
+    try panel.assign(theirs, other);
+
+    _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_progress = .{
+        .task = mine,
+        .progress = "blocked",
+    } });
+    try testing.expectEqual(Tasks.Progress.blocked, panel.get(mine).?.progress);
+
+    const res = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_progress = .{
+        .task = theirs,
+        .progress = "done",
+    } });
+    try testing.expectEqualStrings("NotYours", res.failed.code);
+    try testing.expectEqual(Tasks.Progress.queued, panel.get(theirs).?.progress);
+
+    // And a word that is not one of the four is a mistake said out loud
+    // rather than a silent no-op.
+    const bad = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_progress = .{
+        .task = mine,
+        .progress = "nearly",
+    } });
+    try testing.expectEqualStrings("BadProgress", bad.failed.code);
+}
+
+test "progress on a cancelled task refuses, so a missed cancellation is heard" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "one");
+    try panel.assign(id, worker);
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = id } });
+
+    const res = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_progress = .{
+        .task = id,
+        .progress = "working",
+    } });
+    try testing.expectEqualStrings("NotOpen", res.failed.code);
+}
+
+test "work cannot be put on a group somebody else made" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    fake.group_owner = other;
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{
+        .group = "build",
+        .title = "one",
+    } });
+    try testing.expectEqualStrings("NotYours", res.failed.code);
+}
+
+test "a task handed to an id nobody has is refused" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .panel = &panel, .open = &.{} };
+
+    const id = try panel.create("build", "one");
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = 0x9999,
+    } });
+    try testing.expectEqualStrings("UnknownTerminal", res.failed.code);
+    try testing.expectEqual(Tasks.nobody, panel.get(id).?.owner);
+
+    // Zero is not a terminal and does not go through that check: it is how
+    // a task is taken back off somebody.
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = 0,
+    } });
+}
+
+test "a shielded terminal cannot be given work" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.register(other);
+    try b.setShielded(other, true, .user);
+
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "one");
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = other,
+    } });
+    try testing.expectEqualStrings("Shielded", res.failed.code);
+}
+
+test "no panel tool is a plugin's" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    for ([_]Method{
+        .task_create,
+        .task_assign,
+        .task_close,
+        .task_cancel,
+        .task_progress,
+        .task_list,
+    }) |m| {
+        try testing.expect(!callableByPlugin(m));
+    }
+
+    // And declaring it changes nothing: the declaration can only ever
+    // narrow.
+    try testing.expectError(error.NotPermitted, authorize(
+        &b,
+        plug(&.{"task_create"}),
+        .{ .task_create = .{ .group = "build", .title = "one" } },
+    ));
+    try testing.expectError(error.NotATerminal, authorize(
+        &b,
+        plug(&.{"task_list"}),
+        .{ .task_list = .{ .group = "build" } },
+    ));
+}
+
+test "the whole life of a task, as it goes over the wire" {
+    // Every other panel test builds a `Request` by hand. This one starts
+    // from the JSON an agent's sidecar actually sends and ends at the JSON
+    // it gets back, because the two ends are where the mistakes that unit
+    // tests cannot see live: a parameter the parser does not know is
+    // dropped silently, and a reply field nobody writes is a reply the
+    // agent reads as absent rather than as zero.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const Step = struct {
+        who: Bus.Id,
+        line: []const u8,
+        want: []const u8,
+    };
+
+    for ([_]Step{
+        // The supervisor makes it.
+        .{
+            .who = boss,
+            .line =
+            \\{"method":"task_create","params":{"group":"build","title":"get the core building"}}
+            ,
+            .want = "\"task\":1",
+        },
+
+        // ...and hands it out.
+        .{
+            .who = boss,
+            .line =
+            \\{"method":"task_assign","params":{"task":1,"id":"0x2222"}}
+            ,
+            .want = "\"ok\":true",
+        },
+
+        // The worker finds it, and finds only it.
+        .{
+            .who = worker,
+            .line =
+            \\{"method":"task_list","params":{"group":"build"}}
+            ,
+            .want = "get the core building",
+        },
+
+        // ...says where it has got to...
+        .{
+            .who = worker,
+            .line =
+            \\{"method":"task_progress","params":{"task":1,"progress":"working"}}
+            ,
+            .want = "\"ok\":true",
+        },
+
+        // ...and reports.
+        .{
+            .who = worker,
+            .line =
+            \\{"method":"group_post","params":{"group":"build","text":"task 1: core builds"}}
+            ,
+            .want = "\"ok\":true",
+        },
+
+        // The supervisor checks and closes.
+        .{
+            .who = boss,
+            .line =
+            \\{"method":"task_close","params":{"task":1}}
+            ,
+            .want = "\"ok\":true",
+        },
+    }) |step| {
+        var parsed = try wire.parseRequest(alloc, step.line);
+        defer parsed.deinit();
+
+        const res = try dispatch(alloc, &b, fake.host(), term(step.who), parsed.value);
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        try wire.writeResponse(&out.writer, res);
+
+        if (std.mem.indexOf(u8, out.written(), step.want) == null) {
+            std.debug.print("\n{s}\n  ->{s}", .{ step.line, out.written() });
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // Closed: gone from the worker, still on the panel for the person.
+    {
+        var parsed = try wire.parseRequest(alloc,
+            \\{"method":"task_list","params":{"group":"build"}}
+        );
+        defer parsed.deinit();
+
+        const mine = try dispatch(alloc, &b, fake.host(), term(worker), parsed.value);
+        try testing.expectEqual(@as(usize, 0), mine.tasks.len);
+
+        const all = try dispatch(alloc, &b, fake.host(), term(Chat.user_id), parsed.value);
+        try testing.expectEqual(@as(usize, 1), all.tasks.len);
+        try testing.expectEqualStrings("closed", all.tasks[0].state);
+        try testing.expectEqualStrings("working", all.tasks[0].progress);
+    }
+}
+
+test "a misspelled panel parameter is a mistake, not a different call" {
+    // The guard `set_watch` cost us: a key the method does not know used to
+    // be dropped and the reply said `ok`. Every one of these would
+    // otherwise fall back to a default and do something the caller did not
+    // ask for -- `task` missing is task zero, `progress` missing is no
+    // change at all.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    for ([_][]const u8{
+        \\{"method":"task_create","params":{"group":"build","titel":"typo"}}
+        ,
+        \\{"method":"task_assign","params":{"task":1,"terminal":"0x2222"}}
+        ,
+        \\{"method":"task_progress","params":{"task":1,"state":"working"}}
+        ,
+        \\{"method":"task_list","params":{"grp":"build"}}
+        ,
+        \\{"method":"task_cancel","params":{}}
+        ,
+    }) |line| {
+        try testing.expectError(error.BadParams, wire.parseRequest(alloc, line));
+    }
 }

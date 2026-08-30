@@ -294,7 +294,22 @@ pub const Tree = struct {
     ) Allocator.Error![]u8 {
         const seg = try encodeSegment(alloc, group);
         defer alloc.free(seg);
+        return self.partPathIn(alloc, seg, day, part);
+    }
 
+    /// The same, for a directory name that is already encoded.
+    ///
+    /// The pair to `daysIn`: a reader that walked the tree has the encoded
+    /// segment in hand and no way back to the name it came from, and
+    /// encoding it a second time would spell it `%25`-something. Caller
+    /// owns the result.
+    pub fn partPathIn(
+        self: *const Tree,
+        alloc: Allocator,
+        seg: []const u8,
+        day: u32,
+        part: u32,
+    ) Allocator.Error![]u8 {
         var buf: [64]u8 = undefined;
         return std.fs.path.join(alloc, &.{ self.dir, seg, nameOf(&buf, .{
             .day = day,
@@ -525,6 +540,68 @@ pub fn encodeSegment(alloc: Allocator, group: []const u8) Allocator.Error![]u8 {
     return out.toOwnedSlice(alloc);
 }
 
+/// A directory name back into the group name it was made from, or null
+/// when it was not made from one.
+///
+/// **Here rather than in the reader that wants it.** The rule that turns a
+/// name into a directory lives in exactly one place -- that is the whole
+/// point of `encodeSegment`'s header and of `gaps.md`'s third section --
+/// and a second file that knows how to undo it is that rule written down
+/// twice. The two would then be free to disagree, which is the failure
+/// where a group's records quietly go to a directory nobody reads back.
+///
+/// Null rather than a best effort, in three cases, and all three are the
+/// same judgement: a segment this did not write is a directory this has
+/// no business claiming to have a name for.
+///
+///   * `%` not followed by two hex digits. That covers the `%%<hash>` tag
+///     `encodeSegment` appends to a name it had to shorten, which is
+///     deliberately *not* invertible -- the bytes past the cut are gone,
+///     and inventing a shorter name for them would put a group under a
+///     name that was never its own.
+///   * The lone `%` that stands for an empty name, by the same rule: it
+///     decodes to nothing, and nothing is not a group.
+///   * Anything else with a stray `%` in it, which is somebody else's
+///     directory sitting in our tree.
+pub fn decodeSegment(alloc: Allocator, seg: []const u8) Allocator.Error!?[]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.ensureTotalCapacity(alloc, seg.len);
+
+    var i: usize = 0;
+    while (i < seg.len) {
+        if (seg[i] != '%') {
+            try out.append(alloc, seg[i]);
+            i += 1;
+            continue;
+        }
+
+        if (i + 2 >= seg.len) {
+            out.deinit(alloc);
+            return null;
+        }
+
+        const hi = std.fmt.charToDigit(seg[i + 1], 16) catch {
+            out.deinit(alloc);
+            return null;
+        };
+        const lo = std.fmt.charToDigit(seg[i + 2], 16) catch {
+            out.deinit(alloc);
+            return null;
+        };
+
+        try out.append(alloc, hi * 16 + lo);
+        i += 3;
+    }
+
+    if (out.items.len == 0) {
+        out.deinit(alloc);
+        return null;
+    }
+
+    return try out.toOwnedSlice(alloc);
+}
+
 /// `struct tm`, declared here because the standard library has no binding
 /// for it and no timezone handling of its own.
 ///
@@ -748,6 +825,50 @@ test "a name too long to be a directory is cut, marked, and still distinct" {
 
     // Two long names that differ only past the cut still land apart.
     try testing.expect(!std.mem.eql(u8, a, b));
+}
+
+test "a directory name goes back to the group name it was made from" {
+    const alloc = testing.allocator;
+
+    // Every name a group may actually have, plus the awkward ones the
+    // encoder is there for. Round-tripping is the property the group list
+    // depends on: it is read back off the directories themselves.
+    for ([_][]const u8{
+        "kairos-15r",
+        "build",
+        "a-b-c-9",
+        "a/b",
+        ".hidden",
+        "with space",
+        "夜班",
+    }) |name| {
+        const seg = try encodeSegment(alloc, name);
+        defer alloc.free(seg);
+
+        const back = (try decodeSegment(alloc, seg)) orelse {
+            std.debug.print("no name back from {s}\n", .{seg});
+            return error.TestUnexpectedResult;
+        };
+        defer alloc.free(back);
+
+        try testing.expectEqualStrings(name, back);
+    }
+}
+
+test "a directory the encoder never wrote yields no name" {
+    const alloc = testing.allocator;
+
+    // A shortened name is marked precisely so it is *not* mistaken for a
+    // whole one; the empty-name marker and any stray `%` are the same
+    // judgement. Each of these must come back null rather than as some
+    // name a group never had.
+    var long: [400]u8 = @splat('x');
+    const cut = try encodeSegment(alloc, &long);
+    defer alloc.free(cut);
+
+    for ([_][]const u8{ cut, "%", "%%", "%zz", "half%2", "trail%" }) |seg| {
+        try testing.expect((try decodeSegment(alloc, seg)) == null);
+    }
 }
 
 test "the day a moment belongs to is also the order the days sort in" {

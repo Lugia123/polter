@@ -361,6 +361,49 @@ pub const Action = union(Key) {
     /// Move a tab to a new window.
     move_tab_to_new_window,
 
+    /// What Poltergeist has to say about this surface has changed.
+    ///
+    /// A mark is not a title, and this action exists so that it stops
+    /// being carried as one. The apprt is expected to keep the value in a
+    /// per-surface field of its own and compose it in front of the title
+    /// at the moment the title is rendered. Writing it into the tab title
+    /// instead gives that one field two writers -- Poltergeist and the
+    /// program in the terminal, through OSC 0/2 -- and the second writer
+    /// erases the first, which is what this replaced.
+    poltergeist_mark: PoltergeistMark,
+
+    /// Close a tab or a window because Poltergeist's tool surface asked, and
+    /// say which of the two things that did.
+    ///
+    /// **Separate from `close_tab` and `close_window` rather than a flag on
+    /// them, and that separation is the guarantee.** The confirmation those
+    /// two raise is a guard against the user's own misclick, and the way to
+    /// be sure a change did not weaken it is for the user's action to be
+    /// byte-for-byte the action it was. `close_tab` is untouched here; an
+    /// apprt that handles this one is adding a path, not editing one.
+    ///
+    /// It exists because closing a tab is decided in the apprt and nowhere
+    /// else. A surface knows whether *it* needs confirming; only the apprt
+    /// knows which surfaces share a tab, and only the apprt owns the dialog.
+    /// So both halves of the tool's problem have to be answered out here:
+    ///
+    ///   - `confirm` travels down. False means the target carries a mark and
+    ///     there is nobody at that tab to press a button, so the apprt should
+    ///     close without asking. See `poltergeist.actions.confirmsClose`.
+    ///
+    ///   - `result` travels back up, and it is the half that was missing.
+    ///     `performAction` answers "did you handle this", which a close that
+    ///     put a dialog up and a close that actually happened both answer
+    ///     `true` to. That is how `terminal_action` came to reply `{"ok":
+    ///     true}` for a tab still sitting there. The apprt writes the outcome
+    ///     through this pointer before it returns.
+    ///
+    /// The pointer is valid for the duration of the call and no longer, the
+    /// same rule `config_change` states for its payload. Every apprt that
+    /// handles this must write it, because the caller cannot tell "left
+    /// alone" from any answer it might have wanted.
+    poltergeist_close: PoltergeistClose,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -433,6 +476,8 @@ pub const Action = union(Key) {
         readonly,
         copy_title_to_clipboard,
         move_tab_to_new_window,
+        poltergeist_mark,
+        poltergeist_close,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -755,6 +800,39 @@ pub const SetTitle = struct {
             .title = self.title.ptr,
         };
     }
+};
+
+/// What Poltergeist has to say about a surface, rendered, to be shown in
+/// front of whatever the program running there called itself.
+///
+/// **A rendered prefix rather than the state behind it, and that is the
+/// decision.** Two separate things are being said at once: what the
+/// terminal is doing (`Bus.TabMark`, seven values) and who may touch it
+/// (`Bus.isShielded`, a bool that is orthogonal to all seven, `none`
+/// included). They stay two separate values in the core -- nothing is
+/// folded into a fourteen-value enum -- and only their composition
+/// crosses this boundary. That keeps the glyph vocabulary and the rule
+/// that the shield leads in the one place their reasoning is written
+/// (`src/poltergeist/Bus.zig`) instead of once per apprt, where two
+/// copies of a seven-row table would drift.
+///
+/// The pointer is owned by the caller and is only valid for the duration
+/// of the `performAction` call, same as `SetTitle`.
+///
+/// Empty means this tab has nothing to add.
+pub const PoltergeistMark = struct {
+    prefix: [:0]const u8,
+
+    // Sync with: ghostty_action_poltergeist_mark_s
+    pub const C = extern struct {
+        prefix: [*:0]const u8,
+    };
+
+    pub fn cval(self: PoltergeistMark) C {
+        return .{
+            .prefix = self.prefix.ptr,
+        };
+    }
 
     pub fn format(
         value: @This(),
@@ -763,6 +841,131 @@ pub const SetTitle = struct {
         writer: *std.Io.Writer,
     ) !void {
         try writer.print("{s}{{ {s} }}", .{ @typeName(@This()), value.title });
+    }
+};
+
+/// What Poltergeist's tool surface asked to close, and room for the answer.
+///
+/// `extern` rather than a plain struct with a `C` twin because there is
+/// nothing to convert: a scope, a bool and a pointer are already what the
+/// header says. A `cval` here would be a copy step whose only job is to
+/// forget nothing, and the way it fails is by forgetting the pointer.
+pub const PoltergeistClose = extern struct {
+    scope: Scope,
+
+    /// Whether the confirmation stays in front of the user. Already answered
+    /// by `poltergeist.actions.confirmsCloseProtected` -- the target's mark
+    /// says whether anybody is there to press it, the target's readonly lock
+    /// says whether the user meant this terminal to be hard to close, and
+    /// neither is a fact an apprt has.
+    ///
+    /// An apprt may only turn a confirmation *off* with this. It never adds
+    /// one: false says "you may skip the question you were going to ask",
+    /// and true says nothing at all beyond "carry on as usual".
+    confirm: bool,
+
+    /// Written by the apprt before it returns. Never read by it.
+    result: *Result,
+
+    /// Sync with: ghostty_action_poltergeist_close_scope_e
+    pub const Scope = enum(c_int) {
+        /// The tab holding the target surface. Falls back to the window when
+        /// the tab is the only one, the same way the menu item does.
+        this_tab,
+        /// Every tab in the target's window except the target's own.
+        other_tabs,
+        /// The tabs after the target's, in tab order.
+        tabs_to_the_right,
+        /// The target's whole window, tab group and all.
+        window,
+
+        test "ghostty.h PoltergeistClose.Scope" {
+            try lib.checkGhosttyHEnum(Scope, "GHOSTTY_ACTION_POLTERGEIST_CLOSE_SCOPE_");
+        }
+    };
+
+    /// Sync with: ghostty_action_poltergeist_close_result_e
+    ///
+    /// `unsupported` is first so that zero is the honest answer. A caller
+    /// initialises the cell to it and an apprt that quietly does nothing --
+    /// or writes nothing -- is reported as having done nothing, rather than
+    /// inheriting `closed` by accident. That accident is the exact bug this
+    /// action exists to fix, and it would be sad to rebuild it in the
+    /// enum's ordering.
+    pub const Result = enum(c_int) {
+        /// This apprt does not do this. Not a failure of the request.
+        unsupported,
+        /// It is closed, or on its way to closed with nothing left to ask.
+        closed,
+        /// The dialog is up and a person has to answer it. Nothing closed.
+        awaiting_confirmation,
+
+        /// The same three answers as the two the tool surface understands:
+        /// it happened, or it did not and here is which sort of "did not".
+        ///
+        /// It lives here rather than in the caller because the caller is
+        /// `App.poltergeistPerformAction`, and **nothing in `App.zig` is
+        /// reached by any test in this repository** -- gutting that function
+        /// leaves the whole suite green. A three-prong switch written there
+        /// is a rule nobody can check; written here it is one line there and
+        /// a test below. The tempting mistake is `.unsupported => {}`, which
+        /// reports a close that never happened as done, and that is the bug
+        /// this action was added to end.
+        pub fn toolAnswer(self: Result) error{
+            CloseAwaitingConfirm,
+            ActionIgnored,
+        }!void {
+            return switch (self) {
+                .closed => {},
+                .awaiting_confirmation => error.CloseAwaitingConfirm,
+                .unsupported => error.ActionIgnored,
+            };
+        }
+
+        test "ghostty.h PoltergeistClose.Result" {
+            try lib.checkGhosttyHEnum(Result, "GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_");
+        }
+
+        test "only a real close is reported as one" {
+            const testing = std.testing;
+            try Result.closed.toolAnswer();
+            try testing.expectError(
+                error.CloseAwaitingConfirm,
+                Result.awaiting_confirmation.toolAnswer(),
+            );
+            try testing.expectError(
+                error.ActionIgnored,
+                Result.unsupported.toolAnswer(),
+            );
+
+            // Exhaustive from the type, so a fourth outcome added above has
+            // to be given an answer here rather than defaulting to silence.
+            for (std.enums.values(Result)) |r| {
+                const ok = if (r.toolAnswer()) |_| true else |_| false;
+                try testing.expectEqual(r == .closed, ok);
+            }
+        }
+    };
+
+    test "doing nothing is what a zeroed result says" {
+        // The bug this action exists to fix is a close that reported success
+        // without having closed anything. An apprt that handles this action
+        // and forgets to write the cell, or one that leaves a zeroed struct
+        // behind, must land on "nothing happened" -- so `unsupported` is
+        // zero, and this is what stops a tidy-minded reordering from putting
+        // `closed` there and rebuilding the bug in the enum's ordering.
+        try std.testing.expectEqual(0, @intFromEnum(Result.unsupported));
+        try std.testing.expect(@intFromEnum(Result.closed) != 0);
+        try std.testing.expect(@intFromEnum(Result.awaiting_confirmation) != 0);
+
+        // And the answer really does travel by pointer. An apprt writes it
+        // after the value has been copied across the C boundary, so a
+        // by-value field would be written into a copy and dropped -- silently,
+        // which is the same failure wearing different clothes.
+        try std.testing.expectEqual(
+            *Result,
+            @FieldType(PoltergeistClose, "result"),
+        );
     }
 };
 

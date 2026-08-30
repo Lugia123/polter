@@ -239,6 +239,39 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .plugin_test => .{ .plugin_test = .{
             .key = try requireString(aa, params, "key"),
         } },
+
+        .task_create => .{ .task_create = .{
+            .group = try requireString(aa, params, "group"),
+            .title = try requireString(aa, params, "title"),
+        } },
+
+        .task_assign => .{
+            .task_assign = .{
+                .task = try requireU64(params, "task"),
+
+                // No default, for `set_watch`'s reason: a call that failed to
+                // say which terminal it meant would take the task off whoever
+                // had it, and quietly.
+                .id = try requireId(params),
+            },
+        },
+
+        .task_close => .{ .task_close = .{
+            .task = try requireU64(params, "task"),
+        } },
+
+        .task_cancel => .{ .task_cancel = .{
+            .task = try requireU64(params, "task"),
+        } },
+
+        .task_progress => .{ .task_progress = .{
+            .task = try requireU64(params, "task"),
+            .progress = try requireString(aa, params, "progress"),
+        } },
+
+        .task_list => .{ .task_list = .{
+            .group = try requireString(aa, params, "group"),
+        } },
     };
 
     return value;
@@ -514,6 +547,11 @@ pub const Response = union(enum) {
         id: ?Bus.Id,
         watching: bool,
     },
+    /// A task's number, answering `task_create`.
+    task: u64,
+
+    tasks: []const rpc.TaskView,
+
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -686,6 +724,38 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.write(v.modifiers);
             try s.objectField("keys");
             try s.write(v.names);
+        },
+        .task => |id| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("task");
+            try s.write(id);
+        },
+        .tasks => |list| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("tasks");
+            try s.beginArray();
+            for (list) |t| {
+                try s.beginObject();
+                try s.objectField("task");
+                try s.write(t.id);
+                try s.objectField("title");
+                try s.write(t.title);
+
+                // Always written, `0x0…0` and all: an absent owner would
+                // have a reader guess whether the field was dropped or
+                // nobody is on it, and "nobody is on it" is the one a
+                // supervisor has to notice.
+                try s.objectField("owner");
+                try writeId(&s, t.owner);
+                try s.objectField("state");
+                try s.write(t.state);
+                try s.objectField("progress");
+                try s.write(t.progress);
+                try s.endObject();
+            }
+            try s.endArray();
         },
         .failed => |f| {
             try s.objectField("ok");

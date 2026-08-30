@@ -683,6 +683,11 @@ typedef struct {
   const char* title;
 } ghostty_action_set_title_s;
 
+// apprt.action.PoltergeistMark.C
+typedef struct {
+  const char* prefix;
+} ghostty_action_poltergeist_mark_s;
+
 // apprt.action.PromptTitle
 typedef enum {
   GHOSTTY_PROMPT_TITLE_SURFACE,
@@ -912,6 +917,32 @@ typedef struct {
   uint64_t len;
 } ghostty_action_scrollbar_s;
 
+// apprt.action.PoltergeistClose.Scope
+typedef enum {
+  GHOSTTY_ACTION_POLTERGEIST_CLOSE_SCOPE_THIS_TAB,
+  GHOSTTY_ACTION_POLTERGEIST_CLOSE_SCOPE_OTHER_TABS,
+  GHOSTTY_ACTION_POLTERGEIST_CLOSE_SCOPE_TABS_TO_THE_RIGHT,
+  GHOSTTY_ACTION_POLTERGEIST_CLOSE_SCOPE_WINDOW,
+} ghostty_action_poltergeist_close_scope_e;
+
+// apprt.action.PoltergeistClose.Result
+typedef enum {
+  GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_UNSUPPORTED,
+  GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_CLOSED,
+  GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_AWAITING_CONFIRMATION,
+} ghostty_action_poltergeist_close_result_e;
+
+// apprt.action.PoltergeistClose
+//
+// `result` is an out parameter: the app writes the outcome through it
+// before returning from the action callback, and the pointer is only valid
+// for that call. An app that handles this action must write it.
+typedef struct {
+  ghostty_action_poltergeist_close_scope_e scope;
+  bool confirm;
+  ghostty_action_poltergeist_close_result_e* result;
+} ghostty_action_poltergeist_close_s;
+
 // apprt.Action.Key
 typedef enum {
   GHOSTTY_ACTION_QUIT,
@@ -984,6 +1015,8 @@ typedef enum {
   GHOSTTY_ACTION_READONLY,
   GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD,
   GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW,
+  GHOSTTY_ACTION_POLTERGEIST_MARK,
+  GHOSTTY_ACTION_POLTERGEIST_CLOSE,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1028,6 +1061,8 @@ typedef union {
   ghostty_action_search_selected_s search_selected;
   ghostty_action_readonly_e readonly;
   ghostty_action_open_config_e open_config;
+  ghostty_action_poltergeist_mark_s poltergeist_mark;
+  ghostty_action_poltergeist_close_s poltergeist_close;
 } ghostty_action_u;
 
 typedef struct {

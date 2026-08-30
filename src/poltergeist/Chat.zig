@@ -171,6 +171,15 @@ const Group = struct {
     /// last part is the line between keeping a note and managing a task.
     brief: []const u8 = "",
 
+    /// When anything was last said in here, for the order the list is in.
+    ///
+    /// Kept as its own field rather than read off the back of `log`,
+    /// because `log` is a working set: it trims, the supervisor compacts
+    /// it on purpose, and a group restored after a restart has none at
+    /// all. Every one of those would make a group that was busy last night
+    /// look like a group nobody has ever used.
+    last_ms: u64 = 0,
+
     fn deinit(self: *Group, alloc: Allocator) void {
         for (self.log.items) |m| alloc.free(m.text);
         self.log.deinit(alloc);
@@ -232,6 +241,83 @@ pub fn create(self: *Chat, name: []const u8, by: Id) Error!void {
     try group.members.put(self.alloc, by, .{});
 
     try self.groups.put(self.alloc, owned, group);
+}
+
+/// Put back a group that existed before the restart -- its name, its note,
+/// and when it was last used. **Not its members.**
+///
+/// This is where the line drawn in `README.md`'s third open question is
+/// actually cut, and the cut is not a compromise. That question refused to
+/// restore a conversation automatically because doing so would need the
+/// program to decide "is this terminal on screen now the one that was in
+/// this group last night", which is a judgement, and judgements belong to
+/// the supervisor (P1). **That argument is only about the members.** A
+/// group's name is a string; putting a string back needs nobody to decide
+/// anything.
+///
+/// So the program restores what needs no judgement and the supervisor
+/// restores what does. A shell comes back with nobody in it but the person
+/// at the keyboard, and stays that way until a supervisor puts terminals
+/// in it -- which is the exact meaning of taking a group up again.
+///
+/// The creator is `user_id`, which is not a claim that the person made it:
+/// it is the absence of one. Who made it is not written down anywhere the
+/// record can answer, and a made-up owner would be worse than none --
+/// `rpc` reads owner zero as "no supervisor's to keep", so the first one
+/// to take the group up can, rather than nobody ever being able to.
+pub fn restoreShell(
+    self: *Chat,
+    name: []const u8,
+    brief: []const u8,
+    last_ms: u64,
+) Error!void {
+    // Already here means this is a second start of the same run, or a
+    // group the supervisor has just made. Either way what is in memory is
+    // newer than what is on disk, and the disk does not get to overwrite
+    // it.
+    if (self.groups.contains(name)) return error.GroupExists;
+
+    try self.create(name, user_id);
+
+    const group = self.groups.getPtr(name).?;
+    group.last_ms = last_ms;
+
+    // After `create`, so a note too long to store leaves a group with no
+    // note rather than no group.
+    if (brief.len > 0) try self.setBrief(name, brief);
+}
+
+/// Whether anybody is working in this group right now.
+///
+/// **The membership list crossed with the terminals that actually exist,
+/// not the list on its own.** A member is an id somebody wrote down once;
+/// a live terminal is one the host still has open. The list alone is only
+/// as true as the code that prunes it -- `Surface.deinit` takes a closing
+/// terminal out of every group through `forget`, and if that one call ever
+/// stopped happening, every group a closed terminal was ever in would read
+/// as active for ever. A rule that is right only while some other file has
+/// no bugs in it is a rule that has handed its correctness to that file.
+/// So this asks the question directly instead, and would still answer it
+/// correctly if the pruning went away.
+///
+/// One condition, not a chain of them: the question is "is any member of
+/// this group a terminal that is open", and that is what is computed. What
+/// changed against counting members is which set is being asked about, not
+/// how many tests there are.
+///
+/// `live` is the ids the host has open now, passed in because this file is
+/// the model -- it has no windows, no clock and no disk, and giving it the
+/// app to ask would be the end of that. The person at the keyboard needs
+/// no special case: `user_id` is zero and a terminal id is documented
+/// never to be, so the user is never in `live`, and a group with nobody
+/// but them in it is inactive -- which is exactly what it is.
+///
+/// O(live), where `live` is however many terminals are open. Single
+/// figures, and a hash lookup each.
+pub fn isActive(self: *const Chat, name: []const u8, live: []const Id) bool {
+    const group = self.groups.getPtr(name) orelse return false;
+    for (live) |id| if (group.members.contains(id)) return true;
+    return false;
 }
 
 /// Set what a group is for. Only the supervisor gets here; the caller
@@ -497,6 +583,11 @@ fn append(
     // The sender has seen its own message by definition.
     if (group.members.getPtr(from)) |m| m.cursor = seq;
 
+    // Never backwards. The clock arrives as a parameter here and a caller
+    // replaying old lines into a live group would otherwise make the group
+    // look staler than it is.
+    if (now_ms > group.last_ms) group.last_ms = now_ms;
+
     self.trim(group);
     return seq;
 }
@@ -616,6 +707,27 @@ pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
     return n;
 }
 
+/// How many unread messages this member should be *interrupted* for.
+///
+/// **Not `unread` with a filter bolted on, and the two are meant to be
+/// able to disagree.** A watched terminal has every one of its messages
+/// unread and nothing worth waking it for, and the next time it looks it
+/// still gets all of them. Folding these into one number would turn "do
+/// not interrupt" into "cannot see", which is the opposite of the point.
+///
+/// `watched` is the *reader's* standing, and it is asked for rather than
+/// looked up because roles live on the bus and the chat is not going to
+/// guess at one. The rule it encodes is one line: **a terminal somebody
+/// is minding is not the group's to interrupt.** Its supervisor directs
+/// it by typing into it, which is a channel the group cannot compete with
+/// and should not try to; an unminded terminal has no such channel, so
+/// the group is the only one it has and it is told. See
+/// `docs/poltergeist/tasks.md`.
+pub fn waking(self: *const Chat, name: []const u8, id: Id, watched: bool) usize {
+    if (watched) return 0;
+    return self.unread(name, id);
+}
+
 /// Total unread across every group `id` is in.
 pub fn unreadTotal(self: *const Chat, id: Id) usize {
     var n: usize = 0;
@@ -678,13 +790,33 @@ pub fn membersOf(
     return owned;
 }
 
-/// The groups `id` is in, sorted so two listings can be compared.
+/// The groups `id` is in, in the order they should be shown.
+///
+/// **Groups with somebody in them first, then the rest newest-spoken
+/// first.** The list never expires -- a group is kept for as long as its
+/// records are, because there is no telling when the person will want last
+/// Tuesday's back -- so without an order the useful ones sink under the
+/// old ones as the weeks go by.
+///
+/// Active means `isActive`: a member of the group is a terminal that is
+/// open right now. `live` is that set of open ids, and it is the same
+/// judgement the refusal to destroy an active group uses -- one definition
+/// of the word, in one function, so the order the list is drawn in and
+/// what may be deleted from it cannot drift apart. It also lines up with
+/// what a restart does: nothing comes back with members, so the morning
+/// after, every group is inactive until the supervisor puts terminals into
+/// the one it wants -- and that is precisely what taking a group up again
+/// means.
+///
+/// The name breaks ties, so two listings taken a moment apart can still be
+/// compared.
 ///
 /// The names belong to the chat, so a caller that keeps them must copy.
 pub fn groupsFor(
     self: *const Chat,
     alloc: Allocator,
     id: Id,
+    live: []const Id,
 ) Allocator.Error![]const []const u8 {
     var out: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer out.deinit(alloc);
@@ -695,23 +827,41 @@ pub fn groupsFor(
     }
 
     const owned = try out.toOwnedSlice(alloc);
-    std.mem.sort([]const u8, owned, {}, lessThan);
+    std.mem.sort([]const u8, owned, Order{ .chat = self, .live = live }, lessThan);
     return owned;
 }
 
-fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+/// What `lessThan` needs to answer: the groups, and which terminals are
+/// open. Two things rather than one because the second is not the chat's
+/// to know.
+const Order = struct { chat: *const Chat, live: []const Id };
+
+fn lessThan(ctx: Order, lhs: []const u8, rhs: []const u8) bool {
+    const l_live = ctx.chat.isActive(lhs, ctx.live);
+    const r_live = ctx.chat.isActive(rhs, ctx.live);
+    if (l_live != r_live) return l_live;
+
+    const l = ctx.chat.groups.getPtr(lhs).?;
+    const r = ctx.chat.groups.getPtr(rhs).?;
+    if (l.last_ms != r.last_ms) return l.last_ms > r.last_ms;
+
     return std.mem.order(u8, lhs, rhs) == .lt;
 }
 
 /// Whether `id` should be told this group has messages waiting.
+///
+/// Asked of `waking`, not of `unread`: whether there is anything worth
+/// interrupting this member for is the first question, and the rate limit
+/// is the second. A watched terminal never gets as far as the clock.
 pub fn shouldNotify(
     self: *Chat,
     name: []const u8,
     id: Id,
     now_ms: u64,
     gap_ms: u64,
+    watched: bool,
 ) bool {
-    if (self.unread(name, id) == 0) return false;
+    if (self.waking(name, id, watched) == 0) return false;
 
     const group = self.groups.getPtr(name) orelse return false;
     const who = group.members.getPtr(id) orelse return false;
@@ -1127,6 +1277,164 @@ test "there is a limit on how many groups can exist" {
     try chat.create("three", boss);
 }
 
+test "a restored shell has its name and its note and nobody in it" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.restoreShell("build", "\u{591c}\u{73ed}\u{90a3}\u{644a}\u{6d3b}", 1_700_000_000_000);
+
+    try testing.expect(chat.exists("build"));
+    try testing.expectEqualStrings("\u{591c}\u{73ed}\u{90a3}\u{644a}\u{6d3b}", try chat.briefOf("build"));
+
+    // The negative half, and the point of the whole thing: the shell is
+    // back, the members are not. Only the person at the keyboard is in it,
+    // which is what makes it inactive until a supervisor takes it up.
+    try testing.expect(!chat.isActive("build", &.{ a, boss }));
+    try testing.expect(chat.isMember("build", user_id));
+    try testing.expect(!chat.isMember("build", a));
+    try testing.expect(!chat.isMember("build", boss));
+
+    const members = try chat.membersOf(testing.allocator, "build");
+    defer testing.allocator.free(members);
+    try testing.expectEqual(@as(usize, 1), members.len);
+}
+
+test "a restored shell does not overwrite the live group of the same name" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.setBrief("build", "live");
+    try chat.add("build", a, .none, .{});
+
+    try testing.expectError(error.GroupExists, chat.restoreShell("build", "stale", 1));
+
+    try testing.expectEqualStrings("live", try chat.briefOf("build"));
+    try testing.expect(chat.isMember("build", a));
+}
+
+test "groups with somebody in them sort above groups with nobody" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    // `quiet` spoke most recently of the three and still sorts last: it
+    // has no terminals in it. That is the whole rule in one case.
+    try chat.restoreShell("quiet", "", 900);
+
+    try chat.restoreShell("older", "", 100);
+    try chat.add("older", a, .all, .{});
+
+    try chat.restoreShell("newer", "", 200);
+    try chat.add("newer", b, .all, .{});
+
+    const list = try chat.groupsFor(testing.allocator, user_id, &.{ a, b });
+    defer testing.allocator.free(list);
+
+    try testing.expectEqual(@as(usize, 3), list.len);
+    try testing.expectEqualStrings("newer", list[0]);
+    try testing.expectEqualStrings("older", list[1]);
+    try testing.expectEqualStrings("quiet", list[2]);
+}
+
+test "who is active is counted from the terminals, not from the user" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    // `loud` spoke most recently and has nobody in it but the person at
+    // the keyboard. `quiet` spoke first and has a terminal working in it.
+    //
+    // This is the case that says *which* count is being used, and it is
+    // the one the obvious mistake fails: the person is put in every group
+    // as it is made, so counting members would make both of these active,
+    // hand the decision to the times, and put `loud` first.
+    try chat.restoreShell("loud", "", 900);
+    try chat.restoreShell("quiet", "", 100);
+    try chat.add("quiet", a, .all, .{});
+
+    try testing.expect(!chat.isActive("loud", &.{a}));
+    try testing.expect(chat.isActive("quiet", &.{a}));
+
+    const list = try chat.groupsFor(testing.allocator, user_id, &.{a});
+    defer testing.allocator.free(list);
+
+    try testing.expectEqualStrings("quiet", list[0]);
+    try testing.expectEqualStrings("loud", list[1]);
+}
+
+test "a member whose terminal is gone does not make its group active" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    // The whole point of crossing the two sets. `a` is on the membership
+    // list of `stale` and is not open any more; `b` is on the list of
+    // `busy` and is. Nothing about the two groups differs except that.
+    //
+    // A criterion that read the list alone would call both of these
+    // active, and `stale` would be undeletable for ever -- which is the
+    // shape of the bug this is written against, not a hypothetical: the
+    // list is pruned by one call in `Surface.deinit`, and this holds
+    // whether or not that call runs.
+    // Made with `restoreShell` rather than `create` so the only members
+    // are the ones named here: `create` puts the terminal that made the
+    // group in it, which is a member like any other and would blur what
+    // this test is about.
+    try chat.restoreShell("stale", "", 100);
+    try chat.add("stale", a, .all, .{});
+    try chat.restoreShell("busy", "", 100);
+    try chat.add("busy", b, .all, .{});
+
+    const live: []const Id = &.{b};
+
+    try testing.expect(!chat.isActive("stale", live));
+    try testing.expect(chat.isActive("busy", live));
+
+    // And the negative control on the other side: with nobody open at all,
+    // neither is active, so a passing case above cannot have come from
+    // `isActive` simply answering true whenever a group has members.
+    try testing.expect(!chat.isActive("stale", &.{}));
+    try testing.expect(!chat.isActive("busy", &.{}));
+
+    // A live id that is in neither group does not make one active either
+    // -- the intersection is with *this group's* members, not with the
+    // terminals that happen to be open.
+    try testing.expect(!chat.isActive("stale", &.{boss}));
+    try testing.expect(!chat.isActive("busy", &.{boss}));
+
+    // The person at the keyboard is in both and neither is active. That
+    // is the case counting members gets wrong, and it needs no rule of its
+    // own here: `user_id` is zero, a terminal id is documented never to
+    // be, so the user is not in `live` and the intersection misses them.
+    try testing.expect(chat.isMember("stale", user_id));
+    try testing.expect(chat.isMember("busy", user_id));
+
+    // A group nobody ever made is not active, rather than crashing.
+    try testing.expect(!chat.isActive("nope", live));
+}
+
+test "a group that is spoken in moves to the front of the live ones" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("one", boss);
+    try chat.add("one", user_id, .all, .{});
+    try chat.create("two", boss);
+    try chat.add("two", user_id, .all, .{});
+
+    // Both live, neither spoken in: the name breaks the tie.
+    {
+        const list = try chat.groupsFor(testing.allocator, user_id, &.{});
+        defer testing.allocator.free(list);
+        try testing.expectEqualStrings("one", list[0]);
+    }
+
+    _ = try chat.post("two", boss, "hello", 5_000);
+
+    const list = try chat.groupsFor(testing.allocator, user_id, &.{});
+    defer testing.allocator.free(list);
+    try testing.expectEqualStrings("two", list[0]);
+    try testing.expectEqualStrings("one", list[1]);
+}
+
 test "groupsFor lists what a terminal is in, sorted" {
     var chat = testChat();
     defer chat.deinit();
@@ -1137,7 +1445,7 @@ test "groupsFor lists what a terminal is in, sorted" {
     try chat.add("zebra", a, .none, .{});
     try chat.add("alpha", a, .none, .{});
 
-    const mine = try chat.groupsFor(testing.allocator, a);
+    const mine = try chat.groupsFor(testing.allocator, a, &.{a});
     defer testing.allocator.free(mine);
 
     try testing.expectEqual(@as(usize, 2), mine.len);
@@ -1181,11 +1489,11 @@ test "notices are rate limited per group and per terminal" {
     try chat.add("build", a, .none, .{});
     _ = try chat.post("build", boss, "one", 0);
 
-    try testing.expect(chat.shouldNotify("build", a, 0, 1000));
-    try testing.expect(!chat.shouldNotify("build", a, 500, 1000));
+    try testing.expect(chat.shouldNotify("build", a, 0, 1000, false));
+    try testing.expect(!chat.shouldNotify("build", a, 500, 1000, false));
 
     _ = try chat.post("build", boss, "two", 900);
-    try testing.expect(chat.shouldNotify("build", a, 1000, 1000));
+    try testing.expect(chat.shouldNotify("build", a, 1000, 1000, false));
 }
 
 test "being noisy in one group does not silence another" {
@@ -1200,8 +1508,8 @@ test "being noisy in one group does not silence another" {
     _ = try chat.post("one", boss, "x", 0);
     _ = try chat.post("two", boss, "y", 0);
 
-    try testing.expect(chat.shouldNotify("one", a, 0, 60_000));
-    try testing.expect(chat.shouldNotify("two", a, 0, 60_000));
+    try testing.expect(chat.shouldNotify("one", a, 0, 60_000, false));
+    try testing.expect(chat.shouldNotify("two", a, 0, 60_000, false));
 }
 
 test "forgetting a terminal takes it out of every group" {
@@ -1499,4 +1807,92 @@ test "a member given the history has no log floor to raise" {
     try chat.create("build", boss);
     try chat.add("build", a, .all, .{});
     try testing.expectEqual(@as(u64, 0), (try chat.floorOf("build", a)).log_seq);
+}
+
+test "a watched terminal is not woken, whoever spoke" {
+    // The rule is about the *reader*, so both directions have to be shown:
+    // the supervisor's own message and a peer's are equally not this
+    // terminal's to be interrupted by. Its supervisor reaches it by typing
+    // into it, and that is the channel that is meant to work.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    try chat.add("build", b, .none, .{});
+
+    _ = try chat.post("build", boss, "here is the plan", 0);
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, true));
+    try testing.expect(!chat.shouldNotify("build", a, 0, 1000, true));
+
+    _ = try chat.post("build", b, "core is green", 1);
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, true));
+    try testing.expect(!chat.shouldNotify("build", a, 1, 1000, true));
+}
+
+test "an unminded terminal is woken by both, because the group is all it has" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    try chat.add("build", b, .none, .{});
+
+    _ = try chat.post("build", boss, "here is the plan", 0);
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, false));
+    try testing.expect(chat.shouldNotify("build", a, 0, 1000, false));
+
+    _ = try chat.post("build", b, "core is green", 1);
+    try testing.expectEqual(@as(usize, 2), chat.waking("build", a, false));
+}
+
+test "a supervisor is woken by both, because that is how it hears" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    const boss2: Id = 0x4444;
+
+    try chat.create("build", boss);
+    try chat.add("build", boss2, .none, .{});
+    try chat.add("build", a, .none, .{});
+
+    _ = try chat.post("build", boss2, "here is the plan", 0);
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", boss, false));
+
+    _ = try chat.post("build", a, "core is green", 1);
+    try testing.expectEqual(@as(usize, 2), chat.waking("build", boss, false));
+}
+
+test "not being woken is not being kept out" {
+    // The line the whole thing rests on, and the one that is easiest to
+    // lose: `a` is watched and never interrupted, and still has every
+    // message unread, still reads all of them, and reads each once.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    try chat.add("build", b, .none, .{});
+
+    _ = try chat.post("build", boss, "here is the plan", 0);
+    _ = try chat.post("build", b, "core is green", 1);
+
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, true));
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 2), chat.unreadTotal(a));
+
+    const seen = try chat.read(testing.allocator, "build", a, 0);
+    defer testing.allocator.free(seen);
+    try testing.expectEqual(@as(usize, 2), seen.len);
+    try testing.expectEqualStrings("here is the plan", seen[0].text);
+    try testing.expectEqualStrings("core is green", seen[1].text);
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+
+    // And what it may see is still decided by its floor, not by this: it
+    // joined with `.none`, so anything said before it arrived stays hidden.
+    try chat.add("build", 0x5555, .none, .{});
+    _ = try chat.post("build", boss, "after", 2);
+    const late = try chat.read(testing.allocator, "build", 0x5555, 0);
+    defer testing.allocator.free(late);
+    try testing.expectEqual(@as(usize, 1), late.len);
 }

@@ -210,6 +210,17 @@ pub fn add(
         .root_source_file = b.path("plugins/archive/archive.py"),
     });
 
+    // And the provisioning plugin, for the same reason and one of its own.
+    // What `claude-code` writes into `~/.claude/skills/` is not data the
+    // core produces and checks -- it is the output of an `awk` program
+    // inside a shell script, and the only way to know that the file a user
+    // ends up with says what it should is to run that script and read the
+    // file. It stamps the installed copy with the build that wrote it, and
+    // a stamp nobody asserts over is a string.
+    step.root_module.addAnonymousImport("plugin_claude_code_sh", .{
+        .root_source_file = b.path("plugins/claude-code/provision.sh"),
+    });
+
     // Every exe needs the terminal options
     self.config.terminalOptions(.ghostty, optimize).add(b, step.root_module);
 

@@ -82,11 +82,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Feed = @import("Feed.zig");
+const login_path = @import("login_path.zig");
 const Plugin = @import("Plugin.zig");
 const PluginLog = @import("PluginLog.zig");
 const reap = @import("reap.zig");
 const report = @import("report.zig");
 const secret = @import("secret.zig");
+const skillpkg = @import("skill.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -273,6 +275,19 @@ socket: []const u8,
 token: []const u8,
 environ: std.process.Environ.Map,
 alert: ?Alert,
+
+/// Whether `environ`'s `PATH` has already been put through
+/// `login_path.widen`. Read and written only by this resident's own
+/// thread, which is the only thing that ever spawns a child.
+///
+/// **Once per resident, not once per child.** Widening costs a fork of the
+/// user's login shell, and a resident in backoff restarts its child every
+/// second; paying for a login shell each time would turn a plugin that
+/// will not start into a machine that will not idle. The answer does not
+/// change between restarts either -- a shell profile is not rewritten
+/// mid-session -- so the one asked for at the first spawn is the one every
+/// later child gets.
+path_widened: bool = false,
 
 timing: Timing,
 
@@ -1365,10 +1380,64 @@ fn main(self: *Resident) void {
                 // Inherited only when there is nowhere to write, which is
                 // the old behaviour kept as the fallback: in a packaged app
                 // Polter's own standard error goes nowhere a user can read.
+                // Done here, on this thread, rather than in `start`: the
+                // caller of `start` is the app thread, and a login shell
+                // whose profile talks to the network would hold the whole
+                // UI for as long as it took.
+                if (!self.path_widened) {
+                    self.path_widened = true;
+                    switch (login_path.widen(self.alloc, io, &self.environ)) {
+                        .widened => self.note(
+                            .info,
+                            "PATH widened to the login shell's: {s}",
+                            .{self.environ.get("PATH") orelse ""},
+                        ),
+
+                        // Said out loud rather than passed over. A plugin
+                        // that cannot find a tool the user installed is
+                        // the failure this exists to stop, and "we could
+                        // not ask your shell" is the one line that
+                        // explains it afterwards.
+                        .no_shell => self.note(
+                            .warn,
+                            "no SHELL to ask, so this plugin gets the PATH " ++
+                                "Polter was started with",
+                            .{},
+                        ),
+                        .unavailable, .unusable => self.note(
+                            .warn,
+                            "the login shell gave no usable PATH, so this " ++
+                                "plugin gets the one Polter was started with",
+                            .{},
+                        ),
+
+                        // Nothing to say: this is every terminal-launched
+                        // Polter, and on Windows there is no bug to fix.
+                        .unchanged, .unsupported => {},
+                    }
+                }
+
                 const pair: ?Stderr = if (self.plog != null) Stderr.make() else null;
 
                 child = std.process.spawn(io, .{
                     .argv = &.{self.exec},
+
+                    // **The user's `PATH`, not the launcher's.** A Polter
+                    // started from the Dock or a `.desktop` file has the
+                    // system default and nothing the user installed, so a
+                    // plugin that shells out to a tool from
+                    // `~/.local/bin` found nothing and -- in the case that
+                    // prompted this, `claude-code` -- concluded the tool
+                    // was not installed and quietly did nothing. See
+                    // `login_path.zig` for why the host answers this and
+                    // not each plugin.
+                    //
+                    // Handing the map over is also what makes that
+                    // widening reach the child at all: without it the
+                    // child inherits our process environment and this
+                    // map is only ever read for `secret.resolve`.
+                    .environ_map = &self.environ,
+
                     .stdin = .pipe,
 
                     // The one shape difference from a one-shot plugin: it
@@ -3128,4 +3197,299 @@ test "a plugin can say something to the user, once, and it cannot draw with it" 
     const body = logOf(alloc, io, dir, "claude-code");
     try testing.expect(std.mem.count(u8, body, "could not write the skill file") >= 4);
     try testing.expect(std.mem.indexOfScalar(u8, body, 0x1b) == null);
+}
+
+/// One run of the shipped `claude-code` plugin, start to finish.
+///
+/// Everything the plugin needs is under `dir`: a `claude` that says yes to
+/// everything (this test is about the skill file, not about Claude Code's
+/// own configuration), a source skill to install, and a `HOME` of its own
+/// so nothing is ever written into the machine's real `~/.claude`.
+fn runShippedClaudeCode(
+    alloc: Allocator,
+    io: std.Io,
+    dir: []const u8,
+    version: []const u8,
+) !void {
+    const exec = try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{dir});
+    const home = try std.fmt.allocPrint(alloc, "{s}/home", .{dir});
+    const bin = try std.fmt.allocPrint(alloc, "{s}/bin", .{dir});
+    const source = try std.fmt.allocPrint(alloc, "{s}/mine.md", .{dir});
+
+    // The plugin looks its tool up on `PATH`, which is the whole of the
+    // bug this round is about; here it is pointed at a stub so that the
+    // "no claude" branch is not the one under test.
+    var env: std.process.Environ.Map = .init(alloc);
+    try env.put("PATH", try std.fmt.allocPrint(alloc, "{s}:/usr/bin:/bin", .{bin}));
+    try env.put("HOME", home);
+
+    var child = std.process.spawn(io, .{
+        .argv = &.{exec},
+        .environ_map = &env,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .inherit,
+    }) catch return error.SkipZigTest; // no /bin/sh on this machine
+
+    var reaper: reap.Reaper = .init(io, "claude-code", child.id, 30 * std.time.ms_per_s);
+    const keeper = std.Thread.spawn(.{}, reap.Reaper.run, .{&reaper}) catch null;
+    defer {
+        reaper.retire();
+        if (keeper) |t| t.join();
+    }
+
+    const wants: Plugin.Wants = .{ .events = &.{.provision} };
+
+    const hello = try renderHello(alloc, .{
+        .key = "claude-code",
+        .cursor = 0,
+        .wants = wants,
+        .params = &.{
+            .{ .name = "scope", .value = "user" },
+            .{ .name = "skills", .value = "yes" },
+        },
+        .values = &.{ "user", "yes" },
+    });
+
+    const events: []const Feed.Event = &.{.{ .provision = .{
+        .n = 1,
+        .at_ms = 1786819271275,
+        .exe = "/nowhere/polter",
+        .version = version,
+        .version_key = "POLTER_REGISTERED",
+        .home = home,
+        .skills = &.{.{ .name = "mine", .path = source }},
+    } }};
+    const batch = try renderBatch(alloc, 0, 1, events, wants);
+
+    const stdin = child.stdin.?;
+    var reader = child.stdout.?.readerStreaming(io, try alloc.alloc(u8, 64 * 1024));
+
+    try stdin.writeStreamingAll(io, hello);
+    switch (readLine(&reader)) {
+        .got => |l| try testing.expect(parseAck(alloc, l).?.ok),
+        else => {
+            _ = child.wait(io) catch {};
+            return error.PluginNeverAnsweredTheGreeting;
+        },
+    }
+
+    try stdin.writeStreamingAll(io, batch);
+    switch (readLine(&reader)) {
+        .got => |l| {
+            const ack = parseAck(alloc, l) orelse {
+                _ = child.wait(io) catch {};
+                return error.BatchAnswerWasNotAnAcknowledgement;
+            };
+            if (!ack.ok) {
+                _ = child.wait(io) catch {};
+                return error.PluginRefusedTheProvisionEvent;
+            }
+        },
+        else => {
+            _ = child.wait(io) catch {};
+            return error.PluginNeverAnsweredTheBatch;
+        },
+    }
+
+    stdin.close(io);
+    child.stdin = null;
+    _ = child.wait(io) catch {};
+
+    try testing.expect(!reaper.killed());
+}
+
+test "an installed skill says which build wrote it, and only changes when that does" {
+    // **What this is for.** `version: 1` in a skill's frontmatter is
+    // hand-written and has never once been incremented, so a file sitting
+    // in `~/.claude/skills/polter-*` could not say which Polter installed
+    // it. The only check available was comparing its text against the
+    // source, which decides nothing at all when a release changed no
+    // prose -- and "changed no prose" is most releases.
+    //
+    // That is the same hole `POLTER_REGISTERED` was added to close on the
+    // MCP side, quoted rather than re-argued: a path alone catches a move
+    // or a reinstall elsewhere, but not a build whose contents changed
+    // while living at the same path, which is every in-place upgrade.
+    //
+    // Three things have to hold together, and each of the first two makes
+    // the third a lie on its own:
+    //
+    //   1. the stamp is the version the host actually handed over;
+    //   2. the same build twice does not rewrite the file (the plugin's
+    //      read-before-write, which exists so that a runtime reading a
+    //      skill mid-session never has it replaced under it);
+    //   3. a different build does rewrite it, and the stamp moves.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-provision-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+        defer d.close(io);
+
+        // The script we ship, embedded for the reason the manifest is: a
+        // test that reads it off disk passes once the file has gone.
+        var f = try d.createFile(io, "provision.sh", .{ .permissions = .fromMode(0o755) });
+        try f.writeStreamingAll(io, @embedFile("plugin_claude_code_sh"));
+        f.close(io);
+
+        try d.createDirPath(io, "bin");
+        var c = try d.createFile(io, "bin/claude", .{ .permissions = .fromMode(0o755) });
+        try c.writeStreamingAll(io, "#!/bin/sh\nexit 0\n");
+        c.close(io);
+
+        var s = try d.createFile(io, "mine.md", .{});
+        try s.writeStreamingAll(io,
+            \\---
+            \\name: mine
+            \\version: 1
+            \\description: a skill for the test
+            \\---
+            \\
+            \\Body.
+            \\
+        );
+        s.close(io);
+    }
+
+    const installed = try std.fmt.allocPrint(
+        alloc,
+        "{s}/home/.claude/skills/polter-mine/SKILL.md",
+        .{dir},
+    );
+
+    try runShippedClaudeCode(alloc, io, dir, "1.2.3-feature-v0-3-+01d879ed9");
+
+    const first = try std.Io.Dir.cwd().readFileAlloc(io, installed, alloc, .unlimited);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        first,
+        "\npolter-build: 1.2.3-feature-v0-3-+01d879ed9\n",
+    ) != null);
+
+    // It is in the frontmatter, not in the prose: a stamp under the
+    // closing `---` would be a line of the skill's text.
+    try testing.expect(
+        std.mem.indexOf(u8, first, "polter-build").? <
+            std.mem.indexOf(u8, first, "\n---\n\nBody.").?,
+    );
+
+    // And the file still loads. `skill.parse` ignores what it does not
+    // know, which is the promise that lets a newer file work on an older
+    // build; a stamp that tripped `ConstraintInFrontmatter` would have
+    // broken every skill at once.
+    const parsed = try skillpkg.parse(first);
+    try testing.expectEqualStrings("polter-mine", parsed.meta.name);
+
+    const before = (try std.Io.Dir.cwd().statFile(io, installed, .{})).mtime;
+
+    // 2. The same build again. Nothing may be written -- this is the
+    // read-before-write that keeps a runtime from having a skill replaced
+    // while it is reading it.
+    try runShippedClaudeCode(alloc, io, dir, "1.2.3-feature-v0-3-+01d879ed9");
+
+    const again = (try std.Io.Dir.cwd().statFile(io, installed, .{})).mtime;
+    try testing.expectEqual(before, again);
+
+    // 3. A different build. The stamp is part of the contents, so the
+    // very check that made step 2 a no-op is what notices -- there is no
+    // second staleness mechanism to keep in step with this one.
+    try runShippedClaudeCode(alloc, io, dir, "9.9.9-other");
+
+    const third = try std.Io.Dir.cwd().readFileAlloc(io, installed, alloc, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, third, "\npolter-build: 9.9.9-other\n") != null);
+    try testing.expect(std.mem.indexOf(u8, third, "1.2.3-feature-v0-3-+01d879ed9") == null);
+}
+
+test "a plugin's child gets the environment the host prepared, not the host's own" {
+    // **Why this is asserted rather than assumed.** Until this round the
+    // spawn passed no environment at all, so a child inherited Polter's
+    // process environment and the map the resident holds was read for one
+    // thing only -- resolving `secret.zig` references. That was invisible
+    // and harmless right up until the host had something to *put* in that
+    // environment: the login shell's `PATH` (see `login_path.zig`), which
+    // is what makes a plugin able to find a tool the user installed in
+    // `~/.local/bin`. Widening a map nobody hands to the child is a fix
+    // that changes nothing, and nothing would have said so.
+    //
+    // `SHELL` is a stand-in that prints a known `PATH`, so the whole chain
+    // is one assertion: the resident asks it, `login_path` merges the
+    // answer into the map, and the map reaches the child. Break any of the
+    // three and the child's `PATH` loses one of the two markers below.
+    // A real login shell here would make this a test about the build
+    // machine's profile.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try scratchDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
+
+    const seen = try std.fmt.allocPrint(alloc, "{s}/path.txt", .{dir});
+    const exec = try scriptFor(alloc, io, try std.fmt.allocPrint(alloc,
+        \\#!/bin/sh
+        \\printf '%s\n' "$PATH" > {s}
+        \\while IFS= read -r line; do
+        \\  echo '{{"ok":true}}'
+        \\done
+    , .{seen}));
+
+    {
+        var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+        defer d.close(io);
+        var f = try d.createFile(io, "shell", .{ .permissions = .fromMode(0o755) });
+        try f.writeStreamingAll(io,
+            \\#!/bin/sh
+            \\printf '%s' "/zzz-only-the-login-shell-knew:/usr/bin:/bin"
+            \\
+        );
+        f.close(io);
+    }
+
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    try env.put("PATH", "/zzz-only-the-host-knew:/usr/bin:/bin");
+    try env.put("SHELL", try std.fmt.allocPrint(alloc, "{s}/shell", .{dir}));
+
+    const a = try start(testing.allocator, io, .{
+        .key = "environ",
+        .exec = exec,
+        .timeout_ms = 5 * std.time.ms_per_s,
+        .wants = .{ .events = &.{.chat}, .groups = &.{"*"} },
+        .params = &.{},
+        .feed = &feed,
+        .environ = env,
+        .timing = .{ .poll_idle_ms = 20 },
+    });
+    defer a.destroy();
+
+    try testing.expect(waitForLines(alloc, io, seen, 1, 5 * std.time.ms_per_s));
+
+    const got = contentsOf(alloc, io, seen);
+
+    // The login shell's, which is the whole point: this is the directory
+    // a Dock-launched Polter could not see.
+    try testing.expect(std.mem.indexOf(u8, got, "/zzz-only-the-login-shell-knew") != null);
+
+    // And the launcher's, because widening is not replacing: a Polter
+    // started by a wrapper script that put something on the front has not
+    // had it taken away.
+    try testing.expect(std.mem.indexOf(u8, got, "/zzz-only-the-host-knew") != null);
 }

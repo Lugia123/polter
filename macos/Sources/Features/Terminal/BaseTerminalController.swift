@@ -895,9 +895,15 @@ class BaseTerminalController: NSWindowController,
         if let titleSurface = focusedSurface ?? lastFocusedSurface,
            surfaceTree.contains(titleSurface) {
             // If we have a surface, we want to listen for title changes.
+            // The Poltergeist mark is in here for the same reason the bell
+            // is: it is per-surface state kept beside the title, not in it,
+            // so every title change recomposes with the mark still on. A
+            // program renaming itself can no longer erase it.
             titleSurface.$title
-                .combineLatest(titleSurface.$bell)
-                .map { [weak self] in self?.computeTitle(title: $0, bell: $1) ?? "" }
+                .combineLatest(titleSurface.$bell, titleSurface.$poltergeistMark)
+                .map { [weak self] in
+                    self?.computeTitle(title: $0, bell: $1, poltergeistMark: $2) ?? ""
+                }
                 .sink { [weak self] in self?.titleDidChange(to: $0) }
                 .store(in: &focusedSurfaceCancellables)
         } else {
@@ -906,13 +912,15 @@ class BaseTerminalController: NSWindowController,
         }
     }
 
-    private func computeTitle(title: String, bell: Bool) -> String {
-        var result = title
-        if bell && ghostty.config.bellFeatures.contains(.title) {
-            result = "🔔 \(result)"
-        }
-
-        return result
+    private func computeTitle(
+        title: String,
+        bell: Bool,
+        poltergeistMark: String
+    ) -> String {
+        TerminalTitle.compose(
+            title: title,
+            bell: bell && ghostty.config.bellFeatures.contains(.title),
+            poltergeistMark: poltergeistMark)
     }
 
     private func titleDidChange(to: String) {
@@ -923,10 +931,14 @@ class BaseTerminalController: NSWindowController,
     private func applyTitleToWindow() {
         guard let window else { return }
 
+        // The mark rides on the override too. An override is the user's
+        // own name for the tab; it replaces what the program calls itself,
+        // not what Poltergeist says about it.
         if let titleOverride {
             window.title = computeTitle(
                 title: titleOverride,
-                bell: focusedSurface?.bell ?? false)
+                bell: focusedSurface?.bell ?? false,
+                poltergeistMark: focusedSurface?.poltergeistMark ?? "")
             return
         }
 

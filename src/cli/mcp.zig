@@ -268,7 +268,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "group_destroy",
-        .description = "Take a group away, and everything said in it. Supervisor only.",
+        .description = "Take a group off the list. The record is kept -- every day file stays on disk; what goes is the group, its members and its tasks. Refused with GroupActive while any terminal in it is still open: destroying it would drop them from a conversation they are working in, so take them out with group_remove first. Note that group_create puts you in the group you made, so you are one of the terminals to remove. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"group":{"type":"string"}},"required":["group"]}
         ,
@@ -402,7 +402,12 @@ const tools = [_]Tool{
             "-- guessing at a name gets you UnknownAction, which is a typo, not a refusal " ++
             "by the terminal. A new tab opens in the same directory as the terminal you " ++
             "asked from, which is worth thinking about before you ask. Same reach rule as " ++
-            "terminal_read.",
+            "terminal_read. `close_surface` is the one action that can answer " ++
+            "AwaitingConfirmation: an unmarked terminal with something still running in " ++
+            "it gets the same confirmation a person clicking close would get, the " ++
+            "terminal stays open, and nothing here can press that button -- wait and " ++
+            "check terminal_list, or ask the user. A terminal you are minding closes " ++
+            "without asking.",
         .schema =
         \\{"type":"object","properties":{"id":{"type":"string"},"action":{"type":"string"}},"required":["id","action"]}
         ,
@@ -463,6 +468,48 @@ const tools = [_]Tool{
             "rearrange who may reach whom; ask your supervisor or the user instead.",
         .schema =
         \\{"type":"object","properties":{}}
+        ,
+    },
+    .{
+        .name = "task_create",
+        .description = "Put a piece of work on a group's panel: one line saying what it is. It answers with a task number. The panel is what survives the night -- an instruction you typed into a terminal has scrolled out of that agent's context by 3am, and so has your memory of sending it. Keep the title to a line; the acceptance test and the detail go in the message you send the worker, not here. Supervisor only, and only in a group you made.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"title":{"type":"string","description":"One line. Not the requirement, just what it is."}},"required":["group","title"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "task_assign",
+        .description = "Say which terminal is doing a task. Pass id 0 to take it back off somebody without cancelling it. Assigning is not telling: the worker learns what it is doing from what you terminal_send it, because a terminal you are minding is not woken by the group. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"task":{"type":"integer"},"id":{"type":"string","description":"The terminal responsible, or 0 for nobody"}},"required":["task","id"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "task_close",
+        .description = "The work is done and you have checked it. Nothing is sent to the worker: it finished, it reported, and this is you agreeing. A closed task stays on the panel for the person at the keyboard to read back in the morning, and disappears from the worker's own task_list. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"task":{"type":"integer"}},"required":["task"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "task_cancel",
+        .description = "Call a task off. **A line is typed into the worker's terminal telling it to stop, and only then does the task leave its list.** A task that merely stopped being on the panel would leave the agent working on something nobody wants -- it has no reason to look at the panel again. **Read the reply**: it says whether the worker was actually told. If its terminal has gone, this refuses and the task stays open rather than pretending. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"task":{"type":"integer"}},"required":["task"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "task_progress",
+        .description = "Move one of your own tasks along: queued, working, blocked, done. Yours only, and only while it is open -- a task that was closed or cancelled refuses, which is how you find out you missed a cancellation. Set `blocked` the moment it is true; that is the one a supervisor watches for. `done` says you believe it is finished, not that it is closed -- closing is the supervisor's word after it has checked. Report in the group as well, naming the task number.",
+        .schema =
+        \\{"type":"object","properties":{"task":{"type":"integer"},"progress":{"type":"string","enum":["queued","working","blocked","done"]}},"required":["task","progress"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "task_list",
+        .description = "The tasks in a group. What you get depends on who you are, because the two questions are different: a supervisor is handed the group's whole panel, closed and cancelled work included, and anybody else is handed its own tasks that are still open and nothing else. Not a restriction so much as the point -- what your peers are doing is not yours to spend context on.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"}},"required":["group"],"additionalProperties":false}
         ,
     },
 };

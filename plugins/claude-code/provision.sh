@@ -48,6 +48,14 @@
 # misconduct and the process is killed. Diagnostics go to stderr, which is
 # Polter's log.
 
+# **POSIX `sh`, so POSIX platforms.** There is no Windows story here and
+# there is no need for one: Ghostty builds no application on Windows at all
+# (`apprt.Runtime.default` answers `.none` for it), so there is no plugin
+# host on Windows for this to fail in. If that ever changes, the answer for
+# this plugin is a sibling written in whatever Windows runs and a manifest
+# that picks between them -- not a `case` on the platform inside a script
+# that cannot be started there.
+
 set -eu
 
 # One value out of the line. Every key used here appears once, which is what
@@ -80,10 +88,25 @@ provision() {
   fi
 
   # No Claude Code on this machine. **Not a failure**: the agent here may be
-  # something else entirely, and Polter works the same either way. Exiting
-  # non-zero would put a message on the screen of every user who does not use
-  # it, every launch.
+  # something else entirely, and Polter works the same either way. Answering
+  # `{"ok":false}` would put this plugin into backoff and then dormancy, and
+  # `plugin_list` would report a broken plugin to every user who simply does
+  # not use Claude Code.
+  #
+  # **But it is said out loud now, and it was not.** This branch used to
+  # return silently, and that silence cost a whole class of user everything
+  # this plugin does: a Polter started from the Dock has only the system
+  # `PATH`, so `claude` installed in `~/.local/bin` was not on it, so this
+  # line was reached on a machine that uses Claude Code every day -- and the
+  # only trace anywhere was one `started` in the log. The host now widens the
+  # `PATH` to the login shell's (`src/poltergeist/login_path.zig`), which
+  # fixes the case that was found; this line is what makes the next one
+  # findable without a debugger. Stderr is the plugin's log, which
+  # `plugin_log` shows and a person can read.
   if ! command -v claude >/dev/null 2>&1; then
+    echo "claude-code: no \`claude\` on PATH ($PATH), so nothing was" \
+      "registered and no skills were installed. Not an error if this" \
+      "machine's agent is something else." >&2
     return 0
   fi
 
@@ -174,9 +197,42 @@ provision() {
     # The name inside the frontmatter has to match the directory, or the
     # runtime lists it under a name the user cannot type. Rewritten in the
     # frontmatter only: a `name:` line in the prose is prose.
-    rendered=$(awk '
+    #
+    # **And it is stamped with the build that wrote it.** `version: 1` in
+    # these files is hand-written and never changes, so an installed skill
+    # could not say which Polter it came from; the only test available was
+    # comparing its text against the source, which says nothing at all when
+    # a release changed no prose. That is the same gap `POLTER_REGISTERED`
+    # exists for on the MCP side, and the reason is quoted rather than
+    # reinvented: a path alone catches a move or a reinstall elsewhere but
+    # not a build whose contents changed while living at the same path --
+    # which is every in-place upgrade.
+    #
+    # **This closes its own loop.** The stamp is part of the file's
+    # contents, so a new build changes the contents, so the "written only
+    # when it differs" test below fires by itself and the stamp is brought
+    # up to date. Nothing separate has to notice that an install went
+    # stale -- and a separate staleness check maintained by hand is the
+    # next thing that would rot.
+    #
+    # **The cost, so nobody reads it as a bug.** Every new build rewrites
+    # all three skills once, on the first launch after the upgrade, even
+    # when not a word of prose changed. It did come from a different
+    # build, so that is the honest answer; it is three writes per upgrade.
+    #
+    # Only the installed copy is stamped. The file under
+    # `src/poltergeist/skills/` and the one in the bundle stay byte for
+    # byte identical, because a diff between them is how anybody checks
+    # what a release actually shipped.
+    rendered=$(awk -v build="$version" '
       NR == 1 && $0 == "---" { fm = 1; print; next }
-      fm == 1 && $0 == "---" { fm = 0; print; next }
+      fm == 1 && $0 == "---" {
+        if (build != "") print "polter-build: " build
+        fm = 0
+        print
+        next
+      }
+      fm == 1 && /^polter-build: / { next }
       fm == 1 && /^name: / { sub(/^name: /, "name: polter-"); print; next }
       { print }
     ' "$path")

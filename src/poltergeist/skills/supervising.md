@@ -29,11 +29,27 @@ group survives a restart.
 Do not wait to be asked. Asking the user to run each step is asking them to
 do the job they just handed over.
 
-## Every word in a group is paid for by everyone in it
+## Posting in a group does not make anybody move
 
-`group_post` wakes every member; each calls `group_read` and puts your whole
-message into its context. One post to three workers is three interruptions
-and three copies.
+**A terminal you have watched is never woken by a group message — yours
+included.** Its attention is yours, and you reach it by typing into it. So an
+assignment posted in the group and nowhere else is an assignment nobody will
+act on, and nothing will say so: you will have written it, seen it land, and
+be waiting on a worker that never heard.
+
+The group is for **planning, for the record, and for the person at the
+keyboard**. To make a terminal do something, `terminal_send` it.
+
+Unwatched terminals and other supervisors *are* woken — nobody is directing
+them, so the group is the only channel they have.
+
+**Not woken is not kept out.** Everything you post is still unread for every
+member, and any of them reading the group with `group_read` gets all of it.
+That is the point: a worker can go and look when it chooses, and is not
+interrupted when it does not.
+
+Which is still a cost. Each `group_read` puts your whole message into that
+worker's context, and context is the only thing here that actually runs out.
 
 Context is the only thing here that actually runs out. Measured on this
 program supervising its own development: six supervisor posts in twenty
@@ -63,6 +79,15 @@ explaining why a message is short is the length coming back as prose.
 reasoning — if it was asked for, give it in full. The rule is only against
 prose nobody asked for.
 
+**The group is the channel. Your runtime's own cross-session messaging is
+not.** Whatever your CLI gives you for talking to another session of itself,
+do not use it on the terminals here. A `group_post` is written to Polter's
+chat log, which is what you read back after a restart and what the user sees
+on their own screen; a message sent out of band is in neither, so tomorrow
+morning it never happened. It also sits outside everything that makes a group
+one — membership, `group_compact`, and your own record of who has read how
+far. Post in the group, or `terminal_send` the one terminal it is for.
+
 ## Handing out work: say what, and say when it is done
 
 An assignment that names a task and stops has handed over the easy half. The
@@ -84,6 +109,38 @@ Good — same length, but it can be finished and you can tell from outside:
     done when: `zig build test -Dtest-filter=lexer` passes 20 runs.
     constraints: do not change the test's assertions.
     report: post the run count.
+
+## The panel: what was handed out, so it survives the night
+
+A `terminal_send` scrolls off and gets compacted away. By 3am the worker no
+longer knows what you set it to do, and neither do you. The panel is the part
+of that which is written down: **a one-line title, who has it, and how far
+along.** Not the work itself — an acceptance test does not fit on a line and
+belongs in the message you send.
+
+The order, and step 2 is a note to yourself:
+
+1. `task_create(group, title)` — one line. It hands back a number.
+2. `group_post` the plan. **Mainly for you and for the record**, and for the
+   person at the keyboard; it will not make anybody move.
+3. `terminal_send` each worker its own instruction, naming the task number,
+   with the acceptance test in it.
+4. `task_assign(task, id)` so the panel says who has it.
+
+Then `task_list(group)` hands you the whole panel — closed and cancelled work
+included, because checking the night is what you use it for. A worker asking
+gets only its own, still open.
+
+`task_close(task)` when you have checked the work. `task_cancel(task)` calls
+one off — **and it types a line into the worker's terminal before the task
+leaves its list**, because a task that merely stopped being there leaves the
+worker carrying on with work nobody wants. Read the reply: it says whether the
+worker was actually told. If its terminal has gone, the call refuses and the
+task stays open rather than pretending.
+
+The panel is not a task system and will not become one: no dependencies, no
+priorities, no due dates, no sub-tasks. Anything a line cannot hold has a
+better home.
 
 ## What you may reach, and what refuses you
 
@@ -189,7 +246,11 @@ name that does not exist is `UnknownAction`: your typo, not a refusal.
 The judgement is what this file is for:
 
 - **`close_surface` deserves hesitation.** A terminal with unsaved work looks
-  exactly like an idle one from a screenful of text.
+  exactly like an idle one from a screenful of text. Nothing will stop you
+  either: a terminal you are minding closes without the confirmation a person
+  clicking close would get, because there is nobody at that tab to answer it.
+  An *unmarked* terminal still asks, and you will get `AwaitingConfirmation`
+  with the terminal still open -- that button is the user's, not yours.
 - **Layout is the person's**; rearranging it while they are away is no favour.
 - **`set_surface_title:worker A` early.** Four hex ids in four identical
   directories are not something you will tell apart in eight hours, and this

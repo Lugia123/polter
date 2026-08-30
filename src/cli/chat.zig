@@ -294,6 +294,29 @@ const Message = struct {
     from_user: bool,
 };
 
+/// One task on a group's panel, copied out of a reply.
+///
+/// The state and the progress arrive as words and stay words. Turning them
+/// into an enum here would mean this view refusing to draw a value a newer
+/// host knows about, and a blank row is a worse answer than an unfamiliar
+/// one.
+const Task = struct {
+    id: u64,
+    title: []const u8,
+    owner: []const u8,
+    state: []const u8,
+    progress: []const u8,
+};
+
+/// One member, with the id as well as the name.
+///
+/// The id is here for the panel: a task says who owns it as an id, and the
+/// name to put beside it is only knowable through this list.
+const Member = struct {
+    id: []const u8,
+    title: []const u8,
+};
+
 /// One group, with everything needed to draw it.
 const Group = struct {
     name: []const u8,
@@ -302,7 +325,16 @@ const Group = struct {
     /// said, which is most groups most of the time.
     brief: []const u8 = "",
     messages: std.ArrayListUnmanaged(Message) = .empty,
-    members: std.ArrayListUnmanaged([]const u8) = .empty,
+    members: std.ArrayListUnmanaged(Member) = .empty,
+
+    /// The panel, rebuilt from scratch on every poll.
+    ///
+    /// Unlike the messages, which accumulate behind a cursor, a task's
+    /// state changes in place: there is no "what is new" to ask for, so
+    /// the whole panel comes back each time and the old one is dropped.
+    /// It is short by construction -- one line per task -- so this costs
+    /// nothing worth a cursor.
+    tasks: std.ArrayListUnmanaged(Task) = .empty,
 
     /// Highest seq seen, so each poll asks only for what is new.
     cursor: u64 = 0,
@@ -353,6 +385,23 @@ const Chat = struct {
     groups: std.ArrayListUnmanaged(Group) = .empty,
     current: usize = 0,
 
+    /// Which of the right-hand column's two tabs is showing.
+    ///
+    /// **On the right only.** The group list on the left does not move,
+    /// because a task belongs to a group: switching tab must not change
+    /// which group you are looking at.
+    view: View = .chat,
+
+    /// Where each tab's label was drawn last frame, for hit testing.
+    /// Rebuilt every frame because the labels shrink on a narrow window.
+    tab_row: u16 = 0,
+
+    /// Where the right-hand column starts, so a click's column can be put
+    /// into the same frame of reference the tab spans were recorded in.
+    /// The spans are relative to that column, not to the screen.
+    tabs_left: u16 = 0,
+    tab_spans: [2]struct { from: u16 = 0, to: u16 = 0 } = .{ .{}, .{} },
+
     /// How far the message pane is scrolled back, **in rendered rows**.
     ///
     /// Rows, not messages: one report from an agent can be forty rows, and
@@ -378,10 +427,72 @@ const Chat = struct {
 
     should_quit: bool = false,
 
+    /// Where a complaint from the host is kept while it is on screen.
+    ///
+    /// A buffer rather than an allocation, because `err` is otherwise
+    /// always a static `@errorName`, and one owned string among several
+    /// borrowed ones is a lifetime nobody would get right twice.
+    err_buf: [200]u8 = undefined,
+
+    /// How many more polls a complaint stays up for.
+    ///
+    /// Without it a refusal lived for less than the half second until the
+    /// next successful poll, which cleared it -- the person pressed a key,
+    /// something flickered, and the group was still there with no reason
+    /// given. Refusals are the one kind of message here that has to be
+    /// readable at human speed.
+    err_hold: usize = 0,
+
+    /// The group the confirmation box is asking about, or null when no box
+    /// is showing.
+    ///
+    /// The **name**, not the index. The list reorders itself under this
+    /// window -- a group going quiet moves it down -- and an index taken
+    /// when the box opened could be pointing at a different group by the
+    /// time somebody presses `y`.
+    confirm: ?Confirm = null,
+
     /// Shown in place of the input line when something went wrong. Cleared
     /// by the next successful poll, so a transient failure does not leave a
     /// stale complaint on screen.
     err: ?[]const u8 = null,
+
+    const View = enum { chat, tasks };
+
+    /// A group name held while the box is up.
+    ///
+    /// Inline rather than allocated: `Chat.isValidName` holds a group name
+    /// to 48 bytes, and a fixed buffer cannot be left dangling by the
+    /// refresh that rebuilds every string in the window half a second later.
+    const Confirm = struct {
+        buf: [48]u8 = undefined,
+        len: usize = 0,
+
+        fn name(self: *const Confirm) []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+
+    const Verdict = enum { forget, cancel };
+
+    /// What one key means while the confirmation box is up.
+    ///
+    /// A function of the key and nothing else, so that it can be tested
+    /// without a terminal attached -- and this is the part worth testing:
+    /// everything that is not an explicit yes has to come back `cancel`,
+    /// because the failure mode is a group leaving the list that the
+    /// person never agreed to remove. Defaulting the other way, or
+    /// leaving a key unhandled so it falls through to the ordinary
+    /// bindings, are the two ways that goes wrong.
+    fn verdictOf(key: vaxis.Key) Verdict {
+        if (key.matches('y', .{}) or
+            key.matches('y', .{ .shift = true }) or
+            key.matches(vaxis.Key.enter, .{}))
+        {
+            return .forget;
+        }
+        return .cancel;
+    }
 
     const Event = union(enum) {
         key_press: vaxis.Key,
@@ -505,6 +616,10 @@ const Chat = struct {
     /// How many older messages to ask for at a time.
     const history_batch = 100;
 
+    /// How many polls a complaint stays on screen -- about six seconds at
+    /// `poll_ms`, which is long enough to read a sentence.
+    const err_polls = 12;
+
     /// Ask the host what is new.
     ///
     /// **Only what is new.** The first version rebuilt everything from
@@ -554,7 +669,33 @@ const Chat = struct {
                 const v = try self.host.callJson(arena, line);
                 for (arrayField(v, "members") catch &.{}) |item| {
                     const title = stringField(item, "title") orelse continue;
-                    try group.members.append(store, try store.dupe(u8, title));
+                    try group.members.append(store, .{
+                        .id = try store.dupe(u8, stringField(item, "id") orelse ""),
+                        .title = try store.dupe(u8, title),
+                    });
+                }
+            }
+
+            // The panel, whole. Tolerated rather than required: a host
+            // that does not know the tool leaves the tab empty, which is
+            // the honest picture, not a reason to take the window down.
+            group.tasks.clearRetainingCapacity();
+            {
+                var buf: [256]u8 = undefined;
+                const line = try std.fmt.bufPrint(
+                    &buf,
+                    "{{\"method\":\"task_list\",\"params\":{{\"group\":\"{s}\"}}}}",
+                    .{name},
+                );
+                const v = self.host.callJson(arena, line) catch std.json.Value.null;
+                for (arrayField(v, "tasks") catch &.{}) |item| {
+                    try group.tasks.append(store, .{
+                        .id = u64Field(item, "task"),
+                        .title = try store.dupe(u8, stringField(item, "title") orelse ""),
+                        .owner = try store.dupe(u8, stringField(item, "owner") orelse ""),
+                        .state = try store.dupe(u8, stringField(item, "state") orelse ""),
+                        .progress = try store.dupe(u8, stringField(item, "progress") orelse ""),
+                    });
                 }
             }
 
@@ -618,7 +759,12 @@ const Chat = struct {
         }
 
         if (self.current >= self.groups.items.len) self.current = 0;
-        self.err = null;
+
+        if (self.err_hold > 0) {
+            self.err_hold -= 1;
+        } else {
+            self.err = null;
+        }
     }
 
     /// What a poll has to throw away, and what that leaves of the history.
@@ -738,11 +884,67 @@ const Chat = struct {
             .mouse => |m| self.onMouse(m),
 
             .key_press => |key| {
+                // The box takes every key while it is up, including `q`.
+                // A confirmation somebody can walk away from by pressing
+                // something else is not a confirmation, and quitting out
+                // from under one would leave them unsure what they just
+                // did.
+                if (self.confirm) |c| {
+                    switch (verdictOf(key)) {
+                        .forget => self.forgetGroup(c.name()),
+                        .cancel => {},
+                    }
+                    self.confirm = null;
+                    return;
+                }
+
                 if (key.matches('c', .{ .ctrl = true }) or
                     key.matches('q', .{ .ctrl = true }) or
                     key.matches('q', .{}))
                 {
                     self.should_quit = true;
+                    return;
+                }
+
+                // Take the selected group off the list.
+                //
+                // **A bare key, like `q` and `t`, and not a chord.** A
+                // modifier was asked for first and does not work here, for
+                // three reasons that are worth keeping written down so the
+                // question is not reopened:
+                //
+                //   * Cmd+Backspace, the obvious one on macOS, is already
+                //     bound: `src/config/Config.zig` ships it as
+                //     `text:\x15`, delete-to-start-of-line, which is
+                //     standard line editing everywhere. Taking it would
+                //     break a key people use without thinking.
+                //   * This view does not turn the Kitty keyboard protocol
+                //     on, and the legacy encodings have no bit for Cmd or
+                //     Super at all. The chord would simply never arrive.
+                //   * Turning that protocol on means sending `CSI > 1 u`
+                //     and restoring it on the way out -- and a view that
+                //     is killed rather than quit never gets to restore it,
+                //     leaving the terminal in a keyboard mode the person
+                //     did not choose. That is a real cost to carry for one
+                //     key.
+                //
+                // And the thing a chord would guard against is what the
+                // box below already guards against. Two answers to one
+                // question is one too many.
+                if (key.matches('d', .{})) {
+                    self.askForget();
+                    return;
+                }
+
+                // Left and right move between the right-hand column's
+                // two tabs, the way up and down move through the groups.
+                // `t` as well, because the arrows are a reach when one
+                // hand is on the mouse.
+                if (key.matches(vaxis.Key.right, .{}) or
+                    key.matches(vaxis.Key.left, .{}) or
+                    key.matches('t', .{}))
+                {
+                    self.selectView(if (self.view == .chat) .tasks else .chat);
                     return;
                 }
 
@@ -786,6 +988,86 @@ const Chat = struct {
         }
     }
 
+    /// Put the confirmation box up for whichever group is selected.
+    fn askForget(self: *Chat) void {
+        if (self.groups.items.len == 0) return;
+
+        var c: Confirm = .{};
+
+        const name = self.groups.items[self.current].name;
+        if (name.len == 0 or name.len > c.buf.len) return;
+
+        @memcpy(c.buf[0..name.len], name);
+        c.len = name.len;
+        self.confirm = c;
+    }
+
+    /// Take a group off the list.
+    ///
+    /// **The list, not the record.** The host leaves every day file under
+    /// `<state>/chat/<group>/` exactly where it was; all that happens is
+    /// that the group stops being offered here. The box says so in as many
+    /// words, because "delete" is the word people read as "last night's
+    /// conversation is gone".
+    ///
+    /// A refusal is shown rather than swallowed. Rearranging groups is the
+    /// supervisor's, and this view runs with whatever standing the terminal
+    /// it was started in has -- so in a terminal that is not a supervisor
+    /// the host says no, and the person has to be told that rather than
+    /// left watching a key do nothing.
+    fn forgetGroup(self: *Chat, name: []const u8) void {
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(
+            &buf,
+            "{{\"method\":\"group_destroy\",\"params\":{{\"group\":\"{s}\"}}}}",
+            .{name},
+        ) catch return;
+
+        // Its own arena, not the one `refresh` uses: that one holds the
+        // strings the group list is currently drawn from, and resetting it
+        // here would leave the next frame reading freed bytes.
+        var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+        defer scratch.deinit();
+
+        const v = self.host.callJson(scratch.allocator(), line) catch |err| {
+            self.err = @errorName(err);
+            return;
+        };
+
+        if (boolField(v, "ok") orelse true) {
+            // Gone from the list, so whatever was selected is no longer
+            // where it was. The next poll rebuilds the list; until then,
+            // stepping back keeps the selection inside it.
+            self.selectGroup(self.current -| 1);
+            self.err = null;
+            return;
+        }
+
+        // Copied into a buffer of our own: the reply is about to be freed
+        // with the scratch arena, and the complaint has to outlive it.
+        const message = stringField(v, "message") orelse "the host refused";
+        const kept = @min(message.len, self.err_buf.len);
+        @memcpy(self.err_buf[0..kept], message[0..kept]);
+        self.err = self.err_buf[0..kept];
+        self.err_hold = err_polls;
+    }
+
+    /// Switch the right-hand column between the conversation and the panel.
+    ///
+    /// The scroll goes back to the bottom, for the same reason changing
+    /// group does: it counts rows in whatever was last laid out, and the
+    /// two views have nothing like the same number of them.
+    fn selectView(self: *Chat, view: View) void {
+        if (self.view == view) return;
+        self.view = view;
+        self.scroll = 0;
+
+        // And what was on screen was the conversation's top. Left set, the
+        // next pass spends a read on the log for a view that is not even
+        // showing.
+        self.at_top = false;
+    }
+
     /// Move to a group by index, clamped, and start it at the newest.
     fn selectGroup(self: *Chat, index: usize) void {
         if (self.groups.items.len == 0) return;
@@ -819,6 +1101,20 @@ const Chat = struct {
                 const col: u16 = @intCast(m.col);
                 const row: u16 = @intCast(m.row);
 
+                // The tabs first: they sit in the right-hand column, which
+                // starts where the group pane ends, so testing them after
+                // the group test would never be reached.
+                if (row == self.tab_row) {
+                    const x = col -| self.tabs_left;
+                    for (self.tab_spans, 0..) |span, i| {
+                        if (span.to == span.from) continue;
+                        if (x >= span.from and x < span.to) {
+                            self.selectView(if (i == 0) .chat else .tasks);
+                            return;
+                        }
+                    }
+                }
+
                 if (col < self.groups_left or col >= self.groups_right) return;
                 if (row < self.groups_top) return;
 
@@ -846,6 +1142,7 @@ const Chat = struct {
     const c_author: vaxis.Color = .{ .index = 6 };
     const c_user: vaxis.Color = .{ .index = 5 };
     const c_dim: vaxis.Color = .{ .index = 8 };
+    const c_alarm: vaxis.Color = .{ .index = 1 };
 
     fn draw(self: *Chat) !void {
         // Cleared here so every path that ends without laying the messages
@@ -900,6 +1197,8 @@ const Chat = struct {
             }
         }
 
+        self.tabs_left = side_width;
+
         const right = win.child(.{
             .x_off = side_width,
             .y_off = 0,
@@ -908,6 +1207,121 @@ const Chat = struct {
         });
 
         try self.drawConversation(right);
+
+        // Over everything, and last, because that is what both of these
+        // are: a complaint and a question that the rest of the window is
+        // the background to.
+        self.drawError(win);
+        self.drawConfirm(win);
+    }
+
+    /// The one-line complaint along the bottom.
+    ///
+    /// It had a field and no drawing at all: every failure this view could
+    /// have reported was written into `err` and then never shown. A key
+    /// that is refused has to say so.
+    fn drawError(self: *Chat, win: vaxis.Window) void {
+        const text = self.err orelse return;
+        if (win.height == 0 or win.width < 8 or text.len == 0) return;
+
+        const row = win.height -| 1;
+        var col: u16 = 0;
+        while (col < win.width) : (col += 1) {
+            win.writeCell(col, row, .{
+                .char = .{ .grapheme = " ", .width = 1 },
+                .style = .{ .bg = c_alarm, .fg = c_selected_fg },
+            });
+        }
+
+        const line = std.fmt.allocPrint(
+            self.frame.allocator(),
+            " {s}",
+            .{text},
+        ) catch text;
+
+        _ = win.printSegment(.{
+            .text = line,
+            .style = .{ .bg = c_alarm, .fg = c_selected_fg, .bold = true },
+        }, .{ .row_offset = row, .col_offset = 0 });
+    }
+
+    /// The box that asks before a group leaves the list.
+    ///
+    /// **Drawn here rather than raised as a system dialog.** This view is a
+    /// terminal window on purpose (see `docs/poltergeist/chatui.md`); a box
+    /// from the operating system would arrive in front of whatever the
+    /// person was doing in another app, for a question about a list in this
+    /// one.
+    ///
+    /// The wording is the load-bearing part. "Delete" reads as "last
+    /// night's conversation is gone", and it is not: the records stay
+    /// exactly where they are and stay greppable, and only the listing
+    /// changes. The box has to say that before somebody presses `y`, not
+    /// afterwards.
+    fn drawConfirm(self: *Chat, win: vaxis.Window) void {
+        const c = self.confirm orelse return;
+        if (win.height < 7 or win.width < 30) return;
+
+        const alloc = self.frame.allocator();
+
+        const title = std.fmt.allocPrint(
+            alloc,
+            "把群「{s}」从列表里移除？",
+            .{c.name()},
+        ) catch "把这个群从列表里移除？";
+
+        const lines = [_][]const u8{
+            title,
+            "",
+            "聊天记录一个字都不会删：磁盘上",
+            "<state>/chat/ 里的每一天原样保留，",
+            "以后还能翻、还能 grep。",
+            "移除的只是这个列表里的一行。",
+            "",
+            "y 确认    其他任意键取消",
+        };
+
+        var inner_w: u16 = 0;
+        for (lines) |l| inner_w = @max(inner_w, measure(l));
+
+        const width = @min(win.width, inner_w + 4);
+        const height = @min(win.height, @as(u16, lines.len) + 2);
+
+        const box = win.child(.{
+            .x_off = (win.width -| width) / 2,
+            .y_off = (win.height -| height) / 2,
+            .width = width,
+            .height = height,
+            .border = .{ .where = .all, .style = .{ .fg = c_alarm } },
+        });
+
+        // Painted rather than left transparent: it sits on top of the
+        // conversation, and text showing through a question is a question
+        // that is hard to read.
+        var row: u16 = 0;
+        while (row < box.height) : (row += 1) {
+            var col: u16 = 0;
+            while (col < box.width) : (col += 1) {
+                box.writeCell(col, row, .{
+                    .char = .{ .grapheme = " ", .width = 1 },
+                    .style = .{},
+                });
+            }
+        }
+
+        for (lines, 0..) |l, i| {
+            const y: u16 = @intCast(i);
+            if (y >= box.height) break;
+            _ = box.printSegment(.{
+                .text = l,
+                .style = if (i == 0)
+                    .{ .bold = true }
+                else if (i == lines.len - 1)
+                    .{ .fg = c_title, .bold = true }
+                else
+                    .{ .fg = c_dim },
+            }, .{ .row_offset = y, .col_offset = 1 });
+        }
     }
 
     /// The list of groups, and where each one was drawn.
@@ -919,7 +1333,10 @@ const Chat = struct {
         self.groups_right = win.width -| 1;
         self.group_rows.clearRetainingCapacity();
 
-        self.heading(win, "群聊 / GROUPS");
+        // The key is named here because it is otherwise unfindable: this
+        // view has no menu and no help line, so a key nobody is told about
+        // is a key that does not exist.
+        self.heading(win, "群聊 / GROUPS  d 移除");
 
         if (self.groups.items.len == 0) {
             _ = win.printSegment(.{
@@ -976,7 +1393,7 @@ const Chat = struct {
 
         const group = self.groups.items[self.current];
         var row: u16 = 1;
-        for (group.members.items) |name| {
+        for (group.members.items) |m| {
             if (row >= win.height) break;
 
             _ = win.printSegment(.{
@@ -985,7 +1402,7 @@ const Chat = struct {
             }, .{ .row_offset = row, .col_offset = 0 });
 
             _ = win.printSegment(
-                .{ .text = name },
+                .{ .text = m.title },
                 .{ .row_offset = row, .col_offset = 2 },
             );
             row += 1;
@@ -1006,6 +1423,8 @@ const Chat = struct {
     fn drawConversation(self: *Chat, win: vaxis.Window) !void {
         if (win.height == 0 or win.width < 8) return;
 
+        self.drawTabs(win);
+
         const name = if (self.groups.items.len > 0)
             self.groups.items[self.current].name
         else
@@ -1014,13 +1433,15 @@ const Chat = struct {
         _ = win.printSegment(.{
             .text = name,
             .style = .{ .fg = c_title, .bold = true },
-        }, .{ .row_offset = 0, .col_offset = 1 });
+        }, .{ .row_offset = 1, .col_offset = 1 });
 
         // The brief is what this group is *for*, so it sits with the name
-        // rather than in the scroll where it would leave the screen.
-        var head_height: u16 = 1;
+        // rather than in the scroll where it would leave the screen. It
+        // stays put across both tabs: it says what the group is about, and
+        // that is as true of the work as of the talk.
+        var head_height: u16 = 2;
         const brief = self.currentBrief();
-        if (brief.len > 0 and win.height > 3) {
+        if (brief.len > 0 and win.height > 4) {
             var rows: std.ArrayListUnmanaged([]const u8) = .empty;
             defer rows.deinit(self.alloc);
 
@@ -1034,7 +1455,7 @@ const Chat = struct {
                 _ = win.printSegment(.{
                     .text = line,
                     .style = .{ .fg = c_dim, .italic = true },
-                }, .{ .row_offset = @intCast(1 + i), .col_offset = 1 });
+                }, .{ .row_offset = @intCast(2 + i), .col_offset = 1 });
                 head_height += 1;
             }
         }
@@ -1053,12 +1474,162 @@ const Chat = struct {
         const body_top = head_height + 1;
         if (win.height <= body_top) return;
 
-        try self.drawMessages(win.child(.{
+        const body = win.child(.{
             .x_off = 0,
             .y_off = body_top,
             .width = win.width,
             .height = win.height -| body_top,
-        }));
+        });
+
+        switch (self.view) {
+            .chat => try self.drawMessages(body),
+            .tasks => self.drawTasks(body),
+        }
+    }
+
+    /// The two tabs across the top of the right-hand column.
+    ///
+    /// Drawn every frame and their positions recorded, because how wide
+    /// the labels are depends on how wide the window is: a narrow window
+    /// gets the short forms, the same way it loses the side column
+    /// entirely rather than squeezing it.
+    fn drawTabs(self: *Chat, win: vaxis.Window) void {
+        self.tab_row = 0;
+        self.tab_spans = .{ .{}, .{} };
+
+        const labels = tabLabels(win.width);
+
+        var col: u16 = 1;
+        for (labels, 0..) |label, i| {
+            const width = measure(label);
+            if (col + width >= win.width) break;
+
+            const on = (i == 0) == (self.view == .chat);
+            _ = win.printSegment(.{
+                .text = label,
+                .style = if (on) .{
+                    .bg = c_selected_bg,
+                    .fg = c_selected_fg,
+                    .bold = true,
+                } else .{ .fg = c_dim },
+            }, .{ .row_offset = 0, .col_offset = col });
+
+            self.tab_spans[i] = .{ .from = col, .to = col + width };
+            col += width + 1;
+        }
+    }
+
+    /// The panel: one row per task, oldest first.
+    ///
+    /// **Everything in the group, closed and cancelled included.** This is
+    /// the person at the keyboard's view, and looking back over last night
+    /// is most of what they want it for. A worker asking the same question
+    /// through `task_list` is handed only its own open work; the two are
+    /// different questions with different answers, and this is the one
+    /// that shows the whole night.
+    fn drawTasks(self: *Chat, win: vaxis.Window) void {
+        if (win.height == 0 or win.width < 8) return;
+
+        if (self.groups.items.len == 0) {
+            _ = win.printSegment(.{
+                .text = "  没有群聊。总管建群之后，任务会出现在这里。",
+                .style = .{ .fg = c_dim, .italic = true },
+            }, .{ .row_offset = 0, .col_offset = 0 });
+            return;
+        }
+
+        const group = self.groups.items[self.current];
+        if (group.tasks.items.len == 0) {
+            _ = win.printSegment(.{
+                .text = "  这个群还没有任务。",
+                .style = .{ .fg = c_dim, .italic = true },
+            }, .{ .row_offset = 0, .col_offset = 0 });
+            return;
+        }
+
+        const alloc = self.frame.allocator();
+
+        // Clamped here rather than where the key is handled, the same as
+        // the messages: how far you can scroll depends on what was drawn.
+        const max_scroll = group.tasks.items.len -| win.height;
+        if (self.scroll > max_scroll) self.scroll = max_scroll;
+        const first = group.tasks.items.len -| win.height -| self.scroll;
+        const last = @min(group.tasks.items.len, first + win.height);
+
+        for (group.tasks.items[first..last], 0..) |task, i| {
+            const y: u16 = @intCast(i);
+            const shut = std.mem.eql(u8, task.state, "closed") or
+                std.mem.eql(u8, task.state, "cancelled");
+
+            _ = win.printSegment(.{
+                .text = stateMark(task.state),
+                .style = .{ .fg = if (shut) c_dim else c_author, .bold = true },
+            }, .{ .row_offset = y, .col_offset = 1 });
+
+            // Progress before the title, so the column of words lines up
+            // and "blocked" can be found by running an eye down it -- that
+            // is the one a supervisor is looking for.
+            const line = std.fmt.allocPrint(alloc, "{s: <8}  {s}  {s}", .{
+                if (shut) task.state else task.progress,
+                task.title,
+                self.ownerName(task.owner),
+            }) catch task.title;
+
+            _ = win.printSegment(.{
+                .text = line,
+                .style = if (shut) .{ .fg = c_dim } else .{},
+            }, .{ .row_offset = y, .col_offset = 3 });
+        }
+
+        if (self.scroll > 0) {
+            const note = std.fmt.allocPrint(alloc, "↓ {d}", .{self.scroll}) catch "↓";
+            const at = win.width -| @as(u16, @intCast(note.len)) -| 1;
+            _ = win.printSegment(.{
+                .text = note,
+                .style = .{ .fg = c_selected_bg, .bold = true },
+            }, .{ .row_offset = win.height -| 1, .col_offset = at });
+        }
+    }
+
+    /// What the two tabs are called at this width.
+    ///
+    /// Short forms on a narrow window rather than truncated long ones,
+    /// which is the precedent the side column already sets: it is dropped
+    /// entirely below sixty columns rather than squeezed into something
+    /// unreadable.
+    fn tabLabels(width: u16) [2][]const u8 {
+        return if (width >= 34)
+            .{ " 群聊 / CHAT ", " 任务 / TASKS " }
+        else
+            .{ " 群聊 ", " 任务 " };
+    }
+
+    /// One glyph for where a task stands, and the progress word with it.
+    ///
+    /// Words rather than a lookup that could fail: a value this build does
+    /// not recognise draws as itself, which is readable, instead of as a
+    /// blank, which is not.
+    fn stateMark(state: []const u8) []const u8 {
+        if (std.mem.eql(u8, state, "closed")) return "✓";
+        if (std.mem.eql(u8, state, "cancelled")) return "✗";
+        return "○";
+    }
+
+    /// What to call the terminal a task belongs to.
+    ///
+    /// The panel says who owns a task as an id; the members list is the
+    /// only place that id has a name. A terminal that has since closed is
+    /// no longer a member, so its id is shown as itself rather than
+    /// silently blanked -- an unowned task and one whose owner has gone
+    /// are different things and the person has to be able to tell.
+    fn ownerName(self: *const Chat, owner: []const u8) []const u8 {
+        if (owner.len == 0) return "";
+        if (std.mem.eql(u8, owner, "0x0000000000000000")) return "· 未分配";
+
+        for (self.groups.items[self.current].members.items) |m| {
+            if (std.mem.eql(u8, m.id, owner)) return m.title;
+        }
+        return owner;
     }
 
     fn currentBrief(self: *const Chat) []const u8 {
@@ -1319,4 +1890,67 @@ test "the next batch joins onto the oldest message held" {
     const seam = Chat.seamOf(&msgs);
     try testing.expect(std.meta.activeTag(seam) == .before);
     try testing.expectEqual(@as(u64, 41), seam.before);
+}
+
+test "the tabs shrink rather than being cut in half" {
+    // The side column's precedent: a narrow window drops what it cannot
+    // draw properly instead of squeezing it.
+    const wide = Chat.tabLabels(80);
+    try testing.expect(std.mem.indexOf(u8, wide[0], "CHAT") != null);
+    try testing.expect(std.mem.indexOf(u8, wide[1], "TASKS") != null);
+
+    const narrow = Chat.tabLabels(30);
+    try testing.expect(std.mem.indexOf(u8, narrow[0], "CHAT") == null);
+    try testing.expect(std.mem.indexOf(u8, narrow[0], "群聊") != null);
+    try testing.expect(std.mem.indexOf(u8, narrow[1], "任务") != null);
+}
+
+test "the confirmation box takes yes for an answer and nothing else for one" {
+    // Yes is yes, in the two ways somebody types it and by pressing
+    // return on the box.
+    try testing.expectEqual(Chat.Verdict.forget, Chat.verdictOf(.{ .codepoint = 'y' }));
+    try testing.expectEqual(Chat.Verdict.forget, Chat.verdictOf(.{
+        .codepoint = 'y',
+        .mods = .{ .shift = true },
+    }));
+    try testing.expectEqual(
+        Chat.Verdict.forget,
+        Chat.verdictOf(.{ .codepoint = vaxis.Key.enter }),
+    );
+
+    // And everything else is no -- including the keys that do something
+    // else in this window, which is the case that matters: `d` opened the
+    // box, and pressing it again must not be the answer to it. `q` would
+    // otherwise quit out from under an unanswered question.
+    for ([_]u21{
+        'n',
+        'N',
+        'd',
+        'q',
+        't',
+        ' ',
+        vaxis.Key.escape,
+        vaxis.Key.up,
+        vaxis.Key.down,
+        vaxis.Key.tab,
+    }) |cp| {
+        try testing.expectEqual(Chat.Verdict.cancel, Chat.verdictOf(.{ .codepoint = cp }));
+    }
+
+    // A `y` that arrives with a modifier on it is not the plain `y` the
+    // box asked for either.
+    try testing.expectEqual(Chat.Verdict.cancel, Chat.verdictOf(.{
+        .codepoint = 'y',
+        .mods = .{ .ctrl = true },
+    }));
+}
+
+test "a task's mark says which of the three states it is in" {
+    try testing.expectEqualStrings("○", Chat.stateMark("open"));
+    try testing.expectEqualStrings("✓", Chat.stateMark("closed"));
+    try testing.expectEqualStrings("✗", Chat.stateMark("cancelled"));
+
+    // A word this build does not know is drawn as open rather than as a
+    // blank: an unfamiliar row beats an invisible one.
+    try testing.expectEqualStrings("○", Chat.stateMark("something-newer"));
 }
