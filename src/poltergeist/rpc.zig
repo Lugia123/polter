@@ -4124,7 +4124,47 @@ pub fn dispatch(
 
         .group_post => |p| {
             host.chatPost(p.group, caller, p.text) catch |err| return chatFailure(err);
-            return .ok;
+
+            // **A post is not a way of handing work out, and this is the
+            // one moment that is worth saying so.**
+            //
+            // A group post never interrupts a terminal somebody is minding
+            // (`Chat.waking`), so a supervisor that plans in the group and
+            // stops there has told nobody. That failure is invisible from
+            // where the supervisor sits: the post succeeded, the text is
+            // there, and the workers are simply still idle.
+            //
+            // The note is bounded to the shape of that mistake -- a
+            // supervisor, a group with people in it, and not one task on
+            // the panel -- so a supervisor already using the panel is never
+            // told anything, and this cannot become noise that gets tuned
+            // out. Everything it says is a fact about right now, not
+            // advice: advice is what the skill is for, and advice at every
+            // post is nagging.
+            if (!bus.isSupervisor(caller)) return .ok;
+
+            const members = host.chatMembers(alloc, p.group) catch return .ok;
+            if (members.len < 2) return .ok;
+
+            const panel = host.taskList(alloc, p.group, caller, true) catch return .ok;
+            // `@tagName` rather than a bare "open": renaming the enum
+            // member then breaks the build instead of quietly turning this
+            // into a test that can never fire.
+            var open: usize = 0;
+            for (panel) |t| {
+                if (std.mem.eql(u8, t.state, @tagName(Tasks.State.open))) open += 1;
+            }
+            if (open > 0) return .ok;
+
+            return .{ .text = try std.fmt.allocPrint(
+                alloc,
+                "posted. {d} terminals are in this group and the panel is " ++
+                    "empty. A post does not reach a terminal under " ++
+                    "supervision -- use terminal_send to give each one its " ++
+                    "instruction, and task_create/task_assign so the work " ++
+                    "outlives this conversation.",
+                .{members.len},
+            ) };
         },
 
         .group_read => |p| {
@@ -4647,6 +4687,11 @@ const FakeHost = struct {
     set_to: ?struct { id: Bus.Id, ms: u64 } = null,
     read_count: usize = 0,
     refuse: bool = false,
+
+    /// How many members `chatMembers` reports. Configurable because a
+    /// group of one and a group of several are different cases for the
+    /// note `group_post` may return.
+    member_count: usize = 1,
     posted: ?struct { group: []const u8, from: Bus.Id, text: []const u8 } = null,
     added: ?struct { group: []const u8, id: Bus.Id, history: History } = null,
     compacted: ?struct { group: []const u8, through: u64, summary: []const u8, by: Bus.Id } = null,
@@ -5026,8 +5071,11 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
 
-        const out = try alloc.alloc(ChatMember, 1);
-        out[0] = .{ .id = 0x9999, .title = try alloc.dupe(u8, "a terminal") };
+        const out = try alloc.alloc(ChatMember, self.member_count);
+        for (out, 0..) |*m, i| m.* = .{
+            .id = @intCast(0x9999 + i),
+            .title = try alloc.dupe(u8, "a terminal"),
+        };
         return out;
     }
 
@@ -7267,4 +7315,73 @@ test "a misspelled panel parameter is a mistake, not a different call" {
     }) |line| {
         try testing.expectError(error.BadParams, wire.parseRequest(alloc, line));
     }
+}
+
+test "posting to a group with nobody assigned anything says so, once" {
+    // The failure this guards: a supervisor writes the night's plan into
+    // the group and stops there. Every worker it meant to move is under
+    // supervision, so none of them is interrupted -- the post succeeded and
+    // reached no one. See `Chat.waking`.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .panel = &panel, .open = &.{}, .member_count = 4 };
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_post = .{
+        .group = "build",
+        .text = "here is the plan",
+    } });
+
+    // It names the two calls that actually move work, and the count is a
+    // fact about this group rather than a figure of speech.
+    try testing.expect(std.mem.indexOf(u8, res.text, "terminal_send") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "task_create") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "4 terminals") != null);
+}
+
+test "a supervisor already using the panel is not told anything" {
+    // The whole value of the note is that it only appears where the gap is.
+    // One that arrives on every post is one that gets read past, and then
+    // it is worse than absent.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .panel = &panel, .open = &.{}, .member_count = 4 };
+
+    _ = try panel.create("build", "something is on the panel");
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_post = .{
+        .group = "build",
+        .text = "here is the plan",
+    } });
+    try testing.expectEqual(wire.Response.ok, res);
+}
+
+test "a worker posting to its own group is not lectured" {
+    // Only a supervisor hands work out, so only a supervisor can have
+    // failed to. Saying this to a worker reporting its progress would be
+    // telling it to do something it is not allowed to do.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.register(other);
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .panel = &panel, .open = &.{}, .member_count = 4 };
+
+    const res = try dispatch(alloc, &b, fake.host(), term(other), .{ .group_post = .{
+        .group = "build",
+        .text = "done with mine",
+    } });
+    try testing.expectEqual(wire.Response.ok, res);
 }

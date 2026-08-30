@@ -10,6 +10,54 @@ const log = std.log.scoped(.mcp);
 /// MCP protocol revision this speaks. Sent back in `initialize`.
 const protocol_version = "2024-11-05";
 
+/// What every client is told at `initialize`, before it asks for anything.
+///
+/// MCP puts this in the connecting agent's system prompt, which is the one
+/// place a compaction does not reach -- so unlike anything injected into the
+/// conversation, it does not need replaying.
+///
+/// It is a map of the tool families and nothing else. It exists because of a
+/// specific, observed failure: a supervisor opened its night by writing out a
+/// tool list from memory of what it used yesterday, and `task_*` was not on
+/// it. Every later decision was then made without the panel on the table --
+/// not chosen against, never present. A skill cannot catch that, because the
+/// narrowing happens before anything gets read. See docs/poltergeist/tasks.md.
+const instructions =
+    "Polter is the terminal multiplexer you are running inside. It gives you four\\n" ++
+    "families of tools. tools/list has all of them, but narrowing your own tool set\\n" ++
+    "down to the ones you used yesterday is the way they get missed, so this is the\\n" ++
+    "whole map, stated before you choose.\\n" ++
+    "\\n" ++
+    "terminal_* -- see and drive any Polter terminal you may reach. terminal_list,\\n" ++
+    "terminal_read, terminal_send, terminal_key, terminal_action, terminal_open.\\n" ++
+    "terminal_keys and terminal_actions catalogue what can be sent.\\n" ++
+    "\\n" ++
+    "group_* -- the group chat. For talking and for the record, not for directing:\\n" ++
+    "a terminal somebody is minding is never interrupted by a group post, so a post\\n" ++
+    "on its own moves nobody. group_create, group_add, group_post, group_read.\\n" ++
+    "\\n" ++
+    "task_* -- the task panel. This is how work is handed out, and it is the part\\n" ++
+    "that survives a restart, a compaction, and the night. A supervisor uses\\n" ++
+    "task_create, task_assign, task_close, task_cancel. Anyone uses task_progress\\n" ++
+    "on their own work and task_list to see it.\\n" ++
+    "\\n" ++
+    "Handing work out is four steps, and dropping the panel out of them is the\\n" ++
+    "failure this note exists to prevent: task_create, then group_post the plan for\\n" ++
+    "the record, then terminal_send each worker its own instruction, then\\n" ++
+    "task_assign.\\n" ++
+    "\\n" ++
+    "me says who you are and what you may reach. skill_read has the full guidance.\\n";
+
+/// The whole `initialize` result, kept as one literal so the test below
+/// parses the bytes that actually go out rather than a copy of them.
+const initialize_result =
+    \\{"protocolVersion":"
+++ protocol_version ++
+    \\","capabilities":{"tools":{}},"serverInfo":{"name":"poltergeist","version":"0"},"instructions":"
+++ instructions ++
+    \\"}
+;
+
 /// Longest reply we will read from the host. Screen dumps are the large
 /// case, and the host caps them below this.
 const max_line = 256 * 1024;
@@ -569,11 +617,7 @@ fn handleOne(
     const id = obj.get("id") orelse return;
 
     if (std.mem.eql(u8, method, "initialize")) {
-        try writeResult(out, id, aa,
-            \\{"protocolVersion":"
-        ++ protocol_version ++
-            \\","capabilities":{"tools":{}},"serverInfo":{"name":"poltergeist","version":"0"}}
-        );
+        try writeResult(out, id, aa, initialize_result);
         return;
     }
 
@@ -838,4 +882,36 @@ test "every tool describes itself and carries a schema" {
         try std.testing.expect(t.description.len > 20);
         try std.testing.expect(std.mem.startsWith(u8, t.schema, "{\"type\":\"object\""));
     }
+}
+
+test "the initialize result is valid JSON and puts the tool families in it" {
+    // `instructions` is prose living inside a JSON string literal, so one
+    // unescaped newline or quote costs the whole handshake -- and it would
+    // cost it at runtime, on a client we do not control, with no compile
+    // error anywhere. Parse the real bytes.
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        initialize_result,
+        .{},
+    );
+    defer parsed.deinit();
+
+    const text = parsed.value.object.get("instructions").?.string;
+
+    // The map is only worth having if every family is named. `task_` is the
+    // one this exists for: it is the family that went missing.
+    for ([_][]const u8{
+        "terminal_send", "terminal_read", "group_post",
+        "task_create",   "task_assign",   "task_list",
+        "skill_read",
+    }) |name| {
+        std.testing.expect(std.mem.indexOf(u8, text, name) != null) catch |err| {
+            std.debug.print("instructions never names {s}\n", .{name});
+            return err;
+        };
+    }
+
+    // Prose, not a bare list: the four steps are the part that failed.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\n") != null);
 }

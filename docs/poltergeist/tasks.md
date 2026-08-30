@@ -237,3 +237,58 @@ P5 当年否掉工作模式，理由是：
 一处（`daylog.encodeSegment`），它的逆也放在同一个文件里（`daylog.decodeSegment`），
 这正是 [gaps.md](gaps.md) 第三节警告的那件事。落地见
 `src/poltergeist/GroupLog.zig`，界面那一半见 [chatui.md](chatui.md)。
+
+## 九、面板会被跳过，而且是在读到任何字之前
+
+2026-08-30 有一次实测：一个总管带四个 worker 开工，全程没有调用过一次
+`task_create`。它把当晚的计划写成一条长群帖，又发了一张分工表格，然后**逐个
+`terminal_send` 把四个人推起来**——群帖两次都没让任何人动，这一点和
+`Chat.waking` 的设计完全一致（见第六节），总管自己也观察到了。
+
+事后问它为什么，答案不是「权衡后省了」：
+
+> 开工第一件事我调了一次 ToolSearch，手写了一份工具清单……这份清单是我照着
+> 昨晚用过什么默写出来的。`task_create` / `task_assign` / `skill_read` 全都在
+> 可用列表里，我一个都没选。**我在做任何决策之前，先把自己的工具面收窄成了
+> 昨晚的习惯。**
+
+它那个会话里一次都没有调用过 `skill_read`。
+
+**这件事推翻了一个隐含假设：把机制写清楚在 skill 里就够了。** 不够——失效发生
+在读之前。skill 是两段式的，常驻上下文里只有 `name` 和 `description`，正文按需
+加载；一个不会去读它的读者，skill 写得再准也拦不住。
+
+所以拦截点必须早于「选工具」这一步，落在两个地方，都不是 skill：
+
+**1. MCP `initialize` 的 `instructions`（`src/cli/mcp.zig`）。** 协议给了这个
+字段，宿主把它放进连接方的**系统提示**。系统提示不被上下文压缩吃掉，所以它不
+需要任何重放机制——这一点上它比 hook 强，hook 注入的内容活在对话里，正是
+ponytail 要在 matcher 里写 `compact` 的原因。内容只是一张**工具族地图**，不是
+skill 的副本：缺的不是四百行细节，是「桌上还有 `task_*` 这一族」。
+
+代价要说清楚：`instructions` 在协议里是 MAY，客户端可以忽略（工具的
+`description` 不能忽略，那是硬的）；而且它在连接时定死，带不了实时状态。
+
+**2. `group_post` 的返回（`src/poltergeist/rpc.zig`）。** 这一条补上了实时状态。
+条件卡得很窄——**调用者是总管、群里不止一个人、面板上一条未关闭任务都没有**
+——三者同时成立才回一句话，否则原样返回 `.ok`。
+
+窄是有意的。一条每次发帖都出现的提示会被读过去，那时它比不存在更糟。而且它说
+的全是此刻的事实（「这个群里有 4 个终端，面板是空的」），不是劝告——劝告是
+skill 的事，每贴一次劝告就是唠叨。
+
+对应测试在 `rpc.zig`：正例、「已经在用面板的总管不被打扰」、「worker 发帖不被
+说教」三条，各自都做过负对照（拆掉对应条件后确认变红）。
+
+### 没有做的：Claude Code 的 SessionStart hook
+
+ponytail（`hooks/claude-codex-hooks.json`）走的是这条：`SessionStart` 的 matcher
+写成 `startup|resume|clear|compact`，四个时机各注入一次约 5.2KB。它还有一个
+`UserPromptSubmit` 每轮重注入的分支，但被 `isQoder` 门住了——那是给一个
+SessionStart 不好使的宿主打的补丁，**别抄**。
+
+暂时不做的理由：它只买到一个宿主，却要引入「Polter 打包成 Claude Code 插件」
+这条新路径；而 Polter 的前提本来就是**不知道终端里跑的是哪个 agent**（
+`claude-code` 插件在 `claude` 不在 PATH 上时静默退出 0，正是这个前提）。上面两
+条走 MCP，任何 MCP 客户端都吃得到，和这个前提一致。等它们上线之后看还漏不漏得
+住再说。
