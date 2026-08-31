@@ -3828,8 +3828,60 @@ pub fn dispatch(
         },
 
         .terminal_send => |p| {
-            host.sendText(p.id, p.text, p.submit) catch
-                return hostFailure("SendFailed", "could not type into that terminal");
+            // **Four causes used to arrive as one sentence, and that is how
+            // a supervisor came to believe something false.**
+            //
+            // `could not type into that terminal` was the whole of what an
+            // agent got back, whether the text had line breaks in it, the
+            // target's process had exited, or somebody was at that keyboard
+            // right then. Those want three different responses -- rewrite
+            // it, pick another terminal, wait a moment -- and with no way to
+            // tell them apart the caller has to guess.
+            //
+            // One did, on 2026-08-31: it concluded that long messages were
+            // refused, and went back to posting orders into the group for
+            // every worker to read, which costs each of them the context the
+            // group was redesigned to stop spending. The guess was wrong --
+            // the limit is 64 KB and line breaks were the real bar -- and it
+            // was wrong in a way nothing it could observe would correct.
+            //
+            // So each cause says what it is and what to do about it. This is
+            // the cheaper half of the fix, and the half that would still
+            // have been worth making if line breaks had stayed refused.
+            host.sendText(p.id, p.text, p.submit) catch |err| return switch (err) {
+                error.NoSuchTerminal => failure(error.UnknownTerminal),
+
+                error.UnbracketedMultiline => hostFailure(
+                    "UnbracketedMultiline",
+                    "that text has line breaks in it and this terminal has not asked " ++
+                        "for bracketed paste, so the lines would run as commands on " ++
+                        "arrival rather than land as text. A bare shell is the usual " ++
+                        "reason; an agent CLI asks for it. Send it as one line, or " ++
+                        "send the lines one call at a time.",
+                ),
+
+                error.UnsafeText => hostFailure(
+                    "UnsafeText",
+                    "that text carries an end-of-paste sequence, which would close the " ++
+                        "frame early and let whatever follows it run. Take it out.",
+                ),
+
+                error.ChildExited => hostFailure(
+                    "ChildExited",
+                    "that terminal's process has exited -- it is showing the user why, " ++
+                        "and typing into it would take that away. There is nothing " ++
+                        "running in there to read what you send.",
+                ),
+
+                error.UserPresent => hostFailure(
+                    "UserPresent",
+                    "somebody is typing in that terminal right now. Nothing was sent, " ++
+                        "because it would have landed in the middle of what they were " ++
+                        "writing and submitted it. Try again shortly.",
+                ),
+
+                else => hostFailure("SendFailed", "could not type into that terminal"),
+            };
             return .ok;
         },
 
@@ -7515,4 +7567,63 @@ test "putting yourself in a group is still not a way to type into yourself" {
     try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
         .set_watch = .{ .id = boss, .watch = true },
     }));
+}
+
+test "each reason a send can fail says which one it was" {
+    // **The point is that these differ**, not that any one of them is
+    // worded well. They used to be one sentence -- `could not type into
+    // that terminal` -- for line breaks, an exited process and somebody at
+    // the keyboard alike, and a supervisor reading it built a false theory
+    // (that long messages were refused) and a workaround for the theory
+    // that cost every worker its context. A caller that cannot tell these
+    // apart cannot respond to them differently, and they want three
+    // different responses: rewrite it, pick another terminal, wait.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.register(worker);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cases = [_]struct { err: anyerror, code: []const u8, named: bool = true }{
+        .{ .err = error.UnbracketedMultiline, .code = "UnbracketedMultiline" },
+        .{ .err = error.UnsafeText, .code = "UnsafeText" },
+        .{ .err = error.ChildExited, .code = "ChildExited" },
+        .{ .err = error.UserPresent, .code = "UserPresent" },
+
+        // Anything the host grows later still has an answer, and it is the
+        // old one rather than a crash. `named = false`: this one is
+        // deliberately terse, because there is nothing to say -- a cause
+        // nobody has met yet cannot be described, and inventing a helpful
+        // sentence for it would be inventing the cause too.
+        .{ .err = error.OutOfMemory, .code = "SendFailed", .named = false },
+    };
+
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(alloc);
+
+    for (cases) |c| {
+        var fake: FakeHost = .{ .open = &.{.{ .id = worker }}, .send_error = c.err };
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_send = .{
+            .id = worker,
+            .text = "go on then",
+        } });
+
+        testing.expectEqualStrings(c.code, res.failed.code) catch |err| {
+            std.debug.print("\n{t} should map to {s}\n", .{ c.err, c.code });
+            return err;
+        };
+
+        // And the message is not the same one wearing a different code: the
+        // code is for a program, the sentence is what the agent reads and
+        // acts on. A cause we have a name for owes the reader what to do
+        // about it, which does not fit in a handful of words.
+        if (c.named) try testing.expect(res.failed.message.len > 40);
+        try seen.put(alloc, res.failed.message, {});
+    }
+
+    // Five causes, five distinct sentences. Without this the switch could
+    // hand back the same text five times and every assertion above would
+    // still pass.
+    try testing.expectEqual(@as(usize, cases.len), seen.count());
 }

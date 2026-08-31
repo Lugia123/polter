@@ -51,6 +51,23 @@ interrupted when it does not.
 Which is still a cost. Each `group_read` puts your whole message into that
 worker's context, and context is the only thing here that actually runs out.
 
+**So never tell a worker to go and read the group.** "Details in the group",
+"see item 10 in the group" -- each of those spends that worker's context on
+everything else in there to collect one paragraph meant for it. Put the
+paragraph in the `terminal_send`. The group is for the record and for the
+person at the keyboard; it is not a noticeboard you send people to.
+
+That instruction used to be unfollowable, which is worth knowing because the
+reason is gone. `terminal_send` refused any text with a line break in it, and
+an order with an acceptance test in it has line breaks, so a supervisor that
+tried got back `could not type into that terminal` with nothing saying why --
+and one of them concluded long messages were rejected and went back to
+posting orders in the group. Multi-line sends now go through as a framed
+paste wherever the target has bracketed paste on, which every agent CLI does.
+If one is refused you get a named reason now: `UnbracketedMultiline` means a
+bare shell, `UserPresent` means somebody is typing there, `ChildExited` means
+there is nothing running to read it.
+
 Context is the only thing here that actually runs out. Measured on this
 program supervising its own development: six supervisor posts in twenty
 minutes, and one worker spent eleven minutes and 44.5k tokens over nine

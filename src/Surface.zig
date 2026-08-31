@@ -3697,20 +3697,66 @@ pub const TypeError = error{
     /// Somebody is using this terminal right now.
     UserPresent,
 
-    /// The text held something that would run on arrival.
+    /// The text held something that would run on arrival whatever the
+    /// target is doing -- an end-of-paste sequence, which is how a paste
+    /// is escaped from.
     UnsafeText,
+
+    /// The text has line breaks in it and this terminal has not asked for
+    /// bracketed paste, so there is no way to hand it over as text rather
+    /// than as commands.
+    UnbracketedMultiline,
 };
 
 pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void {
     if (text.len == 0) return;
 
-    // A newline inside the text is a submission the caller did not ask
-    // for. Bracketed paste swallows it, but a target that has bracketed
-    // paste off would run every line on arrival -- and `submit = false`
-    // would have promised the opposite.
-    if (std.mem.indexOfAny(u8, text, "\r\n") != null) {
-        log.warn("poltergeist: refusing text containing a line break", .{});
+    // **The end of a bracketed paste, refused whatever the target is
+    // doing.** It is how a paste is escaped from: the receiving program
+    // sees the frame close and reads everything after it as typing. Ghostty
+    // treats it as unsafe even when bracketed paste is off, for the reason
+    // `input.paste.isSafe` gives -- text carrying one at all says something
+    // odd about whoever produced it.
+    if (std.mem.indexOf(u8, text, "\x1b[201~") != null) {
+        log.warn("poltergeist: refusing text carrying an end-of-paste sequence", .{});
         return error.UnsafeText;
+    }
+
+    // **Line breaks used to be refused outright, and that was too much.**
+    //
+    // The reason given was sound as far as it went: a target with bracketed
+    // paste off runs every line on arrival, and `submit = false` promised
+    // it would not. What it never did was ask whether this target has
+    // bracketed paste off. Ghostty is that terminal's emulator, so it is
+    // not a guess -- the child writes `CSI ? 2004 h` and
+    // `StreamHandler.setMode` records it.
+    //
+    // The cost of not asking was not a stiff tool, it was a broken design.
+    // `supervising.md` tells a supervisor to `terminal_send` each worker
+    // its own instruction "with the acceptance test in it", and no
+    // acceptance test fits on one line. So every supervisor that tried hit
+    // a refusal it could not read -- see the error mapping in `rpc.zig`,
+    // which used to collapse three causes into one sentence -- and one of
+    // them concluded that long messages were rejected and went back to
+    // posting orders in the group for everybody to read. The guard cost
+    // every worker its context.
+    //
+    // Bracketed paste is exactly the mechanism that makes this safe, and
+    // Ghostty already says so in `completeClipboardPaste`: bracketed pastes
+    // "are by definition safe since they're framed". An agent CLI turns it
+    // on, because framing is how it takes multi-line input at all; a bare
+    // shell may not, and there the refusal stands.
+    const multiline = std.mem.indexOfAny(u8, text, "\r\n") != null;
+
+    const encode_opts: input.paste.Options = opts: {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        defer self.renderer_state.mutex.unlock(global.io());
+        break :opts .fromTerminal(&self.io.terminal);
+    };
+
+    if (multiline and !encode_opts.bracketed) {
+        log.warn("poltergeist: refusing multi-line text, bracketed paste is off", .{});
+        return error.UnbracketedMultiline;
     }
 
     // A terminal whose child has exited is showing the user why. Typing
@@ -3741,7 +3787,27 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
         }
     }
 
-    try self.textCallback(text);
+    // Single-line text goes the way it always has. Only the multi-line case
+    // is new, and it goes framed -- reading the mode is not what makes this
+    // safe, sending the frame is.
+    if (!multiline) {
+        try self.textCallback(text);
+    } else {
+        var data_duped: ?[]u8 = null;
+        const vecs = input.paste.encode(text, encode_opts) catch |err| switch (err) {
+            error.MutableRequired => vecs: {
+                const buf: []u8 = try self.alloc.dupe(u8, text);
+                errdefer self.alloc.free(buf);
+                data_duped = buf;
+                break :vecs input.paste.encode(buf, encode_opts);
+            },
+        };
+        defer if (data_duped) |v| self.alloc.free(v);
+
+        for (vecs) |vec| if (vec.len > 0) {
+            self.queueIo(try termio.Message.writeReq(self.alloc, vec), .unlocked);
+        };
+    }
 
     // `keyCallback` stamps `last_key_time`, and this key is ours, not the
     // user's. Leaving the stamp would have Poltergeist mistake its own
