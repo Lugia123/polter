@@ -193,11 +193,16 @@ polter_provision() {
   version_key=$(field version_key)
   home=$(field home)
 
-  scope=$(field scope)
-  [ -n "$scope" ] || scope=user
-
-  want_skills=$(field skills)
-  [ -n "$want_skills" ] || want_skills=yes
+  # **From the greeting, not from this line.** The host resolves parameters
+  # once and writes them into the handshake -- "exactly once in the whole
+  # conversation", as `renderHello` puts it -- and nothing repeats them per
+  # batch. Read from `$line` they were always empty, so `scope` was always
+  # `user` and `skills` was always `yes`: the two parameters `claude-code`
+  # offers in its manifest were switches connected to nothing. Found while
+  # porting this file to PowerShell, where the greeting has to be parsed
+  # anyway and the absence was visible.
+  scope=$POLTER_SCOPE
+  want_skills=$POLTER_WANT_SKILLS
 
   if [ -z "$exe" ] || [ -z "$home" ]; then
     say "status=failed step=parse -- the line from Polter had no exe or home in it"
@@ -453,11 +458,23 @@ ack() {
   printf '{"ok":%s}\n' "$1"
 }
 
+# Defaults, overwritten from the greeting below. Named rather than passed
+# because the greeting is read in one function and the parameters are wanted
+# in another, and a shell has no other way to carry them across.
+POLTER_SCOPE=user
+POLTER_WANT_SKILLS=yes
+
 polter_provision_main() {
   IFS= read -r hello || exit 0
 
   case "$hello" in
-    *'"hello"'*) ack true ;;
+    *'"hello"'*)
+      _scope=$(printf '%s' "$hello" | sed -n 's/.*"scope":"\([^"]*\)".*/\1/p')
+      _skills=$(printf '%s' "$hello" | sed -n 's/.*"skills":"\([^"]*\)".*/\1/p')
+      [ -z "$_scope" ] || POLTER_SCOPE=$_scope
+      [ -z "$_skills" ] || POLTER_WANT_SKILLS=$_skills
+      ack true
+      ;;
     *)
       say "the first line was not a handshake"
       ack false
