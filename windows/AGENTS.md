@@ -7,10 +7,15 @@ Two crates live here, deliberately separate:
 | `host/` | the application shell -- windows, tabs, keyboard, IME, libghostty |
 | `split-tree/` | the split layout algorithm, ported from `SplitTree.swift`. **Zero dependencies on purpose**, so it is testable with `cargo test` on the machine the port is written on rather than only on the Windows box. |
 
-They are not wired together yet. When they are, the shape should be a **path
-dependency** (and probably a workspace here, so there is one lock file), not a
-copy of the algorithm into `host/src/` -- this directory already paid once for
-a fork that had to be merged back by hand.
+`host/` declares `polter-split-tree` as a **path dependency** and does not yet
+call it; making the tab model use it is separate work. It is a dependency
+rather than a copy because copying would throw away the reason the algorithm
+is testable on macOS, and would create a second copy to keep in agreement --
+this directory already paid once for a fork that had to be merged back by hand.
+
+**`[profile]` belongs in `windows/Cargo.toml`, not in a member.** Cargo ignores
+a member's profile inside a workspace and only warns; the symptom is a release
+binary that quietly went back to unwinding panics.
 
 `host/` is the Windows application shell: a Rust binary that opens the windows,
 owns the tabs, the keyboard and the input method, and drives the terminal
@@ -19,9 +24,12 @@ shared core stays in `src/`, and nothing here is built by `zig build`.
 
 ## Build
 
+`windows/` is a Cargo workspace; build from here, not from a member.
+
 ```
-cd windows/host
-cargo build --release --target x86_64-pc-windows-gnu
+cd windows
+cargo build --release --target x86_64-pc-windows-gnu -p polter-host
+cargo test -p polter-split-tree        # native, runs anywhere
 ```
 
 - **`-gnu`, not `-msvc`.** The core is built with Zig's mingw-w64 target and

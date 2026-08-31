@@ -1,0 +1,22 @@
+# The Windows side of Polter, as one workspace.
+#
+# Two members, kept as separate crates on purpose:
+#
+#   host/        the application shell -- Win32, WGL, TSF, libghostty.
+#                Only builds for a Windows target.
+#   split-tree/  the split layout algorithm, ported from SplitTree.swift.
+#                Zero dependencies, so `cargo test` runs it on whatever
+#                machine the port is being written on.
+#
+# The workspace exists so there is **one lock file and one target directory**
+# for the two, and so `cargo test -p polter-split-tree` works from here without
+# knowing where the crate lives.
+[workspace]
+resolver = "2"
+members = ["host", "split-tree"]
+
+# **Profiles must live here, not in a member.** Cargo ignores a member's
+# `[profile]` inside a workspace and only says so as a warning -- the symptom
+# is a binary that quietly went back to unwinding panics (and grew ~28 KB).
+[profile.release]
+panic = "abort"

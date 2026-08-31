@@ -6,9 +6,14 @@ version = 4
 name = "polter-host"
 version = "0.1.0"
 dependencies = [
+ "polter-split-tree",
  "windows",
  "windows-core",
 ]
+
+[[package]]
+name = "polter-split-tree"
+version = "0.1.0"
 
 [[package]]
 name = "proc-macro2"

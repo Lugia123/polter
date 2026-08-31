@@ -32,5 +32,10 @@ features = [
 # to be a direct dependency even though `windows` re-exports the same types.
 windows-core = "0.62"
 
-[profile.release]
-panic = "abort"
+
+# Declared, not yet called: the split layout lives in its own crate and is
+# reached by path, never copied. Copying it here would throw away the reason
+# it is testable on macOS, and this directory has already paid once for a
+# fork that had to be merged back by hand.
+[dependencies.polter-split-tree]
+path = "../split-tree"
