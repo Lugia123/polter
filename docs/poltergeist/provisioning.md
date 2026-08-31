@@ -360,7 +360,7 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
 - 那 7 份 `.ps1` 本身怎么写、PowerShell 相对 `sh` 哪里简单哪里麻烦，见
   `plugins/_sdk/provision.ps1` 的头注释和 `test/plugins/README.md`。
 
-## 取舍记录## 取舍记录
+## 取舍记录
 
 | 方案 | 为什么没选 / 为什么选 |
 | --- | --- |
