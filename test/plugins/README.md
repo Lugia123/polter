@@ -105,6 +105,33 @@ four things that are the plugin's own job:
 
 The far end is somebody else's milestone.
 
+## `qwenprobe.ps1`
+
+Written after the first `-Real` run hung on `qwen mcp list` with no `node`
+process alive and nothing written. Two causes with completely different next
+steps -- **Qwen Code cannot run without a terminal on this machine**, or **the
+way it is being called is wrong** -- and the hang itself cannot tell them
+apart.
+
+Four invocations, each read-only, each with a wall-clock deadline and a
+process-tree kill when it expires, so the probe finishes even if every call
+hangs:
+
+1. `qwen --version` — does it start at all
+2. `qwen --help` — does it parse arguments without a terminal
+3. `qwen mcp list` — the exact call the plugin makes first
+4. the same, run as `node <entry.js> mcp list`, **bypassing the `.cmd` shim**
+
+(4) is the discriminator: if it answers while (1)-(3) hang, the problem is the
+npm shim and `cmd.exe`, not Qwen Code, and the fix belongs in how a plugin is
+spawned rather than in the acceptance path.
+
+Standard input is redirected and closed immediately in every case, so a CLI
+waiting for a person reads end-of-file and gives up; one that hangs anyway is
+hanging on something else. The probe hashes `~/.qwen/settings.json` before and
+after and prints both -- it is supposed to write nothing, and that is checked
+rather than asserted.
+
 ## Reading `mutate.ps1`
 
 An injection that survives has three possible causes and they are not the

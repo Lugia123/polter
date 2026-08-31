@@ -9,6 +9,10 @@ param(
     # somewhere else.
     [string]$Source = 'C:\app\provsrc',
     [string]$Root = 'C:\app\provtest',
+    # How long any one plugin conversation may take before the harness gives
+    # up on it. The stub-driven cases finish in under a second; only a real
+    # CLI ever gets near this.
+    [int]$TimeoutSec = 60,
     [switch]$Real
 )
 
@@ -68,12 +72,29 @@ function Invoke-Plugin {
     foreach ($b in $Batches) { $w.Write($b + "`n") }
     $w.Close()
 
-    $all = $p.StandardOutput.ReadToEnd()
-    $err = $p.StandardError.ReadToEnd()
-    $p.WaitForExit(30000) | Out-Null
+    # **Read on background threads, and give the whole thing a deadline.**
+    # `ReadToEnd()` on its own has no timeout: the first `-Real` run met a
+    # `qwen mcp list` that never returned, and the suite sat there for eight
+    # minutes until it was killed by hand. A test harness that can hang
+    # forever turns "the CLI is wedged" into "the run is still going", and
+    # those need to look different.
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+
+    $timedOut = -not $p.WaitForExit($TimeoutSec * 1000)
+    if ($timedOut) {
+        # `/T` for the tree: what actually hangs is usually a grandchild --
+        # a `.cmd` shim's node, not the shell we started.
+        & taskkill /PID $p.Id /T /F 2>&1 | Out-Null
+        $p.WaitForExit(5000) | Out-Null
+    }
+
+    $all = $outTask.Result
+    $err = $errTask.Result
 
     $out = New-Object System.Collections.Generic.List[string]
     foreach ($l in ($all -split "`n")) { if ($l.Trim()) { $out.Add($l.TrimEnd("`r")) } }
+    if ($timedOut) { $out.Add("<TIMED OUT after $TimeoutSec s, process tree killed>") }
 
     return [pscustomobject]@{
         Stdout = $out
@@ -308,6 +329,16 @@ if ($Real) {
         -PathPrepend $env:PATH
     Write-Host "stdout: $($r.Stdout -join ' | ')"
     Write-Host "stderr: $($r.Stderr)"
+
+    if (($r.Stdout -join ' ') -match 'TIMED OUT') {
+        Write-Host ""
+        Write-Host "The plugin never finished talking to the real CLI. Nothing below"
+        Write-Host "this line ran, and the backup above is still good. Run"
+        Write-Host "qwenprobe.ps1 before trying again."
+        Write-Host ""
+        Write-Host "RESULT passed=$script:Pass failed=$script:Fail"
+        exit 1
+    }
     $d = ConvertFrom-Json ([System.IO.File]::ReadAllText($qcfgPath, $Utf8))
     $has = $null -ne $d.PSObject.Properties['mcpServers'] -and $null -ne $d.mcpServers.PSObject.Properties['polter']
     Check '9 real qwen -- polter is registered in ~/.qwen/settings.json' $has ''
