@@ -403,7 +403,7 @@ test "file: takes the first line without its newline" {
 
     var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
     defer d.close(io);
-    var f = try d.createFile(io, "key", .{ .permissions = .fromMode(0o600) });
+    var f = try d.createFile(io, "key", fixtureMode(0o600));
     try f.writeStreamingAll(io, "the-key\nand a comment nobody wants sent\n");
     f.close(io);
 
@@ -501,7 +501,7 @@ test "a file: reference expands a leading tilde" {
 
     var d = try std.Io.Dir.cwd().openDir(io, home, .{});
     defer d.close(io);
-    var f = try d.createFile(io, "feishu.key", .{ .permissions = .fromMode(0o600) });
+    var f = try d.createFile(io, "feishu.key", fixtureMode(0o600));
     try f.writeStreamingAll(io, "the-key\n");
     f.close(io);
 
@@ -522,4 +522,22 @@ test "a file: reference expands a leading tilde" {
         error.Unresolved,
         resolve(alloc, io, &homeless, "file:~/feishu.key"),
     );
+}
+
+/// Create flags for a test fixture that POSIX needs a mode on.
+///
+/// Windows has no mode to pass and no `Permissions.fromMode`, so a literal
+/// `0o600` here is a compile error rather than a portability wart -- which
+/// is why the Windows test suite could not be built at all before this.
+///
+/// The POSIX side is unchanged, and the mode is kept there because these
+/// fixtures stand in for a real key file: `0o600` is the shape the thing
+/// being tested has in the field. Dropping it on Windows costs nothing --
+/// the file lives in a temp directory the test deletes on the way out, and
+/// the key in it is the string "the-key".
+fn fixtureMode(comptime mode: u32) std.Io.File.CreateFlags {
+    return switch (builtin.os.tag) {
+        .windows => .{},
+        else => .{ .permissions = .fromMode(mode) },
+    };
 }

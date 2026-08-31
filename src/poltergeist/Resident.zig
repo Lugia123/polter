@@ -2183,7 +2183,7 @@ test "the example plugin answers the greeting the host really writes" {
     {
         var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
         defer d.close(io);
-        var f = try d.createFile(io, "archive.py", .{ .permissions = .fromMode(0o755) });
+        var f = try d.createFile(io, "archive.py", fixtureMode(0o755));
         try f.writeStreamingAll(io, @embedFile("plugin_demo_archive_py"));
         f.close(io);
     }
@@ -2349,7 +2349,7 @@ fn scriptFor(arena: Allocator, io: std.Io, body: []const u8) ![]const u8 {
     var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
     defer d.close(io);
 
-    var f = try d.createFile(io, "run.sh", .{ .permissions = .fromMode(0o755) });
+    var f = try d.createFile(io, "run.sh", fixtureMode(0o755));
     try f.writeStreamingAll(io, body);
     f.close(io);
 
@@ -3483,17 +3483,17 @@ test "an installed skill says which build wrote it, and only changes when that d
         // so embedding only the declaration would test a script that dies on
         // its first line.
         try d.createDirPath(io, "claude-code");
-        var f = try d.createFile(io, "claude-code/provision.sh", .{ .permissions = .fromMode(0o755) });
+        var f = try d.createFile(io, "claude-code/provision.sh", fixtureMode(0o755));
         try f.writeStreamingAll(io, @embedFile("plugin_claude_code_sh"));
         f.close(io);
 
         try d.createDirPath(io, "_sdk");
-        var sdk = try d.createFile(io, "_sdk/provision.sh", .{ .permissions = .fromMode(0o644) });
+        var sdk = try d.createFile(io, "_sdk/provision.sh", fixtureMode(0o644));
         try sdk.writeStreamingAll(io, @embedFile("plugin_sdk_provision_sh"));
         sdk.close(io);
 
         try d.createDirPath(io, "bin");
-        var c = try d.createFile(io, "bin/claude", .{ .permissions = .fromMode(0o755) });
+        var c = try d.createFile(io, "bin/claude", fixtureMode(0o755));
         try c.writeStreamingAll(io, "#!/bin/sh\nexit 0\n");
         c.close(io);
 
@@ -3603,7 +3603,7 @@ test "a plugin's child gets the environment the host prepared, not the host's ow
     {
         var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
         defer d.close(io);
-        var f = try d.createFile(io, "shell", .{ .permissions = .fromMode(0o755) });
+        var f = try d.createFile(io, "shell", fixtureMode(0o755));
         try f.writeStreamingAll(io,
             \\#!/bin/sh
             \\printf '%s' "/zzz-only-the-login-shell-knew:/usr/bin:/bin"
@@ -3640,4 +3640,24 @@ test "a plugin's child gets the environment the host prepared, not the host's ow
     // started by a wrapper script that put something on the front has not
     // had it taken away.
     try testing.expect(std.mem.indexOf(u8, got, "/zzz-only-the-host-knew") != null);
+}
+
+/// Create flags for a test fixture that POSIX needs a mode on.
+///
+/// Windows has no mode to pass, and `Permissions.fromMode` does not exist
+/// there, so a literal `0o755` in a test is a compile error rather than a
+/// portability wart -- which is why the Windows test suite could not be
+/// built at all before this.
+///
+/// Nothing is lost by dropping it there. These are files in a temp
+/// directory the test deletes on the way out, so there is nothing to
+/// protect, and Windows does not decide what is runnable from a mode
+/// anyway. The POSIX side is unchanged, and it is load-bearing there: the
+/// scripts below are about to be run by the plugin host, and without the
+/// executable bit they cannot be.
+fn fixtureMode(comptime mode: u32) std.Io.File.CreateFlags {
+    return switch (builtin.os.tag) {
+        .windows => .{},
+        else => .{ .permissions = .fromMode(mode) },
+    };
 }
