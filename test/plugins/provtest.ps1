@@ -1,0 +1,289 @@
+# Drive the Windows provisioning plugins through the real protocol.
+#
+# One run, many assertions, because every run of this costs an approval.
+# Nothing outside C:\app\provtest is touched unless -Real is passed.
+
+param(
+    # Where the plugin tree was deployed to on this machine. The defaults are
+    # the paths every recorded run used; pass them only to test a checkout
+    # somewhere else.
+    [string]$Source = 'C:\app\provsrc',
+    [string]$Root = 'C:\app\provtest',
+    [switch]$Real
+)
+
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+
+$Plugins = Join-Path $Root 'plugins'
+$Bin = Join-Path $Root 'bin'
+$Utf8 = New-Object System.Text.UTF8Encoding($false)
+
+$script:Pass = 0
+$script:Fail = 0
+
+function Check {
+    param([string]$What, [bool]$Ok, [string]$Detail = '')
+    if ($Ok) { $script:Pass++; Write-Host "PASS  $What" }
+    else { $script:Fail++; Write-Host "FAIL  $What"; if ($Detail) { Write-Host "      $Detail" } }
+}
+
+# --- one conversation with one plugin ---------------------------------------
+function Invoke-Plugin {
+    param(
+        [string]$Key,
+        [string]$Hello,
+        [string[]]$Batches,
+        [string]$PathPrepend = $Bin
+    )
+
+    $script = Join-Path (Join-Path $Plugins $Key) 'provision.ps1'
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = (Get-Command powershell.exe).Source
+    $psi.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script`""
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = $Utf8
+    $psi.StandardErrorEncoding = $Utf8
+    $psi.WorkingDirectory = $Root
+    $psi.EnvironmentVariables['PATH'] = "$PathPrepend;$env:SystemRoot\system32;$env:SystemRoot"
+
+    $p = [System.Diagnostics.Process]::Start($psi)
+
+    # .NET Framework has no StandardInputEncoding, so the writer is built by
+    # hand -- and with "`n", because the protocol is one object per newline
+    # and a CRLF would leave a stray carriage return inside the line.
+    $w = New-Object System.IO.StreamWriter($p.StandardInput.BaseStream, $Utf8)
+    $w.AutoFlush = $true
+
+    # **Everything is written, then everything is read.** Reading up to the
+    # first `{"ok":` and stopping there is how a test stops being able to see
+    # an acknowledgement that came too early -- it reads the extra one as the
+    # answer and never looks at what followed. The whole stream is collected
+    # and the assertions below name the sequence they expect.
+    $w.Write($Hello + "`n")
+    foreach ($b in $Batches) { $w.Write($b + "`n") }
+    $w.Close()
+
+    $all = $p.StandardOutput.ReadToEnd()
+    $err = $p.StandardError.ReadToEnd()
+    $p.WaitForExit(30000) | Out-Null
+
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($l in ($all -split "`n")) { if ($l.Trim()) { $out.Add($l.TrimEnd("`r")) } }
+
+    return [pscustomobject]@{
+        Stdout = $out
+        Stderr = $err
+        Exit = $p.ExitCode
+    }
+}
+
+function New-Hello {
+    param([string]$Key, [string]$Scope = 'user', [string]$Skills = 'yes')
+    '{"hello":1,"plugin":"' + $Key + '","cursor":0,"events":["provision"],"groups":"","calls":[],"params":{"scope":"' + $Scope + '","skills":"' + $Skills + '"}}'
+}
+
+function New-Batch {
+    param([string]$HomeDir, [string]$Version, [string]$SkillPath, [string]$Exe = 'C:\app\polter.exe')
+    $h = $HomeDir -replace '\\', '\\'
+    $s = $SkillPath -replace '\\', '\\'
+    $e = $Exe -replace '\\', '\\'
+    '{"cursor":0,"through":1,"events":[{"n":1,"kind":"provision","at_ms":1786819271275,"exe":"' + $e + '","version":"' + $Version + '","version_key":"POLTER_REGISTERED","home":"' + $h + '","skills":[{"name":"mine","path":"' + $s + '"}]}]}'
+}
+
+function Assert-StdoutClean {
+    param([string]$What, $Result)
+    $bad = @($Result.Stdout | Where-Object { $_ -notmatch '^\{"(ok|tell)"' })
+    Check "$What -- stdout carries only acknowledgements and reports" ($bad.Count -eq 0) ("stray: " + ($bad -join ' | '))
+}
+
+# --- fixture ----------------------------------------------------------------
+
+if (Test-Path $Root) { Remove-Item $Root -Recurse -Force -ErrorAction SilentlyContinue }
+New-Item -ItemType Directory -Path $Bin -Force | Out-Null
+New-Item -ItemType Directory -Path $Plugins -Force | Out-Null
+
+# Laid out here the way the bundle lays them out, because each plugin finds
+# its library by walking `..\_sdk` from its own directory; a flat directory
+# resolves that to the parent of this one and the script fails on its first
+# statement.
+Copy-Item -Path (Join-Path $Source '*') -Destination $Plugins -Recurse -Force
+
+$skillSrc = Join-Path $Root 'mine.md'
+$skillText = "---`nname: mine`ndescription: a skill`nversion: 1`n---`n`nBody with a name: line in the prose.`n"
+[System.IO.File]::WriteAllText($skillSrc, $skillText, $Utf8)
+
+# A home directory with a non-ASCII name, because the console code page on
+# this machine is not UTF-8 and that is the failure this proves absent.
+$home1 = Join-Path $Root ([char]0x5F20 + [char]0x4E09 + '-home')
+New-Item -ItemType Directory -Path $home1 -Force | Out-Null
+
+# Stub CLIs.
+$okCmd = "@echo off`r`necho stub ok`r`nexit /b 0`r`n"
+$failCmd = "@echo off`r`necho something went wrong 1>&2`r`nexit /b 3`r`n"
+[System.IO.File]::WriteAllText((Join-Path $Bin 'opencode.cmd'), $okCmd, $Utf8)
+[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $okCmd, $Utf8)
+[System.IO.File]::WriteAllText((Join-Path $Bin 'deepseek.cmd'), $okCmd, $Utf8)
+
+Write-Host "== 1. absent: a host whose CLI is not installed =="
+$r = Invoke-Plugin -Key 'kimi' -Hello (New-Hello 'kimi') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
+Check '1 absent -- both lines acknowledged true' (($r.Stdout -join ' ') -eq '{"ok":true} {"ok":true}') ($r.Stdout -join ' | ')
+Check '1 absent -- the log says status=absent' ($r.Stderr -match 'status=absent') $r.Stderr
+Assert-StdoutClean '1 absent' $r
+
+Write-Host "== 2. json-merge host: opencode, no python anywhere =="
+$cfg = Join-Path $home1 '.config\opencode\opencode.json'
+$r = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
+Check '2 opencode -- acknowledged true' (($r.Stdout -join ' ') -eq '{"ok":true} {"ok":true}') ($r.Stdout -join ' | ')
+Check '2 opencode -- the config was created' (Test-Path $cfg) $cfg
+if (Test-Path $cfg) {
+    $bytes = [System.IO.File]::ReadAllBytes($cfg)
+    Check '2 opencode -- no byte-order mark' (-not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB)) ("first bytes: " + ($bytes[0..2] -join ','))
+    $d = ConvertFrom-Json ([System.IO.File]::ReadAllText($cfg, $Utf8))
+    Check '2 opencode -- key is `mcp`, command is a list' (@($d.mcp.polter.command).Count -eq 2 -and $d.mcp.polter.type -eq 'local') (ConvertTo-Json $d -Depth 10 -Compress)
+    Check '2 opencode -- the version marker is in `environment`' ($d.mcp.polter.environment.POLTER_REGISTERED -eq '1.0.0') ''
+    $before = [System.IO.File]::ReadAllBytes($cfg)
+
+    Write-Host "-- 2b. same version twice writes nothing"
+    $r2 = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
+    $after = [System.IO.File]::ReadAllBytes($cfg)
+    Check '2b opencode -- second run is byte for byte identical' (@(Compare-Object $before $after -SyncWindow 0).Count -eq 0) ''
+    Check '2b opencode -- and says nothing about it' (-not ($r2.Stderr -match 'status=provisioned')) $r2.Stderr
+
+    # **The write that replaces an existing file, which nothing above does.**
+    # Everything before this point either creates the config or declines to
+    # touch it, so the atomic-replace branch had no coverage at all -- and it
+    # was broken. This is the assertion that would have caught it.
+    Write-Host "-- 2d. a new build rewrites a config that is already there"
+    $r4 = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode') -Batches @((New-Batch $home1 '3.0.0' $skillSrc))
+    Check '2d opencode -- acknowledged true' (($r4.Stdout -join ' ') -eq '{"ok":true} {"ok":true}') ($r4.Stdout -join ' | ')
+    $d4 = ConvertFrom-Json ([System.IO.File]::ReadAllText($cfg, $Utf8))
+    Check '2d opencode -- the version marker followed the build' ($d4.mcp.polter.environment.POLTER_REGISTERED -eq '3.0.0') (ConvertTo-Json $d4 -Depth 10 -Compress)
+    Check '2d opencode -- nothing was left beside it' ((-not (Test-Path "$cfg.polter-tmp")) -and (-not (Test-Path "$cfg.polter-bak"))) ''
+
+    Write-Host "-- 2c. a config that does not parse is refused, not repaired"
+    $broken = "{`nthis is not json`n"
+    [System.IO.File]::WriteAllText($cfg, $broken, $Utf8)
+    $r3 = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode') -Batches @((New-Batch $home1 '2.0.0' $skillSrc))
+    Check '2c opencode -- refused, acknowledged false' (($r3.Stdout | Select-Object -Last 1) -eq '{"ok":false}') ($r3.Stdout -join ' | ')
+    Check '2c opencode -- exactly two acknowledgements, one per line written' ((@($r3.Stdout | Where-Object { $_ -match '^\{"ok"' })).Count -eq 2) ($r3.Stdout -join ' | ')
+    Check '2c opencode -- the broken file is untouched' ([System.IO.File]::ReadAllText($cfg, $Utf8) -eq $broken) ''
+    Check '2c opencode -- the log names the file and the parser complaint' ($r3.Stderr -match 'cannot parse' -and $r3.Stderr -match 'opencode.json') $r3.Stderr
+    Check '2c opencode -- the user is told before the acknowledgement' (($r3.Stdout | Select-Object -Last 2)[0] -match '^\{"tell"') ($r3.Stdout -join ' | ')
+    Assert-StdoutClean '2c opencode' $r3
+    Remove-Item $cfg -Force
+}
+
+Write-Host "== 3. deepseek: the other json host, different shape =="
+$dcfg = Join-Path $home1 '.deepseek\mcp.json'
+$r = Invoke-Plugin -Key 'deepseek' -Hello (New-Hello 'deepseek') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
+Check '3 deepseek -- the config was created' (Test-Path $dcfg) $dcfg
+if (Test-Path $dcfg) {
+    $d = ConvertFrom-Json ([System.IO.File]::ReadAllText($dcfg, $Utf8))
+    Check '3 deepseek -- key is `mcpServers`, command is a string with args beside it' ($d.mcpServers.polter.command -is [string] -and @($d.mcpServers.polter.args).Count -eq 1) (ConvertTo-Json $d -Depth 10 -Compress)
+}
+
+Write-Host "== 4. skills: rendering, stamping, idempotence, pruning =="
+$skillsDir = Join-Path $home1 '.qwen\skills'
+$mine = Join-Path $skillsDir 'polter-mine\SKILL.md'
+
+# A stale one this plugin wrote, and one it did not.
+New-Item -ItemType Directory -Path (Join-Path $skillsDir 'polter-gone') -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $skillsDir 'polter-gone\SKILL.md'), "---`nname: polter-gone`n---`nold`n", $Utf8)
+New-Item -ItemType Directory -Path (Join-Path $skillsDir 'polter-keep') -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $skillsDir 'polter-keep\SKILL.md'), "---`nname: polter-keep`n---`nmine`n", $Utf8)
+[System.IO.File]::WriteAllText((Join-Path $skillsDir 'polter-keep\notes.md'), "not ours`n", $Utf8)
+
+$r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
+Check '4 skills -- acknowledged true' (($r.Stdout -join ' ') -eq '{"ok":true} {"ok":true}') ($r.Stdout -join ' | ')
+Check '4 skills -- the skill was installed' (Test-Path $mine) $mine
+if (Test-Path $mine) {
+    $raw = [System.IO.File]::ReadAllText($mine, $Utf8)
+    Check '4 skills -- the frontmatter name matches the directory' ($raw -match "(?m)^name: polter-mine$") $raw
+    Check '4 skills -- stamped with the build that wrote it' ($raw -match "(?m)^polter-build: 1\.0\.0$") $raw
+    Check '4 skills -- the `name:` in the prose is left alone' ($raw -match 'a name: line in the prose') ''
+    Check '4 skills -- LF only, no CRLF' (-not $raw.Contains("`r")) ''
+    $b = [System.IO.File]::ReadAllBytes($mine)
+    Check '4 skills -- no byte-order mark' (-not ($b[0] -eq 0xEF)) ''
+    $stamp = (Get-Item $mine).LastWriteTimeUtc
+
+    Write-Host "-- 4b. same build again writes nothing"
+    Start-Sleep -Milliseconds 1200
+    $r2 = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
+    Check '4b skills -- not rewritten' ((Get-Item $mine).LastWriteTimeUtc -eq $stamp) ''
+
+    Write-Host "-- 4c. a different build rewrites it and the stamp follows"
+    $r3 = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') -Batches @((New-Batch $home1 '9.9.9' $skillSrc))
+    $raw3 = [System.IO.File]::ReadAllText($mine, $Utf8)
+    Check '4c skills -- the stamp is the new build' ($raw3 -match "(?m)^polter-build: 9\.9\.9$") $raw3
+    Check '4c skills -- exactly one stamp' ((([regex]::Matches($raw3, '(?m)^polter-build: ')).Count) -eq 1) $raw3
+}
+Check '4d prune -- a skill no longer shipped is removed' (-not (Test-Path (Join-Path $skillsDir 'polter-gone'))) ''
+Check '4d prune -- one with a second file is left alone' (Test-Path (Join-Path $skillsDir 'polter-keep\notes.md')) ''
+
+Write-Host "== 5. skills=no is a parameter that does something =="
+$home2 = Join-Path $Root 'home-noskills'
+New-Item -ItemType Directory -Path $home2 -Force | Out-Null
+$r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code' 'user' 'no') -Batches @((New-Batch $home2 '1.0.0' $skillSrc))
+Check '5 skills=no -- nothing was installed' (-not (Test-Path (Join-Path $home2 '.qwen\skills'))) ''
+
+Write-Host "== 6. a registration that fails is loud =="
+[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $failCmd, $Utf8)
+$home3 = Join-Path $Root 'home-fail'
+New-Item -ItemType Directory -Path $home3 -Force | Out-Null
+$r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') -Batches @((New-Batch $home3 '1.0.0' $skillSrc))
+Check '6 failed -- acknowledged false' (($r.Stdout | Select-Object -Last 1) -eq '{"ok":false}') ($r.Stdout -join ' | ')
+# The exact sequence, not "a tell somewhere before the last ok". An
+# acknowledgement written too early is still followed by a tell and another
+# ok, and the loose form reads that as correct.
+$seq = @($r.Stdout | ForEach-Object { if ($_ -match '^\{"ok":true') { 'ok+' } elseif ($_ -match '^\{"ok":false') { 'ok-' } elseif ($_ -match '^\{"tell"') { 'tell' } else { '?' } }) -join ','
+Check '6 failed -- the sequence is exactly greeting-ack, report, refusal' ($seq -eq 'ok+,tell,ok-') "sequence: $seq" 
+Check '6 failed -- the log says status=failed step=mcp' ($r.Stderr -match 'status=failed step=mcp') $r.Stderr
+Check '6 failed -- the CLI own complaint survived to the log' ($r.Stderr -match 'something went wrong') $r.Stderr
+Assert-StdoutClean '6 failed' $r
+[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $okCmd, $Utf8)
+
+Write-Host "== 7. a greeting that is not one =="
+$r = Invoke-Plugin -Key 'kimi' -Hello '{"nope":1}' -Batches @()
+Check '7 bad greeting -- acknowledged false' (($r.Stdout -join ' ') -eq '{"ok":false}') ($r.Stdout -join ' | ')
+Check '7 bad greeting -- exit 2' ($r.Exit -eq 2) "exit=$($r.Exit)"
+
+Write-Host "== 8. an empty batch is a heartbeat =="
+$r = Invoke-Plugin -Key 'kimi' -Hello (New-Hello 'kimi') -Batches @('{"cursor":0,"through":0,"events":[]}')
+Check '8 heartbeat -- acknowledged true' (($r.Stdout -join ' ') -eq '{"ok":true} {"ok":true}') ($r.Stdout -join ' | ')
+
+if ($Real) {
+    Write-Host "== 9. the real Qwen Code on this machine =="
+    $realHome = $env:USERPROFILE
+    $exe = 'C:\app\polter-host.exe'
+    $qcfgPath = Join-Path $realHome '.qwen\settings.json'
+
+    # A copy taken before anything is written, named so it is obvious who
+    # left it and easy to put back by hand.
+    $bak = Join-Path $realHome ('.qwen\settings.json.polter-bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    Copy-Item -LiteralPath $qcfgPath -Destination $bak -Force
+    Write-Host "backup: $bak"
+    $r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') `
+        -Batches @((New-Batch $realHome '0.0.0-provtest' $skillSrc $exe)) `
+        -PathPrepend $env:PATH
+    Write-Host "stdout: $($r.Stdout -join ' | ')"
+    Write-Host "stderr: $($r.Stderr)"
+    $d = ConvertFrom-Json ([System.IO.File]::ReadAllText($qcfgPath, $Utf8))
+    $has = $null -ne $d.PSObject.Properties['mcpServers'] -and $null -ne $d.mcpServers.PSObject.Properties['polter']
+    Check '9 real qwen -- polter is registered in ~/.qwen/settings.json' $has ''
+    if ($has) { Write-Host ("      entry: " + (ConvertTo-Json $d.mcpServers.polter -Depth 10 -Compress)) }
+
+    # What Qwen Code itself says it has, which is the only answer that counts:
+    # a key in a file we wrote proves we can write files.
+    $env:PATH = "$env:APPDATA\npm;$env:PATH"
+    Write-Host "-- qwen mcp list --"
+    & qwen mcp list 2>&1 | ForEach-Object { Write-Host "      $_" }
+    Check '9 real qwen -- the skill landed in ~/.qwen/skills' (Test-Path (Join-Path $realHome '.qwen\skills\polter-mine\SKILL.md')) ''
+}
+
+Write-Host ""
+Write-Host "RESULT passed=$script:Pass failed=$script:Fail"

@@ -10,6 +10,10 @@
 *.swift text eol=lf
 *.py text eol=lf
 *.sh text eol=lf
+# PowerShell is Windows-native tooling, but these ship beside the `.sh` they
+# mirror and Windows PowerShell runs an LF file without complaint. One line
+# ending for the whole repository beats one exception nobody remembers.
+*.ps1 text eol=lf
 *.glsl text eol=lf
 *.blp text eol=lf
 
