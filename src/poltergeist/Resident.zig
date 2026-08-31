@@ -3182,7 +3182,35 @@ test "a plugin can say something to the user, once, and it cannot draw with it" 
 
     // Four exchanges, so this is measuring a rule rather than a plugin that
     // has only had one chance to speak.
-    try testing.expect(waitForLines(alloc, io, beats, 4, 10_000));
+    //
+    // **Five beats, for four exchanges, and the extra one is the whole
+    // point.** The plugin writes its beat *before* it answers, so the
+    // fourth beat says the fourth exchange has begun -- not that its answer
+    // has been read, still less written to the log this asserts on below.
+    // Those are two files with nothing synchronising them. Waiting for the
+    // fifth beat is what closes that: the plugin is only asked a fifth time
+    // after the host has taken the fourth answer, so five beats is the
+    // cheapest available proof that four exchanges finished.
+    //
+    // **How often it failed is not known, and none of the above rests on
+    // it.** It was seen red at least once. Thirty-two runs of the old
+    // four-beat form did not reproduce it, so any rate written here would
+    // be a number nobody has measured -- and a plausible one would be worse
+    // than none, because the next person would plan around it.
+    //
+    // What *is* known is structural, and does not need a rate: `waitForLines`
+    // looks every 25ms, while the gap between the fourth beat landing and
+    // the fourth answer reaching the log is tens of microseconds. So the
+    // poll lands after that gap nearly every time, and the test was passing
+    // on a margin nobody chose. **An assertion that reads one file to
+    // decide another is ready is wrong at any frequency**, and it is wrong
+    // in the way that costs most: rare, and unreadable when it happens.
+    //
+    // If it ever goes red again, count the copies of the line in the log.
+    // **Exactly three is this race and nothing else** -- the fourth answer
+    // had not been recorded yet. Any other count (none, one) means the
+    // account above is wrong and wants replacing, not patching.
+    try testing.expect(waitForLines(alloc, io, beats, 5, 10_000));
 
     // It arrived, attributed, in the plugin's own words.
     try testing.expect(heard.heard("could not write the skill file"));
