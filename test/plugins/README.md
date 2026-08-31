@@ -77,7 +77,21 @@ page is not UTF-8.
 `-Real` runs the `qwen-code` plugin against the Qwen Code actually installed
 on the machine and the user's real `%USERPROFILE%`. It copies
 `.qwen\settings.json` to `.qwen\settings.json.polter-bak-<timestamp>` before
-anything is written, and prints the path.
+anything is written, prints the path, the original's size and its SHA-256,
+**compares the copy to the original byte for byte, and aborts the run without
+writing anything if they differ**.
+
+That check is there rather than a rehearsal of the backup against a fake home,
+and the difference is the point: the backup is the only thing between this run
+and somebody's real configuration, and a rehearsal exercises a different path
+than the one that matters. A backup that verifies itself on the path it
+actually guards is worth more than one that was watched working elsewhere.
+
+The run also prints, before pruning can happen, which `polter-*` directories
+already exist under `~/.qwen/skills` — those are the only ones pruning could
+ever reach — and, at the end, exactly what it left behind and how to undo it.
+It does not tidy up after itself: the registration is the point of the run,
+and a cleanup that ran before anybody looked would take the evidence with it.
 
 **It cannot show that the agent reaches Polter, and should not be reported as
 though it does.** The registration names an executable that does not exist on

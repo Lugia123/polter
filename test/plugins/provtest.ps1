@@ -264,9 +264,45 @@ if ($Real) {
 
     # A copy taken before anything is written, named so it is obvious who
     # left it and easy to put back by hand.
+    #
+    # **And then checked, before a single byte is written, with the run
+    # aborted if the check fails.** The backup is the only thing standing
+    # between this and somebody's real configuration, and until this point it
+    # had never run: rehearsing it against a fake home would have exercised a
+    # different path than the one that matters. A backup that verifies itself
+    # on the path it actually guards is worth more than one that was watched
+    # working somewhere else.
     $bak = Join-Path $realHome ('.qwen\settings.json.polter-bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     Copy-Item -LiteralPath $qcfgPath -Destination $bak -Force
-    Write-Host "backup: $bak"
+
+    $srcBytes = [System.IO.File]::ReadAllBytes($qcfgPath)
+    $bakBytes = [System.IO.File]::ReadAllBytes($bak)
+    $identical = ($srcBytes.Length -eq $bakBytes.Length) -and
+                 (@(Compare-Object $srcBytes $bakBytes -SyncWindow 0).Count -eq 0)
+
+    # Recorded in the log itself, so the log is a second copy of the facts
+    # even if both files are later lost.
+    $sha = (Get-FileHash -LiteralPath $qcfgPath -Algorithm SHA256).Hash
+    Write-Host "backup:   $bak"
+    Write-Host "original: $($srcBytes.Length) bytes, sha256 $sha"
+
+    Check '9a real qwen -- the backup is byte for byte the original' $identical "src=$($srcBytes.Length) bak=$($bakBytes.Length)"
+    if (-not $identical) {
+        Write-Host "ABORTING before any write: there is no usable backup."
+        Write-Host ""
+        Write-Host "RESULT passed=$script:Pass failed=$script:Fail"
+        exit 1
+    }
+
+    # What the prune step could reach in a real home, said before it runs.
+    # Only `polter-*` directories are ever candidates, and only ones this
+    # plugin would recognise as its own.
+    $realSkills = Join-Path $realHome '.qwen\skills'
+    $atRisk = @()
+    if (Test-Path -LiteralPath $realSkills) {
+        $atRisk = @(Get-ChildItem -LiteralPath $realSkills -Directory -Filter 'polter-*' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    }
+    Write-Host "existing polter-* skills that pruning could touch: $(if ($atRisk.Count) { $atRisk -join ', ' } else { '(none)' })"
     $r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') `
         -Batches @((New-Batch $realHome '0.0.0-provtest' $skillSrc $exe)) `
         -PathPrepend $env:PATH
@@ -283,6 +319,15 @@ if ($Real) {
     Write-Host "-- qwen mcp list --"
     & qwen mcp list 2>&1 | ForEach-Object { Write-Host "      $_" }
     Check '9 real qwen -- the skill landed in ~/.qwen/skills' (Test-Path (Join-Path $realHome '.qwen\skills\polter-mine\SKILL.md')) ''
+
+    # Left in place rather than tidied away: the registration is the point of
+    # this run, and a cleanup that ran before anybody looked would take the
+    # evidence with it. Said out loud so nobody has to reconstruct it.
+    Write-Host ""
+    Write-Host "-- left on this machine, and how to undo it --"
+    Write-Host '   ~/.qwen/settings.json       mcpServers.polter -- undo with: qwen mcp remove polter'
+    Write-Host '   ~/.qwen/skills/polter-mine  a test skill -- delete the directory'
+    Write-Host "   $bak  the backup -- delete once you are happy"
 }
 
 Write-Host ""
