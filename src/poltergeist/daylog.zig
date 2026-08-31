@@ -539,7 +539,88 @@ pub fn encodeSegment(alloc: Allocator, group: []const u8) Allocator.Error![]u8 {
     // cannot produce says "empty" without colliding with anything.
     if (out.items.len == 0) try out.append(alloc, '%');
 
+    // Windows keeps two more names from meaning what they say. The loop
+    // above already disposes of separators and every other awkward byte --
+    // `\\` and `:` are outside `[A-Za-z0-9._-]` and left as `%5C` and
+    // `%3A` -- but these two survive it, because they are spelled entirely
+    // in bytes the loop calls plain. See `windowsHazard`.
+    if (comptime builtin.os.tag == .windows) {
+        if (windowsHazard(out.items)) |h| try escapeAt(alloc, &out, h.index);
+    }
+
     return out.toOwnedSlice(alloc);
+}
+
+/// Where a segment the loop calls clean would still not be the name it says
+/// on Windows, or null when there is nowhere.
+///
+/// **Pure, and taking the already-encoded bytes, so that it is testable off
+/// Windows.** The rule it encodes is only applied on Windows -- a POSIX
+/// tree must keep spelling names exactly as it always has, or every
+/// directory already on disk is orphaned -- but a rule that can only be
+/// exercised on the platform it guards is a rule nobody checks. The tests
+/// below call this directly and so run everywhere.
+///
+/// Two hazards, and neither is a directory escape -- `encodeSegment`'s
+/// allow-list already made escapes impossible on both platforms:
+///
+///   * **A trailing dot.** Windows strips it silently when it creates the
+///     file, so `report.` and `report` become one directory. That breaks
+///     the injectivity the header above calls the whole requirement.
+///     Trailing spaces are stripped the same way, but a space is not in
+///     the allow-list so it already left as `%20`.
+///
+///   * **A reserved device name.** `CON`, `PRN`, `NUL`, `AUX`, `COM1`-`COM9`
+///     and `LPT1`-`LPT9` name devices, not files, and they do so with an
+///     extension too: `CON.jsonl` is still the console. A terminal titled
+///     `NUL` would send a night's transcript to the bit bucket.
+pub const WindowsHazard = struct { index: usize };
+
+pub fn windowsHazard(seg: []const u8) ?WindowsHazard {
+    if (seg.len == 0) return null;
+
+    // A trailing dot. Escaped dots end in a hex digit, so a `.` in the last
+    // position can only be one the loop passed through.
+    if (seg[seg.len - 1] == '.') return .{ .index = seg.len - 1 };
+
+    // A reserved device name, with or without an extension. Escaping the
+    // first byte is enough to stop it being one, and costs two bytes.
+    const stem = seg[0 .. std.mem.indexOfScalar(u8, seg, '.') orelse seg.len];
+    if (isReservedDeviceName(stem)) return .{ .index = 0 };
+
+    return null;
+}
+
+fn isReservedDeviceName(stem: []const u8) bool {
+    if (stem.len != 3 and stem.len != 4) return false;
+
+    const three = [_][]const u8{ "CON", "PRN", "NUL", "AUX" };
+    if (stem.len == 3) {
+        for (three) |r| if (std.ascii.eqlIgnoreCase(stem, r)) return true;
+        return false;
+    }
+
+    // COM1-COM9 and LPT1-LPT9. COM0/LPT0 are not reserved.
+    const digit = stem[3];
+    if (digit < '1' or digit > '9') return false;
+    return std.ascii.eqlIgnoreCase(stem[0..3], "COM") or
+        std.ascii.eqlIgnoreCase(stem[0..3], "LPT");
+}
+
+/// Replace one byte with its `%XX`, in place.
+///
+/// The byte is one the loop already decided was plain, so `decodeSegment`
+/// turns it straight back: the encoding stays injective and the round trip
+/// keeps working with no second rule to teach the decoder.
+fn escapeAt(
+    alloc: Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    index: usize,
+) Allocator.Error!void {
+    const hex = "0123456789ABCDEF";
+    const c = out.items[index];
+    try out.insertSlice(alloc, index + 1, &[_]u8{ hex[c >> 4], hex[c & 0xf] });
+    out.items[index] = '%';
 }
 
 /// A directory name back into the group name it was made from, or null
@@ -744,6 +825,87 @@ test "an ordinary name comes through a directory name unchanged" {
     const plain = try encodeSegment(alloc, "kairos-15r");
     defer alloc.free(plain);
     try testing.expectEqualStrings("kairos-15r", plain);
+}
+
+test "the bytes Windows would eat are spotted, on whatever platform runs this" {
+    // `windowsHazard` takes already-encoded bytes and is pure, so these run
+    // on macOS and Linux too -- the rule is only *applied* on Windows, but
+    // a rule that can only be checked on Windows is a rule nobody checks.
+
+    // A trailing dot: Windows drops it, so `report.` and `report` would be
+    // one directory. The dot is at the end, and that is what gets escaped.
+    try testing.expectEqual(@as(?usize, 6), if (windowsHazard("report.")) |h| h.index else null);
+    try testing.expectEqual(@as(?usize, 1), if (windowsHazard("..")) |h| h.index else null);
+
+    // Reserved device names, bare and with an extension, in any case.
+    for ([_][]const u8{
+        "CON",     "PRN",      "NUL",  "AUX",
+        "con",     "NuL",      "COM1", "COM9",
+        "LPT1",    "LPT9",     "lpt3", "NUL.jsonl",
+        "CON.txt", "com1.log",
+    }) |name| {
+        const h = windowsHazard(name);
+        try testing.expect(h != null);
+        try testing.expectEqual(@as(usize, 0), h.?.index);
+    }
+
+    // Names that only look like devices. COM0 and LPT0 are not reserved,
+    // and a longer word that merely starts with one is a plain name.
+    for ([_][]const u8{
+        "COM0",    "LPT0",  "CONS",  "CONSOLE",
+        "NULL",    "AUXIN", "COM10", "kairos-15r",
+        "report",  "a",     "",      "%2E%2E",
+        "CON%2Ex",
+    }) |name| {
+        try testing.expect(windowsHazard(name) == null);
+    }
+
+    // Separators and colons never reach this rule: the allow-list in
+    // `encodeSegment` already spent them, so what arrives here has none.
+    try testing.expect(windowsHazard("a%5Cb") == null);
+    try testing.expect(windowsHazard("C%3A") == null);
+}
+
+test "a device name and a trailing dot survive the round trip" {
+    const alloc = testing.allocator;
+
+    // Whatever the platform did to them, the name comes back. On Windows
+    // the encoding is `%43ON` / `report%2E`; on POSIX it is unchanged. Both
+    // decode to the name they were made from, which is the property that
+    // actually matters to a reader walking the tree.
+    for ([_][]const u8{
+        "CON", "NUL.jsonl", "report.", "COM1", "lpt9", "..",
+    }) |name| {
+        const enc = try encodeSegment(alloc, name);
+        defer alloc.free(enc);
+
+        // Still one segment, whatever else happened to it.
+        try testing.expect(std.mem.indexOfScalar(u8, enc, '/') == null);
+        try testing.expect(std.mem.indexOfScalar(u8, enc, '\\') == null);
+
+        const back = try decodeSegment(alloc, enc);
+        defer if (back) |b| alloc.free(b);
+        try testing.expect(back != null);
+        try testing.expectEqualStrings(name, back.?);
+
+        // And on Windows specifically, nothing the filesystem would rewrite.
+        if (comptime builtin.os.tag == .windows) {
+            try testing.expect(windowsHazard(enc) == null);
+        }
+    }
+}
+
+test "two names Windows would merge stay two directories" {
+    const alloc = testing.allocator;
+
+    // The pair that motivates the trailing-dot rule: Windows creates both
+    // as `report`, so without the escape one terminal's records land in the
+    // other's directory.
+    const a = try encodeSegment(alloc, "report");
+    defer alloc.free(a);
+    const b = try encodeSegment(alloc, "report.");
+    defer alloc.free(b);
+    try testing.expect(!std.mem.eql(u8, a, b));
 }
 
 test "a name that means somewhere else is still one path segment" {

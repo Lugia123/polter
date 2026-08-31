@@ -608,9 +608,23 @@ test "a title that would escape the directory is one segment anyway" {
     // The whole title became *one* directory component under our own tree,
     // through the same encoding the chat record uses: directory, then day
     // file, and no third level for the separators the title was carrying.
+    //
+    // Counted in the separator this platform actually builds paths with.
+    // `partPath` goes through `std.fs.path.join`, so on Windows the two
+    // separators are `\` and a test that counted `/` would find none and
+    // read that as "the title escaped" -- the exact opposite of the truth.
     const rel = path[t.dir.len..];
-    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, rel, "/"));
+    const sep = std.fs.path.sep;
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, rel, &.{sep}));
     try testing.expect(std.mem.startsWith(u8, path, t.dir));
+
+    // And neither separator survives *inside* the segment, which is the
+    // property the title was threatening. Checked for both spellings on
+    // both platforms: `/` means nothing to a POSIX name either way, but
+    // `\` is a separator on Windows and must not be sitting in a segment.
+    const seg = rel[1 .. std.mem.indexOfScalarPos(u8, rel, 1, sep) orelse rel.len];
+    try testing.expect(std.mem.indexOfScalar(u8, seg, '/') == null);
+    try testing.expect(std.mem.indexOfScalar(u8, seg, '\\') == null);
 
     const got = try readDay(alloc, io, &t, at);
     defer alloc.free(got);

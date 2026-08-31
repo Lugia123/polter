@@ -27,6 +27,7 @@ const net = std.Io.net;
 const posix = std.posix;
 
 const Bus = @import("Bus.zig");
+const transport = @import("transport.zig");
 const rpc = @import("rpc.zig");
 const wire = @import("wire.zig");
 
@@ -45,7 +46,7 @@ const max_connections = 16;
 /// join the thread.
 const Slot = struct {
     thread: ?std.Thread = null,
-    stream: ?net.Stream = null,
+    stream: ?transport.Conn = null,
 
     /// Set by the connection thread on its way out, so the accept loop can
     /// reap it without blocking.
@@ -132,9 +133,12 @@ alloc: Allocator,
 io: std.Io,
 submit: Submit,
 
-/// Filesystem path of the socket, owned here.
+/// How to reach this server, owned here. A filesystem path on POSIX and a
+/// `\\.\pipe\` name on Windows; the string is passed around and handed to
+/// clients through `GHOSTTY_POLTER_SOCKET` without either side needing to
+/// know which of the two it is holding. See `transport.zig`.
 path: []u8,
-listener: net.Server,
+listener: transport.Listener,
 
 /// Token to caller. Written by the app thread when a surface starts or a
 /// plugin is spawned, read by connection threads, hence the lock.
@@ -178,8 +182,7 @@ listener_closed: bool = false,
 
 pub const InitError = error{
     UnixSocketsUnavailable,
-    PathTooLong,
-} || Allocator.Error || net.UnixAddress.ListenError;
+} || Allocator.Error || transport.impl.BindError;
 
 /// Start listening.
 pub fn init(
@@ -188,19 +191,12 @@ pub fn init(
     path: []const u8,
     submit: Submit,
 ) InitError!Server {
-    if (!net.has_unix_sockets) return error.UnixSocketsUnavailable;
+    if (!transport.available) return error.UnixSocketsUnavailable;
 
     const owned = try alloc.dupe(u8, path);
     errdefer alloc.free(owned);
 
-    // A socket left behind by a previous run would make listen fail. The
-    // path is freshly random per run, so a collision means the file is a
-    // leftover rather than someone else's live socket, and removing it
-    // saves the user a puzzling failure after a crash.
-    std.Io.Dir.cwd().deleteFile(io, owned) catch {};
-
-    const addr = net.UnixAddress.init(owned) catch return error.PathTooLong;
-    var listener = try addr.listen(io, .{});
+    var listener = try transport.bind(alloc, io, owned);
     errdefer listener.deinit(io);
 
     // Note there is no chmod here. Socket file permissions are not
@@ -230,7 +226,7 @@ pub fn deinit(self: *Server) void {
     self.inflight.deinit(self.alloc);
 
     self.closeListener();
-    std.Io.Dir.cwd().deleteFile(self.io, self.path) catch {};
+    transport.unlink(self.io, self.path);
     self.alloc.free(self.path);
     self.* = undefined;
 }
@@ -245,8 +241,16 @@ pub fn stop(self: *Server) void {
     self.running.store(false, .release);
 
     if (self.listen_thread) |t| {
-        // Closing the listener is what unblocks accept.
-        self.closeListener();
+        // **Waking is not the same as closing, and only one platform can
+        // treat it as such.** On POSIX closing the listener is what breaks
+        // `accept`, and `wake` does exactly that. On Windows a close under
+        // a pending accept is the very pattern that panics inside the
+        // standard library, so `wake` knocks on the pipe as an ordinary
+        // client instead and leaves the listener alive for `deinit`.
+        // `wake_releases` says which of the two happened, so neither path
+        // gives the listener back twice.
+        self.listener.wake(self.io);
+        if (transport.Listener.wake_releases) self.listener_closed = true;
         t.join();
         self.listen_thread = null;
     }
@@ -522,7 +526,7 @@ fn reapFinished(self: *Server) void {
     }
 }
 
-fn claimSlot(self: *Server, stream: net.Stream) ?usize {
+fn claimSlot(self: *Server, stream: transport.Conn) ?usize {
     self.slots_mutex.lockUncancelable(self.io);
     defer self.slots_mutex.unlock(self.io);
 
@@ -550,9 +554,16 @@ fn releaseSlot(self: *Server, index: usize) void {
 fn stopConnections(self: *Server) void {
     var threads: [max_connections]?std.Thread = @splat(null);
 
+    // **The shutdown happens under the lock, and that is deliberate.**
+    // `connectionMain` clears its slot under this same lock *before* it
+    // closes the handle, so anything found here while holding it is still
+    // open. Moving the wake outside the lock -- which looks like the
+    // ordinary "no syscalls under a mutex" tidy-up, and which I did once --
+    // reintroduces exactly the use-after-close this lock exists to prevent.
+    // The join below is outside it because a join is not touching a handle.
     self.slots_mutex.lockUncancelable(self.io);
     for (0..max_connections) |i| {
-        if (self.slots[i].stream) |stream| stream.shutdown(self.io, .both) catch {};
+        if (self.slots[i].stream) |stream| transport.shutdownConn(stream, self.io);
         threads[i] = self.slots[i].thread;
     }
     self.slots_mutex.unlock(self.io);
@@ -608,8 +619,8 @@ fn connectionMain(self: *Server, index: usize) void {
 /// Read the opening line and check its token.
 fn handshake(
     self: *Server,
-    reader: *net.Stream.Reader,
-    writer: *net.Stream.Writer,
+    reader: *transport.Reader,
+    writer: *transport.Writer,
 ) ?Bus.Caller {
     const line = (reader.interface.takeDelimiter('\n') catch return null) orelse return null;
 
@@ -667,7 +678,7 @@ fn parseAuthToken(alloc: Allocator, line: []const u8) ?[]const u8 {
 
 fn serveOne(
     self: *Server,
-    writer: *net.Stream.Writer,
+    writer: *transport.Writer,
     caller: Bus.Caller,
     line: []const u8,
 ) !void {
@@ -720,7 +731,7 @@ fn serveOne(
 
 fn refuse(
     self: *Server,
-    writer: *net.Stream.Writer,
+    writer: *transport.Writer,
     code: []const u8,
     message: []const u8,
 ) void {
@@ -884,9 +895,12 @@ pub fn sweepStale(alloc: Allocator, io: std.Io, dir_path: []const u8) void {
 }
 
 pub fn defaultPath(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error![]u8 {
-    var raw: [8]u8 = undefined;
-    io.random(&raw);
-    return std.fmt.allocPrint(alloc, "{s}/polter-{x}.sock", .{ state_dir, &raw });
+    return transport.defaultName(alloc, io, state_dir);
+}
+
+/// Connect to a server, for the clients that are not this process.
+pub fn connect(io: std.Io, path: []const u8) !transport.Conn {
+    return transport.connect(io, path);
 }
 
 // -- tests ------------------------------------------------------------------

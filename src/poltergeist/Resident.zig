@@ -1286,20 +1286,20 @@ fn collect(
 /// of them has anything to do.
 fn hush(self: *Resident, drain: *?std.Thread, errs: *?std.Io.File) void {
     if (errs.*) |f| switch (builtin.os.tag) {
-        // Both, and neither is redundant, because the drain thread may be
-        // on either side of its `ReadFile` when this runs.
-        // `DisconnectNamedPipe` is the sticky half -- it settles every read
-        // issued from here on -- but it is documented to end the
-        // *connection*, not to promise anything about a read already in
-        // flight, so `CancelIoEx` covers the thread that was already
-        // blocked. Failures are ignored on purpose: a pipe that is already
-        // disconnected, or a read that had already returned, both report
-        // failure and both mean the job is done.
-        .windows => {
-            const k32 = internal_os.windows.exp.kernel32;
-            _ = k32.DisconnectNamedPipe(f.handle);
-            _ = k32.CancelIoEx(f.handle, null);
-        },
+        // **Disconnect only. Never cancel.** `CancelIoEx` is wrong twice
+        // over here: on a synchronous handle it does nothing (it cancels
+        // *asynchronous* operations, which a blocking read issued by
+        // another thread is not), and on an asynchronous one -- which this
+        // is, because `spawn` makes its pipe's server end asynchronous --
+        // the read completes with `STATUS_CANCELLED`, which
+        // `ntReadFileResult` answers with `unreachable`. Either nothing
+        // happens or the process dies.
+        //
+        // `DisconnectNamedPipe` does the whole job: a read in flight ends
+        // with `STATUS_PIPE_DISCONNECTED`, and so does every read issued
+        // after it. That one is an ordinary error, and the drain stops on
+        // any read error.
+        .windows => _ = internal_os.windows.exp.kernel32.DisconnectNamedPipe(f.handle),
         else => _ = std.c.shutdown(f.handle, std.c.SHUT.RD),
     };
 
@@ -1516,7 +1516,31 @@ fn main(self: *Resident) void {
                     }
                 }
 
-                const pair: ?Stderr = if (self.plog != null) Stderr.make() else null;
+                // **Windows lets the standard library make this pair, and
+                // POSIX must not.** `spawn` on Windows does not hand a
+                // `.file` stderr to the child as-is: it reopens it to get
+                // an inheritable copy, and reopening a named pipe asks for
+                // another instance of it. A hand-built pipe capped at one
+                // instance -- capped there on purpose, so nothing else on
+                // the machine could squat the name -- has no second
+                // instance to give, so the reopen failed with
+                // `STATUS_PIPE_NOT_AVAILABLE` and the plugin would not
+                // start at all. `.pipe` is the same construction done a
+                // step earlier: the standard library creates the client end
+                // inheritable to begin with, so there is nothing to reopen.
+                // It is still a real named pipe underneath
+                // (`NtCreateNamedPipeFile`), which is what `hush` needs.
+                //
+                // POSIX keeps the socket pair, because what it needs from
+                // it is `shutdown(SHUT_RD)` and a pipe has no such thing.
+                const plan: enum { none, pair, pipe } = if (self.plog == null)
+                    .none
+                else if (builtin.os.tag == .windows)
+                    .pipe
+                else
+                    .pair;
+
+                const pair: ?Stderr = if (plan == .pair) Stderr.make() else null;
 
                 child = std.process.spawn(io, .{
                     .argv = &.{self.exec},
@@ -1543,7 +1567,11 @@ fn main(self: *Resident) void {
                     // answers, so we have to be able to hear it.
                     .stdout = .pipe,
 
-                    .stderr = if (pair) |p| .{ .file = p.theirs } else .inherit,
+                    .stderr = switch (plan) {
+                        .none => .inherit,
+                        .pair => if (pair) |p| .{ .file = p.theirs } else .inherit,
+                        .pipe => .pipe,
+                    },
                 }) catch |err| {
                     if (pair) |p| {
                         p.ours.close(io);
@@ -1553,16 +1581,34 @@ fn main(self: *Resident) void {
                     break :step .failure;
                 };
 
-                if (pair) |p| {
-                    // Our copy of the child's end, now that the child has
-                    // its own. Left open it would keep the socket alive for
-                    // ever, which is only harmless because we no longer
-                    // rely on end-of-input -- and relying on nothing is not
-                    // a reason to leak a descriptor per restart.
-                    p.theirs.close(io);
-                    errs = p.ours;
+                // Whichever way it was made, this is our end to read.
+                const mine: ?std.Io.File = switch (plan) {
+                    .none => null,
+                    .pair => if (pair) |p| mine: {
+                        // Our copy of the child's end, now that the child
+                        // has its own. Left open it would keep the socket
+                        // alive for ever, which is only harmless because we
+                        // no longer rely on end-of-input -- and relying on
+                        // nothing is not a reason to leak a descriptor per
+                        // restart.
+                        p.theirs.close(io);
+                        break :mine p.ours;
+                    } else null,
 
-                    drain_ctx = .{ .plog = &self.plog.?, .file = p.ours, .io = io };
+                    // Taken out of the child, because from here on this
+                    // file is closed by `hush` and a second owner would
+                    // close it twice.
+                    .pipe => mine: {
+                        const f = child.?.stderr;
+                        child.?.stderr = null;
+                        break :mine f;
+                    },
+                };
+
+                if (mine) |ours| {
+                    errs = ours;
+
+                    drain_ctx = .{ .plog = &self.plog.?, .file = ours, .io = io };
                     drain = std.Thread.spawn(.{}, PluginLog.Drain.run, .{&drain_ctx}) catch {
                         // The same call the missing reaper thread gets, and
                         // for a version of the same reason: with nothing

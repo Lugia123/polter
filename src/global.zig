@@ -66,14 +66,31 @@ pub fn init(opts: InitOpts) !void {
         },
         .args = switch (opts) {
             .main, .tool => |m| m.args,
-            // TODO: Using the C API from Windows is unsupported at this time.
+            // On Windows, `std.process.Args.Vector` is a single WTF-16
+            // command-line string (`[]const u16`), not an argv array, so the
+            // C API's UTF-8 `argv` cannot be handed to it directly.
             //
-            // When do we plan on supporting Windows, it's recommended to
-            // ensure that the C API can take a UNICODE_STRING (aka []16, a
-            // WTF-16 string) so that it can just be passed into
-            // std.process.Args.Vector directly.
+            // The original recommendation, kept here because it is still the
+            // fuller answer: to pass real arguments, the C API should take a
+            // UNICODE_STRING (aka []u16, a WTF-16 string) so that it can be
+            // passed into std.process.Args.Vector directly.
+            //
+            // We give Windows an empty command line rather than widening the
+            // C ABI, because nothing on this target actually reads it:
+            //
+            //   - `.args` feeds `Io.Threaded.Argv0.init`, which ignores its
+            //     argument on every target except OpenBSD/Haiku.
+            //   - It feeds `cli.action.detectArgs`, whose iterator yields
+            //     nothing for an empty command line, so `action` is null --
+            //     the same result an embedded host gets by passing argc=0.
+            //
+            // The cost is that CLI actions (`ghostty_cli_try_action`) are
+            // inert for the Windows C API; an embedded host owns its own
+            // command line anyway. If Windows later wants them, the cheap
+            // upgrade is `GetCommandLineW()` here, which is still no ABI
+            // change.
             .c => |c| .{ .vector = if (builtin.os.tag == .windows)
-                return error.UnsupportedOSForCApi
+                &[_]u16{}
             else
                 c.argv[0..c.argc] },
         },

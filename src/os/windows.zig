@@ -104,8 +104,13 @@ pub const MEM_RELEASE = 0x8000;
 pub const MEM_RESERVE = 0x2000;
 pub const OPEN_EXISTING = 3; // Known as FILE_OPEN in Windows docs
 pub const PAGE_READWRITE = 0x04;
+pub const ERROR_IO_PENDING = 997;
+pub const ERROR_PIPE_BUSY = 231;
+pub const ERROR_PIPE_CONNECTED = 535;
 pub const GENERIC_WRITE = 0x40000000;
+pub const PIPE_ACCESS_DUPLEX = 0x00000003;
 pub const PIPE_ACCESS_INBOUND = 0x00000001;
+pub const PIPE_UNLIMITED_INSTANCES = 255;
 pub const PIPE_ACCESS_OUTBOUND = 0x00000002;
 pub const PIPE_READMODE_BYTE = 0x00000000;
 pub const PIPE_TYPE_BYTE = 0x00000000;
@@ -116,6 +121,7 @@ pub const PROC_THREAD_ATTRIBUTE_NUMBER = 0x0000FFFF;
 pub const PROC_THREAD_ATTRIBUTE_THREAD = 0x00010000;
 pub const S_OK = 0;
 pub const WAIT_FAILED = 0xFFFFFFFF;
+pub const WAIT_OBJECT_0 = 0;
 
 // Access control, for the plugin settings file. See `Plugin.Settings.write`.
 pub const DACL_SECURITY_INFORMATION: SECURITY_INFORMATION = 0x00000004;
@@ -233,6 +239,33 @@ pub const exp = struct {
             nDefaultTimeOut: DWORD,
             lpSecurityAttributes: ?*const SECURITY_ATTRIBUTES,
         ) callconv(.winapi) HANDLE;
+        pub extern "kernel32" fn CreateEventW(
+            lpEventAttributes: ?*SECURITY_ATTRIBUTES,
+            bManualReset: BOOL,
+            bInitialState: BOOL,
+            lpName: ?LPCWSTR,
+        ) callconv(.winapi) ?HANDLE;
+        pub extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+        pub extern "kernel32" fn WaitForMultipleObjects(
+            nCount: DWORD,
+            lpHandles: [*]const HANDLE,
+            bWaitAll: BOOL,
+            dwMilliseconds: DWORD,
+        ) callconv(.winapi) DWORD;
+        pub extern "kernel32" fn GetOverlappedResult(
+            hFile: HANDLE,
+            lpOverlapped: *OVERLAPPED,
+            lpNumberOfBytesTransferred: *DWORD,
+            bWait: BOOL,
+        ) callconv(.winapi) BOOL;
+        pub extern "kernel32" fn WaitNamedPipeW(
+            lpNamedPipeName: LPCWSTR,
+            nTimeOut: DWORD,
+        ) callconv(.winapi) BOOL;
+        pub extern "kernel32" fn ConnectNamedPipe(
+            hNamedPipe: HANDLE,
+            lpOverlapped: ?*OVERLAPPED,
+        ) callconv(.winapi) BOOL;
         pub extern "kernel32" fn CloseHandle(
             hObject: HANDLE,
         ) callconv(.winapi) BOOL;
@@ -332,6 +365,118 @@ pub const exp = struct {
         ) callconv(.winapi) NTSTATUS;
     };
 };
+
+/// A DACL naming this user and nobody else, ready to hand to any Win32 call
+/// that takes a `SECURITY_ATTRIBUTES`.
+///
+/// **The `P` in `D:P` is the load-bearing half.** It marks the DACL
+/// *protected*: without it the entries the parent object hands down are
+/// kept, and not inheriting them is the whole point. `rights` is the SDDL
+/// rights string -- `"FA"` for a file, `"GA"` for a kernel object such as a
+/// pipe.
+///
+/// Lives here rather than beside either caller because it is one security
+/// decision, and a second copy of it is a second place for it to drift.
+pub const OwnerOnly = struct {
+    sd: PSECURITY_DESCRIPTOR,
+
+    pub fn deinit(self: OwnerOnly) void {
+        _ = exp.kernel32.LocalFree(self.sd);
+    }
+
+    /// A `SECURITY_ATTRIBUTES` pointing at it. Borrowed: it must not outlive
+    /// the `OwnerOnly` it came from.
+    pub fn attributes(self: *const OwnerOnly) SECURITY_ATTRIBUTES {
+        return .{
+            .nLength = @sizeOf(SECURITY_ATTRIBUTES),
+            .lpSecurityDescriptor = self.sd,
+            .bInheritHandle = FALSE,
+        };
+    }
+};
+
+/// Build one, or say which call failed.
+///
+/// The error code is carried out of the block rather than asked for after
+/// it: `break` evaluates its operand *before* the scope unwinds, while
+/// `GetLastError` reads a per-thread slot that the `defer`s here --
+/// `CloseHandle`, `LocalFree` -- overwrite on their way out. Asking
+/// afterwards reports whichever cleanup ran last, very often `0`, which
+/// reads as "nothing went wrong" in the one value whose job is to say what
+/// did. A plausible wrong answer is worse than no answer.
+pub fn ownerOnly(
+    alloc: std.mem.Allocator,
+    comptime rights: []const u8,
+) error{Win32}!OwnerOnly {
+    const advapi32 = exp.advapi32;
+
+    const err: Win32Error = failed: {
+        var token: HANDLE = undefined;
+        if (advapi32.OpenProcessToken(
+            exp.kernel32.GetCurrentProcess(),
+            TOKEN_QUERY,
+            &token,
+        ) == FALSE) break :failed GetLastError();
+        defer _ = exp.kernel32.CloseHandle(token);
+
+        // `TOKEN_USER` is a header; the SID it points at lives past the end
+        // of it in the same buffer. A SID is at most 68 bytes, so one
+        // buffer with room to spare is simpler than the two-call sizing
+        // dance and cannot come up short.
+        var buf: [256]u8 align(@alignOf(TOKEN_USER)) = undefined;
+        var len: DWORD = 0;
+        if (advapi32.GetTokenInformation(
+            token,
+            .User,
+            &buf,
+            buf.len,
+            &len,
+        ) == FALSE) break :failed GetLastError();
+        const user: *const TOKEN_USER = @ptrCast(&buf);
+
+        var sid_str: LPWSTR = undefined;
+        if (advapi32.ConvertSidToStringSidW(
+            user.User.Sid,
+            &sid_str,
+        ) == FALSE) break :failed GetLastError();
+        defer _ = exp.kernel32.LocalFree(sid_str);
+
+        // Built as SDDL rather than by hand: an ACL assembled out of
+        // `InitializeAcl`/`AddAccessAllowedAce` is a dozen more calls and a
+        // dozen more ways to get a byte count wrong, for a string the
+        // system parses the same either way.
+        const sid_len = std.mem.len(sid_str);
+        const sddl = std.fmt.allocPrintSentinel(
+            alloc,
+            "D:P(A;;" ++ rights ++ ";;;{f})",
+            .{std.unicode.fmtUtf16Le(sid_str[0..sid_len])},
+            0,
+        ) catch break :failed GetLastError();
+        defer alloc.free(sddl);
+
+        const sddl_w = std.unicode.wtf8ToWtf16LeAllocZ(alloc, sddl) catch
+            break :failed GetLastError();
+        defer alloc.free(sddl_w);
+
+        var sd: PSECURITY_DESCRIPTOR = undefined;
+        if (advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl_w,
+            SDDL_REVISION_1,
+            &sd,
+            null,
+        ) == FALSE) break :failed GetLastError();
+
+        return .{ .sd = sd };
+    };
+
+    lastError = err;
+    return error.Win32;
+}
+
+/// What the most recent `ownerOnly` failure was, for the caller's log line.
+/// Not thread safe and does not need to be: it is read immediately after the
+/// error, and a wrong code in a warning is not worth a lock.
+pub var lastError: Win32Error = .SUCCESS;
 
 pub const ProcThreadAttributeNumber = enum(DWORD) {
     ProcThreadAttributePseudoConsole = 22,

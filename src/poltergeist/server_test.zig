@@ -10,10 +10,12 @@
 //! Nothing short of running it would have found that. So: run it.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const net = std.Io.net;
 const testing = std.testing;
 
 const Server = @import("Server.zig");
+const transport = @import("transport.zig");
 const wire = @import("wire.zig");
 
 const worker: u64 = 0x2222;
@@ -95,15 +97,13 @@ const Fixture = struct {
     }
 
     fn connect(self: *Fixture) !Client {
-        const addr = try net.UnixAddress.init(self.path);
-        const stream = try addr.connect(self.io);
-        return .{ .io = self.io, .stream = stream };
+        return .{ .io = self.io, .stream = try transport.connect(self.io, self.path) };
     }
 };
 
 const Client = struct {
     io: std.Io,
-    stream: net.Stream,
+    stream: transport.Conn,
     read_buf: [64 * 1024]u8 = undefined,
     write_buf: [8 * 1024]u8 = undefined,
 
@@ -406,6 +406,16 @@ const SweepDir = struct {
         self.threaded.deinit();
     }
 
+    /// The sweep exists to clear socket *files* left behind by a crash.
+    /// Windows has none to clear -- a pipe name lives in a kernel namespace
+    /// and is gone with its last handle -- so `sweepStale` is a no-op there
+    /// and these tests have nothing to assert. Skipped rather than deleted,
+    /// because the POSIX behaviour they cover is unchanged and still needs
+    /// them.
+    fn skipOnWindows() !void {
+        if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    }
+
     fn full(self: *SweepDir, buf: []u8, name: []const u8) ![]u8 {
         return std.fmt.bufPrint(buf, "{s}/{s}", .{ self.path, name });
     }
@@ -435,6 +445,7 @@ const SweepDir = struct {
 };
 
 test "sweeping removes sockets nothing is listening on" {
+    try SweepDir.skipOnWindows();
     var d: SweepDir = undefined;
     try d.setup();
     defer d.deinit();
@@ -449,6 +460,7 @@ test "sweeping removes sockets nothing is listening on" {
 }
 
 test "sweeping leaves a socket someone is still listening on" {
+    try SweepDir.skipOnWindows();
     // The one that matters. A live Polter's socket sits in this directory
     // next to the dead ones, and deleting it would cut every agent that
     // terminal is hosting off from the app.
@@ -468,6 +480,7 @@ test "sweeping leaves a socket someone is still listening on" {
 }
 
 test "sweeping does not touch anything that is not one of our sockets" {
+    try SweepDir.skipOnWindows();
     var d: SweepDir = undefined;
     try d.setup();
     defer d.deinit();
@@ -481,6 +494,7 @@ test "sweeping does not touch anything that is not one of our sockets" {
 }
 
 test "sweeping a directory that is not there does nothing and says nothing" {
+    try SweepDir.skipOnWindows();
     var d: SweepDir = undefined;
     try d.setup();
     defer d.deinit();
@@ -491,6 +505,7 @@ test "sweeping a directory that is not there does nothing and says nothing" {
 }
 
 test "a server removes its own socket when it goes away" {
+    try SweepDir.skipOnWindows();
     // A socket file outliving the process that bound it is how sixty of
     // them piled up in the state directory. The ordinary exit path has to
     // take its own with it.
