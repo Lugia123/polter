@@ -554,7 +554,7 @@ extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
         ACTION_MOVE_TAB => {
             let d = action.as_isize();
             logf!("[action] move_tab {}", d);
-            tabs::post_op(Op::MoveTab(d));
+            tabs::post_op(Op::MoveTabBy(d));
             true
         }
 

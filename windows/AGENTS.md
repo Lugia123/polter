@@ -13,6 +13,31 @@ rather than a copy because copying would throw away the reason the algorithm
 is testable on macOS, and would create a second copy to keep in agreement --
 this directory already paid once for a fork that had to be merged back by hand.
 
+## One surface, one HWND -- and what that forces
+
+A libghostty surface is bound to the `HWND` it was created with for its whole
+life, and `wgl.zig` takes a `CS_OWNDC` device context for that window and keeps
+it until the context is destroyed.
+
+**So a split on Windows is necessarily several child windows, and cannot be
+one surface drawing into several regions.** macOS can nest `NSView`s inside a
+single surface's view, so the SwiftUI side is free to treat a split as a layout
+detail; here it is a window-management fact. Anyone arriving from the macOS
+code will reach for "draw two panes in one surface" first, and that wall is
+where they will stop.
+
+The same fact is why a tab is a child window rather than a repaint, and why
+`tabs.rs` is a tree of leaves each owning one `HWND` plus one surface.
+
+**Two more consequences, both of which cost a real-machine round trip to find:**
+
+- A surface window must be **created at its final size** before
+  `ghostty_surface_new`; a later `set_size` does not repair it. See
+  `docs/windows/development.md` section 5.2, item 4.
+- Identity is `PaneId` / `TabId` out of one shared counter, **never an index**.
+  Panes and tabs are reordered and removed, and an index quietly starts naming
+  a different one.
+
 **`[profile]` belongs in `windows/Cargo.toml`, not in a member.** Cargo ignores
 a member's profile inside a workspace and only warns; the symptom is a release
 binary that quietly went back to unwinding panics.

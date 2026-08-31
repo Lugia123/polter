@@ -60,8 +60,18 @@ pub struct Pane {
     pub surface: usize,
 }
 
+/// A tab's identity. **Never an index, and never reused.**
+///
+/// A newtype rather than a bare `u64` because tab ids and pane ids come out
+/// of the *same* counter: with two id spaces sharing one allocator, passing
+/// one where the other belongs would not collide, it would just quietly find
+/// nothing. This turns that into a compile error.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TabId(pub u64);
+
 /// One tab: a tree of panes, which of them has focus, and a label.
 pub struct Tab {
+    pub id: TabId,
     pub tree: Tree,
     pub panes: Vec<Pane>,
     pub focused: PaneId,
@@ -81,7 +91,10 @@ pub enum Op {
     NewTab,
     CloseTab(i32),
     GotoTab(i32),
-    MoveTab(i64),
+    /// What the core's `move_tab` action carries: a relative shift of the
+    /// active tab. Kept faithful to the action rather than resolved at the
+    /// call site, because the tab set can change between queueing and running.
+    MoveTabBy(i64),
     ToggleFullscreen,
     ToggleMaximize,
     ResetWindowSize,
@@ -117,9 +130,10 @@ pub struct State {
     pub scale: f64,
     /// The size the very first surface asked for, for `reset_window_size`.
     pub initial: Option<(u32, u32)>,
-    /// Handed out to panes, never reused. Starts at 1 so that 0 can mean
-    /// "no pane" in the C userdata pointer.
-    pub next_pane: PaneId,
+    /// Handed out to panes **and tabs**, never reused. One counter for both,
+    /// so an id means exactly one thing in this process. Starts at 1 so that
+    /// 0 can mean "no pane" in the C userdata pointer.
+    pub next_id: u64,
     /// Typed into the first shell as if the user had typed it (`--clock`).
     /// Owned here because the core reads the pointer during `surface_new`.
     pub initial_input: Option<std::ffi::CString>,
@@ -138,7 +152,7 @@ impl State {
             ops: Vec::new(),
             frame: 0,
             scale: 1.0,
-            next_pane: 1,
+            next_id: 1,
             initial: None,
             initial_input: None,
         }
@@ -410,10 +424,11 @@ fn create_pane(
     })
 }
 
-fn take_pane_id() -> PaneId {
+/// The next identity. Shared by panes and tabs; see `TabId`.
+fn take_id() -> u64 {
     let mut st = state();
-    let id = st.next_pane;
-    st.next_pane += 1;
+    let id = st.next_id;
+    st.next_id += 1;
     id
 }
 
@@ -427,13 +442,14 @@ pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINS
         logf!("[tab] no client area yet; not creating a tab");
         return false;
     };
-    let id = take_pane_id();
+    let id = take_id();
     let Some(pane) = create_pane(frame, app, hinst, id, bounds) else {
         return false;
     };
     {
         let mut st = state();
         st.tabs.push(Tab {
+            id: TabId(take_id()),
             tree: Tree::with_pane(id),
             panes: vec![pane],
             focused: id,
@@ -470,7 +486,7 @@ fn split_focused(
         (bounds, tab.focused, tab.tree.clone())
     };
 
-    let id = take_pane_id();
+    let id = take_id();
     let new_tree = match tree.insert(id, focused, dir) {
         Ok(t) => t,
         Err(e) => {
@@ -545,6 +561,47 @@ fn close_pane(frame: HWND, id: PaneId) {
     }
     layout(frame);
     focus_active();
+}
+
+/// Move one tab to a position, **by identity**.
+///
+/// This is the primitive; the core's relative `move_tab` action resolves into
+/// it. Dragging a tab will call it directly -- a drag is a state machine that
+/// spans dozens of frames (`WM_LBUTTONDOWN` -> many `WM_MOUSEMOVE` ->
+/// `WM_LBUTTONUP`) and any frame in between can reorder, so the thing being
+/// dragged needs a name that an intervening reorder cannot invalidate. It
+/// needs no queued `Op`: mouse messages already arrive on the thread that
+/// owns the windows.
+///
+/// **The whole `Tab` moves**, and a `Tab` owns its tree, its panes and its
+/// title -- there is no second array keyed by position for them to fall out
+/// of step with. That is what makes "the order is right but the contents are
+/// wrong" not expressible here: it is a bug of parallel arrays, and there are
+/// none. The acceptance check for it (three tabs, move the first to third,
+/// the contents follow) therefore tests the model, not this function.
+pub fn move_tab_to(frame: HWND, id: TabId, to: usize) {
+    let moved = {
+        let mut st = state();
+        let Some(from) = st.tabs.iter().position(|t| t.id == id) else {
+            logf!("[tab] move: {:?} no longer exists", id);
+            return;
+        };
+        let n = st.tabs.len();
+        if n < 2 {
+            return;
+        }
+        let to = to.min(n - 1);
+        if to == from {
+            return;
+        }
+        let tab = st.tabs.remove(from);
+        st.tabs.insert(to, tab);
+        // Follow the tab that moved, not the position it left.
+        st.active = to;
+        (from, to)
+    };
+    layout(frame);
+    logf!("[tab] moved {:?} from {} to {}", id, moved.0, moved.1);
 }
 
 /// Panes in the active tab.
@@ -849,27 +906,28 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 };
                 set_active(frame, idx);
             }
-            Op::MoveTab(delta) => {
-                let n = count();
-                if n < 2 {
-                    continue;
+            Op::MoveTabBy(delta) => {
+                // Resolve to an identity here, on the main thread, and hand
+                // the rest to the primitive.
+                let target = {
+                    let st = state();
+                    let n = st.tabs.len() as i64;
+                    if n < 2 {
+                        None
+                    } else {
+                        let cur = st.active as i64;
+                        // Wrap, the way macOS does, so move_tab:1 on the last
+                        // tab brings it to the front rather than doing nothing.
+                        let mut to = (cur + delta) % n;
+                        if to < 0 {
+                            to += n;
+                        }
+                        st.tabs.get(st.active).map(|t| (t.id, to as usize))
+                    }
+                };
+                if let Some((id, to)) = target {
+                    move_tab_to(frame, id, to);
                 }
-                let cur = active_index() as i64;
-                // Wrap, the way macOS does, so move_tab:1 on the last tab
-                // brings it to the front rather than doing nothing.
-                let mut to = (cur + delta) % (n as i64);
-                if to < 0 {
-                    to += n as i64;
-                }
-                let to = to as usize;
-                {
-                    let mut st = state();
-                    let t = st.tabs.remove(cur as usize);
-                    st.tabs.insert(to, t);
-                    st.active = to;
-                }
-                layout(frame);
-                logf!("[tab] moved {} -> {}", cur + 1, to + 1);
             }
             Op::ToggleFullscreen => go_fullscreen(frame),
             Op::ToggleMaximize => unsafe {
