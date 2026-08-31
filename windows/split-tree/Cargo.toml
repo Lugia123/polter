@@ -1,0 +1,11 @@
+[package]
+name = "polter-split-tree"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# No dependencies, on purpose. This crate is the split layout algorithm and
+# nothing else: no Win32, no libghostty, no serde. That is what lets it be
+# tested on the machine the port is written on rather than only on the test
+# box.
+[dependencies]

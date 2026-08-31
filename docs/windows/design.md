@@ -29,25 +29,165 @@ macOS 已经证明了一件事：**一个外部宿主可以拥有应用生命周
 | 1. C API 加一个平台成员 | **~20 行** | 真的只有这么多 |
 | 2. **渲染后端在 `embedded` 下的空缺** | **数百到两千行** | **主体工作** |
 | 3. Polter 自己的 POSIX 假设 | **5 处** | 已定位到行；第 5 处要修完前 4 处才看得见 |
-| 4. Rust 侧的壳 | ~~一两万行~~ 见下 | 你要写的那部分 |
+| 4. Rust 侧的壳 | **1.75 万 – 3 万行**（不含测试；中心 ~2.3 万） | 你要写的那部分 |
 
-> **第 4 行那个「一两万行」不可信，两个理由。**
+> **第 4 行这个区间和它 2026-08-31 之前的写法数值上接近，但两者没有共同的输入。
+> 旧推导必须整段丢掉——留着它，换一个文件重来一遍就会得出错的数。**
 >
-> **基数错了**：它是参照 `macos/` 的 Swift 行数估的，本文原写 32,694，**实测 43,157**，
-> 低了 32%。
+> 旧推导是：数 `macos/` 里有多少行「碰平台框架」，把剩下的当作可移植的部分外推。
+> 那个量**不但不等于「不能照搬的行数」，方向还不一致**（见下）。
+> 新推导是：**拿两边都已经写完的功能面，直接比行数。**
+> 这在 2026-08-31 之前做不到——那时 Windows 侧还没有任何一行跑起来的宿主代码。
+> 今天 `windows/host/` 有 2,817 行真跑起来的东西，它就是对照组。
+
+### 4.1 四个已经两边都写完的功能面
+
+**必须按功能面配对，不能按文件配对。** 两个平台把同一件事切在不同位置——
+macOS 把死键和候选串放在 `keyDown` 里，Windows 放在 TSF 里；
+按文件比会得出「键盘便宜 5 倍、输入法贵 3 倍」这样两个都不能用的数。
+
+代码行 = 去空行、去 `//` 注释行。
+
+| 功能面 | macOS | Rust | 比 | 方向为什么是这个 |
+| --- | --- | --- | --- | --- |
+| **输入法** | 184 | 573 | **3.11×** | macOS 实现 `NSTextInputClient` 十来个方法就够，候选窗定位系统代劳；TSF 要手写 `ITextStoreACP` 26 个方法，外加手搓 COM |
+| **标签** | 334 | 574 | **1.72×** | AppKit 白送 `NSWindow` tab group 和整套标签 UI；Win32 一个都没有 |
+| **全屏** | 261 | 60 | **0.23×** | macOS 要处理原生/非原生两套、Dock、菜单栏、刘海、跨屏；Windows 存一次 `WINDOWPLACEMENT` 就完了 |
+| **键盘** | 736 | 136 | **0.18×** | 见 §4.2，这一条单独讲 |
+
+**四个数方向不一致，而且大致抵消。** Win32 在 AppKit 白送的地方贵，
+macOS 在自己独有的复杂度上贵。**任何一个「Windows 普遍贵 N 倍」的系数都是错的。**
+
+把今天宿主覆盖的**全部**功能面加总（每一项都是数出来的，没有估计值）：
+
+| 功能面 | macOS 代码行 | 出处 |
+| --- | --- | --- |
+| 键盘 | 736 | `Ghostty.Input.swift` 键相关 502 + `SurfaceView_AppKit` 的 keyDown/keyUp/performKeyEquivalent/flagsChanged/keyAction 234 |
+| 输入法 | 184 | `NSTextInputClient` 扩展 155 + preedit 助手 29 |
+| 标签 | 334 | `TerminalController` 里全部 tab 段 |
+| 全屏 / 最大化 | 261 | `Helpers/Fullscreen.swift` |
+| 窗口 / surface 宿主 / DPI | 186 | `SurfaceView_AppKit` 的 init/deinit/backingProperties/size/trackingAreas |
+| 应用启动 | 145 | `AppDelegate` 的 init + willFinishLaunching + didFinishLaunching + 通知中心 + `main.swift` |
+| 24 个 action（switch 份额 + 各自 handler） | 519 | 逐个加总；switch 按 24/72 折算 47 |
+| 剪贴板（只算已实现的标题复制） | 17 | `copyTitleToClipboard` |
+| **合计** | **2,382** | |
+
+Rust 侧同一批：`ffi.rs` 149 + `load_api` 40 + 日志 52 + `main()` 283 + 两个 `wndproc` 118
++ `ime_*` 177 + `tsf.rs` 396 + `keys.rs` 136 + `cb_*` 159 + `tabs.rs` 各段 586 = **2,096**。
+
+> **2,096 / 2,382 = 0.88 —— 在已经写完的功能面上，Rust 比 Swift 少 12%。**
 >
-> **构成更要命**：`macos/Sources` 170 文件 43,157 行里，**`import AppKit/SwiftUI/Cocoa`
-> 的占 133 文件、33,111 行 = 92%**；不碰平台框架的只有 2,644 行 = 7%。
-> **也就是说 Rust 侧能照搬的是思路，不是代码**，按总行数换算天然偏乐观。
->
-> 唯一能几乎一一对应重写的是 `Ghostty.App.swift`——2,515 行里只有 44 行碰 `NS*`，
-> 它基本就是「72 个 action 的 switch + C 调用」，**是全仓移植价值最高的一份参照**。
-> 反过来 `Features/` 里 AppleScript 1,554、App Intents 1,158 等在 Windows 上用不上。
->
-> **所以规模不该按总行数估，要按「必须实现的 action 数 × 每个的宿主侧成本」估。**
-> 已量出来的分类：72 个 action 里 **14 个必须实现**（没有它窗口不成形、不能关、
-> 看不出状态），**40 个是「对齐 macOS 能力」所需**（macOS 这 54 个全实现了），
-> 剩 18 个可以先返回 `false`（其中 9 个 **macOS 自己也没实现**）。
+> 这个分子里**已经含了 Win32 独有、Swift 侧根本不存在的 241 行**（手写 C ABI、
+> `GetProcAddress` 逐个解析、日志）。所以 0.88 不是「移植折扣」，
+> 是**净额**：多出来的和省下来的都算进去之后的比。
+
+⚠️ **这个比值钉在一个具体状态上：`windows/host/src` 为 2,817 行 / 2,130 代码行
+（2026-09-01 01:56）。** 之所以要钉住，是因为它在被改：同一天 02:07 那份是
+3,037 行 / 2,285 代码行，`main.rs` +100、`tabs.rs` +55，**全部是黑屏排查的插桩**
+（两个文件里 92 处 `logf!` / `log_line`），没有新增任何功能覆盖面。
+
+**重量的人注意：分子只能算「有对应 macOS 功能面」的行。**
+把插桩、临时探针、宿主自用的加速键表算进分子，比值会往上飘，
+而分母不动——**得到的会是一个看起来更精确、方向却是错的数。**
+重量之前先确认宿主实现的 action 数变了没有（这次没变，仍是 24）；
+**没变就说明覆盖面没变，那么分子涨了就是杂质。**
+
+### 4.2 键盘 0.18×：Windows 有时更便宜，而且便宜得有原因
+
+这一段单独写，是因为这份文档其余部分的调子偏向「Windows 处处更贵」，而那是错的。
+
+**macOS 侧那 736 行里，355 行在 Windows 上直接归零。**
+`Ghostty.Input.swift` 的 `enum Key`（176 行）和 `var cKey`（179 行）是
+**Swift 为 C 枚举做的一份镜像**，给 AppIntents、AppleScript 和快捷键 UI 用的。
+全仓一共 5 个使用点，其中 2 个就是 AppleScript 和 App Intents——
+**这两样 Windows 上本来就不做。**
+
+**Rust 侧只用六行，是因为那张表核心已经带着了。**
+`ghostty_input_key_s.keycode` 不是 `GHOSTTY_KEY_*`，核心拿它去查
+`src/input/keycodes.zig` 的**原生列**，Windows 构建下那是第 3 列 —— IBM PC set-1
+扫描码。而 `WM_KEYDOWN` 的 lParam 位 16–23 正是扫描码、位 24 是扩展标志。
+**转换六行，核心自带的 673 行表干掉剩下的活。**
+
+反过来写一张 VK→key 的表也能工作，但那会是**第二张要和 `keycodes.zig` 保持一致的表**，
+而不一致的表现是「某个布局下某个键什么都不做」——不报错，没人会发现。
+**这条便宜不是运气，是一次「先读核心怎么查表，再决定自己写什么」换来的。**
+
+### 4.3 分档外推
+
+`macos/Sources` 实测 **35,755 行 / 24,621 代码行**（注释+空行 31%）。
+
+**在 Windows 上没有这个概念，不做 —— 2,543 代码行。**
+**这份清单以前不在文档里，而它就是「能力对齐 macOS」这个目标的边界：**
+
+| | 代码行 | 为什么 Windows 上不存在 |
+| --- | --- | --- |
+| AppleScript | 1,035 | macOS 的应用脚本桥。Windows 无对应物 |
+| App Intents | 885 | macOS/iOS 的 Shortcuts 集成 |
+| Custom App Icon | 293 | 换 Dock 图标。Windows 的任务栏图标是另一套机制（见 AppUserModelID） |
+| Secure Input | 157 | `EnableSecureEventInput`，macOS 独有的键盘记录防护 |
+| Services | 57 | macOS 的「服务」菜单 |
+| `Helpers/Private`（CGS / Dock） | 82 | 私有 macOS API |
+| Language | 34 | macOS 的按应用语言设置 |
+
+**要做，但不是移植（行数与 Swift 无关）—— 另计。**
+Update 1,295 行是 Sparkle 专属，Global Keybinds 102 行是 macOS event tap。
+Windows 侧分别是「自己的更新器」和 `RegisterHotKey`，
+连同品牌六处（AppUserModelID / VERSIONINFO / 互斥体 / 注册表 / 崩溃上报）
+一起估 **700 – 1,350 Rust 行**。
+
+**其余 20,681 行走系数模型：**
+
+| 档 | macOS 行 | 系数 | Rust 行 | 系数来自 |
+| --- | --- | --- | --- | --- |
+| S1 今天已覆盖 | 2,382 | **0.88** | 2,096 | 实测，已经写完了 |
+| S2 纯算法（`SplitTree`） | 848 | **0.66** | 558 | 实测，见 §4.4 |
+| S3 UI 装饰 | 4,441 | 0.15 – 0.6 | 666 – 2,665 | **不是误差，是待裁决策**，见 status.md |
+| S4 其余 | 13,010 | 0.7 – 1.0 | 9,107 – 13,010 | 以 S1 的 0.88 为中心 |
+
+S3 = Window Styles 1,447 + Command Palette 569 + Splits 三个视图 442 +
+`SurfaceView.swift`（SwiftUI 包装）912 + Plugins 视图 ~700 + About/Settings 371。
+S4 = Terminal 控制器、`Ghostty.Config`、AppDelegate 其余、Helpers、Plugins 逻辑、
+QuickTerminal、Surface View 其余。
+
+合计 Rust 代码行 **13,100 – 19,700**（中心 ~16,300）。
+按实测注释率折回总行数——宿主 25%、`split-tree` 36%，取 25–35%——
+**17,500 – 30,300 行，中心 ~23,200。**
+
+加单元测试：`split-tree` 的测试/实现比是 431/558 = **0.77**，但那是纯算法模块；
+**整份壳里能这样测的大概只有 15–20%**，其余是 Win32 交互，
+落回「只能在 Windows 上跑的测试等于没人检查的测试」那条。
+按此 **+2,200 – 4,300 行 → 含测试 20,000 – 34,000。**
+
+### 4.4 唯一能一比一照搬的那个文件，和它教的事
+
+`macos/Sources/Features/Splits/SplitTree.swift` 是全仓唯一一份纯数据结构：
+分割树、方向、比例、遍历、找邻居、关闭叶子后的塌缩。已译成
+`windows/split-tree/`（零依赖，`cargo test` 在 macOS 上就能跑，42 个测试）。
+
+**1,413 行 / 848 代码行里，能搬的是 533 行 = 63%。** 搬不动的 315 行要分两类算：
+
+- **真·平台绑定 ~145 行**：Combine 发布者 27、给 SwiftUI `.id()` 做结构 diff 的
+  `StructuralIdentity` 82、读 `NSView.bounds` 的几何 ~35
+- **Swift 语言设施 ~170 行**：`Codable` / `Equatable` / `Collection` / `Sequence` 的一致性实现。
+  Rust 侧是 6 行 derive 和一个 `Vec`——**这不是工作量，是省下来的工作量**
+
+移植时还发现原文件内部有一处真实的不一致：`calculateViewBounds`（Y-up，AppKit 视图坐标）
+和 `spatialSlots`（Y-down）**对同一个 vertical split 给出相反的矩形**，各自在自己的
+约定里都对。Win32 客户区坐标是 Y-down，所以只搬后者。
+
+### 4.5 为什么「碰平台符号的行数」这个量被弃用了
+
+三个文件，三个方向，**用符号密度外推方向都是错的**：
+
+| 文件 | 碰 `NS*` | 实际 | 为什么 |
+| --- | --- | --- | --- |
+| `Ghostty.App.swift` | 2,515 行里 39 行（1.6%） | 它的便宜是**别人替它付的** | 它是转发表；那 60 个 handler 各自去 AppKit 里解析目标窗口 |
+| `SplitTree.swift` | 几乎为零 | **37% 的代码行不能搬** | 它把数据结构和 SwiftUI 的 diff 缓存写在了一个文件里 |
+| `Ghostty.Input.swift` | 几乎为零 | **355 行在 Windows 上归零** | 那是给 macOS 脚本接口做的 C 枚举镜像 |
+
+顺带：本文档旧版那句「92%」今天**四种口径都复现不出来**（`import AppKit/SwiftUI/Cocoa`
+在 `macos/` 下是 113 文件 28,114 行 = 65%，只算 `Sources` 是 94 文件 22,771 行 = 63%）。
+不追这个差值——**这个量已经不用了。**
 
 第 2 块是我漏掉的。`src/renderer/OpenGL.zig` 里，`embedded` 那几支是空的，注释是
 作者自己写的：
@@ -291,12 +431,16 @@ Ghostty 的规矩不是「每平台用自己的语言」，而是：
 | 平台 | 壳 | 为什么 |
 | --- | --- | --- |
 | Linux | **Zig** + GTK4 | GTK 是 C 库，Zig 直接绑；**没有强制的打包签名链** |
-| macOS | **Swift** + AppKit，43,157 行 | AppKit 只有 ObjC/Swift；**打包、签名、公证、Sparkle 全绑在 Xcode 上** |
+| macOS | **Swift** + AppKit，35,755 行 | AppKit 只有 ObjC/Swift；**打包、签名、公证、Sparkle 全绑在 Xcode 上** |
 | Windows | **？** | Win32 是 C API（像 Linux），**但输入法是 COM**（不像任何一个） |
 
-> ⚠️ **`macos/` 的 43,157 行是重量的结果，旧值 32,694 偏低 32%。**
-> 这个数在本文里有论证作用——第一节表格「4. Rust 侧的壳 · 一两万行」那一格是参照它估出来的。
-> **基数变了，那个估计需要重看**（本次只改数字，估计本身未改）。量法见文末附录。
+> ⚠️ **这个数改过两次，第二次是往回改的。**
+> 32,694 → 43,157 → **35,755**。中间那个 43,157 是
+> `find macos -name '*.swift'` 数出来的，而它**扫进了 `macos/build/` 下的构建产物**
+> （同一份 735 行的 `GeneratedAssetSymbols.swift` 有四份副本，共 2,940 行）
+> **以及 4,462 行测试**。源码是 `macos/Sources` 的 **35,755 行 / 24,621 代码行**。
+> **一次没限定范围的 `find`，就是「基数错了 32%」这个结论本身的来源。**
+> 规模估计现在不再依赖这个基数，见第一节 §4。
 
 分水岭不在语言，在**有没有一条强制的平台工具链**，以及**输入法长什么样**。Windows
 在第一条上像 Linux，在第二条上谁都不像——这就是它三年没定的原因。
@@ -396,7 +540,10 @@ Ghostty 的规矩不是「每平台用自己的语言」，而是：
 | gtk 各库引用次数 | `grep -rhoE "\b<lib>\.[A-Za-z_]" src/apprt/gtk --include='*.zig' \| wc -l` | 见正文小字 |
 | `os/windows.zig` 的 extern | `grep -c 'extern "kernel32"' src/os/windows.zig` | 21 → **25** |
 | `WindowsPty` 行数 / 位置 | `src/pty.zig` 第 326–491 行 = 166 行 | 166（**未变**）；位置更正 |
-| `macos/` Swift 行数 | `find macos -name '*.swift' -exec cat {} + \| wc -l` | 32,694 → **43,157** |
+| `macos/` Swift 行数 | 旧口径 `find macos -name '*.swift'` **扫进了 `macos/build/` 的产物 2,940 行和测试 4,462 行**。源码口径：`find macos/Sources -name '*.swift' -exec cat {} + \| wc -l` | 32,694 → 43,157 → **35,755**（源码；代码行 24,621） |
+| 宿主 Rust 行数 | `wc -l windows/host/src/*.rs`；代码行 = 去空行去 `//` | **2,817 行 / 2,130 代码行**（2026-09-01，#73 合并后） |
+| 宿主已实现 action 数 | `sed -n '422,575p' windows/host/src/main.rs \| grep -oE 'ACTION_[A-Z_]+' \| sort -u \| wc -l` | 14 → **24** |
+| `Ghostty.App.swift` 碰 `NS*` 行数 | `grep -c 'NS[A-Z]' macos/Sources/Ghostty/Ghostty.App.swift` | 44 → **39**（代码变了；**这个量已弃用，见 §4.5**） |
 | `OpenGL.zig` / `opengl/` | `wc -l` / `find ... -exec cat` | 461 → **582** / 1,084 → **1,440** |
 | `Metal.zig` / `metal/` | 同上 | 496 → **502** / 2,205（**未变**） |
 | 群聊 + 任务 TUI 行数 | `wc -l src/cli/chat.zig src/cli/chat_layout.zig`（1,970 + 227） | 1,984 → **2,197** |
@@ -411,5 +558,8 @@ Ghostty 的规矩不是「每平台用自己的语言」，而是：
    照新行号改会让那一节看起来在说「这些地方现在还是坏的」，而它们已经修了。
    **这一节是当成历史实验记录保留，还是改写成现状，是框架问题不是数字问题，留给文档作者。**
 
-2. **第一节表格「4. Rust 侧的壳 · 一两万行」未改**——它依赖上面那个 `macos/` 基数，
-   而基数偏低了 32%。**改这个估计要连着真机数据一起重写，不在本次范围内。**
+2. ~~**第一节表格「4. Rust 侧的壳 · 一两万行」未改**~~ —— **2026-09-01 已重写，见第一节 §4。**
+   当时写的是「改这个估计要连着真机数据一起重写」，那个条件现在满足了：
+   `windows/host/` 有 2,817 行跑起来的宿主代码，可以拿它和 macOS 的同一批功能面直接比。
+   **新区间 1.75 万–3 万行和旧的「一两万行」数值上接近，但没有一个共同的输入**——
+   旧的靠符号密度外推，新的靠已完成功能面的实测转换率。**结论对、推导错，两件事都成立。**
