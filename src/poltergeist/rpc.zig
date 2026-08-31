@@ -6662,20 +6662,26 @@ test "a value the parameter does not take is refused with the ones it does" {
     try testing.expect(fake.configured == null);
 }
 
-test "the shipped manifests mark their credentials, so the guard has something to refuse" {
+test "the manifests in the tree mark their credentials, so the guard has something to refuse" {
     // `Guard` only refuses a plaintext credential where the manifest says
     // one is a credential, so every rule above is worth exactly what the
-    // shipped `plugin.json` files declare. Nothing else in the build reads
-    // them at compile time, which means an author dropping `"secret": true`
-    // would turn `plugin_configure` into a way to put a long-lived
-    // credential of an agent's choosing on the user's disk in plaintext --
-    // and every test in this file would still pass. This is the one that
-    // would not.
+    // `plugin.json` files declare. Nothing else in the build reads them at
+    // compile time, which means an author dropping `"secret": true` would
+    // turn `plugin_configure` into a way to put a long-lived credential of
+    // an agent's choosing on the user's disk in plaintext -- and every test
+    // in this file would still pass. This is the one that would not.
+    //
+    // **Every manifest in the tree, not only the ones the bundle ships.**
+    // `demo-archive` is an example and is not installed, and it is still
+    // checked here, because what decides whether this rule matters is that a
+    // manifest can be loaded -- and a plugin directory a user copies into
+    // the config directory is loaded exactly like one out of the bundle. An
+    // example is in fact the likelier one to be copied and edited.
     //
     // Embedded rather than read at runtime: a test that goes to the
     // filesystem passes when the file is missing, and missing is the
     // failure being guarded against.
-    const shipped = [_]struct {
+    const declaring = [_]struct {
         manifest: []const u8,
         /// The parameters whose value is a credential, whatever they are
         /// named. A signing key does not look like a password and is one:
@@ -6684,7 +6690,7 @@ test "the shipped manifests mark their credentials, so the guard has something t
         credentials: []const []const u8,
     }{
         .{
-            .manifest = @embedFile("plugin_manifest_archive"),
+            .manifest = @embedFile("plugin_manifest_demo_archive"),
             .credentials = &.{"sign_key"},
         },
     };
@@ -6692,11 +6698,11 @@ test "the shipped manifests mark their credentials, so the guard has something t
     // A list with nothing in it would make everything below pass by not
     // running, which is worse than having no test at all: a security check
     // that cannot fail reads, from the outside, exactly like one that keeps
-    // passing. When the last shipped plugin holding a credential goes, this
-    // is what says so.
-    try testing.expect(shipped.len > 0);
+    // passing. When the last manifest holding a credential goes, this is
+    // what says so.
+    try testing.expect(declaring.len > 0);
 
-    inline for (shipped) |s| {
+    inline for (declaring) |s| {
         var parsed = try std.json.parseFromSlice(
             std.json.Value,
             testing.allocator,
@@ -6711,7 +6717,7 @@ test "the shipped manifests mark their credentials, so the guard has something t
 
         for (s.credentials) |name| {
             const field = properties.get(name) orelse {
-                std.debug.print("a shipped manifest no longer declares {s}\n", .{name});
+                std.debug.print("a manifest no longer declares {s}\n", .{name});
                 return error.CredentialParameterGone;
             };
 

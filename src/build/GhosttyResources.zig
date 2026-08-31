@@ -148,18 +148,45 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     // path exists and nothing is ever installed into it.
     //
     // A plugin directory may also hold a `settings.json`, which is the
-    // defaults it ships with. It rides along here because the exclusion
-    // below is `.md` and nothing else; a user's own
+    // defaults it ships with. It rides along because the exclusion below is
+    // `.md` and nothing else; a user's own
     // `<config>/polter/plugins/<key>.json` still wins over it, including
     // when that file switches the plugin off. See `Plugin.Settings`.
+    //
+    // **The list is written out rather than being "everything in
+    // `plugins/`".** An example is meant to be read next to the host code,
+    // and a directory that ships is a plugin a user can switch on: put those
+    // two in one directory with a glob over it and the example ships too,
+    // which is what happened -- `demo-archive` was in the bundle of every
+    // build. Naming what ships is the only version of this that cannot go
+    // wrong silently, since a new plugin that nobody adds a line for is
+    // absent and obvious, where an example nobody excluded is present and
+    // invisible. `demo-` is the naming convention that goes with it; the
+    // list is what enforces it.
     {
-        const install_step = b.addInstallDirectory(.{
-            .source_dir = b.path("plugins"),
-            .install_dir = .{ .custom = "share" },
-            .install_subdir = b.pathJoin(&.{ "ghostty", "polter", "plugins" }),
-            .exclude_extensions = &.{".md"},
-        });
-        try steps.append(b.allocator, &install_step.step);
+        const shipped = [_][]const u8{
+            "_sdk",
+            "claude-code",
+            "codex",
+            "deepseek",
+            "gemini",
+            "iflow",
+            "kimi",
+            "opencode",
+            "qwen-code",
+        };
+
+        for (shipped) |key| {
+            const install_step = b.addInstallDirectory(.{
+                .source_dir = b.path(b.pathJoin(&.{ "plugins", key })),
+                .install_dir = .{ .custom = "share" },
+                .install_subdir = b.pathJoin(&.{
+                    "ghostty", "polter", "plugins", key,
+                }),
+                .exclude_extensions = &.{".md"},
+            });
+            try steps.append(b.allocator, &install_step.step);
+        }
     }
 
     // Themes
