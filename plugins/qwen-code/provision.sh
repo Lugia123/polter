@@ -15,9 +15,10 @@ POLTER_HOST_BIN=qwen
 # **Qwen Code is a fork of gemini-cli**, so this file is nearly its sibling:
 # `~/.qwen/settings.json`, key `mcpServers`, a `qwen mcp` subcommand of the
 # same shape. That is not a coincidence to be pleased about -- it means an
-# upstream change lands on Gemini CLI, Qwen Code and iFlow at once, and all
-# three of these files break together. Whoever fixes one should check the
-# other two.
+# upstream change lands on Gemini CLI and Qwen Code at once, and both of
+# these files break together. Whoever fixes one should check the other.
+# (iFlow CLI was the third of this shape; its service closed on 2026-04-17
+# and the plugin went with it.)
 host_mcp_current() {
   qwen mcp list 2>/dev/null | grep polter || true
 }

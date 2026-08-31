@@ -7,7 +7,7 @@
 | | 订阅 | 做什么 |
 | --- | --- | --- |
 | [archive.md](archive.md) | `chat` | 把每条群聊消息另存一份到文件系统，一天一个文件，所有群一条时间线 |
-| [provisioning.md](provisioning.md) | `provision` | **八个**：把 Polter 的 MCP 端点和 skill 装给 Claude Code / Codex / Gemini / Qwen Code / Kimi / iFlow / opencode / DeepSeek-TUI。一份实现，八份声明；**默认只开 Claude Code** |
+| [provisioning.md](provisioning.md) | `provision` | **七个**：把 Polter 的 MCP 端点和 skill 装给 Claude Code / Codex / Gemini / Qwen Code / Kimi / opencode / DeepSeek-TUI。一份实现，七份声明；**默认只开 Claude Code** |
 
 装出去的是 `src/build/GhosttyResources.zig` 里写出来的一份名单，不是对 `plugins/`
 做 glob——理由见 [../plugins.md](../plugins.md)。

@@ -169,7 +169,6 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             "codex",
             "deepseek",
             "gemini",
-            "iflow",
             "kimi",
             "opencode",
             "qwen-code",
