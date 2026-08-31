@@ -198,18 +198,40 @@ typedef union {
 } ghostty_platform_u;
 ```
 
-`src/apprt/embedded.zig` 的 `Platform.init`（约 393 行）加一支，照 `.macos` 那支写。
+`src/apprt/embedded.zig` 的 `Platform.init`（**406 行**）加一支，照 `.macos` 那支写。
 
 **加在枚举末尾**：`action.zig` 顶上的注释说得很清楚——顺序直接映射到 C 枚举，为了
 ABI 兼容，新成员一律加在最后。平台枚举同理。
 
 **这一块确实只有二十行左右。** 别被它骗了，主体在下一节。
 
-> **但 IME 定位那条缝不在这二十行里。** `embedded` 今天暴露的
-> `ghostty_surface_ime_point` 是 **macOS 的形状：宿主给核心一个点**。
-> TSF 要的是**反过来、而且是范围**——TSF 问宿主 `GetTextExt(start, end)`，
-> 宿主答一个**屏幕矩形**（见 4.1）。这两者不是一回事。
-> **具体还缺什么要等步5 接线才知道，记在步5 账上，别到时候当成新发现。**
+> **但 IME 定位那条缝不在这二十行里——虽然它比第一版写的浅得多。**
+>
+> **这段话本身被改过一次，值得留着当例子。** 初稿写的是
+> 「`ghostty_surface_ime_point` 是 macOS 的形状：**宿主给核心一个点**」。
+> **方向是反的**，而且是并入文档时没有核对签名造成的：
+>
+> - `include/ghostty.h` 的签名是 **四个 `double*`**，如果是宿主给核心，
+>   应该是两个传值的 `double`
+> - `embedded.zig` 的实现里四个全是 `x.* = …`，**只写不读**
+> - 返回类型 `IMEPos { x, y, width, height }` **就是一个矩形**
+> - `Surface.imePoint()` 取光标位置加 `preedit.width()`，用 `size.cell` 换算成像素
+>
+> **正确的说法**：`ghostty_surface_ime_point` 是**核心给宿主一个矩形**
+> （四个出参，未缩放坐标，宿主要自己乘 content_scale），内容是光标 + 组合串。
+>
+> TSF 要的是**任意范围 → 屏幕矩形**（它问宿主 `GetTextExt(start, end)`）。
+> **核心给的那一个覆盖了主用例**；任意子范围要宿主自己算——用 `cell_size`
+> （走 action 回调拿）加 `ghostty_unicode_grapheme_width`。后者已经导出在
+> `libghostty-vt` 里，头文件点名了 IME preedit 这个用例，并写明是
+> **「终端自己用的同一张宽度表」**——所以「Rust 侧会长出第二套宽度表」这个风险
+> **不存在，也不需要加 C API**。
+>
+> 代价只是打包：**宽度表在 `ghostty-vt.dll`，surface API 在 `ghostty-internal.dll`，
+> 宿主要同时加载两个**（两个都已在真机 `LoadLibrary` 成功）。
+>
+> **仍未解决的是滚动**：`imePoint()` 里有核心自己的 TODO——
+> 滚动时光标不在可见区域的情况没处理。
 
 ## 3. 渲染：这是主体，先走便宜的那条
 
@@ -228,8 +250,8 @@ apprt.embedded => {
 
 | | 要写多少 | 参照 |
 | --- | --- | --- |
-| **A. 把 WGL 填进那 3 处** | 数百行 | OpenGL 后端本体已有 461 + `opengl/` 1084 行 |
-| B. 写 D3D11 后端 | 一两千行 | `Metal.zig` 496 + `metal/` 2205 行 |
+| **A. 把 WGL 填进那 3 处** | 数百行 | OpenGL 后端本体已有 582 + `opengl/` 1440 行 |
+| B. 写 D3D11 后端 | 一两千行 | `Metal.zig` 502 + `metal/` 2205 行 |
 
 **先做 A。** 要填的是三件事：在 `HWND` 上建 WGL 上下文、`wglMakeCurrent` 的线程归属、
 `SwapBuffers` 的时机。注意 GTK 那支的注释说 **GTK 不支持线程化 OpenGL，所以它在渲染
@@ -258,14 +280,14 @@ apprt.embedded => {
 
 ```
 wakeup_cb                    唤醒事件循环
-action_cb                    73 种 action 的分发，返回 bool（不支持就 false）
+action_cb                    72 种 action 的分发，返回 bool（不支持就 false）
 read_clipboard_cb
 confirm_read_clipboard_cb
 write_clipboard_cb
 close_surface_cb
 ```
 
-**73 种 action**（`src/apprt/action.zig`），前几个是这个味道：
+**72 种 action**（`src/apprt/action.zig`），前几个是这个味道：
 `new_tab` `close_tab` `new_split` `toggle_fullscreen` `move_tab` `goto_tab`
 `goto_split` `goto_window` `resize_split` `size_limit` `initial_size` `cell_size`
 `scrollbar`……**可以只实现一部分**，不支持的返回 `false`。
@@ -378,7 +400,74 @@ Rust 里的具体后果：**任何 `RefCell` 借用都不能跨过 `OnLockGrante
 **结果：不比预期难，比预期容易。** `windows-rs` 的 COM 实现侧是像样的——26 个方法的
 `ITextStoreACP` 首次编译只有 9 个错误，全是类型别名和参数形状的小错，没有一个是
 vtable、引用计数或线程模型级别的问题；交叉编译的 exe 拷到测试机**第一次运行就完成了
-完整握手**。**这条路上风险最高的一件已经拆掉，剩下的最大未知数是渲染（第 3 节）。**
+完整握手**。**这条路上风险最高的一件已经拆掉。**
+
+---
+
+## 5.1 上面那张表只到「编得过」。真正的目标是 `polter.exe`
+
+第 0–6 步是**编译层面的准备**，做完之后仍然**没有一个能用的东西**：
+`-Dapp-runtime=none` 产出的是库，Windows 上**没有任何 apprt**——没有窗口，没有事件
+循环，没有人调 `ghostty_surface_new`。
+
+目标是：**一个 `polter.exe`，在 Windows 上能用，能力和 macOS 版一致。**
+下面这张表是按真机数据排的，**不是按原文档的猜测**。
+
+### 阻塞项，按「挡住多少别的东西」排
+
+| | 是什么 | 规模（量过的） | 状态 |
+| --- | --- | --- | --- |
+| **B1** | **没有任何 Windows apprt** | 对照 `apprt/gtk` 23,669 行；**72 个 action 里要实现 54 个**才对齐 macOS 能力 | 一行没写 |
+| **B2** | **Polter 认证链断了** | `custom env vars` 测试失败 → `GHOSTTY_POLTER_TOKEN` 传不进子进程 → **agent 连不上 Polter** | 根因未定位 |
+| **B3** | **IPC 要换命名管道** | `server.zig` 945 行里 19 处碰 `std.Io.net`；关停相关 98 行。协议/握手/token **不动** | 见 design.md §六 |
+| **B4** | **屏幕上没画出东西** | WGL 代码已就位、GL 4.3 已验；**缺的是 `HWND`，属于 B1** | 随 B1 解决 |
+| **B5** | **插件起不来** | 出厂 9 个插件里 8 个是 `.sh`；另有 `NoDevice` 是本次移植自己的 bug | 见 5.3 |
+| **B6** | **目录逃逸** | `Transcript` 防逃逸测试失败，Windows 的 `\` 也是分隔符 | **安全，不排队** |
+
+### 里程碑，每个都以「拿得出来的东西」结尾
+
+| | 做完能干什么 | 验收（观察得到，不是「看起来对」） |
+| --- | --- | --- |
+| **M0** | 知道 GL 能不能用 | ✅ **已完成**：真机 ICD 全硬件、core 4.3 创建成功 |
+| **M1** | **屏幕上出现终端画面** | 一个 Rust 宿主开出窗口，`ghostty_surface_new` 成功，**画面刷新可见**（截图为证）。含 14 个必须实现的 action |
+| **M2** | **能敲命令、能看回显** | 真机上跑起 `cmd.exe`，输入 `echo hi` 看到回显。**这是 ConPTY 第一次被端到端验证** |
+| **M3** | **能打中文** | 微软拼音组合上屏，候选窗贴在插入点（步 3 的探针已证可行，这里是接进真终端） |
+| **M4** | **Polter 监管层能用** | `server_test` 14 个在 Windows 上全绿；总管终端能看管另一个终端 |
+| **M5** | **插件能起能收能杀** | 命名管道通、插件启动、stderr 收得到、能杀掉 |
+| **M6** | **能力对齐 macOS** | 40 个「对齐所需」的 action 实现完；标签、分屏、全屏、配置、快捷键可用 |
+
+**M1 和 M2 之间没有依赖**：`Pty.open` 发生在 io 线程、`Surface.init` 返回之后，
+所以 **ConPTY 起不来不影响渲染出画面**，两条可以并行。
+
+### 5.2 M1 之前必须知道的三件事（否则会画不出来且症状不指向原因）
+
+**这三条是 `wgl.zig` 对宿主的隐含要求，代码里没写，违反了不会报错。**
+
+1. **窗口类必须带 `CS_OWNDC`。** `wgl.init` 调一次 `GetDC(hwnd)` 并**把 HDC 持有到
+   上下文销毁**。没有 `CS_OWNDC` 时 DC 来自系统的 5 个缓存 DC，用完必须还，
+   跨帧持有是未定义行为。
+2. **不能留默认背景刷，或者必须吃掉 `WM_ERASEBKGND`。** 否则 GDI 会在 GL 后缓冲
+   之外把窗口刷成背景色，**表现为闪烁**。
+3. **尺寸和 DPI 要宿主推。** `Surface.Options` **没有宽高字段**，`embedded.zig` 里
+   硬编码 800×600。宿主必须在 `WM_SIZE` 调 `ghostty_surface_set_size`、
+   DPI 变化时调 `ghostty_surface_set_content_scale`。
+
+> 步 3 的 TSF 探针**前两条都不满足**（`RegisterClassW` 里没有 `CS_OWNDC`，
+> `hbrBackground` 是 `WHITE_BRUSH`）。**直接拿它接 WGL 会踩这两个坑。**
+
+### 5.3 一个要人拍板的产品决策：Windows 上插件用什么
+
+出厂插件 9 个声明了 `exec`，**8 个是 `provision.sh`**（claude-code / codex / deepseek /
+gemini / iflow / kimi / opencode / qwen-code），1 个是 `archive.py`。
+Windows 不能直接执行 `.sh`，报 `error.InvalidExe`。
+
+| 选项 | 代价 | 影响面 |
+| --- | --- | --- |
+| **A** 每个插件加一份 `.ps1`/`.cmd` | 8 份要重写并**长期双份维护**；还要处理 PowerShell 执行策略 | 插件作者、文档、SDK |
+| **B** 保持 `.sh`，要求装 git-bash / WSL | 开发量最小；**但给每个 Windows 用户加了前置依赖**，还要探测解释器路径 | 用户安装体验 |
+| **C** 宿主按扩展名选解释器 | 改一处宿主，**插件一个不动** | 宿主 + 一份约定 |
+
+**这不是技术问题，是产品决策。** 未定之前 M5 排不进去。
 
 ## 6. 交叉编译与测试
 
@@ -516,7 +605,7 @@ Rust 的 stdout 在**不是终端**的时候按块缓冲（约 8KB），不是�
 ## 7. 已知不解决的
 
 - **Polter 的监管界面**：菜单项、tab 标识位、右键菜单现在锁在 Swift 里，Windows 是
-  第三份实现。群聊和任务面板已经是 TUI（1,984 行 Zig），不用重做。
+  第三份实现。群聊和任务面板已经是 TUI（2,197 行 Zig），不用重做。
 - **上游合入**：改 `ghostty_platform_u` 是动公共 ABI，要他们点头。
 - **msvc ABI**：`simdutf` 那个坑没解，`-gnu` 绕过去了。哪天要发 msvc 版本得回来处理。
 - **一个既有的 flaky 测试，和 Windows 移植无关**：
@@ -535,3 +624,24 @@ Rust 的 stdout 在**不是终端**的时候按块缓冲（约 8KB），不是�
 - `include/ghostty.h` —— 契约本体
 - `src/apprt/embedded.zig` —— 宿主拥有生命周期那条路
 - `src/renderer/OpenGL.zig` —— `surfaceInit` / `threadEnter` / `threadExit` 那 3 处 `embedded` 分支
+
+## 附录：这份文档里的数字是怎么量的
+
+2026-08-31 复量（任务 #60 延伸）。**只列可量的数字**；结论和实验记录不在此列。
+
+| 数字 | 量法 | 旧值 → 新值 |
+| --- | --- | --- |
+| `Platform.init` 所在行 | `grep -n "pub fn init" src/apprt/embedded.zig` | 约 393 → **406** |
+| apprt action 数（两处） | `src/apprt/action.zig` 的 **`Action.Key`**（408–485 行）成员数；用 `Action = union(Key)`（63–553 行）反向核对，两侧同为 72、双向差集为空。<br>**旧值 73 的来源是把 21 行的 `Target.Key` 混进来了——那个 enum 只有 `app`/`surface` 两个成员。** | 73 → **72** |
+| `OpenGL.zig` / `opengl/` 行数 | `wc -l src/renderer/OpenGL.zig` / `find src/renderer/opengl -name '*.zig' -exec cat {} + \| wc -l`（含步4 新增的 WGL） | 461 → **582** / 1,084 → **1,440** |
+| `Metal.zig` / `metal/` 行数 | 同上 | 496 → **502** / 2,205（**未变**） |
+| 群聊 + 任务 TUI 行数 | `wc -l src/cli/chat.zig src/cli/chat_layout.zig`（1,970 + 227） | 1,984 → **2,197** |
+| `generic.zig` 3,379 行 | `wc -l src/renderer/generic.zig` | **未变，已复核** |
+| `ghostty_surface_new` 在 409 行 | `grep -n` on `SurfaceView_AppKit.swift` | **未变，已复核** |
+| `SurfaceView.swift` 639 行递指针 | `grep -n nsview` | **未变，已复核** |
+| `ghostty_runtime_config_s` 6 个回调 | 数结构体里的 `*_cb` 字段 | **未变，已复核** |
+| `ITextStoreACP` 26 个方法 | 步3 探针按 `windows-rs` 生成的 trait 逐个实现 | **未变** |
+
+**未改动的：** 第 0 节和第 6 节里带日期的实验记录（`3975/3991`、地板对照、
+`_ = embedded.PlatformTag` 的 +1 等）是**某次运行的观测值**，不是对当前树的断言，
+照原样保留。
