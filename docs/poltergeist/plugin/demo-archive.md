@@ -1,7 +1,12 @@
-# archive
+# demo-archive
 
 **订阅 `chat`**：把每条群聊消息另存一份到文件系统，**一天一个文件，所有群排在
 一条时间线上**。
+
+**这是一个例子，而且是仓库里唯一一个。** 它不随构建装进 app bundle——`demo-`
+前缀就是这个意思，见 [README.md](README.md)。要跑它得自己拷进配置目录，见下面
+「它不预装」。它留在仓库里的理由是它是这棵树上**唯一一份完整的常驻协议实现**，
+所以协议的测试就跑它（`Resident.zig`、`rpc.zig` 都嵌了它的字节）。
 
 ```text
 ~/.local/state/polter/archive/
@@ -9,7 +14,7 @@
   2026-08-29.jsonl
 ```
 
-代码在 `plugins/archive/`，宿主一侧在 `src/poltergeist/Resident.zig` 与
+代码在 `plugins/demo-archive/`，宿主一侧在 `src/poltergeist/Resident.zig` 与
 `Feed.zig`。协议全文见 [../plugins.md](../plugins.md) 第二节。
 
 ## 它是「额外的一份」，不是记录本身
@@ -65,11 +70,21 @@
 二进制，`rpc.zig` 里那条测试读它）——所以这个标注掉了，不只是这个插件变松，是那条
 规则失去被检验的对象。测试自己也会在名单空掉时失败。
 
-## 预装即开
+## 它不预装
 
-目录里带一份 `settings.json`（`{"enabled": true, "params": {}}`）。那是**发行带的
-缺省**，只在你没有自己那份文件时生效；`~/.config/polter/plugins/archive.json`
-存在就赢，**包括它写着「关」**。运行时永不写发行那份。见
+**它曾经预装即开，现在不是。** 例子和随构建装出去的插件放在同一个目录下，而构建
+那一步是对整个 `plugins/` 目录做的 glob，所以这个例子曾经进了每一份 bundle。现在
+`GhosttyResources.zig` 里写的是一份**显式清单**，`demo-archive` 不在上面。
+
+要跑它，把整个目录拷到配置目录下：
+
+```sh
+cp -R plugins/demo-archive ~/.config/polter/plugins/demo-archive
+```
+
+拷过去之后它自带的 `settings.json`（`{"enabled": true, "params": {}}`）就是它的
+缺省，所以拷完即开。那只是**缺省**：`~/.config/polter/plugins/demo-archive.json`
+存在就赢，**包括它写着「关」**。运行时永不写目录里那份。见
 [../boundary.md](../boundary.md) 第二节与 `Plugin.Settings.readFirst`。
 
 ## `n` 和 `seq`：一个是游标，一个是幂等键
@@ -125,7 +140,7 @@ EXIT=0
 
 ```console
 $ printf '%s\n%s\n' \
-  '{"hello":1,"plugin":"archive","cursor":0,"events":["chat"],"groups":["*"],"calls":[],"params":{"dir":"/tmp/a"}}' \
+  '{"hello":1,"plugin":"demo-archive","cursor":0,"events":["chat"],"groups":["*"],"calls":[],"params":{"dir":"/tmp/a"}}' \
   '{"cursor":0,"through":11,"events":[{"n":11,"kind":"chat","seq":110,"at_ms":1786819271275,"group":"build","author":"worker","text":"hi"}]}' \
   | ./archive.py > /tmp/x.log 2>&1; echo "EXIT=$?"
 ```
