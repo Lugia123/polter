@@ -299,6 +299,18 @@ close_surface_cb
 （`ghostty_surface_new` 在 409 行）和 `SurfaceView.swift`（639 行把 `NSView` 指针递
 过去）。**Rust 侧要做的是同一件事，把 `NSView*` 换成 `HWND`。**
 
+> **参照 macOS 的时候，有一件事不要从行数上推。**
+> Swift 侧一个文件「碰不碰 `NS*`」和「这段能不能照搬」不是同一个量，方向还不一致——
+> 转发表符号密度低是因为代价由被它转发的地方付；给脚本接口做的 C 枚举镜像
+> 不碰平台符号但在 Windows 上整段归零。规模怎么估见
+> [design.md §4](design.md)（拿两边都写完的功能面直接比行数，实测 0.88），
+> 哪些不是估计误差而是**待人拍板**见
+> [status.md 五之二](status.md)。
+>
+> **已经译完可以直接用的只有一份**：`windows/split-tree/`，分割树的算法，
+> 零依赖、`cargo test` 在 macOS 上就能跑。它不依赖 Win32 也不依赖 libghostty，
+> 只回答「谁在哪、多大」，窗口创建仍然是宿主的活。
+
 ### 4.1 输入法：宿主要满足的第二份契约（TSF）
 
 除了 `ghostty_runtime_config_s` 那 6 个回调，Windows 宿主还要实现
@@ -474,9 +486,9 @@ vtable、引用计数或线程模型级别的问题；交叉编译的 exe 拷到
 **M1 和 M2 之间没有依赖**：`Pty.open` 发生在 io 线程、`Surface.init` 返回之后，
 所以 **ConPTY 起不来不影响渲染出画面**，两条可以并行。
 
-### 5.2 M1 之前必须知道的三件事（否则会画不出来且症状不指向原因）
+### 5.2 M1 之前必须知道的四件事（否则会画不出来且症状不指向原因）
 
-**这三条是 `wgl.zig` 对宿主的隐含要求，代码里没写，违反了不会报错。**
+**这四条是 `wgl.zig` 对宿主的隐含要求，代码里没写，违反了不会报错。**
 
 1. **窗口类必须带 `CS_OWNDC`。** `wgl.init` 调一次 `GetDC(hwnd)` 并**把 HDC 持有到
    上下文销毁**。没有 `CS_OWNDC` 时 DC 来自系统的 5 个缓存 DC，用完必须还，
@@ -486,6 +498,24 @@ vtable、引用计数或线程模型级别的问题；交叉编译的 exe 拷到
 3. **尺寸和 DPI 要宿主推。** `Surface.Options` **没有宽高字段**，`embedded.zig` 里
    硬编码 800×600。宿主必须在 `WM_SIZE` 调 `ghostty_surface_set_size`、
    DPI 变化时调 `ghostty_surface_set_content_scale`。
+
+4. **上下文必须建在一个已经是最终尺寸的窗口上。**【实测，两个变量已拆开】
+   `ghostty_surface_new` 内部就在**主线程**调 `wgl.init`，上下文当场创建，而
+   `wgl.zig` 的 `clientSize`（`OpenGL.surfaceSize` 用它）是**问窗口要
+   `GetClientRect`**。宿主如果先把窗口建成一个占位尺寸（子窗口很容易写成
+   100×100 再 `layout` 里放大），**整段 GL 初始化照样全部成功**——`surface_new`
+   返回非 null、`GetPixelFormat` 读得到格式、窗口照收 `WM_PAINT`——**但屏幕上
+   一个像素都没有**，而且**事后调 `ghostty_surface_set_size` 补救不回来**
+   （黑屏那一版日志里 `pushed size 984x631` 是打了的）。
+
+   **可见性不在这条里，这是量出来的不是想出来的。** 一次只把窗口留在隐藏、
+   但尺寸先设成最终值的对照运行**画面正常**。最初的归因（「必须先显示」）
+   因此是错的，被这次对照推翻。
+
+   **还没查清的是机制**：已证「先设成最终尺寸就没事」，**未证**「init 之后的
+   resize 追不上」。如果是后者，那么**用户拖动窗口边缘也会撞上同一件事**——
+   那就不是一条 init 期的约束，而是一个 resize 缺陷。判据很便宜：拖一次窗口
+   看终端跟不跟。
 
 > 步 3 的 TSF 探针**前两条都不满足**（`RegisterClassW` 里没有 `CS_OWNDC`，
 > `hbrBackground` 是 `WHITE_BRUSH`）。**直接拿它接 WGL 会踩这两个坑。**

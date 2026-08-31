@@ -1,0 +1,36 @@
+[package]
+name = "polter-host"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "polter-host"
+path = "src/main.rs"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_OpenGL",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemInformation",
+    "Win32_System_Variant",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_TextServices",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dependencies]
+# The #[implement] macro expands to paths rooted at `windows_core`, so it has
+# to be a direct dependency even though `windows` re-exports the same types.
+windows-core = "0.62"
+
+[profile.release]
+panic = "abort"
