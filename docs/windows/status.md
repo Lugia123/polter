@@ -161,9 +161,11 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
   边缘会撞上同一件事**，那就不是 init 期约束而是 resize 缺陷。判据：拖一次窗口。
 - **`ghostty_surface_key` 是否曾经工作过**：中文输入走的是 `surface_text`
   （IME 提交）和 `WM_CHAR` 兜底，**两条都绕开 `surface_key`**，所以「能打字」
-  不构成这条路通了的证据。Ctrl-C 不生效（真机确证，带负对照：同一组合发给原生
-  cmd 窗口能中断）。已在宿主两侧加日志区分「核心拒绝」和「核心根本没被问到」
-  （TSF 在消息泵里先吃掉）。
+  不构成这条路通了的证据。Ctrl-C 不生效是真机确证的。
+  ~~带负对照：同一组合发给原生 cmd 窗口能中断，所以缺陷在我们这边~~ →
+  **那个对照不成立，「缺陷在我们这边」退回未检验**：`cmd` 不看扫描码，
+  而扫描码正是这条路唯一依赖的东西。详见**第五之三节**，那里有跑之前写死的判据表。
+  已在宿主两侧加日志区分「核心拒绝」和「核心根本没被问到」（TSF 在消息泵里先吃掉）。
 - **品牌两处新暴露**：console 子系统带出来的黑框要去掉
   （`#![windows_subsystem = "windows"]`，日志已落文件不靠 stdout）；框架窗口标题
   跟随 shell 是对的，但**还没有标题时的兜底必须是 Polter**（当前建窗口时就是
@@ -216,6 +218,24 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
    **`windows/split-tree/` 的接线不再被它挡着。**
 6. **`Command: custom env vars`** 在 Windows 上失败，**已降级为非阻塞**（生产路径是整份环境照抄）。
    根因未定位，探针 `C:\app\envprobe.exe` 已就位没跑。
+7. **Ctrl-C 不生效**：缺陷确证存在，**位置未定**（宿主/核心 vs 探针的扫描码，二选一）。
+   判据表已写死在**第五之三节**，下一份真机日志一行定案。
+8. **⚠️ `ctrl+shift+c` 会静默变成「复制标题」——这条还没发生，但触发条件已经在了。**
+
+   **两条腿不一样，这是关键**：`ctrl+c` 靠 **keycode** 走 `ctrlSeq`；
+   `ctrl+shift+c` 的默认绑定是 `.{ .key = .{ .unicode = 'c' } }`（`Config.zig:6782`），
+   而 `Binding.getEvent` 的三级匹配是 物理键 → `utf8` 单码点 → **`unshifted_codepoint`**
+   （`Binding.zig:2787`）。ctrl+shift+c 的 `WM_CHAR` 也是 `0x03`，text 为空，
+   **所以它只能靠 `unshifted_codepoint` 匹配上**，而那个值来自 `keys.rs` 的
+   `MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR)`。
+
+   - **触发条件**：`MapVirtualKeyW` 在某个键盘布局下对 `VK_C` 返回 0。
+   - **症状**：核心的绑定匹配不上 → `surface_key` 返回 false →
+     落到 `keys.rs` 的 `accelerator` 表，那里 `(ctrl, shift, VK_C)` 指向
+     **`copy_title_to_clipboard`**。于是**复制选区静默变成复制标题**。
+   - **为什么难发现**：「什么都不做」会被立刻注意到，「做了另一件事」不会——
+     用户会以为自己没选中。
+   - **两条腿不会一起坏，也不能互相当对照**：ctrl+c 好不代表 ctrl+shift+c 好，反之亦然。
 
 ## 五之二、三条裁决（2026-09-01 已定）
 
@@ -277,7 +297,87 @@ Splits 的三个视图、`SurfaceView.swift` 的 SwiftUI 包装、插件页、�
 **机制缺口**没定：插件清单里没有「支持哪些系统」这个字段，
 所以平台专属插件只能在启动失败时暴露。**改插件模型要人拍板，不在 M5 范围内。**
 
-## 六、今天证伪或修正的判断（九条，五条是主控的）
+## 五之三、Ctrl-C：判据在跑之前先写死
+
+**缺陷已确证存在**（Polter 终端里 Ctrl-C 不中断 `ping -t`），
+**位置未定**：宿主/核心 **或** 探针，二选一。下面这张表就是用来二选一的。
+
+### 为什么位置退回了「未定」
+
+原先的结论是「缺陷在我们这边」，依据是一个负对照：同一个 argus 组合发给原生 cmd
+窗口能立刻中断。**那个对照不成立**——`cmd` 读的是控制台输入缓冲区，拿到的是虚拟键码
+和字符，**它从头到尾不看扫描码**。所以那次对照证明的是「按键到达了 OS、并且能让一个
+控制台程序收到 Ctrl+C 事件」，**它没有证明 `WM_KEYDOWN` 的 lParam 里扫描码非零**——
+而后者是我们这条路唯一依赖的东西。教训记在第七节第 11 条。
+
+### 静态复核已经确定的三件事
+
+**1. 在 Windows 上，Ctrl-C 完全押在物理键查表上，没有第二条路。**
+`key_encode.zig:682` 的 `ctrlSeq` 取字符只有两个来源：
+
+```zig
+if (utf8.len == 1) break :char utf8[0];      // 第一来源：文本
+if (logical_key.codepoint()) |cp| { ... }    // 第二来源：物理键
+return null;                                  // 没有第三个
+```
+
+**`unshifted_codepoint` 不是 `char` 的来源**，它只在 `char` 已取到且是大写字母时用来
+转小写。而 `keys.rs` 对控制字符**故意不送 text**（`c >= 0x20` 才填）。
+所以 Ctrl-C 走的必然是第二条：`keycode → .key_c → 'c' → 3`。
+**在会送 text 的平台上 keycode 错了会被文本掩盖，Windows 上不会**——
+「映射这一段是对的」不是旁证，是唯一的承重墙。
+
+**2. `keycode == 0` 会静默命中垃圾条目。**
+`keycodes.zig` 里 Win 列为 `0x0000` 的有 **85 条**，线性扫描第一个撞上的是第 184 行
+`.{ 0x000000, 0x0000, 0x0000, 0x0000, 0xffff, "" }`，code 是空串，
+`code_to_key.get("")` 查不到 → `key = .unidentified` → `codepoint()` 返回 null →
+`ctrlSeq` 返回 null → **什么都不编码**。
+
+| | 扫描码正常 | **扫描码 = 0** |
+| --- | --- | --- |
+| 打字母 `a` | text=`"a"` → 正常 | `.unidentified`，但 **text 仍在** → 命中第一来源 → **照常工作** |
+| **Ctrl-C** | `.key_c` → `'c'` → `0x03` | **`.ignored`，静默失效** |
+
+**字母正常、Ctrl-C 静默失效——和症状逐字吻合。** 什么时候扫描码会是 0：物理键盘不会，
+RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCODE` 时会**。
+
+**3. TSF 吃不吃这个键，读我们的代码得不到答案。**
+宿主没有注册自己的 `ITfKeyEventSink`（`tsf.rs` 只实现了 `ITextStoreACP` 和
+`ITfContextOwnerCompositionSink`），**吃不吃 100% 是当前文字服务的决定**。
+而且文档管理器只要 surface 有焦点就是 focused（`ime_init` 的
+`AssociateFocus` + `SetFocus`），**与是否在组合中无关**——所以 Ctrl-C 一定会被问到。
+
+### 判据表：`keys.rs` 那行日志，一行定案
+
+```
+[key] msg=0x100 vk=0x43 keycode=0x… mods=0x… text=… -> surface_key=…
+```
+
+| 看到什么 | 结论 | 下一步 |
+| --- | --- | --- |
+| **压根没有这行**，只有 `[key] TSF ate … vk=0x43` | TSF 吃了 | 问题在 IME 交互，不在 key 路径 |
+| `keycode=0x0` … `surface_key=false` | **扫描码为 0** | 换物理键盘、或给注入补 `KEYEVENTF_SCANCODE` 复测；**这时缺陷在探针不在产品** |
+| `keycode=0x2e mods=0x2 text=none → surface_key=false` | 送进去的是对的，核心仍拒了 | **上面的静态复核有错**，回去重读 `ctrlSeq` |
+| `keycode=0x2e … → surface_key=true` | 核心编码并入队了 | **缺陷在 key 路径下游**：pty 写入 / ConPTY / 子进程 |
+
+**`mods` 出现 `0x22` 是正常的**（`0x2` ctrl + `0x20` numlock）：
+`Mods.binding()` 只保留 shift/ctrl/alt/super，锁定位和侧位都会被剥掉。
+
+⚠️ **`surface_key=true` 有一个例外，别过度解读**：`Surface.zig:2894` 在
+`terminal.modes.get(.disable_keyboard)` 时**直接返回 `.consumed` 而不编码任何东西**。
+概率很低，但它是「返回 true ⟺ 已写入 pty」这条等价关系唯一的漏洞。
+
+### 顺手排除掉的两条（附为什么它们本来是好候选）
+
+- **`CREATE_NEW_PROCESS_GROUP` —— 排除。** 微软文档写明该标志会为新进程组的所有进程
+  **禁用 Ctrl+C**，与症状完美吻合。但 `Command.zig:418` 的 flags 只有
+  `CREATE_UNICODE_ENVIRONMENT`（有 attribute list 时加 `EXTENDED_STARTUPINFO_PRESENT`），
+  全仓 `grep` 不到这个标志。
+- **Windows 上 ctrl+c 被绑成复制 —— 排除。** `Config.zig:6775` 的分支是
+  `isDarwin → super，否则 → ctrl+shift`，源码注释自己写着
+  *"Linux ctrl+shift since ctrl+c is to kill the process"*。**ctrl+c 上没有任何默认绑定。**
+
+## 六、今天证伪或修正的判断（十条，六条是主控的）
 
 | 谁 | 原来 | 实际 |
 | --- | --- | --- |
@@ -290,8 +390,10 @@ Splits 的三个视图、`SurfaceView.swift` 的 SwiftUI 包装、插件页、�
 | 主控 | `custom env vars` 掐断认证链 | **链断了**，生产是整份环境照抄 |
 | 主控 | 「回归全绿」是充分标准 | 测试**够不着** `embedded.zig` 和 `OpenGL.zig` |
 | 主控 | 控制台归属修好了输出路由 | **两个变量同时变了**，起作用的是另一个 |
+| 主控 | Ctrl-C 的缺陷在宿主侧（**有负对照**：同一组合在原生 cmd 里能中断） | 那个对照**检验的层次和被测路径依赖的层次不是同一层**——`cmd` 不看扫描码。结论**退回未检验**，见第五之三节 |
 
-**九条没有一条是靠讨论纠正的，全是靠一次具体的测量。**
+**十条没有一条是靠讨论纠正的，全是靠一次具体的测量。**
+最后一条是唯一一条**被推翻的不是判断而是证据**：负对照做了、也确实通过了。
 
 > **脚注（2026-09-01）：上表第一行那条修正，后来被再修正了一次。**
 >
@@ -337,6 +439,21 @@ Splits 的三个视图、`SurfaceView.swift` 的 SwiftUI 包装、插件页、�
 9. **规则的适用条件比规则本身更难记住。**「别在锁里做系统调用」是对的，但那把锁正是防
    use-after-close 的机制。
 10. **绕开一条路，不等于绕开它底下的那一族问题。**
+11. **负对照检验的那一层，必须就是被测路径依赖的那一层。**
+    这条不是「要做负对照」的重复——**对照做了，也通过了，然后主控停在了那里。**
+
+    Ctrl-C 不生效，主控的负对照是「同一个 argus 组合发给原生 cmd 窗口能立刻中断」，
+    据此结论「探针是好的，缺陷在我们这边」。**但 `cmd` 读的是控制台输入缓冲区，
+    拿到的是虚拟键码和字符，它从头到尾不看扫描码**——而扫描码是我们这条路唯一依赖的
+    东西（见第五之三节）。那个对照证明了「按键到达了 OS」，**没有证明我们要的那一层**。
+
+    **和第 3 条的区别**：第 3 条是探针用错了、阴性等于没做实验；
+    这一条是**探针是对的、实验做成了、阳性也是真的，但它测的是隔壁那一层**。
+    第 3 条给的是「没有信息」，这一条给的是「有信息，且指向错的方向」——**更贵**。
+
+    **触发条件**：当你写下「我做过负对照了」这句话时。
+    **下一句必须是**：「它对照的是哪一层？被测路径依赖的是哪一层？两者是同一层吗？」
+    这次两者差了一层，而差的那一层正好是唯一相关的那层。
 
 ## 八、可复核的现场
 
