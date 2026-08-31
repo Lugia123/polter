@@ -46,9 +46,7 @@
 
 ## 二之二、下一步（按性价比排，都有判据）
 
-1. **M3 中文输入**：TSF 探针已验可行（约 470 行）。接进真终端只差三件，**都不需要动 C API**：
-   UTF-16↔UTF-8 换算、宽度表调 `ghostty_unicode_grapheme_width`（已导出、真机验过
-   「你」=2 格）、滚动时 `imePoint()` 的 TODO。
+1. ~~**M3 中文输入**~~ → **已完成，见第二之三节。**
 2. **M6 能力对齐**：72 个 action 里要实现 54 个（14 必须 + 40 对齐），宿主现在实现了 14 个。
    参照是 `Ghostty.App.swift`——2,515 行里只有 44 行碰 `NS*`，基本是「action 的 switch + C 调用」。
 3. **`Surface.zig:1047` 的冲突要裁**：实测「无害且无用」（主线程 82 次 `drawFrame` 零可观测
@@ -59,6 +57,51 @@
 5. **M5 插件**：**已定**——8 个 `.sh` 插件各补一份 `.ps1`/`.cmd`（见 `development.md` 5.3）。
    连带记一条**机制缺口**：插件清单里没有「支持哪些系统」这个字段，所以平台专属插件
    只能在启动失败时暴露。那是插件模型的事，不在 M5 范围内。
+
+## 二之三、M3 中文输入：已在真终端里打出汉字【实测】
+
+全链路通过，两张验收截图为证：
+
+| 环节 | 证据 |
+| --- | --- |
+| TSF 激活 | `ActivateEx ok, clientId=32` → `context pushed, editCookie=1` |
+| 按键进入 IME | 第一个真实虚拟键就出 `OnStartComposition`（**不能用合成文本，它绕过 IME**） |
+| 组合串 | `SetText 0..0 <- "n"` → `SetText 0..2 <- "你"` |
+| **候选窗定位** | 截图：候选窗**紧贴 preedit 正下方**，不是屏幕角落 |
+| **preedit 渲染** | 截图：终端里 `>ni` **带下划线**，核心自己画的 |
+| **上屏** | `OnEndComposition commit="你"`，截图里 `C:\Users\bestf>你` |
+
+**`SetText 0..2 <- "你"` 这个范围本身是一次验证**：「你」是 **1 个 UTF-16 码元但占 2 格**，
+是这条路上最容易算错的地方。用核心的 `ghostty_unicode_grapheme_width` 算的，不是手写表。
+
+### 实现上的一个判断，不是从探针照搬来的
+
+探针里文档是一行自己画的文本、在自己编的网格上。接进终端时形状变了：
+**文档只装组合串**——终端不是可编辑文档，`ITextStoreACP` 不假装持有一个；
+`GetText` 只答 preedit，上屏的字通过 `ghostty_surface_text` 离开后就不再属于这里。
+
+### ⚠️ `ghostty_surface_ime_point` 的四个出参不在同一个单位里
+
+读 `Surface.zig:2277-2340` 发现的，**96dpi 上看不出来，缩放显示器上会**：
+
+| 出参 | 实际是什么 |
+| --- | --- |
+| `x` | 光标格的**水平中点**，不是左边缘（`x += cell_width / 2`） |
+| `y` | 光标格的**底边**，不是顶边（`y += cell_height`） |
+| `height` | 格高 **÷ content_scale** |
+| `width` | preedit 宽度，**故意没有除以 content_scale** |
+
+最后一条是源码里作者自己的话：*"we don't apply content scale here because it looks
+like for some reason in macOS its already scaled. I'm not sure why that is"*。
+
+**当前的处理是不用 `width`**——列数由宿主按宽度表自己量，x/y/height 乘回 scale。
+**接 DPI 缩放的人要先看这一条。**
+
+### 已知未解（原样记下，不是失败）
+
+- **滚动**：核心自己在 `imePoint()` 里的 TODO 还在——组合中滚屏可能让候选窗跑偏。
+- **没有 VK → keycode 表**：`WM_CHAR` 直接走 `ghostty_surface_text`，够打字够回车，
+  **不够 Ctrl-C**。那是键盘路由的事，不在 M3 范围内。
 
 ## 三、四条线的最终状态
 
@@ -71,9 +114,9 @@
 
 ## 四、下一个里程碑要做什么
 
-**M3 中文输入**：TSF 探针已验可行（约 470 行）。接进真终端的三个已知欠账：
-UTF-16↔UTF-8 换算、**宽度表必须调 `ghostty_unicode_grapheme_width`**（已导出、真机验过，
-「你」=2 格），以及滚动时 `imePoint()` 的 TODO。**不需要动 C API。**
+**M3 中文输入**：✅ **已完成**（见第二之三节）。三个欠账里两个已解——UTF-16↔UTF-8 的
+三个计数彼此独立、宽度表改调核心的 `ghostty_unicode_grapheme_width`；**滚动那条仍未解**，
+是核心自己的 TODO。全程**没有动 C API**，当初判断对了。
 
 **M6 能力对齐**：72 个 action 里必须实现 54 个（14 必须 + 40 对齐），目前宿主实现了 14 个。
 
