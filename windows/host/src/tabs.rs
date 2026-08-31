@@ -33,6 +33,8 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use polter_split_tree::{Focus, NewSplit, PaneId, Rect as TreeRect, Side, Tree};
+
 use crate::ffi::*;
 use crate::{api, logf};
 
@@ -42,14 +44,39 @@ pub const STRIP_H: i32 = 30;
 /// Posted to the frame window when the action queue has something in it.
 pub const WM_POLTER_OP: u32 = WM_APP + 1;
 
-pub struct Tab {
+/// One leaf of a tab's split tree: a window, and the surface bound to it.
+///
+/// **A pane is a window because it has to be.** A libghostty surface is bound
+/// to one HWND for its whole life, and `wgl.zig` keeps a `CS_OWNDC` device
+/// context for that window -- so a split cannot be "one surface drawing two
+/// regions". macOS can nest `NSView`s inside a single surface's view; Windows
+/// cannot, and that is why the tree's leaves are HWNDs here.
+pub struct Pane {
+    /// Stable identity, and what the tree stores. **Never an index**: panes
+    /// are reordered and removed, and an index would silently come to mean a
+    /// different pane.
+    pub id: PaneId,
     pub hwnd: isize,
     pub surface: usize,
+}
+
+/// One tab: a tree of panes, which of them has focus, and a label.
+pub struct Tab {
+    pub tree: Tree,
+    pub panes: Vec<Pane>,
+    pub focused: PaneId,
     pub title: String,
 }
 
-/// One queued mutation. Kept as data rather than a closure so it can cross
-/// the thread boundary without any borrowing questions.
+impl Tab {
+    fn pane(&self, id: PaneId) -> Option<&Pane> {
+        self.panes.iter().find(|p| p.id == id)
+    }
+    fn focused_pane(&self) -> Option<&Pane> {
+        self.pane(self.focused)
+    }
+}
+
 pub enum Op {
     NewTab,
     CloseTab(i32),
@@ -61,6 +88,17 @@ pub enum Op {
     SetTabTitle(String),
     CopyTitleToClipboard,
     PresentTerminal,
+    /// `ghostty_action_split_direction_e`.
+    NewSplit(i32),
+    /// `ghostty_action_goto_split_e`.
+    GotoSplit(i32),
+    /// amount in pixels, `ghostty_action_resize_split_direction_e`.
+    ResizeSplit(u16, i32),
+    EqualizeSplits,
+    ToggleSplitZoom,
+    /// A surface asked to be closed: its pane goes, and the tab with it if it
+    /// was the last one. Carries the pane id, which is the surface userdata.
+    ClosePane(PaneId),
 }
 
 pub struct State {
@@ -79,6 +117,9 @@ pub struct State {
     pub scale: f64,
     /// The size the very first surface asked for, for `reset_window_size`.
     pub initial: Option<(u32, u32)>,
+    /// Handed out to panes, never reused. Starts at 1 so that 0 can mean
+    /// "no pane" in the C userdata pointer.
+    pub next_pane: PaneId,
     /// Typed into the first shell as if the user had typed it (`--clock`).
     /// Owned here because the core reads the pointer during `surface_new`.
     pub initial_input: Option<std::ffi::CString>,
@@ -97,6 +138,7 @@ impl State {
             ops: Vec::new(),
             frame: 0,
             scale: 1.0,
+            next_pane: 1,
             initial: None,
             initial_input: None,
         }
@@ -157,36 +199,75 @@ fn strip_h(scale: f64) -> i32 {
 
 /// Put the active tab's child window over the client area below the strip,
 /// and hide every other one.
-pub fn layout(frame: HWND) {
+/// The area a tab's panes live in: the client area minus the strip.
+fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
     let mut rc = RECT::default();
     unsafe {
         if GetClientRect(frame, &mut rc).is_err() {
-            return;
+            return None;
         }
     }
-    // Snapshot, then drop the guard *before* touching Windows: `SetWindowPos`
-    // with SWP_SHOWWINDOW sends WM_SIZE straight into `surface_wndproc` on
-    // this thread, and that handler takes this same lock. See `state()`.
-    let (sh, active, children): (i32, usize, Vec<HWND>) = {
+    let w = (rc.right - rc.left) as f64;
+    let h = ((rc.bottom - rc.top - sh).max(0)) as f64;
+    Some(TreeRect::new(0.0, sh as f64, w, h))
+}
+
+/// Place every pane of the active tab where the tree says, and hide the rest.
+///
+/// **The tree does the geometry, this does the windows.** `Tree::layout` is a
+/// pure function over rectangles -- it is what the 42 tests in
+/// `windows/split-tree` cover, on whatever machine the port is written on --
+/// and nothing below the call knows what a split is. Keeping Win32 out of the
+/// algorithm is the whole reason it is a separate crate.
+///
+/// **The strip's pixels never enter the tree.** It is handed a content rect;
+/// `STRIP_H` is added and subtracted here. When the strip becomes a drawn,
+/// draggable thing, none of the tree code changes.
+pub fn layout(frame: HWND) {
+    // Pure work under the lock, Windows calls after it: `SetWindowPos` sends
+    // WM_SIZE back into this thread, which takes the same lock. See `state()`.
+    let (place, hide): (Vec<(HWND, TreeRect)>, Vec<HWND>) = {
         let st = state();
-        (
-            strip_h(st.scale),
-            st.active,
-            st.tabs.iter().map(|t| HWND(t.hwnd as *mut c_void)).collect(),
-        )
-    };
-    let w = rc.right - rc.left;
-    let h = (rc.bottom - rc.top - sh).max(0);
-    for (i, hw) in children.into_iter().enumerate() {
-        unsafe {
-            if i == active {
-                let _ = SetWindowPos(hw, None, 0, sh, w, h, SWP_NOZORDER | SWP_SHOWWINDOW);
-            } else {
-                let _ = ShowWindow(hw, SW_HIDE);
+        let sh = strip_h(st.scale);
+        let Some(bounds) = content_bounds(frame, sh) else {
+            return;
+        };
+        let mut place = Vec::new();
+        let mut hide = Vec::new();
+        for (i, tab) in st.tabs.iter().enumerate() {
+            if i != st.active {
+                hide.extend(tab.panes.iter().map(|p| HWND(p.hwnd as *mut c_void)));
+                continue;
+            }
+            let laid = tab.tree.layout(bounds);
+            for p in tab.panes.iter() {
+                let hw = HWND(p.hwnd as *mut c_void);
+                // A pane absent from the layout is one a zoom is covering.
+                match laid.iter().find(|(id, _)| *id == p.id) {
+                    Some((_, r)) => place.push((hw, *r)),
+                    None => hide.push(hw),
+                }
             }
         }
-    }
+        (place, hide)
+    };
+
     unsafe {
+        // Hide before showing, so a zoom toggle does not flash both.
+        for hw in hide {
+            let _ = ShowWindow(hw, SW_HIDE);
+        }
+        for (hw, r) in place {
+            let _ = SetWindowPos(
+                hw,
+                None,
+                r.x as i32,
+                r.y as i32,
+                (r.w as i32).max(1),
+                (r.h as i32).max(1),
+                SWP_NOZORDER | SWP_SHOWWINDOW,
+            );
+        }
         let _ = InvalidateRect(Some(frame), None, false);
     }
 }
@@ -244,23 +325,35 @@ pub fn paint_strip(frame: HWND) {
     let _ = unsafe { EndPaint(frame, &ps) };
 }
 
-/// Create one tab: a child window plus the surface bound to it.
+/// Create one pane: a child window at the rectangle the tree gave it, plus
+/// the surface bound to that window.
 ///
-/// Returns false and logs if either half fails. The caller keeps running --
-/// a tab that could not be made is not a reason to lose the ones that exist.
-pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTANCE) -> bool {
+/// **The window is created at its final size and shown before
+/// `ghostty_surface_new`.** That is not tidiness: the renderer sizes itself
+/// from `GetClientRect` of this HWND inside `surface_new`, and a surface built
+/// on a placeholder-sized window renders black with no error anywhere. See
+/// docs/windows/development.md section 5.2, item 4.
+fn create_pane(
+    frame: HWND,
+    app: App,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    id: PaneId,
+    r: TreeRect,
+) -> Option<Pane> {
     let scale = state().scale;
+    let (x, y) = (r.x as i32, r.y as i32);
+    let (w, h) = ((r.w as i32).max(1), (r.h as i32).max(1));
 
     let child = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("PolterSurface"),
             PCWSTR::null(),
-            WS_CHILD | WS_CLIPSIBLINGS,
-            0,
-            strip_h(scale),
-            100,
-            100,
+            WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE,
+            x,
+            y,
+            w,
+            h,
             Some(frame),
             None,
             Some(hinst),
@@ -268,114 +361,196 @@ pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINS
         )
     };
     let child = match child {
-        Ok(h) => h,
+        Ok(c) => c,
         Err(e) => {
-            logf!("[tab] CreateWindowExW(child) failed: {:?}", e);
-            return false;
+            logf!("[pane] CreateWindowExW failed: {:?}", e);
+            return None;
         }
     };
-    logf!("[tab] surface hwnd = {:?}", child.0);
-
-    // **Give the window its final size before the core builds a GL context
-    // on it.** This is not a preference; it is the difference between a
-    // terminal and a black rectangle.
-    //
-    // `ghostty_surface_new` calls `wgl.init` on this thread, and the renderer
-    // sizes itself from `GetClientRect` of this HWND (`wgl.zig`'s
-    // `clientSize`, used by `OpenGL.surfaceSize`). Creating the window at
-    // 100x100 and resizing it afterwards -- even with an explicit
-    // `set_size` -- rendered black on the test machine; setting the final
-    // size here first rendered a terminal.
-    //
-    // **Visibility is not part of it.** That was measured, not assumed: a run
-    // that kept the window hidden until `layout` but set this size still
-    // rendered correctly. See docs/windows/development.md section 5.2.
-    {
-        let mut rc = RECT::default();
-        unsafe {
-            if GetClientRect(frame, &mut rc).is_ok() {
-                let sh = strip_h(scale);
-                let _ = SetWindowPos(
-                    child,
-                    None,
-                    0,
-                    sh,
-                    rc.right - rc.left,
-                    (rc.bottom - rc.top - sh).max(1),
-                    SWP_NOZORDER | SWP_SHOWWINDOW,
-                );
-                logf!(
-                    "[tab] surface window sized {}x{} before surface_new",
-                    rc.right - rc.left,
-                    (rc.bottom - rc.top - sh).max(1)
-                );
-            }
-        }
-    }
+    logf!("[pane] {} hwnd = {:?} at {}x{}+{}+{}", id, child.0, w, h, x, y);
 
     let mut sc: SurfaceConfig = unsafe { (api().surface_config_new)() };
     sc.platform_tag = PLATFORM_WIN32;
     sc.platform_hwnd = child.0 as *mut c_void;
     sc.scale_factor = scale;
+    // The surface carries its own pane id: `close_surface_cb` is handed this
+    // back and nothing else, so without it a shell exiting in one pane could
+    // only be answered by guessing which pane it was.
+    sc.userdata = id as *mut c_void;
 
-    // Taken, not borrowed: only the first tab gets it, and the CString has to
-    // stay alive across `surface_new`, which is what this binding is for.
-    let initial_input = {
-        let mut st = state();
-        st.initial_input.take()
-    };
+    // Taken, not borrowed: only the first pane gets it, and the CString has
+    // to outlive `surface_new`, which is what this binding is for.
+    let initial_input = state().initial_input.take();
     if let Some(cmd) = &initial_input {
         sc.initial_input = cmd.as_ptr();
     }
 
     let s = unsafe { (api().surface_new)(app, &sc) };
     if s.is_null() {
-        logf!("[tab] ghostty_surface_new returned null -- destroying the child window");
+        logf!("[pane] ghostty_surface_new returned null -- destroying the window");
         unsafe {
             let _ = DestroyWindow(child);
         }
-        return false;
+        return None;
     }
-    logf!("[tab] surface = {:?}", s);
-
     unsafe {
         (api().surface_set_content_scale)(s, scale, scale);
+        (api().surface_set_size)(s, w as u32, h as u32);
         (api().surface_set_focus)(s, true);
     }
+    // A window TSF has never seen has no document until it is told, and the
+    // failure is silent: the IME looks switched on and nothing composes.
+    crate::ime_attach(child);
+    logf!("[pane] {} surface = {:?}", id, s);
 
+    Some(Pane {
+        id,
+        hwnd: child.0 as isize,
+        surface: s as usize,
+    })
+}
+
+fn take_pane_id() -> PaneId {
+    let mut st = state();
+    let id = st.next_pane;
+    st.next_pane += 1;
+    id
+}
+
+/// Create one tab: a tree with a single pane in it.
+///
+/// Returns false and logs if either half fails. The caller keeps running --
+/// a tab that could not be made is not a reason to lose the ones that exist.
+pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTANCE) -> bool {
+    let sh = strip_h(state().scale);
+    let Some(bounds) = content_bounds(frame, sh) else {
+        logf!("[tab] no client area yet; not creating a tab");
+        return false;
+    };
+    let id = take_pane_id();
+    let Some(pane) = create_pane(frame, app, hinst, id, bounds) else {
+        return false;
+    };
     {
         let mut st = state();
         st.tabs.push(Tab {
-            hwnd: child.0 as isize,
-            surface: s as usize,
+            tree: Tree::with_pane(id),
+            panes: vec![pane],
+            focused: id,
             title: "shell".to_string(),
         });
         st.active = st.tabs.len() - 1;
     }
-    // A new window TSF has never seen has no document until it is told, and
-    // the failure is silent: the IME looks switched on and nothing composes.
-    crate::ime_attach(child);
     layout(frame);
-    // Contract 3, stated rather than inferred. `layout` above resizes the
-    // child, and that WM_SIZE pushes the size -- but relying on a message to
-    // have been delivered makes "the core still thinks it is 800x600" depend
-    // on window-message ordering. The verified M1/M3 hosts pushed it
-    // explicitly right here; a redundant push costs one call.
-    {
-        let mut rc = RECT::default();
-        unsafe {
-            if GetClientRect(child, &mut rc).is_ok() {
-                let (w, h) = ((rc.right - rc.left) as u32, (rc.bottom - rc.top) as u32);
-                if w > 0 && h > 0 {
-                    (api().surface_set_size)(s, w, h);
-                    logf!("[tab] pushed size {}x{} scale {}", w, h, scale);
-                }
-            }
-        }
-    }
     focus_active();
     logf!("[tab] created; count now {}", count());
     true
+}
+
+/// Split the focused pane of the active tab.
+///
+/// The new tree is computed **before** the window exists, because that is
+/// what says how big the new pane is -- and a pane has to be created at its
+/// final size (see `create_pane`).
+fn split_focused(
+    frame: HWND,
+    app: App,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    dir: NewSplit,
+) {
+    let (bounds, focused, tree) = {
+        let st = state();
+        let sh = strip_h(st.scale);
+        let Some(bounds) = content_bounds(frame, sh) else {
+            return;
+        };
+        let Some(tab) = st.tabs.get(st.active) else {
+            return;
+        };
+        (bounds, tab.focused, tab.tree.clone())
+    };
+
+    let id = take_pane_id();
+    let new_tree = match tree.insert(id, focused, dir) {
+        Ok(t) => t,
+        Err(e) => {
+            logf!("[split] insert failed: {:?}", e);
+            return;
+        }
+    };
+    let Some((_, r)) = new_tree.layout(bounds).into_iter().find(|(p, _)| *p == id) else {
+        logf!("[split] the new pane is not in the layout; refusing to create it");
+        return;
+    };
+
+    let Some(pane) = create_pane(frame, app, hinst, id, r) else {
+        return;
+    };
+    {
+        let mut st = state();
+        let a = st.active;
+        if let Some(tab) = st.tabs.get_mut(a) {
+            tab.tree = new_tree;
+            tab.panes.push(pane);
+            tab.focused = id;
+        }
+    }
+    layout(frame);
+    focus_active();
+    logf!("[split] {:?} -> pane {}; {} panes in this tab", dir, id, pane_count());
+}
+
+/// Close one pane. The tab goes with it when it was the last one.
+fn close_pane(frame: HWND, id: PaneId) {
+    let (hwnd, surface, tab_empty, tab_idx) = {
+        let mut st = state();
+        let Some((idx, _)) = st
+            .tabs
+            .iter()
+            .enumerate()
+            .find(|(_, t)| t.pane(id).is_some())
+        else {
+            return;
+        };
+        let tab = &mut st.tabs[idx];
+        let Some(pos) = tab.panes.iter().position(|p| p.id == id) else {
+            return;
+        };
+        let pane = tab.panes.remove(pos);
+        tab.tree = tab.tree.remove(id);
+        if tab.focused == id {
+            // Focus whatever leaf the tree still has; tree order is as good a
+            // choice as any and is at least deterministic.
+            tab.focused = tab.tree.panes().first().copied().unwrap_or(0);
+        }
+        let empty = tab.panes.is_empty();
+        (pane.hwnd, pane.surface, empty, idx)
+    };
+
+    unsafe {
+        (api().surface_free)(surface as Surface);
+        let _ = DestroyWindow(HWND(hwnd as *mut c_void));
+    }
+    logf!("[pane] {} closed", id);
+
+    if tab_empty {
+        destroy_tab_at(frame, tab_idx);
+        if count() == 0 {
+            logf!("[tab] last tab closed -> quitting");
+            unsafe { PostQuitMessage(0) };
+            return;
+        }
+        set_active(frame, active_index());
+        return;
+    }
+    layout(frame);
+    focus_active();
+}
+
+/// Panes in the active tab.
+pub fn pane_count() -> usize {
+    let st = state();
+    st.tabs.get(st.active).map(|t| t.panes.len()).unwrap_or(0)
 }
 
 /// Give the keyboard, and with it the IME, to the active tab.
@@ -386,8 +561,8 @@ pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINS
 pub fn focus_active() {
     let child = {
         let st = state();
-        match st.tabs.get(st.active) {
-            Some(t) => HWND(t.hwnd as *mut c_void),
+        match st.tabs.get(st.active).and_then(|t| t.focused_pane()) {
+            Some(p) => HWND(p.hwnd as *mut c_void),
             None => return,
         }
     };
@@ -401,7 +576,6 @@ pub fn focus_active() {
     }
 }
 
-/// Text to type into the next surface created, consumed by the first one.
 pub fn set_initial_input(cmd: &str) {
     let mut st = state();
     st.initial_input = std::ffi::CString::new(cmd).ok();
@@ -410,35 +584,72 @@ pub fn set_initial_input(cmd: &str) {
 /// The window of the active tab, or a null HWND when there is none.
 pub fn active_hwnd() -> HWND {
     let st = state();
-    match st.tabs.get(st.active) {
-        Some(t) => HWND(t.hwnd as *mut c_void),
+    match st.tabs.get(st.active).and_then(|t| t.focused_pane()) {
+        Some(p) => HWND(p.hwnd as *mut c_void),
         None => HWND(std::ptr::null_mut()),
     }
 }
 
 pub fn count() -> usize {
-    let st = state();
-    st.tabs.len()
+    state().tabs.len()
 }
 
+/// The surface of the focused pane of the active tab -- "where typing goes".
 pub fn active_surface() -> Surface {
     let st = state();
-    match st.tabs.get(st.active) {
-        Some(t) => t.surface as Surface,
+    match st.tabs.get(st.active).and_then(|t| t.focused_pane()) {
+        Some(p) => p.surface as Surface,
         None => std::ptr::null_mut(),
     }
 }
 
-/// The surface bound to a particular child window, for the child's wndproc.
+/// The surface bound to a particular pane window, for that window's wndproc.
 pub fn surface_of(hwnd: HWND) -> Surface {
     let key = hwnd.0 as isize;
     let st = state();
-    for t in st.tabs.iter() {
-        if t.hwnd == key {
-            return t.surface as Surface;
+    for tab in st.tabs.iter() {
+        for p in tab.panes.iter() {
+            if p.hwnd == key {
+                return p.surface as Surface;
+            }
         }
     }
     std::ptr::null_mut()
+}
+
+/// The pane that owns a window, so a click can move focus to it.
+pub fn pane_of(hwnd: HWND) -> Option<(usize, PaneId)> {
+    let key = hwnd.0 as isize;
+    let st = state();
+    for (i, tab) in st.tabs.iter().enumerate() {
+        for p in tab.panes.iter() {
+            if p.hwnd == key {
+                return Some((i, p.id));
+            }
+        }
+    }
+    None
+}
+
+/// Focus follows the click: the pane clicked becomes the focused one, and its
+/// tab the active one.
+pub fn focus_pane_at(frame: HWND, hwnd: HWND) {
+    let Some((tab_idx, id)) = pane_of(hwnd) else {
+        return;
+    };
+    let changed = {
+        let mut st = state();
+        let was = (st.active, st.tabs.get(st.active).map(|t| t.focused));
+        st.active = tab_idx;
+        if let Some(tab) = st.tabs.get_mut(tab_idx) {
+            tab.focused = id;
+        }
+        was != (tab_idx, Some(id))
+    };
+    if changed {
+        layout(frame);
+    }
+    focus_active();
 }
 
 fn set_active(frame: HWND, idx: usize) {
@@ -459,21 +670,24 @@ pub fn active_index() -> usize {
     st.active
 }
 
-fn destroy_at(frame: HWND, idx: usize) {
-    let (hwnd, surface) = {
+/// Destroy a whole tab: every pane's surface and window.
+fn destroy_tab_at(frame: HWND, idx: usize) {
+    let doomed: Vec<(isize, usize)> = {
         let mut st = state();
         if idx >= st.tabs.len() {
             return;
         }
-        let t = st.tabs.remove(idx);
+        let tab = st.tabs.remove(idx);
         if st.active >= st.tabs.len() && !st.tabs.is_empty() {
             st.active = st.tabs.len() - 1;
         }
-        (t.hwnd, t.surface)
+        tab.panes.iter().map(|p| (p.hwnd, p.surface)).collect()
     };
-    unsafe {
-        (api().surface_free)(surface as Surface);
-        let _ = DestroyWindow(HWND(hwnd as *mut c_void));
+    for (hwnd, surface) in doomed {
+        unsafe {
+            (api().surface_free)(surface as Surface);
+            let _ = DestroyWindow(HWND(hwnd as *mut c_void));
+        }
     }
     layout(frame);
     logf!("[tab] closed index {}; count now {}", idx, count());
@@ -598,18 +812,18 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     CLOSE_TAB_OTHER => {
                         for i in (0..n).rev() {
                             if i != active {
-                                destroy_at(frame, i);
+                                destroy_tab_at(frame, i);
                             }
                         }
                         set_active(frame, 0);
                     }
                     CLOSE_TAB_RIGHT => {
                         for i in (active + 1..n).rev() {
-                            destroy_at(frame, i);
+                            destroy_tab_at(frame, i);
                         }
                     }
                     _ => {
-                        destroy_at(frame, active);
+                        destroy_tab_at(frame, active);
                         if count() == 0 {
                             logf!("[tab] last tab closed -> quitting");
                             unsafe { PostQuitMessage(0) };
@@ -708,6 +922,111 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 let ok = copy_to_clipboard(&title);
                 logf!("[win] copy_title_to_clipboard {:?} -> {}", title, ok);
             }
+            Op::NewSplit(dir) => {
+                // `ghostty_action_split_direction_e`
+                let d = match dir {
+                    1 => NewSplit::Down,
+                    2 => NewSplit::Left,
+                    3 => NewSplit::Up,
+                    _ => NewSplit::Right,
+                };
+                split_focused(frame, app, hinst, d);
+            }
+            Op::GotoSplit(v) => {
+                // `ghostty_action_goto_split_e`
+                let f = match v {
+                    0 => Focus::Previous,
+                    1 => Focus::Next,
+                    2 => Focus::Spatial(Side::Up),
+                    3 => Focus::Spatial(Side::Left),
+                    4 => Focus::Spatial(Side::Down),
+                    _ => Focus::Spatial(Side::Right),
+                };
+                let target = {
+                    let st = state();
+                    st.tabs
+                        .get(st.active)
+                        .and_then(|t| t.tree.focus_target(f, t.focused))
+                };
+                match target {
+                    Some(id) => {
+                        {
+                            let mut st = state();
+                            let a = st.active;
+                            if let Some(tab) = st.tabs.get_mut(a) {
+                                tab.focused = id;
+                            }
+                        }
+                        focus_active();
+                        logf!("[split] focus -> pane {}", id);
+                    }
+                    // No pane that way. Doing nothing is the honest answer;
+                    // wrapping would put focus somewhere the user did not aim.
+                    None => logf!("[split] no pane {:?} of the focused one", f),
+                }
+            }
+            Op::ResizeSplit(amount, dir) => {
+                // `ghostty_action_resize_split_direction_e`
+                let side = match dir {
+                    0 => Side::Up,
+                    1 => Side::Down,
+                    2 => Side::Left,
+                    _ => Side::Right,
+                };
+                let out = {
+                    let st = state();
+                    let sh = strip_h(st.scale);
+                    match (content_bounds(frame, sh), st.tabs.get(st.active)) {
+                        (Some(b), Some(tab)) => {
+                            Some((tab.tree.resize(tab.focused, amount, side, b), tab.focused))
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some((res, focused)) = out {
+                    match res {
+                        Ok(t) => {
+                            {
+                                let mut st = state();
+                                let a = st.active;
+                                if let Some(tab) = st.tabs.get_mut(a) {
+                                    tab.tree = t;
+                                }
+                            }
+                            layout(frame);
+                            logf!("[split] resize pane {} by {} {:?}", focused, amount, side);
+                        }
+                        Err(e) => logf!("[split] resize refused: {:?}", e),
+                    }
+                }
+            }
+            Op::EqualizeSplits => {
+                {
+                    let mut st = state();
+                    let a = st.active;
+                    if let Some(tab) = st.tabs.get_mut(a) {
+                        tab.tree = tab.tree.equalize();
+                    }
+                }
+                layout(frame);
+                logf!("[split] equalized");
+            }
+            Op::ToggleSplitZoom => {
+                let zoomed = {
+                    let mut st = state();
+                    let a = st.active;
+                    match st.tabs.get_mut(a) {
+                        Some(tab) => {
+                            tab.tree = tab.tree.toggle_zoom(tab.focused);
+                            tab.tree.zoomed()
+                        }
+                        None => None,
+                    }
+                };
+                layout(frame);
+                logf!("[split] zoom -> {:?}", zoomed);
+            }
+            Op::ClosePane(id) => close_pane(frame, id),
             Op::PresentTerminal => unsafe {
                 let _ = ShowWindow(frame, SW_RESTORE);
                 let _ = SetForegroundWindow(frame);
@@ -838,9 +1157,11 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 LRESULT(0)
             }
 
-            // Clicking a tab's terminal is how a user says "type here".
+            // Clicking a pane is how a user says "type here". With splits
+            // that is also how focus moves between them, so it goes through
+            // the model rather than straight to SetFocus.
             WM_LBUTTONDOWN => {
-                let _ = SetFocus(Some(hwnd));
+                focus_pane_at(frame_hwnd(), hwnd);
                 LRESULT(0)
             }
 

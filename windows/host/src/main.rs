@@ -416,9 +416,21 @@ extern "C" fn cb_write_clipboard(
     _confirm: bool,
 ) {
 }
-extern "C" fn cb_close_surface(_ud: *mut c_void, _confirm: bool) {
-    logf!("[action] close_surface -> quitting");
-    unsafe { PostQuitMessage(0) };
+/// A surface asked to be closed -- its shell exited, or something asked for
+/// it to go. `userdata` is the pane id we put in `ghostty_surface_config_s`,
+/// which is the only thing that says *which* pane this is: with splits,
+/// quitting the whole process here would close three panes because one shell
+/// exited.
+extern "C" fn cb_close_surface(ud: *mut c_void, _confirm: bool) {
+    let id = ud as u64;
+    logf!("[action] close_surface pane={}", id);
+    if id == 0 {
+        // No pane id means we cannot tell which one; closing nothing is safer
+        // than closing the wrong one.
+        logf!("[action] close_surface with no pane id -- ignored");
+        return;
+    }
+    tabs::post_op(tabs::Op::ClosePane(id));
 }
 
 extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
@@ -490,6 +502,35 @@ extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
         ACTION_COPY_TITLE_TO_CLIPBOARD => {
             logf!("[action] copy_title_to_clipboard");
             tabs::post_op(Op::CopyTitleToClipboard);
+            true
+        }
+
+        ACTION_NEW_SPLIT => {
+            let dir = action.as_i32();
+            logf!("[action] new_split dir={}", dir);
+            tabs::post_op(Op::NewSplit(dir));
+            true
+        }
+        ACTION_GOTO_SPLIT => {
+            let v = action.as_i32();
+            logf!("[action] goto_split {}", v);
+            tabs::post_op(Op::GotoSplit(v));
+            true
+        }
+        ACTION_RESIZE_SPLIT => {
+            let (amount, dir) = action.as_resize_split();
+            logf!("[action] resize_split {} dir={}", amount, dir);
+            tabs::post_op(Op::ResizeSplit(amount, dir));
+            true
+        }
+        ACTION_EQUALIZE_SPLITS => {
+            logf!("[action] equalize_splits");
+            tabs::post_op(Op::EqualizeSplits);
+            true
+        }
+        ACTION_TOGGLE_SPLIT_ZOOM => {
+            logf!("[action] toggle_split_zoom");
+            tabs::post_op(Op::ToggleSplitZoom);
             true
         }
 

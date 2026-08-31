@@ -129,6 +129,14 @@ fn accelerator(vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<&'static str>
         (true, true, VK_RIGHT) => Some("move_tab:1"),
         (true, true, VK_LEFT) => Some("move_tab:-1"),
         (true, false, VK_TAB) => Some("next_tab"),
+        // Splits. The names are the core's own binding syntax, so these go
+        // through exactly the path a user's keybind would.
+        (true, true, VK_D) => Some("new_split:right"),
+        (true, true, VK_E) => Some("new_split:down"),
+        (true, true, VK_Z) => Some("toggle_split_zoom"),
+        (true, true, VK_OEM_PLUS) => Some("equalize_splits"),
+        (true, true, VK_UP) => Some("goto_split:up"),
+        (true, true, VK_DOWN) => Some("goto_split:down"),
         (_, _, VK_F11) => Some("toggle_fullscreen"),
         _ => None,
     }

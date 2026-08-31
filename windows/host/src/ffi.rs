@@ -46,6 +46,11 @@ pub const ACTION_SHOW_CHILD_EXITED: u32 = 59;
 // cell_size=26, render=28, set_title=34 all agree.
 pub const ACTION_NEW_WINDOW: u32 = 1;
 pub const ACTION_NEW_TAB: u32 = 2;
+pub const ACTION_NEW_SPLIT: u32 = 4;
+pub const ACTION_GOTO_SPLIT: u32 = 17;
+pub const ACTION_RESIZE_SPLIT: u32 = 19;
+pub const ACTION_EQUALIZE_SPLITS: u32 = 20;
+pub const ACTION_TOGGLE_SPLIT_ZOOM: u32 = 21;
 pub const ACTION_TOGGLE_MAXIMIZE: u32 = 6;
 pub const ACTION_TOGGLE_FULLSCREEN: u32 = 7;
 pub const ACTION_MOVE_TAB: u32 = 15;
@@ -103,6 +108,14 @@ impl Action {
     /// `ghostty_action_move_tab_s { ssize_t amount; }`.
     pub fn as_isize(&self) -> i64 {
         i64::from_ne_bytes(self.payload[0..8].try_into().unwrap())
+    }
+
+    /// `ghostty_action_resize_split_s { u16 amount; enum direction; }`.
+    /// The enum is int-sized and 4-aligned, so it lands at offset 4, not 2.
+    pub fn as_resize_split(&self) -> (u16, i32) {
+        let amount = u16::from_ne_bytes(self.payload[0..2].try_into().unwrap());
+        let dir = i32::from_ne_bytes(self.payload[4..8].try_into().unwrap());
+        (amount, dir)
     }
 
     /// `ghostty_action_size_limit_s { u32 min_w, min_h, max_w, max_h; }`.
