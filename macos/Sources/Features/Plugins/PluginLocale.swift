@@ -7,7 +7,7 @@ import Foundation
 /// not in our catalogues and never will be. So a plugin carries its own
 /// translations beside its manifest:
 ///
-///     plugins/demo-archive/
+///     plugins/archive/
 ///       plugin.json          the manifest, values are plain strings, English
 ///       i18n/zh-Hans.json    only the fields that need saying differently
 ///

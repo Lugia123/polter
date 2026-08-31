@@ -2188,28 +2188,21 @@ test "an acknowledgement that is not an object is not an acknowledgement" {
     try testing.expect(parseAck(alloc, "{\"ok\":true,\"cursor\":-1}").?.cursor == null);
 }
 
-test "the example plugin answers the greeting the host really writes" {
+test "the archive plugin we ship answers the greeting the host really writes" {
     // The regression this file exists to keep: `Resident` arms a deadline,
     // writes `renderHello`, and **waits for a line back**. A plugin that
     // reads the greeting and then waits for a batch never answers, is
     // killed on `timeout_ms`, restarted, and killed again -- from the
     // outside, a restart loop every `timeout_ms` + backoff, and from
-    // inside the plugin, indistinguishable from sitting idle.
-    // `plugins/demo-archive/archive.py` did exactly that for one revision,
-    // back when it was preinstalled and switched on.
+    // inside the plugin, indistinguishable from sitting idle. The shipped
+    // `plugins/archive/archive.py` did exactly that for one revision.
     //
-    // So this runs **a real plugin script** against **the bytes we send**.
+    // So this runs **the script we ship** against **the bytes we send**.
     // Neither half can be stubbed: a hand-written handshake proves the
     // plugin agrees with whoever wrote the test, and a fake plugin proves
     // the host agrees with itself. Embedded rather than read off disk,
     // for the reason the manifest is: a test that goes to the filesystem
     // passes once the file is gone.
-    //
-    // The script is an example now and is not installed into the bundle,
-    // which does not weaken this: it is the only complete implementation of
-    // the protocol in the tree, so it is what the protocol has to keep
-    // agreeing with. An example that has silently stopped working is worse
-    // than no example, because it is copied before it is run.
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -2230,7 +2223,7 @@ test "the example plugin answers the greeting the host really writes" {
         var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
         defer d.close(io);
         var f = try d.createFile(io, "archive.py", fixtureMode(0o755));
-        try f.writeStreamingAll(io, @embedFile("plugin_demo_archive_py"));
+        try f.writeStreamingAll(io, @embedFile("plugin_archive_py"));
         f.close(io);
     }
 
@@ -2246,7 +2239,7 @@ test "the example plugin answers the greeting the host really writes" {
     // The clock is the assertion's other half: without it, a plugin that
     // never answers hangs this test instead of failing it, and a test that
     // hangs is a test nobody keeps.
-    var reaper: reap.Reaper = .init(io, "demo-archive", child.id, 15 * std.time.ms_per_s);
+    var reaper: reap.Reaper = .init(io, "archive", child.id, 15 * std.time.ms_per_s);
     const keeper = std.Thread.spawn(.{}, reap.Reaper.run, .{&reaper}) catch null;
     defer {
         reaper.retire();
@@ -2255,7 +2248,7 @@ test "the example plugin answers the greeting the host really writes" {
 
     const params: []const Plugin.Param = &.{.{ .name = "dir", .value = store }};
     const hello = try renderHello(alloc, .{
-        .key = "demo-archive",
+        .key = "archive",
         .cursor = 0,
         .wants = .{ .events = &.{.chat}, .groups = &.{"*"} },
         .params = params,

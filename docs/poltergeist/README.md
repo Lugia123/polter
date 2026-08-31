@@ -186,7 +186,7 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | [mcp.md](mcp.md)               | R7、R8     | MCP 工具面、sidecar、身份识别、skill 体系、不管任务的边界 | sidecar 而非把 MCP 塞进核心；现成 IPC 不可复用（`src/apprt/embedded.zig:349-360`） |
 | [chatui.md](chatui.md)         | R9         | 群聊与私信界面的承载方式                                  | 原生 UI（参照 command palette）对比 imgui（参照 `src/inspector/Inspector.zig`）    |
 | [plugins.md](plugins.md)       | R3 的一半  | 插件的全部：一个常驻协议、订阅声明取代 `Kind`、插件与 agent 共用一个能力面、凭据、权限、照着写一个 | 拆掉 `Kind`（它同时管生命周期和契约，出过两次同一个 bug）；不写 SDK，让插件直接说 MCP 那套线协议 |
-| [plugin/](plugin/)             | —          | 随构建装出去的插件各自的说明（八个 provisioning），外加唯一的例子 `demo-archive`（**不装出去**） | 官方插件的说明和插件框架分开，改一个不牵动另一个；例子和装出去的东西分开列，因为它们曾经混在一个目录里被一起装走 |
+| [plugin/](plugin/)             | —          | 随构建装出去的两个插件各自的说明（`archive`、`claude-code`） | 官方插件的说明和插件框架分开，改一个不牵动另一个 |
 | [storage.md](storage.md)      | —          | 核心自己的存储：流与记录两种形状、按天布局、往回翻       | 核心的存储是核心功能，不作为插件的数据源——插件那一半整个搬去了 plugins.md |
 | [surface.md](surface.md)      | —          | 菜单栏逐条盘点：哪些该经 MCP 开放给 AI，哪些故意不给    | 判据是「会不会让读到一段文字变成在这台机器上做一件事」 |
 | [gaps.md](gaps.md)            | —          | 作为 AI 原生终端还差什么：感知、记录、双向渠道、成本、注入 | 记录那两条已落地，论证保留；还缺的排在「排序」一节 |

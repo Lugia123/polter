@@ -178,7 +178,7 @@ pub fn add(
     // Every exe gets build options populated
     step.root_module.addOptions("build_options", self.options);
 
-    // The plugin manifests in this tree that declare a credential, so a test
+    // The plugin manifests Polter ships that declare a credential, so a test
     // can read what they declare. `plugin_configure` only refuses a plaintext
     // credential where a manifest marks the parameter `"secret": true`, which
     // makes these files load-bearing for a security rule that lives in Zig --
@@ -187,40 +187,27 @@ pub fn add(
     // when the file has gone missing, and gone missing is the failure worth
     // catching.
     //
-    // **A manifest that holds a credential belongs in this list**, whether or
-    // not it is one of the directories the bundle ships. `demo-archive` is
-    // not shipped and is still here, because the rule it exercises fires on
-    // whatever manifest is loaded, and a plugin a user copies into the config
-    // directory by hand is loaded exactly like one out of the bundle. The
-    // list being about credentials rather than about shipping is what keeps
-    // it right when a plugin moves between the two.
-    //
+    // **A shipped plugin that holds a credential belongs in this list.**
     // Dropping the last entry would leave that test asserting over nothing
-    // and passing for it, which is worse than not having the test: this one
-    // took it over from `webhook` and `chat-archive` when those two were
+    // and passing for it, which is worse than not having the test: `archive`
+    // took this over from `webhook` and `chat-archive` when those two were
     // removed, and the swap was checked by making the test fail on purpose
     // first.
-    step.root_module.addAnonymousImport("plugin_manifest_demo_archive", .{
-        .root_source_file = b.path("plugins/demo-archive/plugin.json"),
+    step.root_module.addAnonymousImport("plugin_manifest_archive", .{
+        .root_source_file = b.path("plugins/archive/plugin.json"),
     });
 
-    // And the example plugin itself, so a test can run a real plugin script
-    // against the bytes `Archive.renderHello` actually writes. Everything
-    // short of that -- a hand-written handshake fed in by hand, a self-test
-    // inside the plugin -- agrees with whatever shape the author had in mind,
-    // and this script missed the one thing the host requires (an
-    // acknowledgement of the greeting) while passing all of it. The host
-    // kills a plugin that does not answer, backs off, starts it again, for
-    // ever; back when this was preinstalled and switched on, that was every
-    // user's first run.
-    //
-    // It is worth embedding even though it no longer ships: it is the only
-    // complete implementation of the resident protocol in the repository, so
-    // it is what the protocol is tested against, and an example that has
-    // stopped agreeing with the host is an example that teaches the wrong
-    // thing to whoever copies it.
-    step.root_module.addAnonymousImport("plugin_demo_archive_py", .{
-        .root_source_file = b.path("plugins/demo-archive/archive.py"),
+    // And the archive plugin itself, so a test can run the script we
+    // actually ship against the bytes `Archive.renderHello` actually
+    // writes. Everything short of that -- a hand-written handshake fed in
+    // by hand, a self-test inside the plugin -- agrees with whatever shape
+    // the author had in mind, and the shipped plugin missed the one thing
+    // the host requires (an acknowledgement of the greeting) while passing
+    // all of it. The host kills a plugin that does not answer, backs off,
+    // starts it again, for ever; preinstalled and switched on, that was
+    // every user's first run.
+    step.root_module.addAnonymousImport("plugin_archive_py", .{
+        .root_source_file = b.path("plugins/archive/archive.py"),
     });
 
     // And the provisioning plugin, for the same reason and one of its own.

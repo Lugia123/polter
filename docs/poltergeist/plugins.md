@@ -236,7 +236,7 @@ Resident 线程失败  →  Resident.tell  →  App.submitPoltergeistAlert
 宿主写的**第一行**，整个会话只出现一次：
 
 ```json
-{"hello":1,"plugin":"demo-archive","cursor":0,
+{"hello":1,"plugin":"archive","cursor":0,
  "events":["chat"],"groups":["*"],"calls":["terminal_read"],
  "socket":"/Users/you/.local/state/polter/polter-ab12.sock",
  "token":"…64 个十六进制字符…",
@@ -268,11 +268,9 @@ Resident 线程失败  →  Resident.tell  →  App.submitPoltergeistAlert
 
 **什么都不回是最糟的一种**：`timeout_ms` 到点被杀、退避、重起、再被杀，外面看
 是一个每 `timeout_ms` + 退避重复一次的重启循环，插件自己看却像在闲等下一批。
-例子插件 `demo-archive` 有一版就是这样，而它当时还是预装即开的。挡住这件事的
-回归测试在 `Resident.zig`（「the example plugin answers the greeting the host
-really writes」）：它拿 `renderHello` 真正写出来的字节去喂**那个真脚本**。它现在
-不进 bundle 了也照测——那是这棵树上唯一一份完整的协议实现，而例子是先被抄走、
-后被跑起来的东西。手写一行
+随构建装出去的 `archive` 有一版就是这样。挡住这件事的回归测试在 `Resident.zig`
+（「the archive plugin we ship answers the greeting the host really writes」）：
+它拿 `renderHello` 真正写出来的字节去喂**我们真正装出去的那个脚本**。手写一行
 握手喂进去只能证明插件和写测试的人想的一样。
 
 ## 批次
@@ -810,8 +808,11 @@ plugins/
 动 app bundle。（早先的稿子写过「三处查找、后者覆盖前者」，**两处都不对**：第三
 处「配置里显式指定的目录」从来没有实现过，而覆盖方向是近的赢。）
 
-仓库里的 `plugins/` 会被整个装进 `<resources>/ghostty/polter/plugins/`，
-**只排除 `.md`**（`src/build/GhosttyResources.zig`）。
+装出去的是 `src/build/GhosttyResources.zig` 里**写出来的一份名单**，不是对
+`plugins/` 做 glob，每个目录**只排除 `.md`**。glob 两个方向都错：为别的用途放进
+那个目录的东西会没人决定就发出去，而一个不再发布的插件只能靠删目录来实现。写名单
+让这两件事都变成一行 diff，而且漏加一行的后果是响的——新插件装不出去，找的人第一
+时间就发现。
 
 > **删掉一个插件目录，装出去的那份不会跟着消失。** `addInstallDirectory` 只拷贝，
 > 从不删除。所以一次增量构建之后，日志里照样会出现
@@ -1161,7 +1162,7 @@ stdout 上应当**正好两行** `{"ok":true}`——加上你自己写的每一�
 文件里。
 
 **第二层：插件自带 `--self-test`。** 把逻辑那一半（批次 → 确认）和 IO 那一半分开，
-自测只驱动前者，在 `mkdtemp()` 下跑，跑完不留东西。`plugins/demo-archive/archive.py`
+自测只驱动前者，在 `mkdtemp()` 下跑，跑完不留东西。`plugins/archive/archive.py`
 是参考实现。**理由是：拿到插件的人不该为了验它先装一套东西。**
 
 **第三层：真的发一次。** 打开插件，让总管调 `plugin_test`。

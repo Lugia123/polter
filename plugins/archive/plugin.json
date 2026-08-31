@@ -1,8 +1,8 @@
 {
-  "key": "demo-archive",
-  "name": "Demo Archive",
+  "key": "archive",
+  "name": "Archive",
   "version": "1.0.0",
-  "description": "An example, and the only one: it is not installed into the app bundle, so running it means copying this directory into $XDG_CONFIG_HOME/polter/plugins/. What it is here to show is a whole resident plugin -- the hello, the cursor, the acknowledgement. Keeps an extra copy of every chat message as one file per day, all groups in one timeline. Polter's own record is kept whether this is on or off and is not what this reads: the plugin is handed live events. Point it at a synced folder or an external disk and the copy outlives this machine.",
+  "description": "Keeps an extra copy of every chat message as one file per day, all groups in one timeline. Polter's own record is kept whether this is on or off and is not what this reads: the plugin is handed live events. Point it at a synced folder or an external disk and the copy outlives this machine.",
 
   "exec": "archive.py",
   "timeout_ms": 30000,

@@ -148,24 +148,23 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     // path exists and nothing is ever installed into it.
     //
     // A plugin directory may also hold a `settings.json`, which is the
-    // defaults it ships with. It rides along because the exclusion below is
-    // `.md` and nothing else; a user's own
+    // defaults it ships with. It rides along here because the exclusion
+    // below is `.md` and nothing else; a user's own
     // `<config>/polter/plugins/<key>.json` still wins over it, including
     // when that file switches the plugin off. See `Plugin.Settings`.
     //
     // **The list is written out rather than being "everything in
-    // `plugins/`".** An example is meant to be read next to the host code,
-    // and a directory that ships is a plugin a user can switch on: put those
-    // two in one directory with a glob over it and the example ships too,
-    // which is what happened -- `demo-archive` was in the bundle of every
-    // build. Naming what ships is the only version of this that cannot go
-    // wrong silently, since a new plugin that nobody adds a line for is
-    // absent and obvious, where an example nobody excluded is present and
-    // invisible. `demo-` is the naming convention that goes with it; the
-    // list is what enforces it.
+    // `plugins/`".** A glob ships whatever happens to be in the directory,
+    // which is the wrong default in both directions: something added for
+    // another purpose ships without anybody deciding it should, and a
+    // plugin that stops shipping does so by being deleted rather than by a
+    // line changing. Naming what ships makes both of those a diff somebody
+    // reads. A new plugin nobody adds a line for is absent, which is the
+    // loud direction: it is noticed the first time somebody looks for it.
     {
         const shipped = [_][]const u8{
             "_sdk",
+            "archive",
             "claude-code",
             "codex",
             "deepseek",

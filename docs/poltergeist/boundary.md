@@ -78,15 +78,8 @@
 
 有两个插件必须默认就是开的，否则它们承担的职责会静默消失：
 
-- 记录插件（当时的 `plugins/archive/`）默认关 → 升级后用户的额外记录停止
+- 记录插件（`plugins/archive/`）默认关 → 升级后用户的额外记录停止
 - `.claude` 插件默认关 → **升级后 Claude Code 直接失去 Polter 的工具面**
-
-> **后来只剩第二条。** 记录插件被认定为例子，改名 `plugins/demo-archive/` 且
-> **不再随构建装出去**，所以「预装即开」对它已经无从谈起——它现在的
-> `settings.json` 只在有人把目录拷进配置目录之后才是它的缺省。下面这一节的结论
-> 对 `claude-code` 原样成立。这也意味着一次真实的升级断裂：装过旧版、开着记录
-> 插件的机器升上来之后，bundle 里没有它了，那一份额外记录会停——核心自己的记录
-> 不受影响。
 
 而 `Plugin.Settings` 的 `enabled` 默认是 `false`，[plugins.md](plugins.md) 的
 红线 3 也写着「默认关闭」。
@@ -288,7 +281,7 @@ mtime 与哈希完全不变）、内容变了则重写、已下架的删且只�
 ### 形态：per-locale 边车文件
 
 ```text
-plugins/demo-archive/
+plugins/archive/
   plugin.json          清单本身不变，值仍是字符串，英文兜底
   i18n/zh-Hans.json    只覆盖需要翻译的那几个字段
 ```
@@ -366,10 +359,8 @@ en-GB       →  en-Latn-GB, en-Latn, en-GB, en
 候选在拼成文件名之前先被验一遍「是不是一个语言标签」，理由和 Zig 那边的
 `isPlainName` 一样：一个从别处拿来的字符串马上要变成路径。
 
-**状态：已实现**（`PluginLocale` / `PluginText`，落在 `PluginCatalog.read`）。
-唯一一份边车在 `plugins/demo-archive/i18n/zh-Hans.json`，而那个插件是例子、**不
-随构建装出去**——所以这条机制目前在 bundle 里没有活的样本，只有把那个目录拷进配置
-目录才看得到它生效。装出去的八个 provisioning 插件都还没有边车。
+**状态：已实现**（`PluginLocale` / `PluginText`，落在 `PluginCatalog.read`；
+随插件目录装出去的边车见 `plugins/archive/i18n/zh-Hans.json`）。
 
 ## 取舍记录
 
