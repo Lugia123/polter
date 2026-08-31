@@ -376,9 +376,14 @@ pub fn rlimits() ResourceLimits {
 
 /// Returns the global state logging configuration.
 ///
-/// Asserts that the global state is initialized.
+/// Falls back to defaults if the global state is not initialized yet.
+/// `init` can fail before `state` is assigned -- the error is returned from
+/// inside the `state = .{...}` literal -- and the caller logs that failure.
+/// Unwrapping here would make the one message worth having the one message
+/// that crashes (or, in release builds, reads a null optional).
 pub fn logging() GlobalState.Logging {
-    return state.?.logging;
+    const s = state orelse return .{};
+    return s.logging;
 }
 
 /// Returns the global state action.

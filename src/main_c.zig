@@ -127,6 +127,28 @@ pub export fn ghostty_init(argc: usize, argv: [*][*:0]u8) c_int {
                 .{ .block = .{ .use_global = true } },
         },
     }) catch |err| {
+        // Deliberately not `std.log`. This is the one message the logger
+        // cannot carry:
+        //
+        //   - `global.init` returns its error from inside the `state = .{...}`
+        //     literal, so `state` is still null here, and `logFn`'s stderr
+        //     branch calls `global.logging()`, which unwraps it.
+        //   - Even with `state` set, `Logging.stderr` defaults to false for
+        //     lib artifacts, and the only other sink is macOS unified
+        //     logging. On Windows that leaves no sink at all.
+        //
+        // So a caller that only ever sees the return code has no way to learn
+        // *why* init failed. Write it raw, the way panics and other
+        // pre-logger diagnostics do.
+        var buf: [256]u8 = undefined;
+        internal_os.stderr.write(std.fmt.bufPrint(
+            &buf,
+            "ghostty: failed to initialize ghostty error={t}\n",
+            .{err},
+        ) catch "ghostty: failed to initialize ghostty\n");
+
+        // Still log it, for hosts that have a working sink configured
+        // (e.g. GHOSTTY_LOG=stderr on a build where state got far enough).
         std.log.err("failed to initialize ghostty error={}", .{err});
         return 1;
     };
