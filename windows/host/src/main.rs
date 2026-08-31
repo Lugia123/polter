@@ -32,6 +32,8 @@
 
 mod ffi;
 mod keys;
+mod palette;
+mod strip;
 mod tabs;
 mod tsf;
 
@@ -49,6 +51,7 @@ use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 // ---------------------------------------------------------------- logging
@@ -436,6 +439,15 @@ extern "C" fn cb_close_surface(ud: *mut c_void, _confirm: bool) {
 extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
     use tabs::Op;
     match action.tag {
+        // The core owns the command list and the actions; the host only
+        // renders and dispatches. Queued rather than done inline: `cb_action`
+        // can arrive on the core's thread, and showing a window off the
+        // owning thread is undefined.
+        ffi::ACTION_TOGGLE_COMMAND_PALETTE => {
+            palette::request_toggle();
+            true
+        }
+
         ACTION_INITIAL_SIZE => {
             let (w, h) = action.as_size();
             logf!("[action] initial_size {}x{}", w, h);
@@ -613,6 +625,16 @@ extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
 
 // ------------------------------------------------------------- window proc
 
+/// The two halves of an `lParam` carrying a point. Signed, because a captured
+/// pointer dragged off the left edge reports negative x, and reading it
+/// unsigned makes the tab jump to the far right.
+fn lo_i16(lp: LPARAM) -> i32 {
+    (lp.0 & 0xFFFF) as u16 as i16 as i32
+}
+fn hi_i16(lp: LPARAM) -> i32 {
+    ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as i32
+}
+
 /// The frame. It owns the tab strip, the window-level state, and nothing
 /// else: keys, text and the IME live on the surface windows (`tabs.rs`),
 /// because those know which surface they belong to.
@@ -624,7 +646,33 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             WM_ERASEBKGND => LRESULT(1),
 
             WM_PAINT => {
-                tabs::paint_strip(hwnd);
+                strip::paint(hwnd);
+                LRESULT(0)
+            }
+
+            // The strip owns the pointer while it is over it.
+            WM_LBUTTONDOWN => {
+                strip::on_button_down(hwnd, lo_i16(lp), hi_i16(lp));
+                LRESULT(0)
+            }
+            WM_MOUSEMOVE => {
+                strip::on_mouse_move(hwnd, lo_i16(lp), hi_i16(lp));
+                LRESULT(0)
+            }
+            WM_LBUTTONUP => {
+                strip::on_button_up(hwnd, lo_i16(lp), hi_i16(lp));
+                LRESULT(0)
+            }
+            WM_LBUTTONDBLCLK => {
+                strip::on_double_click(hwnd, lo_i16(lp), hi_i16(lp));
+                LRESULT(0)
+            }
+            WM_MOUSELEAVE => {
+                strip::on_mouse_leave(hwnd);
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL => {
+                strip::on_wheel(hwnd, ((wp.0 >> 16) & 0xFFFF) as i16);
                 LRESULT(0)
             }
 
@@ -1048,6 +1096,10 @@ fn main() {
     if selftest {
         logf!("--selftest: {} steps, one per second", script.len());
     }
+
+    // After the frame exists, so the palette can centre on it, and after the
+    // config exists, so it has commands to show.
+    palette::init(hinst, config);
 
     logf!("entering message loop; renderer thread drives redraw");
 

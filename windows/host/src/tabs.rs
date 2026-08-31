@@ -28,7 +28,7 @@ use std::ffi::c_void;
 use std::sync::Mutex;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -37,9 +37,6 @@ use polter_split_tree::{Focus, NewSplit, PaneId, Rect as TreeRect, Side, Tree};
 
 use crate::ffi::*;
 use crate::{api, logf};
-
-/// Height of the tab strip in unscaled pixels. Scaled by DPI at layout time.
-pub const STRIP_H: i32 = 30;
 
 /// Posted to the frame window when the action queue has something in it.
 pub const WM_POLTER_OP: u32 = WM_APP + 1;
@@ -207,8 +204,11 @@ pub fn frame_hwnd() -> HWND {
     HWND(st.frame as *mut c_void)
 }
 
-fn strip_h(scale: f64) -> i32 {
-    ((STRIP_H as f64) * scale).round() as i32
+use crate::strip::strip_h;
+
+/// The content scale, for whoever needs to turn unscaled sizes into pixels.
+pub fn scale_of() -> f64 {
+    state().scale
 }
 
 /// Put the active tab's child window over the client area below the strip,
@@ -284,59 +284,6 @@ pub fn layout(frame: HWND) {
         }
         let _ = InvalidateRect(Some(frame), None, false);
     }
-}
-
-/// Draw the tab strip. Deliberately plain: this is the smallest thing that
-/// makes "the action did something" visible in a screenshot. A real strip
-/// (drag to reorder, close buttons, overflow) is its own piece of work --
-/// on Windows there is no native tabbed-window control to inherit from, so
-/// whatever ships here has to be drawn by hand either way.
-pub fn paint_strip(frame: HWND) {
-    let mut ps = PAINTSTRUCT::default();
-    let hdc = unsafe { BeginPaint(frame, &mut ps) };
-    if hdc.is_invalid() {
-        return;
-    }
-    let mut rc = RECT::default();
-    let _ = unsafe { GetClientRect(frame, &mut rc) };
-
-    let st = state();
-    let sh = strip_h(st.scale);
-    let strip = RECT { left: 0, top: 0, right: rc.right, bottom: sh };
-
-    unsafe {
-        let bg = CreateSolidBrush(COLORREF(0x00201f1d));
-        FillRect(hdc, &strip, bg);
-        let _ = DeleteObject(bg.into());
-
-        let n = st.tabs.len().max(1) as i32;
-        let tw = (rc.right / n).min(220).max(60);
-        SetBkMode(hdc, TRANSPARENT);
-        for (i, t) in st.tabs.iter().enumerate() {
-            let x = i as i32 * tw;
-            let cell = RECT { left: x, top: 0, right: x + tw - 1, bottom: sh };
-            let active = i == st.active;
-            let brush = CreateSolidBrush(if active {
-                COLORREF(0x00403f3d)
-            } else {
-                COLORREF(0x00282725)
-            });
-            FillRect(hdc, &cell, brush);
-            let _ = DeleteObject(brush.into());
-            SetTextColor(hdc, if active { COLORREF(0x00ffffff) } else { COLORREF(0x00a0a0a0) });
-            let label = format!(" {}: {}", i + 1, t.title);
-            let mut wide: Vec<u16> = label.encode_utf16().collect();
-            let mut tr = RECT { left: x + 4, top: 4, right: x + tw - 6, bottom: sh };
-            DrawTextW(
-                hdc,
-                &mut wide,
-                &mut tr,
-                DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS,
-            );
-        }
-    }
-    drop(st);
-    let _ = unsafe { EndPaint(frame, &ps) };
 }
 
 /// Create one pane: a child window at the rectangle the tree gave it, plus
@@ -561,6 +508,61 @@ fn close_pane(frame: HWND, id: PaneId) {
     }
     layout(frame);
     focus_active();
+}
+
+/// What the strip needs to draw itself: identity and label, in order, plus
+/// which one is active.
+///
+/// **A snapshot, taken per paint, never cached.** The moment the strip keeps
+/// its own `Vec` of labels there are two orderings that can disagree, and the
+/// symptom is tabs whose order is right and whose contents are not.
+pub fn strip_snapshot() -> (Vec<(TabId, String)>, usize) {
+    let st = state();
+    (
+        st.tabs.iter().map(|t| (t.id, t.title.clone())).collect(),
+        st.active,
+    )
+}
+
+/// Make a tab active by identity.
+pub fn activate_tab(frame: HWND, id: TabId) {
+    let idx = {
+        let st = state();
+        st.tabs.iter().position(|t| t.id == id)
+    };
+    if let Some(idx) = idx {
+        set_active(frame, idx);
+    }
+}
+
+/// Close a tab by identity, with every pane in it.
+pub fn close_tab(frame: HWND, id: TabId) {
+    let idx = {
+        let st = state();
+        st.tabs.iter().position(|t| t.id == id)
+    };
+    let Some(idx) = idx else { return };
+    destroy_tab_at(frame, idx);
+    if count() == 0 {
+        logf!("[tab] last tab closed -> quitting");
+        unsafe { PostQuitMessage(0) };
+        return;
+    }
+    set_active(frame, active_index());
+}
+
+/// Rename a tab. The label is the host's; the shell can still overwrite it
+/// with its own title, which is the same rule macOS follows.
+pub fn rename_tab(frame: HWND, id: TabId, title: String) {
+    {
+        let mut st = state();
+        if let Some(tab) = st.tabs.iter_mut().find(|t| t.id == id) {
+            tab.title = title;
+        }
+    }
+    unsafe {
+        let _ = InvalidateRect(Some(frame), None, false);
+    }
 }
 
 /// Move one tab to a position, **by identity**.

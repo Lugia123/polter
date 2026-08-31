@@ -137,6 +137,10 @@ fn accelerator(vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<&'static str>
         (true, true, VK_OEM_PLUS) => Some("equalize_splits"),
         (true, true, VK_UP) => Some("goto_split:up"),
         (true, true, VK_DOWN) => Some("goto_split:down"),
+        // The palette's only other way in is a keybind, which reaches the core
+        // through surface_key -- the path that goes dead whenever the scan code
+        // is zero. This entry does not, so the panel stays reachable.
+        (true, true, VK_P) => Some("toggle_command_palette"),
         (_, _, VK_F11) => Some("toggle_fullscreen"),
         _ => None,
     }

@@ -52,6 +52,10 @@ pub const ACTION_RESIZE_SPLIT: u32 = 19;
 pub const ACTION_EQUALIZE_SPLITS: u32 = 20;
 pub const ACTION_TOGGLE_SPLIT_ZOOM: u32 = 21;
 pub const ACTION_TOGGLE_MAXIMIZE: u32 = 6;
+/// `Action.Key.toggle_command_palette`, the 12th member of that enum.
+/// Verified against `src/apprt/action.zig` the same way the rest of this
+/// table was: parse the 72 members in order and take the index.
+pub const ACTION_TOGGLE_COMMAND_PALETTE: u32 = 11;
 pub const ACTION_TOGGLE_FULLSCREEN: u32 = 7;
 pub const ACTION_MOVE_TAB: u32 = 15;
 pub const ACTION_GOTO_TAB: u32 = 16;
