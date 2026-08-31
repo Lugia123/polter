@@ -24,8 +24,11 @@
 
 const Plugin = @This();
 
+const builtin = @import("builtin");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+
+const internal_os = @import("../os/main.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -891,18 +894,142 @@ pub const Settings = struct {
         errdefer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
 
         {
-            var f = try std.Io.Dir.cwd().createFile(io, tmp, .{
-                // The parameters here are references far more often than
-                // they are secrets, but not always -- a hand-written file
-                // may hold a literal, and this rewrites such a file.
-                .permissions = .fromMode(0o600),
+            // The parameters here are references far more often than they
+            // are secrets, but not always -- a hand-written file may hold a
+            // literal, and this rewrites such a file. So the narrow
+            // permissions are not incidental strictness; they are the whole
+            // reason this does not just call `createFile` and write.
+            //
+            // POSIX says that in the one word it has for it. Windows has no
+            // mode, so `restrict` below says the same thing in the words it
+            // does have -- a DACL naming this user and nobody else. Either
+            // way it is applied to an **empty** file, before a byte of the
+            // rendered settings exists on disk, so there is no moment at
+            // which a literal sits in a file the machine's other accounts
+            // can open.
+            var f = try std.Io.Dir.cwd().createFile(io, tmp, switch (builtin.os.tag) {
+                .windows => .{},
+                else => .{ .permissions = .fromMode(0o600) },
             });
             defer f.close(io);
+            restrict(alloc, tmp);
             try f.writeStreamingAll(io, bytes);
         }
 
         const cwd = std.Io.Dir.cwd();
         try cwd.rename(tmp, cwd, path, io);
+    }
+
+    /// Cut a just-created file down to this user alone, where the platform
+    /// needs telling separately from `createFile`.
+    ///
+    /// A no-op everywhere but Windows, which has no mode to pass: the
+    /// equivalent is a DACL, and the equivalent of `0o600` is a *protected*
+    /// DACL -- `D:P` -- holding one allow-everything entry for the SID this
+    /// process is running as. Protected is the load-bearing half: without
+    /// it the entries the parent directory hands down are kept, and the
+    /// point of the exercise was to stop inheriting them.
+    ///
+    /// **A failure here is logged, not fatal.** Refusing to write the file
+    /// would leave a user unable to configure a plugin at all on whatever
+    /// unusual machine tripped it, which is a worse trade than a file whose
+    /// only protection is the one the profile directory already gives it.
+    /// But it is said out loud, at `warn`, naming the file: the thing this
+    /// comment is really guarding against is the protection disappearing
+    /// with nothing anywhere to show that it did.
+    fn restrict(alloc: Allocator, path: []const u8) void {
+        if (comptime builtin.os.tag != .windows) return;
+
+        const w = internal_os.windows;
+        const advapi32 = w.exp.advapi32;
+
+        // The error is carried out of the block rather than asked for
+        // after it, and that is not a style choice: `break` evaluates its
+        // operand *before* the scope unwinds, while `GetLastError` reads a
+        // per-thread slot that the `defer`s below -- `CloseHandle`,
+        // `LocalFree` -- overwrite on their way out. Asking afterwards
+        // reports whichever cleanup call ran last, very often `0`, which
+        // reads as "nothing went wrong" in the one message whose entire
+        // job is to say what did. A plausible wrong answer is worse than
+        // no answer.
+        const err: w.Win32Error = failed: {
+            var token: w.HANDLE = undefined;
+            if (advapi32.OpenProcessToken(
+                w.exp.kernel32.GetCurrentProcess(),
+                w.TOKEN_QUERY,
+                &token,
+            ) == w.FALSE) break :failed w.GetLastError();
+            defer _ = w.exp.kernel32.CloseHandle(token);
+
+            // `TOKEN_USER` is a header; the SID it points at lives past the
+            // end of it in the same buffer. A SID is at most 68 bytes, so
+            // one buffer with room to spare is simpler than the two-call
+            // sizing dance and cannot come up short.
+            var buf: [256]u8 align(@alignOf(w.TOKEN_USER)) = undefined;
+            var len: w.DWORD = 0;
+            if (advapi32.GetTokenInformation(
+                token,
+                .User,
+                &buf,
+                buf.len,
+                &len,
+            ) == w.FALSE) break :failed w.GetLastError();
+            const user: *const w.TOKEN_USER = @ptrCast(&buf);
+
+            var sid_str: w.LPWSTR = undefined;
+            if (advapi32.ConvertSidToStringSidW(
+                user.User.Sid,
+                &sid_str,
+            ) == w.FALSE) break :failed w.GetLastError();
+            defer _ = w.exp.kernel32.LocalFree(sid_str);
+
+            // Built as SDDL rather than by hand: an ACL assembled out of
+            // `InitializeAcl`/`AddAccessAllowedAce` is a dozen more calls
+            // and a dozen more ways to get a byte count wrong, for a string
+            // the system parses the same either way.
+            const sid_len = std.mem.len(sid_str);
+            const sddl = std.fmt.allocPrintSentinel(
+                alloc,
+                "D:P(A;;FA;;;{f})",
+                .{std.unicode.fmtUtf16Le(sid_str[0..sid_len])},
+                0,
+            ) catch break :failed w.GetLastError();
+            defer alloc.free(sddl);
+
+            const sddl_w = std.unicode.wtf8ToWtf16LeAllocZ(alloc, sddl) catch break :failed w.GetLastError();
+            defer alloc.free(sddl_w);
+
+            var sd: w.PSECURITY_DESCRIPTOR = undefined;
+            if (advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl_w,
+                w.SDDL_REVISION_1,
+                &sd,
+                null,
+            ) == w.FALSE) break :failed w.GetLastError();
+            defer _ = w.exp.kernel32.LocalFree(sd);
+
+            // By path rather than on the open handle: `SetSecurityInfo`
+            // wants `WRITE_DAC` on the handle, and the handle `createFile`
+            // gave us was not asked for with it. `SetFileSecurityW` opens
+            // the file itself, with the access it needs.
+            const path_w = std.unicode.wtf8ToWtf16LeAllocZ(alloc, path) catch break :failed w.GetLastError();
+            defer alloc.free(path_w);
+
+            if (advapi32.SetFileSecurityW(
+                path_w,
+                w.DACL_SECURITY_INFORMATION | w.PROTECTED_DACL_SECURITY_INFORMATION,
+                sd,
+            ) == w.FALSE) break :failed w.GetLastError();
+
+            return;
+        };
+
+        log.warn(
+            "could not restrict {s} to this user (err={}); it keeps whatever " ++
+                "permissions its directory hands down, so treat any literal " ++
+                "secret in it as readable by this machine's other accounts",
+            .{ path, err },
+        );
     }
 
     /// Whether a name is already in this list.

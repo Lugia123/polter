@@ -3,6 +3,7 @@
 //! also OS-specific features and conventions.
 
 const builtin = @import("builtin");
+const std = @import("std");
 
 const dbus = @import("dbus.zig");
 const desktop = @import("desktop.zig");
@@ -97,4 +98,31 @@ pub const Tm = extern struct {
     zone: ?[*:0]const u8,
 };
 
-pub extern "c" fn localtime_r(timep: *const i64, result: *Tm) ?*Tm;
+const time_c = struct {
+    extern "c" fn localtime_r(timep: *const i64, result: *Tm) ?*Tm;
+
+    /// The Windows CRT's answer. Not a spelling difference: the arguments
+    /// are the other way round, it reports failure through a return code
+    /// rather than a null, and the `struct tm` it fills is the nine POSIX
+    /// members with neither of the BSD ones after them.
+    extern "c" fn _localtime64_s(result: *Tm, timep: *const i64) c_int;
+};
+
+/// A Unix timestamp as a local wall-clock time.
+pub fn localtime_r(timep: *const i64, result: *Tm) ?*Tm {
+    switch (builtin.os.tag) {
+        .windows => {
+            // Zeroed first because the Windows CRT stops after `isdst`, and
+            // `gmtoff` and `zone` would otherwise be whatever the caller's
+            // stack held. Nothing reads those two today -- they are here so
+            // that a platform whose `localtime_r` writes them has somewhere
+            // to put them -- but handing back uninitialised memory as
+            // though it were a time zone is the sort of thing that is only
+            // ever found later and by accident.
+            result.* = std.mem.zeroes(Tm);
+            if (time_c._localtime64_s(result, timep) != 0) return null;
+            return result;
+        },
+        else => return time_c.localtime_r(timep, result),
+    }
+}

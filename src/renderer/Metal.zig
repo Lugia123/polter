@@ -99,6 +99,12 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !Metal {
             .view = switch (opts.rt_surface.platform) {
                 .macos => |v| v.nsview,
                 .ios => |v| v.uiview,
+
+                // Metal is only ever built for Darwin targets, where
+                // Platform.Win32 is `void` and Platform.init rejects the
+                // win32 tag with error.UnsupportedPlatform. We can never
+                // hold a win32 platform here.
+                .win32 => unreachable,
             },
         },
 

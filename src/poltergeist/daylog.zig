@@ -16,6 +16,8 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+
+const internal_os = @import("../os/main.zig");
 const Allocator = std.mem.Allocator;
 
 const log = std.log.scoped(.poltergeist);
@@ -602,28 +604,13 @@ pub fn decodeSegment(alloc: Allocator, seg: []const u8) Allocator.Error!?[]u8 {
     return try out.toOwnedSlice(alloc);
 }
 
-/// `struct tm`, declared here because the standard library has no binding
-/// for it and no timezone handling of its own.
-///
-/// Declared in full even though three fields are read: `localtime_r` writes
-/// into whatever it is given, so a struct short by a field is a buffer
-/// overrun. The first nine are POSIX; the last two are a BSD extension that
-/// both macOS and glibc have.
-const Tm = extern struct {
-    sec: c_int,
-    min: c_int,
-    hour: c_int,
-    mday: c_int,
-    mon: c_int,
-    year: c_int,
-    wday: c_int,
-    yday: c_int,
-    isdst: c_int,
-    gmtoff: c_long,
-    zone: ?[*:0]const u8,
-};
-
-extern "c" fn localtime_r(timep: *const i64, result: *Tm) ?*Tm;
+/// `struct tm` and the call that fills it in, from `os`, which owns the one
+/// declaration of both. It used to be redeclared here; that was fine while
+/// there was one `localtime_r` in the world, and stopped being fine when
+/// Windows turned out to spell it `_localtime64_s` with the arguments the
+/// other way round. A copy of a declaration is a copy of a decision.
+const Tm = internal_os.Tm;
+const localtime_r = internal_os.localtime_r;
 
 /// Which day a message belongs to, packed as `YYYYMMDD`.
 ///

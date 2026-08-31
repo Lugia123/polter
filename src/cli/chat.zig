@@ -21,6 +21,7 @@ const layout = @import("chat_layout.zig");
 const args = @import("args.zig");
 const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
+const internal_os = @import("../os/main.zig");
 
 const log = std.log.scoped(.chat);
 
@@ -1791,28 +1792,13 @@ const Chat = struct {
     }
 };
 
-/// `struct tm`, declared here because the standard library has no binding
-/// for it and no timezone handling of its own.
-///
-/// Declared in full even though only two fields are read: `localtime_r`
-/// writes into whatever it is given, so a struct that is short by a field
-/// is a buffer overrun. The first nine are POSIX; the last two are a BSD
-/// extension that both macOS and glibc have.
-const Tm = extern struct {
-    sec: c_int,
-    min: c_int,
-    hour: c_int,
-    mday: c_int,
-    mon: c_int,
-    year: c_int,
-    wday: c_int,
-    yday: c_int,
-    isdst: c_int,
-    gmtoff: c_long,
-    zone: ?[*:0]const u8,
-};
-
-extern "c" fn localtime_r(timep: *const i64, result: *Tm) ?*Tm;
+/// `struct tm` and the call that fills it in, from `os`, which owns the one
+/// declaration of both. It used to be redeclared here; that was fine while
+/// there was one `localtime_r` in the world, and stopped being fine when
+/// Windows turned out to spell it `_localtime64_s` with the arguments the
+/// other way round. A copy of a declaration is a copy of a decision.
+const Tm = internal_os.Tm;
+const localtime_r = internal_os.localtime_r;
 
 /// `HH:MM` in the reader's own timezone.
 ///

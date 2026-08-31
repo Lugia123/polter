@@ -70,6 +70,9 @@ typedef enum {
   GHOSTTY_PLATFORM_INVALID,
   GHOSTTY_PLATFORM_MACOS,
   GHOSTTY_PLATFORM_IOS,
+  // New platforms MUST be added to the end of this enum. The values are
+  // part of the ABI and existing values must never be renumbered.
+  GHOSTTY_PLATFORM_WIN32,
 } ghostty_platform_e;
 
 typedef enum {
@@ -457,9 +460,14 @@ typedef struct {
   void* uiview;
 } ghostty_platform_ios_s;
 
+typedef struct {
+  void* hwnd;
+} ghostty_platform_win32_s;
+
 typedef union {
   ghostty_platform_macos_s macos;
   ghostty_platform_ios_s ios;
+  ghostty_platform_win32_s win32;
 } ghostty_platform_u;
 
 typedef enum {

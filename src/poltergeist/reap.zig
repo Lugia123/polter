@@ -19,9 +19,53 @@
 //! time the plugin answers (`allow`), and at shutdown asks for the deadline
 //! to be now (`hurry`).
 
+const builtin = @import("builtin");
 const std = @import("std");
 
+const internal_os = @import("../os/main.zig");
+
 const log = std.log.scoped(.poltergeist);
+
+/// Stop a child, hard, without reaping it.
+///
+/// **Windows has no signals**, and the nearest thing to `SIGKILL` is
+/// `TerminateProcess`: both end the process where it stands, with no chance
+/// to clean up and nothing it can install to refuse. The one difference
+/// that matters here is which name the process is held by -- a pid on
+/// POSIX, a handle on Windows -- and a handle is the *stronger* of the two
+/// for this file's purposes, because it names one process for as long as it
+/// is open and so cannot be reused out from under us the way a reaped pid
+/// can. The lock in this file is still what POSIX needs; Windows simply
+/// gets a guarantee it did not have to ask for.
+pub fn kill(id: std.process.Child.Id) !void {
+    switch (builtin.os.tag) {
+        .windows => {
+            const k32 = internal_os.windows.exp.kernel32;
+
+            // 1 rather than 0: a process killed from outside did not
+            // succeed at whatever it was doing, and anything reading the
+            // exit code should be able to tell.
+            if (k32.TerminateProcess(id, 1) == internal_os.windows.FALSE) {
+                return error.PermissionDenied;
+            }
+        },
+        else => try std.posix.kill(id, std.posix.SIG.KILL),
+    }
+}
+
+/// A number for this child that means something to a person reading a log.
+///
+/// `Child.Id` is the process *handle* on Windows, and printing a handle
+/// gives a pointer nobody can look up in Task Manager. `GetProcessId` turns
+/// it back into the number that is on screen everywhere else.
+pub fn pidNumber(id: std.process.Child.Id) u32 {
+    return switch (builtin.os.tag) {
+        // Zero if the handle has lost the right to ask, which is a fine
+        // answer for a log line and not worth a branch at the call site.
+        .windows => internal_os.windows.exp.kernel32.GetProcessId(id),
+        else => @intCast(id),
+    };
+}
 
 /// How often the clock is looked at.
 ///
@@ -133,7 +177,7 @@ pub const Reaper = struct {
                     // belong to somebody else.
                     log.warn("plugin {s}: out of time, stopping it", .{self.key});
                     self.fired.store(true, .release);
-                    std.posix.kill(pid, std.posix.SIG.KILL) catch |err| {
+                    kill(pid) catch |err| {
                         log.warn(
                             "plugin {s}: could not stop it err={}",
                             .{ self.key, err },
@@ -187,7 +231,7 @@ test "a reaper that is retired never signals" {
     if (thread) |t| t.join();
     try testing.expect(!reaper.killed());
 
-    if (child.id) |pid| std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+    if (child.id) |pid| kill(pid) catch {};
     _ = child.wait(io) catch {};
 }
 

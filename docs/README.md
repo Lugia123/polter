@@ -17,6 +17,7 @@
 - [platform-and-config.md](platform-and-config.md) — `src/apprt` 应用运行时（apprt）抽象、`macos/` Swift 应用、`src/config` 配置系统、`src/input` 键绑定与按键编码。
 - [preview-manual.md](preview-manual.md) — 怎么构建、怎么跑起来、怎么快速迭代、怎么看日志和调试。**构建与运行命令以本篇为唯一权威**，其他篇只做一行引用。
 - [poltergeist/](poltergeist/README.md) — Poltergeist 能力层：让一个「总管」终端照看多个 AI 终端。**代码已落地**（`src/poltergeist/`），**整条链路已在真机上跑过**：一个总管带三个工作终端、分派任务、按屏幕静止催办、群聊汇报，全程走的就是这套工具面。逐项验证情况见 [poltergeist/README.md](poltergeist/README.md)，还差什么见 [poltergeist/gaps.md](poltergeist/gaps.md)。本批文档的写作规范见 [poltergeist/\_spec.md](poltergeist/_spec.md)。
+- [windows/](windows/design.md) — Windows 移植的设计与开发文档：用 Rust 写壳、走已有的 `embedded` apprt（macOS 的 Swift 应用走的就是它）。**步 1–4 已落地**：POSIX 假设修完（是五处，不是四处——第五处 `localtime_r` 要修完前四处才在链接阶段现形，而且它溢出了 Polter）、C API 有了 `GHOSTTY_PLATFORM_WIN32`、WGL 填进了 `embedded` 的空分支。**步 3（TSF）已在真机验过**，是这条路上最大的风险，结论是约 470 行、不是主体。DLL 在 Windows 上加载并调通了，但**屏幕上还没画出任何东西**。见 [windows/design.md](windows/design.md) 与 [windows/development.md](windows/development.md)。
 
 ## 先读哪一篇
 

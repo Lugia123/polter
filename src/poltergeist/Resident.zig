@@ -78,9 +78,11 @@
 
 const Resident = @This();
 
+const builtin = @import("builtin");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const internal_os = @import("../os/main.zig");
 const Feed = @import("Feed.zig");
 const login_path = @import("login_path.zig");
 const Plugin = @import("Plugin.zig");
@@ -913,6 +915,12 @@ const Line = union(enum) {
 /// descriptor under it -- which is the same shape as the pid-reuse window
 /// `collect` goes out of its way to close: the number is freed and handed
 /// to whatever asks next.
+///
+/// **Windows has no `socketpair`, and a plain anonymous pipe would lose
+/// exactly the property this was chosen for.** A *named* pipe keeps it: the
+/// end we hold is the server end, and `DisconnectNamedPipe` on a server end
+/// is what `shutdown(SHUT_RD)` is on a socket -- our side, sticky, and
+/// deaf to whether a grandchild still holds the writing end. See `hush`.
 const Stderr = struct {
     /// Ours to read. Closed here, after the drain has stopped.
     ours: std.Io.File,
@@ -922,6 +930,13 @@ const Stderr = struct {
     theirs: std.Io.File,
 
     fn make() ?Stderr {
+        return switch (builtin.os.tag) {
+            .windows => makeWindows(),
+            else => makePosix(),
+        };
+    }
+
+    fn makePosix() ?Stderr {
         var fds: [2]std.posix.fd_t = undefined;
         if (std.c.socketpair(
             @intCast(std.c.AF.UNIX),
@@ -937,6 +952,74 @@ const Stderr = struct {
         return .{
             .ours = .{ .handle = fds[0], .flags = .{ .nonblocking = false } },
             .theirs = .{ .handle = fds[1], .flags = .{ .nonblocking = false } },
+        };
+    }
+
+    /// Distinguishes one pipe from the next within this process. Named
+    /// pipes live in a machine-wide namespace, so the process id alone
+    /// would collide with our own next plugin, and a plugin restarting is
+    /// the ordinary case rather than the rare one.
+    var pipe_seq: std.atomic.Value(u32) = .init(0);
+
+    fn makeWindows() ?Stderr {
+        const w = internal_os.windows;
+        const k32 = w.exp.kernel32;
+
+        var name_buf: [128]u8 = undefined;
+        const name = std.fmt.bufPrint(
+            &name_buf,
+            "\\\\.\\pipe\\ghostty-plugin-stderr-{d}-{d}",
+            .{ w.GetCurrentProcessId(), pipe_seq.fetchAdd(1, .monotonic) },
+        ) catch return null;
+
+        var name_w: [name_buf.len + 1]u16 = undefined;
+        const name_w_len = std.unicode.wtf8ToWtf16Le(&name_w, name) catch return null;
+        name_w[name_w_len] = 0;
+        const name_z: [*:0]const u16 = @ptrCast(&name_w);
+
+        // `FIRST_PIPE_INSTANCE` with a maximum of one instance is the part
+        // that matters for anything but tidiness: without it another
+        // process on this machine could have got to the name first and be
+        // handed the plugin's standard error. With it, a name already in
+        // use is an error here rather than a silent handover.
+        //
+        // Null security attributes leave the pipe with the default DACL,
+        // which is this user -- the same account the child runs as, and no
+        // other.
+        const ours = k32.CreateNamedPipeW(
+            name_z,
+            w.PIPE_ACCESS_INBOUND | w.FILE_FLAG_FIRST_PIPE_INSTANCE,
+            w.PIPE_TYPE_BYTE | w.PIPE_READMODE_BYTE | w.PIPE_WAIT,
+            1,
+            0,
+            64 * 1024,
+            0,
+            null,
+        );
+        if (ours == w.INVALID_HANDLE_VALUE) return null;
+
+        // Opening our own pipe by name is what connects it; no
+        // `ConnectNamedPipe` is needed, and the handle this gives back is
+        // the client end for the child. `spawn` makes its own inheritable
+        // copy of it, so it is not asked for one here.
+        const theirs = k32.CreateFileW(
+            name_z,
+            w.GENERIC_WRITE,
+            0,
+            null,
+            w.OPEN_EXISTING,
+            w.FILE_ATTRIBUTE_NORMAL,
+            null,
+        );
+        if (theirs == w.INVALID_HANDLE_VALUE) {
+            _ = k32.CloseHandle(ours);
+            return null;
+        }
+
+        // Synchronous, for the same reason the POSIX pair is blocking.
+        return .{
+            .ours = .{ .handle = ours, .flags = .{ .nonblocking = false } },
+            .theirs = .{ .handle = theirs, .flags = .{ .nonblocking = false } },
         };
     }
 };
@@ -1161,7 +1244,7 @@ fn collect(
     keeper.* = null;
 
     if (child.*) |*c| {
-        if (c.id) |pid| std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+        if (c.id) |pid| reap.kill(pid) catch {};
 
         // Closed *and* nulled, in that order: `wait` closes and nulls these
         // itself, so a close without the null is a second close of a
@@ -1202,7 +1285,23 @@ fn collect(
 /// Idempotent, because `collect` calls it on both of its paths and only one
 /// of them has anything to do.
 fn hush(self: *Resident, drain: *?std.Thread, errs: *?std.Io.File) void {
-    if (errs.*) |f| _ = std.c.shutdown(f.handle, std.c.SHUT.RD);
+    if (errs.*) |f| switch (builtin.os.tag) {
+        // Both, and neither is redundant, because the drain thread may be
+        // on either side of its `ReadFile` when this runs.
+        // `DisconnectNamedPipe` is the sticky half -- it settles every read
+        // issued from here on -- but it is documented to end the
+        // *connection*, not to promise anything about a read already in
+        // flight, so `CancelIoEx` covers the thread that was already
+        // blocked. Failures are ignored on purpose: a pipe that is already
+        // disconnected, or a read that had already returned, both report
+        // failure and both mean the job is done.
+        .windows => {
+            const k32 = internal_os.windows.exp.kernel32;
+            _ = k32.DisconnectNamedPipe(f.handle);
+            _ = k32.CancelIoEx(f.handle, null);
+        },
+        else => _ = std.c.shutdown(f.handle, std.c.SHUT.RD),
+    };
 
     if (drain.*) |t| t.join();
     drain.* = null;
@@ -1486,7 +1585,7 @@ fn main(self: *Resident) void {
                 if (child.?.id) |pid| self.note(
                     .info,
                     "started {s} as pid {d}",
-                    .{ self.exec, pid },
+                    .{ self.exec, reap.pidNumber(pid) },
                 );
 
                 self.reaper.rearm(child.?.id, self.timeout_ms);

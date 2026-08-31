@@ -34,10 +34,28 @@ pub const UINT = windows.UINT;
 pub const ULONG = windows.ULONG;
 pub const ULONG_PTR = windows.ULONG_PTR;
 pub const UNICODE_STRING = windows.UNICODE_STRING;
+pub const Win32Error = windows.Win32Error;
 
 // Structs and opaque types
 pub const LPPROC_THREAD_ATTRIBUTE_LIST = ?*anyopaque;
 pub const SECURITY_ATTRIBUTES = windows.SECURITY_ATTRIBUTES;
+pub const HLOCAL = ?*anyopaque;
+pub const PSID = ?*anyopaque;
+pub const PACL = ?*anyopaque;
+pub const PSECURITY_DESCRIPTOR = ?*anyopaque;
+pub const SECURITY_INFORMATION = DWORD;
+
+pub const SID_AND_ATTRIBUTES = extern struct {
+    Sid: PSID,
+    Attributes: DWORD,
+};
+
+/// The payload `GetTokenInformation` writes for `TOKEN_INFORMATION_CLASS.User`.
+/// The SID itself sits past the end of the struct, in the same buffer, which
+/// is why callers pass a buffer rather than one of these.
+pub const TOKEN_USER = extern struct {
+    User: SID_AND_ATTRIBUTES,
+};
 pub const STARTF_USESTDHANDLES = windows.STARTF_USESTDHANDLES;
 pub const STARTUPINFOW = windows.STARTUPINFOW;
 
@@ -86,14 +104,30 @@ pub const MEM_RELEASE = 0x8000;
 pub const MEM_RESERVE = 0x2000;
 pub const OPEN_EXISTING = 3; // Known as FILE_OPEN in Windows docs
 pub const PAGE_READWRITE = 0x04;
+pub const GENERIC_WRITE = 0x40000000;
+pub const PIPE_ACCESS_INBOUND = 0x00000001;
 pub const PIPE_ACCESS_OUTBOUND = 0x00000002;
+pub const PIPE_READMODE_BYTE = 0x00000000;
 pub const PIPE_TYPE_BYTE = 0x00000000;
+pub const PIPE_WAIT = 0x00000000;
 pub const PROC_THREAD_ATTRIBUTE_ADDITIVE = 0x00040000;
 pub const PROC_THREAD_ATTRIBUTE_INPUT = 0x00020000;
 pub const PROC_THREAD_ATTRIBUTE_NUMBER = 0x0000FFFF;
 pub const PROC_THREAD_ATTRIBUTE_THREAD = 0x00010000;
 pub const S_OK = 0;
 pub const WAIT_FAILED = 0xFFFFFFFF;
+
+// Access control, for the plugin settings file. See `Plugin.Settings.write`.
+pub const DACL_SECURITY_INFORMATION: SECURITY_INFORMATION = 0x00000004;
+pub const PROTECTED_DACL_SECURITY_INFORMATION: SECURITY_INFORMATION = 0x80000000;
+pub const SDDL_REVISION_1 = 1;
+pub const TOKEN_QUERY = 0x0008;
+
+/// `TOKEN_INFORMATION_CLASS`, of which we only ever ask for the one.
+pub const TOKEN_INFORMATION_CLASS = enum(c_int) {
+    User = 1,
+    _,
+};
 
 pub const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = ProcThreadAttributeValue(
     .ProcThreadAttributePseudoConsole,
@@ -225,6 +259,12 @@ pub const exp = struct {
             hProcess: HANDLE,
             uExitCode: UINT,
         ) callconv(.winapi) BOOL;
+        /// Puts a named pipe instance back into the disconnected state.
+        /// The Windows answer to `shutdown(SHUT_RD)`: unlike `CancelIoEx`
+        /// it is sticky, so a read issued *after* it still ends at once.
+        pub extern "kernel32" fn DisconnectNamedPipe(
+            hNamedPipe: HANDLE,
+        ) callconv(.winapi) BOOL;
         pub extern "kernel32" fn CancelIoEx(
             hFile: HANDLE,
             lpOverlapped: ?*OVERLAPPED,
@@ -235,6 +275,45 @@ pub const exp = struct {
             nNumberOfBytesToRead: DWORD,
             lpNumberOfBytesRead: ?*DWORD,
             lpOverlapped: ?*OVERLAPPED,
+        ) callconv(.winapi) BOOL;
+        pub extern "kernel32" fn GetCurrentProcess() callconv(.winapi) HANDLE;
+        /// The numeric process id behind a process handle. `Child.Id` is the
+        /// handle on Windows, and a handle is not what anybody wants to read
+        /// in a log line.
+        pub extern "kernel32" fn GetProcessId(
+            Process: HANDLE,
+        ) callconv(.winapi) DWORD;
+        pub extern "kernel32" fn LocalFree(
+            hMem: HLOCAL,
+        ) callconv(.winapi) HLOCAL;
+    };
+    pub const advapi32 = struct {
+        pub extern "advapi32" fn OpenProcessToken(
+            ProcessHandle: HANDLE,
+            DesiredAccess: DWORD,
+            TokenHandle: *HANDLE,
+        ) callconv(.winapi) BOOL;
+        pub extern "advapi32" fn GetTokenInformation(
+            TokenHandle: HANDLE,
+            TokenInformationClass: TOKEN_INFORMATION_CLASS,
+            TokenInformation: ?LPVOID,
+            TokenInformationLength: DWORD,
+            ReturnLength: *DWORD,
+        ) callconv(.winapi) BOOL;
+        pub extern "advapi32" fn ConvertSidToStringSidW(
+            Sid: PSID,
+            StringSid: *LPWSTR,
+        ) callconv(.winapi) BOOL;
+        pub extern "advapi32" fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            StringSecurityDescriptor: LPCWSTR,
+            StringSDRevision: DWORD,
+            SecurityDescriptor: *PSECURITY_DESCRIPTOR,
+            SecurityDescriptorSize: ?*ULONG,
+        ) callconv(.winapi) BOOL;
+        pub extern "advapi32" fn SetFileSecurityW(
+            lpFileName: LPCWSTR,
+            SecurityInformation: SECURITY_INFORMATION,
+            pSecurityDescriptor: PSECURITY_DESCRIPTOR,
         ) callconv(.winapi) BOOL;
     };
     pub const ntdll = struct {

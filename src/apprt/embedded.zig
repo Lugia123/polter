@@ -22,6 +22,7 @@ const CoreSurface = @import("../Surface.zig");
 const configpkg = @import("../config.zig");
 const Config = configpkg.Config;
 const String = @import("../main_c.zig").String;
+const lib = @import("../lib/main.zig");
 
 const log = std.log.scoped(.embedded_window);
 
@@ -364,6 +365,7 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
+    win32: Win32,
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -377,6 +379,13 @@ pub const Platform = union(PlatformTag) {
         uiview: objc.Object,
     } else void;
 
+    // If our build target for libghostty is not Windows then we do
+    // not include win32 support at all.
+    pub const Win32 = if (builtin.target.os.tag == .windows) struct {
+        /// The window to render the surface on.
+        hwnd: *anyopaque,
+    } else void;
+
     // The C ABI compatible version of this union. The tag is expected
     // to be stored elsewhere.
     pub const C = extern union {
@@ -386,6 +395,10 @@ pub const Platform = union(PlatformTag) {
 
         ios: extern struct {
             uiview: ?*anyopaque,
+        },
+
+        win32: extern struct {
+            hwnd: ?*anyopaque,
         },
     };
 
@@ -406,6 +419,13 @@ pub const Platform = union(PlatformTag) {
                     break :ios error.UIViewMustBeSet);
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
+
+            .win32 => if (Win32 != void) win32: {
+                const config = c_platform.win32;
+                const hwnd = config.hwnd orelse
+                    break :win32 error.HwndMustBeSet;
+                break :win32 .{ .win32 = .{ .hwnd = hwnd } };
+            } else error.UnsupportedPlatform,
         };
     }
 };
@@ -414,8 +434,47 @@ pub const PlatformTag = enum(c_int) {
     // "0" is reserved for invalid so we can detect unset values
     // from the C API.
 
+    // New platforms MUST be added to the end (with the next highest value)
+    // since these values map directly to the C enum and are part of the ABI.
+
     macos = 1,
     ios = 2,
+    win32 = 3,
+
+    // NOTE: This test does NOT run today. It is kept deliberately, and
+    // this comment exists so that nobody mistakes it for a live guard.
+    //
+    // Why it doesn't run: `zig build test` builds the `exe` artifact with
+    // `app_runtime` defaulting to `.none`, so `apprt.runtime` resolves to
+    // `apprt.none` and nothing in that binary ever references
+    // `apprt.embedded.PlatformTag`. Zig only analyzes (and therefore only
+    // collects tests from) containers that are actually referenced, so this
+    // test is never compiled in. There is also no `test` step in build.zig
+    // that covers the `lib`/embedded artifact -- only `test` and
+    // `test-lib-vt`. Consequence: a green `zig build test` is NOT evidence
+    // that anything in this file compiles; that evidence comes from
+    // `zig build` / `zig build -Demit-macos-app=false`, which build
+    // main_c.zig as the `lib` artifact and do use this file.
+    //
+    // How to make it run, and what it costs (measured 2026-08-31, on top of
+    // HEAD 3335ca394 plus the in-flight Windows-port working tree):
+    //
+    //   Adding `_ = embedded;` to the `test` block in `src/apprt.zig` is
+    //   NOT enough -- test count stayed at 3991 and a deliberately corrupted
+    //   ghostty.h still passed. That reference only reaches this file's
+    //   top-level container, not this nested enum.
+    //
+    //   `_ = embedded.PlatformTag;` DOES work:
+    //     zig build test -Demit-xcframework=false --summary all
+    //       -> exit 0, 3976/3992 tests passed (16 skipped)
+    //   i.e. it adds exactly this one test and costs nothing else -- no
+    //   pre-existing failures are uncovered. Negative control: reordering
+    //   GHOSTTY_PLATFORM_WIN32 before _IOS in ghostty.h made it fail with
+    //   "key ios does not have the same backing int as GHOSTTY_PLATFORM_IOS"
+    //   (exit 1), so the guard really does catch an ABI break.
+    test "ghostty.h PlatformTag" {
+        try lib.checkGhosttyHEnum(PlatformTag, "GHOSTTY_PLATFORM_");
+    }
 };
 
 pub const EnvVar = extern struct {

@@ -22,6 +22,7 @@ pub const Buffer = bufferpkg.Buffer;
 pub const Sampler = @import("opengl/Sampler.zig");
 pub const Texture = @import("opengl/Texture.zig");
 pub const shaders = @import("opengl/shaders.zig");
+const wgl = @import("opengl/wgl.zig");
 
 pub const custom_shader_target: shadertoy.Target = .glsl;
 // The fragCoord for OpenGL shaders is +Y = up.
@@ -32,6 +33,57 @@ pub const custom_shader_y_is_down = false;
 pub const swap_chain_count = 1;
 
 const log = std.log.scoped(.opengl);
+
+/// Whether this build drives its own WGL context on a host-provided `HWND`.
+///
+/// This is the `embedded` apprt on Windows: there is no app runtime to hand
+/// us a context the way GTK does, only a window handle from the external
+/// host. `embedded` on Darwin still has no OpenGL path (it uses Metal), so
+/// it keeps the old no-op behavior.
+const wgl_enabled =
+    apprt.runtime == apprt.embedded and
+    builtin.os.tag == .windows;
+
+/// Threading model for the WGL path.
+///
+/// **The renderer thread owns the context for the whole session.** This is
+/// deliberately *not* what the GTK path does, so the reasoning is written
+/// down here rather than inferred from the code.
+///
+/// GTK loads glad on the main thread and does the real drawing there, because
+/// `GtkGLArea`'s context belongs to the main loop. WGL has no such rule: a
+/// context may be current on any thread, just not on two at once. So we give
+/// it to the renderer thread, which matters on Windows specifically because
+/// dragging or resizing a window enters a *nested modal message loop* that
+/// blocks the host's thread. Drawing on the main thread the way GTK does
+/// would freeze the terminal for as long as the user holds the title bar.
+///
+/// Two constraints fix the handoff sequence:
+///
+///   1. `glad.context` is `threadlocal` (`pkg/opengl/glad.zig`), so every
+///      thread that issues GL calls must run `glad.load` itself.
+///   2. `generic.zig`'s `Renderer.init` builds GPU resources (`SwapChain`,
+///      atlas textures) immediately after `OpenGL.init`, on the *main*
+///      thread. So the context has to be current there first.
+///
+/// Which gives:
+///
+/// | hook                    | thread   | what it does                     |
+/// | ----------------------- | -------- | -------------------------------- |
+/// | `init`                  | main     | create context, current, load glad |
+/// | (`SwapChain.init`)      | main     | builds GPU resources             |
+/// | `finalizeSurfaceInit`   | main     | release, so the thread can claim it |
+/// | `threadEnter`           | renderer | claim, load glad again (TLS)     |
+/// | `present`               | renderer | blit, then `SwapBuffers`         |
+/// | `threadExit`            | renderer | release                          |
+/// | `threadEnter` (again)   | main     | reclaim for teardown             |
+/// | `deinit`                | main     | destroy                          |
+///
+/// The last two are `Surface.deinit`, which joins the renderer thread and
+/// then calls `threadEnter` again to free GPU resources from the main
+/// thread. GL objects live in the context, not the thread, so objects built
+/// on one thread stay valid on the other.
+const Threading = void;
 
 /// We require at least OpenGL 4.3
 pub const MIN_VERSION_MAJOR = 4;
@@ -45,17 +97,48 @@ blending: configpkg.Config.AlphaBlending,
 /// The most recently presented target, in case we need to present it again.
 last_target: ?Target = null,
 
-/// NOTE: This is an error{}!OpenGL instead of just OpenGL for parity with
-///       Metal, since it needs to be fallible so does this, even though it
-///       can't actually fail.
-pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!OpenGL {
+/// Our WGL context, when we own one. See `Threading` above.
+context: if (wgl_enabled) wgl else void,
+
+/// NOTE: The error set is inferred rather than declared. On the GTK path
+///       this infers to `error{}`, matching the old signature; the WGL path
+///       genuinely can fail, since it creates the context here.
+pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
+    const context = if (comptime wgl_enabled) context: {
+        // Build our context on the window the host gave us. This leaves it
+        // current on this (the main) thread, which is what the caller needs:
+        // `Renderer.init` creates GPU resources right after we return.
+        const hwnd = switch (opts.rt_surface.platform) {
+            .win32 => |v| v.hwnd,
+
+            // On Windows targets `Platform.MacOS` and `Platform.IOS` are
+            // `void` and `Platform.init` rejects those tags outright, so we
+            // can never actually hold one here.
+            .macos, .ios => return error.UnsupportedPlatform,
+        };
+
+        const ctx = try wgl.init(@ptrCast(hwnd));
+        errdefer {
+            var c = ctx;
+            c.deinit();
+        }
+
+        // Load glad for *this* thread. `threadEnter` does it again for the
+        // renderer thread, because glad's context is threadlocal.
+        try prepareContext(null);
+
+        break :context ctx;
+    } else {};
+
     return .{
         .alloc = alloc,
         .blending = opts.config.blending,
+        .context = context,
     };
 }
 
 pub fn deinit(self: *OpenGL) void {
+    if (comptime wgl_enabled) self.context.deinit();
     self.* = undefined;
 }
 
@@ -170,9 +253,13 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
         => try prepareContext(null),
 
         apprt.embedded => {
-            // TODO(mitchellh): this does nothing today to allow libghostty
-            // to compile for OpenGL targets but libghostty is strictly
-            // broken for rendering on this platforms.
+            // Nothing to do here. This hook is static (no renderer instance
+            // exists yet) so there is nowhere to store a context; we create
+            // ours in `init`, where we have both `rt_surface` and a `self`
+            // to keep it in. See `Threading`.
+            //
+            // On non-Windows embedded targets there is still no OpenGL
+            // path at all -- those builds use Metal.
         },
     }
 
@@ -189,13 +276,19 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
 /// This is called just prior to spinning up the renderer
 /// thread for final main thread setup requirements.
 pub fn finalizeSurfaceInit(self: *const OpenGL, surface: *apprt.Surface) !void {
-    _ = self;
     _ = surface;
+
+    if (comptime wgl_enabled) {
+        // This is the last main-thread hook before the renderer thread is
+        // spawned. Our context is still current here from `init`, and a WGL
+        // context can only be current on one thread at a time, so we have to
+        // let go of it now or `threadEnter` would fail to claim it.
+        self.context.clearCurrent();
+    }
 }
 
 /// Callback called by renderer.Thread when it begins.
 pub fn threadEnter(self: *const OpenGL, surface: *apprt.Surface) !void {
-    _ = self;
     _ = surface;
 
     switch (apprt.runtime) {
@@ -209,17 +302,24 @@ pub fn threadEnter(self: *const OpenGL, surface: *apprt.Surface) !void {
         },
 
         apprt.embedded => {
-            // TODO(mitchellh): this does nothing today to allow libghostty
-            // to compile for OpenGL targets but libghostty is strictly
-            // broken for rendering on this platforms.
+            if (comptime wgl_enabled) {
+                // Take ownership of the context on this thread. Whoever had
+                // it last released it: `finalizeSurfaceInit` on the way in,
+                // `threadExit` on the way out.
+                try self.context.makeCurrent();
+
+                // glad's context is threadlocal, so having loaded it on the
+                // main thread in `init` does nothing for us here. The GL
+                // objects themselves belong to the context and are already
+                // there; this only re-resolves the function pointers.
+                try prepareContext(null);
+            }
         },
     }
 }
 
 /// Callback called by renderer.Thread when it exits.
 pub fn threadExit(self: *const OpenGL) void {
-    _ = self;
-
     switch (apprt.runtime) {
         else => @compileError("unsupported app runtime for OpenGL"),
 
@@ -229,7 +329,13 @@ pub fn threadExit(self: *const OpenGL) void {
         },
 
         apprt.embedded => {
-            // TODO: see threadEnter
+            if (comptime wgl_enabled) {
+                // Release the context so another thread can claim it.
+                // `Surface.deinit` joins this thread and then calls
+                // `threadEnter` again from the main thread to tear down GPU
+                // resources, which would fail if we still held it.
+                self.context.clearCurrent();
+            }
         },
     }
 }
@@ -277,7 +383,16 @@ pub fn initShaders(
 
 /// Get the current size of the runtime surface.
 pub fn surfaceSize(self: *const OpenGL) !struct { width: u32, height: u32 } {
-    _ = self;
+    // On the WGL path we ask the window, not GL. `GL_VIEWPORT` only happens
+    // to be the surface size under GTK because `GtkGLArea` sets it before
+    // each draw; nothing does that for a bare `HWND`, and the renderer sets
+    // its own viewport per render target, so reading it back here would
+    // report the last target's size instead of the window's.
+    if (comptime wgl_enabled) {
+        const size = self.context.clientSize();
+        return .{ .width = size.width, .height = size.height };
+    }
+
     var viewport: [4]gl.c.GLint = undefined;
     gl.glad.context.GetIntegerv.?(gl.c.GL_VIEWPORT, &viewport);
     return .{
@@ -325,6 +440,12 @@ pub fn present(self: *OpenGL, target: Target) !void {
         gl.c.GL_COLOR_BUFFER_BIT,
         gl.c.GL_NEAREST,
     );
+
+    // On the WGL path nothing else is going to present for us. GTK swaps
+    // buffers itself as part of its draw cycle; our host only owns the
+    // window, so the swap is ours to do, here, right after the blit that
+    // filled the back buffer.
+    if (comptime wgl_enabled) self.context.swapBuffers();
 
     // Keep track of this target in case we need to repeat it.
     self.last_target = target;
