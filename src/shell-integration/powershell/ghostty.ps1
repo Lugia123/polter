@@ -11,9 +11,14 @@
 # `$ExecutionContext.SessionState.InvokeCommand.LocationChangedAction` is
 # PowerShell's own event for "the current location changed" -- exactly the
 # thing OSC 7 reports. bash and zsh have to hang this off their prompt
-# machinery because they have no such event; PowerShell does, and using it
-# means this file never touches the user's `prompt`. Someone running
-# oh-my-posh or starship gets their prompt back untouched.
+# machinery because they have no such event; PowerShell 6+ does, and using it
+# means that on 6+ this file never touches the user's `prompt` at all.
+#
+# **On Windows PowerShell 5.1 it does have to**, because the event does not
+# exist there -- see the capability check further down. The 5.1 wrapper calls
+# the original prompt and returns its output verbatim, which is as small as
+# that intrusion gets, but it is an intrusion and this comment used to claim
+# there was none.
 #
 # The previous handler is called first, not replaced. It is a single-slot
 # property: assigning to it is how you both install and uninstall, so an
@@ -130,15 +135,94 @@ function global:__GhosttyReport {
     }
 }
 
-$global:GhosttyPrevLocationAction =
-    $ExecutionContext.SessionState.InvokeCommand.LocationChangedAction
+# Which hook was installed, readable from inside the session:
+#
+#     echo $env:GHOSTTY_POWERSHELL_HOOK     ->  event | prompt | none
+#
+# **This exists so the branch below can be checked from outside.** The two
+# paths look identical on screen -- a working directory is reported either
+# way -- and "the guard picked the right branch" and "the guard picks nothing
+# anywhere" produce the same silence. One `echo` tells them apart.
+$env:GHOSTTY_POWERSHELL_HOOK = 'none'
 
-$ExecutionContext.SessionState.InvokeCommand.LocationChangedAction = {
-    param($source, $eventArgs)
-    if ($global:GhosttyPrevLocationAction) {
-        try { & $global:GhosttyPrevLocationAction $source $eventArgs } catch { }
+# **Capability detection, not a version comparison.**
+#
+# `LocationChangedAction` was added in PowerShell 6. **Windows PowerShell 5.1
+# does not have it, and 5.1 is the PowerShell that is on every Windows** --
+# `pwsh` is a separate install. Assigning to a property that is not there is
+# not a silent no-op: 5.1 raises
+#
+#     The property 'LocationChangedAction' cannot be found on this object.
+#
+# in red, at the top of every new tab. This file shipped that way, and the
+# reason it survived a round of testing is worth writing down: **the OSC 7
+# reporting above still worked**, because everything before this point had
+# already been installed. Half-installed, loud on screen, green in the log.
+#
+# Asking whether the property exists is asking the question that matters. A
+# `$PSVersionTable.PSVersion.Major -ge 6` test would be a proxy for it, and
+# proxies go wrong at exactly the edges nobody tests.
+$global:GhosttyHasLocationEvent = $false
+try {
+    $global:GhosttyHasLocationEvent =
+        $ExecutionContext.SessionState.InvokeCommand.PSObject.Properties.Match(
+            'LocationChangedAction').Count -gt 0
+} catch {
+    $global:GhosttyHasLocationEvent = $false
+}
+
+if ($global:GhosttyHasLocationEvent) {
+    # PowerShell 6+. The event exists, so nothing here touches `prompt`.
+    $global:GhosttyPrevLocationAction =
+        $ExecutionContext.SessionState.InvokeCommand.LocationChangedAction
+
+    $ExecutionContext.SessionState.InvokeCommand.LocationChangedAction = {
+        param($source, $eventArgs)
+        if ($global:GhosttyPrevLocationAction) {
+            try { & $global:GhosttyPrevLocationAction $source $eventArgs } catch { }
+        }
+        __GhosttyReport
     }
-    __GhosttyReport
+    $env:GHOSTTY_POWERSHELL_HOOK = 'event'
+} else {
+    # Windows PowerShell 5.1. There is no location event, so the only place
+    # left to notice a directory change is the prompt -- which is what bash
+    # and zsh have always had to do.
+    #
+    # **This wrapper never touches the prompt's output.** It reports, then
+    # returns the original's result as the last expression, untouched. The
+    # failure everyone fears here -- somebody's prompt disappearing -- comes
+    # from rewriting that value; this does not have it in hand long enough to
+    # get it wrong. If the original prompt throws, it throws exactly as it
+    # would have without us.
+    #
+    # What this path does inherit is the ordering problem: oh-my-posh and
+    # starship replace `prompt` outright rather than chaining, so one of them
+    # initialised *after* this file silently takes the wrapper with it. The
+    # working directory then stops being reported on 5.1 and nothing says so.
+    # There is no fix available from inside this file; it is written down
+    # because the symptom (cwd tracking that used to work and now does not)
+    # otherwise looks like a terminal bug.
+    # Guarded for the same reason this whole branch exists: reading a
+    # provider item that is not there can throw under `Set-StrictMode`, and
+    # an unguarded assignment printing red at the top of every tab is the
+    # defect being fixed here. Not repeating its shape one block later.
+    $global:GhosttyOriginalPrompt = $null
+    try { $global:GhosttyOriginalPrompt = $function:prompt } catch { }
+    function global:prompt {
+        # Ours first and guarded, so a reporting failure cannot come between
+        # the user and their prompt.
+        try { __GhosttyReport } catch { }
+        if ($global:GhosttyOriginalPrompt) {
+            & $global:GhosttyOriginalPrompt
+        } else {
+            # 5.1 always defines one, so this is only reached if something
+            # removed it. Matching the built-in default is better than
+            # returning nothing, which PowerShell renders as `PS>`.
+            "PS $($ExecutionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
+        }
+    }
+    $env:GHOSTTY_POWERSHELL_HOOK = 'prompt'
 }
 
 # The starting directory, which no change event will ever announce.
