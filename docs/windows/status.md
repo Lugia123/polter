@@ -64,7 +64,10 @@
 4. **libghostty 的日志在真机上看不见**：`std.log` 在 lib artifact 里没落到进程 stderr。
    `ghostty_init` 那次失败只拿到返回码 1，根因是读源码找的。**不修，后面每个真机故障
    都要重复这个成本。**
-5. **M5 插件**：**已写完、地板已量、`-Real` 待跑**——**7 个** `.sh` 插件各补一份
+5. **M5 插件**：**必须级与应当级均已达成**（2026-09-01，`qwen-code` / qwen 0.15.11）。
+   「agent 真的连上 Polter」仍未达成，**阻塞在「Windows 上还没有服务 `+mcp` 的 exe」**
+   （`windows/host/src/` 里 grep 不到任何 `mcp`），**不在插件线射程内**。判据分三级见五之四。
+   ——**7 个** `.sh` 插件各补一份
    `.ps1`（见 `development.md` 5.3）。第 8 个出厂插件是 `archive.py`，Python 跨平台，
    不用补。地板是 6 处变异注入，全部被断言抓住，其中一处逼出了一个真 bug
    （`File.Replace($tmp,$Path,$null)`：`$null` 绑到 `string` 形参变成 `""`，
@@ -362,10 +365,22 @@ RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCOD
 
 | 看到什么 | 结论 | 下一步 |
 | --- | --- | --- |
-| **压根没有这行**，只有 `[key] TSF ate … vk=0x43` | TSF 吃了 | 问题在 IME 交互，不在 key 路径 |
+| **压根没有这行**，只有 `[key] TSF ate … vk=0x43` | **看输入法当时的状态，见下** | 组合中：正常；空闲时：问题在 IME 交互 |
 | `keycode=0x0` … `surface_key=false` | **扫描码为 0** | 换物理键盘、或给注入补 `KEYEVENTF_SCANCODE` 复测；**这时缺陷在探针不在产品** |
 | `keycode=0x2e mods=0x2 text=none → surface_key=false` | 送进去的是对的，核心仍拒了 | **上面的静态复核有错**，回去重读 `ctrlSeq` |
 | `keycode=0x2e … → surface_key=true` | 核心编码并入队了 | **缺陷在 key 路径下游**：pty 写入 / ConPTY / 子进程 |
+
+> ⚠️ **第 1 行是状态相关的，不是一个静态结论。** 2026-09-02 做了组合中/无组合的对照：
+>
+> | 输入法状态 | `WM_KEYDOWN` 到达 wndproc？ |
+> | --- | --- |
+> | **有活动组合**（屏上 `a'b`、候选窗开着） | ❌ `TSF ate msg=0x100 vk=0x11 (not dispatched)` |
+> | **按 Esc 清掉组合之后** | ✅ 到达，但 `keycode=0x0` |
+>
+> **微软拼音只在组合中吃 Ctrl 组合，空闲时不吃。** 所以同一台机器、同一个按键，
+> **两种状态会走进这张表的不同行**，而两种状态在用户那里都是常态。
+> **在组合中看到 `TSF ate` 是正常的，在空闲时看到才是异常**——
+> 原来的写法把它写成了静态结论，会让人把正常读成故障。
 
 **`mods` 出现 `0x22` 是正常的**（`0x2` ctrl + `0x20` numlock）：
 `Mods.binding()` 只保留 shift/ctrl/alt/super，锁定位和侧位都会被剥掉。
@@ -419,6 +434,41 @@ RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCOD
   代价是第三方插件作者要处理签名或让用户改策略。
 
 **这条不是机械结论，是被看过之后的决定**（`docs/poltergeist/provisioning.md` 9.6 第②条）。
+
+## 五之四、M5 的验收判据（2026-09-01 改写）
+
+**原判据把三件阻塞方不同的事捆成了一句**：插件自己做完、那家 CLI 接受、以及对端存在。
+**捆在一起时，只要最后一件没到，前两件的成果就无法表述。** 拆成三级：
+
+**必须（与环境无关）— 已达成。**
+插件在真 Windows 上按真协议跑完：握手、批次、应答、三态、失败时 tell 排在 `ok:false`
+之前、stdout 只有 ack/tell、非 ASCII `%USERPROFILE%` 下不乱码、幂等、skill 戳记与清理、
+坏配置拒写且原样保留。
+**证据**：`test/plugins/provtest.ps1` 真机 48/0；6 处变异注入量过地板（其中一处逼出真 bug：
+`File.Replace($tmp,$Path,$null)`，`$null` 绑到 `string` 形参变成 `""`，**只在目标文件已存在
+时才炸**）；`.sh` 侧由 `zig build test` 钉住（`Resident.zig`，遍历 `qwen-code` 与 `gemini`，
+两个负对照**分别**做过）。
+
+**应当（需要一台装有该 agent CLI 的机器）— 已达成，在 `qwen-code` 上。**
+`x mcp add` 成功；配置里出现 `mcpServers.polter` 且**内容读回来核过**；那家 CLI **自己**在
+`mcp list` 里报出 polter；skill 落进它的目录。
+**证据**：qwen 0.15.11，写进去的是
+`{"command":"C:\\app\\polter-host.exe","args":["+mcp"],"env":{"POLTER_REGISTERED":"0.0.0-provtest"}}`，
+残留已清。
+
+**不在本条射程内（阻塞在别的里程碑）— 未达成。**
+「那个 agent 真的连上 Polter」。**达成与否不改变本条的结论。**
+
+### 达成的是什么，要说准
+
+- **共用实现（`_sdk`）第一次被真 CLI 端到端验过。** 其余六家各自只剩三个钩子、十几行声明——
+  协议、三态、幂等、skill 渲染与清理、JSON 编辑那三条性质，全在已验过的那一份里。
+- **所以 `provisioning.md` 未决问题 1 只退掉了七行里的一行，不是整条。** 每家仍要在装了那个
+  CLI 的机器上各验一次。
+- **`gemini` 要单独说**：它和 `qwen-code` 同源、刚打了同一个补丁、argv 形状被同一条测试钉住——
+  **但它本身一次都没跑过。** 它「能用」是从「同一个上游」推出来的，**是推断不是测量**。
+  > **今天这个 bug 恰好证明了这对文件会一起坏；它没有证明它们会一起好。**
+- **`kimi` 仍是待验**：用 `--env` 不是 `-e`，大概率不受影响，**没量过**。
 
 ## 六、今天证伪或修正的判断（十条，六条是主控的）
 
