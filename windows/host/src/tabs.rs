@@ -133,6 +133,10 @@ pub enum Op {
     /// is how anything reaches the thread that owns windows, so it comes
     /// through here too.
     ToggleQuickTerminal,
+    /// A tab whose surface is not the default one: the chat terminal, today.
+    /// Queued like every other window-making request, because `create_tab`
+    /// must run on the thread that owns windows.
+    NewTabWith(NewTab),
     /// Put a closed tab back: its shell starts in `cwd`, it gets its old name
     /// back, and it goes back to `index` rather than onto the end.
     ///
@@ -584,9 +588,7 @@ fn create_pane(
     hinst: windows::Win32::Foundation::HINSTANCE,
     id: PaneId,
     r: TreeRect,
-    // Where the shell should start. `None` means "wherever the core would
-    // have put it"; only a reopened tab passes anything.
-    cwd: Option<String>,
+    spec: NewTab,
 ) -> Option<Pane> {
     let scale = state().scale;
     let (x, y) = (r.x as i32, r.y as i32);
@@ -634,7 +636,7 @@ fn create_pane(
     }
     // Same lifetime rule as `initial_input`: the core reads the pointer
     // during `surface_new`, so the CString has to outlive that call.
-    let cwd_c = match cwd {
+    let cwd_c = match spec.cwd {
         None => None,
         Some(c) => match std::ffi::CString::new(c.clone()) {
             Ok(c) => Some(c),
@@ -652,6 +654,36 @@ fn create_pane(
     if let Some(c) = &cwd_c {
         sc.working_directory = c.as_ptr();
         logf!("[pane] {} starting in {:?}", id, c);
+    }
+    // **Same lifetime rule as `working_directory` and `initial_input`**: the
+    // core reads the pointer during `surface_new`, so the `CString` has to
+    // outlive that call. Declared here, not inside the `if`, for exactly that.
+    let command_c = match &spec.command {
+        None => None,
+        Some(c) => match std::ffi::CString::new(c.clone()) {
+            Ok(c) => Some(c),
+            Err(_) => {
+                // Refused rather than dropped: a chat surface that silently
+                // starts a plain shell looks like a chat window that does not
+                // answer, and nothing would say which of the two it was.
+                logf!("[pane] {} command {:?} has an interior NUL; not starting it", id, c);
+                return None;
+            }
+        },
+    };
+    if let Some(c) = &command_c {
+        sc.command = c.as_ptr();
+    }
+    // A bool, so no lifetime question -- but it is the whole of what makes
+    // this surface a chat surface, so it is logged with the command.
+    sc.poltergeist_chat = spec.chat;
+    if spec.chat || command_c.is_some() {
+        logf!(
+            "[pane] {} command={:?} poltergeist_chat={}",
+            id,
+            spec.command.as_deref().unwrap_or(""),
+            spec.chat
+        );
     }
 
     let s = unsafe { (api().surface_new)(app, &sc) };
@@ -699,12 +731,43 @@ pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINS
     create_tab_in(frame, app, hinst, None)
 }
 
+/// What a new tab's surface should be, beyond the defaults.
+///
+/// **A value rather than three more parameters.** `cwd` and `command` are both
+/// `Option<String>` and would sit next to each other in the argument list,
+/// where swapping them compiles and produces a shell started in a directory
+/// named `polter +chat`. Named fields cannot be swapped silently, and the
+/// callers that want none of it say `NewTab::default()`.
+#[derive(Clone, Default, Debug)]
+pub struct NewTab {
+    /// Where the shell starts. Only a reopened tab passes one.
+    pub cwd: Option<String>,
+    /// What to run instead of the configured shell. `polter +chat` for the
+    /// chat surface; nothing else uses it yet.
+    pub command: Option<String>,
+    /// **What makes a chat surface different from any other terminal**: it
+    /// tells the core that requests from this surface speak for the person at
+    /// the keyboard (`embedded.zig:684`). Set where we know why the surface is
+    /// being opened, and nowhere else -- the same rule `Ghostty.App.swift`'s
+    /// `openChat` states.
+    pub chat: bool,
+}
+
 /// A new tab whose shell starts in `cwd`. `create_tab` is this with `None`.
 pub fn create_tab_in(
     frame: HWND,
     app: App,
     hinst: windows::Win32::Foundation::HINSTANCE,
     cwd: Option<String>,
+) -> bool {
+    create_tab_with(frame, app, hinst, NewTab { cwd, ..Default::default() })
+}
+
+pub fn create_tab_with(
+    frame: HWND,
+    app: App,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    spec: NewTab,
 ) -> bool {
     let sh = strip_h(state().scale);
     let Some(bounds) = content_bounds(frame, sh) else {
@@ -719,7 +782,7 @@ pub fn create_tab_in(
     // constructed* while the guard for that value's destination was held.
     let id = take_id();
     let tab_id = TabId(take_id());
-    let Some(pane) = create_pane(frame, app, hinst, id, bounds, cwd) else {
+    let Some(pane) = create_pane(frame, app, hinst, id, bounds, spec) else {
         return false;
     };
     // **Read before the tab exists, because the core reports it before the
@@ -800,7 +863,7 @@ fn split_focused(
         return;
     };
 
-    let Some(pane) = create_pane(frame, app, hinst, id, r, None) else {
+    let Some(pane) = create_pane(frame, app, hinst, id, r, NewTab::default()) else {
         return;
     };
     {
@@ -1563,6 +1626,11 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
         match op {
             Op::NewTab => {
                 create_tab(frame, app, hinst);
+            }
+            Op::NewTabWith(spec) => {
+                let chat = spec.chat;
+                let ok = create_tab_with(frame, app, hinst, spec);
+                logf!("[tab] new tab (chat={}) created={}", chat, ok as u8);
             }
             Op::ReopenTab { cwd, title, index } => {
                 if !create_tab_in(frame, app, hinst, Some(cwd.clone())) {

@@ -199,6 +199,32 @@ pub fn build(b: *std.Build) !void {
             if (config.target.result.os.tag == .windows) {
                 lib_shared.install("ghostty-internal.dll");
                 lib_static.install("ghostty-internal-static.lib");
+
+                // **Windows reaches neither of the other two calls to this.**
+                //
+                // `resources.install()` is called in exactly two other
+                // places: the `app_runtime != .none` branch above, and the
+                // xcframework branch below. A Windows target takes neither --
+                // `apprt/runtime.zig` gives it `.none` (only Linux and
+                // FreeBSD default to `.gtk`), and `Config.zig`'s
+                // `emit_xcframework` is false whenever the target is not
+                // macOS. So the Windows build installed a DLL and nothing
+                // else, and `resourcesDir()` found nothing at run time.
+                //
+                // **Four things were silently off because of this line not
+                // existing**: Poltergeist plugins (`App.zig`'s
+                // `{resources}/polter/plugins`), skills, themes, and shell
+                // integration. None of them reports its own absence --
+                // `resourcesdir.zig` says outright that an empty resources
+                // directory is not an error -- so the symptom was four
+                // features that simply did nothing.
+                //
+                // The rest of the resource machinery already anticipated
+                // Windows: `GhosttyResources.zig` skips the `tic` compile and
+                // installs the bare `.terminfo`, which is precisely the
+                // sentinel `resourcesdir.zig` looks for on Windows. Only this
+                // call was missing.
+                resources.install();
             } else {
                 lib_shared.install("ghostty-internal.so");
                 lib_static.install("ghostty-internal.a");
@@ -253,8 +279,21 @@ pub fn build(b: *std.Build) !void {
             // work correctly. If we're running `zig build run` in Ghostty,
             // this also ensures it overwrites the release one with our debug
             // build.
+            //
+            // **The name was missed when the variable was renamed.** This
+            // said `GHOSTTY_RESOURCES_DIR`, which nothing reads any more:
+            // `os/resourcesdir.zig` looks up `POLTER_RESOURCES_DIR` in both
+            // its release and its debug branch, and `termio/Exec.zig` puts
+            // that name into the child environment. So this line set a
+            // variable no reader was looking for -- the same shape as the
+            // rename misses elsewhere in this port, one name at a time.
+            //
+            // **Not verified by running it.** `zig build run` launches the
+            // app, which is not something this repository's agents may do,
+            // so this change is checked by reading the three readers and by
+            // the build still configuring -- not by observing it work.
             run_cmd.setEnvironmentVariable(
-                "GHOSTTY_RESOURCES_DIR",
+                "POLTER_RESOURCES_DIR",
                 b.getInstallPath(.prefix, "share/ghostty"),
             );
 

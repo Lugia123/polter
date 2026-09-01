@@ -1218,13 +1218,22 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             );
             false
         }
+        // **Two fields are the whole of it**, the same two `Ghostty.App.swift`'s
+        // `openChat` sets: the command to run, and the flag that tells the core
+        // requests from this surface speak for the person at the keyboard.
+        //
+        // `toggle_` is the core's name for it; this opens one and does not
+        // close it again. Closing the chat tab is closing a tab, which the
+        // strip already does -- and a toggle that hunted for "the chat tab" to
+        // close would need to decide which one when there are two.
         ffi::ACTION_TOGGLE_POLTERGEIST_CHAT => {
-            logf!(
-                "[action] poltergeist chat requested; it needs a surface created with \
-                 command=\"polter +chat\" and poltergeist_chat=true, which is create_pane's to \
-                 set (tabs.rs). Nothing opened."
-            );
-            false
+            logf!("[action] poltergeist chat requested");
+            tabs::post_op(tabs::Op::NewTabWith(tabs::NewTab {
+                command: Some("polter +chat".to_string()),
+                chat: true,
+                ..Default::default()
+            }));
+            true
         }
 
         ffi::ACTION_READONLY => {
@@ -1673,6 +1682,125 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 /// Drive a binding by name on the active surface. Returns what the core
 /// said: false means it could not parse or could not perform it, and that
 /// distinction is worth logging rather than swallowing.
+/// Tell the core where the bundled resources are, and say so out loud.
+///
+/// # Why this has to exist at all
+///
+/// Four features are read out of one directory -- Poltergeist **plugins**
+/// (`App.zig`'s `{resources}/polter/plugins`), **skills**, **themes**, and
+/// **shell integration** -- and on Windows the host found none of them.
+/// `os/resourcesdir.zig` says it plainly: *an empty resources directory is
+/// not an error*. So all four simply did nothing, with no line anywhere
+/// saying why, and the eight `provision.ps1` files shipped with the plugins
+/// had never once been executed.
+///
+/// # Two routes, each the other's floor
+///
+/// `resourcesDir()` finds the directory two ways:
+///
+///  - **the environment variable**, which is what this function sets; and
+///  - **climbing from the executable**, looking for
+///    `<dir>/share/terminfo/ghostty.terminfo` and then using
+///    `<dir>/share/ghostty`.
+///
+/// Both are done deliberately. The climb survives somebody copying the build
+/// somewhere by hand and never reading our documentation; the variable makes
+/// "the host knows where its resources are" a readable line in the log rather
+/// than an inference. If one is wrong the other still works, and the log says
+/// which one was in play.
+///
+/// # The variable is not taken at face value by the core
+///
+/// `resourcesdir.zig` calls `looksLikeOurs()` on it, which tests for one
+/// subdirectory: `poltergeist`. **Setting a path that does not pass that test
+/// is exactly equivalent to setting nothing**, and the core reports neither.
+/// That is why `has_poltergeist` is its own field below rather than folded
+/// into a single "looks fine" -- it is the core's own probe, quoted, so a
+/// reader can tell "the variable was ignored" from "the variable was used and
+/// the directory was thin".
+///
+/// # And passing that probe does not mean the rest is there
+///
+/// One subdirectory decides whether the whole directory counts. The other
+/// three are reported separately for the same reason: a bundle with
+/// `poltergeist/` and nothing else passes the core's check and then fails to
+/// produce a single plugin, theme or shell integration -- silently, four
+/// times over.
+fn announce_resources_dir() {
+    // Already set by whoever launched us: leave it, and say we did. A test
+    // harness pointing at a build tree is a legitimate reason to override,
+    // and silently replacing it would make that impossible to notice.
+    if let Ok(v) = std::env::var("POLTER_RESOURCES_DIR") {
+        if !v.is_empty() {
+            logf!("[res] POLTER_RESOURCES_DIR already set to {:?}; leaving it", v);
+            report_resources_dir(std::path::Path::new(&v));
+            return;
+        }
+    }
+
+    // `<exe dir>/../share/ghostty`, which is the layout `zig build` produces
+    // (`bin/` beside `share/`) and the one the core's own climb expects.
+    let Ok(exe) = std::env::current_exe() else {
+        logf!("[res] current_exe() failed; POLTER_RESOURCES_DIR not set, so plugins, skills, themes and shell integration will all be absent");
+        return;
+    };
+    let Some(bin) = exe.parent() else {
+        logf!("[res] the executable has no parent directory; POLTER_RESOURCES_DIR not set");
+        return;
+    };
+
+    // Two candidates, in order. The second is for a flat deployment -- an exe
+    // and a `share/` beside it, no `bin/` -- which is how this has actually
+    // been put on the test machine, and getting it wrong there would look
+    // exactly like getting it wrong everywhere.
+    let candidates = [
+        bin.join("..").join("share").join("ghostty"),
+        bin.join("share").join("ghostty"),
+    ];
+    for cand in &candidates {
+        if cand.join("poltergeist").is_dir() {
+            let s = cand.to_string_lossy().into_owned();
+            std::env::set_var("POLTER_RESOURCES_DIR", &s);
+            logf!("[res] POLTER_RESOURCES_DIR = {:?}", s);
+            report_resources_dir(cand);
+            return;
+        }
+    }
+
+    // **Nothing was set, and this says what was looked at.** Setting a path
+    // that fails the core's probe is the same as setting nothing, so guessing
+    // would buy nothing and would cost the reader this list.
+    logf!(
+        "[res] no resources directory found next to the executable; POLTER_RESOURCES_DIR left unset. Looked at: {}",
+        candidates
+            .iter()
+            .map(|c| format!("{:?}", c.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    logf!(
+        "[res] consequence: plugins, skills, themes and shell integration are all unavailable, and none of them reports its own absence"
+    );
+}
+
+/// One line naming what is actually in the directory.
+///
+/// **Each of the four is checked separately**, because each is a different
+/// feature going quiet and the core reports none of them.
+fn report_resources_dir(dir: &std::path::Path) {
+    let has = |sub: &str| dir.join(sub).is_dir();
+    logf!(
+        "[res] exists={} has_poltergeist={} has_shell-integration={} has_polter/plugins={} has_themes={}",
+        dir.is_dir(),
+        // The core's own probe (`looksLikeOurs`). False here means the
+        // variable above is ignored entirely and silently.
+        has("poltergeist"),
+        has("shell-integration"),
+        dir.join("polter").join("plugins").is_dir(),
+        has("themes"),
+    );
+}
+
 /// The config handle, for the settings UI's diagnostics.
 pub fn config_handle() -> ffi::Config {
     CONFIG.load(Ordering::Acquire)
@@ -2024,6 +2152,9 @@ fn main() {
             logf!("GHOSTTY_LOG=stderr (core logging to this process's stderr)");
         }
     }
+
+    // **Before `ghostty_init`, because the core reads it during startup.**
+    announce_resources_dir();
 
     // ghostty_init takes (argc, argv); argv is a non-optional pointer on the
     // Zig side, so hand it a real one rather than null.
