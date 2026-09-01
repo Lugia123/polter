@@ -16,6 +16,13 @@ pub const Shell = enum {
     elvish,
     fish,
     nushell,
+    // **One member, two executables.** `powershell.exe` is Windows
+    // PowerShell 5.1 and ships on every Windows; `pwsh.exe` is PowerShell 7+
+    // and is installed separately. They take the same options for what this
+    // file does, so they are one integration -- but supporting only `pwsh`
+    // would leave the shell that is actually everywhere uncovered, which is
+    // the situation this integration exists to fix.
+    powershell,
     zsh,
 };
 
@@ -67,6 +74,13 @@ pub fn setup(
         ),
 
         .zsh => try setupZsh(
+            alloc_arena,
+            command,
+            resource_dir,
+            env,
+        ),
+
+        .powershell => try setupPowershell(
             alloc_arena,
             command,
             resource_dir,
@@ -162,6 +176,17 @@ fn detectShell(alloc: Allocator, command: config.Command) !?Shell {
     if (std.mem.eql(u8, "fish", exe)) return .fish;
     if (std.mem.eql(u8, "nu", exe)) return .nushell;
     if (std.mem.eql(u8, "zsh", exe)) return .zsh;
+
+    // Both PowerShells, with and without the extension: a Windows shell
+    // configured as `pwsh` and one configured as `pwsh.exe` are the same
+    // shell, and a user writes whichever they have in their PATH.
+    // Case-insensitive because Windows paths are.
+    for ([_][]const u8{ "pwsh", "powershell" }) |name| {
+        if (std.ascii.eqlIgnoreCase(name, exe)) return .powershell;
+        if (exe.len == name.len + 4 and
+            std.ascii.eqlIgnoreCase(name, exe[0..name.len]) and
+            std.ascii.eqlIgnoreCase(".exe", exe[name.len..])) return .powershell;
+    }
 
     return null;
 }
@@ -916,6 +941,289 @@ test "nushell: missing resources" {
 /// Setup the zsh automatic shell integration. This works by setting
 /// ZDOTDIR to our resources dir so that zsh will load our config. This
 /// config then loads the true user config.
+/// Set up the PowerShell integration.
+///
+/// # Why this returns a `direct` command and not a `shell` string
+///
+/// **`Exec.zig` splits a `shell` command string on whitespace on Windows and
+/// says outright that it "does not honor Windows CLI quoting rules"**
+/// (`Exec.zig:2071`). Every other integration gets away with a string because
+/// their arguments have no spaces -- `bash --posix`, `nu --execute '...'`
+/// is quoted for *nushell*, not for the splitter. PowerShell's `-Command`
+/// takes a script fragment, which does have spaces, so a string would arrive
+/// at the process as three broken arguments. The `direct` form is passed
+/// through as an argv array, which is what the same comment recommends.
+///
+/// # Why the path travels in the environment
+///
+/// The script's path can contain spaces (it does on a default install:
+/// `C:\\Program Files\\...`) and a quote is legal in a Windows directory
+/// name. Putting the path in `-Command` would mean quoting it for PowerShell
+/// *inside* an argument that is itself being quoted for the process
+/// creation API. Passing it in an environment variable has no quoting rules
+/// at all -- and `. $env:X` hands the whole value to the dot-source operator
+/// as one path however many spaces it holds. bash's integration uses `ENV`
+/// for the same reason.
+///
+/// # What is refused
+///
+/// `-Command`, `-File` and `-EncodedCommand` all consume the rest of the
+/// command line, so a user who passed one is running something specific and
+/// appending ours would either be ignored or would change what they asked
+/// for. Those bail out, and the shell starts without integration rather than
+/// with a command line that means something else.
+fn setupPowershell(
+    alloc: Allocator,
+    command: config.Command,
+    resource_dir: []const u8,
+    env: *EnvMap,
+) !?config.Command {
+    // The script has to exist before the command line promises to load it:
+    // dot-sourcing a missing path prints an error at the user's first prompt.
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const integ_path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/shell-integration/powershell/ghostty.ps1",
+        .{resource_dir},
+    );
+    std.Io.Dir.accessAbsolute(global.io(), integ_path, .{}) catch |err| {
+        log.warn("unable to access {s}: {}", .{ integ_path, err });
+        return null;
+    };
+    try env.put("GHOSTTY_POWERSHELL_INTEGRATION", integ_path);
+
+    var args: std.ArrayList([:0]const u8) = .empty;
+
+    var iter = try command.argIterator(alloc);
+    defer iter.deinit();
+
+    const exe = iter.next() orelse return null;
+    try args.append(alloc, try alloc.dupeZ(u8, exe));
+
+    while (iter.next()) |arg| {
+        // Prefixes, because PowerShell accepts any unambiguous abbreviation:
+        // `-com`, `-Command` and `-c` are the same switch.
+        if (isPowershellTerminalArg(arg)) return null;
+        try args.append(alloc, try alloc.dupeZ(u8, arg));
+    }
+
+    // **`-ExecutionPolicy Bypass` applies to this process only.** The default
+    // on a Windows client is `Restricted`, under which dot-sourcing any .ps1
+    // fails -- and it fails the way everything in this port fails, by the
+    // feature simply not happening. The alternative, `-EncodedCommand`, is
+    // not subject to the policy either but arrives in the log and the process
+    // list as base64: unreadable exactly when somebody needs to read it.
+    try args.append(alloc, "-ExecutionPolicy");
+    try args.append(alloc, "Bypass");
+    // Without this, `-Command` runs and exits; there would be no shell.
+    try args.append(alloc, "-NoExit");
+    // Last, because everything after `-Command` belongs to it.
+    try args.append(alloc, "-Command");
+    try args.append(alloc, ". $env:GHOSTTY_POWERSHELL_INTEGRATION");
+
+    return .{ .direct = try args.toOwnedSlice(alloc) };
+}
+
+/// Whether an argument makes PowerShell consume the rest of the command line.
+fn isPowershellTerminalArg(arg: []const u8) bool {
+    if (arg.len < 2) return false;
+    if (arg[0] != '-' and arg[0] != '/') return false;
+    const name = arg[1..];
+    // PowerShell allows any unambiguous prefix of a parameter name, so the
+    // check is on prefixes rather than on the full spellings. `-c` is the
+    // documented short form of `-Command`.
+    for ([_][]const u8{ "command", "file", "encodedcommand", "ec" }) |full| {
+        if (name.len <= full.len and std.ascii.eqlIgnoreCase(name, full[0..name.len])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+test "powershell: the command line is direct, not a shell string" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var res: TmpResourcesDir = try .init(.powershell);
+    defer res.deinit();
+
+    var env = EnvMap.init(alloc);
+    defer env.deinit();
+
+    const command = (try setupPowershell(
+        alloc,
+        .{ .shell = "pwsh" },
+        res.path,
+        &env,
+    )).?;
+
+    // **`direct`, and this is the point of the test.** A `shell` string is
+    // split on whitespace on Windows with no regard for quoting, so
+    // `-Command ". $env:X"` would arrive as three arguments and the shell
+    // would start without integration -- silently, since a shell that starts
+    // is a shell that looks fine.
+    const args = switch (command) {
+        .direct => |v| v,
+        .shell => return error.ExpectedDirectCommand,
+    };
+
+    try testing.expectEqualStrings("pwsh", args[0]);
+    try testing.expectEqualStrings("-ExecutionPolicy", args[args.len - 5]);
+    try testing.expectEqualStrings("Bypass", args[args.len - 4]);
+    try testing.expectEqualStrings("-NoExit", args[args.len - 3]);
+    try testing.expectEqualStrings("-Command", args[args.len - 2]);
+    // The fragment has a space in it. That space is exactly what a `shell`
+    // string could not have carried.
+    try testing.expectEqualStrings(". $env:GHOSTTY_POWERSHELL_INTEGRATION", args[args.len - 1]);
+
+    // The path travels in the environment, where nothing has to be quoted.
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    try testing.expectEqualStrings(
+        try std.fmt.bufPrint(
+            &path_buf,
+            "{s}/shell-integration/powershell/ghostty.ps1",
+            .{res.path},
+        ),
+        env.get("GHOSTTY_POWERSHELL_INTEGRATION").?,
+    );
+}
+
+test "powershell: the user's own arguments are kept, in order, before ours" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var res: TmpResourcesDir = try .init(.powershell);
+    defer res.deinit();
+
+    var env = EnvMap.init(alloc);
+    defer env.deinit();
+
+    const command = (try setupPowershell(
+        alloc,
+        .{ .shell = "pwsh -NoLogo -NoProfileLoadTime" },
+        res.path,
+        &env,
+    )).?;
+    const args = switch (command) {
+        .direct => |v| v,
+        .shell => return error.ExpectedDirectCommand,
+    };
+
+    try testing.expectEqualStrings("pwsh", args[0]);
+    try testing.expectEqualStrings("-NoLogo", args[1]);
+    try testing.expectEqualStrings("-NoProfileLoadTime", args[2]);
+    // **Ours come after.** `-Command` consumes everything following it, so an
+    // implementation that appended the user's arguments last would hand them
+    // to PowerShell as part of our script fragment.
+    try testing.expectEqualStrings("-ExecutionPolicy", args[3]);
+}
+
+test "powershell: arguments that swallow the command line are refused" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var res: TmpResourcesDir = try .init(.powershell);
+    defer res.deinit();
+
+    // Each of these takes over the rest of the line. Adding our `-Command`
+    // after one of them either does nothing or changes what the user asked
+    // for; starting without integration is the honest outcome.
+    const refused = [_][:0]const u8{
+        "pwsh -Command Get-Date",
+        "pwsh -c Get-Date",
+        "pwsh -File script.ps1",
+        "pwsh -EncodedCommand ZwBlAHQA",
+        // Abbreviations, which PowerShell accepts for any unambiguous prefix.
+        "pwsh -com Get-Date",
+        "pwsh -fi script.ps1",
+        // Windows-style slash.
+        "pwsh /Command Get-Date",
+    };
+    for (refused) |cmdline| {
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+        const result = try setupPowershell(alloc, .{ .shell = cmdline }, res.path, &env);
+        try testing.expect(result == null);
+    }
+}
+
+// **The floor for the test above.** A predicate that returned true for every
+// argument would refuse everything and pass it, while quietly disabling the
+// integration for anyone who passes any option at all.
+test "powershell: ordinary arguments are not mistaken for terminal ones" {
+    const testing = std.testing;
+    try testing.expect(!isPowershellTerminalArg("-NoLogo"));
+    try testing.expect(!isPowershellTerminalArg("-NoExit"));
+    try testing.expect(!isPowershellTerminalArg("-WorkingDirectory"));
+    try testing.expect(!isPowershellTerminalArg("-ExecutionPolicy"));
+    try testing.expect(!isPowershellTerminalArg("Bypass"));
+    try testing.expect(!isPowershellTerminalArg("-"));
+    try testing.expect(isPowershellTerminalArg("-Command"));
+    try testing.expect(isPowershellTerminalArg("-c"));
+    try testing.expect(isPowershellTerminalArg("-File"));
+}
+
+test "powershell: a missing script means no integration, not a broken shell" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var env = EnvMap.init(alloc);
+    defer env.deinit();
+
+    // Dot-sourcing a path that is not there prints an error at the user's
+    // first prompt, so the check happens before the command line promises it.
+    const result = try setupPowershell(alloc, .{ .shell = "pwsh" }, "/nonexistent", &env);
+    try testing.expect(result == null);
+    try testing.expect(env.get("GHOSTTY_POWERSHELL_INTEGRATION") == null);
+}
+
+test "powershell: both executables are detected, with and without .exe" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    for ([_][:0]const u8{
+        "pwsh",
+        "pwsh.exe",
+        "powershell",
+        "powershell.exe",
+        "PowerShell.exe",
+        // A path with a space has to be quoted in a shell command string --
+        // the argument iterator splits on whitespace otherwise, and arg0
+        // becomes `C:/Program`. That is the iterator's rule, not this
+        // function's, and getting it wrong here was a test bug.
+        "\"C:/Program Files/PowerShell/7/pwsh.exe\"",
+        "pwsh -NoLogo",
+    }) |cmdline| {
+        try testing.expectEqual(
+            Shell.powershell,
+            (try detectShell(alloc, .{ .shell = cmdline })).?,
+        );
+    }
+
+    // **5.1 is the one that matters most**: `powershell.exe` ships on every
+    // Windows, `pwsh.exe` is a separate install. Supporting only the latter
+    // would leave this integration in the same position as bash -- available
+    // only to people who installed something.
+    try testing.expectEqual(
+        Shell.powershell,
+        (try detectShell(alloc, .{ .shell = "powershell.exe" })).?,
+    );
+
+    // The floor: a name that merely starts the same way is a different shell.
+    try testing.expect(try detectShell(alloc, .{ .shell = "pwshx" }) == null);
+    try testing.expect(try detectShell(alloc, .{ .shell = "powershellish" }) == null);
+}
+
 fn setupZsh(
     alloc: Allocator,
     command: config.Command,
@@ -1038,6 +1346,12 @@ const TmpResourcesDir = struct {
         switch (shell) {
             .bash => try tmp_dir.dir.writeFile(std.testing.io, .{
                 .sub_path = "shell-integration/bash/ghostty.bash",
+                .data = "",
+            }),
+            // `setupPowershell` checks the script is there before promising
+            // to dot-source it, so the fixture has to provide one.
+            .powershell => try tmp_dir.dir.writeFile(std.testing.io, .{
+                .sub_path = "shell-integration/powershell/ghostty.ps1",
                 .data = "",
             }),
             else => {},
