@@ -29,7 +29,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use crate::logf;
+use crate::{logf, plogf};
 
 /// One tab worth reopening.
 pub struct Entry {
@@ -124,7 +124,9 @@ pub fn remember(index: usize, title: &str, cwd: &str) {
         let dropped = stack.remove(0);
         // Dropping the oldest is the bound working, but a silent drop and a
         // lost entry look the same from the far side.
-        logf!("[reopen] dropped oldest {:?} to stay at {}", dropped.chosen_title, LIMIT);
+        // process-wide: the stack is one for the process (macOS keeps one too,
+        // `ClosedTabs.shared`), so its depth and its bound belong to no window.
+        plogf!("[reopen] dropped oldest {:?} to stay at {}", dropped.chosen_title, LIMIT);
     }
     logf!(
         "[reopen] remembered tab {} {} cwd={:?}; stack {}/{}",
@@ -142,18 +144,27 @@ pub fn reopen_last() -> bool {
     let entry = match STACK.lock() {
         Ok(mut stack) => stack.pop(),
         Err(_) => {
-            logf!("[reopen] the stack is poisoned; nothing reopened");
+            // process-wide: one stack, one mutex; a poisoned lock is a fact
+            // about the process and not about whoever pressed the key.
+            plogf!("[reopen] the stack is poisoned; nothing reopened");
             return false;
         }
     };
     let Some(entry) = entry else {
         // Reachable only if the row was not greyed when it should have been,
         // so this line is also the greying's own alarm.
-        logf!("[reopen] nothing to reopen; stack 0/{}", LIMIT);
+        // process-wide: the stack is shared, so "empty" is not a fact about
+        // one window. **Which window asked is already on the caller's line**
+        // -- `[menu] pick ... ok=0` and the strip menu's equivalent both carry
+        // their frame -- so naming it again here would be a second answer to a
+        // question that is already answered.
+        plogf!("[reopen] nothing to reopen; stack 0/{}", LIMIT);
         return false;
     };
     let Some(open) = OPENER.get() else {
-        logf!(
+        // process-wide: the opener is a `OnceLock` installed once by `tabs.rs`
+        // for the whole process; its absence disables reopening everywhere.
+        plogf!(
             "[reopen] no opener installed: {:?} cwd={:?} stays on the stack, because a tab \
              opened without its directory is the failure this feature exists to avoid",
             entry.chosen_title,
@@ -174,7 +185,10 @@ pub fn reopen_last() -> bool {
     let title = entry.chosen_title.clone();
     let ok = open(&entry);
     if !ok {
-        logf!("[reopen] the opener refused {:?}; putting it back on the stack", title);
+        // process-wide: this reports what the stack did with the entry. The
+        // refusal itself is logged by `tabs.rs`, on the line that knows which
+        // window could not build the tab.
+        plogf!("[reopen] the opener refused {:?}; putting it back on the stack", title);
         if let Ok(mut stack) = STACK.lock() {
             stack.push(entry);
         }

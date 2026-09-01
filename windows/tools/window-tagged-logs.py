@@ -119,7 +119,7 @@ import sys
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
-BASELINE_UNTAGGED = 178
+BASELINE_UNTAGGED = 173
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`
