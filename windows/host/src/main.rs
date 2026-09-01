@@ -32,7 +32,12 @@
 
 mod ffi;
 mod keys;
+mod hud;
+mod keyseq;
+mod overlay;
 mod palette;
+mod search;
+mod shell;
 mod strip;
 mod tabs;
 mod tsf;
@@ -45,7 +50,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use windows::core::{s, w, Interface, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::HBRUSH;
+use windows::Win32::Graphics::Gdi::{InvalidateRect, HBRUSH};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryA};
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -448,6 +453,46 @@ extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
             true
         }
 
+        // Search: the core owns the search, the host owns a text box and a
+        // counter. All four only copy and post -- `cb_action` can be on the
+        // core's thread, and the `start_search` needle is only valid for the
+        // duration of this call.
+        ffi::ACTION_START_SEARCH => {
+            search::on_start(action.as_cstr().and_then(|c| c.to_str().ok()));
+            true
+        }
+        ffi::ACTION_END_SEARCH => {
+            search::on_end();
+            true
+        }
+        ffi::ACTION_SEARCH_TOTAL => {
+            search::on_count(Some(action.as_isize()), None);
+            true
+        }
+        ffi::ACTION_SEARCH_SELECTED => {
+            search::on_count(None, Some(action.as_isize()));
+            true
+        }
+
+        // The pending-key indicator.
+        ffi::ACTION_KEY_SEQUENCE => {
+            let (active, tag, key, mods) = action.as_key_sequence();
+            keyseq::on_key_sequence(active, tag, key, mods);
+            true
+        }
+        ffi::ACTION_KEY_TABLE => {
+            let (tag, name) = action.as_key_table();
+            keyseq::on_key_table(tag, name.as_deref());
+            true
+        }
+
+        // The read-only badge. The core owns the state; the host paints the
+        // last thing it said.
+        ffi::ACTION_READONLY => {
+            hud::on_readonly(action.as_i32() != 0);
+            true
+        }
+
         ACTION_INITIAL_SIZE => {
             let (w, h) = action.as_size();
             logf!("[action] initial_size {}x{}", w, h);
@@ -625,6 +670,16 @@ extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
 
 // ------------------------------------------------------------- window proc
 
+/// This window's DPI, for the metrics that have a per-DPI form.
+pub fn dpi_for(hwnd: HWND) -> u32 {
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        96
+    } else {
+        dpi
+    }
+}
+
 /// The two halves of an `lParam` carrying a point. Signed, because a captured
 /// pointer dragged off the left edge reports negative x, and reading it
 /// unsigned makes the tab jump to the far right.
@@ -644,6 +699,34 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // The frame owns the strip only; it must still never let GDI
             // erase, or the strip flickers on every resize.
             WM_ERASEBKGND => LRESULT(1),
+
+            // --- the custom frame. See shell.rs for why each one is here. ---
+            WM_NCCALCSIZE => match shell::nc_calc_size(hwnd, wp, lp) {
+                Some(r) => r,
+                None => DefWindowProcW(hwnd, msg, wp, lp),
+            },
+            WM_NCHITTEST => shell::hit_test(hwnd, lo_i16(lp), hi_i16(lp)),
+            WM_NCMOUSEMOVE => {
+                shell::nc_hover(hwnd, wp.0 as isize);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_NCMOUSELEAVE => {
+                shell::nc_hover(hwnd, 0);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_NCLBUTTONDOWN => {
+                if shell::nc_click(hwnd, wp.0 as isize) {
+                    LRESULT(0)
+                } else {
+                    DefWindowProcW(hwnd, msg, wp, lp)
+                }
+            }
+            // The caption's colours differ when the window is not the active
+            // one, and nothing else would ask us to repaint for that.
+            WM_ACTIVATE => {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
 
             WM_PAINT => {
                 strip::paint(hwnd);
@@ -679,6 +762,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // The frame resizes; the active child follows and tells the core.
             WM_SIZE => {
                 tabs::layout(hwnd);
+                // After the layout, so the grid sign measures the client rect
+                // the child actually ended up with rather than the one it had
+                // a moment ago.
+                hud::on_frame_resized();
                 LRESULT(0)
             }
 
@@ -691,7 +778,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
             // The core's cell-derived floor, expressed to Windows.
             WM_GETMINMAXINFO => {
-                tabs::apply_min_max(hwnd, lp.0 as *mut MINMAXINFO);
+                tabs::apply_min_max(lp.0 as *mut MINMAXINFO);
                 LRESULT(0)
             }
 
@@ -928,6 +1015,31 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
+    // **Turn on libghostty's own logging before initialising it.**
+    //
+    // `docs/windows/status.md` carried this as a debt -- "libghostty's log is
+    // invisible on the test machine, so every real-machine failure costs a
+    // guess" -- and it was promoted to a blocker the moment a hang landed
+    // *inside* `ghostty_surface_free`, where the only thing that can say what
+    // it is waiting on is the core itself.
+    //
+    // It turns out not to need any change to the core. `global.zig` reads
+    // `GHOSTTY_LOG` and parses it into `GlobalState.Logging`, whose `stderr`
+    // field **defaults to false for lib artifacts** (`app_runtime == .none`)
+    // and whose only other sink is macOS unified logging -- which on Windows
+    // leaves no sink at all. Setting the variable turns stderr back on, and
+    // this host is a console subsystem binary, so stderr is the same stream
+    // the log file already captures.
+    //
+    // An existing value is left alone: whoever set it meant it.
+    match std::env::var("GHOSTTY_LOG") {
+        Ok(v) => logf!("GHOSTTY_LOG already set to {:?}; leaving it", v),
+        Err(_) => {
+            std::env::set_var("GHOSTTY_LOG", "stderr");
+            logf!("GHOSTTY_LOG=stderr (core logging to this process's stderr)");
+        }
+    }
+
     // ghostty_init takes (argc, argv); argv is a non-optional pointer on the
     // Zig side, so hand it a real one rather than null.
     let arg0 = CString::new("polter-host.exe").unwrap();
@@ -1013,7 +1125,11 @@ fn main() {
             WINDOW_EX_STYLE::default(),
             frame_class,
             w!("Polter"),
-            WS_OVERLAPPEDWINDOW,
+            // **WS_CLIPCHILDREN is load-bearing now.** The frame paints its
+            // own content area (see strip::paint), and without this it would
+            // paint straight over the panes -- children are only excluded
+            // from a parent's drawing when the parent says so.
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             1000,
@@ -1027,6 +1143,8 @@ fn main() {
     .expect("CreateWindowExW");
     HWND_G.store(hwnd.0 as *mut c_void, Ordering::Release);
     logf!("frame hwnd = {:?}", hwnd.0);
+
+    shell::init_frame(hwnd);
 
     let dpi = unsafe { GetDpiForWindow(hwnd) } as f64;
     let scale = if dpi > 0.0 { dpi / 96.0 } else { 1.0 };
@@ -1078,6 +1196,15 @@ fn main() {
     // Each step logs observable state before and after, so the log alone
     // says whether the window actually changed -- "returned true" is not
     // the same claim as "the window moved".
+    // `--striptest`: the tab strip drives itself and prints what it did.
+    // See `strip::script_step`.
+    let striptest = std::env::args().any(|a| a == "--striptest");
+    let mut strip_step = 0usize;
+    let mut strip_running = striptest;
+    if striptest {
+        logf!("--striptest: the strip will exercise itself, one step per ~0.6s");
+    }
+
     let selftest = std::env::args().any(|a| a == "--selftest");
     let script: &[(&str, &str)] = &[
         ("new_tab", "expect tab count 1 -> 2"),
@@ -1090,6 +1217,14 @@ fn main() {
         ("toggle_fullscreen", "expect style loses WS_OVERLAPPEDWINDOW"),
         ("toggle_fullscreen", "expect style restored"),
         ("copy_title_to_clipboard", "expect clipboard = active tab title"),
+        // The read-only badge has no key of its own: the core ships no default
+        // bind for `toggle_readonly` and it is not in the host accelerator
+        // table either, so this script is the only way it gets exercised
+        // without a hand-written config. Two steps, because "the badge came
+        // up" and "the badge went away again" are different claims and the
+        // second one is the one a stuck overlay would fail.
+        ("toggle_readonly", "expect a [hud] readonly on line"),
+        ("toggle_readonly", "expect a [hud] readonly off line"),
         ("close_tab:this", "expect tab count 3 -> 2"),
     ];
     let mut step = 0usize;
@@ -1100,6 +1235,9 @@ fn main() {
     // After the frame exists, so the palette can centre on it, and after the
     // config exists, so it has commands to show.
     palette::init(hinst, config);
+    search::init(hinst);
+    keyseq::init(hinst);
+    hud::init(hinst);
 
     logf!("entering message loop; renderer thread drives redraw");
 
@@ -1292,6 +1430,15 @@ fn main() {
                 rc.bottom - rc.top,
                 center_pixel(sw)
             );
+        }
+
+        // One striptest step per ~0.6s, starting after 2s so the first
+        // surface has settled. Slow enough that each step's messages are
+        // pumped before the next one runs -- which matters, because the
+        // question being asked is whether a repaint happened.
+        if strip_running && ticks > 250 && ticks % 75 == 0 {
+            strip_running = strip::script_step(hwnd, strip_step);
+            strip_step += 1;
         }
 
         // ~1s at 8ms/iteration. This is the *main thread's* pulse: if a

@@ -19,14 +19,14 @@
 //!     painting straight into the window DC flickers -- which is exactly the
 //!     kind of thing "finish" means.
 
-use std::sync::Mutex;
+use std::cell::RefCell;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE,
-    VK_RETURN,
+    GetActiveWindow, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE,
+    TRACKMOUSEEVENT, VK_ESCAPE, VK_RETURN,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -98,6 +98,17 @@ fn overflow_rect(strip_w: i32, scale: f64, sh: i32) -> RECT {
     RECT { left: strip_w - w, top: 0, right: strip_w, bottom: sh }
 }
 
+/// Is this point one of the strip's own controls?
+///
+/// Asked by `WM_NCHITTEST`: a point on a tab has to answer `HTCLIENT` so the
+/// strip's mouse handling runs, and everything else in the strip answers
+/// `HTCAPTION` so the window can be dragged by it. Getting it backwards makes
+/// tabs look broken rather than making the window look wrong.
+pub fn is_interactive(frame: HWND, x: i32, y: i32) -> bool {
+    let (slots, overflow) = slots(frame);
+    hit(&slots, overflow, x, y) != Hit::None
+}
+
 /// The tabs' geometry, and the overflow button's if there is one.
 ///
 /// The scroll offset is clamped here rather than where it is changed: the
@@ -113,16 +124,19 @@ fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>) {
         }
     }
     let sh = strip_h(scale);
-    let strip_w = rc.right - rc.left;
+    // The caption buttons live at the right end of the strip now that the
+    // strip *is* the caption. Their width comes out of the space the tabs
+    // get; **this is the only thing about the shell the strip knows.** The
+    // drag-position arithmetic below is untouched by it.
+    let strip_w = (rc.right - rc.left - crate::shell::reserved_right()).max(1);
     let n = tabs_now.len();
     let (tw, overflowing) = layout(strip_w, scale, n);
     let (_, max_scroll) = extent(strip_w, tw, n, overflowing);
 
-    let scroll = {
-        let mut u = ui();
+    let scroll = with_ui(|u| {
         u.scroll = u.scroll.clamp(0, max_scroll);
         u.scroll
-    };
+    });
 
     let close_side = (14.0 * scale) as i32;
     let slots = tabs_now
@@ -207,18 +221,34 @@ struct Interaction {
     editing: Option<(isize, TabId)>,
 }
 
-static UI: Mutex<Interaction> = Mutex::new(Interaction {
-    drag: Drag::Idle,
-    hover: Hit::None,
-    scroll: 0,
-    editing: None,
-});
+thread_local! {
+    /// **Not a mutex, and that is the point.**
+    ///
+    /// Everything that touches this arrives in a window procedure, and window
+    /// procedures for these windows run on one thread. A second `Mutex`
+    /// alongside `tabs::STATE` bought nothing and cost two things: it created
+    /// a lock-ordering question between two locks that no code documented an
+    /// order for, and, being a blocking lock, re-entering it would have hung
+    /// the thread **in silence** -- the failure mode this file is supposed to
+    /// be helping to avoid.
+    ///
+    /// A `RefCell` on the owning thread cannot be entered twice without
+    /// saying so: it panics, with a stack, at the line that did it.
+    static UI: RefCell<Interaction> = RefCell::new(Interaction {
+        drag: Drag::Idle,
+        hover: Hit::None,
+        scroll: 0,
+        editing: None,
+    });
+}
 
-fn ui() -> std::sync::MutexGuard<'static, Interaction> {
-    match UI.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
-    }
+/// Do something with the interaction state.
+///
+/// Kept as a closure rather than handing out a borrow: a returned borrow can
+/// be held across a Win32 call by accident, and that is precisely the shape
+/// that has cost this port two days.
+fn with_ui<R>(f: impl FnOnce(&mut Interaction) -> R) -> R {
+    UI.with(|c| f(&mut c.borrow_mut()))
 }
 
 fn repaint(frame: HWND) {
@@ -239,11 +269,12 @@ pub fn on_button_down(frame: HWND, x: i32, y: i32) {
         Hit::Close(id) => {
             // Act on release, the way every other close button does: pressing
             // and sliding off has to be a way out.
-            ui().drag = Drag::Pressed { id, x };
+            with_ui(|u| u.drag = Drag::Pressed { id, x });
         }
         Hit::Tab(id) => {
+            logf!("[strip] click -> activate {:?}", id);
             tabs::activate_tab(frame, id);
-            ui().drag = Drag::Pressed { id, x };
+            with_ui(|u| u.drag = Drag::Pressed { id, x });
             unsafe {
                 SetCapture(frame);
             }
@@ -269,8 +300,7 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
     }
 
     let h = hit(&slots, overflow, x, y);
-    let (started, dragging_id) = {
-        let mut u = ui();
+    let (started, dragging_id) = with_ui(|u| {
         if u.hover != h {
             u.hover = h;
         }
@@ -282,9 +312,9 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
             Drag::Dragging { id } => (false, Some(id)),
             _ => (false, None),
         }
-    };
+    });
     if started {
-        logf!("[strip] drag started on {:?}", dragging_id);
+        log_state(frame, &format!("drag start {:?}", dragging_id));
     }
 
     if let Some(id) = dragging_id {
@@ -294,7 +324,7 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         // scroll offset has to come back out of the pointer position -- a
         // dragged tab in a scrolled strip otherwise lands one screenful off.
         let tw = slots.first().map(|s| s.rect.right - s.rect.left + 1).unwrap_or(1);
-        let scroll = ui().scroll;
+        let scroll = with_ui(|u| u.scroll);
         let want = ((x + scroll) / tw.max(1)).clamp(0, slots.len().saturating_sub(1) as i32) as usize;
         let at = slots.iter().position(|s| s.id == id);
         if at != Some(want) {
@@ -313,7 +343,8 @@ pub fn on_wheel(frame: HWND, delta: i16) {
     if by == 0 {
         return;
     }
-    ui().scroll += by;
+    with_ui(|u| u.scroll += by);
+    logf!("[strip] wheel {} -> scroll {}", by, with_ui(|u| u.scroll));
     // The clamp lives in `slots`, which is about to run: it is the only place
     // that knows the current content width.
     repaint(frame);
@@ -391,27 +422,28 @@ fn scroll_into_view(frame: HWND, id: TabId) {
         }
     }
     let right_edge = rc.right - (OVERFLOW_W as f64 * tabs::scale_of()) as i32;
-    let mut u = ui();
-    if slot.rect.left < 0 {
-        u.scroll += slot.rect.left;
-    } else if slot.rect.right > right_edge {
-        u.scroll += slot.rect.right - right_edge;
-    }
+    with_ui(|u| {
+        if slot.rect.left < 0 {
+            u.scroll += slot.rect.left;
+        } else if slot.rect.right > right_edge {
+            u.scroll += slot.rect.right - right_edge;
+        }
+    });
 }
 
 pub fn on_mouse_leave(frame: HWND) {
-    ui().hover = Hit::None;
+    with_ui(|u| u.hover = Hit::None);
     repaint(frame);
 }
 
 pub fn on_button_up(frame: HWND, x: i32, y: i32) {
     let (slots, overflow) = slots(frame);
-    let was = {
-        let mut u = ui();
-        std::mem::replace(&mut u.drag, Drag::Idle)
-    };
+    let was = with_ui(|u| std::mem::replace(&mut u.drag, Drag::Idle));
     unsafe {
         let _ = ReleaseCapture();
+    }
+    if matches!(was, Drag::Dragging { .. }) {
+        log_state(frame, "drag end");
     }
     if let Drag::Pressed { id, .. } = was {
         // A press that never became a drag: if it started and ended on the
@@ -492,13 +524,13 @@ fn begin_rename(frame: HWND, id: TabId, rect: RECT) {
     // focused one or the IME keeps composing into the surface behind the box.
     crate::ime_focus(false);
 
-    ui().editing = Some((edit.0 as isize, id));
+    with_ui(|u| u.editing = Some((edit.0 as isize, id)));
     logf!("[strip] rename {:?} started", id);
 }
 
 /// Close the editor, keeping what was typed if `commit`.
 pub fn end_rename(frame: HWND, commit: bool) {
-    let Some((hwnd, id)) = ui().editing.take() else {
+    let Some((hwnd, id)) = with_ui(|u| u.editing.take()) else {
         return;
     };
     let edit = HWND(hwnd as *mut std::ffi::c_void);
@@ -555,13 +587,71 @@ fn fill(hdc: HDC, r: &RECT, color: u32) {
     }
 }
 
+/// How many times the strip has actually painted. **"The strip was asked to
+/// repaint" and "the strip painted" are different claims**, and a strip that
+/// vanishes could be either; only a counter tells them apart.
+static PAINTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// One line that says everything the strip believes.
+///
+/// **Machine-readable on purpose.** Every strip defect so far was diagnosed
+/// from a screenshot, and screenshots on this link have already produced one
+/// false defect (a tab measured at 45px that was really 76px, because the
+/// image was scaled 0.6). Order, titles,活动标签, scroll and overflow are
+/// facts the host knows; printing them removes the eye from the loop.
+///
+/// The tab order and the titles are printed **together**, because the defect
+/// worth catching here is precisely the one where they disagree.
+pub fn state_line(frame: HWND) -> String {
+    let (tabs_now, active) = tabs::strip_snapshot();
+    let (slots, overflow) = slots(frame);
+    let mut rc = RECT::default();
+    unsafe {
+        let _ = GetClientRect(frame, &mut rc);
+    }
+    let listed: Vec<String> = tabs_now
+        .iter()
+        .map(|(id, t)| format!("{}:{}", id.0, t))
+        .collect();
+    let onscreen = slots
+        .iter()
+        .filter(|s| s.rect.right > 0 && s.rect.left < rc.right)
+        .count();
+    let active_id = tabs_now.get(active).map(|(id, _)| id.0).unwrap_or(0);
+    let (tw, _) = layout(
+        (rc.right - crate::shell::reserved_right()).max(1),
+        tabs::scale_of(),
+        tabs_now.len(),
+    );
+    format!(
+        "tabs=[{}] active={} n={} tw={} scroll={} overflow={} onscreen={} paints={}",
+        listed.join(","),
+        active_id,
+        tabs_now.len(),
+        tw,
+        with_ui(|u| u.scroll),
+        overflow.is_some(),
+        onscreen,
+        PAINTS.load(std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+pub fn log_state(frame: HWND, tag: &str) {
+    logf!("[strip] {} | {}", tag, state_line(frame));
+}
+
 /// Draw the strip. Called from the frame's `WM_PAINT`.
 pub fn paint(frame: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = unsafe { BeginPaint(frame, &mut ps) };
     if hdc.is_invalid() {
+        // EndPaint even so: without it the update region stays invalid and
+        // Windows asks again, forever.
+        let _ = unsafe { EndPaint(frame, &ps) };
+        logf!("[strip] BeginPaint failed; nothing drawn");
         return;
     }
+    PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(frame, &mut rc) };
     let scale = tabs::scale_of();
@@ -580,8 +670,7 @@ pub fn paint(frame: HWND) {
 
         let (tabs_now, active) = tabs::strip_snapshot();
         let (slots, overflow) = slots(frame);
-        let (hover, dragging) = {
-            let u = ui();
+        let (hover, dragging) = with_ui(|u| {
             (
                 u.hover,
                 match u.drag {
@@ -589,7 +678,7 @@ pub fn paint(frame: HWND) {
                     _ => None,
                 },
             )
-        };
+        });
 
         SetBkMode(mem, TRANSPARENT);
         let font = GetStockObject(DEFAULT_GUI_FONT);
@@ -690,6 +779,12 @@ pub fn paint(frame: HWND) {
             );
         }
 
+        // The caption buttons go into the same memory DC, so the whole bar
+        // is still one blit: they are part of the strip now, not a second
+        // surface painted over it.
+        let active = GetActiveWindow() == frame;
+        crate::shell::paint_buttons(mem, frame, active);
+
         SelectObject(mem, old_font);
         let _ = BitBlt(hdc, 0, 0, rc.right, sh, Some(mem), 0, 0, SRCCOPY);
         SelectObject(mem, old);
@@ -697,5 +792,184 @@ pub fn paint(frame: HWND) {
         let _ = DeleteDC(mem);
     }
 
+    // **Clear whatever the panes do not cover.**
+    //
+    // Nothing else paints the frame's content area: the class has no
+    // background brush and `WM_ERASEBKGND` is swallowed, both on purpose so
+    // the GL panes never flicker. The consequence is that a pane which is
+    // hidden -- by a zoom, or by switching tabs -- **leaves its last pixels
+    // on the screen forever**, and the symptom is a `ShowWindow(SW_HIDE)`
+    // that looks like it did nothing. `WS_CLIPCHILDREN` on the frame keeps
+    // this fill off the visible panes.
+    let mut below = rc;
+    below.top = sh;
+    if below.bottom > below.top {
+        fill(hdc, &below, 0x00201f1d);
+    }
+
     let _ = unsafe { EndPaint(frame, &ps) };
+}
+
+// --------------------------------------------------------------- striptest
+
+/// The centre of a tab, and of its close button, in client coordinates.
+fn centre_of(frame: HWND, index: usize) -> Option<(i32, i32, i32, i32)> {
+    let (slots, _) = slots(frame);
+    let s = slots.get(index)?;
+    Some((
+        (s.rect.left + s.rect.right) / 2,
+        (s.rect.top + s.rect.bottom) / 2,
+        (s.close.left + s.close.right) / 2,
+        (s.close.top + s.close.bottom) / 2,
+    ))
+}
+
+/// Click a tab **through the hit test**, without a mouse.
+///
+/// `--striptest`'s other steps call the model directly, and that is why they
+/// did not reproduce the strip vanishing on click: the model path works. The
+/// difference between the two paths *is* the defect, so this drives the same
+/// entry point a real click does -- `on_button_down` / `on_button_up` with
+/// coordinates taken from the strip's own geometry.
+///
+/// **What this still does not cover**: that Windows delivers the click to
+/// this window with these coordinates. Everything after that point is here.
+fn synth_click(frame: HWND, index: usize, on_close: bool) {
+    let Some((tx, ty, cx, cy)) = centre_of(frame, index) else {
+        logf!("[strip] synth_click: no slot {}", index);
+        return;
+    };
+    let (x, y) = if on_close { (cx, cy) } else { (tx, ty) };
+    logf!("[strip] synth click at ({},{}) on slot {}", x, y, index);
+    on_button_down(frame, x, y);
+    on_button_up(frame, x, y);
+}
+
+/// Drag a tab from one slot to another, through the state machine.
+fn synth_drag(frame: HWND, from: usize, to: usize) {
+    let (Some((x0, y0, _, _)), Some((x1, _, _, _))) =
+        (centre_of(frame, from), centre_of(frame, to))
+    else {
+        logf!("[strip] synth_drag: missing slots");
+        return;
+    };
+    logf!("[strip] synth drag {} -> {} (x {} -> {})", from, to, x0, x1);
+    on_button_down(frame, x0, y0);
+    // Several moves, because the drag only starts after DRAG_SLOP and the
+    // reorder is recomputed on every move -- one jump would test neither.
+    let steps = 6;
+    for i in 1..=steps {
+        let x = x0 + (x1 - x0) * i / steps;
+        on_mouse_move(frame, x, y0);
+    }
+    on_button_up(frame, x1, y0);
+}
+
+/// The strip's acceptance run, driven by the host itself.
+///
+/// **Why this exists.** Every step below can be done with a mouse, and doing
+/// it that way cost a day: three misplaced clicks (one of them minimised the
+/// window, one landed in somebody else's session) and one defect reported
+/// from a screenshot that turned out to be the screenshot's scaling. The
+/// same lesson as `--selfresize`: **when the host can do the thing itself and
+/// print the result as a number, no one has to aim.**
+///
+/// Each step prints the strip's whole state before and after, so the check is
+/// a diff of two lines rather than a judgement about an image. What it cannot
+/// cover is left to a human on purpose: typing Chinese into the rename box
+/// needs a real IME, and whether the result *looks* right is not a fact the
+/// host can print.
+///
+/// Returns false when the script is done.
+pub fn script_step(frame: HWND, step: usize) -> bool {
+    let tabs_now = || tabs::strip_snapshot().0;
+    match step {
+        // **Seventeen more tabs, not five.** Seven tabs at 123px wide never
+        // overflow, so the first run exercised neither the scroll nor the
+        // chevron -- `scroll` stayed 0 because the clamp was right, which
+        // reads as a pass and tests nothing. Eighteen is where 60px minimum
+        // times the count passes the strip width on this machine.
+        0..=16 => {
+            crate::binding("new_tab");
+            if step == 16 {
+                log_state(frame, "after 18 tabs; expect overflow=true, onscreen<n");
+            }
+            true
+        }
+        // Scroll: one notch right, then back. Now that it overflows, `scroll`
+        // has somewhere to go and `onscreen` should change with it.
+        17 => {
+            on_wheel(frame, -120);
+            log_state(frame, "after wheel right");
+            true
+        }
+        18 => {
+            on_wheel(frame, 120);
+            log_state(frame, "after wheel left (expect scroll back to 0)");
+            true
+        }
+        // **The reorder check.** The first tab goes to position 3. Renaming
+        // it first is what makes the check real: with every title identical,
+        // a parallel-array bug looks exactly like a correct move.
+        19 => {
+            let t = tabs_now();
+            if let Some((id, _)) = t.first().cloned() {
+                tabs::rename_tab(frame, id, "MOVED-ME".to_string());
+                log_state(frame, "before move (the tab to watch is MOVED-ME)");
+                tabs::move_tab_to(frame, id, 2);
+                log_state(frame, "after move -- MOVED-ME must be at index 2");
+            }
+            true
+        }
+        // Activation through the model. `paints` is the reading: see whether
+        // a repaint follows, and on which tick.
+        20 => {
+            let t = tabs_now();
+            if let Some((id, _)) = t.get(5).cloned() {
+                log_state(frame, "before activate(model)");
+                tabs::activate_tab(frame, id);
+                log_state(frame, "after activate(model)");
+            }
+            true
+        }
+        21 => {
+            log_state(frame, "one tick later (model path)");
+            true
+        }
+        // **Activation through the hit test** -- the path that lost the strip
+        // on the real machine. Same reading, different entry point; if the
+        // two disagree, the difference is the defect.
+        22 => {
+            log_state(frame, "before activate(click)");
+            synth_click(frame, 3, false);
+            log_state(frame, "after activate(click)");
+            true
+        }
+        23 => {
+            log_state(frame, "one tick later (click path)");
+            true
+        }
+        // Drag through the state machine, with the scroll offset in play.
+        24 => {
+            log_state(frame, "before drag 0 -> 4");
+            synth_drag(frame, 0, 4);
+            log_state(frame, "after drag -- MOVED-ME's neighbours must be intact");
+            true
+        }
+        // The close button, again through the hit test.
+        25 => {
+            log_state(frame, "before close-button click on slot 1");
+            synth_click(frame, 1, true);
+            log_state(frame, "after close-button click");
+            true
+        }
+        26 => {
+            log_state(frame, "one tick after close");
+            true
+        }
+        _ => {
+            log_state(frame, "striptest done");
+            false
+        }
+    }
 }

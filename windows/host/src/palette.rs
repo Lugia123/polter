@@ -401,11 +401,6 @@ fn show() {
         let x = fr.left + ((fr.right - fr.left) - w) / 2;
         let y = fr.top + sc(60);
 
-        // The document has to be released *before* the edit control takes
-        // focus, or TSF has already decided which document the next keystroke
-        // belongs to. See this file's header.
-        crate::ime_focus(false);
-
         let prev = GetFocus();
         STATE.with(|c| {
             if let Some(st) = c.borrow_mut().as_mut() {
@@ -419,9 +414,16 @@ fn show() {
         let _ = SetWindowPos(me, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
         let edit = STATE.with(|c| c.borrow().as_ref().map(|s| s.edit));
         if let Some(e) = edit {
-            let _ = SetFocus(Some(e));
+            // The release-then-focus ordering lives in `overlay.rs` now:
+            // three call sites reached it independently, and every way of
+            // getting it wrong is silent.
+            let p2 = crate::overlay::focus_to_edit(e, "palette");
+            STATE.with(|c| {
+                if let Some(st) = c.borrow_mut().as_mut() {
+                    st.prev_focus = p2;
+                }
+            });
         }
-        logf!("[palette] shown, ime document released");
     }
 }
 
@@ -438,16 +440,10 @@ fn hide() {
     });
     unsafe {
         let _ = ShowWindow(me, SW_HIDE);
-        // Focus goes back to the surface, and *its* `WM_SETFOCUS` is what
-        // re-associates the TSF document and calls `ime_focus(true)`. Doing it
-        // here as well would be a second place that has to stay in agreement.
-        if let Some(p) = prev {
-            if !p.0.is_null() {
-                let _ = SetFocus(Some(p));
-            }
-        }
     }
-    logf!("[palette] hidden, focus returned to the surface");
+    if let Some(p) = prev {
+        crate::overlay::focus_back(p, "palette");
+    }
 }
 
 fn run_selected() {

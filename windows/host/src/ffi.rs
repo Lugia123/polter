@@ -56,6 +56,16 @@ pub const ACTION_TOGGLE_MAXIMIZE: u32 = 6;
 /// Verified against `src/apprt/action.zig` the same way the rest of this
 /// table was: parse the 72 members in order and take the index.
 pub const ACTION_TOGGLE_COMMAND_PALETTE: u32 = 11;
+// Search and the pending-key indicator. Ordinals derived the same way as the
+// rest of this table: parse the 72 members of `Action.Key` in
+// `src/apprt/action.zig` in order and take the index.
+pub const ACTION_KEY_SEQUENCE: u32 = 47;
+pub const ACTION_READONLY: u32 = 67;
+pub const ACTION_KEY_TABLE: u32 = 48;
+pub const ACTION_START_SEARCH: u32 = 63;
+pub const ACTION_END_SEARCH: u32 = 64;
+pub const ACTION_SEARCH_TOTAL: u32 = 65;
+pub const ACTION_SEARCH_SELECTED: u32 = 66;
 pub const ACTION_TOGGLE_FULLSCREEN: u32 = 7;
 pub const ACTION_MOVE_TAB: u32 = 15;
 pub const ACTION_GOTO_TAB: u32 = 16;
@@ -120,6 +130,31 @@ impl Action {
         let amount = u16::from_ne_bytes(self.payload[0..2].try_into().unwrap());
         let dir = i32::from_ne_bytes(self.payload[4..8].try_into().unwrap());
         (amount, dir)
+    }
+
+    /// `ghostty_action_key_sequence_s { bool active; ghostty_input_trigger_s trigger; }`
+    /// where the trigger is `{ int tag; union { int; u32 } key; int mods; }`.
+    /// The bool is 1 byte but the trigger is 4-aligned, so the trigger starts
+    /// at offset 4, not 1.
+    pub fn as_key_sequence(&self) -> (bool, i32, u32, i32) {
+        let g = |i: usize| i32::from_ne_bytes(self.payload[i..i + 4].try_into().unwrap());
+        (self.payload[0] != 0, g(4), g(8) as u32, g(12))
+    }
+
+    /// `ghostty_action_key_table_s { tag; union { struct { const char* name; size_t len; } } }`.
+    /// Returns the tag and, for `activate`, the name.
+    pub fn as_key_table(&self) -> (i32, Option<String>) {
+        let tag = i32::from_ne_bytes(self.payload[0..4].try_into().unwrap());
+        if tag != 0 {
+            return (tag, None);
+        }
+        let p = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *const u8;
+        let len = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap());
+        if p.is_null() || len == 0 || len > 256 {
+            return (tag, None);
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(p, len) };
+        (tag, Some(String::from_utf8_lossy(bytes).into_owned()))
     }
 
     /// `ghostty_action_size_limit_s { u32 min_w, min_h, max_w, max_h; }`.
