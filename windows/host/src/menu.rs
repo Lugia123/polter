@@ -177,11 +177,17 @@ const fn sub(label: &'static str, rows: &'static [Row]) -> Row {
     Row { label, action: None, sub: Some(rows), check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
-/// Prefix for the things the core has never heard of. Sending one of these to
-/// `binding_action` would return false and look like a dead menu item, so they
-/// are routed by `run_host` instead -- the same split `keys.rs` already makes
-/// for `__polter_plugin_page`.
-const HOST_PREFIX: &str = "__polter_";
+// The prefix that marks a row as the host's own, and the predicate for it,
+// live in `keys.rs`: `crate::keys::HOST_ACTION_PREFIX` and `is_host_action`.
+//
+// **They were here as well, and the comment that used to sit on this line
+// said so out loud** -- "the same split `keys.rs` already makes for
+// `__polter_plugin_page`". Two spellings of one rule stay in step until the
+// day they do not, and the failure would be silent on both sides: a row this
+// file called the host's own and `keys.rs` did not would go to the core and
+// come back as an unattributable warning, which is precisely the defect that
+// was just fixed. The definition belongs on the side that is already depended
+// on -- this file calls `keys.rs`, so putting it there adds no back edge.
 
 // The six groups. The structure is the macOS `MainMenu.xib` tree; the actions
 // are the core's, checked below. Anything macOS has that Windows has no
@@ -510,7 +516,7 @@ fn parse_action_names(src: &str) -> Vec<String> {
 /// not caught here** -- `new_split:sideways` has a real action name -- which is
 /// why the run-time `ok=` on every pick is the other half of the check.
 fn is_resolvable(action: &str) -> bool {
-    if action.starts_with(HOST_PREFIX) {
+    if crate::keys::is_host_action(action) {
         return HOST_ACTIONS.contains(&action);
     }
     let name = action.split(':').next().unwrap_or("");
@@ -604,7 +610,7 @@ fn install_defaults() {
 /// existed, and they could not be acted on because nothing said which five.
 /// They were these rows.
 fn asks_the_core(action: &str) -> bool {
-    !action.starts_with(HOST_PREFIX)
+    !crate::keys::is_host_action(action)
 }
 
 fn accel_of(action: &str) -> Option<String> {
@@ -982,7 +988,7 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
 /// `assert_actions_exist` already proves for free.
 fn perform(frame: HWND, row: &Row) -> bool {
     let Some(action) = row.action else { return false };
-    let ok = if action.starts_with(HOST_PREFIX) {
+    let ok = if crate::keys::is_host_action(action) {
         run_host(frame, action)
     } else {
         crate::binding(action)
@@ -1230,14 +1236,14 @@ mod tests {
     #[test]
     fn host_rows_are_never_asked_of_the_core() {
         for a in HOST_ACTIONS {
-            assert!(a.starts_with(HOST_PREFIX), "{a} is not a host action name");
+            assert!(crate::keys::is_host_action(a), "{a} is not a host action name");
             assert!(!asks_the_core(a), "{a} would be handed to the core");
         }
         for r in all_rows() {
             let Some(a) = r.action else { continue };
             assert_eq!(
                 asks_the_core(a),
-                !a.starts_with(HOST_PREFIX),
+                !crate::keys::is_host_action(a),
                 "{a} is classified inconsistently"
             );
         }
@@ -1278,7 +1284,7 @@ mod tests {
     fn all_host_rows_are_handled() {
         for r in all_rows() {
             let Some(a) = r.action else { continue };
-            if a.starts_with(HOST_PREFIX) {
+            if crate::keys::is_host_action(a) {
                 assert!(HOST_ACTIONS.contains(&a), "{a} has no handler");
             }
         }
