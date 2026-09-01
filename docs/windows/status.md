@@ -1290,6 +1290,37 @@ RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCOD
     保留的三条判据不动:**屏幕上真有窗口 / `[loop]` 的 ticks 在涨 / 没有 `DEADLOCK`**。
     第二条不能写成「有 `[loop]` 这一行」——**出现过不等于还在动。**
 
+50. **⭐ 工具把答案递到手上,而它被读过去了。**（2026-09-02）
+
+    在测试机上往终端里敲命令,用了 argus `type_text` 的 `keystroke` 模式,
+    理由是「更接近真人敲键盘」。**这个理由错得很具体:
+    它把这台机器的输入法状态,引进了一个和输入法毫无关系的测试。**
+
+    ```
+    想敲:  title tab-alpha    然后  cd /d C:\work\alpha
+    屏幕上: titletab-alpha成都/的C:\work\alpha
+    日志:  [key] TSF ate msg=0x100 vk=0x42 (not dispatched)
+           [ime] OnEndComposition commit="tab-alpha"
+           [key] TSF ate msg=0x100 vk=0x0d (not dispatched)      ← **回车也被吃了**
+    ```
+
+    **回车被吃是这次最贵的一格**:那一行既执行不了也清不掉,
+    Esc 和 Ctrl+C 走同一条路,只能重起进程。
+
+    三条:
+    · **驱动终端用 `mode="unicode"`**(`VK_PACKET` 直出 `WM_CHAR`,绕过输入法)。
+      argus 文档说它「不能用来验证输入法链路」——**反过来正是要的:
+      这里不验输入法,只想把一条命令送进 shell。**
+    · **这台机器的输入法处在激活的中文态**,任何「发几个字母看看走没走通」的测试,
+      在这个状态下测的是别的东西,**而且不报错**。
+    · **`ime_bypassed: false` 就在返回值里,当场就说了。**
+      看见了,没停下来想。**工具已经把答案递到手上,而它被读过去了。**
+
+    这条写在 `development.md` §6 的**第一条**,当事人当晚在群里引用过它两次,
+    然后自己踩了。和第 37 条(截图工具抢走热键)日志形状仍然一样,
+    **但这次 `TSF ate` 的字面证据在,所以这次分得开**——
+    那行日志值的就是这个钱。
+
 ## 八、可复核的现场
 
 - 测试机 `C:\app`：`tsf-probe*`、`dllprobe\`、`conpty\`（8 个二进制 + 输出）、
