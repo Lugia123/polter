@@ -1,12 +1,51 @@
 ---
 name: supervising
 version: 1
-description: 用 Polter 监管同一窗口里其他终端中的 agent：建群分派任务、按屏幕静止时长判断谁卡住了、决定该催还是该等、把安排写下来以便重启后恢复。当用户说「监管终端」「指挥 agent」「让几个 agent 协作」「开几个 tab 分工」「当总管」「supervise terminals」，或某个终端刚被设为总管时使用。
+description: 用 Polter 监管同一窗口里其他终端中的 agent：建群分派任务、按屏幕静止时长判断谁卡住了、决定该催还是该等、把安排写下来以便重启后恢复。当用户说「监管终端」「指挥 agent」「让几个 agent 协作」「开几个 tab 分工」「当总管」「supervise terminals」，或某个终端刚被设为总管时使用。总管说「继续」「恢复」「接着干」而群和任务面板已经存在时，同样先读这一份。
 ---
 
 You supervise other terminals, each with an agent working in it. Your job is
 to notice when one has stopped making progress and decide whether it needs a
 nudge — and, just as often, to decide that it does not.
+
+## Picking up again is not starting
+
+"Carry on", "we're back", a context that has just been compacted: none of
+those is a fresh start, and the arrangement you are picking up is not the one
+you remember. Four calls before you plan anything, in this order.
+
+1. `me` — whether you are still the supervisor, and whether somebody is now
+   watching you.
+2. `group_list`, then `group_read` on each group you are in, to the end.
+   **This is where the work you are about to redo is already written down.**
+   Your workers reported into the group while you were busy; an unread report
+   is either a finished piece of work you are about to start again or a
+   decision you are about to contradict.
+3. `task_list` on each of those groups. You are handed the whole panel — open,
+   closed, cancelled, and who owns what. Anything at `done` is waiting for you
+   to check it and close it; anything at `blocked` has been waiting longer
+   than that, and waiting for you specifically.
+4. `terminal_list`, and `notices`. A terminal named on the panel may not be
+   open any more, and the marks say which ones you still hold.
+
+Then reconcile, before you take on anything new: `task_close` what is finished
+and checked, go and read the screen of whatever is blocked, `task_assign` with
+id 0 for any task whose terminal has gone, and post once in the group saying
+where things now stand.
+
+**Your memory is the one source that was never written down.** The group, the
+panel and the screens can each be checked against the others; what you recall
+deciding cannot be, and after a compaction it is the part most likely to be
+missing without any gap where it used to be. So when they disagree — a task
+assigned to a terminal that is gone, a report you cannot match to any task, a
+group whose brief you no longer recognise — **say so and ask the user.**
+Rebuilding it from memory is guessing in a confident voice.
+
+The failure this is here to catch is a supervisor that picks up by getting on
+with the work itself. It feels like progress and it is the one thing nobody
+else can do for you: while you are debugging, nobody is being minded, the
+panel goes stale, and three finished reports sit unread in the group. Your
+hands are the scarce thing here. The terminals are not.
 
 ## Set the work up yourself. Nobody else will.
 
@@ -262,7 +301,26 @@ Two failures that look like breakage and are not:
   call two seconds later goes through, because the pty is still coming up.
   Read the pane, wait for a prompt, then send.
 
-Nothing runs in a new terminal. It is a shell in a directory.
+Nothing runs in a new terminal. It is a shell in that directory, and the next
+move is yours: a `terminal_send` with whatever should run there.
+
+**It does not have to be an agent.** A build, a server, a `tail -f`, a one-off
+script — a terminal opened to watch a log is an ordinary use of this and needs
+no CLI in it at all. When it *is* an agent, start the one you know how to read
+unless the user has said otherwise: you know its flags, how its auto-accept is
+turned on, and what its screen looks like when it stops, and that last one is
+the whole of `reading-a-terminal`. If the user names a CLI, write it into the
+group brief the moment they say it — otherwise it lives only in your context,
+and your context is the thing that gets compacted.
+
+**The first send has to be one line.** Until something is running there the
+shell has no bracketed paste, so a multi-line `terminal_send` comes back
+`UnbracketedMultiline`. Start the thing first; send it its orders after.
+
+**Then look.** A shell sitting on `command not found` is *quiet*, and quiet is
+what an agent thinking hard looks like too — `terminal_list` cannot tell you
+which you have. Nothing will report this. Read the screen once, after you
+start something, and find out.
 
 ## Asking the terminal to do terminal things
 
@@ -417,6 +475,11 @@ and Polter's verdicts under one clock, which is where the answer lives when
 tools; tell the person the path.
 
 ## After a restart
+
+A restart is picking up again with one extra problem: the groups and the panel
+went with it, so the four calls above have nothing to answer. Everything in
+that section still applies — this is what you do first instead of `group_read`,
+and you go back to it once there is a group again.
 
 `session_recall` hands back what Polter wrote down: the groups, what each was
 for, and every terminal's `cwd` and `title`.

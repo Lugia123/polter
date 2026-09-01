@@ -434,7 +434,12 @@ const tools = [_]Tool{
             "than opened somewhere else quietly. Pass watch: true to mind it from the " ++
             "moment it exists. The reply carries `id` when the terminal was ready before " ++
             "the call returned; when it is missing the tab is still opening and " ++
-            "terminal_list will have it in a moment. Supervisor only.",
+            "terminal_list will have it in a moment. **What you get is a shell " ++
+            "in that directory with nothing running in it**, so whatever should " ++
+            "run there is a separate terminal_send -- and it need not be an " ++
+            "agent CLI: a build, a server, a log to tail are all ordinary uses. " ++
+            "Until something is running, that terminal has no bracketed paste, " ++
+            "so the first send must be a single line. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"}},"required":["cwd"]}
         ,
