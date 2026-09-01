@@ -241,8 +241,9 @@ The question that finds it, and it can be asked before the check is ever run:
 
 > **If the thing under test were wrong, would this check see it?**
 
-Five instances, five different dimensions, and not one of them was caught by
-looking at the check's result — because the result was always "pass":
+Six instances in one day, six different dimensions, and not one of them was
+caught by looking at the check's result — because the result was always
+"pass":
 
 | The check | What it could not reach |
 | --- | --- |
@@ -251,15 +252,24 @@ looking at the check's result — because the result was always "pass":
 | A global-hotkey check driven by a script running inside the app *(host)* | the failure mode, since running there guaranteed the app was foreground |
 | A hand-written parser's own unit tests *(host)* | the other implementation; they proved only that it agreed with itself |
 | The mutation runner, with its target file hard-coded | a whole group of assertions in a *different file* — those had no floor at all, and the reason looked like "not scheduled yet" |
+| The offline pre-check for that runner's anchors | **the layer that produces the string.** It confirmed the text I wanted was in the file; what was wrong was the PowerShell escaping, so the anchor the script actually looked for was never the one I had checked |
 
-**The last one is the trap in miniature.** On a to-do list, "nobody has run
-the floor for 6b yet" and "the floor cannot reach 6b" look identical — and
+**The mutation runner is the trap in miniature.** On a to-do list, "nobody has
+run the floor for 6b yet" and "the floor cannot reach 6b" look identical — and
 only one of them goes away by running it again.
+
+**And the pre-check is this entry applied to itself.** It was written
+*specifically* to stop a bad anchor from reaching the machine, and it reached
+the file without reaching the escaping. Knowing the rule does not exempt the
+thing you write to enforce it.
 
 The fix is the same shape every time: **take the dimension the check cannot
 reach and make it a parameter.** The OS becomes an argument
-(`launchKindFor(tag, exec)`), the file becomes a field on each injection, the
-fixture comes from the other implementation rather than from the same hand.
+(`launchKindFor(tag, exec)`); the file becomes a field on each injection; the
+anchor is extracted from the here-string that will actually be used rather
+than retyped; the fixture comes from the other implementation rather than
+from the same hand; the assertion point is computed from the before and after
+rather than fixed at the centre *(host)*.
 
 **And a corollary, because self-checks are the commonest form of this.** A
 restore step that verifies against *the snapshot it took when it started*
