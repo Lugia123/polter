@@ -167,6 +167,22 @@ impl Placement {
     }
 }
 
+/// One draggable boundary, between the two children of a single split.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Divider {
+    /// Address of the split this boundary belongs to. **Carried rather than
+    /// re-derived**: a drag knows exactly which divider it grabbed, and making
+    /// the caller hand back a pane so the tree can search upward for "the
+    /// nearest ancestor on the right axis" would throw that away and then
+    /// guess it again.
+    pub path: Path,
+    /// How the split arranges its children. **A `Horizontal` split's divider
+    /// is a vertical line** -- the axis names the arrangement, not the line.
+    pub axis: Axis,
+    /// The boundary, `thickness` across, centred on the split point.
+    pub rect: Rect,
+}
+
 /// A node is either a pane or a division of space between two nodes.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Node {
@@ -485,6 +501,70 @@ impl Tree {
         })
     }
 
+    /// Every draggable boundary inside `bounds`, `thickness` pixels across.
+    ///
+    /// Empty while zoomed: one pane fills the area, so there is nothing
+    /// between anything. Empty for a single pane, for the same reason.
+    pub fn dividers(&self, bounds: Rect, thickness: f64) -> Vec<Divider> {
+        let Some(root) = &self.root else { return Vec::new() };
+        if let Some(z) = self.zoomed {
+            if self.contains(z) {
+                return Vec::new();
+            }
+        }
+        let mut out = Vec::new();
+        root.dividers_into(bounds, thickness, Vec::new(), &mut out);
+        out
+    }
+
+    /// Put the divider at `path` where the pointer is.
+    ///
+    /// **`position` is absolute, not a delta.** A drag is a stream of pointer
+    /// positions, and adding up deltas drifts the moment one message is
+    /// coalesced, dropped, or arrives while the window is being resized --
+    /// and that error never corrects itself, because nothing ever re-measures.
+    /// An absolute position is self-correcting: whatever happened to the
+    /// previous message, this one puts the divider under the pointer.
+    ///
+    /// `position` is an x for a `Horizontal` split and a y for a `Vertical`
+    /// one, in the same space as `bounds`. The resulting ratio is clamped to
+    /// [0.1, 0.9], the same floor `resize` uses, so a divider cannot be
+    /// dragged until a pane has no width.
+    pub fn resize_at(&self, path: &[Branch], position: f64, bounds: Rect) -> Result<Tree, Error> {
+        let root = self.root.as_ref().ok_or(Error::PathInvalid)?;
+        let Some(Node::Split(split)) = root.node_at(path) else {
+            return Err(Error::NoSplitOnAxis);
+        };
+
+        let spatial = self.spatial(Some(bounds));
+        let slot = spatial
+            .slots
+            .iter()
+            .find(|s| s.path == path)
+            .ok_or(Error::PathInvalid)?;
+
+        let (origin, extent) = match split.axis {
+            Axis::Horizontal => (slot.bounds.x, slot.bounds.w),
+            Axis::Vertical => (slot.bounds.y, slot.bounds.h),
+        };
+        if extent <= 0.0 {
+            return Err(Error::PathInvalid);
+        }
+
+        let ratio = ((position - origin) / extent).clamp(0.1, 0.9);
+        let new_split = Node::Split(Box::new(Split {
+            ratio,
+            ..(**split).clone()
+        }));
+        Ok(Tree {
+            root: Some(root.replacing(path, new_split)?),
+            // Unlike `resize`, dragging a divider does not clear zoom: a
+            // divider is not reachable while zoomed, so there is no zoom to
+            // clear and pretending otherwise would be a lie in the state.
+            zoomed: self.zoomed,
+        })
+    }
+
     /// What should happen to every pane, inside `bounds`. This is what the
     /// host feeds to `SetWindowPos` and `ShowWindow`.
     ///
@@ -763,6 +843,36 @@ impl Node {
                 )
             }
         }
+    }
+
+    fn dividers_into(
+        &self,
+        bounds: Rect,
+        thickness: f64,
+        path: Path,
+        out: &mut Vec<Divider>,
+    ) {
+        let Node::Split(s) = self else { return };
+        let (l, r) = Node::subdivide(s, bounds);
+        let half = thickness / 2.0;
+        let rect = match s.axis {
+            // The boundary sits where the two children meet, straddling it.
+            Axis::Horizontal => Rect::new(l.max_x() - half, bounds.y, thickness, bounds.h),
+            Axis::Vertical => Rect::new(bounds.x, l.max_y() - half, bounds.w, thickness),
+        };
+        out.push(Divider {
+            path: path.clone(),
+            axis: s.axis,
+            rect,
+        });
+
+        let mut lp = path.clone();
+        lp.push(Branch::Left);
+        s.left.dividers_into(l, thickness, lp, out);
+
+        let mut rp = path;
+        rp.push(Branch::Right);
+        s.right.dividers_into(r, thickness, rp, out);
     }
 
     fn layout_into(&self, bounds: Rect, out: &mut Vec<(PaneId, Rect)>) {

@@ -47,6 +47,7 @@ pub const ACTION_SHOW_CHILD_EXITED: u32 = 59;
 pub const ACTION_NEW_WINDOW: u32 = 1;
 pub const ACTION_NEW_TAB: u32 = 2;
 pub const ACTION_NEW_SPLIT: u32 = 4;
+pub const ACTION_TOGGLE_QUICK_TERMINAL: u32 = 10;
 pub const ACTION_GOTO_SPLIT: u32 = 17;
 pub const ACTION_RESIZE_SPLIT: u32 = 19;
 pub const ACTION_EQUALIZE_SPLITS: u32 = 20;

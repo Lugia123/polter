@@ -500,6 +500,174 @@ fn zoom_leaves_exactly_one_visible() {
     assert_eq!(visible, vec![D]);
 }
 
+// -- dividers and dragging -------------------------------------------------
+
+#[test]
+fn one_divider_per_split_and_none_without_one() {
+    let b = Rect::new(0.0, 0.0, 200.0, 100.0);
+    assert!(Tree::new().dividers(b, 6.0).is_empty());
+    assert!(Tree::with_pane(A).dividers(b, 6.0).is_empty());
+    assert_eq!(row().dividers(b, 6.0).len(), 1);
+    assert_eq!(row3().dividers(b, 6.0).len(), 2);
+    // 2x2 is three splits: the outer one and one per column.
+    assert_eq!(grid().dividers(b, 6.0).len(), 3);
+}
+
+/// Zoom covers everything with one pane, so there is nothing between anything.
+#[test]
+fn a_zoomed_tree_has_no_dividers() {
+    let b = Rect::new(0.0, 0.0, 200.0, 100.0);
+    assert!(grid().toggle_zoom(B).dividers(b, 6.0).is_empty());
+}
+
+#[test]
+fn the_divider_straddles_where_the_children_meet() {
+    let b = Rect::new(0.0, 0.0, 200.0, 100.0);
+    let d = &row().dividers(b, 6.0)[0];
+    // a | b at 0.5 in a 200-wide box: they meet at x=100.
+    assert_eq!(d.axis, Axis::Horizontal);
+    assert_rect(d.rect, 97.0, 0.0, 6.0, 100.0);
+
+    let col = Tree::with_pane(A).insert(B, A, NewSplit::Down).unwrap();
+    let d = &col.dividers(b, 6.0)[0];
+    assert_eq!(d.axis, Axis::Vertical);
+    assert_rect(d.rect, 0.0, 47.0, 200.0, 6.0);
+}
+
+/// A nested divider is measured inside its own split's rectangle, not the
+/// whole window. Getting this wrong puts the boundary in the right place only
+/// when the parent happens to be at 0.5.
+#[test]
+fn a_nested_divider_is_positioned_within_its_own_split() {
+    let bounds = Rect::new(0.0, 0.0, 400.0, 100.0);
+    // a | (b | c): outer at 0.5, so the inner split owns x in [200, 400].
+    let t = row3();
+    let ds = t.dividers(bounds, 4.0);
+    let inner = ds
+        .iter()
+        .find(|d| d.path == vec![Branch::Right])
+        .expect("inner split has a divider");
+    // The inner children meet halfway through [200, 400] = 300.
+    assert_rect(inner.rect, 298.0, 0.0, 4.0, 100.0);
+}
+
+#[test]
+fn dragging_puts_the_divider_where_the_pointer_is() {
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    let t = row().resize_at(&[], 140.0, bounds).unwrap();
+    assert_rect(rect_of(&t, bounds, A), 0.0, 0.0, 140.0, 100.0);
+    assert_rect(rect_of(&t, bounds, B), 140.0, 0.0, 60.0, 100.0);
+}
+
+/// The model half of the real-machine criterion: after a drag the two panes
+/// still tile their split exactly. "The ratio changed" is a conclusion; "the
+/// two rectangles still add up" is what can be judged.
+#[test]
+fn the_children_still_tile_the_split_after_a_drag() {
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    for pos in [20.0, 60.0, 100.0, 155.0, 180.0] {
+        let t = row().resize_at(&[], pos, bounds).unwrap();
+        let a = rect_of(&t, bounds, A);
+        let b = rect_of(&t, bounds, B);
+        assert!(approx(a.max_x(), b.min_x()), "gap or overlap at pos {pos}");
+        assert!(approx(a.w + b.w, bounds.w), "widths do not add up at {pos}");
+        assert!(approx(a.h, bounds.h) && approx(b.h, bounds.h));
+    }
+}
+
+/// Dragging a **nested** split: the position is relative to that split's own
+/// rectangle, not to the window.
+///
+/// Added after a mutation run: every drag test above used the root split,
+/// whose origin is 0, so dropping the `- origin` term changed nothing and all
+/// of them still passed.
+#[test]
+fn dragging_a_nested_divider_measures_from_that_split() {
+    let bounds = Rect::new(0.0, 0.0, 400.0, 100.0);
+    // a | (b | c): the inner split owns x in [200, 400].
+    let t = row3().resize_at(&[Branch::Right], 350.0, bounds).unwrap();
+    assert_rect(rect_of(&t, bounds, A), 0.0, 0.0, 200.0, 100.0);
+    assert_rect(rect_of(&t, bounds, B), 200.0, 0.0, 150.0, 100.0);
+    assert_rect(rect_of(&t, bounds, C), 350.0, 0.0, 50.0, 100.0);
+}
+
+/// Dragging a **vertical** split uses y and height.
+///
+/// Also added after a mutation run: every drag test above was horizontal, so
+/// reading the vertical case off the horizontal fields passed everything.
+#[test]
+fn dragging_a_vertical_divider_uses_the_other_axis() {
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    let col = Tree::with_pane(A).insert(B, A, NewSplit::Down).unwrap();
+    let t = col.resize_at(&[], 70.0, bounds).unwrap();
+    assert_rect(rect_of(&t, bounds, A), 0.0, 0.0, 200.0, 70.0);
+    assert_rect(rect_of(&t, bounds, B), 0.0, 70.0, 200.0, 30.0);
+}
+
+#[test]
+fn dragging_is_clamped_at_both_ends() {
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    // Way off the left edge, and way off the right.
+    let left = row().resize_at(&[], -500.0, bounds).unwrap();
+    assert_rect(rect_of(&left, bounds, A), 0.0, 0.0, 20.0, 100.0);
+    let right = row().resize_at(&[], 5000.0, bounds).unwrap();
+    assert_rect(rect_of(&right, bounds, A), 0.0, 0.0, 180.0, 100.0);
+}
+
+/// Absolute positioning is self-correcting: a drag that skips messages ends
+/// up in the same place as one that does not. With deltas these two would
+/// disagree, and the difference would never be recovered.
+#[test]
+fn a_drag_that_drops_messages_lands_in_the_same_place() {
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    let every = [110.0, 120.0, 130.0, 140.0]
+        .iter()
+        .fold(row(), |t, &p| t.resize_at(&[], p, bounds).unwrap());
+    let sparse = row().resize_at(&[], 140.0, bounds).unwrap();
+    assert_eq!(
+        rect_of(&every, bounds, A),
+        rect_of(&sparse, bounds, A),
+        "an absolute drag must not depend on how many messages arrived"
+    );
+}
+
+#[test]
+fn dragging_a_leaf_or_a_bad_path_is_an_error() {
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    // The root of a single-pane tree is a leaf, not a split.
+    assert_eq!(
+        Tree::with_pane(A).resize_at(&[], 50.0, bounds),
+        Err(Error::NoSplitOnAxis)
+    );
+    assert_eq!(
+        row().resize_at(&[Branch::Left], 50.0, bounds),
+        Err(Error::NoSplitOnAxis)
+    );
+    assert_eq!(
+        Tree::new().resize_at(&[], 50.0, bounds),
+        Err(Error::PathInvalid)
+    );
+}
+
+/// Every divider's path really does address a split, so a hit test can hand
+/// it straight back to `resize_at` without re-deriving anything.
+#[test]
+fn every_divider_path_can_be_dragged() {
+    let bounds = Rect::new(0.0, 0.0, 400.0, 200.0);
+    let t = grid();
+    for d in t.dividers(bounds, 6.0) {
+        let mid = match d.axis {
+            Axis::Horizontal => d.rect.x + d.rect.w / 2.0,
+            Axis::Vertical => d.rect.y + d.rect.h / 2.0,
+        };
+        assert!(
+            t.resize_at(&d.path, mid, bounds).is_ok(),
+            "divider at {:?} could not be dragged",
+            d.path
+        );
+    }
+}
+
 // -- equalize --------------------------------------------------------------
 
 #[test]

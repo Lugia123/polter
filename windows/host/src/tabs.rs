@@ -109,6 +109,10 @@ pub enum Op {
     /// A surface asked to be closed: its pane goes, and the tab with it if it
     /// was the last one. Carries the pane id, which is the surface userdata.
     ClosePane(PaneId),
+    /// The quick terminal, which is not a tab and not a pane -- but the queue
+    /// is how anything reaches the thread that owns windows, so it comes
+    /// through here too.
+    ToggleQuickTerminal,
 }
 
 pub struct State {
@@ -307,7 +311,7 @@ pub fn scale_of() -> f64 {
 /// Put the active tab's child window over the client area below the strip,
 /// and hide every other one.
 /// The area a tab's panes live in: the client area minus the strip.
-fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
+pub fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
     let mut rc = RECT::default();
     unsafe {
         if GetClientRect(frame, &mut rc).is_err() {
@@ -340,7 +344,10 @@ fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
             // handed a window that is not the frame. Printing both the handle
             // we measured and the one the model calls the frame answers that
             // without another round trip.
-            let expect = frame_hwnd();
+            //
+            // The frame comes from an atomic, not from `state()`: this runs
+            // inside `layout`'s critical section.
+            let expect = crate::frame_hwnd_cached();
             logf!(
                 "[layout] refusing: hwnd={:?} (frame={:?}, same={}) client {}x{} (strip {}), \
                  window {}x{} at {},{} zoomed={} iconic={}",
@@ -874,7 +881,10 @@ pub fn surface_of(hwnd: HWND) -> Surface {
             }
         }
     }
-    std::ptr::null_mut()
+    drop(st);
+    // The quick terminal's surface lives in its own module but uses this same
+    // window class and window procedure, so the lookup falls through to it.
+    crate::quick::surface_of(hwnd)
 }
 
 /// The pane that owns a window, so a click can move focus to it.
@@ -1316,6 +1326,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 logf!("[split] zoom -> {:?}", zoomed);
             }
             Op::ClosePane(id) => close_pane(frame, id),
+            Op::ToggleQuickTerminal => crate::quick::toggle(app, hinst),
             Op::PresentTerminal => unsafe {
                 let _ = ShowWindow(frame, SW_RESTORE);
                 let _ = SetForegroundWindow(frame);

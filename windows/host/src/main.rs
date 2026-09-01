@@ -30,12 +30,14 @@
 //! `tabs.rs`. TSF is apartment-bound to the main thread and is only ever
 //! touched from there.
 
+mod divider;
 mod ffi;
 mod keys;
 mod hud;
 mod keyseq;
 mod overlay;
 mod palette;
+mod quick;
 mod search;
 mod shell;
 mod strip;
@@ -146,6 +148,17 @@ struct ImeState {
     thread_mgr: windows::Win32::UI::TextServices::ITfThreadMgr,
     doc_mgr: windows::Win32::UI::TextServices::ITfDocumentMgr,
     _ctx: windows::Win32::UI::TextServices::ITfContext,
+}
+
+/// The frame window, read from an atomic rather than the state lock.
+///
+/// **`content_bounds` needs this and cannot take the lock**: it is called
+/// from inside `layout`'s critical section, so a `state()` in there would
+/// re-enter a non-re-entrant mutex -- on the anomaly path, which is to say
+/// the path that only runs when something is already wrong. The lock scanner
+/// caught it; the atomic is the same value without the hazard.
+pub fn frame_hwnd_cached() -> HWND {
+    HWND(HWND_G.load(Ordering::Acquire))
 }
 
 pub fn api() -> &'static Api {
@@ -591,6 +604,11 @@ extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
             true
         }
 
+        ACTION_TOGGLE_QUICK_TERMINAL => {
+            logf!("[action] toggle_quick_terminal");
+            tabs::post_op(Op::ToggleQuickTerminal);
+            true
+        }
         ACTION_NEW_TAB => {
             logf!("[action] new_tab");
             tabs::post_op(Op::NewTab);
@@ -762,9 +780,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // The frame resizes; the active child follows and tells the core.
             WM_SIZE => {
                 tabs::layout(hwnd);
-                // After the layout, so the grid sign measures the client rect
-                // the child actually ended up with rather than the one it had
-                // a moment ago.
+                // Both after the layout: the dividers follow the panes, and
+                // the grid sign measures the client rect the child actually
+                // ended up with rather than the one it had a moment ago.
+                divider::sync(hwnd);
                 hud::on_frame_resized();
                 LRESULT(0)
             }
@@ -810,6 +829,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
                 tabs::layout(hwnd);
                 logf!("[win] dpi changed -> scale {}", scale);
+                LRESULT(0)
+            }
+
+            // The global hotkey. It arrives here even when Polter is not the
+            // foreground application -- that is the entire point of it, and
+            // the reason it is a `RegisterHotKey` and not an accelerator.
+            WM_HOTKEY => {
+                logf!("[quick] hotkey pressed (foreground={:?})", GetForegroundWindow().0);
+                let app = APP.load(Ordering::Acquire);
+                let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+                quick::toggle(app, hinst);
                 LRESULT(0)
             }
 
@@ -1205,6 +1235,15 @@ fn main() {
         logf!("--striptest: the strip will exercise itself, one step per ~0.6s");
     }
 
+    // `--qttest`: the quick terminal drops in and out on its own, printing
+    // the monitor and the work area it chose alongside the result.
+    let qttest = std::env::args().any(|a| a == "--qttest");
+    let mut qt_step = 0usize;
+    let mut qt_running = qttest;
+    if qttest {
+        logf!("--qttest: the quick terminal will exercise itself");
+    }
+
     let selftest = std::env::args().any(|a| a == "--selftest");
     // Stops the script once it has finished. **Not a tidiness fix.** Without
     // it the last step's "after" line reprints every tick forever, and then
@@ -1241,9 +1280,14 @@ fn main() {
     // After the frame exists, so the palette can centre on it, and after the
     // config exists, so it has commands to show.
     palette::init(hinst, config);
+    // The quick terminal, and the global hotkey that reaches it when Polter
+    // is not the foreground application. Created hidden; the hotkey is
+    // registered on the frame, which is where WM_HOTKEY will arrive.
+    quick::init(hinst, config, hwnd);
     search::init(hinst);
     keyseq::init(hinst);
     hud::init(hinst);
+    divider::init(hinst);
 
     logf!("entering message loop; renderer thread drives redraw");
 
@@ -1443,6 +1487,12 @@ fn main() {
         // surface has settled. Slow enough that each step's messages are
         // pumped before the next one runs -- which matters, because the
         // question being asked is whether a repaint happened.
+        if qt_running && ticks > 250 && ticks % 100 == 0 {
+            let hinst: HINSTANCE = unsafe { GetModuleHandleW(None).unwrap().into() };
+            qt_running = quick::script_step(app, hinst, qt_step);
+            qt_step += 1;
+        }
+
         if strip_running && ticks > 250 && ticks % 75 == 0 {
             strip_running = strip::script_step(hwnd, strip_step);
             strip_step += 1;
