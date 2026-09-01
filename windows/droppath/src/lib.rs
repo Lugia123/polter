@@ -114,7 +114,7 @@ mod tests {
     /// quotes nobody asked for.
     #[test]
     fn a_plain_path_is_left_alone() {
-        assert_eq!(quote(r"C:\Users\lugia\notes.txt"), r"C:\Users\lugia\notes.txt");
+        assert_eq!(quote(r"C:\Users\ghostty\notes.txt"), r"C:\Users\ghostty\notes.txt");
         assert_eq!(quote(r"D:/mixed/separators.md"), r"D:/mixed/separators.md");
     }
 
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn quoting_round_trips_through_a_parser() {
         for original in [
-            r"C:\Users\lugia\notes.txt",
+            r"C:\Users\ghostty\notes.txt",
             r"C:\My Documents\notes.txt",
             r"C:\My Dir\",
             r"\\server\my share\file.txt",

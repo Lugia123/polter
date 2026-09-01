@@ -202,3 +202,229 @@ test isValidMacAddress {
     try testing.expect(!isValidMacAddress("01-23-45-67-89-Aa"));
     try testing.expect(!isValidMacAddress("01:23:45:67:89:Aa:Bb"));
 }
+
+/// Turn the path component of an OSC 7 URI into a native Windows path.
+///
+/// `std.Uri` hands back `/C:/Users/ghostty` for `file:///C:/Users/ghostty`, and
+/// every consumer of the terminal's pwd -- `std.fs.path.resolve`, the host's
+/// `working_directory` for a new tab, the shell it spawns -- wants
+/// `C:\Users\ghostty`. This is that one step.
+///
+/// **Not gated on the target OS.** The conversion is a property of the path
+/// syntax being produced, not of the machine doing the producing, so it
+/// compiles and is tested everywhere. A function that only existed on Windows
+/// could only be tested on Windows, and the rules here are exactly the kind
+/// that are wrong quietly.
+///
+/// # What it accepts
+///
+///   - `/C:/Users/x` and `C:/Users/x` alike. **Both, on purpose**: our own
+///     shell integrations build the URI by concatenating the hostname and
+///     `$PWD` (`kitty-shell-cwd://$HOSTNAME$PWD`), which on a POSIX system
+///     gains its separator from `$PWD`'s leading `/`. A Windows `$PWD` starts
+///     `C:\`, so a script that does the same concatenation produces
+///     `kitty-shell-cwd://MYPCC:\Users\x` -- hostname and path fused. Taking
+///     both forms means a script written either way lands somewhere real
+///     instead of silently landing nowhere.
+///   - Separators either way round, because `raw_path` URIs pass backslashes
+///     through untouched.
+///   - `//server/share/x` as the UNC `\\server\share\x`. **The UNC has to
+///     arrive inside the path, not as the URI's host.** `file://server/...`
+///     is refused earlier by the hostname check, and that refusal is right:
+///     nothing can distinguish "my working directory is on \\server\share"
+///     from "an SSH session claims to be on the host `server`". Keeping the
+///     local machine as the host and the UNC in the path is the only form
+///     that is both expressible and safe. This is not hypothetical --
+///     `Get-Location` on a mapped share returns exactly `\\server\share\x`.
+///
+/// # What it refuses, and why refusing matters
+///
+/// A path with no drive and no UNC prefix (`/`, `/share/dir`) returns null.
+/// **An implementation that merely flipped the slashes would turn
+/// `/share/dir` into `\share\dir`, which looks entirely normal and is a
+/// string no Windows API can use** -- the pwd would be set, every consumer
+/// would fail, and nothing would say why. A cwd is always absolute, so
+/// refusing costs nothing real.
+///
+/// Returns a slice of `buf`, or null. `buf` must be at least one byte longer
+/// than `path` (a bare `C:` grows to `C:\`).
+pub fn windowsPath(buf: []u8, path: []const u8) ?[]const u8 {
+    if (path.len == 0) return null;
+
+    const isSep = struct {
+        fn f(c: u8) bool {
+            return c == '/' or c == '\\';
+        }
+    }.f;
+
+    // A UNC needs two leading separators, a server, and a share. `//server`
+    // on its own names a machine, not a directory, so it is not a cwd.
+    const unc = unc: {
+        if (path.len < 3) break :unc false;
+        if (!isSep(path[0]) or !isSep(path[1]) or isSep(path[2])) break :unc false;
+        // There must be a separator after the server name, with something
+        // after it: `//server/share`, not `//server` or `//server/`.
+        const rest = path[2..];
+        const i = std.mem.indexOfAny(u8, rest, "/\\") orelse break :unc false;
+        break :unc i + 1 < rest.len;
+    };
+
+    const src = if (unc)
+        path
+    else if (isSep(path[0]))
+        path[1..]
+    else
+        path;
+
+    if (!unc) {
+        // A drive letter and a colon, or nothing doing.
+        if (src.len < 2) return null;
+        if (!std.ascii.isAlphabetic(src[0])) return null;
+        if (src[1] != ':') return null;
+    }
+
+    if (src.len + 1 > buf.len) return null;
+    for (src, 0..) |c, i| buf[i] = if (c == '/') '\\' else c;
+    var out = buf[0..src.len];
+
+    // `C:` alone is *the drive's current directory* in Windows path syntax,
+    // which is a relative path wearing an absolute one's clothes. A reported
+    // cwd is absolute, so it means the root.
+    if (out.len == 2 and out[1] == ':') {
+        buf[2] = '\\';
+        out = buf[0..3];
+    }
+
+    // A trailing separator belongs to a drive root (`C:\`) and to nothing
+    // else. Leaving it on `C:\a\` would make two spellings of one directory,
+    // and the pwd is compared against itself to decide whether it changed.
+    const drive_root = out.len == 3 and out[1] == ':' and out[2] == '\\';
+    if (!drive_root and out.len > 1 and out[out.len - 1] == '\\') {
+        out = out[0 .. out.len - 1];
+    }
+
+    return out;
+}
+
+test "winpwd: a drive path with a leading slash" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings(
+        "C:\\Users\\ghostty",
+        windowsPath(&buf, "/C:/Users/ghostty").?,
+    );
+}
+
+// The form our own shell integrations produce when `$PWD` is concatenated
+// straight onto the hostname, which on Windows has no separator to donate.
+test "winpwd: a drive path with no leading slash" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings(
+        "C:\\Users\\ghostty",
+        windowsPath(&buf, "C:/Users/ghostty").?,
+    );
+}
+
+// `raw_path` URIs are handed over unescaped and unaltered, so backslashes
+// arrive as backslashes.
+test "winpwd: separators may already be backslashes" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings(
+        "C:\\Users\\ghostty",
+        windowsPath(&buf, "/C:\\Users\\ghostty").?,
+    );
+}
+
+test "winpwd: a drive root keeps its trailing separator" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("C:\\", windowsPath(&buf, "/C:/").?);
+}
+
+// A bare `C:` is the drive's *current* directory in Windows syntax -- a
+// relative path that looks absolute. A reported cwd is absolute.
+test "winpwd: a bare drive letter becomes the drive root" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("C:\\", windowsPath(&buf, "/C:").?);
+}
+
+// Anywhere but a drive root, a trailing separator is dropped: the pwd is
+// compared against itself to decide whether it changed, and two spellings of
+// one directory would report a change that did not happen.
+test "winpwd: a trailing separator elsewhere is dropped" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("C:\\a", windowsPath(&buf, "/C:/a/").?);
+}
+
+test "winpwd: a UNC path arrives inside the path component" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings(
+        "\\\\server\\share\\x",
+        windowsPath(&buf, "//server/share/x").?,
+    );
+    // And with backslashes, which is what `Get-Location` gives verbatim.
+    try testing.expectEqualStrings(
+        "\\\\server\\share\\x",
+        windowsPath(&buf, "\\\\server\\share\\x").?,
+    );
+}
+
+// A server with no share names a machine, not a directory.
+test "winpwd: a UNC needs a share, not just a server" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expect(windowsPath(&buf, "//server") == null);
+    try testing.expect(windowsPath(&buf, "//server/") == null);
+}
+
+// Spaces and non-ASCII are already decoded by the URI parser and must pass
+// through untouched -- they are ordinary characters in a Windows path.
+test "winpwd: spaces and non-ascii pass through" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings(
+        "C:\\a b\\\u{9879}\u{76ee}",
+        windowsPath(&buf, "/C:/a b/\u{9879}\u{76ee}").?,
+    );
+}
+
+// **The floor for every test above.**
+//
+// An implementation that only flipped the slashes would pass all of them and
+// would turn `/share/dir` into `\share\dir`: a string that looks entirely
+// normal, that no Windows API can use, and that would be stored as the pwd
+// with nothing anywhere reporting a problem. Refusing is the whole point.
+test "winpwd: a path with no drive and no UNC is refused" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expect(windowsPath(&buf, "/") == null);
+    try testing.expect(windowsPath(&buf, "/share/dir") == null);
+    try testing.expect(windowsPath(&buf, "/Users/ghostty") == null);
+    try testing.expect(windowsPath(&buf, "") == null);
+    // A digit is not a drive letter.
+    try testing.expect(windowsPath(&buf, "/1:/x") == null);
+    // A drive letter with no colon is a directory name.
+    try testing.expect(windowsPath(&buf, "/C/x") == null);
+}
+
+// A buffer too small returns null rather than writing past it. The `+1` is
+// the room a bare `C:` needs to become `C:\`.
+test "winpwd: a short buffer is refused, not overrun" {
+    const testing = std.testing;
+    var small: [4]u8 = undefined;
+    try testing.expect(windowsPath(&small, "/C:/Users") == null);
+    // Two bytes cannot hold `C:\`, so the growth is refused rather than
+    // silently truncated to `C:` -- which would be a *relative* path.
+    var too_small: [2]u8 = undefined;
+    try testing.expect(windowsPath(&too_small, "/C:") == null);
+    // Three is exactly enough, and the guard must not be off by one in the
+    // other direction either: a correct path refused is as wrong as a wrong
+    // path returned, and both are silent.
+    var exact: [3]u8 = undefined;
+    try testing.expectEqualStrings("C:\\", windowsPath(&exact, "/C:").?);
+}

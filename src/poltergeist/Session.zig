@@ -736,7 +736,7 @@ test "a terminal in no group is still written down" {
     const groups = [_]Group{.{ .name = "alpha" }};
     const terminals = [_]Terminal{
         .{ .cwd = "/work/alpha", .title = "◑ colstat" },
-        .{ .cwd = "/home/lugia", .title = "zsh" },
+        .{ .cwd = "/home/ghostty", .title = "zsh" },
     };
     write(alloc, io, path, .{ .groups = &groups, .terminals = &terminals });
 

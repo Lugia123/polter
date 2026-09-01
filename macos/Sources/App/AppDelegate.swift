@@ -302,10 +302,10 @@ class AppDelegate: NSObject,
     /// instances briefly fighting over it.
     ///
     /// The bundle path is passed as an argument rather than spliced into the
-    /// script. A path with a quote or a space in it -- and this one lives
-    /// under "claude lugia" on at least one machine -- would otherwise turn
-    /// into a broken command, or worse, a working one that runs something
-    /// else.
+    /// script. A path with a quote or a space in it -- and on at least one
+    /// machine this checkout lives under a directory whose name contains a
+    /// space -- would otherwise turn into a broken command, or worse, a
+    /// working one that runs something else.
     private func relaunch() {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")

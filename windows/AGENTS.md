@@ -61,9 +61,11 @@ cargo test -p polter-split-tree        # native, runs anywhere
   the two have to agree.
 - **The target directory must not contain a space.** `dlltool` splits its
   arguments on whitespace, so a checkout under a path like
-  `~/claude lugia/ghostty` fails during dependency compilation with
-  `can't open ...dllh.o`, before any of this code is looked at. Build with
-  `CARGO_TARGET_DIR` pointing somewhere without spaces.
+  `~/claude code/ghostty` -- **the space is the whole point of the example**
+  -- fails during dependency compilation with `can't open ...dllh.o`, before
+  any of this code is looked at. Build with `CARGO_TARGET_DIR` pointing
+  somewhere without spaces. Two people hit this independently in one night
+  and both first read it as a broken dependency.
 
 The host loads **two** DLLs at runtime: `ghostty-internal.dll` (the surface
 API) and `ghostty-vt.dll` (the width table the IME needs). Both must sit next

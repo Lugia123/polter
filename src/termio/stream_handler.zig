@@ -1047,11 +1047,6 @@ pub const StreamHandler = struct {
             return;
         }
 
-        if (builtin.os.tag == .windows) {
-            log.warn("reportPwd unimplemented on windows", .{});
-            return;
-        }
-
         // Attempt to parse this file-style URI using options appropriate
         // for this OSC 7 context (e.g. kitty-shell-cwd expects the full,
         // unencoded path).
@@ -1099,7 +1094,36 @@ pub const StreamHandler = struct {
         var arena_alloc: std.heap.ArenaAllocator = .init(self.alloc);
         var stack_alloc = std.heap.stackFallback(1024, arena_alloc.allocator());
         defer arena_alloc.deinit();
-        const path = try uri.path.toRawMaybeAlloc(stack_alloc.get());
+        const raw_path = try uri.path.toRawMaybeAlloc(stack_alloc.get());
+
+        // **On Windows the URI path is not a path yet.** `std.Uri` gives
+        // `/C:/Users/x` for `file:///C:/Users/x`, and every consumer of the
+        // pwd -- `std.fs.path.resolve` when opening a relative file, the
+        // apprt's `working_directory` for a new tab, the shell it spawns --
+        // wants `C:\Users\x`.
+        //
+        // This used to be an early `return` with a `log.warn` saying
+        // "unimplemented", **and that one line was the whole of why four
+        // Windows features did nothing**: the pwd never reached the terminal,
+        // so `GHOSTTY_ACTION_PWD` was never emitted, so a host that had
+        // already implemented every step after this one had nothing to
+        // receive. Five of the six links in that chain were finished.
+        const path = if (comptime builtin.os.tag != .windows) raw_path else path: {
+            // One byte of headroom: a bare `C:` becomes `C:\`.
+            const buf = try stack_alloc.get().alloc(u8, raw_path.len + 1);
+            break :path internal_os.uri.windowsPath(buf, raw_path) orelse {
+                // Refused rather than passed through with the slashes
+                // flipped. `/share/dir` would become `\share\dir`, which
+                // reads as a perfectly ordinary path and is one no Windows
+                // API can use -- the pwd would be set and every consumer of
+                // it would fail, silently.
+                log.warn(
+                    "OSC 7 path is not an absolute Windows path, ignoring: {s}",
+                    .{raw_path},
+                );
+                return;
+            };
+        };
 
         log.debug("terminal pwd: {s}", .{path});
         try self.terminal.setPwd(path);
