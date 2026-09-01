@@ -44,6 +44,25 @@ KNOWN = {
         "NSUserInterfaceItemIdentifier values namespaced by the bundle id",
     "macos/Sources/Features/About/AboutView.swift": "links to the fork's public repository",
     "macos/Sources/App/AppDelegate.swift": "links to the fork's public documentation",
+    # **This one is here rather than skipped, and the difference matters.**
+    # An earlier version of this file excluded the whole xcodeproj path, which
+    # is the shape this checker exists to argue against: bending the pattern
+    # around a hit instead of writing down why the hit may stay. The nine
+    # PRODUCT_BUNDLE_IDENTIFIER lines in it are the application's identity on
+    # disk -- change them and an installed copy becomes a different app, with
+    # its preferences, keychain items and TCC grants no longer its own.
+    "macos/Ghostty.xcodeproj/project.pbxproj":
+        "PRODUCT_BUNDLE_IDENTIFIER values; changing them re-identifies the app",
+    # **It finds itself, which is the right answer and worth saying.** A
+    # checker for a name has to contain the name -- in what it searches for,
+    # in the reasons above, and in the self-test samples, which have to be
+    # literal or they are testing a variable rather than a spelling. Run it
+    # over itself and it reports every one of those, correctly. The reason it
+    # may stay is that the identifier is already public in the bundle id and
+    # the repository URL; what must not leak is a *path* off this machine, and
+    # there is none here.
+    "tools/no-local-identifiers.py":
+        "names the identifier it searches for, in its samples and its reasons",
 }
 
 
@@ -58,8 +77,6 @@ def scan():
     bad = []
     for path in tracked_files():
         if path.endswith((".lock", ".png", ".jpg", ".ico", ".icns", ".ttf")):
-            continue
-        if path.startswith("macos/Ghostty.xcodeproj"):
             continue
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
