@@ -46,7 +46,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use polter_split_tree::{Axis, Branch};
 
-use crate::logf;
+use crate::{logf, plogf, wlogf};
 
 /// Divider thickness in unscaled pixels. Wide enough to grab, narrow enough
 /// not to eat a column of text.
@@ -100,11 +100,13 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
             ..Default::default()
         };
         if RegisterClassExW(&wc) == 0 {
-            logf!("[div] RegisterClassExW failed");
+            // process-wide: registering the divider window class, once per process
+            plogf!("[div] RegisterClassExW failed");
             return;
         }
         REGISTERED.store(true, Ordering::Release);
-        logf!("[div] ready");
+        // process-wide: the divider class is registered; no window owns it
+        plogf!("[div] ready");
     }
 }
 
@@ -191,7 +193,7 @@ pub fn sync(frame: HWND) {
                     axis: Axis::Horizontal,
                 }),
                 Err(e) => {
-                    logf!("[div] CreateWindowExW failed: {e:?}");
+                    wlogf!(frame, "[div] CreateWindowExW failed: {e:?}");
                     return;
                 }
             }
@@ -220,7 +222,7 @@ pub fn sync(frame: HWND) {
                 let _ = ShowWindow(d.hwnd, SW_HIDE);
             }
         }
-        logf!(
+        wlogf!(frame, 
             "[div] sync: {} dividers for {} panes, zoomed={}",
             wanted.len(),
             panes,
@@ -290,7 +292,7 @@ fn drag_to(frame: HWND, idx: usize) {
                 // Not fatal: the divider may belong to a tree that changed
                 // under the drag. Logged because a divider that silently
                 // stops responding is indistinguishable from a frozen app.
-                logf!("[div] resize_at({:?}) failed: {:?}", path, e);
+                wlogf!(frame, "[div] resize_at({:?}) failed: {:?}", path, e);
                 false
             }
         }

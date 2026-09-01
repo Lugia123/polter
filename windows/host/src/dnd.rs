@@ -62,7 +62,7 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
-use crate::logf;
+use crate::{logf, plogf};
 
 /// One target per surface window. It holds the window, and nothing else --
 /// **the surface is looked up per drop, not cached**, because a pane's
@@ -263,7 +263,9 @@ fn ensure_ole() -> bool {
         const S_FALSE: i32 = 1;
         let hr = r.as_ref().err().map(|e| e.code().0).unwrap_or(0);
         let ok = r.is_ok() || hr == S_FALSE;
-        logf!("[drop] OleInitialize -> 0x{:08x} usable={} (S_FALSE means COM was already up, which is fine)", hr, ok);
+        // process-wide: OLE is initialised once for the process, before any
+        // drop target exists; no window is involved in the answer
+        plogf!("[drop] OleInitialize -> 0x{:08x} usable={} (S_FALSE means COM was already up, which is fine)", hr, ok);
         f.set(ok);
         ok
     })

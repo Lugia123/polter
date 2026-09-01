@@ -58,7 +58,20 @@ import sys
 #                     "everything, unless declared"
 #   217  `98af8cff5`  the four `[menu]` lines that show and dispatch a menu
 #                     for one window were tagged
-#   204  this commit  21 declared process-wide at the call site: 11 in
+#   199  this commit  5, and the batch was budgeted at 18. `divider.rs` gave
+#                     2 process-wide (the window class) + 3 tagged, `dnd.rs`
+#                     gave 1 (OLE init). **The other 13 are left, and each is
+#                     left for a stated reason** -- see the report; the short
+#                     version is that they are about a *pane* or an overlay
+#                     rather than about a frame, and the identity they would
+#                     need does not exist yet.
+#
+#                     Six conversions produced a drop of five: `[div] sync:`
+#                     was already exempt for naming "panes", so tagging it
+#                     moved it between two columns without changing the count.
+#                     **"Drop == conversions" is the wrong equation; the right
+#                     one is "drop == conversions that were unclassified".**
+#   204  6d5796283    21 declared process-wide at the call site: 11 in
 #                     `plugins.rs` (manifests, settings files, the catalog on
 #                     disk) and 10 in `settings_ui.rs` (the three singleton
 #                     windows and the config they show). One hand this time,
@@ -103,7 +116,7 @@ import sys
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
-BASELINE_UNTAGGED = 204
+BASELINE_UNTAGGED = 199
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`
@@ -189,7 +202,18 @@ plogf!("[build] sha256 {}", sha);
 # `plogf!` without its sentence. **A separate canary because it is a separate
 # failure**: the line is out of the count either way, so without this the
 # checker would let `plogf!` be used as a way to make a number go down.
-CANARY_UNREASONED = 'plogf!("[menu] built {} groups", n);' 
+CANARY_UNREASONED = 'plogf!("[menu] built {} groups", n);'
+
+# A reason spread over two lines, with the marker on the first. **Its own
+# canary because the rule changed for it**: requiring the marker on the line
+# immediately above silently rejected every two-line reason, and the failure
+# read as "this line has no reason" rather than "the checker only looks up one
+# line".
+CANARY_TWO_LINE = """
+// process-wide: OLE is initialised once for the process, before any
+// drop target exists; no window is involved in the answer
+plogf!("[drop] OleInitialize -> 0x{:08x}", hr);
+"""
 # The shape the first version could not see at all.
 CANARY_FIELD = 'wlogf!(self.frame, "[strip] moved to {},{}", x, y);'
 
@@ -204,8 +228,19 @@ def bad_sites(src: str, name: str):
         if macro == "plogf":
             # The reason is the point. `plogf!` on its own only moves a line
             # out of the count; the sentence above it is what a reader gets.
-            above = lines[line_no - 2] if line_no >= 2 else ""
-            if not PROCESS_WIDE_COMMENT.search(above):
+            # **The whole comment block above, not just the line above.**
+            # A reason worth reading is sometimes two lines, and requiring it
+            # to fit on one would buy shorter reasons rather than better ones.
+            # The marker may sit anywhere in the contiguous run of `//` lines
+            # immediately above the call.
+            found = False
+            i = line_no - 2
+            while i >= 0 and lines[i].strip().startswith("//"):
+                if PROCESS_WIDE_COMMENT.search(lines[i]):
+                    found = True
+                    break
+                i -= 1
+            if not found:
                 yield name, line_no, f"{tag} plogf! with no `// process-wide:` reason"
             continue
         yield name, line_no, tag
@@ -231,6 +266,10 @@ def self_test() -> None:
     if not unreasoned:
         print("FAIL: `plogf!` with no `// process-wide:` reason was accepted; the macro "
               "would then be a way to lower the count without saying anything.")
+        sys.exit(1)
+    spread = list(bad_sites(CANARY_TWO_LINE, "<canary>"))
+    if spread:
+        print(f"FAIL: a reason spread over two lines was rejected: {spread}")
         sys.exit(1)
     print("probe self-test: OK (unclassified seen, reasoned/exempt ignored, "
           "unreasoned plogf! caught, field-expression sites visible)")
