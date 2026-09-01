@@ -58,7 +58,25 @@ import sys
 #                     "everything, unless declared"
 #   217  `98af8cff5`  the four `[menu]` lines that show and dispatch a menu
 #                     for one window were tagged
-#   237  this commit  17 of `menu.rs`'s 18 unclassified lines were declared
+#   225  this commit  **two hands, one commit, on purpose.**
+#                       11  `palette.rs` -- 10 declared process-wide at the
+#                           call site, 1 tagged (`[palette] shown at`, which
+#                           can name the frame `show()` already positions
+#                           itself against)
+#                        1  `menu.rs` -- `[menu] CreatePopupMenu failed` now
+#                           carries a frame, because `build` gained one.
+#                           **That change is W1's, not this batch's author's.**
+#                     12 = 1 + 11, and the arithmetic is what said a second
+#                     hand had been in the tree: the drop was one larger than
+#                     the lines this author had classified.
+#
+#                     They land together because they cannot land apart. The
+#                     `menu.rs` change lowers the real count the moment it is
+#                     committed, and a baseline still reading 237 would then
+#                     fail for everybody -- a gate red for work already done
+#                     blocks the innocent. So the change and the baseline it
+#                     moves belong in one commit.
+#   237  e7ad63d6f    17 of `menu.rs`'s 18 unclassified lines were declared
 #                     process-wide at the call site. The 18th, `CreatePopupMenu
 #                     failed`, is left on purpose -- see below.
 #   254  c45e3ba71    the tag table was deleted; its 37 declarations became
@@ -80,7 +98,7 @@ import sys
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
-BASELINE_UNTAGGED = 237
+BASELINE_UNTAGGED = 225
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`

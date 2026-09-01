@@ -50,7 +50,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::ffi::Config;
-use crate::logf;
+use crate::{logf, plogf, wlogf};
 
 /// Posted to the palette window to open or close it. `WM_APP + 1` is taken by
 /// the tab op queue (`tabs::WM_POLTER_OP`), so this is `+ 2`.
@@ -199,14 +199,16 @@ fn load_commands(config: Config) -> Vec<Command> {
         let m = match GetModuleHandleA(s!("ghostty-internal.dll")) {
             Ok(m) => m,
             Err(e) => {
-                logf!("[palette] GetModuleHandleA failed: {e:?}");
+                // process-wide: loading the module, once, before any window exists
+                plogf!("[palette] GetModuleHandleA failed: {e:?}");
                 return Vec::new();
             }
         };
         match GetProcAddress(m, s!("ghostty_config_get")) {
             Some(p) => std::mem::transmute(p),
             None => {
-                logf!("[palette] ghostty_config_get not exported");
+                // process-wide: a fact about the core library this process loaded
+                plogf!("[palette] ghostty_config_get not exported");
                 return Vec::new();
             }
         }
@@ -225,7 +227,8 @@ fn load_commands(config: Config) -> Vec<Command> {
     if !ok || list.commands.is_null() {
         // Not fatal: a palette with no entries still opens and still closes,
         // which is a far better failure than a host that will not start.
-        logf!("[palette] config_get(command-palette-entry) = {ok}, len={}", list.len);
+        // process-wide: reading a config value: one config for the process
+        plogf!("[palette] config_get(command-palette-entry) = {ok}, len={}", list.len);
         return Vec::new();
     }
 
@@ -247,7 +250,8 @@ fn load_commands(config: Config) -> Vec<Command> {
             aliases,
         });
     }
-    logf!("[palette] loaded {} commands from the core", out.len());
+    // process-wide: the command list, read once and shared by every palette
+    plogf!("[palette] loaded {} commands from the core", out.len());
     audit_synonyms(&out);
     out
 }
@@ -289,7 +293,8 @@ fn audit_synonyms(commands: &[Command]) {
     }
     orphaned.sort_unstable();
     orphaned.dedup();
-    logf!(
+    // process-wide: the synonyms table, read once at startup
+    plogf!(
         "[palette] synonyms: {} lines, {} naming no command{}",
         pairs.len(),
         orphaned.len(),
@@ -402,7 +407,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config) {
             ..Default::default()
         };
         if RegisterClassExW(&wc) == 0 {
-            logf!("[palette] RegisterClassExW failed");
+            // process-wide: registering the window class, once per process
+            plogf!("[palette] RegisterClassExW failed");
             return;
         }
 
@@ -424,7 +430,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config) {
         ) {
             Ok(h) => h,
             Err(e) => {
-                logf!("[palette] CreateWindowExW failed: {e:?}");
+                // process-wide: creating the single palette window this process has
+                plogf!("[palette] CreateWindowExW failed: {e:?}");
                 return;
             }
         };
@@ -448,7 +455,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config) {
         ) {
             Ok(h) => h,
             Err(e) => {
-                logf!("[palette] edit CreateWindowExW failed: {e:?}");
+                // process-wide: creating the single palette window this process has
+                plogf!("[palette] edit CreateWindowExW failed: {e:?}");
                 return;
             }
         };
@@ -500,7 +508,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config) {
             });
         });
         HWND_PALETTE.store(hwnd.0, Ordering::Release);
-        logf!("[palette] ready");
+        // process-wide: the palette is initialised; there is one, and no window owns it yet
+        plogf!("[palette] ready");
     }
 }
 
@@ -508,7 +517,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config) {
 pub fn request_toggle() {
     let h = HWND_PALETTE.load(Ordering::Acquire);
     if h.is_null() {
-        logf!("[palette] toggle before init, ignored");
+        // process-wide: the palette does not exist yet, so no window can be meant
+        plogf!("[palette] toggle before init, ignored");
         return;
     }
     let _ = unsafe { PostMessageW(Some(HWND(h)), WM_PALETTE_TOGGLE, WPARAM(0), LPARAM(0)) };
@@ -562,7 +572,8 @@ fn show() {
         let mut got = RECT::default();
         let _ = GetWindowRect(me, &mut got);
         let rows = STATE.with(|c| c.borrow().as_ref().map(|s| s.filtered.len()).unwrap_or(0));
-        logf!(
+        wlogf!(
+            frame,
             "[palette] shown at {},{} {}x{} visible={} rows={}",
             got.left,
             got.top,

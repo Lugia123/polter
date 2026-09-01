@@ -45,7 +45,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::{logf, plogf, wlogf};
+use crate::{plogf, wlogf};
 
 // ------------------------------------------------------------------- table
 
@@ -879,12 +879,17 @@ fn flatten<'a>(rows: &'a [Row], out: &mut Vec<&'a Row>) {
 
 /// Build one popup and everything under it. Returns the menu, or `None` if
 /// Windows would not give us one.
-fn build(rows: &[Row], next: &mut usize) -> Option<HMENU> {
+/// `frame` is carried only so the one failure in here can say which window's
+/// menu did not open. **It is not used to build anything** -- the tree is the
+/// same for every window -- but the line below is printed exactly on the day
+/// somebody needs to know which of two windows lost its menu, and a line that
+/// cannot say is a line that arrives too late to be worth having.
+fn build(frame: HWND, rows: &[Row], next: &mut usize) -> Option<HMENU> {
     unsafe {
         let menu = match CreatePopupMenu() {
             Ok(m) => m,
             Err(e) => {
-                logf!("[menu] CreatePopupMenu failed: {e:?}");
+                wlogf!(frame, "[menu] CreatePopupMenu failed: {e:?}");
                 return None;
             }
         };
@@ -898,7 +903,7 @@ fn build(rows: &[Row], next: &mut usize) -> Option<HMENU> {
                 // walking the tree the same way this does; a submenu quietly
                 // left out here would shift every id after it, and the menu
                 // would then run the wrong command while looking right.
-                let child = build(children, next)?;
+                let child = build(frame, children, next)?;
                 let wide: Vec<u16> = r.label.encode_utf16().chain(Some(0)).collect();
                 let _ = AppendMenuW(
                     menu,
@@ -946,7 +951,7 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     flatten(ROOT, &mut order);
 
     let mut next = 0usize;
-    let Some(menu) = build(ROOT, &mut next) else { return };
+    let Some(menu) = build(frame, ROOT, &mut next) else { return };
 
     // Items on the root itself, which is what a person sees when it opens:
     // the six groups plus the two tail rows. Not the 50-odd leaves below.
