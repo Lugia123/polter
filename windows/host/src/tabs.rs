@@ -36,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use polter_split_tree::{Focus, NewSplit, PaneId, Placement, Rect as TreeRect, Side, Tree};
 
 use crate::ffi::*;
-use crate::{api, logf};
+use crate::{api, logf, wlogf};
 
 /// Posted to the frame window when the action queue has something in it.
 pub const WM_POLTER_OP: u32 = WM_APP + 1;
@@ -446,7 +446,7 @@ pub fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
             // The frame comes from an atomic, not from `state()`: this runs
             // inside `layout`'s critical section.
             let expect = crate::frame_hwnd_cached();
-            logf!(
+            wlogf!(frame, 
                 "[layout] refusing: hwnd={:?} (frame={:?}, same={}) client {}x{} (strip {}), \
                  window {}x{} at {},{} zoomed={} iconic={}",
                 frame.0,
@@ -795,7 +795,7 @@ pub fn create_tab_with(
 ) -> bool {
     let sh = strip_h(state().scale);
     let Some(bounds) = content_bounds(frame, sh) else {
-        logf!("[tab] no client area yet; not creating a tab");
+        wlogf!(frame, "[tab] no client area yet; not creating a tab");
         return false;
     };
     // **Both identities are taken before the guard is.** `take_id` locks, so
@@ -843,7 +843,7 @@ pub fn create_tab_with(
     }
     layout(frame);
     focus_active();
-    logf!("[tab] created; count now {}", count());
+    wlogf!(frame, "[tab] created; count now {}", count());
     true
 }
 
@@ -938,7 +938,7 @@ fn close_pane(frame: HWND, id: PaneId) {
     if tab_empty {
         destroy_tab_at(frame, tab_idx);
         if count() == 0 {
-            logf!("[tab] last tab closed -> quitting");
+            wlogf!(frame, "[tab] last tab closed -> quitting");
             unsafe { PostQuitMessage(0) };
             return;
         }
@@ -983,7 +983,7 @@ pub fn close_tab(frame: HWND, id: TabId) {
     let Some(idx) = idx else { return };
     destroy_tab_at(frame, idx);
     if count() == 0 {
-        logf!("[tab] last tab closed -> quitting");
+        wlogf!(frame, "[tab] last tab closed -> quitting");
         unsafe { PostQuitMessage(0) };
         return;
     }
@@ -1108,7 +1108,7 @@ pub fn install_reopen_opener() {
     crate::reopen::set_opener(|e| {
         post_op(Op::ReopenTab {
             cwd: e.cwd.clone(),
-            title: e.title.clone(),
+            title: e.chosen_title.clone(),
             index: e.index,
         });
         true
@@ -1415,7 +1415,7 @@ fn set_active(frame: HWND, idx: usize) {
     }
     layout(frame);
     focus_active();
-    logf!("[tab] active -> {} of {}", active_index() + 1, count());
+    wlogf!(frame, "[tab] active -> {} of {}", active_index() + 1, count());
 }
 
 pub fn active_index() -> usize {
@@ -1498,7 +1498,7 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
     }
     logf!("[close] tab index {} panes gone; laying out", idx);
     layout(frame);
-    logf!("[tab] closed index {}; count now {}", idx, count());
+    wlogf!(frame, "[tab] closed index {}; count now {}", idx, count());
 }
 
 /// `CF_UNICODETEXT`. Spelled numerically because the constant lives behind a
@@ -1706,7 +1706,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             Op::NewTabWith(spec) => {
                 let chat = spec.chat;
                 let ok = create_tab_with(frame, app, hinst, spec);
-                logf!("[tab] new tab (chat={}) created={}", chat, ok as u8);
+                wlogf!(frame, "[tab] new tab (chat={}) created={}", chat, ok as u8);
             }
             Op::ReopenTab { cwd, title, index } => {
                 if !create_tab_in(frame, app, hinst, Some(cwd.clone())) {
@@ -1786,7 +1786,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     _ => {
                         destroy_tab_at(frame, active);
                         if count() == 0 {
-                            logf!("[tab] last tab closed -> quitting");
+                            wlogf!(frame, "[tab] last tab closed -> quitting");
                             unsafe { PostQuitMessage(0) };
                         } else {
                             set_active(frame, active_index());
@@ -1872,9 +1872,9 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // like a title landing on the right one.
                 match outcome {
                     ShellTitle::Applied(i) => {
-                        logf!("[tab] set_tab_title {:?} on tab {} of {}", title, i + 1, count())
+                        wlogf!(frame, "[tab] set_tab_title {:?} on tab {} of {}", title, i + 1, count())
                     }
-                    ShellTitle::Overridden(i) => logf!(
+                    ShellTitle::Overridden(i) => wlogf!(frame, 
                         "[tab] set_tab_title {:?} ignored on tab {} of {}; the user named it",
                         title,
                         i + 1,

@@ -30,7 +30,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::logf;
+use crate::wlogf;
 
 /// `%LOCALAPPDATA%/polter/session.json`, the sibling of `plugins/`.
 fn path() -> Option<PathBuf> {
@@ -122,7 +122,7 @@ pub fn flush_if_dirty(frame: HWND) {
         return;
     }
     let Some(path) = path() else {
-        logf!("[session] no config directory; geometry not saved");
+        wlogf!(frame, "[session] no config directory; geometry not saved");
         return;
     };
     if let Some(parent) = path.parent() {
@@ -141,16 +141,16 @@ pub fn flush_if_dirty(frame: HWND) {
     // caused it.
     let tmp = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp, body.as_bytes()) {
-        logf!("[session] write failed: {}", e);
+        wlogf!(frame, "[session] write failed: {}", e);
         return;
     }
     if let Err(e) = std::fs::rename(&tmp, &path) {
-        logf!("[session] rename failed: {}", e);
+        wlogf!(frame, "[session] rename failed: {}", e);
         let _ = std::fs::remove_file(&tmp);
         return;
     }
     LAST_WRITTEN.with(|l| l.set(Some(g)));
-    logf!("[session] saved geometry {}", g.to_line());
+    wlogf!(frame, "[session] saved geometry {}", g.to_line());
 }
 
 /// What was saved last time, if anything.
@@ -176,11 +176,11 @@ pub fn load() -> Option<Geometry> {
 /// where they dragged the window last time is not what they asked for.
 pub fn restore(frame: HWND, origin: bool, size: bool) -> bool {
     if !origin && !size {
-        logf!("[session] geometry not restored: position and size are both set in the config");
+        wlogf!(frame, "[session] geometry not restored: position and size are both set in the config");
         return false;
     }
     let Some(g) = load() else {
-        logf!("[session] nothing saved yet; leaving the window where it was placed");
+        wlogf!(frame, "[session] nothing saved yet; leaving the window where it was placed");
         return false;
     };
 
@@ -189,7 +189,7 @@ pub fn restore(frame: HWND, origin: bool, size: bool) -> bool {
         ..Default::default()
     };
     if unsafe { GetWindowPlacement(frame, &mut wp) }.is_err() {
-        logf!("[session] GetWindowPlacement failed; geometry not restored");
+        wlogf!(frame, "[session] GetWindowPlacement failed; geometry not restored");
         return false;
     }
     let cur = wp.rcNormalPosition;
@@ -203,14 +203,14 @@ pub fn restore(frame: HWND, origin: bool, size: bool) -> bool {
     wp.showCmd = if g.maximized && size { SW_SHOWMAXIMIZED.0 as u32 } else { SW_SHOWNORMAL.0 as u32 };
 
     if unsafe { SetWindowPlacement(frame, &wp) }.is_err() {
-        logf!("[session] SetWindowPlacement failed; geometry not restored");
+        wlogf!(frame, "[session] SetWindowPlacement failed; geometry not restored");
         return false;
     }
     // **The same four numbers the save line printed.** The check is that the
     // two lines agree; a screenshot only has to confirm the window is really
     // there, which is the way round that survives a capture tool reporting a
     // scale it does not have.
-    logf!(
+    wlogf!(frame, 
         "[session] restored geometry {} (origin={} size={})",
         Geometry { x, y, w, h, maximized: wp.showCmd == SW_SHOWMAXIMIZED.0 as u32 }.to_line(),
         origin,
@@ -272,7 +272,7 @@ fn clamp_onto_a_monitor(frame: HWND) {
         // than where the log said it was restored to is the one case where
         // these two lines would disagree, and this is the line that explains
         // the difference rather than leaving it to look like a bug.
-        logf!(
+        wlogf!(frame, 
             "[session] clamped onto the nearest monitor: {}x{}+{}+{} -> {}x{}+{}+{} (work area {}x{}+{}+{})",
             r.right - r.left, r.bottom - r.top, r.left, r.top,
             w, h, x, y,

@@ -46,6 +46,7 @@ mod settings_ui;
 mod quick;
 mod reopen;
 mod session;
+mod winid;
 mod search;
 mod shell;
 mod strip;
@@ -2364,7 +2365,7 @@ fn main() {
             (api().config_get)(config, &mut ch as *mut u32 as *mut c_void, key.as_ptr(), key.len())
         };
         let configured_size = cw != 0 || ch != 0;
-        logf!(
+        wlogf!(hwnd, 
             "[session] config: window-position set={} ({},{}), window-size set={} ({}x{}), \
              initial_size seen={}",
             has_x || has_y,

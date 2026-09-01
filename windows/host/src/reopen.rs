@@ -43,7 +43,7 @@ pub struct Entry {
     ///
     /// So the promise this stack makes is about the **directory**, and about
     /// the name only when the person set one.
-    pub title: String,
+    pub chosen_title: String,
     /// Where its shell was standing. **Never empty**: an entry without one is
     /// refused by `remember` rather than stored and papered over later.
     pub cwd: String,
@@ -95,6 +95,9 @@ pub fn can_reopen() -> bool {
 ///
 /// Called from `destroy_tab_at` while the tab is still whole -- after the
 /// panes are freed there is nothing left to ask.
+/// `title` is the name **the person chose** (`title_override`), or empty. See
+/// `Entry::chosen_title`: the shell's own name is not kept, because a reopened
+/// tab gets a fresh shell that announces its own within a frame.
 pub fn remember(index: usize, title: &str, cwd: &str) {
     if cwd.is_empty() {
         // **Said out loud rather than skipped.** "The stack is empty" and
@@ -113,7 +116,7 @@ pub fn remember(index: usize, title: &str, cwd: &str) {
         return;
     };
     stack.push(Entry {
-        title: title.to_string(),
+        chosen_title: title.to_string(),
         cwd: cwd.to_string(),
         index,
     });
@@ -121,7 +124,7 @@ pub fn remember(index: usize, title: &str, cwd: &str) {
         let dropped = stack.remove(0);
         // Dropping the oldest is the bound working, but a silent drop and a
         // lost entry look the same from the far side.
-        logf!("[reopen] dropped oldest {:?} to stay at {}", dropped.title, LIMIT);
+        logf!("[reopen] dropped oldest {:?} to stay at {}", dropped.chosen_title, LIMIT);
     }
     logf!(
         "[reopen] remembered tab {} {} cwd={:?}; stack {}/{}",
@@ -153,7 +156,7 @@ pub fn reopen_last() -> bool {
         logf!(
             "[reopen] no opener installed: {:?} cwd={:?} stays on the stack, because a tab \
              opened without its directory is the failure this feature exists to avoid",
-            entry.title,
+            entry.chosen_title,
             entry.cwd
         );
         // Put it back: a dropped entry would make the next press reopen the
@@ -168,7 +171,7 @@ pub fn reopen_last() -> bool {
     // actually handed to the surface -- printing them from here would report
     // this function's intent, which is the copy that is right even when the
     // used value is wrong.
-    let title = entry.title.clone();
+    let title = entry.chosen_title.clone();
     let ok = open(&entry);
     if !ok {
         logf!("[reopen] the opener refused {:?}; putting it back on the stack", title);
@@ -242,7 +245,7 @@ mod tests {
         let mut order = Vec::new();
         while let Ok(mut s) = STACK.lock() {
             match s.pop() {
-                Some(e) => order.push(e.title),
+                Some(e) => order.push(e.chosen_title),
                 None => break,
             }
         }
@@ -260,8 +263,8 @@ mod tests {
         }
         assert_eq!(stack_depth().0, LIMIT);
         let s = STACK.lock().unwrap();
-        assert_eq!(s.first().unwrap().title, "tab5", "the oldest five should be gone");
-        assert_eq!(s.last().unwrap().title, format!("tab{}", LIMIT + 4));
+        assert_eq!(s.first().unwrap().chosen_title, "tab5", "the oldest five should be gone");
+        assert_eq!(s.last().unwrap().chosen_title, format!("tab{}", LIMIT + 4));
     }
 
     /// With no opener installed the entry stays put. **The failure this

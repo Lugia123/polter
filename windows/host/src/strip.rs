@@ -30,7 +30,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::logf;
+use crate::{logf, wlogf};
 use crate::menu::{draw_menu_button, show_root_menu};
 use crate::tabs::{self, TabId};
 
@@ -396,7 +396,7 @@ pub fn on_button_down(frame: HWND, x: i32, y: i32) {
         // learn.
         Hit::New => {
             let ok = crate::binding("new_tab");
-            logf!("[strip] click -> new_tab, binding_action = {}", ok);
+            wlogf!(frame, "[strip] click -> new_tab, binding_action = {}", ok);
         }
         Hit::Overflow => {
             show_overflow_menu(frame, g.overflow.unwrap_or_default());
@@ -485,7 +485,7 @@ pub fn on_wheel(frame: HWND, delta: i16) {
         return;
     }
     with_ui(|u| u.scroll += by);
-    logf!("[strip] wheel {} -> scroll {}", by, with_ui(|u| u.scroll));
+    wlogf!(frame, "[strip] wheel {} -> scroll {}", by, with_ui(|u| u.scroll));
     // The clamp lives in `slots`, which is about to run: it is the only place
     // that knows the current content width.
     repaint(frame);
@@ -645,7 +645,7 @@ fn begin_rename(frame: HWND, id: TabId, rect: RECT) {
         )
     };
     let Ok(edit) = edit else {
-        logf!("[strip] rename: CreateWindowExW(EDIT) failed");
+        wlogf!(frame, "[strip] rename: CreateWindowExW(EDIT) failed");
         return;
     };
 
@@ -794,7 +794,7 @@ pub fn state_line(frame: HWND) -> String {
 }
 
 pub fn log_state(frame: HWND, tag: &str) {
-    logf!("[strip] {} | {}", tag, state_line(frame));
+    wlogf!(frame, "[strip] {} | {}", tag, state_line(frame));
 }
 
 /// Draw the strip. Called from the frame's `WM_PAINT`.
@@ -805,7 +805,7 @@ pub fn paint(frame: HWND) {
         // EndPaint even so: without it the update region stays invalid and
         // Windows asks again, forever.
         let _ = unsafe { EndPaint(frame, &ps) };
-        logf!("[strip] BeginPaint failed; nothing drawn");
+        wlogf!(frame, "[strip] BeginPaint failed; nothing drawn");
         return;
     }
     PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1180,12 +1180,12 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
 
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
-            logf!("[tabmenu] CreatePopupMenu failed");
+            wlogf!(frame, "[tabmenu] CreatePopupMenu failed");
             return;
         };
         let Ok(colours) = CreatePopupMenu() else {
             let _ = DestroyMenu(menu);
-            logf!("[tabmenu] CreatePopupMenu (colours) failed");
+            wlogf!(frame, "[tabmenu] CreatePopupMenu (colours) failed");
             return;
         };
         for (i, (name, _)) in TAB_COLORS.iter().enumerate() {
@@ -1234,7 +1234,7 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
         // Printed **before** `TrackPopupMenu`, which runs a nested message
         // loop and does not come back until the menu is dismissed. `items`
         // counts selectable rows, separators excluded.
-        logf!(
+        wlogf!(frame, 
             "[tabmenu] shown for tab {} of {} at {},{} items={}",
             target.index + 1,
             target.n,
@@ -1249,7 +1249,7 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
         // other reading is a photograph of a menu, taken while
         // `TrackPopupMenu` is running a nested modal loop -- and the capture
         // on this link has already reported a scale it did not have.
-        logf!(
+        wlogf!(frame, 
             "[tabmenu] tab {} ticks: supervisor={} watch={} shield={} colour={}",
             target.index + 1,
             role == 1,
@@ -1274,7 +1274,7 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
     };
 
     if chosen == 0 {
-        logf!("[tabmenu] dismissed without a choice");
+        wlogf!(frame, "[tabmenu] dismissed without a choice");
         return;
     }
     if (TAB_COLOR_BASE..TAB_COLOR_BASE + TAB_COLORS.len()).contains(&chosen) {
@@ -1330,17 +1330,17 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
     let ok = match cmd {
         TabCmd::Close => {
             tabs::close_tab(frame, id);
-            report_remaining(&before, &format!("closed tab {}", at));
+            report_remaining(frame, &before, &format!("closed tab {}", at));
             true
         }
         TabCmd::CloseOthers => {
             tabs::close_other_tabs(frame, id);
-            report_remaining(&before, &format!("closed other than tab {}", at));
+            report_remaining(frame, &before, &format!("closed other than tab {}", at));
             true
         }
         TabCmd::CloseRight => {
             tabs::close_tabs_right_of(frame, id);
-            report_remaining(&before, &format!("closed right of tab {}", at));
+            report_remaining(frame, &before, &format!("closed right of tab {}", at));
             true
         }
         // Greyed, so this is unreachable from the menu. Kept as a real arm
@@ -1366,7 +1366,7 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
         }
     };
 
-    logf!(
+    wlogf!(frame, 
         "[tabmenu] pick {:?} tab {} -> {} ok={}",
         cmd.label(),
         at,
@@ -1383,7 +1383,7 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
 /// nothing except that the arithmetic in this function is consistent with
 /// itself -- and the tabs are indistinguishable on screen, so a screenshot
 /// cannot supply what this line does not.
-fn report_remaining(before: &[TabId], what: &str) {
+fn report_remaining(frame: HWND, before: &[TabId], what: &str) {
     let (after, _) = tabs::strip_snapshot();
     let names: Vec<String> = after
         .iter()
@@ -1392,7 +1392,7 @@ fn report_remaining(before: &[TabId], what: &str) {
             None => "?".to_string(),
         })
         .collect();
-    logf!("[tabmenu] {}, remaining {}", what, names.join(","));
+    wlogf!(frame, "[tabmenu] {}, remaining {}", what, names.join(","));
 }
 
 // ------------------------------------------------- the blank-strip right-click
@@ -1415,7 +1415,7 @@ const STRIP_MENU: &[(&str, &str, bool)] = &[
 fn show_strip_menu(frame: HWND, x: i32, y: i32) {
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
-            logf!("[stripmenu] CreatePopupMenu failed");
+            wlogf!(frame, "[stripmenu] CreatePopupMenu failed");
             return;
         };
         // Greyed only when there is genuinely nothing to reopen -- not
@@ -1430,7 +1430,7 @@ fn show_strip_menu(frame: HWND, x: i32, y: i32) {
             let flags = if live { MF_STRING } else { MF_STRING | MF_GRAYED };
             let _ = AppendMenuW(menu, flags, STRIP_ID_BASE + i, PCWSTR(wide.as_ptr()));
         }
-        logf!(
+        wlogf!(frame, 
             "[stripmenu] shown at {},{} items={}",
             x,
             y,
@@ -1451,7 +1451,7 @@ fn show_strip_menu(frame: HWND, x: i32, y: i32) {
         cmd.0 as usize
     };
     if chosen == 0 {
-        logf!("[stripmenu] dismissed without a choice");
+        wlogf!(frame, "[stripmenu] dismissed without a choice");
         return;
     }
     let Some((label, action, _)) =
@@ -1464,15 +1464,15 @@ fn show_strip_menu(frame: HWND, x: i32, y: i32) {
     // not have returns false and does nothing, which is the failure mode this
     // whole evening has been about.
     let ok = if let Some(host) = action.strip_prefix("host:") {
-        run_strip_host_action(host)
+        run_strip_host_action(frame, host)
     } else {
         crate::binding(action)
     };
-    logf!("[stripmenu] pick {:?} -> {} ok={}", label, action, ok as u8);
+    wlogf!(frame, "[stripmenu] pick {:?} -> {} ok={}", label, action, ok as u8);
 }
 
 /// The blank-strip rows the core knows nothing about.
-fn run_strip_host_action(name: &str) -> bool {
+fn run_strip_host_action(frame: HWND, name: &str) -> bool {
     match name {
         // **The whole of it is one call.** The stack, the bound, the refusal
         // to remember a tab with no directory, and the log lines around all
@@ -1481,7 +1481,7 @@ fn run_strip_host_action(name: &str) -> bool {
         // action come to disagree.
         "reopen_closed_tab" => crate::reopen::reopen_last(),
         other => {
-            logf!("[stripmenu] no host handler for {:?}", other);
+            wlogf!(frame, "[stripmenu] no host handler for {:?}", other);
             false
         }
     }
@@ -1502,7 +1502,7 @@ pub fn on_right_click(frame: HWND, x: i32, y: i32) {
         // **Logged even though nothing happens.** Silence here reads exactly
         // the same as "the right-click never reached the strip at all", and
         // those are a design decision and a routing bug respectively.
-        logf!("[strip] right-click on the menu button at {},{}: ignored by design", x, y);
+        wlogf!(frame, "[strip] right-click on the menu button at {},{}: ignored by design", x, y);
         return;
     }
     show_strip_menu(frame, x, y);
@@ -1654,11 +1654,11 @@ fn reachable_span(
 /// this window with these coordinates. Everything after that point is here.
 fn synth_click(frame: HWND, index: usize, on_close: bool) {
     let Some((tx, ty, cx, cy)) = centre_of(frame, index) else {
-        logf!("[strip] synth_click: no slot {}", index);
+        wlogf!(frame, "[strip] synth_click: no slot {}", index);
         return;
     };
     let (x, y) = if on_close { (cx, cy) } else { (tx, ty) };
-    logf!("[strip] synth click at ({},{}) on slot {}", x, y, index);
+    wlogf!(frame, "[strip] synth click at ({},{}) on slot {}", x, y, index);
     on_button_down(frame, x, y);
     on_button_up(frame, x, y);
 }
@@ -1668,10 +1668,10 @@ fn synth_drag(frame: HWND, from: usize, to: usize) {
     let (Some((x0, y0, _, _)), Some((x1, _, _, _))) =
         (centre_of(frame, from), centre_of(frame, to))
     else {
-        logf!("[strip] synth_drag: missing slots");
+        wlogf!(frame, "[strip] synth_drag: missing slots");
         return;
     };
-    logf!("[strip] synth drag {} -> {} (x {} -> {})", from, to, x0, x1);
+    wlogf!(frame, "[strip] synth drag {} -> {} (x {} -> {})", from, to, x0, x1);
     on_button_down(frame, x0, y0);
     // Several moves, because the drag only starts after DRAG_SLOP and the
     // reorder is recomputed on every move -- one jump would test neither.
@@ -1797,7 +1797,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
                     g.slots.first().map(|s| s.rect.left)
                 })
                 .unwrap_or(-1);
-            logf!(
+            wlogf!(frame, 
                 "[strip] inset check: menu_w({}) = {}, first tab left = {} -- {}",
                 scale,
                 want,
@@ -1838,28 +1838,28 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
                     Err(why) => {
                         untested += 1;
                         // **Not counted as a pass.** This tab was not tested.
-                        logf!("[strip] rmb-probe tab {} of {}: UNTESTED -- {}", i + 1, n, why);
+                        wlogf!(frame, "[strip] rmb-probe tab {} of {}: UNTESTED -- {}", i + 1, n, why);
                         continue;
                     }
                 };
                 match tab_menu_target(frame, x, y) {
                     Some(t) if t.index == i => {
                         ok += 1;
-                        logf!(
+                        wlogf!(frame, 
                             "[strip] rmb-probe at ({},{}) -> tab {} of {} (want {}) ok{}",
                             x, y, t.index + 1, t.n, i + 1, how
                         );
                     }
                     Some(t) => {
                         bad += 1;
-                        logf!(
+                        wlogf!(frame, 
                             "[strip] rmb-probe at ({},{}) -> tab {} of {} (want {}) MISMATCH{}",
                             x, y, t.index + 1, t.n, i + 1, how
                         );
                     }
                     None => {
                         bad += 1;
-                        logf!(
+                        wlogf!(frame, 
                             "[strip] rmb-probe at ({},{}) -> no tab (want {}) MISMATCH{}",
                             x, y, i + 1, how
                         );
@@ -1870,7 +1870,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
             // **All three counts on one line.** `0 mismatches` alone cannot
             // say whether seventeen tabs passed or four passed and thirteen
             // were never reached, and those are very different readings.
-            logf!(
+            wlogf!(frame, 
                 "[strip] rmb-probe done: {} tabs, {} ok, {} mismatches, {} untested",
                 n, ok, bad, untested
             );
@@ -1885,7 +1885,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
             let y = strip_h(scale) / 2;
             let on_button = tab_menu_target(frame, w / 2, y).is_some();
             let past_button = tab_menu_target(frame, w, y).map(|t| t.index);
-            logf!(
+            wlogf!(frame, 
                 "[strip] inset probe: x={} -> tab? {} (want false); x={} -> tab {:?} (want Some(0)) -- {}",
                 w / 2,
                 on_button,
@@ -1920,7 +1920,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
                 // Focus is deliberately left wherever the previous steps put
                 // it: if it happened to be this tab, the check would pass on
                 // an implementation that ignores `id` entirely.
-                logf!("[strip] focus is on tab {} of {}", tabs::active_index() + 1, t.len());
+                wlogf!(frame, "[strip] focus is on tab {} of {}", tabs::active_index() + 1, t.len());
                 log_state(frame, "before close-right-of tab 3");
                 run_tab_command(frame, id, TabCmd::CloseRight);
             }
@@ -1929,7 +1929,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
         31 => {
             let t = tabs_now();
             if let Some((id, _)) = t.get(1).cloned() {
-                logf!("[strip] focus is on tab {} of {}", tabs::active_index() + 1, t.len());
+                wlogf!(frame, "[strip] focus is on tab {} of {}", tabs::active_index() + 1, t.len());
                 log_state(frame, "before close-others-than tab 2");
                 run_tab_command(frame, id, TabCmd::CloseOthers);
             }
