@@ -261,12 +261,33 @@ pub fn state() -> Guard {
     // Wait, but not forever. A lock this file holds is never held for long,
     // so five seconds means it is never coming back -- and **a process that
     // dies saying who held the lock is worth more than one that spins**.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    //
+    // The wait is timed and reported on the way out because the two illnesses
+    // that produce a contended lock look identical in a log that only says
+    // "contended". **One call stuck forever and ten thousand calls each
+    // waiting a moment are different bugs, and the earlier version of this
+    // line described only the first one** -- it read "if the log stops here it
+    // is re-entrant", and then a real build printed it 24 MB of times without
+    // ever stopping. Saying how long each one actually waited turns that
+    // distinction into a reading instead of an inference from silence.
+    let began = std::time::Instant::now();
+    let deadline = began + std::time::Duration::from_secs(5);
     loop {
-        match STATE.try_lock() {
-            Ok(g) => return claim(g, here),
-            Err(std::sync::TryLockError::Poisoned(p)) => return claim(p.into_inner(), here),
-            Err(std::sync::TryLockError::WouldBlock) => {}
+        let got = match STATE.try_lock() {
+            Ok(g) => Some(claim(g, here)),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(claim(p.into_inner(), here)),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(g) = got {
+            let waited = began.elapsed();
+            if n == 1 || n % 10_000 == 0 {
+                logf!(
+                    "[state] contended #{} resolved after {:.1}ms (churn, not a deadlock)",
+                    n,
+                    waited.as_secs_f64() * 1000.0
+                );
+            }
+            return g;
         }
         if std::time::Instant::now() >= deadline {
             let msg = format!(

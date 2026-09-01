@@ -376,14 +376,22 @@ impl ITextStoreACP_Impl for TextStore_Impl {
         }
         r = RECT { left: tl.x, top: tl.y, right: br.x, bottom: br.y };
 
-        crate::ime_log(&format!(
-            "GetTextExt {acpstart}..{acpend} cols {cols0}..{cols1} -> ({},{})-({},{})",
-            r.left, r.top, r.right, r.bottom
-        ));
+        // **Logged after the writes, not before, and the reason is a reading
+        // we could not take.** A process died with a completed `GetTextExt`
+        // line as its last word, which left two possibilities that the log
+        // could not separate: it died in the two stores below, or it died
+        // after returning into the text service. Emitting the line last makes
+        // the line itself mean "all of our code ran" -- so next time, the line
+        // being *absent* while the previous one is present says the death was
+        // ours. It costs nothing: the rectangle is already computed.
         unsafe {
             if !prc.is_null() { *prc = r; }
             if !pfclipped.is_null() { *pfclipped = BOOL(0); }
         }
+        crate::ime_log(&format!(
+            "GetTextExt {acpstart}..{acpend} cols {cols0}..{cols1} -> ({},{})-({},{})",
+            r.left, r.top, r.right, r.bottom
+        ));
         Ok(())
     }
 

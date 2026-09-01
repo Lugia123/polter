@@ -95,6 +95,75 @@ fn log_path() -> std::path::PathBuf {
     }
 }
 
+/// The identity of one binary: SHA-256 prefix, byte size, and mtime.
+///
+/// **This exists because identity was being checked at the wrong moment.**
+/// All day the three of us compared hashes *at the moment of transfer* --
+/// and then read logs and screenshots that could not say which binary
+/// produced them. A user reported two different behaviours and it turned out
+/// he had opened two different snapshots out of seventeen in one directory.
+///
+/// Printing it here moves "which build is this?" from a recollection to a
+/// reading, for us and for anyone who sends us a screenshot.
+///
+/// SHA-256 comes from `BCryptHash`, which Windows provides -- no new
+/// dependency, and no hand-written cryptography. If it fails the line still
+/// prints, with the hash marked unavailable: **a build identity that refuses
+/// to print because one of its three fields is missing would be worse than
+/// one that prints two.**
+fn binary_identity(path: &std::path::Path) -> String {
+    use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
+
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "?".into());
+
+    let meta = std::fs::metadata(path);
+    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let mtime = meta
+        .as_ref()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let sha = match std::fs::read(path) {
+        Ok(bytes) => {
+            let mut out = [0u8; 32];
+            let rc = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, &bytes, &mut out) };
+            if rc.is_ok() {
+                out[..8].iter().map(|b| format!("{:02x}", b)).collect()
+            } else {
+                "unavailable".to_string()
+            }
+        }
+        Err(_) => "unreadable".to_string(),
+    };
+
+    format!(
+        "{} sha256={} size={} mtime={}",
+        name, sha, size, mtime
+    )
+}
+
+/// Print the identity of everything this process is made of.
+///
+/// The two DLLs are looked up next to the exe, which is where
+/// `LoadLibraryA` finds them: **the same resolution order, so this cannot
+/// report a file the process did not load.**
+fn log_build_identity() {
+    let Ok(exe) = std::env::current_exe() else {
+        logf!("[build] current_exe() failed; no identity available");
+        return;
+    };
+    logf!("[build] {}", binary_identity(&exe));
+    for dll in ["ghostty-internal.dll", "ghostty-vt.dll"] {
+        logf!("[build] {}", binary_identity(&exe.with_file_name(dll)));
+    }
+}
+
 pub fn log_line(msg: &str) {
     let s = &format!("[{}] {}", now_str(), msg);
     println!("{s}");
@@ -952,6 +1021,111 @@ fn pixel_format_of(hwnd: HWND) -> i32 {
 /// because the host has no way to count `SwapBuffers` -- that call lives in
 /// `wgl.zig` on the renderer thread -- and "the renderer presented a frame"
 /// is otherwise unobservable from this side.
+/// The colour at one point of a window's client area.
+///
+/// **Superseded `center_pixel` as the resize criterion, and the reason is the
+/// criterion, not the code.** When a window grows, Windows keeps the old bits
+/// and only invalidates what is new -- so the centre shows the *previous*
+/// frame whether or not the renderer ever drew at the new size. A criterion
+/// read there is blind to exactly the failure it exists to catch: it says
+/// "still not black" in both the working case and the broken one.
+///
+/// The centre is still logged, because "the whole thing went black" is a
+/// different failure and that is where it shows.
+fn pixel_at(hwnd: HWND, x: i32, y: i32) -> u32 {
+    use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
+    if hwnd.0.is_null() {
+        return 0xFFFF_FFFF;
+    }
+    unsafe {
+        let hdc = GetDC(Some(hwnd));
+        if hdc.is_invalid() {
+            return 0xFFFF_FFFF;
+        }
+        let p = GetPixel(hdc, x, y);
+        ReleaseDC(Some(hwnd), hdc);
+        p.0
+    }
+}
+
+/// A point inside the new client area that was **outside the old one**.
+///
+/// Those pixels cannot have come from the previous frame under any
+/// preservation scheme, so a colour read there is a statement about the new
+/// size and nothing else.
+///
+/// A fixed corner would not do: the top-right is newly exposed only when the
+/// *width* grew, and a resize that only grows the height would be checked at
+/// a point the old canvas still covers -- the same blindness, moved.
+/// `None` means nothing grew, and then there is no such point and the
+/// criterion does not apply.
+fn newly_exposed_point(old: (i32, i32), new: (i32, i32)) -> Option<(i32, i32)> {
+    let (ow, oh) = old;
+    let (nw, nh) = new;
+    // A few pixels in from the edge: window borders and rounding can put the
+    // very last column somewhere that is nobody's canvas.
+    const INSET: i32 = 4;
+    if nw > ow + INSET * 2 {
+        Some((ow + (nw - ow) / 2, (nh / 2).max(INSET)))
+    } else if nh > oh + INSET * 2 {
+        Some(((nw / 2).max(INSET), oh + (nh - oh) / 2))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod resize_criterion_tests {
+    use super::newly_exposed_point;
+
+    /// The property, not the formula: whatever point comes back must be
+    /// somewhere the old canvas could not have painted.
+    fn assert_outside(old: (i32, i32), new: (i32, i32)) {
+        let (x, y) = newly_exposed_point(old, new).expect("something grew, so a point exists");
+        assert!(
+            x >= old.0 || y >= old.1,
+            "point ({x},{y}) is inside the old {}x{} -- the old canvas covers it",
+            old.0,
+            old.1
+        );
+        assert!(x < new.0 && y < new.1, "point ({x},{y}) is outside the new {new:?}");
+    }
+
+    #[test]
+    fn a_wider_window_is_probed_in_the_new_column() {
+        assert_outside((984, 631), (1224, 631));
+    }
+
+    /// The case a fixed top-right corner would get wrong: the width did not
+    /// change, so every x is still covered by the old canvas and only a large
+    /// y is new.
+    #[test]
+    fn a_taller_window_is_probed_in_the_new_row() {
+        assert_outside((984, 631), (984, 820));
+        let (_, y) = newly_exposed_point((984, 631), (984, 820)).unwrap();
+        assert!(y >= 631, "a height-only growth must be probed below the old bottom");
+    }
+
+    #[test]
+    fn growing_both_ways_still_lands_outside() {
+        assert_outside((984, 631), (1224, 820));
+    }
+
+    #[test]
+    fn nothing_grew_has_no_point() {
+        assert_eq!(newly_exposed_point((984, 631), (984, 631)), None);
+        assert_eq!(newly_exposed_point((984, 631), (800, 500)), None);
+    }
+
+    /// A growth of a pixel or two is inside the border inset, and a point
+    /// there says more about window chrome than about the renderer.
+    #[test]
+    fn a_growth_smaller_than_the_inset_does_not_count() {
+        assert_eq!(newly_exposed_point((984, 631), (988, 631)), None);
+        assert_eq!(newly_exposed_point((984, 631), (984, 635)), None);
+    }
+}
+
 fn center_pixel(hwnd: HWND) -> u32 {
     use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
     if hwnd.0.is_null() {
@@ -1071,6 +1245,8 @@ fn main() {
         DRAW_ON_PAINT.store(1, Ordering::Relaxed);
         logf!("NOTE: --draw-on-paint enabled (main-thread draw; see status.md)");
     }
+
+    log_build_identity();
 
     let api_box = match load_api() {
         Some(a) => Box::leak(Box::new(a)),
@@ -1395,6 +1571,10 @@ fn main() {
     // a screenshot as the read-out. A black terminal after the resize shows up
     // here as `center_pixel` going to 0x000000, which is a number in a log.
     let selfresize = std::env::args().any(|a| a == "--selfresize");
+    // The size before the resize, so the "after" step can work out which part
+    // of the window is new. Kept here rather than re-measured because by then
+    // the old size is gone.
+    let mut resize_before: Option<(i32, i32)> = None;
     if selfresize {
         logf!("--selfresize: the host will resize its own window once, at ~5s");
     }
@@ -1530,6 +1710,7 @@ fn main() {
             unsafe {
                 let _ = GetClientRect(sw, &mut rc);
             }
+            resize_before = Some((rc.right - rc.left, rc.bottom - rc.top));
             logf!(
                 "[resize] before: surface client {}x{} center_pixel=0x{:06x}",
                 rc.right - rc.left,
@@ -1547,12 +1728,36 @@ fn main() {
             unsafe {
                 let _ = GetClientRect(sw, &mut rc);
             }
+            let new = (rc.right - rc.left, rc.bottom - rc.top);
             logf!(
                 "[resize] after: surface client {}x{} center_pixel=0x{:06x}",
-                rc.right - rc.left,
-                rc.bottom - rc.top,
+                new.0,
+                new.1,
                 center_pixel(sw)
             );
+
+            // **The criterion.** The centre above says whether the window went
+            // black; this says whether anything was drawn at the new size at
+            // all, which is the thing the centre cannot see.
+            match resize_before.and_then(|old| newly_exposed_point(old, new).map(|p| (old, p))) {
+                Some((old, (px, py))) => {
+                    let c = pixel_at(sw, px, py);
+                    logf!(
+                        "[resize] new-region pixel at ({},{}) = 0x{:06x}  (was outside {}x{}; \
+                         0x000000 means nothing was drawn there)",
+                        px,
+                        py,
+                        c,
+                        old.0,
+                        old.1
+                    );
+                }
+                None => logf!(
+                    "[resize] nothing grew ({:?} -> {:?}); the new-region criterion does not apply",
+                    resize_before,
+                    new
+                ),
+            }
         }
 
         // One striptest step per ~0.6s, starting after 2s so the first
