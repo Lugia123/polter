@@ -506,6 +506,42 @@ extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
 
         // The read-only badge. The core owns the state; the host paints the
         // last thing it said.
+        // The core decides *where* the config is and asks the host to open
+        // it; only the opening is ours. Mode 1 wants it in an editor in a new
+        // terminal window, which needs a surface with a command -- logged
+        // rather than silently treated as mode 0, because "it opened the wrong
+        // way" is a bug report and "nothing happened" is not.
+        ffi::ACTION_OPEN_CONFIG => {
+            let mode = action.as_i32();
+            let s = unsafe { (api().config_open_path)() };
+            if s.ptr.is_null() || s.len == 0 {
+                logf!("[action] open_config: the core reported no path");
+                return false;
+            }
+            let bytes = unsafe { std::slice::from_raw_parts(s.ptr as *const u8, s.len) };
+            let path = String::from_utf8_lossy(bytes).into_owned();
+            unsafe { (api().string_free)(s) };
+
+            if mode != 0 {
+                logf!("[action] open_config mode {} not supported; opening with the OS", mode);
+            }
+            let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+            let r = unsafe {
+                windows::Win32::UI::Shell::ShellExecuteW(
+                    None,
+                    windows::core::w!("open"),
+                    windows::core::PCWSTR(wide.as_ptr()),
+                    windows::core::PCWSTR::null(),
+                    windows::core::PCWSTR::null(),
+                    SW_SHOWNORMAL,
+                )
+            };
+            // ShellExecuteW returns a fake HINSTANCE; <= 32 means it failed.
+            let ok = r.0 as usize > 32;
+            logf!("[action] open_config {:?} -> {}", path, ok);
+            ok
+        }
+
         ffi::ACTION_READONLY => {
             hud::on_readonly(action.as_i32() != 0);
             true
@@ -996,6 +1032,9 @@ fn load_api() -> Option<Api> {
         Some(Api {
             init: sym!(internal, "ghostty_init"),
             config_new: sym!(internal, "ghostty_config_new"),
+            info: sym!(internal, "ghostty_info"),
+            config_open_path: sym!(internal, "ghostty_config_open_path"),
+            string_free: sym!(internal, "ghostty_string_free"),
             config_diagnostics_count: sym!(internal, "ghostty_config_diagnostics_count"),
             config_get_diagnostic: sym!(internal, "ghostty_config_get_diagnostic"),
             config_load_default_files: sym!(internal, "ghostty_config_load_default_files"),

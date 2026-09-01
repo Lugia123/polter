@@ -60,6 +60,7 @@ pub const ACTION_TOGGLE_COMMAND_PALETTE: u32 = 11;
 // Search and the pending-key indicator. Ordinals derived the same way as the
 // rest of this table: parse the 72 members of `Action.Key` in
 // `src/apprt/action.zig` in order and take the index.
+pub const ACTION_OPEN_CONFIG: u32 = 43;
 pub const ACTION_KEY_SEQUENCE: u32 = 47;
 pub const ACTION_READONLY: u32 = 67;
 pub const ACTION_KEY_TABLE: u32 = 48;
@@ -230,6 +231,9 @@ const _: () = {
     assert!(std::mem::size_of::<RuntimeConfig>() == 64);
     // action u32 + mods i32 + consumed i32 + keycode u32 then an 8-aligned
     // pointer, u32, bool, tail padding.
+    assert!(std::mem::size_of::<GString>() == 24);
+    assert!(std::mem::size_of::<Info>() == 24);
+    assert!(std::mem::size_of::<Diagnostic>() == 8);
     assert!(std::mem::size_of::<KeyEvent>() == 32);
     assert!(std::mem::align_of::<KeyEvent>() == 8);
 };
@@ -237,6 +241,29 @@ const _: () = {
 /// Resolved entry points. We load at runtime rather than link, because the
 /// build installs no import library for ghostty-internal.dll, and because
 /// the width table lives in a *different* DLL than the surface API.
+/// `ghostty_string_s { const char* ptr; uintptr_t len; bool sentinel; }`.
+/// Owned by the core; hand it back to `ghostty_string_free`.
+///
+/// **The third field is easy to miss and expensive to miss**: `string_free`
+/// takes this *by value*, so a two-field version would compile, link, and
+/// hand the callee a short structure. The size assertion below is what makes
+/// that a build failure instead of a corrupted stack on the test machine.
+#[repr(C)]
+pub struct GString {
+    pub ptr: *const c_char,
+    pub len: usize,
+    pub sentinel: bool,
+}
+
+/// `ghostty_info_s { ghostty_build_mode_e build_mode; const char* version; size_t version_len; }`.
+/// The enum is int-sized, so the pointer lands at offset 8, not 4.
+#[repr(C)]
+pub struct Info {
+    pub build_mode: i32,
+    pub version: *const c_char,
+    pub version_len: usize,
+}
+
 /// `ghostty_diagnostic_s`. **One field: there is no line number.** A criterion
 /// that promises to show where in the file the error is cannot be met from
 /// this API; the message is the whole of what the core reports.
@@ -248,6 +275,11 @@ pub struct Diagnostic {
 pub struct Api {
     pub init: unsafe extern "C" fn(usize, *const *const c_char) -> i32,
     pub config_new: unsafe extern "C" fn() -> Config,
+    /// Version and build mode, for the about box. **The core owns this string**;
+    /// a version the host composes itself is a second one to keep in step.
+    pub info: unsafe extern "C" fn() -> Info,
+    pub config_open_path: unsafe extern "C" fn() -> GString,
+    pub string_free: unsafe extern "C" fn(GString),
     pub config_diagnostics_count: unsafe extern "C" fn(Config) -> u32,
     pub config_get_diagnostic: unsafe extern "C" fn(Config, u32) -> Diagnostic,
     pub config_load_default_files: unsafe extern "C" fn(Config),

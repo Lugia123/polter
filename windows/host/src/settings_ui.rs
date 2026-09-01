@@ -63,10 +63,12 @@ const COL_WARN: u32 = 0x004040e0;
 const ID_ENABLED: usize = 1000;
 const ID_SAVE: usize = 1001;
 const ID_OPEN_CONFIG: usize = 1002;
+const ID_ABOUT: usize = 1003;
 const ID_PARAM_BASE: usize = 2000;
 
 static HWND_SETTINGS: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_ERRORS: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static HWND_ABOUT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 struct Field {
     /// Parameter name, as the manifest and the settings file spell it.
@@ -92,6 +94,11 @@ struct State {
     /// Set when a required parameter is empty at save time.
     complaint: String,
     errors: Vec<String>,
+    /// Created once and kept: unlike the parameter controls these do not
+    /// change with the selection, and destroying them on every selection
+    /// change is how a button stops responding halfway through a session.
+    open_cfg_btn: HWND,
+    about_btn: HWND,
 }
 
 thread_local! {
@@ -116,6 +123,7 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
                 w!("PolterSettings"),
             ),
             (errors_proc, w!("PolterConfigErrors")),
+            (about_proc, w!("PolterAbout")),
         ] {
             let wc = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -187,8 +195,16 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
             let mut st = c.borrow_mut();
             st.font = font;
         });
+        let ha = match make(w!("PolterAbout"), 420, 220) {
+            Ok(h) => h,
+            Err(e) => {
+                logf!("[set] about CreateWindowExW failed: {e:?}");
+                return;
+            }
+        };
         HWND_SETTINGS.store(hs.0, Ordering::Release);
         HWND_ERRORS.store(he.0, Ordering::Release);
+        HWND_ABOUT.store(ha.0, Ordering::Release);
         logf!("[set] ready");
     }
 }
@@ -421,6 +437,169 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
     let _ = unsafe { InvalidateRect(Some(win), None, true) };
 }
 
+/// The two buttons that do not belong to any one plugin: they are about the
+/// configuration and about the build, and both outlive the selection.
+fn ensure_buttons(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
+    let sc = dpi_scale(win);
+    let s = |v: i32| v * sc / 96;
+    let font = ST.with(|c| c.borrow().font);
+    let have = ST.with(|c| !c.borrow().open_cfg_btn.0.is_null());
+    if have {
+        return;
+    }
+
+    let mk = |label: &str, y: i32, id: usize| unsafe {
+        let h = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            s(PAD),
+            y,
+            s(LIST_W - PAD * 2),
+            s(26),
+            Some(win),
+            Some(HMENU(id as *mut c_void)),
+            Some(hinst),
+            None,
+        );
+        if let Ok(h) = h {
+            SendMessageW(h, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+            set_text(h, label);
+            return h;
+        }
+        HWND(std::ptr::null_mut())
+    };
+
+    let cfg = mk("Open config file…", s(H - PAD - 68), ID_OPEN_CONFIG);
+    let about = mk("About Polter", s(H - PAD - 34), ID_ABOUT);
+    ST.with(|c| {
+        let mut st = c.borrow_mut();
+        st.open_cfg_btn = cfg;
+        st.about_btn = about;
+    });
+}
+
+/// Version, commit and build mode -- **all three straight out of the core**.
+///
+/// The host composing its own version string would be a second one to keep in
+/// step with the first, and the two would disagree exactly when it mattered:
+/// in a bug report.
+fn about_lines() -> Vec<String> {
+    let api = crate::api();
+    let info = unsafe { (api.info)() };
+    let version = if info.version.is_null() || info.version_len == 0 {
+        "unknown".to_string()
+    } else {
+        let bytes =
+            unsafe { std::slice::from_raw_parts(info.version as *const u8, info.version_len) };
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    let mode = match info.build_mode {
+        0 => "Debug",
+        1 => "ReleaseSafe",
+        2 => "ReleaseFast",
+        3 => "ReleaseSmall",
+        other => return vec![format!("Polter {version}"), format!("build mode {other} (unknown)")],
+    };
+    vec![
+        "Polter".to_string(),
+        format!("libghostty {version}"),
+        format!("{mode} build"),
+        String::new(),
+        "MIT licensed. A fork of Ghostty.".to_string(),
+    ]
+}
+
+fn show_about() {
+    let h = HWND(HWND_ABOUT.load(Ordering::Acquire));
+    if h.0.is_null() {
+        return;
+    }
+    unsafe {
+        let frame = crate::tabs::frame_hwnd();
+        let mut fr = RECT::default();
+        if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
+            return;
+        }
+        let sc = dpi_scale(h);
+        let (w, hh) = (420 * sc / 96, 220 * sc / 96);
+        let x = fr.left + ((fr.right - fr.left) - w) / 2;
+        let y = fr.top + ((fr.bottom - fr.top) - hh) / 2;
+        let _ = SetWindowPos(h, Some(HWND_TOPMOST), x, y, w, hh, SWP_SHOWWINDOW);
+        let _ = InvalidateRect(Some(h), None, true);
+    }
+    logf!("[set] about shown");
+}
+
+unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_KEYDOWN if VIRTUAL_KEY(wp.0 as u16) == VK_ESCAPE => {
+                let _ = ShowWindow(win, SW_HIDE);
+                LRESULT(0)
+            }
+            WM_LBUTTONDOWN => {
+                let _ = ShowWindow(win, SW_HIDE);
+                LRESULT(0)
+            }
+            WM_ERASEBKGND => LRESULT(1),
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(win, &mut ps);
+                if !hdc.is_invalid() {
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(win, &mut rc);
+                    let sc = dpi_scale(win);
+                    let s = |v: i32| v * sc / 96;
+                    let b = CreateSolidBrush(COLORREF(COL_BG));
+                    FillRect(hdc, &rc, b);
+                    let _ = DeleteObject(b.into());
+                    SetBkMode(hdc, TRANSPARENT);
+                    ST.with(|c| {
+                        let st = c.borrow();
+                        let old = SelectObject(hdc, st.font.into());
+                        let mut y = s(PAD * 2);
+                        for (i, line) in about_lines().iter().enumerate() {
+                            let mut r = RECT {
+                                left: s(PAD * 2),
+                                top: y,
+                                right: rc.right - s(PAD),
+                                bottom: y + s(24),
+                            };
+                            draw_text(
+                                hdc,
+                                line,
+                                &mut r,
+                                DT_LEFT | DT_SINGLELINE,
+                                if i == 0 { COL_TEXT } else { COL_DIM },
+                            );
+                            y += s(24);
+                        }
+                        let mut fr = RECT {
+                            left: s(PAD * 2),
+                            top: rc.bottom - s(30),
+                            right: rc.right - s(PAD),
+                            bottom: rc.bottom,
+                        };
+                        draw_text(
+                            hdc,
+                            "Esc or click to dismiss",
+                            &mut fr,
+                            DT_LEFT | DT_SINGLELINE,
+                            COL_DIM,
+                        );
+                        SelectObject(hdc, old);
+                    });
+                    let _ = EndPaint(win, &ps);
+                }
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(win, msg, wp, lp),
+        }
+    }
+}
+
 /// Collect the controls and write the file.
 fn save_selected() {
     let (key, enabled, values, missing) = ST.with(|c| {
@@ -505,6 +684,7 @@ fn show(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
         let _ = SetWindowPos(win, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
     }
 
+    ensure_buttons(win, hinst);
     rebuild_fields(win, hinst);
 
     // The page owns real edit controls, so the terminal's TSF document has to
@@ -560,7 +740,14 @@ unsafe extern "system" fn settings_proc(
                 if id == ID_SAVE {
                     save_selected();
                 } else if id == ID_OPEN_CONFIG {
-                    crate::binding("open_config");
+                    // The core owns *where* the config is: this asks it, and
+                    // the resulting `open_config` action comes back to
+                    // `cb_action`, which does the opening. One path, and the
+                    // host never computes a config path of its own.
+                    let ok = crate::binding("open_config");
+                    logf!("[set] open_config -> binding_action = {}", ok);
+                } else if id == ID_ABOUT {
+                    show_about();
                 }
                 LRESULT(0)
             }
