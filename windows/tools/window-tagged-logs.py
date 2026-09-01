@@ -58,7 +58,10 @@ import sys
 #                     "everything, unless declared"
 #   217  `98af8cff5`  the four `[menu]` lines that show and dispatch a menu
 #                     for one window were tagged
-#   254  this commit  the tag table was deleted; its 37 declarations became
+#   237  this commit  17 of `menu.rs`'s 18 unclassified lines were declared
+#                     process-wide at the call site. The 18th, `CreatePopupMenu
+#                     failed`, is left on purpose -- see below.
+#   254  c45e3ba71    the tag table was deleted; its 37 declarations became
 #                     unclassified again, because a declaration by tag was
 #                     never true for a tag that is half one thing and half
 #                     the other. **The rise is the rule getting stricter, not
@@ -77,7 +80,7 @@ import sys
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
-BASELINE_UNTAGGED = 254
+BASELINE_UNTAGGED = 237
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`

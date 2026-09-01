@@ -45,7 +45,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::{logf, wlogf};
+use crate::{logf, plogf, wlogf};
 
 // ------------------------------------------------------------------- table
 
@@ -423,7 +423,8 @@ fn run_host(frame: HWND, action: &str) -> bool {
         // reach these, so this arm is only a backstop -- if it ever fires,
         // something un-greyed them.
         "__polter_language" | "__polter_help_docs" => {
-            logf!("[menu] host action {action:?} is not built; the row should have been greyed");
+            // process-wide: a row naming a host action with no handler is a gap in the table, the same one for every window
+            plogf!("[menu] host action {action:?} is not built; the row should have been greyed");
             false
         }
         _ => false,
@@ -655,7 +656,8 @@ fn count(rows: &[Row], c: &mut Counts) {
         if !is_resolvable(a) {
             c.unresolved += 1;
             // Named, because "one row is dead" is useless without which one.
-            logf!("[menu] unresolved action {a:?} on row {:?}", r.label);
+            // process-wide: a row naming an action the core does not publish; a property of the table, not of a window
+            plogf!("[menu] unresolved action {a:?} on row {:?}", r.label);
         }
         if r.check.is_some() {
             c.checkable += 1;
@@ -734,7 +736,8 @@ fn validate_once() {
         host_rows: 0,
     };
     count(ROOT, &mut c);
-    logf!(
+    // process-wide: the static menu tree, built once at startup and shared by every window
+    plogf!(
         "[menu] built {} groups, {} items, {} greyed, {} unresolved",
         GROUP_COUNT,
         c.items,
@@ -745,7 +748,8 @@ fn validate_once() {
     // and what would fix it, and neither is readable as the other. The counts
     // are measured, so an installed provider that resolves nothing reads
     // differently from no provider at all.
-    logf!(
+    // process-wide: where the shortcut text comes from: one provider for the process
+    plogf!(
         "[menu] shortcut provider {}, accel={}/{} (shortcuts come from the core binding table; none are written here)",
         if ACCEL.get().is_some() { "installed" } else { "NOT installed" },
         c.with_accel,
@@ -757,21 +761,24 @@ fn validate_once() {
     // lookup starts failing, which is otherwise indistinguishable from the
     // user never having bound it.
     if !c.no_accel.is_empty() {
-        logf!(
+        // process-wide: a count over the static table
+        plogf!(
             "[menu] no shortcut for {} of {} core actions: {}",
             c.no_accel.len(),
             c.items - c.host_rows,
             c.no_accel.join(", ")
         );
     }
-    logf!(
+    // process-wide: a count over the static table
+    plogf!(
         "[menu] {} rows are the host's own and are never asked of the core (a `__polter_*` name \
          makes it log error.InvalidAction with no name attached)",
         c.host_rows
     );
     arm_selftest();
     let (evaluable, ticked, no_source) = check_state_counts();
-    logf!(
+    // process-wide: a count over the static table
+    plogf!(
         "[menu] check-state: {} rows, {} evaluable, {} ticked now{}",
         c.checkable,
         evaluable,
@@ -1041,7 +1048,8 @@ fn run_selftest(frame: HWND) {
         .iter()
         .partition(|r| r.action.is_some_and(|a| ENDS_THE_SESSION.contains(&a)));
 
-    logf!(
+    // process-wide: the whole-process self test; it dispatches through one window but reports on the table
+    plogf!(
         "[menu] selftest: {} items through the same call a mouse pick makes, {} of them last because they end the session",
         order.len(),
         last.len()
@@ -1055,7 +1063,8 @@ fn run_selftest(frame: HWND) {
         if !row_enabled(row) {
             // A greyed row cannot be picked with a mouse either, so dispatching
             // it here would test a path that does not exist.
-            logf!("[menu] selftest skip {:?} (greyed; a click cannot reach it)", row.label);
+            // process-wide: the whole-process self test, reporting on a row rather than on a window
+            plogf!("[menu] selftest skip {:?} (greyed; a click cannot reach it)", row.label);
             skipped += 1;
             continue;
         }
@@ -1066,7 +1075,8 @@ fn run_selftest(frame: HWND) {
             // and this table still says they did not -- and the next reader
             // takes the stale note as fact.
             if let Ready::HostGap(why) = row.ready {
-                logf!(
+                // process-wide: the whole-process self test, reporting on a row rather than on a window
+                plogf!(
                     "[menu] selftest {:?} works now but is still marked not-built: {}",
                     row.label,
                     why
@@ -1081,15 +1091,18 @@ fn run_selftest(frame: HWND) {
         match row.ready {
             Ready::Always => {
                 failed += 1;
-                logf!("[menu] selftest FAILED {:?}: nothing had to be true for this one", row.label);
+                // process-wide: the whole-process self test, reporting on a row rather than on a window
+                plogf!("[menu] selftest FAILED {:?}: nothing had to be true for this one", row.label);
             }
             Ready::NeedsState(why) => {
                 nothing_to_do += 1;
-                logf!("[menu] selftest nothing-to-do {:?}: {}", row.label, why);
+                // process-wide: the whole-process self test, reporting on a row rather than on a window
+                plogf!("[menu] selftest nothing-to-do {:?}: {}", row.label, why);
             }
             Ready::HostGap(why) => {
                 not_built += 1;
-                logf!("[menu] selftest not-built {:?}: {}", row.label, why);
+                // process-wide: the whole-process self test, reporting on a row rather than on a window
+                plogf!("[menu] selftest not-built {:?}: {}", row.label, why);
             }
         }
     }
@@ -1097,7 +1110,8 @@ fn run_selftest(frame: HWND) {
     // one that is a defect; a run with `failed=0` and `not-built=7` is a menu
     // working correctly on top of a host with seven pieces missing, and that
     // is a different report from `failed=7`.
-    logf!(
+    // process-wide: the whole-process self test: one run, whatever the window count
+    plogf!(
         "[menu] selftest done: {} ok, {} nothing-to-do (state), {} not-built (host gap), {} failed (should have worked), {} skipped",
         ok, nothing_to_do, not_built, failed, skipped
     );
@@ -1125,7 +1139,8 @@ extern "system" fn selftest_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             let n = SELFTEST_TRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n >= SELFTEST_MAX_TRIES {
                 unsafe { let _ = KillTimer(Some(hwnd), 1); }
-                logf!(
+                // process-wide: the whole-process self test never dispatched; nothing window-specific happened
+                plogf!(
                     "[menu] selftest gave up: no surface after {} tries; nothing was dispatched",
                     n
                 );
@@ -1176,13 +1191,15 @@ fn arm_selftest() {
         );
         match hwnd {
             Ok(h) => {
-                logf!("[menu] selftest armed by --menu-selftest; waiting for a surface");
+                // process-wide: the whole-process self test being armed, before any window is involved
+                plogf!("[menu] selftest armed by --menu-selftest; waiting for a surface");
                 let _ = PostMessageW(Some(h), WM_MENU_SELFTEST, WPARAM(0), LPARAM(0));
             }
             // Said out loud: a self-test that quietly did not run reads as a
             // menu that has never been exercised, and there is no line to tell
             // the two apart.
-            Err(e) => logf!("[menu] selftest could NOT arm: {e:?}"),
+            // process-wide: the whole-process self test failed to arm; no window is involved
+            Err(e) => plogf!("[menu] selftest could NOT arm: {e:?}"),
         }
     }
 }
