@@ -14,12 +14,19 @@
 //!  - it has no tab strip, no tabs, and exactly one surface. It is a terminal
 //!    that appears, not a window you manage.
 //!
-//! **Position and screen come from defaults, not from the config.** The core
-//! exposes `quick-terminal-size`, `-autohide` and `-animation-duration`
-//! through `ghostty_config_get` because those have C representations;
-//! `quick-terminal-position` and `-screen` are Zig enums with no entry in
-//! `include/ghostty.h`, so there is nothing to read. Top edge and the monitor
-//! under the pointer are what this does until that changes -- written down
+//! **The edge comes from the config.** An earlier note in this file said it
+//! could not: that `quick-terminal-position` is a Zig enum with no entry in
+//! `include/ghostty.h` and therefore nothing to read. **That was wrong, and
+//! the correction is worth keeping** -- `ghostty_config_get` has a generic
+//! `.@"enum"` arm (`src/config/c_get.zig`) that writes the tag *name* as a
+//! `const char*`. So any enum in the config is readable by string, whether or
+//! not `ghostty.h` names it, and `quick-terminal-position` is read here as
+//! one of `top` / `bottom` / `left` / `right` / `center`.
+//!
+//! The screen is still the monitor under the pointer rather than
+//! `quick-terminal-screen`: on a desk with two screens the panel should
+//! arrive where the user is looking, which is `mouse`, the mode that is also
+//! the most useful default. `main` remains unimplemented and is written down
 //! here rather than silently assumed.
 
 use std::cell::RefCell;
@@ -51,9 +58,13 @@ struct Quick {
     child: HWND,
     surface: usize,
     visible: bool,
-    /// Where the window is going, and where it is now, during a slide.
-    slide_to: i32,
-    slide_from: i32,
+    /// Where the window is going, and where it started, during a slide.
+    /// **Both coordinates**, because the panel slides sideways on the left
+    /// and right edges and a y-only slide would leave those two edges
+    /// appearing fully formed with no animation at all -- a difference nobody
+    /// would report as a bug and nobody would notice as correct.
+    slide_to: (i32, i32),
+    slide_from: (i32, i32),
     slide_step: i32,
     /// **Last geometry per monitor, keyed by device name.**
     ///
@@ -66,6 +77,37 @@ struct Quick {
     /// From the config, read once.
     autohide: bool,
     size_primary: (u32, f32), // (tag, value) -- tag per ghostty_quick_terminal_size_tag_e
+    edge: Edge,
+}
+
+/// Which edge the panel drops in from -- `quick-terminal-position`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Edge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+    Center,
+}
+
+impl Edge {
+    /// The core hands the enum over as its tag name.
+    ///
+    /// **An unrecognised name falls back to `Top` and says so.** A silent
+    /// fallback here would make a typo in the config look like the feature
+    /// ignoring the setting, which is the same symptom as not having read it
+    /// at all -- and this file has already been wrong once about whether it
+    /// could read it.
+    pub fn parse(name: &str) -> Option<Edge> {
+        match name {
+            "top" => Some(Edge::Top),
+            "bottom" => Some(Edge::Bottom),
+            "left" => Some(Edge::Left),
+            "right" => Some(Edge::Right),
+            "center" => Some(Edge::Center),
+            _ => None,
+        }
+    }
 }
 
 thread_local! {
@@ -128,44 +170,97 @@ fn target_monitor() -> Option<(String, RECT)> {
     }
 }
 
+/// How far along its axis the panel extends, from `quick-terminal-size`.
+///
+/// The primary size is measured along the axis the edge implies: a height for
+/// top and bottom, a width for left and right. That is the core's own reading
+/// of the setting, and it is why one number serves all four edges.
+fn primary_extent(size: (u32, f32), full: i32) -> i32 {
+    match size {
+        // GHOSTTY_QUICK_TERMINAL_SIZE_PERCENTAGE
+        (1, v) => ((full as f32) * (v / 100.0)) as i32,
+        // GHOSTTY_QUICK_TERMINAL_SIZE_PIXELS
+        (2, v) => v as i32,
+        // NONE, or anything unrecognised: a quarter of the screen.
+        _ => full / 4,
+    }
+    .clamp(100.min(full), full)
+}
+
+/// Where the panel comes to rest on this work area, for this edge.
+///
+/// **Pure, so the four edges can be checked without a monitor.** The bug this
+/// shape guards against is the one where three edges are written by copying
+/// the first and one of the four ends up mirrored -- which on a machine whose
+/// config says `top` is invisible forever.
+pub fn resting_rect(edge: Edge, work: RECT, size: (u32, f32)) -> RECT {
+    let (full_w, full_h) = (work.right - work.left, work.bottom - work.top);
+    match edge {
+        Edge::Top => {
+            let h = primary_extent(size, full_h);
+            RECT { left: work.left, top: work.top, right: work.right, bottom: work.top + h }
+        }
+        Edge::Bottom => {
+            let h = primary_extent(size, full_h);
+            RECT { left: work.left, top: work.bottom - h, right: work.right, bottom: work.bottom }
+        }
+        Edge::Left => {
+            let w = primary_extent(size, full_w);
+            RECT { left: work.left, top: work.top, right: work.left + w, bottom: work.bottom }
+        }
+        Edge::Right => {
+            let w = primary_extent(size, full_w);
+            RECT { left: work.right - w, top: work.top, right: work.right, bottom: work.bottom }
+        }
+        // Centre has no edge to come from, so it is sized on both axes and
+        // simply appears. Sliding it from anywhere would be inventing a
+        // direction the setting deliberately does not have.
+        Edge::Center => {
+            let w = primary_extent(size, full_w);
+            let h = primary_extent(size, full_h);
+            let (cx, cy) = (work.left + full_w / 2, work.top + full_h / 2);
+            RECT { left: cx - w / 2, top: cy - h / 2, right: cx + w / 2, bottom: cy + h / 2 }
+        }
+    }
+}
+
+/// The top-left the slide starts from: just outside the work area, on the
+/// edge the panel belongs to. Equal to the resting corner for `center`, which
+/// is how "no slide" is expressed without a second code path.
+pub fn offscreen_origin(edge: Edge, work: RECT, rest: RECT) -> (i32, i32) {
+    let (w, h) = (rest.right - rest.left, rest.bottom - rest.top);
+    match edge {
+        Edge::Top => (rest.left, work.top - h),
+        Edge::Bottom => (rest.left, work.bottom),
+        Edge::Left => (work.left - w, rest.top),
+        Edge::Right => (work.right, rest.top),
+        Edge::Center => (rest.left, rest.top),
+    }
+}
+
 /// The window rectangle for this drop, honouring the cache.
 fn target_rect(q: &Quick, work: RECT, device: &str) -> RECT {
     if let Some(prev) = q.geometry.get(device) {
         return *prev;
     }
-    let w = work.right - work.left;
-    let full_h = work.bottom - work.top;
-    let h = match q.size_primary {
-        // GHOSTTY_QUICK_TERMINAL_SIZE_PERCENTAGE
-        (1, v) => ((full_h as f32) * (v / 100.0)) as i32,
-        // GHOSTTY_QUICK_TERMINAL_SIZE_PIXELS
-        (2, v) => v as i32,
-        // NONE, or anything unrecognised: a quarter of the screen.
-        _ => full_h / 4,
-    }
-    .clamp(100, full_h);
-    RECT {
-        left: work.left,
-        top: work.top,
-        right: work.left + w,
-        bottom: work.top + h,
-    }
+    resting_rect(q.edge, work, q.size_primary)
 }
 
 // -------------------------------------------------------------------- init
 
-fn read_config(config: Config) -> (bool, (u32, f32)) {
+fn read_config(config: Config) -> (bool, (u32, f32), Edge) {
     use windows::core::s;
     use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
     let mut autohide = true;
     let mut size = (1u32, 25.0f32);
+    let mut edge = Edge::Top;
     unsafe {
         let Ok(m) = GetModuleHandleA(s!("ghostty-internal.dll")) else {
-            return (autohide, size);
+            return (autohide, size, edge);
         };
         let Some(p) = GetProcAddress(m, s!("ghostty_config_get")) else {
             logf!("[quick] ghostty_config_get not exported; using defaults");
-            return (autohide, size);
+            return (autohide, size, edge);
         };
         let get: unsafe extern "C" fn(Config, *mut c_void, *const u8, usize) -> bool =
             std::mem::transmute(p);
@@ -201,13 +296,33 @@ fn read_config(config: Config) -> (bool, (u32, f32)) {
             };
             size = (s2.primary.tag, v);
         }
+
+        // The edge. `c_get.zig`'s generic enum arm writes the tag name as a
+        // `const char*` owned by the core -- read, never freed.
+        let key = b"quick-terminal-position";
+        let mut name: *const std::os::raw::c_char = std::ptr::null();
+        if get(config, &mut name as *mut _ as *mut c_void, key.as_ptr(), key.len())
+            && !name.is_null()
+        {
+            let s = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
+            match Edge::parse(&s) {
+                Some(e) => edge = e,
+                None => logf!(
+                    "[quick] quick-terminal-position = {:?} is not a name this host knows; \
+                     using top",
+                    s
+                ),
+            }
+        } else {
+            logf!("[quick] quick-terminal-position could not be read; using top");
+        }
     }
-    (autohide, size)
+    (autohide, size, edge)
 }
 
 /// Create the window (hidden) and claim the hotkey.
 pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner: HWND) {
-    let (autohide, size_primary) = read_config(config);
+    let (autohide, size_primary, edge) = read_config(config);
 
     unsafe {
         let wc = WNDCLASSEXW {
@@ -254,12 +369,13 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
                 child: HWND(std::ptr::null_mut()),
                 surface: 0,
                 visible: false,
-                slide_to: 0,
-                slide_from: 0,
+                slide_to: (0, 0),
+                slide_from: (0, 0),
                 slide_step: 0,
                 geometry: HashMap::new(),
                 autohide,
                 size_primary,
+                edge,
             })
         });
 
@@ -268,23 +384,111 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
         // combination, and it fails by returning false -- after which the key
         // does nothing at all and looks, from the user's side, exactly like a
         // key they did not press hard enough.
-        let ok = RegisterHotKey(
+        let r = RegisterHotKey(
             Some(owner),
             HOTKEY_ID,
             MOD_CONTROL | MOD_NOREPEAT,
             VK_OEM_3.0 as u32,
-        )
-        .is_ok();
-        logf!(
-            "[quick] window ready; hotkey Ctrl+` registered={} autohide={} size={:?}",
-            ok,
-            autohide,
-            size_primary
         );
-        if !ok {
-            logf!("[quick] the hotkey is owned by another process; it will do nothing");
+        // `GetLastError` is read **before** anything else can clobber it, and
+        // only on the failing branch, because on the success branch it holds
+        // whatever the last unrelated call left behind.
+        let err = if r.is_ok() {
+            0
+        } else {
+            windows::Win32::Foundation::GetLastError().0
+        };
+        for line in hotkey_lines(HOTKEY_COMBO, r.is_ok(), err) {
+            logf!("{}", line);
         }
+        logf!(
+            "[quick] window ready; edge={:?} autohide={} size={:?} monitors={}",
+            edge,
+            autohide,
+            size_primary,
+            monitor_count()
+        );
     }
+}
+
+/// The combination this host claims, spelled the way a person would type it
+/// into a config. **One constant, used by the registration and by the log**,
+/// so a line that names a combination cannot name a different one than was
+/// actually asked for.
+const HOTKEY_COMBO: &str = "Ctrl+`";
+
+/// `ERROR_HOTKEY_ALREADY_REGISTERED`. The only failure worth naming, because
+/// it is the one that happens to users rather than to programs.
+const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
+
+/// The startup lines for the hotkey registration.
+///
+/// **This is the whole point of the return-value check, so it is a function
+/// and not an inline `logf!`.** `RegisterHotKey` does not raise anything, does
+/// not pop a dialog and does not write to any log of its own: when another
+/// process already owns the combination it returns FALSE and the key silently
+/// does nothing forever after. An implementation that never looked at the
+/// return value is **byte-for-byte identical in behaviour** to a correct one
+/// on the success path, which is why "it worked on my machine" cannot
+/// distinguish them and why the failure line has to be produced from the
+/// actual return value and the actual error code.
+///
+/// The success line says *registered at startup* on purpose. Windows does not
+/// notify anyone when a hotkey is taken over later, so this line is a fact
+/// about one moment, not a claim about the present.
+fn hotkey_lines(combo: &str, ok: bool, err: u32) -> Vec<String> {
+    if ok {
+        return vec![format!(
+            "[quick] hotkey {combo} registered (true at startup; Windows does not report \
+             a later takeover)"
+        )];
+    }
+    let mut v = vec![format!("[quick] hotkey {combo} FAILED err={err}")];
+    v.push(if err == ERROR_HOTKEY_ALREADY_REGISTERED {
+        format!(
+            "[quick] err={err} is ERROR_HOTKEY_ALREADY_REGISTERED: another process owns \
+             {combo}. The quick terminal cannot be opened by keyboard in this session."
+        )
+    } else {
+        format!(
+            "[quick] the quick terminal cannot be opened by keyboard in this session; \
+             RegisterHotKey returned FALSE with err={err}"
+        )
+    });
+    v
+}
+
+/// How many monitors the desktop has.
+///
+/// In the startup line because `C3`'s floor needs it: on a one-screen machine
+/// "the panel appeared on the right monitor" is unverifiable -- the right
+/// monitor and the only monitor are the same rectangle -- and this number is
+/// what lets a report say *not applicable* instead of *passed*.
+fn monitor_count() -> u32 {
+    unsafe extern "system" fn count_cb(
+        _: HMONITOR,
+        _: HDC,
+        _: *mut RECT,
+        data: LPARAM,
+    ) -> windows::core::BOOL {
+        unsafe {
+            let n = data.0 as *mut u32;
+            if !n.is_null() {
+                *n += 1;
+            }
+        }
+        windows::core::BOOL(1)
+    }
+    let mut n: u32 = 0;
+    unsafe {
+        let _ = EnumDisplayMonitors(
+            None,
+            None,
+            Some(count_cb),
+            LPARAM(&mut n as *mut u32 as isize),
+        );
+    }
+    n
 }
 
 // ------------------------------------------------------------------ toggle
@@ -315,22 +519,16 @@ fn show(app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
         None => return,
     };
 
+    let edge = with_quick(|q| q.edge).unwrap_or(Edge::Top);
     let rect = with_quick(|q| target_rect(q, work, &device)).unwrap_or(work);
     let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+    let from = offscreen_origin(edge, work, rect);
 
     unsafe {
-        // Placed above the work area and slid down, so the first frame is
-        // already the right size: a window that resizes while it animates
-        // makes the terminal reflow on every step.
-        let _ = SetWindowPos(
-            hwnd,
-            Some(HWND_TOPMOST),
-            rect.left,
-            work.top - h,
-            w,
-            h,
-            SWP_NOACTIVATE,
-        );
+        // Placed just outside the work area at its final size, then slid in:
+        // a window that resizes while it animates makes the terminal reflow
+        // on every step.
+        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), from.0, from.1, w, h, SWP_NOACTIVATE);
     }
 
     if need_child {
@@ -339,8 +537,8 @@ fn show(app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
 
     with_quick(|q| {
         q.visible = true;
-        q.slide_from = work.top - h;
-        q.slide_to = rect.top;
+        q.slide_from = from;
+        q.slide_to = (rect.left, rect.top);
         q.slide_step = 0;
         q.geometry.insert(device.clone(), rect);
     });
@@ -350,7 +548,25 @@ fn show(app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
         let _ = SetForegroundWindow(hwnd);
         SetTimer(Some(hwnd), TIMER_SLIDE, 16, None);
     }
-    log_state("show");
+    // **The device name is in this line, not just the coordinates.** Which
+    // monitor the panel chose is the thing that cannot be checked from a
+    // screenshot on a one-screen machine, and the name is the half of it that
+    // still can be: a host that never asked `GetMonitorInfo` for a name has
+    // nothing to print here.
+    logf!(
+        "[quick] shown on {} at {},{} {}x{} edge={:?} work={}x{}+{}+{} monitors={}",
+        device,
+        rect.left,
+        rect.top,
+        w,
+        h,
+        edge,
+        work.right - work.left,
+        work.bottom - work.top,
+        work.left,
+        work.top,
+        monitor_count()
+    );
 }
 
 fn hide() {
@@ -361,8 +577,12 @@ fn hide() {
     unsafe {
         let _ = KillTimer(Some(hwnd), TIMER_SLIDE);
         let _ = ShowWindow(hwnd, SW_HIDE);
+        // **`UnregisterHotKey` is deliberately not called here.** The hotkey
+        // belongs to the session, not to the window: releasing it on hide
+        // would let the panel open exactly once, and the second press would
+        // do nothing with no line in the log to say why.
     }
-    log_state("hide");
+    logf!("[quick] hidden | {}", state_line());
 }
 
 fn create_surface(
@@ -419,6 +639,19 @@ fn create_surface(
     logf!("[quick] surface = {:?} on {:?} {}x{}", s, child.0, w, h);
 }
 
+/// One frame of the slide, `eased` running 0 → 1.
+///
+/// Both axes, so the same easing serves all four edges. Pure because the
+/// property worth pinning is that it **ends exactly on the destination**: an
+/// interpolation that stops a pixel short leaves a permanent one-pixel gap at
+/// the screen edge, which reads as a rendering bug rather than as arithmetic.
+fn slide_at(from: (i32, i32), to: (i32, i32), eased: f32) -> (i32, i32) {
+    (
+        from.0 + ((to.0 - from.0) as f32 * eased) as i32,
+        from.1 + ((to.1 - from.1) as f32 * eased) as i32,
+    )
+}
+
 // ------------------------------------------------------------------- proc
 
 unsafe extern "system" fn quick_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -435,11 +668,11 @@ unsafe extern "system" fn quick_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     // Ease out: fast at the start, settling at the end. A
                     // linear slide reads as mechanical at this distance.
                     let eased = 1.0 - (1.0 - t) * (1.0 - t);
-                    let y = q.slide_from + ((q.slide_to - q.slide_from) as f32 * eased) as i32;
+                    let (x, y) = slide_at(q.slide_from, q.slide_to, eased);
                     let _ = SetWindowPos(
                         q.hwnd,
                         None,
-                        0,
+                        x,
                         y,
                         0,
                         0,
@@ -577,5 +810,189 @@ pub fn script_step(app: App, hinst: windows::Win32::Foundation::HINSTANCE, step:
             false
         }
         _ => false,
+    }
+}
+
+// ------------------------------------------------------------------ tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 1920x1080 desktop with a 40px taskbar at the bottom.
+    const WORK: RECT = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
+    /// 25% of the axis.
+    const SIZE: (u32, f32) = (1, 25.0);
+
+    #[test]
+    fn the_edge_comes_from_the_config_name() {
+        assert_eq!(Edge::parse("top"), Some(Edge::Top));
+        assert_eq!(Edge::parse("bottom"), Some(Edge::Bottom));
+        assert_eq!(Edge::parse("left"), Some(Edge::Left));
+        assert_eq!(Edge::parse("right"), Some(Edge::Right));
+        assert_eq!(Edge::parse("center"), Some(Edge::Center));
+    }
+
+    /// An unknown name is **not** silently an edge. The caller logs and falls
+    /// back to top; folding the fallback in here would hide a config typo
+    /// behind behaviour indistinguishable from a correct `top`.
+    #[test]
+    fn an_unknown_position_name_is_not_an_edge() {
+        assert_eq!(Edge::parse("topp"), None);
+        assert_eq!(Edge::parse(""), None);
+        assert_eq!(Edge::parse("TOP"), None);
+    }
+
+    #[test]
+    fn each_edge_rests_against_its_own_edge() {
+        let top = resting_rect(Edge::Top, WORK, SIZE);
+        assert_eq!((top.left, top.top, top.right), (0, 0, 1920));
+        assert_eq!(top.bottom, 260); // 25% of 1040
+
+        let bottom = resting_rect(Edge::Bottom, WORK, SIZE);
+        assert_eq!((bottom.left, bottom.right, bottom.bottom), (0, 1920, 1040));
+        assert_eq!(bottom.top, 780);
+
+        let left = resting_rect(Edge::Left, WORK, SIZE);
+        assert_eq!((left.left, left.top, left.bottom), (0, 0, 1040));
+        assert_eq!(left.right, 480); // 25% of 1920
+
+        let right = resting_rect(Edge::Right, WORK, SIZE);
+        assert_eq!((right.top, right.bottom, right.right), (0, 1040, 1920));
+        assert_eq!(right.left, 1440);
+    }
+
+    /// **The floor for the test above.** Four edges written by copying the
+    /// first would still satisfy "top is at the top"; what they cannot
+    /// satisfy is that all four differ. Every pair is compared because the
+    /// mistake that actually happens is one mirrored edge, not four.
+    #[test]
+    fn no_two_edges_produce_the_same_rectangle() {
+        let all = [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right, Edge::Center];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                let (ra, rb) = (resting_rect(*a, WORK, SIZE), resting_rect(*b, WORK, SIZE));
+                assert_ne!(
+                    (ra.left, ra.top, ra.right, ra.bottom),
+                    (rb.left, rb.top, rb.right, rb.bottom),
+                    "{a:?} and {b:?} land in the same place"
+                );
+            }
+        }
+    }
+
+    /// Every resting rectangle is inside the *work* area, which is what keeps
+    /// the panel off the taskbar. The bottom edge is the one that gets this
+    /// wrong, by measuring from the monitor rather than from the work area.
+    #[test]
+    fn every_edge_stays_inside_the_work_area() {
+        for e in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right, Edge::Center] {
+            let r = resting_rect(e, WORK, SIZE);
+            assert!(r.left >= WORK.left && r.top >= WORK.top, "{e:?} starts outside");
+            assert!(r.right <= WORK.right && r.bottom <= WORK.bottom, "{e:?} ends outside");
+        }
+    }
+
+    /// The slide starts fully off the work area, on the matching side.
+    #[test]
+    fn the_slide_starts_outside_on_the_matching_side() {
+        for (e, ) in [(Edge::Top,), (Edge::Bottom,), (Edge::Left,), (Edge::Right,)] {
+            let rest = resting_rect(e, WORK, SIZE);
+            let (x, y) = offscreen_origin(e, WORK, rest);
+            let (w, h) = (rest.right - rest.left, rest.bottom - rest.top);
+            let outside = x + w <= WORK.left
+                || x >= WORK.right
+                || y + h <= WORK.top
+                || y >= WORK.bottom;
+            assert!(outside, "{e:?} starts at {x},{y} which is not outside the work area");
+        }
+    }
+
+    /// Centre has no direction to come from, so it starts where it ends.
+    #[test]
+    fn centre_does_not_slide() {
+        let rest = resting_rect(Edge::Center, WORK, SIZE);
+        assert_eq!(offscreen_origin(Edge::Center, WORK, rest), (rest.left, rest.top));
+    }
+
+    /// The animation must land **exactly** on the destination. One pixel
+    /// short leaves a permanent gap at the screen edge on every show.
+    #[test]
+    fn the_slide_ends_exactly_on_the_destination() {
+        let from = (0, -260);
+        let to = (0, 0);
+        assert_eq!(slide_at(from, to, 1.0), to);
+        assert_eq!(slide_at(from, to, 0.0), from);
+        // And sideways, which is the axis a y-only implementation drops.
+        let from = (-480, 0);
+        let to = (0, 0);
+        assert_eq!(slide_at(from, to, 1.0), to);
+        assert_ne!(slide_at(from, to, 0.5), to);
+    }
+
+    #[test]
+    fn size_is_read_as_a_percentage_or_as_pixels() {
+        assert_eq!(primary_extent((1, 50.0), 1000), 500);
+        assert_eq!(primary_extent((2, 640.0), 1000), 640);
+        // Unrecognised tag: a quarter, not zero. A zero-height panel is
+        // invisible and looks exactly like the hotkey not working.
+        assert_eq!(primary_extent((0, 0.0), 1000), 250);
+    }
+
+    // --------------------------------------------------------- the hotkey
+
+    /// The success line names the combination and says when it was true.
+    #[test]
+    fn the_success_line_names_the_combination() {
+        let lines = hotkey_lines("Ctrl+`", true, 0);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("Ctrl+`"), "{}", lines[0]);
+        assert!(lines[0].contains("registered"));
+        assert!(!lines[0].contains("FAILED"));
+        // It must not read as a claim about the present.
+        assert!(lines[0].contains("at startup"), "{}", lines[0]);
+    }
+
+    /// **The line that the whole return-value check exists for.**
+    ///
+    /// `RegisterHotKey` fails by returning FALSE and nothing else: no
+    /// exception, no dialog, no log of its own. So the only difference
+    /// between a host that checks and a host that does not is this line, and
+    /// it has to carry the error number -- 1409 is the one a user will hit,
+    /// and it means a different thing from every other value.
+    #[test]
+    fn the_failure_line_is_self_sufficient() {
+        let lines = hotkey_lines("Ctrl+`", false, ERROR_HOTKEY_ALREADY_REGISTERED);
+        let joined = lines.join("\n");
+        assert!(joined.contains("FAILED err=1409"), "{joined}");
+        assert!(joined.contains("Ctrl+`"), "{joined}");
+        assert!(joined.contains("ERROR_HOTKEY_ALREADY_REGISTERED"), "{joined}");
+        // What it means for the user, in the same log, not inferred.
+        assert!(joined.contains("cannot be opened by keyboard"), "{joined}");
+    }
+
+    /// An unexpected error code still produces a failure line rather than
+    /// falling through to the success wording. This is the floor for the test
+    /// above: matching on 1409 alone would leave every other failure silent,
+    /// which is the exact bug being guarded against, one code narrower.
+    #[test]
+    fn an_unexpected_error_code_still_fails_loudly() {
+        let joined = hotkey_lines("Ctrl+`", false, 87).join("\n");
+        assert!(joined.contains("FAILED err=87"), "{joined}");
+        assert!(!joined.contains("ERROR_HOTKEY_ALREADY_REGISTERED"), "{joined}");
+        assert!(joined.contains("cannot be opened by keyboard"), "{joined}");
+    }
+
+    /// Success and failure must not be tellable apart only by a trailing
+    /// boolean. A `registered={ok}` line technically carries the fact, but
+    /// `registered=false` scrolls past as though it were a status field; the
+    /// two cases have to be different sentences.
+    #[test]
+    fn success_and_failure_do_not_look_alike() {
+        let ok = hotkey_lines("Ctrl+`", true, 0).join("\n");
+        let bad = hotkey_lines("Ctrl+`", false, 1409).join("\n");
+        assert_ne!(ok, bad);
+        assert!(!ok.contains("FAILED"));
+        assert!(!bad.contains("registered ("));
     }
 }

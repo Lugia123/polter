@@ -31,6 +31,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::logf;
+use crate::menu::{draw_menu_button, show_root_menu};
 use crate::tabs::{self, TabId};
 
 /// Height of the strip in unscaled pixels.
@@ -43,6 +44,21 @@ const TAB_MIN_W: i32 = 60;
 /// How far the pointer travels before a press becomes a drag rather than a
 /// click. Without it, a click with a shaky hand reorders tabs.
 const DRAG_SLOP: i32 = 4;
+
+/// The `≡` button's width at this scale, which is also **the tabs' left
+/// inset**.
+///
+/// **One line, forwarding to `menu.rs`, on purpose.** `s4.md` §3.1 pins the
+/// button to the strip's left end (the right end belongs to the caption
+/// buttons, and a button that moves with the tab count is one you have to
+/// find again every time), which makes its width and the tabs' inset the same
+/// fact. Computing `46 * scale` here as well would be that fact stored twice:
+/// the two would agree at every scale until one of them changed its rounding,
+/// and the symptom would be tabs starting one pixel off with nothing to
+/// report it.
+pub fn menu_w(scale: f64) -> i32 {
+    crate::menu::button_w(scale)
+}
 
 pub fn strip_h(scale: f64) -> i32 {
     ((STRIP_H as f64) * scale).round() as i32
@@ -80,30 +96,55 @@ const OVERFLOW_W: i32 = 22;
 /// consumes rectangles and does not know how they were chosen, so a different
 /// policy is a change here and nowhere else.
 ///
+/// `inset` is what the tabs do not get: the main-menu button's width. **A
+/// parameter rather than a call to `menu_w` from inside here**, so the
+/// arithmetic stays a pure function of its inputs and a strip with no button
+/// is still expressible -- which is what makes the inset testable at all.
+///
 /// Returns `(tab width, overflowing)`.
-pub fn layout(strip_w: i32, scale: f64, n: usize) -> (i32, bool) {
+pub fn layout(strip_w: i32, scale: f64, n: usize, inset: i32) -> (i32, bool) {
     let min_w = (TAB_MIN_W as f64 * scale) as i32;
     let max_w = (TAB_MAX_W as f64 * scale) as i32;
     if n == 0 {
         return (min_w, false);
     }
+    let avail = (strip_w - inset).max(1);
     let n = n as i32;
     // Does it fit at the narrowest we are willing to draw?
-    if n * min_w > strip_w {
+    if n * min_w > avail {
         return (min_w, true);
     }
-    ((strip_w / n).clamp(min_w, max_w), false)
+    ((avail / n).clamp(min_w, max_w), false)
+}
+
+/// Where tab `i` starts, in strip coordinates.
+///
+/// **Split out so the inset can be pinned by a test.** The number this
+/// returns for `i == 0` is the whole of §3.1's "the first slot moves right by
+/// the button's width", and inlined in `slots` it was reachable only through
+/// an `HWND`.
+fn tab_x(inset: i32, i: usize, tw: i32, scroll: i32) -> i32 {
+    inset + i as i32 * tw - scroll
 }
 
 /// The whole strip's content width, and how far it can be scrolled.
-fn extent(strip_w: i32, tw: i32, n: usize, overflowing: bool) -> (i32, i32) {
+fn extent(strip_w: i32, tw: i32, n: usize, overflowing: bool, inset: i32) -> (i32, i32) {
     let content = tw * n as i32;
+    // The button's width is gone from the visible span too, not just from the
+    // tabs' start: leaving it in here scrolls the strip 46px past its end,
+    // and the symptom is a last tab that cannot be reached.
     let visible = if overflowing {
-        strip_w - (OVERFLOW_W as f64 * tabs::scale_of()) as i32
+        strip_w - inset - (OVERFLOW_W as f64 * tabs::scale_of()) as i32
     } else {
-        strip_w
+        strip_w - inset
     };
     (content, (content - visible).max(0))
+}
+
+/// The `≡` button's rectangle: the strip's left end, always, whatever the
+/// tabs are doing.
+fn menu_rect(scale: f64, sh: i32) -> RECT {
+    RECT { left: 0, top: 0, right: menu_w(scale), bottom: sh }
 }
 
 /// The `»` button's rectangle, when the strip overflows.
@@ -119,8 +160,12 @@ fn overflow_rect(strip_w: i32, scale: f64, sh: i32) -> RECT {
 /// `HTCAPTION` so the window can be dragged by it. Getting it backwards makes
 /// tabs look broken rather than making the window look wrong.
 pub fn is_interactive(frame: HWND, x: i32, y: i32) -> bool {
-    let (slots, overflow, new) = slots(frame);
-    hit(&slots, overflow, new, x, y) != Hit::None
+    let g = slots(frame);
+    // The menu button is in here through `hit`, which is what makes those
+    // 46px answer `HTCLIENT`. Left out, the button would still be drawn and
+    // still be dead: pressing it would drag the window, and the defect would
+    // look like a menu that does not open rather than like a hit test.
+    hit(&g, x, y) != Hit::None
 }
 
 /// The tabs' geometry, and the overflow button's if there is one.
@@ -134,20 +179,40 @@ pub fn is_interactive(frame: HWND, x: i32, y: i32) -> bool {
 /// **Pinned rather than dropped.** A `+` that disappears once there are
 /// enough tabs teaches the user it was never there; one that stays put is
 /// still where they last saw it.
-fn new_rect(strip_w: i32, scale: f64, sh: i32, after_tabs: i32, overflowing: bool) -> RECT {
+fn new_rect(strip_w: i32, scale: f64, sh: i32, after_tabs: i32, overflowing: bool, inset: i32) -> RECT {
     let w = (OVERFLOW_W as f64 * scale) as i32;
     let right_limit = if overflowing { strip_w - w } else { strip_w };
-    let left = after_tabs.min(right_limit - w).max(0);
+    // Floored at the inset, not at 0: with no tabs at all the `+` would
+    // otherwise sit underneath the menu button, and whichever the hit test
+    // named first would win a click aimed at the other.
+    let left = after_tabs.min(right_limit - w).max(inset);
     RECT { left, top: 0, right: left + w, bottom: sh }
 }
 
-fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>, RECT) {
+/// Everything on the strip that a pointer can be over.
+///
+/// A struct rather than a tuple that grew a fourth member: every caller here
+/// passes the whole thing on to `hit`, and a four-tuple of rectangles is four
+/// chances to swap two of them silently.
+struct Geometry {
+    slots: Vec<Slot>,
+    overflow: Option<RECT>,
+    new: RECT,
+    menu: RECT,
+}
+
+fn slots(frame: HWND) -> Geometry {
     let (tabs_now, _) = tabs::strip_snapshot();
     let scale = tabs::scale_of();
     let mut rc = RECT::default();
     unsafe {
         if GetClientRect(frame, &mut rc).is_err() {
-            return (Vec::new(), None, RECT::default());
+            return Geometry {
+                slots: Vec::new(),
+                overflow: None,
+                new: RECT::default(),
+                menu: RECT::default(),
+            };
         }
     }
     let sh = strip_h(scale);
@@ -157,8 +222,9 @@ fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>, RECT) {
     // drag-position arithmetic below is untouched by it.
     let strip_w = (rc.right - rc.left - crate::shell::reserved_right()).max(1);
     let n = tabs_now.len();
-    let (tw, overflowing) = layout(strip_w, scale, n);
-    let (_, max_scroll) = extent(strip_w, tw, n, overflowing);
+    let inset = menu_w(scale);
+    let (tw, overflowing) = layout(strip_w, scale, n, inset);
+    let (_, max_scroll) = extent(strip_w, tw, n, overflowing, inset);
 
     let scroll = with_ui(|u| {
         u.scroll = u.scroll.clamp(0, max_scroll);
@@ -170,7 +236,7 @@ fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>, RECT) {
         .into_iter()
         .enumerate()
         .map(|(i, (id, _))| {
-            let x = i as i32 * tw - scroll;
+            let x = tab_x(inset, i, tw, scroll);
             let rect = RECT { left: x, top: 0, right: x + tw - 1, bottom: sh };
             // The close button only earns its space once the tab is wide
             // enough that it does not swallow the label.
@@ -187,12 +253,13 @@ fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>, RECT) {
             Slot { id, rect, close }
         })
         .collect();
-    let after_tabs = n as i32 * tw - scroll;
-    (
+    let after_tabs = tab_x(inset, n, tw, scroll);
+    Geometry {
         slots,
-        overflowing.then(|| overflow_rect(strip_w, scale, sh)),
-        new_rect(strip_w, scale, sh, after_tabs, overflowing),
-    )
+        overflow: overflowing.then(|| overflow_rect(strip_w, scale, sh)),
+        new: new_rect(strip_w, scale, sh, after_tabs, overflowing, inset),
+        menu: menu_rect(scale, sh),
+    }
 }
 
 fn contains(r: &RECT, x: i32, y: i32) -> bool {
@@ -212,9 +279,24 @@ pub enum Hit {
     /// quotes this enum as the evidence that D1 could not pass; that quote
     /// needs updating now that this variant exists.
     New,
+    /// The `≡` at the left end. **Added 2026-09-02** for `s4.md` §3.1, the
+    /// same way `New` was added: appended, never inserted. `Hit` is compared
+    /// for equality all over this file (hover, drag, the close-on-release
+    /// check), and reordering the variants would change what those
+    /// comparisons mean without changing a line of the code that makes them.
+    Menu,
 }
 
-fn hit(slots: &[Slot], overflow: Option<RECT>, new: RECT, x: i32, y: i32) -> Hit {
+fn hit(g: &Geometry, x: i32, y: i32) -> Hit {
+    // First, and it costs nothing: the menu button is pinned to the left end
+    // and the tabs are inset past it, so today nothing can overlap it. It is
+    // tested first anyway, so that if a future edit narrows the inset the
+    // answer stays "the control that is drawn on top" -- which is the rule
+    // `New` and `Overflow` below already follow.
+    if contains(&g.menu, x, y) {
+        return Hit::Menu;
+    }
+    let (slots, overflow, new) = (&g.slots, g.overflow, g.new);
     // The button sits on top of whatever the strip scrolled under it.
     if let Some(r) = overflow {
         if contains(&r, x, y) {
@@ -300,8 +382,15 @@ fn repaint(frame: HWND) {
 // ------------------------------------------------------------------- mouse
 
 pub fn on_button_down(frame: HWND, x: i32, y: i32) {
-    let (slots, overflow, new) = slots(frame);
-    match hit(&slots, overflow, new, x, y) {
+    let g = slots(frame);
+    match hit(&g, x, y) {
+        // The root menu is not this file's to build. All the strip owns is
+        // "the pointer is on the button", and the button's rectangle to hang
+        // the menu off.
+        Hit::Menu => {
+            show_root_menu(frame, g.menu);
+            return;
+        }
         // Straight to the core's own action, the same one the keyboard bind
         // reaches. The strip does not know how to make a tab and should not
         // learn.
@@ -310,7 +399,7 @@ pub fn on_button_down(frame: HWND, x: i32, y: i32) {
             logf!("[strip] click -> new_tab, binding_action = {}", ok);
         }
         Hit::Overflow => {
-            show_overflow_menu(frame, overflow.unwrap_or_default());
+            show_overflow_menu(frame, g.overflow.unwrap_or_default());
             return;
         }
         Hit::Close(id) => {
@@ -332,7 +421,7 @@ pub fn on_button_down(frame: HWND, x: i32, y: i32) {
 }
 
 pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
-    let (slots, overflow, new) = slots(frame);
+    let g = slots(frame);
 
     // Ask to be told when the pointer leaves, so hover can be cleared. Without
     // this the last hovered tab stays lit after the pointer is gone.
@@ -346,7 +435,7 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         let _ = TrackMouseEvent(&mut tme);
     }
 
-    let h = hit(&slots, overflow, new, x, y);
+    let h = hit(&g, x, y);
     let (started, dragging_id) = with_ui(|u| {
         if u.hover != h {
             u.hover = h;
@@ -370,10 +459,15 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         // Positions are measured in the strip's own coordinates, so the
         // scroll offset has to come back out of the pointer position -- a
         // dragged tab in a scrolled strip otherwise lands one screenful off.
-        let tw = slots.first().map(|s| s.rect.right - s.rect.left + 1).unwrap_or(1);
+        let tw = g.slots.first().map(|s| s.rect.right - s.rect.left + 1).unwrap_or(1);
         let scroll = with_ui(|u| u.scroll);
-        let want = ((x + scroll) / tw.max(1)).clamp(0, slots.len().saturating_sub(1) as i32) as usize;
-        let at = slots.iter().position(|s| s.id == id);
+        // The inset comes back out of the pointer position along with the
+        // scroll, for the same reason: both shift where tab 0 starts, and a
+        // drag that forgets either lands one slot off at every position.
+        let inset = menu_w(tabs::scale_of());
+        let want = ((x + scroll - inset).max(0) / tw.max(1))
+            .clamp(0, g.slots.len().saturating_sub(1) as i32) as usize;
+        let at = g.slots.iter().position(|s| s.id == id);
         if at != Some(want) {
             tabs::move_tab_to(frame, id, want);
         }
@@ -455,11 +549,11 @@ fn show_overflow_menu(frame: HWND, button: RECT) {
 /// Put a tab on screen after it was chosen from the menu -- otherwise
 /// activating a tab that is scrolled out of sight looks like nothing happened.
 fn scroll_into_view(frame: HWND, id: TabId) {
-    let (slots, overflow, _new) = slots(frame);
-    if overflow.is_none() {
+    let g = slots(frame);
+    if g.overflow.is_none() {
         return;
     }
-    let Some(slot) = slots.iter().find(|s| s.id == id) else {
+    let Some(slot) = g.slots.iter().find(|s| s.id == id) else {
         return;
     };
     let mut rc = RECT::default();
@@ -469,9 +563,10 @@ fn scroll_into_view(frame: HWND, id: TabId) {
         }
     }
     let right_edge = rc.right - (OVERFLOW_W as f64 * tabs::scale_of()) as i32;
+    let inset = menu_w(tabs::scale_of());
     with_ui(|u| {
-        if slot.rect.left < 0 {
-            u.scroll += slot.rect.left;
+        if slot.rect.left < inset {
+            u.scroll += slot.rect.left - inset;
         } else if slot.rect.right > right_edge {
             u.scroll += slot.rect.right - right_edge;
         }
@@ -484,7 +579,7 @@ pub fn on_mouse_leave(frame: HWND) {
 }
 
 pub fn on_button_up(frame: HWND, x: i32, y: i32) {
-    let (slots, overflow, new) = slots(frame);
+    let g = slots(frame);
     let was = with_ui(|u| std::mem::replace(&mut u.drag, Drag::Idle));
     unsafe {
         let _ = ReleaseCapture();
@@ -495,7 +590,7 @@ pub fn on_button_up(frame: HWND, x: i32, y: i32) {
     if let Drag::Pressed { id, .. } = was {
         // A press that never became a drag: if it started and ended on the
         // same close button, that is a click on it.
-        if hit(&slots, overflow, new, x, y) == Hit::Close(id) {
+        if hit(&g, x, y) == Hit::Close(id) {
             logf!("[strip] close {:?}", id);
             tabs::close_tab(frame, id);
             return;
@@ -505,9 +600,9 @@ pub fn on_button_up(frame: HWND, x: i32, y: i32) {
 }
 
 pub fn on_double_click(frame: HWND, x: i32, y: i32) {
-    let (slots, overflow, new) = slots(frame);
-    if let Hit::Tab(id) = hit(&slots, overflow, new, x, y) {
-        if let Some(slot) = slots.iter().find(|s| s.id == id) {
+    let g = slots(frame);
+    if let Hit::Tab(id) = hit(&g, x, y) {
+        if let Some(slot) = g.slots.iter().find(|s| s.id == id) {
             begin_rename(frame, id, slot.rect);
         }
     }
@@ -656,7 +751,7 @@ static PAINTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(
 /// came up the first time these two lines were compared across runs.
 pub fn state_line(frame: HWND) -> String {
     let (tabs_now, active) = tabs::strip_snapshot();
-    let (slots, overflow, _new) = slots(frame);
+    let g = slots(frame);
     let mut rc = RECT::default();
     unsafe {
         let _ = GetClientRect(frame, &mut rc);
@@ -665,26 +760,34 @@ pub fn state_line(frame: HWND) -> String {
         .iter()
         .map(|(id, t)| format!("{}:{}", id.0, t))
         .collect();
-    let onscreen = slots
+    let onscreen = g
+        .slots
         .iter()
         .filter(|s| s.rect.right > 0 && s.rect.left < rc.right)
         .count();
     let active_id = tabs_now.get(active).map(|(id, _)| id.0).unwrap_or(0);
+    let scale = tabs::scale_of();
     let (tw, _) = layout(
         (rc.right - crate::shell::reserved_right()).max(1),
-        tabs::scale_of(),
+        scale,
         tabs_now.len(),
+        menu_w(scale),
     );
+    // `inset=` and `tab0=` are printed because §3.1's whole claim is about
+    // where the first tab starts, and a line that prints only the tab width
+    // cannot say whether the inset was applied, skipped, or applied twice.
     format!(
-        "tabs=[{}] active={} n={} client={}x{} tw={} scroll={} overflow={} onscreen={} paints={}",
+        "tabs=[{}] active={} n={} client={}x{} inset={} tab0={} tw={} scroll={} overflow={} onscreen={} paints={}",
         listed.join(","),
         active_id,
         tabs_now.len(),
         rc.right - rc.left,
         rc.bottom - rc.top,
+        menu_w(scale),
+        g.slots.first().map(|s| s.rect.left).unwrap_or(-1),
         tw,
         with_ui(|u| u.scroll),
-        overflow.is_some(),
+        g.overflow.is_some(),
         onscreen,
         PAINTS.load(std::sync::atomic::Ordering::Relaxed)
     )
@@ -723,7 +826,8 @@ pub fn paint(frame: HWND) {
         fill(mem, &strip, 0x00201f1d);
 
         let (tabs_now, active) = tabs::strip_snapshot();
-        let (slots, overflow, new) = slots(frame);
+        let colours = tabs::tab_colors();
+        let Geometry { slots, overflow, new, menu } = slots(frame);
         let (hover, dragging) = with_ui(|u| {
             (
                 u.hover,
@@ -757,6 +861,25 @@ pub fn paint(frame: HWND) {
                 0x00282725
             };
             fill(mem, &slot.rect, bg);
+
+            // The tab's colour, if it has one: a bar along the top edge.
+            // **Looked up by id**, not by the loop counter -- the colours
+            // come from a second snapshot and the two lists are only in the
+            // same order until they are not.
+            let colour = colours
+                .iter()
+                .find(|(cid, _)| *cid == slot.id)
+                .map(|(_, c)| *c)
+                .unwrap_or(0) as usize;
+            if colour > 0 && colour < TAB_COLORS.len() {
+                let bar = RECT {
+                    left: slot.rect.left,
+                    top: slot.rect.top,
+                    right: slot.rect.right,
+                    bottom: slot.rect.top + (3.0 * scale).max(2.0) as i32,
+                };
+                fill(mem, &bar, TAB_COLORS[colour].1);
+            }
 
             // The active tab gets a lit edge along the bottom -- the cheapest
             // mark that reads as "this one" even at a glance.
@@ -818,6 +941,12 @@ pub fn paint(frame: HWND) {
             }
         }
 
+        // The `≡`. Drawn before the tabs would be wrong -- nothing can reach
+        // under it -- and drawn here, after them, it is also drawn over the
+        // strip's own background rather than over a tab, which is what the
+        // hit test says is true.
+        draw_menu_button(mem, menu, scale, hover == Hit::Menu);
+
         // The `+`, drawn before the overflow button so that when both are
         // pinned to the right the overflow one wins the pixels -- the same
         // order the hit test uses, so what is clicked is what is seen.
@@ -878,12 +1007,500 @@ pub fn paint(frame: HWND) {
     let _ = unsafe { EndPaint(frame, &ps) };
 }
 
+
+// -------------------------------------------------------------------- menus
+//
+// Three menus hang off this file. Only one of them is built here.
+//
+//  * The **root** menu (the `≡` at the left end) belongs to `menu.rs`; the
+//    strip owns the button's rectangle and its hit test, and hands both to
+//    `menu.rs` to draw and to open.
+//  * The **tab** menu and the **blank-strip** menu are built here, because
+//    both are answers to "which tab is under the pointer", and that question
+//    has exactly one implementation in this process (`hit`).
+
+// The button's rectangle, its hit test and its paint are the strip's; what
+// it draws and what it opens are `menu.rs`'s. The two call sites are
+// `on_button_down` (`Hit::Menu`) and `paint`.
+
+// ------------------------------------------------------- the tab right-click
+
+/// Which tab a right-click landed on, and how many there are.
+///
+/// **This is the value that must survive to the far end.** `s4.md` §3.3 ends
+/// on it: a menu opened on tab 3 that acts on the focused tab looks entirely
+/// correct -- the menu appears where you clicked, the item you picked does
+/// what it says -- and closes the wrong terminal. So the identity is resolved
+/// once, here, and everything downstream takes a `TabId`; nothing downstream
+/// is allowed to ask what the active tab is.
+pub struct MenuTarget {
+    pub index: usize,
+    pub id: TabId,
+    pub n: usize,
+}
+
+pub fn tab_menu_target(frame: HWND, x: i32, y: i32) -> Option<MenuTarget> {
+    let g = slots(frame);
+    let id = match hit(&g, x, y) {
+        // The close cross counts as its tab: a right-click is not a click,
+        // and landing two pixels inside the cross should not mean "no tab".
+        Hit::Tab(id) | Hit::Close(id) => id,
+        _ => return None,
+    };
+    let index = g.slots.iter().position(|s| s.id == id)?;
+    Some(MenuTarget { index, id, n: g.slots.len() })
+}
+
+/// The tab colours, `0` being none. Nine plus none, which is what
+/// `TerminalTabColor.swift` has; `s4.md` §3.3 says eight and is out by one.
+/// The values are macOS's own system colours, as `COLORREF` (`0x00BBGGRR`).
+const TAB_COLORS: &[(&str, u32)] = &[
+    ("无颜色", 0x00000000),
+    ("蓝", 0x00FF840A),
+    ("紫", 0x00F25ABF),
+    ("粉", 0x005F37FF),
+    ("红", 0x003A45FF),
+    ("橙", 0x000A9FFF),
+    ("黄", 0x000AD6FF),
+    ("绿", 0x0058D130),
+    ("青", 0x00E2E663),
+    ("石墨", 0x00938E8E),
+];
+
+/// One row of the tab menu, ported item for item from
+/// `TerminalWindow.swift:717` (`configureTabContextMenuIfNeeded` and the two
+/// sections it appends). **That code is this repository's own, not something
+/// AppKit supplies**, so there is nothing here that a platform gives away.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TabCmd {
+    Close,
+    CloseOthers,
+    CloseRight,
+    MoveToNewWindow,
+    Rename,
+    Supervisor,
+    Watch,
+    Shield,
+}
+
+impl TabCmd {
+    fn label(self) -> &'static str {
+        match self {
+            TabCmd::Close => "关闭标签",
+            TabCmd::CloseOthers => "关闭其他标签",
+            TabCmd::CloseRight => "关闭右侧的标签",
+            TabCmd::MoveToNewWindow => "移到新窗口",
+            TabCmd::Rename => "重命名标签…",
+            TabCmd::Supervisor => "设为总管",
+            TabCmd::Watch => "监督此终端",
+            TabCmd::Shield => "禁止 agent 进入",
+        }
+    }
+
+    /// What the log line names. For the three agent rows this **is** a core
+    /// binding name, checked against `src/input/Binding.zig`'s `Action`
+    /// union; for the rest it names the host operation that ran, because
+    /// there is no core action that means "close every tab but this named
+    /// one" -- see `close_other_tabs`.
+    fn action(self) -> &'static str {
+        match self {
+            TabCmd::Close => "close_tab:this",
+            TabCmd::CloseOthers => "close_tab:other",
+            TabCmd::CloseRight => "close_tab:right",
+            TabCmd::MoveToNewWindow => "move_tab_to_new_window",
+            TabCmd::Rename => "rename_tab",
+            TabCmd::Supervisor => "poltergeist_supervisor",
+            TabCmd::Watch => "poltergeist_toggle_watch",
+            TabCmd::Shield => "poltergeist_toggle_shielded",
+        }
+    }
+
+    /// Ticked when the terminal already is what the row offers to make it.
+    /// The comment macOS wrote for this is worth keeping: a row that has been
+    /// used has to look different from one that has not, or the only way to
+    /// find out whether the last click landed is to click it again.
+    ///
+    /// **Three different state bits, read three times.** Sharing one getter
+    /// between them is the most natural way to write this and would tick all
+    /// three together.
+    fn checked(self, role: u8, shielded: bool) -> bool {
+        match self {
+            TabCmd::Supervisor => role == 1,
+            TabCmd::Watch => role == 2,
+            TabCmd::Shield => shielded,
+            _ => false,
+        }
+    }
+
+    /// Rows the host cannot do yet. **Greyed, never hidden** (`s4.md` §3.4.3):
+    /// a row that is missing and a row that never existed look the same.
+    ///
+    /// `move_tab_to_new_window` is a real core action and a real gap *here*:
+    /// the Windows host has one frame, and `ACTION_MOVE_TAB_TO_NEW_WINDOW`
+    /// (tag 69) is not dispatched. It is a piece of S4 nobody has written,
+    /// not something the core lacks.
+    fn enabled(self) -> bool {
+        !matches!(self, TabCmd::MoveToNewWindow)
+    }
+}
+
+/// Top level of the tab menu, in order. `None` is a separator.
+const TAB_MENU: &[Option<TabCmd>] = &[
+    Some(TabCmd::Close),
+    Some(TabCmd::CloseOthers),
+    Some(TabCmd::CloseRight),
+    Some(TabCmd::MoveToNewWindow),
+    None,
+    Some(TabCmd::Rename),
+    // The colour submenu is inserted here, between the two separators.
+    None,
+    Some(TabCmd::Supervisor),
+    Some(TabCmd::Watch),
+    Some(TabCmd::Shield),
+];
+
+/// Command ids. Well clear of anything Windows sends, and clear of
+/// `ctxmenu.rs`'s `0x4000` block so a stray id cannot be read by both.
+const TAB_ID_BASE: usize = 0x5000;
+const TAB_COLOR_BASE: usize = 0x5100;
+const STRIP_ID_BASE: usize = 0x5200;
+
+/// A tab's 1-based position **right now**, or `?` if it has gone.
+fn ordinal(id: TabId) -> String {
+    match tabs::index_of(id) {
+        Some((i, _)) => (i + 1).to_string(),
+        None => "?".to_string(),
+    }
+}
+
+/// The tab right-click menu, on the tab that was right-clicked.
+fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
+    let (role, shielded) = tabs::tab_mark(target.id);
+    let colour = tabs::tab_color(target.id);
+
+    let chosen = unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            logf!("[tabmenu] CreatePopupMenu failed");
+            return;
+        };
+        let Ok(colours) = CreatePopupMenu() else {
+            let _ = DestroyMenu(menu);
+            logf!("[tabmenu] CreatePopupMenu (colours) failed");
+            return;
+        };
+        for (i, (name, _)) in TAB_COLORS.iter().enumerate() {
+            let mut wide: Vec<u16> = name.encode_utf16().collect();
+            wide.push(0);
+            let flags = if i as u8 == colour {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            };
+            let _ = AppendMenuW(colours, flags, TAB_COLOR_BASE + i, PCWSTR(wide.as_ptr()));
+        }
+
+        let mut items = 0usize;
+        for (i, row) in TAB_MENU.iter().enumerate() {
+            let Some(cmd) = row else {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                // The colour submenu goes after the second separator, which
+                // is where macOS puts it (right below "Rename Tab...").
+                if i == 6 {
+                    let mut wide: Vec<u16> = "标签颜色".encode_utf16().collect();
+                    wide.push(0);
+                    let _ = AppendMenuW(
+                        menu,
+                        MF_POPUP,
+                        menu_handle_as_id(colours),
+                        PCWSTR(wide.as_ptr()),
+                    );
+                    items += 1;
+                }
+                continue;
+            };
+            let mut flags = MF_STRING;
+            if cmd.checked(role, shielded) {
+                flags |= MF_CHECKED;
+            }
+            if !cmd.enabled() {
+                flags |= MF_GRAYED;
+            }
+            let mut wide: Vec<u16> = cmd.label().encode_utf16().collect();
+            wide.push(0);
+            let _ = AppendMenuW(menu, flags, TAB_ID_BASE + i, PCWSTR(wide.as_ptr()));
+            items += 1;
+        }
+
+        // Printed **before** `TrackPopupMenu`, which runs a nested message
+        // loop and does not come back until the menu is dismissed. `items`
+        // counts selectable rows, separators excluded.
+        logf!(
+            "[tabmenu] shown for tab {} of {} at {},{} items={}",
+            target.index + 1,
+            target.n,
+            x,
+            y,
+            items
+        );
+
+        let mut pt = POINT { x, y };
+        let _ = ClientToScreen(frame, &mut pt);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+            pt.x,
+            pt.y,
+            None,
+            frame,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        cmd.0 as usize
+    };
+
+    if chosen == 0 {
+        logf!("[tabmenu] dismissed without a choice");
+        return;
+    }
+    if (TAB_COLOR_BASE..TAB_COLOR_BASE + TAB_COLORS.len()).contains(&chosen) {
+        let c = chosen - TAB_COLOR_BASE;
+        run_tab_colour(frame, target.id, c as u8);
+        return;
+    }
+    // Subtracted only after the range is known: an id below the base would
+    // wrap, and a wrapped index is a lookup that fails for the wrong reason.
+    let row = chosen
+        .checked_sub(TAB_ID_BASE)
+        .and_then(|i| TAB_MENU.get(i))
+        .copied()
+        .flatten();
+    let Some(cmd) = row else {
+        logf!("[tabmenu] returned an id outside the table: {}", chosen);
+        return;
+    };
+    run_tab_command(frame, target.id, cmd);
+}
+
+/// `AppendMenuW`'s `uIDNewItem` is the submenu handle for an `MF_POPUP` row.
+fn menu_handle_as_id(m: HMENU) -> usize {
+    m.0 as usize
+}
+
+fn run_tab_colour(frame: HWND, id: TabId, c: u8) {
+    let ok = tabs::set_tab_color(frame, id, c);
+    logf!(
+        "[tabmenu] pick {:?} tab {} -> tab_color:{} ok={}",
+        TAB_COLORS[c as usize].0,
+        ordinal(id),
+        c,
+        ok as u8
+    );
+}
+
+/// Do the thing, on the tab that was right-clicked.
+///
+/// **`ordinal(id)` is re-read here, at the point the work happens, and it is
+/// in every log line this function prints.** It is not the number
+/// `show_tab_menu` printed and it is not passed in: an implementation that
+/// carries the index correctly as far as the menu and then falls back to "the
+/// current tab" to do the work passes every check that reads only the
+/// `shown` line. This is the one place that can tell them apart.
+fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
+    let at = ordinal(id);
+    // Taken before anything closes, purely so the `remaining` line below can
+    // *name* the survivors. The survivors themselves are re-enumerated after
+    // the fact; this is the naming, not the arithmetic.
+    let before: Vec<TabId> = tabs::strip_snapshot().0.into_iter().map(|(i, _)| i).collect();
+
+    let ok = match cmd {
+        TabCmd::Close => {
+            tabs::close_tab(frame, id);
+            report_remaining(&before, &format!("closed tab {}", at));
+            true
+        }
+        TabCmd::CloseOthers => {
+            tabs::close_other_tabs(frame, id);
+            report_remaining(&before, &format!("closed other than tab {}", at));
+            true
+        }
+        TabCmd::CloseRight => {
+            tabs::close_tabs_right_of(frame, id);
+            report_remaining(&before, &format!("closed right of tab {}", at));
+            true
+        }
+        // Greyed, so this is unreachable from the menu. Kept as a real arm
+        // rather than `unreachable!()`: the row becoming live is a one-line
+        // change in `enabled`, and a panic is a poor way to find that out.
+        TabCmd::MoveToNewWindow => false,
+        TabCmd::Rename => {
+            let g = slots(frame);
+            match g.slots.iter().find(|s| s.id == id) {
+                Some(slot) => {
+                    // The editor opens on the tab that was right-clicked --
+                    // the same trap as the actions, with its own exit.
+                    begin_rename(frame, id, slot.rect);
+                    true
+                }
+                None => false,
+            }
+        }
+        TabCmd::Supervisor | TabCmd::Watch | TabCmd::Shield => {
+            // Straight at that tab's surface. `crate::binding` would send it
+            // to whichever surface has focus.
+            tabs::binding_on_tab(id, cmd.action())
+        }
+    };
+
+    logf!(
+        "[tabmenu] pick {:?} tab {} -> {} ok={}",
+        cmd.label(),
+        at,
+        cmd.action(),
+        ok as u8
+    );
+}
+
+/// `[tabmenu] closed tab 3, remaining 1,2,4,5`.
+///
+/// **The survivors are enumerated from the model after the close**, and only
+/// then labelled with the positions they held before it. Subtracting one
+/// entry from the pre-close list would produce the same line while proving
+/// nothing except that the arithmetic in this function is consistent with
+/// itself -- and the tabs are indistinguishable on screen, so a screenshot
+/// cannot supply what this line does not.
+fn report_remaining(before: &[TabId], what: &str) {
+    let (after, _) = tabs::strip_snapshot();
+    let names: Vec<String> = after
+        .iter()
+        .map(|(id, _)| match before.iter().position(|b| b == id) {
+            Some(i) => (i + 1).to_string(),
+            None => "?".to_string(),
+        })
+        .collect();
+    logf!("[tabmenu] {}, remaining {}", what, names.join(","));
+}
+
+// ------------------------------------------------- the blank-strip right-click
+
+/// The three rows for the empty part of the strip (`s4.md` §3.3).
+const STRIP_MENU: &[(&str, &str, bool)] = &[
+    ("新建标签", "new_tab", true),
+    // **Greyed, and this is a gap in the host, not in the core.** macOS's row
+    // calls `reopenClosedTab:`, an application selector backed by
+    // `ClosedTabs.swift`'s stack of closed tabs. Nothing equivalent exists
+    // here: `destroy_tab_at` frees the panes and keeps nothing. That is a
+    // piece of S4 nobody has written yet, roughly 70-100 lines; it is not
+    // "the core does not support it", and the two read very differently a
+    // year from now.
+    ("重开关闭的标签", "reopen_closed_tab", false),
+    ("命令面板", "toggle_command_palette", true),
+];
+
+fn show_strip_menu(frame: HWND, x: i32, y: i32) {
+    let chosen = unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            logf!("[stripmenu] CreatePopupMenu failed");
+            return;
+        };
+        for (i, (label, _, enabled)) in STRIP_MENU.iter().enumerate() {
+            let mut wide: Vec<u16> = label.encode_utf16().collect();
+            wide.push(0);
+            let flags = if *enabled { MF_STRING } else { MF_STRING | MF_GRAYED };
+            let _ = AppendMenuW(menu, flags, STRIP_ID_BASE + i, PCWSTR(wide.as_ptr()));
+        }
+        logf!(
+            "[stripmenu] shown at {},{} items={}",
+            x,
+            y,
+            STRIP_MENU.len()
+        );
+        let mut pt = POINT { x, y };
+        let _ = ClientToScreen(frame, &mut pt);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+            pt.x,
+            pt.y,
+            None,
+            frame,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        cmd.0 as usize
+    };
+    if chosen == 0 {
+        logf!("[stripmenu] dismissed without a choice");
+        return;
+    }
+    let Some((label, action, enabled)) =
+        chosen.checked_sub(STRIP_ID_BASE).and_then(|i| STRIP_MENU.get(i))
+    else {
+        logf!("[stripmenu] returned an id outside the table: {}", chosen);
+        return;
+    };
+    // A greyed row cannot be picked, so reaching here with one means the
+    // flags and the table disagree -- worth a line rather than a silent no-op.
+    let ok = if *enabled {
+        crate::binding(action)
+    } else {
+        logf!("[stripmenu] a disabled row was picked: {:?}", label);
+        false
+    };
+    logf!("[stripmenu] pick {:?} -> {} ok={}", label, action, ok as u8);
+}
+
+/// A right button released over the strip's **client** part: the tabs, their
+/// close crosses, the `+`, the chevron, the `≡`.
+pub fn on_right_click(frame: HWND, x: i32, y: i32) {
+    if let Some(target) = tab_menu_target(frame, x, y) {
+        show_tab_menu(frame, target, x, y);
+        return;
+    }
+    let g = slots(frame);
+    if hit(&g, x, y) == Hit::Menu {
+        // The `≡` answers to the left button. A right-click on it opening the
+        // strip's own menu would put two different menus on one control.
+        return;
+    }
+    show_strip_menu(frame, x, y);
+}
+
+/// A right button released over the strip's **caption** part -- the empty
+/// space, which answers `HTCAPTION` so the window can be dragged by it and
+/// therefore never sees a client mouse message.
+///
+/// Returns whether it was ours; `false` leaves Windows to show the window's
+/// system menu, which is still the right answer everywhere else in the
+/// caption.
+pub fn on_nc_right_click(frame: HWND, screen_x: i32, screen_y: i32) -> bool {
+    let mut pt = POINT { x: screen_x, y: screen_y };
+    unsafe {
+        let _ = ScreenToClient(frame, &mut pt);
+    }
+    let sh = strip_h(tabs::scale_of());
+    if pt.y < 0 || pt.y >= sh || pt.x < 0 {
+        return false;
+    }
+    let mut rc = RECT::default();
+    unsafe {
+        if GetClientRect(frame, &mut rc).is_err() {
+            return false;
+        }
+    }
+    // The minimise/maximise/close buttons keep their own behaviour.
+    if pt.x >= rc.right - crate::shell::reserved_right() {
+        return false;
+    }
+    on_right_click(frame, pt.x, pt.y);
+    true
+}
+
 // --------------------------------------------------------------- striptest
 
 /// The centre of a tab, and of its close button, in client coordinates.
 fn centre_of(frame: HWND, index: usize) -> Option<(i32, i32, i32, i32)> {
-    let (slots, _, _) = slots(frame);
-    let s = slots.get(index)?;
+    let g = slots(frame);
+    let s = g.slots.get(index)?;
     Some((
         (s.rect.left + s.rect.right) / 2,
         (s.rect.top + s.rect.bottom) / 2,
@@ -1035,6 +1652,86 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
             log_state(frame, "one tick after close");
             true
         }
+        // **The left inset**, checked rather than eyeballed. §3.1 says the
+        // first slot starts after the button; `state_line` now prints both
+        // `inset=` and `tab0=` so the two can be compared without an image.
+        27 => {
+            let scale = tabs::scale_of();
+            let want = menu_w(scale);
+            let got = centre_of(frame, 0)
+                .and_then(|_| {
+                    let g = slots(frame);
+                    g.slots.first().map(|s| s.rect.left)
+                })
+                .unwrap_or(-1);
+            logf!(
+                "[strip] inset check: menu_w({}) = {}, first tab left = {} -- {}",
+                scale,
+                want,
+                got,
+                if got == want { "ok" } else { "MISMATCH" }
+            );
+            true
+        }
+        // **The trap, driven end to end without a mouse.** For every tab in
+        // turn: take the coordinates of that tab from the strip's own
+        // geometry, put them through the same hit test a right-click uses,
+        // and print what came back next to what was asked for.
+        //
+        // `--striptest`'s whole reason applies here twice over: aiming a real
+        // right-click at tab 3 of 18 by hand is exactly the operation that
+        // has already produced one false defect on this port.
+        28 => {
+            let n = tabs::count();
+            let mut bad = 0;
+            for i in 0..n {
+                let Some((x, y, _, _)) = centre_of(frame, i) else {
+                    logf!("[strip] rmb-probe: no slot {}", i);
+                    bad += 1;
+                    continue;
+                };
+                match tab_menu_target(frame, x, y) {
+                    Some(t) if t.index == i => {
+                        logf!(
+                            "[strip] rmb-probe at ({},{}) -> tab {} of {} (want {}) ok",
+                            x, y, t.index + 1, t.n, i + 1
+                        );
+                    }
+                    Some(t) => {
+                        bad += 1;
+                        logf!(
+                            "[strip] rmb-probe at ({},{}) -> tab {} of {} (want {}) MISMATCH",
+                            x, y, t.index + 1, t.n, i + 1
+                        );
+                    }
+                    None => {
+                        bad += 1;
+                        logf!("[strip] rmb-probe at ({},{}) -> no tab (want {}) MISMATCH", x, y, i + 1);
+                    }
+                }
+            }
+            logf!("[strip] rmb-probe done: {} tabs, {} mismatches", n, bad);
+            true
+        }
+        // A point inside the button must **not** resolve to a tab, and a
+        // point one pixel past it must. Without this pair, step 28 passes on
+        // an implementation that has no inset at all.
+        29 => {
+            let scale = tabs::scale_of();
+            let w = menu_w(scale);
+            let y = strip_h(scale) / 2;
+            let on_button = tab_menu_target(frame, w / 2, y).is_some();
+            let past_button = tab_menu_target(frame, w, y).map(|t| t.index);
+            logf!(
+                "[strip] inset probe: x={} -> tab? {} (want false); x={} -> tab {:?} (want Some(0)) -- {}",
+                w / 2,
+                on_button,
+                w,
+                past_button,
+                if !on_button && past_button == Some(0) { "ok" } else { "MISMATCH" }
+            );
+            true
+        }
         _ => {
             log_state(frame, "striptest done");
             false
@@ -1042,6 +1739,220 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
     }
 }
 
+
+#[cfg(test)]
+mod menu_inset_tests {
+    use super::*;
+
+    /// A strip's geometry without a window, built from the same pure pieces
+    /// `slots` uses. Only what the hit test reads is filled in.
+    fn geometry(strip_w: i32, scale: f64, n: usize, scroll: i32) -> Geometry {
+        let inset = menu_w(scale);
+        let sh = strip_h(scale);
+        let (tw, _) = layout(strip_w, scale, n, inset);
+        let slots = (0..n)
+            .map(|i| {
+                let x = tab_x(inset, i, tw, scroll);
+                Slot {
+                    id: TabId(100 + i as u64),
+                    rect: RECT { left: x, top: 0, right: x + tw - 1, bottom: sh },
+                    close: RECT::default(),
+                }
+            })
+            .collect();
+        Geometry {
+            slots,
+            overflow: None,
+            // Parked off the right-hand end so it cannot take a hit meant
+            // for a tab; where it really goes is `new_rect`'s business.
+            new: RECT { left: strip_w + 1000, top: 0, right: strip_w + 1022, bottom: sh },
+            menu: menu_rect(scale, sh),
+        }
+    }
+
+    /// **The number `s4.md` §3.1 specifies, at the scales Windows reports.**
+    ///
+    /// Written out rather than computed, because a test that recomputes
+    /// `46.0 * scale` the same way the code does agrees with any mistake the
+    /// code makes -- including the one this is really guarding: the day
+    /// someone "tidies" the button to 44 or 48 to make an icon fit, and the
+    /// only visible consequence is that the strip no longer matches the
+    /// design it was measured against.
+    #[test]
+    fn the_button_is_46_logical_pixels_at_every_scale() {
+        assert_eq!(menu_w(1.0), 46);
+        assert_eq!(menu_w(1.25), 58); // 57.5, rounded
+        assert_eq!(menu_w(1.5), 69);
+        assert_eq!(menu_w(2.0), 92);
+        assert_eq!(menu_w(3.0), 138);
+    }
+
+    /// **The acceptance number: the first tab starts at `46 * scale`.**
+    ///
+    /// This is the whole of the layout half of the block. Before it, `layout`
+    /// started tabs at 0 and the button would have been drawn on top of tab
+    /// one -- which does not look like a layout bug, it looks like a menu
+    /// button that sometimes switches tabs.
+    #[test]
+    fn the_first_tab_starts_after_the_menu_button() {
+        for &scale in &[1.0f64, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0] {
+            for &n in &[1usize, 2, 7, 18, 200] {
+                let g = geometry(1600, scale, n, 0);
+                assert_eq!(
+                    g.slots[0].rect.left,
+                    menu_w(scale),
+                    "scale {scale}, {n} tabs: first tab must start at 46*scale",
+                );
+                assert_eq!(g.menu.right, menu_w(scale));
+            }
+        }
+    }
+
+    /// The inset comes out of the tabs' share, not out of nowhere: with a
+    /// button, the same strip and the same tab count give narrower tabs.
+    #[test]
+    fn the_inset_is_taken_from_the_tabs_not_added_to_the_strip() {
+        let (with_button, _) = layout(1000, 1.0, 5, menu_w(1.0));
+        let (without, _) = layout(1000, 1.0, 5, 0);
+        assert!(
+            with_button < without,
+            "5 tabs in 1000px must be narrower once 46px is spent: {with_button} vs {without}",
+        );
+        assert_eq!(with_button, (1000 - 46) / 5);
+    }
+
+    /// **The trap, as a unit test.** Right-clicking the Nth tab must resolve
+    /// to the Nth tab, for every N -- and it has to fail if the answer is
+    /// "whichever one is current", so nothing here consults an active index.
+    #[test]
+    fn a_hit_on_the_nth_tab_resolves_to_the_nth_tab() {
+        for &scale in &[1.0f64, 1.5, 2.0] {
+            for &n in &[1usize, 3, 5, 18] {
+                let g = geometry(1600, scale, n, 0);
+                for i in 0..n {
+                    let s = &g.slots[i];
+                    let x = (s.rect.left + s.rect.right) / 2;
+                    let y = (s.rect.top + s.rect.bottom) / 2;
+                    let h = hit(&g, x, y);
+                    assert_eq!(h, Hit::Tab(TabId(100 + i as u64)), "scale {scale}, {n} tabs, i {i}");
+                    let index = g.slots.iter().position(|q| q.id == TabId(100 + i as u64));
+                    assert_eq!(index, Some(i));
+                }
+            }
+        }
+    }
+
+    /// The other half of that: the button's own pixels are not any tab's.
+    ///
+    /// Without this, the test above passes on a strip with no inset at all --
+    /// tab 3 is still tab 3, it is just also underneath the button.
+    #[test]
+    fn the_button_is_not_a_tab() {
+        for &scale in &[1.0f64, 1.5, 2.0] {
+            let g = geometry(1600, scale, 5, 0);
+            let y = strip_h(scale) / 2;
+            for x in [0, 1, menu_w(scale) / 2, menu_w(scale) - 1] {
+                assert_eq!(hit(&g, x, y), Hit::Menu, "x={x} at scale {scale}");
+            }
+            assert_eq!(
+                hit(&g, menu_w(scale), y),
+                Hit::Tab(TabId(100)),
+                "the pixel after the button is the first tab",
+            );
+        }
+    }
+
+    /// A scrolled strip still starts its content after the button: the scroll
+    /// offset moves the tabs, it does not move where they are allowed to
+    /// begin. Tab 0 slides left under nothing, and the first *visible* tab
+    /// must still not be reachable at x < inset.
+    #[test]
+    fn scrolling_never_puts_a_tab_under_the_button() {
+        let scale = 1.0;
+        let g = geometry(400, scale, 18, 137);
+        let y = strip_h(scale) / 2;
+        for x in 0..menu_w(scale) {
+            assert_eq!(hit(&g, x, y), Hit::Menu, "x={x} while scrolled");
+        }
+    }
+
+    /// Every row of the tab menu says what it does, and the three agent rows
+    /// read three different state bits. **Copying one getter to all three is
+    /// the natural way to write `checked`** and would tick them together.
+    #[test]
+    fn the_three_agent_rows_do_not_share_a_state_bit() {
+        // role 1 = supervisor, 2 = watched; shielded is its own flag.
+        assert!(TabCmd::Supervisor.checked(1, false));
+        assert!(!TabCmd::Watch.checked(1, false));
+        assert!(!TabCmd::Shield.checked(1, false));
+
+        assert!(!TabCmd::Supervisor.checked(2, false));
+        assert!(TabCmd::Watch.checked(2, false));
+        assert!(!TabCmd::Shield.checked(2, false));
+
+        assert!(!TabCmd::Supervisor.checked(0, true));
+        assert!(!TabCmd::Watch.checked(0, true));
+        assert!(TabCmd::Shield.checked(0, true));
+
+        // And nothing is ticked when the terminal is nothing in particular.
+        for cmd in [TabCmd::Supervisor, TabCmd::Watch, TabCmd::Shield, TabCmd::Close] {
+            assert!(!cmd.checked(0, false), "{cmd:?} ticked on a plain terminal");
+        }
+    }
+
+    /// The colour submenu is inserted at a hard-coded position in the loop
+    /// that builds the menu. **That index and the table have to agree**, and
+    /// nothing else would notice if they stopped: the submenu would simply
+    /// appear in the wrong section, which looks like a design choice.
+    #[test]
+    fn the_colour_submenu_goes_after_the_second_separator() {
+        assert!(TAB_MENU[6].is_none(), "index 6 must be the separator before the agent rows");
+        assert_eq!(TAB_MENU[5], Some(TabCmd::Rename), "the colours follow 重命名标签…");
+        assert_eq!(TAB_MENU[7], Some(TabCmd::Supervisor));
+        assert_eq!(TAB_MENU.iter().filter(|r| r.is_none()).count(), 2);
+    }
+
+    /// The three id blocks cannot overlap each other, `ctxmenu.rs`'s block,
+    /// or anything Windows sends. An overlap is a menu row that runs a
+    /// different row's action -- and it compiles.
+    #[test]
+    fn the_id_blocks_do_not_overlap() {
+        assert!(TAB_ID_BASE > 0x4000 + 64, "must clear ctxmenu.rs's block");
+        assert!(TAB_ID_BASE + TAB_MENU.len() < TAB_COLOR_BASE);
+        assert!(TAB_COLOR_BASE + TAB_COLORS.len() < STRIP_ID_BASE);
+        assert!(STRIP_ID_BASE + STRIP_MENU.len() < 0xF000);
+    }
+
+    /// Nine colours plus none, matching `TerminalTabColor.swift`. `s4.md`
+    /// §3.3 says eight; the source is the source.
+    #[test]
+    fn the_palette_matches_the_macos_one() {
+        assert_eq!(TAB_COLORS.len(), 10);
+        assert_eq!(TAB_COLORS[0].1, 0, "index 0 is 'no colour' and draws nothing");
+        for (name, c) in &TAB_COLORS[1..] {
+            assert_ne!(*c, 0, "{name} would draw as no colour at all");
+        }
+    }
+
+    /// Every action string this file hands to the core has a binding's shape.
+    /// A typo returns `false` from `binding_action` and does nothing else,
+    /// so the cheap check is worth having next to the real one.
+    #[test]
+    fn the_core_bound_rows_have_binding_shaped_names() {
+        for cmd in [TabCmd::Supervisor, TabCmd::Watch, TabCmd::Shield] {
+            let a = cmd.action();
+            assert!(!a.contains(' '), "binding names have no spaces: {a}");
+            assert!(a.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c == ':'));
+        }
+        for (label, action, enabled) in STRIP_MENU {
+            if !enabled {
+                continue;
+            }
+            assert!(!action.is_empty(), "{label} is enabled with no action");
+            assert!(!action.contains(' '), "binding names have no spaces: {action}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod close_affordance_tests {
@@ -1067,7 +1978,10 @@ mod close_affordance_tests {
         for &scale in &[1.0f64, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0] {
             // The narrowest tab the layout will ever hand out: far too many
             // tabs for the strip.
-            let (tw, overflowing) = layout(400, scale, 200);
+            // No inset here on purpose: this test is about the close
+            // cross against `TAB_MIN_W`, and the menu button is a separate
+            // claim with its own tests below.
+            let (tw, overflowing) = layout(400, scale, 200, 0);
             assert!(overflowing, "200 tabs in 400px must overflow (scale {scale})");
             assert!(
                 tab_shows_close(tw, scale),

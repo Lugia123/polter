@@ -69,6 +69,17 @@ thread_local! {
 
 // ------------------------------------------------------- from `action_cb`
 
+/// Whether the terminal is read-only right now.
+///
+/// The badge already draws from `READONLY`; the right-click menu has to tick
+/// its «Terminal Read-only» row from the **same** bit. A second copy of this
+/// state kept by the menu would drift the first time the core toggled it from
+/// anywhere else, and the symptom would be a menu that lies about a mode the
+/// badge on screen is simultaneously reporting correctly.
+pub fn is_readonly() -> bool {
+    READONLY.load(Ordering::Acquire)
+}
+
 /// `GHOSTTY_ACTION_READONLY`. **Safe from any thread.**
 pub fn on_readonly(on: bool) {
     READONLY.store(on, Ordering::Release);

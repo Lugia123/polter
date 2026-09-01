@@ -78,7 +78,7 @@ const TRIGGER_UNICODE: i32 = 1;
 /// deliberately dropped: "Ctrl+Shift+A" is what the user typed into their
 /// config, and showing "RCtrl+CapsLock+Ctrl+Shift+A" would be accurate and
 /// useless.
-fn mods_label(mods: i32) -> String {
+pub(crate) fn mods_label(mods: i32) -> String {
     let mut s = String::new();
     if mods & (1 << 1) != 0 {
         s.push_str("Ctrl+");
@@ -95,7 +95,7 @@ fn mods_label(mods: i32) -> String {
     s
 }
 
-fn key_label(tag: i32, key: u32) -> String {
+pub(crate) fn key_label(tag: i32, key: u32) -> String {
     if tag == TRIGGER_UNICODE {
         return char::from_u32(key)
             .map(|c| c.to_uppercase().to_string())

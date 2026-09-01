@@ -75,6 +75,26 @@ pub const ACTION_SIZE_LIMIT: u32 = 23;
 pub const ACTION_RESET_WINDOW_SIZE: u32 = 24;
 pub const ACTION_SET_TAB_TITLE: u32 = 35;
 pub const ACTION_COPY_TITLE_TO_CLIPBOARD: u32 = 68;
+/// The three tags after `copy_title_to_clipboard`, counted off
+/// `ghostty_action_tag_e` in `include/ghostty.h`. **The count was checked
+/// against a tag that was already here**: `copy_title_to_clipboard` comes out
+/// at 68 by the same counting, which is what says the counting is right.
+pub const ACTION_MOVE_TAB_TO_NEW_WINDOW: u32 = 69;
+pub const ACTION_POLTERGEIST_MARK: u32 = 70;
+pub const ACTION_POLTERGEIST_CLOSE: u32 = 71;
+
+/// `ghostty_action_poltergeist_mark_s`. The prefix is the core's rendered
+/// glyphs; `role` and `shielded` are the meaning, which is what a menu item
+/// needs -- **a tick cannot be derived from a string**, which is the reason
+/// the core sends both.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PoltergeistMark {
+    pub prefix: *const c_char,
+    /// `ghostty_action_poltergeist_role_e`: 0 none, 1 supervisor, 2 watched.
+    pub role: i32,
+    pub shielded: bool,
+}
 
 // `ghostty_action_goto_tab_e`. Anything >= 0 is a 1-based tab index.
 pub const GOTO_TAB_PREVIOUS: i32 = -1;
@@ -114,6 +134,17 @@ impl Action {
         let p = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *const c_char;
         if p.is_null() { return None; }
         Some(unsafe { std::ffi::CStr::from_ptr(p) })
+    }
+
+    /// `ghostty_action_poltergeist_mark_s { const char* prefix; int role;
+    /// bool shielded; }`. The pointer is 8-aligned, so `role` is at offset 8
+    /// and `shielded` at 12 -- **not** packed after the pointer at 8 and 12
+    /// by luck: the same 4-alignment rule that put `resize_split`'s enum at 4
+    /// rather than 2 applies here, and getting it wrong reads a byte of
+    /// padding as the tick.
+    pub fn as_poltergeist_mark(&self) -> (i32, bool) {
+        let role = i32::from_ne_bytes(self.payload[8..12].try_into().unwrap());
+        (role, self.payload[12] != 0)
     }
 
     /// A bare `c_int` payload: goto_tab, close_tab mode, fullscreen mode.

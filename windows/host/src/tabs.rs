@@ -73,6 +73,21 @@ pub struct Tab {
     pub panes: Vec<Pane>,
     pub focused: PaneId,
     pub title: String,
+    /// The tab's colour: 0 for none, otherwise an index into the strip's
+    /// palette. **Stored on the tab, not in a side table keyed by position**
+    /// -- for the same reason the title is: a parallel array is how "the
+    /// order is right but the colours are wrong" gets written.
+    pub color: u8,
+    /// What Poltergeist has made of this terminal, as the core last said.
+    /// `ghostty_action_poltergeist_role_e`: 0 none, 1 supervisor, 2 watched.
+    ///
+    /// **Kept here rather than asked for on demand because there is nothing
+    /// to ask.** The core announces a mark through `poltergeist_mark` and
+    /// publishes no getter, so a menu item that wants to tick itself has to
+    /// have been listening. Before this field the Windows host discarded the
+    /// action entirely.
+    pub role: u8,
+    pub shielded: bool,
 }
 
 impl Tab {
@@ -642,6 +657,9 @@ pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINS
             panes: vec![pane],
             focused: id,
             title: "shell".to_string(),
+            color: 0,
+            role: 0,
+            shielded: false,
         });
         st.active = st.tabs.len() - 1;
     }
@@ -792,6 +810,169 @@ pub fn close_tab(frame: HWND, id: TabId) {
         return;
     }
     set_active(frame, active_index());
+}
+
+/// Where a tab sits right now, and how many there are.
+///
+/// **Resolved at the moment it is asked, never cached.** Everything that
+/// prints "tab 3 of 5" goes through here, including the line printed at the
+/// point an action actually runs -- that line is the only external evidence
+/// that the identity travelled the whole way instead of degenerating into
+/// "the current one" somewhere in the middle.
+pub fn index_of(id: TabId) -> Option<(usize, usize)> {
+    let st = state();
+    let n = st.tabs.len();
+    st.tabs.iter().position(|t| t.id == id).map(|i| (i, n))
+}
+
+/// The surface of the focused pane of **a named tab** -- not the active one.
+///
+/// `active_surface` is the right answer for "where typing goes" and the wrong
+/// answer for everything a context menu does, because the tab that was
+/// right-clicked is usually not the tab that has focus.
+pub fn surface_of_tab(id: TabId) -> Surface {
+    let st = state();
+    match st.tabs.iter().find(|t| t.id == id).and_then(|t| t.focused_pane()) {
+        Some(p) => p.surface as Surface,
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Send a core binding action to a **named tab's** surface.
+///
+/// The twin of `crate::binding`, which sends to whichever surface has focus.
+/// A menu that was opened on tab 3 and dispatches through `crate::binding`
+/// acts on tab 1, silently, and looks entirely correct while doing it.
+pub fn binding_on_tab(id: TabId, name: &str) -> bool {
+    let s = surface_of_tab(id);
+    if s.is_null() {
+        return false;
+    }
+    unsafe { (api().surface_binding_action)(s, name.as_ptr(), name.len()) }
+}
+
+/// Close every tab except one, **named by identity**.
+///
+/// **Not `Op::CloseTab(CLOSE_TAB_OTHER)`.** That branch is the core's action
+/// and resolves against `active_index()`, which is exactly right for the
+/// keyboard binding and exactly wrong for a menu opened on a tab that does
+/// not have focus. The two are different operations that happen to share a
+/// name, so they are different functions.
+pub fn close_other_tabs(frame: HWND, id: TabId) {
+    let victims: Vec<usize> = {
+        let st = state();
+        let keep = st.tabs.iter().position(|t| t.id == id);
+        match keep {
+            None => return,
+            Some(keep) => (0..st.tabs.len()).rev().filter(|i| *i != keep).collect(),
+        }
+    };
+    for i in victims {
+        destroy_tab_at(frame, i);
+    }
+    set_active(frame, 0);
+    logf!("[tab] closed all but {:?}; count now {}", id, count());
+}
+
+/// Close every tab to the right of one, **named by identity**. Same reason.
+pub fn close_tabs_right_of(frame: HWND, id: TabId) {
+    let victims: Vec<usize> = {
+        let st = state();
+        match st.tabs.iter().position(|t| t.id == id) {
+            None => return,
+            Some(at) => (at + 1..st.tabs.len()).rev().collect(),
+        }
+    };
+    let n = victims.len();
+    for i in victims {
+        destroy_tab_at(frame, i);
+    }
+    set_active(frame, active_index().min(count().saturating_sub(1)));
+    logf!("[tab] closed {} tabs right of {:?}; count now {}", n, id, count());
+}
+
+/// Every tab's colour, by identity, in one lock.
+///
+/// **By identity, not a `Vec<u8>` in strip order.** A vector indexed by
+/// position is the parallel array this file's rule 1 exists to forbid, and
+/// the bug it writes -- colours right, order wrong -- is invisible until two
+/// tabs happen to be different colours.
+pub fn tab_colors() -> Vec<(TabId, u8)> {
+    let st = state();
+    st.tabs.iter().map(|t| (t.id, t.color)).collect()
+}
+
+/// A tab's colour, and how to set it. 0 is "none".
+pub fn tab_color(id: TabId) -> u8 {
+    let st = state();
+    st.tabs.iter().find(|t| t.id == id).map(|t| t.color).unwrap_or(0)
+}
+
+pub fn set_tab_color(frame: HWND, id: TabId, color: u8) -> bool {
+    let found = {
+        let mut st = state();
+        match st.tabs.iter_mut().find(|t| t.id == id) {
+            Some(tab) => {
+                tab.color = color;
+                true
+            }
+            None => false,
+        }
+    };
+    if found {
+        unsafe {
+            let _ = InvalidateRect(Some(frame), None, false);
+        }
+    }
+    found
+}
+
+/// What Poltergeist has made of a tab: `(role, shielded)`.
+pub fn tab_mark(id: TabId) -> (u8, bool) {
+    let st = state();
+    st.tabs
+        .iter()
+        .find(|t| t.id == id)
+        .map(|t| (t.role, t.shielded))
+        .unwrap_or((0, false))
+}
+
+/// What Poltergeist has made of the terminal in a **particular surface**.
+///
+/// Exported so that nothing else has to keep its own copy of this. The mark
+/// arrives once, as an action, and every consumer that cached it separately
+/// would be a second place for it to be right -- which is the shape that has
+/// gone wrong four times tonight (the menu's target, the close batch, the
+/// mark's landing tab, and the button width), each time by two stores of one
+/// fact drifting apart with nothing to report it.
+pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool)> {
+    let key = surface as usize;
+    let st = state();
+    st.tabs
+        .iter()
+        .find(|t| t.panes.iter().any(|p| p.surface == key))
+        .map(|t| (t.role, t.shielded))
+}
+
+/// Record a `poltergeist_mark` against **the surface it was sent for**.
+///
+/// **The surface, not the active tab.** `set_tab_title` and its neighbours
+/// queue an `Op` that lands on whichever tab is active when the queue runs,
+/// which is right for a title the focused shell just set and wrong here: a
+/// mark can be made on a tab that is not in front (from this very menu, or
+/// from a supervisor elsewhere), and applying it to the active tab would put
+/// the tick on the wrong row while looking completely normal.
+pub fn set_mark_for_surface(surface: Surface, role: u8, shielded: bool) -> bool {
+    let key = surface as usize;
+    let mut st = state();
+    for tab in st.tabs.iter_mut() {
+        if tab.panes.iter().any(|p| p.surface == key) {
+            tab.role = role;
+            tab.shielded = shielded;
+            return true;
+        }
+    }
+    false
 }
 
 /// Rename a tab. The label is the host's; the shell can still overwrite it

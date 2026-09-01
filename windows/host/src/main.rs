@@ -36,6 +36,7 @@ mod ffi;
 mod keys;
 mod hud;
 mod keyseq;
+mod menu;
 mod overlay;
 mod palette;
 mod plugins;
@@ -867,7 +868,7 @@ extern "C" fn cb_close_surface(ud: *mut c_void, _confirm: bool) {
     tabs::post_op(tabs::Op::ClosePane(id));
 }
 
-extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
+extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
     use tabs::Op;
     match action.tag {
         // The core owns the command list and the actions; the host only
@@ -1018,6 +1019,30 @@ extern "C" fn cb_action(_app: App, _target: Target, action: Action) -> bool {
             }
             true
         }
+        // **Read off `target`, not off the active tab.** Every other action
+        // here queues an `Op` that lands on whichever tab is active when the
+        // queue runs, which is right for a title the focused shell just set.
+        // A mark is different: it can be made on a terminal that is not in
+        // front -- from the tab strip's own right-click menu, or by a
+        // supervisor elsewhere -- and applying it to the active tab would put
+        // the tick on the wrong row while looking entirely normal.
+        //
+        // Done inline rather than queued because it touches no window: it
+        // writes two fields under the same lock every `Op` would have taken.
+        ffi::ACTION_POLTERGEIST_MARK => {
+            let (role, shielded) = action.as_poltergeist_mark();
+            let found = tabs::set_mark_for_surface(target.surface, role as u8, shielded);
+            // The surface's own right-click menu wants the same three bits.
+            // It reads them back out of `tabs::mark_for_surface`; this call
+            // is the notification that they changed, not a second copy.
+            crate::ctxmenu::on_poltergeist_mark(role, shielded);
+            logf!(
+                "[action] poltergeist_mark role={} shielded={} surface={:?} matched={}",
+                role, shielded, target.surface, found
+            );
+            true
+        }
+
         ACTION_COPY_TITLE_TO_CLIPBOARD => {
             logf!("[action] copy_title_to_clipboard");
             tabs::post_op(Op::CopyTitleToClipboard);
@@ -1233,6 +1258,31 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             WM_MOUSEWHEEL => {
                 strip::on_wheel(hwnd, ((wp.0 >> 16) & 0xFFFF) as i16);
                 LRESULT(0)
+            }
+
+            // The right button over the strip. **Two messages, because the
+            // strip is two things**: the tabs answer `HTCLIENT` (see
+            // `shell::hit_test`) and so send client mouse messages, while the
+            // empty space answers `HTCAPTION` so the window can be dragged by
+            // it -- and a caption never sends `WM_RBUTTONUP` at all. Handling
+            // only the first would leave `s4.md` §3.3's third menu
+            // unreachable, and the symptom would be a menu that "sometimes"
+            // does not appear.
+            //
+            // On the up, not the down: pressing and sliding off has to be a
+            // way out of a menu, the same as it is for the close cross.
+            WM_RBUTTONUP => {
+                strip::on_right_click(hwnd, lo_i16(lp), hi_i16(lp));
+                LRESULT(0)
+            }
+            WM_NCRBUTTONUP => {
+                if strip::on_nc_right_click(hwnd, lo_i16(lp), hi_i16(lp)) {
+                    LRESULT(0)
+                } else {
+                    // Not ours: the window's own system menu, which is still
+                    // the right answer for the rest of the caption.
+                    DefWindowProcW(hwnd, msg, wp, lp)
+                }
             }
 
             // The frame resizes; the active child follows and tells the core.
