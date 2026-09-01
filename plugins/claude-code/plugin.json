@@ -5,6 +5,7 @@
   "description": "Tells Claude Code that Polter is here: registers the MCP server under the user scope and mirrors Polter's skills into ~/.claude/skills/polter-*. Without it an agent has the socket and the token in its environment and no way to use either.",
 
   "exec": "provision.sh",
+  "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
 
   "wants": {

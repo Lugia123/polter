@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Registers Polter's MCP server with opencode by editing ~/.config/opencode/opencode.json -- opencode has no `mcp add`, so this one edits a config file, refusing outright if it cannot parse what is there. Needs python3 for that. Skills are not installed: the directory has not been confirmed.",
   "exec": "provision.sh",
+  "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
   "wants": {
     "events": [

@@ -84,7 +84,7 @@ poltergeist_notify_window: ?poltergeistpkg.notify.Window = null,
 /// reload and cannot dangle.
 poltergeist_config_text: []const u8 = "",
 
-/// When the last plugin test went out, on `poltergeistNow`'s clock.
+/// When the last plugin test went out, on `poltergeistElapsedMs`'s clock.
 ///
 /// Optional rather than a zero sentinel: that clock starts at zero, so a
 /// test in the app's first millisecond would stamp a 0 that reads back as
@@ -170,17 +170,6 @@ poltergeist_residents_started: bool = false,
 /// Baseline for the monotonic clock the bus is given. Taken on the first
 /// report rather than at startup so it costs nothing when unused.
 poltergeist_epoch: ?std.Io.Timestamp = null,
-
-/// What the wall clock read at that same instant, in Unix milliseconds.
-///
-/// The bus and the chat log run on a monotonic clock, which is the right
-/// choice for measuring how long something has been still: it does not
-/// jump when the system clock is corrected. But somebody reading the chat
-/// wants to know what time a thing was said, and an offset from an
-/// arbitrary baseline cannot answer that. Pairing the two clocks once, at
-/// the single instant both were read, lets either be recovered from the
-/// other.
-poltergeist_epoch_wall_ms: i64 = 0,
 
 /// The socket agents reach Poltergeist through. Null unless
 /// `poltergeist-mcp` is on, so the default build opens nothing.
@@ -460,7 +449,7 @@ fn poltergeistReport(
     // Whatever comes of the report, the tabs should say what is true now.
     defer self.refreshPoltergeistTabs();
 
-    const now_ms = self.poltergeistNow();
+    const now_ms = self.poltergeistElapsedMs();
 
     // Into the box. Nothing goes to the supervisor at this instant: a
     // report is a change of state, not an errand, and interrupting somebody
@@ -655,6 +644,24 @@ fn scanPlugins(
             const settings = self.pluginSettings(arena, io, environ_map, manifest.key);
             if (!keep_disabled and !settings.enabled) {
                 log.debug("poltergeist: plugin {s} is installed but off", .{manifest.key});
+                continue;
+            }
+
+            // **Nothing to run here is not a failure, and it is known now.**
+            // A plugin that declares only a `.sh` cannot start on Windows;
+            // said here, once, it costs a line. Left to the spawn it becomes
+            // `error.InvalidExe`, a back-off, a restart and the same failure
+            // again -- a loop that from the plugin's side is indistinguishable
+            // from idling. See `Plugin.Manifest.runnable`.
+            //
+            // Only for plugins that are switched on: an unsupported plugin
+            // nobody enabled has nothing to say.
+            if (!manifest.runnable) {
+                log.info(
+                    "poltergeist: plugin {s} declares nothing this system can run " ++
+                        "({s}); installed and enabled, but not started",
+                    .{ manifest.key, manifest.exec },
+                );
                 continue;
             }
 
@@ -1352,7 +1359,7 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
             .home = home,
             .skills = skills.items,
         },
-        self.poltergeist_epoch_wall_ms + @as(i64, @intCast(self.poltergeistNow())),
+        self.poltergeistWallMs(),
     ));
 
     log.info(
@@ -2043,7 +2050,7 @@ fn pluginTest(
     // Global rather than per key: this protects the person, not the plugin,
     // and a person with four channels configured is one person. The branch
     // that only reports on a resident spends it too, as specified.
-    const now = self.poltergeistNow();
+    const now = self.poltergeistElapsedMs();
     if (self.poltergeist_plugin_tested_ms) |last| {
         if (now -| last < std.time.ms_per_min) return error.TooSoon;
     }
@@ -2085,7 +2092,7 @@ fn pluginTest(
             "plugin_test tool. Nothing is wrong. If this reached you, the channel works.",
         .terminal = by,
         .terminal_name = terminal_name,
-        .at_ms = self.poltergeist_epoch_wall_ms + @as(i64, @intCast(now)),
+        .at_ms = self.poltergeistWallMs(),
     };
 
     // **The one plugin that was named is no longer a thing this can do.**
@@ -2338,7 +2345,7 @@ fn poltergeistStoodDown(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) void {
 
 fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.poltergeist.quietMs(id, self.poltergeistNow());
+    return self.poltergeist.quietMs(id, self.poltergeistElapsedMs());
 }
 
 /// Every terminal on screen, with where it is and what it is called.
@@ -2494,7 +2501,7 @@ fn poltergeistDrainNotices(
     const self: *App = @ptrCast(@alignCast(ctx));
 
     var buf: [255]u8 = undefined;
-    const line = self.poltergeist.drain(to, self.poltergeistNow(), &buf) orelse
+    const line = self.poltergeist.drain(to, self.poltergeistElapsedMs(), &buf) orelse
         return "";
     return alloc.dupe(u8, line);
 }
@@ -2611,7 +2618,7 @@ fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {
 /// in `poltergeist/` -- and the record is filed by local day, so this is
 /// where the two meet.
 fn taskWallMs(self: *App) i64 {
-    return self.poltergeist_epoch_wall_ms + @as(i64, @intCast(self.poltergeistNow()));
+    return self.poltergeistWallMs();
 }
 
 /// Write one thing that happened, if there is anywhere to write it.
@@ -2817,7 +2824,7 @@ fn chatCompact(
     by: poltergeistpkg.Bus.Id,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    const at = self.poltergeistNow();
+    const at: u64 = @intCast(self.poltergeistWallMs());
     const seq = try self.chat.compact(group, through, summary, by, at);
 
     // Written after the messages it replaced, not over them. Compaction
@@ -2834,7 +2841,7 @@ fn chatPost(
     text: []const u8,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    const at = self.poltergeistNow();
+    const at: u64 = @intCast(self.poltergeistWallMs());
     const seq = try self.chat.post(group, from, text, at);
 
     // A terminal's title moves with its work, so the record follows it.
@@ -2874,7 +2881,7 @@ fn logChat(
     var fixed: std.heap.FixedBufferAllocator = .init(&buf);
     const author = self.chatMemberTitle(fixed.allocator(), from) catch "";
 
-    const at_wall_ms = self.poltergeist_epoch_wall_ms + @as(i64, @intCast(at_ms));
+    const at_wall_ms: i64 = @intCast(at_ms);
 
     const log_seq = l.append(
         group,
@@ -2967,8 +2974,7 @@ fn notifyUser(
         .body = body,
         .terminal = id,
         .terminal_name = terminal_name,
-        .at_ms = self.poltergeist_epoch_wall_ms +
-            @as(i64, @intCast(self.poltergeistNow())),
+        .at_ms = self.poltergeistWallMs(),
     };
 
     switch (poltergeistpkg.notify.decide(
@@ -3241,10 +3247,9 @@ fn chatRead(
             .from = m.from,
             .author = try self.chatMemberTitle(alloc, m.from),
 
-            // Back onto the wall clock. The log runs on a monotonic one,
-            // which is right for measuring stillness and useless for
-            // saying what time somebody spoke.
-            .at_ms = self.poltergeist_epoch_wall_ms + @as(i64, @intCast(m.at_ms)),
+            // Already the wall clock: a message is stamped when it is
+            // posted, from the real clock, so there is nothing to convert.
+            .at_ms = @intCast(m.at_ms),
 
             .summary = m.summary,
             .text = try alloc.dupe(u8, m.text),
@@ -3304,9 +3309,8 @@ fn chatHistory(
             // the only place that name still exists.
             .author = e.author,
 
-            // Already wall-clock. Adding the epoch here -- as `chatRead`
-            // must, because the in-memory log is monotonic -- would put
-            // these messages decades into the future.
+            // Wall-clock, as it was written. The live log is stamped the
+            // same way now, so history and memory read alike.
             .at_ms = e.at_ms,
 
             .summary = e.summary,
@@ -3324,7 +3328,7 @@ fn chatHistory(
 /// A count and how to fetch, never the messages themselves. What an agent
 /// does about it is its own decision, and one it can decline.
 fn tellTerminalsAboutMessages(self: *App) void {
-    const now_ms = self.poltergeistNow();
+    const now_ms = self.poltergeistElapsedMs();
 
     // Worked out once for the whole sweep rather than per surface: it is
     // the same answer every time round, and the list does not move while
@@ -3408,18 +3412,28 @@ pub fn tellSurface(self: *App, id: poltergeistpkg.Bus.Id, text: []const u8) void
     };
 }
 
-/// Monotonic milliseconds for the bus and the chat log alike.
-pub fn poltergeistNow(self: *App) u64 {
+/// How long this app has been awake, in milliseconds. **A duration, never
+/// a time of day.**
+///
+/// `.awake` excludes time the machine is suspended, which is exactly right
+/// for the thing this measures: a laptop shut overnight has not left its
+/// terminals "still for eight hours", and quiescence, the notice interval
+/// and every rate limit here are asking "how long since", not "when".
+///
+/// **It is not a clock you can turn into a timestamp.** There used to be a
+/// paired `poltergeist_epoch_wall_ms` here, and a wall time was recovered
+/// as epoch + this. That is wrong by however long the machine has slept
+/// since Polter started, it only ever grows, and it was silent: on the
+/// machine this was found on, a chat message sent after a lid had been
+/// closed for two hours was stamped, filed and displayed two hours early,
+/// and the day file for the following day was never opened because the
+/// clock had not reached midnight. Anything that needs a time of day calls
+/// `poltergeistWallMs`, which reads the real clock. The field is gone so
+/// that the arithmetic cannot be written again.
+pub fn poltergeistElapsedMs(self: *App) u64 {
     const epoch = self.poltergeist_epoch orelse epoch: {
         const t: std.Io.Timestamp = .now(global.io(), .awake);
         self.poltergeist_epoch = t;
-
-        const wall: std.Io.Timestamp = .now(global.io(), .real);
-        self.poltergeist_epoch_wall_ms = @intCast(@divTrunc(
-            wall.nanoseconds,
-            std.time.ns_per_ms,
-        ));
-
         break :epoch t;
     };
     const now: std.Io.Timestamp = .now(global.io(), .awake);
@@ -3428,6 +3442,19 @@ pub fn poltergeistNow(self: *App) u64 {
         0,
         std.math.maxInt(i64),
     ));
+}
+
+/// The wall clock, in milliseconds, for anything that is a time of day:
+/// when a message was sent, which local day a record is filed under, what
+/// a notification says happened when.
+///
+/// Read at the moment of stamping rather than derived from anything, so
+/// that suspending the machine cannot put it behind. It can step backwards
+/// when the system clock is corrected, which is what every chat program
+/// lives with: ordering here is by `seq`, never by time.
+pub fn poltergeistWallMs(self: *App) i64 {
+    _ = self;
+    return poltergeistpkg.daylog.nowMs(global.io());
 }
 
 /// Load a skill, preferring the user's copy.

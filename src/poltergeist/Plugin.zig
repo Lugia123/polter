@@ -256,8 +256,24 @@ pub const Manifest = struct {
     /// For a person reading a list of them.
     name: []const u8 = "",
 
-    /// Absolute path to the executable.
+    /// Absolute path to the executable this system would run.
+    ///
+    /// Resolved from `exec_<os>` when the manifest declares one for this
+    /// system, and from `exec` otherwise. See `launchKindFor`.
     exec: []const u8,
+
+    /// Whether this system can start `exec` at all.
+    ///
+    /// **A third state, and it belongs at load rather than at spawn.** A
+    /// plugin that declares only a `.sh` is not broken and its manifest is
+    /// not malformed -- it simply has nothing to run here, which is a static
+    /// fact known while the manifest is being read. Discovering it at spawn
+    /// instead turns it into a restart loop, and `error.BadManifest` would
+    /// file it next to "somebody typed the JSON wrong". Same reasoning as the
+    /// `absent` / `provisioned` / `failed` split the provisioning plugins
+    /// use: **"nothing to do here" and "something went wrong" must not look
+    /// alike.**
+    runnable: bool = true,
 
     timeout_ms: u64 = default_timeout_ms,
 
@@ -276,6 +292,111 @@ pub const Manifest = struct {
         return null;
     }
 };
+
+/// How this system starts a file of that kind.
+///
+/// **Which file to run is the plugin's to say; how to start that kind of file
+/// is this host's.** Those are two different questions and only the first one
+/// was ever settled -- see `docs/poltergeist/provisioning.md` section 9. The
+/// plugin answers the first with `exec_<os>`; this table answers the second,
+/// and it is deliberately short.
+///
+/// **Short because every row is the host deciding what to run somebody's file
+/// with.** A general "find an interpreter by extension" mechanism would turn
+/// dropping a `.py` or a `.jar` into `<config>/polter/plugins/` into a request
+/// this host would honour. Three rows, and everything else runs as itself,
+/// exactly as it does today.
+const LaunchKind = enum {
+    /// Run the file. This is what every plugin got before this table existed
+    /// and what every POSIX plugin still gets.
+    direct,
+    /// Windows will not execute a `.ps1`, and its default execution policy
+    /// refuses script files besides. `-NoProfile` is not decoration: a user
+    /// profile that prints anything puts it on the plugin's standard output,
+    /// where anything that is not an acknowledgement is judged misconduct.
+    powershell,
+    /// Windows will not execute a `.cmd` or `.bat` directly either.
+    command_shell,
+    /// Nothing on this system starts a file of that kind. **Said at load,
+    /// not discovered at spawn** -- see `Manifest.runnable`.
+    unsupported,
+};
+
+fn endsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (haystack.len < needle.len) return false;
+    return std.ascii.eqlIgnoreCase(haystack[haystack.len - needle.len ..], needle);
+}
+
+/// **The table, with the system as an argument rather than as `builtin`.**
+///
+/// Written this way for one reason: with the target baked in, the Windows
+/// rows are unreachable from a test running on macOS, and "the Windows row is
+/// wrong" would be a thing no test on the build machine could ever go red
+/// for. A table nothing can contradict is not a table, it is a hope.
+fn launchKindFor(tag: std.Target.Os.Tag, exec: []const u8) LaunchKind {
+    const windows_only = endsWithIgnoreCase(exec, ".ps1") or
+        endsWithIgnoreCase(exec, ".cmd") or
+        endsWithIgnoreCase(exec, ".bat");
+
+    return switch (tag) {
+        .windows => if (endsWithIgnoreCase(exec, ".ps1"))
+            .powershell
+        else if (endsWithIgnoreCase(exec, ".cmd") or endsWithIgnoreCase(exec, ".bat"))
+            .command_shell
+        else if (endsWithIgnoreCase(exec, ".sh") or endsWithIgnoreCase(exec, ".py"))
+            // A shebang means nothing to `CreateProcess`. This is the case
+            // the whole mechanism exists for: seven shipped plugins declare
+            // a `.sh`, and on Windows they used to fail at spawn, back off,
+            // restart and fail again -- a loop that looks, from the plugin's
+            // side, exactly like idling.
+            .unsupported
+        else
+            .direct,
+
+        else => if (windows_only) .unsupported else .direct,
+    };
+}
+
+/// Whether this system can start it at all. No allocation, so a caller
+/// deciding whether to bother does not have to.
+pub fn launchable(exec: []const u8) bool {
+    return launchKindFor(builtin.os.tag, exec) != .unsupported;
+}
+
+/// The command line, or `null` when this system cannot start it.
+///
+/// **Every spawn of a plugin goes through here, tests included.** A test that
+/// built its own argv would be asserting over its own idea of the command
+/// line: get this function wrong and that test stays green while nothing
+/// starts. Running the thing we ship, the way we ship it, is the whole point
+/// of the end-to-end tests below.
+pub fn launchArgv(
+    alloc: Allocator,
+    exec: []const u8,
+) Allocator.Error!?[]const []const u8 {
+    return launchArgvFor(alloc, builtin.os.tag, exec);
+}
+
+pub fn launchArgvFor(
+    alloc: Allocator,
+    tag: std.Target.Os.Tag,
+    exec: []const u8,
+) Allocator.Error!?[]const []const u8 {
+    return switch (launchKindFor(tag, exec)) {
+        .direct => try alloc.dupe([]const u8, &.{exec}),
+        .powershell => try alloc.dupe([]const u8, &.{
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            exec,
+        }),
+        .command_shell => try alloc.dupe([]const u8, &.{ "cmd", "/c", exec }),
+        .unsupported => null,
+    };
+}
 
 /// Load a plugin's manifest from a directory.
 ///
@@ -342,15 +463,35 @@ pub fn load(
         .{ key, stale },
     );
 
-    const exec_rel = stringField(obj, "exec") orelse {
-        log.warn("plugin {s}: no exec", .{key});
-        return error.BadManifest;
-    };
+    // **`exec_<os>` first, `exec` as the fallback.** Purely additive: a
+    // manifest that names only `exec` means exactly what it meant before,
+    // and a reader that has never heard of the new key is still right on
+    // POSIX. The alternatives -- `exec` becoming an object, an array of
+    // `{os, path}` -- would have made every existing manifest and every
+    // example ambiguous to save a few flat keys. See
+    // `docs/poltergeist/provisioning.md` 9.2.
+    //
+    // The name is `builtin.os.tag`'s own: `exec_windows`, `exec_macos`,
+    // `exec_linux`.
+    //
+    // ⚠️ **Not `wants.exec`.** That one is the list of binaries a plugin says
+    // it will look for on `PATH`, and it is disclosure only. This one is the
+    // file to start. The two have collided in readers' heads before.
+    const os_key = "exec_" ++ @tagName(builtin.os.tag);
+    const exec_rel = stringField(obj, os_key) orelse
+        stringField(obj, "exec") orelse
+        {
+            log.warn("plugin {s}: no exec", .{key});
+            return error.BadManifest;
+        };
+
+    const exec_abs = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, exec_rel });
 
     return .{
         .key = key,
         .name = stringField(obj, "name") orelse key,
-        .exec = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, exec_rel }),
+        .exec = exec_abs,
+        .runnable = launchable(exec_abs),
         .timeout_ms = switch (obj.get("timeout_ms") orelse std.json.Value{ .null = {} }) {
             .integer => |n| if (n > 0) @intCast(n) else default_timeout_ms,
             else => default_timeout_ms,
@@ -1239,6 +1380,74 @@ test "settings round-trip through the file format" {
     try testing.expect(std.mem.indexOf(u8, rendered, "\"enabled\": true") != null);
 }
 
+test "settings written by the Windows host" {
+    // **The cross-implementation check.** The Rust host writes this file and
+    // this parser reads it; a unit test on either side alone proves only that
+    // an implementation agrees with itself, and the failure that matters is
+    // the two disagreeing. The symptom in the field is silent: a plugin the
+    // user configured simply stops being configured.
+    //
+    // The fixture comes out of the host's own `render_settings`
+    // (`windows/host/src/plugins.rs`), regenerated with
+    // `polter-host.exe --write-settings-fixture <path>`. It carries a quote,
+    // a backslash and non-ASCII on purpose -- escaping is where two JSON
+    // implementations actually diverge.
+    //
+    // `@embedFile` rather than reading a path: a deleted fixture then fails
+    // the build instead of quietly testing nothing.
+    const fixture = @embedFile("testdata/windows_host_settings.json");
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-winfix-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, "winhost.json", .{});
+    try f.writeStreamingAll(io, fixture);
+    f.close(io);
+
+    const path = try std.fs.path.join(alloc, &.{ dir, "winhost.json" });
+    const settings = Settings.read(alloc, io, path);
+
+    try testing.expect(settings.enabled);
+    try testing.expectEqual(@as(usize, 3), settings.params.len);
+
+    var seen_url = false;
+    var seen_flag = false;
+    var seen_escapes = false;
+    for (settings.params) |p| {
+        if (std.mem.eql(u8, p.name, "url")) {
+            seen_url = true;
+            try testing.expectEqualStrings("cmd:op read op://Private/hook", p.value);
+        } else if (std.mem.eql(u8, p.name, "verbose")) {
+            // A boolean parameter is the *text* true, because `Param.value`
+            // is a string on both sides of the wire.
+            seen_flag = true;
+            try testing.expectEqualStrings("true", p.value);
+        } else if (std.mem.eql(u8, p.name, "quote")) {
+            seen_escapes = true;
+            try testing.expectEqualStrings(
+                "a \"quoted\" value, a backslash \\, and 中文",
+                p.value,
+            );
+        }
+    }
+    try testing.expect(seen_url);
+    try testing.expect(seen_flag);
+    try testing.expect(seen_escapes);
+}
+
 test "the older flat file still delivers" {
     // Before this, the file held parameters alone and the main config said
     // which plugins were on. Reading such a file as "not enabled" would stop
@@ -1976,4 +2185,185 @@ test "settings are written whole or not at all" {
         error.FileNotFound,
         std.Io.Dir.cwd().access(io, try std.fmt.allocPrint(alloc, "{s}.new", .{path}), .{}),
     );
+}
+
+test "the launch table, read from both sides of the system it switches on" {
+    // **The table is asserted with the target as an argument, on purpose.**
+    // Baked to `builtin.os.tag`, the Windows rows would be unreachable from a
+    // test on the build machine: "the `.ps1` row is wrong" would be something
+    // no test here could ever go red for, and the row would be carried on
+    // nothing but the care of whoever wrote it. Both sides are read here.
+    const alloc = testing.allocator;
+
+    // --- POSIX: unchanged, and that is the load-bearing claim -------------
+    //
+    // Seven plugins in this repository ship a `.sh` that runs today. The
+    // command line for them must come out of this function **exactly** as it
+    // went in: one element, the path, nothing added. Anything else is a
+    // regression in the thing that already works, bought to fix the thing
+    // that does not.
+    for ([_]std.Target.Os.Tag{ .macos, .linux, .freebsd }) |tag| {
+        const argv = (try launchArgvFor(alloc, tag, "/x/claude-code/provision.sh")).?;
+        defer alloc.free(argv);
+        try testing.expectEqual(@as(usize, 1), argv.len);
+        try testing.expectEqualStrings("/x/claude-code/provision.sh", argv[0]);
+
+        // A plugin with no extension at all -- a compiled binary -- is the
+        // same story.
+        const bare = (try launchArgvFor(alloc, tag, "/x/thing/plugin")).?;
+        defer alloc.free(bare);
+        try testing.expectEqual(@as(usize, 1), bare.len);
+        try testing.expectEqualStrings("/x/thing/plugin", bare[0]);
+
+        // And `archive.py`, which is shipped and must keep working: a
+        // shebang is all POSIX needs.
+        const py = (try launchArgvFor(alloc, tag, "/x/archive/archive.py")).?;
+        defer alloc.free(py);
+        try testing.expectEqual(@as(usize, 1), py.len);
+
+        // What POSIX cannot start.
+        try testing.expect((try launchArgvFor(alloc, tag, "/x/p/provision.ps1")) == null);
+        try testing.expect((try launchArgvFor(alloc, tag, "/x/p/run.cmd")) == null);
+    }
+
+    // --- Windows ----------------------------------------------------------
+    {
+        const argv = (try launchArgvFor(alloc, .windows, "C:\\p\\qwen-code\\provision.ps1")).?;
+        defer alloc.free(argv);
+
+        try testing.expectEqual(@as(usize, 7), argv.len);
+        try testing.expectEqualStrings("powershell", argv[0]);
+        try testing.expectEqualStrings("-NoProfile", argv[1]);
+        try testing.expectEqualStrings("-NonInteractive", argv[2]);
+        try testing.expectEqualStrings("-ExecutionPolicy", argv[3]);
+        try testing.expectEqualStrings("Bypass", argv[4]);
+
+        // `-File` and not `-Command`: measured on the Windows test machine,
+        // `powershell -Command "..."` echoes the command instead of running
+        // it. And the path comes last, as `-File`'s argument.
+        try testing.expectEqualStrings("-File", argv[5]);
+        try testing.expectEqualStrings("C:\\p\\qwen-code\\provision.ps1", argv[6]);
+    }
+
+    {
+        const argv = (try launchArgvFor(alloc, .windows, "C:\\p\\x\\go.CMD")).?;
+        defer alloc.free(argv);
+        // Extensions are case-insensitive on Windows, so the table is too.
+        try testing.expectEqual(@as(usize, 3), argv.len);
+        try testing.expectEqualStrings("cmd", argv[0]);
+        try testing.expectEqualStrings("/c", argv[1]);
+    }
+
+    // **The case the whole mechanism exists for.** Seven shipped plugins
+    // declare a `.sh`; on Windows that used to be `error.InvalidExe` at
+    // spawn, then a back-off, then the same failure again.
+    try testing.expect((try launchArgvFor(alloc, .windows, "C:\\p\\c\\provision.sh")) == null);
+    try testing.expect((try launchArgvFor(alloc, .windows, "C:\\p\\a\\archive.py")) == null);
+
+    // A native binary is still just run.
+    {
+        const argv = (try launchArgvFor(alloc, .windows, "C:\\p\\x\\tool.exe")).?;
+        defer alloc.free(argv);
+        try testing.expectEqual(@as(usize, 1), argv.len);
+    }
+}
+
+/// A directory holding one `plugin.json`, for the manifest tests.
+fn manifestDir(alloc: Allocator, io: std.Io, json: []const u8) ![]const u8 {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-execos-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+
+    var f = try d.createFile(io, "plugin.json", .{});
+    defer f.close(io);
+    try f.writeStreamingAll(io, json);
+
+    return dir;
+}
+
+test "a manifest names the file for this system, and says so when there is none" {
+    // `exec_<os>` is purely additive: a manifest that names only `exec` means
+    // what it always meant. The key is spelled with `builtin.os.tag`'s own
+    // name so this test reads the same row the product will.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const os_key = "exec_" ++ @tagName(builtin.os.tag);
+
+    // 1. Only `exec`. Unchanged behaviour, and on this system it runs.
+    {
+        const dir = try manifestDir(alloc, io,
+            \\{"key":"only-exec","exec":"provision.sh"}
+        );
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        const m = try load(alloc, io, dir);
+        try testing.expectEqualStrings(
+            try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{dir}),
+            m.exec,
+        );
+        try testing.expect(m.runnable != (builtin.os.tag == .windows));
+    }
+
+    // 2. Both, and the one for this system wins.
+    {
+        const json = try std.fmt.allocPrint(
+            alloc,
+            "{{\"key\":\"both\",\"exec\":\"provision.sh\",\"{s}\":\"chosen.bin\"}}",
+            .{os_key},
+        );
+        const dir = try manifestDir(alloc, io, json);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        const m = try load(alloc, io, dir);
+        try testing.expectEqualStrings(
+            try std.fmt.allocPrint(alloc, "{s}/chosen.bin", .{dir}),
+            m.exec,
+        );
+        try testing.expect(m.runnable);
+    }
+
+    // 3. A key for some other system is not this system's, and the fallback
+    //    still applies. Picking it up would be worse than ignoring it: the
+    //    plugin would run a file written for somebody else's OS.
+    {
+        const other = if (builtin.os.tag == .windows) "exec_linux" else "exec_windows";
+        const json = try std.fmt.allocPrint(
+            alloc,
+            "{{\"key\":\"other\",\"exec\":\"provision.sh\",\"{s}\":\"not-ours.x\"}}",
+            .{other},
+        );
+        const dir = try manifestDir(alloc, io, json);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        const m = try load(alloc, io, dir);
+        try testing.expectEqualStrings(
+            try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{dir}),
+            m.exec,
+        );
+    }
+
+    // 4. **The third state.** A manifest naming only something this system
+    //    cannot start is not malformed -- `load` succeeds, and says so on
+    //    `runnable`. Reported once at load rather than discovered at every
+    //    spawn; see `Manifest.runnable`.
+    {
+        const foreign = if (builtin.os.tag == .windows) "provision.sh" else "provision.ps1";
+        const json = try std.fmt.allocPrint(
+            alloc,
+            "{{\"key\":\"foreign\",\"exec\":\"{s}\"}}",
+            .{foreign},
+        );
+        const dir = try manifestDir(alloc, io, json);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        const m = try load(alloc, io, dir);
+        try testing.expect(!m.runnable);
+        try testing.expectEqualStrings("foreign", m.key);
+    }
 }

@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Registers Polter's MCP server with OpenAI's Codex CLI and mirrors Polter's skills into ~/.codex/skills/polter-*. Codex keeps TOML at ~/.codex/config.toml under mcp_servers, not the mcpServers every other host uses; the registration goes through `codex mcp` either way.",
   "exec": "provision.sh",
+  "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
   "wants": {
     "events": [

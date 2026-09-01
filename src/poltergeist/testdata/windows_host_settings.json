@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "params": {
+    "quote": "a \"quoted\" value, a backslash \\, and 中文",
+    "url": "cmd:op read op://Private/hook",
+    "verbose": "true"
+  }
+}

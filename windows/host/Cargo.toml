@@ -30,6 +30,16 @@ features = [
 ]
 
 [dependencies]
+# **Chosen over hand-writing a parser, and the reason is the judge, not the
+# code.** The settings file is written here and read by `Plugin.zig`, so the
+# failure that matters is "the two implementations disagree" -- and a
+# hand-written parser with its own unit tests proves only that it agrees with
+# itself. The cross-implementation check is a fixture this host writes and a
+# Zig test reads (`test "settings written by the Windows host"`), and that
+# check works the same whichever parser is underneath. Once the judge is the
+# same, the 200 lines are just 200 lines.
+serde_json = "1"
+
 # The #[implement] macro expands to paths rooted at `windows_core`, so it has
 # to be a direct dependency even though `windows` re-exports the same types.
 windows-core = "0.62"

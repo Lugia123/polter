@@ -122,7 +122,7 @@ pub fn sync(frame: HWND) {
     }
 
     // Pure read under the lock; every window call happens after it is dropped.
-    let wanted: Vec<(Vec<Branch>, Axis, RECT)> = {
+    let (wanted, panes, zoomed): (Vec<(Vec<Branch>, Axis, RECT)>, usize, bool) = {
         let st = tabs::state();
         let sh = crate::strip::strip_h(st.scale);
         let Some(bounds) = tabs::content_bounds(frame, sh) else {
@@ -131,8 +131,14 @@ pub fn sync(frame: HWND) {
         let Some(tab) = st.tabs.get(st.active) else {
             return;
         };
+        // Recorded so the log can carry the whole claim: for a tree of P
+        // panes with nothing zoomed, there are exactly P-1 boundaries. Two
+        // numbers on one line is a check anyone can do; "N dividers" alone
+        // needs a second source to mean anything.
+        let panes = tab.tree.panes().len();
+        let zoomed = tab.tree.zoomed().is_some();
         let t = scaled_thickness(frame) as f64;
-        tab.tree
+        let rects = tab.tree
             .dividers(bounds, t)
             .into_iter()
             .map(|d| {
@@ -147,7 +153,8 @@ pub fn sync(frame: HWND) {
                     },
                 )
             })
-            .collect()
+            .collect();
+        (rects, panes, zoomed)
     };
 
     let hinst = unsafe {
@@ -213,7 +220,12 @@ pub fn sync(frame: HWND) {
                 let _ = ShowWindow(d.hwnd, SW_HIDE);
             }
         }
-        logf!("[div] sync: {} dividers", wanted.len());
+        logf!(
+            "[div] sync: {} dividers for {} panes, zoomed={}",
+            wanted.len(),
+            panes,
+            zoomed
+        );
     });
 }
 
@@ -285,8 +297,9 @@ fn drag_to(frame: HWND, idx: usize) {
     };
 
     if changed {
+        // `layout` syncs the dividers itself; calling it here as well would be
+        // a second place that has to stay in agreement with the first.
         tabs::layout(frame);
-        sync(frame);
     }
 }
 

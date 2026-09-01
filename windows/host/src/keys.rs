@@ -123,6 +123,10 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 fn accelerator(vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<&'static str> {
     match (ctrl, shift, vk) {
         (true, true, VK_T) => Some("new_tab"),
+        // The plugin page has no action of its own: the core knows nothing
+        // about a settings window, so unlike `new_tab` this one can never be
+        // superseded by a core default. It stays.
+        (true, true, VK_OEM_COMMA) => Some("__polter_plugin_page"),
         (true, true, VK_W) => Some("close_tab:this"),
         (true, true, VK_C) => Some("copy_title_to_clipboard"),
         (true, true, VK_M) => Some("toggle_maximize"),
@@ -241,7 +245,18 @@ pub fn handle_key_message(
             let ctrl = down(VK_CONTROL);
             let shift = down(VK_SHIFT);
             if let Some(name) = accelerator(VIRTUAL_KEY(vk), ctrl, shift) {
-                let ok = crate::binding(name);
+                // Two kinds of entry live in that table. Most are core action
+                // names and go to `ghostty_surface_binding_action`. A `__polter_`
+                // one names something the core has never heard of -- sending it
+                // there would just return false, and the accelerator would look
+                // like it did not fire.
+                let ok = match name {
+                    "__polter_plugin_page" => {
+                        crate::settings_ui::request_toggle();
+                        true
+                    }
+                    _ => crate::binding(name),
+                };
                 logf!("[key] host accelerator {:?} -> binding_action = {}", name, ok);
                 consumed = ok;
             }

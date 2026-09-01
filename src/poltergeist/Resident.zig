@@ -1542,8 +1542,29 @@ fn main(self: *Resident) void {
 
                 const pair: ?Stderr = if (plan == .pair) Stderr.make() else null;
 
+                // **The one place a plugin's command line is built.**
+                // `Plugin.launchArgv` owns the extension table; nothing here
+                // knows that a `.ps1` needs an interpreter, and nothing else
+                // is allowed to learn it. The end-to-end tests below call the
+                // same function for the same reason -- a test that built its
+                // own argv would be checking its own idea of the command line
+                // and would stay green while nothing started.
+                const argv = (Plugin.launchArgv(scratch, self.exec) catch null) orelse {
+                    // Cannot happen for a plugin the app started: `load`
+                    // refuses to mark one runnable that this system cannot
+                    // start. Handled anyway, and loudly, because the
+                    // alternative to a refusal here is the restart loop this
+                    // whole mechanism exists to remove.
+                    self.note(
+                        .warn,
+                        "nothing on this system can start {s}; not spawning",
+                        .{self.exec},
+                    );
+                    break :step .failure;
+                };
+
                 child = std.process.spawn(io, .{
-                    .argv = &.{self.exec},
+                    .argv = argv,
 
                     // **The user's `PATH`, not the launcher's.** A Polter
                     // started from the Dock or a `.desktop` file has the
@@ -2230,7 +2251,11 @@ test "the archive plugin we ship answers the greeting the host really writes" {
     const exec = try std.fmt.allocPrint(alloc, "{s}/archive.py", .{dir});
 
     var child = std.process.spawn(io, .{
-        .argv = &.{exec},
+        // **The same expansion the product uses.** Built by hand here, this
+        // test would assert over its own idea of the command line: get
+        // `launchArgv` wrong and it stays green while nothing starts. The
+        // point of running the shipped script is to run it the shipped way.
+        .argv = (try Plugin.launchArgv(alloc, exec)).?,
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .inherit,
@@ -3449,7 +3474,11 @@ fn runShippedProvision(
     if (argv_log) |path| try env.put("POLTER_TEST_ARGV", path);
 
     var child = std.process.spawn(io, .{
-        .argv = &.{exec},
+        // **The same expansion the product uses.** Built by hand here, this
+        // test would assert over its own idea of the command line: get
+        // `launchArgv` wrong and it stays green while nothing starts. The
+        // point of running the shipped script is to run it the shipped way.
+        .argv = (try Plugin.launchArgv(alloc, exec)).?,
         .environ_map = &env,
         .stdin = .pipe,
         .stdout = .pipe,

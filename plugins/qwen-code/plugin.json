@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Registers Polter's MCP server with Alibaba's Qwen Code (~/.qwen/settings.json). Skills are not installed: Qwen Code advertises them but its directory has not been confirmed, and Polter's guidance stays reachable through skill_read and the tool map in the MCP handshake.",
   "exec": "provision.sh",
+  "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
   "wants": {
     "events": [

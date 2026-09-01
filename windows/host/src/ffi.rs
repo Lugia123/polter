@@ -237,9 +237,19 @@ const _: () = {
 /// Resolved entry points. We load at runtime rather than link, because the
 /// build installs no import library for ghostty-internal.dll, and because
 /// the width table lives in a *different* DLL than the surface API.
+/// `ghostty_diagnostic_s`. **One field: there is no line number.** A criterion
+/// that promises to show where in the file the error is cannot be met from
+/// this API; the message is the whole of what the core reports.
+#[repr(C)]
+pub struct Diagnostic {
+    pub message: *const c_char,
+}
+
 pub struct Api {
     pub init: unsafe extern "C" fn(usize, *const *const c_char) -> i32,
     pub config_new: unsafe extern "C" fn() -> Config,
+    pub config_diagnostics_count: unsafe extern "C" fn(Config) -> u32,
+    pub config_get_diagnostic: unsafe extern "C" fn(Config, u32) -> Diagnostic,
     pub config_load_default_files: unsafe extern "C" fn(Config),
     pub config_finalize: unsafe extern "C" fn(Config),
     pub app_new: unsafe extern "C" fn(*const RuntimeConfig, Config) -> App,

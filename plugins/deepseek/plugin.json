@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Registers Polter's MCP server with DeepSeek-TUI by editing ~/.deepseek/mcp.json. DeepSeek ships no CLI of its own -- this targets the third-party DeepSeek-TUI, which can change its config shape without notice, so failures here are reported loudly. Needs python3. DeepSeek-TUI documents no skills mechanism.",
   "exec": "provision.sh",
+  "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
   "wants": {
     "events": [

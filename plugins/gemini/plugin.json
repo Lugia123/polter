@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Registers Polter's MCP server with Google's Gemini CLI and mirrors Polter's skills into ~/.gemini/skills/polter-*.",
   "exec": "provision.sh",
+  "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
   "wants": {
     "events": [

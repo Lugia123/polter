@@ -483,6 +483,20 @@ pub fn layout(frame: HWND) {
         }
         let _ = InvalidateRect(Some(frame), None, false);
     }
+
+    // **The dividers follow the panes, from here and nowhere else.**
+    //
+    // This was originally hooked to the frame's `WM_SIZE`, which is one of
+    // ten call sites of this function -- and not one of the ones that matter:
+    // splitting, closing and zooming all change the layout without changing
+    // the frame's size, so a split produced panes with no divider between
+    // them. Putting it at the end of the one function every layout change
+    // goes through is the structure; hooking each caller was a rule, and nine
+    // callers did not know about it.
+    //
+    // Safe here specifically because the `STATE` guard above has already been
+    // dropped: `sync` takes that lock itself.
+    crate::divider::sync(frame);
 }
 
 /// Create one pane: a child window at the rectangle the tree gave it, plus
