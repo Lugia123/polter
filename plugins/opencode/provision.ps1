@@ -12,8 +12,15 @@ $PolterHostKey = 'opencode'
 $PolterHostLabel = 'opencode'
 $PolterHostBin = 'opencode'
 
-# **opencode has no `mcp add`, so this one edits the user's file**, with all
-# the care that requires -- see `Edit-PolterJson`. It is also the host whose
+# **`opencode mcp add` exists as of opencode 1.2.10, and it still cannot be
+# used**: measured 2026-09-01, it takes no arguments and is an interactive
+# wizard -- with stdin closed it prints `Enter MCP server name` and waits.
+# A plugin that called it would hang until `timeout_ms` killed it. The `.sh`
+# beside this file carries the measurement, and the confirmation from
+# `opencode mcp list` that opencode reads the shape written below.
+#
+# **So this one edits the user's file**, with all the care that requires --
+# see `Edit-PolterJson`. It is also the host whose
 # shape is furthest from the rest: the key is `mcp`, not `mcpServers`, and an
 # entry is an object with `type` and `command` as a list, not a `command`
 # string with `args` beside it. Copying a sibling into this file produces a

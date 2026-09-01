@@ -56,6 +56,14 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 | --- | --- | --- |
 | **A. 有 `x mcp add` 子命令** | 调命令，不碰文件 | claude, codex, gemini, qwen, kimi |
 | **B. 只能改 JSON 配置** | 读→合并→写 | opencode, deepseek |
+
+> **B 族的判据是「能不能非交互地调用」，不是「有没有那个子命令」。**
+> `opencode mcp add` **是存在的**（2026-09-01 实测 opencode 1.2.10），但它是一个
+> **交互向导**，一个位置参数都不接——`opencode mcp add` 直接进「Enter MCP server name」
+> 的提示符。**照着 `--help` 把 opencode 改成 A 族，会得到一个一直挂到宿主超时的插件，
+> 而那从插件那侧看起来只是「闲着」。**
+> 归族没错，早先写的理由（「没有 `mcp add`」）错了；**「没有这个命令」和「有但用不了」
+> 在文档里是同一个结论，在代码里是不同的防线。**
 | **C. IDE 专用** | **不做** | cursor, windsurf, kiro, cline, 通义灵码 IDE, 文心快码 |
 
 **A 族优先，而且优先得有理由**：调一条命令是那家自己维护的接口，格式、锁、原子

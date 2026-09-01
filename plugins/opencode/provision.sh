@@ -12,8 +12,34 @@ POLTER_HOST_KEY=opencode
 POLTER_HOST_LABEL="opencode"
 POLTER_HOST_BIN=opencode
 
-# **opencode has no `mcp add`, so this one edits the user's file**, with all
-# the care that requires -- see `polter_json_edit`. It is also the host whose
+# **`opencode mcp add` exists, and it still cannot be used.** The comment
+# here used to say opencode had no such subcommand; as of opencode 1.2.10 it
+# does -- `opencode mcp` offers `add`, `list`, `auth`, `logout`, `debug`.
+# **Measured 2026-09-01: `opencode mcp add` takes no arguments at all.** It is
+# an interactive wizard; run with stdin closed it prints `Enter MCP server
+# name` and waits. There is nothing to pass a name and a command to.
+#
+# So the conclusion this file was written on is unchanged, **but its reason
+# is not the one it used to give**, and the difference matters: somebody who
+# reads `opencode mcp add` in the help and "fixes" this plugin to call it will
+# produce a plugin that hangs until the host's `timeout_ms` kills it.
+#
+# **What opencode itself confirmed, which is the part nobody had checked.**
+# Written by this plugin into a scratch `$HOME` and then read back by
+# `opencode mcp list`:
+#
+#     ●  ✗ polter  failed
+#          ENOENT: no such file or directory, posix_spawn '/opt/polter/polter'
+#          /opt/polter/polter +mcp
+#     └  1 server(s)
+#
+# It found the entry, understood `mcp` / `type` / `command`-as-a-list, and
+# went as far as trying to spawn it -- the `ENOENT` is the fake path in the
+# fixture, not a rejection. Until then every test of this shape had asked our
+# own reader whether our own writer had written what we expected.
+#
+# **This one edits the user's file**, with all the care that requires -- see
+# `polter_json_edit`. It is also the host whose
 # shape is furthest from the rest: the key is `mcp`, not `mcpServers`, and an
 # entry is an object with `type` and `command` as a list, not a `command`
 # string with `args` beside it. Copying a sibling into this file produces a
