@@ -88,6 +88,11 @@ pub struct Tab {
     /// action entirely.
     pub role: u8,
     pub shielded: bool,
+    /// The shell's working directory, as the core last reported it
+    /// (`GHOSTTY_ACTION_PWD`). Kept so a reopened tab lands where the closed
+    /// one was, which is the whole of what makes "reopen" different from
+    /// "new tab".
+    pub cwd: Option<String>,
 }
 
 impl Tab {
@@ -128,6 +133,16 @@ pub enum Op {
     /// is how anything reaches the thread that owns windows, so it comes
     /// through here too.
     ToggleQuickTerminal,
+    /// Put a closed tab back: its shell starts in `cwd`, it gets its old name
+    /// back, and it goes back to `index` rather than onto the end.
+    ///
+    /// **Queued rather than done at the menu**, because it makes a window,
+    /// and `create_tab` must run on the thread that owns them.
+    ReopenTab {
+        cwd: String,
+        title: String,
+        index: usize,
+    },
 }
 
 pub struct State {
@@ -153,6 +168,23 @@ pub struct State {
     /// Typed into the first shell as if the user had typed it (`--clock`).
     /// Owned here because the core reads the pointer during `surface_new`.
     pub initial_input: Option<std::ffi::CString>,
+    /// Working directories reported for a surface that has no `Tab` yet.
+    ///
+    /// **This exists because of an ordering, not as a cache.** The core emits
+    /// `pwd` from inside `ghostty_surface_new`, and that call happens before
+    /// the `Tab` holding the pane is pushed. Without somewhere to put it the
+    /// first `pwd` of every tab is dropped -- and the symptom would be that
+    /// reopening a tab you never `cd`'d in lands in the wrong place.
+    pub pending_cwd: Vec<(usize, String)>,
+    /// **The directory actually handed to `sc.working_directory`** by the
+    /// last `create_pane`, or `None` when none was.
+    ///
+    /// Written where the pointer is set, read by the restore log line. It
+    /// exists because that line must report the value that was *used*, not
+    /// the one the caller meant to use -- the same value right up until the
+    /// moment worth catching, when the string could not be made into a
+    /// `CString` and the shell quietly started somewhere else.
+    pub last_pane_cwd: Option<String>,
 }
 
 impl State {
@@ -171,6 +203,8 @@ impl State {
             next_id: 1,
             initial: None,
             initial_input: None,
+            pending_cwd: Vec::new(),
+            last_pane_cwd: None,
         }
     }
 }
@@ -543,12 +577,16 @@ pub fn layout(frame: HWND) {
 /// from `GetClientRect` of this HWND inside `surface_new`, and a surface built
 /// on a placeholder-sized window renders black with no error anywhere. See
 /// docs/windows/development.md section 5.2, item 4.
+#[allow(clippy::too_many_arguments)]
 fn create_pane(
     frame: HWND,
     app: App,
     hinst: windows::Win32::Foundation::HINSTANCE,
     id: PaneId,
     r: TreeRect,
+    // Where the shell should start. `None` means "wherever the core would
+    // have put it"; only a reopened tab passes anything.
+    cwd: Option<String>,
 ) -> Option<Pane> {
     let scale = state().scale;
     let (x, y) = (r.x as i32, r.y as i32);
@@ -594,6 +632,27 @@ fn create_pane(
     if let Some(cmd) = &initial_input {
         sc.initial_input = cmd.as_ptr();
     }
+    // Same lifetime rule as `initial_input`: the core reads the pointer
+    // during `surface_new`, so the CString has to outlive that call.
+    let cwd_c = match cwd {
+        None => None,
+        Some(c) => match std::ffi::CString::new(c.clone()) {
+            Ok(c) => Some(c),
+            Err(_) => {
+                // An interior NUL. Said out loud, because the alternative is a
+                // shell that starts somewhere else for a reason nothing records.
+                logf!("[pane] {} cwd {:?} has an interior NUL; using the default directory", id, c);
+                None
+            }
+        },
+    };
+    // **Written where the pointer is set.** This is what the restore line
+    // reports, so that line cannot say `cwd=X` while the surface got nothing.
+    state().last_pane_cwd = cwd_c.as_ref().map(|c| c.to_string_lossy().to_string());
+    if let Some(c) = &cwd_c {
+        sc.working_directory = c.as_ptr();
+        logf!("[pane] {} starting in {:?}", id, c);
+    }
 
     let s = unsafe { (api().surface_new)(app, &sc) };
     if s.is_null() {
@@ -637,6 +696,16 @@ fn take_id() -> u64 {
 /// Returns false and logs if either half fails. The caller keeps running --
 /// a tab that could not be made is not a reason to lose the ones that exist.
 pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTANCE) -> bool {
+    create_tab_in(frame, app, hinst, None)
+}
+
+/// A new tab whose shell starts in `cwd`. `create_tab` is this with `None`.
+pub fn create_tab_in(
+    frame: HWND,
+    app: App,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    cwd: Option<String>,
+) -> bool {
     let sh = strip_h(state().scale);
     let Some(bounds) = content_bounds(frame, sh) else {
         logf!("[tab] no client area yet; not creating a tab");
@@ -650,9 +719,13 @@ pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINS
     // constructed* while the guard for that value's destination was held.
     let id = take_id();
     let tab_id = TabId(take_id());
-    let Some(pane) = create_pane(frame, app, hinst, id, bounds) else {
+    let Some(pane) = create_pane(frame, app, hinst, id, bounds, cwd) else {
         return false;
     };
+    // **Read before the tab exists, because the core reports it before the
+    // tab exists.** `pwd` can arrive during `surface_new`, which runs inside
+    // `create_pane` above -- at which point there is no `Tab` to write it to.
+    let pane_surface = pane.surface;
     {
         let mut st = state();
         st.tabs.push(Tab {
@@ -664,6 +737,7 @@ pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINS
             color: 0,
             role: 0,
             shielded: false,
+            cwd: take_pending_cwd(pane_surface),
         });
         st.active = st.tabs.len() - 1;
     }
@@ -714,7 +788,7 @@ fn split_focused(
         return;
     };
 
-    let Some(pane) = create_pane(frame, app, hinst, id, r) else {
+    let Some(pane) = create_pane(frame, app, hinst, id, r, None) else {
         return;
     };
     {
@@ -893,6 +967,52 @@ pub fn close_tabs_right_of(frame: HWND, id: TabId) {
     }
     set_active(frame, active_index().min(count().saturating_sub(1)));
     logf!("[tab] closed {} tabs right of {:?}; count now {}", n, id, count());
+}
+
+/// Record the working directory the core reported for a surface.
+///
+/// **Keyed on the surface the action was targeted at, never on the active
+/// tab.** A background tab's shell changes directory as freely as the focused
+/// one; writing every `pwd` onto whichever tab is in front would quietly give
+/// tab A's directory to tab B, and the only place it would ever show is a
+/// reopened tab landing somewhere the user never was.
+pub fn set_cwd_for_surface(surface: Surface, cwd: String) -> bool {
+    let key = surface as usize;
+    let mut st = state();
+    for tab in st.tabs.iter_mut() {
+        if tab.panes.iter().any(|p| p.surface == key) {
+            tab.cwd = Some(cwd);
+            return true;
+        }
+    }
+    // No tab yet: it is still being built. Held until `create_tab` collects it.
+    st.pending_cwd.retain(|(s, _)| *s != key);
+    st.pending_cwd.push((key, cwd));
+    false
+}
+
+/// Take whatever `pwd` arrived for a surface before its tab existed.
+fn take_pending_cwd(surface: usize) -> Option<String> {
+    let mut st = state();
+    let at = st.pending_cwd.iter().position(|(s, _)| *s == surface)?;
+    Some(st.pending_cwd.remove(at).1)
+}
+
+/// Teach `reopen.rs` how to build a tab. Called once, at startup.
+///
+/// **The stack is `reopen.rs`'s and tab creation is this file's**, and this
+/// is the one line where they meet. The first version of this kept a second
+/// stack here -- the same fact stored twice, and the two already disagreed
+/// about the bound (20 there, 10 here) before either had run once.
+pub fn install_reopen_opener() {
+    crate::reopen::set_opener(|e| {
+        post_op(Op::ReopenTab {
+            cwd: e.cwd.clone(),
+            title: e.title.clone(),
+            index: e.index,
+        });
+        true
+    });
 }
 
 /// Every tab's colour, by identity, in one lock.
@@ -1196,17 +1316,31 @@ fn free_pane(id: PaneId, hwnd: isize, surface: usize) {
 }
 
 fn destroy_tab_at(frame: HWND, idx: usize) {
-    let doomed: Vec<(PaneId, isize, usize)> = {
+    // Both come out of the one critical section: the panes to free, and what
+    // `reopen.rs` should be told once the guard is gone.
+    let (doomed, remembered): (Vec<(PaneId, isize, usize)>, Option<(String, String)>) = {
         let mut st = state();
         if idx >= st.tabs.len() {
             return;
         }
         let tab = st.tabs.remove(idx);
+        // Taken while the tab is still whole; handed to `reopen.rs` below,
+        // **after this guard is dropped** -- `remember` takes its own lock and
+        // logs, and this file's rule is that `STATE` is held across neither.
+        let remembered = Some((tab.title.clone(), tab.cwd.clone().unwrap_or_default()));
         if st.active >= st.tabs.len() && !st.tabs.is_empty() {
             st.active = st.tabs.len() - 1;
         }
-        tab.panes.iter().map(|p| (p.id, p.hwnd, p.surface)).collect()
+        (
+            tab.panes.iter().map(|p| (p.id, p.hwnd, p.surface)).collect(),
+            remembered,
+        )
     };
+    if let Some((title, cwd)) = remembered {
+        // `remember` refuses an empty cwd, loudly: a tab that reopens in the
+        // wrong directory is worse than one that does not reopen at all.
+        crate::reopen::remember(idx, &title, &cwd);
+    }
     logf!("[close] tab index {} -> {} pane(s)", idx, doomed.len());
     for (id, hwnd, surface) in doomed {
         free_pane(id, hwnd, surface);
@@ -1417,6 +1551,43 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
         match op {
             Op::NewTab => {
                 create_tab(frame, app, hinst);
+            }
+            Op::ReopenTab { cwd, title, index } => {
+                if !create_tab_in(frame, app, hinst, Some(cwd.clone())) {
+                    // Back on the stack: `reopen_last` already popped it, and
+                    // an entry dropped here would make the next undo reopen
+                    // the wrong tab with nothing to say why.
+                    logf!("[reopen] could not create the tab; putting {:?} back", title);
+                    crate::reopen::remember(index, &title, &cwd);
+                    continue;
+                }
+                // `create_tab_in` appends and activates, so the tab just made
+                // is the last one -- and it is picked up **by identity here**,
+                // before anything else can reorder, so the rename and the move
+                // below cannot land on a different tab.
+                let Some(id) = state().tabs.last().map(|t| t.id) else {
+                    continue;
+                };
+                rename_tab(frame, id, title.clone());
+                // Back where it was. Clamped by `move_tab_to` itself: the tab
+                // list is shorter now than when it was closed, and index 7 of
+                // a 3-tab strip has to mean "the end", not "nowhere".
+                move_tab_to(frame, id, index);
+                // **Both halves are read back, not intended.** The index is
+                // where the tab actually is after the move, and the directory
+                // is the one `create_pane` actually handed to the surface --
+                // W3's K1 floor compares this line against the `cd` output on
+                // screen, and a line printed from the copy on the stack would
+                // agree with itself while the shell stood somewhere else.
+                let used = state().last_pane_cwd.clone().unwrap_or_default();
+                let at = index_of(id).map(|(i, _)| i).unwrap_or(0);
+                logf!(
+                    "[reopen] restored {:?} cwd={:?} at index {} of {}",
+                    title,
+                    used,
+                    at,
+                    count()
+                );
             }
             Op::CloseTab(mode) => {
                 let (active, n) = (active_index(), count());

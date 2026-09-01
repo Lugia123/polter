@@ -395,24 +395,52 @@ pub fn format_trigger(t: TriggerC) -> Option<String> {
     }
 }
 
+/// Why a lookup did not produce a usable trigger, or the trigger it did.
+///
+/// **Four outcomes, not one `None`.** They are four different faults with one
+/// symptom -- "the hotkey is the built-in one" -- and collapsing them into a
+/// single `Option` is what made the last one take three round trips on the
+/// test machine to tell apart from the first. Each gets its own log line at
+/// the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lookup {
+    /// `ghostty_config_trigger` is not exported by the core that loaded.
+    NoLookup,
+    /// The host has no config handle yet.
+    NoConfig,
+    /// The config was read and this action simply has no key bound to it.
+    Unbound,
+    Bound(TriggerC),
+}
+
+/// The raw trigger bound to a core action, with the reason when there is none.
+pub fn trigger_lookup(action: &str) -> Lookup {
+    let Some(f) = config_trigger_fn() else {
+        return Lookup::NoLookup;
+    };
+    let cfg = crate::config_handle();
+    if cfg.is_null() {
+        return Lookup::NoConfig;
+    }
+    let t = unsafe { f(cfg, action.as_ptr(), action.len()) };
+    // Same "no binding" probe as `format_trigger`, so the two cannot disagree
+    // about whether an action is bound.
+    if t.tag == TRIGGER_CATCH_ALL || (t.tag == TRIGGER_PHYSICAL && t.key == KEY_UNIDENTIFIED) {
+        return Lookup::Unbound;
+    }
+    Lookup::Bound(t)
+}
+
 /// The raw trigger bound to a core action right now.
 ///
 /// `shortcut_for` renders this for display; a caller that has to *act* on the
 /// binding -- `RegisterHotKey` needs a virtual-key code, not a label -- needs
 /// the numbers instead. Same lookup, same no-caching rule.
 pub fn trigger_for(action: &str) -> Option<TriggerC> {
-    let f = config_trigger_fn()?;
-    let cfg = crate::config_handle();
-    if cfg.is_null() {
-        return None;
+    match trigger_lookup(action) {
+        Lookup::Bound(t) => Some(t),
+        _ => None,
     }
-    let t = unsafe { f(cfg, action.as_ptr(), action.len()) };
-    // Same "no binding" probe as `format_trigger`, so the two cannot disagree
-    // about whether an action is bound.
-    if t.tag == TRIGGER_CATCH_ALL || (t.tag == TRIGGER_PHYSICAL && t.key == KEY_UNIDENTIFIED) {
-        return None;
-    }
-    Some(t)
 }
 
 /// The key combination bound to a core action right now, e.g.

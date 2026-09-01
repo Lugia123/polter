@@ -74,6 +74,7 @@ pub const ACTION_GOTO_TAB: u32 = 16;
 pub const ACTION_SIZE_LIMIT: u32 = 23;
 pub const ACTION_RESET_WINDOW_SIZE: u32 = 24;
 pub const ACTION_SET_TAB_TITLE: u32 = 35;
+pub const ACTION_PWD: u32 = 38;
 pub const ACTION_COPY_TITLE_TO_CLIPBOARD: u32 = 68;
 /// The three tags after `copy_title_to_clipboard`, counted off
 /// `ghostty_action_tag_e` in `include/ghostty.h`. **The count was checked

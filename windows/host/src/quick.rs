@@ -393,23 +393,60 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
         // It also makes the failure path *testable without writing a
         // program to squat on a key*: point the config at a combination
         // something else already owns and `RegisterHotKey` fails for real.
-        let (mods, vk, combo) = match crate::keys::trigger_for("toggle_quick_terminal")
-            .and_then(hotkey_from_trigger)
-        {
-            Some(v) => v,
-            None => {
-                // Nothing bound, or a trigger this host cannot turn into a
-                // virtual key. Falls back, and **says which**, because "the
-                // hotkey is not the one I configured" and "the hotkey is the
-                // default because nothing was configured" are different
-                // problems with the same symptom.
+        // **Four outcomes, four different lines.** They all end in the same
+        // built-in fallback, so on screen they are one symptom; a single line
+        // covering all four cost three round trips on the test machine to
+        // tell the first from the last, and only an unrelated `diagnostics`
+        // count made it possible at all.
+        use crate::keys::Lookup;
+        let resolved = match crate::keys::trigger_lookup("toggle_quick_terminal") {
+            Lookup::NoLookup => {
                 logf!(
-                    "[quick] toggle_quick_terminal has no usable binding;                      falling back to the built-in {}",
+                    "[quick] ghostty_config_trigger is not exported by this core, so no \
+                     configured hotkey can be read at all; using the built-in {}",
                     HOTKEY_COMBO
                 );
-                (MOD_CONTROL, VK_OEM_3.0 as u32, HOTKEY_COMBO.to_string())
+                None
             }
+            Lookup::NoConfig => {
+                logf!(
+                    "[quick] no config handle yet, so the hotkey could not be looked up; \
+                     using the built-in {}",
+                    HOTKEY_COMBO
+                );
+                None
+            }
+            Lookup::Unbound => {
+                logf!(
+                    "[quick] the config was read and toggle_quick_terminal has no keybind \
+                     in it; using the built-in {}",
+                    HOTKEY_COMBO
+                );
+                None
+            }
+            Lookup::Bound(t) => match hotkey_from_trigger(t) {
+                Some(v) => Some(v),
+                None => {
+                    // **The case that actually happened.** The tag, key and
+                    // mods are in the line because without them it says only
+                    // "something was bound and I could not use it", which is
+                    // exactly where the last investigation stalled.
+                    logf!(
+                        "[quick] toggle_quick_terminal IS bound (tag={} key=0x{:x} mods=0x{:x} \
+                         = {:?}) but this host cannot turn it into a RegisterHotKey \
+                         combination; using the built-in {}",
+                        t.tag,
+                        t.key,
+                        t.mods,
+                        crate::keys::format_trigger(t),
+                        HOTKEY_COMBO
+                    );
+                    None
+                }
+            },
         };
+        let (mods, vk, combo) =
+            resolved.unwrap_or((MOD_CONTROL, VK_OEM_3.0 as u32, HOTKEY_COMBO.to_string()));
         let r = RegisterHotKey(Some(owner), HOTKEY_ID, mods | MOD_NOREPEAT, vk);
         // `GetLastError` is read **before** anything else can clobber it, and
         // only on the failing branch, because on the success branch it holds

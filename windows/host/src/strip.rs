@@ -1398,16 +1398,17 @@ fn report_remaining(before: &[TabId], what: &str) {
 // ------------------------------------------------- the blank-strip right-click
 
 /// The three rows for the empty part of the strip (`s4.md` §3.3).
+/// The blank-strip rows. The third field is whether the row does something
+/// the core knows about; `reopen_closed_tab` is the host's own, so it is
+/// dispatched here rather than handed to `binding`.
 const STRIP_MENU: &[(&str, &str, bool)] = &[
     ("新建标签", "new_tab", true),
-    // **Greyed, and this is a gap in the host, not in the core.** macOS's row
-    // calls `reopenClosedTab:`, an application selector backed by
-    // `ClosedTabs.swift`'s stack of closed tabs. Nothing equivalent exists
-    // here: `destroy_tab_at` frees the panes and keeps nothing. That is a
-    // piece of S4 nobody has written yet, roughly 70-100 lines; it is not
-    // "the core does not support it", and the two read very differently a
-    // year from now.
-    ("重开关闭的标签", "reopen_closed_tab", false),
+    // **The host's, not the core's.** There is no `reopen_closed_tab` in
+    // `Binding.zig`; macOS's row calls `reopenClosedTab:`, an application
+    // selector backed by `ClosedTabs.swift`. The equivalent stack lives in
+    // `reopen.rs`, so the action string here names the host and is never
+    // handed to `binding_action`, which would silently return false.
+    ("重开关闭的标签", "host:reopen_closed_tab", false),
     ("命令面板", "toggle_command_palette", true),
 ];
 
@@ -1417,10 +1418,16 @@ fn show_strip_menu(frame: HWND, x: i32, y: i32) {
             logf!("[stripmenu] CreatePopupMenu failed");
             return;
         };
-        for (i, (label, _, enabled)) in STRIP_MENU.iter().enumerate() {
+        // Greyed only when there is genuinely nothing to reopen -- not
+        // because the feature is missing. A row that is grey for one reason
+        // today and another reason tomorrow has to say which, and the log
+        // line below is where it says it.
+        let can_reopen = crate::reopen::can_reopen();
+        for (i, (label, action, _)) in STRIP_MENU.iter().enumerate() {
             let mut wide: Vec<u16> = label.encode_utf16().collect();
             wide.push(0);
-            let flags = if *enabled { MF_STRING } else { MF_STRING | MF_GRAYED };
+            let live = *action != "host:reopen_closed_tab" || can_reopen;
+            let flags = if live { MF_STRING } else { MF_STRING | MF_GRAYED };
             let _ = AppendMenuW(menu, flags, STRIP_ID_BASE + i, PCWSTR(wide.as_ptr()));
         }
         logf!(
@@ -1447,21 +1454,37 @@ fn show_strip_menu(frame: HWND, x: i32, y: i32) {
         logf!("[stripmenu] dismissed without a choice");
         return;
     }
-    let Some((label, action, enabled)) =
+    let Some((label, action, _)) =
         chosen.checked_sub(STRIP_ID_BASE).and_then(|i| STRIP_MENU.get(i))
     else {
         logf!("[stripmenu] returned an id outside the table: {}", chosen);
         return;
     };
-    // A greyed row cannot be picked, so reaching here with one means the
-    // flags and the table disagree -- worth a line rather than a silent no-op.
-    let ok = if *enabled {
-        crate::binding(action)
+    // Host rows never reach `binding_action`: an action name the core does
+    // not have returns false and does nothing, which is the failure mode this
+    // whole evening has been about.
+    let ok = if let Some(host) = action.strip_prefix("host:") {
+        run_strip_host_action(host)
     } else {
-        logf!("[stripmenu] a disabled row was picked: {:?}", label);
-        false
+        crate::binding(action)
     };
     logf!("[stripmenu] pick {:?} -> {} ok={}", label, action, ok as u8);
+}
+
+/// The blank-strip rows the core knows nothing about.
+fn run_strip_host_action(name: &str) -> bool {
+    match name {
+        // **The whole of it is one call.** The stack, the bound, the refusal
+        // to remember a tab with no directory, and the log lines around all
+        // three belong to `reopen.rs`; this row's only job is to press the
+        // button. Reading the stack here as well is how the greying and the
+        // action come to disagree.
+        "reopen_closed_tab" => crate::reopen::reopen_last(),
+        other => {
+            logf!("[stripmenu] no host handler for {:?}", other);
+            false
+        }
+    }
 }
 
 /// A right button released over the strip's **client** part: the tabs, their
@@ -2177,12 +2200,19 @@ mod menu_inset_tests {
             assert!(!a.contains(' '), "binding names have no spaces: {a}");
             assert!(a.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c == ':'));
         }
-        for (label, action, enabled) in STRIP_MENU {
-            if !enabled {
+        for (label, action, _) in STRIP_MENU {
+            assert!(!action.is_empty(), "{label} has no action");
+            assert!(!action.contains(' '), "action names have no spaces: {action}");
+            // A host row must be marked as one. An unmarked name goes to
+            // `binding_action`, which does not have it, and returns false
+            // without saying why -- the exact silence this table avoids.
+            if action.starts_with("host:") {
                 continue;
             }
-            assert!(!action.is_empty(), "{label} is enabled with no action");
-            assert!(!action.contains(' '), "binding names have no spaces: {action}");
+            assert!(
+                action.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c == ':'),
+                "unexpected characters in the core action {action}",
+            );
         }
     }
 }

@@ -43,6 +43,7 @@ mod palette;
 mod plugins;
 mod settings_ui;
 mod quick;
+mod reopen;
 mod search;
 mod shell;
 mod strip;
@@ -905,10 +906,26 @@ extern "C" fn cb_read_clipboard(ud: *mut c_void, kind: u32, state: *mut c_void) 
 /// is recorded as that block still being unwritten -- but the alternative is
 /// a paste that works for one line and not for two.
 ///
-/// **A refusal leaks the request state, knowingly.** The only exported way to
-/// release it is to complete the request, and completing it *is* pasting; so
-/// the choice is a few bytes or pasting what the user just declined. There is
-/// no third option in the C API today, and inventing a silent "yes" is not one.
+/// **A refusal does not leak, and the way out is worth stating.** The only
+/// exported entry point is `complete_clipboard_request`, so "cancel" has to be
+/// spelled as a completion that does nothing. `embedded.zig:800-832` only
+/// keeps the request when the completion throws `UnsafePaste` /
+/// `UnauthorizedPaste`; every other outcome, errors included, falls through to
+/// `alloc.destroy(state)`. So completing with an **empty string** frees it:
+///
+///  * `.paste` -> `completeClipboardPaste` returns at `if (data.len == 0)`,
+///    which is its **first** line, ahead of the safety check. Nothing is
+///    pasted and no error is thrown.
+///  * `.osc_52_read` -> replies with an empty OSC 52 payload, which is the
+///    right answer to a read the user declined: the client gets its reply and
+///    learns nothing about the clipboard.
+///
+/// **`confirmed: true`, and the reason is the OSC 52 branch, not the paste
+/// one.** For `.paste` either value works, because the length check is
+/// reached first. For `.osc_52_read`, `confirmed: false` with
+/// `clipboard-read = ask` throws `UnauthorizedPaste` again
+/// (`Surface.zig:6591`), which calls straight back into this function --
+/// round and round, and the state is never released.
 extern "C" fn cb_confirm_read_clipboard(
     ud: *mut c_void,
     s: *const std::os::raw::c_char,
@@ -956,10 +973,23 @@ extern "C" fn cb_confirm_read_clipboard(
     };
     logf!("[clip] paste confirmation: pane={} answered {}", pane, if yes { "yes" } else { "no" });
     if !yes {
-        // Deliberate: see the note above. The request state stays allocated
-        // because completing it is the only way to release it, and completing
-        // it would paste.
-        logf!("[clip] paste declined; the core's request state is not reclaimable without pasting");
+        // **Not `.osc_52_write`.** That branch hands the string straight to
+        // `setClipboard`, so completing it with an empty one would *clear*
+        // the user's clipboard rather than leave it alone. It cannot arrive
+        // here today -- `setClipboard` returns no error, so it never reaches
+        // the catch that calls this function -- but the day it can, emptying
+        // the clipboard on a refusal is not the failure to discover late.
+        if req == ffi::CLIPBOARD_REQUEST_OSC_52_WRITE {
+            logf!(
+                "[clip] declined an OSC 52 write; not completing it, because an empty completion would clear the clipboard"
+            );
+            return;
+        }
+        let empty = std::ffi::CString::default();
+        unsafe {
+            (api().surface_complete_clipboard_request)(surface, empty.as_ptr(), state, true);
+        }
+        logf!("[clip] paste declined; completed empty so the core releases the request");
         return;
     }
     unsafe {
@@ -1047,6 +1077,23 @@ extern "C" fn cb_close_surface(ud: *mut c_void, _confirm: bool) {
         return;
     }
     tabs::post_op(tabs::Op::ClosePane(id));
+}
+
+/// The surface an action was aimed at, or `None`.
+///
+/// **`ghostty_target_u` is a union whose only member is a surface**, so when
+/// the tag says `APP` that field is not a surface -- it is whatever happened
+/// to be in those eight bytes. Reading it unconditionally is how a per-surface
+/// fact gets filed against a pointer that names nothing, and the result looks
+/// exactly like a correct program until two surfaces disagree.
+///
+/// One function so that every arm that needs a target asks the same question;
+/// three arms doing it inline is three chances for the fourth to forget.
+fn target_surface(target: &Target) -> Option<Surface> {
+    if target.tag != ffi::TARGET_SURFACE || target.surface.is_null() {
+        return None;
+    }
+    Some(target.surface)
 }
 
 extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
@@ -1141,11 +1188,12 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // The tag is checked because the union only holds a surface: an
             // app-targeted action's `surface` field is not one, and recording
             // a per-surface fact against it would key the table on garbage.
-            if target.tag == ffi::TARGET_SURFACE && !target.surface.is_null() {
-                hud::on_readonly_for(target.surface as usize, on);
-                logf!("[action] readonly={} surface={:?}", on, target.surface);
-            } else {
-                logf!("[action] readonly={} with no surface (tag={}); dropped", on, target.tag);
+            match target_surface(&target) {
+                Some(s) => {
+                    hud::on_readonly_for(s as usize, on);
+                    logf!("[action] readonly={} surface={:?}", on, s);
+                }
+                None => logf!("[action] readonly={} with no surface (tag={}); dropped", on, target.tag),
             }
             true
         }
@@ -1205,6 +1253,28 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             }
             true
         }
+        // **Per surface, and this is the arm that makes "reopen" land in the
+        // right directory.** Using the active tab here would file tab A's
+        // directory against tab B -- and nothing would show it until a
+        // reopened tab started somewhere the user had never been.
+        ffi::ACTION_PWD => {
+            let Some(cwd) = action.as_cstr().map(|c| c.to_string_lossy().to_string()) else {
+                return true;
+            };
+            match target_surface(&target) {
+                Some(s) => {
+                    let attached = tabs::set_cwd_for_surface(s, cwd.clone());
+                    // `attached=0` is not a failure: `pwd` arrives from inside
+                    // `surface_new`, before the tab exists, and is held until
+                    // it does. It is logged because "held" and "lost" would
+                    // otherwise look the same.
+                    logf!("[action] pwd {:?} surface={:?} attached={}", cwd, s, attached as u8);
+                }
+                None => logf!("[action] pwd {:?} with no surface (tag={}); dropped", cwd, target.tag),
+            }
+            true
+        }
+
         ACTION_SET_TAB_TITLE => {
             if let Some(t) = action.as_cstr() {
                 let t = t.to_string_lossy().to_string();
@@ -1225,9 +1295,8 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // writes two fields under the same lock every `Op` would have taken.
         ffi::ACTION_POLTERGEIST_MARK => {
             let (role, shielded) = action.as_poltergeist_mark();
-            let found = target.tag == ffi::TARGET_SURFACE
-                && !target.surface.is_null()
-                && tabs::set_mark_for_surface(target.surface, role as u8, shielded);
+            let found = target_surface(&target)
+                .is_some_and(|s| tabs::set_mark_for_surface(s, role as u8, shielded));
             // The surface's own right-click menu wants the same three bits.
             // It reads them back out of `tabs::mark_for_surface`; this call
             // is the notification that they changed, not a second copy.
@@ -2026,6 +2095,12 @@ fn main() {
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
+
+    // Before the first tab, because the first tab can be closed. `reopen.rs`
+    // keeps the stack and `tabs.rs` builds the tabs; this is the one line
+    // where the two are introduced.
+    tabs::install_reopen_opener();
+    logf!("[reopen] opener installed; stack {:?}", reopen::stack_depth());
 
     // ---- first tab ----
     if !tabs::create_tab(hwnd, app, hinst) {
