@@ -16,8 +16,32 @@ $PolterHostBin = 'gemini'
 # CLI rather than by hand for the reason every host here is: that file holds
 # the user's whole setup, and re-serialising it to add one key reorders all of
 # it.
+# **The staleness check reads the config file; registration still goes
+# through the CLI.**
+#
+# `gemini mcp list` cannot answer this question: it prints the command and
+# its arguments and **never the environment**, which is where the version
+# marker lives, and it prints that listing on **stderr**, which
+# `Get-PolterCliOutput` discards. Either fault alone makes `stale` always
+# yes; together they made this plugin rewrite the user's settings on every
+# launch -- the exact race the read-before-write exists to prevent.
+# Measured on gemini 0.33.1 via the `.sh` beside this file.
+#
+# Reading their file is not writing it: `Register-HostMcp` still goes through
+# `gemini mcp add` and nothing here writes a byte. The full reasoning, and
+# what was measured, is in the `.sh` beside this file; both must agree.
+function Get-PolterGeminiConfig {
+    Join-Path $script:PolterHome '.gemini\settings.json'
+}
+
 function Get-HostMcpCurrent {
-    Get-PolterCliOutput 'gemini' @('mcp', 'list')
+    Read-PolterJson (Get-PolterGeminiConfig) {
+        param($d)
+        $entry = Get-PolterIn $d @('mcpServers', 'polter')
+        $command = Get-PolterIn $entry @('command')
+        $marker = Get-PolterIn $entry @('env', 'POLTER_REGISTERED')
+        "$command $marker"
+    }
 }
 
 function Register-HostMcp {

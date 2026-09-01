@@ -19,8 +19,41 @@ POLTER_HOST_BIN=qwen
 # these files break together. Whoever fixes one should check the other.
 # (iFlow CLI was the third of this shape; its service closed on 2026-04-17
 # and the plugin went with it.)
+# **The staleness check reads the config file; registration still goes
+# through the CLI.** Those are two different rules and only one of them was
+# ever in force here.
+#
+# `qwen mcp list` cannot answer this question. It prints the command and
+# its arguments -- `polter: /opt/polter/polter +mcp (stdio) - Disconnected` --
+# and **never the environment**, which is where the version marker lives. It
+# also prints that listing on **stderr**, so the old `2>/dev/null | grep`
+# read an empty string no matter what. Either fault alone makes `stale`
+# always yes; together they made this plugin **rewrite the user's settings on
+# every single launch**, which is the exact race the read-before-write exists
+# to prevent (`MCP server "polter" is already configured ... updated in user
+# settings.` on run two, and every run after). **Not measured**: nobody has run `qwen mcp list` and looked. Qwen Code
+# is a fork of gemini-cli and its `mcp` subcommand group has the same five
+# verbs, so the same hole is expected -- but expected is not measured, and
+# the only reason this change is safe to make unmeasured is the paragraph
+# below.
+#
+# **Reading their file is not writing it.** The rule this plugin follows is
+# "the tool that owns the file knows how to edit it", and it still holds:
+# `host_mcp_register` goes through `qwen mcp add` and nothing here ever
+# writes a byte. Reading it to decide whether that call is needed at all is
+# what `opencode` and `deepseek` already do for their half.
+#
+# **The degradation is the old behaviour.** `polter_json_read` prints nothing
+# when there is no `python3`, when the file is missing, or when it does not
+# parse -- all of which read as "not registered", which costs one redundant
+# write and never a missed one. So this cannot be worse than what it
+# replaces, which is why it was safe to apply to both forks at once.
+# `python3` is deliberately **not** added to `wants.exec`: unlike `opencode`
+# and `deepseek`, this plugin still works without it.
 host_mcp_current() {
-  qwen mcp list 2>/dev/null | grep polter || true
+  polter_json_read "$home/.qwen/settings.json" \
+    'p = (d.get("mcpServers") or {}).get("polter", {});
+print(p.get("command", ""), (p.get("env") or {}).get("POLTER_REGISTERED", ""))'
 }
 
 host_mcp_register() {

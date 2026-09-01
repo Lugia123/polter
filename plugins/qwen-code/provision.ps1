@@ -22,8 +22,33 @@ $PolterHostBin = 'qwen'
 # On Windows what `Get-Command` finds is `qwen.cmd`, the npm shim, not an
 # `.exe`. `Invoke-PolterCli` asks for `-CommandType Application`, which a
 # `.cmd` satisfies; nothing else about the call changes.
+# **The staleness check reads the config file; registration still goes
+# through the CLI.**
+#
+# `qwen mcp list` cannot answer this question: it prints the command and
+# its arguments and **never the environment**, which is where the version
+# marker lives, and it prints that listing on **stderr**, which
+# `Get-PolterCliOutput` discards. Either fault alone makes `stale` always
+# yes; together they made this plugin rewrite the user's settings on every
+# launch -- the exact race the read-before-write exists to prevent.
+# **Not measured for this CLI** -- see the `.sh` beside this file, which
+# says why the change is safe to make unmeasured anyway.
+#
+# Reading their file is not writing it: `Register-HostMcp` still goes through
+# `qwen mcp add` and nothing here writes a byte. The full reasoning, and
+# what was measured, is in the `.sh` beside this file; both must agree.
+function Get-PolterQwenConfig {
+    Join-Path $script:PolterHome '.qwen\settings.json'
+}
+
 function Get-HostMcpCurrent {
-    Get-PolterCliOutput 'qwen' @('mcp', 'list')
+    Read-PolterJson (Get-PolterQwenConfig) {
+        param($d)
+        $entry = Get-PolterIn $d @('mcpServers', 'polter')
+        $command = Get-PolterIn $entry @('command')
+        $marker = Get-PolterIn $entry @('env', 'POLTER_REGISTERED')
+        "$command $marker"
+    }
 }
 
 function Register-HostMcp {

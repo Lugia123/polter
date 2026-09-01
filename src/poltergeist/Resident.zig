@@ -3713,6 +3713,7 @@ test "the mcp add line keeps `-e` after the positional arguments" {
             try c.writeStreamingAll(io,
                 \\#!/bin/sh
                 \\{ echo "--CALL--"; for a in "$@"; do echo "$a"; done; } >> "$POLTER_TEST_ARGV"
+                \\{ echo "ENV HOME=$HOME"; command -v python3 || echo "ENV NOPYTHON"; ls -l "$HOME/.$(basename "$0")/settings.json" 2>&1; } >> "$POLTER_TEST_ARGV"
                 \\exit 0
                 \\
             );
@@ -3784,6 +3785,126 @@ test "the mcp add line keeps `-e` after the positional arguments" {
 
         // The value went with the flag rather than being lost between the two.
         try testing.expect(find(argv, "POLTER_REGISTERED=1.2.3") != null);
+    }
+}
+
+test "a registration that is already current is not written again" {
+    // **The hole this closes was found by running a real CLI, not by reading
+    // the code.** `gemini mcp list` prints the command and its arguments and
+    // **never the environment**, which is where the version marker lives --
+    // and it prints that listing on stderr, which the plugin was discarding.
+    // Either fault alone makes the staleness test always say "stale"; together
+    // they made the plugin re-register on **every single launch**, rewriting a
+    // file its owner rewrites too. That is the precise race the read-before-
+    // write exists to prevent, and it had been happening since the file was
+    // written.
+    //
+    // Nothing caught it because nothing ever asked **whether `mcp add` was
+    // issued at all** -- every test so far asserted on what the command line
+    // looked like once it happened. So this counts the invocations instead:
+    // same build twice is one, a new build is two.
+    //
+    // The stub emulates the one thing about the real CLI that matters here --
+    // that `mcp add` leaves the entry, marker and all, in the config the
+    // plugin now reads back. Measured against gemini 0.33.1 before being
+    // written this way: run 1 registers, run 2 is silent, run 3 with a new
+    // version registers again and the marker moves.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const pair: []const struct {
+        key: []const u8,
+        bin: []const u8,
+        src: []const u8,
+    } = &.{
+        .{ .key = "qwen-code", .bin = "qwen", .src = @embedFile("plugin_qwen_code_sh") },
+        .{ .key = "gemini", .bin = "gemini", .src = @embedFile("plugin_gemini_sh") },
+    };
+
+    for (pair) |host| {
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-stale-{x}", .{&raw});
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        const argv_log = try std.fmt.allocPrint(alloc, "{s}/argv.txt", .{dir});
+
+        {
+            var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+            defer d.close(io);
+
+            try d.createDirPath(io, host.key);
+            var f = try d.createFile(
+                io,
+                try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{host.key}),
+                fixtureMode(0o755),
+            );
+            try f.writeStreamingAll(io, host.src);
+            f.close(io);
+
+            try d.createDirPath(io, "_sdk");
+            var sdk = try d.createFile(io, "_sdk/provision.sh", fixtureMode(0o644));
+            try sdk.writeStreamingAll(io, @embedFile("plugin_sdk_provision_sh"));
+            sdk.close(io);
+
+            try d.createDirPath(io, "bin");
+            var c = try d.createFile(
+                io,
+                try std.fmt.allocPrint(alloc, "bin/{s}", .{host.bin}),
+                fixtureMode(0o755),
+            );
+            try c.writeStreamingAll(io, mcp_add_stub);
+            c.close(io);
+
+            var sk = try d.createFile(io, "mine.md", .{});
+            try sk.writeStreamingAll(io,
+                \\---
+                \\name: mine
+                \\version: 1
+                \\description: a skill for the test
+                \\---
+                \\
+                \\Body.
+                \\
+            );
+            sk.close(io);
+        }
+
+        const count = struct {
+            fn f(a: Allocator, i: std.Io, path: []const u8) !usize {
+                const text = std.Io.Dir.cwd().readFileAlloc(i, path, a, .unlimited) catch return 0;
+                var n: usize = 0;
+                var calls = std.mem.splitSequence(u8, text, "--CALL--\n");
+                _ = calls.next();
+                while (calls.next()) |call| {
+                    if (std.mem.startsWith(u8, call, "mcp\nadd\n")) n += 1;
+                }
+                return n;
+            }
+        }.f;
+
+        try runShippedProvision(alloc, io, dir, host.key, "1.2.3", argv_log);
+        try testing.expectEqual(@as(usize, 1), try count(alloc, io, argv_log));
+
+        // The same build again. **Nothing may be written.** Before the fix
+        // this was two, and would have been three, four, once per launch for
+        // ever.
+        try runShippedProvision(alloc, io, dir, host.key, "1.2.3", argv_log);
+        try testing.expectEqual(@as(usize, 1), try count(alloc, io, argv_log));
+
+        // A different build must still get through, or the fix would have
+        // bought idempotence by breaking the thing the marker is for.
+        try runShippedProvision(alloc, io, dir, host.key, "9.9.9", argv_log);
+        try testing.expectEqual(@as(usize, 2), try count(alloc, io, argv_log));
+
+        try runShippedProvision(alloc, io, dir, host.key, "9.9.9", argv_log);
+        try testing.expectEqual(@as(usize, 2), try count(alloc, io, argv_log));
     }
 }
 
@@ -3882,6 +4003,34 @@ test "a plugin's child gets the environment the host prepared, not the host's ow
 /// anyway. The POSIX side is unchanged, and it is load-bearing there: the
 /// scripts below are about to be run by the plugin host, and without the
 /// executable bit they cannot be.
+/// A stand-in for a `mcp add` CLI: it records what it was called with, and on
+/// `add` it leaves behind the entry the real one leaves, marker included.
+/// That last part is the whole point -- the staleness check reads it back.
+///
+/// It works out its own config directory from `$0`, so one literal serves
+/// both hosts and nothing has to be formatted into it. `qwen` -> `.qwen` and
+/// `gemini` -> `.gemini` happens to hold; that is a convenience of the
+/// fixture, not a claim about either product.
+const mcp_add_stub =
+    \\#!/bin/sh
+    \\{ echo "--CALL--"; for a in "$@"; do echo "$a"; done; } >> "$POLTER_TEST_ARGV"
+    \\if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "add" ]; then
+    \\  dir="$HOME/.$(basename "$0")"
+    \\  exe=""
+    \\  marker=""
+    \\  for a in "$@"; do
+    \\    case "$a" in
+    \\      POLTER_REGISTERED=*) marker=${a#POLTER_REGISTERED=} ;;
+    \\      /*) exe=$a ;;
+    \\    esac
+    \\  done
+    \\  mkdir -p "$dir"
+    \\  printf '{"mcpServers":{"polter":{"command":"%s","args":["+mcp"],"env":{"POLTER_REGISTERED":"%s"}}}}\n' "$exe" "$marker" > "$dir/settings.json"
+    \\fi
+    \\exit 0
+    \\
+;
+
 fn fixtureMode(comptime mode: u32) std.Io.File.CreateFlags {
     return switch (builtin.os.tag) {
         .windows => .{},
