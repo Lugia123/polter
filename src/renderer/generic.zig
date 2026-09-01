@@ -45,6 +45,18 @@ const DisplayLink = switch (builtin.os.tag) {
 
 const log = std.log.scoped(.generic_renderer);
 
+/// How many frames the Windows resize instrumentation has printed.
+///
+/// **Instrumentation, and it is deliberately `log.info`.** On Windows the lib
+/// artifact only reaches a sink at all when `GHOSTTY_LOG=stderr` is set, and
+/// that sink drops `log.debug` in a release build -- so a `debug` line here
+/// would be absent both when the canvas is fine and when `drawFrame` never
+/// runs, which are the two things this line exists to tell apart. It prints
+/// the first `rsz_log_max` frames unconditionally so "no line at all" can
+/// only mean "this function is not being called".
+var rsz_log_count: usize = 0;
+const rsz_log_max: usize = 20;
+
 /// Create a renderer type with the provided graphics API wrapper.
 ///
 /// The graphics API wrapper must provide the interface outlined below.
@@ -1498,6 +1510,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.hasAnimations() or
                 sync;
 
+            // Windows canvas-follows-resize instrumentation. Four measured
+            // numbers and one computed flag on a single line; nothing here is
+            // a statement about success. See `rsz_log_count`.
+            if (comptime builtin.os.tag == .windows) {
+                if (rsz_log_count < rsz_log_max or size_changed) {
+                    rsz_log_count += 1;
+                    log.info(
+                        "[rsz] surface={d}x{d} screen={d}x{d} changed={} needs_redraw={}",
+                        .{
+                            surface_size.width,     surface_size.height,
+                            self.size.screen.width, self.size.screen.height,
+                            size_changed,           needs_redraw,
+                        },
+                    );
+                }
+            }
+
             if (!needs_redraw) {
                 // We still need to present the last target again, because the
                 // apprt may be swapping buffers and display an outdated frame
@@ -1552,8 +1581,21 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // If this frame's target isn't the correct size, or the target
             // config has changed (such as when the blending mode changes),
             // remove it and replace it with a new one with the right values.
-            if (frame.target.width != self.size.screen.width or
-                frame.target.height != self.size.screen.height or
+            const target_stale = frame.target.width != self.size.screen.width or
+                frame.target.height != self.size.screen.height;
+            if (comptime builtin.os.tag == .windows) {
+                if (rsz_log_count <= rsz_log_max or target_stale) {
+                    log.info(
+                        "[rsz] target={d}x{d} screen={d}x{d} stale={}",
+                        .{
+                            frame.target.width,     frame.target.height,
+                            self.size.screen.width, self.size.screen.height,
+                            target_stale,
+                        },
+                    );
+                }
+            }
+            if (target_stale or
                 frame.target_config_modified != self.target_config_modified)
             {
                 try frame.resize(
