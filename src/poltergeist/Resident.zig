@@ -3379,7 +3379,7 @@ fn runShippedClaudeCode(
     dir: []const u8,
     version: []const u8,
 ) !void {
-    return runShippedProvision(alloc, io, dir, "claude-code", version, null);
+    return runShippedProvision(alloc, io, dir, .{ .key = "claude-code", .version = version });
 }
 
 /// One run of a shipped host plugin, start to finish.
@@ -3390,14 +3390,41 @@ fn runShippedClaudeCode(
 ///
 /// `argv_log`, when given, is handed to the stub in the environment so it can
 /// record what it was called with. See the `mcp add` test below.
+/// What one run needs beyond the fixture. Everything here has a default that
+/// keeps the original behaviour, so a caller that wants none of it says none.
+const ShippedRun = struct {
+    key: []const u8,
+    version: []const u8,
+
+    /// Handed to the stub in the environment so it can record its argv.
+    argv_log: ?[]const u8 = null,
+
+    /// When given, the plugin's standard error is captured here instead of
+    /// being inherited. Some of what this plugin promises is only ever said
+    /// on stderr -- `status=failed step=mcp -- no python3 ...` is the whole
+    /// of one contract -- and a test that cannot read it can only assert
+    /// that something went wrong, not that the right thing was said.
+    stderr_out: ?*std.ArrayList(u8) = null,
+
+    /// What follows the fixture's own `bin` on `PATH`. Overridden by the one
+    /// test that needs a machine without `python3` on it.
+    path_tail: []const u8 = "/usr/bin:/bin",
+
+    /// Whether the batch must be acknowledged true. A refusal is the correct
+    /// answer to some events, and a helper that treated every refusal as a
+    /// harness failure could not test any of them.
+    expect_ok: bool = true,
+};
+
 fn runShippedProvision(
     alloc: Allocator,
     io: std.Io,
     dir: []const u8,
-    key: []const u8,
-    version: []const u8,
-    argv_log: ?[]const u8,
+    opts: ShippedRun,
 ) !void {
+    const key = opts.key;
+    const version = opts.version;
+    const argv_log = opts.argv_log;
     // Laid out the way the bundle lays it out, because the plugin now finds
     // its library by walking `../_sdk` from its own directory. A flat temp
     // directory would resolve that to the parent of the temp directory and
@@ -3411,7 +3438,7 @@ fn runShippedProvision(
     // bug this round is about; here it is pointed at a stub so that the
     // "no claude" branch is not the one under test.
     var env: std.process.Environ.Map = .init(alloc);
-    try env.put("PATH", try std.fmt.allocPrint(alloc, "{s}:/usr/bin:/bin", .{bin}));
+    try env.put("PATH", try std.fmt.allocPrint(alloc, "{s}:{s}", .{ bin, opts.path_tail }));
     try env.put("HOME", home);
     if (argv_log) |path| try env.put("POLTER_TEST_ARGV", path);
 
@@ -3420,7 +3447,7 @@ fn runShippedProvision(
         .environ_map = &env,
         .stdin = .pipe,
         .stdout = .pipe,
-        .stderr = .inherit,
+        .stderr = if (opts.stderr_out == null) .inherit else .pipe,
     }) catch return error.SkipZigTest; // no /bin/sh on this machine
 
     var reaper: reap.Reaper = .init(io, key, child.id, 30 * std.time.ms_per_s);
@@ -3473,9 +3500,12 @@ fn runShippedProvision(
                 _ = child.wait(io) catch {};
                 return error.BatchAnswerWasNotAnAcknowledgement;
             };
-            if (!ack.ok) {
+            if (ack.ok != opts.expect_ok) {
                 _ = child.wait(io) catch {};
-                return error.PluginRefusedTheProvisionEvent;
+                return if (opts.expect_ok)
+                    error.PluginRefusedTheProvisionEvent
+                else
+                    error.PluginAcceptedWhatItShouldHaveRefused;
             }
         },
         else => {
@@ -3486,6 +3516,21 @@ fn runShippedProvision(
 
     stdin.close(io);
     child.stdin = null;
+
+    // Drained before the wait: a child whose stderr pipe fills up blocks in
+    // `write` and never exits, and the wait would then be the thing that
+    // hangs rather than the thing that reports.
+    if (opts.stderr_out) |out| {
+        var buf: [4096]u8 = undefined;
+        var r = child.stderr.?.readerStreaming(io, &buf);
+        var chunk: [1024]u8 = undefined;
+        while (true) {
+            const n = r.interface.readSliceShort(&chunk) catch break;
+            if (n == 0) break;
+            try out.appendSlice(alloc, chunk[0..n]);
+        }
+    }
+
     _ = child.wait(io) catch {};
 
     try testing.expect(!reaper.killed());
@@ -3733,7 +3778,7 @@ test "the mcp add line keeps `-e` after the positional arguments" {
             sk.close(io);
         }
 
-        try runShippedProvision(alloc, io, dir, host.key, "1.2.3", argv_log);
+        try runShippedProvision(alloc, io, dir, .{ .key = host.key, .version = "1.2.3", .argv_log = argv_log });
 
         const text = try std.Io.Dir.cwd().readFileAlloc(io, argv_log, alloc, .unlimited);
 
@@ -3889,22 +3934,268 @@ test "a registration that is already current is not written again" {
             }
         }.f;
 
-        try runShippedProvision(alloc, io, dir, host.key, "1.2.3", argv_log);
+        try runShippedProvision(alloc, io, dir, .{ .key = host.key, .version = "1.2.3", .argv_log = argv_log });
         try testing.expectEqual(@as(usize, 1), try count(alloc, io, argv_log));
 
         // The same build again. **Nothing may be written.** Before the fix
         // this was two, and would have been three, four, once per launch for
         // ever.
-        try runShippedProvision(alloc, io, dir, host.key, "1.2.3", argv_log);
+        try runShippedProvision(alloc, io, dir, .{ .key = host.key, .version = "1.2.3", .argv_log = argv_log });
         try testing.expectEqual(@as(usize, 1), try count(alloc, io, argv_log));
 
         // A different build must still get through, or the fix would have
         // bought idempotence by breaking the thing the marker is for.
-        try runShippedProvision(alloc, io, dir, host.key, "9.9.9", argv_log);
+        try runShippedProvision(alloc, io, dir, .{ .key = host.key, .version = "9.9.9", .argv_log = argv_log });
         try testing.expectEqual(@as(usize, 2), try count(alloc, io, argv_log));
 
-        try runShippedProvision(alloc, io, dir, host.key, "9.9.9", argv_log);
+        try runShippedProvision(alloc, io, dir, .{ .key = host.key, .version = "9.9.9", .argv_log = argv_log });
         try testing.expectEqual(@as(usize, 2), try count(alloc, io, argv_log));
+    }
+}
+
+test "the hosts that edit a config file, and the four properties they promise" {
+    // **The half of the SDK nothing had ever run.** `opencode` and
+    // `deepseek` have no `mcp add` to call, so they edit the user's file
+    // themselves -- `polter_json_edit` and `polter_json_read` -- and that is
+    // a different job from shelling out, with different ways to ruin
+    // somebody's day. Until this test there was no automated coverage of it
+    // at all on the platform it ships to: the PowerShell port had five
+    // assertions over the same ground and the `sh` original had none.
+    //
+    // They are also the only two plugins that override a **fourth** hook,
+    // `config()`. The two write to different paths and disagree about the
+    // shape of the entry, so the test runs both and checks each one's own
+    // shape -- an assertion that only proved the SDK would let exactly the
+    // difference that makes them separate plugins drift unnoticed.
+    //
+    // Four properties, and the first three are the ones written down in
+    // `_sdk/provision.sh` as the reason this code exists at all:
+    //
+    //   1. a file that does not parse is never written;
+    //   2. the same build twice writes nothing;
+    //   3. a different build does write, and the marker moves;
+    //   4. without `python3` it fails **loudly**, naming the reason.
+    //
+    // (4) is the one that needed a machine without `python3` on it, which is
+    // why this test can set its own `PATH`.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const hosts: []const struct {
+        key: []const u8,
+        bin: []const u8,
+        cfg: []const u8,
+        src: []const u8,
+        /// A fragment only this host's shape contains. `opencode` keys on
+        /// `mcp` and writes `command` as a list with a `type`; `deepseek`
+        /// keys on `mcpServers` and writes `command` as a string with `args`
+        /// beside it. Copying one into the other produces a file its reader
+        /// accepts and ignores, which is the failure this pins.
+        shape: []const u8,
+    } = &.{
+        .{
+            .key = "opencode",
+            .bin = "opencode",
+            .cfg = ".config/opencode/opencode.json",
+            .src = @embedFile("plugin_opencode_sh"),
+            .shape = "\"type\": \"local\"",
+        },
+        .{
+            .key = "deepseek",
+            .bin = "deepseek",
+            .cfg = ".deepseek/mcp.json",
+            .src = @embedFile("plugin_deepseek_sh"),
+            .shape = "\"args\": [",
+        },
+    };
+
+    for (hosts) |host| {
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-jsonedit-{x}", .{&raw});
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        const cfg = try std.fmt.allocPrint(alloc, "{s}/home/{s}", .{ dir, host.cfg });
+
+        {
+            var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+            defer d.close(io);
+
+            try d.createDirPath(io, host.key);
+            var f = try d.createFile(
+                io,
+                try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{host.key}),
+                fixtureMode(0o755),
+            );
+            try f.writeStreamingAll(io, host.src);
+            f.close(io);
+
+            try d.createDirPath(io, "_sdk");
+            var sdk = try d.createFile(io, "_sdk/provision.sh", fixtureMode(0o644));
+            try sdk.writeStreamingAll(io, @embedFile("plugin_sdk_provision_sh"));
+            sdk.close(io);
+
+            // Present on `PATH` and never called. These hosts register by
+            // editing a file, so the only thing the binary is for is the
+            // presence check that decides `absent` from everything else.
+            try d.createDirPath(io, "bin");
+            var c = try d.createFile(
+                io,
+                try std.fmt.allocPrint(alloc, "bin/{s}", .{host.bin}),
+                fixtureMode(0o755),
+            );
+            try c.writeStreamingAll(io, "#!/bin/sh\nexit 0\n");
+            c.close(io);
+
+            var sk = try d.createFile(io, "mine.md", .{});
+            try sk.writeStreamingAll(io,
+                \\---
+                \\name: mine
+                \\version: 1
+                \\description: a skill for the test
+                \\---
+                \\
+                \\Body.
+                \\
+            );
+            sk.close(io);
+        }
+
+        // 1. First run writes the file, at the path this host's own
+        //    `config()` returns -- which is how the fourth hook gets
+        //    exercised rather than assumed.
+        var run1: std.ArrayList(u8) = .empty;
+        try runShippedProvision(alloc, io, dir, .{
+            .key = host.key,
+            .version = "1.2.3",
+            .stderr_out = &run1,
+        });
+        try testing.expect(std.mem.indexOf(u8, run1.items, "status=provisioned") != null);
+
+        const first = try std.Io.Dir.cwd().readFileAlloc(io, cfg, alloc, .unlimited);
+        try testing.expect(std.mem.indexOf(u8, first, "polter") != null);
+        try testing.expect(std.mem.indexOf(u8, first, "/nowhere/polter") != null);
+        try testing.expect(std.mem.indexOf(u8, first, "1.2.3") != null);
+        try testing.expect(std.mem.indexOf(u8, first, host.shape) != null);
+
+        // 2. The same build again **does not write**.
+        //
+        //    **The interesting part is how this is asked.** Comparing the
+        //    file before and after does not test this: a plugin that
+        //    rewrites the same values produces the same bytes, so the
+        //    comparison passes while the write it was meant to forbid
+        //    happens every launch. That mutation survived the first version
+        //    of this test, which is the same hole as asserting what a
+        //    command line looks like instead of whether it was issued.
+        //
+        //    `status=provisioned` is the SDK's own report that it wrote
+        //    something, so it is asked directly. The byte comparison stays
+        //    as well -- it catches a different fault, a rewrite that changes
+        //    the file.
+        var run2: std.ArrayList(u8) = .empty;
+        try runShippedProvision(alloc, io, dir, .{
+            .key = host.key,
+            .version = "1.2.3",
+            .stderr_out = &run2,
+        });
+        try testing.expect(std.mem.indexOf(u8, run2.items, "status=provisioned") == null);
+        const second = try std.Io.Dir.cwd().readFileAlloc(io, cfg, alloc, .unlimited);
+        try testing.expectEqualStrings(first, second);
+
+        // 3. A different build does get through, and the marker moves --
+        //    idempotence must not have been bought by disabling the marker.
+        var run3: std.ArrayList(u8) = .empty;
+        try runShippedProvision(alloc, io, dir, .{
+            .key = host.key,
+            .version = "4.5.6",
+            .stderr_out = &run3,
+        });
+        try testing.expect(std.mem.indexOf(u8, run3.items, "status=provisioned") != null);
+        const third = try std.Io.Dir.cwd().readFileAlloc(io, cfg, alloc, .unlimited);
+        try testing.expect(std.mem.indexOf(u8, third, "4.5.6") != null);
+        try testing.expect(std.mem.indexOf(u8, third, "1.2.3") == null);
+
+        // 4. A file that does not parse is refused, not repaired, and it
+        //    comes back untouched. Overwriting somebody's config because we
+        //    could not read it is the one outcome worth refusing outright:
+        //    it is unrecoverable and it is our fault.
+        const broken = "{ this is not json\n";
+        {
+            var bf = try std.Io.Dir.cwd().createFile(io, cfg, .{});
+            try bf.writeStreamingAll(io, broken);
+            bf.close(io);
+        }
+
+        var refused: std.ArrayList(u8) = .empty;
+        try runShippedProvision(alloc, io, dir, .{
+            .key = host.key,
+            .version = "7.8.9",
+            .stderr_out = &refused,
+            .expect_ok = false,
+        });
+
+        const after = try std.Io.Dir.cwd().readFileAlloc(io, cfg, alloc, .unlimited);
+        try testing.expectEqualStrings(broken, after);
+
+        // And it says which file and what the parser thought, because
+        // "could not register" and "your config has a syntax error on line
+        // 12" are not the same sentence to the person who has to fix it.
+        try testing.expect(std.mem.indexOf(u8, refused.items, "cannot parse") != null);
+        try testing.expect(std.mem.indexOf(u8, refused.items, cfg) != null);
+
+        // 5. And with no `python3` on `PATH` it fails loudly rather than
+        //    falling back to something clever. An agent CLI without Polter's
+        //    tools is a disappointment; a mangled config is a broken machine.
+        //
+        //    `PATH` here is a directory of the tools the plugin genuinely
+        //    needs, and **that list is the point**: if the SDK grows a
+        //    dependency, this test fails and somebody finds out.
+        {
+            var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+            defer d.close(io);
+            try d.createDirPath(io, "nopy");
+        }
+        const nopy = try std.fmt.allocPrint(alloc, "{s}/nopy", .{dir});
+        for ([_][]const u8{ "sh", "sed", "awk", "grep", "cat", "ls", "rm", "tr", "mkdir", "dirname" }) |tool| {
+            // **The target has to be checked, not just linked to.** A symlink
+            // to a path that does not exist is created happily and then never
+            // resolves, so a wrong guess here produces a `PATH` that is
+            // missing `dirname` -- and the plugin dies on its first line, for
+            // a reason that has nothing to do with `python3`.
+            const to = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ nopy, tool });
+            for ([_][]const u8{ "/bin", "/usr/bin" }) |root| {
+                const from = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ root, tool });
+                if (!fileExists(io, from)) continue;
+                std.Io.Dir.cwd().symLink(io, from, to, .{}) catch {};
+                break;
+            }
+            if (!fileExists(io, to)) return error.TestFixtureIsMissingATool;
+        }
+
+        // Put the config back so this run has something valid to have
+        // refused for the *right* reason.
+        try std.Io.Dir.cwd().deleteFile(io, cfg);
+
+        var nopylog: std.ArrayList(u8) = .empty;
+        try runShippedProvision(alloc, io, dir, .{
+            .key = host.key,
+            .version = "7.8.9",
+            .stderr_out = &nopylog,
+            .path_tail = nopy,
+            .expect_ok = false,
+        });
+
+        try testing.expect(std.mem.indexOf(u8, nopylog.items, "no python3") != null);
+        try testing.expect(std.mem.indexOf(u8, nopylog.items, "status=failed step=mcp") != null);
+
+        // Nothing was written in the meantime.
+        try testing.expect(!fileExists(io, cfg));
     }
 }
 
@@ -4030,6 +4321,11 @@ const mcp_add_stub =
     \\exit 0
     \\
 ;
+
+fn fileExists(io: std.Io, path: []const u8) bool {
+    _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return true;
+}
 
 fn fixtureMode(comptime mode: u32) std.Io.File.CreateFlags {
     return switch (builtin.os.tag) {

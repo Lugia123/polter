@@ -24,18 +24,23 @@ POLTER_HOST_BIN=qwen
 # ever in force here.
 #
 # `qwen mcp list` cannot answer this question. It prints the command and
-# its arguments -- `polter: /opt/polter/polter +mcp (stdio) - Disconnected` --
-# and **never the environment**, which is where the version marker lives. It
-# also prints that listing on **stderr**, so the old `2>/dev/null | grep`
-# read an empty string no matter what. Either fault alone makes `stale`
-# always yes; together they made this plugin **rewrite the user's settings on
-# every single launch**, which is the exact race the read-before-write exists
-# to prevent (`MCP server "polter" is already configured ... updated in user
-# settings.` on run two, and every run after). **Not measured**: nobody has run `qwen mcp list` and looked. Qwen Code
-# is a fork of gemini-cli and its `mcp` subcommand group has the same five
-# verbs, so the same hole is expected -- but expected is not measured, and
-# the only reason this change is safe to make unmeasured is the paragraph
-# below.
+# its arguments -- `polter: <command> <args> (stdio) - Disconnected` -- and
+# **never the environment**, which is where the version marker lives. So the
+# version could never be found, `stale` was always yes, and this plugin
+# rewrote the user's settings on every single launch: the exact race the
+# read-before-write exists to prevent.
+#
+# **Measured on qwen 0.15.11 (Windows, 2026-09-01), and the answer was not
+# gemini's.** This comment used to say the two forks had the same two faults,
+# and marked that as a guess. Half of the guess was wrong: `qwen mcp list`
+# writes to **stdout**, not stderr (`1>out 2>err` gave 233 bytes and 0), so
+# the stream half of gemini's problem does not apply here -- the old
+# `2>/dev/null | grep` was reading the right stream all along. Only the
+# missing environment applies, and it is enough on its own.
+#
+# **The two forks are not broken in the same way.** They share five `mcp`
+# verbs and have already drifted in what those verbs print; whoever changes
+# one still has to check the other, but must not assume the answer.
 #
 # **Reading their file is not writing it.** The rule this plugin follows is
 # "the tool that owns the file knows how to edit it", and it still holds:

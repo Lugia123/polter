@@ -27,12 +27,14 @@ $PolterHostBin = 'qwen'
 #
 # `qwen mcp list` cannot answer this question: it prints the command and
 # its arguments and **never the environment**, which is where the version
-# marker lives, and it prints that listing on **stderr**, which
-# `Get-PolterCliOutput` discards. Either fault alone makes `stale` always
-# yes; together they made this plugin rewrite the user's settings on every
-# launch -- the exact race the read-before-write exists to prevent.
-# **Not measured for this CLI** -- see the `.sh` beside this file, which
-# says why the change is safe to make unmeasured anyway.
+# marker lives. So the version could never be found, `stale` was always yes,
+# and this plugin rewrote the user's settings on every launch -- the exact
+# race the read-before-write exists to prevent.
+#
+# Measured on qwen 0.15.11 (Windows, 2026-09-01). **Unlike gemini, this one
+# prints its listing on stdout**, so it has one of gemini's two faults and
+# not both. The two forks are not broken the same way; the `.sh` beside this
+# file carries the measurement.
 #
 # Reading their file is not writing it: `Register-HostMcp` still goes through
 # `qwen mcp add` and nothing here writes a byte. The full reasoning, and

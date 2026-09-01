@@ -241,6 +241,23 @@ pub fn add(
         .root_source_file = b.path("plugins/gemini/provision.sh"),
     });
 
+    // **And the two hosts that edit a config file instead of calling an
+    // `mcp add`.** They are the other half of the SDK -- `polter_json_edit`,
+    // `polter_json_read`, and the `python3` those two need -- and until this
+    // was added not one line of that half had ever been run by a test on the
+    // platform it ships to. The PowerShell port had five assertions over it
+    // and the `sh` original had none, which is the wrong way round.
+    //
+    // Both, not one: they are the only two plugins that override a fourth
+    // hook, and they disagree about the shape of what they write. Embedding
+    // one would assert the SDK and let the declarations drift.
+    step.root_module.addAnonymousImport("plugin_opencode_sh", .{
+        .root_source_file = b.path("plugins/opencode/provision.sh"),
+    });
+    step.root_module.addAnonymousImport("plugin_deepseek_sh", .{
+        .root_source_file = b.path("plugins/deepseek/provision.sh"),
+    });
+
     // And the library it sources. A host plugin is a declaration now -- the
     // binary to look for, how that CLI registers a server, where it keeps
     // skills -- and every line of the behaviour the test above asserts over

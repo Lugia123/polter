@@ -155,6 +155,60 @@ hanging on something else. The probe hashes `~/.qwen/settings.json` before and
 after and prints both -- it is supposed to write nothing, and that is checked
 rather than asserted.
 
+## Three things this line of work keeps rediscovering
+
+Written down because each was found the hard way, at a different layer, and
+the third one cost most because nobody was looking for it yet.
+
+### 1. The observing tool corrupts what it observes — and it looks like a defect in the thing under test
+
+Three instances so far, in three different languages, all within two days:
+
+| Where | What it did |
+| --- | --- |
+| A `.cmd` stub recording argv one argument at a time | **`cmd` splits on `=`**, so `POLTER_REGISTERED=1.2.3` arrived as two arguments and an assertion failed about a call that was correct |
+| A Zig multiline string holding a shell script | Zig multiline strings are **raw**, so `\n` reached `printf` as two characters and quietly corrupted the JSON the fixture wrote |
+| A screenshot compared at 0.6 scale | produced a defect that was not in the product |
+
+What makes this expensive is not that the tool is wrong — it is that **the
+direction of the error points at the thing being tested**. All three times the
+first instinct was to go and debug the product.
+
+**Splitting, scaling, decoding and re-encoding are all interpretation.** Record
+the rawest thing available: `%*` rather than `%1 %2 …`, the bytes rather than a
+parse, the command line rather than the argument vector.
+
+### 2. When something is inexplicable, print the intermediate product
+
+Not the assertion's verdict — the artefact itself. Every one of the three above
+was solved in one step by printing what was actually there:
+
+- the recorded argv line, which showed `POLTER_REGISTERED 1.2.3` as two fields
+- the config file, whose contents ended in a literal `\n`
+- the plugin's own stderr, which said `The path is not of a legal form.`
+
+A verdict tells you a test failed. The artefact tells you **who** is wrong, and
+that is usually the question.
+
+### 3. "What does it look like?" and "did it happen at all?" are different assertions
+
+This is the one that keeps finding real bugs, because a suite can be thorough
+about the first and completely silent about the second.
+
+- The `mcp add` argument order was wrong on every platform for as long as the
+  file existed. Every test asserted what the command line looked like once it
+  was issued; **none asked whether it was issued**, and the stub said yes to
+  everything.
+- The staleness check was blind, so the plugin rewrote the user's config on
+  **every launch**. The test that should have caught it compared the file
+  before and after — and a plugin that rewrites the same values produces the
+  same bytes, so it passed. It only went red once it asked the SDK's own
+  `status=provisioned` instead.
+
+**If a property is "this must not happen", do not assert on the state
+afterwards.** Identical state is the expected outcome of both the right
+behaviour and the wrong one. Count the calls, or read the report.
+
 ## Reading `mutate.ps1`
 
 An injection that survives has three possible causes and they are not the
