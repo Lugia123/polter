@@ -598,6 +598,246 @@ pub const Action = union(Key) {
             // whole file's neighbours keep being written to avoid.
             try std.testing.expect(checked >= 40);
         }
+        test "the Windows host's accelerator table" {
+            // **The floor for `windows/host/src/keys.rs`'s `accelerator`.**
+            // That table fires only for keys the core declined, so a row whose
+            // chord the core binds is normally dead -- and "normally" is the
+            // whole problem. A `performable` binding declines whenever its
+            // action cannot be performed right now (`Config.zig` on
+            // `performable`: "If there is no selection, Ghostty behaves as if
+            // the keybind was not set"), and then the host's row runs instead.
+            // That is how `ctrl+shift+c` with no selection came to put the
+            // window *title* on the clipboard while the person was looking at
+            // the text they had just selected.
+            //
+            // So the rule the table now follows is: **a chord the core binds
+            // on Windows does not appear here, even when both name the same
+            // action.** Agreeing today is a coincidence; the core changes one
+            // default and a harmless dead row becomes that clipboard bug, and
+            // until this test existed nothing anywhere reported the change.
+            //
+            // **Why this reads the file instead of building the real bind
+            // set.** `Config.default()` takes no target and the platform
+            // branches are `comptime builtin.target.os.tag.isDarwin()`, so a
+            // test running here gets the *macOS* defaults -- which are `super`
+            // chords that can never collide with the host's `ctrl+shift` rows.
+            // It would pass unconditionally, including on the collision it
+            // exists to catch. Reading the source is the only way to evaluate
+            // the branch this host actually ships.
+            var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
+            var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+
+            const H = struct {
+                const Chord = struct {
+                    physical: bool,
+                    key: []const u8,
+                    ctrl: bool,
+                    shift: bool,
+                };
+
+                /// Read a file or fail. **Not a skip**: a skip would let this
+                /// floor quietly stop existing the first time the suite ran
+                /// from another directory, and nothing would say so.
+                fn read(io_: std.Io, a: std.mem.Allocator, path: []const u8) ![]const u8 {
+                    return std.Io.Dir.cwd().readFileAlloc(
+                        io_,
+                        path,
+                        a,
+                        .limited(2 * 1024 * 1024),
+                    ) catch |err| {
+                        std.debug.print(
+                            "cannot read {s} ({t}). Run `zig build test` from the repository root.\n",
+                            .{ path, err },
+                        );
+                        return error.SourceUnreadable;
+                    };
+                }
+
+                fn trim(s: []const u8) []const u8 {
+                    return std.mem.trim(u8, s, " \t\r\n'");
+                }
+            };
+
+            const cfg = try H.read(io, alloc, "src/config/Config.zig");
+            const keys_rs = try H.read(io, alloc, "windows/host/src/keys.rs");
+
+            // ---- the `mods` local, whose non-Darwin arm is what ships here.
+            // `.{ .key = ... , .mods = mods }` is one of the three spellings,
+            // and the one the clipboard binding uses.
+            const mods_decl = std.mem.indexOf(u8, cfg, "const mods: inputpkg.Mods = if (builtin.target.os.tag.isDarwin())") orelse
+                return error.ModsLocalNotFound;
+            const after_else = std.mem.indexOfPos(u8, cfg, mods_decl, "else") orelse
+                return error.ModsLocalNotFound;
+            const mods_var_windows = cfg[after_else..@min(after_else + 80, cfg.len)];
+
+            // ---- every default chord, evaluated for Windows.
+            var chords: [512]H.Chord = undefined;
+            var n_chords: usize = 0;
+            var pos: usize = 0;
+            while (std.mem.indexOfPos(u8, cfg, pos, ".key = .{ .")) |at| {
+                pos = at + 11;
+                const kind_end = std.mem.indexOfPos(u8, cfg, pos, " = ") orelse break;
+                const kind = cfg[pos..kind_end];
+                const val_end = std.mem.indexOfPos(u8, cfg, kind_end, "}") orelse break;
+                const key = H.trim(cfg[kind_end + 3 .. val_end]);
+
+                const mods_at = std.mem.indexOfPos(u8, cfg, val_end, ".mods = ") orelse continue;
+                if (mods_at > val_end + 40) continue; // belongs to a later trigger
+                const mods_txt = cfg[mods_at + 8 .. @min(mods_at + 8 + 120, cfg.len)];
+
+                // The three spellings, and `ctrlOrSuper` is the one that has
+                // to be read as *ctrl* here rather than as super.
+                const ctrl_or_super = std.mem.startsWith(u8, mods_txt, "inputpkg.ctrlOrSuper(");
+                const is_var = !ctrl_or_super and !std.mem.startsWith(u8, mods_txt, ".{");
+                const effective = if (is_var) mods_var_windows else mods_txt;
+                const brace_end = std.mem.indexOf(u8, effective, "}") orelse continue;
+                const m = effective[0..brace_end];
+
+                const ctrl = std.mem.indexOf(u8, m, ".ctrl = true") != null or ctrl_or_super;
+                const shift = std.mem.indexOf(u8, m, ".shift = true") != null;
+                const super = std.mem.indexOf(u8, m, ".super = true") != null;
+                // A `super`-only chord is the macOS arm and does not ship here.
+                if (super and !ctrl_or_super) continue;
+
+                if (n_chords == chords.len) return error.TooManyChords;
+                chords[n_chords] = .{
+                    .physical = std.mem.eql(u8, kind, "physical"),
+                    .key = key,
+                    .ctrl = ctrl,
+                    .shift = shift,
+                };
+                n_chords += 1;
+            }
+
+            const bound = struct {
+                fn f(list: []const H.Chord, physical: bool, key: []const u8, ctrl: bool, shift: bool) bool {
+                    for (list) |c| {
+                        if (c.physical == physical and
+                            c.ctrl == ctrl and
+                            c.shift == shift and
+                            std.mem.eql(u8, std.mem.trimStart(u8, c.key, "."), key)) return true;
+                    }
+                    return false;
+                }
+            }.f;
+            const found = chords[0..n_chords];
+
+            // ---- **Anchors, inside the test rather than beside it.**
+            //
+            // The first version of this check, written in a scratch script,
+            // reported "every surviving row is clean" -- and was wrong,
+            // because its parser silently missed two of the three `mods`
+            // spellings. What caught it was one hand-verified fact asserted
+            // against the parser itself. Without these three lines this test
+            // can go blind and stay green, which is the failure it is here to
+            // prevent in someone else's code.
+            //
+            // One anchor per spelling:
+            try std.testing.expect(bound(found, false, "t", true, true)); //  inline `.{ .ctrl, .shift }`
+            try std.testing.expect(bound(found, false, "c", true, true)); //  the `mods` local
+            try std.testing.expect(bound(found, false, "p", true, true)); //  `inputpkg.ctrlOrSuper(...)`
+
+            // **The fourth anchor is the miss that actually happened.**
+            // `ctrl+tab` -> `next_tab` (`.physical = .tab` with `.ctrl` alone)
+            // was missed by the first enumeration written tonight, and on the
+            // strength of that miss a host row was about to be kept as "not
+            // verified" with a keypress requested on a real machine -- for an
+            // answer that was in this file all along. It pins the physical-key
+            // spelling and the ctrl-without-shift case at once.
+            try std.testing.expect(bound(found, true, "tab", true, false));
+
+            // And the discrimination in the other direction: `equalize_splits`
+            // is bound `super+ctrl+=`, a macOS-only chord, which is exactly
+            // why `ctrl+shift+=` survives in the host table. A parser that
+            // read `super` chords as shipping here would delete that row.
+            try std.testing.expect(!bound(found, false, "=", true, true));
+
+            // A parse that produced nothing would satisfy every "not bound"
+            // assertion below. The one number that says work happened.
+            // **The bound is deliberately loose, and the anchors above are
+            // the real check.** A second parser of this same file, written
+            // independently earlier tonight, keeps 55 where this one keeps 57:
+            // the two draw the boundary differently around triggers carrying
+            // no `.mods` at all. Neither number is load-bearing, and asserting
+            // either would turn an irrelevant disagreement into a failure.
+            // What has to hold is that specific known chords are found, which
+            // is what the anchors above say.
+            try std.testing.expect(n_chords >= 50);
+
+            // ---- the host's rows
+            const Row = struct { vk: []const u8, physical: bool, key: []const u8 };
+            const vks = [_]Row{
+                .{ .vk = "VK_T", .physical = false, .key = "t" },
+                .{ .vk = "VK_W", .physical = false, .key = "w" },
+                .{ .vk = "VK_C", .physical = false, .key = "c" },
+                .{ .vk = "VK_D", .physical = false, .key = "d" },
+                .{ .vk = "VK_E", .physical = false, .key = "e" },
+                .{ .vk = "VK_M", .physical = false, .key = "m" },
+                .{ .vk = "VK_P", .physical = false, .key = "p" },
+                .{ .vk = "VK_Z", .physical = false, .key = "z" },
+                .{ .vk = "VK_OEM_COMMA", .physical = false, .key = "," },
+                .{ .vk = "VK_OEM_PLUS", .physical = false, .key = "=" },
+                .{ .vk = "VK_TAB", .physical = true, .key = "tab" },
+                .{ .vk = "VK_LEFT", .physical = true, .key = "arrow_left" },
+                .{ .vk = "VK_RIGHT", .physical = true, .key = "arrow_right" },
+                .{ .vk = "VK_UP", .physical = true, .key = "arrow_up" },
+                .{ .vk = "VK_DOWN", .physical = true, .key = "arrow_down" },
+            };
+
+            const table_at = std.mem.indexOf(u8, keys_rs, "fn accelerator(") orelse
+                return error.AcceleratorTableNotFound;
+            const table_end = std.mem.indexOfPos(u8, keys_rs, table_at, "\n}\n") orelse keys_rs.len;
+            const table = keys_rs[table_at..table_end];
+
+            var rows: usize = 0;
+            var rp: usize = 0;
+            while (std.mem.indexOfPos(u8, table, rp, "=> Some(\"")) |hit| {
+                const line_start = std.mem.lastIndexOfScalar(u8, table[0..hit], '(') orelse break;
+                _ = line_start;
+                // Walk back to the start of the match arm's tuple.
+                var s = hit;
+                while (s > 0 and table[s] != '\n') s -= 1;
+                const arm = std.mem.trim(u8, table[s..hit], " \t\r\n");
+                rp = hit + 9;
+                const act_end = std.mem.indexOfPos(u8, table, rp, "\"") orelse break;
+                const action = table[rp..act_end];
+
+                if (!std.mem.startsWith(u8, arm, "(")) continue;
+                const ctrl = std.mem.indexOf(u8, arm, "(true,") != null;
+                const rest = arm[std.mem.indexOfScalar(u8, arm, ',').? + 1 ..];
+                const shift = std.mem.startsWith(u8, std.mem.trimStart(u8, rest, " "), "true");
+
+                for (vks) |r| {
+                    if (std.mem.indexOf(u8, arm, r.vk) == null) continue;
+                    // `VK_T` is a prefix of `VK_TAB`; require the boundary.
+                    const at2 = std.mem.indexOf(u8, arm, r.vk).?;
+                    const after = at2 + r.vk.len;
+                    if (after < arm.len and (std.ascii.isAlphanumeric(arm[after]) or arm[after] == '_')) continue;
+
+                    rows += 1;
+                    if (bound(found, r.physical, r.key, ctrl, shift)) {
+                        std.debug.print(
+                            "keys.rs still has {s} -> \"{s}\", but the core binds that chord on Windows.\n" ++
+                                "  A `performable` core binding declines when its action cannot be performed,\n" ++
+                                "  and then this row runs instead -- doing whatever it names, not what the\n" ++
+                                "  user pressed for. Delete the row; the core covers the chord.\n",
+                            .{ r.vk, action },
+                        );
+                        return error.AcceleratorShadowsCoreBinding;
+                    }
+                    break;
+                }
+            }
+
+            // The table is small and shrinking; if it parses to nothing this
+            // test proves nothing.
+            try std.testing.expect(rows >= 3);
+        }
+
     };
 
     /// Sync with: ghostty_action_u

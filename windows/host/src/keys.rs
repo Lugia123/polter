@@ -146,12 +146,20 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 /// which is the reading that says a row can retire.
 fn accelerator(vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<&'static str> {
     match (ctrl, shift, vk) {
-        // The plugin page has no action of its own: the core knows nothing
-        // about a settings window, so unlike the rest this one can never be
-        // superseded by a core default. **Deleting the whole table would have
-        // taken this with it** -- and with it the only way to reach the
-        // settings page from the keyboard.
-        (true, true, VK_OEM_COMMA) => Some("__polter_plugin_page"),
+        // **`ctrl+shift+,` was here, and the argument for keeping it was
+        // right about the action and wrong about the chord.** The plugin page
+        // does have no core action -- the core knows nothing about a settings
+        // window -- so this row could never be superseded *by an action*. But
+        // the chord was already taken: `Config.zig:6733` binds
+        // `ctrlOrSuper(.{ .shift = true })` with `','`, which on Windows is
+        // `ctrl+shift+,`, to `reload_config`. That binding is not
+        // `performable`, so the core consumes the key every time and this row
+        // has never once run. Pressing it reloads the config; the settings
+        // page does not open, and did not before this deletion either.
+        //
+        // **So the settings page currently has no keyboard route at all.**
+        // That is a gap to fill with a chord the core does not bind, not a
+        // reason to keep a row that cannot fire.
         (true, true, VK_M) => Some("toggle_maximize"),
         // The core's split-right default is `ctrl+shift+o`, not `d`.
         (true, true, VK_D) => Some("new_split:right"),
