@@ -155,10 +155,15 @@ hanging on something else. The probe hashes `~/.qwen/settings.json` before and
 after and prints both -- it is supposed to write nothing, and that is checked
 rather than asserted.
 
-## Three things this line of work keeps rediscovering
+## What this line of work keeps rediscovering
 
-Written down because each was found the hard way, at a different layer, and
-the third one cost most because nobody was looking for it yet.
+Written down here because this file outlives the conversation that produced
+it. Every entry cost something to learn, several of them twice, and a few were
+found by walking into them **after** writing the rule down.
+
+Instances marked *(host)* come from the Windows host work rather than from
+these plugins; they are kept because the same shape turning up in a different
+language is most of the evidence that it is a shape and not a coincidence.
 
 ### 1. The observing tool corrupts what it observes — and it looks like a defect in the thing under test
 
@@ -208,6 +213,139 @@ about the first and completely silent about the second.
 **If a property is "this must not happen", do not assert on the state
 afterwards.** Identical state is the expected outcome of both the right
 behaviour and the wrong one. Count the calls, or read the report.
+
+### 4. "No error" is not "it worked"
+
+The gap between them is one specific step, and it is always the same step: an
+absent complaint proves the call returned, not that the effect happened.
+
+| Read as success | What it actually showed |
+| --- | --- |
+| No `error writing to quit pipe` in the log *(host)* | that `errno >= 0` — **not** that the bytes reached the pipe |
+| `opencode.json` was written with the entry we intended | that **our** writer agreed with **our** reader; opencode had never been asked |
+| `~/.claude.json` changed during the run | that *something* wrote it — two other Claude Code sessions were doing so throughout |
+
+Each of these was one question away from being settled, and the question is
+always of the same form: **ask the far side, or ask for the specific thing.**
+`claude mcp get polter` rather than reading the file back. "Is my version
+string in there" rather than "did the file change".
+
+### 5. A reading generalises only as far as the conditions it was taken under
+
+Two readings from one log, on the same run, with opposite fates *(host)*:
+writing to the quit pipe returned success, and that generalises, because it
+does not depend on whether the read end was closed. `CancelIoEx` also returned
+success, and that does **not** generalise, because its result depends on
+whether a read was pending at that instant — and the fix under test changed
+exactly that.
+
+Before reusing a green reading, ask what was true when it was taken, and
+whether the change you are making disturbs it. **The same file, the same
+minute, can hold one number you may quote and one you may not.**
+
+### 6. Same family is not the same product
+
+Three instances, all inside one week, all in this directory:
+
+- `qwen-code` and `gemini` are the same upstream and had **the same bug for
+  different reasons** — `gemini` prints its server list on stderr *and* omits
+  the environment; `qwen` prints on stdout and only omits the environment. A
+  comment saying "the same hole is expected" was half wrong.
+- `opencode` is in the config-editing family for a reason that expired: it
+  **does** have `mcp add` now, and is still in that family because the one it
+  has is an interactive wizard. Right conclusion, dead reason — and a dead
+  reason is what sends the next person back down the same path.
+- `~/.gemini/skills` **not existing** was read as "we are writing into a
+  guessed directory". Measured, the path is what `gemini skills install`
+  prints as its own destination; the directory was absent because nobody had
+  installed a skill. **Absence had two causes and the reading did not
+  distinguish them** — the same fault as entry 3, committed by someone who
+  had just written entry 3 down.
+
+That last one is worth the space: **knowing a rule does not stop you applying
+its opposite.** What stopped it was reporting the suspicion separately instead
+of acting on it, which cost one message and saved switching off a feature that
+worked.
+
+### 7. A criterion that happens to hold and one that was built to hold look identical on the day they both pass
+
+So build the fixture to be hostile to the property, not merely consistent with
+it. The skill that pruning must **not** delete carries the `polter-` prefix,
+holds exactly one `SKILL.md`, and names itself correctly — **every guard says
+yes to it**, and only the shipped list saves it. A candidate that failed some
+other check would have proved nothing about the check under test.
+
+Same for an injection that survives: it means the test has a hole, **or** that
+a later check caught the mutation, **or** that the mutation tripped a latent
+bug which hid it. Those are three different findings and only one of them is
+"add an assertion". See "Reading `mutate.ps1`" below — all three happened.
+
+## Handing this line on
+
+Five of the seven host plugins have been confirmed by the CLI they target. What
+follows is what a seventh confirmation needs, and what each of the six actually
+established, because the two columns are not the same and were reported as one
+for longer than they should have been.
+
+### Confirming a host needs three things, and all three are checkable first
+
+1. **That CLI installed on a machine you can drive.** `deepseek` and `kimi`
+   are unconfirmed for this reason alone — not for any doubt about the code.
+2. **It honours `$HOME`.** Four have been checked — `claude-code`, `codex`,
+   `gemini`, `opencode` — and all four do, each checked separately rather than
+   inferred from the last. It is what makes the whole exercise free: the run
+   happens in a scratch home and the real configuration is never opened.
+
+   **`qwen-code` is confirmed without this**, by the other route: its run was
+   against the real home on the Windows machine, with the config copied first
+   and the copy compared to the original byte for byte **before** anything was
+   written, and the run set to abort if they differed. That route works and is
+   the one to use when a scratch home is not available — but it is not
+   evidence about `qwen`'s `$HOME` handling, which remains unknown.
+
+   Either way, hash the real config before and after. And the question that
+   settles it is not "did the file change" but "is the string I wrote in
+   there": on a machine running Claude Code, `~/.claude.json` changes on its
+   own every few minutes.
+3. **A read-only subcommand that reports what it has.** `claude mcp get`,
+   `codex mcp get`, `qwen mcp list`, `opencode mcp list`. Without one, the
+   shape can only be confirmed by writing it and hoping — which is the state
+   `deepseek` is in even if somebody installs it.
+
+Two smaller notes that cost time: a CLI may refuse to run at all until it is
+authenticated (`gemini` wants `GEMINI_API_KEY` set to *anything* before `mcp
+add` will run), and macOS has no `timeout`, so bounding these runs needs a
+helper.
+
+### What is actually established, per host
+
+**Registration** — does that CLI accept what we write?
+
+| Host | Judged by | Version marker |
+| --- | --- | --- |
+| `claude-code` | `claude mcp get` prints every field | **value echoed** |
+| `codex` | `codex mcp get` prints every field | key echoed, **value masked**; the value is confirmed by the TOML `codex mcp add` itself wrote |
+| `qwen-code` | `qwen mcp list` (Windows, real machine) | not echoed — inferred |
+| `gemini` | entry read back, plus a four-pass idempotence contract | read from the file, not echoed by the CLI |
+| `opencode` | `opencode mcp list` finds it and tries to spawn it | not echoed — inferred |
+| `deepseek`, `kimi` | — | not installed anywhere available |
+
+**Skills** — does that CLI read the directory we install into? **A different
+question with a different answer**, and combining the two columns is why this
+one went unexamined for so long.
+
+| Host | Directory | Evidence |
+| --- | --- | --- |
+| `claude-code` | `~/.claude/skills/` | **end to end.** The `polter-*` skills this plugin installed are loaded and listed by a running Claude Code — not "it says it sees them", it is using them |
+| `gemini` | `~/.gemini/skills/` | path confirmed: `gemini skills install` prints it as its own destination. **Whether it loads what we put there is untested** |
+| `codex` | `~/.codex/skills/` | the directory is codex's own (it holds a `.system/` created at codex's install). **Whether it loads what we put there is untested**, and codex has no read-only skills command to ask |
+| the other four | — | `host_skills_dir` returns nothing on purpose. Writing into a guessed directory leaves litter on somebody's machine |
+
+### Where the far end still is not
+
+None of this shows an agent *reaching* Polter. The registration names an
+executable that does not serve `+mcp` on Windows yet. That is a different
+milestone, and no amount of work on these plugins moves it.
 
 ## Reading `mutate.ps1`
 
