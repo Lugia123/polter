@@ -3694,6 +3694,16 @@ test "the mcp add line keeps `-e` after the positional arguments" {
             // read as two. The marker separates invocations: the plugin calls
             // `mcp list` and `mcp remove` before it calls `mcp add`, and asserting
             // against the wrong one of those would pass for the wrong reason.
+            //
+            // **The Windows half of this test records differently, on
+            // purpose.** There the stub is a `.cmd`, and `cmd` treats `=` as
+            // an argument separator, so recording argument by argument split
+            // `POLTER_REGISTERED=1.2.3` in two and failed an assertion about
+            // a call that was in fact correct -- the observer corrupting what
+            // it observed. It records the raw command line instead. Here
+            // `"$@"` splits nothing and is the more faithful of the two, so
+            // the two recorders are deliberately not the same; what is the
+            // same is the rule each of them asserts.
             try d.createDirPath(io, "bin");
             var c = try d.createFile(
                 io,

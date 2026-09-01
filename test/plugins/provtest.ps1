@@ -290,17 +290,27 @@ Write-Host "== 6b. the mcp add line keeps ``-e`` after the positional arguments 
 # two ports cannot drift apart.
 $argvLog = Join-Path $Root 'argv.txt'
 # A batch file rather than a PowerShell script, because that is what npm
-# installs and what the plugin will actually find on PATH. One argument per
-# line via `%~1` + `shift`, so quoting is stripped once and only once.
+# installs and what the plugin will actually find on PATH.
+#
+# **It records the raw command line and does not tokenise it.** The first
+# version wrote one argument per line with `%~1` + `shift`, which looks
+# obviously right and is wrong on Windows: **`cmd` treats `=` as an argument
+# separator**, on a par with space, comma and semicolon. So
+# `POLTER_REGISTERED=1.2.3` arrived at the assertion as two arguments and 6b
+# failed -- while the real call was fine, as the real `qwen` run proved by
+# writing the whole value into its config.
+#
+# That is worth more than the bug it caused: **the observer was corrupting
+# what it observed**, and it did so in the direction of looking like a defect
+# in the thing under test. Splitting into arguments is already an
+# interpretation; `%*` is the observation.
+#
+# `(echo %*)` is parenthesised on purpose. Written `echo %*>>file`, the last
+# argument here ends in `3` and `cmd` would read `3>>` as a redirect of file
+# handle 3 -- a second way for the recorder to eat its own evidence.
 $recorder = (@'
 @echo off
-echo --CALL-->>"%POLTER_TEST_ARGV%"
-:loop
-if "%~1"=="" goto done
-echo %~1>>"%POLTER_TEST_ARGV%"
-shift
-goto loop
-:done
+(echo %*)>>"%POLTER_TEST_ARGV%"
 exit /b 0
 '@) -replace "`n", "`r`n"
 [System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $recorder, $Utf8)
@@ -313,22 +323,19 @@ $r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') `
 if (-not (Test-Path -LiteralPath $argvLog)) {
     Check '6b argv -- the stub recorded something' $false 'no argv.txt was written'
 } else {
-    # One argument per line, so an argument containing a space cannot be read
-    # as two. The marker separates invocations: the plugin calls `mcp list`
-    # and `mcp remove` before `mcp add`, and asserting against the wrong one
-    # of those would pass for the wrong reason.
-    $calls = ([System.IO.File]::ReadAllText($argvLog, $Utf8) -split '--CALL--') |
-        ForEach-Object { , @($_ -split "`r?`n" | Where-Object { $_.Trim() }) }
-    $add = @($calls | Where-Object { $_.Count -ge 2 -and $_[0] -eq 'mcp' -and $_[1] -eq 'add' })
+    # One line per invocation. The plugin calls `mcp list` and `mcp remove`
+    # before `mcp add`, and asserting against the wrong one of those would
+    # pass for the wrong reason.
+    $lines = @([System.IO.File]::ReadAllText($argvLog, $Utf8) -split "`r?`n" | Where-Object { $_.Trim() })
+    $add = @($lines | Where-Object { $_ -like 'mcp add *' })
 
-    Check '6b argv -- the plugin called `mcp add` exactly once' ($add.Count -eq 1) "calls: $($calls.Count)"
+    Check '6b argv -- the plugin called `mcp add` exactly once' ($add.Count -eq 1) "recorded: $($lines -join ' / ')"
 
     if ($add.Count -ge 1) {
-        $a = $add[0]
-        $iExe = [Array]::IndexOf($a, 'C:\app\polter.exe')
-        $iMcp = [Array]::IndexOf($a, '+mcp')
-        $iE = [Array]::IndexOf($a, '-e')
-        $line = $a -join ' '
+        $line = $add[0]
+        $iExe = $line.IndexOf('C:\app\polter.exe')
+        $iMcp = $line.IndexOf('+mcp')
+        $iE = $line.IndexOf(' -e ')
 
         Check '6b argv -- the served exe and +mcp are both on the line' (($iExe -ge 0) -and ($iMcp -ge 0)) $line
         # The rule, stated as the rule rather than as a literal command line:
@@ -338,9 +345,13 @@ if (-not (Test-Path -LiteralPath $argvLog)) {
         # And no `--`. It used to be there, to keep a future flag on the served
         # side from being read as one of the CLI's own -- but it is what stops
         # the positionals being counted, so it had to go. That protection now
-        # rests on `+mcp` not looking like an option.
-        Check '6b argv -- no `--` separator' ([Array]::IndexOf($a, '--') -lt 0) $line
-        Check '6b argv -- the version marker went with the flag' ([Array]::IndexOf($a, 'POLTER_REGISTERED=1.2.3') -ge 0) $line
+        # rests on `+mcp` not looking like an option. Matched with spaces
+        # around it so `--scope` is not mistaken for it.
+        Check '6b argv -- no `--` separator' ($line -notmatch ' -- ') $line
+        # **`=` and all.** This is the assertion the tokenising recorder broke:
+        # it saw two arguments where the CLI sees one. Kept as an exact
+        # substring so that reverting the recorder goes red here again.
+        Check '6b argv -- the version marker went with the flag, `=` intact' ($line -match ' -e POLTER_REGISTERED=1\.2\.3(\s|$)') $line
     }
 }
 
