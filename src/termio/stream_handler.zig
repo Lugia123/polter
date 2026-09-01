@@ -1112,15 +1112,22 @@ pub const StreamHandler = struct {
             // One byte of headroom: a bare `C:` becomes `C:\`.
             const buf = try stack_alloc.get().alloc(u8, raw_path.len + 1);
             break :path internal_os.uri.windowsPath(buf, raw_path) orelse {
-                // Refused rather than passed through with the slashes
-                // flipped. `/share/dir` would become `\share\dir`, which
-                // reads as a perfectly ordinary path and is one no Windows
-                // API can use -- the pwd would be set and every consumer of
-                // it would fail, silently.
-                log.warn(
-                    "OSC 7 path is not an absolute Windows path, ignoring: {s}",
-                    .{raw_path},
-                );
+                // **Refused, and the refusal returns.** Not passed through
+                // with the slashes flipped, and not fallen back to the raw
+                // string: `/share/dir` would become `\share\dir`, which reads
+                // as a perfectly ordinary path and is one no Windows API can
+                // use -- the pwd would be set, every consumer of it would
+                // fail, and nothing would say why.
+                //
+                // **The `null` half of `windowsPath` is only worth anything
+                // if this branch returns.** Every test for it lives inside
+                // that function; a call site that shrugged and used
+                // `raw_path` would leave all of them green while the pwd went
+                // bad anyway. So this line is the observable end of those
+                // tests, and it names the input verbatim -- the shape of what
+                // was rejected is the only thing that identifies which shell
+                // sent it.
+                log.warn("OSC 7 refused, not an absolute Windows path: {s}", .{raw_path});
                 return;
             };
         };

@@ -570,6 +570,15 @@ fn vk_from_codepoint(cp: u32) -> Option<u32> {
         ' ' => return Some(VK_SPACE.0 as u32),
         _ => {}
     }
+    // **`VkKeyScanW` takes a UTF-16 code unit, and `as u16` truncates in
+    // silence.** A codepoint above the BMP would lose its high bits and be
+    // asked about as an entirely different character -- `U+10041` would
+    // arrive as `U+0041` and map to VK_A, registering a hotkey on a key the
+    // user never named. Nothing above the BMP is on any keyboard, so the
+    // honest answer is to decline before the cast, not after it.
+    if cp > 0xFFFF {
+        return None;
+    }
     // -1 means this layout cannot produce the character at all.
     let r = unsafe { VkKeyScanW(cp as u16) };
     if r == -1 {
@@ -1207,13 +1216,37 @@ mod tests {
     /// on the wrong key is worse than none**: it steals a combination from
     /// another program and misbehaves when pressed, and neither end reports
     /// it.
+    ///
+    /// **This test used to assert the opposite of the one below it.** It
+    /// required a unicode `'q'` to be declined -- which was true of the
+    /// original implementation and was exactly the defect: `ctrl+shift+a`
+    /// reaches this function as a unicode trigger, so declining them all
+    /// declined every hotkey anyone writes. The fix landed without this
+    /// assertion being updated, leaving two tests in one file demanding
+    /// opposite things of one input. **A contradiction between two tests is
+    /// not a flake**, and neither of them could be trusted until it was
+    /// resolved.
     #[test]
     fn an_unmappable_key_is_declined_rather_than_guessed() {
+        // An ordinal outside the ranges this host maps.
         assert!(hotkey_from_trigger(phys(175, 1 << 1)).is_none(), "an unmapped ordinal");
+        // `catch_all` carries no key at all, so there is nothing to register.
         assert!(
-            hotkey_from_trigger(TriggerC { tag: TRIGGER_UNICODE, key: 'q' as u32, mods: 1 << 1 })
-                .is_none(),
-            "a unicode trigger names a character, not a physical key"
+            hotkey_from_trigger(TriggerC { tag: 2, key: 0, mods: 1 << 1 }).is_none(),
+            "catch_all has no key"
+        );
+        // A codepoint no keyboard layout can produce on its own. This is the
+        // real "cannot express" case now that ordinary characters map: there
+        // is no virtual key for it, and inventing one would claim a
+        // combination the user never asked for.
+        assert!(
+            hotkey_from_trigger(TriggerC {
+                tag: TRIGGER_UNICODE,
+                key: 0x1F600, // an emoji
+                mods: 1 << 1,
+            })
+            .is_none(),
+            "a codepoint with no virtual key must be declined, not guessed"
         );
     }
 
@@ -1263,6 +1296,24 @@ mod tests {
         let lower = TriggerC { tag: TRIGGER_UNICODE, key: 'a' as u32, mods: 1 << 1 };
         let upper = TriggerC { tag: TRIGGER_UNICODE, key: 'A' as u32, mods: 1 << 1 };
         assert_eq!(hotkey_from_trigger(lower).unwrap().1, hotkey_from_trigger(upper).unwrap().1);
+    }
+
+    /// **A codepoint above the BMP must not be truncated into a different
+    /// key.** `VkKeyScanW` takes a UTF-16 code unit; casting a `u32`
+    /// codepoint to `u16` silently drops the high bits, so `U+10041` would be
+    /// asked about as `U+0041` -- `A` -- and would register a hotkey on a key
+    /// nobody named. The probe is chosen so that truncation would *succeed*:
+    /// if this ever starts returning `Some`, the cast came back.
+    #[test]
+    fn an_astral_codepoint_is_not_truncated_into_a_bmp_key() {
+        let t = TriggerC { tag: TRIGGER_UNICODE, key: 0x10041, mods: 1 << 1 };
+        assert!(
+            hotkey_from_trigger(t).is_none(),
+            "U+10041 truncates to U+0041 ('A'); it must be declined before the cast"
+        );
+        // The control: the character it would have been mistaken for does map.
+        let a = TriggerC { tag: TRIGGER_UNICODE, key: 0x41, mods: 1 << 1 };
+        assert_eq!(hotkey_from_trigger(a).unwrap().1, 0x41);
     }
 
     /// **The one the test box needs.** `ctrl+shift+a` is the combination a

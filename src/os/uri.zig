@@ -257,30 +257,55 @@ pub fn windowsPath(buf: []u8, path: []const u8) ?[]const u8 {
         }
     }.f;
 
+    // `\\?\...` (extended length) and `\\.\...` (device namespace) are
+    // passed through untouched. They have the same shape as a UNC and would
+    // otherwise be accepted by accident; a shell reporting a path longer than
+    // MAX_PATH really does produce the first of them, so this is deliberate
+    // rather than tolerated.
+    const extended = path.len >= 4 and
+        isSep(path[0]) and isSep(path[1]) and
+        (path[2] == '?' or path[2] == '.') and
+        isSep(path[3]);
+
     // A UNC needs two leading separators, a server, and a share. `//server`
     // on its own names a machine, not a directory, so it is not a cwd.
     const unc = unc: {
+        if (extended) break :unc false;
         if (path.len < 3) break :unc false;
         if (!isSep(path[0]) or !isSep(path[1]) or isSep(path[2])) break :unc false;
         // There must be a separator after the server name, with something
         // after it: `//server/share`, not `//server` or `//server/`.
         const rest = path[2..];
         const i = std.mem.indexOfAny(u8, rest, "/\\") orelse break :unc false;
+        // **The server segment has to look like a host, not a drive.**
+        // `//C:/x` is a single stray leading separator away from `/C:/x` --
+        // and concatenating a URI prefix onto a path is exactly where that
+        // stray separator comes from. Read as a UNC it produces `\\C:\x`,
+        // a string no Windows API can use: the same class of result the
+        // no-drive rule below exists to prevent, arriving through another
+        // door.
+        if (std.mem.indexOfScalar(u8, rest[0..i], ':') != null) break :unc false;
         break :unc i + 1 < rest.len;
     };
 
-    const src = if (unc)
+    const src = if (unc or extended)
         path
     else if (isSep(path[0]))
         path[1..]
     else
         path;
 
-    if (!unc) {
-        // A drive letter and a colon, or nothing doing.
+    if (!unc and !extended) {
+        // A drive letter, a colon, and then either nothing or a separator.
         if (src.len < 2) return null;
         if (!std.ascii.isAlphabetic(src[0])) return null;
         if (src[1] != ':') return null;
+        // **`C:foo` is not an absolute path.** It names `foo` relative to
+        // whatever the current directory on drive C happens to be -- state
+        // this terminal does not hold and the shell did not send. A bare
+        // `C:` is allowed just below because it has no relative part left to
+        // resolve: the only absolute reading of it is the drive root.
+        if (src.len > 2 and !isSep(src[2])) return null;
     }
 
     if (src.len + 1 > buf.len) return null;
@@ -427,4 +452,53 @@ test "winpwd: a short buffer is refused, not overrun" {
     // path returned, and both are silent.
     var exact: [3]u8 = undefined;
     try testing.expectEqualStrings("C:\\", windowsPath(&exact, "/C:").?);
+}
+
+// **A drive letter is not enough; the colon must be followed by a separator.**
+//
+// `C:foo` is Windows syntax for "foo, relative to whatever the current
+// directory on drive C happens to be" -- a relative path wearing an absolute
+// one's clothes, the same disease as the bare `C:` above with three more
+// letters on the end. Resolving it needs per-drive state this terminal does
+// not have and the shell did not send.
+test "winpwd: a drive-relative path is refused" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expect(windowsPath(&buf, "C:foo") == null);
+    try testing.expect(windowsPath(&buf, "/C:foo") == null);
+    try testing.expect(windowsPath(&buf, "/C:foo/bar") == null);
+}
+
+// **One stray leading separator must not turn a drive path into a UNC.**
+//
+// The extra slash is the likeliest typo in the whole scheme: our own
+// integrations build the URI by concatenation, so `.../` plus `/C:/x` is one
+// keystroke away in the shell script. Accepted as a UNC it yields
+// `\\C:\x` -- a string no Windows API can use, which is the exact class of
+// result the `/share/dir` test exists to prevent, arriving through a
+// different door. A server segment holding a colon is not a host name.
+test "winpwd: a doubled leading separator is not a UNC server" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expect(windowsPath(&buf, "//C:/x") == null);
+    try testing.expect(windowsPath(&buf, "\\\\C:\\x") == null);
+}
+
+// The extended-length prefix, pinned deliberately rather than left working by
+// accident. `\\?\C:\very\long\path` is how Windows escapes MAX_PATH, it is a
+// real thing a shell can report, and it happens to satisfy the UNC shape --
+// so without this test the next person to tighten the UNC rule would break it
+// and no test would say so.
+test "winpwd: the extended-length prefix passes through" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings(
+        "\\\\?\\C:\\x",
+        windowsPath(&buf, "\\\\?\\C:\\x").?,
+    );
+    // The device namespace has the same shape.
+    try testing.expectEqualStrings(
+        "\\\\.\\pipe\\x",
+        windowsPath(&buf, "\\\\.\\pipe\\x").?,
+    );
 }

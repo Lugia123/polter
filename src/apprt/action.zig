@@ -617,13 +617,23 @@ pub const Action = union(Key) {
             // until this test existed nothing anywhere reported the change.
             //
             // **Why this reads the file instead of building the real bind
-            // set.** `Config.default()` takes no target and the platform
-            // branches are `comptime builtin.target.os.tag.isDarwin()`, so a
-            // test running here gets the *macOS* defaults -- which are `super`
-            // chords that can never collide with the host's `ctrl+shift` rows.
-            // It would pass unconditionally, including on the collision it
-            // exists to catch. Reading the source is the only way to evaluate
-            // the branch this host actually ships.
+            // set -- and the limit is this machine, not the technique.**
+            // `Config.default()` takes no target and the platform branches are
+            // `comptime builtin.target.os.tag.isDarwin()`, so a test compiled
+            // *for this host* gets the macOS defaults: `super` chords that can
+            // never collide with the host table's `ctrl+shift` rows. It would
+            // pass unconditionally, including on the collision it exists to
+            // catch.
+            //
+            // **Cross-compiled for Windows and run on the machine, it would
+            // get the real thing** -- that is an existing pipeline here, not a
+            // hypothetical: the Windows test executable is built and run every
+            // round. When this test can go that way, the text parsing below
+            // should be deleted outright and replaced by a query against the
+            // real bind set, which cannot drift from the source because it *is*
+            // the source. "Cannot be done" and "cannot be done on the machine
+            // that happens to run `zig build test` today" are different
+            // sentences, and only the second one is true.
             var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
             defer arena.deinit();
             const alloc = arena.allocator();
@@ -673,10 +683,17 @@ pub const Action = union(Key) {
             const after_else = std.mem.indexOfPos(u8, cfg, mods_decl, "else") orelse
                 return error.ModsLocalNotFound;
             const mods_var_windows = cfg[after_else..@min(after_else + 80, cfg.len)];
+            // **The window is cut on a `}` that has to be inside it.** If the
+            // `else` arm is ever written longer than this, the brace falls
+            // outside, every trigger using the `mods` local fails to parse and
+            // the set quietly loses a batch -- including `ctrl+shift+c`, the
+            // one this whole floor exists for.
+            try std.testing.expect(std.mem.indexOf(u8, mods_var_windows, "}") != null);
 
             // ---- every default chord, evaluated for Windows.
             var chords: [512]H.Chord = undefined;
             var n_chords: usize = 0;
+            var unparsed: usize = 0;
             var pos: usize = 0;
             while (std.mem.indexOfPos(u8, cfg, pos, ".key = .{ .")) |at| {
                 pos = at + 11;
@@ -685,23 +702,50 @@ pub const Action = union(Key) {
                 const val_end = std.mem.indexOfPos(u8, cfg, kind_end, "}") orelse break;
                 const key = H.trim(cfg[kind_end + 3 .. val_end]);
 
-                const mods_at = std.mem.indexOfPos(u8, cfg, val_end, ".mods = ") orelse continue;
-                if (mods_at > val_end + 40) continue; // belongs to a later trigger
-                const mods_txt = cfg[mods_at + 8 .. @min(mods_at + 8 + 120, cfg.len)];
+                // **A trigger with no `.mods` is a chord with no modifiers,
+                // not a trigger to skip.** The first version `continue`d here,
+                // which dropped seven of them (`.copy`, `.paste`, `.escape`,
+                // the `digit_N` run, `'n'`) without a word -- the same shape as
+                // the regex in the scratch script that could not match a key
+                // whose value *was* a comma, and reported a clean table.
+                //
+                // It was not only theoretical: `keys.rs` carried
+                // `(_, _, VK_F11) => toggle_fullscreen` with both modifiers
+                // false, and deciding whether the core already covered that
+                // row needs exactly the triggers this used to drop.
+                //
+                // The window is still needed: `indexOfPos` finds the *next*
+                // `.mods` anywhere in the file, so without a bound a trigger
+                // that has none would borrow the next trigger's modifiers.
+                var ctrl = false;
+                var shift = false;
+                if (std.mem.indexOfPos(u8, cfg, val_end, ".mods = ")) |mods_at| skip: {
+                    if (mods_at > val_end + 40) break :skip; // this trigger has none
+                    const mods_txt = cfg[mods_at + 8 .. @min(mods_at + 8 + 120, cfg.len)];
 
-                // The three spellings, and `ctrlOrSuper` is the one that has
-                // to be read as *ctrl* here rather than as super.
-                const ctrl_or_super = std.mem.startsWith(u8, mods_txt, "inputpkg.ctrlOrSuper(");
-                const is_var = !ctrl_or_super and !std.mem.startsWith(u8, mods_txt, ".{");
-                const effective = if (is_var) mods_var_windows else mods_txt;
-                const brace_end = std.mem.indexOf(u8, effective, "}") orelse continue;
-                const m = effective[0..brace_end];
+                    // The three spellings, and `ctrlOrSuper` is the one that
+                    // has to be read as *ctrl* here rather than as super.
+                    const ctrl_or_super = std.mem.startsWith(u8, mods_txt, "inputpkg.ctrlOrSuper(");
+                    const is_var = !ctrl_or_super and !std.mem.startsWith(u8, mods_txt, ".{");
+                    const effective = if (is_var) mods_var_windows else mods_txt;
+                    // **Loud, not skipped.** Reaching here means the mods
+                    // expression did not close inside the window, which is a
+                    // parse this code does not understand -- and an
+                    // unparsed trigger has to be a failure rather than one
+                    // fewer chord in a set everything else is checked against.
+                    const brace_end = std.mem.indexOf(u8, effective, "}") orelse {
+                        unparsed += 1;
+                        break :skip;
+                    };
+                    const m = effective[0..brace_end];
 
-                const ctrl = std.mem.indexOf(u8, m, ".ctrl = true") != null or ctrl_or_super;
-                const shift = std.mem.indexOf(u8, m, ".shift = true") != null;
-                const super = std.mem.indexOf(u8, m, ".super = true") != null;
-                // A `super`-only chord is the macOS arm and does not ship here.
-                if (super and !ctrl_or_super) continue;
+                    ctrl = std.mem.indexOf(u8, m, ".ctrl = true") != null or ctrl_or_super;
+                    shift = std.mem.indexOf(u8, m, ".shift = true") != null;
+                    // A `super`-only chord is the macOS arm and does not ship
+                    // here. **A deliberate exclusion, and the `=` anchor below
+                    // is what proves it still happens.**
+                    if (std.mem.indexOf(u8, m, ".super = true") != null and !ctrl_or_super) continue;
+                }
 
                 if (n_chords == chords.len) return error.TooManyChords;
                 chords[n_chords] = .{
@@ -750,6 +794,13 @@ pub const Action = union(Key) {
             // spelling and the ctrl-without-shift case at once.
             try std.testing.expect(bound(found, true, "tab", true, false));
 
+            // **And one for the class that used to be dropped entirely.**
+            // `escape` is bound with no modifiers at all; before the fix above
+            // it and six others never entered the set, so any host row with
+            // both modifiers false was being checked against a table that
+            // could not contain its answer.
+            try std.testing.expect(bound(found, true, "escape", false, false));
+
             // And the discrimination in the other direction: `equalize_splits`
             // is bound `super+ctrl+=`, a macOS-only chord, which is exactly
             // why `ctrl+shift+=` survives in the host table. A parser that
@@ -767,6 +818,13 @@ pub const Action = union(Key) {
             // What has to hold is that specific known chords are found, which
             // is what the anchors above say.
             try std.testing.expect(n_chords >= 50);
+
+            // **Nothing was skipped for a reason this code does not
+            // understand.** The `super` arm is excluded on purpose and counted
+            // nowhere; this counts only triggers whose modifiers could not be
+            // read at all, and one of those is a hole in the set that every
+            // "not bound" answer below is drawn from.
+            try std.testing.expectEqual(@as(usize, 0), unparsed);
 
             // ---- the host's rows
             const Row = struct { vk: []const u8, physical: bool, key: []const u8 };
@@ -793,6 +851,16 @@ pub const Action = union(Key) {
             const table_end = std.mem.indexOfPos(u8, keys_rs, table_at, "\n}\n") orelse keys_rs.len;
             const table = keys_rs[table_at..table_end];
 
+            // **`vks` is a second table that has to stay in step with
+            // `accelerator()`, and nothing was keeping it there.** The loop
+            // below `continue`s past an arm whose VK it does not know, so a
+            // new row -- `(true, true, VK_B) => ...` -- would be waved through
+            // and `rows >= 3` would still hold. Counting the arms and
+            // requiring every one of them to have been checked is what turns
+            // "I looked at every row" from a claim into an assertion. It is
+            // the other half of what the neighbouring test says about the
+            // host's tags: the claim is that every row *stated* is right.
+            var arms: usize = 0;
             var rows: usize = 0;
             var rp: usize = 0;
             while (std.mem.indexOfPos(u8, table, rp, "=> Some(\"")) |hit| {
@@ -806,7 +874,12 @@ pub const Action = union(Key) {
                 const act_end = std.mem.indexOfPos(u8, table, rp, "\"") orelse break;
                 const action = table[rp..act_end];
 
-                if (!std.mem.startsWith(u8, arm, "(")) continue;
+                arms += 1;
+                var matched = false;
+                if (!std.mem.startsWith(u8, arm, "(")) {
+                    std.debug.print("unrecognised accelerator arm: {s}\n", .{arm});
+                    continue;
+                }
                 const ctrl = std.mem.indexOf(u8, arm, "(true,") != null;
                 const rest = arm[std.mem.indexOfScalar(u8, arm, ',').? + 1 ..];
                 const shift = std.mem.startsWith(u8, std.mem.trimStart(u8, rest, " "), "true");
@@ -819,6 +892,7 @@ pub const Action = union(Key) {
                     if (after < arm.len and (std.ascii.isAlphanumeric(arm[after]) or arm[after] == '_')) continue;
 
                     rows += 1;
+                    matched = true;
                     if (bound(found, r.physical, r.key, ctrl, shift)) {
                         std.debug.print(
                             "keys.rs still has {s} -> \"{s}\", but the core binds that chord on Windows.\n" ++
@@ -831,11 +905,18 @@ pub const Action = union(Key) {
                     }
                     break;
                 }
+                if (!matched) std.debug.print(
+                    "accelerator arm {s} -> \"{s}\" names a virtual key this test does not know;\n" ++
+                        "  add it to `vks` -- until then nothing checks whether the core binds that chord.\n",
+                    .{ arm, action },
+                );
             }
 
             // The table is small and shrinking; if it parses to nothing this
             // test proves nothing.
             try std.testing.expect(rows >= 3);
+            // And every arm in it was one of the rows checked above.
+            try std.testing.expectEqual(arms, rows);
         }
 
     };
