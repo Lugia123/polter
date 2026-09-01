@@ -475,7 +475,7 @@ RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCOD
 | `keycode=0x2e mods=0x2 text=none → surface_key=false` | 送进去的是对的，核心仍拒了 | **上面的静态复核有错**，回去重读 `ctrlSeq` |
 | `keycode=0x2e … → surface_key=true` | 核心编码并入队了 | **缺陷在 key 路径下游**：pty 写入 / ConPTY / 子进程 |
 
-> ⚠️ **第 1 行是状态相关的，不是一个静态结论。** 2026-09-02（**日期未能确认**，可能跨午夜——测试机 +08:00）做了组合中/无组合的对照：
+> ⚠️ **第 1 行是状态相关的，不是一个静态结论。** 2026-09-01做了组合中/无组合的对照：
 >
 > | 输入法状态 | `WM_KEYDOWN` 到达 wndproc？ |
 > | --- | --- |
