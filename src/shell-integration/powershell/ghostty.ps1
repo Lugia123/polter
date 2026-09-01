@@ -1,10 +1,10 @@
 # Polter/Ghostty shell integration for PowerShell.
 #
 # Works on Windows PowerShell 5.1 (`powershell.exe`) and PowerShell 7+
-# (`pwsh.exe`). This is the L3 half: the working directory (OSC 7) and the
-# window title (OSC 2). Prompt marking (OSC 133) is deliberately not here --
-# it requires wrapping the user's `prompt` function, and getting that wrong
-# makes somebody's prompt disappear.
+# (`pwsh.exe`). It reports **the working directory (OSC 7) and the window
+# title (OSC 2), and nothing else.** Prompt marking -- OSC 133 A/B/C/D -- is
+# not here, and there is a section below saying why, because "just add
+# OSC 133" is the first thing anyone reading this will want to do.
 #
 # ## Why this hooks LocationChangedAction and not `prompt`
 #
@@ -18,6 +18,49 @@
 # The previous handler is called first, not replaced. It is a single-slot
 # property: assigning to it is how you both install and uninstall, so an
 # assignment that did not chain would silently disable whatever was there.
+#
+# ## Do not "just add OSC 133" here
+#
+# **There is no non-invasive way to do it, and that is a fact about
+# PowerShell, not a gap in this file.**
+#
+# What makes the code below clean is that PowerShell has a purpose-built
+# event for the thing being reported. **Prompt marking has no such event.**
+# The only hooks are two functions that belong to somebody else:
+#
+#   * `prompt` -- a function, and oh-my-posh and starship each replace it
+#     outright. Neither chains to what was there before, so wrapping it works
+#     only while nothing installs after us. If a user's profile sets up one
+#     of those later, our wrapper is gone and A/B/D stop, with no error
+#     anywhere.
+#   * `PSConsoleHostReadLine` -- the function **PSReadLine** defines. Without
+#     PSReadLine there is nowhere to emit C from at all, and re-importing
+#     PSReadLine redefines the function, dropping any wrapper silently. C
+#     stops while A, B and D keep going, which is the worst of the states to
+#     diagnose.
+#
+# So OSC 133 means replacing two functions the user's own tools also replace.
+# It is doable -- Microsoft ships it in VS Code's `shellIntegration.ps1`,
+# saving each original and invoking it -- but it is a different kind of change
+# from this file, and **getting it wrong makes somebody's prompt disappear.**
+# It is tracked separately, as L2.
+#
+# ## And when you write that: the exit code in `D` is not obtainable
+#
+# PowerShell offers no real exit code at prompt time. `$?` is a boolean, and
+# `$LASTEXITCODE` is meaningful only for native executables and is stale
+# after a failing cmdlet. Microsoft's own shipping implementation writes
+#
+#     $FakeCode = [int]!$global:?
+#
+# -- **the variable is named `FakeCode` in the original** -- so every failure
+# is reported as `1`. A terminal receiving that shows "exit code 1" when the
+# real one was 127.
+#
+# **Do not emit 0/1 in its place.** OSC 133 permits `D` with no exit code,
+# and Microsoft itself sends the bare form when it cannot tell what happened.
+# An honest "the command finished" beats a precise-looking number that is
+# wrong.
 #
 # ## The URI is `kitty-shell-cwd://`, and the leading slash is ours to add
 #
