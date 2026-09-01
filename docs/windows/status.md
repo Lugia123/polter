@@ -1367,6 +1367,45 @@ RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCOD
     (`39 is Action.Key.mouse_shape`)——**一个错的 tag 不是「空」,
     它是另一个真实动作的编号,而那才是宿主真会去跑的那条 arm。**
 
+53. **⭐ 注入器对 physical 类触发器结构性失明,而症状和「这条绑定坏了」一模一样。**（2026-09-02）
+
+    菜单上写着 `分屏缩放  Ctrl+Shift+Enter`,按下去什么都不发生;
+    同一轮 `Ctrl+Shift+O`(向右分屏)按下去**是生效的**。**两次日志都是 `keycode=0x0`。**
+
+    定案的两行代码:
+
+    ```
+    Config.zig:7191   .{ .key = .{ .physical = .enter } } => toggle_split_zoom
+    key.zig:169       enter,      ← 是 key.Key 的字段名 → 解析成 **physical**
+    key.zig:143       key_o,      ← 字段名不是 `o` → ctrl+shift+o 掉进单码点分支 → **unicode**
+    ```
+
+    `keycode(lp)` 读的是 lParam 的扫描码位。**注入器不带扫描码 → physical 匹配不上;
+    unicode 那支靠字符匹配,不受影响。** 所以同一个 `keycode=0x0`,一个生效一个不生效。
+
+    > **结论不是「这条绑定坏了」,是「这个注入器验不了这一类键」。**
+    > Enter / Esc / F1–F12 / 方向键 / 反引号——**所有没有字符的键,
+    > 它们的快捷键在这台机器上都验不了**,而症状统一是 `surface_key=false`。
+
+    **这一类判据只能记未验,或者换一个真能带扫描码的注入方式。**
+
+    ⚠️ 过程本身也值一笔:当事人**把这条记成「待判」而不是二选一**,
+    并且提出了一个**判完就结案的具体问题**(「这条触发器的 tag 是 unicode 还是 physical」)。
+    **一个可判的问题,比一个自信的结论有用。**
+
+54. **一条自打脸的日志,真的打到了自己。**（2026-09-02）
+
+    菜单表里每条标了 `not-built` 的行,若**执行成功**就打一句
+    `works now but is still marked not-built`。写的时候是防呆,当晚就响了:
+
+    ```
+    [menu] selftest "粘贴" works now but is still marked not-built:
+           cb_read_clipboard in main.rs returns false unconditionally
+    ```
+    剪贴板那一轮已经修好,而说明文字还是旧的。**没有这行,「粘贴」会一直挂在
+    not-built 那一档,而它早就能用了**——**一张手写的「已知缺口」表,
+    默认会烂在它被写下的那一刻。**
+
 ## 八、可复核的现场
 
 - 测试机 `C:\app`：`tsf-probe*`、`dllprobe\`、`conpty\`（8 个二进制 + 输出）、
