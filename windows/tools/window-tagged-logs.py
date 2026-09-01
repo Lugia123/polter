@@ -58,7 +58,12 @@ import sys
 #                     "everything, unless declared"
 #   217  `98af8cff5`  the four `[menu]` lines that show and dispatch a menu
 #                     for one window were tagged
-#   225  this commit  **two hands, one commit, on purpose.**
+#   204  this commit  21 declared process-wide at the call site: 11 in
+#                     `plugins.rs` (manifests, settings files, the catalog on
+#                     disk) and 10 in `settings_ui.rs` (the three singleton
+#                     windows and the config they show). One hand this time,
+#                     and the drop matched the count exactly.
+#   225  f93827b5b    **two hands, one commit, on purpose.**
 #                       11  `palette.rs` -- 10 declared process-wide at the
 #                           call site, 1 tagged (`[palette] shown at`, which
 #                           can name the frame `show()` already positions
@@ -98,7 +103,7 @@ import sys
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
-BASELINE_UNTAGGED = 225
+BASELINE_UNTAGGED = 204
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`

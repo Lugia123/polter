@@ -35,7 +35,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::logf;
+use crate::plogf;
 
 /// What a value is allowed to be, and therefore what control to put on screen.
 ///
@@ -211,7 +211,8 @@ fn control_of(spec: &serde_json::Value) -> Control {
 
 fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
     let v: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| logf!("[plug] {}: manifest will not parse: {}", key, e))
+        // process-wide: a plugin's manifest on disk; the same file whatever window is in front
+        .map_err(|e| plogf!("[plug] {}: manifest will not parse: {}", key, e))
         .ok()?;
 
     let name = v
@@ -291,7 +292,8 @@ fn read_settings(key: &str) -> (bool, BTreeMap<String, String>) {
         return (false, values);
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-        logf!("[plug] {}: settings will not parse, treating as unconfigured", key);
+        // process-wide: a plugin's settings file on disk, read once
+        plogf!("[plug] {}: settings will not parse, treating as unconfigured", key);
         return (false, values);
     };
     let Some(obj) = v.as_object() else {
@@ -327,7 +329,8 @@ fn read_settings(key: &str) -> (bool, BTreeMap<String, String>) {
 /// plugin off.
 pub fn save(key: &str, enabled: bool, values: &BTreeMap<String, String>) -> bool {
     let Some(path) = settings_path(key) else {
-        logf!("[plug] {}: no config directory; nothing saved", key);
+        // process-wide: the process's config directory, or the absence of one
+        plogf!("[plug] {}: no config directory; nothing saved", key);
         return false;
     };
     if let Some(parent) = path.parent() {
@@ -337,15 +340,18 @@ pub fn save(key: &str, enabled: bool, values: &BTreeMap<String, String>) -> bool
     let body = render_settings(enabled, values);
 
     if let Err(e) = std::fs::write(&tmp, body.as_bytes()) {
-        logf!("[plug] {}: write failed: {}", key, e);
+        // process-wide: writing a plugin's settings file
+        plogf!("[plug] {}: write failed: {}", key, e);
         return false;
     }
     if let Err(e) = std::fs::rename(&tmp, &path) {
-        logf!("[plug] {}: rename failed: {}", key, e);
+        // process-wide: writing a plugin's settings file
+        plogf!("[plug] {}: rename failed: {}", key, e);
         let _ = std::fs::remove_file(&tmp);
         return false;
     }
-    logf!("[plug] {} saved: enabled={} params={}", key, enabled, values.len());
+    // process-wide: writing a plugin's settings file
+    plogf!("[plug] {} saved: enabled={} params={}", key, enabled, values.len());
     true
 }
 
@@ -356,13 +362,15 @@ pub fn catalog() -> Vec<Plugin> {
     let mut out: Vec<Plugin> = Vec::new();
 
     if let Some(d) = user_dir() {
-        logf!("[plug] config dir {}", d.display());
+        // process-wide: the directory the catalog is read from: one per process
+        plogf!("[plug] config dir {}", d.display());
     }
     // **Which of the three cases holds, every time the catalog is built.**
     // The page's empty state and this line have to agree, and both have to
     // distinguish "no directory" from "empty directory" -- the two looked
     // identical for as long as this host read the wrong directory entirely.
-    logf!("[plug] {}", shipped_note());
+    // process-wide: which of the three catalog cases holds; a fact about a directory
+    plogf!("[plug] {}", shipped_note());
 
     for base in [shipped_dir(), user_dir()].into_iter().flatten() {
         let Ok(entries) = std::fs::read_dir(&base) else {
@@ -397,7 +405,8 @@ pub fn catalog() -> Vec<Plugin> {
     }
 
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    logf!("[plug] catalog: {} plugins", out.len());
+    // process-wide: the plugin catalog, built from disk and shared by every window
+    plogf!("[plug] catalog: {} plugins", out.len());
     out
 }
 
@@ -418,11 +427,13 @@ pub fn write_fixture(path: &str) -> bool {
     let body = render_settings(true, &values);
     match std::fs::write(path, body.as_bytes()) {
         Ok(()) => {
-            logf!("[plug] fixture written to {}", path);
+            // process-wide: a fixture file written for the cross-implementation check
+            plogf!("[plug] fixture written to {}", path);
             true
         }
         Err(e) => {
-            logf!("[plug] fixture write failed: {}", e);
+            // process-wide: a fixture file written for the cross-implementation check
+            plogf!("[plug] fixture write failed: {}", e);
             false
         }
     }

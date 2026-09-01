@@ -39,7 +39,7 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::logf;
+use crate::plogf;
 use crate::plugins::{self, Control, Plugin};
 
 const WM_SETTINGS_TOGGLE: u32 = WM_APP + 8;
@@ -140,7 +140,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
                 ..Default::default()
             };
             if RegisterClassExW(&wc) == 0 {
-                logf!("[set] RegisterClassExW failed");
+                // process-wide: registering the window class, once per process
+                plogf!("[set] RegisterClassExW failed");
                 return;
             }
         }
@@ -165,14 +166,16 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         let hs = match make(w!("PolterSettings"), W, H) {
             Ok(h) => h,
             Err(e) => {
-                logf!("[set] CreateWindowExW failed: {e:?}");
+                // process-wide: the settings window: there is one, by the S4-B ruling, and no window owns it
+                plogf!("[set] CreateWindowExW failed: {e:?}");
                 return;
             }
         };
         let he = match make(w!("PolterConfigErrors"), 560, 320) {
             Ok(h) => h,
             Err(e) => {
-                logf!("[set] errors CreateWindowExW failed: {e:?}");
+                // process-wide: the errors window: one per process
+                plogf!("[set] errors CreateWindowExW failed: {e:?}");
                 return;
             }
         };
@@ -202,14 +205,16 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         let ha = match make(w!("PolterAbout"), 420, 220) {
             Ok(h) => h,
             Err(e) => {
-                logf!("[set] about CreateWindowExW failed: {e:?}");
+                // process-wide: the about window: one per process
+                plogf!("[set] about CreateWindowExW failed: {e:?}");
                 return;
             }
         };
         HWND_SETTINGS.store(hs.0, Ordering::Release);
         HWND_ERRORS.store(he.0, Ordering::Release);
         HWND_ABOUT.store(ha.0, Ordering::Release);
-        logf!("[set] ready");
+        // process-wide: the three windows are up; no terminal window is involved
+        plogf!("[set] ready");
     }
 }
 
@@ -231,7 +236,8 @@ pub fn request_toggle() {
 pub fn request_about() {
     let h = HWND_ABOUT.load(Ordering::Acquire);
     if h.is_null() {
-        logf!("[set] about was asked for before its window existed");
+        // process-wide: the about window does not exist yet, so no window could be meant
+        plogf!("[set] about was asked for before its window existed");
         return;
     }
     let _ = unsafe { PostMessageW(Some(HWND(h)), WM_ABOUT_SHOW, WPARAM(0), LPARAM(0)) };
@@ -557,7 +563,8 @@ fn show_about() {
         let _ = SetWindowPos(h, Some(HWND_TOPMOST), x, y, w, hh, SWP_SHOWWINDOW);
         let _ = InvalidateRect(Some(h), None, true);
     }
-    logf!("[set] about shown");
+    // process-wide: the about window is one per process
+    plogf!("[set] about shown");
 }
 
 unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -729,7 +736,8 @@ fn show(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
         let prev = crate::overlay::focus_to_edit(f, "settings");
         ST.with(|c| c.borrow_mut().prev_focus = prev);
     }
-    logf!("[set] shown");
+    // process-wide: the settings window is one per process; it is not shown *for* a window
+    plogf!("[set] shown");
 }
 
 fn hide(win: HWND) {
@@ -784,7 +792,8 @@ unsafe extern "system" fn settings_proc(
                     // action without naming it, and that claim was false and
                     // uncheckable at the same time. See development.md §6.
                     let ok = crate::binding("open_config");
-                    logf!("[set] open_config -> binding_action = {}", ok);
+                    // process-wide: opening the config file: one config, one process
+                    plogf!("[set] open_config -> binding_action = {}", ok);
                 } else if id == ID_ABOUT {
                     show_about();
                 }
@@ -1046,7 +1055,8 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
         match msg {
             WM_ERRORS_SHOW => {
                 let errors = read_diagnostics();
-                logf!("[set] config diagnostics: {}", errors.len());
+                // process-wide: diagnostics about the config this process loaded
+                plogf!("[set] config diagnostics: {}", errors.len());
                 if errors.is_empty() {
                     let _ = ShowWindow(win, SW_HIDE);
                     return LRESULT(0);
