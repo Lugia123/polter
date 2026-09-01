@@ -2606,9 +2606,10 @@ pub const ChatLine = struct {
     /// against anything on screen.
     author: []const u8,
 
-    /// Unix milliseconds, so this can be shown as a time of day. The log
-    /// itself runs on a monotonic clock -- right for measuring stillness,
-    /// useless for saying when somebody spoke -- and the host converts.
+    /// Unix milliseconds, so this can be shown as a time of day. Read off
+    /// the real clock when the message is posted -- not derived from how
+    /// long the app has been awake, which loses every second the machine
+    /// spends suspended and would date a message hours early.
     at_ms: i64,
 
     /// True when this stands in for messages the supervisor compacted away.

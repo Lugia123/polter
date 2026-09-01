@@ -693,6 +693,28 @@ pub fn decodeSegment(alloc: Allocator, seg: []const u8) Allocator.Error!?[]u8 {
 const Tm = internal_os.Tm;
 const localtime_r = internal_os.localtime_r;
 
+/// The wall clock, in Unix milliseconds. **The one place a record's time of
+/// day comes from.**
+///
+/// Here because this file already owns "what does Polter call a moment in
+/// time on disk": `dayOf` decides which local day a moment falls in, and
+/// the two answers have to come off one clock, or a message ends up filed
+/// under a day its own timestamp disagrees with.
+///
+/// `.real`, and nothing that looks equivalent. The alternative that does --
+/// pair the wall clock with a monotonic one once at startup, then report
+/// `epoch + elapsed` -- was live in `App` and was wrong by however long the
+/// machine had been suspended, because `.awake` stops while a laptop is
+/// shut. A message sent after a two-hour lid-close was stamped two hours
+/// early, filed into the previous day's file, and drawn at the wrong time
+/// in the chat window. The error only grows, and nothing about it looks
+/// broken. A monotonic clock answers "how long since"; there is no way to
+/// make it answer "when".
+pub fn nowMs(io: std.Io) i64 {
+    const wall: std.Io.Timestamp = .now(io, .real);
+    return @intCast(@divFloor(wall.nanoseconds, std.time.ns_per_ms));
+}
+
 /// Which day a message belongs to, packed as `YYYYMMDD`.
 ///
 /// The reader's own day rather than UTC, for the same reason the chat
@@ -792,6 +814,38 @@ fn render(buf: *[19]u8, at: struct { y: i64, mo: i64, d: i64, h: i64, mi: i64, s
 }
 
 const testing = std.testing;
+
+test "the clock a record is dated by is the wall clock, not an elapsed one" {
+    // **This cannot reproduce the bug it is here about, and saying so is
+    // the point.** The failure was `epoch + elapsed`, where `elapsed` came
+    // off a clock that stops while the machine is suspended; it reads
+    // correct until the machine has slept, and no test suspends a machine.
+    //
+    // What is checkable is the shape of the answer. An elapsed count starts
+    // near zero and is small for the life of a process; a Unix timestamp is
+    // 1.7e12 and rising. So a `nowMs` that ever returned a duration --
+    // which is exactly what the regression would look like, whether written
+    // as `elapsed` alone or as a stale `epoch + elapsed` from a process
+    // that has been up a while -- lands nowhere near a plausible date, and
+    // this fails.
+    //
+    // The floor is a date in the past rather than "now" so that the test
+    // does not depend on the machine's clock being right, only on it being
+    // a clock at all.
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const at = nowMs(io);
+
+    // 2020-01-01, in milliseconds.
+    try testing.expect(at > 1_577_836_800_000);
+
+    // And it is the same clock `dayOf` is meant to be fed: the day it
+    // names has to be a real date, not the epoch's.
+    const day = dayOf(at);
+    try testing.expect(day / 10000 >= 2020);
+}
 
 test "a stamp is a fixed nineteen characters, whatever the moment" {
     // Fixed width is the point: these lines are read in a column, and a

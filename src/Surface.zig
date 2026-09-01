@@ -3510,7 +3510,7 @@ const notice_quiet_keyboard_ms = 10 * std.time.ms_per_s;
 pub fn updatePoltergeistTabMark(self: *Surface) void {
     const mark = self.app.poltergeist.tabMark(
         self.id,
-        self.app.poltergeistNow(),
+        self.app.poltergeistElapsedMs(),
         self.io.config.poltergeist_quiescence_ms,
     );
     const shielded = self.app.poltergeist.isShielded(self.id);

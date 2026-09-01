@@ -159,11 +159,9 @@ pub fn defaultDir(alloc: Allocator, state_dir: []const u8) Allocator.Error![]con
 ///
 /// Wall rather than monotonic because the question this file answers is
 /// "what was happening at two in the morning", and a monotonic clock cannot
-/// be asked that.
-pub fn nowMs(io: std.Io) i64 {
-    const wall: std.Io.Timestamp = .now(io, .real);
-    return @intCast(@divFloor(wall.nanoseconds, std.time.ns_per_ms));
-}
+/// be asked that. The implementation is `daylog`'s, beside the `dayOf` that
+/// turns this into a filename -- one clock, one answer.
+const nowMs = daylog.nowMs;
 
 /// The directory name one terminal gets.
 ///
