@@ -1194,9 +1194,39 @@ test "powershell: ordinary arguments are not mistaken for terminal ones" {
 // hand-written second list is exactly what failed here, and repeating one
 // inside the test that checks for it would make the test blind in the same
 // way the code was.
+/// Does `E` have a member spelled `name`?
+///
+/// **Both loops below and the anchors that check them go through here**, and
+/// that is the whole point of it being a function. An anchor that called
+/// `std.meta.stringToEnum` directly would pin the standard library, not this
+/// test's instrument: replace the lookup inside the loops with something that
+/// always says yes, and the loops go green while such an anchor still passes,
+/// because it asked a different question.
+fn hasName(comptime E: type, name: []const u8) bool {
+    return std.meta.stringToEnum(E, name) != null;
+}
+
 test "the config's shell-integration values and this file's shells are the same set" {
     const testing = std.testing;
     const Configurable = config.Config.ShellIntegration;
+
+    // **The anchors come first, because they are what says the loops below
+    // are looking at anything.** Every assertion in those loops is of the
+    // form "nothing was missing", and the three counts only say how many
+    // times the loop went round -- **not what the lookup decided**. A lookup
+    // that always answered yes satisfies both loops and all three counts.
+
+    // A name that will never be a shell. `hasName` must be able to say no.
+    try testing.expect(!hasName(Shell, "not_a_shell_zz"));
+    try testing.expect(!hasName(Configurable, "not_a_shell_zz"));
+
+    // And the member this test was written for. **Deleting `powershell` from
+    // both enums at once -- the shape of an ordinary "nobody uses this,
+    // clean it up" -- keeps the two tables agreeing, drops both counts from
+    // 6 to 5, and leaves `>= 5` and the equality both satisfied. This pair of
+    // lines is the only thing that would notice.**
+    try testing.expect(hasName(Configurable, "powershell"));
+    try testing.expect(hasName(Shell, "powershell"));
 
     // `none` and `detect` are not shells; every other config value must name
     // one this file can inject.
@@ -1206,7 +1236,7 @@ test "the config's shell-integration values and this file's shells are the same 
             !std.mem.eql(u8, field.name, "detect"))
         {
             configurable += 1;
-            if (std.meta.stringToEnum(Shell, field.name) == null) {
+            if (!hasName(Shell, field.name)) {
                 std.debug.print(
                     "config allows shell-integration = {s}, but termio.shell_integration.Shell " ++
                         "has no such member: the value parses and then nothing injects it\n",
@@ -1222,7 +1252,7 @@ test "the config's shell-integration values and this file's shells are the same 
     var injectable: usize = 0;
     inline for (@typeInfo(Shell).@"enum".fields) |field| {
         injectable += 1;
-        if (std.meta.stringToEnum(Configurable, field.name) == null) {
+        if (!hasName(Configurable, field.name)) {
             std.debug.print(
                 "this file injects {s}, but Config.ShellIntegration has no such value: " ++
                     "`shell-integration = {s}` is rejected with a diagnostic while `detect` " ++
