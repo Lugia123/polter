@@ -23,11 +23,27 @@ function Get-HostMcpCurrent {
 function Register-HostMcp {
     param($Version, $VersionKey, $Exe, $Scope)
 
+    # `remove` leaves a `"mcpServers": {}` behind in a file that had no such
+    # key. Harmless, and left alone: the tool owns the file, and owning it
+    # does not promise putting everything back.
     Invoke-PolterCliQuietly 'gemini' @('mcp', 'remove', 'polter')
+
+    # **`-e` goes last, after the positional arguments.** `gemini mcp add`
+    # takes `<name> <command> [args...]` and `-e` is an array option, which
+    # yargs makes greedy; `--` ends parsing, so what follows it is not counted
+    # as a positional either. Written with `-e` in the middle the parser sees
+    # one positional and refuses the call outright:
+    #
+    #     Not enough non-option arguments: got 1, need at least 2
+    #
+    # **This is not a Windows problem.** The `.sh` beside this file had the
+    # same line and the same bug from the day it was written; the full
+    # reasoning, the cost of dropping `--`, and what was measured are in its
+    # comment. Both files must stay in agreement.
     Invoke-PolterCli 'gemini' @(
         'mcp', 'add', '--scope', 'user', 'polter',
-        '-e', "$VersionKey=$Version",
-        '--', $Exe, '+mcp'
+        $Exe, '+mcp',
+        '-e', "$VersionKey=$Version"
     )
 }
 

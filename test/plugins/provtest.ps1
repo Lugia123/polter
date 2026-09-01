@@ -38,7 +38,10 @@ function Invoke-Plugin {
         [string]$Key,
         [string]$Hello,
         [string[]]$Batches,
-        [string]$PathPrepend = $Bin
+        [string]$PathPrepend = $Bin,
+        # When given, handed to the stub CLI so it can record the argv it was
+        # called with. See group 6b.
+        [string]$ArgvLog = ''
     )
 
     $script = Join-Path (Join-Path $Plugins $Key) 'provision.ps1'
@@ -54,6 +57,7 @@ function Invoke-Plugin {
     $psi.StandardErrorEncoding = $Utf8
     $psi.WorkingDirectory = $Root
     $psi.EnvironmentVariables['PATH'] = "$PathPrepend;$env:SystemRoot\system32;$env:SystemRoot"
+    if ($ArgvLog) { $psi.EnvironmentVariables['POLTER_TEST_ARGV'] = $ArgvLog }
 
     $p = [System.Diagnostics.Process]::Start($psi)
 
@@ -266,6 +270,80 @@ Check '6 failed -- the sequence is exactly greeting-ack, report, refusal' ($seq 
 Check '6 failed -- the log says status=failed step=mcp' ($r.Stderr -match 'status=failed step=mcp') $r.Stderr
 Check '6 failed -- the CLI own complaint survived to the log' ($r.Stderr -match 'something went wrong') $r.Stderr
 Assert-StdoutClean '6 failed' $r
+[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $okCmd, $Utf8)
+
+Write-Host "== 6b. the mcp add line keeps ``-e`` after the positional arguments =="
+#
+# **This is a real bug that was in both `.sh` and `.ps1` from the day they
+# were written, and every test passed anyway.**
+#
+# `qwen mcp add` and `gemini mcp add` take `<name> <command> [args...]`, and
+# their `-e` is an *array* option: yargs makes it greedy, and `--` ends
+# parsing, so what follows is not counted as a positional either. With `-e` in
+# the middle the parser saw one positional and refused the call outright --
+# `Not enough non-option arguments: got 1, need at least 2`.
+#
+# What is asserted is the argv **this repository generates**, which is the
+# part we own and the part that was wrong. That `qwen` accepts this shape was
+# measured separately (qwen 0.15.11, 2026-09-01, exit 0 with the written entry
+# read back). The same rule is pinned on the `.sh` side by a Zig test, so the
+# two ports cannot drift apart.
+$argvLog = Join-Path $Root 'argv.txt'
+# A batch file rather than a PowerShell script, because that is what npm
+# installs and what the plugin will actually find on PATH. One argument per
+# line via `%~1` + `shift`, so quoting is stripped once and only once.
+$recorder = (@'
+@echo off
+echo --CALL-->>"%POLTER_TEST_ARGV%"
+:loop
+if "%~1"=="" goto done
+echo %~1>>"%POLTER_TEST_ARGV%"
+shift
+goto loop
+:done
+exit /b 0
+'@) -replace "`n", "`r`n"
+[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $recorder, $Utf8)
+
+$homeArgv = Join-Path $Root 'home-argv'
+New-Item -ItemType Directory -Path $homeArgv -Force | Out-Null
+$r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') `
+    -Batches @((New-Batch $homeArgv '1.2.3' $skillSrc)) -ArgvLog $argvLog
+
+if (-not (Test-Path -LiteralPath $argvLog)) {
+    Check '6b argv -- the stub recorded something' $false 'no argv.txt was written'
+} else {
+    # One argument per line, so an argument containing a space cannot be read
+    # as two. The marker separates invocations: the plugin calls `mcp list`
+    # and `mcp remove` before `mcp add`, and asserting against the wrong one
+    # of those would pass for the wrong reason.
+    $calls = ([System.IO.File]::ReadAllText($argvLog, $Utf8) -split '--CALL--') |
+        ForEach-Object { , @($_ -split "`r?`n" | Where-Object { $_.Trim() }) }
+    $add = @($calls | Where-Object { $_.Count -ge 2 -and $_[0] -eq 'mcp' -and $_[1] -eq 'add' })
+
+    Check '6b argv -- the plugin called `mcp add` exactly once' ($add.Count -eq 1) "calls: $($calls.Count)"
+
+    if ($add.Count -ge 1) {
+        $a = $add[0]
+        $iExe = [Array]::IndexOf($a, 'C:\app\polter.exe')
+        $iMcp = [Array]::IndexOf($a, '+mcp')
+        $iE = [Array]::IndexOf($a, '-e')
+        $line = $a -join ' '
+
+        Check '6b argv -- the served exe and +mcp are both on the line' (($iExe -ge 0) -and ($iMcp -ge 0)) $line
+        # The rule, stated as the rule rather than as a literal command line:
+        # a literal would break on any innocuous addition and teach nobody why.
+        Check '6b argv -- `-e` comes after the served exe' (($iE -ge 0) -and ($iE -gt $iExe)) $line
+        Check '6b argv -- `-e` comes after +mcp' (($iE -ge 0) -and ($iE -gt $iMcp)) $line
+        # And no `--`. It used to be there, to keep a future flag on the served
+        # side from being read as one of the CLI's own -- but it is what stops
+        # the positionals being counted, so it had to go. That protection now
+        # rests on `+mcp` not looking like an option.
+        Check '6b argv -- no `--` separator' ([Array]::IndexOf($a, '--') -lt 0) $line
+        Check '6b argv -- the version marker went with the flag' ([Array]::IndexOf($a, 'POLTER_REGISTERED=1.2.3') -ge 0) $line
+    }
+}
+
 [System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $okCmd, $Utf8)
 
 Write-Host "== 7. a greeting that is not one =="

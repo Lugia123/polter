@@ -3373,22 +3373,36 @@ test "a plugin can say something to the user, once, and it cannot draw with it" 
 }
 
 /// One run of the shipped `claude-code` plugin, start to finish.
-///
-/// Everything the plugin needs is under `dir`: a `claude` that says yes to
-/// everything (this test is about the skill file, not about Claude Code's
-/// own configuration), a source skill to install, and a `HOME` of its own
-/// so nothing is ever written into the machine's real `~/.claude`.
 fn runShippedClaudeCode(
     alloc: Allocator,
     io: std.Io,
     dir: []const u8,
     version: []const u8,
 ) !void {
+    return runShippedProvision(alloc, io, dir, "claude-code", version, null);
+}
+
+/// One run of a shipped host plugin, start to finish.
+///
+/// Everything the plugin needs is under `dir`: a stub CLI that says yes to
+/// everything, a source skill to install, and a `HOME` of its own so nothing
+/// is ever written into the machine's real configuration.
+///
+/// `argv_log`, when given, is handed to the stub in the environment so it can
+/// record what it was called with. See the `mcp add` test below.
+fn runShippedProvision(
+    alloc: Allocator,
+    io: std.Io,
+    dir: []const u8,
+    key: []const u8,
+    version: []const u8,
+    argv_log: ?[]const u8,
+) !void {
     // Laid out the way the bundle lays it out, because the plugin now finds
     // its library by walking `../_sdk` from its own directory. A flat temp
     // directory would resolve that to the parent of the temp directory and
     // the script would fail on its first statement.
-    const exec = try std.fmt.allocPrint(alloc, "{s}/claude-code/provision.sh", .{dir});
+    const exec = try std.fmt.allocPrint(alloc, "{s}/{s}/provision.sh", .{ dir, key });
     const home = try std.fmt.allocPrint(alloc, "{s}/home", .{dir});
     const bin = try std.fmt.allocPrint(alloc, "{s}/bin", .{dir});
     const source = try std.fmt.allocPrint(alloc, "{s}/mine.md", .{dir});
@@ -3399,6 +3413,7 @@ fn runShippedClaudeCode(
     var env: std.process.Environ.Map = .init(alloc);
     try env.put("PATH", try std.fmt.allocPrint(alloc, "{s}:/usr/bin:/bin", .{bin}));
     try env.put("HOME", home);
+    if (argv_log) |path| try env.put("POLTER_TEST_ARGV", path);
 
     var child = std.process.spawn(io, .{
         .argv = &.{exec},
@@ -3408,7 +3423,7 @@ fn runShippedClaudeCode(
         .stderr = .inherit,
     }) catch return error.SkipZigTest; // no /bin/sh on this machine
 
-    var reaper: reap.Reaper = .init(io, "claude-code", child.id, 30 * std.time.ms_per_s);
+    var reaper: reap.Reaper = .init(io, key, child.id, 30 * std.time.ms_per_s);
     const keeper = std.Thread.spawn(.{}, reap.Reaper.run, .{&reaper}) catch null;
     defer {
         reaper.retire();
@@ -3418,7 +3433,7 @@ fn runShippedClaudeCode(
     const wants: Plugin.Wants = .{ .events = &.{.provision} };
 
     const hello = try renderHello(alloc, .{
-        .key = "claude-code",
+        .key = key,
         .cursor = 0,
         .wants = wants,
         .params = &.{
@@ -3597,6 +3612,169 @@ test "an installed skill says which build wrote it, and only changes when that d
     const third = try std.Io.Dir.cwd().readFileAlloc(io, installed, alloc, .unlimited);
     try testing.expect(std.mem.indexOf(u8, third, "\npolter-build: 9.9.9-other\n") != null);
     try testing.expect(std.mem.indexOf(u8, third, "1.2.3-feature-v0-3-+01d879ed9") == null);
+}
+
+test "the mcp add line keeps `-e` after the positional arguments" {
+    // **This exists because a command line was wrong on every platform for
+    // as long as the file had existed, and every test passed anyway.**
+    //
+    // `qwen mcp add` and `gemini mcp add` take `<name> <command> [args...]`,
+    // and their `-e` is an *array* option. yargs makes an array option
+    // greedy, and `--` ends parsing, so what follows it is not counted as a
+    // positional either. Written the obvious way --
+    //
+    //     qwen mcp add --scope user polter -e KEY=V -- <exe> +mcp
+    //
+    // -- the parser saw one positional and refused the whole call with
+    // `Not enough non-option arguments: got 1, need at least 2`. The fix is
+    // to put `-e` last, after the positionals.
+    //
+    // **What this test proves, and what it does not.** It drives the shipped
+    // script through the real protocol with a stub on `PATH` that records the
+    // argv it was handed, and asserts the ordering rule. That is the argv
+    // *this repository generates*, which is the thing that was broken and the
+    // thing we own.
+    //
+    // It does **not** prove that `qwen` accepts that shape -- that is somebody
+    // else's parser, and no stub can speak for it. That half was measured on
+    // qwen 0.15.11 on 2026-09-01: exit 0, and the entry it wrote read back and
+    // checked rather than the exit code alone.
+    //
+    // So the honest limit is this: **the test freezes what we believe the CLI
+    // wants.** If that upstream changes, this stays green while production
+    // breaks, exactly as it did before -- which is why the belief is dated and
+    // versioned here instead of being left implicit.
+    //
+    // **Both plugins are run, not one.** `gemini` is the same upstream and had
+    // the same line; the comment in each file says "fix one and check the
+    // other", and a comment is not a check. Pinning only one would leave the
+    // pair free to drift in exactly the direction they have already drifted
+    // together once.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const pair: []const struct { key: []const u8, bin: []const u8, src: []const u8 } = &.{
+        .{ .key = "qwen-code", .bin = "qwen", .src = @embedFile("plugin_qwen_code_sh") },
+        .{ .key = "gemini", .bin = "gemini", .src = @embedFile("plugin_gemini_sh") },
+    };
+
+    for (pair) |host| {
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-mcpadd-{x}", .{&raw});
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        const argv_log = try std.fmt.allocPrint(alloc, "{s}/argv.txt", .{dir});
+
+        {
+            var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+            defer d.close(io);
+
+            try d.createDirPath(io, host.key);
+            var f = try d.createFile(
+                io,
+                try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{host.key}),
+                fixtureMode(0o755),
+            );
+            try f.writeStreamingAll(io, host.src);
+            f.close(io);
+
+            try d.createDirPath(io, "_sdk");
+            var sdk = try d.createFile(io, "_sdk/provision.sh", fixtureMode(0o644));
+            try sdk.writeStreamingAll(io, @embedFile("plugin_sdk_provision_sh"));
+            sdk.close(io);
+
+            // One argument per line, so an argument containing a space cannot be
+            // read as two. The marker separates invocations: the plugin calls
+            // `mcp list` and `mcp remove` before it calls `mcp add`, and asserting
+            // against the wrong one of those would pass for the wrong reason.
+            try d.createDirPath(io, "bin");
+            var c = try d.createFile(
+                io,
+                try std.fmt.allocPrint(alloc, "bin/{s}", .{host.bin}),
+                fixtureMode(0o755),
+            );
+            try c.writeStreamingAll(io,
+                \\#!/bin/sh
+                \\{ echo "--CALL--"; for a in "$@"; do echo "$a"; done; } >> "$POLTER_TEST_ARGV"
+                \\exit 0
+                \\
+            );
+            c.close(io);
+
+            var sk = try d.createFile(io, "mine.md", .{});
+            try sk.writeStreamingAll(io,
+                \\---
+                \\name: mine
+                \\version: 1
+                \\description: a skill for the test
+                \\---
+                \\
+                \\Body.
+                \\
+            );
+            sk.close(io);
+        }
+
+        try runShippedProvision(alloc, io, dir, host.key, "1.2.3", argv_log);
+
+        const text = try std.Io.Dir.cwd().readFileAlloc(io, argv_log, alloc, .unlimited);
+
+        // The `mcp add` invocation, and only it.
+        var add: ?[]const []const u8 = null;
+        {
+            var calls = std.mem.splitSequence(u8, text, "--CALL--\n");
+            _ = calls.next(); // whatever came before the first marker
+            while (calls.next()) |call| {
+                var args: std.ArrayList([]const u8) = .empty;
+                var lines = std.mem.splitScalar(u8, call, '\n');
+                while (lines.next()) |line| {
+                    if (line.len == 0) continue;
+                    try args.append(alloc, line);
+                }
+                if (args.items.len >= 2 and
+                    std.mem.eql(u8, args.items[0], "mcp") and
+                    std.mem.eql(u8, args.items[1], "add"))
+                {
+                    add = args.items;
+                }
+            }
+        }
+
+        const argv = add orelse return error.ThePluginNeverCalledMcpAdd;
+
+        const find = struct {
+            fn f(haystack: []const []const u8, needle: []const u8) ?usize {
+                for (haystack, 0..) |a, i| if (std.mem.eql(u8, a, needle)) return i;
+                return null;
+            }
+        }.f;
+
+        const exe = find(argv, "/nowhere/polter") orelse return error.TheServedExeIsNotOnTheLine;
+        const mcp = find(argv, "+mcp") orelse return error.TheServedArgumentIsNotOnTheLine;
+        const e = find(argv, "-e") orelse return error.TheVersionMarkerIsNotOnTheLine;
+
+        // The rule, stated as the rule rather than as a literal command line: a
+        // literal would break on any innocuous addition and teach nobody why.
+        try testing.expect(e > exe);
+        try testing.expect(e > mcp);
+
+        // And no `--`. It used to be here, to keep a future flag on the served
+        // side from being read as one of the CLI's own -- but it is what stops
+        // the positionals being counted, so it had to go. That protection now
+        // rests on `+mcp` not looking like an option, which is written down in
+        // the plugin beside the line.
+        try testing.expect(find(argv, "--") == null);
+
+        // The value went with the flag rather than being lost between the two.
+        try testing.expect(find(argv, "POLTER_REGISTERED=1.2.3") != null);
+    }
 }
 
 test "a plugin's child gets the environment the host prepared, not the host's own" {

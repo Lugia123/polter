@@ -221,6 +221,26 @@ pub fn add(
         .root_source_file = b.path("plugins/claude-code/provision.sh"),
     });
 
+    // And `qwen-code`, for one property that has nothing to do with skills:
+    // **the command line it builds for `qwen mcp add`.** That argument order
+    // was wrong from the day the file was written -- `-e` is an array option
+    // and swallowed the rest of the line -- and nothing noticed for as long
+    // as nobody ran it against a real `qwen`. What the test beside it asserts
+    // is the shape of the argv this repository generates, which is the part
+    // this repository owns; that the shape is one `qwen` accepts was measured
+    // separately, against qwen 0.15.11. Two claims, two kinds of evidence.
+    step.root_module.addAnonymousImport("plugin_qwen_code_sh", .{
+        .root_source_file = b.path("plugins/qwen-code/provision.sh"),
+    });
+
+    // **And `gemini`, which is the same upstream and was broken the same
+    // way.** Embedding only one of the pair would assert the property on one
+    // file while the note in both says "fix one and check the other" -- and a
+    // note is not a check. The test runs the same assertions over both.
+    step.root_module.addAnonymousImport("plugin_gemini_sh", .{
+        .root_source_file = b.path("plugins/gemini/provision.sh"),
+    });
+
     // And the library it sources. A host plugin is a declaration now -- the
     // binary to look for, how that CLI registers a server, where it keeps
     // skills -- and every line of the behaviour the test above asserts over

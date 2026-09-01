@@ -105,6 +105,29 @@ four things that are the plugin's own job:
 
 The far end is somebody else's milestone.
 
+## The `mcp add` argument order (group 6b)
+
+`qwen mcp add` and `gemini mcp add` take `<name> <command> [args...]`, and
+their `-e` is an *array* option: yargs makes it greedy, and `--` ends parsing,
+so what follows is not counted as a positional either. With `-e` written in
+the middle the parser saw one positional and refused the whole call —
+`Not enough non-option arguments: got 1, need at least 2`.
+
+That was wrong on every platform from the day the files were written, in both
+the `.sh` and the `.ps1`, and every test passed. Group 6b puts a batch file on
+`PATH` that records the argv it was handed and asserts the ordering rule; the
+`.sh` side is pinned by a Zig test (`Resident.zig`, "the mcp add line keeps
+`-e` after the positional arguments") which runs both `qwen-code` and `gemini`.
+
+**What those tests prove is the argv this repository generates** — the part we
+own and the part that was wrong. They do not prove the CLI accepts that shape;
+no stub can speak for somebody else's parser. That half was measured against
+qwen 0.15.11 on 2026-09-01: exit 0, with the entry it wrote read back and
+checked rather than the exit code alone. Two claims, two kinds of evidence, and
+the tests freeze a dated belief about what the CLI wants — if upstream changes,
+they stay green while production breaks, which is why the version and date are
+written into the test rather than left implicit.
+
 ## `qwenprobe.ps1`
 
 Written after the first `-Real` run hung on `qwen mcp list` with no `node`
