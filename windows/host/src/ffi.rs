@@ -370,6 +370,12 @@ pub struct Api {
     pub string_free: unsafe extern "C" fn(GString),
     pub config_diagnostics_count: unsafe extern "C" fn(Config) -> u32,
     pub config_get_diagnostic: unsafe extern "C" fn(Config, u32) -> Diagnostic,
+    /// Read one config value by key. **The return value is the answer to "did
+    /// the user set this"**, not just an error code: `c_get.zig`'s optional
+    /// arm returns false for a field that is null, so
+    /// `window-position-x` (`?i16`) reports false exactly when the user left
+    /// it alone. That is the signal the geometry restore needs.
+    pub config_get: unsafe extern "C" fn(Config, *mut c_void, *const u8, usize) -> bool,
     pub config_load_default_files: unsafe extern "C" fn(Config),
     pub config_finalize: unsafe extern "C" fn(Config),
     pub app_new: unsafe extern "C" fn(*const RuntimeConfig, Config) -> App,

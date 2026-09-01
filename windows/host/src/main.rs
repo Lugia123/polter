@@ -45,6 +45,7 @@ mod prompt;
 mod settings_ui;
 mod quick;
 mod reopen;
+mod session;
 mod search;
 mod shell;
 mod strip;
@@ -1543,6 +1544,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // The caption's colours differ when the window is not the active
             // one, and nothing else would ask us to repaint for that.
             WM_ACTIVATE => {
+                // One of the three messages that change where the window is
+                // -- the same three `LastWindowPosition` saves on. **Marked,
+                // not written**: a drag delivers `WM_MOVE` continuously, and
+                // the main loop is what touches the disk.
+                session::mark_dirty();
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
@@ -1605,6 +1611,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
             // The frame resizes; the active child follows and tells the core.
             WM_SIZE => {
+                session::mark_dirty();
                 tabs::layout(hwnd);
                 // The dividers are synced by `layout` itself, from inside it.
                 // The grid sign is measured after, so it reads the client rect
@@ -1617,6 +1624,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // The composition is somewhere else on screen now even though its
             // text did not change. TSF does not come back to ask on its own.
             WM_MOVE => {
+                session::mark_dirty();
                 ime_layout_changed();
                 LRESULT(0)
             }
@@ -2062,6 +2070,7 @@ fn load_api() -> Option<Api> {
             string_free: sym!(internal, "ghostty_string_free"),
             config_diagnostics_count: sym!(internal, "ghostty_config_diagnostics_count"),
             config_get_diagnostic: sym!(internal, "ghostty_config_get_diagnostic"),
+            config_get: sym!(internal, "ghostty_config_get"),
             config_load_default_files: sym!(internal, "ghostty_config_load_default_files"),
             config_finalize: sym!(internal, "ghostty_config_finalize"),
             app_new: sym!(internal, "ghostty_app_new"),
@@ -2286,6 +2295,69 @@ fn main() {
 
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
+    }
+
+    // ---- put the window back where it was
+    //
+    // **After `ShowWindow`, because the geometry is only read while the window
+    // is visible** -- and the same rule applies to writing it, so restoring
+    // into a hidden window would be saved back as nothing.
+    //
+    // The two halves are gated separately, the way `LastWindowPosition` does
+    // it: a person who wrote `window-position-x` into their config asked for
+    // that position every launch, and handing them the place they dragged it
+    // to last time is not what they asked for. **`config_get` returning false
+    // is the "they did not set it" signal** -- `?i16` reports false when null.
+    {
+        let mut px: i16 = 0;
+        let key = "window-position-x";
+        let has_x = unsafe {
+            (api().config_get)(config, &mut px as *mut i16 as *mut c_void, key.as_ptr(), key.len())
+        };
+        let mut py: i16 = 0;
+        let key = "window-position-y";
+        let has_y = unsafe {
+            (api().config_get)(config, &mut py as *mut i16 as *mut c_void, key.as_ptr(), key.len())
+        };
+        // **The size half cannot use `initial_size`, and the reason is a
+        // one-way implication.** `Surface.zig:2017` returns early unless
+        // *both* `window-width` and `window-height` are set, so the action
+        // never arrives for someone who configured only the width -- and
+        // reading its absence as "no size configured" would then let the
+        // remembered size overwrite the half they did configure. "The action
+        // came, so they set it" is true; "the action did not come, so they
+        // did not" is not.
+        //
+        // So both are read here, the same way the position is. **The test is
+        // the value, not the return, and that difference is not an
+        // inconsistency**: `window-width` is `u32 = 0` and always readable, so
+        // 0 is its "unset" -- a zero-wide window is not a thing anyone asks
+        // for. `window-position-x` is `?i16`, where 0 is a position somebody
+        // may well want, so there the *return value* is the only honest
+        // signal.
+        let mut cw: u32 = 0;
+        let key = "window-width";
+        let _ = unsafe {
+            (api().config_get)(config, &mut cw as *mut u32 as *mut c_void, key.as_ptr(), key.len())
+        };
+        let mut ch: u32 = 0;
+        let key = "window-height";
+        let _ = unsafe {
+            (api().config_get)(config, &mut ch as *mut u32 as *mut c_void, key.as_ptr(), key.len())
+        };
+        let configured_size = cw != 0 || ch != 0;
+        logf!(
+            "[session] config: window-position set={} ({},{}), window-size set={} ({}x{}), \
+             initial_size seen={}",
+            has_x || has_y,
+            px,
+            py,
+            configured_size,
+            cw,
+            ch,
+            tabs::state().initial.is_some()
+        );
+        session::restore(hwnd, !(has_x || has_y), !configured_size);
     }
 
     // Before the first tab, because the first tab can be closed. `reopen.rs`
@@ -2644,6 +2716,13 @@ fn main() {
         // ~1s at 8ms/iteration. This is the *main thread's* pulse: if a
         // nested modal loop (window move/size) blocks the pump, these lines
         // stop appearing, which is exactly the condition we want to observe.
+        // Twice a second: often enough that a kill a moment after a drag still
+        // has the new position, rare enough that dragging a window is not a
+        // write per frame.
+        if ticks % 62 == 0 {
+            session::flush_if_dirty(hwnd);
+        }
+
         if ticks % 125 == 0 {
             let sw = tabs::active_hwnd();
             let pf = pixel_format_of(sw);
