@@ -230,6 +230,44 @@ always of the same form: **ask the far side, or ask for the specific thing.**
 `claude mcp get polter` rather than reading the file back. "Is my version
 string in there" rather than "did the file change".
 
+### 4b. Ask whether the check *could* fail, not whether it passed
+
+The sister of entry 4, and the sharper of the two. Entry 4 is about
+misreading a piece of evidence. This one is about **a check that is
+structurally incapable of producing evidence at all** — and it presents as a
+green test, so nothing ever prompts you to look.
+
+The question that finds it, and it can be asked before the check is ever run:
+
+> **If the thing under test were wrong, would this check see it?**
+
+Five instances, five different dimensions, and not one of them was caught by
+looking at the check's result — because the result was always "pass":
+
+| The check | What it could not reach |
+| --- | --- |
+| The launch table's tests, with the target OS baked in | the other system's rows: "the `.ps1` row is wrong" was something no test on the build machine could go red for |
+| A repaint assertion reading the centre pixel *(host)* | the defect — the old canvas covered that pixel either way |
+| A global-hotkey check driven by a script running inside the app *(host)* | the failure mode, since running there guaranteed the app was foreground |
+| A hand-written parser's own unit tests *(host)* | the other implementation; they proved only that it agreed with itself |
+| The mutation runner, with its target file hard-coded | a whole group of assertions in a *different file* — those had no floor at all, and the reason looked like "not scheduled yet" |
+
+**The last one is the trap in miniature.** On a to-do list, "nobody has run
+the floor for 6b yet" and "the floor cannot reach 6b" look identical — and
+only one of them goes away by running it again.
+
+The fix is the same shape every time: **take the dimension the check cannot
+reach and make it a parameter.** The OS becomes an argument
+(`launchKindFor(tag, exec)`), the file becomes a field on each injection, the
+fixture comes from the other implementation rather than from the same hand.
+
+**And a corollary, because self-checks are the commonest form of this.** A
+restore step that verifies against *the snapshot it took when it started*
+reports success after faithfully restoring a file that was already wrong. Its
+check is closed on itself. Verify against something outside the run — the
+bytes in the repository, a hash taken elsewhere — or the check only tells you
+the script is self-consistent.
+
 ### 5. A reading generalises only as far as the conditions it was taken under
 
 Two readings from one log, on the same run, with opposite fates *(host)*:

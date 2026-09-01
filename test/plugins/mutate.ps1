@@ -11,7 +11,15 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
-$Pristine = [System.IO.File]::ReadAllText($Sdk, $Utf8)
+
+# **Each injection names the file it goes into.** The first six land in the
+# SDK, because that is where the shared behaviour lives. The 6b ones land in
+# a host plugin, because what they attack is that plugin's own command line.
+# Keeping one hard-coded target is why the 6b assertions had no floor at all.
+$Qwen = Join-Path (Split-Path -Parent (Split-Path -Parent $Sdk)) 'qwen-code\provision.ps1'
+
+$Original = @{}
+foreach ($f in @($Sdk, $Qwen)) { $Original[$f] = [System.IO.File]::ReadAllText($f, $Utf8) }
 
 $mutations = @(
     @{ Name = 'M1 BOM: the JSON write goes through Out-File -Encoding UTF8'
@@ -54,6 +62,43 @@ $mutations = @(
             [System.IO.File]::Replace($tmp, $Path, $bak)
             Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue'
               To   = '            [System.IO.File]::Replace($tmp, $Path, $null)' }) }
+,
+
+    # --- 6b: the `mcp add` command line ------------------------------------
+    #
+    # **These exist because 6b had no floor at all.** It was the one place in
+    # this round with a new implementation, a new set of assertions, and
+    # nothing measuring whether the second could catch the first being wrong
+    # -- which is the combination the whole exercise is for. Each injection is
+    # a form somebody could plausibly write, and each is the exact shape the
+    # real `qwen` refuses with `Not enough non-option arguments`.
+
+    @{ Name = 'M7 6b: `-e` moves back in front of the positional arguments'
+       File = 'qwen'
+       # **A single-quoted here-string, not an escaped double-quoted one.**
+       # The first version spelled the line break as `` `n `` inside `"..."`
+       # and came back `ANCHOR MISSING` -- the two halves each matched on
+       # their own (M8 and M9 prove it), only the join did not. Here the
+       # newline is a real newline in this file, and `$Exe` is literal text
+       # rather than something PowerShell resolves.
+       Pairs = @(@{ From = @'
+        $Exe, '+mcp',
+        '-e', "$VersionKey=$Version"
+'@
+                    To = @'
+        '-e', "$VersionKey=$Version",
+        $Exe, '+mcp'
+'@ }) },
+
+    @{ Name = 'M8 6b: the `--` separator comes back'
+       File = 'qwen'
+       Pairs = @(@{ From = "        `$Exe, '+mcp',"
+                    To   = "        '--', `$Exe, '+mcp'," }) },
+
+    @{ Name = 'M9 6b: the marker is split into two arguments'
+       File = 'qwen'
+       Pairs = @(@{ From = "        '-e', `"`$VersionKey=`$Version`""
+                    To   = "        '-e', `$VersionKey, `$Version" }) }
 )
 
 function Invoke-Suite {
@@ -73,7 +118,8 @@ foreach ($m in $mutations) {
     Write-Host ""
     Write-Host "=== $($m.Name) ==="
 
-    $t = $Pristine
+    $target = if ($m.Contains('File') -and $m.File -eq 'qwen') { $Qwen } else { $Sdk }
+    $t = $Original[$target]
     $missing = $false
     foreach ($pair in $m.Pairs) {
         if (-not $t.Contains($pair.From)) { Write-Host "  ANCHOR MISSING -- nothing injected"; $missing = $true; break }
@@ -81,17 +127,17 @@ foreach ($m in $mutations) {
     }
     if ($missing) { continue }
 
-    [System.IO.File]::WriteAllText($Sdk, $t, $Utf8)
+    [System.IO.File]::WriteAllText($target, $t, $Utf8)
     # "The mutation was never applied" and "the mutation killed nothing"
     # produce the same green, and only one of them means anything.
-    Write-Host "  differs from the original on disk: $(([System.IO.File]::ReadAllText($Sdk, $Utf8)) -ne $Pristine)"
+    Write-Host "  differs from the original on disk: $(([System.IO.File]::ReadAllText($target, $Utf8)) -ne $Original[$target])"
 
     $r = Invoke-Suite
     Write-Host "  $($r.Result)"
     if ($r.Fails.Count -eq 0) { Write-Host "  *** SURVIVED -- nothing caught this ***" }
     else { $r.Fails | ForEach-Object { Write-Host "    red: $_" } }
 
-    [System.IO.File]::WriteAllText($Sdk, $Pristine, $Utf8)
+    [System.IO.File]::WriteAllText($target, $Original[$target], $Utf8)
 }
 
 Write-Host ""
@@ -99,4 +145,7 @@ Write-Host "=== restored, pristine again ==="
 $f = Invoke-Suite
 Write-Host "  $($f.Result)"
 $f.Fails | ForEach-Object { Write-Host "    red: $_" }
-Write-Host "  file matches the original: $(([System.IO.File]::ReadAllText($Sdk, $Utf8)) -eq $Pristine)"
+foreach ($f in @($Sdk, $Qwen)) {
+    $ok = ([System.IO.File]::ReadAllText($f, $Utf8)) -eq $Original[$f]
+    Write-Host "  $(Split-Path -Leaf (Split-Path -Parent $f))/$(Split-Path -Leaf $f) matches the original: $ok"
+}
