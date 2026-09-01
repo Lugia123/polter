@@ -41,7 +41,7 @@
 use std::sync::OnceLock;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -177,7 +177,16 @@ const AGENTS_ROWS: &[Row] = &[
     sep(),
     // Host rows: the core knows nothing about either page.
     act("插件…", "__polter_plugin_page"),
-    act("语言…", "__polter_language"),
+    // Greyed: nothing behind it yet. `s4.md` §3.4.3 -- greyed says "this
+    // exists, not now"; a row that is missing and a row that never existed
+    // look the same, and a row that does nothing is worse than both.
+    Row {
+        label: "语言…",
+        action: Some("__polter_language"),
+        sub: None,
+        check: None,
+        enabled: false,
+    },
 ];
 
 const GOTO_SPLIT_ROWS: &[Row] = &[
@@ -216,7 +225,14 @@ const WINDOW_ROWS: &[Row] = &[
 ];
 
 const HELP_ROWS: &[Row] = &[
-    act("Polter 帮助", "__polter_help_docs"),
+    // Greyed for the same reason as «语言…»: the docs URL has no opener yet.
+    Row {
+        label: "Polter 帮助",
+        action: Some("__polter_help_docs"),
+        sub: None,
+        check: None,
+        enabled: false,
+    },
     sep(),
     // The core publishes `check_for_updates`, but block L is not built, so the
     // row is greyed rather than removed. Removing it would make the missing
@@ -263,16 +279,24 @@ fn run_host(frame: HWND, action: &str) -> bool {
             crate::settings_ui::request_toggle();
             true
         }
+        // **The about box this host already has**, not a second one. It shows
+        // the product, the core's own version string, the build mode and the
+        // running binary's identity -- the same line `[build]` logs.
+        "__polter_about" => {
+            crate::settings_ui::request_about();
+            true
+        }
         "__polter_minimize" => {
             let _ = unsafe { ShowWindow(frame, SW_MINIMIZE) };
             true
         }
-        // Deliberately not yet built, and each says so rather than pretending.
-        // They are in the table because a menu is also a statement about what
-        // exists; the log line is what keeps "not built" from reading as
-        // "broken".
-        "__polter_language" | "__polter_about" | "__polter_help_docs" => {
-            logf!("[menu] host action {action:?} has no handler yet");
+        // Not built, and **greyed in the table** rather than live: a row that
+        // is clickable and does nothing is worse than one that is greyed, and
+        // it is the exact defect this menu exists to stop. A click cannot
+        // reach these, so this arm is only a backstop -- if it ever fires,
+        // something un-greyed them.
+        "__polter_language" | "__polter_help_docs" => {
+            logf!("[menu] host action {action:?} is not built; the row should have been greyed");
             false
         }
         _ => false,
@@ -388,11 +412,7 @@ static STATE: OnceLock<fn(Flag) -> Option<bool>> = OnceLock::new();
 
 /// Install the check-mark source, replacing the default.
 pub fn set_state_provider(f: fn(Flag) -> Option<bool>) {
-    let _ = set_state_provider_inner(f);
-}
-
-fn set_state_provider_inner(f: fn(Flag) -> Option<bool>) -> Result<(), fn(Flag) -> Option<bool>> {
-    STATE.set(f)
+    let _ = STATE.set(f);
 }
 
 /// What the check marks read when nobody has installed anything else.
@@ -448,6 +468,9 @@ struct Counts {
     items: usize,
     unresolved: usize,
     checkable: usize,
+    /// Rows shown greyed on purpose. Reported because "greyed" is a claim
+    /// about the menu that nobody can check from a log that does not say it.
+    greyed: usize,
     /// Items that actually came back with a shortcut, **not** items that
     /// would have if a provider were installed. A counter that reports the
     /// hopeful number is worse than no counter: it says "wired" when nothing
@@ -471,18 +494,53 @@ fn count(rows: &[Row], c: &mut Counts) {
         if r.check.is_some() {
             c.checkable += 1;
         }
+        if !r.enabled {
+            c.greyed += 1;
+        }
         if accel_of(a).is_some_and(|t| !t.is_empty()) {
             c.with_accel += 1;
         }
     }
 }
 
-/// How many of the checkable rows are ticked right now.
-fn checked_now() -> usize {
-    [Flag::ReadOnly, Flag::FloatOnTop, Flag::Supervisor, Flag::Watched, Flag::Shielded]
-        .into_iter()
-        .filter(|f| checked(*f) == Some(true))
-        .count()
+/// Every flag a row can be ticked by.
+const ALL_FLAGS: &[Flag] = &[
+    Flag::ReadOnly,
+    Flag::FloatOnTop,
+    Flag::Supervisor,
+    Flag::Watched,
+    Flag::Shielded,
+];
+
+/// Flags something can currently answer, and flags ticked right now.
+///
+/// **Two numbers, because they fail in opposite directions and looked
+/// identical when they were one.** "0 ticked" is the normal state at startup
+/// and says nothing about wiring; "0 evaluable" means nothing can answer, and
+/// then every unticked row is unticked for a reason that has nothing to do
+/// with its state. Reported as one line so neither can be read alone.
+fn check_state_counts() -> (usize, usize, Vec<&'static str>) {
+    let mut evaluable = 0;
+    let mut ticked = 0;
+    let mut no_source = Vec::new();
+    for f in ALL_FLAGS {
+        match checked(*f) {
+            Some(v) => {
+                evaluable += 1;
+                if v {
+                    ticked += 1;
+                }
+            }
+            None => no_source.push(match f {
+                Flag::ReadOnly => "ReadOnly",
+                Flag::FloatOnTop => "FloatOnTop",
+                Flag::Supervisor => "Supervisor",
+                Flag::Watched => "Watched",
+                Flag::Shielded => "Shielded",
+            }),
+        }
+    }
+    (evaluable, ticked, no_source)
 }
 
 /// Build the table, check it against the core, and say so. Idempotent.
@@ -496,12 +554,13 @@ fn validate_once() {
         return;
     }
     install_defaults();
-    let mut c = Counts { items: 0, unresolved: 0, checkable: 0, with_accel: 0 };
+    let mut c = Counts { items: 0, unresolved: 0, checkable: 0, with_accel: 0, greyed: 0 };
     count(ROOT, &mut c);
     logf!(
-        "[menu] built {} groups, {} items, {} unresolved",
+        "[menu] built {} groups, {} items, {} greyed, {} unresolved",
         GROUP_COUNT,
         c.items,
+        c.greyed,
         c.unresolved
     );
     // Two more lines rather than two more fields: each says what is missing
@@ -514,11 +573,18 @@ fn validate_once() {
         c.with_accel,
         c.items
     );
+    arm_selftest();
+    let (evaluable, ticked, no_source) = check_state_counts();
     logf!(
-        "[menu] check-state provider {}, checks={}/{} marked",
-        if STATE.get().is_some() { "installed" } else { "NOT installed" },
-        checked_now(),
-        c.checkable
+        "[menu] check-state: {} rows, {} evaluable, {} ticked now{}",
+        c.checkable,
+        evaluable,
+        ticked,
+        if no_source.is_empty() {
+            String::new()
+        } else {
+            format!("; no source for: {}", no_source.join(", "))
+        }
     );
 }
 
@@ -716,8 +782,16 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
         logf!("[menu] returned an id outside the table: {id}");
         return;
     };
-    let Some(action) = row.action else { return };
+    perform(frame, row);
+}
 
+/// Run one row and say so. **The single place a menu row turns into an
+/// action** -- a mouse pick and `--menu-selftest` both come through here, and
+/// that is the whole reason the self-test is worth anything. A self-test with
+/// its own dispatch would prove that 54 action strings parse, which is what
+/// `assert_actions_exist` already proves for free.
+fn perform(frame: HWND, row: &Row) -> bool {
+    let Some(action) = row.action else { return false };
     let ok = if action.starts_with(HOST_PREFIX) {
         run_host(frame, action)
     } else {
@@ -726,6 +800,7 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     // The label is in the log because that is the word the person clicked, and
     // the action is there because that is the word that failed.
     logf!("[menu] pick {:?} -> {} ok={}", row.label, action, ok as i32);
+    ok
 }
 
 /// Open the root menu under the button itself -- the mouse path and the
@@ -738,6 +813,145 @@ pub fn show_root_menu(frame: HWND, button: RECT) {
     let mut p = POINT { x: button.left, y: button.bottom };
     let _ = unsafe { ClientToScreen(frame, &mut p) };
     show(frame, p.x, p.y);
+}
+
+// --------------------------------------------------------------- self-test
+
+/// Rows that end the session, in the order they are least destructive.
+///
+/// **Dispatching a menu row does the thing.** The self-test is not a dry run:
+/// `binding_action` performs the action, so by the time it reaches these three
+/// the window is on its way out and nothing after them would be logged. They
+/// go last so that everything else is already on record.
+const ENDS_THE_SESSION: &[&str] = &["close_surface", "close_tab:this", "close_window"];
+
+/// Was `--menu-selftest` on the command line?
+fn selftest_requested() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::args().any(|a| a == "--menu-selftest"))
+}
+
+/// Run every row through `perform`, in table order, session-enders last.
+///
+/// **This proves the dispatch, not the pointer.** Every row here is reached by
+/// its table entry, not by a click, so a menu whose hit test is broken -- a
+/// button nobody can press, a rectangle at the wrong x -- passes this with 54
+/// green lines. W4 samples real clicks for that half; *only* the self-test
+/// means 54 green lines on a stretch of code nobody can reach.
+fn run_selftest(frame: HWND) {
+    let mut order: Vec<&Row> = Vec::new();
+    flatten(ROOT, &mut order);
+    let (last, first): (Vec<&Row>, Vec<&Row>) = order
+        .iter()
+        .partition(|r| r.action.is_some_and(|a| ENDS_THE_SESSION.contains(&a)));
+
+    logf!(
+        "[menu] selftest: {} items through the same call a mouse pick makes, {} of them last because they end the session",
+        order.len(),
+        last.len()
+    );
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    let mut skipped = 0usize;
+    for row in first.into_iter().chain(last) {
+        if !row.enabled {
+            // A greyed row cannot be picked with a mouse either, so dispatching
+            // it here would test a path that does not exist.
+            logf!("[menu] selftest skip {:?} (greyed; a click cannot reach it)", row.label);
+            skipped += 1;
+            continue;
+        }
+        if perform(frame, row) {
+            ok += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    logf!("[menu] selftest done: {} ok, {} failed, {} skipped", ok, failed, skipped);
+}
+
+/// `WM_APP` on the self-test's own window: the run happens here rather than in
+/// the paint that armed it. **Dispatching 54 actions from inside `WM_PAINT`**
+/// -- with a memory DC selected and `BeginPaint` open -- reenters painting
+/// through every action that opens a window, and that is a hang, not a test.
+// `WM_APP + 9` is taken twice already (main.rs and settings_ui.rs, on their
+// own windows); a third same-numbered message is a thing someone misreads.
+const WM_MENU_SELFTEST: u32 = WM_APP + 11;
+
+/// How many times the timer has looked for a surface and not found one.
+static SELFTEST_TRIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+const SELFTEST_MAX_TRIES: u32 = 40;
+
+extern "system" fn selftest_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_MENU_SELFTEST || msg == WM_TIMER {
+        // **Wait for a surface.** Every action would fail against a null one,
+        // and 54 red lines that mean "the app had not finished starting" look
+        // exactly like 54 red lines that mean "the menu is wrong".
+        let frame = crate::frame_hwnd_cached();
+        if crate::tabs::active_surface().is_null() || frame.is_invalid() {
+            let n = SELFTEST_TRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n >= SELFTEST_MAX_TRIES {
+                unsafe { let _ = KillTimer(Some(hwnd), 1); }
+                logf!(
+                    "[menu] selftest gave up: no surface after {} tries; nothing was dispatched",
+                    n
+                );
+                return LRESULT(0);
+            }
+            unsafe { SetTimer(Some(hwnd), 1, 250, None) };
+            return LRESULT(0);
+        }
+        unsafe { let _ = KillTimer(Some(hwnd), 1); }
+        run_selftest(frame);
+        return LRESULT(0);
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+}
+
+/// Arm the self-test, once, if it was asked for.
+fn arm_selftest() {
+    static DONE: OnceLock<()> = OnceLock::new();
+    if !selftest_requested() || DONE.set(()).is_err() {
+        return;
+    }
+    unsafe {
+        let hinst = windows::Win32::System::LibraryLoader::GetModuleHandleW(PCWSTR::null())
+            .unwrap_or_default();
+        let class = windows::core::w!("PolterMenuSelftest");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(selftest_proc),
+            hInstance: hinst.into(),
+            lpszClassName: class,
+            ..Default::default()
+        };
+        RegisterClassW(&wc);
+        // Message-only: it never shows, and its messages are pumped by the
+        // main loop like any other window this thread owns.
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            class,
+            PCWSTR::null(),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            Some(hinst.into()),
+            None,
+        );
+        match hwnd {
+            Ok(h) => {
+                logf!("[menu] selftest armed by --menu-selftest; waiting for a surface");
+                let _ = PostMessageW(Some(h), WM_MENU_SELFTEST, WPARAM(0), LPARAM(0));
+            }
+            // Said out loud: a self-test that quietly did not run reads as a
+            // menu that has never been exercised, and there is no line to tell
+            // the two apart.
+            Err(e) => logf!("[menu] selftest could NOT arm: {e:?}"),
+        }
+    }
 }
 
 // ------------------------------------------------------------------- tests
@@ -887,12 +1101,30 @@ mod tests {
         }
     }
 
-    /// One row is greyed on purpose. If block L ever lands and this stops
-    /// being true, the test says so rather than the menu quietly staying grey.
+    /// Three rows are greyed on purpose, and the list is spelled out: when one
+    /// of them gets built, this test is what says "un-grey it" rather than the
+    /// menu quietly staying grey forever.
     #[test]
-    fn exactly_one_row_is_greyed_and_it_is_the_updater() {
-        let greyed: Vec<_> = all_rows().iter().filter(|r| !r.enabled).map(|r| r.label).collect();
-        assert_eq!(greyed, vec!["检查更新…"]);
+    fn the_greyed_rows_are_the_three_that_are_not_built() {
+        let mut greyed: Vec<_> =
+            all_rows().iter().filter(|r| !r.enabled).map(|r| r.label).collect();
+        greyed.sort_unstable();
+        // Sorted, not in table order: this test is about *which* rows are
+        // greyed. Pinning the traversal order here would make it fail the next
+        // time a group is reordered, for a reason it does not care about.
+        let mut want = vec!["语言…", "检查更新…", "Polter 帮助"];
+        want.sort_unstable();
+        assert_eq!(greyed, want);
+    }
+
+    /// A greyed row still names something. **Greying is not a way to park a
+    /// row with no action** -- the row has to be a real command that is not
+    /// available yet, or it should not be in the menu at all.
+    #[test]
+    fn greyed_rows_still_name_an_action() {
+        for r in all_rows().iter().filter(|r| !r.enabled) {
+            assert!(r.action.is_some(), "greyed row {} names nothing", r.label);
+        }
     }
 
     /// The button is the width `strip.rs` insets by, at any scale it is asked

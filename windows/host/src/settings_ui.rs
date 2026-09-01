@@ -44,6 +44,10 @@ use crate::plugins::{self, Control, Plugin};
 
 const WM_SETTINGS_TOGGLE: u32 = WM_APP + 8;
 const WM_ERRORS_SHOW: u32 = WM_APP + 9;
+/// Show the about box, asked for from somewhere that is not this window --
+/// the main menu's «About Polter». Posted rather than called so the window
+/// that owns the about box is the one that shows it.
+const WM_ABOUT_SHOW: u32 = WM_APP + 10;
 
 const W: i32 = 720;
 const H: i32 = 460;
@@ -216,6 +220,21 @@ pub fn request_toggle() {
         return;
     }
     let _ = unsafe { PostMessageW(Some(HWND(h)), WM_SETTINGS_TOGGLE, WPARAM(0), LPARAM(0)) };
+}
+
+/// Show the about box. **Safe from any thread.**
+///
+/// **Here rather than a second dialog in `menu.rs`.** A host with two about
+/// boxes has two version strings to keep in step, and they disagree exactly
+/// when it matters -- in a bug report. Same reason `about_lines` asks the core
+/// instead of composing the version itself.
+pub fn request_about() {
+    let h = HWND_ABOUT.load(Ordering::Acquire);
+    if h.is_null() {
+        logf!("[set] about was asked for before its window existed");
+        return;
+    }
+    let _ = unsafe { PostMessageW(Some(HWND(h)), WM_ABOUT_SHOW, WPARAM(0), LPARAM(0)) };
 }
 
 /// Show the config errors, if the core reported any. **Safe from any thread.**
@@ -502,10 +521,19 @@ fn about_lines() -> Vec<String> {
         3 => "ReleaseSmall",
         other => return vec![format!("Polter {version}"), format!("build mode {other} (unknown)")],
     };
+    // **The same string the `[build]` log line carries**, from the same
+    // function -- not a second hash computed here. A bug report that quotes
+    // the about box and a log that quotes the build line have to be talking
+    // about the same binary, and the only way to be sure of that is for one
+    // of them not to exist twice.
+    let build = std::env::current_exe()
+        .map(|p| crate::binary_identity(&p))
+        .unwrap_or_else(|_| "build identity unavailable".to_string());
     vec![
         "Polter".to_string(),
         format!("libghostty {version}"),
         format!("{mode} build"),
+        build,
         String::new(),
         "MIT licensed. A fork of Ghostty.".to_string(),
     ]
@@ -535,6 +563,10 @@ fn show_about() {
 unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
+            WM_ABOUT_SHOW => {
+                show_about();
+                LRESULT(0)
+            }
             WM_KEYDOWN if VIRTUAL_KEY(wp.0 as u16) == VK_ESCAPE => {
                 let _ = ShowWindow(win, SW_HIDE);
                 LRESULT(0)

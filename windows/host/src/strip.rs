@@ -1242,6 +1242,21 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
             y,
             items
         );
+        // **The ticks, in words.** The unit test on `TabCmd::checked` proves
+        // that pure function is right; it cannot say that `role` and
+        // `shielded` came from the tab that was right-clicked, nor that the
+        // flags reached `AppendMenuW`. Nothing else can either: the only
+        // other reading is a photograph of a menu, taken while
+        // `TrackPopupMenu` is running a nested modal loop -- and the capture
+        // on this link has already reported a scale it did not have.
+        logf!(
+            "[tabmenu] tab {} ticks: supervisor={} watch={} shield={} colour={}",
+            target.index + 1,
+            role == 1,
+            role == 2,
+            shielded,
+            colour
+        );
 
         let mut pt = POINT { x, y };
         let _ = ClientToScreen(frame, &mut pt);
@@ -1460,6 +1475,11 @@ pub fn on_right_click(frame: HWND, x: i32, y: i32) {
     if hit(&g, x, y) == Hit::Menu {
         // The `≡` answers to the left button. A right-click on it opening the
         // strip's own menu would put two different menus on one control.
+        //
+        // **Logged even though nothing happens.** Silence here reads exactly
+        // the same as "the right-click never reached the strip at all", and
+        // those are a design decision and a routing bug respectively.
+        logf!("[strip] right-click on the menu button at {},{}: ignored by design", x, y);
         return;
     }
     show_strip_menu(frame, x, y);
@@ -1507,6 +1527,96 @@ fn centre_of(frame: HWND, index: usize) -> Option<(i32, i32, i32, i32)> {
         (s.close.left + s.close.right) / 2,
         (s.close.top + s.close.bottom) / 2,
     ))
+}
+
+/// A point on tab `index` that a pointer could actually land on, or why
+/// there is not one.
+///
+/// **Written after the centre-of-the-tab version reported a defect that was
+/// not one and passed three tabs it had not tested.** On the real machine,
+/// with 17 tabs in an 877px strip:
+///
+///  * tab 14's centre (855) is underneath the `»` chevron, which `hit` tests
+///    before the tabs on purpose -- so the probe called a correct hit test
+///    broken, and
+///  * tabs 15, 16 and 17 have centres at 915, 975 and 1035, all **past the
+///    right edge of the strip**, where no click can ever be delivered.
+///    `hit` has no bounds check (it does not need one: Windows never sends a
+///    click from outside the window), so `contains` matched and the probe
+///    said `ok` three times without testing anything.
+///
+/// The second is the worse half. A probe that reports a false alarm gets
+/// looked at; one that reports `ok` for what it never exercised is how
+/// `0 mismatches` comes to mean nothing.
+///
+/// The point is chosen from **rectangles only** -- the strip's width and the
+/// three controls drawn over the tabs -- and never from `hit`'s answer.
+/// Asking `hit` where the tab is and then asking `hit` whether that is the
+/// tab would agree with any ordering mistake `hit` makes, and the ordering is
+/// the whole of what this is testing.
+fn reachable_point(frame: HWND, index: usize) -> Result<(i32, i32), String> {
+    let g = slots(frame);
+    let Some(s) = g.slots.get(index) else {
+        return Err("no such slot".to_string());
+    };
+    let mut rc = RECT::default();
+    unsafe {
+        if GetClientRect(frame, &mut rc).is_err() {
+            return Err("no client rect".to_string());
+        }
+    }
+    let strip_w = (rc.right - rc.left - crate::shell::reserved_right()).max(1);
+    let y = (s.rect.top + s.rect.bottom) / 2;
+    let covers: Vec<(i32, i32)> = [Some(g.new), g.overflow]
+        .into_iter()
+        .flatten()
+        .map(|r| (r.left, r.right))
+        .collect();
+    match reachable_span(
+        (s.rect.left, s.rect.right),
+        g.menu.right,
+        strip_w,
+        &covers,
+    ) {
+        Some((a, b)) => Ok(((a + b) / 2, y)),
+        None if s.rect.left >= strip_w || s.rect.right <= g.menu.right => Err(format!(
+            "scrolled outside the strip (rect {}..{}, strip {}..{})",
+            s.rect.left, s.rect.right, g.menu.right, strip_w
+        )),
+        None => Err(format!(
+            "entirely underneath the strip's own controls (rect {}..{}, covers {:?})",
+            s.rect.left, s.rect.right, covers
+        )),
+    }
+}
+
+/// The widest run of a tab that is on the strip and not covered by anything
+/// drawn over it. **Pure, so the machine's own numbers can be pinned in a
+/// test** -- which is the only way the probe's two failure modes get a floor,
+/// because the probe itself needs a window.
+fn reachable_span(
+    tab: (i32, i32),
+    inset: i32,
+    strip_w: i32,
+    covers: &[(i32, i32)],
+) -> Option<(i32, i32)> {
+    let mut spans = vec![(tab.0.max(inset), tab.1.min(strip_w))];
+    for &(cl, cr) in covers {
+        let mut next = Vec::new();
+        for (a, b) in spans {
+            if cl > a {
+                next.push((a, b.min(cl)));
+            }
+            if cr < b {
+                next.push((a.max(cr), b));
+            }
+        }
+        spans = next;
+    }
+    spans
+        .into_iter()
+        .filter(|(a, b)| b > a)
+        .max_by_key(|(a, b)| b - a)
 }
 
 /// Click a tab **through the hit test**, without a mouse.
@@ -1683,34 +1793,64 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
         // has already produced one false defect on this port.
         28 => {
             let n = tabs::count();
-            let mut bad = 0;
+            let (mut ok, mut bad, mut untested) = (0, 0, 0);
+            let scroll_was = with_ui(|u| u.scroll);
             for i in 0..n {
-                let Some((x, y, _, _)) = centre_of(frame, i) else {
-                    logf!("[strip] rmb-probe: no slot {}", i);
-                    bad += 1;
-                    continue;
+                // A tab scrolled out of the strip is not a defect -- it is a
+                // tab you would scroll to before right-clicking it. So the
+                // probe scrolls to it, exactly as a person would, and only
+                // then gives up. Without this, a third of the tabs in an
+                // overflowing strip go untested every run.
+                let mut how = "";
+                let mut at = reachable_point(frame, i);
+                if at.is_err() {
+                    if let Some((id, _)) = tabs::strip_snapshot().0.get(i).cloned() {
+                        scroll_into_view(frame, id);
+                        how = " (after scrolling it into view)";
+                        at = reachable_point(frame, i);
+                    }
+                }
+                let (x, y) = match at {
+                    Ok(p) => p,
+                    Err(why) => {
+                        untested += 1;
+                        // **Not counted as a pass.** This tab was not tested.
+                        logf!("[strip] rmb-probe tab {} of {}: UNTESTED -- {}", i + 1, n, why);
+                        continue;
+                    }
                 };
                 match tab_menu_target(frame, x, y) {
                     Some(t) if t.index == i => {
+                        ok += 1;
                         logf!(
-                            "[strip] rmb-probe at ({},{}) -> tab {} of {} (want {}) ok",
-                            x, y, t.index + 1, t.n, i + 1
+                            "[strip] rmb-probe at ({},{}) -> tab {} of {} (want {}) ok{}",
+                            x, y, t.index + 1, t.n, i + 1, how
                         );
                     }
                     Some(t) => {
                         bad += 1;
                         logf!(
-                            "[strip] rmb-probe at ({},{}) -> tab {} of {} (want {}) MISMATCH",
-                            x, y, t.index + 1, t.n, i + 1
+                            "[strip] rmb-probe at ({},{}) -> tab {} of {} (want {}) MISMATCH{}",
+                            x, y, t.index + 1, t.n, i + 1, how
                         );
                     }
                     None => {
                         bad += 1;
-                        logf!("[strip] rmb-probe at ({},{}) -> no tab (want {}) MISMATCH", x, y, i + 1);
+                        logf!(
+                            "[strip] rmb-probe at ({},{}) -> no tab (want {}) MISMATCH{}",
+                            x, y, i + 1, how
+                        );
                     }
                 }
             }
-            logf!("[strip] rmb-probe done: {} tabs, {} mismatches", n, bad);
+            with_ui(|u| u.scroll = scroll_was);
+            // **All three counts on one line.** `0 mismatches` alone cannot
+            // say whether seventeen tabs passed or four passed and thirteen
+            // were never reached, and those are very different readings.
+            logf!(
+                "[strip] rmb-probe done: {} tabs, {} ok, {} mismatches, {} untested",
+                n, ok, bad, untested
+            );
             true
         }
         // A point inside the button must **not** resolve to a tab, and a
@@ -1730,6 +1870,46 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
                 past_button,
                 if !on_button && past_button == Some(0) { "ok" } else { "MISMATCH" }
             );
+            true
+        }
+        // **The two closing directions, driven without a mouse.**
+        //
+        // Steps 28 and 29 prove the *resolution* is right (right-clicking the
+        // Nth tab yields the Nth tab). They cannot prove the *action* is:
+        // an implementation that carries the index correctly as far as the
+        // menu and then falls back to "the current tab" to do the work passes
+        // both. These two steps drive `run_tab_command` on a named tab, which
+        // is the same function the menu calls, and print what survived.
+        //
+        // Two opposite directions on purpose. "Close to the right of tab 3"
+        // and "close everything but tab 3" leave different sets, and an
+        // implementation that has degenerated to the focused tab cannot get
+        // both right -- one direction alone can pass by luck.
+        //
+        // **What this still does not cover**, and needs a real right-click:
+        // that Windows delivers WM_RBUTTONUP / WM_NCRBUTTONUP here, that
+        // `TrackPopupMenu` puts a menu on screen, and that the MF_CHECKED
+        // flags reached it. The `[tabmenu] ... ticks:` line is the reading
+        // for that last one.
+        30 => {
+            let t = tabs_now();
+            if let Some((id, _)) = t.get(2).cloned() {
+                // Focus is deliberately left wherever the previous steps put
+                // it: if it happened to be this tab, the check would pass on
+                // an implementation that ignores `id` entirely.
+                logf!("[strip] focus is on tab {} of {}", tabs::active_index() + 1, t.len());
+                log_state(frame, "before close-right-of tab 3");
+                run_tab_command(frame, id, TabCmd::CloseRight);
+            }
+            true
+        }
+        31 => {
+            let t = tabs_now();
+            if let Some((id, _)) = t.get(1).cloned() {
+                logf!("[strip] focus is on tab {} of {}", tabs::active_index() + 1, t.len());
+                log_state(frame, "before close-others-than tab 2");
+                run_tab_command(frame, id, TabCmd::CloseOthers);
+            }
             true
         }
         _ => {
@@ -1910,6 +2090,59 @@ mod menu_inset_tests {
         assert_eq!(TAB_MENU[5], Some(TabCmd::Rename), "the colours follow 重命名标签…");
         assert_eq!(TAB_MENU[7], Some(TabCmd::Supervisor));
         assert_eq!(TAB_MENU.iter().filter(|r| r.is_none()).count(), 2);
+    }
+
+    /// **The reading that came off the real machine, pinned.**
+    ///
+    /// 17 tabs, 60px wide, 46px inset, an 877px strip, with the `+` at
+    /// 833..855 and the `»` at 855..877. The first probe took each tab's
+    /// geometric centre and got two things wrong at once, and this test is
+    /// both of them.
+    #[test]
+    fn the_probe_point_is_on_the_strip_and_out_from_under_the_controls() {
+        let (inset, tw, strip_w) = (46, 60, 877);
+        let covers = [(833, 855), (855, 877)];
+        let rect = |i: i32| (inset + i * tw, inset + i * tw + tw - 1);
+
+        // Tab 14 (index 13): its centre is 855, which is the chevron. The
+        // hit test is right to answer `Overflow` there -- the chevron is
+        // drawn on top -- so the probe must aim somewhere else on the tab
+        // rather than call a correct hit test broken.
+        let (a, b) = reachable_span(rect(13), inset, strip_w, &covers)
+            .expect("tab 14 has 826..833 showing and must be reachable");
+        let x = (a + b) / 2;
+        assert!(rect(13).0 <= x && x < rect(13).1, "the point must be on tab 14");
+        for (cl, cr) in covers {
+            assert!(!(cl..cr).contains(&x), "the point must not be under {cl}..{cr}");
+        }
+        assert!(x < strip_w, "and it must be somewhere a click can land");
+
+        // Tabs 15, 16 and 17 are entirely past the strip's right edge. The
+        // first probe called all three `ok`: `hit` has no bounds check, so
+        // `contains` matched coordinates no click can ever carry. They have
+        // to come back as "no point", which the caller reports as UNTESTED.
+        for i in 14..17 {
+            assert_eq!(
+                reachable_span(rect(i), inset, strip_w, &covers),
+                None,
+                "tab {} starts at {} which is past the strip's {strip_w}",
+                i + 1,
+                rect(i).0,
+            );
+        }
+
+        // And the ordinary case is unaffected: tab 13 is clear of everything.
+        assert!(reachable_span(rect(12), inset, strip_w, &covers).is_some());
+    }
+
+    /// A tab hidden behind the button is not reachable either, and must not
+    /// be silently counted as a pass.
+    #[test]
+    fn a_tab_scrolled_under_the_menu_button_has_no_probe_point() {
+        assert_eq!(reachable_span((-60, -1), 46, 877, &[]), None);
+        // Half under it: the visible half is the answer, not the whole tab.
+        let (a, b) = reachable_span((20, 80), 46, 877, &[]).unwrap();
+        assert_eq!((a, b), (46, 80));
     }
 
     /// The three id blocks cannot overlap each other, `ctxmenu.rs`'s block,

@@ -181,6 +181,24 @@ fn mark_of(surface: Surface) -> Option<(u8, bool)> {
     crate::tabs::mark_for_surface(surface)
 }
 
+/// Run a core action **on one named surface**.
+///
+/// The `tabs::binding_on_tab` of panes. `crate::binding` exists for the
+/// keyboard, where "the focused surface" is the right answer by definition;
+/// a menu opened with the right button has a different right answer, and the
+/// two are different operations that happen to share a name.
+fn binding_on(surface: Surface, name: &str) -> bool {
+    if surface.is_null() {
+        // **Not a fall back to the focused surface.** Silently retargeting is
+        // the bug this function exists to remove, and it would come back
+        // wearing a `null` check. A menu on a window with no surface should
+        // do nothing and say so.
+        logf!("[ctx] no surface for this window; {:?} not sent", name);
+        return false;
+    }
+    unsafe { (crate::api().surface_binding_action)(surface, name.as_ptr(), name.len()) }
+}
+
 /// Whether a tick is on, given the mark for this surface.
 fn tick_state(mark: Option<(u8, bool)>, t: Tick) -> bool {
     match t {
@@ -338,11 +356,35 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
         };
         let Some(action) = row.action else { return };
 
-        let ok = crate::binding(action);
-        // **The action name is in the log on purpose.** If the core ever drops
-        // or renames one of these, this line is what says which row went dead;
-        // without it the symptom is a menu item that does nothing.
-        logf!("[ctx] pick {:?} -> {:?} binding_action = {}", row.label, action, ok);
+        // **Straight at the surface this menu was opened on.**
+        //
+        // `crate::binding` would send it to `tabs::active_surface()`, and a
+        // right-click does not move focus -- `tabs.rs` calls `focus_pane_at`
+        // from `WM_LBUTTONDOWN` only. So with splits open, right-clicking an
+        // unfocused pane and picking «Copy» copied the *other* pane's
+        // selection. **Invisible without splits**, and with them it looks
+        // exactly like the user having failed to select anything.
+        //
+        // This is the same trap as §3.3's menu target, one window further
+        // down: the identity was already resolved at the top of this
+        // function and then thrown away at the point of use.
+        let ok = binding_on(surface, action);
+        // **The action name and the surface are both in the log on purpose.**
+        // The action name says which row went dead if the core ever renames
+        // one. The surface pointer is the only external evidence that this
+        // fix took: with a single pane the surface a menu acts on and the
+        // focused surface are always the same value, so a build that still
+        // went through `active_surface()` would look identical everywhere
+        // except a split -- which is not a state a log reader can assume was
+        // set up. It is printed from the variable the call actually used, not
+        // from a copy taken earlier.
+        logf!(
+            "[ctx] pick {:?} on surface {:?} -> {:?} binding_action = {}",
+            row.label,
+            surface,
+            action,
+            ok
+        );
     }
 }
 
@@ -506,6 +548,78 @@ mod tests {
         }
     }
 
+    /// **The action string reaches the binding table whole**, `:value` and
+    /// all. `ghostty_config_trigger` parses the entire string, so passing
+    /// `new_split` where `new_split:right` was meant still returns *a*
+    /// trigger -- a wrong one, silently. Truncation at the colon is therefore
+    /// the failure that looks most like success.
+    #[test]
+    fn the_action_reaches_the_lookup_with_its_value_attached() {
+        use std::cell::RefCell;
+        let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let _ = build(
+            &|a| {
+                seen.borrow_mut().push(a.to_string());
+                None
+            },
+            &no_ticks,
+        );
+        let seen = seen.into_inner();
+        for a in ["new_split:right", "new_split:left", "new_split:down", "new_split:up", "close_tab:this", "inspector:toggle"] {
+            assert!(seen.iter().any(|s| s == a), "{a} never reached the lookup");
+        }
+        assert!(
+            !seen.iter().any(|s| s == "new_split"),
+            "an action was truncated at the colon before the lookup"
+        );
+    }
+
+    /// **The four splits must not collapse to one shortcut.** If the value
+    /// were dropped on the way to the binding table, all four would come back
+    /// with the same trigger and the menu would show one key four times --
+    /// which reads as a config mistake, not as a host bug.
+    #[test]
+    fn four_splits_with_four_bindings_render_four_labels() {
+        let cfg = |a: &str| match a {
+            "new_split:right" => Some("Ctrl+Shift+D".to_string()),
+            "new_split:left" => Some("Ctrl+Shift+A".to_string()),
+            "new_split:down" => Some("Ctrl+Shift+E".to_string()),
+            "new_split:up" => Some("Ctrl+Shift+W".to_string()),
+            _ => None,
+        };
+        let items = build(&cfg, &no_ticks);
+        let mut labels: Vec<&str> = items
+            .iter()
+            .filter(|i| {
+                ROWS[i.index]
+                    .action
+                    .is_some_and(|a| a.starts_with("new_split:"))
+            })
+            .map(|i| i.text.as_str())
+            .collect();
+        assert_eq!(labels.len(), 4);
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), 4, "the four splits share a label");
+    }
+
+    /// **No binding is not the same as not available** (`s4.md` §3.4.3 is the
+    /// stronger form of this). With an empty binding table every row must
+    /// still be present and still be a real, pickable command.
+    #[test]
+    fn an_empty_binding_table_removes_no_rows() {
+        let full = build(&|_| Some("Ctrl+X".to_string()), &no_ticks);
+        let empty = build(&no_shortcuts, &no_ticks);
+        assert_eq!(full.len(), empty.len());
+        assert_eq!(full.len(), ROWS.len());
+        for (a, b) in full.iter().zip(empty.iter()) {
+            assert_eq!(a.index, b.index);
+            assert_eq!(a.separator, b.separator);
+            // Same action behind both, so the row is as clickable as before.
+            assert_eq!(ROWS[a.index].action, ROWS[b.index].action);
+        }
+    }
+
     /// A label must never carry a key of its own. This is the regression
     /// guard: the file used to hold `"Copy\tCtrl+Shift+C"` as a literal, and
     /// the way that comes back is somebody adding one new row in the old
@@ -519,6 +633,18 @@ mod tests {
                 r.label
             );
         }
+    }
+
+    /// A window with no surface sends nothing, and **does not fall back to
+    /// the focused surface**.
+    ///
+    /// The fallback is the tempting fix for the null case and it is the
+    /// original bug wearing a null check: it would make «Copy» on a
+    /// surface-less window copy from whichever pane happened to have focus.
+    /// The only safe answer is to do nothing, loudly.
+    #[test]
+    fn a_null_surface_sends_no_action() {
+        assert!(!binding_on(std::ptr::null_mut(), "copy_to_clipboard"));
     }
 
     // ------------------------------------------------------------- ticks
