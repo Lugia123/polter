@@ -410,6 +410,9 @@ pub fn initTarget(self: *const OpenGL, width: usize, height: usize) !Target {
     });
 }
 
+var present_log_count: usize = 0;
+const present_log_max: usize = 40;
+
 /// Present the provided target.
 pub fn present(self: *OpenGL, target: Target) !void {
     // In order to present a target we blit it to the default framebuffer.
@@ -440,6 +443,55 @@ pub fn present(self: *OpenGL, target: Target) !void {
         gl.c.GL_COLOR_BUFFER_BIT,
         gl.c.GL_NEAREST,
     );
+
+    // **What this prints, and why these quantities.** A resize was measured
+    // end to end -- surface, screen, target and the cell grid all follow the
+    // window -- and the newly exposed region stayed black, with the boundary
+    // exactly at the *old* width. The blit above is built from `target` on
+    // both sides, so its rectangle cannot be the wrong size; what it cannot
+    // tell us is how big the thing it blits *into* is. That is the one
+    // quantity nobody has read yet, so it is the one this prints, next to
+    // the numbers it has to be compared against.
+    //
+    // `err` is here because a blit that fails is currently silent, and a
+    // silent failure and a stale drawable produce the same black pixels.
+    if (present_log_count < present_log_max) {
+        present_log_count += 1;
+        const fb = blk: {
+            var v: gl.c.GLint = undefined;
+            gl.glad.context.GetIntegerv.?(gl.c.GL_DRAW_FRAMEBUFFER_BINDING, &v);
+            break :blk v;
+        };
+        var vp: [4]gl.c.GLint = undefined;
+        gl.glad.context.GetIntegerv.?(gl.c.GL_VIEWPORT, &vp);
+        const err = gl.glad.context.GetError.?();
+        if (comptime wgl_enabled) {
+            const client = self.context.clientSize();
+            log.info(
+                "[blit] r={x} target={d}x{d} dst={d}x{d} drawable={d}x{d} viewport=({d},{d},{d},{d}) fb={d} err=0x{x}",
+                .{
+                    @intFromPtr(self),   target.width, target.height,
+                    target.width,        target.height,
+                    client.width,        client.height,
+                    vp[0], vp[1], vp[2], vp[3],
+                    fb,                  err,
+                },
+            );
+        } else {
+            // Rule 5: a criterion that does not apply says so, out loud. The
+            // drawable size is asked of the window, and only the WGL path has
+            // a window to ask.
+            log.info(
+                "[blit] r={x} target={d}x{d} dst={d}x{d} drawable=n/a (not the WGL path) viewport=({d},{d},{d},{d}) fb={d} err=0x{x}",
+                .{
+                    @intFromPtr(self), target.width, target.height,
+                    target.width,      target.height,
+                    vp[0], vp[1], vp[2], vp[3],
+                    fb,                err,
+                },
+            );
+        }
+    }
 
     // On the WGL path nothing else is going to present for us. GTK swaps
     // buffers itself as part of its draw cycle; our host only owns the

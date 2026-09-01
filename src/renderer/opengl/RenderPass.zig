@@ -81,6 +81,32 @@ pub fn step(self: *Self, s: Step) void {
     };
     defer fbobind.unbind();
 
+    // **The viewport belongs to the attachment, and nothing was setting it.**
+    // `gl.viewport` had zero callers in the entire tree: the renderer drew
+    // into a framebuffer without ever saying which region of it to draw to,
+    // and lived on whatever the last party to call `glViewport` had left
+    // behind. Under GTK that party is `GtkGLArea`, which sets
+    // `glViewport (0, 0, width * scale, height * scale)` before each draw, so
+    // the value happened to be right and the omission was invisible. On a
+    // bare `HWND` nobody sets it, so it kept the size the window had when the
+    // context was first made current -- and every later resize drew into the
+    // old rectangle, leaving the newly exposed region never written and so
+    // black, with the boundary exactly at the old width.
+    //
+    // It is set per step rather than once per frame because the two kinds of
+    // attachment do not share a size: a `target` is the screen, a `texture`
+    // is whatever a custom shader asked for. **A single viewport for the
+    // frame would be right for one of them and wrong for the other**, which
+    // is the same bug again with a smaller blast radius.
+    switch (self.attachments[0].target) {
+        inline .target, .texture => |t| gl.viewport(
+            0,
+            0,
+            @intCast(t.width),
+            @intCast(t.height),
+        ) catch {},
+    }
+
     defer self.step_number += 1;
 
     // If we have a clear color and this is the

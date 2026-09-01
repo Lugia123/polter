@@ -587,6 +587,79 @@ vtable、引用计数或线程模型级别的问题；交叉编译的 exe 拷到
    > **一条写下来的、便宜的、没人跑的判据，和没有判据的区别只在于事后追责。**
    > 它在这里躺了一天，期间那个缺陷又长出两处症状，其中一处还伪装成了一次通过。
 
+   ### ⚠️ 同日第三次追记：**根因是一个从来没被设置过的量，前两次都推错了**
+
+   **这一次不是推的，是读的。** 按上一段的要求，探针改成打矩形不打尺寸，
+   加在 `OpenGL.present` 里（`drawable` 取 `context.clientSize()`，视口取
+   `GL_VIEWPORT` 的四个参数，外加 `fb=` 和 `err=`）：
+
+   ```
+   [win] surface WM_SIZE 1240x790 -> set_size (#1)
+   [rsz]  r=…5af0 surface=1240x790 screen=1000x670 changed=true
+   [blit] r=…6d50 target=1240x790 dst=1240x790 drawable=1240x790 \
+          viewport=(0,0,1000,670) fb=0 err=0x0
+   ```
+
+   **`target`、`dst`、`drawable` 三个都跟上了。`viewport` 卡在 `(0,0,1000,670)`，
+   resize 前后一次没变过。** `fb=0` 排除了「还绑着别的帧缓冲」，`err=0x0`
+   排除了「blit 静默失败」——**这两个是特意加的，因为它们和陈旧视口产生
+   一模一样的黑像素。**
+
+   **机制**：视口不参与 blit，它管的是**往 target 里画**。视口停在旧尺寸，
+   target 右侧和下方那一圈**从来没被写过**，blit 忠实地把一块空白贴上屏，
+   **分界线因此正好落在旧宽度**——和那张跨界原图逐像素对得上。
+
+   **根因**：`pkg/opengl/draw.zig` 有 `viewport()`，**全仓零个调用者**。
+   （地板：同一形状的 grep 在同文件的 `blendFunc` 上得 1、在 `viewport` 上得 0，
+   所以那个 0 是真的 0，不是搜错了。）**GL 视口一辈子只有一个值——上下文
+   首次 make-current 时窗口的大小。**
+
+   **GTK 为什么没有这个病**（读的是上游源，不是推的）——GTK4 `gtkglarea.c`：
+
+   ```c
+   gtk_gl_area_resize:  glViewport (0, 0, width, height);
+   // w = gtk_widget_get_width(widget) * scale
+   // h = gtk_widget_get_height(widget) * scale
+   ```
+
+   **GTK 每帧替我们设视口，裸 `HWND` 上没有人设。** 而这句话早就写在
+   `OpenGL.zig` `surfaceSize()` 的注释里（"nothing does that for a bare `HWND`"）
+   ——**读过那个函数的人没把它当成缺陷读。**
+
+   ### ⚠️ 因此上面第 4 条本身也要改口：它不是修复，是碰巧
+
+   「上下文必须建在最终尺寸的窗口上」之所以有效，是因为它让**默认视口**
+   恰好等于窗口。**病一直在，只是被藏进了「首次之后的任何一次 resize」。**
+   这解释了为什么那个修复当天看起来是对的、而 resize 依然坏——
+   **一个碰巧成立的修复和一个真修复，在它刚落地那天长得一模一样。**
+
+   ### 修法：按附件设视口，不加平台分支
+
+   补在 `opengl/RenderPass.zig` 的 `step` 里，绑定帧缓冲之后：
+
+   ```zig
+   switch (self.attachments[0].target) {
+       inline .target, .texture => |t| gl.viewport(0, 0, @intCast(t.width), @intCast(t.height)) catch {},
+   }
+   ```
+
+   **不加 Windows 分支**，因为这不是 Windows 的怪癖，是渲染器的一个缺失：
+   它往一个帧缓冲里画却从不声明画到哪块区域，一直靠别人替它设好。
+   补上之后渲染器自足，**下一个平台不会再中一次**。
+
+   **负对照做过了**：GTK 设的是 `(0, 0, w*scale, h*scale)`，我们的 `target`
+   由 `size.screen`（同样是已缩放的设备像素）建，**两组数一致，没有偏移、
+   没有缩放错配**，所以无条件覆盖不会让 GTK 回归。
+
+   ⚠️ **按附件设，不是按帧设**：`target` 是屏幕尺寸、`texture` 是自定义着色器
+   要的尺寸，**一帧一个视口对其中一个必然是错的**——那是同一个缺陷的缩小版。
+
+   > **三次推错的顺序留在这里，是这一节现在的一半价值：**
+   > ① 「必须在最终尺寸下创建上下文」——把碰巧当成了约束；
+   > ② 「画布不跟随 resize」——把症状的稳定性当成了机制；
+   > ③ 真答案是「视口从没被设过」。
+   > **①② 都是从症状推的，③ 是从一个此前没人读过的量读出来的。**
+
 > 步 3 的 TSF 探针**前两条都不满足**（`RegisterClassW` 里没有 `CS_OWNDC`，
 > `hbrBackground` 是 `WHITE_BRUSH`）。**直接拿它接 WGL 会踩这两个坑。**
 

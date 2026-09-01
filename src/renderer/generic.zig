@@ -1517,8 +1517,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 if (rsz_log_count < rsz_log_max or size_changed) {
                     rsz_log_count += 1;
                     log.info(
-                        "[rsz] surface={d}x{d} screen={d}x{d} changed={} needs_redraw={}",
+                        "[rsz] r={x} surface={d}x{d} screen={d}x{d} changed={} needs_redraw={}",
                         .{
+                            @intFromPtr(self),
                             surface_size.width,     surface_size.height,
                             self.size.screen.width, self.size.screen.height,
                             size_changed,           needs_redraw,
@@ -1586,8 +1587,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (comptime builtin.os.tag == .windows) {
                 if (rsz_log_count <= rsz_log_max or target_stale) {
                     log.info(
-                        "[rsz] target={d}x{d} screen={d}x{d} stale={}",
+                        "[rsz] r={x} target={d}x{d} screen={d}x{d} stale={}",
                         .{
+                            @intFromPtr(self),
                             frame.target.width,     frame.target.height,
                             self.size.screen.width, self.size.screen.height,
                             target_stale,
