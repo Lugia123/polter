@@ -726,6 +726,18 @@ pub fn create_tab_in(
     // tab exists.** `pwd` can arrive during `surface_new`, which runs inside
     // `create_pane` above -- at which point there is no `Tab` to write it to.
     let pane_surface = pane.surface;
+    // **Taken before the guard, and the comment eight lines up says why.**
+    // `take_pending_cwd` locks. Written as a field initialiser inside the
+    // struct literal below -- which is where it was, and which deadlocked the
+    // host on startup with no window ever appearing -- it is evaluated *after*
+    // that literal's destination has already taken the same non-re-entrant
+    // lock. The shape is invisible at the call site: it reads as fetching a
+    // value, not as acquiring anything.
+    //
+    // This is the same paragraph that was already written above for `take_id`,
+    // about the same struct literal. Rewriting it rather than pointing at it,
+    // because the first copy did not stop the second instance.
+    let pending_cwd = take_pending_cwd(pane_surface);
     {
         let mut st = state();
         st.tabs.push(Tab {
@@ -737,7 +749,7 @@ pub fn create_tab_in(
             color: 0,
             role: 0,
             shielded: false,
-            cwd: take_pending_cwd(pane_surface),
+            cwd: pending_cwd,
         });
         st.active = st.tabs.len() - 1;
     }
