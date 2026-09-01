@@ -93,6 +93,23 @@ pub struct Tab {
     /// one was, which is the whole of what makes "reopen" different from
     /// "new tab".
     pub cwd: Option<String>,
+    /// The name **the user gave this tab**, as opposed to the one the program
+    /// inside it announced.
+    ///
+    /// **Two different facts that were one field, and that is the whole of the
+    /// defect this exists to fix.** A reopened tab had its name restored and
+    /// then lost it a moment later, because the freshly started `cmd` sends
+    /// its own `OSC 0` and the host wrote it over the top -- leaving a log
+    /// line claiming a title had been restored and a strip showing
+    /// `C:\WINDOWS\system32\cmd.exe`. The log and the screen disagreed, and
+    /// the log was the one that was wrong.
+    ///
+    /// macOS keeps the same split (`titleOverride` in
+    /// `BaseTerminalController`) and is explicit about the precedence: "When
+    /// set, this takes precedence over the computed title from the terminal."
+    /// Only this field is worth remembering across a close; the program's own
+    /// title belongs to the program that is gone.
+    pub title_override: Option<String>,
 }
 
 impl Tab {
@@ -813,6 +830,7 @@ pub fn create_tab_with(
             role: 0,
             shielded: false,
             cwd: pending_cwd,
+            title_override: None,
         });
         st.active = st.tabs.len() - 1;
     }
@@ -1174,19 +1192,44 @@ pub fn set_mark_for_surface(surface: Surface, role: u8, shielded: bool) -> bool 
     false
 }
 
-/// Rename a tab. The label is the host's; the shell can still overwrite it
-/// with its own title, which is the same rule macOS follows.
+/// Rename a tab **because the user said so** -- the in-place editor, the tab
+/// menu's rename, or a restored name.
+///
+/// **This outranks the program's own title from here on.** The comment that
+/// used to sit here said the opposite ("the shell can still overwrite it,
+/// which is the same rule macOS follows"), and that sentence was wrong about
+/// macOS: `BaseTerminalController` says of `titleOverride`, "When set, this
+/// takes precedence over the computed title from the terminal." The host was
+/// built to a mis-stated rule, which is why a renamed tab lost its name at the
+/// next `cd`.
 pub fn rename_tab(frame: HWND, id: TabId, title: String) {
     {
         let mut st = state();
         if let Some(tab) = st.tabs.iter_mut().find(|t| t.id == id) {
-            tab.title = title;
+            tab.title = title.clone();
+            tab.title_override = Some(title);
         }
     }
     unsafe {
         let _ = InvalidateRect(Some(frame), None, false);
     }
 }
+
+/// The program inside a tab announced its own title (`OSC 0` / `OSC 2`).
+///
+/// **Ignored while the user has given the tab a name of their own.** Every
+/// `cd` in a shell sends one of these, so without the guard a name the user
+/// typed survives until their next command.
+fn set_shell_title(idx: usize, title: String) -> bool {
+    let mut st = state();
+    let Some(tab) = st.tabs.get_mut(idx) else { return false };
+    if tab.title_override.is_some() {
+        return false;
+    }
+    tab.title = title;
+    true
+}
+
 
 /// Move one tab to a position, **by identity**.
 ///
@@ -1402,7 +1445,15 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
         // Taken while the tab is still whole; handed to `reopen.rs` below,
         // **after this guard is dropped** -- `remember` takes its own lock and
         // logs, and this file's rule is that `STATE` is held across neither.
-        let remembered = Some((tab.title.clone(), tab.cwd.clone().unwrap_or_default()));
+        // **The user's name, not the program's.** A reopened tab gets a fresh
+        // shell, and that shell announces its own title within a moment of
+        // starting -- so restoring the program's old title produces a name
+        // that is visibly wrong for one frame and then gone. Only a name the
+        // person chose is theirs to get back.
+        let remembered = Some((
+            tab.title_override.clone().unwrap_or_default(),
+            tab.cwd.clone().unwrap_or_default(),
+        ));
         if st.active >= st.tabs.len() && !st.tabs.is_empty() {
             st.active = st.tabs.len() - 1;
         }
@@ -1648,7 +1699,15 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 let Some(id) = state().tabs.last().map(|t| t.id) else {
                     continue;
                 };
-                rename_tab(frame, id, title.clone());
+                // **Only if there is one to restore**, and the log below says
+                // which happened. Renaming to the empty string would put a
+                // blank tab on the strip; renaming to the old shell title
+                // would be overwritten by the new shell a moment later, and
+                // the line claiming it had been restored would be describing
+                // something nobody could see.
+                if !title.is_empty() {
+                    rename_tab(frame, id, title.clone());
+                }
                 // Back where it was. Clamped by `move_tab_to` itself: the tab
                 // list is shorter now than when it was closed, and index 7 of
                 // a 3-tab strip has to mean "the end", not "nowhere".
@@ -1661,13 +1720,27 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // agree with itself while the shell stood somewhere else.
                 let used = state().last_pane_cwd.clone().unwrap_or_default();
                 let at = index_of(id).map(|(i, _)| i).unwrap_or(0);
-                logf!(
-                    "[reopen] restored {:?} cwd={:?} at index {} of {}",
-                    title,
-                    used,
-                    at,
-                    count()
-                );
+                // **The log claims only what is on the strip.** These two
+                // lines are different claims, and the reason they are two is
+                // that a single line saying `restored "tab-alpha"` was true of
+                // the host's intent and false of the screen a moment later.
+                if title.is_empty() {
+                    logf!(
+                        "[reopen] restored cwd={:?} at index {} of {}; no user title to restore, \
+                         the shell names it",
+                        used,
+                        at,
+                        count()
+                    );
+                } else {
+                    logf!(
+                        "[reopen] restored {:?} cwd={:?} at index {} of {}",
+                        title,
+                        used,
+                        at,
+                        count()
+                    );
+                }
             }
             Op::CloseTab(mode) => {
                 let (active, n) = (active_index(), count());
@@ -1763,17 +1836,20 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 }
             }
             Op::SetTabTitle(t) => {
-                {
-                    let mut st = state();
-                    let a = st.active;
-                    if let Some(tab) = st.tabs.get_mut(a) {
-                        tab.title = t.clone();
-                    }
-                }
+                let applied = set_shell_title(active_index(), t.clone());
                 unsafe {
                     let _ = InvalidateRect(Some(frame), None, false);
                 }
-                logf!("[tab] set_tab_title {:?}", t);
+                // **One line, and it says which of the two happened.** The
+                // line that used to be here read `set_tab_title "..."`
+                // whatever the outcome -- the same shape as the `[reopen]`
+                // line above it, claiming a title had been applied that the
+                // strip was not showing.
+                if applied {
+                    logf!("[tab] set_tab_title {:?}", t);
+                } else {
+                    logf!("[tab] set_tab_title {:?} ignored; the user named this tab", t);
+                }
             }
             Op::CopyTitleToClipboard => {
                 let title = {
