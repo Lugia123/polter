@@ -86,6 +86,31 @@ pub fn tag(frame: HWND) -> String {
 /// have been read as "the tag cannot be used here" rather than "this macro is
 /// too narrow". Keeping the caller's literal inside `format_args!` leaves the
 /// capture working.
+/// `logf!` for a line that is **not** about any one window.
+///
+/// **It expands to exactly what `logf!` does.** There is no runtime
+/// difference and the output is byte-for-byte the same, because changing the
+/// text would break every `grep` anyone has written against these lines. Its
+/// whole value is at the source level: it is a declaration, made where the
+/// line is written, that this fact belongs to the process rather than to a
+/// window -- and `windows/tools/window-tagged-logs.py` requires the reason to
+/// be written on the line above:
+///
+/// ```ignore
+/// // process-wide: the static menu table, built once at startup
+/// plogf!("[menu] built {} groups, {} items", groups, items);
+/// ```
+///
+/// **Why this rather than a table of tags in the checker.** That is what it
+/// was, and the table was a second place where a fact lived: `[menu]` is 4
+/// lines about a window and 18 about a table, so no answer for the tag as a
+/// whole was true. The declaration belongs to the line, where the person
+/// writing it knows which of the two they are writing.
+#[macro_export]
+macro_rules! plogf {
+    ($($a:tt)*) => { $crate::log_line(&format!($($a)*)) };
+}
+
 #[macro_export]
 macro_rules! wlogf {
     ($frame:expr, $($a:tt)*) => {{

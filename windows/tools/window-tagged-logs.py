@@ -11,12 +11,17 @@ has no answer to "which window?" -- and it does not turn red when that
 happens, it turns *unreadable*. A criterion that fails gets looked at; one
 that can no longer be judged gets believed.
 
-**Every tag is per-window until someone writes down why it is not.** The first
-version had this the other way round -- a whitelist of six tags -- and the
-default was wrong in the direction that matters: a *new* tag was unchecked by
-default, and new tags are exactly what multi-window code produces. The list
-below is therefore the exceptions, and each one carries its reason, because a
-name on its own is how a real gap gets parked.
+**Every line is per-window until someone writes down why it is not**, and the
+writing-down happens at the line, not in a list here. Three ways for a tagged
+log call to be in order:
+
+  * `wlogf!(frame, ...)` -- about one window, and says which.
+  * `plogf!(...)` with `// process-wide: <reason>` on the line above -- not
+    about any window, and says why.
+  * plain `logf!` naming a `TabId` or `PaneId` -- already unambiguous, because
+    those come from one counter shared by every window.
+
+Anything else is unclassified, and unclassified is what the ratchet counts.
 
 **A line is also exempt when it already names something process-unique.**
 `TabId` and `PaneId` come from one counter shared by every window
@@ -47,10 +52,18 @@ import sys
 
 # How many per-window lines were still untagged when this ratchet was set.
 #
-# **Measured, not chosen.** 221 on `372b5cece` (2026-09-02), the commit at
-# which this check's default was flipped from a whitelist of six tags to
-# "everything, unless declared". 217 after the four `[menu]` lines that show
-# and dispatch a menu for one window were tagged.
+# **Measured, not chosen**, and it has gone up once on purpose:
+#
+#   221  `372b5cece`  the default flipped from a six-tag whitelist to
+#                     "everything, unless declared"
+#   217  `98af8cff5`  the four `[menu]` lines that show and dispatch a menu
+#                     for one window were tagged
+#   254  this commit  the tag table was deleted; its 37 declarations became
+#                     unclassified again, because a declaration by tag was
+#                     never true for a tag that is half one thing and half
+#                     the other. **The rise is the rule getting stricter, not
+#                     a regression** -- and it is written here rather than
+#                     left for someone to discover as an unexplained jump.
 #
 # **The remainder is not one mechanical job.** Reading the untagged lines
 # tag by tag shows most of them are not about a window at all -- `[menu] built
@@ -64,18 +77,15 @@ import sys
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
-BASELINE_UNTAGGED = 217
+BASELINE_UNTAGGED = 254
 
-# Tags whose lines are NOT about one particular window. Each needs a reason.
-PROCESS_WIDE = {
-    "[build]": "the executable's own identity: one sha and size per process",
-    "[wd]": "the watchdog thread, which watches the process, not a window",
-    "[loop]": "the single message loop; one thread pumps every window",
-    "[plug]": "plugin settings files, shared by the whole process",
-    "[set]": "the settings window is deliberately one per process (S4-B ruling)",
-    "[selftest]": "a whole-process self test",
-    "[win]": "this tag *is* the frame-to-name pairing; tagging it would be circular",
-}
+# **There is no table of process-wide tags here, and there used to be.**
+# It was a second place where a fact lived, and it could not be right: `[menu]`
+# is four lines about a window and eighteen about a static table, so no answer
+# for the tag as a whole was true. The declaration now sits on the line that
+# makes the claim -- `plogf!` with a `// process-wide: <reason>` above it --
+# where the person writing it knows which of the two they are writing.
+PROCESS_WIDE_COMMENT = re.compile(r"//\s*process-wide:\s*(\S.*)$")
 
 # Something process-unique in the call's ARGUMENTS makes the window implicit.
 # **Arguments only, not the message text.** Matching the text exempted two
@@ -92,7 +102,7 @@ def sites(src: str):
     counted as neither tagged nor untagged, which is the worst of the three.
     """
     for m in re.finditer(
-        r"\b(w?logf)!\(\s*((?:[^,\"()]|\([^()]*\))*,\s*)?\"(\[[a-z]+\])([^\"]*)\"",
+        r"\b(wlogf|plogf|logf)!\(\s*((?:[^,\"()]|\([^()]*\))*,\s*)?\"(\[[a-z]+\])([^\"]*)\"",
         src,
     ):
         depth, k = 1, m.end()
@@ -102,6 +112,14 @@ def sites(src: str):
             elif src[k] == ")":
                 depth -= 1
             k += 1
+        # **A log call inside a doc comment is not a call.** `winid.rs`
+        # documents both macros with worked examples, and counting those made
+        # this report a declaration that does not exist -- the same class of
+        # false positive `lock-reentry.py` records having hit, where a comment
+        # explaining the lock made its own module look like a locker.
+        bol = src.rfind("\n", 0, m.start()) + 1
+        if src[bol:m.start()].lstrip().startswith("//"):
+            continue
         yield m.start(), m.group(1), m.group(3), src[m.end():k]
 
 
@@ -111,7 +129,7 @@ def untagged_calls(src: str) -> int:
     Reported rather than ignored: a checker that can say how much it cannot see
     is a different instrument from one that implies it saw everything.
     """
-    total = len(re.findall(r"\b(?:w?logf)!\(", src))
+    total = len(re.findall(r"\b(?:wlogf|plogf|logf)!\(", src))
     return total - sum(1 for _ in sites(src))
 
 
@@ -138,17 +156,33 @@ CANARY_OK = """
 wlogf!(frame, "[strip] click -> activate at {},{}", x, y);
 logf!("[clip] read kind={} pane={} -> {} chars", kind, pane, n);
 logf!("[strip] close {:?}", id);
-logf!("[build] sha256 {}", sha);
+// process-wide: the executable's own identity, one per process
+plogf!("[build] sha256 {}", sha);
 """
+
+# `plogf!` without its sentence. **A separate canary because it is a separate
+# failure**: the line is out of the count either way, so without this the
+# checker would let `plogf!` be used as a way to make a number go down.
+CANARY_UNREASONED = 'plogf!("[menu] built {} groups", n);' 
 # The shape the first version could not see at all.
 CANARY_FIELD = 'wlogf!(self.frame, "[strip] moved to {},{}", x, y);'
 
 
 def bad_sites(src: str, name: str):
+    """Unclassified sites, and `plogf!` sites whose reason is missing."""
+    lines = src.split("\n")
     for start, macro, tag, args in sites(src):
-        if tag in PROCESS_WIDE or macro == "wlogf" or ALREADY_NAMED.search(args):
+        line_no = src[:start].count("\n") + 1
+        if macro == "wlogf" or ALREADY_NAMED.search(args):
             continue
-        yield name, src[:start].count("\n") + 1, tag
+        if macro == "plogf":
+            # The reason is the point. `plogf!` on its own only moves a line
+            # out of the count; the sentence above it is what a reader gets.
+            above = lines[line_no - 2] if line_no >= 2 else ""
+            if not PROCESS_WIDE_COMMENT.search(above):
+                yield name, line_no, f"{tag} plogf! with no `// process-wide:` reason"
+            continue
+        yield name, line_no, tag
 
 
 def self_test() -> None:
@@ -167,7 +201,13 @@ def self_test() -> None:
         print("FAIL: the probe cannot see `wlogf!(self.frame, ...)`; such sites "
               "would count as neither tagged nor untagged.")
         sys.exit(1)
-    print("probe self-test: OK (untagged seen, exempt ignored, field-expression sites visible)")
+    unreasoned = list(bad_sites(CANARY_UNREASONED, "<canary>"))
+    if not unreasoned:
+        print("FAIL: `plogf!` with no `// process-wide:` reason was accepted; the macro "
+              "would then be a way to lower the count without saying anything.")
+        sys.exit(1)
+    print("probe self-test: OK (unclassified seen, reasoned/exempt ignored, "
+          "unreasoned plogf! caught, field-expression sites visible)")
 
 
 def main() -> int:
@@ -187,25 +227,39 @@ def main() -> int:
         src = open(path, encoding="utf-8").read()
         invisible += untagged_calls(src)
         for _, macro, tag, args in sites(src):
-            if tag in PROCESS_WIDE:
-                process += 1
-            elif macro == "wlogf":
+            if macro == "wlogf":
                 tagged += 1
+            elif macro == "plogf":
+                process += 1
             elif ALREADY_NAMED.search(args):
                 exempt += 1
         bad.extend(bad_sites(src, name))
 
-    print(f"scanned {len(paths)} files: {tagged} tagged, {exempt} name a tab or pane, "
-          f"{process} process-wide by declaration")
-    print(f"  {invisible} log calls carry no [tag] at all and are not examined")
+    summary_at = (tagged, exempt, process, invisible)
+
+    # **The unreasoned `plogf!` sites are listed one by one, with line
+    # numbers.** They are individually actionable -- somebody wrote the macro
+    # and left out the sentence -- unlike the bulk below, which is a backlog
+    # to be classified rather than a mistake to be corrected. Counting one as
+    # "declared" in the summary above would also make that line disagree with
+    # this one about the same site, so it is subtracted there.
+    unreasoned = [h for h in bad if "no `// process-wide:`" in h[2]]
+    for name, line, what in unreasoned:
+        print(f"  {name}:{line}  {what}")
+    process -= len(unreasoned)
 
     from collections import Counter
-    for tag, n in Counter(t for _, _, t in bad).most_common():
-        where = sorted({f for f, _, t in bad if t == tag})
-        print(f"  {tag:12s} {n:3d} untagged   ({', '.join(where)})")
+    rest = [h for h in bad if h not in unreasoned]
+    for tag, n in Counter(t for _, _, t in rest).most_common():
+        where = sorted({f for f, _, t in rest if t == tag})
+        print(f"  {tag:12s} {n:3d} unclassified   ({', '.join(where)})")
 
     n = len(bad)
-    print(f"\n{n} per-window log lines say nothing about which window "
+    tagged, exempt, process, invisible = summary_at
+    print(f"scanned {len(paths)} files: {tagged} tagged, {exempt} name a tab or pane, "
+          f"{process - len(unreasoned)} declared process-wide at the call site")
+    print(f"  {invisible} log calls carry no [tag] at all and are not examined\n")
+    print(f"{n} per-window log lines say nothing about which window "
           f"(baseline {BASELINE_UNTAGGED}).")
 
     if n > BASELINE_UNTAGGED:
@@ -213,8 +267,9 @@ def main() -> int:
         print(f"FAIL: {added} more than the baseline. A per-window log line was added "
               f"without a window\n      identity. It reads fine today and stops being "
               f"readable the day there are two\n      windows -- which is not a day anyone "
-              f"will connect to this commit. Use `wlogf!(frame, ...)`,\n      or declare the "
-              f"tag in PROCESS_WIDE with the reason it is not about one window.")
+              f"will connect to this commit.\n"
+              f"      `wlogf!(frame, ...)` if it is about one window; `plogf!` with a\n"
+              f"      `// process-wide: <reason>` line above it if it is not.")
         return 1
 
     if n < BASELINE_UNTAGGED:
