@@ -113,39 +113,64 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// Host-level accelerators, tried **only for what the core did not take**.
 ///
-/// The core owns keybinds; this table exists because the core's Windows
-/// defaults are not yet exercised on a real machine, and a host with no way
-/// to open a tab is not testable. Every entry here goes through
-/// `ghostty_surface_binding_action` -- the same entry point a macOS menu item
-/// uses -- so the action path being tested is the production one. When the
-/// core's own binds cover these, this table stops firing on its own: it is
-/// reached only after `ghostty_surface_key` returned false.
+/// **The premise this table was written on is false, and that is why it is
+/// now five rows instead of sixteen.** It said the core's Windows defaults
+/// were not yet exercised, so the host had to cover them. The core does have
+/// Windows defaults, and had them all along: eleven of the sixteen rows named
+/// a chord the core already binds, so they never ran.
+///
+/// **Dead was not the dangerous half.** A row the core covers is not
+/// unreachable -- it is reached whenever the core *declines*, and
+/// `performable` bindings decline as a matter of course. `copy_to_clipboard`
+/// is bound to `ctrl+shift+c` with `performable = true`, and
+/// `Config.zig:1996` says what that means: "If there is no selection, Ghostty
+/// behaves as if the keybind was not set." So every `ctrl+shift+c` with no
+/// selection fell through to this table, which sent
+/// `copy_title_to_clipboard`: the window title, onto the clipboard, silently.
+/// The person had selected text, copied, pasted the title, and had every
+/// reason to doubt their own selection. That row is gone.
+///
+/// **The rule, and it does not care whether the actions agree.** A row whose
+/// chord the core also binds is deleted, even when both name the same action.
+/// "The same action" is today's coincidence: the core changes one default and
+/// a harmless dead row becomes a `ctrl+shift+c`, with nothing anywhere
+/// reporting the change. Four rows were already in the second state --
+/// `ctrl+shift+←/→` sent `move_tab` where the core sends `previous_tab` /
+/// `next_tab`, and those two are `performable`, so with a single tab open the
+/// core declined and the host moved a tab instead of switching one.
+///
+/// What is left is the chords the core does not bind on Windows, where this
+/// table is the only way to reach the action at all. Each of them logs when it
+/// fires -- they are supposed to fire, so the line is a signal rather than
+/// noise, and when the core grows a default the line will stop appearing,
+/// which is the reading that says a row can retire.
 fn accelerator(vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<&'static str> {
     match (ctrl, shift, vk) {
-        (true, true, VK_T) => Some("new_tab"),
         // The plugin page has no action of its own: the core knows nothing
-        // about a settings window, so unlike `new_tab` this one can never be
-        // superseded by a core default. It stays.
+        // about a settings window, so unlike the rest this one can never be
+        // superseded by a core default. **Deleting the whole table would have
+        // taken this with it** -- and with it the only way to reach the
+        // settings page from the keyboard.
         (true, true, VK_OEM_COMMA) => Some("__polter_plugin_page"),
-        (true, true, VK_W) => Some("close_tab:this"),
-        (true, true, VK_C) => Some("copy_title_to_clipboard"),
         (true, true, VK_M) => Some("toggle_maximize"),
-        (true, true, VK_RIGHT) => Some("move_tab:1"),
-        (true, true, VK_LEFT) => Some("move_tab:-1"),
-        (true, false, VK_TAB) => Some("next_tab"),
-        // Splits. The names are the core's own binding syntax, so these go
-        // through exactly the path a user's keybind would.
+        // The core's split-right default is `ctrl+shift+o`, not `d`.
         (true, true, VK_D) => Some("new_split:right"),
-        (true, true, VK_E) => Some("new_split:down"),
         (true, true, VK_Z) => Some("toggle_split_zoom"),
+        // The core binds `equalize_splits` to `super+ctrl+=`, which is the
+        // macOS branch; there is no Windows default.
         (true, true, VK_OEM_PLUS) => Some("equalize_splits"),
-        (true, true, VK_UP) => Some("goto_split:up"),
-        (true, true, VK_DOWN) => Some("goto_split:down"),
-        // The palette's only other way in is a keybind, which reaches the core
-        // through surface_key -- the path that goes dead whenever the scan code
-        // is zero. This entry does not, so the panel stays reachable.
-        (true, true, VK_P) => Some("toggle_command_palette"),
-        (_, _, VK_F11) => Some("toggle_fullscreen"),
+
+        // **`ctrl+tab` was here, and it should not have been.** The first
+        // pass called it "not verified" and asked for a keypress on a real
+        // machine to settle whether the key is encoded into the pty. It never
+        // needed one: `Config.zig:6896` binds `.{ .physical = .tab }` with
+        // `.ctrl` to `next_tab`, on every platform, which is the same action
+        // this row named. The reason it looked open is that the pass which
+        // enumerated the core's defaults missed that line -- so the question
+        // "does this key reach the table" was asked of a machine when the
+        // answer was in the source, and the row would have survived on the
+        // strength of an incomplete search rather than a fact.
+
         _ => None,
     }
 }
@@ -257,7 +282,18 @@ pub fn handle_key_message(
                     }
                     _ => crate::binding(name),
                 };
-                logf!("[key] host accelerator {:?} -> binding_action = {}", name, ok);
+                // **Logged because these are supposed to fire.** Every row
+                // left in that table names a chord the core does not bind on
+                // Windows, so this line appearing is the table doing its job.
+                // The day the core grows a default for one of them, the core
+                // consumes the key first and this line stops appearing for it
+                // -- which is how a row earns its retirement, rather than
+                // being noticed by someone reading the source years later.
+                logf!(
+                    "[key] host accelerator {:?} -> binding_action = {} (the core has no Windows bind for this chord)",
+                    name,
+                    ok
+                );
                 consumed = ok;
             }
         }
