@@ -33,6 +33,16 @@ use crate::logf;
 
 /// One tab worth reopening.
 pub struct Entry {
+    /// **The name the person chose, or empty.** Not the tab's displayed
+    /// title: a reopened tab gets a fresh shell, and that shell announces its
+    /// own name (OSC 0/2) within a moment of starting, so restoring the
+    /// program's old name would put a visibly wrong word on the strip for one
+    /// frame and then lose to the shell anyway. `tabs.rs` therefore hands
+    /// over `title_override` only, and an empty string here means "this tab
+    /// had no chosen name" -- **not** "its name was not worth keeping".
+    ///
+    /// So the promise this stack makes is about the **directory**, and about
+    /// the name only when the person set one.
     pub title: String,
     /// Where its shell was standing. **Never empty**: an entry without one is
     /// refused by `remember` rather than stored and papered over later.
@@ -41,6 +51,16 @@ pub struct Entry {
     /// a tab that comes back at the far end has moved, and the person who
     /// pressed undo did not ask for it to move.
     pub index: usize,
+}
+
+/// How a title reads in a log line. **An empty one is a fact about the tab,
+/// not a missing value**, and `""` reads as the second.
+fn named(title: &str) -> String {
+    if title.is_empty() {
+        "(no name the person chose)".to_string()
+    } else {
+        format!("{title:?}")
+    }
 }
 
 /// The bound. See the module docs: undo stack, not history.
@@ -81,10 +101,10 @@ pub fn remember(index: usize, title: &str, cwd: &str) {
         // "this tab had no directory to remember" produce the same greyed
         // menu item, and only this line tells them apart.
         logf!(
-            "[reopen] not remembering tab {} {:?}: no cwd known (nothing has told this host \
+            "[reopen] not remembering tab {} {}: no cwd known (nothing has told this host \
              where that shell was; GHOSTTY_ACTION_PWD)",
             index,
-            title
+            named(title)
         );
         return;
     }
@@ -104,9 +124,9 @@ pub fn remember(index: usize, title: &str, cwd: &str) {
         logf!("[reopen] dropped oldest {:?} to stay at {}", dropped.title, LIMIT);
     }
     logf!(
-        "[reopen] remembered tab {} {:?} cwd={:?}; stack {}/{}",
+        "[reopen] remembered tab {} {} cwd={:?}; stack {}/{}",
         index,
-        title,
+        named(title),
         cwd,
         stack.len(),
         LIMIT
@@ -194,6 +214,20 @@ mod tests {
     fn a_tab_with_a_cwd_is_remembered() {
         reset();
         remember(3, "build", "C:\\work\\alpha");
+        assert_eq!(stack_depth().0, 1);
+        assert!(can_reopen());
+        reset();
+    }
+
+    /// **A tab with no chosen name is still worth reopening.** The directory
+    /// is what this stack promises; the name is only restored when the person
+    /// set one. An implementation that refused an empty title would drop
+    /// every ordinary tab -- and the menu row would stay greyed for a reason
+    /// that looks exactly like "no cwd known".
+    #[test]
+    fn a_tab_with_no_chosen_name_is_still_remembered() {
+        reset();
+        remember(2, "", "C:\\work\\gamma");
         assert_eq!(stack_depth().0, 1);
         assert!(can_reopen());
         reset();
