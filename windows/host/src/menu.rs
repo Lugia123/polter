@@ -67,13 +67,39 @@ struct Row {
     check: Option<Flag>,
     /// What has to be true before this row can succeed. See `Ready`.
     ready: Ready,
-    /// False for a row that is deliberately shown greyed.
+    /// Whether the row can be picked. See `Enable`.
     ///
     /// **Greyed, not hidden** (§3.4.3): a menu item that is missing and one
     /// that never existed look identical, and a person who was told the
     /// feature exists concludes they misremembered. A greyed one says "this
     /// exists, not now".
-    enabled: bool,
+    enabled: Enable,
+}
+
+/// Whether a row is live, and what decides it.
+///
+/// **The third case is why this is not a `bool`.** Greying used to be a
+/// constant: three rows were greyed because nobody had built them, and they
+/// would be greyed forever. «重开关闭的标签» is the first row whose greying is
+/// a fact about right now -- there is nothing to reopen until something has
+/// been closed -- so the count in the `built` line moves, and a count that
+/// moves is a reading rather than a constant.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Enable {
+    Yes,
+    /// Greyed always: §3.4.3, "this exists, not now", for something nobody
+    /// has built yet.
+    No,
+    /// Greyed while the closed-tab stack is empty.
+    WhenReopenable,
+}
+
+fn row_enabled(r: &Row) -> bool {
+    match r.enabled {
+        Enable::Yes => true,
+        Enable::No => false,
+        Enable::WhenReopenable => crate::reopen::can_reopen(),
+    }
 }
 
 /// Why a row can come back `ok=0` with nothing wrong.
@@ -110,7 +136,7 @@ pub enum Flag {
 
 /// Shorthand for the common case: a labelled row that runs a core action.
 const fn act(label: &'static str, action: &'static str) -> Row {
-    Row { label, action: Some(action), sub: None, check: None, ready: Ready::Always, enabled: true }
+    Row { label, action: Some(action), sub: None, check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
 /// A row the terminal's own state can legitimately refuse.
@@ -121,7 +147,7 @@ const fn act_state(label: &'static str, action: &'static str, why: &'static str)
         sub: None,
         check: None,
         ready: Ready::NeedsState(why),
-        enabled: true,
+        enabled: Enable::Yes,
     }
 }
 
@@ -133,22 +159,22 @@ const fn act_gap(label: &'static str, action: &'static str, why: &'static str) -
         sub: None,
         check: None,
         ready: Ready::HostGap(why),
-        enabled: true,
+        enabled: Enable::Yes,
     }
 }
 
 /// A row that runs a core action and shows a check mark for `flag`.
 const fn toggle(label: &'static str, action: &'static str, flag: Flag, ready: Ready) -> Row {
-    Row { label, action: Some(action), sub: None, check: Some(flag), ready, enabled: true }
+    Row { label, action: Some(action), sub: None, check: Some(flag), ready, enabled: Enable::Yes }
 }
 
 const fn sep() -> Row {
-    Row { label: "", action: None, sub: None, check: None, ready: Ready::Always, enabled: true }
+    Row { label: "", action: None, sub: None, check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
 /// A row that opens a nested menu.
 const fn sub(label: &'static str, rows: &'static [Row]) -> Row {
-    Row { label, action: None, sub: Some(rows), check: None, ready: Ready::Always, enabled: true }
+    Row { label, action: None, sub: Some(rows), check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
 /// Prefix for the things the core has never heard of. Sending one of these to
@@ -168,7 +194,20 @@ const FILE_ROWS: &[Row] = &[
     sep(),
     // The core's `undo` is scoped to surface lifecycle, which is what
     // "reopen the tab I just closed" is.
-    act_gap("重开关闭的标签", "undo", "GHOSTTY_ACTION_UNDO(55) reaches this host and cb_action does not handle it; the closed-tab stack is task 105"),
+    // **Not `undo`.** The core's `undo` action is handed to the host
+    // (`GHOSTTY_ACTION_UNDO`, tag 55) and the host is where a closed-tab
+    // stack has to live, so this row runs the host's own stack directly
+    // rather than going out to the core and back for nothing. Greyed while
+    // the stack is empty -- the first row in this menu whose greying is a
+    // fact about right now.
+    Row {
+        label: "重开关闭的标签",
+        action: Some("__polter_reopen_tab"),
+        sub: None,
+        check: None,
+        ready: Ready::NeedsState("needs a tab closed in this session; the row is greyed until then"),
+        enabled: Enable::WhenReopenable,
+    },
     sep(),
     act("向右分屏", "new_split:right"),
     act("向左分屏", "new_split:left"),
@@ -192,8 +231,14 @@ const FIND_ROWS: &[Row] = &[
 
 const EDIT_ROWS: &[Row] = &[
     act_state("复制", "copy_to_clipboard", "needs a selection: Surface.zig returns false when there is none"),
-    act_gap("粘贴", "paste_from_clipboard", "cb_read_clipboard in main.rs returns false unconditionally; this host has no clipboard bridge yet"),
-    act_gap("粘贴选区", "paste_from_selection", "same stub clipboard callback as 粘贴"),
+    act("粘贴", "paste_from_clipboard"),
+    // **«粘贴选区» is gone, and its absence is the point.** It pastes the
+    // *selection* clipboard, which X11 and macOS have and Windows does not.
+    // This host declares no selection support and `cb_write_clipboard`
+    // refuses that kind outright, so the row could never do anything --
+    // and `s4.md` §3.2's own rule is that a concept Windows does not have
+    // is not ported. A row that can never work is worse than a missing one:
+    // it is the "click does nothing" this whole menu was audited to remove.
     act("全选", "select_all"),
     sep(),
     sub("查找", FIND_ROWS),
@@ -238,11 +283,7 @@ const AGENTS_ROWS: &[Row] = &[
     // The chat is a TUI (`polter +chat`), so opening it is opening a terminal
     // with a command and one flag set -- and both of those are `create_pane`'s
     // to set, in `tabs.rs`. The tag is handled and says so.
-    act_gap(
-        "终端对话",
-        "poltergeist_toggle_chat",
-        "needs create_pane to set command=\"polter +chat\" and poltergeist_chat=true (tabs.rs)",
-    ),
+    act("终端对话", "poltergeist_toggle_chat"),
     sep(),
     toggle("设为总管", "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
     toggle("监督此终端", "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
@@ -259,7 +300,7 @@ const AGENTS_ROWS: &[Row] = &[
         sub: None,
         check: None,
         ready: Ready::HostGap("no language picker exists yet"),
-        enabled: false,
+        enabled: Enable::No,
     },
 ];
 
@@ -306,7 +347,7 @@ const HELP_ROWS: &[Row] = &[
         sub: None,
         check: None,
         ready: Ready::HostGap("no docs opener exists yet"),
-        enabled: false,
+        enabled: Enable::No,
     },
     sep(),
     // The core publishes `check_for_updates`, but block L is not built, so the
@@ -318,7 +359,7 @@ const HELP_ROWS: &[Row] = &[
         sub: None,
         check: None,
         ready: Ready::HostGap("block L is not built"),
-        enabled: false,
+        enabled: Enable::No,
     },
     act("重载配置", "reload_config"),
 ];
@@ -362,6 +403,10 @@ fn run_host(frame: HWND, action: &str) -> bool {
             crate::settings_ui::request_about();
             true
         }
+        // The stack, and the tab it makes, both live in the host: see
+        // `reopen.rs`. It answers false when there is nothing to reopen,
+        // which is also what the greyed row is saying.
+        "__polter_reopen_tab" => crate::reopen::reopen_last(),
         "__polter_minimize" => {
             let _ = unsafe { ShowWindow(frame, SW_MINIMIZE) };
             true
@@ -381,6 +426,7 @@ fn run_host(frame: HWND, action: &str) -> bool {
 
 /// Every host action this file may name. `run_host` must have an arm for each.
 const HOST_ACTIONS: &[&str] = &[
+    "__polter_reopen_tab",
     "__polter_plugin_page",
     "__polter_minimize",
     "__polter_language",
@@ -588,7 +634,7 @@ fn count(rows: &[Row], c: &mut Counts) {
         if r.check.is_some() {
             c.checkable += 1;
         }
-        if !r.enabled {
+        if !row_enabled(r) {
             c.greyed += 1;
         }
         if accel_of(a).is_some_and(|t| !t.is_empty()) {
@@ -809,7 +855,7 @@ fn build(rows: &[Row], next: &mut usize) -> Option<HMENU> {
                 _ => r.label.to_string(),
             };
             let mut flags = MF_STRING;
-            if !r.enabled {
+            if !row_enabled(r) {
                 flags = flags | MF_GRAYED;
             }
             if let Some(flag) = r.check {
@@ -950,7 +996,7 @@ fn run_selftest(frame: HWND) {
     let mut failed = 0usize;
     let mut skipped = 0usize;
     for row in first.into_iter().chain(last) {
-        if !row.enabled {
+        if !row_enabled(row) {
             // A greyed row cannot be picked with a mouse either, so dispatching
             // it here would test a path that does not exist.
             logf!("[menu] selftest skip {:?} (greyed; a click cannot reach it)", row.label);
@@ -1232,13 +1278,16 @@ mod tests {
         }
     }
 
-    /// Three rows are greyed on purpose, and the list is spelled out: when one
+    /// Three rows are greyed **always**, and the list is spelled out: when one
     /// of them gets built, this test is what says "un-grey it" rather than the
-    /// menu quietly staying grey forever.
+    /// menu quietly staying grey forever. The conditional one is next door.
     #[test]
     fn the_greyed_rows_are_the_three_that_are_not_built() {
-        let mut greyed: Vec<_> =
-            all_rows().iter().filter(|r| !r.enabled).map(|r| r.label).collect();
+        let mut greyed: Vec<_> = all_rows()
+            .iter()
+            .filter(|r| r.enabled == Enable::No)
+            .map(|r| r.label)
+            .collect();
         greyed.sort_unstable();
         // Sorted, not in table order: this test is about *which* rows are
         // greyed. Pinning the traversal order here would make it fail the next
@@ -1258,10 +1307,10 @@ mod tests {
         let rows = all_rows();
         let leaves: Vec<_> = rows.iter().filter(|r| r.action.is_some()).collect();
         let n = |f: fn(&Ready) -> bool| leaves.iter().filter(|r| f(&r.ready)).count();
-        assert_eq!(leaves.len(), 55);
-        assert_eq!(n(|r| matches!(r, Ready::Always)), 43, "unconditional rows");
-        assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 4, "state-dependent rows");
-        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 8, "rows this host does not answer yet");
+        assert_eq!(leaves.len(), 54);
+        assert_eq!(n(|r| matches!(r, Ready::Always)), 45, "unconditional rows");
+        assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 5, "state-dependent rows");
+        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 4, "rows this host does not answer yet");
     }
 
     /// Both non-trivial buckets have to say why, because the reason is what
@@ -1292,12 +1341,27 @@ mod tests {
         assert_eq!(find("改终端标题…"), "prompt_surface_title");
     }
 
+    /// Exactly one row's greying depends on the moment rather than on
+    /// whether somebody has built it. **That is what makes the `greyed` count
+    /// in the log a reading**: a number that can only be 3 says nothing, and a
+    /// second conditional row added without noticing would make the count move
+    /// for a reason nobody wrote down.
+    #[test]
+    fn one_row_is_greyed_by_state_and_it_is_the_reopen_one() {
+        let conditional: Vec<_> = all_rows()
+            .iter()
+            .filter(|r| matches!(r.enabled, Enable::WhenReopenable))
+            .map(|r| r.label)
+            .collect();
+        assert_eq!(conditional, vec!["重开关闭的标签"]);
+    }
+
     /// A greyed row still names something. **Greying is not a way to park a
     /// row with no action** -- the row has to be a real command that is not
     /// available yet, or it should not be in the menu at all.
     #[test]
     fn greyed_rows_still_name_an_action() {
-        for r in all_rows().iter().filter(|r| !r.enabled) {
+        for r in all_rows().iter().filter(|r| r.enabled != Enable::Yes) {
             assert!(r.action.is_some(), "greyed row {} names nothing", r.label);
         }
     }
