@@ -272,6 +272,35 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
 缺陷「关闭标签挂死主线程」正是靠它从「卡在 `ghostty_surface_free` 某处」
 缩到「第一个 join 过了、`threadEnter` 执行了、卡在 io 线程那个 join」。
 
+### 10. `160x0`：出现过一次，未复现，原因未查清（2026-09-01）
+
+**现象**：`--striptest` 开 18 个标签的过程中，**第 6 到第 15 次布局连续把新 pane 摆成 `160x0`**
+（宽 160、**高 0**），第 16 次自己恢复 `1000x670` 并一直正常到结束。约七秒。
+
+**已排除的三条**（都是读代码，不是猜）：`--selftest` 混跑（日志里零命中）、
+别的窗口共用框架 wndproc（`hud`/`keyseq`/`search`/`palette` 各有自己的窗口类和 wndproc）、
+UI-C 改小了框架窗口（那四个模块拿到 `frame_hwnd()` 之后只 `GetWindowRect` 读，无任何写）。
+`st.frame` 全程只被写过一次。**所以那七秒里框架客户区是真的 160×≤30，为什么没有证据。**
+
+**下一版（加了 `client=` 探针和 `refusing` 拒绝分支）上未复现**，18 次布局 `client=1000x700` 一次没抖。
+**但这不能记成「修好了」**：三处改动没有一处能解释它——**`refusing` 分支一次都没触发**
+（它只在坏情况发生时才有作用），`client=` 是纯日志，`selftest` 收口和这条路径无关。
+**「被顺带改掉」这个可能性因此很弱，剩下基本只有间歇性**——而「十次全是 160、一次没抖」
+和间歇性同样别扭。**两种都没有证据。**
+
+**危害已经拿掉**：`content_bounds` 现在在高度为 0 时返回 `None`、整个 layout 不执行，
+**保住上一次的好几何**，而不是把 pane 摆成零高度（原来 `SetWindowPos` 会报告成功——
+把窗口移成零高度是合法请求）。
+
+**再发生时怎么判**：`[layout] refusing: client WxH (strip N), window WxH zoomed= iconic=`
+**同时打客户区和窗口矩形**，那两个数正好分开两种世界——窗口矩形也小 → 窗口真的变小了；
+窗口矩形正常而客户区小 → **`WM_NCCALCSIZE`（UI-A）算错了**。
+
+> **⚠️ 这条链上有三个「看起来像独立证据」的东西，全都在它下游**：
+> `warning(surface): very small terminal grid detected with padding set`（核心对我们喂进去的
+> 尺寸的正确抱怨，客户区正常时不出现）、`[hud] size 16x0 from client 160x1`、
+> 以及 `[win] surface WM_SIZE 160x1`。**三个都不是独立观察，是同一个原因的三个回声。**
+
 ## 五之二、五条裁决（2026-09-01 已定）
 
 **这一节和第五节不同。** 第五节是技术账——有确切位置、有人能查下去。

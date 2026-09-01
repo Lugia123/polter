@@ -314,9 +314,54 @@ fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
             return None;
         }
     }
-    let w = (rc.right - rc.left) as f64;
-    let h = ((rc.bottom - rc.top - sh).max(0)) as f64;
-    Some(TreeRect::new(0.0, sh as f64, w, h))
+    let w = rc.right - rc.left;
+    let h = (rc.bottom - rc.top - sh).max(0);
+
+    // **A layout with no height is not a layout.**
+    //
+    // The frame was once observed reporting a 160x30 client area for about
+    // seven seconds, and every pane created during it was dutifully placed at
+    // `160x0` -- `SetWindowPos` reported success each time, because moving a
+    // window to zero height is a legal thing to ask for. The panes were
+    // invisible and the strip showed three tabs out of seventeen.
+    //
+    // Refusing here keeps the last good geometry instead of replacing it with
+    // a meaningless one, and **says so**: the window rect and the window's
+    // state go in the line, because "the client area is wrong" and "our
+    // arithmetic is wrong" are two different bugs and this is the input that
+    // separates them.
+    if h == 0 || w <= 0 {
+        let mut wr = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(frame, &mut wr);
+            // **The HWND is in the line too.** Two hypotheses survive for a
+            // 160-pixel client area, and they are told apart by identity, not
+            // by geometry: either the frame really is that small, or this was
+            // handed a window that is not the frame. Printing both the handle
+            // we measured and the one the model calls the frame answers that
+            // without another round trip.
+            let expect = frame_hwnd();
+            logf!(
+                "[layout] refusing: hwnd={:?} (frame={:?}, same={}) client {}x{} (strip {}), \
+                 window {}x{} at {},{} zoomed={} iconic={}",
+                frame.0,
+                expect.0,
+                frame.0 == expect.0,
+                w,
+                rc.bottom - rc.top,
+                sh,
+                wr.right - wr.left,
+                wr.bottom - wr.top,
+                wr.left,
+                wr.top,
+                IsZoomed(frame).as_bool(),
+                IsIconic(frame).as_bool()
+            );
+        }
+        return None;
+    }
+
+    Some(TreeRect::new(0.0, sh as f64, w as f64, h as f64))
 }
 
 /// Place every pane of the active tab where the tree says, and hide the rest.

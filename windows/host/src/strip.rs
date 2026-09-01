@@ -602,6 +602,11 @@ static PAINTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(
 ///
 /// The tab order and the titles are printed **together**, because the defect
 /// worth catching here is precisely the one where they disagree.
+///
+/// `client=` is here because `onscreen=` is a *derived* number: it depends on
+/// the client width, and a line that prints the conclusion without the input
+/// cannot say whether the window changed or the arithmetic did. That question
+/// came up the first time these two lines were compared across runs.
 pub fn state_line(frame: HWND) -> String {
     let (tabs_now, active) = tabs::strip_snapshot();
     let (slots, overflow) = slots(frame);
@@ -624,10 +629,12 @@ pub fn state_line(frame: HWND) -> String {
         tabs_now.len(),
     );
     format!(
-        "tabs=[{}] active={} n={} tw={} scroll={} overflow={} onscreen={} paints={}",
+        "tabs=[{}] active={} n={} client={}x{} tw={} scroll={} overflow={} onscreen={} paints={}",
         listed.join(","),
         active_id,
         tabs_now.len(),
+        rc.right - rc.left,
+        rc.bottom - rc.top,
         tw,
         with_ui(|u| u.scroll),
         overflow.is_some(),
