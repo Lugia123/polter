@@ -50,7 +50,68 @@ KNOWN = {
 }
 
 
+def scan_mutex_guard(src, path):
+    """The same rule for `tabs::state()`, whose guard is a `MutexGuard`.
+
+    **A third shape, and neither tool saw it.** `lock-reentry.py` asks whether
+    the guard outlives a call that takes the lock *again*, matched by function
+    name -- and `SetWindowPos` is not such a function, it is a call that
+    delivers `WM_SIZE` to a window procedure on this thread which then takes
+    it. The check above asks the same question of `RefCell`, but keys on the
+    literal word `borrow`, which a `MutexGuard` does not contain, so it never
+    looked. Between the two, a `state()` guard held across a dispatching call
+    was checked by nobody.
+
+    That is not a hypothetical: it is one of the two deadlocks this host
+    already had (`layout()` holding `STATE` across `SetWindowPos`). It is
+    safe there today only because someone hand-arranged that function as
+    "pure work under the lock, Windows calls after it" -- a structure with
+    nothing testing that it stays that way. Reinstating that exact shape and
+    running both tools produced two clean reports.
+    """
+    lines = src.split("\n")
+    for i, line in enumerate(lines):
+        m = re.search(r"let (?:mut )?(\w+)\s*=\s*(?:tabs::)?state\(\);", line)
+        if not m:
+            continue
+        guard = m.group(1)
+        pos = sum(len(x) + 1 for x in lines[:i])
+
+        # Out to the enclosing block, then forward to its close: the guard is
+        # alive over that span. Same walk as `lock-reentry.py` does.
+        depth, k = 0, pos
+        while k > 0:
+            if src[k] == "}":
+                depth -= 1
+            elif src[k] == "{":
+                depth += 1
+                if depth == 1:
+                    break
+            k -= 1
+        depth, end = 0, len(src)
+        for q in range(k, len(src)):
+            if src[q] == "{":
+                depth += 1
+            elif src[q] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = q
+                    break
+        scope = src[pos:end]
+
+        # `drop(guard)` ends it early; this is how `surface_of` reaches into
+        # another module safely, and how `layout` is meant to be read.
+        dm = re.search(r"drop\(\s*%s\s*\)" % re.escape(guard), scope)
+        if dm:
+            scope = scope[: dm.start()]
+
+        hits = sorted({d for d in DISPATCH if re.search(r"\b" + d + r"\b", scope)})
+        if hits:
+            yield (path, i + 1, hits)
+
+
 def scan(src, path):
+    yield from scan_mutex_guard(src, path)
     lines = src.split("\n")
     for i, line in enumerate(lines):
         if not re.search(r"\b\w+\.with\(\|", line):
@@ -85,6 +146,33 @@ if not list(scan(CANARY, "<canary>")):
     print("FAIL: the probe cannot see the panic it was written for.")
     sys.exit(1)
 
+# The mutex half, in both directions. The bad one is the shape `layout()`
+# already had once; the good one is the shape it has now, and without it
+# "the drop is honoured" would be an assumption about our own code rather
+# than something this file checks.
+CANARY_MUTEX_BAD = '''
+fn layout() {
+    let mut st = state();
+    st.dirty = true;
+    unsafe { SetWindowPos(hw, None, 0, 0, 1, 1, SWP_NOZORDER); }
+}
+'''
+CANARY_MUTEX_OK = '''
+fn layout() {
+    let place = {
+        let st = state();
+        st.places.clone()
+    };
+    unsafe { SetWindowPos(hw, None, 0, 0, 1, 1, SWP_NOZORDER); }
+}
+'''
+if not list(scan_mutex_guard(CANARY_MUTEX_BAD, "<canary>")):
+    print("FAIL: the probe cannot see a STATE guard held across a dispatching call.")
+    sys.exit(1)
+if list(scan_mutex_guard(CANARY_MUTEX_OK, "<canary>")):
+    print("FAIL: the probe fires on work that takes its copy and drops the guard first.")
+    sys.exit(1)
+
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host", "src")
 found, unexpected = {}, []
 for path in sorted(glob.glob(os.path.join(root, "*.rs"))):
@@ -93,7 +181,7 @@ for path in sorted(glob.glob(os.path.join(root, "*.rs"))):
         for _, ln, hits in scan(fh.read(), name):
             found.setdefault(name, []).append((ln, hits))
 
-print("probe self-test: OK (it sees the known panic shape)")
+print("probe self-test: OK (RefCell borrow and STATE guard, both directions)")
 print(f"scanned {len(glob.glob(os.path.join(root, '*.rs')))} files\n")
 for name, sites in sorted(found.items()):
     note = KNOWN.get(name)
