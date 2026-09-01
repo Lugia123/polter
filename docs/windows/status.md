@@ -247,6 +247,31 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
      用户会以为自己没选中。
    - **两条腿不会一起坏，也不能互相当对照**：ctrl+c 好不代表 ctrl+shift+c 好，反之亦然。
 
+### 9. 三条只有开了核心日志才看得见的事（2026-09-01）
+
+**背景**：`libghostty` 的 `std.log` 在真机上「看不见」这笔账，**根本不是欠账**——
+`src/global.zig` 读环境变量 `GHOSTTY_LOG`，而 `Logging{ stderr, macos }` 里
+`stderr` 对 lib 构建默认 `false`、`macos` 在 Windows 上恒为 `false`，
+**两个 sink 相加等于没有出口**。`GHOSTTY_LOG=stderr` 就够了，宿主现在在
+`ghostty_init` 之前自己设它。
+
+> `main_c.zig` 的注释本来就写着 "On Windows that leaves no sink at all"。
+> **前半句写清楚了，后半句要读的人自己接**：既然两个 sink 都关着，那总得有东西能打开它们。
+> 那句注释被读过不止一次，没有人往回推那一步。
+
+**打开之后立刻暴露的三条**，它们都不是新出现的问题，是**在此之前无法被看见**：
+
+1. **`warning(config): no default shell found, will default to using cmd`**
+   Windows 上没有 shell 探测，**永远回落到 `cmd`**。用户装了 PowerShell 7 也不会被用上。
+2. **`warning(io_exec): no resources dir set, shell integration disabled`**
+   shell 集成（提示符标记、当前目录跟踪、`cd` 同步那一类）在 Windows 上**整个是关的**。
+3. **`warning(stream): unimplemented mode: 9001`** 和 `ignoring CSI t`
+   `cmd` 会发这些，目前忽略。无害，但它们标出了终端能力的边界。
+
+**这一条真正的价值不是上面三件**，是从今往后真机故障能读到根因：
+缺陷「关闭标签挂死主线程」正是靠它从「卡在 `ghostty_surface_free` 某处」
+缩到「第一个 join 过了、`threadEnter` 执行了、卡在 io 线程那个 join」。
+
 ## 五之二、五条裁决（2026-09-01 已定）
 
 **这一节和第五节不同。** 第五节是技术账——有确切位置、有人能查下去。
