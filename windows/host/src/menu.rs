@@ -594,7 +594,23 @@ fn install_defaults() {
     let _ = STATE.set(default_state as fn(Flag) -> Option<bool>);
 }
 
+/// Is this an action the *core* could have a key bound to?
+///
+/// **A `__polter_*` row is the host's own**, and asking the core for its
+/// trigger is asking about a name the core has never heard of. The core
+/// answers by logging `error finding trigger err=error.InvalidAction` -- one
+/// line, **with no action string in it** -- and returning an empty trigger.
+/// Five such lines have been in every run's log for as long as this menu has
+/// existed, and they could not be acted on because nothing said which five.
+/// They were these rows.
+fn asks_the_core(action: &str) -> bool {
+    !action.starts_with(HOST_PREFIX)
+}
+
 fn accel_of(action: &str) -> Option<String> {
+    if !asks_the_core(action) {
+        return None;
+    }
     ACCEL.get().and_then(|f| f(action))
 }
 
@@ -611,6 +627,10 @@ struct Counts {
     /// Rows shown greyed on purpose. Reported because "greyed" is a claim
     /// about the menu that nobody can check from a log that does not say it.
     greyed: usize,
+    /// Core actions that came back with no shortcut, by name.
+    no_accel: Vec<&'static str>,
+    /// Rows that are the host's own, which the core is never asked about.
+    host_rows: usize,
     /// Items that actually came back with a shortcut, **not** items that
     /// would have if a provider were installed. A counter that reports the
     /// hopeful number is worse than no counter: it says "wired" when nothing
@@ -637,8 +657,12 @@ fn count(rows: &[Row], c: &mut Counts) {
         if !row_enabled(r) {
             c.greyed += 1;
         }
-        if accel_of(a).is_some_and(|t| !t.is_empty()) {
+        if !asks_the_core(a) {
+            c.host_rows += 1;
+        } else if accel_of(a).is_some_and(|t| !t.is_empty()) {
             c.with_accel += 1;
+        } else {
+            c.no_accel.push(a);
         }
     }
 }
@@ -694,7 +718,15 @@ fn validate_once() {
         return;
     }
     install_defaults();
-    let mut c = Counts { items: 0, unresolved: 0, checkable: 0, with_accel: 0, greyed: 0 };
+    let mut c = Counts {
+        items: 0,
+        unresolved: 0,
+        checkable: 0,
+        with_accel: 0,
+        greyed: 0,
+        no_accel: Vec::new(),
+        host_rows: 0,
+    };
     count(ROOT, &mut c);
     logf!(
         "[menu] built {} groups, {} items, {} greyed, {} unresolved",
@@ -712,6 +744,24 @@ fn validate_once() {
         if ACCEL.get().is_some() { "installed" } else { "NOT installed" },
         c.with_accel,
         c.items
+    );
+    // **Named, on one line.** "Eighteen of fifty-four have a shortcut" cannot
+    // be acted on; the other thirty-six by name can. And a row that *should*
+    // have one -- because the user bound it -- shows up here the moment the
+    // lookup starts failing, which is otherwise indistinguishable from the
+    // user never having bound it.
+    if !c.no_accel.is_empty() {
+        logf!(
+            "[menu] no shortcut for {} of {} core actions: {}",
+            c.no_accel.len(),
+            c.items - c.host_rows,
+            c.no_accel.join(", ")
+        );
+    }
+    logf!(
+        "[menu] {} rows are the host's own and are never asked of the core (a `__polter_*` name \
+         makes it log error.InvalidAction with no name attached)",
+        c.host_rows
     );
     arm_selftest();
     let (evaluable, ticked, no_source) = check_state_counts();
@@ -1169,6 +1219,33 @@ mod tests {
                 "{nested} is a nested type's member, not an action"
             );
         }
+    }
+
+    /// The host's own rows are never handed to the core's trigger lookup.
+    ///
+    /// **This is the whole of the fix for those five nameless log lines**, so
+    /// it is worth a test that fails if someone drops the guard: the symptom
+    /// of dropping it is not a bug anyone would notice, it is five more
+    /// unattributable warnings per menu build.
+    #[test]
+    fn host_rows_are_never_asked_of_the_core() {
+        for a in HOST_ACTIONS {
+            assert!(a.starts_with(HOST_PREFIX), "{a} is not a host action name");
+            assert!(!asks_the_core(a), "{a} would be handed to the core");
+        }
+        for r in all_rows() {
+            let Some(a) = r.action else { continue };
+            assert_eq!(
+                asks_the_core(a),
+                !a.starts_with(HOST_PREFIX),
+                "{a} is classified inconsistently"
+            );
+        }
+        assert!(asks_the_core("copy_to_clipboard"));
+        // A core action with a parameter is still the core's: the parameter is
+        // parsed by the core, and a lookup that failed on it would be a real
+        // finding rather than noise.
+        assert!(asks_the_core("resize_split:up,10"));
     }
 
     /// **The check this file exists to pass.** Every action named in the menu
