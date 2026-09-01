@@ -99,10 +99,86 @@ pub fn settings_path(key: &str) -> Option<PathBuf> {
     Some(user_dir()?.join(format!("{key}.json")))
 }
 
-/// Where the plugins that ship with the build live: beside the executable.
+/// Why the shipped plugin directory is or is not there.
+///
+/// **Three outcomes, not an `Option`.** "There is no plugin directory" and
+/// "the plugin directory is there and holds nothing" are different facts about
+/// the installation, and the page has to be able to say which -- one is a
+/// broken install, the other is a build that shipped no plugins. Collapsing
+/// them is how this defect hid: the page said *no plugins found* while the
+/// resources check said `has_polter/plugins=true`, and both were telling the
+/// truth about two different directories.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shipped {
+    /// The directory exists. Contents still unknown.
+    Found(PathBuf),
+    /// `POLTER_RESOURCES_DIR` is not set, so there is nothing to look under.
+    NoResourcesDir,
+    /// It is set, and this path under it does not exist.
+    Missing(PathBuf),
+}
+
+/// Where the plugins that ship with the build live.
+///
+/// # This used to look beside the executable, and nothing agreed with it
+///
+/// The core reads `{resources}/polter/plugins` (`App.zig:717`). This host read
+/// `<exe dir>/plugins`. **The two never once pointed at the same place**, so
+/// the core could list eight plugins while this page said there were none --
+/// and because each was internally consistent, neither reported a problem.
+///
+/// The fix is to read the core's directory, **not to copy the plugins next to
+/// the executable**. A copy would be a second set of plugin manifests that
+/// starts identical and diverges the first time one side is updated, and the
+/// symptom then is a settings page describing a plugin that behaves
+/// differently from what it describes.
+pub fn shipped() -> Shipped {
+    // The same variable `main.rs` sets before `ghostty_init`, and the same one
+    // `os/resourcesdir.zig` reads. **Deliberately not falling back to the
+    // executable's directory**: that fallback is exactly the state this
+    // function is being fixed out of, and it fails by looking like an empty
+    // plugin directory rather than like a missing one.
+    let Some(res) = std::env::var_os("POLTER_RESOURCES_DIR").filter(|v| !v.is_empty()) else {
+        return Shipped::NoResourcesDir;
+    };
+    let dir = PathBuf::from(res).join("polter").join("plugins");
+    if dir.is_dir() {
+        Shipped::Found(dir)
+    } else {
+        Shipped::Missing(dir)
+    }
+}
+
+/// The shipped directory, when there is one.
 pub fn shipped_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("plugins"))
+    match shipped() {
+        Shipped::Found(d) => Some(d),
+        _ => None,
+    }
+}
+
+/// One line saying which of the three cases holds, for the startup log and
+/// for the settings page's empty state.
+///
+/// **The wording distinguishes the cases on purpose.** "I could not find the
+/// plugin directory" sends someone to look at the install; "the directory is
+/// there and empty" sends them to look at the build. Telling them the wrong
+/// one costs a whole investigation, which is what this defect already cost.
+pub fn shipped_note() -> String {
+    match shipped() {
+        Shipped::Found(d) => {
+            let n = std::fs::read_dir(&d).map(|e| e.flatten().count()).unwrap_or(0);
+            format!("shipped plugins: {} entries in {}", n, d.display())
+        }
+        Shipped::NoResourcesDir => {
+            "shipped plugins: POLTER_RESOURCES_DIR is not set, so the bundled \
+             plugin directory could not be located at all"
+                .into()
+        }
+        Shipped::Missing(d) => {
+            format!("shipped plugins: {} does not exist", d.display())
+        }
+    }
 }
 
 // --------------------------------------------------------------- manifest
@@ -282,6 +358,11 @@ pub fn catalog() -> Vec<Plugin> {
     if let Some(d) = user_dir() {
         logf!("[plug] config dir {}", d.display());
     }
+    // **Which of the three cases holds, every time the catalog is built.**
+    // The page's empty state and this line have to agree, and both have to
+    // distinguish "no directory" from "empty directory" -- the two looked
+    // identical for as long as this host read the wrong directory entirely.
+    logf!("[plug] {}", shipped_note());
 
     for base in [shipped_dir(), user_dir()].into_iter().flatten() {
         let Ok(entries) = std::fs::read_dir(&base) else {
@@ -343,6 +424,136 @@ pub fn write_fixture(path: &str) -> bool {
         Err(e) => {
             logf!("[plug] fixture write failed: {}", e);
             false
+        }
+    }
+}
+
+#[cfg(test)]
+mod shipped_tests {
+    use super::*;
+
+    /// These tests set a process-wide environment variable, so they must not
+    /// run beside each other. Rust runs tests in threads by default, so the
+    /// lock is not optional -- without it the failures are intermittent and
+    /// read as flakiness rather than as a shared-state bug.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        old: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl EnvGuard {
+        fn set(v: Option<&std::path::Path>) -> EnvGuard {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let old = std::env::var_os("POLTER_RESOURCES_DIR");
+            match v {
+                Some(p) => std::env::set_var("POLTER_RESOURCES_DIR", p),
+                None => std::env::remove_var("POLTER_RESOURCES_DIR"),
+            }
+            EnvGuard { old, _lock: lock }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.old.take() {
+                Some(v) => std::env::set_var("POLTER_RESOURCES_DIR", v),
+                None => std::env::remove_var("POLTER_RESOURCES_DIR"),
+            }
+        }
+    }
+
+    /// **The defect this replaces.** The shipped directory has to be the one
+    /// the core reads -- `{resources}/polter/plugins` (`App.zig:717`) -- and
+    /// not `<exe dir>/plugins`, which nothing else in the system has ever
+    /// pointed at.
+    #[test]
+    fn the_shipped_directory_is_the_one_the_core_reads() {
+        let tmp = std::env::temp_dir().join("polter-plug-test-found");
+        let dir = tmp.join("polter").join("plugins");
+        let _ = std::fs::create_dir_all(&dir);
+        let _g = EnvGuard::set(Some(&tmp));
+
+        assert_eq!(shipped(), Shipped::Found(dir.clone()));
+        assert_eq!(shipped_dir().as_deref(), Some(dir.as_path()));
+
+        // The floor: it must not be the executable's directory. If those two
+        // ever coincide on some machine this assertion is vacuous, so it is
+        // written against the *shape* -- the path has to end in the core's
+        // two components.
+        let d = shipped_dir().unwrap();
+        assert!(d.ends_with("polter/plugins") || d.ends_with("polter\\plugins"), "{d:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A resources directory that has no plugin subdirectory is **missing**,
+    /// which is a different report from having no plugins.
+    #[test]
+    fn a_resources_dir_without_the_subdirectory_is_missing_not_empty() {
+        let tmp = std::env::temp_dir().join("polter-plug-test-missing");
+        let _ = std::fs::create_dir_all(&tmp);
+        let _g = EnvGuard::set(Some(&tmp));
+
+        match shipped() {
+            Shipped::Missing(d) => assert!(d.starts_with(&tmp)),
+            other => panic!("expected Missing, got {other:?}"),
+        }
+        assert!(shipped_dir().is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// **No fallback to the executable's directory.** That fallback is the
+    /// state being fixed: it produced a path that existed on no machine, and
+    /// failed by looking like an empty plugin directory instead of a missing
+    /// one. An unset variable has to say so.
+    #[test]
+    fn an_unset_variable_does_not_fall_back_to_the_executable() {
+        let _g = EnvGuard::set(None);
+        assert_eq!(shipped(), Shipped::NoResourcesDir);
+        assert!(shipped_dir().is_none());
+    }
+
+    /// The three cases produce three different sentences. **A single message
+    /// covering all three is the defect**: "no plugins found" was true of a
+    /// broken install, an empty build, and a host reading the wrong directory
+    /// alike, and it sent the reader to the wrong one of the three.
+    #[test]
+    fn each_case_says_something_different() {
+        let unset = {
+            let _g = EnvGuard::set(None);
+            shipped_note()
+        };
+        let missing = {
+            let tmp = std::env::temp_dir().join("polter-plug-test-note");
+            let _ = std::fs::create_dir_all(&tmp);
+            let _g = EnvGuard::set(Some(&tmp));
+            let n = shipped_note();
+            let _ = std::fs::remove_dir_all(&tmp);
+            n
+        };
+        let found = {
+            let tmp = std::env::temp_dir().join("polter-plug-test-note2");
+            let _ = std::fs::create_dir_all(tmp.join("polter").join("plugins"));
+            let _g = EnvGuard::set(Some(&tmp));
+            let n = shipped_note();
+            let _ = std::fs::remove_dir_all(&tmp);
+            n
+        };
+        assert_ne!(unset, missing);
+        assert_ne!(missing, found);
+        assert_ne!(unset, found);
+        assert!(unset.contains("POLTER_RESOURCES_DIR"), "{unset}");
+        assert!(missing.contains("does not exist"), "{missing}");
+        assert!(found.contains("entries"), "{found}");
+    }
+
+    /// `user_dir()` is untouched by all of this: plugins a user installed
+    /// themselves live under their own config directory and always did.
+    #[test]
+    fn the_user_directory_is_not_derived_from_resources() {
+        let tmp = std::env::temp_dir().join("polter-plug-test-user");
+        let _g = EnvGuard::set(Some(&tmp));
+        if let Some(u) = user_dir() {
+            assert!(!u.starts_with(&tmp), "user_dir must not follow the resources dir: {u:?}");
         }
     }
 }

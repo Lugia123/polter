@@ -886,7 +886,32 @@ fn paint_settings(win: HWND) {
                     right: s(LIST_W - PAD),
                     bottom: rc.bottom,
                 };
-                draw_text(hdc, "no plugins found", &mut r, DT_LEFT | DT_WORDBREAK, COL_DIM);
+                // **Two different sentences, because they are two different
+                // problems.** "The directory is missing" is a broken install;
+                // "the directory is there and empty" is a build that shipped
+                // nothing. A single "no plugins found" covered both, and the
+                // one time it mattered it sent the reader looking in the
+                // wrong place -- the directory was fine, this host was
+                // reading a different one.
+                let msg = match crate::plugins::shipped() {
+                    crate::plugins::Shipped::Found(d) => format!(
+                        "no plugins found\n\nThe bundled plugin directory exists and holds \
+                         none this host can read:\n{}",
+                        d.display()
+                    ),
+                    crate::plugins::Shipped::Missing(d) => format!(
+                        "the bundled plugin directory is missing\n\n{}\n\nThis build's \
+                         resources are not installed next to it.",
+                        d.display()
+                    ),
+                    crate::plugins::Shipped::NoResourcesDir => {
+                        "the bundled plugin directory could not be located\n\n\
+                         POLTER_RESOURCES_DIR is not set, so plugins, skills, themes and \
+                         shell integration are all unavailable."
+                            .to_string()
+                    }
+                };
+                draw_text(hdc, &msg, &mut r, DT_LEFT | DT_WORDBREAK, COL_DIM);
             }
 
             for (i, p) in st.plugins.iter().enumerate() {
