@@ -41,6 +41,7 @@ mod menu;
 mod overlay;
 mod palette;
 mod plugins;
+mod prompt;
 mod settings_ui;
 mod quick;
 mod reopen;
@@ -1183,6 +1184,49 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // One `AtomicBool` for the whole process is why a split showed the
         // right-hand pane's menu with the left-hand pane's tick: both panes
         // were reading one flag that whichever surface spoke last had set.
+        // Float the window. The mode is `ghostty_action_float_window_e`
+        // (on / off / toggle), and it is a *window* property, so the target
+        // does not have to be a surface.
+        ffi::ACTION_FLOAT_WINDOW => {
+            prompt::request_float(action.as_i32());
+            true
+        }
+
+        // The title box. **The payload is the whole point**: one tag carries
+        // three different requests (surface / tab / window), and an arm that
+        // ignored it would rename the wrong thing while looking correct.
+        ffi::ACTION_PROMPT_TITLE => {
+            // **The target rides along.** The typed name is sent back through
+            // a binding, and a binding with no surface goes to whichever one
+            // has focus -- so a title box opened on a pane that is not
+            // focused would rename the focused one instead, and look right
+            // doing it.
+            prompt::request_title(action.as_i32(), target_surface(&target));
+            true
+        }
+
+        // **Not built, and each says why rather than falling through.** A tag
+        // that reaches `_ => false` is indistinguishable from one that was
+        // never sent; these two lines are the difference between "this host
+        // does not do that yet" and "the menu is broken".
+        ffi::ACTION_INSPECTOR => {
+            logf!(
+                "[action] inspector requested (mode {}), but libghostty publishes no renderer for \
+                 it outside Apple: ghostty_inspector_metal_* in include/ghostty.h sits inside \
+                 #ifdef __APPLE__. Not a missing host feature -- a missing C API.",
+                action.as_i32()
+            );
+            false
+        }
+        ffi::ACTION_TOGGLE_POLTERGEIST_CHAT => {
+            logf!(
+                "[action] poltergeist chat requested; it needs a surface created with \
+                 command=\"polter +chat\" and poltergeist_chat=true, which is create_pane's to \
+                 set (tabs.rs). Nothing opened."
+            );
+            false
+        }
+
         ffi::ACTION_READONLY => {
             let on = action.as_i32() != 0;
             // The tag is checked because the union only holds a surface: an
@@ -1632,6 +1676,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 /// The config handle, for the settings UI's diagnostics.
 pub fn config_handle() -> ffi::Config {
     CONFIG.load(Ordering::Acquire)
+}
+
+/// Drive a binding on **a named surface**, rather than on whichever one has
+/// focus.
+///
+/// **`binding` below is the wrong function whenever the caller knows which
+/// terminal it means** -- a menu opened on one pane, an action the core asked
+/// for on a particular surface. Resolving to the focused surface there is the
+/// defect that has now been found five separate times in this port, and it is
+/// invisible: with one pane the two are the same, and with two panes the wrong
+/// one changes.
+pub fn binding_on(surface: ffi::Surface, name: &str) -> bool {
+    if surface.is_null() {
+        logf!("[action] binding {:?} asked for on a null surface; nothing done", name);
+        return false;
+    }
+    unsafe { (api().surface_binding_action)(surface, name.as_ptr(), name.len()) }
 }
 
 pub fn binding(name: &str) -> bool {

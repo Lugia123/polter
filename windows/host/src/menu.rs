@@ -212,28 +212,37 @@ const VIEW_ROWS: &[Row] = &[
     // row labelled for the first and wired to the second, which is a defect
     // that looks like a working menu item: the dialog opens, a name is typed,
     // and the wrong thing is renamed.
-    act_gap(
-        "改标签标题…",
-        "prompt_tab_title",
-        "GHOSTTY_ACTION_PROMPT_TITLE(37) is unhandled in cb_action",
-    ),
-    act_gap(
-        "改终端标题…",
-        "prompt_surface_title",
-        "GHOSTTY_ACTION_PROMPT_TITLE(37) is unhandled in cb_action",
-    ),
+    act("改标签标题…", "prompt_tab_title"),
+    act("改终端标题…", "prompt_surface_title"),
     // §3.2 called this `toggle_surface_read_only`; the core's name is shorter.
     toggle("只读", "toggle_readonly", Flag::ReadOnly, Ready::Always),
     sep(),
     act("快速终端", "toggle_quick_terminal"),
     sep(),
-    act_gap("终端检查器", "inspector:toggle", "GHOSTTY_ACTION_INSPECTOR(29) is unhandled in cb_action"),
+    // **Blocked on the core's C API, not on host work.** The only inspector
+    // renderer libghostty publishes is `ghostty_inspector_metal_*`, and that
+    // block of `include/ghostty.h` sits inside `#ifdef __APPLE__`. The tag is
+    // handled now -- it says this in the log instead of falling through
+    // silently -- but there is nothing on Windows to render into.
+    act_gap(
+        "终端检查器",
+        "inspector:toggle",
+        "libghostty publishes no inspector renderer outside Apple (ghostty_inspector_metal_* is \
+         inside #ifdef __APPLE__)",
+    ),
 ];
 
 const AGENTS_ROWS: &[Row] = &[
     // §3.2 called this `poltergeist_conversations`; the core publishes
     // `poltergeist_toggle_chat`.
-    act_gap("终端对话", "poltergeist_toggle_chat", "GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CHAT(12) is unhandled in cb_action"),
+    // The chat is a TUI (`polter +chat`), so opening it is opening a terminal
+    // with a command and one flag set -- and both of those are `create_pane`'s
+    // to set, in `tabs.rs`. The tag is handled and says so.
+    act_gap(
+        "终端对话",
+        "poltergeist_toggle_chat",
+        "needs create_pane to set command=\"polter +chat\" and poltergeist_chat=true (tabs.rs)",
+    ),
     sep(),
     toggle("设为总管", "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
     toggle("监督此终端", "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
@@ -286,12 +295,7 @@ const WINDOW_ROWS: &[Row] = &[
     sep(),
     act("恢复默认大小", "reset_window_size"),
     sep(),
-    toggle(
-        "置顶",
-        "toggle_window_float_on_top",
-        Flag::FloatOnTop,
-        Ready::HostGap("GHOSTTY_ACTION_FLOAT_WINDOW(45) is unhandled in cb_action"),
-    ),
+    toggle("置顶", "toggle_window_float_on_top", Flag::FloatOnTop, Ready::Always),
 ];
 
 const HELP_ROWS: &[Row] = &[
@@ -513,10 +517,11 @@ fn default_state(flag: Flag) -> Option<bool> {
                 Some(crate::hud::is_readonly_for(s))
             }
         }
-        // **Nothing in this host is told about it yet.** `None` rather than
-        // `Some(false)`: an unticked row and a row whose state nobody knows
-        // look the same on screen, and only the log can tell them apart.
-        Flag::FloatOnTop => None,
+        // **Asked of the window itself** (`WS_EX_TOPMOST`), which is the
+        // state rather than a record of it. This row used to answer `None`
+        // -- nothing in the host knew -- and that showed up in the log as
+        // `4 evaluable` out of five.
+        Flag::FloatOnTop => Some(crate::prompt::is_float_on_top()),
         Flag::Supervisor | Flag::Watched | Flag::Shielded => {
             let (role, shielded) = crate::tabs::mark_for_surface(crate::tabs::active_surface())?;
             Some(match flag {
@@ -535,6 +540,10 @@ fn default_state(flag: Flag) -> Option<bool> {
 /// this block is `mod menu;` -- and because a menu that has to be wired up by
 /// its caller is a menu that ships unwired the first time someone forgets.
 fn install_defaults() {
+    // The title box and the float-on-top request need a window on this
+    // thread. **This is the main thread**: the first paint of the strip is
+    // what got us here.
+    crate::prompt::init();
     let _ = ACCEL.set(crate::keys::shortcut_for as fn(&str) -> Option<String>);
     let _ = STATE.set(default_state as fn(Flag) -> Option<bool>);
 }
@@ -1250,9 +1259,9 @@ mod tests {
         let leaves: Vec<_> = rows.iter().filter(|r| r.action.is_some()).collect();
         let n = |f: fn(&Ready) -> bool| leaves.iter().filter(|r| f(&r.ready)).count();
         assert_eq!(leaves.len(), 55);
-        assert_eq!(n(|r| matches!(r, Ready::Always)), 40, "unconditional rows");
+        assert_eq!(n(|r| matches!(r, Ready::Always)), 43, "unconditional rows");
         assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 4, "state-dependent rows");
-        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 11, "rows this host does not answer yet");
+        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 8, "rows this host does not answer yet");
     }
 
     /// Both non-trivial buckets have to say why, because the reason is what

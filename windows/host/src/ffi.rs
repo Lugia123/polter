@@ -76,6 +76,16 @@ pub const ACTION_RESET_WINDOW_SIZE: u32 = 24;
 pub const ACTION_SET_TAB_TITLE: u32 = 35;
 pub const ACTION_PWD: u32 = 38;
 pub const ACTION_COPY_TITLE_TO_CLIPBOARD: u32 = 68;
+/// The five below are the tags `cb_action` used to fall through to `_ => false`
+/// on. **A falling-through tag is not a silent no-op**: `binding_action`
+/// returns false and the menu row does nothing, which reads as a broken menu.
+/// Counted the same way as the rest -- the whole `ghostty_action_tag_e` was
+/// parsed and checked against the six constants already here before these were
+/// taken from it.
+pub const ACTION_TOGGLE_POLTERGEIST_CHAT: u32 = 12;
+pub const ACTION_INSPECTOR: u32 = 29;
+pub const ACTION_PROMPT_TITLE: u32 = 37;
+pub const ACTION_FLOAT_WINDOW: u32 = 45;
 /// The three tags after `copy_title_to_clipboard`, counted off
 /// `ghostty_action_tag_e` in `include/ghostty.h`. **The count was checked
 /// against a tag that was already here**: `copy_title_to_clipboard` comes out
