@@ -141,6 +141,32 @@ impl Rect {
     }
 }
 
+/// What the tree says should happen to one pane.
+///
+/// **Read the incompleteness note on [`Tree::layout`] before treating a
+/// `Vec<(PaneId, Placement)>` as "everything the host has to do".** It covers
+/// every pane the tree currently knows about, and nothing else.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Placement {
+    /// Put the pane here and show it.
+    Visible(Rect),
+    /// Hide the pane. It still exists and still has a window; it is just not
+    /// on screen right now, which is what zoom does to everything else.
+    Hidden,
+}
+
+impl Placement {
+    /// The rectangle, or `None` for a hidden pane. A convenience for tests and
+    /// for callers that genuinely only want the visible ones -- **not** a way
+    /// to skip the hidden set, which still has to be applied.
+    pub fn rect(&self) -> Option<Rect> {
+        match self {
+            Placement::Visible(r) => Some(*r),
+            Placement::Hidden => None,
+        }
+    }
+}
+
 /// A node is either a pane or a division of space between two nodes.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Node {
@@ -459,27 +485,61 @@ impl Tree {
         })
     }
 
-    /// Where each pane goes inside `bounds`. This is what the host feeds to
-    /// `SetWindowPos` for the child windows.
+    /// What should happen to every pane, inside `bounds`. This is what the
+    /// host feeds to `SetWindowPos` and `ShowWindow`.
     ///
-    /// A zoomed pane is the only one returned, filling the whole area.
+    /// **Every pane the tree knows about appears exactly once**, in tree
+    /// order. Zoom does not shorten the list: the zoomed pane is
+    /// `Visible(bounds)` and every other one is `Hidden`.
+    ///
+    /// # This return value is complete in one direction only
+    ///
+    /// It covers **the panes the tree currently knows about**. A pane that was
+    /// removed (see [`Tree::remove`]) **does not appear here at all** -- not
+    /// even as `Hidden` -- because the tree no longer knows it exists.
+    /// **Destroying that pane's window is the host's job**, and the only way
+    /// to find it is for the host to diff its own window table against
+    /// [`Tree::panes`].
+    ///
+    /// This paragraph is not a caveat, it is the point. **A return value that
+    /// looks exhaustive makes people stop checking**, so the one direction it
+    /// is *not* exhaustive in has to be stated where they are looking. There
+    /// is a test (`removed_panes_do_not_appear_in_the_layout_at_all`) that
+    /// fails if this ever stops being true.
     ///
     /// Deviation: the Swift app has no equivalent -- SwiftUI's `SplitView`
     /// walks the tree itself and zoom is handled in the view layer. Win32 has
-    /// no layout engine to hand the tree to, so producing the rectangles is
+    /// no layout engine to hand the tree to, so producing the placement is
     /// part of the model here.
-    pub fn layout(&self, bounds: Rect) -> Vec<(PaneId, Rect)> {
+    pub fn layout(&self, bounds: Rect) -> Vec<(PaneId, Placement)> {
         let Some(root) = &self.root else { return Vec::new() };
 
+        // Zoom hides rather than omits. Returning only the zoomed pane made a
+        // caller that did exactly what the return value said still wrong: it
+        // had to compute the complement against `panes()` to learn who to
+        // hide, and that requirement lived nowhere but in prose.
         if let Some(z) = self.zoomed {
             if self.contains(z) {
-                return vec![(z, bounds)];
+                return self
+                    .panes()
+                    .into_iter()
+                    .map(|p| {
+                        let place = if p == z {
+                            Placement::Visible(bounds)
+                        } else {
+                            Placement::Hidden
+                        };
+                        (p, place)
+                    })
+                    .collect();
             }
         }
 
         let mut out = Vec::new();
         root.layout_into(bounds, &mut out);
-        out
+        out.into_iter()
+            .map(|(p, r)| (p, Placement::Visible(r)))
+            .collect()
     }
 
     /// The spatial map: every node with the rectangle it occupies.

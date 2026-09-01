@@ -57,6 +57,8 @@ fn rect_of(tree: &Tree, bounds: Rect, pane: PaneId) -> Rect {
         .find(|(p, _)| *p == pane)
         .unwrap_or_else(|| panic!("pane {pane} not in layout"))
         .1
+        .rect()
+        .unwrap_or_else(|| panic!("pane {pane} is hidden, not placed"))
 }
 
 // -- shape -----------------------------------------------------------------
@@ -81,7 +83,7 @@ fn single_pane_fills_everything() {
     assert_eq!(t.path_of(A), Some(vec![]));
 
     let b = Rect::new(0.0, 0.0, 800.0, 600.0);
-    assert_eq!(t.layout(b), vec![(A, b)]);
+    assert_eq!(t.layout(b), vec![(A, Placement::Visible(b))]);
 }
 
 #[test]
@@ -161,7 +163,8 @@ fn layout_covers_the_bounds_exactly() {
     let area: f64 = grid()
         .layout(bounds)
         .iter()
-        .map(|(_, r)| r.w * r.h)
+        .filter_map(|(_, p)| p.rect())
+        .map(|r| r.w * r.h)
         .sum();
     assert!(approx(area, bounds.w * bounds.h), "panes covered {area}");
 }
@@ -399,7 +402,17 @@ fn zoom_hides_the_other_panes() {
     assert_eq!(t.zoomed(), Some(B));
 
     let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
-    assert_eq!(t.layout(bounds), vec![(B, bounds)]);
+    // Every pane still appears; zoom hides the others rather than omitting
+    // them. A caller that applies exactly what it is handed is now correct.
+    assert_eq!(
+        t.layout(bounds),
+        vec![
+            (A, Placement::Hidden),
+            (C, Placement::Hidden),
+            (B, Placement::Visible(bounds)),
+            (D, Placement::Hidden),
+        ]
+    );
 
     // The tree itself is untouched, so un-zooming restores the layout.
     let back = t.toggle_zoom(B);
@@ -431,6 +444,60 @@ fn splitting_or_resizing_clears_the_zoom() {
 fn zooming_a_pane_that_is_not_there_changes_nothing() {
     let t = grid();
     assert_eq!(t.toggle_zoom(99), t);
+}
+
+/// **The one direction `layout` is not complete in, as an assertion.**
+///
+/// A removed pane does not appear at all -- not even as `Hidden` -- because
+/// the tree no longer knows it exists. The host still has a window for it.
+/// This test exists so that the sentence in `layout`'s documentation is
+/// something that fails when it stops being true, rather than prose nobody
+/// re-reads.
+#[test]
+fn removed_panes_do_not_appear_in_the_layout_at_all() {
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    let t = grid().remove(C);
+
+    let placed: Vec<PaneId> = t.layout(bounds).into_iter().map(|(p, _)| p).collect();
+    assert!(!placed.contains(&C), "removed pane must not be placed");
+    assert!(
+        !t.layout(bounds).iter().any(|(p, pl)| *p == C && *pl == Placement::Hidden),
+        "a removed pane is not Hidden either -- it is absent, and the host has \
+         to find it by diffing its own windows against panes()"
+    );
+
+    // The rest still come out complete, so "absent" is specific to the pane
+    // that was removed and not a hole in the whole answer.
+    assert_eq!(placed, t.panes());
+}
+
+/// Whatever the zoom state, the answer names every pane the tree knows about
+/// exactly once. This is the property a caller is allowed to rely on.
+#[test]
+fn every_known_pane_appears_exactly_once_in_every_zoom_state() {
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    for t in [grid(), grid().toggle_zoom(B), row3(), Tree::with_pane(A)] {
+        let placed: Vec<PaneId> = t.layout(bounds).into_iter().map(|(p, _)| p).collect();
+        let mut sorted = placed.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), placed.len(), "a pane was named twice");
+        assert_eq!(placed, t.panes(), "layout and panes() must agree, in order");
+    }
+}
+
+/// Exactly one pane is visible while zoomed, and it is the zoomed one.
+#[test]
+fn zoom_leaves_exactly_one_visible() {
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    let t = grid().toggle_zoom(D);
+    let visible: Vec<PaneId> = t
+        .layout(bounds)
+        .into_iter()
+        .filter(|(_, p)| p.rect().is_some())
+        .map(|(p, _)| p)
+        .collect();
+    assert_eq!(visible, vec![D]);
 }
 
 // -- equalize --------------------------------------------------------------

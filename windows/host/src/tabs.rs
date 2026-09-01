@@ -33,7 +33,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use polter_split_tree::{Focus, NewSplit, PaneId, Rect as TreeRect, Side, Tree};
+use polter_split_tree::{Focus, NewSplit, PaneId, Placement, Rect as TreeRect, Side, Tree};
 
 use crate::ffi::*;
 use crate::{api, logf};
@@ -158,31 +158,124 @@ impl State {
 
 static STATE: Mutex<State> = Mutex::new(State::new());
 
-/// The one lock, with a tripwire.
+/// The one lock, with a tripwire that **names the holder**.
 ///
 /// **The invariant this file lives by: never hold this across a Win32 call
 /// that can dispatch a message.** `SetWindowPos`, `ShowWindow`, `SetFocus`,
 /// `DestroyWindow` and friends call a window procedure *on this thread*
 /// before they return, and every window procedure here needs the same lock.
 /// A `std` mutex is not re-entrant, so doing it deadlocks the main thread --
-/// silently. That is what it looks like from outside: a window that never
-/// paints and never responds, a process that is alive, and a log that simply
-/// stops mid-function. Take a copy of what is needed, drop the guard, then
-/// call Windows.
+/// silently, with a window that never responds and a log that simply stops.
+/// Take a copy of what is needed, drop the guard, then call Windows.
 ///
-/// `try_lock` first so that if it ever happens again the log says so instead
-/// of going quiet. Contention with the core's thread (which calls `action_cb`
-/// and takes this lock briefly) is normal and momentary; a line here followed
-/// by nothing at all is the re-entrant case.
-pub fn state() -> std::sync::MutexGuard<'static, State> {
-    match STATE.try_lock() {
-        Ok(g) => return g,
-        Err(std::sync::TryLockError::Poisoned(p)) => return p.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => {
-            logf!("[state] lock contended; if the log stops here it is re-entrant, not slow");
-        }
+/// **Three things went wrong with the first version of this tripwire, and all
+/// three are fixed here:**
+///
+///  1. **It spun instead of waiting.** The fallback was written as a
+///     recursive call, so a contended lock became an infinite retry at 100%
+///     CPU. (That was not a design choice: a blanket regex meant to replace
+///     the lock boilerplate at every call site also replaced the one inside
+///     this function.)
+///  2. **It logged on every turn of that spin** -- 100,000 identical lines
+///     and 6.7 MB in two minutes. The difference between one line and a
+///     hundred thousand is the difference between evidence and noise.
+///  3. **Its text contradicted its behaviour**: it said "if the log stops
+///     here it is re-entrant", while guaranteeing the log would never stop.
+///
+/// And it answered the wrong question. Knowing the lock is contended is
+/// nearly useless; knowing **which line holds it** is the whole diagnosis.
+/// `#[track_caller]` gets the waiter's location for free, and the guard
+/// records the holder's, so a contended lock prints both.
+pub struct Guard {
+    inner: std::sync::MutexGuard<'static, State>,
+}
+
+impl std::ops::Deref for Guard {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.inner
     }
-    state()
+}
+impl std::ops::DerefMut for Guard {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.inner
+    }
+}
+impl Drop for Guard {
+    fn drop(&mut self) {
+        HOLDER.store(0, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// `&'static Location` of whoever holds the lock, or 0.
+static HOLDER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// How many times anyone has had to wait. Bounds the logging.
+static CONTENDED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn claim(
+    inner: std::sync::MutexGuard<'static, State>,
+    here: &'static std::panic::Location<'static>,
+) -> Guard {
+    HOLDER.store(
+        here as *const _ as usize,
+        std::sync::atomic::Ordering::Release,
+    );
+    Guard { inner }
+}
+
+fn holder_str() -> String {
+    let p = HOLDER.load(std::sync::atomic::Ordering::Acquire);
+    if p == 0 {
+        return "nobody (released between the failed try and this read)".to_string();
+    }
+    // Safe: only ever a `&'static Location` stored by `claim`.
+    let loc = unsafe { &*(p as *const std::panic::Location<'static>) };
+    format!("{}:{}", loc.file(), loc.line())
+}
+
+#[track_caller]
+pub fn state() -> Guard {
+    let here = std::panic::Location::caller();
+    match STATE.try_lock() {
+        Ok(g) => return claim(g, here),
+        Err(std::sync::TryLockError::Poisoned(p)) => return claim(p.into_inner(), here),
+        Err(std::sync::TryLockError::WouldBlock) => {}
+    }
+
+    // Contended. Say it once, with both ends of the story.
+    let n = CONTENDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n == 1 || n % 10_000 == 0 {
+        logf!(
+            "[state] contended #{}: waiter {}:{}, holder {}",
+            n,
+            here.file(),
+            here.line(),
+            holder_str()
+        );
+    }
+
+    // Wait, but not forever. A lock this file holds is never held for long,
+    // so five seconds means it is never coming back -- and **a process that
+    // dies saying who held the lock is worth more than one that spins**.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match STATE.try_lock() {
+            Ok(g) => return claim(g, here),
+            Err(std::sync::TryLockError::Poisoned(p)) => return claim(p.into_inner(), here),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            let msg = format!(
+                "[state] DEADLOCK: {}:{} waited 5s; holder is {}",
+                here.file(),
+                here.line(),
+                holder_str()
+            );
+            logf!("{}", msg);
+            panic!("{}", msg);
+        }
+        std::thread::yield_now();
+    }
 }
 
 /// Queue an op and wake the main thread. Safe from any thread.
@@ -240,8 +333,14 @@ fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
 pub fn layout(frame: HWND) {
     // Pure work under the lock, Windows calls after it: `SetWindowPos` sends
     // WM_SIZE back into this thread, which takes the same lock. See `state()`.
-    let (place, hide): (Vec<(HWND, TreeRect)>, Vec<HWND>) = {
+    #[allow(clippy::type_complexity)]
+    let (place, hide, orphans): (
+        Vec<(PaneId, HWND, TreeRect)>,
+        Vec<(PaneId, HWND)>,
+        Vec<PaneId>,
+    ) = {
         let st = state();
+        let mut orphans: Vec<PaneId> = Vec::new();
         let sh = strip_h(st.scale);
         let Some(bounds) = content_bounds(frame, sh) else {
             return;
@@ -250,29 +349,65 @@ pub fn layout(frame: HWND) {
         let mut hide = Vec::new();
         for (i, tab) in st.tabs.iter().enumerate() {
             if i != st.active {
-                hide.extend(tab.panes.iter().map(|p| HWND(p.hwnd as *mut c_void)));
+                hide.extend(tab.panes.iter().map(|p| (p.id, HWND(p.hwnd as *mut c_void))));
                 continue;
             }
             let laid = tab.tree.layout(bounds);
             for p in tab.panes.iter() {
                 let hw = HWND(p.hwnd as *mut c_void);
-                // A pane absent from the layout is one a zoom is covering.
                 match laid.iter().find(|(id, _)| *id == p.id) {
-                    Some((_, r)) => place.push((hw, *r)),
-                    None => hide.push(hw),
+                    Some((_, Placement::Visible(r))) => place.push((p.id, hw, *r)),
+                    Some((_, Placement::Hidden)) => hide.push((p.id, hw)),
+
+                    // **Absent is not the same as hidden**, and the previous
+                    // version could not tell them apart: it read every miss as
+                    // "a zoom is covering this" and hid it. A pane the tree
+                    // does not know about is not covered, it is a disagreement
+                    // between `panes` and `tree` -- and `close_pane` removes
+                    // from both together, so reaching here means they drifted.
+                    //
+                    // Hidden anyway, so a stale window does not sit on screen,
+                    // but never silently: the old behaviour made this
+                    // indistinguishable from normal zoom.
+                    //
+                    // **Destruction deliberately does not happen here.**
+                    // `close_pane` owns it, this loop runs under `STATE`, and
+                    // `ghostty_surface_free` is precisely the call that must
+                    // not be made from inside a layout pass.
+                    None => {
+                        orphans.push(p.id);
+                        hide.push((p.id, hw));
+                    }
                 }
             }
         }
-        (place, hide)
+        (place, hide, orphans)
     };
 
+    for id in orphans {
+        logf!(
+            "[layout] BUG pane {} is in tabs.panes but not in the tree; hidden, not destroyed",
+            id
+        );
+    }
+
+    // **Every window call here is logged with its pane and its result.**
+    // The previous version logged only that a `WM_SIZE` had happened, with no
+    // pane in the line -- and when two panes disagreed about their size, that
+    // log could not say which one had been moved and which had been skipped.
+    // A layout is a decision per pane; the log is now one line per decision.
+    let n = LAYOUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let verbose = n <= 40;
     unsafe {
         // Hide before showing, so a zoom toggle does not flash both.
-        for hw in hide {
-            let _ = ShowWindow(hw, SW_HIDE);
+        for (id, hw) in hide {
+            let ok = ShowWindow(hw, SW_HIDE).as_bool();
+            if verbose {
+                logf!("[layout #{}] pane {} -> hide (was visible: {})", n, id, ok);
+            }
         }
-        for (hw, r) in place {
-            let _ = SetWindowPos(
+        for (id, hw, r) in place {
+            let res = SetWindowPos(
                 hw,
                 None,
                 r.x as i32,
@@ -281,6 +416,18 @@ pub fn layout(frame: HWND) {
                 (r.h as i32).max(1),
                 SWP_NOZORDER | SWP_SHOWWINDOW,
             );
+            if verbose {
+                logf!(
+                    "[layout #{}] pane {} -> {}x{}+{}+{} ({})",
+                    n,
+                    id,
+                    r.w as i32,
+                    r.h as i32,
+                    r.x as i32,
+                    r.y as i32,
+                    if res.is_ok() { "ok" } else { "SetWindowPos FAILED" }
+                );
+            }
         }
         let _ = InvalidateRect(Some(frame), None, false);
     }
@@ -389,14 +536,21 @@ pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINS
         logf!("[tab] no client area yet; not creating a tab");
         return false;
     };
+    // **Both identities are taken before the guard is.** `take_id` locks, so
+    // calling it inside the block below re-enters a non-re-entrant mutex --
+    // and it is easy to miss there because it is not a statement, it is one
+    // field's initialiser inside a struct literal. That is exactly what
+    // deadlocked the host on startup: a lock taken *inside a value being
+    // constructed* while the guard for that value's destination was held.
     let id = take_id();
+    let tab_id = TabId(take_id());
     let Some(pane) = create_pane(frame, app, hinst, id, bounds) else {
         return false;
     };
     {
         let mut st = state();
         st.tabs.push(Tab {
-            id: TabId(take_id()),
+            id: tab_id,
             tree: Tree::with_pane(id),
             panes: vec![pane],
             focused: id,
@@ -441,7 +595,12 @@ fn split_focused(
             return;
         }
     };
-    let Some((_, r)) = new_tree.layout(bounds).into_iter().find(|(p, _)| *p == id) else {
+    // Only `Visible` is acceptable for a pane being created: a brand new pane
+    // that the tree reports as `Hidden` would be a tree bug, and building a
+    // window for it would hide that bug behind an invisible window.
+    let Some((_, Placement::Visible(r))) =
+        new_tree.layout(bounds).into_iter().find(|(p, _)| *p == id)
+    else {
         logf!("[split] the new pane is not in the layout; refusing to create it");
         return;
     };
@@ -490,10 +649,7 @@ fn close_pane(frame: HWND, id: PaneId) {
         (pane.hwnd, pane.surface, empty, idx)
     };
 
-    unsafe {
-        (api().surface_free)(surface as Surface);
-        let _ = DestroyWindow(HWND(hwnd as *mut c_void));
-    }
+    free_pane(id, hwnd, surface);
     logf!("[pane] {} closed", id);
 
     if tab_empty {
@@ -730,8 +886,37 @@ pub fn active_index() -> usize {
 }
 
 /// Destroy a whole tab: every pane's surface and window.
+/// Free a surface and destroy its window, **saying how long each half took**.
+///
+/// Closing a tab hung the main thread for minutes with no lock contention and
+/// no deadlock panic -- so it was not waiting on `STATE`, it was inside a call
+/// that does not touch it. There are exactly two candidates here and they
+/// belong to different owners: `ghostty_surface_free` joins the core's io and
+/// renderer threads and tears down the ConPTY, while `DestroyWindow` is ours.
+/// **A log line on each side of both names which one, and a duration says
+/// whether it was slow or stopped.**
+fn free_pane(id: PaneId, hwnd: isize, surface: usize) {
+    let t0 = std::time::Instant::now();
+    logf!("[close] pane {} -> ghostty_surface_free …", id);
+    unsafe {
+        (api().surface_free)(surface as Surface);
+    }
+    let t1 = std::time::Instant::now();
+    logf!("[close] pane {} surface_free done in {} ms", id, (t1 - t0).as_millis());
+
+    logf!("[close] pane {} -> DestroyWindow …", id);
+    unsafe {
+        let _ = DestroyWindow(HWND(hwnd as *mut c_void));
+    }
+    logf!(
+        "[close] pane {} DestroyWindow done in {} ms",
+        id,
+        t1.elapsed().as_millis()
+    );
+}
+
 fn destroy_tab_at(frame: HWND, idx: usize) {
-    let doomed: Vec<(isize, usize)> = {
+    let doomed: Vec<(PaneId, isize, usize)> = {
         let mut st = state();
         if idx >= st.tabs.len() {
             return;
@@ -740,14 +925,13 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
         if st.active >= st.tabs.len() && !st.tabs.is_empty() {
             st.active = st.tabs.len() - 1;
         }
-        tab.panes.iter().map(|p| (p.hwnd, p.surface)).collect()
+        tab.panes.iter().map(|p| (p.id, p.hwnd, p.surface)).collect()
     };
-    for (hwnd, surface) in doomed {
-        unsafe {
-            (api().surface_free)(surface as Surface);
-            let _ = DestroyWindow(HWND(hwnd as *mut c_void));
-        }
+    logf!("[close] tab index {} -> {} pane(s)", idx, doomed.len());
+    for (id, hwnd, surface) in doomed {
+        free_pane(id, hwnd, surface);
     }
+    logf!("[close] tab index {} panes gone; laying out", idx);
     layout(frame);
     logf!("[tab] closed index {}; count now {}", idx, count());
 }
@@ -1102,7 +1286,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
 /// about the whole window, so the non-client area and the tab strip have to
 /// be added back or the terminal ends up one row short of what the core
 /// asked for.
-pub fn apply_min_max(frame: HWND, mmi: *mut MINMAXINFO) {
+pub fn apply_min_max(mmi: *mut MINMAXINFO) {
     let (min_w, min_h, max_w, max_h, scale) = {
         let st = state();
         (st.min_w, st.min_h, st.max_w, st.max_h, st.scale)
@@ -1110,33 +1294,29 @@ pub fn apply_min_max(frame: HWND, mmi: *mut MINMAXINFO) {
     if min_w == 0 && min_h == 0 && max_w == 0 && max_h == 0 {
         return;
     }
+    // **No `AdjustWindowRectEx` any more.** With the custom frame the client
+    // area *is* the window rect (see shell.rs), so there is no caption or
+    // border to add back. Asking Windows for the non-client size of a
+    // `WS_OVERLAPPEDWINDOW` would add a caption that is not there and make
+    // the minimum a titlebar too tall -- a wrong number that nothing would
+    // ever report.
+    let sh = strip_h(scale);
     unsafe {
-        let style = GetWindowLongPtrW(frame, GWL_STYLE) as u32;
-        let exstyle = GetWindowLongPtrW(frame, GWL_EXSTYLE) as u32;
-        let mut rc = RECT {
-            left: 0,
-            top: 0,
-            right: min_w as i32,
-            bottom: min_h as i32 + strip_h(scale),
-        };
-        let _ = AdjustWindowRectEx(
-            &mut rc,
-            WINDOW_STYLE(style),
-            false,
-            WINDOW_EX_STYLE(exstyle),
-        );
         if min_w > 0 || min_h > 0 {
-            (*mmi).ptMinTrackSize.x = rc.right - rc.left;
-            (*mmi).ptMinTrackSize.y = rc.bottom - rc.top;
+            (*mmi).ptMinTrackSize.x = min_w as i32;
+            (*mmi).ptMinTrackSize.y = min_h as i32 + sh;
         }
         // A zero maximum means "no maximum" -- that is what the core sends
         // today, and clamping to zero would make the window unresizable.
         if max_w > 0 && max_h > 0 {
             (*mmi).ptMaxTrackSize.x = max_w as i32;
-            (*mmi).ptMaxTrackSize.y = max_h as i32 + strip_h(scale);
+            (*mmi).ptMaxTrackSize.y = max_h as i32 + sh;
         }
     }
 }
+
+/// How many layouts have run, so the per-pane lines can be bounded.
+static LAYOUTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// How many times the surface was resized and told the core.
 static SIZES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -1183,7 +1363,10 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                     (api().surface_set_size)(s, w, h);
                     let n = SIZES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     if n <= 10 {
-                        logf!("[win] surface WM_SIZE {}x{} -> set_size (#{})", w, h, n);
+                        logf!(
+                            "[win] surface {:?} WM_SIZE {}x{} -> set_size (#{})",
+                            hwnd.0, w, h, n
+                        );
                     }
                 }
                 // The composition is somewhere else on screen now even though
