@@ -1406,6 +1406,55 @@ RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCOD
     not-built 那一档,而它早就能用了**——**一张手写的「已知缺口」表,
     默认会烂在它被写下的那一刻。**
 
+55. **⭐ 「不可信」被读成了「不用读」,而那两个词之间隔着一整份核心日志。**（2026-09-02）
+
+    今晚定过一条流水规矩:**「只读 `.log` 不读 `.out.txt`」**,理由是后者块缓冲、
+    跑一半可能还是 0 字节。**规矩的前半对,结论错了:**
+
+    | | 里面是什么 |
+    | --- | --- |
+    | `.log` | 宿主的 `logf!`,每行 flush,判据行在这里 |
+    | `.out.txt` | 重定向的 stdout/stderr——**核心 `std.log` 说的每一句话都只在这里** |
+
+    代价是具体的:**两条现成的答案从第一轮起就躺在每一份 `.out.txt` 里**,
+    整晚没人看：
+
+    ```
+    warning(config): no default shell found, will default to using cmd
+    warning(io_exec): shell could not be detected, no automatic shell integration will be injected
+    ```
+
+    第二行是「为什么拿不到 cwd」的直接答案。**实际走的路是
+    cmd → git-bash → 读 `shell_integration.zig` → 查产物有没有 `share/`**,
+    绕一大圈拼出同一个结论。**结论没错,路绕了**——更要紧的是,
+    读了它,「产物不带 shell-integration」和「shell 检测不到」
+    这两件事**会一开始就分开**,而当时是把前者当成了全部。
+
+    > **块缓冲的正确含义是「跑到一半可能还没落盘」,不是「里面没有东西」。**
+
+    改成:判据行读 `.log`,**核心说了什么、为什么,读 `.out.txt`**;
+    一条读不到就去另一份找一遍。
+
+56. **一条被记成罕见的缺陷,比一条没被记下来的更难得到修复。**（2026-09-02）
+
+    `ctrl+shift+c` 会静默变成「复制标题」这件事,文档里记的触发条件是
+    **「某个键盘布局下 `MapVirtualKeyW` 对 `VK_C` 返回 0」**——罕见、
+    而且写的人和读的人都验不了。
+
+    实际的触发条件不需要任何布局配合。`Config.zig:6783` 那条绑定带
+    `.{ .performable = true }`,而 `:1996` 的文档逐字写着:
+    **「If there is no selection, Ghostty behaves as if the keybind was not set.」**
+    于是 `surface_key` 返回 false,落到宿主的 accelerator 表,
+    那里 `(ctrl,shift,VK_C)` 指向 `copy_title_to_clipboard`。
+    **每一台机器、每一次没有选区的 `Ctrl+Shift+C`。**
+
+    **它挂了一整天没人动,正因为记下来的那条读起来像个边角情况。**
+    用户的经历比「什么都没发生」更糟:**先选好文字、复制、粘出来是标题,
+    然后怀疑的是自己的选区。**
+
+    ⚠️ 而它**今天才变得可见**——昨天 `cb_write_clipboard` 是空函数体,
+    这条路走到底也什么都不会发生。**修好一个缺陷,让另一个缺陷第一次有了后果。**
+
 ## 八、可复核的现场
 
 - 测试机 `C:\app`：`tsf-probe*`、`dllprobe\`、`conpty\`（8 个二进制 + 输出）、
