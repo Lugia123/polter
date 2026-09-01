@@ -45,7 +45,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::logf;
+use crate::{logf, wlogf};
 
 // ------------------------------------------------------------------- table
 
@@ -944,7 +944,7 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     // Items on the root itself, which is what a person sees when it opens:
     // the six groups plus the two tail rows. Not the 50-odd leaves below.
     let root_items = ROOT.iter().filter(|r| !r.label.is_empty()).count();
-    logf!("[menu] root shown at {screen_x},{screen_y} items={root_items}");
+    wlogf!(frame, "[menu] root shown at {screen_x},{screen_y} items={root_items}");
 
     OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
     let chosen = unsafe {
@@ -971,11 +971,11 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     if id < ID_BASE {
         // "Dismissed" and "never opened" are different bugs that look the same
         // from the far side of the screen.
-        logf!("[menu] dismissed without a choice");
+        wlogf!(frame, "[menu] dismissed without a choice");
         return;
     }
     let Some(row) = order.get(id - ID_BASE) else {
-        logf!("[menu] returned an id outside the table: {id}");
+        wlogf!(frame, "[menu] returned an id outside the table: {id}");
         return;
     };
     perform(frame, row);
@@ -995,7 +995,7 @@ fn perform(frame: HWND, row: &Row) -> bool {
     };
     // The label is in the log because that is the word the person clicked, and
     // the action is there because that is the word that failed.
-    logf!("[menu] pick {:?} -> {} ok={}", row.label, action, ok as i32);
+    wlogf!(frame, "[menu] pick {:?} -> {} ok={}", row.label, action, ok as i32);
     ok
 }
 

@@ -70,10 +70,26 @@ pub fn tag(frame: HWND) -> String {
 /// The frame comes first because it is not optional: a caller that does not
 /// know which window it is talking about should use `logf!` and appear in the
 /// untagged list, not pass something plausible.
+/// **`format_args!` on the caller's literal, not `concat!` into a new one.**
+/// The first version built the format string with `concat!("{} ", $fmt)`, and
+/// that quietly forbids the thing half this codebase writes:
+///
+/// ```ignore
+/// wlogf!(frame, "[menu] root shown at {screen_x},{screen_y}");
+/// ```
+///
+/// Rust captures `screen_x` from the surrounding scope only when the format
+/// string is a literal **in the source**; a string produced by `concat!` is
+/// not, and the call fails with `there is no argument named screen_x`. It is a
+/// compile error rather than a silent one, but it is an error at *somebody
+/// else's* call site, for a reason that is inside this macro -- so it would
+/// have been read as "the tag cannot be used here" rather than "this macro is
+/// too narrow". Keeping the caller's literal inside `format_args!` leaves the
+/// capture working.
 #[macro_export]
 macro_rules! wlogf {
-    ($frame:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {{
+    ($frame:expr, $($a:tt)*) => {{
         let __w = $crate::winid::tag($frame);
-        $crate::logf!(concat!("{} ", $fmt), __w $(, $arg)*);
+        $crate::log_line(&format!("{} {}", __w, format_args!($($a)*)));
     }};
 }

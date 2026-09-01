@@ -47,16 +47,24 @@ import sys
 
 # How many per-window lines were still untagged when this ratchet was set.
 #
-# **Measured, not chosen**: this is what the scan below reported on
-# `372b5cece` (2026-09-02), the commit at which the check's default was
-# flipped from a whitelist of six tags to "everything, unless declared". The
-# 53 that *are* tagged were done as S4-B step 0; the rest are the same
-# mechanical job, one tag at a time.
+# **Measured, not chosen.** 221 on `372b5cece` (2026-09-02), the commit at
+# which this check's default was flipped from a whitelist of six tags to
+# "everything, unless declared". 217 after the four `[menu]` lines that show
+# and dispatch a menu for one window were tagged.
+#
+# **The remainder is not one mechanical job.** Reading the untagged lines
+# tag by tag shows most of them are not about a window at all -- `[menu] built
+# 6 groups, 55 items`, `[palette] loaded 42 commands from the core`,
+# `[quick] read_config ...` are facts about a table or the process. Those need
+# a declaration with a reason, not a window identity, and the declaration this
+# file offers is per *tag*, which cannot express "this tag is sometimes one and
+# sometimes the other". `[menu]` is exactly that: 4 of its 22 lines are about a
+# window and 18 are about the static menu table.
 #
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
-BASELINE_UNTAGGED = 221
+BASELINE_UNTAGGED = 217
 
 # Tags whose lines are NOT about one particular window. Each needs a reason.
 PROCESS_WIDE = {
