@@ -741,9 +741,16 @@ unsafe extern "system" fn settings_proc(
                     save_selected();
                 } else if id == ID_OPEN_CONFIG {
                     // The core owns *where* the config is: this asks it, and
-                    // the resulting `open_config` action comes back to
-                    // `cb_action`, which does the opening. One path, and the
-                    // host never computes a config path of its own.
+                    // the resulting action comes back to `cb_action` under
+                    // `ffi::ACTION_OPEN_CONFIG`, which calls
+                    // `ghostty_config_open_path` and hands the result to
+                    // `ShellExecuteW`. One path, and the host never computes a
+                    // config path of its own.
+                    //
+                    // The symbol names are here on purpose: an earlier version
+                    // of this comment claimed the host "already handles" the
+                    // action without naming it, and that claim was false and
+                    // uncheckable at the same time. See development.md §6.
                     let ok = crate::binding("open_config");
                     logf!("[set] open_config -> binding_action = {}", ok);
                 } else if id == ID_ABOUT {
