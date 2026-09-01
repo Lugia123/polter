@@ -439,6 +439,31 @@ pub fn format_trigger(t: TriggerC) -> Option<String> {
     }
 }
 
+/// The prefix on an action name the **host** performs, not the core.
+///
+/// `__polter_minimize`, `__polter_plugin_page` and their kind name things the
+/// core has never heard of: a settings window, a Win32 `ShowWindow` call. They
+/// travel through the same tables as core action names because the menus and
+/// the accelerator table are one list each, and they are separated by this
+/// prefix at the point where the core would otherwise be asked.
+///
+/// **Defined here and nowhere else.** `menu.rs` had its own copy, and its own
+/// comment pointed at this file as the precedent -- two definitions of one
+/// concept, which is the shape that has gone wrong repeatedly in this port.
+/// The direction is the one the modules already run in: `menu.rs` calls into
+/// `keys.rs` for its accelerators, so the constant lives at the end that is
+/// already depended upon.
+pub const HOST_ACTION_PREFIX: &str = "__polter_";
+
+/// Whether an action name belongs to the host rather than to the core.
+pub fn is_host_action(name: &str) -> bool {
+    name.starts_with(HOST_ACTION_PREFIX)
+}
+
+/// Names already reported by `shortcut_for`, so a host action reaching it
+/// produces one line rather than one per menu build.
+static REPORTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// Why a lookup did not produce a usable trigger, or the trigger it did.
 ///
 /// **Four outcomes, not one `None`.** They are four different faults with one
@@ -508,6 +533,40 @@ pub fn trigger_lookup(action: &str) -> Lookup {
 /// (The *function pointer* is resolved once -- that one genuinely cannot
 /// change while the process lives.)
 pub fn shortcut_for(action: &str) -> Option<String> {
+    // **A host action is never asked of the core**, and saying so by name is
+    // the point of this branch.
+    //
+    // `ghostty_config_trigger` parses whatever it is handed; a name the core
+    // does not have comes back as the default trigger, which is
+    // indistinguishable from a real action that nobody has bound. So without
+    // this the failure is a menu row with no shortcut and **no line anywhere
+    // naming the action** -- which is exactly how the last round of these
+    // took as long as it did to find.
+    //
+    // `menu.rs` gates these before they get here. This is the second door:
+    // anything else that calls this function directly gets the same answer
+    // and the same log line.
+    //
+    // **What this does not check** is whether a non-prefixed name is a real
+    // core action. That question is answered by `menu.rs`'s `unresolved`
+    // count, which parses `Binding.zig`; duplicating that parser here would
+    // be a second definition of "is this a core action", which is the thing
+    // this constant was just moved to avoid.
+    if is_host_action(action) {
+        if let Ok(mut seen) = REPORTED.lock() {
+            if !seen.iter().any(|n| n == action) {
+                seen.push(action.to_string());
+                logf!(
+                    "[keys] {:?} is a host action, not a core one; no keybind was looked up \
+                     (this is expected for {}* names and is reported once each)",
+                    action,
+                    HOST_ACTION_PREFIX
+                );
+            }
+        }
+        return None;
+    }
+
     let f = config_trigger_fn()?;
     let cfg = crate::config_handle();
     if cfg.is_null() {
@@ -520,6 +579,39 @@ pub fn shortcut_for(action: &str) -> Option<String> {
 #[cfg(test)]
 mod shortcut_tests {
     use super::*;
+
+    /// The concept lives in one place. **`menu.rs` used to carry its own copy
+    /// of this prefix**, with a comment pointing at this file as the
+    /// precedent -- two definitions of one fact, which is how they drift.
+    #[test]
+    fn host_actions_are_recognised_by_their_prefix() {
+        assert!(is_host_action("__polter_minimize"));
+        assert!(is_host_action("__polter_plugin_page"));
+        assert!(!is_host_action("new_tab"));
+        assert!(!is_host_action("close_tab:this"));
+        // A core action that merely starts with an underscore is not ours.
+        assert!(!is_host_action("_sdk"));
+    }
+
+    /// **A host action must never reach the core's binding table.**
+    ///
+    /// Asking `ghostty_config_trigger` about a name the core does not have
+    /// returns the default trigger, which reads exactly like a real action
+    /// nobody has bound: a menu row with no shortcut and **no line anywhere
+    /// naming the action**. This returns `None` before that can happen.
+    ///
+    /// The assertion is about the branch, not the lookup: with no core loaded
+    /// in a test binary every lookup returns `None` anyway, so the value
+    /// alone proves nothing. What is pinned here is that the host-action
+    /// branch is reached first -- `is_host_action` is the same predicate the
+    /// function uses.
+    #[test]
+    fn a_host_action_is_never_asked_of_the_core() {
+        for a in ["__polter_minimize", "__polter_plugin_page", "__polter_about"] {
+            assert!(is_host_action(a), "{a} must be gated");
+            assert_eq!(shortcut_for(a), None);
+        }
+    }
 
     /// An action nobody bound draws no shortcut. This is the case that has to
     /// be right first: the default trigger is not a sentinel value chosen by
