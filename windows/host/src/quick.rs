@@ -384,12 +384,33 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
         // combination, and it fails by returning false -- after which the key
         // does nothing at all and looks, from the user's side, exactly like a
         // key they did not press hard enough.
-        let r = RegisterHotKey(
-            Some(owner),
-            HOTKEY_ID,
-            MOD_CONTROL | MOD_NOREPEAT,
-            VK_OEM_3.0 as u32,
-        );
+        // **The combination comes from the core's binding table**, the same
+        // place the menus get their shortcut text. Hardcoding it here would
+        // be §3.4.1's bug in its most expensive form: a user who rebinds
+        // `toggle_quick_terminal` gets a hotkey that is not the one their
+        // config says, with nothing anywhere reporting the disagreement.
+        //
+        // It also makes the failure path *testable without writing a
+        // program to squat on a key*: point the config at a combination
+        // something else already owns and `RegisterHotKey` fails for real.
+        let (mods, vk, combo) = match crate::keys::trigger_for("toggle_quick_terminal")
+            .and_then(hotkey_from_trigger)
+        {
+            Some(v) => v,
+            None => {
+                // Nothing bound, or a trigger this host cannot turn into a
+                // virtual key. Falls back, and **says which**, because "the
+                // hotkey is not the one I configured" and "the hotkey is the
+                // default because nothing was configured" are different
+                // problems with the same symptom.
+                logf!(
+                    "[quick] toggle_quick_terminal has no usable binding;                      falling back to the built-in {}",
+                    HOTKEY_COMBO
+                );
+                (MOD_CONTROL, VK_OEM_3.0 as u32, HOTKEY_COMBO.to_string())
+            }
+        };
+        let r = RegisterHotKey(Some(owner), HOTKEY_ID, mods | MOD_NOREPEAT, vk);
         // `GetLastError` is read **before** anything else can clobber it, and
         // only on the failing branch, because on the success branch it holds
         // whatever the last unrelated call left behind.
@@ -398,7 +419,7 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
         } else {
             windows::Win32::Foundation::GetLastError().0
         };
-        for line in hotkey_lines(HOTKEY_COMBO, r.is_ok(), err) {
+        for line in hotkey_lines(&combo, r.is_ok(), err) {
             logf!("{}", line);
         }
         logf!(
@@ -411,11 +432,84 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
     }
 }
 
-/// The combination this host claims, spelled the way a person would type it
-/// into a config. **One constant, used by the registration and by the log**,
-/// so a line that names a combination cannot name a different one than was
-/// actually asked for.
+/// The combination used when the config has nothing usable. **One constant,
+/// used by the registration and by the log**, so a line that names a
+/// combination cannot name a different one than was actually asked for.
 const HOTKEY_COMBO: &str = "Ctrl+`";
+
+/// `ghostty_input_key_e` ordinals. The three contiguous runs are the same
+/// ones `keyseq.rs` uses to name keys, derived by counting the enum in
+/// `include/ghostty.h`; they are repeated rather than shared because that
+/// file names keys for a human and this one maps them to virtual keys, and
+/// the two would drift in different directions.
+const K_BACKQUOTE: u32 = 1;
+const K_DIGIT_0: u32 = 6;
+const K_A: u32 = 20;
+const K_SPACE: u32 = 63;
+const K_ESCAPE: u32 = 120;
+const K_F1: u32 = 121;
+
+/// A core trigger as `RegisterHotKey` wants it: modifiers, virtual key, and
+/// the combination spelled out for the log.
+///
+/// **`None` when the key cannot be expressed**, rather than a guess. A hotkey
+/// registered on the wrong key is worse than no hotkey: it silently steals a
+/// combination from another program and does the wrong thing when pressed,
+/// and neither end reports it.
+///
+/// Only the keys a person actually binds a global hotkey to are mapped --
+/// letters, digits, function keys, backquote, space, escape. That is
+/// arithmetic on three contiguous ranges plus three constants, not a
+/// 176-entry table; an unmapped key falls back and logs.
+fn hotkey_from_trigger(t: crate::keys::TriggerC) -> Option<(HOT_KEY_MODIFIERS, u32, String)> {
+    // A unicode trigger names a character, not a physical key, and
+    // `RegisterHotKey` only speaks virtual keys. Declining is correct.
+    if t.tag != crate::keys::TRIGGER_PHYSICAL {
+        return None;
+    }
+    let k = t.key;
+    let vk = if (K_A..K_A + 26).contains(&k) {
+        0x41 + (k - K_A) // VK_A .. VK_Z
+    } else if (K_DIGIT_0..K_DIGIT_0 + 10).contains(&k) {
+        0x30 + (k - K_DIGIT_0) // VK_0 .. VK_9
+    } else if (K_F1..K_F1 + 12).contains(&k) {
+        0x70 + (k - K_F1) // VK_F1 .. VK_F12
+    } else {
+        match k {
+            K_BACKQUOTE => VK_OEM_3.0 as u32,
+            K_SPACE => VK_SPACE.0 as u32,
+            K_ESCAPE => VK_ESCAPE.0 as u32,
+            _ => return None,
+        }
+    };
+
+    // `ghostty_input_mods_e` -> `HOT_KEY_MODIFIERS`. The sided bits are
+    // ignored on purpose: `RegisterHotKey` cannot express "the right-hand
+    // Ctrl only", so honouring them would mean claiming a combination
+    // narrower than the one that gets registered.
+    let mut mods = HOT_KEY_MODIFIERS(0);
+    if t.mods & (1 << 0) != 0 {
+        mods |= MOD_SHIFT;
+    }
+    if t.mods & (1 << 1) != 0 {
+        mods |= MOD_CONTROL;
+    }
+    if t.mods & (1 << 2) != 0 {
+        mods |= MOD_ALT;
+    }
+    if t.mods & (1 << 3) != 0 {
+        mods |= MOD_WIN;
+    }
+    // **A hotkey with no modifier is refused.** `RegisterHotKey` would take
+    // it and then swallow that key system-wide, from every application, for
+    // the life of the process -- a bare `a` bound by accident makes the
+    // machine unusable and gives no clue why.
+    if mods.0 == 0 {
+        return None;
+    }
+
+    Some((mods, vk, crate::keys::format_trigger(t)?))
+}
 
 /// `ERROR_HOTKEY_ALREADY_REGISTERED`. The only failure worth naming, because
 /// it is the one that happens to users rather than to programs.
@@ -632,6 +726,10 @@ fn create_surface(
         (api().surface_set_focus)(s, true);
     }
     crate::ime_attach(child);
+    // Files can be dropped onto the quick terminal too. It is the same window
+    // class as a pane, so it is the same registration -- the panel being a
+    // different *window* is not a reason for it to be a different *terminal*.
+    crate::dnd::attach(child);
     with_quick(|q| {
         q.child = child;
         q.surface = s as usize;
@@ -937,6 +1035,98 @@ mod tests {
         // Unrecognised tag: a quarter, not zero. A zero-height panel is
         // invisible and looks exactly like the hotkey not working.
         assert_eq!(primary_extent((0, 0.0), 1000), 250);
+    }
+
+    // ---------------------------------------------------- the combination
+
+    use crate::keys::{TriggerC, TRIGGER_PHYSICAL, TRIGGER_UNICODE};
+
+    fn phys(key: u32, mods: i32) -> TriggerC {
+        TriggerC { tag: TRIGGER_PHYSICAL, key, mods }
+    }
+
+    /// Letters, digits and function keys are three contiguous runs, so the
+    /// mapping is arithmetic. Both ends of each run are checked -- a run
+    /// mapped with the wrong base looks right in the middle.
+    #[test]
+    fn the_three_contiguous_runs_map_to_their_virtual_keys() {
+        let ctrl = 1 << 1;
+        assert_eq!(hotkey_from_trigger(phys(K_A, ctrl)).unwrap().1, 0x41, "A");
+        assert_eq!(hotkey_from_trigger(phys(K_A + 25, ctrl)).unwrap().1, 0x5A, "Z");
+        assert_eq!(hotkey_from_trigger(phys(K_DIGIT_0, ctrl)).unwrap().1, 0x30, "0");
+        assert_eq!(hotkey_from_trigger(phys(K_DIGIT_0 + 9, ctrl)).unwrap().1, 0x39, "9");
+        assert_eq!(hotkey_from_trigger(phys(K_F1, ctrl)).unwrap().1, 0x70, "F1");
+        assert_eq!(hotkey_from_trigger(phys(K_F1 + 11, ctrl)).unwrap().1, 0x7B, "F12");
+    }
+
+    /// The default combination, end to end: `ctrl+` ` must come out as
+    /// MOD_CONTROL plus VK_OEM_3, which is what the built-in fallback
+    /// registers. If this disagrees, a configured default and the fallback
+    /// would claim two different keys while both logging the same name.
+    #[test]
+    fn the_default_backquote_hotkey_maps_to_the_fallback() {
+        let (mods, vk, combo) = hotkey_from_trigger(phys(K_BACKQUOTE, 1 << 1)).unwrap();
+        assert_eq!(mods, MOD_CONTROL);
+        assert_eq!(vk, VK_OEM_3.0 as u32);
+        assert_eq!(combo, HOTKEY_COMBO);
+    }
+
+    /// Each modifier bit reaches its own flag. Tested one at a time: a
+    /// mapping that returned MOD_CONTROL for everything passes any test that
+    /// sets ctrl alongside the others.
+    #[test]
+    fn each_modifier_bit_reaches_its_own_flag() {
+        let f = |bit: i32| hotkey_from_trigger(phys(K_A, bit)).unwrap().0;
+        assert_eq!(f(1 << 0), MOD_SHIFT);
+        assert_eq!(f(1 << 1), MOD_CONTROL);
+        assert_eq!(f(1 << 2), MOD_ALT);
+        assert_eq!(f(1 << 3), MOD_WIN);
+        assert_eq!(f((1 << 0) | (1 << 1)), MOD_SHIFT | MOD_CONTROL);
+    }
+
+    /// **A bare key is refused.** `RegisterHotKey` would accept it and then
+    /// swallow that key system-wide, in every application, until the process
+    /// exits -- a machine where `a` does nothing anywhere, with no clue why.
+    #[test]
+    fn a_hotkey_with_no_modifier_is_refused() {
+        assert!(hotkey_from_trigger(phys(K_A, 0)).is_none());
+        assert!(hotkey_from_trigger(phys(K_F1, 0)).is_none());
+    }
+
+    /// Sided bits alone are not modifiers. The core sets the base bit next to
+    /// a sided one, so a sided bit on its own never occurs in practice --
+    /// which is exactly why it is the probe: only a mapping reading the wrong
+    /// bit would turn it into a flag, and then a bare key would register.
+    #[test]
+    fn sided_modifier_bits_do_not_count_as_modifiers() {
+        assert!(hotkey_from_trigger(phys(K_A, 1 << 7)).is_none(), "ctrl_right alone");
+        assert!(hotkey_from_trigger(phys(K_A, 1 << 6)).is_none(), "shift_right alone");
+    }
+
+    /// A key this host cannot express is declined, not guessed at. **A hotkey
+    /// on the wrong key is worse than none**: it steals a combination from
+    /// another program and misbehaves when pressed, and neither end reports
+    /// it.
+    #[test]
+    fn an_unmappable_key_is_declined_rather_than_guessed() {
+        assert!(hotkey_from_trigger(phys(175, 1 << 1)).is_none(), "an unmapped ordinal");
+        assert!(
+            hotkey_from_trigger(TriggerC { tag: TRIGGER_UNICODE, key: 'q' as u32, mods: 1 << 1 })
+                .is_none(),
+            "a unicode trigger names a character, not a physical key"
+        );
+    }
+
+    /// **The one the test box needs.** `ctrl+shift+a` is the combination a
+    /// screenshot tool on that machine already owns, so pointing the config
+    /// at it is how the `RegisterHotKey` failure path gets exercised for
+    /// real. This pins that the config route can actually reach it.
+    #[test]
+    fn ctrl_shift_a_is_expressible() {
+        let (mods, vk, combo) = hotkey_from_trigger(phys(K_A, (1 << 1) | (1 << 0))).unwrap();
+        assert_eq!(mods, MOD_CONTROL | MOD_SHIFT);
+        assert_eq!(vk, 0x41);
+        assert_eq!(combo, "Ctrl+Shift+A");
     }
 
     // --------------------------------------------------------- the hotkey

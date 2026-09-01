@@ -27,7 +27,7 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -50,9 +50,26 @@ const COL_RO_BG: u32 = 0x00306090; // BGR: amber, for the read-only badge
 
 static HWND_SIZE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_RO: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-/// Written from `action_cb` on whichever thread the core is on. A single bool
-/// needs no inbox and no lock.
-static READONLY: AtomicBool = AtomicBool::new(false);
+
+/// Which surfaces are read-only, by surface pointer.
+///
+/// **This was one process-wide `AtomicBool`, and that is the defect this list
+/// exists to fix.** Read-only is a property of a *surface*: with a split, one
+/// pane can be read-only while the other is not. A single bool made the two
+/// panes share one answer, and the two visible consequences pointed in
+/// opposite directions -- the right pane's menu ticked «Read-only» because
+/// the *left* pane was, and toggling it printed `on` because the right pane's
+/// own state, the one the core keeps, said otherwise. **A tick and a badge
+/// drawn from a state that is not the one the core is toggling will disagree
+/// with it eventually, and there is nothing in either of them that can say
+/// so.**
+///
+/// A `Vec` rather than a map: a window has a handful of panes, and the whole
+/// list is walked on every sync anyway to drop surfaces that no longer exist.
+static READONLY: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
+
+/// The surface the badge is currently showing for, or 0.
+static RO_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 struct State {
     font: HFONT,
@@ -69,34 +86,96 @@ thread_local! {
 
 // ------------------------------------------------------- from `action_cb`
 
-/// Whether the terminal is read-only right now.
+/// Is **this** surface read-only?
 ///
-/// The badge already draws from `READONLY`; the right-click menu has to tick
-/// its «Terminal Read-only» row from the **same** bit. A second copy of this
-/// state kept by the menu would drift the first time the core toggled it from
-/// anywhere else, and the symptom would be a menu that lies about a mode the
-/// badge on screen is simultaneously reporting correctly.
-pub fn is_readonly() -> bool {
-    READONLY.load(Ordering::Acquire)
+/// The badge and every menu tick have to come from here, with the surface the
+/// menu is about: the one the pointer opened it on, not the focused one. Two
+/// copies of this state drift the first time the core toggles it from
+/// somewhere else, and the symptom is a menu that lies about a mode the badge
+/// is simultaneously reporting correctly.
+pub fn is_readonly_for(surface: usize) -> bool {
+    if surface == 0 {
+        return false;
+    }
+    READONLY
+        .lock()
+        .map(|v| v.iter().any(|(s, on)| *s == surface && *on))
+        .unwrap_or(false)
 }
 
-/// `GHOSTTY_ACTION_READONLY`. **Safe from any thread.**
-pub fn on_readonly(on: bool) {
-    READONLY.store(on, Ordering::Release);
+/// `GHOSTTY_ACTION_READONLY` for one surface. **Safe from any thread.**
+pub fn on_readonly_for(surface: usize, on: bool) {
+    if surface == 0 {
+        logf!("[hud] readonly {} for surface 0 -- ignored, that names no terminal", on);
+        return;
+    }
+    if let Ok(mut v) = READONLY.lock() {
+        match v.iter_mut().find(|(s, _)| *s == surface) {
+            Some(e) => e.1 = on,
+            None => v.push((surface, on)),
+        }
+    }
     let h = HWND_RO.load(Ordering::Acquire);
     if !h.is_null() {
-        let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
+        let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(surface), LPARAM(0)) };
     }
+}
+
+/// The pane window that hosts a surface, and its rectangle on screen.
+///
+/// **Read out of the tab model rather than kept here.** A second table of
+/// which pane owns which surface is a second thing to keep in step with the
+/// splits, and it would be wrong exactly while a split is being made.
+fn pane_rect_for(surface: usize) -> Option<RECT> {
+    let hwnd = {
+        let st = crate::tabs::state();
+        st.tabs
+            .iter()
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.surface == surface)
+            .map(|p| HWND(p.hwnd as *mut c_void))?
+    };
+    let mut r = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut r) }.is_err() {
+        return None;
+    }
+    Some(r)
+}
+
+/// Drop surfaces that no longer exist, and say how many are read-only.
+///
+/// Called on every sync: a pane that closed while read-only would otherwise
+/// leave its `true` behind, and surface pointers get reused.
+fn prune_and_count() -> usize {
+    let live: Vec<usize> = {
+        let st = crate::tabs::state();
+        st.tabs.iter().flat_map(|t| t.panes.iter()).map(|p| p.surface).collect()
+    };
+    let Ok(mut v) = READONLY.lock() else { return 0 };
+    let before = v.len();
+    v.retain(|(s, _)| live.contains(s));
+    if v.len() != before {
+        logf!("[hud] forgot {} closed surface(s) from the read-only list", before - v.len());
+    }
+    v.iter().filter(|(_, on)| *on).count()
 }
 
 /// The frame was resized. **Main thread only** -- it is called from the frame's
 /// own window procedure.
 pub fn on_frame_resized() {
     let h = HWND_SIZE.load(Ordering::Acquire);
-    if h.is_null() {
-        return;
+    if !h.is_null() {
+        let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
     }
-    let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
+    // **The badge has to move too, now that it sits over a pane.** While it
+    // was pinned to the window's corner a resize left it roughly right; over a
+    // pane, a resize moves the pane out from under it and the badge ends up
+    // marking whatever is now beneath it. `WPARAM(0)` means "re-evaluate the
+    // surface you are already showing".
+    let ro = HWND_RO.load(Ordering::Acquire);
+    if !ro.is_null() {
+        let _ = unsafe { PostMessageW(Some(HWND(ro)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
+    }
 }
 
 /// Columns and rows of the active surface, or `None` if either input is not
@@ -323,7 +402,16 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     unsafe {
         match msg {
             WM_HUD_SYNC => {
-                let on = READONLY.load(Ordering::Acquire);
+                let n_readonly = prune_and_count();
+                // Which surface this sync is about: the one that just changed,
+                // or -- for a sync with no surface, such as a resize -- the one
+                // the badge is already showing for.
+                let surface = if wp.0 != 0 {
+                    wp.0
+                } else {
+                    RO_SHOWN_FOR.load(Ordering::Acquire)
+                };
+                let on = is_readonly_for(surface);
                 let was = STATE.with(|c| {
                     c.borrow_mut()
                         .as_mut()
@@ -334,21 +422,41 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     if was {
                         let _ = ShowWindow(hwnd, SW_HIDE);
                     }
-                    logf!("[hud] readonly off");
+                    RO_SHOWN_FOR.store(0, Ordering::Release);
+                    logf!("[hud] readonly off for surface {:#x}", surface);
+                    // One badge, and more than one pane can be read-only. Say
+                    // so rather than leaving a read-only pane unmarked and
+                    // unexplained.
+                    if n_readonly > 0 {
+                        logf!(
+                            "[hud] {} other surface(s) still read-only and unbadged (one badge,                              many panes)",
+                            n_readonly
+                        );
+                    }
                     return LRESULT(0);
                 }
-                let frame = crate::tabs::frame_hwnd();
-                let mut fr = RECT::default();
-                if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
+                // **Over the pane that owns the surface, not the window's
+                // corner.** The old placement was `frame.left + 16, frame.top
+                // + 56`, which is the left pane's corner whenever there is a
+                // split -- so a read-only right pane put its badge on a pane
+                // that was not read-only, and nothing about the badge said
+                // which pane it meant.
+                let Some(fr) = pane_rect_for(surface) else {
+                    logf!(
+                        "[hud] readonly on for surface {:#x}, but no pane owns it; badge hidden                          rather than drawn somewhere arbitrary",
+                        surface
+                    );
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    RO_SHOWN_FOR.store(0, Ordering::Release);
                     return LRESULT(0);
-                }
+                };
                 let dpi = GetDpiForWindow(hwnd).max(96) as i32;
                 let sc = |v: i32| v * dpi / 96;
                 let (w, h) = (sc(110), sc(HEIGHT));
-                // Top-left of the content area: the one corner the search bar
-                // (top-right) and the key indicator (bottom-right) do not use.
+                // Top-left of that pane, inset. The search bar (top-right) and
+                // the key indicator (bottom-right) still do not use it.
                 let x = fr.left + sc(16);
-                let y = fr.top + sc(56);
+                let y = fr.top + sc(16);
                 let _ = SetWindowPos(
                     hwnd,
                     Some(HWND_TOPMOST),
@@ -359,7 +467,24 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     SWP_SHOWWINDOW | SWP_NOACTIVATE,
                 );
                 let _ = InvalidateRect(Some(hwnd), None, true);
-                logf!("[hud] readonly on");
+                RO_SHOWN_FOR.store(surface, Ordering::Release);
+                logf!(
+                    "[hud] readonly on for surface {:#x}; badge at {},{} over pane {},{}..{},{}",
+                    surface,
+                    x,
+                    y,
+                    fr.left,
+                    fr.top,
+                    fr.right,
+                    fr.bottom
+                );
+                if n_readonly > 1 {
+                    logf!(
+                        "[hud] {} surfaces are read-only; the badge shows {:#x} (one badge, many                          panes)",
+                        n_readonly,
+                        surface
+                    );
+                }
                 LRESULT(0)
             }
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
@@ -403,5 +528,53 @@ fn paint(hwnd: HWND, label: &str, bg: u32, fg: u32) {
             SelectObject(hdc, old);
         });
         let _ = EndPaint(hwnd, &ps);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clear() {
+        if let Ok(mut v) = READONLY.lock() {
+            v.clear();
+        }
+    }
+
+    /// **The regression this file was rewritten for.** Read-only used to be
+    /// one process-wide bool, so a second surface answered the first one's
+    /// state: with a split, the right pane's menu ticked «Read-only» because
+    /// the left pane was. Asking about a surface nobody has said anything
+    /// about must be `false`, not "whatever the last surface said".
+    #[test]
+    fn one_surface_going_readonly_does_not_answer_for_another() {
+        clear();
+        on_readonly_for(0x1111, true);
+        assert!(is_readonly_for(0x1111));
+        assert!(!is_readonly_for(0x2222), "a different surface must answer for itself");
+        clear();
+    }
+
+    /// Toggling back off is per surface too -- and the entry is updated, not
+    /// appended, or the list would answer with whichever copy came first.
+    #[test]
+    fn a_surface_can_be_toggled_back_and_keeps_one_entry() {
+        clear();
+        on_readonly_for(0x3333, true);
+        on_readonly_for(0x3333, false);
+        assert!(!is_readonly_for(0x3333));
+        assert_eq!(READONLY.lock().unwrap().len(), 1, "one entry per surface");
+        clear();
+    }
+
+    /// A null surface names no terminal. Storing it would give every "no
+    /// surface" caller a shared answer, which is the original bug in miniature.
+    #[test]
+    fn surface_zero_is_never_readonly_and_is_never_stored() {
+        clear();
+        on_readonly_for(0, true);
+        assert!(!is_readonly_for(0));
+        assert!(READONLY.lock().unwrap().is_empty());
+        clear();
     }
 }

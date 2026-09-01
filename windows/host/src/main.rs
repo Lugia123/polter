@@ -32,6 +32,7 @@
 
 mod ctxmenu;
 mod divider;
+mod dnd;
 mod ffi;
 mod keys;
 mod hud;
@@ -833,23 +834,203 @@ fn ime_init(hwnd: HWND) -> bool {
 
 extern "C" fn cb_wakeup(_ud: *mut c_void) {}
 
-extern "C" fn cb_read_clipboard(_ud: *mut c_void, _kind: u32, _state: *mut c_void) -> bool {
-    false
+// ------------------------------------------------------------- clipboard
+//
+// **Both of these were stubs, and the copy path reported success while doing
+// nothing** -- the one shape of defect that no amount of checking the logs
+// would have caught, because its log was green. What was missing was not the
+// knowledge of how to write a clipboard (`tabs::copy_to_clipboard` has been
+// complete since the tab titles needed it) but the wiring, and on the read
+// side half the entry points: `ghostty_surface_complete_clipboard_request`
+// was never even resolved from the DLL, which is what made a hard-coded
+// `false` the only self-consistent thing `cb_read_clipboard` could return.
+
+/// A paste has been asked for. **Returning `true` is a promise**, see
+/// `ffi::ReadClipboardCb`: the core has allocated `state` and will only free
+/// it if we return `false` or complete the request. Every failure path below
+/// therefore returns `false`, and there is no path that returns `true`
+/// without having called `complete_clipboard_request` first.
+extern "C" fn cb_read_clipboard(ud: *mut c_void, kind: u32, state: *mut c_void) -> bool {
+    let pane = ud as u64;
+    if kind != ffi::CLIPBOARD_STANDARD {
+        // See `cb_write_clipboard` for why this is refused rather than mapped.
+        logf!("[clip] read kind={} pane={} -> refused: no selection clipboard on Windows", kind, pane);
+        return false;
+    }
+    let surface = tabs::surface_of_pane(pane);
+    if surface.is_null() {
+        logf!("[clip] read kind={} pane={} -> false: no surface for that pane", kind, pane);
+        return false;
+    }
+    let text = match tabs::read_clipboard_text() {
+        Ok(t) => t,
+        Err(why) => {
+            logf!("[clip] read kind={} pane={} -> false: {}", kind, pane, why);
+            return false;
+        }
+    };
+    // An interior NUL cannot be handed to a C string API. Truncating at it is
+    // what every other apprt does, and it is said out loud rather than
+    // silently producing a shorter paste.
+    let cut = text.find('\0');
+    if let Some(at) = cut {
+        logf!("[clip] read pane={}: clipboard text has a NUL at {}; truncated there", pane, at);
+    }
+    let text = &text[..cut.unwrap_or(text.len())];
+    let Ok(c) = std::ffi::CString::new(text) else {
+        logf!("[clip] read kind={} pane={} -> false: could not make a C string", kind, pane);
+        return false;
+    };
+    logf!("[clip] read kind={} pane={} -> {} chars, completing", kind, pane, text.chars().count());
+    // **`confirmed: false`.** `clipboard-paste-protection` defaults to true,
+    // and this is what keeps it working: the core gets to look at the text
+    // and ask before pasting something that could run on arrival. Passing
+    // `true` here would answer that question on the user's behalf, always.
+    unsafe {
+        (api().surface_complete_clipboard_request)(surface, c.as_ptr(), state, false);
+    }
+    true
 }
+
+/// The core looked at the text and wants it confirmed before pasting.
+///
+/// **This fires on any ordinary multi-line paste** (`Surface.zig:6678`:
+/// unbracketed text that is not `input.paste.isSafe`), so it is not an exotic
+/// path -- leaving it empty, as it was, means pasting a two-line command
+/// silently does nothing. That is the same defect this task exists to fix,
+/// one level down.
+///
+/// So it asks. A `MessageBox` is not the dialog `s4.md` §J wants (macOS has
+/// 195 lines of `ClipboardConfirmation` with the text shown in full), and it
+/// is recorded as that block still being unwritten -- but the alternative is
+/// a paste that works for one line and not for two.
+///
+/// **A refusal leaks the request state, knowingly.** The only exported way to
+/// release it is to complete the request, and completing it *is* pasting; so
+/// the choice is a few bytes or pasting what the user just declined. There is
+/// no third option in the C API today, and inventing a silent "yes" is not one.
 extern "C" fn cb_confirm_read_clipboard(
-    _ud: *mut c_void,
-    _s: *const std::os::raw::c_char,
-    _state: *mut c_void,
-    _req: u32,
+    ud: *mut c_void,
+    s: *const std::os::raw::c_char,
+    state: *mut c_void,
+    req: u32,
 ) {
+    let pane = ud as u64;
+    let text = if s.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(s) }.to_string_lossy().to_string()
+    };
+    let surface = tabs::surface_of_pane(pane);
+    logf!(
+        "[clip] paste confirmation requested: pane={} req={} {} chars, {} lines",
+        pane,
+        req,
+        text.chars().count(),
+        text.lines().count()
+    );
+    if surface.is_null() {
+        logf!("[clip] paste confirmation: no surface for pane {}; not pasting", pane);
+        return;
+    }
+
+    // Enough of it to judge by, and not so much that the box does not fit.
+    let mut preview: String = text.chars().take(400).collect();
+    if text.chars().count() > 400 {
+        preview.push_str("\n…");
+    }
+    let body = format!(
+        "要粘贴的内容有 {} 行，其中可能含有会立即执行的字符。\n\n{}\n\n确定要粘贴吗？",
+        text.lines().count(),
+        preview
+    );
+    let yes = unsafe {
+        let b: Vec<u16> = body.encode_utf16().chain(Some(0)).collect();
+        let t: Vec<u16> = "确认粘贴".encode_utf16().chain(Some(0)).collect();
+        MessageBoxW(
+            Some(tabs::frame_hwnd()),
+            windows::core::PCWSTR(b.as_ptr()),
+            windows::core::PCWSTR(t.as_ptr()),
+            MB_YESNO | MB_ICONWARNING,
+        ) == IDYES
+    };
+    logf!("[clip] paste confirmation: pane={} answered {}", pane, if yes { "yes" } else { "no" });
+    if !yes {
+        // Deliberate: see the note above. The request state stays allocated
+        // because completing it is the only way to release it, and completing
+        // it would paste.
+        logf!("[clip] paste declined; the core's request state is not reclaimable without pasting");
+        return;
+    }
+    unsafe {
+        (api().surface_complete_clipboard_request)(surface, s, state, true);
+    }
 }
+
+/// Something asked for text to be put on the clipboard.
+///
+/// **The payload is an array of `{mime, data}` pairs, not a string.** Read as
+/// one C string it yields the mime type, so a copy would put `text/plain` on
+/// the clipboard and report success -- which is this defect exactly, with a
+/// different cause.
 extern "C" fn cb_write_clipboard(
-    _ud: *mut c_void,
-    _kind: u32,
-    _content: *const c_void,
-    _n: usize,
-    _confirm: bool,
+    ud: *mut c_void,
+    kind: u32,
+    content: *const ffi::ClipboardContent,
+    n: usize,
+    confirm: bool,
 ) {
+    let pane = ud as u64;
+    if kind != ffi::CLIPBOARD_STANDARD {
+        // **Refused rather than mapped onto the one clipboard Windows has.**
+        // `supports_selection_clipboard` is false and the core gates on it,
+        // so this should not arrive from a normal path -- but OSC 52 can ask
+        // directly, and honouring it would let a remote program overwrite the
+        // clipboard the user is actually holding, through an action the user
+        // never took.
+        logf!("[clip] write kind={} pane={} -> refused: Windows has one clipboard and we declare no selection support", kind, pane);
+        return;
+    }
+    if confirm {
+        // `clipboard-write` defaults to `allow`, so reaching here means the
+        // user set it to `ask`. We cannot ask, so we must not answer.
+        logf!("[clip] write kind={} pane={} -> refused: clipboard-write=ask and this host has no confirmation UI", kind, pane);
+        return;
+    }
+    if content.is_null() || n == 0 {
+        logf!("[clip] write kind={} pane={} -> nothing to write (count={})", kind, pane, n);
+        return;
+    }
+    let items = unsafe { std::slice::from_raw_parts(content, n) };
+    let read = |p: *const std::os::raw::c_char| -> Option<String> {
+        if p.is_null() {
+            return None;
+        }
+        Some(unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().to_string())
+    };
+    // Prefer plain text; fall back to the first entry that has any data, so a
+    // core that sends only some other text-ish mime still copies something.
+    let chosen = items
+        .iter()
+        .map(|c| (read(c.mime).unwrap_or_default(), read(c.data)))
+        .filter(|(_, d)| d.is_some())
+        .max_by_key(|(m, _)| u8::from(m.starts_with("text/plain")));
+    let Some((mime, Some(data))) = chosen else {
+        logf!("[clip] write kind={} pane={} count={} -> nothing to write: every entry had a null data pointer", kind, pane, n);
+        return;
+    };
+    match tabs::copy_to_clipboard(&data) {
+        Ok(()) => logf!(
+            "[clip] write kind={} pane={} count={} mime={:?} len={} -> ok",
+            kind, pane, n, mime, data.chars().count()
+        ),
+        // **"Wrote" and "wrote successfully" are two lines on purpose.** The
+        // defect being fixed here was the gap between them.
+        Err(why) => logf!(
+            "[clip] write kind={} pane={} count={} mime={:?} len={} -> FAILED: {}",
+            kind, pane, n, mime, data.chars().count(), why
+        ),
+    }
 }
 /// A surface asked to be closed -- its shell exited, or something asked for
 /// it to go. `userdata` is the pane id we put in `ghostty_surface_config_s`,
@@ -951,8 +1132,21 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             ok
         }
 
+        // **Read-only is per surface, and this arm used to drop `target`.**
+        // One `AtomicBool` for the whole process is why a split showed the
+        // right-hand pane's menu with the left-hand pane's tick: both panes
+        // were reading one flag that whichever surface spoke last had set.
         ffi::ACTION_READONLY => {
-            hud::on_readonly(action.as_i32() != 0);
+            let on = action.as_i32() != 0;
+            // The tag is checked because the union only holds a surface: an
+            // app-targeted action's `surface` field is not one, and recording
+            // a per-surface fact against it would key the table on garbage.
+            if target.tag == ffi::TARGET_SURFACE && !target.surface.is_null() {
+                hud::on_readonly_for(target.surface as usize, on);
+                logf!("[action] readonly={} surface={:?}", on, target.surface);
+            } else {
+                logf!("[action] readonly={} with no surface (tag={}); dropped", on, target.tag);
+            }
             true
         }
 
@@ -1031,7 +1225,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // writes two fields under the same lock every `Op` would have taken.
         ffi::ACTION_POLTERGEIST_MARK => {
             let (role, shielded) = action.as_poltergeist_mark();
-            let found = tabs::set_mark_for_surface(target.surface, role as u8, shielded);
+            let found = target.tag == ffi::TARGET_SURFACE
+                && !target.surface.is_null()
+                && tabs::set_mark_for_surface(target.surface, role as u8, shielded);
             // The surface's own right-click menu wants the same three bits.
             // It reads them back out of `tabs::mark_for_surface`; this call
             // is the notification that they changed, not a second copy.
@@ -1620,6 +1816,10 @@ fn load_api() -> Option<Api> {
             surface_set_focus: sym!(internal, "ghostty_surface_set_focus"),
             surface_free: sym!(internal, "ghostty_surface_free"),
             surface_binding_action: sym!(internal, "ghostty_surface_binding_action"),
+            surface_complete_clipboard_request: sym!(
+                internal,
+                "ghostty_surface_complete_clipboard_request"
+            ),
             surface_key: sym!(internal, "ghostty_surface_key"),
             surface_text: sym!(internal, "ghostty_surface_text"),
             surface_preedit: sym!(internal, "ghostty_surface_preedit"),

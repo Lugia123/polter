@@ -1,0 +1,19 @@
+[package]
+name = "polter-droppath"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# No dependencies, on purpose -- the same reason `split-tree` has none.
+#
+# The quoting rules for a dropped path are the part of drag-and-drop that can
+# actually be wrong in a way nobody notices: a path with a space in it turns
+# into two arguments, and the shell reports "no such file" naming only the
+# first half. That is worth a test, and a test is only worth having if it runs
+# on the machine the port is being written on. `polter-host` cannot do that --
+# it pulls in `windows`, whose own dependencies do not compile for a macOS
+# target at all (`windows-future` fails on `windows_threading::submit`), so
+# `cargo test` there is not "slow", it is impossible.
+#
+# So the rules live here, where `cargo test -p polter-droppath` runs anywhere.
+[dependencies]

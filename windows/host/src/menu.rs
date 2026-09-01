@@ -65,6 +65,8 @@ struct Row {
     sub: Option<&'static [Row]>,
     /// Which run-time flag decides this row's check mark, if any.
     check: Option<Flag>,
+    /// What has to be true before this row can succeed. See `Ready`.
+    ready: Ready,
     /// False for a row that is deliberately shown greyed.
     ///
     /// **Greyed, not hidden** (§3.4.3): a menu item that is missing and one
@@ -72,6 +74,28 @@ struct Row {
     /// feature exists concludes they misremembered. A greyed one says "this
     /// exists, not now".
     enabled: bool,
+}
+
+/// Why a row can come back `ok=0` with nothing wrong.
+///
+/// **`binding_action` returning false means three different things**, and
+/// until they were told apart the self-test's summary could not distinguish
+/// "the terminal had no selection" from "this host never implemented that".
+/// The first is the normal state of a menu; the second is work not done; only
+/// the third is a defect. A single `failed` count made all three look like the
+/// third, which is how a green run and a broken menu look the same.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ready {
+    /// Nothing outside the menu has to hold. **`ok=0` here is a defect.**
+    Always,
+    /// Needs the terminal to be in some state: a selection to copy, a search
+    /// to step through. The core returns false and is right to.
+    NeedsState(&'static str),
+    /// The core performs this by asking *this host*, and this host does not
+    /// answer yet -- `cb_action` in `main.rs` ends in `_ => false`, and the
+    /// stub clipboard callbacks return false the same way. Not a defect in
+    /// the menu; a piece of the host that is not built.
+    HostGap(&'static str),
 }
 
 /// A run-time toggle a row can show a check mark for.
@@ -86,21 +110,45 @@ pub enum Flag {
 
 /// Shorthand for the common case: a labelled row that runs a core action.
 const fn act(label: &'static str, action: &'static str) -> Row {
-    Row { label, action: Some(action), sub: None, check: None, enabled: true }
+    Row { label, action: Some(action), sub: None, check: None, ready: Ready::Always, enabled: true }
+}
+
+/// A row the terminal's own state can legitimately refuse.
+const fn act_state(label: &'static str, action: &'static str, why: &'static str) -> Row {
+    Row {
+        label,
+        action: Some(action),
+        sub: None,
+        check: None,
+        ready: Ready::NeedsState(why),
+        enabled: true,
+    }
+}
+
+/// A row the core hands to this host, which does not answer it yet.
+const fn act_gap(label: &'static str, action: &'static str, why: &'static str) -> Row {
+    Row {
+        label,
+        action: Some(action),
+        sub: None,
+        check: None,
+        ready: Ready::HostGap(why),
+        enabled: true,
+    }
 }
 
 /// A row that runs a core action and shows a check mark for `flag`.
-const fn toggle(label: &'static str, action: &'static str, flag: Flag) -> Row {
-    Row { label, action: Some(action), sub: None, check: Some(flag), enabled: true }
+const fn toggle(label: &'static str, action: &'static str, flag: Flag, ready: Ready) -> Row {
+    Row { label, action: Some(action), sub: None, check: Some(flag), ready, enabled: true }
 }
 
 const fn sep() -> Row {
-    Row { label: "", action: None, sub: None, check: None, enabled: true }
+    Row { label: "", action: None, sub: None, check: None, ready: Ready::Always, enabled: true }
 }
 
 /// A row that opens a nested menu.
 const fn sub(label: &'static str, rows: &'static [Row]) -> Row {
-    Row { label, action: None, sub: Some(rows), check: None, enabled: true }
+    Row { label, action: None, sub: Some(rows), check: None, ready: Ready::Always, enabled: true }
 }
 
 /// Prefix for the things the core has never heard of. Sending one of these to
@@ -120,7 +168,7 @@ const FILE_ROWS: &[Row] = &[
     sep(),
     // The core's `undo` is scoped to surface lifecycle, which is what
     // "reopen the tab I just closed" is.
-    act("重开关闭的标签", "undo"),
+    act_gap("重开关闭的标签", "undo", "GHOSTTY_ACTION_UNDO(55) reaches this host and cb_action does not handle it; the closed-tab stack is task 105"),
     sep(),
     act("向右分屏", "new_split:right"),
     act("向左分屏", "new_split:left"),
@@ -136,16 +184,16 @@ const FIND_ROWS: &[Row] = &[
     act("查找…", "start_search"),
     // `s4.md` §3.2 called these `next_search_result` / `previous_search_result`;
     // the core has no such actions. It publishes one action with a direction.
-    act("下一个", "navigate_search:next"),
-    act("上一个", "navigate_search:previous"),
+    act_state("下一个", "navigate_search:next", "needs an open search"),
+    act_state("上一个", "navigate_search:previous", "needs an open search"),
     sep(),
-    act("隐藏查找条", "end_search"),
+    act_state("隐藏查找条", "end_search", "reports performed only if a search was open"),
 ];
 
 const EDIT_ROWS: &[Row] = &[
-    act("复制", "copy_to_clipboard"),
-    act("粘贴", "paste_from_clipboard"),
-    act("粘贴选区", "paste_from_selection"),
+    act_state("复制", "copy_to_clipboard", "needs a selection: Surface.zig returns false when there is none"),
+    act_gap("粘贴", "paste_from_clipboard", "cb_read_clipboard in main.rs returns false unconditionally; this host has no clipboard bridge yet"),
+    act_gap("粘贴选区", "paste_from_selection", "same stub clipboard callback as 粘贴"),
     act("全选", "select_all"),
     sep(),
     sub("查找", FIND_ROWS),
@@ -157,23 +205,39 @@ const VIEW_ROWS: &[Row] = &[
     act("缩小", "decrease_font_size:1"),
     sep(),
     act("命令面板", "toggle_command_palette"),
-    act("改标签标题…", "prompt_surface_title"),
+    // **Two rows, because the core has two actions and they do different
+    // things.** `prompt_tab_title` renames the tab and keeps the name against
+    // whatever the shell sets; `prompt_surface_title` renames this pane's
+    // terminal. macOS lists both side by side under View. This table had one
+    // row labelled for the first and wired to the second, which is a defect
+    // that looks like a working menu item: the dialog opens, a name is typed,
+    // and the wrong thing is renamed.
+    act_gap(
+        "改标签标题…",
+        "prompt_tab_title",
+        "GHOSTTY_ACTION_PROMPT_TITLE(37) is unhandled in cb_action",
+    ),
+    act_gap(
+        "改终端标题…",
+        "prompt_surface_title",
+        "GHOSTTY_ACTION_PROMPT_TITLE(37) is unhandled in cb_action",
+    ),
     // §3.2 called this `toggle_surface_read_only`; the core's name is shorter.
-    toggle("只读", "toggle_readonly", Flag::ReadOnly),
+    toggle("只读", "toggle_readonly", Flag::ReadOnly, Ready::Always),
     sep(),
     act("快速终端", "toggle_quick_terminal"),
     sep(),
-    act("终端检查器", "inspector:toggle"),
+    act_gap("终端检查器", "inspector:toggle", "GHOSTTY_ACTION_INSPECTOR(29) is unhandled in cb_action"),
 ];
 
 const AGENTS_ROWS: &[Row] = &[
     // §3.2 called this `poltergeist_conversations`; the core publishes
     // `poltergeist_toggle_chat`.
-    act("终端对话", "poltergeist_toggle_chat"),
+    act_gap("终端对话", "poltergeist_toggle_chat", "GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CHAT(12) is unhandled in cb_action"),
     sep(),
-    toggle("设为总管", "poltergeist_supervisor", Flag::Supervisor),
-    toggle("监督此终端", "poltergeist_toggle_watch", Flag::Watched),
-    toggle("禁止 agent 进入", "poltergeist_toggle_shielded", Flag::Shielded),
+    toggle("设为总管", "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
+    toggle("监督此终端", "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
+    toggle("禁止 agent 进入", "poltergeist_toggle_shielded", Flag::Shielded, Ready::Always),
     sep(),
     // Host rows: the core knows nothing about either page.
     act("插件…", "__polter_plugin_page"),
@@ -185,6 +249,7 @@ const AGENTS_ROWS: &[Row] = &[
         action: Some("__polter_language"),
         sub: None,
         check: None,
+        ready: Ready::HostGap("no language picker exists yet"),
         enabled: false,
     },
 ];
@@ -221,7 +286,12 @@ const WINDOW_ROWS: &[Row] = &[
     sep(),
     act("恢复默认大小", "reset_window_size"),
     sep(),
-    toggle("置顶", "toggle_window_float_on_top", Flag::FloatOnTop),
+    toggle(
+        "置顶",
+        "toggle_window_float_on_top",
+        Flag::FloatOnTop,
+        Ready::HostGap("GHOSTTY_ACTION_FLOAT_WINDOW(45) is unhandled in cb_action"),
+    ),
 ];
 
 const HELP_ROWS: &[Row] = &[
@@ -231,6 +301,7 @@ const HELP_ROWS: &[Row] = &[
         action: Some("__polter_help_docs"),
         sub: None,
         check: None,
+        ready: Ready::HostGap("no docs opener exists yet"),
         enabled: false,
     },
     sep(),
@@ -242,6 +313,7 @@ const HELP_ROWS: &[Row] = &[
         action: Some("check_for_updates"),
         sub: None,
         check: None,
+        ready: Ready::HostGap("block L is not built"),
         enabled: false,
     },
     act("重载配置", "reload_config"),
@@ -427,7 +499,20 @@ fn default_state(flag: Flag) -> Option<bool> {
     const ROLE_SUPERVISOR: u8 = 1;
     const ROLE_WATCHED: u8 = 2;
     match flag {
-        Flag::ReadOnly => Some(crate::hud::is_readonly()),
+        // **Of this surface, not of "the terminal".** Read-only is per
+        // surface; asking the global question ticked the row for a pane the
+        // menu was not about, which is task 108. The root menu acts on the
+        // active surface, so that is the one it must ask about -- a menu
+        // opened on some other surface (the tab and surface context menus)
+        // has to pass its own.
+        Flag::ReadOnly => {
+            let s = crate::tabs::active_surface() as usize;
+            if s == 0 {
+                None
+            } else {
+                Some(crate::hud::is_readonly_for(s))
+            }
+        }
         // **Nothing in this host is told about it yet.** `None` rather than
         // `Some(false)`: an unticked row and a row whose state nobody knows
         // look the same on screen, and only the log can tell them apart.
@@ -851,6 +936,8 @@ fn run_selftest(frame: HWND) {
         last.len()
     );
     let mut ok = 0usize;
+    let mut nothing_to_do = 0usize;
+    let mut not_built = 0usize;
     let mut failed = 0usize;
     let mut skipped = 0usize;
     for row in first.into_iter().chain(last) {
@@ -863,11 +950,46 @@ fn run_selftest(frame: HWND) {
         }
         if perform(frame, row) {
             ok += 1;
-        } else {
-            failed += 1;
+            // **The one that must not pass unnoticed.** A row marked as a
+            // missing piece of the host that now works means someone built it
+            // and this table still says they did not -- and the next reader
+            // takes the stale note as fact.
+            if let Ready::HostGap(why) = row.ready {
+                logf!(
+                    "[menu] selftest {:?} works now but is still marked not-built: {}",
+                    row.label,
+                    why
+                );
+            }
+            continue;
+        }
+        // **A false is sorted here, not counted here.** Which bucket it lands
+        // in was decided when the row was written, by someone who had read the
+        // core; deciding it from the result instead would make every failure
+        // explain itself away.
+        match row.ready {
+            Ready::Always => {
+                failed += 1;
+                logf!("[menu] selftest FAILED {:?}: nothing had to be true for this one", row.label);
+            }
+            Ready::NeedsState(why) => {
+                nothing_to_do += 1;
+                logf!("[menu] selftest nothing-to-do {:?}: {}", row.label, why);
+            }
+            Ready::HostGap(why) => {
+                not_built += 1;
+                logf!("[menu] selftest not-built {:?}: {}", row.label, why);
+            }
         }
     }
-    logf!("[menu] selftest done: {} ok, {} failed, {} skipped", ok, failed, skipped);
+    // **Five numbers, because they mean five things.** `failed` is the only
+    // one that is a defect; a run with `failed=0` and `not-built=7` is a menu
+    // working correctly on top of a host with seven pieces missing, and that
+    // is a different report from `failed=7`.
+    logf!(
+        "[menu] selftest done: {} ok, {} nothing-to-do (state), {} not-built (host gap), {} failed (should have worked), {} skipped",
+        ok, nothing_to_do, not_built, failed, skipped
+    );
 }
 
 /// `WM_APP` on the self-test's own window: the run happens here rather than in
@@ -1115,6 +1237,50 @@ mod tests {
         let mut want = vec!["语言…", "检查更新…", "Polter 帮助"];
         want.sort_unstable();
         assert_eq!(greyed, want);
+    }
+
+    /// The three buckets, counted. **Pinned so that building one of the
+    /// missing pieces has to come here and say so**: a row that starts
+    /// working while the table still calls it not-built turns the self-test's
+    /// summary into a stale note nobody rereads. The run-time counterpart is
+    /// the "works now but is still marked not-built" line.
+    #[test]
+    fn the_three_readiness_buckets_are_what_we_think() {
+        let rows = all_rows();
+        let leaves: Vec<_> = rows.iter().filter(|r| r.action.is_some()).collect();
+        let n = |f: fn(&Ready) -> bool| leaves.iter().filter(|r| f(&r.ready)).count();
+        assert_eq!(leaves.len(), 55);
+        assert_eq!(n(|r| matches!(r, Ready::Always)), 40, "unconditional rows");
+        assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 4, "state-dependent rows");
+        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 11, "rows this host does not answer yet");
+    }
+
+    /// Both non-trivial buckets have to say why, because the reason is what
+    /// the log line prints and a blank one reads as no reason at all.
+    #[test]
+    fn every_excused_row_says_why() {
+        for r in all_rows() {
+            match r.ready {
+                Ready::Always => {}
+                Ready::NeedsState(why) | Ready::HostGap(why) => {
+                    assert!(!why.trim().is_empty(), "{} is excused without a reason", r.label)
+                }
+            }
+        }
+    }
+
+    /// The two "rename" rows name the two different core actions. **They were
+    /// one row**, labelled for the tab and wired to the surface, and nothing
+    /// on screen could have told you: the dialog opens either way and the
+    /// wrong name lands somewhere plausible.
+    #[test]
+    fn the_two_title_rows_are_not_the_same_action() {
+        let rows = all_rows();
+        let find = |label: &str| {
+            rows.iter().find(|r| r.label == label).and_then(|r| r.action).unwrap_or("")
+        };
+        assert_eq!(find("改标签标题…"), "prompt_tab_title");
+        assert_eq!(find("改终端标题…"), "prompt_surface_title");
     }
 
     /// A greyed row still names something. **Greying is not a way to park a

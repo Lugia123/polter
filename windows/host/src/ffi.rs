@@ -108,6 +108,35 @@ pub const CLOSE_TAB_RIGHT: i32 = 2;
 
 pub const PLATFORM_WIN32: u32 = 3;
 
+// `ghostty_clipboard_e`.
+pub const CLIPBOARD_STANDARD: u32 = 0;
+pub const CLIPBOARD_SELECTION: u32 = 1;
+
+// `ghostty_clipboard_request_e`.
+pub const CLIPBOARD_REQUEST_PASTE: u32 = 0;
+pub const CLIPBOARD_REQUEST_OSC_52_READ: u32 = 1;
+pub const CLIPBOARD_REQUEST_OSC_52_WRITE: u32 = 2;
+
+/// `ghostty_clipboard_content_s`.
+///
+/// **The write callback is handed an array of these, not a string.** Both
+/// fields are `const char*`, so a host that reads the payload as one C string
+/// gets the *mime type* -- `text/plain` copied to the clipboard, every time,
+/// with no error anywhere. The pair is the reason this struct exists rather
+/// than a `*const c_char`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ClipboardContent {
+    pub mime: *const c_char,
+    pub data: *const c_char,
+}
+
+// `ghostty_target_tag_e`. **The union only has a surface in it**, so when
+// the tag says `APP` the `surface` field is not a surface -- reading it is
+// how a per-surface fact gets recorded against a pointer that names nothing.
+pub const TARGET_APP: u32 = 0;
+pub const TARGET_SURFACE: u32 = 1;
+
 #[repr(C)]
 pub struct Target {
     pub tag: u32,
@@ -200,9 +229,26 @@ impl Action {
 
 pub type WakeupCb = extern "C" fn(*mut c_void);
 pub type ActionCb = extern "C" fn(App, Target, Action) -> bool;
+/// `(surface userdata, ghostty_clipboard_e, request state) -> started`.
+///
+/// **The return value carries an ownership contract**, and it is the one
+/// thing in this file that leaks if it is got wrong. `embedded.zig`
+/// (`clipboardRequest`) allocates the request state before calling this:
+///
+///  * return `false` and the core destroys that state -- the safe answer, and
+///    the right one for *every* failure path here;
+///  * return `true` and the host has promised to call
+///    `ghostty_surface_complete_clipboard_request` with that same pointer.
+///    Returning `true` and then bailing out leaks the request, silently.
 pub type ReadClipboardCb = extern "C" fn(*mut c_void, u32, *mut c_void) -> bool;
 pub type ConfirmReadClipboardCb = extern "C" fn(*mut c_void, *const c_char, *mut c_void, u32);
-pub type WriteClipboardCb = extern "C" fn(*mut c_void, u32, *const c_void, usize, bool);
+/// `(surface userdata, ghostty_clipboard_e, contents, count, confirm)`.
+///
+/// The first argument is **the surface's** userdata -- our pane id -- not the
+/// runtime's. `embedded.zig` passes `self.userdata` from the `Surface`, and
+/// `RuntimeConfig.userdata` (which is null) never reaches here.
+pub type WriteClipboardCb =
+    extern "C" fn(*mut c_void, u32, *const ClipboardContent, usize, bool);
 pub type CloseSurfaceCb = extern "C" fn(*mut c_void, bool);
 
 /// `ghostty_input_key_s`.
@@ -334,6 +380,16 @@ pub struct Api {
     /// self-test is evidence about the *action* path and says nothing about
     /// the keyboard.
     pub surface_binding_action: unsafe extern "C" fn(Surface, *const u8, usize) -> bool,
+    /// The second half of a paste. `read_clipboard_cb` only says a request
+    /// **started**; the text arrives back through here, against the same
+    /// `state` pointer the callback was handed.
+    ///
+    /// **Its absence from this struct is the whole of "paste does nothing".**
+    /// Without the symbol there is no way to finish a request, which makes
+    /// `cb_read_clipboard`'s hard-coded `false` the only self-consistent thing
+    /// it could have been.
+    pub surface_complete_clipboard_request:
+        unsafe extern "C" fn(Surface, *const c_char, *mut c_void, bool),
 
     // --- keyboard ---
     /// The real input entry point. `surface_text` only ever meant "these

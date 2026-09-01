@@ -84,56 +84,56 @@ const SEP: Row = Row { label: "", action: None, tick: None };
 /// `start_search`. That mismatch is the same one the palette has, and it is
 /// being fixed there separately.
 const ROWS: &[Row] = &[
-    item("Copy", "copy_to_clipboard"),
-    item("Paste", "paste_from_clipboard"),
-    item("Select All", "select_all"),
+    item("复制", "copy_to_clipboard"),
+    item("粘贴", "paste_from_clipboard"),
+    item("全选", "select_all"),
     SEP,
-    item("Find…", "start_search"),
+    item("查找…", "start_search"),
     SEP,
-    item("New Tab", "new_tab"),
+    item("新建标签", "new_tab"),
     // **Not here because the strip's close cross is missing** -- it is not; a
     // test in `strip.rs` now pins that it never can be. It is here because
     // this is a second place to look, and the one place a person who has not
     // noticed the cross would think to look next. The alternative they reach
     // for otherwise is the window's ×, which takes every other tab with it.
-    item("Close Tab", "close_tab:this"),
+    item("关闭标签", "close_tab:this"),
     SEP,
     // All four directions, because macOS has all four. Two of them were
     // missing here, and a split menu that offers right and down but not left
     // and up reads as "this terminal cannot split left", not as "this menu is
     // short".
-    item("Split Right", "new_split:right"),
-    item("Split Left", "new_split:left"),
-    item("Split Down", "new_split:down"),
-    item("Split Up", "new_split:up"),
+    item("向右分屏", "new_split:right"),
+    item("向左分屏", "new_split:left"),
+    item("向下分屏", "new_split:down"),
+    item("向上分屏", "new_split:up"),
     SEP,
-    item("Reset Terminal", "reset"),
-    item("Toggle Terminal Inspector", "inspector:toggle"),
-    checkable("Terminal Read-only", "toggle_readonly", Tick::Readonly),
+    item("重置终端", "reset"),
+    item("终端检查器", "inspector:toggle"),
+    checkable("只读", "toggle_readonly", Tick::Readonly),
     SEP,
     // Two different titles, and they are genuinely different: the tab title
     // sticks to the tab and survives focus moving inside it, the surface
     // title is this pane's. The core has a separate action for each.
-    item("Change Tab Title…", "prompt_tab_title"),
-    item("Change Terminal Title…", "prompt_surface_title"),
+    item("改标签标题…", "prompt_tab_title"),
+    item("改终端标题…", "prompt_surface_title"),
     SEP,
     checkable(
-        "Make This Terminal a Supervisor",
+        "设为总管",
         "poltergeist_supervisor",
         Tick::PgSupervisor,
     ),
     checkable(
-        "Supervise This Terminal",
+        "监督此终端",
         "poltergeist_toggle_watch",
         Tick::PgWatched,
     ),
     checkable(
-        "Keep Agents Out of This Terminal",
+        "禁止 agent 进入",
         "poltergeist_toggle_shielded",
         Tick::PgShielded,
     ),
     SEP,
-    item("All commands…", "toggle_command_palette"),
+    item("命令面板", "toggle_command_palette"),
 ];
 
 /// Command ids start here so they cannot collide with anything Windows sends.
@@ -199,10 +199,23 @@ fn binding_on(surface: Surface, name: &str) -> bool {
     unsafe { (crate::api().surface_binding_action)(surface, name.as_ptr(), name.len()) }
 }
 
-/// Whether a tick is on, given the mark for this surface.
-fn tick_state(mark: Option<(u8, bool)>, t: Tick) -> bool {
+/// Whether a tick is on, for **this** surface.
+///
+/// Every one of the four reads is scoped to the surface the menu was opened
+/// on. Nothing here asks what is focused, and that is the whole point: with a
+/// split open, the pane under the pointer and the pane with focus are two
+/// different terminals that look the same on screen, so a tick sourced from
+/// "current" is wrong in exactly the cases nobody sets up to test.
+///
+/// This is the third member of one family, all now reading the same
+/// `surface` variable: **which surface the action runs on** (fixed earlier),
+/// **which surface the mark belongs to** (`tabs::mark_for_surface`), and
+/// **which surface the state is about** (`hud::is_readonly_for`).
+/// `hud::is_readonly()` exists and resolves the focused surface -- its own
+/// doc comment says a menu must not use it.
+fn tick_state(surface: Surface, mark: Option<(u8, bool)>, t: Tick) -> bool {
     match t {
-        Tick::Readonly => crate::hud::is_readonly(),
+        Tick::Readonly => crate::hud::is_readonly_for(surface as usize),
         // **Three bits, read three times.** Sharing one getter between the
         // three is the most natural way to write this and would tick all
         // three together, which no test that only looks at one row can see.
@@ -277,7 +290,7 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
     // clicked, and this is the same question one window down.
     let surface = crate::tabs::surface_of(surface_hwnd);
     let mark = mark_of(surface);
-    let items = build(&|a| crate::keys::shortcut_for(a), &|t| tick_state(mark, t));
+    let items = build(&|a| crate::keys::shortcut_for(a), &|t| tick_state(surface, mark, t));
 
     unsafe {
         let menu = match CreatePopupMenu() {
@@ -426,6 +439,12 @@ mod tests {
         false
     }
 
+    /// The tick tests below probe the three poltergeist bits, which come from
+    /// the `mark` argument and never touch the surface. A null one keeps them
+    /// honest about that: if one of them ever started reading the surface,
+    /// it would have to say so.
+    const NO_SURFACE: Surface = std::ptr::null_mut();
+
     #[test]
     fn separators_carry_no_action_and_items_all_do() {
         for r in ROWS {
@@ -522,8 +541,8 @@ mod tests {
         let a = label_of(&build(&default_cfg, &no_ticks));
         let b = label_of(&build(&rebound_cfg, &no_ticks));
 
-        assert_eq!(a, "Copy\tCtrl+Shift+C");
-        assert_eq!(b, "Copy\tAlt+Y");
+        assert_eq!(a, "复制\tCtrl+Shift+C");
+        assert_eq!(b, "复制\tAlt+Y");
         assert_ne!(
             a, b,
             "the label must follow the config; a constant would make these equal"
@@ -701,21 +720,21 @@ mod tests {
     /// dropped -- e.g. by testing `!= none` for both.
     #[test]
     fn supervisor_and_watched_are_mutually_exclusive() {
-        assert!(tick_state(Some((ROLE_SUPERVISOR, false)), Tick::PgSupervisor));
-        assert!(!tick_state(Some((ROLE_SUPERVISOR, false)), Tick::PgWatched));
+        assert!(tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false)), Tick::PgSupervisor));
+        assert!(!tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false)), Tick::PgWatched));
 
-        assert!(!tick_state(Some((ROLE_WATCHED, false)), Tick::PgSupervisor));
-        assert!(tick_state(Some((ROLE_WATCHED, false)), Tick::PgWatched));
+        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false)), Tick::PgSupervisor));
+        assert!(tick_state(NO_SURFACE, Some((ROLE_WATCHED, false)), Tick::PgWatched));
     }
 
     /// The shield is independent of the role: a shielded terminal that is
     /// neither supervisor nor watched must tick exactly one row.
     #[test]
     fn the_shield_is_its_own_bit() {
-        assert!(tick_state(Some((0, true)), Tick::PgShielded));
-        assert!(!tick_state(Some((0, true)), Tick::PgSupervisor));
-        assert!(!tick_state(Some((0, true)), Tick::PgWatched));
-        assert!(!tick_state(Some((ROLE_WATCHED, false)), Tick::PgShielded));
+        assert!(tick_state(NO_SURFACE, Some((0, true)), Tick::PgShielded));
+        assert!(!tick_state(NO_SURFACE, Some((0, true)), Tick::PgSupervisor));
+        assert!(!tick_state(NO_SURFACE, Some((0, true)), Tick::PgWatched));
+        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false)), Tick::PgShielded));
     }
 
     /// **Never told is not "all off".** Both draw unticked; only the log line
@@ -724,7 +743,7 @@ mod tests {
     #[test]
     fn an_unknown_mark_ticks_nothing_and_is_not_role_none() {
         for t in [Tick::PgSupervisor, Tick::PgWatched, Tick::PgShielded] {
-            assert!(!tick_state(None, t), "{t:?} ticked with no mark at all");
+            assert!(!tick_state(NO_SURFACE, None, t), "{t:?} ticked with no mark at all");
         }
         // The distinction this test exists to protect: the two cases are
         // different values, so a caller can tell them apart.

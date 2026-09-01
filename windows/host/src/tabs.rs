@@ -611,6 +611,10 @@ fn create_pane(
     // A window TSF has never seen has no document until it is told, and the
     // failure is silent: the IME looks switched on and nothing composes.
     crate::ime_attach(child);
+    // Dropped files land on a pane, so the drop target is registered per
+    // pane, the same as the IME document above. `quick.rs` does this for its
+    // own surface already; the tabs' panes were the ones nobody had wired.
+    crate::dnd::attach(child);
     logf!("[pane] {} surface = {:?}", id, s);
 
     Some(Pane {
@@ -1167,6 +1171,11 @@ pub fn active_index() -> usize {
 /// **A log line on each side of both names which one, and a duration says
 /// whether it was slow or stopped.**
 fn free_pane(id: PaneId, hwnd: isize, surface: usize) {
+    // **Before `DestroyWindow`, not after.** `RevokeDragDrop` reaches OLE,
+    // which is holding a reference to the drop target, which is holding this
+    // HWND. Destroy the window first and OLE is left clutching a dead handle
+    // -- and nothing says so at the time.
+    crate::dnd::detach(HWND(hwnd as *mut c_void));
     let t0 = std::time::Instant::now();
     logf!("[close] pane {} -> ghostty_surface_free …", id);
     unsafe {
@@ -1207,36 +1216,125 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
     logf!("[tab] closed index {}; count now {}", idx, count());
 }
 
-fn copy_to_clipboard(text: &str) -> bool {
+/// `CF_UNICODETEXT`. Spelled numerically because the constant lives behind a
+/// feature this crate does not otherwise need.
+const CF_UNICODETEXT: u32 = 13;
+
+/// Put text on the Windows clipboard.
+///
+/// **Returns why, not just whether.** The defect this was pulled out of was
+/// precisely a clipboard write that reported success and did nothing, so
+/// "tried" and "succeeded" have to be two different readings, and a failure
+/// that cannot say which of four calls failed is barely better than a `false`.
+pub fn copy_to_clipboard(text: &str) -> Result<(), &'static str> {
     use windows::Win32::System::DataExchange::*;
     use windows::Win32::System::Memory::*;
     let mut wide: Vec<u16> = text.encode_utf16().collect();
     wide.push(0);
     let bytes = wide.len() * 2;
     unsafe {
+        // The clipboard is a machine-wide resource and another process can be
+        // holding it. This is the failure a user actually hits, and it is
+        // transient, so it has to be distinguishable from the rest.
         if OpenClipboard(None).is_err() {
-            return false;
+            return Err("OpenClipboard denied (another process holds it)");
         }
         let _ = EmptyClipboard();
         let h = match GlobalAlloc(GMEM_MOVEABLE, bytes) {
             Ok(h) => h,
             Err(_) => {
                 let _ = CloseClipboard();
-                return false;
+                return Err("GlobalAlloc failed");
             }
         };
         let p = GlobalLock(h);
         if p.is_null() {
+            // **`GlobalFree` before returning.** Ownership of `h` passes to
+            // the clipboard only when `SetClipboardData` succeeds; on every
+            // path before that it is still ours, and the previous version
+            // dropped it -- leaking one block per failed copy.
+            let _ = windows::Win32::Foundation::GlobalFree(Some(h));
             let _ = CloseClipboard();
-            return false;
+            return Err("GlobalLock failed");
         }
         std::ptr::copy_nonoverlapping(wide.as_ptr(), p as *mut u16, wide.len());
         let _ = GlobalUnlock(h);
-        // CF_UNICODETEXT. Ownership of `h` passes to the clipboard on success.
-        let ok = SetClipboardData(13u32, Some(windows::Win32::Foundation::HANDLE(h.0))).is_ok();
+        let ok = SetClipboardData(CF_UNICODETEXT, Some(windows::Win32::Foundation::HANDLE(h.0)))
+            .is_ok();
+        if !ok {
+            // Same rule: it did not take ownership, so it is still ours.
+            let _ = windows::Win32::Foundation::GlobalFree(Some(h));
+        }
         let _ = CloseClipboard();
-        ok
+        if ok {
+            Ok(())
+        } else {
+            Err("SetClipboardData failed")
+        }
     }
+}
+
+/// Read text off the Windows clipboard.
+///
+/// `CF_UNICODETEXT` only: Windows synthesises it from `CF_TEXT` for us, so
+/// asking for the one format covers both without a conversion of our own.
+pub fn read_clipboard_text() -> Result<String, &'static str> {
+    use windows::Win32::System::DataExchange::*;
+    use windows::Win32::System::Memory::*;
+    unsafe {
+        if !IsClipboardFormatAvailable(CF_UNICODETEXT).is_ok() {
+            // Not an error worth alarming about -- an image on the clipboard
+            // reaches here -- but it is a different outcome from a failure to
+            // open, and the log has to say which.
+            return Err("clipboard has no CF_UNICODETEXT");
+        }
+        if OpenClipboard(None).is_err() {
+            return Err("OpenClipboard denied (another process holds it)");
+        }
+        let h = match GetClipboardData(CF_UNICODETEXT) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = CloseClipboard();
+                return Err("GetClipboardData failed");
+            }
+        };
+        let hg = windows::Win32::Foundation::HGLOBAL(h.0);
+        let p = GlobalLock(hg) as *const u16;
+        if p.is_null() {
+            let _ = CloseClipboard();
+            return Err("GlobalLock failed");
+        }
+        // **The handle belongs to the clipboard, not to us**: it is locked and
+        // unlocked, never freed, and it must not be read after CloseClipboard.
+        let mut n = 0usize;
+        while *p.add(n) != 0 {
+            n += 1;
+        }
+        let text = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+        let _ = GlobalUnlock(hg);
+        let _ = CloseClipboard();
+        Ok(text)
+    }
+}
+
+/// The surface belonging to a pane id.
+///
+/// **Both clipboard callbacks are handed a pane id**, because `embedded.zig`
+/// passes the *surface's* userdata (`self.userdata`), not the runtime's --
+/// which is null. So a paste can be completed against the surface that asked
+/// for it, and neither callback has to fall back to "whichever surface has
+/// focus". That fallback would be wrong in exactly the way tonight's other
+/// three defects were wrong, and here it costs nothing to avoid.
+pub fn surface_of_pane(pane: u64) -> Surface {
+    let st = state();
+    for tab in st.tabs.iter() {
+        for p in tab.panes.iter() {
+            if p.id == pane {
+                return p.surface as Surface;
+            }
+        }
+    }
+    std::ptr::null_mut()
 }
 
 fn go_fullscreen(frame: HWND) {
@@ -1434,7 +1532,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                         .map(|t| t.title.clone())
                         .unwrap_or_default()
                 };
-                let ok = copy_to_clipboard(&title);
+                let ok = copy_to_clipboard(&title).is_ok();
                 logf!("[win] copy_title_to_clipboard {:?} -> {}", title, ok);
             }
             Op::NewSplit(dir) => {

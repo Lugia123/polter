@@ -395,6 +395,26 @@ pub fn format_trigger(t: TriggerC) -> Option<String> {
     }
 }
 
+/// The raw trigger bound to a core action right now.
+///
+/// `shortcut_for` renders this for display; a caller that has to *act* on the
+/// binding -- `RegisterHotKey` needs a virtual-key code, not a label -- needs
+/// the numbers instead. Same lookup, same no-caching rule.
+pub fn trigger_for(action: &str) -> Option<TriggerC> {
+    let f = config_trigger_fn()?;
+    let cfg = crate::config_handle();
+    if cfg.is_null() {
+        return None;
+    }
+    let t = unsafe { f(cfg, action.as_ptr(), action.len()) };
+    // Same "no binding" probe as `format_trigger`, so the two cannot disagree
+    // about whether an action is bound.
+    if t.tag == TRIGGER_CATCH_ALL || (t.tag == TRIGGER_PHYSICAL && t.key == KEY_UNIDENTIFIED) {
+        return None;
+    }
+    Some(t)
+}
+
 /// The key combination bound to a core action right now, e.g.
 /// `shortcut_for("copy_to_clipboard")` -> `Some("Ctrl+Shift+C")`.
 ///
