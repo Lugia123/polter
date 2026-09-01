@@ -98,3 +98,23 @@ them fails loudly** when broken.
 
 `docs/windows/status.md` -- what is verified on a real machine and what is
 still owed. Claims there are marked 实测 or not; unmarked means untested.
+
+## 提交前要跑的检查
+
+`windows/tools/` 下每一个 `.py` 都是一道闸,**提交前全部跑一遍**——不是挑着跑:
+
+```sh
+for t in windows/tools/*.py; do python3 "$t" || echo "FAILED: $t"; done
+python3 tools/no-local-identifiers.py     # 仓库根,不在这个目录里
+```
+
+**这里不列它们的名字,也不列个数。** 上一版文档写了「三个 lint」并把名字抄了一遍,
+**当天就多了第四个,而那句话没人改**——一份会过期的清单比没有清单更糟,
+因为读的人以为它是全的。glob 不会过期。
+
+每一道闸都带自我检查(`probe self-test: OK`),**那一行不出现就说明检查器本身没工作**;
+`no-local-identifiers.py` 还带一个正控制。**读输出,不要只读退出码**:
+其中一道是棘轮——数字比基线低也会失败,消息会告诉你把基线改成多少。
+
+⚠️ **在一棵已经红的树上做地板注入时,比对具体那一行,不要看退出码**:
+树本来就是红的,于是任何地板都看起来响了。

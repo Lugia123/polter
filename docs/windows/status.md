@@ -1284,8 +1284,9 @@ RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCOD
     > **一个没人跑的检查器,和一个不存在的检查器,产出完全一样。**
     > 而前者更贵:它让下一个人以为这个形状已经被守住了。
 
-    落地:提交前跑 `windows/tools/` 下的三个 lint
-    (`lock-reentry.py` / `borrow-across-dispatch.py` / `watchdog-alarm-path.py`),
+    落地:提交前跑 `windows/tools/` 下的全部 lint
+    (⚠️ **别在这里数个数**——写「三个」的那一版当天就过期了,现在是四个;
+    清单在 `windows/AGENTS.md`,那是改这棵子树前必读的那份),
     和构建、扫描同一档。**再写第二个检查器是把同一个事实存两份**——
     今晚数到的第八次。正确的做法是:发现现有的那个盖不到,就去补它,
     连同新地板一起加进它的自测。
