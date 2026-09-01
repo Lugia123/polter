@@ -30,6 +30,7 @@
 //! `tabs.rs`. TSF is apartment-bound to the main thread and is only ever
 //! touched from there.
 
+mod ctxmenu;
 mod divider;
 mod ffi;
 mod keys;

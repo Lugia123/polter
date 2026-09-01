@@ -1,0 +1,39 @@
+# Words a person is likely to type, and the command the core actually publishes.
+#
+# **This is an index, not a naming.** Nothing here renames anything: each line
+# says "if they type the left, they mean the right". A line whose right-hand
+# side no longer exists therefore degrades to today's behaviour -- the search
+# simply does not match -- rather than pointing at the wrong command. The
+# startup log reports how many lines have no matching command, so a stale one
+# is visible rather than silent.
+#
+# Every line came from comparing macOS's MainMenu.xib against the core's own
+# command list; 20 of that menu's 69 commands are the same action under a
+# different word. Adding a line from memory is exactly what the Zig test
+# `test "palette synonyms name real commands"` exists to catch.
+#
+# Format: <what they type> = <the core's title>
+find = Start Search
+search = Start Search
+find next = Next Search Result
+find previous = Previous Search Result
+hide find bar = End Search
+use selection for find = Search Selection
+copy = Copy to Clipboard
+paste = Paste from Clipboard
+paste selection = Paste from Selection
+zoom split = Toggle Split Zoom
+select split above = Focus Split: Up
+select split below = Focus Split: Down
+select split left = Focus Split: Left
+select split right = Focus Split: Right
+select previous split = Focus Split: Previous
+select next split = Focus Split: Next
+return to default size = Reset Window Size
+preferences = Open Config Using OS editor
+settings = Open Config Using OS editor
+secure keyboard entry = Toggle Secure Input
+jump to selection = Scroll to Selection
+terminal read-only = Toggle Read-Only Mode
+toggle full screen = Toggle Fullscreen
+full screen = Toggle Fullscreen

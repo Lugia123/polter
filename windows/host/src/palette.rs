@@ -80,7 +80,27 @@ struct Command {
     description: String,
     /// Lowercased title, kept so filtering does not re-allocate per keystroke.
     haystack: String,
+    /// Extra lowercased words from `synonyms.txt`, matched separately so a
+    /// synonym can win on its own without polluting the title's own score.
+    aliases: Vec<String>,
 }
+
+/// Extra words that reach a command, on top of its own title.
+///
+/// **Why this exists.** 20 of the 69 commands on macOS's menu bar are the same
+/// action the core publishes under a different word: someone typing `Find`
+/// gets nothing, because the core calls it `Start Search`. **No code is wrong
+/// in that story** -- the command is there, the palette works, the search
+/// works -- and every acceptance criterion we had was asking whether the
+/// function was correct.
+///
+/// **It is an index, not a naming.** A line whose command no longer exists
+/// stops matching, which is the behaviour without any of this; it cannot
+/// point somewhere wrong. `load_synonyms` reports how many lines found no
+/// command, so a stale one is a number in the log rather than silence, and
+/// `test "palette synonyms name real commands"` in `src/input/command.zig`
+/// fails the build if a line names a command the core does not publish.
+const SYNONYMS: &str = include_str!("synonyms.txt");
 
 struct State {
     edit: HWND,
@@ -179,15 +199,67 @@ fn load_commands(config: Config) -> Vec<Command> {
             continue;
         }
         let haystack = title.to_lowercase();
+        let aliases = synonyms_for(&title);
         out.push(Command {
             action,
             title,
             description: unsafe { cstr(c.description) },
             haystack,
+            aliases,
         });
     }
     logf!("[palette] loaded {} commands from the core", out.len());
+    audit_synonyms(&out);
     out
+}
+
+/// Parse `synonyms.txt` into `(typed word, core title)` pairs.
+fn synonym_pairs() -> Vec<(String, String)> {
+    SYNONYMS
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let (a, b) = l.split_once('=')?;
+            Some((a.trim().to_lowercase(), b.trim().to_string()))
+        })
+        .collect()
+}
+
+fn synonyms_for(title: &str) -> Vec<String> {
+    synonym_pairs()
+        .into_iter()
+        .filter(|(_, t)| t == title)
+        .map(|(w, _)| w)
+        .collect()
+}
+
+/// **The floor.** Counts the lines whose command the core did not publish, by
+/// name, at startup.
+///
+/// A synonym pointing at a command that no longer exists is harmless -- it
+/// just never matches -- but it is also invisible, and an index nobody can
+/// tell is stale is one people stop trusting. One line makes it a reading.
+fn audit_synonyms(commands: &[Command]) {
+    let pairs = synonym_pairs();
+    let mut orphaned: Vec<&str> = Vec::new();
+    for (_, title) in &pairs {
+        if !commands.iter().any(|c| &c.title == title) {
+            orphaned.push(title);
+        }
+    }
+    orphaned.sort_unstable();
+    orphaned.dedup();
+    logf!(
+        "[palette] synonyms: {} lines, {} naming no command{}",
+        pairs.len(),
+        orphaned.len(),
+        if orphaned.is_empty() {
+            String::new()
+        } else {
+            format!(" -> {:?}", orphaned)
+        }
+    );
 }
 
 // ---------------------------------------------------------------- filtering
@@ -243,7 +315,18 @@ fn refilter(st: &mut State, needle: &str) {
         .commands
         .iter()
         .enumerate()
-        .filter_map(|(i, c)| score(&c.haystack, &needle).map(|s| (s, i)))
+        .filter_map(|(i, c)| {
+            // The best of the title and any synonym. **A synonym never beats a
+            // real title match by more than it should**: it is scored by the
+            // same function, so `find` matching the alias of `Start Search`
+            // ranks against `find` matching some other command's title on
+            // equal terms.
+            let best = std::iter::once(&c.haystack)
+                .chain(c.aliases.iter())
+                .filter_map(|h| score(h, &needle))
+                .max()?;
+            Some((best, i))
+        })
         .collect();
     // Stable by score, then by the core's own ordering, so equal scores do not
     // shuffle between keystrokes.

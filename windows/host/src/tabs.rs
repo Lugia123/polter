@@ -1476,6 +1476,20 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             }
 
             // Fallback for anything the core did not consume as a key.
+            // The right button. **The host handled no right-button message at
+            // all before this**; a person who selected text and reached for it
+            // got nothing back, which is the whole of what
+            // `discoverability.md` D2 asks about.
+            //
+            // `WM_CONTEXTMENU` rather than `WM_RBUTTONUP`: it is the message
+            // Windows sends for *every* way of asking for a context menu,
+            // including the keyboard's menu key, and handling the mouse one
+            // alone would leave that path silent.
+            WM_CONTEXTMENU => {
+                crate::ctxmenu::on_context_menu(hwnd, lp.0);
+                LRESULT(0)
+            }
+
             WM_CHAR => {
                 let s = surface_of(hwnd);
                 let c = wp.0 as u16;

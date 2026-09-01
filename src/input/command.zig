@@ -790,6 +790,80 @@ fn actionCommands(action: Action.Key) []const Command {
     return result;
 }
 
+test "palette synonyms name real commands" {
+    // **The floor for `windows/host/src/synonyms.txt`.** That file maps words
+    // a person is likely to type onto the commands this list publishes -- 20
+    // of macOS's 69 menu commands are the same action under a different word,
+    // so somebody typing `Find` into the command palette gets nothing because
+    // the core calls it `Start Search`.
+    //
+    // The risk in such a table is not that it breaks anything: a line naming a
+    // command that does not exist simply stops matching. The risk is that it
+    // is **invisible when stale**, and an index nobody can tell is out of date
+    // is one people stop trusting. This test is the only place that can see
+    // both sides -- the table is data, and the command list is right here.
+    //
+    // It deliberately checks the direction that can go wrong. A word nobody
+    // types is harmless; a command name that no longer exists is the failure.
+    // Read rather than `@embedFile`d: the table lives in the Windows host's
+    // crate, which is outside this package, and Zig will not embed across that
+    // boundary. The path is relative to the repository root, which is where
+    // `zig build test` runs from.
+    //
+    // **A missing file fails the test rather than skipping it.** A skip here
+    // would mean the floor quietly stops existing the first time someone runs
+    // the suite from another directory, and nothing would say so.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const table = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "windows/host/src/synonyms.txt",
+        alloc,
+        .limited(64 * 1024),
+    ) catch |err| {
+        std.debug.print(
+            "cannot read windows/host/src/synonyms.txt ({t}). " ++
+                "Run `zig build test` from the repository root.\n",
+            .{err},
+        );
+        return error.SynonymTableUnreadable;
+    };
+
+    var lines = std.mem.splitScalar(u8, table, '\n');
+    var checked: usize = 0;
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const title = std.mem.trim(u8, line[eq + 1 ..], " \t\r");
+
+        var found = false;
+        for (defaults) |cmd| {
+            if (std.mem.eql(u8, cmd.title, title)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std.debug.print(
+                "synonyms.txt names a command this list does not publish: \"{s}\"\n",
+                .{title},
+            );
+            return error.UnknownCommandTitle;
+        }
+        checked += 1;
+    }
+
+    // A table that parsed to nothing would pass every assertion above. **The
+    // one number that says the test did any work at all.**
+    try std.testing.expect(checked >= 20);
+}
+
 test "command defaults" {
     // This just ensures that defaults is analyzed and works.
     const testing = std.testing;

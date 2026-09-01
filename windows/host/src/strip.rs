@@ -55,6 +55,20 @@ pub struct Slot {
     pub close: RECT,
 }
 
+/// The close cross's side, in pixels.
+fn close_side_px(scale: f64) -> i32 {
+    (14.0 * scale) as i32
+}
+
+/// Does a tab this wide have room for its close cross?
+///
+/// **Split out of `slots` so it can be tested**, because the answer being
+/// "always yes" is a property of two constants that live far apart
+/// (`TAB_MIN_W` here, the factor below) and nothing connected them.
+fn tab_shows_close(tw: i32, scale: f64) -> bool {
+    tw > close_side_px(scale) * 4
+}
+
 /// Room the overflow button takes when there is one.
 const OVERFLOW_W: i32 = 22;
 
@@ -105,8 +119,8 @@ fn overflow_rect(strip_w: i32, scale: f64, sh: i32) -> RECT {
 /// `HTCAPTION` so the window can be dragged by it. Getting it backwards makes
 /// tabs look broken rather than making the window look wrong.
 pub fn is_interactive(frame: HWND, x: i32, y: i32) -> bool {
-    let (slots, overflow) = slots(frame);
-    hit(&slots, overflow, x, y) != Hit::None
+    let (slots, overflow, new) = slots(frame);
+    hit(&slots, overflow, new, x, y) != Hit::None
 }
 
 /// The tabs' geometry, and the overflow button's if there is one.
@@ -114,13 +128,26 @@ pub fn is_interactive(frame: HWND, x: i32, y: i32) -> bool {
 /// The scroll offset is clamped here rather than where it is changed: the
 /// number of tabs can change without the pointer touching anything, and a
 /// stale offset would leave the strip scrolled past its own end.
-fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>) {
+/// Where the `+` goes: straight after the last tab, the way every browser
+/// puts it, and pinned to the right end when the tabs no longer fit.
+///
+/// **Pinned rather than dropped.** A `+` that disappears once there are
+/// enough tabs teaches the user it was never there; one that stays put is
+/// still where they last saw it.
+fn new_rect(strip_w: i32, scale: f64, sh: i32, after_tabs: i32, overflowing: bool) -> RECT {
+    let w = (OVERFLOW_W as f64 * scale) as i32;
+    let right_limit = if overflowing { strip_w - w } else { strip_w };
+    let left = after_tabs.min(right_limit - w).max(0);
+    RECT { left, top: 0, right: left + w, bottom: sh }
+}
+
+fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>, RECT) {
     let (tabs_now, _) = tabs::strip_snapshot();
     let scale = tabs::scale_of();
     let mut rc = RECT::default();
     unsafe {
         if GetClientRect(frame, &mut rc).is_err() {
-            return (Vec::new(), None);
+            return (Vec::new(), None, RECT::default());
         }
     }
     let sh = strip_h(scale);
@@ -138,7 +165,7 @@ fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>) {
         u.scroll
     });
 
-    let close_side = (14.0 * scale) as i32;
+    let close_side = close_side_px(scale);
     let slots = tabs_now
         .into_iter()
         .enumerate()
@@ -147,7 +174,7 @@ fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>) {
             let rect = RECT { left: x, top: 0, right: x + tw - 1, bottom: sh };
             // The close button only earns its space once the tab is wide
             // enough that it does not swallow the label.
-            let close = if tw > close_side * 4 {
+            let close = if tab_shows_close(tw, scale) {
                 RECT {
                     left: rect.right - close_side - (6.0 * scale) as i32,
                     top: (sh - close_side) / 2,
@@ -160,9 +187,11 @@ fn slots(frame: HWND) -> (Vec<Slot>, Option<RECT>) {
             Slot { id, rect, close }
         })
         .collect();
+    let after_tabs = n as i32 * tw - scroll;
     (
         slots,
         overflowing.then(|| overflow_rect(strip_w, scale, sh)),
+        new_rect(strip_w, scale, sh, after_tabs, overflowing),
     )
 }
 
@@ -177,14 +206,25 @@ pub enum Hit {
     Tab(TabId),
     Close(TabId),
     Overflow,
+    /// The `+`. **Added 2026-09-02**: the strip had no target for "make
+    /// another one of these", so the only way to open a tab was a keyboard
+    /// shortcut nobody is told about. `docs/windows/discoverability.md` §3.1
+    /// quotes this enum as the evidence that D1 could not pass; that quote
+    /// needs updating now that this variant exists.
+    New,
 }
 
-fn hit(slots: &[Slot], overflow: Option<RECT>, x: i32, y: i32) -> Hit {
+fn hit(slots: &[Slot], overflow: Option<RECT>, new: RECT, x: i32, y: i32) -> Hit {
     // The button sits on top of whatever the strip scrolled under it.
     if let Some(r) = overflow {
         if contains(&r, x, y) {
             return Hit::Overflow;
         }
+    }
+    // Before the tabs: when the strip is full the `+` is pinned over the end
+    // of the last tab, and the thing on top is the thing that was clicked.
+    if contains(&new, x, y) {
+        return Hit::New;
     }
     for s in slots.iter() {
         if contains(&s.close, x, y) {
@@ -260,8 +300,15 @@ fn repaint(frame: HWND) {
 // ------------------------------------------------------------------- mouse
 
 pub fn on_button_down(frame: HWND, x: i32, y: i32) {
-    let (slots, overflow) = slots(frame);
-    match hit(&slots, overflow, x, y) {
+    let (slots, overflow, new) = slots(frame);
+    match hit(&slots, overflow, new, x, y) {
+        // Straight to the core's own action, the same one the keyboard bind
+        // reaches. The strip does not know how to make a tab and should not
+        // learn.
+        Hit::New => {
+            let ok = crate::binding("new_tab");
+            logf!("[strip] click -> new_tab, binding_action = {}", ok);
+        }
         Hit::Overflow => {
             show_overflow_menu(frame, overflow.unwrap_or_default());
             return;
@@ -285,7 +332,7 @@ pub fn on_button_down(frame: HWND, x: i32, y: i32) {
 }
 
 pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
-    let (slots, overflow) = slots(frame);
+    let (slots, overflow, new) = slots(frame);
 
     // Ask to be told when the pointer leaves, so hover can be cleared. Without
     // this the last hovered tab stays lit after the pointer is gone.
@@ -299,7 +346,7 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         let _ = TrackMouseEvent(&mut tme);
     }
 
-    let h = hit(&slots, overflow, x, y);
+    let h = hit(&slots, overflow, new, x, y);
     let (started, dragging_id) = with_ui(|u| {
         if u.hover != h {
             u.hover = h;
@@ -408,7 +455,7 @@ fn show_overflow_menu(frame: HWND, button: RECT) {
 /// Put a tab on screen after it was chosen from the menu -- otherwise
 /// activating a tab that is scrolled out of sight looks like nothing happened.
 fn scroll_into_view(frame: HWND, id: TabId) {
-    let (slots, overflow) = slots(frame);
+    let (slots, overflow, _new) = slots(frame);
     if overflow.is_none() {
         return;
     }
@@ -437,7 +484,7 @@ pub fn on_mouse_leave(frame: HWND) {
 }
 
 pub fn on_button_up(frame: HWND, x: i32, y: i32) {
-    let (slots, overflow) = slots(frame);
+    let (slots, overflow, new) = slots(frame);
     let was = with_ui(|u| std::mem::replace(&mut u.drag, Drag::Idle));
     unsafe {
         let _ = ReleaseCapture();
@@ -448,7 +495,7 @@ pub fn on_button_up(frame: HWND, x: i32, y: i32) {
     if let Drag::Pressed { id, .. } = was {
         // A press that never became a drag: if it started and ended on the
         // same close button, that is a click on it.
-        if hit(&slots, overflow, x, y) == Hit::Close(id) {
+        if hit(&slots, overflow, new, x, y) == Hit::Close(id) {
             logf!("[strip] close {:?}", id);
             tabs::close_tab(frame, id);
             return;
@@ -458,8 +505,8 @@ pub fn on_button_up(frame: HWND, x: i32, y: i32) {
 }
 
 pub fn on_double_click(frame: HWND, x: i32, y: i32) {
-    let (slots, overflow) = slots(frame);
-    if let Hit::Tab(id) = hit(&slots, overflow, x, y) {
+    let (slots, overflow, new) = slots(frame);
+    if let Hit::Tab(id) = hit(&slots, overflow, new, x, y) {
         if let Some(slot) = slots.iter().find(|s| s.id == id) {
             begin_rename(frame, id, slot.rect);
         }
@@ -609,7 +656,7 @@ static PAINTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(
 /// came up the first time these two lines were compared across runs.
 pub fn state_line(frame: HWND) -> String {
     let (tabs_now, active) = tabs::strip_snapshot();
-    let (slots, overflow) = slots(frame);
+    let (slots, overflow, _new) = slots(frame);
     let mut rc = RECT::default();
     unsafe {
         let _ = GetClientRect(frame, &mut rc);
@@ -676,7 +723,7 @@ pub fn paint(frame: HWND) {
         fill(mem, &strip, 0x00201f1d);
 
         let (tabs_now, active) = tabs::strip_snapshot();
-        let (slots, overflow) = slots(frame);
+        let (slots, overflow, new) = slots(frame);
         let (hover, dragging) = with_ui(|u| {
             (
                 u.hover,
@@ -771,6 +818,20 @@ pub fn paint(frame: HWND) {
             }
         }
 
+        // The `+`, drawn before the overflow button so that when both are
+        // pinned to the right the overflow one wins the pixels -- the same
+        // order the hit test uses, so what is clicked is what is seen.
+        {
+            // Same two colours the overflow button uses, so the two controls
+            // at the right end read as one row rather than two decorations.
+            let lit = hover == Hit::New;
+            fill(mem, &new, if lit { 0x00403f3d } else { 0x00201f1d });
+            SetTextColor(mem, COLORREF(if lit { 0x00ffffff } else { 0x00a0a0a0 }));
+            let mut plus: Vec<u16> = "+".encode_utf16().collect();
+            let mut r2 = new;
+            DrawTextW(mem, &mut plus, &mut r2, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        }
+
         // The overflow button, drawn last so the scrolled tabs pass under it.
         if let Some(r) = overflow {
             let lit = hover == Hit::Overflow;
@@ -821,7 +882,7 @@ pub fn paint(frame: HWND) {
 
 /// The centre of a tab, and of its close button, in client coordinates.
 fn centre_of(frame: HWND, index: usize) -> Option<(i32, i32, i32, i32)> {
-    let (slots, _) = slots(frame);
+    let (slots, _, _) = slots(frame);
     let s = slots.get(index)?;
     Some((
         (s.rect.left + s.rect.right) / 2,
@@ -978,5 +1039,50 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
             log_state(frame, "striptest done");
             false
         }
+    }
+}
+
+
+#[cfg(test)]
+mod close_affordance_tests {
+    use super::{layout, tab_shows_close, TAB_MIN_W};
+
+    /// **The close cross must never disappear, at any width the layout can
+    /// produce, at any DPI.**
+    ///
+    /// This is the one control on the strip whose absence loses data: someone
+    /// who cannot find how to close a tab reaches for the window's ×, and that
+    /// takes every other tab with it.
+    ///
+    /// It holds today only because `TAB_MIN_W` (60) is larger than the four
+    /// close-widths the cross needs (56) -- **a seven percent margin between
+    /// two constants that no code connects.** Narrowing `TAB_MIN_W` as part of
+    /// some future overflow change would remove the cross silently, and the
+    /// symptom would be a person closing the wrong thing. This test is the
+    /// connection.
+    #[test]
+    fn the_close_cross_survives_the_narrowest_tab_at_every_scale() {
+        // 1.0 is the floor Windows reports; the rest are the usual ladder,
+        // plus a deliberately absurd one.
+        for &scale in &[1.0f64, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0] {
+            // The narrowest tab the layout will ever hand out: far too many
+            // tabs for the strip.
+            let (tw, overflowing) = layout(400, scale, 200);
+            assert!(overflowing, "200 tabs in 400px must overflow (scale {scale})");
+            assert!(
+                tab_shows_close(tw, scale),
+                "at scale {scale} the narrowest tab is {tw}px and loses its close cross",
+            );
+        }
+    }
+
+    /// The margin itself, stated once so a future edit sees the number it is
+    /// spending.
+    #[test]
+    fn the_margin_between_the_two_constants_is_named() {
+        assert!(
+            TAB_MIN_W > 56,
+            "TAB_MIN_W must stay above four close-widths (56) or the cross vanishes"
+        );
     }
 }
