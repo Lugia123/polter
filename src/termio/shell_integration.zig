@@ -1169,6 +1169,78 @@ test "powershell: ordinary arguments are not mistaken for terminal ones" {
     try testing.expect(isPowershellTerminalArg("-File"));
 }
 
+// **The two lists that have to agree, and the reason this is a test rather
+// than a convention.**
+//
+// `Config.ShellIntegration` is what a person may write in their config;
+// `Shell` above is what this file knows how to inject. They are two enums in
+// two files, and they disagreed: `powershell` was here and not there, so
+// `shell-integration = powershell` was rejected with a diagnostic **while the
+// integration itself worked**, because `detect` -- the default -- finds
+// `powershell.exe` on its own. The person gets a red box and working
+// software, and concludes the documentation is wrong.
+//
+// **Both directions are asserted, and they fail differently:**
+//
+//  - A config value with no shell here parses and then injects nothing: a red
+//    box, and the feature silently absent.
+//  - A shell here with no config value **cannot be asked for**: that is the
+//    defect above, and it is the worse of the two to find, because the
+//    symptom is a rejected setting on top of a feature that works anyway.
+//    Nothing about the running terminal is wrong -- only the person's belief
+//    about what they are allowed to write.
+//
+// Written with `@typeInfo` over both enums rather than a list of names: a
+// hand-written second list is exactly what failed here, and repeating one
+// inside the test that checks for it would make the test blind in the same
+// way the code was.
+test "the config's shell-integration values and this file's shells are the same set" {
+    const testing = std.testing;
+    const Configurable = config.Config.ShellIntegration;
+
+    // `none` and `detect` are not shells; every other config value must name
+    // one this file can inject.
+    var configurable: usize = 0;
+    inline for (@typeInfo(Configurable).@"enum".fields) |field| {
+        if (comptime !std.mem.eql(u8, field.name, "none") and
+            !std.mem.eql(u8, field.name, "detect"))
+        {
+            configurable += 1;
+            if (std.meta.stringToEnum(Shell, field.name) == null) {
+                std.debug.print(
+                    "config allows shell-integration = {s}, but termio.shell_integration.Shell " ++
+                        "has no such member: the value parses and then nothing injects it\n",
+                    .{field.name},
+                );
+                return error.ConfigurableShellHasNoIntegration;
+            }
+        }
+    }
+
+    // And every shell this file injects must be nameable in the config, or it
+    // can only ever be reached by `detect`.
+    var injectable: usize = 0;
+    inline for (@typeInfo(Shell).@"enum".fields) |field| {
+        injectable += 1;
+        if (std.meta.stringToEnum(Configurable, field.name) == null) {
+            std.debug.print(
+                "this file injects {s}, but Config.ShellIntegration has no such value: " ++
+                    "`shell-integration = {s}` is rejected with a diagnostic while `detect` " ++
+                    "keeps injecting it, so the rejection changes nothing that can be seen\n",
+                .{ field.name, field.name },
+            );
+            return error.InjectableShellIsNotConfigurable;
+        }
+    }
+
+    // **The numbers that say the loops did any work.** An `inline for` over an
+    // enum that stopped having fields would satisfy every branch above and
+    // read exactly like a clean run.
+    try testing.expect(configurable >= 5);
+    try testing.expect(injectable >= 5);
+    try testing.expectEqual(configurable, injectable);
+}
+
 test "powershell: a missing script means no integration, not a broken shell" {
     const testing = std.testing;
     var arena = ArenaAllocator.init(testing.allocator);

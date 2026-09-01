@@ -3116,7 +3116,10 @@ keybind: Keybinds = .{},
 ///
 ///   * `detect` - Detect the shell based on the filename.
 ///
-///   * `bash`, `elvish`, `fish`, `nushell`, `zsh` - Use this specific shell injection scheme.
+///   * `bash`, `elvish`, `fish`, `nushell`, `powershell`, `zsh` - Use this
+///     specific shell injection scheme. `powershell` covers both
+///     `powershell.exe` (Windows PowerShell 5.1) and `pwsh.exe`
+///     (PowerShell 7+).
 ///
 /// The default value is `detect`.
 @"shell-integration": ShellIntegration = .detect,
@@ -8955,6 +8958,7 @@ pub const ShellIntegration = enum {
     elvish,
     fish,
     nushell,
+    powershell,
     zsh,
 };
 
