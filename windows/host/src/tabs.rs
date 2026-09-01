@@ -132,7 +132,14 @@ pub enum Op {
     ToggleFullscreen,
     ToggleMaximize,
     ResetWindowSize,
-    SetTabTitle(String),
+    /// A program announced its own title. **Carries the surface it came
+    /// from**, because the tab it belongs to is not necessarily the tab in
+    /// front: a build running in a background tab renames itself as it goes.
+    ///
+    /// A `usize` rather than a `Surface`, matching `Pane.surface`: this queue
+    /// lives behind the `STATE` mutex, and a raw pointer in it would make the
+    /// whole of `State` un-`Send`.
+    SetTabTitle { surface: usize, title: String },
     CopyTitleToClipboard,
     PresentTerminal,
     /// `ghostty_action_split_direction_e`.
@@ -1220,14 +1227,32 @@ pub fn rename_tab(frame: HWND, id: TabId, title: String) {
 /// **Ignored while the user has given the tab a name of their own.** Every
 /// `cd` in a shell sends one of these, so without the guard a name the user
 /// typed survives until their next command.
-fn set_shell_title(idx: usize, title: String) -> bool {
+/// What happened to a title a program announced.
+pub enum ShellTitle {
+    Applied(usize),
+    /// The user named this tab; the program does not get to rename it.
+    Overridden(usize),
+    /// No tab owns that surface. **Distinct from the other two on purpose**:
+    /// "the title went to the wrong tab" and "the title went nowhere" are
+    /// different failures and used to produce the same silence.
+    NoSuchSurface,
+}
+
+fn set_shell_title(surface: usize, title: String) -> ShellTitle {
     let mut st = state();
-    let Some(tab) = st.tabs.get_mut(idx) else { return false };
+    let Some(idx) = st
+        .tabs
+        .iter()
+        .position(|t| t.panes.iter().any(|p| p.surface == surface))
+    else {
+        return ShellTitle::NoSuchSurface;
+    };
+    let tab = &mut st.tabs[idx];
     if tab.title_override.is_some() {
-        return false;
+        return ShellTitle::Overridden(idx);
     }
     tab.title = title;
-    true
+    ShellTitle::Applied(idx)
 }
 
 
@@ -1835,20 +1860,31 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     logf!("[win] reset_window_size -> {}x{}", w, h);
                 }
             }
-            Op::SetTabTitle(t) => {
-                let applied = set_shell_title(active_index(), t.clone());
+            Op::SetTabTitle { surface, title } => {
+                let outcome = set_shell_title(surface, title.clone());
                 unsafe {
                     let _ = InvalidateRect(Some(frame), None, false);
                 }
-                // **One line, and it says which of the two happened.** The
-                // line that used to be here read `set_tab_title "..."`
-                // whatever the outcome -- the same shape as the `[reopen]`
-                // line above it, claiming a title had been applied that the
-                // strip was not showing.
-                if applied {
-                    logf!("[tab] set_tab_title {:?}", t);
-                } else {
-                    logf!("[tab] set_tab_title {:?} ignored; the user named this tab", t);
+                // **One line, and it says which of the three happened, and to
+                // which tab.** The line that used to be here read
+                // `set_tab_title "..."` whatever the outcome and never named a
+                // tab -- so a title landing on the wrong one looked exactly
+                // like a title landing on the right one.
+                match outcome {
+                    ShellTitle::Applied(i) => {
+                        logf!("[tab] set_tab_title {:?} on tab {} of {}", title, i + 1, count())
+                    }
+                    ShellTitle::Overridden(i) => logf!(
+                        "[tab] set_tab_title {:?} ignored on tab {} of {}; the user named it",
+                        title,
+                        i + 1,
+                        count()
+                    ),
+                    ShellTitle::NoSuchSurface => logf!(
+                        "[tab] set_tab_title {:?} dropped: no tab owns surface {:?}",
+                        title,
+                        surface as *const std::ffi::c_void
+                    ),
                 }
             }
             Op::CopyTitleToClipboard => {

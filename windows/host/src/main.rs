@@ -1303,7 +1303,15 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 }
                 // The window title and the tab label track the same string
                 // until something calls set_tab_title with its own.
-                tabs::post_op(Op::SetTabTitle(t));
+                //
+                // **The tab half is per surface.** The window's caption is
+                // genuinely the window's -- whichever terminal is in front
+                // names it -- but the tab label belongs to the tab this came
+                // from, and that is not always the tab in front.
+                match target_surface(&target) {
+                    Some(s) => tabs::post_op(Op::SetTabTitle { surface: s as usize, title: t }),
+                    None => logf!("[action] set_title with no surface (tag={}); tab label unchanged", target.tag),
+                }
             }
             true
         }
@@ -1329,11 +1337,21 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             true
         }
 
+        // **Per surface, and it used to drop the target.** A program in a
+        // background tab -- a build printing its progress into the title --
+        // renamed whichever tab was in front instead of its own. The guard
+        // added for user-named tabs made that worse rather than better: the
+        // stray title could then be refused by the *front* tab's override,
+        // leaving the background tab's name permanently stale with nothing
+        // reporting either half.
         ACTION_SET_TAB_TITLE => {
             if let Some(t) = action.as_cstr() {
                 let t = t.to_string_lossy().to_string();
                 logf!("[action] set_tab_title {:?}", t);
-                tabs::post_op(Op::SetTabTitle(t));
+                match target_surface(&target) {
+                    Some(s) => tabs::post_op(Op::SetTabTitle { surface: s as usize, title: t }),
+                    None => logf!("[action] set_tab_title with no surface (tag={}); dropped", target.tag),
+                }
             }
             true
         }
