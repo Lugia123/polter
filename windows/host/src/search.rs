@@ -41,7 +41,7 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::logf;
+use crate::{logf, plogf, wlogf};
 
 /// `WM_APP + 1` is the tab op queue, `+ 2` the command palette.
 const WM_SEARCH_SHOW: u32 = WM_APP + 3;
@@ -172,7 +172,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
             ..Default::default()
         };
         if RegisterClassExW(&wc) == 0 {
-            logf!("[search] RegisterClassExW failed");
+            // process-wide: registering the search window class, once per process
+            plogf!("[search] RegisterClassExW failed");
             return;
         }
 
@@ -192,7 +193,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         ) {
             Ok(h) => h,
             Err(e) => {
-                logf!("[search] CreateWindowExW failed: {e:?}");
+                // process-wide: creating the single search window this process has
+                plogf!("[search] CreateWindowExW failed: {e:?}");
                 return;
             }
         };
@@ -218,7 +220,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         ) {
             Ok(h) => h,
             Err(e) => {
-                logf!("[search] edit CreateWindowExW failed: {e:?}");
+                // process-wide: creating the single search window this process has
+                plogf!("[search] edit CreateWindowExW failed: {e:?}");
                 return;
             }
         };
@@ -259,7 +262,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
             });
         });
         HWND_SEARCH.store(hwnd.0, Ordering::Release);
-        logf!("[search] ready");
+        // process-wide: the search window exists; no terminal window owns it yet
+        plogf!("[search] ready");
     }
 }
 
@@ -311,7 +315,9 @@ fn show(needle: &str) {
             // Select all, so typing replaces the previous needle.
             SendMessageW(wins.edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
         }
-        logf!("[search] shown, needle={:?}", needle);
+        // `frame` is the window this bar positioned itself over, a few lines
+        // up -- so the line names where it actually landed, not a guess.
+        wlogf!(frame, "[search] shown, needle={:?}", needle);
     }
 }
 

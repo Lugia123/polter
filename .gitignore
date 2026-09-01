@@ -36,3 +36,8 @@ vgcore.*
 
 # LLVM profiling output, dropped wherever a build happens to run
 *.profraw
+
+# Python bytecode from the checkers in windows/tools/, which are run directly
+# rather than imported; the cache only appears because one imports another.
+__pycache__/
+*.pyc

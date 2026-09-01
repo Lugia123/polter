@@ -35,7 +35,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::logf;
+use crate::{logf, plogf};
 
 const WM_HUD_SYNC: u32 = WM_APP + 7;
 /// Timer id for "the resize is over".
@@ -224,7 +224,8 @@ fn make_window(hinst: windows::Win32::Foundation::HINSTANCE, class: windows::cor
         ) {
             Ok(h) => h,
             Err(e) => {
-                logf!("[hud] CreateWindowExW failed: {e:?}");
+                // process-wide: creating one of the two badge windows; there is one pair per process
+                plogf!("[hud] CreateWindowExW failed: {e:?}");
                 HWND(std::ptr::null_mut())
             }
         }
@@ -247,7 +248,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
                 ..Default::default()
             };
             if RegisterClassExW(&wc) == 0 {
-                logf!("[hud] RegisterClassExW failed");
+                // process-wide: registering the badge window class, once per process
+                plogf!("[hud] RegisterClassExW failed");
                 return;
             }
         }
@@ -286,7 +288,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         });
         HWND_SIZE.store(hsize.0, Ordering::Release);
         HWND_RO.store(hro.0, Ordering::Release);
-        logf!("[hud] ready");
+        // process-wide: the badge windows exist; neither belongs to a terminal window yet
+        plogf!("[hud] ready");
     }
 }
 

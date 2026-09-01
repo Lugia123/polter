@@ -31,7 +31,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::logf;
+use crate::{logf, plogf, wlogf};
 
 /// Requests posted here from `cb_action`.
 ///
@@ -69,6 +69,13 @@ fn scope_of(scope: i32) -> Option<(&'static str, &'static str)> {
 struct Open {
     hwnd: isize,
     edit: isize,
+    /// The **terminal window** this box belongs to.
+    ///
+    /// Not `hwnd` above: that is the box's own popup, and a log line naming it
+    /// would answer "which window?" with the name of the thing that is asking
+    /// the question. Carried because `close` runs from the edit control's
+    /// window procedure, which has no way back to the frame.
+    frame: isize,
     /// The terminal the typed name will be applied to. 0 = whichever has
     /// focus, which is a fallback and not a default.
     surface: usize,
@@ -169,7 +176,10 @@ fn post(kind: usize, arg: i32, what: &str) {
     if h.is_null() {
         // Dropped rather than done here: doing it here would make a window on
         // whatever thread the core happened to call us on.
-        logf!("[prompt] {what} asked for before the mailbox existed; dropped");
+        // process-wide: the mailbox is one message-only window for the whole
+        // process, and a request that arrives before it exists has not been
+        // resolved to a terminal window yet -- there is nothing to name.
+        plogf!("[prompt] {what} asked for before the mailbox existed; dropped");
         return;
     }
     let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HOST_REQUEST, WPARAM(kind), LPARAM(arg as isize)) };
@@ -204,9 +214,13 @@ pub fn init() {
         match hwnd {
             Ok(h) => {
                 MAILBOX.store(h.0, std::sync::atomic::Ordering::Release);
-                logf!("[prompt] ready");
+                // process-wide: one message-only window per process, created
+                // before any terminal window is involved.
+                plogf!("[prompt] ready");
             }
-            Err(e) => logf!("[prompt] mailbox window failed: {e:?} -- title box and float will not work"),
+            // process-wide: same window as above; its absence disables the
+            // title box and float for every window there will ever be.
+            Err(e) => plogf!("[prompt] mailbox window failed: {e:?} -- title box and float will not work"),
         }
     }
 }
@@ -217,17 +231,23 @@ pub fn init() {
 /// request named none, and the focused one is used instead -- said out loud,
 /// because that fallback is the failure mode this parameter exists to avoid.
 pub fn prompt_title(scope: i32, surface: usize) {
+    // **Fetched before the first thing that can fail**, so the lines below can
+    // say which window did not get a box. The value is not used for anything
+    // else until the box is built.
+    let frame = crate::tabs::frame_hwnd();
+
     let Some((action, label)) = scope_of(scope) else {
         // Said rather than swallowed: a new scope in the core would otherwise
         // look exactly like a menu row that does nothing.
-        logf!("[prompt] title requested for unknown scope {scope}; nothing shown");
+        wlogf!(frame, "[prompt] title requested for unknown scope {scope}; nothing shown");
         return;
     };
     close(false);
 
-    let frame = crate::tabs::frame_hwnd();
     if frame.0.is_null() {
-        logf!("[prompt] no frame window; {label} box not shown");
+        // process-wide: there is no window to name -- that is what this line
+        // reports. Naming one here would have to invent it.
+        plogf!("[prompt] no frame window; {label} box not shown");
         return;
     }
     let scale = crate::tabs::scale_of();
@@ -261,7 +281,7 @@ pub fn prompt_title(scope: i32, surface: usize) {
             None,
         );
         let Ok(hwnd) = hwnd else {
-            logf!("[prompt] CreateWindowExW failed; {label} box not shown");
+            wlogf!(frame, "[prompt] CreateWindowExW failed; {label} box not shown");
             return;
         };
 
@@ -283,7 +303,7 @@ pub fn prompt_title(scope: i32, surface: usize) {
         );
         let Ok(edit) = edit else {
             let _ = DestroyWindow(hwnd);
-            logf!("[prompt] CreateWindowExW(EDIT) failed; {label} box not shown");
+            wlogf!(frame, "[prompt] CreateWindowExW(EDIT) failed; {label} box not shown");
             return;
         };
 
@@ -303,6 +323,7 @@ pub fn prompt_title(scope: i32, surface: usize) {
             *c.borrow_mut() = Some(Open {
                 hwnd: hwnd.0 as isize,
                 edit: edit.0 as isize,
+                frame: frame.0 as isize,
                 surface,
                 action,
                 label,
@@ -310,7 +331,8 @@ pub fn prompt_title(scope: i32, surface: usize) {
             });
         });
     }
-    logf!(
+    wlogf!(
+        frame,
         "[prompt] {label} box open, scope={scope}, surface={surface:#x}, current title {current:?}"
     );
 }
@@ -321,6 +343,7 @@ fn close(accept: bool) {
     let Some(open) = open else { return };
     let hwnd = HWND(open.hwnd as *mut std::ffi::c_void);
     let edit = HWND(open.edit as *mut std::ffi::c_void);
+    let frame = HWND(open.frame as *mut std::ffi::c_void);
 
     let text = if accept {
         let mut buf = [0u16; 512];
@@ -336,25 +359,25 @@ fn close(accept: bool) {
     crate::overlay::focus_back(HWND(open.prev as *mut std::ffi::c_void), "title prompt");
 
     if !accept {
-        logf!("[prompt] {} cancelled", open.label);
+        wlogf!(frame, "[prompt] {} cancelled", open.label);
         return;
     }
     if text.trim().is_empty() {
         // An empty name would clear the title, which is a different request
         // from the one the menu row makes.
-        logf!("[prompt] {} accepted with an empty name; nothing sent", open.label);
+        wlogf!(frame, "[prompt] {} accepted with an empty name; nothing sent", open.label);
         return;
     }
     let binding = format!("{}:{}", open.action, text);
     let ok = if open.surface != 0 {
         crate::binding_on(open.surface as crate::ffi::Surface, &binding)
     } else {
-        logf!("[prompt] {} had no surface of its own; applying to the focused one", open.label);
+        wlogf!(frame, "[prompt] {} had no surface of its own; applying to the focused one", open.label);
         crate::binding(&binding)
     };
     // The action name is in the line because that is the half that says which
     // of the three this box was.
-    logf!("[prompt] {} -> {:?} ok={}", open.label, binding, ok as i32);
+    wlogf!(frame, "[prompt] {} -> {:?} ok={}", open.label, binding, ok as i32);
 }
 
 fn register_class() {
@@ -387,7 +410,9 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         prompt_title(scope, surface);
                     }
                     REQ_FLOAT => float_window(lp.0 as i32),
-                    other => logf!("[prompt] unknown host request {other}"),
+                    // process-wide: this is the mailbox's own window, one per
+                    // process, and an unrecognised kind carries no window.
+                    other => plogf!("[prompt] unknown host request {other}"),
                 }
                 LRESULT(0)
             }

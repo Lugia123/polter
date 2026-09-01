@@ -58,7 +58,10 @@ import sys
 #                     "everything, unless declared"
 #   217  `98af8cff5`  the four `[menu]` lines that show and dispatch a menu
 #                     for one window were tagged
-#   199  this commit  5, and the batch was budgeted at 18. `divider.rs` gave
+#   191  this commit  8: `search.rs` 4 process-wide + 1 tagged, `hud.rs` 3
+#                     process-wide. All 8 had been unclassified, so this time
+#                     the drop and the conversion count agree.
+#   199  7019467de    5, and the batch was budgeted at 18. `divider.rs` gave
 #                     2 process-wide (the window class) + 3 tagged, `dnd.rs`
 #                     gave 1 (OLE init). **The other 13 are left, and each is
 #                     left for a stated reason** -- see the report; the short
@@ -116,7 +119,7 @@ import sys
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
-BASELINE_UNTAGGED = 199
+BASELINE_UNTAGGED = 178
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`
