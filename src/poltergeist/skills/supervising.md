@@ -142,7 +142,18 @@ The order, and step 2 is a note to yourself:
    person at the keyboard; it will not make anybody move.
 3. `terminal_send` each worker its own instruction, naming the task number,
    with the acceptance test in it.
-4. `task_assign(task, id)` so the panel says who has it.
+4. `task_assign(task, id)` so the panel says who has it. **This types a line
+   into that terminal saying the task is theirs, and the panel is only
+   written if that lands** — read the reply. It carries the task number and
+   nothing else; step 3 is still where the work is described.
+
+**Never hand work over by announcing it.** A hand-over said in the group, or
+written in a reply to somebody else, reaches nobody: the terminal you are
+handing to is watched, and a watched terminal is not woken by a post. It is
+`task_assign` or `terminal_send`, and the group is the record afterwards. The
+failure this is written from cost eight minutes of two agents waiting on each
+other, and the supervisor had written the rule down before breaking it — what
+it had not done was make the announcement and the delivery the same act.
 
 Then `task_list(group)` hands you the whole panel — closed and cancelled work
 included, because checking the night is what you use it for. A worker asking

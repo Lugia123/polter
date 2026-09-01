@@ -2997,6 +2997,15 @@ pub const ChatGroupInfo = struct {
 pub const TaskOwner = struct {
     owner: Bus.Id,
     title: []const u8,
+
+    /// Whether the task is still open.
+    ///
+    /// Here because `task_assign` has to know *before* it says anything.
+    /// Assigning a closed task is refused, and a refusal that arrives
+    /// after the worker has already been told it has the work is the same
+    /// silent disagreement this file spends its time preventing, only
+    /// pointing the other way.
+    open: bool,
 };
 
 pub const TaskView = struct {
@@ -3375,11 +3384,12 @@ pub const Host = struct {
 
         taskClose: *const fn (ctx: *anyopaque, task: u64) anyerror!void,
 
-        /// Who has a task, and what it is called.
+        /// Who has a task, what it is called, and whether it is open.
         ///
-        /// Asked before a cancellation, because the worker has to be told
-        /// and the message has to name the work. Fails with `NoSuchTask`
-        /// where there is none. The title belongs to the host.
+        /// Asked before a cancellation and before an assignment, because
+        /// both have to tell a worker something and the message has to name
+        /// the work. Fails with `NoSuchTask` where there is none. The title
+        /// belongs to the host.
         taskOwner: *const fn (ctx: *anyopaque, task: u64) anyerror!TaskOwner,
 
         /// Mark a task cancelled. **The worker has already been told**;
@@ -4346,8 +4356,85 @@ pub fn dispatch(
                 return failure(error.UnknownTerminal);
             }
 
+            // **Tell the worker, then write it down** -- the order
+            // `task_cancel` already runs on, for the mirror image of its
+            // reason. A task that appeared on the panel with somebody's
+            // name on it and no word to that somebody is a state only the
+            // supervisor can see, and the panel does not wake anybody: a
+            // watched terminal is not interrupted by the group, so there
+            // is no second channel that would have carried it.
+            //
+            // This is what an eight-minute deadlock looked like on the
+            // machine this was written on. The supervisor wrote "I have
+            // put #75 on the machine" in a group reply, never sent it
+            // anything, and then waited. Both halves were true separately
+            // -- something was announced, something was assigned -- and
+            // nothing anywhere compared them. So the two become one call.
+            //
+            // The line says only that the work is theirs. What it *is*
+            // stays the supervisor's to send, because the acceptance test
+            // is the part that cannot be generated, and a fixed sentence
+            // that pretended to carry it would be worse than none.
+            const what = host.taskOwner(p.task) catch |err| return taskFailure(err);
+
+            // Asked before anything is said. `assign` refuses a task that
+            // is closed or cancelled, and a refusal arriving after the
+            // worker has been told the work is theirs would leave exactly
+            // the disagreement this is here to close.
+            if (!what.open) return taskFailure(error.NotOpen);
+
+            var told: []const u8 = " Nobody is on it now.";
+            if (p.id != 0) {
+                const line = try std.fmt.allocPrint(
+                    alloc,
+                    "[polter] Task {d} (\"{s}\") is now yours. " ++
+                        "Your supervisor will send the detail.",
+                    .{ p.task, what.title },
+                );
+
+                // **Nothing is assigned if this fails.** Answering `ok` for
+                // a message nobody heard is how the supervisor comes to
+                // believe a terminal is working on something it has never
+                // heard of.
+                //
+                // Said in this branch's own words rather than through
+                // `taskFailure`: the reasons a terminal will not take text
+                // are `terminal_send`'s, and `taskFailure`'s `OwnerGone`
+                // sentence is written for a cancellation -- it would tell
+                // the caller the work could not be stopped, and offer
+                // `task_assign` as the way out of a `task_assign` that just
+                // failed.
+                host.sendText(p.id, line, true) catch |err| return switch (err) {
+                    error.NoSuchTerminal, error.ChildExited => hostFailure(
+                        "OwnerGone",
+                        "there is nothing running in that terminal to be told, so the " ++
+                            "task was left as it was. Start something there, or assign " ++
+                            "it to a terminal that is working.",
+                    ),
+
+                    error.UserPresent => hostFailure(
+                        "UserPresent",
+                        "somebody is typing in that terminal right now, so nothing was " ++
+                            "said and nothing was assigned. Try again shortly.",
+                    ),
+
+                    else => hostFailure(
+                        "SendFailed",
+                        "could not tell that terminal the task is theirs, so it was not " ++
+                            "assigned. The panel is unchanged.",
+                    ),
+                };
+
+                told = " The terminal was told the task is theirs.";
+            }
+
             host.taskAssign(p.task, p.id) catch |err| return taskFailure(err);
-            return .ok;
+
+            return .{ .text = try std.fmt.allocPrint(
+                alloc,
+                "Task {d} assigned.{s}",
+                .{ p.task, told },
+            ) };
         },
 
         .task_close => |p| {
@@ -5044,7 +5131,7 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
         const t = panel.get(task) orelse return error.NoSuchTask;
-        return .{ .owner = t.owner, .title = t.title };
+        return .{ .owner = t.owner, .title = t.title, .open = t.state == .open };
     }
 
     fn taskCancel(ctx: *anyopaque, task: u64) anyerror!void {
@@ -7088,6 +7175,121 @@ test "a closed task is gone from the worker and still on the panel" {
         try testing.expectEqual(@as(usize, 1), res.tasks.len);
         try testing.expectEqualStrings("closed", res.tasks[0].state);
     }
+}
+
+test "assigning says so to the worker before the panel says so" {
+    // The mirror of the cancellation rule below, and it exists because the
+    // other direction was silent. A supervisor announced a hand-over in a
+    // group reply, never sent the terminal anything, and waited eight
+    // minutes for a worker that had not been told it had the work. The
+    // group could not have carried it either: a watched terminal is not
+    // woken by a post. So the two halves are one call.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "take the machine");
+
+    try testing.expect(fake.sent == null);
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+    } });
+
+    // Something was typed, it went to the terminal being given the work,
+    // it was submitted, and it names the task both ways a worker might
+    // look for it.
+    try testing.expect(fake.sent != null);
+    try testing.expectEqual(worker, fake.sent.?.id);
+    try testing.expect(fake.sent.?.submit);
+    try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "take the machine") != null);
+    try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "yours") != null);
+
+    try testing.expectEqual(worker, panel.get(id).?.owner);
+
+    // And the supervisor is told that somebody was told, rather than `ok`.
+    try testing.expect(std.mem.indexOf(u8, res.text, "was told") != null);
+}
+
+test "an assignment the worker could not be told leaves the panel alone" {
+    // The negative control for the one above. If the send fails and the
+    // panel records the owner anyway, the supervisor believes a terminal
+    // is working on something it has never heard of -- which is the state
+    // the ordering exists to make impossible, arriving by the back door.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    fake.send_error = error.ChildExited;
+
+    const id = try panel.create("build", "take the machine");
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+    } });
+    try testing.expectEqualStrings("OwnerGone", res.failed.code);
+    try testing.expect(fake.sent == null);
+    try testing.expectEqual(Tasks.nobody, panel.get(id).?.owner);
+}
+
+test "taking a task off somebody types into nobody" {
+    // `id 0` is the one assignment with no one to tell. It must not fall
+    // into the branch above and try to type into terminal zero.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "take the machine");
+    try panel.assign(id, worker);
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = 0,
+    } });
+    try testing.expect(fake.sent == null);
+    try testing.expectEqual(Tasks.nobody, panel.get(id).?.owner);
+    try testing.expect(std.mem.indexOf(u8, res.text, "Nobody") != null);
+}
+
+test "a closed task is refused before anybody is told it is theirs" {
+    // The order matters here too, and in the same direction: `assign`
+    // refuses a task that is shut, and a refusal that arrives after the
+    // worker has been told the work is theirs is the disagreement this is
+    // all about, pointing the other way.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "take the machine");
+    try panel.close(id);
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+    } });
+    try testing.expectEqualStrings("NotOpen", res.failed.code);
+    try testing.expect(fake.sent == null);
 }
 
 test "cancelling says so to the worker before the task goes" {

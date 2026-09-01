@@ -527,7 +527,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "task_assign",
-        .description = "Say which terminal is doing a task. Pass id 0 to take it back off somebody without cancelling it. Assigning is not telling: the worker learns what it is doing from what you terminal_send it, because a terminal you are minding is not woken by the group. Supervisor only.",
+        .description = "Say which terminal is doing a task. **A line is typed into that terminal saying the task is theirs, and only then does the panel record it** -- an assignment nobody was told about is one only you can see, and the group cannot carry it because a terminal you are minding is not woken by a post. **Read the reply**: it says whether the terminal was actually told, and if it could not be, nothing was assigned. What the work *is* still goes in your own terminal_send: the line Polter types names the task and nothing more. Pass id 0 to take it back off somebody without cancelling it; there is nobody to tell, so nothing is typed. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"task":{"type":"integer"},"id":{"type":"string","description":"The terminal responsible, or 0 for nobody"}},"required":["task","id"],"additionalProperties":false}
         ,

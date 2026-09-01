@@ -2666,7 +2666,7 @@ fn taskClose(ctx: *anyopaque, task: u64) anyerror!void {
 fn taskOwner(ctx: *anyopaque, task: u64) anyerror!poltergeistpkg.rpc.TaskOwner {
     const self: *App = @ptrCast(@alignCast(ctx));
     const t = self.tasks.get(task) orelse return error.NoSuchTask;
-    return .{ .owner = t.owner, .title = t.title };
+    return .{ .owner = t.owner, .title = t.title, .open = t.state == .open };
 }
 
 /// Mark a task cancelled. The worker has already been told; see above.
