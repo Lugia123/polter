@@ -203,7 +203,18 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
 
 **M6 能力对齐**：72 个 action 里必须实现 54 个（14 必须 + 40 对齐），**目前宿主实现了 24 个**。
 
-**M5 插件**：**已写完**——出厂 8 个里 7 个是 `.sh`，各补一份 `.ps1`（第 8 个是
+**M5 插件**：⚠️ **口径订正（2026-09-02）——「已写完」的真值是
+「插件的 `.ps1` 已写完，且从未被加载过一次」。**
+`App.zig:717/:804` 的插件搜索路径是 `{resources_dir}/polter/plugins`，
+而 **Windows 上 `resources_dir` 恒为空**（`build.zig:180` 的
+`resources.install()` 在 `app_runtime == .none` 且非 xcframework 的
+Windows 目标下两支都进不去），**且 `resourcesdir.zig:79` 明写
+「an empty resources directory is not an error」——它是设计成静默的。**
+同一个空目录还哑掉另外三样：**技能**（`App.zig:1334/:3494`）、
+**主题**（`theme.zig:62`）、**shell 集成**（`Surface.zig:728` →
+`shell_integration.zig:1040`）。见任务 110。
+
+原文：**已写完**——出厂 8 个里 7 个是 `.sh`，各补一份 `.ps1`（第 8 个是
 `archive.py`，Python 跨平台）。`plugins/` 下还有 `_sdk`，那是库不是插件，不声明 `exec`。
 没有选「宿主按扩展名猜解释器」，理由不是代价：**能不能在这个系统上跑是插件的属性，
 不是宿主的推断**。插件本该声明自己支持哪些系统，不支持就不该被加载——
