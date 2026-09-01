@@ -51,7 +51,7 @@ use ffi::*;
 use std::cell::RefCell;
 use std::ffi::{c_void, CString};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use windows::core::{s, w, Interface, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -154,6 +154,318 @@ fn binary_identity(path: &std::path::Path) -> String {
 /// The two DLLs are looked up next to the exe, which is where
 /// `LoadLibraryA` finds them: **the same resolution order, so this cannot
 /// report a file the process did not load.**
+/// The main loop's iteration count, published so another thread can read it.
+///
+/// The loop keeps its own `ticks` local; this is a copy, written every
+/// iteration. **It is deliberately the same number the `[loop]` heartbeat
+/// prints**, so the two lines can be compared instead of being two
+/// independent stories about the same thing.
+static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// The watchdog's ping, answered by the main window procedure.
+///
+/// **The counter alone cannot tell the two stalls apart.** A nested modal
+/// loop -- someone holding the context menu open, dragging the window -- stops
+/// our loop exactly as a deadlock does, and `ticks` freezes identically. But a
+/// modal loop is still `GetMessage`/`DispatchMessage`, so a *posted* message
+/// is delivered; a thread blocked in a call answers nothing. Reading a number
+/// can never separate them. Asking a question can.
+static WD_PONG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Posted by the watchdog to the frame window once per poll.
+pub const WM_WD_PING: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 9;
+
+/// A fixed-size line builder that never allocates.
+///
+/// Exists only for the alarm path below. Anything that reaches for the heap is
+/// unusable there; see `alarm` for why.
+struct Line {
+    b: [u8; Line::CAP],
+    n: usize,
+    /// Set when something did not fit. **Silent truncation would eat the end
+    /// of the line, and the end of the alarm line is where the claim lives.**
+    truncated: bool,
+}
+
+impl Line {
+    /// Buffer size. Tied to the longest line this can build by the test
+    /// `alarm_line_fits`, which builds that line with every number at its
+    /// widest. **Adding a field to the alarm makes that test fail**, which is
+    /// the whole point: the previous version had a comfortable margin and
+    /// nothing connecting it to the line it had to hold.
+    /// 260 bytes is the widest this line can be (every number at `u64::MAX`);
+    /// the rest is room for a phrase to grow before anyone has to think about
+    /// it again. **The margin is not the safety here -- `alarm_line_fits` is.**
+    const CAP: usize = 320;
+
+    fn new() -> Self {
+        Line { b: [0; Line::CAP], n: 0, truncated: false }
+    }
+    fn s(&mut self, t: &str) {
+        for &c in t.as_bytes() {
+            if self.n < self.b.len() {
+                self.b[self.n] = c;
+                self.n += 1;
+            } else {
+                self.truncated = true;
+            }
+        }
+    }
+    fn u(&mut self, mut v: u64) {
+        if v == 0 {
+            return self.s("0");
+        }
+        let mut d = [0u8; 20];
+        let mut i = 0;
+        while v > 0 {
+            d[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            i += 1;
+        }
+        while i > 0 {
+            i -= 1;
+            if self.n < self.b.len() {
+                self.b[self.n] = d[i];
+                self.n += 1;
+            } else {
+                self.truncated = true;
+            }
+        }
+    }
+    /// Two digits, so a timestamp reads like the ones `log_line` writes.
+    fn u2(&mut self, v: u64) {
+        if v < 10 {
+            self.s("0");
+        }
+        self.u(v);
+    }
+}
+
+/// Write one line for the watchdog. **Does no stdout.**
+///
+/// `log_line` starts with `println!`, which takes Rust's global stdout lock,
+/// and the main thread uses the same function. If the main thread is stuck
+/// inside a stdout write -- redirected into a pipe whose reader has stopped,
+/// which is how this process is run on the test machine -- it holds that lock,
+/// and a watchdog that called `log_line` would block on its own `println!`.
+/// That is a third meaning for "no `[wd]` lines", and the worst one: the
+/// watchdog gagged by the very stall it exists to report.
+///
+/// ⚠️ **This still allocates** (`format!` at every call site, `now_str`, and
+/// the path conversion inside `open`), so it is fine for the healthy cadence
+/// and unusable for the alarm. The alarm uses `alarm` below.
+fn wd_log(msg: &str) {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    {
+        let _ = writeln!(f, "[{}] {msg}", now_str());
+        let _ = f.flush();
+    }
+}
+
+/// Write the alarm line **without allocating anything**.
+///
+/// **The path that only runs when something is wrong is the path that gets to
+/// be wrong**, and this one had a specific way to be wrong: the alarm fires
+/// when the main thread is not running, and one reason a thread stops running
+/// is that it holds the process heap lock. Every obvious way to build this
+/// line -- `format!`, `now_str`, even `OpenOptions::open` converting the path
+/// -- wants the heap. The watchdog would then block in the allocator instead
+/// of reporting, and **its silence is exactly how "the watchdog is broken"
+/// reads.** So: the handle is opened once while things are healthy and kept,
+/// the digits are written by hand, and the timestamp comes from a struct the
+/// kernel fills in.
+fn alarm(f: &std::fs::File, line: &Line) {
+    use std::io::Write as _;
+    let _ = (&mut { f }).write_all(&line.b[..line.n]);
+}
+
+/// Build the "main thread blocked" line. Allocation-free, and shared with the
+/// test that pins it against `Line::CAP`.
+fn blocked_line(pid: u64, secs: u64, ticks: u64, seq: u64, pong: u64, tid: u64) -> Line {
+    let mut l = Line::new();
+    stamp_into(&mut l);
+    l.s("[wd] pid=");
+    l.u(pid);
+    l.s(" MAIN THREAD BLOCKED ");
+    l.u(secs);
+    l.s("s: ticks frozen at ");
+    l.u(ticks);
+    l.s(", ping ");
+    l.u(seq);
+    l.s(" UNANSWERED (last answered ");
+    l.u(pong);
+    l.s("), tid=");
+    l.u(tid);
+    l.s(" -- nothing on this line was allocated\n");
+    l
+}
+
+/// Local time into a `Line`, allocation-free.
+fn stamp_into(line: &mut Line) {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    let t = unsafe { GetLocalTime() };
+    line.s("[");
+    line.u2(t.wHour as u64);
+    line.s(":");
+    line.u2(t.wMinute as u64);
+    line.s(":");
+    line.u2(t.wSecond as u64);
+    line.s("] ");
+}
+
+/// Watch the main thread from a thread that cannot be blocked by it.
+///
+/// **Why this exists, stated as what the existing probe cannot see.** The
+/// `[state]` sentinel in `tabs.rs` reports a lock that was contended for five
+/// seconds. That makes it a lock-contention detector, not a liveness detector,
+/// and it is blind to three deaths: one somewhere other than the lock, one
+/// that dies *holding* the lock, and a single-threaded stall where nothing
+/// calls `state()` again -- and that last one is exactly the case in which it
+/// can never emit a line.
+///
+/// ⚠️ **What silence here does and does not mean, in three separate claims,
+/// because merging them is how the last version of this comment came to say
+/// something false.**
+///
+///  1. **Measured.** Nothing on this thread writes to stdout, and the alarm
+///     branch contains no allocating call. `windows/tools/watchdog-alarm-path.py`
+///     checks both and fails its own canaries first, so this is a reading.
+///  2. The alarm line is built in a stack buffer with a handle opened in
+///     advance. The claim that buys is exactly the one the checker prints,
+///     copied rather than restated because restating it is how it grew:
+///     `NOT CHECKED: whether that branch can allocate indirectly -- names only`.
+///  3. **Unverified.** That the watchdog still speaks while the main thread is
+///     stuck inside a stdout write, or is holding the process heap lock, has
+///     never been demonstrated. Producing that state on purpose needs a stuck
+///     pipe reader we have no reliable way to arrange. **It stays unverified
+///     until someone measures it, not until someone finds the argument
+///     convincing.**
+///
+/// Every line carries the pid, because the log path can be pinned with
+/// `POLTER_HOST_LOG` and then two processes write one file: two agreeing
+/// readings out of one wrong process is a shape that has caught us already.
+fn start_watchdog() {
+    use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+
+    const POLL: std::time::Duration = std::time::Duration::from_secs(2);
+    // Two polls, so one slow iteration is not called a stall.
+    const STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(4);
+    const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    let main_tid = unsafe { GetCurrentThreadId() };
+    let pid = unsafe { GetCurrentProcessId() };
+
+    let spawned = std::thread::Builder::new()
+        .name("polter-watchdog".into())
+        .spawn(move || {
+            let tid = unsafe { GetCurrentThreadId() };
+            // Opened here, while the process is healthy, and kept for the life
+            // of the thread: the alarm path must not open anything.
+            let alarm_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path())
+                .ok();
+            if alarm_file.is_none() {
+                wd_log("[wd] could not open the alarm handle; the BLOCKED line \
+                        will be unavailable this run");
+            }
+            wd_log(&format!(
+                "[wd] pid={pid} tid={tid} up, watching main tid={main_tid}, \
+                 poll={}s stall_after={}s",
+                POLL.as_secs(),
+                STALL_AFTER.as_secs()
+            ));
+
+            let mut seq: u64 = 0;
+            let mut last_ticks = TICKS.load(Ordering::Relaxed);
+            let mut last_progress = std::time::Instant::now();
+            let mut last_heartbeat = std::time::Instant::now();
+            let mut announced = false;
+
+            loop {
+                // Ask before waiting, so the answer has the whole poll to
+                // arrive.
+                seq += 1;
+                let frame = crate::frame_hwnd_cached();
+                if !frame.0.is_null() {
+                    let _ = unsafe {
+                        PostMessageW(Some(frame), WM_WD_PING, WPARAM(seq as usize), LPARAM(0))
+                    };
+                }
+                std::thread::sleep(POLL);
+
+                let ticks = TICKS.load(Ordering::Relaxed);
+                let pong = WD_PONG.load(Ordering::Relaxed);
+
+                if ticks != last_ticks {
+                    if announced {
+                        wd_log(&format!(
+                            "[wd] pid={pid} resumed after {:.1}s, ticks={ticks}",
+                            last_progress.elapsed().as_secs_f64()
+                        ));
+                        announced = false;
+                    }
+                    last_ticks = ticks;
+                    last_progress = std::time::Instant::now();
+                } else if last_progress.elapsed() >= STALL_AFTER {
+                    // **Said every poll, on purpose.** A stall announced once
+                    // and then quiet is indistinguishable from a stall that
+                    // took the process with it; a line every two seconds says
+                    // which, and the growing number is the reading.
+                    announced = true;
+                    if pong == seq {
+                        let stalled = last_progress.elapsed().as_secs_f64();
+                        wd_log(&format!(
+                            "[wd] pid={pid} PUMP BUSY {stalled:.1}s: ticks frozen at \
+                             {ticks}, ping {seq} ANSWERED -- a nested modal loop \
+                             (menu, window move/size) is dispatching. Not a fault."
+                        ));
+                    } else if let Some(f) = alarm_file.as_ref() {
+                        // **Not `format!`.** See `alarm`: this branch runs
+                        // exactly when the main thread is not running, and one
+                        // way for a thread to stop running is holding the heap
+                        // lock -- which would park the watchdog in the
+                        // allocator and produce silence instead of a report.
+                        let mut l = blocked_line(
+                            pid as u64,
+                            last_progress.elapsed().as_secs(),
+                            ticks,
+                            seq,
+                            pong,
+                            tid as u64,
+                        );
+                        if l.truncated {
+                            // Cannot grow the buffer here, but silence about
+                            // it is worse than a short line.
+                            l.s("[TRUNCATED]");
+                        }
+                        alarm(f, &l);
+                    }
+                    last_heartbeat = std::time::Instant::now();
+                }
+
+                if last_heartbeat.elapsed() >= HEARTBEAT {
+                    last_heartbeat = std::time::Instant::now();
+                    wd_log(&format!(
+                        "[wd] pid={pid} watching, ticks={ticks} pong={pong}"
+                    ));
+                }
+            }
+        });
+
+    if let Err(e) = spawned {
+        // **Loud, because the alternative is a log with no `[wd]` lines that
+        // reads exactly like a healthy run.**
+        logf!("[wd] FAILED to start the watchdog: {e:?} -- no liveness data this run");
+    }
+}
+
 fn log_build_identity() {
     // **A known answer, because three matching hashes prove nothing on their
     // own.** The cross-implementation check we have been relying on -- these
@@ -852,6 +1164,14 @@ fn hi_i16(lp: LPARAM) -> i32 {
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
+            // The watchdog's ping. Answering is one atomic store, so this arm
+            // cannot itself be the thing that blocks -- and its arrival here
+            // at all is the reading: it means this thread is still
+            // dispatching, even if our own loop is not running.
+            m if m == WM_WD_PING => {
+                WD_PONG.store(wp.0 as u64, Ordering::Relaxed);
+                LRESULT(0)
+            }
             // The frame owns the strip only; it must still never let GDI
             // erase, or the strip flickers on every resize.
             WM_ERASEBKGND => LRESULT(1),
@@ -1564,6 +1884,7 @@ fn main() {
     // default install, with the reason only in a log nobody opened.
     settings_ui::request_errors();
 
+    start_watchdog();
     logf!("entering message loop; renderer thread drives redraw");
 
     // ---- loop ----
@@ -1685,6 +2006,7 @@ fn main() {
             (api_box.app_tick)(app);
         }
         ticks += 1;
+        TICKS.store(ticks, Ordering::Relaxed);
 
         // One self-test step per ~1.2s, starting after 2s so the first
         // surface has settled.
@@ -1813,8 +2135,9 @@ fn main() {
                 log_pixel_format(sw, pf);
             }
             logf!(
-                "[loop] main-thread alive, ticks={} main_thread_paints={} \
+                "[loop] pid={} main-thread alive, ticks={} main_thread_paints={} \
                  surface_pixel_format={} center_pixel=0x{:06x}",
+                unsafe { windows::Win32::System::Threading::GetCurrentProcessId() },
                 ticks,
                 PAINTS.load(Ordering::Relaxed),
                 pf,
@@ -1825,4 +2148,38 @@ fn main() {
     }
 
     logf!("exiting");
+}
+
+
+#[cfg(test)]
+mod wd_tests {
+    use super::*;
+
+    /// **The buffer and the line it must hold, connected.**
+    ///
+    /// The two numbers used to sit apart -- a 256-byte buffer and a line that
+    /// happened to be about 234 bytes -- with nothing between them but the
+    /// arithmetic somebody did once. This builds the line with every number at
+    /// its widest, so a new field, or a longer phrase, fails here instead of
+    /// quietly losing the end of the alarm.
+    #[test]
+    fn alarm_line_fits() {
+        let l = blocked_line(u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX);
+        assert!(
+            !l.truncated,
+            "the alarm line no longer fits in Line::CAP ({} bytes); it needs {}+",
+            Line::CAP,
+            l.n
+        );
+    }
+
+    /// The flag is not decorative: prove it turns on.
+    #[test]
+    fn truncation_is_reported() {
+        let mut l = Line::new();
+        for _ in 0..Line::CAP + 1 {
+            l.s("x");
+        }
+        assert!(l.truncated);
+    }
 }
