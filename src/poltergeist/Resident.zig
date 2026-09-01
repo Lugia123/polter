@@ -3414,6 +3414,12 @@ const ShippedRun = struct {
     /// answer to some events, and a helper that treated every refusal as a
     /// harness failure could not test any of them.
     expect_ok: bool = true,
+
+    /// Send a `provision` carrying no skills at all. The SDK treats that as
+    /// "the line did not parse" rather than "this release ships nothing",
+    /// and refuses to prune on it -- acting on it would delete every skill on
+    /// the machine. That refusal had no test.
+    empty_skill_list: bool = false,
 };
 
 fn runShippedProvision(
@@ -3470,6 +3476,11 @@ fn runShippedProvision(
         .values = &.{ "user", "yes" },
     });
 
+    const skills: []const Feed.Skill = if (opts.empty_skill_list)
+        &.{}
+    else
+        &.{.{ .name = "mine", .path = source }};
+
     const events: []const Feed.Event = &.{.{ .provision = .{
         .n = 1,
         .at_ms = 1786819271275,
@@ -3477,7 +3488,7 @@ fn runShippedProvision(
         .version = version,
         .version_key = "POLTER_REGISTERED",
         .home = home,
-        .skills = &.{.{ .name = "mine", .path = source }},
+        .skills = skills,
     } }};
     const batch = try renderBatch(alloc, 0, 1, events, wants);
 
@@ -4197,6 +4208,146 @@ test "the hosts that edit a config file, and the four properties they promise" {
         // Nothing was written in the meantime.
         try testing.expect(!fileExists(io, cfg));
     }
+}
+
+test "pruning removes what Polter no longer ships, and nothing else" {
+    // **The only code path that deletes anything in a user's directory, and
+    // on the platform it ships to it had no assertions at all.** The `sh`
+    // side reached it once, sideways, through a test about skill stamps; the
+    // two properties that keep it from eating somebody's work were guarded
+    // only by the PowerShell port.
+    //
+    // Installing without removing is not synchronising -- three `mode-*`
+    // skills outlived the work modes they described and went on telling
+    // agents to call a tool that no longer existed. So pruning has to happen.
+    // The question is what it is allowed to touch, and that is four separate
+    // claims, each of which fails differently:
+    //
+    //   1. a `polter-` skill that is no longer shipped goes;
+    //   2. one that has grown a second file stays -- somebody put it there;
+    //   3. one whose frontmatter names something else stays;
+    //   4. a directory without the prefix is never a candidate at all;
+    //
+    // and a fifth that is the frightening one:
+    //
+    //   5. **an event carrying no skills prunes nothing.** An empty list is
+    //      far likelier to be a line that did not parse than a release that
+    //      ships nothing, and acting on it would delete every skill on the
+    //      machine.
+    //
+    // **2, 3 and 5 are absences.** They cannot be tested by counting
+    // deletions or by watching for an event; the only question that works is
+    // "is it still there afterwards".
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-prune-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const skills_dir = try std.fmt.allocPrint(alloc, "{s}/home/.claude/skills", .{dir});
+
+    const put = struct {
+        fn f(i: std.Io, path: []const u8, body: []const u8) !void {
+            var f2 = try std.Io.Dir.cwd().createFile(i, path, .{});
+            defer f2.close(i);
+            try f2.writeStreamingAll(i, body);
+        }
+    }.f;
+
+    {
+        var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+        defer d.close(io);
+
+        try d.createDirPath(io, "claude-code");
+        var f = try d.createFile(io, "claude-code/provision.sh", fixtureMode(0o755));
+        try f.writeStreamingAll(io, @embedFile("plugin_claude_code_sh"));
+        f.close(io);
+
+        try d.createDirPath(io, "_sdk");
+        var sdk = try d.createFile(io, "_sdk/provision.sh", fixtureMode(0o644));
+        try sdk.writeStreamingAll(io, @embedFile("plugin_sdk_provision_sh"));
+        sdk.close(io);
+
+        try d.createDirPath(io, "bin");
+        var c = try d.createFile(io, "bin/claude", fixtureMode(0o755));
+        try c.writeStreamingAll(io, "#!/bin/sh\nexit 0\n");
+        c.close(io);
+
+        var sk = try d.createFile(io, "mine.md", .{});
+        try sk.writeStreamingAll(io,
+            \\---
+            \\name: mine
+            \\version: 1
+            \\description: a skill for the test
+            \\---
+            \\
+            \\Body.
+            \\
+        );
+        sk.close(io);
+    }
+
+    try std.Io.Dir.cwd().createDirPath(io, skills_dir);
+
+    // 1. Ours, stamped by us, no longer shipped.
+    const gone = try std.fmt.allocPrint(alloc, "{s}/polter-gone", .{skills_dir});
+    try std.Io.Dir.cwd().createDirPath(io, gone);
+    try put(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{gone}), "---\nname: polter-gone\n---\n\nOld.\n");
+
+    // 2. Under our prefix, but somebody added a file to it.
+    const kept = try std.fmt.allocPrint(alloc, "{s}/polter-kept", .{skills_dir});
+    try std.Io.Dir.cwd().createDirPath(io, kept);
+    try put(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{kept}), "---\nname: polter-kept\n---\n\nMine.\n");
+    try put(io, try std.fmt.allocPrint(alloc, "{s}/notes.md", .{kept}), "not ours\n");
+
+    // 3. Under our prefix, one file, but it calls itself something else --
+    //    so this plugin did not write it.
+    const alias = try std.fmt.allocPrint(alloc, "{s}/polter-alias", .{skills_dir});
+    try std.Io.Dir.cwd().createDirPath(io, alias);
+    try put(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{alias}), "---\nname: someone-elses\n---\n\nTheirs.\n");
+
+    // 4. Not under the prefix. The prefix is this plugin's namespace claim,
+    //    and the claim stops there.
+    const theirs = try std.fmt.allocPrint(alloc, "{s}/their-skill", .{skills_dir});
+    try std.Io.Dir.cwd().createDirPath(io, theirs);
+    try put(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{theirs}), "---\nname: their-skill\n---\n\nTheirs.\n");
+
+    try runShippedProvision(alloc, io, dir, .{ .key = "claude-code", .version = "1.2.3" });
+
+    const installed = try std.fmt.allocPrint(alloc, "{s}/polter-mine/SKILL.md", .{skills_dir});
+    try testing.expect(fileExists(io, installed));
+
+    // The one visible event.
+    try testing.expect(!fileExists(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{gone})));
+
+    // And the three absences.
+    try testing.expect(fileExists(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{kept})));
+    try testing.expect(fileExists(io, try std.fmt.allocPrint(alloc, "{s}/notes.md", .{kept})));
+    try testing.expect(fileExists(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{alias})));
+    try testing.expect(fileExists(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{theirs})));
+
+    // 5. A batch that carries no skills must prune nothing -- **including
+    //    the one we installed a moment ago**, which by then is a `polter-`
+    //    directory holding exactly one `SKILL.md` naming itself, i.e. the
+    //    perfect candidate. This is the assertion that stands between a
+    //    mis-parsed line and an empty skills directory.
+    try runShippedProvision(alloc, io, dir, .{
+        .key = "claude-code",
+        .version = "1.2.3",
+        .empty_skill_list = true,
+    });
+
+    try testing.expect(fileExists(io, installed));
+    try testing.expect(fileExists(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{kept})));
+    try testing.expect(fileExists(io, try std.fmt.allocPrint(alloc, "{s}/SKILL.md", .{theirs})));
 }
 
 test "a plugin's child gets the environment the host prepared, not the host's own" {
