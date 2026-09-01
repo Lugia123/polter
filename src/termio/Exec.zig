@@ -217,13 +217,41 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     }
 
     if (comptime builtin.os.tag == .windows) {
-        // Interrupt the blocking read so the thread can see the quit message
-        if (windows.exp.kernel32.CancelIoEx(exec.read_thread_fd, null) == windows.FALSE) {
-            switch (windows.GetLastError()) {
-                .NOT_FOUND => {},
-                else => |err| log.warn("error interrupting read thread err={}", .{err}),
-            }
+        // **Close the console before joining the reader.**
+        //
+        // The reader is in a blocking `ReadFile` on the pty's output pipe.
+        // That read ends when the pipe has no writers left, and there were
+        // two: our own copy of the write end (now closed in `Pty.open`) and
+        // the console host's, which lives until the console is closed. Doing
+        // it after the join instead -- which is where `Pty.deinit` does it --
+        // is a circular wait: the join waits for the read, the read waits for
+        // the write end to close, and the close waits for the join.
+        //
+        // Killing the child is not enough and never was: the child is not the
+        // writer, the console host is.
+        if (self.subprocess.pty) |*pty| pty.closeConsole() else {
+            log.warn("no pty to close; the read thread may not wake", .{});
         }
+
+        // **This call is scheduled for deletion.** Kept for exactly one round,
+        // and only to record what it answers.
+        //
+        // Once the two write ends are closed above, waking the reader no
+        // longer depends on cancellation at all -- so leaving this here would
+        // preserve a "the cancel must work" precondition that nothing needs.
+        // Removing a precondition beats documenting one. Delete it as soon as
+        // one real-machine log has recorded its return value, which is the
+        // only thing it is still here for.
+        // `CancelIoEx` cancels *registered, cancellable* requests; a
+        // synchronous read on this pipe is usually not one, and it then
+        // reports `ERROR_NOT_FOUND` -- which this code used to swallow as if
+        // it were success. That silence made "the reader was never woken" and
+        // "the reader was woken and did not return" identical in the log.
+        // See `docs/windows/status.md` 七.8: this is the fourth round of
+        // getting this function wrong in this repository, and the first three
+        // ended by deleting it.
+        const cancelled = windows.exp.kernel32.CancelIoEx(exec.read_thread_fd, null);
+        log.info("CancelIoEx -> {} err={}", .{ cancelled, windows.GetLastError() });
     }
 
     exec.read_thread.join();
@@ -1820,9 +1848,23 @@ pub const ReadThread = struct {
                         // Check for a quit signal
                         .OPERATION_ABORTED => break,
 
+                        // **The normal end of a pty**, not an impossible
+                        // event: the write ends are gone, because the console
+                        // was closed (see `threadExit`) or the host went away.
+                        // This arm used to be `unreachable`, which in a
+                        // release build is undefined behaviour -- reached by
+                        // nothing more exotic than a user typing `exit`.
+                        .BROKEN_PIPE, .PIPE_NOT_CONNECTED, .INVALID_HANDLE => {
+                            log.info("io reader closing, err={}", .{err});
+                            return;
+                        },
+
                         else => {
+                            // Still unexpected, but a terminal that logs and
+                            // stops is worth more than one with undefined
+                            // behaviour in it.
                             log.err("io reader error err={}", .{err});
-                            unreachable;
+                            return;
                         },
                     }
                 }
@@ -1844,8 +1886,11 @@ pub const ReadThread = struct {
             var quit_bytes: windows.DWORD = 0;
             if (windows.exp.kernel32.PeekNamedPipe(quit, null, 0, null, &quit_bytes, null) == windows.FALSE) {
                 const err = windows.GetLastError();
-                log.err("quit pipe reader error err={}", .{err});
-                unreachable;
+                // Same reasoning as the read arm above: the quit pipe going
+                // away means this thread is finished, not that the world is
+                // broken.
+                log.info("quit pipe closed, err={}; read thread exiting", .{err});
+                return;
             }
 
             if (quit_bytes > 0) {

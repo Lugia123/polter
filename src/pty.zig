@@ -336,6 +336,10 @@ const WindowsPty = struct {
     out_pipe_pty: windows.HANDLE,
     in_pipe_pty: windows.HANDLE,
     pseudo_console: windows.HPCON,
+    /// Whether `closeConsole` has run. The console is closed before the read
+    /// thread is joined and again in `deinit`; without this the second call
+    /// would close a handle that is no longer ours.
+    console_closed: bool,
     size: winsize,
 
     pub const OpenError = error{Unexpected};
@@ -449,16 +453,60 @@ const WindowsPty = struct {
         );
         if (result != windows.S_OK) return error.Unexpected;
 
+        // **Give up our copy of the write end, now that the console has one.**
+        //
+        // `CreatePseudoConsole` duplicates the handles it is given into the
+        // console host; Microsoft's own ConPTY sample closes both PTY-side
+        // handles immediately after the call for exactly this reason. Keeping
+        // ours open makes *us* a writer on the pipe our reader thread is
+        // blocked on, and a pipe with a live writer never reports
+        // `ERROR_BROKEN_PIPE` -- so the read could not end even after the
+        // child was killed and the console was closed.
+        //
+        // The other half of that deadlock is `closeConsole` below: the host
+        // holds the *other* copy, and it keeps writing until the console is
+        // closed. **Both writers have to go**; closing either one alone
+        // leaves the reader blocked, which is why this bug survived two
+        // separate diagnoses that each found one of them.
+        _ = windows.exp.kernel32.CloseHandle(pty.out_pipe_pty);
+        pty.out_pipe_pty = windows.INVALID_HANDLE_VALUE;
+
+        pty.console_closed = false;
         pty.size = size;
         return pty;
+    }
+
+    /// Close the pseudoconsole, and nothing else. Idempotent.
+    ///
+    /// **This exists so it can happen before the read thread is joined.**
+    /// The reader sits in a blocking `ReadFile` on `out_pipe`, and that read
+    /// does not return when the child process dies: the write end belongs to
+    /// the console host, not to the child, so it stays open until the console
+    /// itself is closed. Closing it here is what ends the read.
+    ///
+    /// The alternative the code used to rely on -- `CancelIoEx` on the read
+    /// handle -- cannot do this job: it cancels *registered, cancellable*
+    /// requests, and a synchronous read on this pipe is often not one. It
+    /// reports `ERROR_NOT_FOUND` and changes nothing. See
+    /// `docs/windows/status.md` section 七.8: the same function had already
+    /// been wrong three times in the named-pipe shutdown, where the answer
+    /// was also to stop cancelling and close the thing being waited on.
+    pub fn closeConsole(self: *Pty) void {
+        if (self.console_closed) return;
+        self.console_closed = true;
+        _ = windows.exp.kernel32.ClosePseudoConsole(self.pseudo_console);
     }
 
     pub fn deinit(self: *Pty) void {
         _ = windows.exp.kernel32.CloseHandle(self.in_pipe_pty);
         _ = windows.exp.kernel32.CloseHandle(self.in_pipe);
-        _ = windows.exp.kernel32.CloseHandle(self.out_pipe_pty);
+        // `out_pipe_pty` is normally already closed, in `open`. Guarded rather
+        // than removed so this stays correct if that ever moves.
+        if (self.out_pipe_pty != windows.INVALID_HANDLE_VALUE) {
+            _ = windows.exp.kernel32.CloseHandle(self.out_pipe_pty);
+        }
         _ = windows.exp.kernel32.CloseHandle(self.out_pipe);
-        _ = windows.exp.kernel32.ClosePseudoConsole(self.pseudo_console);
+        self.closeConsole();
         self.* = undefined;
     }
 
