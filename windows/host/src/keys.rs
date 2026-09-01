@@ -431,18 +431,6 @@ pub fn trigger_lookup(action: &str) -> Lookup {
     Lookup::Bound(t)
 }
 
-/// The raw trigger bound to a core action right now.
-///
-/// `shortcut_for` renders this for display; a caller that has to *act* on the
-/// binding -- `RegisterHotKey` needs a virtual-key code, not a label -- needs
-/// the numbers instead. Same lookup, same no-caching rule.
-pub fn trigger_for(action: &str) -> Option<TriggerC> {
-    match trigger_lookup(action) {
-        Lookup::Bound(t) => Some(t),
-        _ => None,
-    }
-}
-
 /// The key combination bound to a core action right now, e.g.
 /// `shortcut_for("copy_to_clipboard")` -> `Some("Ctrl+Shift+C")`.
 ///

@@ -49,26 +49,61 @@ const COL_DIM: u32 = 0x00a0a0a0;
 
 static HWND_KEYSEQ: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-/// Ordinals of `ghostty_input_key_e`, derived by parsing the enum in
-/// `include/ghostty.h` in order. Checkable the same way the action constants
-/// in `ffi.rs` are.
-const K_DIGIT_0: i32 = 6;
-const K_EQUAL: i32 = 16;
-const K_A: i32 = 20;
-const K_MINUS: i32 = 46;
-const K_PERIOD: i32 = 47;
-const K_SEMICOLON: i32 = 49;
-const K_SLASH: i32 = 50;
-const K_BACKSPACE: i32 = 53;
-const K_ENTER: i32 = 58;
-const K_SPACE: i32 = 63;
-const K_TAB: i32 = 64;
-const K_ARROW_DOWN: i32 = 75;
-const K_ARROW_LEFT: i32 = 76;
-const K_ARROW_RIGHT: i32 = 77;
-const K_ARROW_UP: i32 = 78;
-const K_ESCAPE: i32 = 120;
-const K_F1: i32 = 121;
+/// `ghostty_input_key_e`, **read from the header rather than copied out of
+/// it**.
+///
+/// The ordinals used to be a dozen hand-counted constants and everything else
+/// fell through to a `key#N` string. That was defensible while this file only
+/// drew the pending-key indicator, where showing *that* a key was consumed is
+/// the whole job. **It stopped being defensible the moment menus started
+/// rendering their shortcut halves through here**: `Ctrl+key#72` is not a
+/// degraded label, it is a wrong one, and it went in front of users.
+///
+/// 72 is `INSERT`. `Ctrl+Insert` and `Shift+Insert` are the oldest
+/// copy/paste keys on Windows, so the binding was not just valid, it was the
+/// most Windows-appropriate binding in the menu -- and this file printed it
+/// as a number.
+///
+/// Embedding the header (the same trick `menu.rs` uses on `Binding.zig`)
+/// means the table **cannot drift from the enum it names**, and that adding a
+/// key to the core cannot silently produce another `key#N`.
+const GHOSTTY_H: &str = include_str!("../../../include/ghostty.h");
+
+/// Enum member names in ordinal order, e.g. `["UNIDENTIFIED", "BACKQUOTE",
+/// ...]` with the `GHOSTTY_KEY_` prefix removed.
+fn key_names() -> &'static [String] {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        let mut out = Vec::new();
+        let mut inside = false;
+        for line in GHOSTTY_H.lines() {
+            let t = line.trim();
+            if !inside {
+                // The enum is anonymous, so it is found by its typedef name
+                // on the closing line; the opening one is just `typedef enum
+                // {`. Tracking from the first member instead: the block that
+                // ends `} ghostty_input_key_e;` is the one we want, and
+                // members are recognised by their prefix, which no other enum
+                // in this header shares.
+                if t.starts_with("GHOSTTY_KEY_") {
+                    inside = true;
+                } else {
+                    continue;
+                }
+            }
+            if t.starts_with('}') {
+                break;
+            }
+            if let Some(name) = t.strip_prefix("GHOSTTY_KEY_") {
+                let name = name.trim_end_matches(',').trim();
+                if !name.is_empty() {
+                    out.push(name.to_string());
+                }
+            }
+        }
+        out
+    })
+}
 
 /// `ghostty_input_trigger_tag_e`
 const TRIGGER_PHYSICAL: i32 = 0;
@@ -102,39 +137,74 @@ pub(crate) fn key_label(tag: i32, key: u32) -> String {
             .unwrap_or_else(|| "?".into());
     }
     if tag != TRIGGER_PHYSICAL {
-        return "…".into();
+        return "\u{2026}".into();
     }
-    let k = key as i32;
-    // The three contiguous ranges, then the named ones.
-    if (K_A..K_A + 26).contains(&k) {
-        return ((b'A' + (k - K_A) as u8) as char).to_string();
+    let Some(name) = key_names().get(key as usize) else {
+        // **No longer silent.** What comes out of this function is shown to a
+        // user, so a key with no name is a defect to report, not a string to
+        // print. Reaching here now means an ordinal outside the enum the
+        // header declares -- a core newer than the header this was built
+        // against.
+        logf!("[keys] no label for physical key #{key}; the header has {} entries", key_names().len());
+        return format!("key#{key}");
+    };
+    label_for_name(name)
+}
+
+/// One enum member name as a person would see it on a keycap.
+///
+/// Split out so the whole enum can be walked in a test without a window.
+fn label_for_name(name: &str) -> String {
+    // Symbols are drawn as the symbol, not as the word: `Ctrl+;` reads, and
+    // `Ctrl+Semicolon` does not.
+    match name {
+        "BACKQUOTE" => return "`".into(),
+        "BACKSLASH" => return "\\".into(),
+        "BRACKET_LEFT" => return "[".into(),
+        "BRACKET_RIGHT" => return "]".into(),
+        "COMMA" => return ",".into(),
+        "EQUAL" => return "=".into(),
+        "MINUS" => return "-".into(),
+        "PERIOD" => return ".".into(),
+        "QUOTE" => return "'".into(),
+        "SEMICOLON" => return ";".into(),
+        "SLASH" => return "/".into(),
+        "ARROW_LEFT" => return "\u{2190}".into(),
+        "ARROW_UP" => return "\u{2191}".into(),
+        "ARROW_RIGHT" => return "\u{2192}".into(),
+        "ARROW_DOWN" => return "\u{2193}".into(),
+        "ESCAPE" => return "Esc".into(),
+        "SPACE" => return "Space".into(),
+        _ => {}
     }
-    if (K_DIGIT_0..K_DIGIT_0 + 10).contains(&k) {
-        return ((b'0' + (k - K_DIGIT_0) as u8) as char).to_string();
+    // `A`..`Z` and `F1`..`F25` are already what a keycap says.
+    if name.len() == 1 || (name.starts_with('F') && name[1..].chars().all(|c| c.is_ascii_digit())) {
+        return name.to_string();
     }
-    if (K_F1..K_F1 + 12).contains(&k) {
-        return format!("F{}", k - K_F1 + 1);
+    // `DIGIT_7` is the 7 key.
+    if let Some(d) = name.strip_prefix("DIGIT_") {
+        return d.to_string();
     }
-    match k {
-        K_ESCAPE => "Esc".into(),
-        K_ENTER => "Enter".into(),
-        K_TAB => "Tab".into(),
-        K_SPACE => "Space".into(),
-        K_BACKSPACE => "Backspace".into(),
-        K_ARROW_LEFT => "←".into(),
-        K_ARROW_RIGHT => "→".into(),
-        K_ARROW_UP => "↑".into(),
-        K_ARROW_DOWN => "↓".into(),
-        K_MINUS => "-".into(),
-        K_EQUAL => "=".into(),
-        K_PERIOD => ".".into(),
-        K_SEMICOLON => ";".into(),
-        K_SLASH => "/".into(),
-        // Deliberately not a table of all 176: an unmapped key still shows
-        // *that a key was consumed*, which is the indicator's whole job. The
-        // number is there so an unmapped key can be identified and added.
-        other => format!("key#{other}"),
+    // `NUMPAD_ADD` -> `NumAdd`, keeping numpad keys distinguishable from the
+    // main-row keys that share their names. Without this, `NUMPAD_5` and `5`
+    // would render identically and a menu could not tell them apart.
+    if let Some(rest) = name.strip_prefix("NUMPAD_") {
+        return format!("Num{}", camel(rest));
     }
+    camel(name)
+}
+
+/// `PAGE_DOWN` -> `PageDown`.
+fn camel(name: &str) -> String {
+    name.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -420,30 +490,104 @@ extern "system" fn keyseq_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
 mod tests {
     use super::*;
 
+    /// The ordinal of an enum member, looked up by name.
+    ///
+    /// **Not a hand-copied constant.** The constants this replaces were the
+    /// reason the table could disagree with the header at all; a test that
+    /// used them to check the header would have been checking one copy
+    /// against itself.
+    fn ord(name: &str) -> u32 {
+        key_names()
+            .iter()
+            .position(|n| n == name)
+            .unwrap_or_else(|| panic!("{name} is not in ghostty_input_key_e")) as u32
+    }
+
     #[test]
-    fn letters_digits_and_function_keys_are_arithmetic() {
-        assert_eq!(key_label(TRIGGER_PHYSICAL, K_A as u32), "A");
-        assert_eq!(key_label(TRIGGER_PHYSICAL, (K_A + 25) as u32), "Z");
-        assert_eq!(key_label(TRIGGER_PHYSICAL, K_DIGIT_0 as u32), "0");
-        assert_eq!(key_label(TRIGGER_PHYSICAL, (K_DIGIT_0 + 9) as u32), "9");
-        assert_eq!(key_label(TRIGGER_PHYSICAL, K_F1 as u32), "F1");
-        assert_eq!(key_label(TRIGGER_PHYSICAL, (K_F1 + 11) as u32), "F12");
+    fn letters_digits_and_function_keys_read_as_keycaps() {
+        assert_eq!(key_label(TRIGGER_PHYSICAL, ord("A")), "A");
+        assert_eq!(key_label(TRIGGER_PHYSICAL, ord("Z")), "Z");
+        assert_eq!(key_label(TRIGGER_PHYSICAL, ord("DIGIT_0")), "0");
+        assert_eq!(key_label(TRIGGER_PHYSICAL, ord("DIGIT_9")), "9");
+        assert_eq!(key_label(TRIGGER_PHYSICAL, ord("F1")), "F1");
+        assert_eq!(key_label(TRIGGER_PHYSICAL, ord("F12")), "F12");
     }
 
     #[test]
     fn named_keys_come_from_the_table() {
-        assert_eq!(key_label(TRIGGER_PHYSICAL, K_ESCAPE as u32), "Esc");
-        assert_eq!(key_label(TRIGGER_PHYSICAL, K_SPACE as u32), "Space");
+        assert_eq!(key_label(TRIGGER_PHYSICAL, ord("ESCAPE")), "Esc");
+        assert_eq!(key_label(TRIGGER_PHYSICAL, ord("SPACE")), "Space");
+    }
+
+    /// **The two the user was shown as numbers**, end to end through the same
+    /// entry point the menu uses. `Ctrl+Insert` and `Shift+Insert` are the
+    /// oldest copy/paste keys on Windows, so this was not an obscure binding
+    /// being mangled -- it was the most appropriate one in the menu.
+    #[test]
+    fn insert_renders_as_insert_not_as_key_72() {
+        let s = key_label(TRIGGER_PHYSICAL, ord("INSERT"));
+        assert_eq!(s, "Insert");
+        assert_eq!(format!("{}{}", mods_label(1 << 1), s), "Ctrl+Insert");
+        assert_eq!(format!("{}{}", mods_label(1 << 0), s), "Shift+Insert");
     }
 
     /// An unmapped key must still say *something*: the indicator's job is to
     /// show that a key was consumed, and a blank label would look like the
     /// chord ended.
+    /// An ordinal the header does not declare. **175 used to be the probe
+    /// here and is not usable any more** -- it is `PASTE`, a real key with a
+    /// real name now. Using an in-range ordinal as the "unmapped" probe is
+    /// exactly how this function kept its blind spot: every value anyone
+    /// tested with was one the fallback was expected to catch.
     #[test]
-    fn unmapped_key_still_renders_and_is_identifiable() {
-        let s = key_label(TRIGGER_PHYSICAL, 175);
+    fn an_ordinal_outside_the_enum_still_renders_and_is_identifiable() {
+        let n = key_names().len() as u32 + 10;
+        let s = key_label(TRIGGER_PHYSICAL, n);
         assert!(!s.is_empty());
-        assert!(s.contains("175"), "should name the ordinal, got {s}");
+        assert!(s.contains(&n.to_string()), "should name the ordinal, got {s}");
+    }
+
+    /// **Every key the core can report has a name.**
+    ///
+    /// This is the test that would have caught `Ctrl+key#72` before a user
+    /// did. It walks the whole enum rather than the handful of ordinals
+    /// somebody thought to list, because the defect was precisely in the ones
+    /// nobody thought to list.
+    #[test]
+    fn no_key_in_the_enum_renders_as_a_number() {
+        let names = key_names();
+        assert_eq!(names.len(), 176, "the header's key enum changed size");
+        for (i, name) in names.iter().enumerate() {
+            let s = key_label(TRIGGER_PHYSICAL, i as u32);
+            assert!(
+                !s.contains("key#"),
+                "ordinal {i} ({name}) has no label: {s}"
+            );
+            assert!(!s.is_empty(), "ordinal {i} ({name}) rendered empty");
+        }
+    }
+
+    /// The three the user actually saw, by name rather than by ordinal, so
+    /// this keeps meaning the same thing if the enum is renumbered.
+    #[test]
+    fn the_keys_that_were_printed_as_numbers_now_have_names() {
+        assert_eq!(label_for_name("INSERT"), "Insert");
+        assert_eq!(label_for_name("DELETE"), "Delete");
+        assert_eq!(label_for_name("HOME"), "Home");
+        assert_eq!(label_for_name("END"), "End");
+        assert_eq!(label_for_name("PAGE_UP"), "PageUp");
+        assert_eq!(label_for_name("PAGE_DOWN"), "PageDown");
+        // The one that broke `quick.rs`'s fallback test.
+        assert_eq!(label_for_name("BACKQUOTE"), "`");
+    }
+
+    /// Numpad keys must not collapse onto the main row: a menu that showed
+    /// `Ctrl+5` for both could not say which one it meant.
+    #[test]
+    fn numpad_keys_are_distinguishable_from_the_main_row() {
+        assert_ne!(label_for_name("NUMPAD_5"), label_for_name("DIGIT_5"));
+        assert_eq!(label_for_name("DIGIT_5"), "5");
+        assert_eq!(label_for_name("NUMPAD_5"), "Num5");
     }
 
     #[test]

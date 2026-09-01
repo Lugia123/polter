@@ -499,12 +499,29 @@ const K_F1: u32 = 121;
 /// arithmetic on three contiguous ranges plus three constants, not a
 /// 176-entry table; an unmapped key falls back and logs.
 fn hotkey_from_trigger(t: crate::keys::TriggerC) -> Option<(HOT_KEY_MODIFIERS, u32, String)> {
-    // A unicode trigger names a character, not a physical key, and
-    // `RegisterHotKey` only speaks virtual keys. Declining is correct.
-    if t.tag != crate::keys::TRIGGER_PHYSICAL {
-        return None;
-    }
-    let k = t.key;
+    let vk = match t.tag {
+        crate::keys::TRIGGER_PHYSICAL => vk_from_physical(t.key)?,
+        // **A unicode trigger is the common case, not the exotic one**, and
+        // an earlier version of this function declined it outright -- which
+        // made every hotkey written the way people actually write hotkeys
+        // fall back to the built-in, silently.
+        //
+        // The reason is `src/input/key.zig:129`: the `Key` enum's fields are
+        // `key_a` and `digit_1`, **not `a` and `1`**. So when `Binding.zig`'s
+        // trigger parser walks the enum field names looking for `a` it finds
+        // nothing, drops through to its single-codepoint branch, and yields
+        // `.unicode = 'a'`. `ctrl+shift+a` and `ctrl+1` are therefore *both*
+        // unicode triggers, and only spellings nobody writes in a config
+        // (`ctrl+key_a`) come back physical.
+        crate::keys::TRIGGER_UNICODE => vk_from_codepoint(t.key)?,
+        // `catch_all` carries no key at all.
+        _ => return None,
+    };
+    finish(t, vk)
+}
+
+/// A `ghostty_input_key_e` ordinal as a virtual key.
+fn vk_from_physical(k: u32) -> Option<u32> {
     let vk = if (K_A..K_A + 26).contains(&k) {
         0x41 + (k - K_A) // VK_A .. VK_Z
     } else if (K_DIGIT_0..K_DIGIT_0 + 10).contains(&k) {
@@ -519,7 +536,53 @@ fn hotkey_from_trigger(t: crate::keys::TriggerC) -> Option<(HOT_KEY_MODIFIERS, u
             _ => return None,
         }
     };
+    Some(vk)
+}
 
+/// A unicode codepoint as a virtual key.
+///
+/// ASCII letters and digits map by arithmetic and are the same on every
+/// layout. Anything else goes through `VkKeyScanW`, which answers for the
+/// **currently active layout** -- and is accepted only when it needs no
+/// modifier of its own. A character that requires Shift on this layout (`:`
+/// on a US keyboard) would otherwise register the *unshifted* key, giving the
+/// user a combination they never asked for; declining is the honest answer.
+///
+/// The layout dependence is real and cannot be removed here:
+/// `RegisterHotKey` takes a virtual key, and which character a virtual key
+/// produces is a property of the layout at press time. Switching layouts
+/// moves such a hotkey. That is Windows' behaviour, not this function's.
+fn vk_from_codepoint(cp: u32) -> Option<u32> {
+    let ch = char::from_u32(cp)?;
+    // Case names the same physical key, and a config saying `ctrl+shift+A`
+    // must not register a different hotkey from `ctrl+shift+a`.
+    if ch.is_ascii_lowercase() {
+        return Some(ch.to_ascii_uppercase() as u32);
+    }
+    if ch.is_ascii_uppercase() || ch.is_ascii_digit() {
+        return Some(ch as u32);
+    }
+    match ch {
+        // Must agree with `vk_from_physical`'s `K_BACKQUOTE`, or a user who
+        // writes the default combination out explicitly would get a
+        // different key from the one they get by writing nothing.
+        '`' => return Some(VK_OEM_3.0 as u32),
+        ' ' => return Some(VK_SPACE.0 as u32),
+        _ => {}
+    }
+    // -1 means this layout cannot produce the character at all.
+    let r = unsafe { VkKeyScanW(cp as u16) };
+    if r == -1 {
+        return None;
+    }
+    if (r >> 8) & 0xFF != 0 {
+        return None; // needs a modifier of its own; see above
+    }
+    Some((r & 0xFF) as u32)
+}
+
+/// Modifiers, and the label, for a key that has already been resolved.
+fn finish(t: crate::keys::TriggerC, vk: u32) -> Option<(HOT_KEY_MODIFIERS, u32, String)> {
     // `ghostty_input_mods_e` -> `HOT_KEY_MODIFIERS`. The sided bits are
     // ignored on purpose: `RegisterHotKey` cannot express "the right-hand
     // Ctrl only", so honouring them would mean claiming a combination
@@ -1152,6 +1215,54 @@ mod tests {
                 .is_none(),
             "a unicode trigger names a character, not a physical key"
         );
+    }
+
+    /// **The bug W4's three rounds cornered, as a test.**
+    ///
+    /// `ctrl+shift+a` in a config parses to a **unicode** trigger, not a
+    /// physical one, because `key.zig`'s enum field is `key_a` -- so the
+    /// parser's enum-name walk misses `a` and falls through to its
+    /// single-codepoint branch. A `hotkey_from_trigger` that only accepted
+    /// physical triggers therefore declined every hotkey written the way
+    /// people write hotkeys, and fell back to the built-in silently.
+    #[test]
+    fn a_unicode_trigger_is_the_common_case_and_must_map() {
+        let t = TriggerC { tag: TRIGGER_UNICODE, key: 'a' as u32, mods: (1 << 1) | (1 << 0) };
+        let (mods, vk, combo) = hotkey_from_trigger(t).expect("ctrl+shift+a must be usable");
+        assert_eq!(mods, MOD_CONTROL | MOD_SHIFT);
+        assert_eq!(vk, 0x41, "VK_A");
+        assert_eq!(combo, "Ctrl+Shift+A");
+    }
+
+    /// Digits go the same way: the enum field is `digit_1`, so `ctrl+1` is
+    /// also a unicode trigger. The physical digit range in this file is
+    /// therefore unreachable from any config anyone would write -- which is
+    /// why testing only the physical path proved nothing.
+    #[test]
+    fn a_unicode_digit_maps_too() {
+        let t = TriggerC { tag: TRIGGER_UNICODE, key: '1' as u32, mods: 1 << 2 };
+        assert_eq!(hotkey_from_trigger(t).unwrap().1, 0x31, "VK_1");
+    }
+
+    /// The backquote written as a character, which is how `ctrl+`` reaches
+    /// here from a config -- and it must land on the same virtual key as the
+    /// built-in fallback, or a user who writes the default explicitly gets a
+    /// different hotkey from the one they get by writing nothing.
+    #[test]
+    fn the_configured_backquote_and_the_fallback_are_the_same_key() {
+        let t = TriggerC { tag: TRIGGER_UNICODE, key: '`' as u32, mods: 1 << 1 };
+        let (mods, vk, _) = hotkey_from_trigger(t).unwrap();
+        assert_eq!((mods, vk), (MOD_CONTROL, VK_OEM_3.0 as u32));
+    }
+
+    /// Upper and lower case name the same physical key. A config saying
+    /// `ctrl+shift+A` must not register a different hotkey from
+    /// `ctrl+shift+a`.
+    #[test]
+    fn case_does_not_change_the_key() {
+        let lower = TriggerC { tag: TRIGGER_UNICODE, key: 'a' as u32, mods: 1 << 1 };
+        let upper = TriggerC { tag: TRIGGER_UNICODE, key: 'A' as u32, mods: 1 << 1 };
+        assert_eq!(hotkey_from_trigger(lower).unwrap().1, hotkey_from_trigger(upper).unwrap().1);
     }
 
     /// **The one the test box needs.** `ctrl+shift+a` is the combination a
