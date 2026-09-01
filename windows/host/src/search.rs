@@ -28,7 +28,7 @@
 //! across a Win32 call -- that is the shape that deadlocked the tab layout
 //! once already.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
@@ -75,11 +75,25 @@ static INBOX: Mutex<Inbox> = Mutex::new(Inbox {
     selected: None,
 });
 
-struct State {
+/// The window handles, written once and never again. **Outside the `RefCell`
+/// deliberately** -- see the long note on `palette::Windows`, which this
+/// mirrors. In short: reading a `Cell` takes no borrow, so `Model` below can
+/// hold no window, so the call that crashed the palette (a dispatching Win32
+/// call made while a borrow was live) has nothing here to be made on.
+///
+/// This file had the same defect as the palette and had simply never been
+/// asked to run it: `show` only wrote the box when the needle was non-empty,
+/// and `start_search` passes an empty one.
+#[derive(Clone, Copy)]
+struct Windows {
     edit: HWND,
-    prev_focus: HWND,
     font: HFONT,
     edit_proc: WNDPROC,
+}
+
+/// **Adding an `HWND` or `HFONT` field here re-opens that crash** -- it belongs
+/// on `Windows` instead.
+struct Model {
     visible: bool,
     /// Straight from the core. `None` means it has not answered yet, which is
     /// different from zero and is painted differently.
@@ -88,7 +102,16 @@ struct State {
 }
 
 thread_local! {
-    static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    static STATE: RefCell<Option<Model>> = const { RefCell::new(None) };
+    static WINDOWS: Cell<Option<Windows>> = const { Cell::new(None) };
+    /// The window that had focus when the bar opened. A `Cell` and not a field
+    /// of `Model`, for the reason above.
+    static PREV_FOCUS: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
+}
+
+/// The handles, or `None` before `init`. **Takes no borrow.**
+fn windows() -> Option<Windows> {
+    WINDOWS.with(|w| w.get())
 }
 
 fn hwnd() -> HWND {
@@ -221,12 +244,15 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         let f: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = edit_proc;
         let old = SetWindowLongPtrW(edit, GWLP_WNDPROC, f as usize as isize);
 
-        STATE.with(|c| {
-            *c.borrow_mut() = Some(State {
+        WINDOWS.with(|w| {
+            w.set(Some(Windows {
                 edit,
-                prev_focus: HWND(std::ptr::null_mut()),
                 font,
                 edit_proc: std::mem::transmute(old),
+            }))
+        });
+        STATE.with(|c| {
+            *c.borrow_mut() = Some(Model {
                 visible: false,
                 total: None,
                 selected: None,
@@ -259,31 +285,31 @@ fn show(needle: &str) {
         let x = fr.right - w - sc(16);
         let y = fr.top + sc(56);
 
-        let edit = STATE.with(|c| {
-            c.borrow_mut().as_mut().map(|st| {
+        STATE.with(|c| {
+            if let Some(st) = c.borrow_mut().as_mut() {
                 st.visible = true;
-                // A fresh search that carries a needle replaces what was
-                // there; `start_search` with an empty needle keeps it, which
-                // is what "reopen the bar I just closed" should do.
-                if !needle.is_empty() {
-                    let wide: Vec<u16> = needle.encode_utf16().chain(Some(0)).collect();
-                    let _ = SetWindowTextW(st.edit, PCWSTR(wide.as_ptr()));
-                }
-                st.edit
-            })
+            }
         });
+
+        // A fresh search that carries a needle replaces what was there;
+        // `start_search` with an empty needle keeps it, which is what "reopen
+        // the bar I just closed" should do. Outside any borrow: `WM_SETTEXT`
+        // reaches the subclassed `edit_proc` synchronously. This is the line
+        // that crashed the palette, in the one shape that never ran.
+        let wins = windows();
+        if let Some(wins) = wins {
+            if !needle.is_empty() {
+                let wide: Vec<u16> = needle.encode_utf16().chain(Some(0)).collect();
+                let _ = SetWindowTextW(wins.edit, PCWSTR(wide.as_ptr()));
+            }
+        }
 
         let _ = SetWindowPos(me, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
 
-        if let Some(e) = edit {
-            let prev = crate::overlay::focus_to_edit(e, "search");
-            STATE.with(|c| {
-                if let Some(st) = c.borrow_mut().as_mut() {
-                    st.prev_focus = prev;
-                }
-            });
+        if let Some(wins) = wins {
+            PREV_FOCUS.set(crate::overlay::focus_to_edit(wins.edit, "search"));
             // Select all, so typing replaces the previous needle.
-            SendMessageW(e, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+            SendMessageW(wins.edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
         }
         logf!("[search] shown, needle={:?}", needle);
     }
@@ -294,19 +320,21 @@ fn hide() {
     if me.0.is_null() {
         return;
     }
-    let prev = STATE.with(|c| {
-        c.borrow_mut().as_mut().map(|st| {
-            st.visible = false;
-            st.total = None;
-            st.selected = None;
-            st.prev_focus
-        })
+    let was_up = STATE.with(|c| {
+        c.borrow_mut()
+            .as_mut()
+            .map(|st| {
+                st.total = None;
+                st.selected = None;
+                std::mem::replace(&mut st.visible, false)
+            })
+            .unwrap_or(false)
     });
     unsafe {
         let _ = ShowWindow(me, SW_HIDE);
     }
-    if let Some(p) = prev {
-        crate::overlay::focus_back(p, "search");
+    if was_up {
+        crate::overlay::focus_back(PREV_FOCUS.get(), "search");
     }
 }
 
@@ -314,14 +342,14 @@ fn hide() {
 /// is the core's own rule for `search:` -- deleting the text should stop
 /// highlighting, not leave the last match lit.
 fn push_needle() {
-    let text = STATE.with(|c| {
-        let b = c.borrow();
-        let st = b.as_ref()?;
-        let mut buf = [0u16; 512];
-        let n = unsafe { GetWindowTextW(st.edit, &mut buf) } as usize;
-        Some(String::from_utf16_lossy(&buf[..n]))
-    });
-    let Some(text) = text else { return };
+    // `GetWindowTextW` sends `WM_GETTEXT` synchronously, so it is a dispatching
+    // call like any other and is made with no borrow held. It happened to be
+    // safe before this change -- both sides took a *shared* borrow -- but that
+    // was a fact about `edit_proc`'s first line, two hundred lines away.
+    let Some(wins) = windows() else { return };
+    let mut buf = [0u16; 512];
+    let n = unsafe { GetWindowTextW(wins.edit, &mut buf) } as usize;
+    let text = String::from_utf16_lossy(&buf[..n]);
 
     // The core has not answered for this needle yet. Painting the old count
     // next to a new needle is worse than painting nothing.
@@ -416,11 +444,9 @@ extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
 
             WM_DESTROY => {
-                STATE.with(|c| {
-                    if let Some(st) = c.borrow_mut().as_mut() {
-                        let _ = DeleteObject(st.font.into());
-                    }
-                });
+                if let Some(wins) = windows() {
+                    let _ = DeleteObject(wins.font.into());
+                }
                 LRESULT(0)
             }
 
@@ -432,7 +458,7 @@ extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
 /// Everything not listed falls through to the original, which is what keeps
 /// editing, selection and the IME working.
 unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let old = STATE.with(|c| c.borrow().as_ref().and_then(|s| s.edit_proc));
+    let old = windows().and_then(|w| w.edit_proc);
 
     unsafe {
         match msg {
@@ -495,10 +521,11 @@ fn paint(hwnd: HWND) {
         let _ = DeleteObject(bg.into());
         SetBkMode(hdc, TRANSPARENT);
 
+        let Some(wins) = windows() else { return };
         STATE.with(|c| {
             let b = c.borrow();
             let Some(st) = b.as_ref() else { return };
-            let old_font = SelectObject(hdc, st.font.into());
+            let old_font = SelectObject(hdc, wins.font.into());
 
             // The counter. Three distinct states, and they must look
             // different: not answered yet, answered zero, answered n.

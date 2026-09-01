@@ -155,6 +155,32 @@ fn binary_identity(path: &std::path::Path) -> String {
 /// `LoadLibraryA` finds them: **the same resolution order, so this cannot
 /// report a file the process did not load.**
 fn log_build_identity() {
+    // **A known answer, because three matching hashes prove nothing on their
+    // own.** The cross-implementation check we have been relying on -- these
+    // three values also computed on the build machine, by a different SHA-256
+    // -- is the stronger floor of the two, but it needs both sides present.
+    // This one works when only the log is in front of you, which is the
+    // situation this whole line exists for: a hash that silently returned a
+    // constant would read exactly like a real one, and "all three lines look
+    // like hashes" is not evidence that any of them is.
+    {
+        const EMPTY_SHA256_PREFIX: &str = "e3b0c44298fc1c14";
+        use windows::Win32::Security::Cryptography::{BCryptHash, BCRYPT_SHA256_ALG_HANDLE};
+        let mut out = [0u8; 32];
+        let rc = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, &[], &mut out) };
+        let got: String = out[..8].iter().map(|b| format!("{:02x}", b)).collect();
+        logf!(
+            "[build] sha256 self-test: \"\" -> {} (want {}) {}",
+            got,
+            EMPTY_SHA256_PREFIX,
+            if rc.is_ok() && got == EMPTY_SHA256_PREFIX {
+                "ok"
+            } else {
+                "MISMATCH -- treat every hash below as unverified"
+            }
+        );
+    }
+
     let Ok(exe) = std::env::current_exe() else {
         logf!("[build] current_exe() failed; no identity available");
         return;

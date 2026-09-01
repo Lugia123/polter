@@ -37,7 +37,7 @@
 //! That is why the state below is a `thread_local`, not a `Mutex`: there is no
 //! lock to take, and so no lock to deadlock on.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -102,26 +102,65 @@ struct Command {
 /// fails the build if a line names a command the core does not publish.
 const SYNONYMS: &str = include_str!("synonyms.txt");
 
-struct State {
+/// The window handles, written once when the palette is built and never again.
+/// **They live outside the `RefCell` deliberately.**
+///
+/// Reading a `Cell` takes no borrow, so a Win32 call made through a handle from
+/// here cannot re-enter a borrow that is still live. That is not a convenience;
+/// it is the entire reason this type exists, and it is why `Model` below holds
+/// no window handle of any kind.
+///
+/// **This structure replaces a rule that had already been rediscovered twice
+/// and then failed a third time.** `tabs.rs` carries "no lock across a Win32
+/// call that dispatches" and `tsf.rs` carries "no borrow across
+/// `OnLockGranted`"; this module carried neither, and learned it by panicking
+/// in front of a user the first time the palette was ever opened --
+/// `SetWindowTextW` inside `borrow_mut` sends `WM_SETTEXT` synchronously to the
+/// subclassed `edit_proc`, whose first line borrows.
+///
+/// A comment was never going to be enough here, because **whether a call site
+/// is safe is not visible at that call site.** `SetWindowTextW(st.edit, ..)`
+/// here and `SendMessageW(f.hwnd, WM_SETFONT, ..)` in `settings_ui.rs` are the
+/// same shape; one panics and one does not, and separating them means checking,
+/// in two other functions, whether the target window was subclassed and whether
+/// that subclass borrows this cell. So the invariant moved into the types:
+/// **the borrow hands out no window, so the dangerous call has nothing to be
+/// made on.**
+#[derive(Clone, Copy)]
+struct Windows {
     edit: HWND,
-    /// The window that had focus when the palette opened, so it can be given
-    /// back. This is a surface child window, and its `WM_SETFOCUS` is what
-    /// restores the terminal's IME.
-    prev_focus: HWND,
     font: HFONT,
+    /// The old `EDIT` window procedure, for keys we do not take.
+    edit_proc: WNDPROC,
+}
+
+/// Everything that changes while the palette is open. **Adding an `HWND` or
+/// `HFONT` field here re-opens the panic described on `Windows`** -- such a
+/// field belongs there instead.
+struct Model {
     commands: Vec<Command>,
     /// Indices into `commands`, best match first. Rebuilt on every keystroke.
     filtered: Vec<usize>,
     selected: usize,
     /// First visible row, so a long list can scroll without a scrollbar.
     top: usize,
-    /// The old `EDIT` window procedure, for keys we do not take.
-    edit_proc: WNDPROC,
     visible: bool,
 }
 
 thread_local! {
-    static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    static STATE: RefCell<Option<Model>> = const { RefCell::new(None) };
+    static WINDOWS: Cell<Option<Windows>> = const { Cell::new(None) };
+    /// The window that had focus when the palette opened, so it can be given
+    /// back. A `Cell` and not a field of `Model` for the reason above: it is a
+    /// window handle, and `focus_back` dispatches. It is a surface child
+    /// window, and its `WM_SETFOCUS` is what restores the terminal's IME.
+    static PREV_FOCUS: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
+}
+
+/// The handles, or `None` before `init`. **Takes no borrow -- that is the
+/// point of it.**
+fn windows() -> Option<Windows> {
+    WINDOWS.with(|w| w.get())
 }
 
 // --------------------------------------------------------------- commands
@@ -309,7 +348,11 @@ fn score(haystack: &str, needle: &str) -> Option<i32> {
     Some(score - (hay.len() as i32) / 16)
 }
 
-fn refilter(st: &mut State, needle: &str) {
+/// Rebuild the visible list. It logs on every call, including the empty
+/// needle at open, so the narrowing asked for by criterion 3 has a reading
+/// that does not share a failure mode with the screenshot: a list that looks
+/// shorter because the window was repainted wrong still logs the true count.
+fn refilter(st: &mut Model, needle: &str) {
     let needle = needle.to_lowercase();
     let mut scored: Vec<(i32, usize)> = st
         .commands
@@ -334,6 +377,12 @@ fn refilter(st: &mut State, needle: &str) {
     st.filtered = scored.into_iter().map(|(_, i)| i).collect();
     st.selected = 0;
     st.top = 0;
+    logf!(
+        "[palette] filter {:?} -> {} of {}",
+        needle,
+        st.filtered.len(),
+        st.commands.len()
+    );
 }
 
 // ------------------------------------------------------------------- window
@@ -434,16 +483,19 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config) {
 
         let commands = load_commands(config);
 
-        STATE.with(|c| {
-            *c.borrow_mut() = Some(State {
+        WINDOWS.with(|w| {
+            w.set(Some(Windows {
                 edit,
-                prev_focus: HWND(std::ptr::null_mut()),
                 font,
+                edit_proc: edit_proc_old,
+            }))
+        });
+        STATE.with(|c| {
+            *c.borrow_mut() = Some(Model {
                 commands,
                 filtered: Vec::new(),
                 selected: 0,
                 top: 0,
-                edit_proc: edit_proc_old,
                 visible: false,
             });
         });
@@ -484,28 +536,47 @@ fn show() {
         let x = fr.left + ((fr.right - fr.left) - w) / 2;
         let y = fr.top + sc(60);
 
-        let prev = GetFocus();
+        PREV_FOCUS.set(GetFocus());
         STATE.with(|c| {
             if let Some(st) = c.borrow_mut().as_mut() {
-                st.prev_focus = prev;
                 st.visible = true;
-                let _ = SetWindowTextW(st.edit, w!(""));
                 refilter(st, "");
             }
         });
 
+        // Clearing the box is a Win32 call and therefore lives outside the
+        // borrow -- and here it could not live anywhere else, because `Model`
+        // has no window to pass it. `WM_SETTEXT` is delivered synchronously to
+        // `edit_proc`, which borrows on its first line.
+        if let Some(wins) = windows() {
+            let _ = SetWindowTextW(wins.edit, w!(""));
+        }
+
         let _ = SetWindowPos(me, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
-        let edit = STATE.with(|c| c.borrow().as_ref().map(|s| s.edit));
-        if let Some(e) = edit {
+
+        // One self-contained line, because a reader must not have to join it
+        // to another: "the log said it opened" is compatible with a window
+        // that is zero-sized, off-screen, or not actually visible, and each of
+        // those looks like a pass. `IsWindowVisible` is the style bit, and the
+        // rectangle is where it really landed.
+        let mut got = RECT::default();
+        let _ = GetWindowRect(me, &mut got);
+        let rows = STATE.with(|c| c.borrow().as_ref().map(|s| s.filtered.len()).unwrap_or(0));
+        logf!(
+            "[palette] shown at {},{} {}x{} visible={} rows={}",
+            got.left,
+            got.top,
+            got.right - got.left,
+            got.bottom - got.top,
+            IsWindowVisible(me).as_bool() as u8,
+            rows
+        );
+
+        if let Some(wins) = windows() {
             // The release-then-focus ordering lives in `overlay.rs` now:
             // three call sites reached it independently, and every way of
             // getting it wrong is silent.
-            let p2 = crate::overlay::focus_to_edit(e, "palette");
-            STATE.with(|c| {
-                if let Some(st) = c.borrow_mut().as_mut() {
-                    st.prev_focus = p2;
-                }
-            });
+            PREV_FOCUS.set(crate::overlay::focus_to_edit(wins.edit, "palette"));
         }
     }
 }
@@ -515,17 +586,22 @@ fn hide() {
     if me.0.is_null() {
         return;
     }
-    let prev = STATE.with(|c| {
-        c.borrow_mut().as_mut().map(|st| {
-            st.visible = false;
-            st.prev_focus
-        })
+    let was_up = STATE.with(|c| {
+        c.borrow_mut()
+            .as_mut()
+            .map(|st| std::mem::replace(&mut st.visible, false))
+            .unwrap_or(false)
     });
     unsafe {
         let _ = ShowWindow(me, SW_HIDE);
+        logf!(
+            "[palette] hidden, was_up={} visible={}",
+            was_up as u8,
+            IsWindowVisible(me).as_bool() as u8
+        );
     }
-    if let Some(p) = prev {
-        crate::overlay::focus_back(p, "palette");
+    if was_up {
+        crate::overlay::focus_back(PREV_FOCUS.get(), "palette");
     }
 }
 
@@ -625,11 +701,9 @@ extern "system" fn palette_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             }
 
             WM_DESTROY => {
-                STATE.with(|c| {
-                    if let Some(st) = c.borrow_mut().as_mut() {
-                        let _ = DeleteObject(st.font.into());
-                    }
-                });
+                if let Some(wins) = windows() {
+                    let _ = DeleteObject(wins.font.into());
+                }
                 LRESULT(0)
             }
 
@@ -641,7 +715,7 @@ extern "system" fn palette_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
 /// The edit control's procedure. Everything not listed falls through to the
 /// original, which is what keeps text editing, selection and the IME working.
 unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let old = STATE.with(|c| c.borrow().as_ref().and_then(|s| s.edit_proc));
+    let old = windows().and_then(|w| w.edit_proc);
 
     unsafe {
         match msg {
@@ -716,10 +790,11 @@ fn paint(hwnd: HWND) {
 
         SetBkMode(hdc, TRANSPARENT);
 
+        let Some(wins) = windows() else { return };
         STATE.with(|c| {
             let b = c.borrow();
             let Some(st) = b.as_ref() else { return };
-            let old_font = SelectObject(hdc, st.font.into());
+            let old_font = SelectObject(hdc, wins.font.into());
 
             if st.filtered.is_empty() {
                 SetTextColor(hdc, COLORREF(COL_DIM));
