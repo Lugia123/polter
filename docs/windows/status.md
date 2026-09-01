@@ -1225,6 +1225,45 @@ RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCOD
     这是第 24 条(只在出错时才走的路径)的正面版本:
     **那条路径被写对了一次,于是省掉的是一整轮误判。**
 
+47. **⭐ 这个仓里已经有一个能抓住它的检查器,为这个形状写的,带自测——没有人跑它。**（2026-09-02）
+
+    启动死锁修好之后,作者提议再写一个静态检查。**不需要**:
+    `windows/tools/lock-reentry.py` 就是为这个形状写的,
+    它的模块注释里点名的例子正是「`take_id` 在结构体字面量里那一次」。
+
+    把 bug 原样放回去跑:
+
+    ```
+    （修好的树）  no unexpected hits
+    （放回 bug）  HIT  tabs.rs:742  guard `st` is alive across ['take_pending_cwd']
+                  1 unexpected; each one is a five-second panic waiting.
+    ```
+
+    **所以缺口不是「缺一个检查」,是提交闸门里没有「跑这个仓自己的 lint」这一步。**
+    build 有、`test --no-run` 有、五道泄密扫描有,三个 lint 一个都没跑。
+
+    > **一个没人跑的检查器,和一个不存在的检查器,产出完全一样。**
+    > 而前者更贵:它让下一个人以为这个形状已经被守住了。
+
+    落地:提交前跑 `windows/tools/` 下的三个 lint
+    (`lock-reentry.py` / `borrow-across-dispatch.py` / `watchdog-alarm-path.py`),
+    和构建、扫描同一档。**再写第二个检查器是把同一个事实存两份**——
+    今晚数到的第八次。正确的做法是:发现现有的那个盖不到,就去补它,
+    连同新地板一起加进它的自测。
+
+48. **一份挡不住的文档,再抄一份也挡不住。**（2026-09-02）
+
+    那个结构体字面量**正上方八行**就写着这件事——写给 `take_id` 的:
+    「calling it inside the block below re-enters a non-re-entrant mutex,
+    and it is easy to miss there because it is not a statement, it is one
+    field's initialiser inside a struct literal.」
+    **同一个字面量里被加进了第二个同样的字段。**
+
+    `development.md` 6 记过「注释里那句『某处已经做了这件事』——
+    唯一一个连工具都够不到的地方」。这一条是它的加强版:
+    **注释不但在,而且就在正上方,而且描述的正是即将发生的那件事。**
+    所以这一次的产出不是再写一段注释,是把那个形状交给一个会失败的东西。
+
 ## 八、可复核的现场
 
 - 测试机 `C:\app`：`tsf-probe*`、`dllprobe\`、`conpty\`（8 个二进制 + 输出）、
