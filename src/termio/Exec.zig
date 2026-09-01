@@ -123,8 +123,8 @@ pub fn threadEnter(
     // Create our pipe that we'll use to kill our read thread.
     // pipe[0] is the read end, pipe[1] is the write end.
     const pipe = try internal_os.pipe();
-    errdefer _ = posix.system.close(pipe[0]);
-    errdefer _ = posix.system.close(pipe[1]);
+    errdefer closePipeEnd(pipe[0]);
+    errdefer closePipeEnd(pipe[1]);
 
     // Setup our stream so that we can write.
     var stream = xev.Stream.initFd(pty_fds.write);
@@ -193,6 +193,21 @@ pub fn threadEnter(
     }
 }
 
+/// Close one end of a pipe created by `internal_os.pipe`.
+///
+/// **On Windows an `fd_t` is a `HANDLE`**, and the C `close`/`write` take a
+/// CRT descriptor -- passing a handle to them compiles, returns success, and
+/// does nothing to the pipe. That mismatch cost this port a hang (the quit
+/// byte that was never delivered) and a handle leak per surface; every place
+/// that closes one of these ends goes through here so it cannot cost a third.
+fn closePipeEnd(fd: posix.fd_t) void {
+    if (comptime builtin.os.tag == .windows) {
+        _ = windows.exp.kernel32.CloseHandle(fd);
+    } else {
+        _ = posix.system.close(fd);
+    }
+}
+
 pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     assert(td.backend == .exec);
     const exec = &td.backend.exec;
@@ -203,17 +218,26 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     // Quit our read thread after exiting the subprocess so that
     // we don't get stuck waiting for data to stop flowing if it is
     // a particularly noisy process.
-    switch (posix.errno(posix.system.write(exec.read_thread_pipe, "x", 1))) {
-        .SUCCESS => {},
+    //
+    // **POSIX only.** On Windows this wrote a `HANDLE` into a function whose
+    // C symbol takes a CRT file descriptor. It returned success and the byte
+    // never reached the pipe -- measured: the reader was interrupted, looked
+    // at the quit pipe, found nothing, and went back to blocking. A quit
+    // signal that reports success and delivers nothing is worse than no quit
+    // signal, because the code downstream is written as if it worked.
+    if (comptime builtin.os.tag != .windows) {
+        switch (posix.errno(posix.system.write(exec.read_thread_pipe, "x", 1))) {
+            .SUCCESS => {},
 
-        // EPIPE means that our read thread is closed already, which is
-        // completely fine since that is what we were trying to achieve.
-        .PIPE => {},
+            // EPIPE means that our read thread is closed already, which is
+            // completely fine since that is what we were trying to achieve.
+            .PIPE => {},
 
-        else => |e| log.warn(
-            "error writing to read thread quit pipe err=E{s}",
-            .{@tagName(e)},
-        ),
+            else => |e| log.warn(
+                "error writing to read thread quit pipe err=E{s}",
+                .{@tagName(e)},
+            ),
+        }
     }
 
     if (comptime builtin.os.tag == .windows) {
@@ -233,25 +257,18 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
             log.warn("no pty to close; the read thread may not wake", .{});
         }
 
-        // **This call is scheduled for deletion.** Kept for exactly one round,
-        // and only to record what it answers.
+        // `CancelIoEx` used to live here, and it is gone on purpose.
         //
-        // Once the two write ends are closed above, waking the reader no
-        // longer depends on cancellation at all -- so leaving this here would
-        // preserve a "the cancel must work" precondition that nothing needs.
-        // Removing a precondition beats documenting one. Delete it as soon as
-        // one real-machine log has recorded its return value, which is the
-        // only thing it is still here for.
-        // `CancelIoEx` cancels *registered, cancellable* requests; a
-        // synchronous read on this pipe is usually not one, and it then
-        // reports `ERROR_NOT_FOUND` -- which this code used to swallow as if
-        // it were success. That silence made "the reader was never woken" and
-        // "the reader was woken and did not return" identical in the log.
-        // See `docs/windows/status.md` 七.8: this is the fourth round of
-        // getting this function wrong in this repository, and the first three
-        // ended by deleting it.
-        const cancelled = windows.exp.kernel32.CancelIoEx(exec.read_thread_fd, null);
-        log.info("CancelIoEx -> {} err={}", .{ cancelled, windows.GetLastError() });
+        // It was measured on the real machine with the read definitely still
+        // blocked: it returned **SUCCESS**, and the read *was* interrupted --
+        // so it worked, and the three earlier rounds' verdict ("this API never
+        // does anything here") does not apply to this one. It is removed
+        // because nothing needs it: closing the console above ends the read on
+        // its own, and keeping a second way to stop the reader would keep a
+        // precondition ("the cancel must land while a read is pending") that
+        // the shutdown no longer depends on.
+        //
+        // What that measurement *did* expose is below.
     }
 
     exec.read_thread.join();
@@ -575,7 +592,7 @@ pub const ThreadData = struct {
     termios_mode: ptypkg.Mode = .{},
 
     pub fn deinit(self: *ThreadData, alloc: Allocator) void {
-        _ = posix.system.close(self.read_thread_pipe);
+        closePipeEnd(self.read_thread_pipe);
 
         // Clear our write pool. We know we aren't ever going to do
         // any more IO since we stop our data stream below so we can just
@@ -1824,8 +1841,8 @@ pub const ReadThread = struct {
     }
 
     fn threadMainWindows(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t) void {
-        // Always close our end of the pipe when we exit.
-        defer _ = posix.system.close(quit);
+        // Always close our end of the pipe when we exit. See `closePipeEnd`.
+        defer closePipeEnd(quit);
 
         // Setup our crash metadata
         crash.sentry.thread_state = .{
@@ -1838,65 +1855,57 @@ pub const ReadThread = struct {
         // up, and so the last moment the final screenful can be recorded.
         defer io.finishTranscript();
 
+        // One loop, not two. The outer loop used to exist so that an aborted
+        // read could fall through to a quit-pipe check and then resume
+        // reading; that check could never see anything, and the resume is
+        // exactly what turned a successful cancel into a permanent block.
         var buf: [1024]u8 = undefined;
         while (true) {
-            while (true) {
-                var n: windows.DWORD = 0;
-                if (windows.exp.kernel32.ReadFile(fd, &buf, buf.len, &n, null) == windows.FALSE) {
-                    const err = windows.GetLastError();
-                    switch (err) {
-                        // Check for a quit signal
-                        .OPERATION_ABORTED => break,
-
-                        // **The normal end of a pty**, not an impossible
-                        // event: the write ends are gone, because the console
-                        // was closed (see `threadExit`) or the host went away.
-                        // This arm used to be `unreachable`, which in a
-                        // release build is undefined behaviour -- reached by
-                        // nothing more exotic than a user typing `exit`.
-                        .BROKEN_PIPE, .PIPE_NOT_CONNECTED, .INVALID_HANDLE => {
-                            log.info("io reader closing, err={}", .{err});
-                            return;
-                        },
-
-                        else => {
-                            // Still unexpected, but a terminal that logs and
-                            // stops is worth more than one with undefined
-                            // behaviour in it.
-                            log.err("io reader error err={}", .{err});
-                            return;
-                        },
-                    }
-                }
-
-                @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
-
-                // No batch ring here, so every read is the end of a run as
-                // far as this loop can tell. Less coalescing than the posix
-                // stage gets; the alternative is the transcript recording
-                // nothing at all, which is what it did before this existed.
-                io.flushTranscript();
-
-                // See threadMainPosix: hand the renderer state mutex
-                // off if the renderer is waiting, since this loop
-                // would otherwise starve it under heavy output.
-                io.renderer_state.yieldToDemand(global.io());
-            }
-
-            var quit_bytes: windows.DWORD = 0;
-            if (windows.exp.kernel32.PeekNamedPipe(quit, null, 0, null, &quit_bytes, null) == windows.FALSE) {
+            var n: windows.DWORD = 0;
+            if (windows.exp.kernel32.ReadFile(fd, &buf, buf.len, &n, null) == windows.FALSE) {
                 const err = windows.GetLastError();
-                // Same reasoning as the read arm above: the quit pipe going
-                // away means this thread is finished, not that the world is
-                // broken.
-                log.info("quit pipe closed, err={}; read thread exiting", .{err});
-                return;
+                switch (err) {
+                    // Nothing cancels this read any more (see
+                    // `threadExit`), so an abort can only mean somebody
+                    // wants this thread gone.
+                    .OPERATION_ABORTED => {
+                        log.info("io reader aborted; exiting", .{});
+                        return;
+                    },
+
+                    // **The normal end of a pty**, not an impossible
+                    // event: the write ends are gone, because the console
+                    // was closed (see `threadExit`) or the host went away.
+                    // This arm used to be `unreachable`, which in a
+                    // release build is undefined behaviour -- reached by
+                    // nothing more exotic than a user typing `exit`.
+                    .BROKEN_PIPE, .PIPE_NOT_CONNECTED, .INVALID_HANDLE => {
+                        log.info("io reader closing, err={}", .{err});
+                        return;
+                    },
+
+                    else => {
+                        // Still unexpected, but a terminal that logs and
+                        // stops is worth more than one with undefined
+                        // behaviour in it.
+                        log.err("io reader error err={}", .{err});
+                        return;
+                    },
+                }
             }
 
-            if (quit_bytes > 0) {
-                log.info("read thread got quit signal", .{});
-                return;
-            }
+            @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
+
+            // No batch ring here, so every read is the end of a run as
+            // far as this loop can tell. Less coalescing than the posix
+            // stage gets; the alternative is the transcript recording
+            // nothing at all, which is what it did before this existed.
+            io.flushTranscript();
+
+            // See threadMainPosix: hand the renderer state mutex
+            // off if the renderer is waiting, since this loop
+            // would otherwise starve it under heavy output.
+            io.renderer_state.yieldToDemand(global.io());
         }
     }
 };

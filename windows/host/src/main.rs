@@ -1206,6 +1206,12 @@ fn main() {
     }
 
     let selftest = std::env::args().any(|a| a == "--selftest");
+    // Stops the script once it has finished. **Not a tidiness fix.** Without
+    // it the last step's "after" line reprints every tick forever, and then
+    // "stuck on step N" and "finished step N and idle" look identical at the
+    // tail of the log -- which is the one question this script exists to
+    // answer. `--striptest` says `striptest done`; this now does the same.
+    let mut selftest_running = selftest;
     let script: &[(&str, &str)] = &[
         ("new_tab", "expect tab count 1 -> 2"),
         ("new_tab", "expect tab count 2 -> 3"),
@@ -1359,7 +1365,7 @@ fn main() {
 
         // One self-test step per ~1.2s, starting after 2s so the first
         // surface has settled.
-        if selftest && ticks > 250 && ticks % 150 == 0 && step < script.len() {
+        if selftest_running && ticks > 250 && ticks % 150 == 0 && step < script.len() {
             let (act, expect) = script[step];
             step += 1;
             let zoomed = unsafe { IsZoomed(hwnd).as_bool() };
@@ -1384,7 +1390,7 @@ fn main() {
             );
         }
         // The state *after* the queued op has run, one second later.
-        if selftest && ticks > 250 && ticks % 150 == 75 && step > 0 {
+        if selftest_running && ticks > 250 && ticks % 150 == 75 && step > 0 {
             let zoomed = unsafe { IsZoomed(hwnd).as_bool() };
             let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32;
             logf!(
@@ -1397,7 +1403,8 @@ fn main() {
                 style
             );
             if step == script.len() {
-                logf!("[selftest] done -- {} steps executed", step);
+                logf!("[selftest] selftest done -- {} steps executed", step);
+                selftest_running = false;
             }
         }
 
