@@ -482,6 +482,122 @@ pub const Action = union(Key) {
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
         }
+
+        test "the Windows host's action tags" {
+            // **The floor for `windows/host/src/ffi.rs`.** That file redeclares
+            // this enum's values as Rust constants, because the host reaches
+            // libghostty through the C ABI and gets a bare `u32` tag back with
+            // no name attached. The numbers are written out by hand, counted
+            // off `ghostty_action_tag_e`.
+            //
+            // **The failure a wrong number produces is not a crash.** The host
+            // matches the tag, finds some other action's arm, and runs it: a
+            // `pwd` report becomes a mouse-shape change, or two arms quietly
+            // take each other's messages. It compiles, it runs, and the only
+            // symptom is behaviour attributed to the wrong feature.
+            //
+            // This test is the only place that can see both sides -- the
+            // constants are data, and the enum is right here. The other
+            // direction, ffi.rs against `ghostty.h`, is **not** checked here:
+            // `checkGhosttyHEnum` above already pins this enum to the header,
+            // so going the long way round would be the same fact stored twice.
+            //
+            // **Two constants sharing a tag is not checked separately, because
+            // it cannot be reached.** It was, until the attempt to make it
+            // fail showed why it never could: two different names holding one
+            // value means at least one of them disagrees with its own name, so
+            // the check below fires first and names the culprit; and the same
+            // name twice is a Rust compile error (`E0428`), so it never gets
+            // this far. A branch whose floor cannot be built is not coverage,
+            // it is the appearance of coverage, so it is gone rather than
+            // sitting here looking like a guarantee.
+            //
+            // **Only the tags the host declares are checked, not all of them.**
+            // This enum has far more members than the host has arms, and a tag
+            // the host has not wired is the normal state, not a defect. Making
+            // that fail would need an exemption list on day one, and that list
+            // would be the next thing nobody maintains. The claim is "every
+            // number the host states is right", not "the host states them all".
+            var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
+            var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+
+            // **A missing file fails rather than skips**, for the reason the
+            // synonyms floor in `input/command.zig` states: a skip would let
+            // the floor quietly stop existing the first time someone ran the
+            // suite from elsewhere, and nothing would say so.
+            const src = std.Io.Dir.cwd().readFileAlloc(
+                io,
+                "windows/host/src/ffi.rs",
+                alloc,
+                .limited(512 * 1024),
+            ) catch |err| {
+                std.debug.print(
+                    "cannot read windows/host/src/ffi.rs ({t}). " ++
+                        "Run `zig build test` from the repository root.\n",
+                    .{err},
+                );
+                return error.HostFfiUnreadable;
+            };
+
+            const prefix = "pub const ACTION_";
+            var checked: usize = 0;
+
+            var lines = std.mem.splitScalar(u8, src, '\n');
+            while (lines.next()) |raw| {
+                const line = std.mem.trim(u8, raw, " \t\r");
+                if (!std.mem.startsWith(u8, line, prefix)) continue;
+                const rest = line[prefix.len..];
+                const colon = std.mem.indexOfScalar(u8, rest, ':') orelse continue;
+                const eq = std.mem.indexOfScalar(u8, rest, '=') orelse continue;
+                const semi = std.mem.indexOfScalar(u8, rest, ';') orelse continue;
+                const name = rest[0..colon];
+                const value = std.fmt.parseInt(
+                    c_int,
+                    std.mem.trim(u8, rest[eq + 1 .. semi], " \t"),
+                    10,
+                ) catch continue;
+
+                const lower = try alloc.alloc(u8, name.len);
+                for (lower, name) |*d, s| d.* = std.ascii.toLower(s);
+
+                const key = std.meta.stringToEnum(Key, lower) orelse {
+                    std.debug.print(
+                        "ffi.rs declares ACTION_{s}, which is not a member of Action.Key\n",
+                        .{name},
+                    );
+                    return error.UnknownActionTag;
+                };
+
+                if (@intFromEnum(key) != value) {
+                    std.debug.print(
+                        "ffi.rs says ACTION_{s} = {d}, but Action.Key.{s} = {d}\n",
+                        .{ name, value, lower, @intFromEnum(key) },
+                    );
+                    // **And say what that number really is.** A wrong tag is
+                    // not an absence: it names some other action, and that is
+                    // the arm the host would run.
+                    inline for (@typeInfo(Key).@"enum".fields) |f| {
+                        if (f.value == value) std.debug.print(
+                            "  {d} is Action.Key.{s} -- the host would dispatch that instead\n",
+                            .{ value, f.name },
+                        );
+                    }
+                    return error.ActionTagMismatch;
+                }
+
+                checked += 1;
+            }
+
+            // **The one number that says the test did any work.** A pattern
+            // that stopped matching would pass every assertion above while
+            // reading exactly like a clean run -- which is the failure this
+            // whole file's neighbours keep being written to avoid.
+            try std.testing.expect(checked >= 40);
+        }
     };
 
     /// Sync with: ghostty_action_u
