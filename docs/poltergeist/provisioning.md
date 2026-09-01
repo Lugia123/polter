@@ -195,10 +195,15 @@ POLTER_HOST_SKILLS_DIR="$home/.codex/skills"   # 空 = 这家不支持，跳过�
 给出 python 的原话（`cannot parse …: line 1 column 3`）。这条一开始是坏的——SDK 用
 `>/dev/null 2>&1` 调注册，**把唯一说明白原因的那句吞掉了**。现在只吞 stdout。
 
-## 九、一个插件在不同系统上执行什么 —— **待拍板，本节只是设计**
+## 九、一个插件在不同系统上执行什么 —— **已落地**
+
+> **状态：已实现（`8c969495d`）。用户于 2026-09-01 裁决「加 `exec_<os>`，`os` 字段
+> 仍不加」。** 本节原为设计稿；现在描述的是既成事实，**只有 9.5 的第二半（`os` 字段）
+> 仍是待议**。落地与设计的差异逐条记在 9.3 和 9.4 里，**没有合并进正文**——把偏离
+> 写进结论里，下一个人就再也看不到它偏在哪。
 
 Windows 上出厂的 7 个供给插件各补了一份 `provision.ps1`（`docs/windows/development.md`
-5.3）。**但宿主现在够不着它们**：`plugin.json` 里只有一个 `exec`，指向 `provision.sh`，
+5.3）。**在此之前宿主够不着它们**：`plugin.json` 里只有一个 `exec`，指向 `provision.sh`，
 Windows 执行不了 `.sh`，报 `error.InvalidExe`。
 
 **这不是 Windows 专属的缺口。** 今天是 Windows，明天是一个只在 Linux 上有意义的
@@ -224,16 +229,23 @@ powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <绝对路�
 
 三个开关各有理由，缺一个就是一种具体的坏法：
 
-- **`-File` 不能换成 `-Command`。** 实测（`windows-5eca899157d2-bestf`，Windows
-  PowerShell 5.1）`-Command "…"` 只回显不执行。
+- **`-File` 不能换成 `-Command`。** **实测**（`windows-5eca899157d2-bestf`，Windows
+  PowerShell 5.1）：`-Command "…"` 只回显不执行。
 - **`-NoProfile` 不是装饰。** 用户 profile 只要印一个字，就落在插件的 stdout 上，
-  而 stdout 上非「应答/报告」的东西按协议算 misconduct，插件会被杀。
+  而 stdout 上非「应答/报告」的东西会让宿主停掉并重启这个插件——
+  `Resident.zig` 的 `parseAck` 认不出的行走的就是那条路，
+  见 `test "a plugin that answers with nonsense is stopped and started again"`。
 - **`-ExecutionPolicy Bypass`**：默认策略直接拒绝脚本文件。
+  ⚠️ **这一条没有在这台机器上验过**：所有真机运行都带着 `Bypass`，**从来没有跑过
+  一次不带它的对照**，所以「不带会被拒」在这里是沿用的常识，不是测量。
+  同理，「Windows 不会直接执行 `.ps1`」也没验过——**验过的是 `.sh`**
+  （`error.InvalidExe`，见本节引子）。两条都成立的可能性很高，但**它们的证据强度
+  和上面两条不是一回事，混在同一个列表里会读成一样强。**
 
 **让 7 个插件各自把这串咒语抄一遍，是把宿主的知识搬进插件**——正是 `_sdk` 这个结构
 在避免的事。所以：**插件说「跑这个文件」，宿主说「这类文件这么起」。**
 
-### 9.2 字段形状：推荐 `exec_<os>`，加缺省回落
+### 9.2 字段形状：`exec_<os>`，加缺省回落 —— **已定**
 
 ```json
 {
@@ -261,13 +273,16 @@ powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <绝对路�
 没变；不认识新键的读者（人或程序）在 POSIX 上仍然完全正确。上面三种都要求所有人
 重新学一遍 `exec` 是什么。
 
-### 9.3 宿主侧要改哪里 —— 给 #73 的输入
+### 9.3 宿主侧要改哪里 —— **已实现**
 
-**两处，一处读，一处拼。**
+**两处，一处读，一处拼。** 落地后的符号名写在每一处后面，因为「宿主会……」这种
+话不指到符号就没法被反驳。
 
-**（一）`src/poltergeist/Plugin.zig`，`load()` 里读 `exec` 的那一段**
-（现在是 `const exec_rel = stringField(obj, "exec") orelse { … return error.BadManifest; }`）。
-改成先试 `exec_<tag>` 再回落 `exec`。`Manifest.exec` 拼绝对路径的方式不变。
+**（一）`src/poltergeist/Plugin.zig`，`load()` 里读 `exec` 的那一段。**
+先试 `exec_<tag>` 再回落 `exec`；`Manifest.exec` 拼绝对路径的方式不变。
+**已实现**：键名由 `const os_key = "exec_" ++ @tagName(builtin.os.tag)` 生成，所以
+是 `exec_windows` / `exec_macos` / `exec_linux`——和 `builtin` 用同一份名字，不另立
+一套。
 
 > ⚠️ **别和 `wants.exec` 搞混。** `wants.exec` 是「这个插件会去 PATH 上找哪些二进制」，
 > 是 disclosure；这里的 `exec` 是「启动哪个文件」。两个名字已经在读者脑子里撞过一次，
@@ -278,20 +293,39 @@ powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <绝对路�
 > 清单，不影响运行，但拍板时值得知道**它已经在携带某些系统上不成立的信息**。
 
 **（二）`src/poltergeist/Resident.zig`，唯一拼 argv 的地方**
-（`child = std.process.spawn(io, .{ .argv = &.{self.exec}, … })`）。
-扩展名 → 启动方式的展开落在这里，或者落在它旁边一个小函数里，**这样别的调用方继续
-只递一个路径**。
+（原来是 `.argv = &.{self.exec}`）。
+**已实现**：展开是 `Plugin.launchArgv(alloc, exec) !?[]const []const u8`，表本身是
+`Plugin.launchKindFor(tag, exec)`，spawn 处只调前者。别的调用方仍然只递一个路径。
 
-建议做成一张封闭的小表，而不是一个可扩展的钩子：
+> ⭐ **表把目标系统当参数收（`launchKindFor(tag, …)`），这不是洁癖。** 写死成
+> `builtin.os.tag` 的话，Windows 那几行在 macOS 的构建机上不可达——「`.ps1` 那一行
+> 写错了」会变成**没有任何测试能为它变红**的东西。测试
+> `test "the launch table, read from both sides of the system it switches on"`
+> 两侧都读，六处变异注入全部致死。
 
-| 扩展名 | argv |
-| --- | --- |
-| `.ps1`（仅 Windows） | `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <path>` |
-| `.cmd` / `.bat`（仅 Windows） | `cmd /c <path>` |
-| 其他 | `<path>`，也就是今天的行为 |
+封闭的小表，而不是一个可扩展的钩子：
+
+**设计时是三行；落地是按系统分两侧读的同一张表**，多出来的是「这个系统起不来」那一格：
+
+| 扩展名 | Windows | POSIX |
+| --- | --- | --- |
+| `.ps1` | `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <path>` | **unsupported** |
+| `.cmd` / `.bat` | `cmd /c <path>` | **unsupported** |
+| `.sh` / `.py` | **unsupported** | `<path>` |
+| 其他 | `<path>` | `<path>` |
 
 **封闭是有意的**：宿主替一个文件选解释器，等于宿主决定用什么去执行用户机器上的一份
 文件。表越短，这个决定越好审。
+
+> ⚠️ **「其他」那一格必须是 `<path>`，不能是 unsupported，而这一条被要求过一次。**
+> 落地时收到的口头规格是「`.ps1` → powershell；`.sh` → 直接 exec；**其余 →
+> unsupported**」。照做会让 `archive/plugin.json` 的 `exec: "archive.py"` 在
+> **macOS 和 Linux 上今天就死**——它是出厂插件，靠 shebang 正常跑着。
+>
+> **本节的表从一开始写的就是「其他 → `<path>`」，实现也是**；不一致的是那份口头
+> 规格，不是设计和实现。记在这里是因为下一个读到「其余 → unsupported」的人需要
+> 知道它被否过，以及否掉它的理由：**不猜解释器，也不越权否决**——一个用二进制或
+> Python 写的第三方插件，宿主没有资格替它判死。
 
 **还有两处同形状的地方**，不改也能跑，但改了才叫「测的是我们真发出去的东西」：
 `Resident.zig` 里那两条端到端测试自己拼 argv（一条跑 `archive/archive.py`，一条跑
@@ -300,7 +334,7 @@ powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <绝对路�
 `src/build/GhosttyResources.zig` **不用改**：它是整目录安装、只排除 `.md`，`.ps1`
 已经随包走了。
 
-### 9.4 向后兼容：只写了 `exec` 的旧插件，在 Windows 上应该怎样
+### 9.4 向后兼容：只写了 `exec` 的旧插件，在 Windows 上怎样 —— **选了 C，已实现**
 
 **今天的行为是最坏的一种**：spawn 失败 → 宿主退避 → 重启 → 再失败，一个从插件那侧
 看起来和「闲着」一模一样的重启循环。而且它发生在**运行时**，尽管所需的信息在
@@ -317,7 +351,31 @@ powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <绝对路�
 C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但这台机器上跑不了」，不能
 再是「Manifest 或 error」。
 
-### 9.5 和「系统字段暂不加」那条裁决的互动 —— **这一条请拍板的人重看**
+**落地成什么样，以及一处比设计少的**：
+
+- `Plugin.Manifest.runnable: bool`，在 `load()` 里由 `Plugin.launchable(exec_abs)` 算出。
+  `load()` 仍然返回 Manifest，**「起不来」不再借用 `error.BadManifest`**——一个只支持
+  POSIX 的插件不是一份坏清单。
+- `src/App.zig` 的 `ensurePlugins`：`if (!manifest.runnable)` 时 `log.info` 说一次并
+  跳过，**放在「插件是否启用」判断之后**——没人开启的插件没什么可说的。
+- `Resident.zig` 的 spawn 处对 `launchArgv` 返回 `null` 也有一条防御分支（走既有的
+  `.failure`），**它在正常路径上不可达**，因为 App 不会启动一个 `runnable == false`
+  的插件。留着是因为它的替代品正是这套机制要消掉的那个重启循环。
+
+> ⚠️ **少的那一处：C 里写的「在 `plugin_list` 里可见」没有实现。** 现在
+> `!manifest.runnable` 的插件在 `ensurePlugins` 里 `continue`，**根本没进 `found`**，
+> 所以它在 `plugin_list` 里不是「显示为 unsupported」，而是**完全不出现**。
+>
+> **日志里说了一次，工具面上没有。** 对一个装了却不该启动的插件，「看不见」和
+> 「看得见但标着 unsupported」不是一回事——后者才是这一节主张的那个三态。**这是已知
+> 缺口，不是已完成。**
+
+**一处和 9.6 第 1 条相反的结果**：那里预测「出厂 8 个恰好都跨平台，所以 `unsupported`
+分支拿它们永远测不到」。**实际不是**——`archive` 没有 `exec_windows`，它的 `exec` 是
+`archive.py`，而 Windows 起不来 `.py`，**所以出厂插件里恰好有一个会在 Windows 上走进
+这一态**。预测错了，方向是好的：那条分支在真机上有出厂样本。
+
+### 9.5 和「系统字段暂不加」那条裁决的互动 —— **已重看，结论：加 `exec_<os>`，`os` 字段仍不加**
 
 用户裁过：插件清单里**暂不加**「支持哪些系统」这个字段，理由是
 
@@ -341,10 +399,13 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
 | 现在有信息吗 | **有**（8 个值不同） | 没有（8 个都跨平台） |
 | 能推出对方吗 | 能间接推出「不支持」，靠扩展名和缺省 | 推不出跑哪个文件 |
 
-**我的建议：先加 `exec_<os>`，`os` 字段继续不加。** 理由不是「以后再说」，是
-**`exec_<os>` 把那个字段今天唯一能表达的东西表达掉了**，而且是用一个此刻真的有信息的
-形状。等出现第一个「有 Windows 可执行文件、但作者仍然不想它在 Windows 上加载」的
-插件时——那才是 `os` 字段唯一不能被替代的场景——需求会是具体的。
+**裁决（用户，2026-09-01）：加 `exec_<os>`，`os` 字段继续不加。** 理由不是「以后
+再说」，是 **`exec_<os>` 把那个字段今天唯一能表达的东西表达掉了**，而且是用一个此刻
+真的有信息的形状。
+
+**`os` 字段唯一不能被替代的场景仍然悬着**：一个「有 Windows 可执行文件、但作者仍然
+不想它在 Windows 上加载」的插件。**今天没有这样的插件**，所以需求还不具体；等它出现
+时再看。**这是本节唯一仍然待议的部分。**
 
 ### 9.6 这是给所有插件的机制，不只是给出厂那 8 个
 
@@ -353,17 +414,27 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
 1. **第三方插件更可能是单系统的。** 出厂这 8 个恰好都跨平台，所以 9.4 那个
    `unsupported` 态对它们一次都不会触发——**而对第三方插件那会是常态**。拿出厂插件
    验收这个机制，等于永远不测那条分支。
+
+   > **这一条落地后被推翻了一半**：`archive` 没有 `exec_windows`，`exec` 是
+   > `archive.py`，Windows 起不来 `.py`，**所以它在 Windows 上会走进 `unsupported`**。
+   > 出厂插件里恰好有一个样本。见 9.4 末尾。
 2. **`-ExecutionPolicy Bypass` 是替别人的文件绕过这台机器的策略。** 对我们自己发的
    插件这只是必要条件；对一份用户从别处装进 `<config>/polter/plugins/` 的 `.ps1`，
    这是宿主主动跳过了一道用户或管理员设的闸。**这是一个安全形状的决定，不是机械的**，
    拍板时该被看见——哪怕结论仍然是「就这么做」，也该是被看过之后的「就这么做」。
+
+   > **已裁决（用户，2026-09-01）：全部绕过。** 见 `docs/windows/status.md` 五之二
+   > 第 5 条。**结论和「不看就照做」会得到的一样，但它现在是被看过之后的那一个**——
+   > 这正是提出它的目的，而不是希望它被否掉。
 3. **扩展名表必须是封闭的。** 一旦它变成「按扩展名找解释器」的通用机制，
    `<config>/polter/plugins/` 里放一个 `.py` 或 `.jar` 就成了「宿主替我找运行时」。
    9.3 那张三行的表是有意短的。
 
 ### 9.7 不在这一节里的
 
-- **实现。** 本节只到设计，没有一行代码，`plugin.json` 一个字没改。
+- **那 7 份 `plugin.json` 各加的一行**（`"exec_windows": "provision.ps1"`）：`archive`
+  没有加，因为 `.py` 跨平台——**而这恰好让它成为 Windows 上唯一走进 `unsupported` 的
+  出厂插件**，见 9.4 末尾。
 - **`exec_windows` 之外的 Windows 移植事项**，见 `docs/windows/development.md`。
 - 那 7 份 `.ps1` 本身怎么写、PowerShell 相对 `sh` 哪里简单哪里麻烦，见
   `plugins/_sdk/provision.ps1` 的头注释和 `test/plugins/README.md`。
@@ -415,9 +486,15 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
    属于宿主那一侧。
 4. `deepseek` 对着的是第三方的 DeepSeek-TUI。它改配置形状不会通知任何人，届时用
    户会以为是 Polter 坏了。没有别的办法，只有让它失败得响一点。
-5. **`exec_<os>` 没拍板，所以 Windows 上那 7 份 `provision.ps1` 宿主够不着。**
-   设计在第九节，包括它和「系统字段暂不加」那条裁决的互动——**那条裁决的理由
-   （「8 个插件都填同一个值」）在这个字段上不成立**，值得拍板的人一起看。
+5. ~~**`exec_<os>` 没拍板，所以 Windows 上那 7 份 `provision.ps1` 宿主够不着。**~~
+   **已裁决并落地（用户，2026-09-01；`8c969495d`）:加 `exec_<os>`，`os` 字段继续
+   不加。** 见第九节。
+
+   **剩下的是第九节里两处明确的欠账，不是这一条**：
+   - `unsupported` 的插件在 `plugin_list` 里**完全不出现**，而不是显示为
+     unsupported（9.4 末尾）；
+   - `os` 字段唯一不能被 `exec_<os>` 替代的那个场景仍然悬着，等第一个具体需求
+     （9.5 末尾）。
 
 ## 延伸阅读
 
