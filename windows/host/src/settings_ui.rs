@@ -55,14 +55,65 @@ const LIST_W: i32 = 220;
 const ROW_H: i32 = 30;
 const PAD: i32 = 12;
 const FIELD_H: i32 = 26;
-/// Where the first control sits, measured from the top of the panel.
+/// The name line, above the summary. Fixed: it is one line by construction.
+const NAME_H: i32 = 24;
+/// How tall the summary and the subscription line are allowed to grow before
+/// the text is cut instead.
 ///
-/// **One constant, because two places need the same answer**: the function
-/// that creates the controls and the one that paints the labels above them.
-/// They were two copies of `PAD + 52`, and the subscription line below had to
-/// push both down by the same amount -- which is exactly the kind of edit
-/// that lands in one of two places.
-const HEAD_H: i32 = 74;
+/// **Growth is honest until it starts pushing the controls off the page.** A
+/// plugin's self-description is written by its author and can be any length;
+/// a page that grew to fit it would eventually put the Save button below the
+/// bottom edge, where nothing says it is there. Past this, the text is
+/// ellipsised -- a visible cut rather than an invisible one.
+const HEAD_MAX_H: i32 = 150;
+
+/// How tall the block above the first control is, **measured, not assumed**.
+///
+/// Returns the tops and heights the painter draws at and the y the controls
+/// start at, so that the two functions cannot disagree: they were two copies
+/// of one constant, and when the summary started being read (it had been an
+/// empty string, because the reader looked for a field the manifests do not
+/// have) that constant was 22px of room for text that wraps to three lines.
+/// The result was the summary printed under the subscription line and the
+/// checkbox, letters on top of letters.
+///
+/// **Measuring is what makes the length the author's business rather than
+/// ours.** A bigger constant only moves the number at which it breaks.
+fn head_layout(win: HWND, p: &Plugin) -> (RECT, RECT, i32) {
+    let sc = dpi_scale(win);
+    let s = |v: i32| v * sc / 96;
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(win, &mut rc) };
+    let left = s(LIST_W + PAD * 2);
+    let right = rc.right - s(PAD);
+
+    let measure = |text: &str, top: i32| -> RECT {
+        let mut r = RECT { left, top, right, bottom: top + s(HEAD_MAX_H) };
+        if text.is_empty() {
+            r.bottom = top;
+            return r;
+        }
+        unsafe {
+            let hdc = GetDC(Some(win));
+            let font = ST.with(|c| c.borrow().font);
+            let old = SelectObject(hdc, font.into());
+            let mut wide: Vec<u16> = text.encode_utf16().collect();
+            // `DT_CALCRECT` fills the rectangle instead of drawing; the width
+            // is fixed and the height comes back.
+            DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+            SelectObject(hdc, old);
+            ReleaseDC(Some(win), hdc);
+        }
+        r.right = right;
+        r.bottom = r.bottom.min(top + s(HEAD_MAX_H));
+        r
+    };
+
+    let summary = measure(&p.summary, s(PAD + NAME_H));
+    let sub_top = if p.summary.is_empty() { summary.bottom } else { summary.bottom + s(6) };
+    let subscription = measure(&subscription_line(&p.events), sub_top);
+    (summary, subscription, subscription.bottom + s(10))
+}
 
 /// What this build can say about an event, one phrase each.
 ///
@@ -351,7 +402,10 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
 
     let Some(p) = plugin else { return };
     let x = s(LIST_W + PAD * 2);
-    let mut y = s(PAD + HEAD_H);
+    // The same measurement the painter makes, from the same function: the two
+    // used to share a constant, and a constant is what stopped fitting the
+    // moment the summary had any text in it.
+    let mut y = head_layout(win, &p).2;
     let field_w = s(W - LIST_W - PAD * 4);
 
     // **Every control this page makes goes through here**, which is why the
@@ -1041,32 +1095,30 @@ fn paint_settings(win: HWND) {
                     bottom: s(PAD + 24),
                 };
                 draw_text(hdc, &p.name, &mut r, DT_LEFT | DT_SINGLELINE, COL_TEXT);
-                let mut r2 = RECT {
-                    left: x,
-                    top: s(PAD + 24),
-                    right,
-                    bottom: s(PAD + 50),
-                };
-                draw_text(hdc, &p.summary, &mut r2, DT_LEFT | DT_WORDBREAK, COL_DIM);
+                // **Measured once, by the same function the control layout
+                // uses.** The summary is the plugin author's sentence and
+                // wraps to as many lines as it wraps to.
+                let (mut r2, mut r3, controls_top) = head_layout(win, p);
+                draw_text(
+                    hdc,
+                    &p.summary,
+                    &mut r2,
+                    DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS,
+                    COL_DIM,
+                );
 
                 // What it subscribes to, from its own `wants.events`.
-                let mut r3 = RECT {
-                    left: x,
-                    top: s(PAD + 52),
-                    right,
-                    bottom: s(PAD + HEAD_H),
-                };
                 draw_text(
                     hdc,
                     &subscription_line(&p.events),
                     &mut r3,
-                    DT_LEFT | DT_WORDBREAK,
+                    DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS,
                     COL_DIM,
                 );
 
                 // Labels above each control, in the same order the controls
                 // were created.
-                let mut y = s(PAD + HEAD_H) + s(32);
+                let mut y = controls_top + s(32);
                 for param in &p.params {
                     let mut lr = RECT {
                         left: x,
