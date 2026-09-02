@@ -78,6 +78,11 @@ pub struct Plugin {
     #[allow(dead_code)]
     pub dir: PathBuf,
     pub params: Vec<Parameter>,
+    /// What the manifest's `wants.events` asks to be handed, **as the wire
+    /// spells it**. Kept raw on purpose: the phrase table below is
+    /// presentation and is allowed to go stale, and a build that has never
+    /// heard of an event still has to be able to say the plugin asked for it.
+    pub events: Vec<String>,
     /// What the user has said. Missing file reads as "not configured", which
     /// is the same as off.
     pub enabled: bool,
@@ -253,15 +258,320 @@ fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
         }
     }
 
+    // `wants.events`, verbatim. **Read here rather than looked up somewhere
+    // else**: what a plugin is handed is a fact about its manifest, and the
+    // page's job is to show it, not to decide it.
+    let events: Vec<String> = v
+        .get("wants")
+        .and_then(|w| w.get("events"))
+        .and_then(|e| e.as_array())
+        .map(|a| a.iter().map(as_str).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+
     Some(Plugin {
         key: key.to_string(),
         name,
         summary,
         dir: dir.to_path_buf(),
         params,
+        events,
         enabled: false,
         values: BTreeMap::new(),
     })
+}
+
+// ------------------------------------------------------------- a plugin's
+// own translations
+//
+// **Why a plugin carries its own strings.** Polter's own text goes through
+// gettext (`po/`, `src/os/i18n.zig`); a third party's cannot -- their
+// sentences are not in our catalogues and never will be. So a plugin ships a
+// sidecar beside its manifest:
+//
+//     plugins/archive/
+//       plugin.json          the manifest, English, values are plain strings
+//       i18n/zh-Hans.json    only the fields that need saying differently
+//
+// **This is the settings page only.** `plugin_list` answers an agent, and it
+// answers with the manifest verbatim: an agent reading different tool
+// descriptions on a Chinese machine and an English one stops being
+// reproducible. A person gets their own language; an agent gets the same
+// words everywhere. See `docs/poltergeist/boundary.md` §4 and the macOS
+// original, `PluginLocale.swift`.
+
+/// Whether a candidate is a language tag and nothing more.
+///
+/// It is about to be spelled into a file name. The preferred languages come
+/// from Windows rather than from anywhere hostile, but the check costs
+/// nothing and the alternative is a path built out of a string somebody else
+/// chose.
+fn is_tag(text: &str) -> bool {
+    if text.is_empty() || text.len() > 35 {
+        return false;
+    }
+    let mut subtags = 0;
+    for subtag in text.split('-') {
+        subtags += 1;
+        if !(2..=8).contains(&subtag.len()) {
+            return false;
+        }
+        if !subtag.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return false;
+        }
+    }
+    subtags > 0
+}
+
+/// `zh_CN.UTF-8` -> `zh-CN`, `ZH-HANS` -> `zh-Hans`, `en_GB@euro` -> `en-GB`.
+///
+/// A POSIX-shaped locale is not what Windows hands out, but it is what an
+/// environment variable hands out, and both end up here.
+fn tidy_tag(raw: &str) -> String {
+    let cut = raw
+        .split(['.', '@'])
+        .next()
+        .unwrap_or("")
+        .replace('_', "-");
+    let mut out = String::new();
+    for (i, part) in cut.split('-').filter(|p| !p.is_empty()).enumerate() {
+        if i > 0 {
+            out.push('-');
+        }
+        // Language lower, script Titlecase, region UPPER -- the shapes BCP-47
+        // writes them in, so `zh_hans` and `ZH-HANS` land on one file name.
+        let cased: String = match (i, part.len()) {
+            (0, _) => part.to_ascii_lowercase(),
+            (_, 4) => {
+                let mut c = part.chars();
+                match c.next() {
+                    Some(f) => f.to_ascii_uppercase().to_string() + &c.as_str().to_ascii_lowercase(),
+                    None => String::new(),
+                }
+            }
+            _ => part.to_ascii_uppercase(),
+        };
+        out.push_str(&cased);
+    }
+    out
+}
+
+/// Ask Windows what a tag means, so `zh-CN` comes back as `zh-Hans-CN`.
+///
+/// **The script is filled in by the system, not by a table here.** A table of
+/// regions would go stale and would only ever have Chinese in it; `zh-CN`
+/// names no script, and what a Chinese reader cannot read is the other
+/// script. `ResolveLocaleName` is the same answer macOS gets from `Locale`.
+fn resolved(tag: &str) -> Option<String> {
+    let mut wide: Vec<u16> = tag.encode_utf16().chain(Some(0)).collect();
+    let mut out = [0u16; 85];
+    let n = unsafe {
+        windows::Win32::Globalization::ResolveLocaleName(
+            windows::core::PCWSTR(wide.as_mut_ptr()),
+            Some(&mut out),
+        )
+    };
+    if n <= 1 {
+        return None;
+    }
+    let s = String::from_utf16_lossy(&out[..(n - 1) as usize]);
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Which sidecar files to look for, in the order they should be tried.
+///
+/// Each preferred language is expanded into a ladder from most specific to
+/// least:
+///
+/// ```text
+/// zh-Hans-CN  ->  zh-Hans-CN, zh-Hans, zh-CN, zh
+/// zh_CN.UTF-8 ->  zh-Hans-CN, zh-Hans, zh-CN, zh
+/// zh          ->  zh-Hans, zh
+/// en-GB       ->  en-Latn-GB, en-Latn, en-GB, en
+/// ```
+///
+/// **Script beats region.** `zh-Hans` is tried before `zh-CN`, because what a
+/// reader cannot read is the other script, while the region only changes
+/// vocabulary. A translator who ships one `zh-Hans.json` must reach somebody
+/// whose machine says `zh_CN`.
+pub fn locale_candidates(preferred: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in preferred {
+        let tidy = tidy_tag(raw);
+        if tidy.is_empty() {
+            continue;
+        }
+        // The system's own expansion first, so a tag with no script written
+        // down gets one; then the tag as it was given, in case the system
+        // knows nothing about it.
+        let full = resolved(&tidy).map(|r| tidy_tag(&r)).unwrap_or_else(|| tidy.clone());
+
+        let mut lang = String::new();
+        let mut script: Option<String> = None;
+        let mut region: Option<String> = None;
+        for (i, part) in full.split('-').enumerate() {
+            if i == 0 {
+                lang = part.to_string();
+            } else if part.len() == 4 && script.is_none() {
+                script = Some(part.to_string());
+            } else {
+                region = Some(part.to_string());
+            }
+        }
+        // A tag given as `zh-CN` also names a region even when the system
+        // rewrote it; keep the one the person actually has.
+        if region.is_none() {
+            if let Some(given) = tidy.split('-').nth(1).filter(|p| p.len() != 4) {
+                region = Some(given.to_string());
+            }
+        }
+        if lang.is_empty() || !is_tag(&lang) {
+            continue;
+        }
+
+        let mut ladder: Vec<String> = Vec::new();
+        if let (Some(s), Some(r)) = (&script, &region) {
+            ladder.push(format!("{lang}-{s}-{r}"));
+        }
+        if let Some(s) = &script {
+            ladder.push(format!("{lang}-{s}"));
+        }
+        if let Some(r) = &region {
+            ladder.push(format!("{lang}-{r}"));
+        }
+        ladder.push(lang);
+
+        for candidate in ladder {
+            if is_tag(&candidate) && !out.contains(&candidate) {
+                out.push(candidate);
+            }
+        }
+    }
+    out
+}
+
+/// The languages this person prefers, most wanted first.
+///
+/// **The whole list, not just the default.** Somebody whose machine is
+/// English with Chinese second still reads Chinese; taking only
+/// `GetUserDefaultLocaleName` would never reach their second choice, and
+/// macOS asks for `Locale.preferredLanguages` for the same reason.
+pub fn preferred_languages() -> Vec<String> {
+    use windows::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
+    let mut count: u32 = 0;
+    let mut chars: u32 = 0;
+    unsafe {
+        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, None, &mut chars).is_err() {
+            // process-wide: the person's language list, asked of Windows once
+            plogf!("[plug] GetUserPreferredUILanguages sizing failed; plugin text stays English");
+            return Vec::new();
+        }
+        let mut buf = vec![0u16; chars as usize];
+        if GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut count,
+            Some(windows::core::PWSTR(buf.as_mut_ptr())),
+            &mut chars,
+        )
+        .is_err()
+        {
+            // process-wide: same call as above, the second half of it
+            plogf!("[plug] GetUserPreferredUILanguages failed; plugin text stays English");
+            return Vec::new();
+        }
+        // A double-NUL-terminated list of NUL-separated tags.
+        buf.split(|&c| c == 0)
+            .filter(|s| !s.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect()
+    }
+}
+
+/// What one sidecar file says, or nothing when there is no sidecar.
+///
+/// Every field is optional and every missing one means "the manifest already
+/// says it well enough". A sidecar holding one line is a legitimate sidecar.
+#[derive(Default, Debug, PartialEq)]
+pub struct PluginText {
+    pub name: Option<String>,
+    pub summary: Option<String>,
+    /// Parameter name -> (title, description).
+    pub fields: BTreeMap<String, (Option<String>, Option<String>)>,
+}
+
+/// Read the first sidecar that exists, nearest language first.
+///
+/// **The first file that exists wins whole; there is no merging.** Laying a
+/// `zh-Hans` over a `zh` would mean a key added to one file silently changes
+/// what readers of the other see, and neither translator could see the
+/// result. What a sidecar leaves out falls back to the manifest, which is
+/// English -- one clearly-marked fallback instead of a chain.
+///
+/// **A file that is there but will not parse ends the search.** Falling
+/// through to the next language would show half of somebody's typo as
+/// somebody else's language.
+pub fn load_text(dir: &Path, preferred: &[String]) -> PluginText {
+    let base = dir.join("i18n");
+    for candidate in locale_candidates(preferred) {
+        let path = base.join(format!("{candidate}.json"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            // process-wide: a plugin's own translation file on disk; the same
+            // file whatever window the settings page is in front of
+            plogf!("[plug] {}: will not parse; the manifest's own words are used", path.display());
+            return PluginText::default();
+        };
+        let Some(obj) = v.as_object() else {
+            return PluginText::default();
+        };
+        let mut out = PluginText {
+            name: obj.get("name").map(as_str).filter(|s| !s.is_empty()),
+            summary: obj.get("description").map(as_str).filter(|s| !s.is_empty()),
+            fields: BTreeMap::new(),
+        };
+        if let Some(params) = obj.get("params").and_then(|p| p.as_object()) {
+            for (name, spec) in params {
+                let Some(spec) = spec.as_object() else { continue };
+                out.fields.insert(
+                    name.clone(),
+                    (
+                        spec.get("title").map(as_str).filter(|s| !s.is_empty()),
+                        spec.get("description").map(as_str).filter(|s| !s.is_empty()),
+                    ),
+                );
+            }
+        }
+        return out;
+    }
+    PluginText::default()
+}
+
+/// Lay a sidecar's sentences over the manifest's.
+///
+/// **Only the sentences.** A sidecar carries no `type`, no `required` and no
+/// `enum`: it is the list of things to translate, not a second copy of the
+/// schema.
+fn apply_text(p: &mut Plugin, text: PluginText) {
+    if let Some(name) = text.name {
+        p.name = name;
+    }
+    if let Some(summary) = text.summary {
+        p.summary = summary;
+    }
+    for param in p.params.iter_mut() {
+        let Some((title, help)) = text.fields.get(&param.name) else { continue };
+        if let Some(t) = title {
+            param.title = t.clone();
+        }
+        if let Some(h) = help {
+            param.help = h.clone();
+        }
+    }
 }
 
 // --------------------------------------------------------------- settings
@@ -360,6 +670,9 @@ pub fn save(key: &str, enabled: bool, values: &BTreeMap<String, String>) -> bool
 /// Every plugin this build can see, shipped first, then the user's own.
 pub fn catalog() -> Vec<Plugin> {
     let mut out: Vec<Plugin> = Vec::new();
+    // Asked once for the whole listing rather than once per plugin: it is a
+    // property of the person, not of any plugin.
+    let prefs = preferred_languages();
 
     if let Some(d) = user_dir() {
         // process-wide: the directory the catalog is read from: one per process
@@ -396,6 +709,10 @@ pub fn catalog() -> Vec<Plugin> {
                 continue;
             };
             if let Some(mut p) = parse_manifest(key, &dir, &text) {
+                // The plugin's own translations, if it carries any for this
+                // person's language. Read here, next to the manifest, so the
+                // page never has to know that two files were involved.
+                apply_text(&mut p, load_text(&dir, &prefs));
                 let (enabled, values) = read_settings(key);
                 p.enabled = enabled;
                 p.values = values;
@@ -566,5 +883,136 @@ mod shipped_tests {
         if let Some(u) = user_dir() {
             assert!(!u.starts_with(&tmp), "user_dir must not follow the resources dir: {u:?}");
         }
+    }
+}
+
+// ------------------------------------------------- the sidecar's own tests
+#[cfg(test)]
+mod locale_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("polter-i18n-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("i18n")).unwrap();
+        dir
+    }
+
+    fn write(dir: &std::path::Path, tag: &str, body: &str) {
+        std::fs::write(dir.join("i18n").join(format!("{tag}.json")), body).unwrap();
+    }
+
+    /// **A POSIX locale must reach a translator's one file.** `zh_CN.UTF-8`
+    /// names no script, and the file a translator ships is `zh-Hans.json`.
+    /// Also pins the order: script before region, because what a reader
+    /// cannot read is the other script while the region only changes
+    /// vocabulary.
+    #[test]
+    fn a_posix_chinese_locale_reaches_the_hans_sidecar() {
+        let c = locale_candidates(&["zh_CN.UTF-8".to_string()]);
+        let hans = c.iter().position(|x| x == "zh-Hans");
+        let cn = c.iter().position(|x| x == "zh-CN");
+        assert!(hans.is_some(), "no zh-Hans candidate in {c:?}");
+        assert!(c.contains(&"zh".to_string()), "no bare zh in {c:?}");
+        if let (Some(h), Some(r)) = (hans, cn) {
+            assert!(h < r, "script must be tried before region: {c:?}");
+        }
+    }
+
+    /// Casing and separators are normalised before anything becomes a file
+    /// name, so `zh_hans` and `ZH-HANS` land on one file.
+    #[test]
+    fn spellings_of_one_tag_land_on_one_file() {
+        assert_eq!(tidy_tag("zh_hans"), "zh-Hans");
+        assert_eq!(tidy_tag("ZH-HANS"), "zh-Hans");
+        assert_eq!(tidy_tag("en_GB@euro"), "en-GB");
+        assert_eq!(tidy_tag("zh_CN.UTF-8"), "zh-CN");
+    }
+
+    /// A tag is about to be spelled into a path.
+    #[test]
+    fn only_a_language_tag_can_become_a_file_name() {
+        assert!(is_tag("zh-Hans"));
+        assert!(!is_tag("../etc/passwd"));
+        assert!(!is_tag("zh/Hans"));
+        assert!(!is_tag(""));
+        assert!(!is_tag("z"));
+    }
+
+    /// **The first file that exists wins whole.** Laying `zh-Hans` over `zh`
+    /// would mean a key added to one file silently changes what readers of
+    /// the other see, and neither translator could see the result.
+    #[test]
+    fn the_first_sidecar_wins_and_is_not_merged_over_the_next() {
+        let dir = scratch("nomerge");
+        write(&dir, "zh", r#"{"name":"从 zh 来","description":"只有 zh 有这句"}"#);
+        write(&dir, "zh-Hans", r#"{"name":"从 zh-Hans 来"}"#);
+
+        let text = load_text(&dir, &["zh-Hans".to_string()]);
+        assert_eq!(text.name.as_deref(), Some("从 zh-Hans 来"));
+        // The description exists in `zh.json` and only there. A merge would
+        // put it here; the rule says the manifest's own English is what fills
+        // that gap instead.
+        assert_eq!(text.summary, None, "zh.json must not be laid under zh-Hans.json");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A file that is there but will not parse ends the search.** Falling
+    /// through to the next language would show half of somebody's typo as
+    /// somebody else's language.
+    #[test]
+    fn a_broken_sidecar_falls_back_to_the_manifest_not_to_the_next_language() {
+        let dir = scratch("broken");
+        write(&dir, "zh-Hans", "{ this is not json ");
+        write(&dir, "zh", r#"{"name":"从 zh 来"}"#);
+
+        let text = load_text(&dir, &["zh-Hans".to_string()]);
+        assert_eq!(text, PluginText::default(), "the search must stop, not continue to zh.json");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No sidecar at all is the ordinary case: everything falls back to the
+    /// manifest, and nothing is an error.
+    #[test]
+    fn no_sidecar_is_not_a_failure() {
+        let dir = scratch("none");
+        assert_eq!(load_text(&dir, &["zh-Hans".to_string()]), PluginText::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only the sentences are laid over; the schema is not touched.
+    #[test]
+    fn a_sidecar_changes_words_and_nothing_else() {
+        let mut p = Plugin {
+            key: "k".into(),
+            name: "Archive".into(),
+            summary: "English summary".into(),
+            dir: std::path::PathBuf::from("."),
+            params: vec![Parameter {
+                name: "dir".into(),
+                title: "Where".into(),
+                help: "English help".into(),
+                required: true,
+                secret: false,
+                control: Control::Choice(vec!["a".into(), "b".into()]),
+                default: Some("a".into()),
+            }],
+            events: vec!["chat".into()],
+            enabled: false,
+            values: BTreeMap::new(),
+        };
+        let mut fields = BTreeMap::new();
+        fields.insert("dir".to_string(), (Some("存到哪".to_string()), None));
+        apply_text(&mut p, PluginText {
+            name: Some("存档".into()),
+            summary: None,
+            fields,
+        });
+        assert_eq!(p.name, "存档");
+        assert_eq!(p.summary, "English summary", "a sidecar without the field leaves it alone");
+        assert_eq!(p.params[0].title, "存到哪");
+        assert_eq!(p.params[0].help, "English help");
+        assert!(p.params[0].required, "required is the schema's, not the sidecar's");
+        assert!(matches!(p.params[0].control, Control::Choice(_)));
     }
 }

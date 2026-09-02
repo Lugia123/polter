@@ -12,6 +12,10 @@ path = "src/main.rs"
 version = "0.62"
 features = [
     "Win32_Foundation",
+    # `GetUserPreferredUILanguages` and `ResolveLocaleName`, for the plugin
+    # settings page: a plugin carries its own translations and this is how the
+    # host finds out which of them to read.
+    "Win32_Globalization",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_OpenGL",

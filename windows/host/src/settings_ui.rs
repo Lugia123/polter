@@ -55,6 +55,58 @@ const LIST_W: i32 = 220;
 const ROW_H: i32 = 30;
 const PAD: i32 = 12;
 const FIELD_H: i32 = 26;
+/// Where the first control sits, measured from the top of the panel.
+///
+/// **One constant, because two places need the same answer**: the function
+/// that creates the controls and the one that paints the labels above them.
+/// They were two copies of `PAD + 52`, and the subscription line below had to
+/// push both down by the same amount -- which is exactly the kind of edit
+/// that lands in one of two places.
+const HEAD_H: i32 = 74;
+
+/// What this build can say about an event, one phrase each.
+///
+/// **Presentation and nothing else**, which is the whole difference from a
+/// list that decides behaviour: an event missing from here costs a phrase,
+/// not a plugin. The page shows the raw wire name for anything not in it, so
+/// an event added after this build still leaves the subscription visible --
+/// a plugin that says nothing about itself is the shape this replaced.
+///
+/// **English only, and that is a known gap, not an oversight.** This host has
+/// no gettext; macOS runs these three through `String(localized:)`. A Chinese
+/// reader therefore gets a translated summary from the plugin's own sidecar
+/// and this line in English, which reads worse than all-English -- written
+/// down in the report rather than left to be discovered.
+const EVENT_PHRASES: &[(&str, &str)] = &[
+    ("chat", "Keeps the conversations"),
+    ("terminal.quiet", "Notifies you"),
+    ("provision", "Sets your agent up to reach Polter"),
+];
+
+/// One line saying what a plugin is handed.
+///
+/// Phrases where this build has one, wire names where it has not, **both from
+/// the same table** so "which events do we have a phrase for" is answered in
+/// one place. Nothing at all is not an option: a plugin that subscribes to
+/// nothing is not started, and saying so is more use than an empty list.
+fn subscription_line(events: &[String]) -> String {
+    if events.is_empty() {
+        return "Subscribes to nothing, so Polter has nothing to hand it and will not start it."
+            .to_string();
+    }
+    let mut said: Vec<String> = Vec::new();
+    for (wire, phrase) in EVENT_PHRASES {
+        if events.iter().any(|e| e == wire) {
+            said.push((*phrase).to_string());
+        }
+    }
+    for e in events {
+        if !EVENT_PHRASES.iter().any(|(wire, _)| wire == e) {
+            said.push(e.clone());
+        }
+    }
+    format!("What it is handed: {}", said.join(", "))
+}
 
 const COL_BG: u32 = 0x00201f1d;
 const COL_PANEL: u32 = 0x00282725;
@@ -299,7 +351,7 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
 
     let Some(p) = plugin else { return };
     let x = s(LIST_W + PAD * 2);
-    let mut y = s(PAD + 52);
+    let mut y = s(PAD + HEAD_H);
     let field_w = s(W - LIST_W - PAD * 4);
 
     let mk = |class: PCWSTR, style: WINDOW_STYLE, yy: i32, hh: i32, id: usize| unsafe {
@@ -974,9 +1026,24 @@ fn paint_settings(win: HWND) {
                 };
                 draw_text(hdc, &p.summary, &mut r2, DT_LEFT | DT_WORDBREAK, COL_DIM);
 
+                // What it subscribes to, from its own `wants.events`.
+                let mut r3 = RECT {
+                    left: x,
+                    top: s(PAD + 52),
+                    right,
+                    bottom: s(PAD + HEAD_H),
+                };
+                draw_text(
+                    hdc,
+                    &subscription_line(&p.events),
+                    &mut r3,
+                    DT_LEFT | DT_WORDBREAK,
+                    COL_DIM,
+                );
+
                 // Labels above each control, in the same order the controls
                 // were created.
-                let mut y = s(PAD + 52) + s(32);
+                let mut y = s(PAD + HEAD_H) + s(32);
                 for param in &p.params {
                     let mut lr = RECT {
                         left: x,
@@ -1144,5 +1211,34 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             _ => DefWindowProcW(win, msg, wp, lp),
         }
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::subscription_line;
+
+    /// A phrase where this build has one.
+    #[test]
+    fn a_known_event_is_said_in_words() {
+        assert_eq!(subscription_line(&["chat".to_string()]), "What it is handed: Keeps the conversations");
+    }
+
+    /// **And the raw wire name where it has not.** This is the whole reason
+    /// the table is allowed to go stale: an event added after this build must
+    /// still leave the subscription visible, or the plugin becomes a thing
+    /// that says nothing about itself.
+    #[test]
+    fn an_unknown_event_is_said_by_its_wire_name() {
+        let line = subscription_line(&["chat".to_string(), "terminal.smells".to_string()]);
+        assert!(line.contains("Keeps the conversations"), "{line}");
+        assert!(line.contains("terminal.smells"), "{line}");
+    }
+
+    /// Subscribing to nothing is not an empty list.
+    #[test]
+    fn nothing_subscribed_says_so() {
+        let line = subscription_line(&[]);
+        assert!(line.contains("will not start it"), "{line}");
     }
 }
