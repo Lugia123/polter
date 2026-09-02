@@ -1528,6 +1528,12 @@ pub fn create_tab_with(
     layout(frame);
     focus_active(frame);
     wlogf!(frame, "[tab] created; count now {}", count(frame));
+    // **After the guard above is gone, and that is load-bearing.** Raising a
+    // UIA event can call straight back into `uia.rs`, which takes this
+    // module's lock -- and taking it twice on one thread hangs rather than
+    // panics. See the rule at the head of `uia.rs`'s events section;
+    // `borrow-across-dispatch.py` enforces it.
+    crate::uia::tabs_changed(frame);
     true
 }
 
@@ -2050,16 +2056,30 @@ pub fn set_mark_for_surface(surface: Surface, role: u8, shielded: bool) -> bool 
 /// built to a mis-stated rule, which is why a renamed tab lost its name at the
 /// next `cd`.
 pub fn rename_tab(frame: HWND, id: TabId, title: String) {
-    {
+    // **Whether the rename actually landed**, taken inside the block and read
+    // outside it. Announcing a name that was never stored -- because the tab
+    // had gone -- would tell a client to re-read a property that has not
+    // changed, which is a smaller lie than the alternative but still a lie.
+    let renamed = {
         if let Some(mut w) = window(frame) {
-            if let Some(tab) = w.tabs.iter_mut().find(|t| t.id == id) {
-                tab.title = title.clone();
-                tab.title_override = Some(title);
+            match w.tabs.iter_mut().find(|t| t.id == id) {
+                Some(tab) => {
+                    tab.title = title.clone();
+                    tab.title_override = Some(title.clone());
+                    true
+                }
+                None => false,
             }
+        } else {
+            false
         }
-    }
+    };
     unsafe {
         let _ = InvalidateRect(Some(frame), None, false);
+    }
+    // Outside the block, same rule as the other four.
+    if renamed {
+        crate::uia::tab_renamed(frame, id, &title);
     }
 }
 
@@ -2152,6 +2172,10 @@ pub fn move_tab_to(frame: HWND, id: TabId, to: usize) {
     };
     layout(frame);
     logf!("[tab] moved {:?} from {} to {}", id, moved.0, moved.1);
+    // A reorder **is** a structure change: the children come back in a
+    // different order, and a client holding the old order is holding a wrong
+    // one. Outside the block above, for the reason written there.
+    crate::uia::tabs_changed(frame);
 }
 
 /// Panes in the active tab.
@@ -2353,6 +2377,17 @@ fn set_active(frame: HWND, idx: usize) {
     layout(frame);
     focus_active(frame);
     wlogf!(frame, "[tab] active -> {} of {}", active_index(frame) + 1, count(frame));
+    // **A property change, not a structure change**: switching tabs does not
+    // alter the shape of the tree, only which element has focus. The identity
+    // is read back here rather than carried down from the block above, so the
+    // announcement is about the tab that ended up active -- `idx` was clamped.
+    let now = {
+        let (tabs_now, active) = tab_infos(frame);
+        tabs_now.get(active).map(|t| (t.id, t.pane))
+    };
+    if let Some((id, pane)) = now {
+        crate::uia::active_tab_changed(frame, id, pane);
+    }
 }
 
 pub fn active_index(frame: HWND) -> usize {
@@ -2438,6 +2473,8 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
     logf!("[close] tab index {} panes gone; laying out", idx);
     layout(frame);
     wlogf!(frame, "[tab] closed index {}; count now {}", idx, count(frame));
+    // Same rule as the creation side: the critical section ended far above.
+    crate::uia::tabs_changed(frame);
 }
 
 /// `CF_UNICODETEXT`. Spelled numerically because the constant lives behind a

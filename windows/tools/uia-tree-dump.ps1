@@ -30,6 +30,11 @@
   concurrent  Dump repeatedly while a pane is producing output, then check
               against the host log how many reads actually reached
               libghostty.
+  events      Subscribe to StructureChanged and PropertyChanged, then wait
+              while the operator adds, closes, switches and renames tabs.
+              **The only mode that exercises the provider with a client
+              attached**, and therefore the only one that can reach the
+              call-back path described in `docs/windows/uia.md`.
 
 .PARAMETER LogPath
   The host's log, for the `concurrent` mode's counting. Defaults to the
@@ -72,7 +77,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('floor', 'tree', 'windows', 'concurrent')]
+    [ValidateSet('floor', 'tree', 'windows', 'concurrent', 'events')]
     [string]$Mode = 'tree',
     [string]$ProcessName = 'polter-host',
     [string]$LogPath = '',
@@ -82,7 +87,10 @@ param(
     # cache and the concurrency check measures the cache instead of the
     # terminal -- it goes green and means nothing. The check below refuses to
     # run rather than let that happen quietly.
-    [int]$IntervalMs = 600
+    [int]$IntervalMs = 600,
+    # `events` only: how long to sit and listen after the subscription proves
+    # itself. Long enough for a person to open, close, switch and rename.
+    [int]$ListenSeconds = 120
 )
 
 $ErrorActionPreference = 'Stop'
@@ -275,6 +283,108 @@ switch ($Mode) {
         Write-Host ''
         Write-Host ("per-window tab counts: " + (($perWindow | ForEach-Object { $_.Count }) -join ', '))
         if ($ok) { Write-Host 'WINDOWS OK: no element is claimed by two windows.' }
+    }
+
+    'events' {
+        # ------------------------------------------------------------------
+        # The subscription has to prove itself BEFORE anything is concluded
+        # from silence.
+        #
+        # "No events arrived" and "the subscription was never established"
+        # print the same thing -- an empty list -- and this session has met
+        # that shape five times tonight in five different disguises. So the
+        # first thing this mode does is subscribe to something the operating
+        # system raises on its own, and refuse to continue if it hears
+        # nothing.
+        #
+        # **The self-test deliberately does not use our own events.** Using
+        # the thing under test to prove the instrument means a host that
+        # raises nothing fails both at once, with no way to tell which broke.
+        # Focus changes are raised by UIA itself for any window the operator
+        # clicks, including ones that are not ours.
+        # ------------------------------------------------------------------
+        $script:heard = New-Object System.Collections.ArrayList
+        $script:focusSeen = $false
+
+        $focusHandler = [System.Windows.Automation.AutomationFocusChangedEventHandler]{
+            param($sender, $e)
+            $script:focusSeen = $true
+        }
+        [System.Windows.Automation.Automation]::AddAutomationFocusChangedEventHandler($focusHandler)
+
+        Write-Host 'instrument check: click any window (ours or not), twice.'
+        Write-Host 'waiting up to 20s for a focus change from the system...'
+        $deadline = (Get-Date).AddSeconds(20)
+        while (-not $script:focusSeen -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 200
+        }
+        [System.Windows.Automation.Automation]::RemoveAutomationFocusChangedEventHandler($focusHandler)
+
+        if (-not $script:focusSeen) {
+            Write-Host ''
+            Write-Host 'INSTRUMENT FAILED: no focus change arrived from the system in 20s.'
+            Write-Host '  This says nothing about Polter. It says this session cannot receive'
+            Write-Host '  UIA events at all -- wrong shell, blocked by policy, or nothing was'
+            Write-Host '  clicked. **Do not run the rest of this mode and do not record a'
+            Write-Host '  zero**: a zero from here is indistinguishable from the defect.'
+            exit 1
+        }
+        Write-Host 'instrument OK: this session can receive UIA events.'
+        Write-Host ''
+
+        # Now the real subscriptions, scoped to our windows' subtrees.
+        $structHandler = [System.Windows.Automation.StructureChangedEventHandler]{
+            param($sender, $e)
+            [void]$script:heard.Add([pscustomobject]@{
+                At   = (Get-Date).ToString('HH:mm:ss.fff')
+                Kind = 'Structure/' + $e.StructureChangeType
+                Name = $sender.Current.Name
+                Type = $sender.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+            })
+        }
+        $propHandler = [System.Windows.Automation.AutomationPropertyChangedEventHandler]{
+            param($sender, $e)
+            [void]$script:heard.Add([pscustomobject]@{
+                At   = (Get-Date).ToString('HH:mm:ss.fff')
+                Kind = 'Property/' + $e.Property.ProgrammaticName
+                Name = $sender.Current.Name
+                Type = $sender.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+            })
+        }
+
+        foreach ($w in $windows) {
+            [System.Windows.Automation.Automation]::AddStructureChangedEventHandler(
+                $w, [System.Windows.Automation.TreeScope]::Subtree, $structHandler)
+            [System.Windows.Automation.Automation]::AddAutomationPropertyChangedEventHandler(
+                $w, [System.Windows.Automation.TreeScope]::Subtree, $propHandler,
+                @([System.Windows.Automation.AutomationElement]::NameProperty,
+                  [System.Windows.Automation.AutomationElement]::HasKeyboardFocusProperty))
+        }
+
+        Write-Host "subscribed to $($windows.Count) window(s). Now, in Polter:"
+        Write-Host '  1. open a tab      2. switch tabs     3. rename a tab     4. close a tab'
+        Write-Host "listening for $ListenSeconds seconds..."
+        Start-Sleep -Seconds $ListenSeconds
+
+        [System.Windows.Automation.Automation]::RemoveAllEventHandlers()
+
+        Write-Host ''
+        if ($script:heard.Count -eq 0) {
+            Write-Host 'NO EVENTS. The instrument was proven working above, so this is a'
+            Write-Host 'reading about Polter and not about the session: nothing was announced.'
+            Write-Host 'That is exactly what the pre-patch build does -- keep this output if'
+            Write-Host 'this is the floor run.'
+            exit 1
+        }
+        $script:heard | ForEach-Object {
+            Write-Host ("  {0}  {1,-42} {2,-10} `"{3}`"" -f $_.At, $_.Kind, $_.Type, $_.Name)
+        }
+        Write-Host ''
+        Write-Host "total: $($script:heard.Count) event(s)"
+        Write-Host 'Check against the table in docs/windows/uia.md. In particular: switching'
+        Write-Host 'tabs must produce a HasKeyboardFocus PropertyChanged and NOT a'
+        Write-Host 'StructureChanged -- a structure event there would be announcing something'
+        Write-Host 'that did not happen.'
     }
 
     'concurrent' {

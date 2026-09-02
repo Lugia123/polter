@@ -82,7 +82,8 @@ use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::SAFEARRAY;
 use windows::Win32::System::Ole::{SafeArrayCreateVector, SafeArrayPutElement};
 use windows::Win32::System::Variant::{
-    VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_BSTR, VT_EMPTY, VT_I4,
+    VariantClear, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_BSTR, VT_EMPTY,
+    VT_I4,
 };
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -318,15 +319,27 @@ fn variant_empty() -> VARIANT {
 /// ids visibly different in an external dump, and telling them apart from
 /// outside is exactly what the multi-window criterion checks. A prefix only
 /// UIA can see would leave that criterion unable to fail.
-fn runtime_id(win: u32, kind: i32, id: u64) -> WResult<*mut SAFEARRAY> {
-    let parts: [i32; 5] = [
+fn runtime_parts(win: u32, kind: i32, id: u64) -> [i32; 5] {
+    [
         // A `u32` in the metadata, an `i32` in the array UIA reads.
         UiaAppendRuntimeId as i32,
         win as i32,
         kind,
         (id & 0xFFFF_FFFF) as i32,
         (id >> 32) as i32,
-    ];
+    ]
+}
+
+/// The same five numbers, as the SAFEARRAY `GetRuntimeId` returns.
+///
+/// **One source for the shape, and that is not tidiness.** A structure-changed
+/// event carries a runtime id too, and it is how the client works out *which*
+/// element's children changed. An event whose id is built a second way, and
+/// drifts, does not fail loudly: the client receives an event about an element
+/// it has never seen and ignores it, and the tree goes on looking stale for a
+/// reason no log mentions.
+fn runtime_id(win: u32, kind: i32, id: u64) -> WResult<*mut SAFEARRAY> {
+    let parts = runtime_parts(win, kind, id);
     unsafe {
         let sa = SafeArrayCreateVector(VT_I4, 0, parts.len() as u32);
         if sa.is_null() {
@@ -1108,4 +1121,162 @@ pub fn read_counts() -> (u64, u64) {
         READS.load(Ordering::Relaxed),
         CACHE_HITS.load(Ordering::Relaxed),
     )
+}
+
+// ------------------------------------------------------------------- events
+//
+// **Why a tree that is always fresh still has to announce itself.**
+//
+// Every `Navigate` here recomputes from a snapshot, so a client that walks the
+// tree again always sees the truth. A screen reader does not walk it again: it
+// builds its model once and then waits to be told. Without these calls the
+// reader's model goes stale the moment a tab is opened, closed or switched,
+// and only comes back by accident when the window is refocused. That was
+// written down as the cost of leaving this out, and this is it being paid.
+//
+// # The one rule these functions impose on their callers
+//
+// **Never call one while a `tabs` guard is alive.**
+//
+// Raising an event hands control to UIAutomationCore, which may call straight
+// back into a provider in this file to read properties -- and every one of
+// those calls takes the `tabs` registry lock. That lock is a plain
+// `std::sync::Mutex`, so taking it twice on one thread does not panic, it
+// **hangs**.
+//
+// That failure is worse than the `RefCell` one this port met in the settings
+// page. A double borrow aborts and leaves a stack naming the two places; a
+// self-deadlock leaves a frozen main thread, and this host has already spent a
+// round on exactly that shape -- closing a tab hanging the main thread for
+// minutes. Anyone meeting it again will start where they started last time,
+// which is not here.
+//
+// `windows/tools/borrow-across-dispatch.py` knows these three names, so a
+// caller that puts one inside a guard is caught by a gate rather than by a
+// test machine.
+
+/// Is anyone listening?
+///
+/// **A speed decision, not a safety one.** When no client is attached, none of
+/// the callbacks described above can happen, so the risky window does not
+/// exist -- but that is a fact about the common case, and the lock ordering
+/// still has to be right on its own for the day a screen reader is running.
+/// Every criterion that exercises these events is, by definition, a run where
+/// this returns true.
+fn anyone_listening() -> bool {
+    unsafe { UiaClientsAreListening() }.as_bool()
+}
+
+/// Tabs were added, removed or reordered in this window.
+///
+/// **`ChildrenInvalidated`, not `ChildAdded`/`ChildRemoved`.** The honest thing
+/// to say about this tree is "read this subtree again", because that is how it
+/// is built. The alternatives would also mean holding on to a departed tab's
+/// runtime id so it could be handed over after the tab is gone -- a second
+/// record of something we deliberately do not keep.
+///
+/// **Two elements are announced**, because a tab shows up in two places: as a
+/// `TabItem` under the tab list, and as a `Document` under the root. Telling a
+/// client about only the first leaves it with a document list that no longer
+/// matches the window.
+pub fn tabs_changed(frame: HWND) {
+    if !anyone_listening() || !live(frame) {
+        return;
+    }
+    let f = frame.0 as isize;
+    let win = winid::of(frame);
+
+    let list: IRawElementProviderSimple = TabList { frame: f }.into();
+    let mut list_id = runtime_parts(win, KIND_TABLIST, 0);
+    let root: IRawElementProviderSimple = WindowRoot { frame: f }.into();
+    let mut root_id = runtime_parts(win, KIND_ROOT, 0);
+
+    unsafe {
+        let _ = UiaRaiseStructureChangedEvent(
+            &list,
+            StructureChangeType_ChildrenInvalidated,
+            list_id.as_mut_ptr(),
+            list_id.len() as i32,
+        );
+        let _ = UiaRaiseStructureChangedEvent(
+            &root,
+            StructureChangeType_ChildrenInvalidated,
+            root_id.as_mut_ptr(),
+            root_id.len() as i32,
+        );
+    }
+    wlogf!(frame, "[uia] structure changed announced");
+}
+
+/// A different tab is now the active one.
+///
+/// **Not a structure change, and sending one would be saying something that
+/// did not happen.** The tree keeps its shape when tabs are switched -- that
+/// is why there is a `Document` per tab rather than one for "the current tab"
+/// -- and the only thing that differs is which element answers true to
+/// `HasKeyboardFocus`. So that is the property that is announced, on both
+/// elements that carry it.
+///
+/// The old value is reported as `false` and the new as `true` rather than
+/// tracking what was previously announced. **That is exactly true of the
+/// element being named**: it is the one gaining focus. The element losing it
+/// is not announced at all, which is what UIA's focus model expects.
+pub fn active_tab_changed(frame: HWND, tab: TabId, pane: PaneId) {
+    if !anyone_listening() || !live(frame) {
+        return;
+    }
+    let f = frame.0 as isize;
+    let item: IRawElementProviderSimple = TabItem { frame: f, tab }.into();
+    let doc: IRawElementProviderSimple = Document { frame: f, tab, pane }.into();
+
+    let was = variant_bool(false);
+    let now = variant_bool(true);
+    unsafe {
+        // No `VariantClear` for these two: `VT_BOOL` owns nothing. The
+        // string-valued one below is the case that does.
+        let _ = UiaRaiseAutomationPropertyChangedEvent(
+            &item,
+            UIA_HasKeyboardFocusPropertyId,
+            &was,
+            &now,
+        );
+        let _ = UiaRaiseAutomationPropertyChangedEvent(
+            &doc,
+            UIA_HasKeyboardFocusPropertyId,
+            &was,
+            &now,
+        );
+    }
+    wlogf!(frame, "[uia] focus change announced for tab {}", tab.0);
+}
+
+/// A tab's name changed -- the user renamed it, or the program in it did.
+///
+/// **Outside the task that asked for the other two, and here for a reason
+/// that is the same one.** A client told the structure is fresh but not told
+/// the name is different reads out the name it recorded, which is the one the
+/// user just replaced. "The tree is new and the name is old" is the same
+/// defect wearing a different hat.
+///
+/// **The `BSTR` is freed here, and that is a real decision rather than
+/// housekeeping.** `VARIANT` has no `Drop` in this crate, and a by-value
+/// `VARIANT` argument is `[in]` by COM convention -- the callee reads it, the
+/// caller still owns it. So the string has to be released on this side, once
+/// the call has returned. Getting this wrong is a leak of one string per
+/// rename, which is small until something renames on a timer.
+pub fn tab_renamed(frame: HWND, tab: TabId, name: &str) {
+    if !anyone_listening() || !live(frame) {
+        return;
+    }
+    let f = frame.0 as isize;
+    let item: IRawElementProviderSimple = TabItem { frame: f, tab }.into();
+
+    let old = variant_empty();
+    let mut new = variant_bstr(name);
+    unsafe {
+        let _ = UiaRaiseAutomationPropertyChangedEvent(&item, UIA_NamePropertyId, &old, &new);
+        // See the note above. `VT_EMPTY` needs no clearing; this one does.
+        let _ = VariantClear(&mut new);
+    }
+    wlogf!(frame, "[uia] name change announced for tab {}", tab.0);
 }
