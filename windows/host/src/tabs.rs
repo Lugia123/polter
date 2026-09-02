@@ -1737,6 +1737,88 @@ pub fn surface_of_tab(frame: HWND, id: TabId) -> Surface {
     }
 }
 
+/// One tab, as the UIA provider needs to see it: identity first, then the
+/// things that are only true right now.
+///
+/// **Every field is owned, and the lock is not held when this is returned.**
+/// That is the point of the type rather than a convenience: `uia.rs` must
+/// call into libghostty to read the screen, and libghostty takes the core's
+/// renderer lock -- so the registry lock has to be gone by then. See the lock
+/// rule at the top of `uia.rs`.
+pub struct TabInfo {
+    pub id: TabId,
+    pub title: String,
+    /// The tab's focused pane. **Carried so the provider can name a pane by
+    /// identity** rather than holding a `Surface` pointer across calls: a
+    /// pane can be closed between one UIA call and the next, and a stale
+    /// `Surface` is the one mistake here that is not recoverable.
+    pub pane: PaneId,
+    /// That pane's window. **Carried in the same snapshot as the id, not
+    /// looked up afterwards**: two lookups a moment apart can straddle a
+    /// pane being closed, and the pair would then describe two different
+    /// panes while looking like one.
+    pub pane_hwnd: isize,
+}
+
+/// Every tab of one window, and which of them is active.
+///
+/// The twin of `strip_snapshot`, which the strip uses to paint. Kept
+/// separate rather than widened because the strip's version is called on
+/// every `WM_PAINT` and has no business growing a field for a caller that
+/// runs when a screen reader asks.
+pub fn tab_infos(frame: HWND) -> (Vec<TabInfo>, usize) {
+    match window(frame) {
+        Some(w) => (
+            w.tabs
+                .iter()
+                .map(|t| TabInfo {
+                    id: t.id,
+                    // The name the user gave wins over the one the program
+                    // announced -- the same precedence the strip paints with.
+                    title: t.title_override.clone().unwrap_or_else(|| t.title.clone()),
+                    pane: t.focused,
+                    pane_hwnd: t
+                        .panes
+                        .iter()
+                        .find(|p| p.id == t.focused)
+                        .map(|p| p.hwnd)
+                        .unwrap_or(0),
+                })
+                .collect(),
+            w.active,
+        ),
+        None => (Vec::new(), 0),
+    }
+}
+
+/// Resolve a `(frame, tab, pane)` triple to a live surface, or null.
+///
+/// **All three have to still agree**, which is what makes this different
+/// from `surface_of_pane`: a pane id is unique in the process, so looking it
+/// up alone would happily answer for a pane that has since been moved into
+/// another window -- and the UIA provider would then read window 2's
+/// terminal while claiming to be window 1's. Checking the whole triple is
+/// how "this element is gone" stays distinguishable from "this element now
+/// means something else".
+///
+/// A null return is the provider's cue to answer `UIA_E_ELEMENTNOTAVAILABLE`.
+/// **Not an empty string**: a terminal that has been closed and a terminal
+/// showing nothing are different facts, and a screen reader that is told the
+/// second one will sit reading a blank document that no longer exists.
+pub fn surface_of_tab_pane(frame: HWND, tab: TabId, pane: PaneId) -> Surface {
+    let found = window(frame).and_then(|w| {
+        w.tabs
+            .iter()
+            .find(|t| t.id == tab)
+            .and_then(|t| t.panes.iter().find(|p| p.id == pane))
+            .map(|p| p.surface)
+    });
+    match found {
+        Some(surface) => surface as Surface,
+        None => std::ptr::null_mut(),
+    }
+}
+
 /// Send a core binding action to a **named tab's** surface.
 ///
 /// The twin of `crate::binding`, which sends to whichever surface has focus.

@@ -201,6 +201,21 @@ struct Geometry {
     menu: RECT,
 }
 
+/// Where each tab is drawn, in the frame's client coordinates.
+///
+/// **A read of the same `slots` the mouse handling uses, not a second
+/// layout.** The strip's rule 1 is "no second list of tabs"; this is the
+/// same rule one level down for the geometry, and the reason it is a thin
+/// accessor rather than an exported `layout` call is that a caller doing its
+/// own arithmetic would be a second place for the inset and the scroll to be
+/// wrong -- and it would be wrong only after a scroll, which is the kind of
+/// thing nobody reproduces.
+///
+/// The caller is `uia.rs`, which needs a `BoundingRectangle` for each tab.
+pub fn tab_rects(frame: HWND) -> Vec<(TabId, RECT)> {
+    slots(frame).slots.iter().map(|s| (s.id, s.rect)).collect()
+}
+
 fn slots(frame: HWND) -> Geometry {
     let (tabs_now, _) = tabs::strip_snapshot(frame);
     let scale = tabs::scale_of(frame);

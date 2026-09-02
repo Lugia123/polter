@@ -53,6 +53,7 @@ mod strip;
 mod tabs;
 mod theme;
 mod tsf;
+mod uia;
 
 use ffi::*;
 use std::cell::RefCell;
@@ -1928,6 +1929,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // erase, or the strip flickers on every resize.
             WM_ERASEBKGND => LRESULT(1),
 
+            // Accessibility. **Before anything that could answer it by
+            // accident**: `WM_GETOBJECT` arrives with several different
+            // object ids, and only one of them is the UI Automation tree --
+            // `uia::on_get_object` answers `None` for the rest, including
+            // MSAA's `OBJID_CLIENT`, and those go to `DefWindowProcW`
+            // unchanged. Returning a provider for the wrong object id is how
+            // a window comes to look like it has two conflicting trees.
+            WM_GETOBJECT => match uia::on_get_object(hwnd, wp, lp) {
+                Some(r) => r,
+                None => DefWindowProcW(hwnd, msg, wp, lp),
+            },
+
             // --- the custom frame. See shell.rs for why each one is here. ---
             WM_NCCALCSIZE => match shell::nc_calc_size(hwnd, wp, lp) {
                 Some(r) => r,
@@ -2591,6 +2604,8 @@ fn load_api() -> Option<Api> {
             surface_text: sym!(internal, "ghostty_surface_text"),
             surface_preedit: sym!(internal, "ghostty_surface_preedit"),
             surface_ime_point: sym!(internal, "ghostty_surface_ime_point"),
+            surface_read_text: sym!(internal, "ghostty_surface_read_text"),
+            surface_free_text: sym!(internal, "ghostty_surface_free_text"),
             codepoint_width: sym!(vt, "ghostty_unicode_codepoint_width"),
             grapheme_width: sym!(vt, "ghostty_unicode_grapheme_width"),
         })

@@ -324,6 +324,12 @@ const _: () = {
     assert!(std::mem::size_of::<Diagnostic>() == 8);
     assert!(std::mem::size_of::<KeyEvent>() == 32);
     assert!(std::mem::align_of::<KeyEvent>() == 8);
+    // Measured the same way the rest of this file was, against
+    // `include/ghostty.h`: two doubles, two u32s, then an 8-aligned pointer
+    // and a usize.
+    assert!(std::mem::size_of::<Text>() == 40);
+    assert!(std::mem::size_of::<Point>() == 16);
+    assert!(std::mem::size_of::<Selection>() == 36);
 };
 
 /// Resolved entry points. We load at runtime rather than link, because the
@@ -358,6 +364,85 @@ pub struct Info {
 #[repr(C)]
 pub struct Diagnostic {
     pub message: *const c_char,
+}
+
+// --- reading the screen, for the UIA provider (`uia.rs`) ---
+
+/// `ghostty_point_tag_e`.
+pub const POINT_ACTIVE: i32 = 0;
+pub const POINT_VIEWPORT: i32 = 1;
+pub const POINT_SCREEN: i32 = 2;
+pub const POINT_SURFACE: i32 = 3;
+
+/// `ghostty_point_coord_e`.
+pub const COORD_EXACT: i32 = 0;
+pub const COORD_TOP_LEFT: i32 = 1;
+pub const COORD_BOTTOM_RIGHT: i32 = 2;
+
+/// `ghostty_point_s`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Point {
+    pub tag: i32,
+    pub coord: i32,
+    pub x: u32,
+    pub y: u32,
+}
+
+/// `ghostty_selection_s`.
+///
+/// **`rectangle` is a `bool` after two 16-byte points, so the struct is 36
+/// bytes and not 40.** Both fields being 4-aligned is what keeps the tail
+/// from rounding up to 8; the assertion below is what makes a wrong guess a
+/// build failure rather than a selection the core reads past the end of.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Selection {
+    pub tl: Point,
+    pub br: Point,
+    pub rectangle: bool,
+}
+
+impl Selection {
+    /// The whole of what is on screen right now, scrollback excluded.
+    ///
+    /// The `x`/`y` are ignored for the `TOP_LEFT`/`BOTTOM_RIGHT` coords --
+    /// they name the corner, they do not carry it. This is the same pair
+    /// macOS builds for `cachedVisibleContents`.
+    pub fn viewport() -> Selection {
+        Selection {
+            tl: Point { tag: POINT_VIEWPORT, coord: COORD_TOP_LEFT, x: 0, y: 0 },
+            br: Point { tag: POINT_VIEWPORT, coord: COORD_BOTTOM_RIGHT, x: 0, y: 0 },
+            rectangle: false,
+        }
+    }
+}
+
+/// `ghostty_text_s`. **The core owns `text`**; it comes back from
+/// `surface_read_text` and goes back through `surface_free_text`. Nothing
+/// here may outlive that pair -- see the lock rule at the top of `uia.rs`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Text {
+    pub tl_px_x: f64,
+    pub tl_px_y: f64,
+    pub offset_start: u32,
+    pub offset_len: u32,
+    pub text: *const c_char,
+    pub text_len: usize,
+}
+
+impl Default for Text {
+    fn default() -> Text {
+        Text {
+            tl_px_x: 0.0,
+            tl_px_y: 0.0,
+            offset_start: 0,
+            offset_len: 0,
+            text: std::ptr::null(),
+            text_len: 0,
+        }
+    }
 }
 
 pub struct Api {
@@ -429,6 +514,21 @@ pub struct Api {
     /// comment there saying so, and saying why is unknown). At scale 1.0 the
     /// difference does not show.
     pub surface_ime_point: unsafe extern "C" fn(Surface, *mut f64, *mut f64, *mut f64, *mut f64),
+
+    // --- reading the screen ---
+    /// Copy some of the terminal's text out. **The core takes its own
+    /// `renderer_state.mutex` and hands back a copy** (`embedded.zig`'s
+    /// `readTextLocked` -> `dumpTextLocked`), so what arrives is a snapshot
+    /// and not a view onto a buffer the terminal thread is still writing.
+    ///
+    /// The core's own comment on it: *"This is an expensive operation so it
+    /// shouldn't be called too often. We recommend that callers cache the
+    /// result and throttle calls to this function."* `uia.rs` does.
+    pub surface_read_text: unsafe extern "C" fn(Surface, Selection, *mut Text) -> bool,
+    /// The other half of `surface_read_text`. **Not optional**: the text is
+    /// the core's allocation, and skipping this leaks it once per read --
+    /// which, at a screen reader's polling rate, is a leak with a slope.
+    pub surface_free_text: unsafe extern "C" fn(Surface, *mut Text),
 
     // from ghostty-vt.dll -- proves both DLLs are loaded and callable
     pub codepoint_width: unsafe extern "C" fn(u32) -> u8,
