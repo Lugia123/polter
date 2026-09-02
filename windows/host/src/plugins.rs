@@ -593,14 +593,43 @@ pub fn render_settings(enabled: bool, values: &BTreeMap<String, String>) -> Stri
     format!("{}\n", serde_json::to_string_pretty(&doc).unwrap_or_default())
 }
 
-fn read_settings(key: &str) -> (bool, BTreeMap<String, String>) {
-    let Some(path) = settings_path(key) else {
-        return (false, BTreeMap::new());
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return (false, BTreeMap::new());
-    };
-    parse_settings(key, &text)
+fn read_settings(key: &str, dir: &Path) -> (bool, BTreeMap<String, String>) {
+    // The user's own file first, then whatever the release ships inside the
+    // plugin's own directory.
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if let Some(p) = settings_path(key) {
+        paths.push(p);
+    }
+    paths.push(dir.join("settings.json"));
+    read_first(key, &paths)
+}
+
+/// The first of `paths` that **has a file**, nearest first.
+///
+/// **Chosen by which file exists, not by merging their contents**, and the
+/// core says why (`Plugin.Settings.readFirst`): a settings value cannot tell
+/// "switched off" from "never configured" -- both are `enabled = false` -- so
+/// folding the two together would let an upgrade switch a plugin back on for
+/// somebody who had deliberately switched it off.
+///
+/// **A file that is there wins even when it says off, and even when it will
+/// not parse.** Falling through to the shipped default because the user's
+/// file has a typo in it is the one outcome that turns something on behind
+/// their back.
+///
+/// Without this, a plugin a release ships configured -- `claude-code` arrives
+/// as `{"enabled":true,"params":{"scope":"user","skills":"yes"}}` -- showed
+/// in this page as **off with empty fields** on a machine that had never
+/// configured it, while the core was running it from those very values. The
+/// page was the convincing one and it was the wrong one.
+fn read_first(key: &str, paths: &[PathBuf]) -> (bool, BTreeMap<String, String>) {
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        return parse_settings(key, &text);
+    }
+    (false, BTreeMap::new())
 }
 
 /// One plugin's settings file, as the page reads it.
@@ -747,7 +776,7 @@ pub fn catalog() -> Vec<Plugin> {
                 // person's language. Read here, next to the manifest, so the
                 // page never has to know that two files were involved.
                 apply_text(&mut p, load_text(&dir, &prefs));
-                let (enabled, values) = read_settings(key);
+                let (enabled, values) = read_settings(key, &dir);
                 p.enabled = enabled;
                 p.values = values;
                 out.push(p);
@@ -1154,5 +1183,109 @@ mod control_tests {
         assert_eq!(values.get("a"), None);
         assert_eq!(values.get("b"), None);
         assert_eq!(values.get("c").map(String::as_str), Some("kept"));
+    }
+}
+
+// ------------------------------- the shipped default, and why it is a search
+// over files rather than a merge
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("polter-fallback-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const SHIPPED: &str = r#"{"enabled": true, "params": {"scope": "user", "skills": "yes"}}"#;
+
+    /// **A machine that has never configured the plugin still sees what the
+    /// release configured.** This is the case that was wrong: `claude-code`
+    /// ships enabled with two values, and the page showed off with empty
+    /// fields while the core ran it from those values.
+    #[test]
+    fn with_no_file_of_their_own_the_shipped_one_is_read() {
+        let dir = scratch("shipped");
+        let user = dir.join("user-does-not-exist.json");
+        let shipped = dir.join("settings.json");
+        std::fs::write(&shipped, SHIPPED).unwrap();
+
+        let (enabled, values) = read_first("claude-code", &[user, shipped]);
+        assert!(enabled);
+        assert_eq!(values.get("scope").map(String::as_str), Some("user"));
+        assert_eq!(values.get("skills").map(String::as_str), Some("yes"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The floor for the test above.** The fallback happens because no file
+    /// of the user's exists -- not unconditionally. A user's file saying
+    /// "off" must win over a shipped file saying "on", or an upgrade switches
+    /// something back on for somebody who deliberately switched it off.
+    #[test]
+    fn a_file_of_their_own_wins_even_when_it_says_off() {
+        let dir = scratch("theirs-off");
+        let user = dir.join("user.json");
+        let shipped = dir.join("settings.json");
+        std::fs::write(&user, r#"{"enabled": false, "params": {}}"#).unwrap();
+        std::fs::write(&shipped, SHIPPED).unwrap();
+
+        let (enabled, values) = read_first("claude-code", &[user, shipped]);
+        assert!(!enabled, "the shipped default must not switch it back on");
+        assert!(values.is_empty(), "nor supply its values");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Existence decides, and there is no merging.** A user's file that
+    /// says only "on" does not get the shipped parameters laid under it: with
+    /// merging, "switched off" and "never configured" become the same thing
+    /// on the way through, which is exactly what a settings value cannot tell
+    /// apart.
+    #[test]
+    fn the_two_files_are_never_merged() {
+        let dir = scratch("nomerge");
+        let user = dir.join("user.json");
+        let shipped = dir.join("settings.json");
+        std::fs::write(&user, r#"{"enabled": true, "params": {}}"#).unwrap();
+        std::fs::write(&shipped, SHIPPED).unwrap();
+
+        let (enabled, values) = read_first("claude-code", &[user, shipped]);
+        assert!(enabled);
+        assert!(
+            values.is_empty(),
+            "the shipped params must not appear under the user's file: {values:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A file that is there but will not parse still wins**, and reads as
+    /// off. Falling through to the shipped default because the user's file
+    /// has a typo in it is the one outcome that turns something on behind
+    /// their back.
+    #[test]
+    fn a_broken_file_of_their_own_does_not_fall_through_to_the_shipped_one() {
+        let dir = scratch("broken");
+        let user = dir.join("user.json");
+        let shipped = dir.join("settings.json");
+        std::fs::write(&user, "{ not json").unwrap();
+        std::fs::write(&shipped, SHIPPED).unwrap();
+
+        let (enabled, values) = read_first("claude-code", &[user, shipped]);
+        assert!(!enabled, "a typo must not switch the plugin on");
+        assert!(values.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Neither file is the ordinary case for a plugin nobody ships settings
+    /// for: off, no values, and not an error.
+    #[test]
+    fn neither_file_is_off_and_empty() {
+        let dir = scratch("none");
+        let (enabled, values) =
+            read_first("k", &[dir.join("user.json"), dir.join("settings.json")]);
+        assert!(!enabled);
+        assert!(values.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
