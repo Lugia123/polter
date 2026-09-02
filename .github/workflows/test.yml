@@ -172,7 +172,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -230,7 +230,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -263,7 +263,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           determinate: true
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -298,7 +298,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -364,7 +364,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           determinate: true
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -404,7 +404,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -442,7 +442,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -559,7 +559,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -593,7 +593,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -638,7 +638,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -690,7 +690,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           determinate: true
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -738,7 +738,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -819,7 +819,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -848,7 +848,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -881,7 +881,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -963,7 +963,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1003,7 +1003,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1071,7 +1071,7 @@ jobs:
   #     - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
   #       with:
   #         nix_path: nixpkgs=channel:nixos-unstable
-  #     - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+  #     - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
   #       with:
   #         name: ghostty
   #         authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1134,7 +1134,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           determinate: true
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1186,7 +1186,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           determinate: true
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1226,7 +1226,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           determinate: true
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1280,7 +1280,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1337,7 +1337,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1362,7 +1362,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1397,7 +1397,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1445,7 +1445,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1480,7 +1480,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1511,7 +1511,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           determinate: true
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1570,7 +1570,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1601,7 +1601,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1643,7 +1643,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1674,7 +1674,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1704,7 +1704,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1733,7 +1733,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           determinate: true
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1762,7 +1762,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1790,7 +1790,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1818,7 +1818,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1851,7 +1851,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1879,7 +1879,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1916,7 +1916,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -1978,7 +1978,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ghostty
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
