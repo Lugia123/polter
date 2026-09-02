@@ -229,7 +229,7 @@ powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <绝对路�
 
 三个开关各有理由，缺一个就是一种具体的坏法：
 
-- **`-File` 不能换成 `-Command`。** **实测**（`windows-5eca899157d2-bestf`，Windows
+- **`-File` 不能换成 `-Command`。** **实测**（Windows
   PowerShell 5.1）：`-Command "…"` 只回显不执行。
 - **`-NoProfile` 不是装饰。** 用户 profile 只要印一个字，就落在插件的 stdout 上，
   而 stdout 上非「应答/报告」的东西会让宿主停掉并重启这个插件——
