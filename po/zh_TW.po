@@ -1274,3 +1274,12 @@ msgstr "開 {0}"
 msgid "cancelled {0}"
 msgstr "取消 {0}"
 
+msgid "  last supervisor:"
+msgstr "  上次的總管："
+
+msgid "  no supervisor was recorded"
+msgstr "  沒有記錄到總管"
+
+msgid "  and {0} other terminals"
+msgstr "  另有 {0} 個終端"
+

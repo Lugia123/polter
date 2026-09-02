@@ -16,7 +16,11 @@ you remember. Four calls before you plan anything, in this order.
 
 1. `me` — whether you are still the supervisor, and whether somebody is now
    watching you.
-2. `group_list`, then `group_read` on each group you are in, to the end.
+2. `group_list`. **Read `joined` on each entry.** A group marked
+   `joined: false` is one that came back from disk without you in it — after
+   a restart that is all of them — and `group_read` on it answers
+   `NotAMember`. `group_add` yourself first; the group, its note and its task
+   panel are all still there. Then `group_read` each one to the end.
    **This is where the work you are about to redo is already written down.**
    Your workers reported into the group while you were busy; an unread report
    is either a finished piece of work you are about to start again or a
@@ -183,8 +187,10 @@ The order, and step 2 is a note to yourself:
    with the acceptance test in it.
 4. `task_assign(task, id)` so the panel says who has it. **This types a line
    into that terminal saying the task is theirs, and the panel is only
-   written if that lands** — read the reply. It carries the task number and
-   nothing else; step 3 is still where the work is described.
+   written if that lands** — read the reply. That line names the task and
+   tells the worker to report with `task_progress` when it finishes or gets
+   stuck; it does not say what the work is. **Step 3 is still where the work
+   is described**, acceptance test and all.
 
 **Never hand work over by announcing it.** A hand-over said in the group, or
 written in a reply to somebody else, reaches nobody: the terminal you are
@@ -520,10 +526,22 @@ and you go back to it once there is a group again.
 `session_recall` hands back what Polter wrote down: the groups, what each was
 for, and every terminal's `cwd` and `title`.
 
-**Nothing has been restored** — it is a description. Read the notes,
-`terminal_list` what is open, match on directory and title, and put back the
-ones you can place: `set_watch`, rebuild the group, `group_add`, write the
-brief again. No permission needed. For the rest, say so and ask; do not guess.
+**The groups themselves are already back.** Their names and their notes come
+off disk on their own, and so do their task panels — what does *not* come back
+is who was in them, because deciding which terminal on screen now is which one
+from last night is a judgement, and judgements are yours.
+
+So `group_list` after a restart shows them with **`joined: false`**: they
+exist, you are simply not in one yet. **That is not an empty night, and the
+move is `group_add`, not `group_create`** — rebuilding a group that is already
+there gets you `GroupExists` at best, and at worst a second group beside a
+panel of tasks you have just orphaned. `task_list` on the old name will show
+you last night's work still sitting there.
+
+Then read the notes, `terminal_list` what is open, match on directory and
+title, and put back the ones you can place: `set_watch`, `group_add`, write
+the brief again if it needs changing. No permission needed. For the rest, say
+so and ask; do not guess.
 
 - **`session_recall` empty with terminals open** means last night was never
   recorded, usually because no group was made. Say that first; inferring from

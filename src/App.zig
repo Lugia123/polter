@@ -3457,7 +3457,12 @@ fn chatGroupInfo(
     const live = try self.liveTerminals(alloc);
     defer alloc.free(live);
 
-    const names = try self.chat.groupsFor(alloc, id, live);
+    // The brief and the whole list travel together: both are for whoever
+    // is arranging the groups, which is the supervisor and the person whose
+    // machine this is. `want_brief` is already that question answered, so
+    // it is the one asked here too rather than a second rule that could
+    // drift from it.
+    const names = try self.chat.groupsSeenBy(alloc, id, live, want_brief);
     defer alloc.free(names);
 
     const out = try alloc.alloc(poltergeistpkg.rpc.ChatGroupInfo, names.len);
@@ -3477,8 +3482,9 @@ fn chatGroupInfo(
             const b = self.chat.briefOf(n) catch "";
             break :brief if (b.len > 0) try alloc.dupe(u8, b) else "";
         } else "";
+        const joined = self.chat.hasMember(n, id);
 
-        out[i] = .{ .name = try alloc.dupe(u8, n), .brief = brief };
+        out[i] = .{ .name = try alloc.dupe(u8, n), .brief = brief, .joined = joined };
         filled += 1;
     }
     return out;

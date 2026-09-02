@@ -135,6 +135,14 @@ fn complain(io: std.Io, missing: []const u8) u8 {
 const Host = struct {
     alloc: Allocator,
     io: std.Io,
+
+    /// Kept because the state directory is the one that holds it: the
+    /// statistics read `session.json` out of there, and deriving the
+    /// directory from the socket means this window never has a second
+    /// opinion about where Polter's state lives. Borrowed from the caller,
+    /// which holds it for the life of the program.
+    socket_path: []const u8,
+
     stream: net.Stream,
     read_buf: []u8,
     write_buf: []u8,
@@ -159,6 +167,7 @@ const Host = struct {
         var self: Host = .{
             .alloc = alloc,
             .io = io,
+            .socket_path = path,
             .stream = stream,
             .read_buf = read_buf,
             .write_buf = write_buf,
@@ -321,6 +330,18 @@ const Task = struct {
     progress: []const u8,
 };
 
+/// One terminal as `session.json` remembers it from last time.
+///
+/// No id: `Surface.id` is a fresh random number every run, so the session
+/// file deliberately does not keep one -- see `poltergeist/Session.zig`.
+/// What is here is what a person can match against: what the tab was
+/// called, where it was working, and what it was doing.
+const Recalled = struct {
+    title: []const u8,
+    cwd: []const u8,
+    role: []const u8,
+};
+
 /// One member, with the id as well as the name.
 ///
 /// The id is here for the panel: a task says who owns it as an id, and the
@@ -414,6 +435,22 @@ const Chat = struct {
     /// Polls left before the record is read again. Zero reads on the next
     /// pass; see `fetchEvents` for why this is not every poll.
     events_wait: usize = 0,
+
+    /// Who was in this group when Polter was last shut down.
+    ///
+    /// **The one thing a person needs that the live state cannot give.** A
+    /// restart brings a group back as a shell -- its name and its note, and
+    /// nobody in it, because deciding which terminal on screen now is which
+    /// one from last night is a judgement and the program does not make it
+    /// (`Chat.restoreShell`). That is right, and it leaves the person at
+    /// the keyboard looking at a list of `claude -r` sessions with no way to
+    /// tell which was the supervisor.
+    ///
+    /// So this is read straight off `session.json`, which records exactly
+    /// that: each member's title, its working directory, and its role. It
+    /// is the same material `session_recall` hands the supervisor, shown to
+    /// the person instead of to an agent.
+    recalled: std.ArrayListUnmanaged(Recalled) = .empty,
 
     /// Which of the right-hand column's tabs is showing.
     ///
@@ -1046,6 +1083,64 @@ const Chat = struct {
             // as by count and says which in `more`.
             before = batch.items[0].seq;
             if (!(boolField(v, "more") orelse false)) break;
+        }
+
+        self.readRecalled(arena, name) catch {};
+    }
+
+    /// Read last night's members for `group` out of `session.json`.
+    ///
+    /// **A file rather than a call**, and this is the one place this window
+    /// touches the state directory. The tool that hands this material over
+    /// the socket, `session_recall`, is the supervisor's -- it is prose
+    /// written for an agent to act on. What is wanted here is the same
+    /// facts as a table, for the person, and inventing a second tool to
+    /// carry them to the one program that is definitionally running as the
+    /// user seemed worse than reading the file the user owns.
+    ///
+    /// The directory is found from the socket, which sits in it, so nothing
+    /// here has a second opinion about where the state lives.
+    ///
+    /// Failure is silence: no file, unreadable, or a shape this does not
+    /// recognise all leave the list empty, and an empty list draws nothing.
+    fn readRecalled(self: *Chat, arena: Allocator, group: []const u8) !void {
+        // `.empty`, not `clearRetainingCapacity`: the list's own buffer was
+        // allocated from the arena that `fetchEvents` has just reset, so
+        // keeping the capacity keeps a pointer into freed memory. The
+        // events list a few lines up does the same thing for the same
+        // reason.
+        self.recalled = .empty;
+
+        const dir = std.fs.path.dirname(self.host.socket_path) orelse return;
+        const path = try std.fs.path.join(arena, &.{ dir, "session.json" });
+
+        const bytes = std.Io.Dir.readFileAlloc(
+            .cwd(),
+            self.io,
+            path,
+            arena,
+            .limited(1024 * 1024),
+        ) catch return;
+
+        const parsed = std.json.parseFromSliceLeaky(
+            std.json.Value,
+            arena,
+            bytes,
+            .{},
+        ) catch return;
+
+        for (arrayField(parsed, "groups") catch return) |g| {
+            const name = stringField(g, "name") orelse continue;
+            if (!std.mem.eql(u8, name, group)) continue;
+
+            for (arrayField(g, "members") catch continue) |m| {
+                try self.recalled.append(arena, .{
+                    .title = try arena.dupe(u8, stringField(m, "title") orelse ""),
+                    .cwd = try arena.dupe(u8, stringField(m, "cwd") orelse ""),
+                    .role = try arena.dupe(u8, stringField(m, "role") orelse ""),
+                });
+            }
+            return;
         }
     }
 
@@ -2083,6 +2178,69 @@ const Chat = struct {
             &.{ num(alloc, s.terminals.now), num(alloc, s.terminals.ever) },
         ), .{});
 
+        // **What was here when Polter was last shut down.**
+        //
+        // A restart brings a group back with nobody in it, on purpose:
+        // deciding which terminal on screen now is which one from last
+        // night is a judgement, and the program does not make it. The cost
+        // falls on the person, who is looking at a list of `claude -r`
+        // sessions with no way to tell which one was the supervisor. These
+        // rows are the answer -- the title to recognise it by, the
+        // directory to resume it in, and which one was minding the others.
+        if (self.recalled.items.len > 0 and y + 1 < win.height) {
+            // **Only the supervisor, and it is named as one in words.**
+            //
+            // The first version listed every member with a glyph in front
+            // of the supervisor's row. That was unreadable for a reason
+            // worth writing down: a terminal's *title* already begins with
+            // a mark Polter puts there -- `✳`, `◑`, `◐` for on duty, quiet,
+            // off duty -- so a second column of glyphs produced rows
+            // reading "○ ✳" and "◐ ◑", and no reader can be expected to
+            // know which of the two was ours.
+            //
+            // And the workers were noise anyway. What this box is for is
+            // one question the program can otherwise not answer after a
+            // restart: **which of these `claude -r` sessions was the
+            // supervisor.** So the supervisor gets the words "last
+            // supervisor" beside it, its whole title on one line -- that is
+            // what gets matched against the session list, and truncating it
+            // defeats the purpose -- and its directory below, which is
+            // where the resume has to be run. Everybody else is a count.
+            var bosses: usize = 0;
+            for (self.recalled.items) |r| {
+                if (std.mem.eql(u8, r.role, "supervisor")) bosses += 1;
+            }
+
+            if (bosses == 0) {
+                y = statLine(win, y, tr("  no supervisor was recorded"), .{ .fg = c_dim });
+            } else {
+                y = statLine(win, y, tr("  last supervisor:"), .{ .fg = c_dim });
+
+                for (self.recalled.items) |r| {
+                    if (!std.mem.eql(u8, r.role, "supervisor")) continue;
+                    if (y + 1 >= win.height) break;
+
+                    y = statLine(win, y, std.fmt.allocPrint(alloc, "    {s}", .{
+                        clip(r.title, win.width -| 6),
+                    }) catch "", .{ .bold = true });
+
+                    y = statLine(win, y, std.fmt.allocPrint(alloc, "      {s}", .{
+                        clip(
+                            shortPath(alloc, r.cwd, self.env.get("HOME") orelse ""),
+                            win.width -| 8,
+                        ),
+                    }) catch "", .{ .fg = c_dim });
+                }
+            }
+
+            const others = self.recalled.items.len - bosses;
+            if (others > 0 and y < win.height) {
+                y = statLine(win, y, fill(alloc, tr("  and {0} other terminals"), &.{
+                    num(alloc, others),
+                }), .{ .fg = c_dim });
+            }
+        }
+
         return y;
     }
 
@@ -2805,6 +2963,16 @@ fn padLeft(alloc: Allocator, text: []const u8, cols: u16) []const u8 {
 
     const gap = @min(@as(usize, cols - have), spaces.len);
     return std.fmt.allocPrint(alloc, "{s}{s}", .{ spaces[0..gap], text }) catch text;
+}
+
+/// A path with the home directory written as `~`.
+///
+/// Not decoration: the row it goes in is what somebody types `claude -r`
+/// into, and an absolute path under `/Users/…` costs a dozen columns to say
+/// something they already know.
+fn shortPath(alloc: Allocator, path: []const u8, home: []const u8) []const u8 {
+    if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
+    return std.fmt.allocPrint(alloc, "~{s}", .{path[home.len..]}) catch path;
 }
 
 /// One glyph repeated, `n` times.

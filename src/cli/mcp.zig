@@ -39,7 +39,9 @@ const instructions =
     "task_* -- the task panel. This is how work is handed out, and it is the part\\n" ++
     "that survives a restart, a compaction, and the night. A supervisor uses\\n" ++
     "task_create, task_assign, task_close, task_cancel. Anyone uses task_progress\\n" ++
-    "on their own work and task_list to see it.\\n" ++
+    "on their own work, task_list to see where it stands, and task_history to see\\n" ++
+    "\\n" ++
+    "when it got there -- which is the one that answers what happened overnight.\\n" ++
     "\\n" ++
     "Handing work out is four steps, and dropping the panel out of them is the\\n" ++
     "failure this note exists to prevent: task_create, then group_post the plan for\\n" ++
@@ -86,7 +88,7 @@ pub const Options = struct {
 };
 
 /// The `mcp` command runs an MCP server that lets an agent see and
-/// steer the other terminals a Poltergeist supervisor is watching.
+/// steer the other terminals a Polter supervisor is watching.
 ///
 /// It is not run by hand. Point an MCP client at it:
 ///
@@ -224,14 +226,14 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_list",
-        .description = "Every terminal Poltergeist knows about: how long each screen has been unchanged, and whether it is on duty. Durations only -- call terminal_read to see what is actually on one.",
+        .description = "Every terminal Polter knows about, and enough about each to tell them apart: `cwd` and `title` say which terminal this actually is, `role` and `shielded` say whether a call of yours will reach it, `held` says the user is holding it to its work. For a terminal somebody is watching there is also `quiet_ms` and `rounds` -- how long its screen has been unchanged, and how many times that has been reported. **`quiet_ms` is absent rather than zero for a terminal nobody is watching**: nothing samples it, and zero would read as busy this instant. Durations and bookkeeping only -- call terminal_read to see what is on a screen.",
         .schema =
         \\{"type":"object","properties":{},"additionalProperties":false}
         ,
     },
     .{
         .name = "notices",
-        .description = "What has happened that you have not been shown yet: which terminals went quiet and for how long, and which came back to work. Reading clears them, so what comes back will not come back again. You are also handed this on a timer; call it yourself whenever you finish something, rather than waiting to be interrupted. An empty answer means nothing is waiting. Supervisor only.",
+        .description = "What has happened that you have not been shown yet: which terminals went quiet and for how long, and which came back to work. The same line can carry one clause about a group you supervise -- a task nothing has happened to for a long time, a conversation that has stopped, a task handed round three times -- each with its duration and no verdict attached, because none of those is by itself a problem. Reading clears them, so what comes back will not come back again. You are also handed this on a timer; call it yourself whenever you finish something, rather than waiting to be interrupted. An empty answer means nothing is waiting. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{},"additionalProperties":false}
         ,
@@ -302,7 +304,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "skill_read",
-        .description = "Read one of Poltergeist's skills: the text describing how to supervise, or how to read a terminal. Start with `supervising`.",
+        .description = "Read one of Polter's skills: how to supervise, how to operate another terminal, or how to read one. Start with `supervising` if you are minding terminals and `operating-a-terminal` if you are not.",
         .schema =
         \\{"type":"object","properties":{"name":{"type":"string","description":"supervising or reading-a-terminal"}},"required":["name"]}
         ,
@@ -344,7 +346,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "group_list",
-        .description = "Which groups you are in.",
+        .description = "Which groups there are. A worker is shown the ones it is in. A supervisor is shown all of them, each with its note and with `joined: false` on any it is not a member of -- which is what a restart leaves: groups come back from disk with their names and notes intact and nobody in them, because deciding which terminal on screen now is which one from last night is a judgement and Polter does not make it. So an empty-looking list after a restart is not a lost night; a `joined: false` group is one to rejoin with group_add, not to rebuild with group_create -- its task panel is still behind it.",
         .schema =
         \\{"type":"object","properties":{},"additionalProperties":false}
         ,
@@ -532,7 +534,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "task_assign",
-        .description = "Say which terminal is doing a task. **A line is typed into that terminal saying the task is theirs, and only then does the panel record it** -- an assignment nobody was told about is one only you can see, and the group cannot carry it because a terminal you are minding is not woken by a post. **Read the reply**: it says whether the terminal was actually told, and if it could not be, nothing was assigned. What the work *is* still goes in your own terminal_send: the line Polter types names the task and nothing more. Pass id 0 to take it back off somebody without cancelling it; there is nobody to tell, so nothing is typed. Supervisor only.",
+        .description = "Say which terminal is doing a task. **A line is typed into that terminal saying the task is theirs, and only then does the panel record it** -- an assignment nobody was told about is one only you can see, and the group cannot carry it because a terminal you are minding is not woken by a post. **Read the reply**: it says whether the terminal was actually told, and if it could not be, nothing was assigned. The line names the task and tells the worker to report with task_progress when it finishes or gets stuck; **what the work is is still yours to send**, because the acceptance test is the part that cannot be generated. Pass id 0 to take it back off somebody without cancelling it; there is nobody to tell, so nothing is typed. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"task":{"type":"integer"},"id":{"type":"string","description":"The terminal responsible, or 0 for nobody"}},"required":["task","id"],"additionalProperties":false}
         ,

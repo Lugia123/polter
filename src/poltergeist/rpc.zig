@@ -3044,6 +3044,15 @@ pub const ChatMember = struct {
 pub const ChatGroupInfo = struct {
     name: []const u8,
     brief: []const u8,
+
+    /// Whether the caller is in this group.
+    ///
+    /// Always true for a worker, which is only shown its own. False is what
+    /// a supervisor sees for a group that came back from disk as a shell
+    /// after a restart: it exists, its note is intact, and nobody is in it
+    /// -- so the answer to "is last night gone" is no, and the next move is
+    /// `group_add`, not `group_create`.
+    joined: bool = true,
 };
 
 /// One task as it goes out over the wire.

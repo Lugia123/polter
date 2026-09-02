@@ -643,6 +643,16 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                     try s.objectField("brief");
                     try s.write(g.brief);
                 }
+
+                // The same rule, pointed the other way: written only when
+                // it is false, because a listing where every entry says
+                // `joined: true` is a field that has never told anybody
+                // anything. False means the group is there and the caller
+                // is not in it -- which is what a restart leaves.
+                if (!g.joined) {
+                    try s.objectField("joined");
+                    try s.write(false);
+                }
                 try s.endObject();
             }
             try s.endArray();

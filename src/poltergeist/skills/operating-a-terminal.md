@@ -212,6 +212,13 @@ believe it is finished; closing it is the supervisor's word after checking.
 Report in the group as well, naming the task number, so the supervisor does
 not have to read prose to work out which piece you mean.
 
+`task_history(group)` is open to you too, and it is worth one call when you
+are picking up work you cannot remember: it is the panel's own record —
+created, assigned, progressed, closed — each line with a timestamp. If you
+have just been restarted and are holding a task you have no memory of, that
+is where the story of it is, and it costs you nothing to read one group's
+worth.
+
 If a task of yours is cancelled you will be told here, in this terminal, in
 so many words. Stop when you are.
 
