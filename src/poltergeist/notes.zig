@@ -160,6 +160,61 @@ fn tasks(w: *std.Io.Writer, in: Input) usize {
     return said;
 }
 
+/// The most tasks one nudge names.
+///
+/// Two, because the sentence has to stay readable in an input box and the
+/// worker knows what it is holding -- the numbers are there to make the
+/// reply typeable, not to be a list.
+pub const nudge_listed = 2;
+
+/// The line a worker is given when its screen has stopped and it is still
+/// holding open work.
+///
+/// **Why this exists at all.** A worker that finishes writes its account to
+/// its own screen, and nothing on that screen reaches anybody: the
+/// supervisor cannot see it and learns only that the terminal went quiet.
+/// On the record this was written against, 71 tasks produced 15 `done`
+/// reports and one `blocked` -- so the instruction sitting in
+/// `operating-a-terminal` is not enough on its own, and this puts it in
+/// front of the worker at the one moment it is about to be needed: it has
+/// just stopped.
+///
+/// **Phrased as a question on purpose.** "Report your progress" asks for an
+/// answer and gets one, including from a worker that has not finished --
+/// which would put a `done` on the panel that nobody has any reason to
+/// doubt. "Finished? then say so; stuck? then say so; neither -- ignore
+/// this" leaves doing nothing as an ordinary answer.
+///
+/// Returns empty when there is nothing to hold it up for, so the caller can
+/// treat "no line" as "say nothing".
+pub fn nudge(buf: []u8, quiet_ms: u64, open: []const u64) []const u8 {
+    if (open.len == 0) return "";
+
+    var w: std.Io.Writer = .fixed(buf);
+    var stamp: [16]u8 = undefined;
+
+    w.print("[polter] Your screen has been still for {s}, and ", .{
+        brief(&stamp, quiet_ms),
+    }) catch return "";
+
+    const listed = @min(open.len, nudge_listed);
+    for (open[0..listed], 0..) |id, i| {
+        w.print("{s}#{d}", .{ if (i == 0) "" else ", ", id }) catch return "";
+    }
+    if (open.len > listed) {
+        w.print(" (+{d})", .{open.len - listed}) catch {};
+    }
+
+    w.print(
+        " is still open. Finished? task_progress({d},\"done\") and post the" ++
+            " result to the group. Stuck? task_progress({d},\"blocked\")." ++
+            " Neither -- ignore this; what you print here reaches nobody.",
+        .{ open[0], open[0] },
+    ) catch return "";
+
+    return w.buffered();
+}
+
 /// A duration in the shortest form that still says which unit it is.
 ///
 /// Coarse on purpose, and for a line typed into an input box: `49h`,
@@ -411,6 +466,40 @@ test "no more than three tasks are named however many there are" {
     });
 
     try testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "untouched"));
+}
+
+test "a nudge names the work and leaves doing nothing as an answer" {
+    var buf: [255]u8 = undefined;
+    const out = nudge(&buf, 12 * 60 * 1000, &.{93});
+
+    try testing.expect(std.mem.indexOf(u8, out, "still for 12m") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "#93 is still open") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "task_progress(93,\"done\")") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "task_progress(93,\"blocked\")") != null);
+
+    // The part that keeps it from manufacturing a `done`: not answering is
+    // one of the answers.
+    try testing.expect(std.mem.indexOf(u8, out, "ignore this") != null);
+
+    // And it fits the fixed message buffer it is delivered through.
+    try testing.expect(out.len <= 254);
+}
+
+test "a nudge with nothing open says nothing" {
+    var buf: [255]u8 = undefined;
+    try testing.expectEqualStrings("", nudge(&buf, 60 * 60 * 1000, &.{}));
+}
+
+test "a nudge names two tasks and counts the rest" {
+    var buf: [255]u8 = undefined;
+    const out = nudge(&buf, 20 * 60 * 1000, &.{ 93, 71, 12, 5 });
+
+    try testing.expect(std.mem.indexOf(u8, out, "#93, #71 (+2)") != null);
+    try testing.expect(out.len <= 254);
+
+    // The example uses the first one, so the reply is typeable as it
+    // stands rather than being a template to fill in.
+    try testing.expect(std.mem.indexOf(u8, out, "task_progress(93,\"done\")") != null);
 }
 
 test "a duration says which unit it is" {

@@ -86,6 +86,21 @@ poltergeist_notes_ms: ?u64 = null,
 poltergeist_task_idle_ms: u64 = 0,
 poltergeist_group_quiet_ms: u64 = 0,
 
+/// `poltergeist-worker-nudge-after`, in milliseconds. Zero switches it off.
+poltergeist_worker_nudge_ms: u64 = 0,
+
+/// Tasks whose owner has already been reminded to report on them.
+///
+/// **Once per task.** A reminder that arrives every quarter of an hour is
+/// one that gets ignored, and worse, one that competes with what the
+/// supervisor is typing into the same box. Cleared when the task is handed
+/// out afresh, because that is a new piece of work rather than the same one
+/// going quiet again -- see `logTask`.
+///
+/// In memory only: a restart forgets, and one extra reminder after a
+/// restart is a better failure than a reminder that never comes.
+poltergeist_nudged: std.AutoHashMapUnmanaged(u64, void) = .empty,
+
 /// The whole configuration, rendered the way `+show-config` renders it, so
 /// that an agent can be told what it is working under.
 ///
@@ -336,6 +351,7 @@ pub fn deinit(self: *App) void {
     if (self.chat_log) |*l| l.deinit();
     if (self.task_log) |*l| l.deinit();
     if (self.stats_log) |*l| l.deinit();
+    self.poltergeist_nudged.deinit(self.alloc);
     if (self.group_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
@@ -393,6 +409,8 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
         config.@"poltergeist-task-idle-after".duration / std.time.ns_per_ms;
     self.poltergeist_group_quiet_ms =
         config.@"poltergeist-group-quiet-after".duration / std.time.ns_per_ms;
+    self.poltergeist_worker_nudge_ms =
+        config.@"poltergeist-worker-nudge-after".duration / std.time.ns_per_ms;
 
     self.poltergeist_notify_window =
         poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
@@ -478,7 +496,76 @@ fn poltergeistReport(
     // Before the hand-over, so anything worked out this pass rides out in
     // the same line rather than waiting a whole interval behind it.
     self.considerGroupNotes(now_ms);
+    self.considerWorkerNudge(from, event);
     self.deliverPoltergeistNotices(now_ms);
+}
+
+/// Remind one worker that printing is not reporting, once, when it stops.
+///
+/// **The asymmetry this closes.** A supervisor reaches a worker by typing
+/// into it -- that is what `task_assign` and `terminal_send` do. A worker
+/// reaches its supervisor only by calling `task_progress` or `group_post`
+/// of its own accord, and nothing anywhere asks it to. So a worker that
+/// finishes writes its account to its own screen and stops, and what the
+/// system observes is a still screen: **done and stuck look identical**,
+/// and the supervisor has to go and read the terminal to tell which.
+///
+/// This does not fix that by asking for a report. It puts the two calls in
+/// front of the worker at the moment it has just stopped, and says plainly
+/// that doing nothing is one of the answers -- see `notes.nudge` for why
+/// that wording matters.
+fn considerWorkerNudge(
+    self: *App,
+    id: poltergeistpkg.Bus.Id,
+    event: poltergeistpkg.Sampler.Event,
+) void {
+    if (self.poltergeist_worker_nudge_ms == 0) return;
+
+    // Only a screen that has stopped. `resumed` is the opposite of the
+    // case this is for.
+    const quiet_ms: u64 = switch (event) {
+        .quiescent, .still_quiescent => |r| r.quiet_ms,
+        .resumed => return,
+    };
+    if (quiet_ms < self.poltergeist_worker_nudge_ms) return;
+
+    // A terminal that has clocked off is supposed to be quiet, and a
+    // supervisor is not holding work of its own.
+    const entry = self.poltergeist.get(id) orelse return;
+    if (entry.duty == .off) return;
+    if (entry.role == .supervisor) return;
+
+    // What this terminal is holding, across every group. Nothing open
+    // means there is nothing to report on, and nothing to say.
+    var open: std.ArrayListUnmanaged(u64) = .empty;
+    defer open.deinit(self.alloc);
+
+    var groups = self.chat.groups.keyIterator();
+    while (groups.next()) |name| {
+        const mine = self.tasks.forWorker(self.alloc, name.*, id) catch continue;
+        defer self.alloc.free(mine);
+
+        for (mine) |t| {
+            if (t.state != .open) continue;
+            if (self.poltergeist_nudged.contains(t.id)) continue;
+            open.append(self.alloc, t.id) catch break;
+        }
+    }
+    if (open.items.len == 0) return;
+
+    var buf: [poltergeistpkg.provision.max_message]u8 = undefined;
+    const line = poltergeistpkg.notes.nudge(&buf, quiet_ms, open.items);
+    if (line.len == 0) return;
+
+    // Marked before the telling, not after: `tellSurface` cannot say
+    // whether the agent read it, and a reminder that repeats because the
+    // delivery could not be confirmed is exactly the nagging this is
+    // bounded to avoid.
+    for (open.items) |task| {
+        self.poltergeist_nudged.put(self.alloc, task, {}) catch {};
+    }
+
+    self.tellSurface(id, line);
 }
 /// How often the group notes are worked out again.
 ///
@@ -2791,6 +2878,13 @@ fn taskWallMs(self: *App) i64 {
 
 /// Write one thing that happened, if there is anywhere to write it.
 fn logTask(self: *App, op: poltergeistpkg.TaskLog.Op, id: u64) void {
+    // A task handed to somebody is a fresh piece of work, whether it is a
+    // new owner or the same one being given it again -- so the reminder
+    // this task has already had does not count against the new stretch.
+    // Every other event leaves the mark alone: a worker that reported and
+    // carried on does not need telling twice.
+    if (op == .assigned) _ = self.poltergeist_nudged.remove(id);
+
     const l = if (self.task_log) |*v| v else return;
     const task = self.tasks.get(id) orelse return;
     l.append(self.taskWallMs(), op, task);

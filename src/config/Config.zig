@@ -1375,6 +1375,33 @@ command: ?Command = null,
 /// morning. Set it to zero to say nothing about tasks at all.
 @"poltergeist-task-idle-after": Duration = .{ .duration = 12 * 60 * std.time.ns_per_min },
 
+/// How long a worker's screen may be still before it is reminded to report.
+///
+/// A terminal holding open work whose screen has stopped is told once, in
+/// its own input box: it is still holding #93, and if it has finished or is
+/// stuck, that is what `task_progress` is for.
+///
+/// **This exists because printing is not reporting.** A worker that
+/// finishes writes its account to its own screen, and nothing on that
+/// screen reaches anybody -- the supervisor sees only that the terminal
+/// went quiet, and has to go and look to find out whether that means done
+/// or dead. On the record this was written against, 71 tasks produced 15
+/// `done` reports and one `blocked`, so the instruction in the skill is
+/// demonstrably not enough on its own. This puts it in front of the worker
+/// at the one moment it is about to be needed.
+///
+/// **Longer than `poltergeist-quiescence-after`, deliberately.** That one
+/// decides when to tell the supervisor, which costs the supervisor a line;
+/// this one types into a worker that may be thinking, which costs it a
+/// turn. Once per task, and again only if the task is handed out afresh --
+/// a reminder that repeats is a reminder that gets ignored, and worse, one
+/// that competes with the supervisor's own instructions.
+///
+/// Set it to zero to switch it off. Only has an effect when
+/// `poltergeist-watch` is enabled, since nothing measures a screen
+/// otherwise.
+@"poltergeist-worker-nudge-after": Duration = .{ .duration = 10 * std.time.ns_per_min },
+
 /// How long a group may be silent before it is worth a line.
 ///
 /// The same channel and the same rule as the setting above, about the

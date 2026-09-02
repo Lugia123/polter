@@ -4502,10 +4502,21 @@ pub fn dispatch(
 
             var told: []const u8 = " Nobody is on it now.";
             if (p.id != 0) {
+                // **And how to hand it back.** This is the one moment the
+                // worker is certain to read something about this task, and
+                // reporting is the half of the arrangement that gets
+                // dropped: on the record this was written against, 71
+                // tasks produced 15 `done` reports and one `blocked`. A
+                // worker that finishes writes its account to its own
+                // screen, which nobody is reading -- the supervisor learns
+                // it went quiet and has to go and look. Saying it here
+                // costs a sentence and is the cheapest place there is.
                 const line = try std.fmt.allocPrint(
                     alloc,
                     "[polter] Task {d} (\"{s}\") is now yours. " ++
-                        "Your supervisor will send the detail.",
+                        "Your supervisor will send the detail. When you " ++
+                        "finish or get stuck, say so with task_progress " ++
+                        "-- what you print here reaches nobody.",
                     .{ p.task, what.title },
                 );
 
