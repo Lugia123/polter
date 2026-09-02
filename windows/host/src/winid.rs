@@ -33,12 +33,32 @@ use std::sync::Mutex;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT};
 
-/// Frames in the order they were first seen. The index plus one is the tag.
+/// The live frames, each with **the number it was given when it was created**.
 ///
 /// A `Mutex` rather than a thread-local: `cb_action` arrives on whichever
 /// thread the core is on, and a log line from there must get the same name for
 /// a window as the one the message loop uses.
-static FRAMES: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+///
+/// **The number used to be the position in this list, and that was wrong in a
+/// way the log could not show.** `Vec::retain` closes the gap it makes, so
+/// closing the first of two windows renumbered the survivor from `w2` to
+/// `w1` -- and a real log has been read where `w1` names one handle while it
+/// is created and a different handle when it is destroyed. Every line is
+/// individually correct and the sequence is unreadable.
+///
+/// It is not only a reading problem. `uia.rs` publishes this number twice:
+/// as the window's `AutomationId` (the string an automation client uses to
+/// *find* an element) and inside every `RuntimeId` (what a client caches to
+/// recognise an element it has already seen). A number that changes because
+/// **some other window closed** makes a stable-looking identity quietly start
+/// meaning something else.
+static FRAMES: Mutex<Vec<(isize, u32)>> = Mutex::new(Vec::new());
+
+/// The next number to hand out. **Monotonic, and never reused.**
+///
+/// Starts at 1 so `w0` stays available as "no window", which is what [`of`]
+/// returns for a handle it does not know.
+static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 /// A window has been created: **both registries learn about it here, and
 /// there is nowhere to stand between them.**
@@ -97,7 +117,7 @@ pub fn destroyed(frame: HWND) -> usize {
     // no line at all.
     let known = FRAMES
         .lock()
-        .map(|f| f.iter().any(|k| *k == key))
+        .map(|f| f.iter().any(|(k, _)| *k == key))
         .unwrap_or(false);
     if !known {
         return count();
@@ -107,7 +127,11 @@ pub fn destroyed(frame: HWND) -> usize {
     // number at all and this line would say `w0`.
     let id = of(frame);
     if let Ok(mut frames) = FRAMES.lock() {
-        frames.retain(|f| *f != key);
+        // **The number does not come back.** `retain` still closes the gap in
+        // this list -- it is a list of live windows and nothing more -- but
+        // the id travels with the entry rather than with the position, so
+        // removing one does not rename any other.
+        frames.retain(|(k, _)| *k != key);
     }
     let left = count();
     crate::logf!(
@@ -192,7 +216,7 @@ pub fn empty_agrees(frame: HWND) {
 pub fn all() -> Vec<HWND> {
     FRAMES
         .lock()
-        .map(|f| f.iter().map(|k| HWND(*k as *mut std::ffi::c_void)).collect())
+        .map(|f| f.iter().map(|(k, _)| HWND(*k as *mut std::ffi::c_void)).collect())
         .unwrap_or_default()
 }
 
@@ -326,12 +350,19 @@ pub fn close_requested(frame: HWND, via: CloseVia) {
 /// Windows all gone, process still running, and every line in the log
 /// individually correct.
 ///
-/// **The number is the index plus one, and numbers are therefore reused.**
-/// That is worth stating because it is what made the defect hard to see from
-/// the log: the re-registered handle came back as `w2` on a run that really
-/// did have a `w2`, so "every `wN` has a `created` line" was true while the
-/// process refused to exit. The reading that does hold is the handle -- the
-/// pairing line for one `frame 0x...` appearing twice.
+/// **The number used to be the index plus one, and numbers were therefore
+/// reused.** That is worth keeping on the page, because it is what made the
+/// defect above hard to see from the log: the re-registered handle came back
+/// as `w2` on a run that really did have a `w2`, so "every `wN` has a
+/// `created` line" was true while the process refused to exit. The reading
+/// that held then, and still holds, is the handle -- the pairing line for one
+/// `frame 0x...` appearing twice.
+///
+/// The number comes from `NEXT_ID` now and is never handed out twice, so the
+/// number is a usable identity as well. **That did not make the handle
+/// reading redundant**: the handle is what proves a *registration* happened
+/// twice, which is the fault, while a repeated number would now prove only
+/// that this counter is broken.
 fn assign(frame: HWND) -> u32 {
     let key = frame.0 as isize;
     // **A null handle is not a window, and must not become one.** A caller
@@ -348,11 +379,15 @@ fn assign(frame: HWND) -> u32 {
         // "no window", which is true and visibly not a window number.
         Err(_) => return 0,
     };
-    if let Some(i) = frames.iter().position(|f| *f == key) {
-        return i as u32 + 1;
+    if let Some((_, id)) = frames.iter().find(|(k, _)| *k == key) {
+        return *id;
     }
-    frames.push(key);
-    let id = frames.len() as u32;
+    // **Taken from a counter, not from the length.** A length-derived number
+    // is a position, and positions move when something ahead of them is
+    // removed; this one belongs to the window for as long as the process
+    // lives, and is not handed out again after it goes.
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    frames.push((key, id));
     drop(frames);
     // The pairing, printed once. This is the line that makes the tag mean
     // something to somebody who was not here when it was assigned.
@@ -386,8 +421,8 @@ pub fn of(frame: HWND) -> u32 {
     let Ok(frames) = FRAMES.lock() else {
         return 0;
     };
-    match frames.iter().position(|f| *f == key) {
-        Some(i) => i as u32 + 1,
+    match frames.iter().find(|(k, _)| *k == key) {
+        Some((_, id)) => *id,
         None => 0,
     }
 }
@@ -535,11 +570,25 @@ mod registry_tests {
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
     /// A fresh registry, and the guard that keeps it fresh for one test.
+    ///
+    /// `pub(super)` under the alias `reset` as well, because
+    /// `numbering_tests` needs the same guard: two test modules writing one
+    /// static without sharing the lock is the flake that would be blamed on
+    /// the code under test.
+    pub(super) fn reset() -> std::sync::MutexGuard<'static, ()> {
+        empty()
+    }
+
     fn empty() -> std::sync::MutexGuard<'static, ()> {
         let g = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(mut f) = FRAMES.lock() {
             f.clear();
         }
+        // **The counter goes back too.** It is process-wide and monotonic, so
+        // without this the second test to run would start at whatever the
+        // first left behind, and every assertion about a specific number
+        // would depend on the order the harness happened to pick.
+        NEXT_ID.store(1, std::sync::atomic::Ordering::Relaxed);
         g
     }
 
@@ -592,14 +641,16 @@ mod registry_tests {
         assert_eq!(destroyed(w2), 0, "the last window leaves none behind");
     }
 
-    /// **`N = 2`, because the numbers are reused.**
+    /// **`N = 2`, and the reason has outlived the aliasing it was written
+    /// for.**
     ///
-    /// The id is the index plus one, so a handle put back after a removal
-    /// takes a number that already belonged to somebody. That aliasing is
-    /// what made the log look clean, and it is why closing one window before
-    /// the last is not a sufficient test: a run that only ever closes one
-    /// could land on an arrangement where the stale entry is the one being
-    /// removed anyway.
+    /// It was written when the id was the index plus one: a handle put back
+    /// after a removal took a number that already belonged to somebody, and a
+    /// run that only ever closed one window could land on an arrangement
+    /// where the stale entry happened to be the one being removed anyway.
+    /// Numbers do not alias any more -- but the *positions* in `FRAMES` still
+    /// shift on every removal, and this is the test that walks more than one
+    /// of them.
     #[test]
     fn the_count_reaches_zero_after_two_windows_have_been_closed() {
         let _g = empty();
@@ -692,5 +743,268 @@ mod invariant_tests {
     fn agreement_is_silent() {
         assert!(!d(0, 0));
         assert!(!d(4, 4));
+    }
+}
+
+#[cfg(test)]
+mod numbering_tests {
+    use super::*;
+
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        super::registry_tests::reset()
+    }
+
+    fn h(n: isize) -> HWND {
+        HWND(n as *mut std::ffi::c_void)
+    }
+
+    /// **The defect, exactly as the log showed it.**
+    ///
+    /// Two windows are created; the first is closed. The survivor's number
+    /// must not change -- it used to, because the number was the position in
+    /// `FRAMES` and `retain` closes the gap. A real log has `w1 = frame
+    /// 0x1a009c` and `w2 = frame 0x2f07a0` at creation, and then `0x2f07a0`
+    /// being destroyed **as `w1`**: one name, two windows, in one file.
+    #[test]
+    fn closing_a_window_does_not_renumber_the_others() {
+        let _g = guard();
+        let (a, b) = (h(0x1a009c), h(0x2f07a0));
+        assert_eq!(assign(a), 1);
+        assert_eq!(assign(b), 2);
+        destroyed(a);
+        assert_eq!(of(b), 2, "the survivor keeps the number it was created with");
+        assert_eq!(tag(b), "w2");
+    }
+
+    /// A number is never handed out twice, **even after the window that had
+    /// it is gone**.
+    ///
+    /// This is the half that a "numbers are unique right now" check would
+    /// miss: with position-derived ids, the id of a closed window is free
+    /// again the moment the next one opens, and the log then has two
+    /// unrelated windows answering to one name at different times.
+    #[test]
+    fn a_number_is_never_reused() {
+        let _g = guard();
+        let first = assign(h(0x100));
+        destroyed(h(0x100));
+        let second = assign(h(0x200));
+        assert_ne!(first, second, "a retired number must not come back");
+        // And again, so a single spare is not mistaken for a rule.
+        destroyed(h(0x200));
+        let third = assign(h(0x300));
+        assert_ne!(second, third);
+        assert_ne!(first, third);
+    }
+
+    /// **The floor for the two tests above.** If `assign` stopped handing out
+    /// numbers at all -- returning `0` for everything -- `a_number_is_never_reused`
+    /// would fail, but `closing_a_window_does_not_renumber_the_others` would
+    /// pass while saying nothing. Numbers have to be real and to start at 1.
+    #[test]
+    fn numbers_start_at_one_and_increase() {
+        let _g = guard();
+        assert_eq!(assign(h(0xa)), 1);
+        assert_eq!(assign(h(0xb)), 2);
+        assert_eq!(assign(h(0xc)), 3);
+        // Asking again is not a new number.
+        assert_eq!(assign(h(0xa)), 1);
+    }
+
+    /// Removing from the middle is the arrangement where a position-derived
+    /// id renames the most windows at once.
+    #[test]
+    fn removing_from_the_middle_renames_nobody() {
+        let _g = guard();
+        let ws = [h(0x11), h(0x22), h(0x33), h(0x44)];
+        for w in ws {
+            assign(w);
+        }
+        destroyed(ws[1]);
+        assert_eq!(of(ws[0]), 1);
+        assert_eq!(of(ws[2]), 3, "third window keeps w3, not w2");
+        assert_eq!(of(ws[3]), 4);
+        assert_eq!(count(), 3, "the count still follows the live windows");
+    }
+}
+
+#[cfg(test)]
+mod invariant_floor {
+    //! **Does `empty_agrees` actually say anything?**
+    //!
+    //! `invariant_tests` pins the predicate: `0` against `n` is a
+    //! disagreement, `n` against `m` is not. That is the half that can be
+    //! reasoned about. It does not answer the question this module exists
+    //! for, which is whether the check, wired up to the two real registries
+    //! and given a real disagreement, **produces a line**.
+    //!
+    //! That question has to be asked, because the answer "no" is invisible.
+    //! An invariant that never fires and an invariant that cannot fire look
+    //! identical from every direction except this one -- and the cost of the
+    //! difference is that the next time the registries drift apart, nothing
+    //! says so and the reading is "the invariant is there, so it must be
+    //! fine". A panic hook nobody had heard speak cost exactly that today.
+    //!
+    //! **So this makes the registries genuinely disagree** -- one is written
+    //! and the other is not -- and then reads the log file back off disk.
+    //! Not a switch that makes the line print: that would prove the line can
+    //! be printed, which nobody doubted. **The point is to prove the check
+    //! can see.**
+    //!
+    //! What it still does not cover, said out loud: the call site. That
+    //! `WM_DESTROY` reaches `empty_agrees` at the one moment both registries
+    //! are finished with a window is a claim about `main.rs`, and only a real
+    //! machine can answer it.
+
+    use super::*;
+
+    fn h(n: isize) -> HWND {
+        HWND(n as *mut std::ffi::c_void)
+    }
+
+    /// A clean pair of registries, and the guard that keeps them clean.
+    ///
+    /// **`registry_tests::reset` only clears `winid`.** These tests write
+    /// `tabs` as well, and they clean up after themselves -- but a test that
+    /// fails part-way does not reach its cleanup, and the residue would make
+    /// the *next* test fail for a reason that has nothing to do with what it
+    /// is checking. **A harness-caused failure attributed to the code under
+    /// test costs somebody an afternoon changing something that was not
+    /// broken**, so the clearing happens on the way in as well as on the way
+    /// out.
+    fn clean(handles: &[HWND]) -> std::sync::MutexGuard<'static, ()> {
+        let g = super::registry_tests::reset();
+        for h in handles {
+            crate::tabs::remove_window(*h);
+        }
+        g
+    }
+
+    /// Run `body` with the log redirected to a fresh file, and hand back
+    /// everything that was written to it.
+    ///
+    /// `log_path` reads `POLTER_HOST_LOG` on every call, so this needs no
+    /// hook of its own -- the lines go through exactly the path they go
+    /// through in the product.
+    fn logged(body: impl FnOnce()) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "polter-invariant-floor-{}-{:?}.log",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let previous = std::env::var("POLTER_HOST_LOG").ok();
+        std::env::set_var("POLTER_HOST_LOG", &path);
+        body();
+        match previous {
+            Some(p) => std::env::set_var("POLTER_HOST_LOG", p),
+            None => std::env::remove_var("POLTER_HOST_LOG"),
+        }
+        let out = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    const MARKER: &str = "REGISTRIES DISAGREE";
+
+    /// `winid` has a window, `tabs` does not. **This is the direction the
+    /// real defect had**: the count that decides whether to quit said one
+    /// while the other registry had already reached zero.
+    #[test]
+    fn it_speaks_when_winid_has_one_and_tabs_has_none() {
+        let w = h(0x5001);
+        let _g = clean(&[w]);
+        let out = logged(|| {
+            // The disagreement is made by writing one registry and not the
+            // other -- not by handing the check two numbers.
+            assign(w);
+            assert_eq!(count(), 1);
+            assert_eq!(crate::tabs::with_windows(|ws| ws.len()), 0);
+            empty_agrees(w);
+        });
+        let _ = destroyed(w);
+        assert!(
+            out.contains(MARKER),
+            "the invariant said nothing about 1 vs 0. Log was:\n{out}"
+        );
+        assert!(out.contains("winid has 1"), "the line must carry both numbers:\n{out}");
+        assert!(out.contains("tabs has 0"), "the line must carry both numbers:\n{out}");
+    }
+
+    /// The other direction, because a check that only looks one way is half a
+    /// check and the halves fail separately.
+    #[test]
+    fn it_speaks_when_tabs_has_one_and_winid_has_none() {
+        let w = h(0x5002);
+        let _g = clean(&[w]);
+        let out = logged(|| {
+            crate::tabs::add_window(w);
+            assert_eq!(count(), 0);
+            assert_eq!(crate::tabs::with_windows(|ws| ws.len()), 1);
+            empty_agrees(w);
+        });
+        crate::tabs::remove_window(w);
+        assert!(
+            out.contains(MARKER),
+            "the invariant said nothing about 0 vs 1. Log was:\n{out}"
+        );
+    }
+
+    /// **The half that keeps it switched on.**
+    ///
+    /// An invariant that fires on the normal path gets removed, and the
+    /// person who removes it does not put anything back. Both registries
+    /// holding the same window, and both holding nothing, are the normal
+    /// path -- and so is one holding two while the other holds one, which is
+    /// what every window's creation and destruction passes through.
+    #[test]
+    fn it_stays_quiet_when_there_is_nothing_to_say() {
+        let (a, b) = (h(0x5003), h(0x5004));
+        let _g = clean(&[a, b]);
+
+        // Both empty.
+        let out = logged(|| empty_agrees(a));
+        assert!(!out.contains(MARKER), "0 vs 0 is agreement:\n{out}");
+
+        // Both holding the same one.
+        let out = logged(|| {
+            assign(a);
+            crate::tabs::add_window(a);
+            empty_agrees(a);
+        });
+        assert!(!out.contains(MARKER), "1 vs 1 is agreement:\n{out}");
+
+        // Two against one: the transient every window passes through.
+        let out = logged(|| {
+            assign(b);
+            empty_agrees(b);
+        });
+        assert!(
+            !out.contains(MARKER),
+            "2 vs 1 is a legitimate transient and must not fire:\n{out}"
+        );
+
+        let _ = destroyed(a);
+        let _ = destroyed(b);
+        crate::tabs::remove_window(a);
+    }
+
+    /// **The floor for this module's own instrument.**
+    ///
+    /// Every assertion above is of the form "the log did (not) contain a
+    /// string". If `logged` returned an empty string always -- a wrong path,
+    /// a redirect that did not take, a file that could not be read -- the
+    /// three "stays quiet" assertions would pass while proving nothing, and
+    /// the two "speaks" ones would fail in a way that reads like a broken
+    /// invariant rather than a broken harness.
+    #[test]
+    fn the_harness_captures_a_line_it_is_given() {
+        let _g = clean(&[]);
+        let out = logged(|| crate::logf!("[floor] the redirect works"));
+        assert!(
+            out.contains("[floor] the redirect works"),
+            "POLTER_HOST_LOG redirect did not take; every other test in this \
+             module is unreadable until it does. Log was:\n{out}"
+        );
     }
 }
