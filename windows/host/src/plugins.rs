@@ -225,15 +225,33 @@ fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
         .map(as_str)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| key.to_string());
-    let summary = v.get("summary").map(as_str).unwrap_or_default();
+    // **`description`, not `summary`.** The manifest has no `summary` field;
+    // reading one gave every plugin an empty self-description, and the only
+    // line left on the page was the one about what it subscribes to. The core
+    // and the macOS app both read `description`
+    // (`Plugin.swift:375  text.summary ?? root["description"]`).
+    let summary = v.get("description").map(as_str).unwrap_or_default();
 
-    // `schema.properties` is the shape both the core and the macOS app read.
-    let props = v
-        .get("schema")
+    // **`params.properties`, not `schema.properties`.**
+    //
+    // The comment that stood here said "`schema.properties` is the shape both
+    // the core and the macOS app read", and **that sentence was false in both
+    // halves**: `Plugin.zig:619` reads `obj.get("params")` and then
+    // `"properties"`; `Plugin.swift:378` reads `root["params"]` and then
+    // `schema["properties"]` -- the Swift *local* is called `schema`, which is
+    // probably where the wrong word came from.
+    //
+    // A manifest has no `schema` key, so this read found nothing in every
+    // plugin, every plugin declared no parameters, and the settings page drew
+    // an on/off switch and nothing else. **That is the defect a person
+    // reported as "mac shows each plugin's own settings and Windows only has a
+    // switch"** -- and the prose above it said the code was right, which is
+    // what made it take a round to find.
+    let params_schema = v.get("params");
+    let props = params_schema
         .and_then(|s| s.get("properties"))
         .and_then(|p| p.as_object());
-    let required: Vec<String> = v
-        .get("schema")
+    let required: Vec<String> = params_schema
         .and_then(|s| s.get("required"))
         .and_then(|r| r.as_array())
         .map(|a| a.iter().map(as_str).collect())
@@ -1287,5 +1305,71 @@ mod fallback_tests {
         assert!(!enabled);
         assert!(values.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// -------------------------------- the shipped manifests, as an outside ruler
+#[cfg(test)]
+mod shipped_manifest_tests {
+    use super::*;
+
+    // **Baked in from the real plugin directory, not written here.** A fixture
+    // of my own would carry my own mistake: this parser read
+    // `schema.properties` for weeks, and a fixture written against it would
+    // have had a `schema` key and passed. These four files are somebody
+    // else's, they are what ships, and they are the only thing in reach that
+    // can say the reader is looking in the wrong place.
+    const ARCHIVE: &str = include_str!("../../../plugins/archive/plugin.json");
+    const CLAUDE_CODE: &str = include_str!("../../../plugins/claude-code/plugin.json");
+    const CODEX: &str = include_str!("../../../plugins/codex/plugin.json");
+    const GEMINI: &str = include_str!("../../../plugins/gemini/plugin.json");
+    const KIMI: &str = include_str!("../../../plugins/kimi/plugin.json");
+
+    fn parse(key: &str, text: &str) -> Plugin {
+        parse_manifest(key, std::path::Path::new("."), text).expect("a shipped manifest parses")
+    }
+
+    /// **The count is the whole test.** Every one of these was read as zero,
+    /// and zero parameters is exactly what "the page has only an on/off
+    /// switch" looks like from a chair.
+    #[test]
+    fn the_shipped_manifests_declare_the_parameters_they_declare() {
+        assert_eq!(parse("archive", ARCHIVE).params.len(), 2, "archive: dir, sign_key");
+        assert_eq!(parse("claude-code", CLAUDE_CODE).params.len(), 2, "claude-code: scope, skills");
+        assert_eq!(parse("codex", CODEX).params.len(), 1, "codex: skills");
+        assert_eq!(parse("gemini", GEMINI).params.len(), 1, "gemini: skills");
+        // And one that really does declare none, so a parser that answered
+        // "two" to everything would not pass either.
+        assert_eq!(parse("kimi", KIMI).params.len(), 0, "kimi declares none");
+    }
+
+    /// The shapes, from the same outside ruler: a closed set is a dropdown and
+    /// a plain string is a text box.
+    #[test]
+    fn a_shipped_enum_becomes_a_dropdown() {
+        let p = parse("claude-code", CLAUDE_CODE);
+        let scope = p.params.iter().find(|x| x.name == "scope").expect("scope");
+        assert!(matches!(scope.control, Control::Choice(ref c) if c.len() == 2), "{:?}", scope.control);
+        let a = parse("archive", ARCHIVE);
+        let dir = a.params.iter().find(|x| x.name == "dir").expect("dir");
+        assert!(matches!(dir.control, Control::Text));
+    }
+
+    /// **The self-description is `description`.** Reading a field the
+    /// manifests do not have left every plugin with an empty one, and the
+    /// page showed only the line about what it subscribes to.
+    #[test]
+    fn a_shipped_manifest_has_a_self_description() {
+        let a = parse("archive", ARCHIVE);
+        assert!(!a.summary.is_empty(), "archive has no summary");
+        assert!(a.summary.starts_with("Keeps an extra copy"), "{}", a.summary);
+        assert!(!parse("kimi", KIMI).summary.is_empty(), "kimi has no summary");
+    }
+
+    /// And what it subscribes to, from the same files.
+    #[test]
+    fn a_shipped_manifest_says_what_it_wants() {
+        assert_eq!(parse("archive", ARCHIVE).events, vec!["chat".to_string()]);
+        assert_eq!(parse("kimi", KIMI).events, vec!["provision".to_string()]);
     }
 }

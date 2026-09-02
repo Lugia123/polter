@@ -88,11 +88,27 @@ pub fn focus_back(prev: HWND, who: &str) {
 // page that has a Save button, so what is shared here is only the part that
 // is the same -- and the part whose absence is silent.
 
-/// Let `control`'s parent see `Escape`.
+/// Let `control`'s parent see **the keys that close the page it is on**.
 ///
-/// A `COMBOBOX` with its list dropped keeps the key: closing the list is what
-/// Escape means there, and it is what every other Windows program does. The
-/// second press then reaches the parent, because the list is no longer down.
+/// Two of them, because a page needs a way out that works wherever focus is:
+///
+///  * `Escape`.
+///  * `Ctrl+Shift+,` -- **the chord that opened the page**. It is a host
+///    accelerator in `keys.rs`, and that path runs only for a *surface*
+///    window, so once focus is inside the page the key never reaches the code
+///    that would toggle it. The page handles it itself; this makes sure a
+///    control does not eat it first.
+///
+/// **The second key was the half that was missed.** The first version of this
+/// forwarded only `Escape`, the page grew a branch for the chord, and the
+/// commit message said the page could now be closed from anywhere -- while
+/// the chord was still being swallowed by whichever control had focus, which
+/// is the condition that was broken to begin with. A fix for one of two ways
+/// out reads exactly like a fix for both.
+///
+/// A `COMBOBOX` with its list dropped keeps `Escape`: closing the list is what
+/// it means there, and it is what every other Windows program does. The second
+/// press then reaches the parent, because the list is no longer down.
 pub fn forward_escape_to_parent(control: HWND) {
     if control.0.is_null() {
         return;
@@ -107,12 +123,22 @@ pub fn forward_escape_to_parent(control: HWND) {
 /// behind a Controls feature this crate does not otherwise need.
 const CB_GETDROPPEDSTATE: u32 = 0x0157;
 
+fn held(vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY) -> bool {
+    (unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(vk.0 as i32) } as u16
+        & 0x8000)
+        != 0
+}
+
 unsafe extern "system" fn escape_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_OEM_COMMA, VK_SHIFT};
     unsafe {
         let prev = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-        if msg == WM_KEYDOWN && wp.0 as u16 == VK_ESCAPE.0 {
-            let dropped = SendMessageW(hwnd, CB_GETDROPPEDSTATE, None, None).0 != 0;
-            if !dropped {
+        if msg == WM_KEYDOWN {
+            let key = wp.0 as u16;
+            let is_escape = key == VK_ESCAPE.0
+                && SendMessageW(hwnd, CB_GETDROPPEDSTATE, None, None).0 == 0;
+            let is_chord = key == VK_OEM_COMMA.0 && held(VK_CONTROL) && held(VK_SHIFT);
+            if is_escape || is_chord {
                 if let Ok(parent) = GetParent(hwnd) {
                     SendMessageW(parent, WM_KEYDOWN, Some(wp), Some(lp));
                     return LRESULT(0);
