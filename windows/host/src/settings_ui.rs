@@ -788,6 +788,45 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
                             );
                         }
                     }
+                    // **Ask for a list height, out loud.**
+                    //
+                    // Without this the drop-down is capped at 30 rows -- the
+                    // documented default for `CB_SETMINVISIBLE` -- and on the
+                    // test machine a 40-option list showed exactly 30 with
+                    // **no scroll bar**: `LB_SETTOPINDEX(10)` moved it and
+                    // `End` reached item 39, so the list scrolls and the
+                    // keyboard arrives; what is missing is the handle, and a
+                    // person using the mouse cannot reach item 31.
+                    //
+                    // **Two things were ruled out before this line was
+                    // written, and neither cost a reading of its own:**
+                    //
+                    //  - *Owner drawing*, by running the same list under high
+                    //    contrast, where `custom_drawing()` is false and this
+                    //    style bit is not set. No scroll bar there either.
+                    //  - *The creation height above*, by putting two existing
+                    //    measurements side by side: the list came out 602px
+                    //    with our 20px rows and 572px with the system's 19px
+                    //    rows -- **thirty rows both times**. A pixel cap
+                    //    cannot produce the same row count at two different
+                    //    row heights, so the cap is on rows and the height
+                    //    passed to `CreateWindowExW` is not participating.
+                    //
+                    // What is left is not "the control is simply like this":
+                    // the documentation says a list with more items than the
+                    // minimum grows a scroll bar, so that answer would be a
+                    // claim about Windows that Microsoft's own documentation
+                    // denies. **The remaining hypothesis is that the sizing
+                    // path only runs completely when an application asks**,
+                    // and we never have. This line asks.
+                    //
+                    // 12 rather than a smaller number because the point is a
+                    // usable list, not a minimal one; `CB_SETMINVISIBLE` is a
+                    // *minimum*, so a three-option plugin still shows three
+                    // rows and is unaffected.
+                    unsafe {
+                        SendMessageW(h, CB_SETMINVISIBLE, Some(WPARAM(12)), Some(LPARAM(0)));
+                    }
                     let want = cur.clone().or_else(|| param.default.clone());
                     let idx = want
                         .and_then(|v| options.iter().position(|o| *o == v))
