@@ -1,0 +1,5 @@
+/* The manifest, as resource 1 (CREATEPROCESS_MANIFEST_RESOURCE_ID). An exe
+   with no RT_MANIFEST resource gets comctl32 v5 for every standard control;
+   see polter.manifest for what that looked like. */
+#include <windows.h>
+1 RT_MANIFEST "polter.manifest"

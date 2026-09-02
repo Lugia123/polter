@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Why this file exists: without a Common-Controls v6 dependency every standard
+  control in this process is drawn by comctl32 v5 -- the Windows 95 look. The
+  font was right, the sizes were right, and the buttons still looked like
+  1995, which is what a person reported as "the buttons are ugly".
+
+  **DPI awareness is deliberately NOT declared here.** main.rs calls
+  SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) at startup, and when
+  both a manifest and a call say something about it **the manifest wins and
+  the call fails -- returning false, saying nothing**. One place says it, and
+  it is that one. If you are here to declare it in this file, delete that call
+  in the same edit; leaving both is how the code stops meaning anything while
+  still being read.
+
+  This file contains no DPI element of any kind, and the element's name is
+  deliberately not spelled anywhere in it -- a comment is inert to the loader
+  but not to a person or a script grepping the built exe for it, and a
+  documented absence that answers "present" to every search is worse than no
+  documentation. Searching the exe for that element must find nothing.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="Polter.Host" version="1.0.0.0" processorArchitecture="amd64"/>
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>
