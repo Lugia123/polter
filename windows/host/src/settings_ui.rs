@@ -159,11 +159,83 @@ fn subscription_line(events: &[String]) -> String {
     format!("What it is handed: {}", said.join(", "))
 }
 
-const COL_BG: u32 = 0x00201f1d;
-const COL_PANEL: u32 = 0x00282725;
-const COL_SEL: u32 = 0x00403f3d;
-const COL_TEXT: u32 = 0x00ffffff;
-const COL_DIM: u32 = 0x00a0a0a0;
+// ------------------------------------------------------------------ colour
+//
+// **These were six dark literals, and the controls never agreed with them.**
+// The page draws its own background and text; BUTTON, EDIT and COMBOBOX are
+// drawn by the system. So there were two sets of colours that had to be kept
+// in step and only one of them was ever set: a near-black page with white
+// text, and native controls in the system's light theme. What a person saw
+// was a black background, grey buttons and white input boxes, and the fix
+// they asked for was "make it all dark, or make it all light".
+//
+// **All dark was investigated and is not on offer.** Under the Common-Controls
+// v6 manifest these controls are theme-drawn, and there is no supported way to
+// ask for a dark theme: what exists is a set of undocumented `uxtheme` exports
+// called by ordinal, which are not part of any contract, are version
+// dependent, and do not reach a combo box's drop-down list at all. Owner-draw
+// covers a button but not the list, and the honest end of that road is a
+// half-dark page, which is where this started.
+//
+// So: light, from the system, which is a different thing from six new light
+// literals. **The page and the controls now read one source.** There is no
+// pair to keep in step, and a person on a themed, high-contrast or otherwise
+// non-default desktop gets a page that matches their controls rather than one
+// that matches ours.
+//
+// **Read at paint time, never captured into a `static`.** A colour folded in
+// at startup is a second copy again -- one that was right once -- and the
+// visible cost is that the page does not follow a theme change while it is
+// open. `GetSysColor` is a table lookup; this is not a place where a cached
+// value buys anything.
+
+/// The form's ground: the right-hand side, and what the controls sit on.
+fn col_face() -> u32 {
+    unsafe { GetSysColor(COLOR_BTNFACE) }
+}
+
+/// A content area's ground: the plugin list, the about box, the error box.
+fn col_list() -> u32 {
+    unsafe { GetSysColor(COLOR_WINDOW) }
+}
+
+/// Text on `col_face`.
+fn col_face_text() -> u32 {
+    unsafe { GetSysColor(COLOR_BTNTEXT) }
+}
+
+/// Text on `col_list`.
+fn col_text() -> u32 {
+    unsafe { GetSysColor(COLOR_WINDOWTEXT) }
+}
+
+/// Secondary text: a help line, a summary, a disabled row.
+fn col_dim() -> u32 {
+    unsafe { GetSysColor(COLOR_GRAYTEXT) }
+}
+
+/// The selected row, and **the text that goes on it**. The pair is taken
+/// together on purpose: a highlight colour with unrelated text over it is
+/// unreadable on the themes where the highlight is not the one we imagined,
+/// which is the whole class of bug this change is about.
+fn col_sel() -> u32 {
+    unsafe { GetSysColor(COLOR_HIGHLIGHT) }
+}
+
+fn col_sel_text() -> u32 {
+    unsafe { GetSysColor(COLOR_HIGHLIGHTTEXT) }
+}
+
+/// **The one literal left, and why it stays one.** There is no system colour
+/// that means "this is a complaint": the palette has window, button, text,
+/// grey text, highlight and so on, and nothing for an error. Taking one of the
+/// others would be picking a slot for a meaning it does not have, and the next
+/// person would read the name and believe it.
+///
+/// What it costs: this red does not follow a high-contrast theme, so on such a
+/// desktop it is a fixed colour among system ones. That is a real gap and it
+/// is named rather than hidden -- the alternative, falling back to plain text
+/// colour, would make a complaint indistinguishable from a label.
 const COL_WARN: u32 = 0x004040e0;
 
 /// Control ids. `1..` are parameter fields, offset by their index.
@@ -713,6 +785,16 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 let _ = ShowWindow(win, SW_HIDE);
                 LRESULT(0)
             }
+            // **A theme change is a repaint, because the colours are the
+            // system's now.** Without this the page keeps the old ones until
+            // something else invalidates it -- and "it did not follow the
+            // theme" is exactly what a second, private copy of the colours
+            // would look like, which would make the two indistinguishable
+            // from outside.
+            WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                let _ = InvalidateRect(Some(win), None, true);
+                LRESULT(0)
+            }
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
@@ -722,7 +804,7 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     let _ = GetClientRect(win, &mut rc);
                     let sc = dpi_scale(win);
                     let s = |v: i32| v * sc / 96;
-                    let b = CreateSolidBrush(COLORREF(COL_BG));
+                    let b = CreateSolidBrush(COLORREF(col_list()));
                     FillRect(hdc, &rc, b);
                     let _ = DeleteObject(b.into());
                     SetBkMode(hdc, TRANSPARENT);
@@ -742,7 +824,7 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                                 line,
                                 &mut r,
                                 DT_LEFT | DT_SINGLELINE,
-                                if i == 0 { COL_TEXT } else { COL_DIM },
+                                if i == 0 { col_text() } else { col_dim() },
                             );
                             y += s(24);
                         }
@@ -757,7 +839,7 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                             "Esc or click to dismiss",
                             &mut fr,
                             DT_LEFT | DT_SINGLELINE,
-                            COL_DIM,
+                            col_dim(),
                         );
                         SelectObject(hdc, old);
                     });
@@ -1010,6 +1092,16 @@ unsafe extern "system" fn settings_proc(
                 LRESULT(0)
             }
 
+            // **A theme change is a repaint, because the colours are the
+            // system's now.** Without this the page keeps the old ones until
+            // something else invalidates it -- and "it did not follow the
+            // theme" is exactly what a second, private copy of the colours
+            // would look like, which would make the two indistinguishable
+            // from outside.
+            WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                let _ = InvalidateRect(Some(win), None, true);
+                LRESULT(0)
+            }
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 paint_settings(win);
@@ -1052,7 +1144,7 @@ fn paint_settings(win: HWND) {
         let sc = dpi_scale(win);
         let s = |v: i32| v * sc / 96;
 
-        let bg = CreateSolidBrush(COLORREF(COL_BG));
+        let bg = CreateSolidBrush(COLORREF(col_face()));
         FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg.into());
         let panel = RECT {
@@ -1061,7 +1153,7 @@ fn paint_settings(win: HWND) {
             right: s(LIST_W),
             bottom: rc.bottom,
         };
-        let pb = CreateSolidBrush(COLORREF(COL_PANEL));
+        let pb = CreateSolidBrush(COLORREF(col_list()));
         FillRect(hdc, &panel, pb);
         let _ = DeleteObject(pb.into());
         SetBkMode(hdc, TRANSPARENT);
@@ -1102,7 +1194,7 @@ fn paint_settings(win: HWND) {
                             .to_string()
                     }
                 };
-                draw_text(hdc, &msg, &mut r, DT_LEFT | DT_WORDBREAK, COL_DIM);
+                draw_text(hdc, &msg, &mut r, DT_LEFT | DT_WORDBREAK, col_dim());
             }
 
             for (i, p) in st.plugins.iter().enumerate() {
@@ -1114,7 +1206,7 @@ fn paint_settings(win: HWND) {
                     bottom: y + s(ROW_H),
                 };
                 if i == st.selected {
-                    let b = CreateSolidBrush(COLORREF(COL_SEL));
+                    let b = CreateSolidBrush(COLORREF(col_sel()));
                     FillRect(hdc, &row, b);
                     let _ = DeleteObject(b.into());
                 }
@@ -1134,7 +1226,18 @@ fn paint_settings(win: HWND) {
                     &label,
                     &mut r,
                     DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS,
-                    if p.enabled { COL_TEXT } else { COL_DIM },
+                    // **The selected row's text comes from the highlight
+                    // pair, not from the enabled/disabled pair.** Whether the
+                    // plugin is on is already in the glyph; readable text on
+                    // the highlight is not something a second colour can be
+                    // asked to guess.
+                    if i == st.selected {
+                        col_sel_text()
+                    } else if p.enabled {
+                        col_text()
+                    } else {
+                        col_dim()
+                    },
                 );
             }
 
@@ -1147,7 +1250,7 @@ fn paint_settings(win: HWND) {
                     right,
                     bottom: s(PAD + 24),
                 };
-                draw_text(hdc, &p.name, &mut r, DT_LEFT | DT_SINGLELINE, COL_TEXT);
+                draw_text(hdc, &p.name, &mut r, DT_LEFT | DT_SINGLELINE, col_face_text());
                 // **Measured once, by the same function the control layout
                 // uses.** The summary is the plugin author's sentence and
                 // wraps to as many lines as it wraps to.
@@ -1157,7 +1260,7 @@ fn paint_settings(win: HWND) {
                     &p.summary,
                     &mut r2,
                     DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS,
-                    COL_DIM,
+                    col_dim(),
                 );
 
                 // What it subscribes to, from its own `wants.events`.
@@ -1166,7 +1269,7 @@ fn paint_settings(win: HWND) {
                     &subscription_line(&p.events),
                     &mut r3,
                     DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS,
-                    COL_DIM,
+                    col_dim(),
                 );
 
                 // Labels above each control, in the same order the controls
@@ -1192,7 +1295,7 @@ fn paint_settings(win: HWND) {
                     } else {
                         format!("{label}  —  {}", param.help)
                     };
-                    draw_text(hdc, &label, &mut lr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, COL_DIM);
+                    draw_text(hdc, &label, &mut lr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, col_dim());
                     y += s(18);
                     y += match param.control {
                         Control::Flag => s(28),
@@ -1278,6 +1381,16 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let _ = ShowWindow(win, SW_HIDE);
                 LRESULT(0)
             }
+            // **A theme change is a repaint, because the colours are the
+            // system's now.** Without this the page keeps the old ones until
+            // something else invalidates it -- and "it did not follow the
+            // theme" is exactly what a second, private copy of the colours
+            // would look like, which would make the two indistinguishable
+            // from outside.
+            WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                let _ = InvalidateRect(Some(win), None, true);
+                LRESULT(0)
+            }
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
@@ -1287,7 +1400,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     let _ = GetClientRect(win, &mut rc);
                     let sc = dpi_scale(win);
                     let s = |v: i32| v * sc / 96;
-                    let b = CreateSolidBrush(COLORREF(COL_BG));
+                    let b = CreateSolidBrush(COLORREF(col_list()));
                     FillRect(hdc, &rc, b);
                     let _ = DeleteObject(b.into());
                     SetBkMode(hdc, TRANSPARENT);
@@ -1315,7 +1428,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                                 right: rc.right - s(PAD),
                                 bottom: y + s(40),
                             };
-                            draw_text(hdc, e, &mut er, DT_LEFT | DT_WORDBREAK, COL_TEXT);
+                            draw_text(hdc, e, &mut er, DT_LEFT | DT_WORDBREAK, col_text());
                             y += s(42);
                         }
                         let mut fr = RECT {
@@ -1329,7 +1442,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                             "Esc or click to dismiss",
                             &mut fr,
                             DT_LEFT | DT_SINGLELINE,
-                            COL_DIM,
+                            col_dim(),
                         );
                         SelectObject(hdc, old);
                     });
