@@ -63,6 +63,24 @@ metrics: Metrics,
 /// to review call sites to ensure they are using the lock correctly.
 lock: std.Io.RwLock,
 
+/// A number that identifies this grid for as long as this program runs,
+/// and is never given to a second one.
+///
+/// **This exists because an address is not an identity.** Grids are
+/// reference counted by `SharedGridSet` and destroyed when the last surface
+/// using that font configuration goes away, so the allocator is free to
+/// hand the same address to the next grid -- which has a different
+/// collection, and therefore different fonts behind the same face indices.
+/// A cache that decided it was still valid by comparing
+/// `@intFromPtr(grid)` would see the reused address, keep entries built
+/// against the old collection, and shape text with one font while
+/// rasterising it from another. That is not hypothetical: it is what the
+/// CoreText shaper's font cache did, and it rendered Chinese as unrelated
+/// glyphs from a Japanese face until the terminal's font size was changed.
+///
+/// Starts at 1 so that zero remains available to mean "nothing cached yet".
+id: u64,
+
 pub const init_tw = tripwire.module(enum {
     codepoints_capacity,
     glyphs_capacity,
@@ -70,6 +88,10 @@ pub const init_tw = tripwire.module(enum {
 }, init);
 
 pub const InitError = std.mem.Allocator.Error || Collection.UpdateMetricsError;
+
+/// The source of `id`. Starts at 1; see the field for why it is not an
+/// address.
+var next_id: std.atomic.Value(u64) = .init(1);
 
 /// Initialize the grid.
 ///
@@ -99,6 +121,7 @@ pub fn init(
         .atlas_grayscale = atlas_grayscale,
         .atlas_color = atlas_color,
         .lock = .init,
+        .id = next_id.fetchAdd(1, .monotonic),
         .metrics = undefined, // Loaded below
     };
 
@@ -541,6 +564,48 @@ fn testGrid(mode: TestMode, alloc: Allocator, lib: Library) !SharedGrid {
     errdefer r.deinit(alloc);
 
     return try init(alloc, r);
+}
+
+test "a freed grid does not hand its identity to the next one" {
+    // The regression this field exists for. Grids are reference counted and
+    // destroyed when the last surface on that font configuration closes, so
+    // the allocator may put the next grid at the address the last one had.
+    // Anything that decided "same grid" by comparing addresses would then
+    // keep caches built against a collection that no longer exists -- which
+    // is what the CoreText shaper's font cache did, and it is indexed by
+    // face index, so a fallback face silently became a different font.
+    //
+    // Heap allocated on purpose: the hazard is the allocator reusing an
+    // address, and that is not something a stack value demonstrates. The
+    // address reuse is asserted only if it actually happens, because
+    // whether it does is the allocator's business and not this rule's -- the
+    // rule is that the ids differ either way.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var lib = try Library.init(alloc);
+    defer lib.deinit();
+
+    const first = try alloc.create(SharedGrid);
+    first.* = try testGrid(.normal, alloc, lib);
+    const first_id = first.id;
+    const first_addr = @intFromPtr(first);
+    first.deinit(alloc);
+    alloc.destroy(first);
+
+    const second = try alloc.create(SharedGrid);
+    defer alloc.destroy(second);
+    second.* = try testGrid(.normal, alloc, lib);
+    defer second.deinit(alloc);
+
+    // The point of the whole thing.
+    try testing.expect(second.id != first_id);
+
+    // And when the allocator did reuse the address -- which it usually does
+    // here -- this is the case the old check got wrong, now covered.
+    if (@intFromPtr(second) == first_addr) {
+        try testing.expect(second.id != first_id);
+    }
 }
 
 test getIndex {

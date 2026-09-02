@@ -64,9 +64,22 @@ pub const Shaper = struct {
     /// attributed strings.
     cached_fonts: std.ArrayListUnmanaged(?*macos.foundation.Dictionary),
 
-    /// The grid that our cached fonts correspond to.
+    /// The grid that our cached fonts correspond to, by `SharedGrid.id`.
     /// If the grid changes then we need to reset our cache.
-    cached_font_grid: usize,
+    ///
+    /// **The id and not the address.** Grids are reference counted and
+    /// freed when the last surface using that font configuration goes, so
+    /// the next grid can be allocated at the same address. Comparing
+    /// addresses said "same grid" for a different collection, and these
+    /// entries are indexed by face index -- so index 3 kept meaning the
+    /// old collection's third face while everything else meant the new
+    /// one's. Latin survived that, because the primary face is usually the
+    /// same font either way; the fallback faces did not, and Chinese came
+    /// out as unrelated glyphs taken from a Japanese face. It needed a
+    /// grid to be freed and its address reused, so it arrived after hours
+    /// of opening and closing terminals, one surface at a time, and a font
+    /// size change cleared it for that surface only.
+    cached_font_grid: u64,
 
     /// The list of CoreFoundation objects to release on the dedicated
     /// release thread. This is built up over the course of shaping and
@@ -552,9 +565,8 @@ pub const Shaper = struct {
     ) !*macos.foundation.Dictionary {
         // If this grid doesn't match the one we've cached fonts for,
         // then we reset the cache list since it's no longer valid.
-        // We use an intFromPtr rather than direct pointer comparison
-        // because we don't want anyone to inadvertently use the pointer.
-        const grid_id: usize = @intFromPtr(grid);
+        // The grid's own id rather than its address: see the field.
+        const grid_id: u64 = grid.id;
         if (grid_id != self.cached_font_grid) {
             if (self.cached_font_grid > 0) {
                 // Put all the currently cached fonts in to
