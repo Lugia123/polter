@@ -205,6 +205,23 @@ worker carrying on with work nobody wants. Read the reply: it says whether the
 worker was actually told. If its terminal has gone, the call refuses and the
 task stays open rather than pretending.
 
+`task_history(group, before_seq, limit)` is the other question. The panel says
+where each task stands **now**; this says **when it got there** — one line per
+thing that happened, created through cancelled, each with a timestamp. That is
+what answers "what happened while I was asleep": how long a task has sat
+untouched, which ones came back and were handed to a third terminal, how many
+were closed overnight. Page it the way `group_history` is paged — the smallest
+`seq` you have seen becomes the next `before_seq`, and `more: false` is the
+beginning of the record.
+
+**Read the numbers; do not let them read you.** A task open for two days may
+be stalled, or it may be a standing lease that is *meant* to stay open — the
+terminal holding a machine nobody else may touch is a task by design. Nothing
+in the record can tell those apart, and neither can any rule you could write
+over it. The arithmetic is yours to be handed; the judgement is yours to make,
+and it is the same line `set_quiescence_threshold` draws: measure how long
+something has been still, never declare it stuck.
+
 The panel is not a task system and will not become one: no dependencies, no
 priorities, no due dates, no sub-tasks. Anything a line cannot hold has a
 better home.
@@ -248,6 +265,25 @@ Nothing arriving means everyone is working, not that the mechanism stopped.
 Two durations. *Screen unchanged* means nothing visible moved; *pty silent*
 means nothing was written at all. A program redrawing the same frame is
 unchanged but not silent, and is alive. One that has stopped is both.
+
+The same line can carry one more clause, about a **group** you are the
+supervisor of rather than about a screen:
+
+    [poltergeist] 0x0000000000002222 quiet 185s · build: #93 untouched 49h, nothing said for 3h40m
+
+It arrives in the same box, on the same interval, because that interval is
+the one number the user set to say how often you may be interrupted at all.
+Everything in it is arithmetic over records that already exist — how long
+since each open task's last event, how long since anybody spoke, how many
+times a task has been handed round. **None of it says a task is stuck**, and
+neither should you until you have looked: a task open for two days may be a
+standing lease that is *meant* to stay open. `task_history` is where you
+read what actually happened to it; the thresholds are
+`poltergeist-task-idle-after` and `poltergeist-group-quiet-after`, and
+either at zero says nothing.
+
+A group nobody has taken up gets no such line — there is nobody to tell.
+After a restart that is every group, until a supervisor takes one up.
 
 Then:
 

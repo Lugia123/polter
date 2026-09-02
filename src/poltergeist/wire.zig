@@ -226,6 +226,12 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .limit = try optionalU64(params, "limit", 0),
         } },
 
+        .task_history => .{ .task_history = .{
+            .group = try requireString(aa, params, "group"),
+            .before_seq = try optionalU64(params, "before_seq", 0),
+            .limit = try optionalU64(params, "limit", 0),
+        } },
+
         .plugin_list => .{ .plugin_list = .{
             .key = (try optionalString(aa, params, "key")) orelse "",
         } },
@@ -552,6 +558,17 @@ pub const Response = union(enum) {
 
     tasks: []const rpc.TaskView,
 
+    /// What happened to a panel, answering `task_history`.
+    task_events: struct {
+        events: []const rpc.TaskEvent,
+
+        /// Whether there is older still to ask for -- the same flag
+        /// `messages` carries, for the same reason: a page cut short by
+        /// the budget is otherwise indistinguishable from the beginning
+        /// of the record.
+        more: bool = false,
+    },
+
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -658,6 +675,35 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.write(m.summary);
                 try s.objectField("text");
                 try s.write(m.text);
+                try s.endObject();
+            }
+            try s.endArray();
+        },
+        .task_events => |v| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("more");
+            try s.write(v.more);
+            try s.objectField("events");
+            try s.beginArray();
+            for (v.events) |e| {
+                try s.beginObject();
+                try s.objectField("seq");
+                try s.write(e.seq);
+                try s.objectField("at_ms");
+                try s.write(e.at_ms);
+                try s.objectField("op");
+                try s.write(e.op);
+                try s.objectField("task");
+                try s.write(e.task);
+                try s.objectField("title");
+                try s.write(e.title);
+                try s.objectField("owner");
+                try writeId(&s, e.owner);
+                try s.objectField("state");
+                try s.write(e.state);
+                try s.objectField("progress");
+                try s.write(e.progress);
                 try s.endObject();
             }
             try s.endArray();
@@ -1274,6 +1320,51 @@ test "a history request may omit the cursor and the limit" {
     defer p.deinit();
     try testing.expectEqual(@as(u64, 0), p.value.group_history.before_seq);
     try testing.expectEqual(@as(u64, 0), p.value.group_history.limit);
+}
+
+test "task_history parses its cursor and its limit, and may omit both" {
+    var p = try parse(
+        \\{"method":"task_history","params":{"group":"build","before_seq":42,"limit":20}}
+    );
+    defer p.deinit();
+    try testing.expectEqualStrings("build", p.value.task_history.group);
+    try testing.expectEqual(@as(u64, 42), p.value.task_history.before_seq);
+    try testing.expectEqual(@as(u64, 20), p.value.task_history.limit);
+
+    var bare = try parse(
+        \\{"method":"task_history","params":{"group":"build"}}
+    );
+    defer bare.deinit();
+    try testing.expectEqual(@as(u64, 0), bare.value.task_history.before_seq);
+    try testing.expectEqual(@as(u64, 0), bare.value.task_history.limit);
+}
+
+test "a panel history reply carries the event, its cursor and its clock" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const events = [_]rpc.TaskEvent{.{
+        .seq = 7,
+        .at_ms = 1_700_000_000_000,
+        .op = "assigned",
+        .task = 93,
+        .title = "get the core building",
+        .owner = 0x2222,
+        .state = "open",
+        .progress = "working",
+    }};
+    try writeResponse(&w, .{ .task_events = .{ .events = &events, .more = true } });
+    const out = w.buffered();
+
+    try testing.expect(std.mem.indexOf(u8, out, "\"seq\":7") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"op\":\"assigned\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"task\":93") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"at_ms\":1700000000000") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"more\":true") != null);
+
+    // The owner is written the way every other id in this protocol is, so
+    // one reader parses them all.
+    try testing.expect(std.mem.indexOf(u8, out, "\"owner\":\"0x0000000000002222\"") != null);
 }
 
 test "a history reply carries the log cursor beside the group seq" {

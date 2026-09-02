@@ -559,6 +559,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "task_history",
+        .description = "What happened to a group's panel, out of the record on disk. task_list says where each task stands now; this says when it got there -- created, assigned, progressed, closed, cancelled, each with a timestamp. This is what answers \"what happened last night\": how long a task has sat untouched, which ones were handed to a third terminal after two gave them back, how many were closed while you were asleep. Page it the way group_history is paged: pass the smallest `seq` you have seen as `before_seq` for the batch before it, and `more: false` means you have reached the beginning. Read the numbers; do not let them read you -- a task open for two days may be stalled or may be a standing lease that is *meant* to stay open, and nothing here can tell those apart.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"before_seq":{"type":"integer"},"limit":{"type":"integer"}},"required":["group"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "task_list",
         .description = "The tasks in a group. What you get depends on who you are, because the two questions are different: a supervisor is handed the group's whole panel, closed and cancelled work included, and anybody else is handed its own tasks that are still open and nothing else. Not a restriction so much as the point -- what your peers are doing is not yours to spend context on.",
         .schema =

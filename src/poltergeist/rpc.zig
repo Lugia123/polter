@@ -255,6 +255,15 @@ pub const Method = enum {
     /// which is the whole point: a worker's attention is not to be spent
     /// on what its peers are doing.
     task_list,
+
+    /// What happened to a group's panel, out of the record on disk.
+    ///
+    /// The panel says where each task stands *now*; this says when it got
+    /// there. Those are different questions and only the second can answer
+    /// "what happened last night" -- a table of final states cannot say
+    /// that a task sat untouched for two days, or that it was handed to a
+    /// third terminal after the first two gave it back.
+    task_history,
 };
 
 pub const Request = union(Method) {
@@ -321,6 +330,11 @@ pub const Request = union(Method) {
     task_cancel: struct { task: u64 },
     task_progress: struct { task: u64, progress: []const u8 },
     task_list: struct { group: []const u8 },
+
+    // Paged the same way `group_history` is, and by the same kind of
+    // cursor: the position of a line in the record. See `TaskLog.Event`
+    // for why that number is made on reading rather than written down.
+    task_history: struct { group: []const u8, before_seq: u64 = 0, limit: u64 = 0 },
 };
 
 /// How much text one `group_read` reply may carry.
@@ -397,6 +411,40 @@ pub fn capHistory(lines: []const ChatLine) struct {
         }
     }
     return .{ .lines = lines, .more = false };
+}
+
+/// The same two numbers for the panel's own history.
+///
+/// Smaller than the chat's ceiling because the caller is different: this is
+/// read to be counted, not to be read line by line, and a page of a hundred
+/// events is already a night's work in most groups.
+const default_task_history_limit: usize = 100;
+const max_task_history_limit: usize = 200;
+
+/// Keep the newest events that fit the budget.
+///
+/// The mirror of `capHistory`, dropping from the old end for the same
+/// reason: the caller pages backwards from the oldest event it holds, so a
+/// hole left at the new end could never be asked for again. Only the title
+/// is measured -- every other field is a number or one of a handful of
+/// words, and a budget that pretended to count them would be arithmetic
+/// dressed up as care.
+pub fn capTaskEvents(events: []const TaskEvent) struct {
+    events: []const TaskEvent,
+    more: bool,
+} {
+    var used: usize = 0;
+    var i: usize = events.len;
+    while (i > 0) {
+        i -= 1;
+        used += events[i].title.len;
+        if (used > read_budget_bytes) {
+            // At least one, however big it is: a reply of nothing tells
+            // the caller it has reached the beginning when it has not.
+            return .{ .events = events[@min(i + 1, events.len - 1)..], .more = true };
+        }
+    }
+    return .{ .events = events, .more = false };
 }
 
 pub const History = @import("Chat.zig").History;
@@ -569,6 +617,9 @@ pub fn callableByPlugin(method: Method) bool {
         .task_cancel,
         .task_progress,
         .task_list,
+
+        // And a plugin has no group whose history it could be reading.
+        .task_history,
         => false,
     };
 }
@@ -731,6 +782,13 @@ pub fn requiresSupervisor(method: Method) bool {
         // was built for.
         .task_progress,
         .task_list,
+
+        // Open on the same terms the group's own history is: a member may
+        // read what was said in its group, and the panel's events are that
+        // same night written in another column. How much of it a member
+        // added with `history: none` is shown is the host's to decide, the
+        // way `group_history` leaves the floor to the host.
+        .task_history,
         => false,
     };
 }
@@ -786,6 +844,7 @@ pub fn targetsTerminal(method: Method) bool {
         .task_cancel,
         .task_progress,
         .task_list,
+        .task_history,
         => false,
 
         // Both name another terminal, so both go through the self-target
@@ -856,6 +915,7 @@ pub fn target(req: Request) ?Bus.Id {
         .task_cancel,
         .task_progress,
         .task_list,
+        .task_history,
         => null,
 
         inline .group_add, .group_remove, .task_assign => |v| v.id,
@@ -922,6 +982,7 @@ pub fn selfPermitted(req: Request) bool {
         .task_cancel,
         .task_progress,
         .task_list,
+        .task_history,
 
         // **Refused: the call comes back round to the caller.** These put
         // bytes on your own stdin and hand them back to you, so an agent
@@ -1259,6 +1320,7 @@ test "only what changes the arrangement needs the supervisor" {
             // given. Neither changes the arrangement.
             .task_progress,
             .task_list,
+            .task_history,
             => true,
 
             // Writing what a group is for is arranging, not talking.
@@ -3016,6 +3078,34 @@ pub const TaskView = struct {
     progress: []const u8,
 };
 
+/// One thing that happened to one task, as the record wrote it down.
+///
+/// The words -- `op`, `state`, `progress` -- are handed over as words for
+/// the reason `TaskView` does the same: a reader that met an unfamiliar one
+/// can show it, and a reader that turned them into an enum would have to
+/// drop what it did not know.
+pub const TaskEvent = struct {
+    /// Where this sits in the group's record. The cursor `task_history`
+    /// pages by; see `TaskLog.Event` for why it is counted rather than
+    /// stored.
+    seq: u64,
+
+    at_ms: i64,
+    op: []const u8,
+    task: u64,
+    title: []const u8,
+    owner: Bus.Id,
+    state: []const u8,
+    progress: []const u8,
+};
+
+pub const TaskPage = struct {
+    events: []const TaskEvent,
+
+    /// Whether there is older still to ask for.
+    more: bool,
+};
+
 /// What the app must supply for a request to be carried out.
 ///
 /// An interface rather than a direct dependency on `App` so the dispatch
@@ -3420,6 +3510,22 @@ pub const Host = struct {
             who: Bus.Id,
             whole_panel: bool,
         ) anyerror![]const TaskView,
+
+        /// What happened to `group`'s panel, older than `before_seq`.
+        ///
+        /// The host is the one that knows whether `id` is in the group and
+        /// how far its view reaches; this surface only asks. Both the slice
+        /// and the strings inside it must belong to `alloc` -- the reply is
+        /// written by the connection thread after the app thread has moved
+        /// on.
+        taskHistory: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            group: []const u8,
+            id: Bus.Id,
+            before_seq: u64,
+            limit: usize,
+        ) anyerror!TaskPage,
     };
 
     fn readTerminal(
@@ -3705,6 +3811,17 @@ pub const Host = struct {
         whole_panel: bool,
     ) anyerror![]const TaskView {
         return self.vtable.taskList(self.ctx, alloc, group, who, whole_panel);
+    }
+
+    fn taskHistory(
+        self: Host,
+        alloc: std.mem.Allocator,
+        group: []const u8,
+        id: Bus.Id,
+        before_seq: u64,
+        limit: usize,
+    ) anyerror!TaskPage {
+        return self.vtable.taskHistory(self.ctx, alloc, group, id, before_seq, limit);
     }
 };
 
@@ -4506,6 +4623,24 @@ pub fn dispatch(
             return .{ .tasks = list };
         },
 
+        .task_history => |p| {
+            const want: usize = if (p.limit == 0)
+                default_task_history_limit
+            else
+                @intCast(@min(p.limit, @as(u64, max_task_history_limit)));
+
+            const page = host.taskHistory(alloc, p.group, caller, p.before_seq, want) catch |err|
+                return taskFailure(err);
+
+            // Two ways there can be more, the same two `group_history`
+            // has: the record said so, or the budget cut the batch short.
+            const capped = capTaskEvents(page.events);
+            return .{ .task_events = .{
+                .events = capped.events,
+                .more = page.more or capped.more,
+            } };
+        },
+
         .plugin_list => |p| {
             const list = host.pluginList(alloc, p.key) catch |err| return switch (err) {
                 // An unknown key is not an empty listing. `[]` reads as
@@ -4927,6 +5062,10 @@ const FakeHost = struct {
     history_asked: ?struct { group: []const u8, before_seq: u64, limit: usize } = null,
     history_more: bool = false,
 
+    /// The same, for `task_history`.
+    task_history_asked: ?struct { group: []const u8, before_seq: u64, limit: usize } = null,
+    task_history_more: bool = false,
+
     /// Which terminal told the host it had stood down, if any did.
     stood_down: ?Bus.Id = null,
 
@@ -5058,6 +5197,7 @@ const FakeHost = struct {
             .taskCancel = taskCancel,
             .taskProgress = taskProgress,
             .taskList = taskList,
+            .taskHistory = taskHistory,
         } };
     }
 
@@ -5178,6 +5318,36 @@ const FakeHost = struct {
             .progress = @tagName(t.progress),
         };
         return out;
+    }
+
+    fn taskHistory(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        group: []const u8,
+        _: Bus.Id,
+        before_seq: u64,
+        limit: usize,
+    ) anyerror!TaskPage {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.refuse) return error.NoSuchGroup;
+        self.task_history_asked = .{
+            .group = group,
+            .before_seq = before_seq,
+            .limit = limit,
+        };
+
+        const one = try alloc.alloc(TaskEvent, 1);
+        one[0] = .{
+            .seq = if (before_seq == 0) 42 else before_seq - 1,
+            .at_ms = 1_700_000_000_000,
+            .op = try alloc.dupe(u8, "created"),
+            .task = 7,
+            .title = try alloc.dupe(u8, "get the core building"),
+            .owner = 0x2222,
+            .state = try alloc.dupe(u8, "open"),
+            .progress = try alloc.dupe(u8, "queued"),
+        };
+        return .{ .events = one, .more = self.task_history_more };
     }
 
     fn chatOwner(ctx: *anyopaque, _: []const u8) anyerror!Bus.Id {
@@ -6132,6 +6302,100 @@ test "a reply that fits says there is no more" {
 /// The fake hands back a single line, so the reply is always the whole
 /// allocation rather than a tail of it -- `capHistory` returns a subslice,
 /// and the testing allocator cannot free one of those.
+/// Run one `task_history` against the fake and free what comes back.
+fn taskHistoryOnce(
+    b: *Bus,
+    fake: *FakeHost,
+    caller: Bus.Id,
+    req: Request,
+) !void {
+    const res = try dispatch(testing.allocator, b, fake.host(), term(caller), req);
+    for (res.task_events.events) |e| {
+        testing.allocator.free(e.op);
+        testing.allocator.free(e.title);
+        testing.allocator.free(e.state);
+        testing.allocator.free(e.progress);
+    }
+    testing.allocator.free(res.task_events.events);
+}
+
+test "task_history is open to a terminal already in the group" {
+    // Open for the reason `group_history` is: the panel's events are the
+    // same night the conversation was, written in another column, and the
+    // view the person at the keyboard reads it through is not a supervisor
+    // either. Who is shown how much is the host's, through the same floor
+    // the chat log keeps.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    try taskHistoryOnce(&b, &fake, worker, .{ .task_history = .{ .group = "build" } });
+    try testing.expectEqualStrings("build", fake.task_history_asked.?.group);
+}
+
+test "task_history asks for the cursor and limit it was given" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    try taskHistoryOnce(&b, &fake, boss, .{
+        .task_history = .{ .group = "build", .before_seq = 42, .limit = 20 },
+    });
+
+    try testing.expectEqual(@as(u64, 42), fake.task_history_asked.?.before_seq);
+    try testing.expectEqual(@as(usize, 20), fake.task_history_asked.?.limit);
+}
+
+test "task_history has a default page and a ceiling on the asked-for one" {
+    // The ceiling is not politeness: the protocol is one JSON object per
+    // line into a fixed buffer, so a reply nobody bounded is a connection
+    // that never recovers.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    try taskHistoryOnce(&b, &fake, boss, .{ .task_history = .{ .group = "build" } });
+    try testing.expectEqual(default_task_history_limit, fake.task_history_asked.?.limit);
+
+    try taskHistoryOnce(&b, &fake, boss, .{
+        .task_history = .{ .group = "build", .limit = 100_000 },
+    });
+    try testing.expectEqual(max_task_history_limit, fake.task_history_asked.?.limit);
+}
+
+test "task_history says there is more when the record does" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .task_history_more = true };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .task_history = .{ .group = "build" },
+    });
+    defer {
+        for (res.task_events.events) |e| {
+            testing.allocator.free(e.op);
+            testing.allocator.free(e.title);
+            testing.allocator.free(e.state);
+            testing.allocator.free(e.progress);
+        }
+        testing.allocator.free(res.task_events.events);
+    }
+
+    try testing.expect(res.task_events.more);
+    try testing.expectEqualStrings("created", res.task_events.events[0].op);
+}
+
+test "task_history on a group that is not there says so" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .refuse = true };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .task_history = .{ .group = "nowhere" },
+    });
+    try testing.expect(res == .failed);
+}
+
 fn historyOnce(
     b: *Bus,
     fake: *FakeHost,

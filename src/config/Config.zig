@@ -1354,6 +1354,38 @@ command: ?Command = null,
 /// interruption.
 @"poltergeist-notice-interval": Duration = .{ .duration = std.time.ns_per_min },
 
+/// How long a task may go untouched before it is worth a line.
+///
+/// Nothing has happened to it -- no assignment, no progress report, no
+/// close -- for this long, and its number rides out with the supervisor's
+/// next hand-over, in the same line and on the same clock as the quiet
+/// screens. Only for a group that has a supervisor; a group nobody has
+/// taken up has nobody to tell.
+///
+/// **This is a mark, not a verdict, and the difference is the whole
+/// point.** A task open for two days may be stalled, or it may be a
+/// standing lease that is *meant* to stay open -- the terminal holding a
+/// machine nobody else may touch is a task by design. Nothing here can
+/// tell those apart and nothing here tries: the line says how long, and
+/// the supervisor says what that means. The same rule
+/// `poltergeist-quiescence-after` keeps about a screen.
+///
+/// Twelve hours by default: long enough that ordinary work does not trip
+/// it, short enough to catch a night that went wrong at two in the
+/// morning. Set it to zero to say nothing about tasks at all.
+@"poltergeist-task-idle-after": Duration = .{ .duration = 12 * 60 * std.time.ns_per_min },
+
+/// How long a group may be silent before it is worth a line.
+///
+/// The same channel and the same rule as the setting above, about the
+/// conversation rather than the panel: nobody has said anything in this
+/// group for this long. A group whose work is finished is silent and is
+/// supposed to be, which is exactly why this reports the duration and
+/// stops there.
+///
+/// Set it to zero to say nothing about silence.
+@"poltergeist-group-quiet-after": Duration = .{ .duration = 60 * std.time.ns_per_min },
+
 /// Whether a supervisor may take itself off duty.
 ///
 /// A supervisor is woken on `poltergeist-notice-interval` for as long as it
