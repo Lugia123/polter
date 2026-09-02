@@ -101,3 +101,13 @@ full screen = Toggle Fullscreen
 重载配置 = Reload Config
 设置… = Open Config Using OS editor
 检查更新… = Check for Updates
+
+# The tab's own right-click menu (`strip.rs`) and the terminal's (`ctxmenu.rs`)
+# are two more tables of Chinese labels, and the four words below are the ones
+# they say that the main menu does not. The rest of their rows repeat labels
+# already listed above -- so most of that menu was searchable by accident, and
+# these four were not.
+重置终端 = Reset Terminal
+关闭其他标签 = Close Other Tabs
+关闭右侧的标签 = Close Tabs to the Right
+移到新窗口 = Move Tab to New Window
