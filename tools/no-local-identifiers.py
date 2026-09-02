@@ -129,6 +129,7 @@ NEEDLES = [
 # Empty on purpose: whoever knows a name adds it with `--digest`, and this
 # file never learns it.
 HASHED_NEEDLES: dict[str, str] = {
+    "d3727f45330d": "Windows test machine, added 2026-09-03 after its name reached two docs",
     # "0123456789ab": "the Windows test machine, added 2026-09",
 }
 
