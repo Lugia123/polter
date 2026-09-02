@@ -303,6 +303,36 @@ switch ($Mode) {
         # Focus changes are raised by UIA itself for any window the operator
         # clicks, including ones that are not ours.
         # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # **This mode needs a message pump, and `Start-Sleep` is not one.**
+        #
+        # UIA delivers client callbacks as cross-apartment COM calls, which
+        # arrive through the thread's message queue. A thread parked in
+        # `Start-Sleep` is not pumping, so the callbacks queue up behind it and
+        # nothing is ever heard -- **and "nothing was heard" is precisely the
+        # reading this mode exists to produce**, so the failure disguises
+        # itself as the result.
+        #
+        # The first version of this mode slept. On the test machine the
+        # instrument check failed three times in a row and three different
+        # focus actions were tried before anyone suspected the waiting rather
+        # than the clicking. The remedy is below and, more importantly, it is
+        # named in the failure message: a person reading `INSTRUMENT FAILED`
+        # is looking for what to do next, and that is where the answer has to
+        # be.
+        Add-Type -AssemblyName System.Windows.Forms
+
+        function Wait-Pumped {
+            param([int]$Ms, [scriptblock]$Until)
+            $end = (Get-Date).AddMilliseconds($Ms)
+            while ((Get-Date) -lt $end) {
+                [System.Windows.Forms.Application]::DoEvents()
+                if ($Until -and (& $Until)) { return $true }
+                Start-Sleep -Milliseconds 50
+            }
+            return $false
+        }
+
         $script:heard = New-Object System.Collections.ArrayList
         $script:focusSeen = $false
 
@@ -314,19 +344,29 @@ switch ($Mode) {
 
         Write-Host 'instrument check: click any window (ours or not), twice.'
         Write-Host 'waiting up to 20s for a focus change from the system...'
-        $deadline = (Get-Date).AddSeconds(20)
-        while (-not $script:focusSeen -and (Get-Date) -lt $deadline) {
-            Start-Sleep -Milliseconds 200
-        }
+        [void](Wait-Pumped -Ms 20000 -Until { $script:focusSeen })
         [System.Windows.Automation.Automation]::RemoveAutomationFocusChangedEventHandler($focusHandler)
 
         if (-not $script:focusSeen) {
             Write-Host ''
             Write-Host 'INSTRUMENT FAILED: no focus change arrived from the system in 20s.'
-            Write-Host '  This says nothing about Polter. It says this session cannot receive'
-            Write-Host '  UIA events at all -- wrong shell, blocked by policy, or nothing was'
-            Write-Host '  clicked. **Do not run the rest of this mode and do not record a'
-            Write-Host '  zero**: a zero from here is indistinguishable from the defect.'
+            Write-Host '  This says nothing about Polter: it says this session cannot receive'
+            Write-Host '  UIA events at all. **Do not run the rest of this mode and do not'
+            Write-Host '  record a zero** -- a zero from here is indistinguishable from the'
+            Write-Host '  defect under test.'
+            Write-Host ''
+            Write-Host '  What to change, in the order worth trying:'
+            Write-Host ''
+            Write-Host '   1. RUN IT IN AN INTERACTIVE CONSOLE. UIA callbacks arrive as COM'
+            Write-Host '      calls through this thread message queue, and a script started'
+            Write-Host '      with `Start-Process -WindowStyle Hidden` from a non-interactive'
+            Write-Host '      parent often has nowhere for them to land. A Polter tab is a'
+            Write-Host '      real interactive console and is the easiest one to hand.'
+            Write-Host '   2. Check the apartment: `[Threading.Thread]::CurrentThread.'
+            Write-Host '      GetApartmentState()` should say STA. powershell.exe 5.1 is STA'
+            Write-Host '      by default; pwsh is not, and pwsh cannot run this script anyway.'
+            Write-Host '   3. Only then suspect the clicking. Any window will do, including'
+            Write-Host '      ones that are not ours.'
             exit 1
         }
         Write-Host 'instrument OK: this session can receive UIA events.'
@@ -339,7 +379,7 @@ switch ($Mode) {
                 At   = (Get-Date).ToString('HH:mm:ss.fff')
                 Kind = 'Structure/' + $e.StructureChangeType
                 Name = $sender.Current.Name
-                Type = $sender.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+                Type = ($sender.Current.ControlType.ProgrammaticName -replace '^ControlType\.', '')
             })
         }
         $propHandler = [System.Windows.Automation.AutomationPropertyChangedEventHandler]{
@@ -348,7 +388,7 @@ switch ($Mode) {
                 At   = (Get-Date).ToString('HH:mm:ss.fff')
                 Kind = 'Property/' + $e.Property.ProgrammaticName
                 Name = $sender.Current.Name
-                Type = $sender.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+                Type = ($sender.Current.ControlType.ProgrammaticName -replace '^ControlType\.', '')
             })
         }
 
@@ -364,7 +404,9 @@ switch ($Mode) {
         Write-Host "subscribed to $($windows.Count) window(s). Now, in Polter:"
         Write-Host '  1. open a tab      2. switch tabs     3. rename a tab     4. close a tab'
         Write-Host "listening for $ListenSeconds seconds..."
-        Start-Sleep -Seconds $ListenSeconds
+        # Pumped, for the same reason as the instrument check above: a blocking
+        # sleep here would collect nothing and report it as nothing happening.
+        [void](Wait-Pumped -Ms ($ListenSeconds * 1000) -Until { $false })
 
         [System.Windows.Automation.Automation]::RemoveAllEventHandlers()
 
