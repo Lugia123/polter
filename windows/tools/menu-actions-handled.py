@@ -30,6 +30,15 @@ The rule, which is computed rather than declared:
     than left implicit -- **a checker that cannot say how much it does not see
     is indistinguishable from one that sees everything.**
 
+**The other side of the same coin, and the reason it is here.** The rule above
+catches "not greyed and does nothing". It does not catch a row that *was*
+usable and quietly became greyed: the gate stays green, the person sees a grey
+row, and nothing anywhere says why it went grey. So every row that is greyed
+**by a decision** -- not by the state of the moment -- must carry the same
+`// greyed: <why>` next to whatever decides it. A row greyed **by state**
+(there is nothing to reopen yet) is a different thing and is counted
+separately: its greyness moves, and a number that moves is a reading.
+
 Exit: 0 if the unreasoned count equals the baseline, 1 otherwise.
 """
 
@@ -38,13 +47,17 @@ import os
 import re
 import sys
 
-# **Measured, not chosen.** Rows that have no `cb_action` branch and no
-# `// greyed:` reason. One today: `move_tab_to_new_window`, whose row is greyed
+# **Measured, not chosen.** Two classes, counted together because the remedy is
+# the same line of text: rows with no `cb_action` branch and no `// greyed:`
+# reason, and rows greyed by a decision with no reason. Five today --
+# `move_tab_to_new_window`, whose row is greyed
 # in `strip.rs` with a paragraph explaining exactly why -- in a doc comment on
-# `enabled()`, not in the form this tool can read. Going *up* means somebody
-# added a row that will do nothing when clicked. Going *down* means the reason
-# got written down, and the number here should follow it.
-BASELINE_UNREASONED = 1
+# `enabled()`, not in the form this tool can read; and the three rows `menu.rs`
+# greys on purpose (`语言…`, `Polter 帮助`, `检查更新…`), each of which has a
+# comment saying why in prose and none in this shape. Going *up* means somebody
+# added a row that does nothing when clicked, or greyed one without saying why.
+# Going *down* means a reason got written down, and this number should follow.
+BASELINE_UNREASONED = 2
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host", "src")
 
@@ -174,6 +187,54 @@ def declared_constants(ffi_src: str):
     return set(re.findall(r"^pub const (ACTION_[A-Z0-9_]+):", ffi_src, re.M))
 
 
+STATIC_GREY = (
+    # `menu.rs`: a row literal that says so.
+    re.compile(r'label:\s*"([^"]*)"[\s\S]{0,400}?enabled:\s*Enable::No'),
+    # `menu.rs`: the older spelling, kept so this does not go quiet if it comes back.
+    re.compile(r'label:\s*"([^"]*)"[\s\S]{0,400}?enabled:\s*false'),
+)
+
+STATE_GREY = re.compile(r'label:\s*"([^"]*)"[\s\S]{0,400}?enabled:\s*Enable::(\w+)')
+
+# `strip.rs` decides greyness in a function over the enum instead.
+ENUM_GREY = re.compile(r"fn enabled\(self\) -> bool \{\s*!matches!\(self, ([^)]*)\)")
+
+
+def statically_greyed(src: str):
+    """Rows greyed by a decision, with whether a reason is written beside them.
+
+    **Not the same question as "is it greyed".** A row can be grey because
+    somebody wrote down why, or because greying it was the cheapest way to
+    make a checker stop talking -- and the two are indistinguishable from the
+    row itself.
+    """
+    seen = set()
+    for pattern in STATIC_GREY:
+        for m in pattern.finditer(src):
+            label = m.group(1)
+            if label in seen:
+                continue
+            seen.add(label)
+            yield label, reason_near_index(src, m.start())
+    m = ENUM_GREY.search(src)
+    if m:
+        for variant in re.findall(r"\w+::(\w+)", m.group(1)):
+            yield variant, reason_near_index(src, m.start())
+
+
+def state_greyed(src: str):
+    """Rows whose greyness is a fact about right now, not a decision."""
+    for m in STATE_GREY.finditer(src):
+        if m.group(2) not in ("No", "Yes"):
+            yield m.group(1), m.group(2)
+
+
+def reason_near_index(src: str, idx: int) -> bool:
+    lines = src.splitlines()
+    at = src[:idx].count("\n")
+    return any(GREYED_REASON.search(l) for l in lines[max(0, at - 12) : at + 7])
+
+
 def greyed_reason_near(src: str, action: str) -> bool:
     """Is there a `// greyed: <reason>` within sight of this action's row?
 
@@ -259,11 +320,21 @@ def main() -> int:
     handled, arms = handled_tags(main_src)
     declared = declared_constants(ffi_src)
 
+    unreasoned_grey = []
+    state_grey = []
     total = reaches_host = ok = greyed = 0
     core_only = 0
     hosts_own = 0
     bad = []
+    seen_files = set()
     for name, kind, rows, whole in menu_rows():
+        if name not in seen_files:
+            seen_files.add(name)
+            for label, has_reason in statically_greyed(whole):
+                if not has_reason:
+                    unreasoned_grey.append((name, label))
+            for label, how in state_greyed(whole):
+                state_grey.append((name, label, how))
         for label, action, line in rows:
             total += 1
             if action.startswith("__polter_") or action.startswith("host:"):
@@ -291,6 +362,18 @@ def main() -> int:
         f"{reaches_host} reach the host -- {ok} handled, {greyed} greyed with a written reason"
     )
 
+    print(
+        f"greyed rows: {len(unreasoned_grey)} greyed by a decision with no `// greyed:` reason; "
+        f"{len(state_grey)} greyed by state "
+        + (f"({', '.join(l for _, l, _ in state_grey)})" if state_grey else "(none)")
+    )
+    for name, label in unreasoned_grey:
+        print(
+            f"GREY   {name}  {label!r} is greyed and nothing says why. A row that was usable "
+            f"and went grey looks exactly like one that was always grey."
+        )
+        print(f"       Write `// greyed: <why>` beside whatever decides it.")
+
     for name, kind, label, action, const, line in bad:
         where = f"{name}:{line}" if line else f"{name} ({kind})"
         print(
@@ -302,7 +385,7 @@ def main() -> int:
             f"beside whatever decides it."
         )
 
-    n = len(bad)
+    n = len(bad) + len(unreasoned_grey)
     if n == BASELINE_UNREASONED:
         print(f"{n} row(s) unhandled and unreasoned (baseline {BASELINE_UNREASONED}).")
         return 0

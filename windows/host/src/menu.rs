@@ -300,6 +300,8 @@ const AGENTS_ROWS: &[Row] = &[
     // Greyed: nothing behind it yet. `s4.md` §3.4.3 -- greyed says "this
     // exists, not now"; a row that is missing and a row that never existed
     // look the same, and a row that does nothing is worse than both.
+    // greyed: no language picker exists yet -- nothing to open, and a row that
+    // opens nothing is what §3.4.3 greys rather than hides.
     Row {
         label: "语言…",
         action: Some("__polter_language"),
@@ -347,6 +349,7 @@ const WINDOW_ROWS: &[Row] = &[
 
 const HELP_ROWS: &[Row] = &[
     // Greyed for the same reason as «语言…»: the docs URL has no opener yet.
+    // greyed: no docs opener exists yet in this host.
     Row {
         label: "Polter 帮助",
         action: Some("__polter_help_docs"),
@@ -359,6 +362,9 @@ const HELP_ROWS: &[Row] = &[
     // The core publishes `check_for_updates`, but block L is not built, so the
     // row is greyed rather than removed. Removing it would make the missing
     // updater indistinguishable from a decision never to have one.
+    // greyed: block L (the updater) is not built, so there is nothing behind
+    // this row. Kept visible on purpose: a missing row and a row that never
+    // existed look the same.
     Row {
         label: "检查更新…",
         action: Some("check_for_updates"),
