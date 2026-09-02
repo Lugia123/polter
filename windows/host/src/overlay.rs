@@ -109,16 +109,6 @@ pub fn focus_back(prev: HWND, who: &str) {
 /// A `COMBOBOX` with its list dropped keeps `Escape`: closing the list is what
 /// it means there, and it is what every other Windows program does. The second
 /// press then reaches the parent, because the list is no longer down.
-///
-/// **The chord half has not been verified on a machine, and cannot be with
-/// the input tooling in use.** The injector cannot produce a comma:
-/// `key(",")` fails outright and `key("ctrl+shift+,")` reports success while
-/// sending nothing -- shown by a positive control, where the same chord aimed
-/// at a focused terminal did not open the page it opens. So the earlier
-/// reading of "the chord does nothing" was measuring the tool, not this code.
-/// **What is written here is what the code does when read; nothing has
-/// watched it happen.** Verifying it needs another input channel -- a real
-/// keyboard, or an injector that can send `VK_OEM_COMMA` with two modifiers.
 pub fn forward_escape_to_parent(control: HWND) {
     if control.0.is_null() {
         return;

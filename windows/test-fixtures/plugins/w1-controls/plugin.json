@@ -1,7 +1,7 @@
 {
   "key": "w1-controls",
   "name": "Control shapes (test fixture)",
-  "description": "Not a real plugin. It declares one parameter of each shape so the settings page has all three controls on one page at once -- the checkbox has otherwise never been drawn, because no shipped plugin declares a boolean.",
+  "summary": "Not a real plugin. It declares one parameter of each shape so the settings page has all three controls on one page at once -- the checkbox has otherwise never been drawn, because no shipped plugin declares a boolean.",
   "exec": "controls.ps1",
   "wants": { "events": ["provision"] },
   "params": {
