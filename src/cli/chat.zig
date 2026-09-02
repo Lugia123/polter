@@ -15,7 +15,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
-const net = std.Io.net;
+const transport = @import("../poltergeist/transport.zig");
 const vaxis = @import("vaxis");
 const layout = @import("chat_layout.zig");
 const args = @import("args.zig");
@@ -134,20 +134,34 @@ fn complain(io: std.Io, missing: []const u8) u8 {
 const Host = struct {
     alloc: Allocator,
     io: std.Io,
-    stream: net.Stream,
+    stream: transport.Conn,
     read_buf: []u8,
     write_buf: []u8,
-    reader: net.Stream.Reader,
-    writer: net.Stream.Writer,
+    reader: transport.Reader,
+    writer: transport.Writer,
 
+    /// The pipe to Polter, **through `transport`**.
+    ///
+    /// **This used to be `net.UnixAddress.init(path)`, and on Windows that could
+    /// not work.** `transport.zig` picks a named pipe for that platform on
+    /// purpose -- it explains at length why, and the short version is that Zig
+    /// 0.16's Windows AF_UNIX accept path answers a cancelled request with
+    /// `unreachable`, so the supported way to stop a server panics. So
+    /// `GHOSTTY_POLTER_SOCKET` carries `\\.\pipe\polter-<hex>` there, and
+    /// opening that as a unix socket address fails every time.
+    ///
+    /// `transport.zig` already said this file used `connect`: "the client half,
+    /// **shared by** the MCP client, the chat client and the tests". **That
+    /// sentence was written as a statement of fact and was not one.** A comment
+    /// that describes an arrangement nobody implemented is worse than none: it
+    /// answers the question, so the next person stops looking.
     fn connect(
         alloc: Allocator,
         io: std.Io,
         path: []const u8,
         token: []const u8,
     ) !Host {
-        const addr = try net.UnixAddress.init(path);
-        const stream = try addr.connect(io);
+        const stream = try transport.connect(io, path);
         errdefer stream.close(io);
 
         const read_buf = try alloc.alloc(u8, max_line);

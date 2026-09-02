@@ -530,6 +530,18 @@ pub struct Api {
     /// which, at a screen reader's polling rate, is a leak with a slope.
     pub surface_free_text: unsafe extern "C" fn(Surface, *mut Text),
 
+    // --- CLI actions ---
+    /// Run a `+action` from this process's command line, if there is one.
+    ///
+    /// **It does not return when there is one**: it runs the action and
+    /// exits. That is the whole contract, and it is the same one
+    /// `macos/Sources/App/main.swift` relies on at line 51.
+    ///
+    /// It was inert on Windows until `global.zig` was taught to read
+    /// `GetCommandLineW()`: the C API handed that target an empty command
+    /// line, so `global.action()` was always null and this returned at once.
+    pub cli_try_action: unsafe extern "C" fn(),
+
     // from ghostty-vt.dll -- proves both DLLs are loaded and callable
     pub codepoint_width: unsafe extern "C" fn(u32) -> u8,
     /// Cluster-aware width, in cells. Consumes one grapheme per call and

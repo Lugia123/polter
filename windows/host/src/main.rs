@@ -64,7 +64,9 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use windows::core::{s, w, Interface, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{InvalidateRect, HBRUSH};
-use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryA};
+use windows::Win32::System::LibraryLoader::{
+    GetModuleFileNameW, GetModuleHandleW, GetProcAddress, LoadLibraryA,
+};
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -1501,10 +1503,36 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // close would need to decide which one when there are two.
         ffi::ACTION_TOGGLE_POLTERGEIST_CHAT => {
             alogf!(origin, "[action] poltergeist chat requested");
+            // **Our own path, not the name `polter`.**
+            //
+            // This used to be the literal `"polter +chat"`, which asks
+            // `CreateProcessW` to search for a program of that name -- the
+            // application directory, the working directory, the system
+            // directories, then `PATH`. On Windows nothing puts Polter on
+            // `PATH`, so the search found nothing and the menu item did
+            // nothing. A process already knows where it is; asking the
+            // operating system to go and look for it is the step that could
+            // fail, and removing it is cheaper than any of the ways to make
+            // the search succeed.
+            //
+            // **The path is quoted as one unit and never taken apart.** The
+            // quotes are not a workaround for spaces, they are what keeps the
+            // whole answer one value: `splitWindowsShell` in the core reads
+            // the quoted run as a single argument and
+            // `windowsCreateCommandLine` re-quotes it on the way to
+            // `CreateProcessW`. Before that pair existed a path with a space
+            // in it could not be expressed here at all -- and the directory
+            // this is developed in has one.
+            let Some(exe) = own_exe_path() else {
+                alogf!(origin, "[action] chat: cannot find our own executable; not opening");
+                return true;
+            };
+            let command = format!("\"{exe}\" +chat");
+            alogf!(origin, "[action] chat command: {command}");
             queue_from(
                 origin,
                 tabs::Op::NewTabWith(tabs::NewTab {
-                    command: Some("polter +chat".to_string()),
+                    command: Some(command),
                     chat: true,
                     ..Default::default()
                 }),
@@ -2621,6 +2649,7 @@ fn load_api() -> Option<Api> {
             surface_ime_point: sym!(internal, "ghostty_surface_ime_point"),
             surface_read_text: sym!(internal, "ghostty_surface_read_text"),
             surface_free_text: sym!(internal, "ghostty_surface_free_text"),
+            cli_try_action: sym!(internal, "ghostty_cli_try_action"),
             codepoint_width: sym!(vt, "ghostty_unicode_codepoint_width"),
             grapheme_width: sym!(vt, "ghostty_unicode_grapheme_width"),
         })
@@ -2819,6 +2848,45 @@ fn maybe_panic_test() {
     }
 }
 
+/// This executable's own full path.
+///
+/// **The string the operating system gives back is used whole and is never
+/// taken apart.** `GetModuleFileNameW` already answers the question "where am
+/// I", correctly for a renamed executable and for one copied somewhere else,
+/// because it reports the module that is actually loaded rather than anything
+/// derived from `argv[0]` or from `PATH`. Every bug this function exists to
+/// avoid comes from *doing something* to that answer -- joining it to a
+/// directory, splitting it on a separator, re-resolving it -- and the
+/// directory this repository lives in has a space in its name, so a split
+/// would be wrong on the machine it is developed on.
+///
+/// The caller quotes it as one unit. That is not "handling spaces"; it is the
+/// same rule -- the path stays one value from here to `CreateProcessW`.
+fn own_exe_path() -> Option<String> {
+    // 32K units: the documented ceiling for a path with the `\\?\` prefix.
+    // Sized once rather than grown, because the retry loop is the part that
+    // gets the truncation case wrong.
+    let mut buf = vec![0u16; 32768];
+    let n = unsafe { GetModuleFileNameW(None, &mut buf) } as usize;
+    if n == 0 || n >= buf.len() {
+        // process-wide: this is about the executable, not any window
+        plogf!("[cli] GetModuleFileNameW failed or truncated (n={n})");
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buf[..n]))
+}
+
+/// Did the command line ask for a `+action`?
+///
+/// Answered here as well as by the core because two things depend on it
+/// before the core is initialised, and one of them is not obvious: a CLI
+/// action is a **terminal program**, and this host otherwise turns on
+/// `GHOSTTY_LOG=stderr`. Logging to stderr underneath a full-screen TUI
+/// scribbles over it. The other is that there is no reason to open a window.
+fn cli_action_requested() -> bool {
+    std::env::args().skip(1).any(|a| a.starts_with('+'))
+}
+
 fn main() {
     let _ = std::fs::remove_file(log_path());
     // **First, ahead of the banner.** Everything below can panic, and a panic
@@ -2881,8 +2949,35 @@ fn main() {
     // the log file already captures.
     //
     // An existing value is left alone: whoever set it meant it.
+    //
+    // # Everything above stops applying under a `+action`
+    //
+    // **Read this before deleting the guard below.** The person most likely
+    // to delete it is the one who arrives here wanting exactly what the
+    // paragraphs above argue for: they are debugging `+chat`, they can see no
+    // core logging, and turning it back on is one line away.
+    //
+    // What happens when they do is not "more output". `+chat` is a
+    // **full-screen TUI drawing on this same stderr**, so a log line is
+    // painted into the middle of it. The symptom is a chat window with
+    // debris in it, which reads as a broken TUI -- so the change that caused
+    // it is the last place anyone looks.
+    //
+    // **The escape hatch is already here and needs no edit**: the `Ok` arm
+    // above honours an explicit `GHOSTTY_LOG`. Set it in the environment for
+    // the run you are debugging, and redirect stderr somewhere the TUI is
+    // not. That gets the logging without leaving it on for every user who
+    // opens the chat.
+    //
+    // This host's own log file is unaffected either way -- `logf!` writes
+    // there, not to stderr -- so a `+action` still leaves a record.
     match std::env::var("GHOSTTY_LOG") {
         Ok(v) => logf!("GHOSTTY_LOG already set to {:?}; leaving it", v),
+        Err(_) if cli_action_requested() => {
+            // process-wide: a logging sink for the whole process, decided
+            // before any window exists
+            plogf!("[cli] +action: leaving GHOSTTY_LOG unset so the TUI owns stderr");
+        }
         Err(_) => {
             std::env::set_var("GHOSTTY_LOG", "stderr");
             logf!("GHOSTTY_LOG=stderr (core logging to this process's stderr)");
@@ -2894,12 +2989,43 @@ fn main() {
 
     // ghostty_init takes (argc, argv); argv is a non-optional pointer on the
     // Zig side, so hand it a real one rather than null.
+    //
+    // **This argv is not where the core gets our arguments on Windows.**
+    // `global.zig` takes the real command line from `GetCommandLineW()` on
+    // this target, because `std.process.Args.Vector` there is a WTF-16
+    // command-line string and not an argv array. This pair is still passed
+    // because the parameter is non-optional; it is not read.
     let arg0 = CString::new("polter-host.exe").unwrap();
     let argv: [*const std::os::raw::c_char; 2] = [arg0.as_ptr(), std::ptr::null()];
     let rc = unsafe { (api_box.init)(1, argv.as_ptr()) };
     logf!("ghostty_init -> {}", rc);
     if rc != 0 {
         logf!("FATAL ghostty_init failed");
+        return;
+    }
+
+    // **A `+action` ends here, and the call does not come back.**
+    //
+    // The same line `macos/Sources/App/main.swift` has. It is placed after
+    // `ghostty_init` because that is what fills in `global.action()` -- before
+    // it there is nothing to run -- and before any window is made, because a
+    // CLI action is a terminal program and has no window.
+    //
+    // Until `global.zig` was taught to read `GetCommandLineW()` this was inert
+    // on Windows: the core parsed an action out of an empty string and got
+    // null, so `polter-host.exe +chat` opened an ordinary shell. That is the
+    // half of "terminal group chat does nothing" that is on this side.
+    if cli_action_requested() {
+        // process-wide: a CLI action runs before any window exists, and this
+        // path never makes one
+        plogf!("[cli] a +action was asked for; handing over to the core");
+        unsafe { (api_box.cli_try_action)() };
+        // Reached only if the core found nothing to run -- a `+` argument
+        // that is not an action name. **Said out loud rather than falling
+        // through into a window**, because a typo that silently opens a
+        // terminal looks like the action ran.
+        // process-wide: same path, still no window -- that is what the line says
+        plogf!("[cli] the core did not recognise it; not opening a window");
         return;
     }
 
