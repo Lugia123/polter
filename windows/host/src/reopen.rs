@@ -76,10 +76,17 @@ static STACK: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 /// into tab creation to keep in step with the first.
 ///
 /// Returns whether the tab was created.
-static OPENER: OnceLock<fn(&Entry) -> bool> = OnceLock::new();
+/// **The opener is handed the window that asked**, not just the entry.
+///
+/// The stack is one stack for the process -- a tab you closed is reopenable
+/// from wherever you press the key -- but the tab it makes has to go into
+/// *some* window, and the only window that can be meant is the one the person
+/// pressed the key in. Before this the opener queued against nothing in
+/// particular and the tab appeared in the first window.
+static OPENER: OnceLock<fn(HWND, &Entry) -> bool> = OnceLock::new();
 
 /// Install the thing that makes a tab from an entry.
-pub fn set_opener(f: fn(&Entry) -> bool) {
+pub fn set_opener(f: fn(HWND, &Entry) -> bool) {
     let _ = OPENER.set(f);
 }
 
@@ -175,7 +182,8 @@ pub fn remember(frame: HWND, id: Option<TabId>, index: usize, title: &str, cwd: 
 
 /// Reopen the most recently closed tab. Returns whether anything happened,
 /// which is what the menu's `ok=` reports.
-pub fn reopen_last() -> bool {
+/// Put the last closed tab back, **into the window that asked for it**.
+pub fn reopen_last(frame: HWND) -> bool {
     let entry = match STACK.lock() {
         Ok(mut stack) => stack.pop(),
         Err(_) => {
@@ -218,7 +226,7 @@ pub fn reopen_last() -> bool {
     // this function's intent, which is the copy that is right even when the
     // used value is wrong.
     let title = entry.chosen_title.clone();
-    let ok = open(&entry);
+    let ok = open(frame, &entry);
     if !ok {
         // process-wide: this reports what the stack did with the entry. The
         // refusal itself is logged by `tabs.rs`, on the line that knows which
@@ -329,7 +337,11 @@ mod tests {
     fn a_refused_reopen_keeps_the_entry() {
         reset();
         remember(HWND::default(), None, 1, "keeps", "C:\\work\\alpha");
-        assert!(!reopen_last(), "no opener is installed in tests");
+        // **`HWND::default()` is honest here, not a placeholder.** These
+        // tests exercise the stack, which is process-wide; the frame only
+        // reaches the opener, and no opener is installed. `remember` above is
+        // handed the same null frame for the same reason.
+        assert!(!reopen_last(HWND::default()), "no opener is installed in tests");
         assert_eq!(stack_depth().0, 1, "the entry must still be there");
         reset();
     }
@@ -338,7 +350,7 @@ mod tests {
     #[test]
     fn an_empty_stack_reopens_nothing() {
         reset();
-        assert!(!reopen_last());
+        assert!(!reopen_last(HWND::default()));
         assert_eq!(stack_depth().0, 0);
     }
 }

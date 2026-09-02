@@ -1230,7 +1230,18 @@ extern "C" fn cb_close_surface(ud: *mut c_void, _confirm: bool) {
         logf!("[action] close_surface with no pane id -- ignored");
         return;
     }
-    tabs::post_op(tabs::Op::ClosePane(id));
+    // **The window comes from the pane, not from the target.** This callback
+    // is handed a pane id and nothing else -- there is no `Target` here -- and
+    // the pane is in exactly one window. Asking `frame_hwnd()` instead would
+    // send a shell that exited in window 2 to close a pane in window 1, which
+    // has one: it would close *some other pane*, because pane ids are unique
+    // and the lookup would simply find nothing to remove.
+    match tabs::frame_of_pane(id) {
+        Some(frame) => tabs::post_op(frame, tabs::Op::ClosePane(id), "close_surface callback"),
+        // process-wide: the pane is in no window this host is tracking, which
+        // is the fact being reported
+        None => plogf!("[ops] ClosePane pane={} is in no live window; not queued", id),
+    }
 }
 
 /// The surface an action was aimed at, or `None`.
@@ -1250,8 +1261,47 @@ fn target_surface(target: &Target) -> Option<Surface> {
     Some(target.surface)
 }
 
+/// The window an action came from: the one owning the surface it was aimed at.
+///
+/// **This is the answer `post_op` needs, and the reason it is a lookup rather
+/// than a default.** Every queued action used to run on the first window,
+/// because the queue woke the first window and nothing carried an address.
+/// The address was available the whole time -- the core says which surface it
+/// is acting on, and a surface is in exactly one window.
+///
+/// `None` is a real answer, not a gap to be papered over: an app-targeted
+/// action names no surface and therefore no window. Its callers refuse rather
+/// than pick one.
+fn origin_window(target: &Target) -> Option<HWND> {
+    tabs::frame_of_surface(target_surface(target)?)
+}
+
+/// Queue an op against the window an action came from.
+///
+/// **The refusal is here, once, rather than at nineteen call sites.** The
+/// thing this must never do is fall back to a window -- an action with no
+/// window that runs on "the current one" is a tab appearing in a window
+/// nobody asked, with a log that reads entirely normal.
+fn queue_from(origin: Option<HWND>, op: tabs::Op, from: &'static str) -> bool {
+    match origin {
+        Some(frame) => {
+            tabs::post_op(frame, op, from);
+            true
+        }
+        None => {
+            // process-wide: the action named no surface, so there is no window
+            // for this line to belong to -- which is the fact being reported
+            plogf!("[ops] {} from {}: the action names no window; not queued", op.name(), from);
+            false
+        }
+    }
+}
+
 extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
     use tabs::Op;
+    // Resolved once, at the top, so every arm below answers "which window"
+    // the same way and a new arm cannot answer it differently by accident.
+    let origin = origin_window(&target);
     match action.tag {
         // The core owns the command list and the actions; the host only
         // renders and dispatches. Queued rather than done inline: `cb_action`
@@ -1381,11 +1431,15 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // close would need to decide which one when there are two.
         ffi::ACTION_TOGGLE_POLTERGEIST_CHAT => {
             logf!("[action] poltergeist chat requested");
-            tabs::post_op(tabs::Op::NewTabWith(tabs::NewTab {
-                command: Some("polter +chat".to_string()),
-                chat: true,
-                ..Default::default()
-            }));
+            queue_from(
+                origin,
+                tabs::Op::NewTabWith(tabs::NewTab {
+                    command: Some("polter +chat".to_string()),
+                    chat: true,
+                    ..Default::default()
+                }),
+                "toggle_poltergeist_chat action",
+            );
             true
         }
 
@@ -1461,7 +1515,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 // names it -- but the tab label belongs to the tab this came
                 // from, and that is not always the tab in front.
                 match target_surface(&target) {
-                    Some(s) => tabs::post_op(Op::SetTabTitle { surface: s as usize, title: t }),
+                    Some(s) => {
+                        queue_from(origin, Op::SetTabTitle { surface: s as usize, title: t }, "set_title action");
+                    }
                     None => logf!("[action] set_title with no surface (tag={}); tab label unchanged", target.tag),
                 }
             }
@@ -1501,7 +1557,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 let t = t.to_string_lossy().to_string();
                 logf!("[action] set_tab_title {:?}", t);
                 match target_surface(&target) {
-                    Some(s) => tabs::post_op(Op::SetTabTitle { surface: s as usize, title: t }),
+                    Some(s) => {
+                        queue_from(origin, Op::SetTabTitle { surface: s as usize, title: t }, "set_title action");
+                    }
                     None => logf!("[action] set_tab_title with no surface (tag={}); dropped", target.tag),
                 }
             }
@@ -1534,82 +1592,68 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
 
         ACTION_COPY_TITLE_TO_CLIPBOARD => {
             logf!("[action] copy_title_to_clipboard");
-            tabs::post_op(Op::CopyTitleToClipboard);
-            true
+            queue_from(origin, Op::CopyTitleToClipboard, "copy_title_to_clipboard action")
         }
 
         ACTION_NEW_SPLIT => {
             let dir = action.as_i32();
             logf!("[action] new_split dir={}", dir);
-            tabs::post_op(Op::NewSplit(dir));
-            true
+            queue_from(origin, Op::NewSplit(dir), "new_split action")
         }
         ACTION_GOTO_SPLIT => {
             let v = action.as_i32();
             logf!("[action] goto_split {}", v);
-            tabs::post_op(Op::GotoSplit(v));
-            true
+            queue_from(origin, Op::GotoSplit(v), "goto_split action")
         }
         ACTION_RESIZE_SPLIT => {
             let (amount, dir) = action.as_resize_split();
             logf!("[action] resize_split {} dir={}", amount, dir);
-            tabs::post_op(Op::ResizeSplit(amount, dir));
-            true
+            queue_from(origin, Op::ResizeSplit(amount, dir), "resize_split action")
         }
         ACTION_EQUALIZE_SPLITS => {
             logf!("[action] equalize_splits");
-            tabs::post_op(Op::EqualizeSplits);
-            true
+            queue_from(origin, Op::EqualizeSplits, "equalize_splits action")
         }
         ACTION_TOGGLE_SPLIT_ZOOM => {
             logf!("[action] toggle_split_zoom");
-            tabs::post_op(Op::ToggleSplitZoom);
-            true
+            queue_from(origin, Op::ToggleSplitZoom, "toggle_split_zoom action")
         }
 
         ACTION_TOGGLE_QUICK_TERMINAL => {
             logf!("[action] toggle_quick_terminal");
-            tabs::post_op(Op::ToggleQuickTerminal);
-            true
+            queue_from(origin, Op::ToggleQuickTerminal, "toggle_quick_terminal action")
         }
         ACTION_NEW_TAB => {
             logf!("[action] new_tab");
-            tabs::post_op(Op::NewTab);
-            true
+            queue_from(origin, Op::NewTab, "new_tab action")
         }
         ACTION_CLOSE_TAB => {
             let mode = action.as_i32();
             logf!("[action] close_tab mode={}", mode);
-            tabs::post_op(Op::CloseTab(mode));
-            true
+            queue_from(origin, Op::CloseTab(mode), "close_tab action")
         }
         ACTION_GOTO_TAB => {
             let v = action.as_i32();
             logf!("[action] goto_tab {}", v);
-            tabs::post_op(Op::GotoTab(v));
-            true
+            queue_from(origin, Op::GotoTab(v), "goto_tab action")
         }
         ACTION_MOVE_TAB => {
             let d = action.as_isize();
             logf!("[action] move_tab {}", d);
-            tabs::post_op(Op::MoveTabBy(d));
-            true
+            queue_from(origin, Op::MoveTabBy(d), "move_tab action")
         }
 
         ACTION_TOGGLE_FULLSCREEN => {
             logf!("[action] toggle_fullscreen mode={}", action.as_i32());
-            tabs::post_op(Op::ToggleFullscreen);
-            true
+            queue_from(origin, Op::ToggleFullscreen, "toggle_fullscreen action")
         }
         ACTION_TOGGLE_MAXIMIZE => {
             logf!("[action] toggle_maximize");
-            tabs::post_op(Op::ToggleMaximize);
-            true
+            queue_from(origin, Op::ToggleMaximize, "toggle_maximize action")
         }
         ACTION_RESET_WINDOW_SIZE => {
             logf!("[action] reset_window_size");
-            tabs::post_op(Op::ResetWindowSize);
-            true
+            queue_from(origin, Op::ResetWindowSize, "reset_window_size action")
         }
 
         ACTION_RENDERER_HEALTH => {
@@ -1618,8 +1662,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         }
         ACTION_PRESENT_TERMINAL => {
             logf!("[action] present_terminal");
-            tabs::post_op(Op::PresentTerminal);
-            true
+            queue_from(origin, Op::PresentTerminal, "present_terminal action")
         }
         ACTION_MOUSE_SHAPE | ACTION_MOUSE_VISIBILITY => true,
         ACTION_RING_BELL => {
@@ -1650,14 +1693,13 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // this line can be about: the new one does not exist yet. When
             // the action is app-targeted there is no asking window either,
             // and the line says that rather than naming a plausible one.
-            match tabs::frame_of_surface(target.surface).filter(|_| target.tag == ffi::TARGET_SURFACE) {
+            match origin {
                 Some(from) => wlogf!(from, "[action] new_window requested"),
                 // process-wide: an app-targeted action names no window, and
                 // the window it is about to make does not exist yet
                 None => plogf!("[action] new_window requested (target tag={})", target.tag),
             }
-            tabs::post_op(Op::NewWindow);
-            true
+            queue_from(origin, Op::NewWindow, "new_window action")
         }
 
         // **The window comes from the action's own target.** The stand-in
@@ -2598,6 +2640,25 @@ fn main() {
     // "renderer frozen" -- Windows blits the client area during a move either
     // way. --clock types a ticking clock into the shell so the screen has
     // something that visibly advances.
+    // `--ops-delay=N`: hold each queued op N milliseconds before running it.
+    //
+    // **A stopwatch on the existing path, not a second path.** It is what
+    // makes "move the focus between queueing and running" an experiment
+    // somebody can actually perform: without it the two happen in the same
+    // millisecond and there is no interval to act in. See `tabs::set_ops_delay`
+    // for why the delay is applied to running rather than to queueing -- the
+    // other version of this hook reads identically and makes every experiment
+    // that uses it vacuous.
+    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--ops-delay=").map(str::to_owned))
+    {
+        match v.parse::<u64>() {
+            Ok(ms) => tabs::set_ops_delay(ms),
+            // process-wide: an argument the process was started with, before
+            // any window exists to attribute it to
+            Err(_) => plogf!("[ops] --ops-delay={:?} is not a number; the hook stays off", v),
+        }
+    }
+
     if std::env::args().any(|a| a == "--clock") {
         tabs::set_initial_input(
             "powershell -NoProfile -Command \"while($true){Get-Date -Format HH:mm:ss.fff; \
@@ -2905,6 +2966,25 @@ fn main() {
         }
         ticks += 1;
         TICKS.store(ticks, Ordering::Relaxed);
+
+        // **Every window's queue, every tick, whether or not the hook is on.**
+        //
+        // `WM_POLTER_OP` still wakes the target window the moment something is
+        // queued, so nothing here changes when an op runs in an ordinary run.
+        // What it adds is a second driver that does not depend on a posted
+        // message arriving -- which is what a held-back op needs, because the
+        // message that would have run it has already been dispatched and
+        // consumed.
+        //
+        // **Deliberately not gated on `ops_delay_ms() > 0`.** Gating it would
+        // mean the hook changes which code drives the queue, and an
+        // instrument that changes the path is measuring a different program
+        // from the one that ships. This way the driver is the same in both
+        // cases and the hook's whole effect is one comparison against a
+        // timestamp.
+        for w in winid::all() {
+            tabs::run_ops(w, app, hinst);
+        }
 
         // One self-test step per ~1.2s, starting after 2s so the first
         // surface has settled.

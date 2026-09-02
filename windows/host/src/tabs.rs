@@ -179,6 +179,40 @@ pub enum Op {
     },
 }
 
+impl Op {
+    /// A short, stable name for the log.
+    ///
+    /// **Spelled out rather than derived from `Debug`.** `Debug` on these
+    /// variants prints their payloads -- a whole `NewTab` struct, a title, a
+    /// directory -- and the queue's lines are read by eye in pairs (`queued`
+    /// then `running`), so they have to be short enough to compare at a
+    /// glance and stable enough that a payload change does not rewrite them.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Op::NewTab => "NewTab",
+            Op::NewWindow => "NewWindow",
+            Op::CloseTab(_) => "CloseTab",
+            Op::GotoTab(_) => "GotoTab",
+            Op::MoveTabBy(_) => "MoveTabBy",
+            Op::ToggleFullscreen => "ToggleFullscreen",
+            Op::ToggleMaximize => "ToggleMaximize",
+            Op::ResetWindowSize => "ResetWindowSize",
+            Op::SetTabTitle { .. } => "SetTabTitle",
+            Op::CopyTitleToClipboard => "CopyTitleToClipboard",
+            Op::PresentTerminal => "PresentTerminal",
+            Op::NewSplit(_) => "NewSplit",
+            Op::GotoSplit(_) => "GotoSplit",
+            Op::ResizeSplit(..) => "ResizeSplit",
+            Op::EqualizeSplits => "EqualizeSplits",
+            Op::ToggleSplitZoom => "ToggleSplitZoom",
+            Op::ClosePane(_) => "ClosePane",
+            Op::ToggleQuickTerminal => "ToggleQuickTerminal",
+            Op::NewTabWith(_) => "NewTabWith",
+            Op::ReopenTab { .. } => "ReopenTab",
+        }
+    }
+}
+
 /// Everything that belongs to **one window**.
 ///
 /// **Only three fields, and the shortness is the point.** A second window
@@ -203,6 +237,47 @@ pub struct WindowState {
     pub frame: isize,
     pub tabs: Vec<Tab>,
     pub active: usize,
+    /// The window's own queue of pending mutations.
+    ///
+    /// **One queue per window, rather than one queue with a target on each
+    /// op.** Both designs answer "whose op is this"; they differ on the day
+    /// the window goes away before its op runs, and that difference is the
+    /// whole reason to choose deliberately rather than by convenience:
+    ///
+    ///  - **Per window (this one).** The queue is part of the window, so it
+    ///    goes when the window goes. There is no moment at which a live op
+    ///    holds a dead window's handle, so there is nothing to resolve, and
+    ///    therefore nothing that can resolve *wrongly*.
+    ///  - **One queue, targets on the ops.** The op outlives its window and
+    ///    has to be refused at the front of the queue. That is a correct
+    ///    design, but it has a failure mode this one cannot have: the refusal
+    ///    is a check somebody has to write, and if it is missing or wrong the
+    ///    fallback is "run it on the current window" -- a tab from the window
+    ///    you just closed silently appearing in another one.
+    ///
+    /// The cost of this choice is that dropping a closed window's ops is
+    /// **normal completion here, not a defect**, which is worth saying next to
+    /// E4 ("closing a window must do none of the things quitting does"):
+    /// discarding that window's queue is part of the window closing, not part
+    /// of anything shutting down.
+    pub ops: Vec<QueuedOp>,
+}
+
+/// An op waiting to run, and the two facts the log needs about it.
+pub struct QueuedOp {
+    pub op: Op,
+    /// When it was queued.
+    ///
+    /// **Read only by the `--ops-delay` test hook**, which is what makes that
+    /// hook a stopwatch rather than a detour: the delay is a comparison
+    /// against this stamp at the front of the queue, so a delayed op takes
+    /// exactly the path an undelayed one takes, later. Nothing about *which*
+    /// code runs depends on it.
+    pub at: std::time::Instant,
+    /// Which call site queued it, for the log line. A `&'static str` so it
+    /// cannot be built out of runtime data and cannot allocate on a path that
+    /// runs from the core's thread.
+    pub from: &'static str,
 }
 
 pub struct State {
@@ -222,13 +297,6 @@ pub struct State {
     pub max_h: u32,
     /// Saved frame state while fullscreen, so the toggle can undo itself.
     pub pre_fullscreen: Option<(WINDOWPLACEMENT, isize)>,
-    /// **One queue for every window, which is a known defect.** A `new_tab`
-    /// queued from window 2 is drained by whichever frame's message pump
-    /// reaches it first, and `post_op` wakes the first frame -- so it lands
-    /// in window 1. Giving the queue a target window is B1-a's fourth item;
-    /// it is left alone here so that change arrives with its own criterion
-    /// rather than as a side effect of this one.
-    pub ops: Vec<Op>,
     /// **One number for every window, which is also a known defect**: two
     /// frames on displays of different DPI share it, and whichever was
     /// measured last wins. Invisible while there was one window.
@@ -270,7 +338,6 @@ impl State {
             max_w: 0,
             max_h: 0,
             pre_fullscreen: None,
-            ops: Vec::new(),
             scale: 1.0,
             next_id: 1,
             initial: None,
@@ -446,16 +513,86 @@ pub fn state() -> Guard {
 }
 
 /// Queue an op and wake the main thread. Safe from any thread.
-pub fn post_op(op: Op) {
-    {
-        let mut st = state();
-        st.ops.push(op);
+/// How long a queued op waits before it is allowed to run, in milliseconds.
+///
+/// **A stopwatch, not a detour.** Zero unless `--ops-delay=N` was given, and
+/// the only thing a non-zero value changes is the comparison in `run_ops`
+/// that decides whether the op at the front is due yet. It does not change
+/// which queue an op goes into, when it is enqueued, which code drains it, or
+/// which arm runs it -- the op takes exactly the path it always takes, later.
+///
+/// **The variant of this hook that would be worth refusing** is one that
+/// delays *enqueueing*. That reads the same at the call site and is the same
+/// one-line change, and it destroys the two criteria the hook exists to make
+/// possible: with nothing on the queue during the delay, "move the focus
+/// between queueing and running" is measuring a window of time in which
+/// nothing has been queued. Every experiment would pass, and pass vacuously.
+/// So the delay is applied at the front of `run_ops` and nowhere else, and
+/// `post_op` is written to be read alongside this paragraph.
+static OPS_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn ops_delay_ms() -> u64 {
+    OPS_DELAY_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Turn the hook on. **Called once, from argument parsing, and silent at
+/// zero**: a test hook that announces itself when it is off teaches people to
+/// ignore the line, and a test hook that is on by default is not a test hook.
+pub fn set_ops_delay(ms: u64) {
+    OPS_DELAY_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+    if ms > 0 {
+        // process-wide: one hook for the process, set before any window has
+        // queued anything
+        crate::plogf!("[ops] delay={}ms (test hook)", ms);
     }
-    let frame = frame_hwnd();
-    if frame.0 as isize != 0 {
-        unsafe {
-            let _ = PostMessageW(Some(frame), WM_POLTER_OP, WPARAM(0), LPARAM(0));
+}
+
+/// Queue a mutation **against a named window**, and wake that window.
+///
+/// **The target is a parameter and cannot be defaulted, and that is the whole
+/// of C4.** This used to take only the op: it pushed onto one process-wide
+/// queue and woke `frame_hwnd()`, so every action queued anywhere ran on the
+/// first window. Nothing about the call sites said which window they meant,
+/// because there was nothing to say. Making the window an argument means the
+/// compiler asks all twenty of them, and a twenty-first cannot be added
+/// without answering.
+///
+/// **A frame this does not know is refused, not redirected.** Falling back to
+/// the first window is the one behaviour that must not exist here: it turns
+/// "this op has no window" into "this op runs on somebody else's window",
+/// which is invisible in every reading except the screen.
+pub fn post_op(frame: HWND, op: Op, from: &'static str) {
+    let name = op.name();
+    let queued = {
+        let mut st = state();
+        match st.win_mut(frame) {
+            Some(w) => {
+                w.ops.push(QueuedOp { op, at: std::time::Instant::now(), from });
+                Some(w.ops.len())
+            }
+            None => None,
         }
+    };
+    let Some(depth) = queued else {
+        // process-wide: the op names no window this host is tracking, which is
+        // the fact being reported; there is no window to attribute it to
+        crate::plogf!(
+            "[ops] {} from {} names no live window ({:?}); not queued",
+            name,
+            from,
+            frame.0
+        );
+        return;
+    };
+    // **The target is in the line, and so is where it came from.** Which
+    // window an op ran on can be read from its effect, but "it happened to
+    // land on the focused window" and "it was addressed to that window" leave
+    // the same effect behind -- so the address is recorded when it is chosen,
+    // not inferred afterwards from where it arrived.
+    wlogf!(frame, "[ops] queued {} for {} (from {}); {} in this window's queue",
+        name, crate::winid::tag(frame), from, depth);
+    unsafe {
+        let _ = PostMessageW(Some(frame), WM_POLTER_OP, WPARAM(0), LPARAM(0));
     }
 }
 
@@ -477,7 +614,12 @@ pub fn add_window(frame: HWND) {
         wlogf!(frame, "[win] add_window: already registered");
         return;
     }
-    st.windows.push(WindowState { frame: key, tabs: Vec::new(), active: 0 });
+    st.windows.push(WindowState {
+        frame: key,
+        tabs: Vec::new(),
+        active: 0,
+        ops: Vec::new(),
+    });
     let n = st.windows.len();
     drop(st);
     wlogf!(frame, "[win] state registered; {} window(s) tracked", n);
@@ -492,10 +634,28 @@ pub fn remove_window(frame: HWND) {
     let key = frame.0 as isize;
     let mut st = state();
     let before = st.windows.len();
+    // **What was still queued for it, counted before it goes.** Dropping a
+    // closed window's ops is this design's normal completion rather than a
+    // fault (see `WindowState::ops`), and normal or not it is a thing that
+    // happened to work the user asked for -- so it is said out loud with a
+    // number, not left as the absence of a line.
+    let pending: Vec<&'static str> = st
+        .win(frame)
+        .map(|w| w.ops.iter().map(|q| q.op.name()).collect())
+        .unwrap_or_default();
     st.windows.retain(|w| w.frame != key);
     let after = st.windows.len();
     drop(st);
     if before != after {
+        if !pending.is_empty() {
+            wlogf!(
+                frame,
+                "[ops] dropped {} queued op(s) with {}: {}",
+                pending.len(),
+                crate::winid::tag(frame),
+                pending.join(", ")
+            );
+        }
         wlogf!(frame, "[win] state dropped; {} window(s) tracked", after);
     }
 }
@@ -1309,12 +1469,16 @@ fn take_pending_cwd(surface: usize) -> Option<String> {
 /// stack here -- the same fact stored twice, and the two already disagreed
 /// about the bound (20 there, 10 here) before either had run once.
 pub fn install_reopen_opener() {
-    crate::reopen::set_opener(|e| {
-        post_op(Op::ReopenTab {
-            cwd: e.cwd.clone(),
-            title: e.chosen_title.clone(),
-            index: e.index,
-        });
+    crate::reopen::set_opener(|frame, e| {
+        post_op(
+            frame,
+            Op::ReopenTab {
+                cwd: e.cwd.clone(),
+                title: e.chosen_title.clone(),
+                index: e.index,
+            },
+            "reopen stack",
+        );
         true
     });
 }
@@ -1589,6 +1753,20 @@ pub fn active_surface(frame: HWND) -> Surface {
     }
 }
 
+/// Which window a pane is in.
+///
+/// **The key `close_surface` has.** That callback is handed a pane id and no
+/// `Target` at all, so it is the one queueing site that cannot go through
+/// `origin_window`. A pane id comes out of the one process-wide counter, so
+/// it names exactly one pane wherever that pane is.
+pub fn frame_of_pane(pane: PaneId) -> Option<HWND> {
+    let st = state();
+    st.windows
+        .iter()
+        .find(|w| w.tabs.iter().any(|t| t.panes.iter().any(|p| p.id == pane)))
+        .map(|w| HWND(w.frame as *mut c_void))
+}
+
 /// Which window a surface is in.
 ///
 /// **This is what an action's target can be turned into**, and it is the
@@ -1596,7 +1774,7 @@ pub fn active_surface(frame: HWND) -> Surface {
 /// surface* an action was sent for, and the window that owns it is a lookup,
 /// not a guess. The alternative on offer was `frame_hwnd()` -- the first
 /// window -- which is right exactly once and silently wrong for every window
-/// opened after it.
+/// opened after it. Every queued op now reaches its window through here.
 pub fn frame_of_surface(surface: Surface) -> Option<HWND> {
     let key = surface as usize;
     let st = state();
@@ -1973,14 +2151,40 @@ fn go_fullscreen(frame: HWND) {
 
 /// Drain the queue. Called on the main thread only.
 pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
+    let delay = ops_delay_ms();
     loop {
-        let op = {
+        let (op, from, behind) = {
             let mut st = state();
-            if st.ops.is_empty() {
+            let Some(w) = st.win_mut(frame) else {
+                // The window went while its own pump was draining. Nothing
+                // left to run for it, and its queue went with it.
+                return;
+            };
+            let Some(head) = w.ops.first() else {
+                return;
+            };
+            // **Not yet due: stop, do not skip.** Skipping to the next op
+            // that *is* due would reorder the queue, which is exactly what
+            // C6 forbids -- and it would do it only while the hook is on, so
+            // the reordering would be invisible in every ordinary run.
+            if delay > 0 && (head.at.elapsed().as_millis() as u64) < delay {
                 return;
             }
-            st.ops.remove(0)
+            let q = w.ops.remove(0);
+            (q.op, q.from, w.ops.len())
         };
+
+        // **The target is on this line too, and it is the target rather than
+        // "the window we are running on".** They are the same window here by
+        // construction -- that is what the queue being the window's own
+        // means -- and printing it anyway is what makes the pair of lines
+        // comparable: a reader matches `queued X for w2` against `running X
+        // for w2` without having to know which pump produced the second.
+        // The provenance is repeated from the `queued` line so the two can be
+        // paired by eye when several ops are in flight -- three `NewTab`s for
+        // one window are otherwise three identical lines.
+        wlogf!(frame, "[ops] running {} for {}; {} queued behind it (queued from {})",
+            op.name(), crate::winid::tag(frame), behind, from);
 
         match op {
             Op::NewTab => {

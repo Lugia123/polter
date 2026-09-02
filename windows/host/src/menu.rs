@@ -418,7 +418,7 @@ fn run_host(frame: HWND, action: &str) -> bool {
         // The stack, and the tab it makes, both live in the host: see
         // `reopen.rs`. It answers false when there is nothing to reopen,
         // which is also what the greyed row is saying.
-        "__polter_reopen_tab" => crate::reopen::reopen_last(),
+        "__polter_reopen_tab" => crate::reopen::reopen_last(frame),
         "__polter_minimize" => {
             let _ = unsafe { ShowWindow(frame, SW_MINIMIZE) };
             true

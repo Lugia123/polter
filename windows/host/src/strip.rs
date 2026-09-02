@@ -1609,7 +1609,7 @@ fn run_strip_host_action(frame: HWND, name: &str) -> bool {
         // three belong to `reopen.rs`; this row's only job is to press the
         // button. Reading the stack here as well is how the greying and the
         // action come to disagree.
-        "reopen_closed_tab" => crate::reopen::reopen_last(),
+        "reopen_closed_tab" => crate::reopen::reopen_last(frame),
         other => {
             wlogf!(frame, "[stripmenu] no host handler for {:?}", other);
             false
