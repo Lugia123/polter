@@ -1000,7 +1000,19 @@ mod invariant_floor {
     #[test]
     fn the_harness_captures_a_line_it_is_given() {
         let _g = clean(&[]);
-        let out = logged(|| crate::logf!("[floor] the redirect works"));
+        // process-wide: this is a probe for the redirect itself, not a report
+        // about a window -- it is written before any window exists and its
+        // whole content is "the log path took".
+        //
+        // **`plogf!` rather than an untagged `logf!`, and the difference is
+        // not cosmetic.** An untagged line passes `window-tagged-logs.py` by
+        // being invisible to it; this one passes by answering its question.
+        // That checker's rule is that every line is about a window until
+        // somebody writes down why it is not, **at the line** -- and a probe
+        // that dodges the rule instead of answering it stops passing the day
+        // the checker starts examining untagged lines, for a reason nobody
+        // will connect to this test.
+        let out = logged(|| crate::plogf!("[floor] the redirect works"));
         assert!(
             out.contains("[floor] the redirect works"),
             "POLTER_HOST_LOG redirect did not take; every other test in this \
