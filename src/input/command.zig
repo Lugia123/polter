@@ -870,3 +870,194 @@ test "command defaults" {
     try testing.expect(defaults.len > 0);
     try testing.expectEqual(defaults.len, defaultsC.len);
 }
+
+test "menu labels reach the palette" {
+    // **The other half of `synonyms.txt`, and the half a person actually
+    // hits.** The test above checks that every synonym names a command that
+    // exists. It says nothing about the words that are missing -- and the
+    // words most likely to be missing are the ones this host prints on its own
+    // menus, because the menu is where somebody learned the word. Measured on
+    // the real machine: the menu says «关闭窗口», and typing those four
+    // characters into the palette returned nothing, while `close` returned
+    // five commands the person had no way to name.
+    //
+    // **The menu table is the list, and it is read rather than restated.** A
+    // second copy of the rows here would be the third hand-written second list
+    // this port has been bitten by (`ffi.rs`'s tag constants and
+    // `Config.ShellIntegration` were the first two), and it would go stale in
+    // exactly the direction that hides the defect: a row added to the menu and
+    // forgotten here would be unsearchable and unreported.
+    //
+    // **Which rows are exempt is computed, not declared.** A row whose action
+    // the core publishes no palette command for cannot be searched -- there is
+    // nothing to find -- and that is a fact about `defaults` right here, not an
+    // exemption list somebody has to maintain.
+    const testing = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const H = struct {
+        fn read(i: std.Io, a: Allocator, path: []const u8) ![]const u8 {
+            return std.Io.Dir.cwd().readFileAlloc(i, path, a, .limited(256 * 1024)) catch |err| {
+                std.debug.print(
+                    "cannot read {s} ({t}). Run `zig build test` from the repository root.\n",
+                    .{ path, err },
+                );
+                return error.SourceUnreadable;
+            };
+        }
+
+        /// Everything a row is allowed to have between its label and its
+        /// action: the constructor's comma, whitespace, and the spelled-out
+        /// form's `action: Some(`.
+        fn gapIsRowPunctuation(gap: []const u8) bool {
+            var rest = gap;
+            if (std.mem.indexOf(u8, rest, "action: Some(")) |at| {
+                for (rest[0..at]) |c| switch (c) {
+                    ' ', '\t', '\r', '\n', ',' => {},
+                    else => return false,
+                };
+                rest = rest[at + "action: Some(".len ..];
+            }
+            for (rest) |c| switch (c) {
+                ' ', '\t', '\r', '\n', ',' => {},
+                else => return false,
+            };
+            return true;
+        }
+
+        /// Does this look like a binding string rather than prose?
+        fn actionShaped(s: []const u8) bool {
+            if (s.len == 0) return false;
+            for (s) |c| switch (c) {
+                'a'...'z', '0'...'9', '_', ':', ',' => {},
+                else => return false,
+            };
+            return true;
+        }
+
+        /// The palette's own rule, in one place: a typed word matches when the
+        /// table maps it to this title.
+        fn synonymNames(table: []const u8, typed: []const u8, title: []const u8) bool {
+            var lines = std.mem.splitScalar(u8, table, '\n');
+            while (lines.next()) |raw| {
+                const line = std.mem.trim(u8, raw, " \t\r");
+                if (line.len == 0 or line[0] == '#') continue;
+                const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+                const left = std.mem.trim(u8, line[0..eq], " \t\r");
+                const right = std.mem.trim(u8, line[eq + 1 ..], " \t\r");
+                if (std.mem.eql(u8, left, typed) and std.mem.eql(u8, right, title)) return true;
+            }
+            return false;
+        }
+
+        /// Anything the table maps this word to, whatever it is.
+        fn synonymHasWord(table: []const u8, typed: []const u8) bool {
+            var lines = std.mem.splitScalar(u8, table, '\n');
+            while (lines.next()) |raw| {
+                const line = std.mem.trim(u8, raw, " \t\r");
+                if (line.len == 0 or line[0] == '#') continue;
+                const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+                if (std.mem.eql(u8, std.mem.trim(u8, line[0..eq], " \t\r"), typed)) return true;
+            }
+            return false;
+        }
+
+        /// The title the core publishes for a binding string, or null when it
+        /// publishes no command for it.
+        ///
+        /// **Parsed with the core's own parser and compared by the action's
+        /// hash**, not by string. The menu writes some actions in their bare
+        /// form -- `copy_to_clipboard` is the core's `copy_to_clipboard:mixed`
+        /// -- and matching those by name picked whichever variant happened to
+        /// come first in the list: the first version of this test demanded a
+        /// synonym for "Copy Selection as ANSI Sequences to Clipboard" because
+        /// `copy_to_clipboard:vt` sorted earlier. Parsing resolves the default
+        /// the same way the running host does.
+        fn titleFor(action: []const u8) ?[]const u8 {
+            const parsed = Action.parse(action) catch return null;
+            for (defaults) |cmd| {
+                if (cmd.action.hash() == parsed.hash()) return cmd.title;
+            }
+            return null;
+        }
+    };
+
+    const menu_all = try H.read(io, alloc, "windows/host/src/menu.rs");
+    // **The table only.** Below `#[cfg(test)]` are that file's own tests,
+    // whose assertion messages are string literals too -- the first version of
+    // this test demanded a palette entry for "only {} actions parsed".
+    const menu = menu_all[0 .. std.mem.indexOf(u8, menu_all, "#[cfg(test)]") orelse menu_all.len];
+    const table = try H.read(io, alloc, "windows/host/src/synonyms.txt");
+
+    // Walk `menu.rs` for `"label", "action"` pairs: two string literals with
+    // nothing but the constructor's punctuation between them. That covers
+    // `act(...)`, `act_state(...)`, `act_gap(...)`, `toggle(...)` and the
+    // spelled-out `Row { label: "...", action: Some("...") }` alike, which is
+    // why it is written this way rather than as four patterns to keep in step.
+    var rows: usize = 0;
+    var required: usize = 0;
+    var covered: usize = 0;
+    var no_command: usize = 0;
+
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, menu, i, '"')) |open1| {
+        const close1 = std.mem.indexOfScalarPos(u8, menu, open1 + 1, '"') orelse break;
+        const label = menu[open1 + 1 .. close1];
+        i = close1 + 1;
+
+        const open2 = std.mem.indexOfScalarPos(u8, menu, i, '"') orelse break;
+        // **Only a row's own punctuation may sit between the two strings.**
+        // A gap measured in characters alone let a prose string and a nearby
+        // action literal pair up; this says what is allowed instead of how far.
+        if (!H.gapIsRowPunctuation(menu[close1 + 1 .. open2])) continue;
+        const close2 = std.mem.indexOfScalarPos(u8, menu, open2 + 1, '"') orelse break;
+        const action = menu[open2 + 1 .. close2];
+        if (!H.actionShaped(action)) continue;
+        if (label.len == 0 or H.actionShaped(label)) continue; // not a label
+        if (std.mem.startsWith(u8, action, "__polter_")) continue; // the host's own
+
+        rows += 1;
+        const title = H.titleFor(action) orelse {
+            // **Not searchable, and not a defect**: the core publishes no
+            // palette command for this action, so there is nothing for a
+            // search to land on. Counted so the number is visible.
+            no_command += 1;
+            continue;
+        };
+        required += 1;
+        if (H.synonymNames(table, label, title)) {
+            covered += 1;
+        } else {
+            std.debug.print(
+                "the menu says \"{s}\", and typing it into the palette finds nothing: " ++
+                    "synonyms.txt has no `{s} = {s}` line for action `{s}`\n",
+                .{ label, label, title, action },
+            );
+            return error.MenuLabelUnsearchable;
+        }
+    }
+
+    // **Anchors, because every assertion above is of the form "nothing was
+    // missing".** A lookup that always said yes would satisfy all of them.
+    try testing.expect(!H.synonymHasWord(table, "not_on_any_menu_zz"));
+    try testing.expect(H.synonymHasWord(table, "关闭窗口"));
+    try testing.expect(H.synonymNames(table, "关闭窗口", "Close Window"));
+    // And the word must be matched to *its own* command, not to any command.
+    try testing.expect(!H.synonymNames(table, "关闭窗口", "New Tab"));
+
+    // The counts. A menu table that stopped parsing would report zero rows and
+    // satisfy every branch above while reading exactly like a clean run.
+    try testing.expect(rows >= 40);
+    try testing.expectEqual(required, covered);
+    try testing.expect(required >= 35);
+    // Six rows name actions the core publishes no command for
+    // (`toggle_command_palette`, `toggle_quick_terminal`, and the four
+    // `resize_split:<dir>,10`). Pinned so that a seventh has to come here and
+    // say why rather than joining them quietly.
+    try testing.expectEqual(@as(usize, 6), no_command);
+}

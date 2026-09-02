@@ -37,3 +37,67 @@ jump to selection = Scroll to Selection
 terminal read-only = Toggle Read-Only Mode
 toggle full screen = Toggle Fullscreen
 full screen = Toggle Fullscreen
+
+# ---------------------------------------------------------------- menu labels
+#
+# **The other half of the same problem.** The lines above are English words a
+# person might type instead of the core's own. These are the words this host
+# puts on its own menus -- in Chinese -- and without them somebody who reads
+# «关闭窗口» off the menu and types those four characters into the palette gets
+# nothing, while `close` lists five commands they cannot name. The menu is the
+# most likely place a person learned the word, so it is the least likely word
+# to be missing here.
+#
+# **Generated from the menu table, not typed from memory.** Every line below is
+# one row of `menu.rs`'s table paired with the title the core publishes for
+# that row's action, and `test "menu labels reach the palette"` in
+# `src/input/command.zig` fails if a row loses its line -- or if a line names a
+# title the core does not publish.
+#
+# Six menu rows have no line and cannot: `toggle_command_palette`,
+# `toggle_quick_terminal` and the four `resize_split:<dir>,10` rows name
+# actions **the core publishes no palette command for**, so there is nothing
+# for a search to find. That is a fact about the core's list, not an
+# exemption written here, and the test computes it rather than being told.
+新建窗口 = New Window
+新建标签 = New Tab
+向右分屏 = Split Right
+向左分屏 = Split Left
+向下分屏 = Split Down
+向上分屏 = Split Up
+关闭分屏 = Close Terminal
+关闭标签 = Close Tab
+关闭窗口 = Close Window
+查找… = Start Search
+下一个 = Next Search Result
+上一个 = Previous Search Result
+隐藏查找条 = End Search
+复制 = Copy to Clipboard
+粘贴 = Paste from Clipboard
+全选 = Select All
+重置字号 = Reset Font Size
+放大 = Increase Font Size
+缩小 = Decrease Font Size
+改标签标题… = Change Tab Title…
+改终端标题… = Change Terminal Title…
+只读 = Toggle Read-Only Mode
+终端检查器 = Toggle Inspector
+终端对话 = Terminal Conversations
+设为总管 = Make This Terminal a Supervisor
+监督此终端 = Toggle Supervision of This Terminal
+禁止 agent 进入 = Keep Agents Out of This Terminal
+上 = Focus Split: Up
+下 = Focus Split: Down
+左 = Focus Split: Left
+右 = Focus Split: Right
+等分 = Equalize Splits
+最大化 = Toggle Maximize
+全屏 = Toggle Fullscreen
+分屏缩放 = Toggle Split Zoom
+上一个分屏 = Focus Split: Previous
+下一个分屏 = Focus Split: Next
+恢复默认大小 = Reset Window Size
+置顶 = Toggle Float on Top
+重载配置 = Reload Config
+设置… = Open Config Using OS editor
+检查更新… = Check for Updates
