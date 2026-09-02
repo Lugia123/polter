@@ -977,9 +977,33 @@ fn about_lines() -> Vec<String> {
     let build = std::env::current_exe()
         .map(|p| crate::binary_identity(&p))
         .unwrap_or_else(|_| "build identity unavailable".to_string());
+    // **The host's own commit, next to the core's.**
+    //
+    // The two halves of this program can be built from different trees, and
+    // when they are, the symptom is that a feature behaves as though nobody
+    // ever wrote it -- the core declines an action it does not know, and a
+    // declined action is indistinguishable from an absent one. The log says
+    // so at startup (`log_pairing`), but **a log is read afterwards by
+    // somebody investigating, and this box is read during, by somebody who is
+    // confused right now**. That is the moment the two lines need to be
+    // side by side.
+    //
+    // It is deliberately the raw stamp rather than a verdict: the verdict
+    // needs both halves parsed and belongs where it can say what to do about
+    // it. Here it is enough that the two strings are visible together, so a
+    // person can see they differ without knowing anything about how either
+    // was produced.
+    let host = match crate::HOST_COMMIT {
+        "" => "host build: commit unknown (not built from a git checkout)".to_string(),
+        c => format!(
+            "host build: {c}{}",
+            if crate::HOST_DIRTY == "1" { " (uncommitted changes)" } else { "" }
+        ),
+    };
     vec![
         "Polter".to_string(),
         format!("libghostty {version}"),
+        host,
         format!("{mode} build"),
         build,
         String::new(),

@@ -482,6 +482,148 @@ fn start_watchdog() {
     }
 }
 
+// ------------------------------------------------ are these two a pair?
+
+/// The commit this host was built from, or empty when git could not say.
+/// Stamped by `build.rs`.
+pub const HOST_COMMIT: &str = env!("POLTER_HOST_COMMIT");
+/// `"1"` when the host's tree had uncommitted changes at build time.
+pub const HOST_DIRTY: &str = env!("POLTER_HOST_DIRTY");
+
+/// The core's own fallback when git was unavailable to *it*
+/// (`src/build/Config.zig`). It is a real-looking hex string and means
+/// "unknown", so it must never take part in a comparison.
+const CORE_UNKNOWN: &str = "0000000";
+
+/// What the version string the core reports says about which tree it came
+/// from, or `None`.
+///
+/// The core reports something like `1.3.2-HEAD-+1fe09f51b`: a semantic
+/// version whose build metadata is the short commit. **This parses somebody
+/// else's format**, which is the one genuinely fragile step in this check --
+/// so every way of failing lands in `None`, and `None` is neither a match nor
+/// a mismatch.
+fn core_commit(version: &str) -> Option<&str> {
+    // Build metadata is everything after the last `+`, by SemVer.
+    let tail = version.rsplit_once('+')?.1;
+    if tail.is_empty() || tail == CORE_UNKNOWN {
+        return None;
+    }
+    if !tail.chars().all(|c| c.is_ascii_hexdigit()) || tail.len() < 4 || tail.len() > 40 {
+        return None;
+    }
+    Some(tail)
+}
+
+/// Do two abbreviated hashes name the same commit?
+///
+/// **A prefix comparison, and not out of laziness.** Both sides abbreviate
+/// with git's own rule, which lengthens as a repository grows, so the two
+/// stamps can legitimately differ in length while naming one commit.
+/// Comparing them as equal strings would report a mismatch for a reason that
+/// has nothing to do with the question -- and a false alarm here costs the
+/// whole line, because a line that cries wolf is a line that gets skipped.
+fn same_commit(a: &str, b: &str) -> bool {
+    let n = a.len().min(b.len());
+    n >= 4 && a[..n].eq_ignore_ascii_case(&b[..n])
+}
+
+/// **Say whether the host and the core it just loaded are a pair.**
+///
+/// # Why this is a verdict and not two more facts
+///
+/// `[build]` already prints sha, size and mtime for all three binaries, and
+/// on the day this mattered **all of that was in the log and nobody compared
+/// it**. A `ghostty-internal.dll` twenty-one hours older than the host had
+/// been in front of us the whole time. So the missing thing was never data;
+/// printing two more hashes would have changed nothing. **The missing thing
+/// was a judgement, made by the machine, once, out loud.**
+///
+/// # Why sha and mtime cannot answer this
+///
+/// A file's own hash says "this is that file". It does not say "this file and
+/// that other one were built together" -- two individually correct binaries
+/// from builds a day apart both hash correctly. `mtime` is weaker still:
+/// copying changes it, and release builds here are not reproducible, so equal
+/// sources do not imply equal hashes in either direction.
+///
+/// # Three outcomes, and the third is not a quiet version of the first
+///
+/// Unknown is its own answer. It must not read as agreement (two absences
+/// comparing equal would manufacture one) **and it must not read as
+/// disagreement** (a format this cannot parse would then raise an alarm on a
+/// perfectly matched pair, and the alarm would be believed once and ignored
+/// thereafter).
+fn log_pairing(core_version: &str) {
+    let dirty = HOST_DIRTY == "1";
+    match (HOST_COMMIT.is_empty(), core_commit(core_version)) {
+        (false, Some(core)) if same_commit(HOST_COMMIT, core) => {
+            // process-wide: which build this process is, not a fact about any
+            // one window
+            plogf!(
+                "[build] host and ghostty-internal.dll are a pair (both from {HOST_COMMIT})"
+            );
+            if dirty {
+                // process-wide: as above
+                plogf!(
+                    "[build] but the host was built from a tree with uncommitted changes, so \
+                     the same commit does not mean the same source. (The core carries no such \
+                     flag, so nothing here can say whether its tree was clean.)"
+                );
+            }
+        }
+
+        (false, Some(core)) => {
+            // process-wide: as above
+            plogf!(
+                "[build] MISMATCH: the host was built from {}{}, ghostty-internal.dll from {}.",
+                HOST_COMMIT,
+                if dirty { " (dirty)" } else { "" },
+                core
+            );
+            // process-wide: as above
+            plogf!(
+                "[build] These are different trees. Anything added to the core after {core} is \
+                 not in this process."
+            );
+            // **The line this whole check exists for.**
+            //
+            // Without it the reading stops at "the versions differ", which is
+            // a tidy fact nobody acts on. What actually happened is that a
+            // feature present in the source behaved exactly like a feature
+            // nobody had written -- and the person looking at it went hunting
+            // in the wrong place. The failure is silent by construction: an
+            // action the core does not recognise is declined, and a declined
+            // action is indistinguishable from an absent one.
+            //
+            // process-wide: as above
+            plogf!(
+                "[build] It will not fail loudly: an action the core does not know is declined \
+                 in silence, so a feature written after {core} looks exactly like a feature \
+                 nobody ever wrote."
+            );
+        }
+
+        (host_missing, parsed) => {
+            let which = if host_missing && parsed.is_none() {
+                "neither side"
+            } else if host_missing {
+                "the host"
+            } else {
+                "ghostty-internal.dll"
+            };
+            // process-wide: as above
+            plogf!(
+                "[build] cannot tell whether the host and ghostty-internal.dll are a pair: \
+                 {which} reports a commit this build can read (core version string was {:?}).",
+                core_version
+            );
+            // process-wide: as above
+            plogf!("[build] This is not agreement, and it is not disagreement. It is 'not checked'.");
+        }
+    }
+}
+
 fn log_build_identity() {
     // **A known answer, because three matching hashes prove nothing on their
     // own.** The cross-implementation check we have been relying on -- these
@@ -2916,6 +3058,23 @@ fn main() {
     };
     API.store(api_box as *mut Api as *mut c_void, Ordering::Release);
 
+    // **As early as the core can be asked, and before anything uses it.** The
+    // verdict is worth most to a reader who has not yet started explaining a
+    // symptom to themselves -- once "this feature was never written" is in
+    // their head, a line further down the log is read as being about
+    // something else.
+    {
+        let info = unsafe { (api_box.info)() };
+        let version = if info.version.is_null() || info.version_len == 0 {
+            String::new()
+        } else {
+            let bytes =
+                unsafe { std::slice::from_raw_parts(info.version as *const u8, info.version_len) };
+            String::from_utf8_lossy(bytes).into_owned()
+        };
+        log_pairing(&version);
+    }
+
     unsafe {
         // Proves ghostty-vt.dll is not merely loaded but callable, and that
         // the width table the IME needs is reachable from here.
@@ -3675,5 +3834,72 @@ mod wd_tests {
             l.s("x");
         }
         assert!(l.truncated);
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::{core_commit, same_commit};
+
+    /// The shape the core actually reports: a semantic version whose build
+    /// metadata is the abbreviated commit.
+    #[test]
+    fn the_commit_comes_out_of_a_real_version_string() {
+        assert_eq!(core_commit("1.3.2-HEAD-+1fe09f51b"), Some("1fe09f51b"));
+        assert_eq!(core_commit("0.1.71-feature/v0.4+abc1234"), Some("abc1234"));
+    }
+
+    /// **Every way of failing to parse lands on `None`, and `None` is neither
+    /// answer.**
+    ///
+    /// This is the rule the whole check turns on. The host's own commit is
+    /// compiled in and never parsed, so a parse failure here cannot produce a
+    /// false *match* -- it produces a false *mismatch*, which is worse in the
+    /// way that matters: an alarm on a correctly matched pair is believed
+    /// once and skipped forever after, and this line is worth something only
+    /// while it is still read.
+    #[test]
+    fn anything_unparseable_is_unknown_rather_than_wrong() {
+        for v in [
+            "",                       // the core said nothing
+            "1.3.2",                  // no build metadata at all
+            "1.3.2-HEAD-+",           // a `+` with nothing after it
+            "1.3.2-HEAD-+zzzz",       // not hexadecimal
+            "1.3.2-HEAD-+ab",         // too short to mean anything
+            "1.3.2+0123456789abcdef0123456789abcdef012345678", // too long to be a hash
+            "some entirely new format the core grew later",
+        ] {
+            assert_eq!(core_commit(v), None, "{v:?} must be unknown, not a verdict");
+        }
+    }
+
+    /// The core's own "git could not tell me" fallback is a real-looking hex
+    /// string. **Two fallbacks comparing equal would manufacture a match out
+    /// of two absences**, so it has to be refused by name.
+    #[test]
+    fn the_cores_unknown_fallback_is_not_a_commit() {
+        assert_eq!(core_commit("1.3.2-HEAD-+0000000"), None);
+    }
+
+    /// Both sides abbreviate with git's own rule, which lengthens as a
+    /// repository grows. **A length difference is not a mismatch**, and
+    /// treating it as one would raise an alarm on a matched pair.
+    #[test]
+    fn a_shorter_abbreviation_of_the_same_commit_still_matches() {
+        assert!(same_commit("1fe09f51b", "1fe09f5"));
+        assert!(same_commit("1fe09f5", "1fe09f51b"));
+        assert!(same_commit("ABC1234", "abc1234"), "hex case must not matter");
+    }
+
+    /// **The floor for the test above.** If `same_commit` answered `true` for
+    /// everything -- which is what a too-eager prefix rule does -- the
+    /// previous test would pass and the check would never fire again.
+    #[test]
+    fn different_commits_do_not_match() {
+        assert!(!same_commit("1fe09f51b", "2fe09f51b"));
+        assert!(!same_commit("abc1234", "abc1235"));
+        // Too little in common to be an abbreviation of anything.
+        assert!(!same_commit("ab", "abc1234"), "a stub must not match by prefix");
+        assert!(!same_commit("", "abc1234"));
     }
 }
