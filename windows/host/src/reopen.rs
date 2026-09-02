@@ -29,7 +29,10 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use crate::{logf, plogf};
+use windows::Win32::Foundation::HWND;
+
+use crate::tabs::TabId;
+use crate::{plogf, wlogf};
 
 /// One tab worth reopening.
 pub struct Entry {
@@ -98,21 +101,51 @@ pub fn can_reopen() -> bool {
 /// `title` is the name **the person chose** (`title_override`), or empty. See
 /// `Entry::chosen_title`: the shell's own name is not kept, because a reopened
 /// tab gets a fresh shell that announces its own within a frame.
-pub fn remember(index: usize, title: &str, cwd: &str) {
+/// Which tab these three lines are about, when there is one.
+///
+/// **`None` is not a missing argument, it is a different situation.** The
+/// second caller is the put-back after a reopen failed to build its tab: the
+/// entry is real, its old position is real, and the tab it names was destroyed
+/// long ago. Printing an invented identity there -- or making the parameter
+/// mandatory and passing some nearby tab's -- would put a true-looking name on
+/// the one line whose subject does not exist.
+fn subject(id: Option<TabId>) -> String {
+    match id {
+        Some(t) => format!("{t:?}"),
+        None => "a tab that no longer exists".to_string(),
+    }
+}
+
+/// Remember a tab that is closing.
+///
+/// **`frame` and `id` answer two different questions, and both are needed.**
+/// `index` is a position on one window's strip, so with two windows there are
+/// two tab 3s and these lines stop being readable; `frame` says which strip.
+/// But a position is also a coordinate that keeps moving -- dragging a tab
+/// changes it -- so `frame` alone would leave "the third one on that strip"
+/// naming a different tab a moment later. `TabId` is stable and unique across
+/// every window, and it is what the reopen actually acts on.
+pub fn remember(frame: HWND, id: Option<TabId>, index: usize, title: &str, cwd: &str) {
     if cwd.is_empty() {
         // **Said out loud rather than skipped.** "The stack is empty" and
         // "this tab had no directory to remember" produce the same greyed
         // menu item, and only this line tells them apart.
-        logf!(
-            "[reopen] not remembering tab {} {}: no cwd known (nothing has told this host \
-             where that shell was; GHOSTTY_ACTION_PWD)",
+        wlogf!(
+            frame,
+            "[reopen] not remembering {} at index {} {}: no cwd known (nothing has told this \
+             host where that shell was; GHOSTTY_ACTION_PWD)",
+            subject(id),
             index,
             named(title)
         );
         return;
     }
     let Ok(mut stack) = STACK.lock() else {
-        logf!("[reopen] the stack is poisoned; tab {index} {title:?} was not remembered");
+        wlogf!(
+            frame,
+            "[reopen] the stack is poisoned; {} at index {index} {title:?} was not remembered",
+            subject(id)
+        );
         return;
     };
     stack.push(Entry {
@@ -128,8 +161,10 @@ pub fn remember(index: usize, title: &str, cwd: &str) {
         // `ClosedTabs.shared`), so its depth and its bound belong to no window.
         plogf!("[reopen] dropped oldest {:?} to stay at {}", dropped.chosen_title, LIMIT);
     }
-    logf!(
-        "[reopen] remembered tab {} {} cwd={:?}; stack {}/{}",
+    wlogf!(
+        frame,
+        "[reopen] remembered {} at index {} {} cwd={:?}; stack {}/{}",
+        subject(id),
         index,
         named(title),
         cwd,
@@ -216,10 +251,16 @@ mod tests {
         // exercised for its refusal paths.
     }
 
+    /// **The `HWND` and the `TabId` these tests pass do not take part in what
+    /// they assert.** Both were added so the three log lines can say which
+    /// window's strip and which tab they are about; the stack does not read
+    /// either. They are written out rather than hidden behind a helper so
+    /// that nobody later reads a passing test as evidence that a window or an
+    /// id was checked.
     #[test]
     fn a_tab_with_no_cwd_is_not_remembered() {
         reset();
-        remember(0, "no cwd", "");
+        remember(HWND::default(), Some(TabId(41)), 0, "no cwd", "");
         assert_eq!(stack_depth().0, 0);
         assert!(!can_reopen());
     }
@@ -230,7 +271,7 @@ mod tests {
     #[test]
     fn a_tab_with_a_cwd_is_remembered() {
         reset();
-        remember(3, "build", "C:\\work\\alpha");
+        remember(HWND::default(), Some(TabId(42)), 3, "build", "C:\\work\\alpha");
         assert_eq!(stack_depth().0, 1);
         assert!(can_reopen());
         reset();
@@ -244,7 +285,7 @@ mod tests {
     #[test]
     fn a_tab_with_no_chosen_name_is_still_remembered() {
         reset();
-        remember(2, "", "C:\\work\\gamma");
+        remember(HWND::default(), Some(TabId(43)), 2, "", "C:\\work\\gamma");
         assert_eq!(stack_depth().0, 1);
         assert!(can_reopen());
         reset();
@@ -253,9 +294,9 @@ mod tests {
     #[test]
     fn the_stack_is_last_in_first_out() {
         reset();
-        remember(0, "x", "C:\\x");
-        remember(1, "y", "C:\\y");
-        remember(2, "z", "C:\\z");
+        remember(HWND::default(), None, 0, "x", "C:\\x");
+        remember(HWND::default(), None, 1, "y", "C:\\y");
+        remember(HWND::default(), None, 2, "z", "C:\\z");
         let mut order = Vec::new();
         while let Ok(mut s) = STACK.lock() {
             match s.pop() {
@@ -273,7 +314,7 @@ mod tests {
     fn the_stack_is_bounded_and_drops_the_oldest() {
         reset();
         for i in 0..(LIMIT + 5) {
-            remember(i, &format!("tab{i}"), "C:\\somewhere");
+            remember(HWND::default(), Some(TabId(i as u64)), i, &format!("tab{i}"), "C:\\somewhere");
         }
         assert_eq!(stack_depth().0, LIMIT);
         let s = STACK.lock().unwrap();
@@ -287,7 +328,7 @@ mod tests {
     #[test]
     fn a_refused_reopen_keeps_the_entry() {
         reset();
-        remember(1, "keeps", "C:\\work\\alpha");
+        remember(HWND::default(), None, 1, "keeps", "C:\\work\\alpha");
         assert!(!reopen_last(), "no opener is installed in tests");
         assert_eq!(stack_depth().0, 1, "the entry must still be there");
         reset();

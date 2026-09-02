@@ -119,7 +119,11 @@ import sys
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
-BASELINE_UNTAGGED = 173
+# 170 (this commit): `reopen.rs`'s last 3. `remember` now takes the frame *and*
+# an `Option<TabId>`. The option is not a missing argument -- the put-back
+# after a failed reopen names a tab destroyed long ago, and inventing an id
+# there would be the only line in the file whose subject does not exist.
+BASELINE_UNTAGGED = 170
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`

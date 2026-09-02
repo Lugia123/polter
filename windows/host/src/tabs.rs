@@ -1461,7 +1461,7 @@ fn free_pane(id: PaneId, hwnd: isize, surface: usize) {
 fn destroy_tab_at(frame: HWND, idx: usize) {
     // Both come out of the one critical section: the panes to free, and what
     // `reopen.rs` should be told once the guard is gone.
-    let (doomed, remembered): (Vec<(PaneId, isize, usize)>, Option<(String, String)>) = {
+    let (doomed, remembered): (Vec<(PaneId, isize, usize)>, Option<(TabId, String, String)>) = {
         let mut st = state();
         if idx >= st.tabs.len() {
             return;
@@ -1476,6 +1476,7 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
         // that is visibly wrong for one frame and then gone. Only a name the
         // person chose is theirs to get back.
         let remembered = Some((
+            tab.id,
             tab.title_override.clone().unwrap_or_default(),
             tab.cwd.clone().unwrap_or_default(),
         ));
@@ -1487,10 +1488,10 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
             remembered,
         )
     };
-    if let Some((title, cwd)) = remembered {
+    if let Some((id, title, cwd)) = remembered {
         // `remember` refuses an empty cwd, loudly: a tab that reopens in the
         // wrong directory is worse than one that does not reopen at all.
-        crate::reopen::remember(idx, &title, &cwd);
+        crate::reopen::remember(frame, Some(id), idx, &title, &cwd);
     }
     logf!("[close] tab index {} -> {} pane(s)", idx, doomed.len());
     for (id, hwnd, surface) in doomed {
@@ -1714,7 +1715,11 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     // an entry dropped here would make the next undo reopen
                     // the wrong tab with nothing to say why.
                     logf!("[reopen] could not create the tab; putting {:?} back", title);
-                    crate::reopen::remember(index, &title, &cwd);
+                    // **`None`: there is no tab.** The one this entry names
+                    // was destroyed when it was closed, and the replacement
+                    // was just refused -- so nothing here has an identity to
+                    // give, and saying so is the honest half of the line.
+                    crate::reopen::remember(frame, None, index, &title, &cwd);
                     continue;
                 }
                 // `create_tab_in` appends and activates, so the tab just made
