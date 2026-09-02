@@ -130,7 +130,10 @@ pub fn sync(frame: HWND) {
         let Some(bounds) = tabs::content_bounds(frame, sh) else {
             return;
         };
-        let Some(tab) = st.tabs.get(st.active) else {
+        let Some(win) = st.win(frame) else {
+            return;
+        };
+        let Some(tab) = win.tabs.get(win.active) else {
             return;
         };
         // Recorded so the log can carry the whole claim: for a tree of P
@@ -278,8 +281,11 @@ fn drag_to(frame: HWND, idx: usize) {
         let Some(bounds) = tabs::content_bounds(frame, sh) else {
             return;
         };
-        let active = st.active;
-        let Some(tab) = st.tabs.get_mut(active) else {
+        let Some(win) = st.win_mut(frame) else {
+            return;
+        };
+        let active = win.active;
+        let Some(tab) = win.tabs.get_mut(active) else {
             return;
         };
         match tab.tree.resize_at(&path, position, bounds) {

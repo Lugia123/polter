@@ -202,7 +202,7 @@ struct Geometry {
 }
 
 fn slots(frame: HWND) -> Geometry {
-    let (tabs_now, _) = tabs::strip_snapshot();
+    let (tabs_now, _) = tabs::strip_snapshot(frame);
     let scale = tabs::scale_of();
     let mut rc = RECT::default();
     unsafe {
@@ -498,7 +498,7 @@ pub fn on_wheel(frame: HWND, delta: i16) {
 /// hand-drawn list would have to reimplement, and, being on nobody's
 /// acceptance list, would not.
 fn show_overflow_menu(frame: HWND, button: RECT) {
-    let (tabs_now, active) = tabs::strip_snapshot();
+    let (tabs_now, active) = tabs::strip_snapshot(frame);
     if tabs_now.is_empty() {
         return;
     }
@@ -620,7 +620,7 @@ pub fn on_double_click(frame: HWND, x: i32, y: i32) {
 fn begin_rename(frame: HWND, id: TabId, rect: RECT) {
     end_rename(frame, false);
 
-    let (tabs_now, _) = tabs::strip_snapshot();
+    let (tabs_now, _) = tabs::strip_snapshot(frame);
     let title = tabs_now
         .iter()
         .find(|(t, _)| *t == id)
@@ -692,7 +692,7 @@ pub fn end_rename(frame: HWND, commit: bool) {
     }
     // Take the input method back, and put the keyboard where it was.
     crate::ime_focus(true);
-    tabs::focus_active();
+    tabs::focus_active(frame);
     repaint(frame);
 }
 
@@ -751,7 +751,7 @@ static PAINTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(
 /// cannot say whether the window changed or the arithmetic did. That question
 /// came up the first time these two lines were compared across runs.
 pub fn state_line(frame: HWND) -> String {
-    let (tabs_now, active) = tabs::strip_snapshot();
+    let (tabs_now, active) = tabs::strip_snapshot(frame);
     let g = slots(frame);
     let mut rc = RECT::default();
     unsafe {
@@ -826,8 +826,8 @@ pub fn paint(frame: HWND) {
 
         fill(mem, &strip, 0x00201f1d);
 
-        let (tabs_now, active) = tabs::strip_snapshot();
-        let colours = tabs::tab_colors();
+        let (tabs_now, active) = tabs::strip_snapshot(frame);
+        let colours = tabs::tab_colors(frame);
         let Geometry { slots, overflow, new, menu } = slots(frame);
         let (hover, dragging) = with_ui(|u| {
             (
@@ -1166,9 +1166,14 @@ const TAB_ID_BASE: usize = 0x5000;
 const TAB_COLOR_BASE: usize = 0x5100;
 const STRIP_ID_BASE: usize = 0x5200;
 
-/// A tab's 1-based position **right now**, or `?` if it has gone.
-fn ordinal(id: TabId) -> String {
-    match tabs::index_of(id) {
+/// A tab's 1-based position **right now** in a given window's strip, or `?`
+/// if it has gone.
+///
+/// **The window is a parameter because a position is only a position within
+/// one strip.** "tab 3" said nothing about which strip while there was one;
+/// now it would say something false.
+fn ordinal(frame: HWND, id: TabId) -> String {
+    match tabs::index_of(frame, id) {
         Some((i, _)) => (i + 1).to_string(),
         None => "?".to_string(),
     }
@@ -1176,8 +1181,8 @@ fn ordinal(id: TabId) -> String {
 
 /// The tab right-click menu, on the tab that was right-clicked.
 fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
-    let (role, shielded) = tabs::tab_mark(target.id);
-    let colour = tabs::tab_color(target.id);
+    let (role, shielded) = tabs::tab_mark(frame, target.id);
+    let colour = tabs::tab_color(frame, target.id);
 
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
@@ -1307,7 +1312,7 @@ fn run_tab_colour(frame: HWND, id: TabId, c: u8) {
     logf!(
         "[tabmenu] pick {:?} tab {} -> tab_color:{} ok={}",
         TAB_COLORS[c as usize].0,
-        ordinal(id),
+        ordinal(frame, id),
         c,
         ok as u8
     );
@@ -1315,18 +1320,18 @@ fn run_tab_colour(frame: HWND, id: TabId, c: u8) {
 
 /// Do the thing, on the tab that was right-clicked.
 ///
-/// **`ordinal(id)` is re-read here, at the point the work happens, and it is
+/// **`ordinal(frame, id)` is re-read here, at the point the work happens, and it is
 /// in every log line this function prints.** It is not the number
 /// `show_tab_menu` printed and it is not passed in: an implementation that
 /// carries the index correctly as far as the menu and then falls back to "the
 /// current tab" to do the work passes every check that reads only the
 /// `shown` line. This is the one place that can tell them apart.
 fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
-    let at = ordinal(id);
+    let at = ordinal(frame, id);
     // Taken before anything closes, purely so the `remaining` line below can
     // *name* the survivors. The survivors themselves are re-enumerated after
     // the fact; this is the naming, not the arithmetic.
-    let before: Vec<TabId> = tabs::strip_snapshot().0.into_iter().map(|(i, _)| i).collect();
+    let before: Vec<TabId> = tabs::strip_snapshot(frame).0.into_iter().map(|(i, _)| i).collect();
 
     let ok = match cmd {
         TabCmd::Close => {
@@ -1368,7 +1373,7 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
         TabCmd::Supervisor | TabCmd::Watch | TabCmd::Shield => {
             // Straight at that tab's surface. `crate::binding` would send it
             // to whichever surface has focus.
-            tabs::binding_on_tab(id, cmd.action())
+            tabs::binding_on_tab(frame, id, cmd.action())
         }
     };
 
@@ -1390,7 +1395,7 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
 /// itself -- and the tabs are indistinguishable on screen, so a screenshot
 /// cannot supply what this line does not.
 fn report_remaining(frame: HWND, before: &[TabId], what: &str) {
-    let (after, _) = tabs::strip_snapshot();
+    let (after, _) = tabs::strip_snapshot(frame);
     let names: Vec<String> = after
         .iter()
         .map(|(id, _)| match before.iter().position(|b| b == id) {
@@ -1706,7 +1711,7 @@ fn synth_drag(frame: HWND, from: usize, to: usize) {
 ///
 /// Returns false when the script is done.
 pub fn script_step(frame: HWND, step: usize) -> bool {
-    let tabs_now = || tabs::strip_snapshot().0;
+    let tabs_now = || tabs::strip_snapshot(frame).0;
     match step {
         // **Seventeen more tabs, not five.** Seven tabs at 123px wide never
         // overflow, so the first run exercised neither the scroll nor the
@@ -1821,7 +1826,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
         // right-click at tab 3 of 18 by hand is exactly the operation that
         // has already produced one false defect on this port.
         28 => {
-            let n = tabs::count();
+            let n = tabs::count(frame);
             let (mut ok, mut bad, mut untested) = (0, 0, 0);
             let scroll_was = with_ui(|u| u.scroll);
             for i in 0..n {
@@ -1833,7 +1838,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
                 let mut how = "";
                 let mut at = reachable_point(frame, i);
                 if at.is_err() {
-                    if let Some((id, _)) = tabs::strip_snapshot().0.get(i).cloned() {
+                    if let Some((id, _)) = tabs::strip_snapshot(frame).0.get(i).cloned() {
                         scroll_into_view(frame, id);
                         how = " (after scrolling it into view)";
                         at = reachable_point(frame, i);
@@ -1926,7 +1931,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
                 // Focus is deliberately left wherever the previous steps put
                 // it: if it happened to be this tab, the check would pass on
                 // an implementation that ignores `id` entirely.
-                wlogf!(frame, "[strip] focus is on tab {} of {}", tabs::active_index() + 1, t.len());
+                wlogf!(frame, "[strip] focus is on tab {} of {}", tabs::active_index(frame) + 1, t.len());
                 log_state(frame, "before close-right-of tab 3");
                 run_tab_command(frame, id, TabCmd::CloseRight);
             }
@@ -1935,7 +1940,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
         31 => {
             let t = tabs_now();
             if let Some((id, _)) = t.get(1).cloned() {
-                wlogf!(frame, "[strip] focus is on tab {} of {}", tabs::active_index() + 1, t.len());
+                wlogf!(frame, "[strip] focus is on tab {} of {}", tabs::active_index(frame) + 1, t.len());
                 log_state(frame, "before close-others-than tab 2");
                 run_tab_command(frame, id, TabCmd::CloseOthers);
             }

@@ -255,7 +255,7 @@ pub fn prompt_title(scope: i32, surface: usize) {
 
     // The tab's current name, so the box opens on what is being changed
     // rather than on nothing. **Read from the model, not remembered here.**
-    let (tabs_now, active) = crate::tabs::strip_snapshot();
+    let (tabs_now, active) = crate::tabs::strip_snapshot(frame);
     let current = tabs_now.get(active).map(|(_, t)| t.clone()).unwrap_or_default();
 
     let mut fr = RECT::default();

@@ -111,10 +111,11 @@ pub fn count() -> usize {
 ///
 /// **Four routes, one destination.** Closing the last tab from the menu, from
 /// the strip's cross, from the window's own X (or Alt+F4), and from the core's
-/// `close_window` all end at the same `PostQuitMessage` today, so a log that
-/// records only the ending cannot say which of the four a person used -- and
-/// an implementation that fixes three of them looks complete until somebody
-/// uses the fourth, which is the one they use most.
+/// `close_window` all end at the same `DestroyWindow`, so a log that records
+/// only the ending cannot say which of the four a person used -- and an
+/// implementation that fixes three of them looks complete until somebody uses
+/// the fourth, which is the one they use most. The window's own X is that
+/// fourth one.
 #[derive(Clone, Copy, Debug)]
 pub enum CloseVia {
     Menu,
@@ -133,17 +134,60 @@ pub enum CloseVia {
 /// three routes out of four, and an unanswerable reading is the kind nobody
 /// re-runs.
 ///
-/// **This is also the seam B1-e changes.** Today it always quits, because
-/// there is always exactly one window. When there can be two, the quit moves
-/// behind `left == 0`, and it moves in one place.
+/// **The quit is behind `left == 0`, and this is the only place that decides
+/// it.** Every route now reaches here the same way -- through
+/// `close_window_now` and Windows' own `WM_DESTROY` -- so "this window is
+/// gone" and "therefore the process is finished" are asked once, of a count
+/// that four routes agree on.
+///
+/// **Called from `WM_DESTROY` and nowhere else.** That is not style: the
+/// count has to be taken *after* the window is really gone, and `WM_DESTROY`
+/// is the one moment where that is true no matter which route asked. A route
+/// that recorded the window on the way in would take the count while the
+/// window it is about is still on screen -- and on the interesting path, the
+/// one where the process does not quit, that off-by-one is the difference
+/// between quitting and not.
 pub fn window_finished(frame: HWND) {
     let left = destroyed(frame);
     if left == 0 {
         unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
     } else {
-        // Unreachable while there is one window; written now so the day it
-        // becomes reachable, the line that says so already exists.
         crate::wlogf!(frame, "[win] {} window(s) remain; the process stays", left);
+    }
+}
+
+/// This window is to go: destroy it, and let `WM_DESTROY` do the recording.
+///
+/// **`DestroyWindow` is the whole of this function, and it is the whole of
+/// what E6 turns on.** The three routes that close a window by closing its
+/// last tab used to call `window_finished` directly: they recorded that the
+/// window was finished and then never destroyed anything. With one window
+/// that was invisible, because `PostQuitMessage` followed immediately and the
+/// process took the window down with it. With two, the same code leaves an
+/// empty frame sitting on screen with no tabs and no way to close it -- **and
+/// every reading E1 asks for is satisfied while it does**: `w2 destroyed`,
+/// `1 window left`, no `[main] exiting`, the pid unchanged. The log is green
+/// and there is a window on the screen that should not be there.
+///
+/// So the destruction is real, and the record is made by the message Windows
+/// sends back. Four routes in, one `DestroyWindow`, one `WM_DESTROY`, one
+/// place that decides to quit.
+///
+/// **Not merged into `window_finished`.** They answer different questions and
+/// run at different moments: this one runs while the window is still there
+/// and asks Windows to take it away; that one runs after it is gone and asks
+/// whether anything is left. Collapsing them would put the count back before
+/// the destruction, which is the bug this pair exists to keep apart.
+pub fn close_window_now(frame: HWND) {
+    crate::wlogf!(frame, "[win] closing -> DestroyWindow");
+    unsafe {
+        // The result is logged rather than dropped: a `DestroyWindow` that
+        // fails leaves the window on screen, which is exactly the E6 symptom,
+        // and it would otherwise be a silent failure with a healthy-looking
+        // log above it.
+        if let Err(e) = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(frame) {
+            crate::wlogf!(frame, "[win] DestroyWindow FAILED: {e:?}; the window is still up");
+        }
     }
 }
 

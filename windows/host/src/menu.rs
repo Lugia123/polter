@@ -563,7 +563,11 @@ fn default_state(flag: Flag) -> Option<bool> {
         // opened on some other surface (the tab and surface context menus)
         // has to pass its own.
         Flag::ReadOnly => {
-            let s = crate::tabs::active_surface() as usize;
+            // **The first window's active surface.** `state_for` is asked by
+            // a menu that already knows its window; threading that through is
+            // a change to the check-mark plumbing rather than to this batch,
+            // so the assumption is written down instead of hidden.
+            let s = crate::tabs::active_surface(crate::tabs::frame_hwnd()) as usize;
             if s == 0 {
                 None
             } else {
@@ -576,7 +580,8 @@ fn default_state(flag: Flag) -> Option<bool> {
         // `4 evaluable` out of five.
         Flag::FloatOnTop => Some(crate::prompt::is_float_on_top()),
         Flag::Supervisor | Flag::Watched | Flag::Shielded => {
-            let (role, shielded) = crate::tabs::mark_for_surface(crate::tabs::active_surface())?;
+            let active = crate::tabs::active_surface(crate::tabs::frame_hwnd());
+            let (role, shielded) = crate::tabs::mark_for_surface(active)?;
             Some(match flag {
                 Flag::Supervisor => role == ROLE_SUPERVISOR,
                 Flag::Watched => role == ROLE_WATCHED,
@@ -1140,7 +1145,7 @@ extern "system" fn selftest_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
         // and 54 red lines that mean "the app had not finished starting" look
         // exactly like 54 red lines that mean "the menu is wrong".
         let frame = crate::frame_hwnd_cached();
-        if crate::tabs::active_surface().is_null() || frame.is_invalid() {
+        if crate::tabs::active_surface(frame).is_null() || frame.is_invalid() {
             let n = SELFTEST_TRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n >= SELFTEST_MAX_TRIES {
                 unsafe { let _ = KillTimer(Some(hwnd), 1); }

@@ -129,8 +129,10 @@ pub fn on_readonly_for(surface: usize, on: bool) {
 fn pane_rect_for(surface: usize) -> Option<RECT> {
     let hwnd = {
         let st = crate::tabs::state();
-        st.tabs
+        // Every window: the key is a surface, which is unique in the process.
+        st.windows
             .iter()
+            .flat_map(|w| w.tabs.iter())
             .flat_map(|t| t.panes.iter())
             .find(|p| p.surface == surface)
             .map(|p| HWND(p.hwnd as *mut c_void))?
@@ -149,7 +151,14 @@ fn pane_rect_for(surface: usize) -> Option<RECT> {
 fn prune_and_count() -> usize {
     let live: Vec<usize> = {
         let st = crate::tabs::state();
-        st.tabs.iter().flat_map(|t| t.panes.iter()).map(|p| p.surface).collect()
+        // Every window: a surface that closed in window 2 has to leave this
+        // list too, or its stale `read-only` sticks to a reused pointer.
+        st.windows
+            .iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .map(|p| p.surface)
+            .collect()
     };
     let Ok(mut v) = READONLY.lock() else { return 0 };
     let before = v.len();
@@ -183,7 +192,11 @@ pub fn on_frame_resized() {
 /// sign that says `0x0` looks like a measurement, and this one would be the
 /// absence of one.
 fn grid() -> Option<(i32, i32, i32, i32, i32, i32)> {
-    let hwnd = crate::tabs::active_hwnd();
+    // **The first window's active pane.** The HUD is one overlay for the
+    // process and has no frame of its own to ask about; which window it
+    // should be measuring is a question for whoever gives the HUD a window,
+    // and it is left visibly unanswered rather than quietly answered.
+    let hwnd = crate::tabs::active_hwnd(crate::tabs::frame_hwnd());
     if hwnd.0.is_null() {
         return None;
     }

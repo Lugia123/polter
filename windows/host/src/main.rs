@@ -575,15 +575,140 @@ struct ImeState {
     _ctx: windows::Win32::UI::TextServices::ITfContext,
 }
 
-/// The frame window, read from an atomic rather than the state lock.
+/// **The first frame**, read from an atomic rather than the state lock.
 ///
 /// **`content_bounds` needs this and cannot take the lock**: it is called
 /// from inside `layout`'s critical section, so a `state()` in there would
 /// re-enter a non-re-entrant mutex -- on the anomaly path, which is to say
 /// the path that only runs when something is already wrong. The lock scanner
 /// caught it; the atomic is the same value without the hazard.
+///
+/// **It is the first frame, not "the" frame, and the difference is now real.**
+/// One atomic held the answer to "which window?" for the whole process while
+/// there was only ever one window to be the answer. There can be two now, and
+/// this still names the first -- so every remaining reader of it is a place
+/// that has not yet been asked which window it means. They are not silently
+/// correct any more; they are silently *about window 1*. `winid::all()` is
+/// the enumeration; `is_primary_frame` is the honest test for the two callers
+/// that genuinely mean "the original one".
 pub fn frame_hwnd_cached() -> HWND {
     HWND(HWND_G.load(Ordering::Acquire))
+}
+
+/// Is this the frame the process started with?
+///
+/// Used where a fact is genuinely singular no matter how many windows there
+/// are -- the remembered window geometry is one rectangle in one file, so a
+/// second window dragged across the screen must not overwrite where the first
+/// one sits. **Asked explicitly rather than assumed**: before there was a
+/// second window every `hwnd` in the frame's window procedure satisfied this
+/// by accident, and code that relies on an accident reads exactly like code
+/// that checked.
+pub fn is_primary_frame(hwnd: HWND) -> bool {
+    !hwnd.0.is_null() && hwnd.0 == HWND_G.load(Ordering::Acquire)
+}
+
+/// Make a top-level frame window, show it, and register it.
+///
+/// **One function, because the second window has to be made the same way as
+/// the first.** This was thirty lines inside `main`, which is a fine place
+/// for it right up until something else needs a window -- and then the
+/// natural move is to write a second, shorter version of it somewhere else,
+/// and the two drift. The parts that differ between the first frame and the
+/// later ones are the parameter, not a second copy.
+///
+/// `primary` is what the first frame gets and no other: it publishes itself
+/// into `HWND_G` and into `State.frame`, both of which are single-valued and
+/// **both of which still assume one window**. A second frame deliberately
+/// does not touch either -- overwriting them would not give window 2 a state
+/// of its own, it would take window 1's away, and every reading would carry
+/// on looking healthy while the strip, the layout and the session geometry
+/// all quietly followed the newest window. Giving each window its own state
+/// is B1-a; this function's job is to not prejudge it.
+fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("PolterHost"),
+            w!("Polter"),
+            // **WS_CLIPCHILDREN is load-bearing now.** The frame paints its
+            // own content area (see strip::paint), and without this it would
+            // paint straight over the panes -- children are only excluded
+            // from a parent's drawing when the parent says so.
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            1000,
+            700,
+            None,
+            None,
+            Some(hinst),
+            None,
+        )
+    };
+    // **Reported, not `expect`ed.** `main` still treats a failed first frame
+    // as fatal, but a `new_window` that cannot get a window must leave the
+    // windows that exist alone -- panicking the process because the second
+    // window failed is a worse outcome than the one being reported.
+    let hwnd = match hwnd {
+        Ok(h) => h,
+        Err(e) => {
+            // process-wide: there is no window for this line to be about --
+            // the failure to make one is the whole of what it reports
+            plogf!("[win] CreateWindowExW(frame) failed: {e:?}");
+            return None;
+        }
+    };
+
+    let dpi = unsafe { GetDpiForWindow(hwnd) } as f64;
+    let scale = if dpi > 0.0 { dpi / 96.0 } else { 1.0 };
+    if primary {
+        HWND_G.store(hwnd.0 as *mut c_void, Ordering::Release);
+        let mut st = tabs::state();
+        // **`scale` is one number for the whole process, and that is a bug
+        // waiting for a second monitor**, not something this change makes
+        // worse: two frames on displays of different DPI already have one
+        // field between them. A second frame does not write it, so today the
+        // value is the first frame's -- which is at least a definite window's
+        // answer rather than whichever window was touched last.
+        st.scale = scale;
+    }
+    // **Before `ShowWindow`, because showing a window dispatches messages**
+    // -- `WM_SIZE`, `WM_PAINT` -- and every one of those handlers asks this
+    // registry for the window's tabs. A frame that is visible before it is
+    // tracked spends those messages being told it does not exist, and the
+    // strip paints empty.
+    tabs::add_window(hwnd);
+
+    shell::init_frame(hwnd);
+
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+    }
+    // **Before anything else mentions it.** `winid::of` would name this window
+    // the first time some other line talked about it, which is enough for
+    // reading a log and not enough for counting: the shutdown rule turns on
+    // how many windows exist, and a window that has not logged yet does not
+    // exist to a lazy registry.
+    winid::created(hwnd);
+    // **After `created`, so the tag in this line is one `winid` has already
+    // paired with the handle.** Logged per window rather than process-wide
+    // because dpi and scale are this window's, and the day the two frames sit
+    // on displays of different DPI these two lines are the reading that says
+    // so.
+    wlogf!(hwnd, "[win] frame dpi={} scale={} primary={}", dpi, scale, primary);
+    Some(hwnd)
+}
+
+/// A frame that is **not** the first one. See `create_frame`.
+///
+/// Exists so `tabs.rs` cannot pass `primary: true` by getting a boolean the
+/// wrong way round -- there is exactly one caller entitled to that, it is in
+/// this file, and a bare `bool` at a call site in another module is the kind
+/// of argument that is read as "yes, make a frame" rather than "yes, and let
+/// it claim to be the original".
+pub fn create_frame_secondary(hinst: HINSTANCE) -> Option<HWND> {
+    create_frame(hinst, false)
 }
 
 pub fn api() -> &'static Api {
@@ -616,9 +741,29 @@ pub fn ime_log(msg: &str) {
     log_line(&format!("[ime] {msg}"));
 }
 
+/// The surface the input method is composing into.
+///
+/// **The window TSF is attached to, not "the active tab".** They were the
+/// same answer while there was one window, and they are not now: the IME
+/// document is retargeted at a particular pane by `ime_set_window`, so that
+/// pane is what a composition belongs to. Asking for the active tab of the
+/// first window instead would deliver a candidate the user picked in window 2
+/// into window 1 -- and it would look entirely normal at the call site.
+fn ime_surface() -> ffi::Surface {
+    let hwnd = IME.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|st| st.ime.try_borrow().ok().map(|i| i.hwnd))
+    });
+    match hwnd {
+        Some(h) if !h.0.is_null() => tabs::surface_of(h),
+        _ => std::ptr::null_mut(),
+    }
+}
+
 /// Hand the in-flight composition to the core so it draws it at the cursor.
 pub fn ime_set_preedit(text: &str) {
-    let s = tabs::active_surface();
+    let s = ime_surface();
     if s.is_null() {
         return;
     }
@@ -627,7 +772,7 @@ pub fn ime_set_preedit(text: &str) {
 
 /// The user chose a candidate: feed it to the terminal as input.
 pub fn ime_commit(text: &str) {
-    let s = tabs::active_surface();
+    let s = ime_surface();
     if s.is_null() {
         return;
     }
@@ -677,7 +822,7 @@ pub fn ime_columns(units: &[u16]) -> i32 {
 /// `ghostty_surface_ime_point` gives a midpoint and a bottom edge in unscaled
 /// units (see the note in ffi.rs); this turns that back into the cell.
 pub fn ime_caret_cell() -> Option<RECT> {
-    let s = tabs::active_surface();
+    let s = ime_surface();
     if s.is_null() {
         return None;
     }
@@ -1491,25 +1636,128 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             true
         }
 
-        // `new_window` is still unimplemented: a second frame is a second
-        // top-level window with its own tab set, which is the next batch.
-        // Returning false is the honest answer and is what macOS does for
-        // the nine actions it does not implement either.
-        ACTION_CLOSE_WINDOW | ACTION_QUIT => {
-            // **`frame_hwnd()` here is a stand-in and is marked as one.** The
-            // action carries a target, but a target is a *surface*, and the
-            // window that owns it cannot be asked for until there is more than
-            // one. B1 has to replace this; until then the line is true because
-            // there is only one window for it to be true of.
-            winid::close_requested(tabs::frame_hwnd(), winid::CloseVia::CoreCloseWindow);
-            logf!("[action] close_window/quit tag={}", action.tag);
-            winid::window_finished(tabs::frame_hwnd());
+        // **A second top-level window.** Queued rather than made here for the
+        // reason every window-making action is queued: this arrives on
+        // whichever thread the core is on, and creating a window off the
+        // thread that owns them is undefined in Win32.
+        //
+        // **This is also the row `文件 ▸ 新建窗口` has always sent.** The menu
+        // dispatches core actions by name, so wiring the action wires the
+        // menu -- there is no second path to forget, which is the asymmetry
+        // that made three of the four *close* routes look complete.
+        ACTION_NEW_WINDOW => {
+            // **Tagged with the window that asked**, which is the only window
+            // this line can be about: the new one does not exist yet. When
+            // the action is app-targeted there is no asking window either,
+            // and the line says that rather than naming a plausible one.
+            match tabs::frame_of_surface(target.surface).filter(|_| target.tag == ffi::TARGET_SURFACE) {
+                Some(from) => wlogf!(from, "[action] new_window requested"),
+                // process-wide: an app-targeted action names no window, and
+                // the window it is about to make does not exist yet
+                None => plogf!("[action] new_window requested (target tag={})", target.tag),
+            }
+            tabs::post_op(Op::NewWindow);
             true
         }
+
+        // **The window comes from the action's own target.** The stand-in
+        // that used to be here read `frame_hwnd()` and said so in a comment:
+        // "the line is true because there is only one window for it to be
+        // true of". It is not true any more. This is the route the command
+        // palette and the key bindings take, so with two windows open the
+        // stand-in would close **the first** window every time, whichever one
+        // the person was looking at -- and a single-window test passes either
+        // way, which is exactly what the old comment predicted about itself.
+        ACTION_CLOSE_WINDOW | ACTION_QUIT => {
+            let owner = if target.tag == ffi::TARGET_SURFACE {
+                tabs::frame_of_surface(target.surface)
+            } else {
+                // `TARGET_APP`: the union holds no surface (see ffi.rs), so
+                // there is genuinely no window in this message. Reading the
+                // field anyway is how a per-window fact gets recorded against
+                // a pointer that names nothing.
+                None
+            };
+            match owner {
+                Some(frame) => {
+                    winid::close_requested(frame, winid::CloseVia::CoreCloseWindow);
+                    logf!("[action] close_window/quit tag={} -> w{}", action.tag, winid::of(frame));
+                    // **The same terminus as the other three.** This route
+                    // used to call `window_finished` directly, which recorded
+                    // the window as gone and quit without ever destroying it
+                    // -- indistinguishable from correct while there was one
+                    // window and `PostQuitMessage` took the window down
+                    // anyway.
+                    winid::close_window_now(frame);
+                    true
+                }
+                None => {
+                    // **Refused, not guessed.** Closing "the first window"
+                    // because this one did not say which is a wrong answer
+                    // that looks like a working feature; returning false is
+                    // what the core does with any action a host declines, and
+                    // it leaves a line saying why.
+                    // process-wide: the action named no window, which is the fact being reported
+                    plogf!(
+                        "[action] close_window/quit tag={} names no window (target tag={}); \
+                         nothing closed",
+                        action.tag,
+                        target.tag
+                    );
+                    false
+                }
+            }
+        }
         ACTION_RENDER => true,
-        _ => false,
+
+        // **An action this host does not answer leaves a line.**
+        //
+        // This arm was bare `_ => false`, and `new_window` fell through it
+        // for the whole life of the port: the menu row was not greyed, so a
+        // person could click `文件 ▸ 新建窗口`, and **nothing happened and
+        // nothing was written anywhere**. The only reading of that defect was
+        // the screen -- and "I clicked it and nothing happened" is the one
+        // report that cannot be checked afterwards against a log.
+        //
+        // Rate-limited rather than unconditional: some of these arrive on
+        // every frame from the core, and a line per frame is how a log stops
+        // being read at all. First sighting of each tag, then every 500th.
+        tag => {
+            let n = UNHANDLED.fetch_add(1, Ordering::Relaxed) + 1;
+            let first = UNHANDLED_SEEN
+                .lock()
+                .map(|mut v| {
+                    let fresh = !v.contains(&tag);
+                    if fresh {
+                        v.push(tag);
+                    }
+                    fresh
+                })
+                .unwrap_or(false);
+            if first || n % 500 == 0 {
+                // process-wide: the core asked this host for something it does
+                // not implement; no window is involved in the refusal
+                plogf!(
+                    "[action] tag={} is not implemented by this host; returning false \
+                     (#{} unhandled so far{})",
+                    tag,
+                    n,
+                    if first { ", first of this tag" } else { "" }
+                );
+            }
+            false
+        }
     }
 }
+
+/// How many actions this host has declined, and which tags have been seen.
+///
+/// **A tag is reported the first time and then counted**, because the two
+/// questions a reader has are different: "is this action wired up?" is
+/// answered once, and "is something hammering us with an action we ignore?"
+/// is answered by a number.
+static UNHANDLED: AtomicU32 = AtomicU32::new(0);
+static UNHANDLED_SEEN: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
 // ------------------------------------------------------------- window proc
 
@@ -1579,7 +1827,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // -- the same three `LastWindowPosition` saves on. **Marked,
                 // not written**: a drag delivers `WM_MOVE` continuously, and
                 // the main loop is what touches the disk.
-                session::mark_dirty();
+                // **Only the first frame's geometry is remembered.** The session file
+                // holds one rectangle, so a second window dragged somewhere would
+                // overwrite where the first one sits -- and the symptom is a window
+                // that comes back in the wrong place next launch, blamed on nothing.
+                // Giving each window its own remembered geometry is a bigger change
+                // than B1-e; refusing to write the wrong one is not.
+                if is_primary_frame(hwnd) {
+                    session::mark_dirty();
+                }
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
@@ -1642,7 +1898,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
             // The frame resizes; the active child follows and tells the core.
             WM_SIZE => {
-                session::mark_dirty();
+                // **Only the first frame's geometry is remembered.** The session file
+                // holds one rectangle, so a second window dragged somewhere would
+                // overwrite where the first one sits -- and the symptom is a window
+                // that comes back in the wrong place next launch, blamed on nothing.
+                // Giving each window its own remembered geometry is a bigger change
+                // than B1-e; refusing to write the wrong one is not.
+                if is_primary_frame(hwnd) {
+                    session::mark_dirty();
+                }
                 tabs::layout(hwnd);
                 // The dividers are synced by `layout` itself, from inside it.
                 // The grid sign is measured after, so it reads the client rect
@@ -1655,7 +1919,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // The composition is somewhere else on screen now even though its
             // text did not change. TSF does not come back to ask on its own.
             WM_MOVE => {
-                session::mark_dirty();
+                // **Only the first frame's geometry is remembered.** The session file
+                // holds one rectangle, so a second window dragged somewhere would
+                // overwrite where the first one sits -- and the symptom is a window
+                // that comes back in the wrong place next launch, blamed on nothing.
+                // Giving each window its own remembered geometry is a bigger change
+                // than B1-e; refusing to write the wrong one is not.
+                if is_primary_frame(hwnd) {
+                    session::mark_dirty();
+                }
                 ime_layout_changed();
                 LRESULT(0)
             }
@@ -1677,7 +1949,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
             // The frame never types. Hand the keyboard to the tab.
             WM_SETFOCUS => {
-                tabs::focus_active();
+                tabs::focus_active(hwnd);
                 LRESULT(0)
             }
 
@@ -1688,7 +1960,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     let mut st = tabs::state();
                     st.scale = scale;
                 }
-                let s = tabs::active_surface();
+                let s = tabs::active_surface(hwnd);
                 if !s.is_null() {
                     (api().surface_set_content_scale)(s, scale, scale);
                 }
@@ -1713,6 +1985,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // the user cannot tell them apart either.
             WM_CLOSE => {
                 winid::close_requested(hwnd, winid::CloseVia::WindowXOrAltF4);
+                // **The tabs go before the window does.** Windows destroys a
+                // frame's children with it, but it knows nothing about the
+                // surfaces bound to them -- so without this the shells in a
+                // closed window keep running with no window attached. It was
+                // invisible while closing a window meant leaving the process.
+                tabs::close_all_tabs_of(hwnd);
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
 
@@ -1727,6 +2005,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // so a route that recorded it on the way in is not counted
                 // twice.
                 winid::window_finished(hwnd);
+                // **After `window_finished`, not before.** That call takes
+                // the count this window is still in, decides whether the
+                // process is finished, and logs it; dropping the state first
+                // would be one route answering "how many windows are left"
+                // with a number that has already had this one taken off it.
+                tabs::remove_window(hwnd);
                 LRESULT(0)
             }
 
@@ -1879,8 +2163,14 @@ pub fn binding_on(surface: ffi::Surface, name: &str) -> bool {
     unsafe { (api().surface_binding_action)(surface, name.as_ptr(), name.len()) }
 }
 
+/// Drive a binding on **the first window's** focused surface.
+///
+/// The accelerators and the menu reach this without saying which window they
+/// came from. That is a gap rather than a decision: threading the window
+/// through the accelerator table is its own change. Written down here so the
+/// next reader sees an assumption instead of an answer.
 pub fn binding(name: &str) -> bool {
-    let s = tabs::active_surface();
+    let s = tabs::active_surface(tabs::frame_hwnd());
     if s.is_null() {
         return false;
     }
@@ -2294,40 +2584,10 @@ fn main() {
         return;
     }
 
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            frame_class,
-            w!("Polter"),
-            // **WS_CLIPCHILDREN is load-bearing now.** The frame paints its
-            // own content area (see strip::paint), and without this it would
-            // paint straight over the panes -- children are only excluded
-            // from a parent's drawing when the parent says so.
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            1000,
-            700,
-            None,
-            None,
-            Some(hinst),
-            None,
-        )
-    }
-    .expect("CreateWindowExW");
-    HWND_G.store(hwnd.0 as *mut c_void, Ordering::Release);
-    logf!("frame hwnd = {:?}", hwnd.0);
-
-    shell::init_frame(hwnd);
-
-    let dpi = unsafe { GetDpiForWindow(hwnd) } as f64;
-    let scale = if dpi > 0.0 { dpi / 96.0 } else { 1.0 };
-    logf!("dpi={} scale={}", dpi, scale);
-    {
-        let mut st = tabs::state();
-        st.frame = hwnd.0 as isize;
-        st.scale = scale;
-    }
+    let Some(hwnd) = create_frame(hinst, true) else {
+        logf!("FATAL could not create the first frame");
+        return;
+    };
 
     // A static prompt cannot distinguish "renderer still drawing" from
     // "renderer frozen" -- Windows blits the client area during a move either
@@ -2340,16 +2600,6 @@ fn main() {
         );
         logf!("--clock: the first tab will run a ticking clock");
     }
-
-    unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
-    }
-    // **Before anything else mentions it.** `winid::of` would name this window
-    // the first time some other line talked about it, which is enough for
-    // reading a log and not enough for counting: the shutdown rule turns on
-    // how many windows exist, and a window that has not logged yet does not
-    // exist to a lazy registry.
-    winid::created(hwnd);
 
     // ---- put the window back where it was
     //
@@ -2426,11 +2676,11 @@ fn main() {
         return;
     }
     tabs::layout(hwnd);
-    logf!("tab count = {}", tabs::count());
+    logf!("tab count = {}", tabs::count(hwnd));
 
     // TSF is stood up against the first tab's window; every later tab is
     // associated with the same document manager as it is created.
-    let first = tabs::active_hwnd();
+    let first = tabs::active_hwnd(hwnd);
     if !first.0.is_null() && ime_init(first) {
         logf!("[ime] TSF up; switch to a Chinese IME and type");
         unsafe {
@@ -2664,8 +2914,8 @@ fn main() {
                 script.len(),
                 act,
                 expect,
-                tabs::count(),
-                tabs::active_index() + 1,
+                tabs::count(hwnd),
+                tabs::active_index(hwnd) + 1,
                 zoomed,
                 style
             );
@@ -2685,8 +2935,8 @@ fn main() {
                 "[selftest {}/{}] after: tabs={} active={} zoomed={} style=0x{:x}",
                 step,
                 script.len(),
-                tabs::count(),
-                tabs::active_index() + 1,
+                tabs::count(hwnd),
+                tabs::active_index(hwnd) + 1,
                 zoomed,
                 style
             );
@@ -2697,7 +2947,7 @@ fn main() {
         }
 
         if selfresize && ticks == 625 {
-            let sw = tabs::active_hwnd();
+            let sw = tabs::active_hwnd(hwnd);
             let mut rc = RECT::default();
             unsafe {
                 let _ = GetClientRect(sw, &mut rc);
@@ -2715,7 +2965,7 @@ fn main() {
             logf!("[resize] frame SetWindowPos -> 1240x820 issued");
         }
         if selfresize && ticks == 750 {
-            let sw = tabs::active_hwnd();
+            let sw = tabs::active_hwnd(hwnd);
             let mut rc = RECT::default();
             unsafe {
                 let _ = GetClientRect(sw, &mut rc);
@@ -2778,7 +3028,7 @@ fn main() {
         }
 
         if ticks % 125 == 0 {
-            let sw = tabs::active_hwnd();
+            let sw = tabs::active_hwnd(hwnd);
             let pf = pixel_format_of(sw);
             if pf > 0 && !pf_logged {
                 pf_logged = true;
@@ -2828,7 +3078,7 @@ fn main() {
     // "really exiting".** A line printed next to `PostQuitMessage` would be
     // printed by every path that asks to quit, including the ones B1-e is
     // about to make not quit.
-    let open_tabs = tabs::count();
+    let open_tabs = tabs::count(hwnd);
     session::flush_if_dirty(hwnd);
     // process-wide: the process is leaving; by this point no window is left
     // for the line to be about
