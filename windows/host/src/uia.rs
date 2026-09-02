@@ -552,6 +552,29 @@ impl IRawElementProviderSimple_Impl for WindowRoot_Impl {
         Ok(match id {
             UIA_ControlTypePropertyId => variant_i4(UIA_WindowControlTypeId.0),
             UIA_NamePropertyId => variant_bstr(&root_name(self.hwnd())),
+            // `w<n>`. **Two limits on what this promises, and the second one
+            // is a property that was silently lost rather than a bug that was
+            // added** -- which is the harder of the two to find later,
+            // because nothing records that it used to hold.
+            //
+            //  - **It is stable for one window, for one run of the process.**
+            //    `NEXT_ID` restarts at 1 when the process does, so after a
+            //    restart `w1` is the *new* first window. An automation script
+            //    that remembers this string across runs finds a window that
+            //    exists and looks entirely normal and is not the one it
+            //    meant. Nothing errors.
+            //  - **Its range is now unbounded.** Until `081bc0546` the number
+            //    was a position in a registry, so it never exceeded the
+            //    number of live windows; it is now a counter that only goes
+            //    up, and a long session reaches `w17`, `w200`. Nothing in
+            //    this file or in `windows/tools/` formats it into a fixed
+            //    width today -- checked -- but "it is a small number" is a
+            //    guarantee that no longer exists.
+            //
+            // Locate elements by structure and content instead. The criterion
+            // script (`windows/tools/uia-tree-dump.ps1`) says the same at
+            // greater length, because the person who needs it reads that file
+            // and not this one.
             UIA_AutomationIdPropertyId => variant_bstr(&winid::tag(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
             _ => variant_empty(),
@@ -594,6 +617,23 @@ impl IRawElementProviderFragment_Impl for WindowRoot_Impl {
     /// points give different answers to "is this still a window" is the same
     /// shape as a fact with two owners. A UIA client holds its elements after
     /// they are gone and keeps asking; this is the method it asks with.
+    ///
+    /// **Nor is it here for stability, so `081bc0546` does not retire it.**
+    /// That commit made the window number an identity rather than a position,
+    /// which fixed a real defect in what this method returns -- a cached
+    /// runtime id stopped meaning a different window after some other window
+    /// closed. The two facts are easy to run together into "the gate can go
+    /// now", so: without it, a dead window's `GetRuntimeId` **succeeds**
+    /// while every other method on the same element answers
+    /// `UIA_E_ELEMENTNOTAVAILABLE`. That is the disagreement, and it is
+    /// untouched by how the number is assigned.
+    ///
+    /// **`live` and `of` take the lock separately**, so a window dying
+    /// between them yields a runtime id with a zero where the window number
+    /// goes. It cannot collide (the host prefix still differs) and the window
+    /// is leaving anyway -- but it is a value with no meaning wearing the
+    /// shape of one, which is the kind that costs somebody half an hour if
+    /// they ever chase it. Written down rather than locked out.
     fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
         if !live(self.hwnd()) {
             return Err(gone());
@@ -732,6 +772,23 @@ impl IRawElementProviderFragment_Impl for TabList_Impl {
     /// points give different answers to "is this still a window" is the same
     /// shape as a fact with two owners. A UIA client holds its elements after
     /// they are gone and keeps asking; this is the method it asks with.
+    ///
+    /// **Nor is it here for stability, so `081bc0546` does not retire it.**
+    /// That commit made the window number an identity rather than a position,
+    /// which fixed a real defect in what this method returns -- a cached
+    /// runtime id stopped meaning a different window after some other window
+    /// closed. The two facts are easy to run together into "the gate can go
+    /// now", so: without it, a dead window's `GetRuntimeId` **succeeds**
+    /// while every other method on the same element answers
+    /// `UIA_E_ELEMENTNOTAVAILABLE`. That is the disagreement, and it is
+    /// untouched by how the number is assigned.
+    ///
+    /// **`live` and `of` take the lock separately**, so a window dying
+    /// between them yields a runtime id with a zero where the window number
+    /// goes. It cannot collide (the host prefix still differs) and the window
+    /// is leaving anyway -- but it is a value with no meaning wearing the
+    /// shape of one, which is the kind that costs somebody half an hour if
+    /// they ever chase it. Written down rather than locked out.
     fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
         if !live(self.hwnd()) {
             return Err(gone());
@@ -823,6 +880,23 @@ impl IRawElementProviderFragment_Impl for TabItem_Impl {
     /// points give different answers to "is this still a window" is the same
     /// shape as a fact with two owners. A UIA client holds its elements after
     /// they are gone and keeps asking; this is the method it asks with.
+    ///
+    /// **Nor is it here for stability, so `081bc0546` does not retire it.**
+    /// That commit made the window number an identity rather than a position,
+    /// which fixed a real defect in what this method returns -- a cached
+    /// runtime id stopped meaning a different window after some other window
+    /// closed. The two facts are easy to run together into "the gate can go
+    /// now", so: without it, a dead window's `GetRuntimeId` **succeeds**
+    /// while every other method on the same element answers
+    /// `UIA_E_ELEMENTNOTAVAILABLE`. That is the disagreement, and it is
+    /// untouched by how the number is assigned.
+    ///
+    /// **`live` and `of` take the lock separately**, so a window dying
+    /// between them yields a runtime id with a zero where the window number
+    /// goes. It cannot collide (the host prefix still differs) and the window
+    /// is leaving anyway -- but it is a value with no meaning wearing the
+    /// shape of one, which is the kind that costs somebody half an hour if
+    /// they ever chase it. Written down rather than locked out.
     fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
         if !live(self.hwnd()) {
             return Err(gone());
@@ -928,6 +1002,23 @@ impl IRawElementProviderFragment_Impl for Document_Impl {
     /// points give different answers to "is this still a window" is the same
     /// shape as a fact with two owners. A UIA client holds its elements after
     /// they are gone and keeps asking; this is the method it asks with.
+    ///
+    /// **Nor is it here for stability, so `081bc0546` does not retire it.**
+    /// That commit made the window number an identity rather than a position,
+    /// which fixed a real defect in what this method returns -- a cached
+    /// runtime id stopped meaning a different window after some other window
+    /// closed. The two facts are easy to run together into "the gate can go
+    /// now", so: without it, a dead window's `GetRuntimeId` **succeeds**
+    /// while every other method on the same element answers
+    /// `UIA_E_ELEMENTNOTAVAILABLE`. That is the disagreement, and it is
+    /// untouched by how the number is assigned.
+    ///
+    /// **`live` and `of` take the lock separately**, so a window dying
+    /// between them yields a runtime id with a zero where the window number
+    /// goes. It cannot collide (the host prefix still differs) and the window
+    /// is leaving anyway -- but it is a value with no meaning wearing the
+    /// shape of one, which is the kind that costs somebody half an hour if
+    /// they ever chase it. Written down rather than locked out.
     fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
         if !live(self.hwnd()) {
             return Err(gone());

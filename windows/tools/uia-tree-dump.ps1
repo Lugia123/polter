@@ -40,6 +40,34 @@
   because it is the one people forget: **a UIA client reaching the tree is not
   a screen reader reading it aloud.** This script proves the first and says
   nothing at all about the second.
+
+  # This script deliberately does not locate anything by AutomationId --
+  # and it did not start out deliberate
+
+  It reads ControlType, Name, BoundingRectangle, RuntimeId and, for the
+  document, ValuePattern. It never matches on AutomationId. **That was an
+  accident when it was written**, and it is being made deliberate here,
+  because the accident already nearly cost something:
+
+  The window element's AutomationId is `w<n>`, and that `n` used to be the
+  window's *position* in a registry, so closing one window renamed the rest.
+  A script that had keyed on `"w1"` would have gone on finding an element --
+  a real one, correctly formed, belonging to a different window -- and would
+  have reported nothing wrong. The numbering was fixed in `081bc0546`, so
+  that particular trap is gone; two reasons not to key on it remain, and
+  neither is fixed by that commit:
+
+    1. **The id is per process.** After Polter restarts, `w1` is the first
+       window of the *new* run. A script that remembers an id across runs
+       finds a window that exists and looks entirely normal, and is not the
+       one it meant. Nothing errors.
+    2. **Its range is now unbounded.** The number is a counter that only goes
+       up, so a long session reaches `w17`, `w200`. Anything that assumed a
+       small or fixed-width value is wrong, quietly.
+
+  So: locate by structure (ControlType, tree position) and by content (Name,
+  the document's text), which is what the modes below do. If you are about to
+  add a lookup by AutomationId, this paragraph is the reason not to.
 #>
 
 [CmdletBinding()]
@@ -95,6 +123,9 @@ function Write-Subtree {
     param($Element, [int]$Depth = 0, [System.Collections.ArrayList]$Sink = $null)
 
     $pad  = ' ' * ($Depth * 2)
+    # AutomationId is deliberately absent from what is read here. See the
+    # note at the top of the file -- the short version is that `w<n>` is only
+    # unique within one run of the process.
     $type = $Element.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
     $name = $Element.Current.Name
     $rid  = Format-RuntimeId $Element
