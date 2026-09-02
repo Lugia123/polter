@@ -275,7 +275,8 @@ fn show(needle: &str) {
         return;
     }
     unsafe {
-        let frame = crate::tabs::frame_hwnd();
+        // Opens over window 1 wherever it was invoked; see `tabs::overlay_frame`.
+        let frame = crate::tabs::overlay_frame();
         let mut fr = RECT::default();
         if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
             return;

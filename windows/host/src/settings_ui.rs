@@ -682,7 +682,7 @@ fn show_about() {
         return;
     }
     unsafe {
-        let frame = crate::tabs::frame_hwnd();
+        let frame = crate::tabs::overlay_frame();
         let mut fr = RECT::default();
         if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
             return;
@@ -842,7 +842,7 @@ fn show(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
     });
 
     unsafe {
-        let frame = crate::tabs::frame_hwnd();
+        let frame = crate::tabs::overlay_frame();
         let mut fr = RECT::default();
         if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
             return;
@@ -886,13 +886,17 @@ fn show(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
 /// it is answered every time it opens. `GWLP_HWNDPARENT` on an already-made
 /// window is how Win32 spells "re-own".
 ///
-/// **`frame_hwnd()` is today's answer and tomorrow's edit.** B1-a is
-/// converting that call to `overlay_frame()` -- "the window the person is
-/// looking at" -- at thirteen sites, and this is one of them. Written with the
-/// name HEAD has, so this fix can land without waiting for that one; it
-/// becomes `overlay_frame()` along with the rest.
+/// **`overlay_frame()` is the answer, and it is a named gap rather than a
+/// value.** This page belongs to the window the person is looking at; this
+/// host cannot yet say which one that is, so `overlay_frame` answers with the
+/// first window and says so in one place, for all fifteen callers that want
+/// it. B1-f replaces its body, and this call needs no edit when it does.
+///
+/// This line was written as `frame_hwnd()` so that the ownership fix could
+/// land without waiting for the split, on the understanding that whichever
+/// batch landed second would change the one word. The split landed second.
 fn own_and_place(win: HWND, x: i32, y: i32, w: i32, h: i32) {
-    let owner = crate::tabs::frame_hwnd();
+    let owner = crate::tabs::overlay_frame();
     unsafe {
         if !owner.0.is_null() {
             SetWindowLongPtrW(win, GWLP_HWNDPARENT, owner.0 as isize);
@@ -1253,7 +1257,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     return LRESULT(0);
                 }
                 ST.with(|c| c.borrow_mut().errors = errors);
-                let frame = crate::tabs::frame_hwnd();
+                let frame = crate::tabs::overlay_frame();
                 let mut fr = RECT::default();
                 if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
                     return LRESULT(0);

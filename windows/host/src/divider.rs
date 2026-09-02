@@ -125,12 +125,14 @@ pub fn sync(frame: HWND) {
 
     // Pure read under the lock; every window call happens after it is dropped.
     let (wanted, panes, zoomed): (Vec<(Vec<Branch>, Axis, RECT)>, usize, bool) = {
-        let st = tabs::state();
-        let sh = crate::strip::strip_h(st.scale);
+        // **The scale is read before the guard is taken**, not out of it:
+        // `scale_of` locks, and taking the lock while already holding it is
+        // the five-second hang this file's header is about.
+        let sh = crate::strip::strip_h(tabs::scale_of(frame));
         let Some(bounds) = tabs::content_bounds(frame, sh) else {
             return;
         };
-        let Some(win) = st.win(frame) else {
+        let Some(win) = tabs::window(frame) else {
             return;
         };
         let Some(tab) = win.tabs.get(win.active) else {
@@ -276,12 +278,13 @@ fn drag_to(frame: HWND, idx: usize) {
     // Compute the new tree under the lock, drop it, then lay out. `layout`
     // calls `SetWindowPos`, which re-enters this thread.
     let changed = {
-        let mut st = tabs::state();
-        let sh = crate::strip::strip_h(st.scale);
+        // Same rule as `sync`: `scale_of` takes the lock, so it runs before
+        // the guard below rather than inside it.
+        let sh = crate::strip::strip_h(tabs::scale_of(frame));
         let Some(bounds) = tabs::content_bounds(frame, sh) else {
             return;
         };
-        let Some(win) = st.win_mut(frame) else {
+        let Some(mut win) = tabs::window(frame) else {
             return;
         };
         let active = win.active;

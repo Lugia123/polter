@@ -795,7 +795,12 @@ fn create_surface(
     w: i32,
     h: i32,
 ) {
-    let scale = crate::tabs::scale_of();
+    // **The quick terminal's own DPI, not a tab window's.** It is a
+    // top-level window of its own and is not in the tab model at all, so
+    // asking `scale_of` for it would find no window and answer 1.0 -- right
+    // on a 96-DPI screen and wrong everywhere else, which is the worst shape
+    // for a default. Measured from the window itself instead.
+    let scale = crate::dpi_for(frame) as f64 / 96.0;
     let child = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),

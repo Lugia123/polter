@@ -261,6 +261,125 @@ pub struct WindowState {
     /// discarding that window's queue is part of the window closing, not part
     /// of anything shutting down.
     pub ops: Vec<QueuedOp>,
+    /// From the `size_limit` action: the smallest the core says this window
+    /// may be. Reported to Windows through `WM_GETMINMAXINFO`.
+    ///
+    /// **Per window because the message is.** `WM_GETMINMAXINFO` arrives at a
+    /// frame and is answered for that frame; with one copy between them, a
+    /// limit computed for window 2's cell grid became the floor window 1
+    /// could not be dragged below.
+    pub min_w: u32,
+    pub min_h: u32,
+    pub max_w: u32,
+    pub max_h: u32,
+    /// Saved frame state while fullscreen, so the toggle can undo itself.
+    ///
+    /// **The clearest of the lot.** One copy, two windows: window 2 goes
+    /// fullscreen and overwrites the placement window 1 was going to be
+    /// restored to, and window 1 comes out of fullscreen the size and place
+    /// of window 2.
+    pub pre_fullscreen: Option<(WINDOWPLACEMENT, isize)>,
+    /// This window's content scale, from the DPI of the display it is on.
+    ///
+    /// **Structurally per window; not claimed as verified.** Two monitors of
+    /// different DPI is the case this matters for, and the machine these are
+    /// tested on has one screen -- where both windows necessarily report the
+    /// same number, so "print both and compare" is a criterion that cannot
+    /// fail. What is checked is that the two are separately addressable and
+    /// that `WM_DPICHANGED` writes only the window it arrived at.
+    pub scale: f64,
+    /// The size this window's first surface asked for, for
+    /// `reset_window_size`.
+    pub initial: Option<(u32, u32)>,
+    /// **The directory actually handed to `sc.working_directory`** by the
+    /// last `create_pane` in this window, or `None` when none was.
+    ///
+    /// Written where the pointer is set, read by the restore log line. It
+    /// exists because that line must report the value that was *used*, not
+    /// the one the caller meant to use -- the same value right up until the
+    /// moment worth catching, when the string could not be made into a
+    /// `CString` and the shell quietly started somewhere else.
+    ///
+    /// **Per window, though it is only ever read immediately after being
+    /// written.** "Only ever" is a property of today's call order, not of the
+    /// field; a reopen in window 2 that reported window 1's directory would
+    /// be a line that is wrong about the one thing it exists to be right
+    /// about.
+    pub last_pane_cwd: Option<String>,
+}
+
+impl WindowState {
+    /// **Every field of this struct, as one line.**
+    ///
+    /// This is the reading E3 and G5 are taken from: two windows are put into
+    /// different states, one dump is taken, and the two lines are compared
+    /// field by field. A field missing from this line is a field those
+    /// criteria silently do not cover -- and the way that goes wrong is the
+    /// worst available, because the comparison still passes.
+    ///
+    /// **The destructuring is exhaustive and has no `..`, and that is the
+    /// mechanism.** Add a field to `WindowState` and this stops compiling
+    /// until the field is named here. The alternative on offer was a test
+    /// asserting the line mentions every field; a test has to be run, and
+    /// this cannot be got past at all. If a new field genuinely does not
+    /// belong in the line, binding it to `_name` is a decision somebody has
+    /// written down, which is the point -- as opposed to an omission, which
+    /// looks like nothing.
+    ///
+    /// **Every value is rendered, not summarised.** `ops` prints its depth
+    /// rather than its contents because the contents are timestamps and would
+    /// differ between two dumps of an idle window -- but the depth is the
+    /// part a criterion can be written against.
+    pub fn state_fields(&self) -> String {
+        let WindowState {
+            frame,
+            tabs,
+            active,
+            ops,
+            min_w,
+            min_h,
+            max_w,
+            max_h,
+            pre_fullscreen,
+            scale,
+            initial,
+            last_pane_cwd,
+        } = self;
+        let listed: Vec<String> = tabs
+            .iter()
+            .map(|t| format!("{}:{}", t.id.0, t.title))
+            .collect();
+        let active_id = tabs.get(*active).map(|t| t.id.0).unwrap_or(0);
+        format!(
+            "frame=0x{:x} tabs=[{}] active={} n={} panes={} ops={} min={}x{} max={}x{} \
+             prefullscreen={} scale={:.2} initial={} lastcwd={}",
+            frame,
+            listed.join(","),
+            active_id,
+            tabs.len(),
+            tabs.get(*active).map(|t| t.panes.len()).unwrap_or(0),
+            ops.len(),
+            min_w,
+            min_h,
+            max_w,
+            max_h,
+            match pre_fullscreen {
+                // The saved style, not just "yes": two windows can both be
+                // fullscreen and be restoring to different things.
+                Some((_, style)) => format!("style=0x{style:x}"),
+                None => "none".to_string(),
+            },
+            scale,
+            match initial {
+                Some((w, h)) => format!("{w}x{h}"),
+                None => "none".to_string(),
+            },
+            match last_pane_cwd {
+                Some(c) => c.as_str(),
+                None => "none",
+            },
+        )
+    }
 }
 
 /// An op waiting to run, and the two facts the log needs about it.
@@ -280,35 +399,36 @@ pub struct QueuedOp {
     pub from: &'static str,
 }
 
+/// Everything that is genuinely one thing for the whole process.
+///
+/// **The window list is deliberately not in here.** It lives in the private
+/// `Registry` alongside this, so that `shared()` -- the accessor allowed to
+/// take no argument -- has no path to a window at all. Leaving `windows` on
+/// this struct would mean that accessor could still reach window 1, and
+/// "quietly reaches the first window" is the exact defect this cell removes.
 pub struct State {
-    /// One entry per live window, in creation order -- the same order
-    /// `winid::FRAMES` uses, so `windows[0]` is `w1`.
-    ///
-    /// **A `Vec` rather than a `HashMap`.** There are one or two of these,
-    /// three if somebody is trying; a linear scan over that is not worth a
-    /// hasher, and creation order is a property worth keeping rather than
-    /// one to reconstruct.
-    pub windows: Vec<WindowState>,
-    /// From the `size_limit` action: the smallest the core says a window may
-    /// be. Reported to Windows through `WM_GETMINMAXINFO`.
-    pub min_w: u32,
-    pub min_h: u32,
-    pub max_w: u32,
-    pub max_h: u32,
-    /// Saved frame state while fullscreen, so the toggle can undo itself.
-    pub pre_fullscreen: Option<(WINDOWPLACEMENT, isize)>,
-    /// **One number for every window, which is also a known defect**: two
-    /// frames on displays of different DPI share it, and whichever was
-    /// measured last wins. Invisible while there was one window.
-    pub scale: f64,
-    /// The size the very first surface asked for, for `reset_window_size`.
-    pub initial: Option<(u32, u32)>,
     /// Handed out to panes **and tabs**, never reused. One counter for both,
     /// so an id means exactly one thing in this process. Starts at 1 so that
     /// 0 can mean "no pane" in the C userdata pointer.
+    ///
+    /// **Shared on purpose, and it is the one field that must not be split.**
+    /// A per-window counter would give two windows each a `Tab(1)` -- and
+    /// beyond the confusion, `windows/tools/window-tagged-logs.py` excuses any
+    /// log line that mentions a `TabId` on the grounds that an id is already
+    /// unambiguous. Splitting this takes that premise away **while the checker
+    /// carries on reporting green**, which is the failure this project keeps
+    /// meeting: the reading does not change and the conclusion is already
+    /// wrong.
     pub next_id: u64,
     /// Typed into the first shell as if the user had typed it (`--clock`).
     /// Owned here because the core reads the pointer during `surface_new`.
+    ///
+    /// **Shared, and the consequence is written down rather than left to be
+    /// discovered.** `create_pane` `take()`s it, so exactly one shell in the
+    /// process ever receives it: the first tab of the first window. **A shell
+    /// started in a second window does not replay `--clock`'s text.** Split
+    /// per window it would be typed again into every new window's first
+    /// shell, which is not what a diagnostic flag for one terminal means.
     pub initial_input: Option<std::ffi::CString>,
     /// Working directories reported for a surface that has no `Tab` yet.
     ///
@@ -317,59 +437,50 @@ pub struct State {
     /// the `Tab` holding the pane is pushed. Without somewhere to put it the
     /// first `pwd` of every tab is dropped -- and the symptom would be that
     /// reopening a tab you never `cd`'d in lands in the wrong place.
-    pub pending_cwd: Vec<(usize, String)>,
-    /// **The directory actually handed to `sc.working_directory`** by the
-    /// last `create_pane`, or `None` when none was.
     ///
-    /// Written where the pointer is set, read by the restore log line. It
-    /// exists because that line must report the value that was *used*, not
-    /// the one the caller meant to use -- the same value right up until the
-    /// moment worth catching, when the string could not be made into a
-    /// `CString` and the shell quietly started somewhere else.
-    pub last_pane_cwd: Option<String>,
+    /// **Shared, because at the moment it is written there is no window to
+    /// file it under.** It is keyed by surface -- unique in the process -- and
+    /// the write happens inside `ghostty_surface_new`, before the `Tab` and
+    /// therefore before anything connects that surface to a frame. A
+    /// per-window copy would need the answer this exists precisely because
+    /// nobody has yet.
+    pub pending_cwd: Vec<(usize, String)>,
 }
 
 impl State {
     const fn new() -> Self {
         State {
-            windows: Vec::new(),
-            min_w: 0,
-            min_h: 0,
-            max_w: 0,
-            max_h: 0,
-            pre_fullscreen: None,
-            scale: 1.0,
             next_id: 1,
-            initial: None,
             initial_input: None,
             pending_cwd: Vec::new(),
-            last_pane_cwd: None,
         }
     }
 
-    /// The state of one window, by its frame.
-    ///
-    /// **`Option`, not a fallback to "the first window".** A frame this does
-    /// not know is a bug at the caller -- a stale handle, or a pane's HWND
-    /// passed where a frame's was meant -- and answering it with window 1's
-    /// tabs would make that bug produce a plausible screen and a plausible
-    /// log. `winid::of` already learned this lesson the other way round: it
-    /// invents a *new* window number for a handle it has not seen, which is
-    /// how a `w3` that never existed can appear in a log. Here the honest
-    /// answer is that there is no such window, and every caller says what it
-    /// does about that.
-    pub fn win(&self, frame: HWND) -> Option<&WindowState> {
-        let key = frame.0 as isize;
-        self.windows.iter().find(|w| w.frame == key)
-    }
+}
 
-    pub fn win_mut(&mut self, frame: HWND) -> Option<&mut WindowState> {
-        let key = frame.0 as isize;
-        self.windows.iter_mut().find(|w| w.frame == key)
+/// The window list plus the process-wide fields, behind the one lock.
+///
+/// Private: nothing outside this file names it, and the three public ways in
+/// (`win`, `shared`, `with_windows`) each expose one half or the other.
+struct Registry {
+    /// One entry per live window, in creation order -- the same order
+    /// `winid::FRAMES` uses, so `windows[0]` is `w1`.
+    ///
+    /// **A `Vec` rather than a `HashMap`.** There are one or two of these,
+    /// three if somebody is trying; a linear scan over that is not worth a
+    /// hasher, and creation order is a property worth keeping rather than
+    /// one to reconstruct.
+    windows: Vec<WindowState>,
+    shared: State,
+}
+
+impl Registry {
+    const fn new() -> Self {
+        Registry { windows: Vec::new(), shared: State::new() }
     }
 }
 
-static STATE: Mutex<State> = Mutex::new(State::new());
+static STATE: Mutex<Registry> = Mutex::new(Registry::new());
 
 /// The one lock, with a tripwire that **names the holder**.
 ///
@@ -399,18 +510,18 @@ static STATE: Mutex<State> = Mutex::new(State::new());
 /// nearly useless; knowing **which line holds it** is the whole diagnosis.
 /// `#[track_caller]` gets the waiter's location for free, and the guard
 /// records the holder's, so a contended lock prints both.
-pub struct Guard {
-    inner: std::sync::MutexGuard<'static, State>,
+struct Guard {
+    inner: std::sync::MutexGuard<'static, Registry>,
 }
 
 impl std::ops::Deref for Guard {
-    type Target = State;
-    fn deref(&self) -> &State {
+    type Target = Registry;
+    fn deref(&self) -> &Registry {
         &self.inner
     }
 }
 impl std::ops::DerefMut for Guard {
-    fn deref_mut(&mut self) -> &mut State {
+    fn deref_mut(&mut self) -> &mut Registry {
         &mut self.inner
     }
 }
@@ -420,13 +531,48 @@ impl Drop for Guard {
     }
 }
 
+/// One window's state, with the lock held. Derefs to that window alone.
+pub struct WinGuard {
+    inner: Guard,
+    at: usize,
+}
+
+impl std::ops::Deref for WinGuard {
+    type Target = WindowState;
+    fn deref(&self) -> &WindowState {
+        &self.inner.windows[self.at]
+    }
+}
+impl std::ops::DerefMut for WinGuard {
+    fn deref_mut(&mut self) -> &mut WindowState {
+        &mut self.inner.windows[self.at]
+    }
+}
+
+/// The process-wide fields, with the lock held.
+pub struct SharedGuard {
+    inner: Guard,
+}
+
+impl std::ops::Deref for SharedGuard {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.inner.shared
+    }
+}
+impl std::ops::DerefMut for SharedGuard {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.inner.shared
+    }
+}
+
 /// `&'static Location` of whoever holds the lock, or 0.
 static HOLDER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// How many times anyone has had to wait. Bounds the logging.
 static CONTENDED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn claim(
-    inner: std::sync::MutexGuard<'static, State>,
+    inner: std::sync::MutexGuard<'static, Registry>,
     here: &'static std::panic::Location<'static>,
 ) -> Guard {
     HOLDER.store(
@@ -446,8 +592,24 @@ fn holder_str() -> String {
     format!("{}:{}", loc.file(), loc.line())
 }
 
+/// The lock itself. **Private, and that is the whole of G1.**
+///
+/// Every way in now says which window it means, or says out loud that it
+/// means none of them:
+///
+///  - `window(frame)` -- one window's state. Most callers.
+///  - `shared()` -- the three process-wide fields, and nothing else. It
+///    cannot reach a window, so it cannot accidentally reach window 1.
+///  - `with_windows` / `with_windows_mut` -- a scan across every window, for
+///    lookups whose key (`HWND`, `Surface`, `PaneId`) is unique in the
+///    process. Those are answering "where is this?", not choosing a window.
+///
+/// **There is deliberately no accessor that hands out "the state".** That
+/// function existed, was called seventy-three times, and every one of those
+/// calls was a place that had not been asked which window it meant -- while
+/// reading exactly like a call that had.
 #[track_caller]
-pub fn state() -> Guard {
+fn reg() -> Guard {
     let here = std::panic::Location::caller();
     match STATE.try_lock() {
         Ok(g) => return claim(g, here),
@@ -512,6 +674,50 @@ pub fn state() -> Guard {
     }
 }
 
+/// One window's state, or `None` if there is no such window.
+///
+/// **`Option`, not a fallback.** A frame this does not know is a bug at the
+/// caller -- a stale handle, or a pane's `HWND` where a frame's was meant --
+/// and answering it with the first window's state would make that bug produce
+/// a plausible screen and a plausible log.
+#[track_caller]
+pub fn window(frame: HWND) -> Option<WinGuard> {
+    let key = frame.0 as isize;
+    let g = reg();
+    let at = g.windows.iter().position(|w| w.frame == key)?;
+    Some(WinGuard { inner: g, at })
+}
+
+/// The process-wide fields: the id counter, the initial input, the pending
+/// working directories. **It cannot reach a window from here**, which is the
+/// point -- these three are shared because they are genuinely one thing, and
+/// a caller reaching for them should not find a window in the same hand.
+#[track_caller]
+// window-free: the three process-wide fields, and it can reach no window at all
+pub fn shared() -> SharedGuard {
+    SharedGuard { inner: reg() }
+}
+
+/// Look across every window, for a key that is unique in the whole process.
+///
+/// **Not a way to get at "the windows"**: it is how `surface_of`,
+/// `frame_of_pane` and their neighbours answer "which window is this thing
+/// in?", which is a search, not a choice. The closure form keeps the borrow
+/// from escaping across a Win32 call, the same reason `strip::with_ui` has it.
+#[track_caller]
+// window-free: a scan over every window, for a key that is unique in the process
+pub fn with_windows<R>(f: impl FnOnce(&[WindowState]) -> R) -> R {
+    let g = reg();
+    f(&g.windows)
+}
+
+#[track_caller]
+// window-free: a scan over every window, for a key that is unique in the process
+pub fn with_windows_mut<R>(f: impl FnOnce(&mut Vec<WindowState>) -> R) -> R {
+    let mut g = reg();
+    f(&mut g.windows)
+}
+
 /// Queue an op and wake the main thread. Safe from any thread.
 /// How long a queued op waits before it is allowed to run, in milliseconds.
 ///
@@ -564,9 +770,8 @@ pub fn set_ops_delay(ms: u64) {
 pub fn post_op(frame: HWND, op: Op, from: &'static str) {
     let name = op.name();
     let queued = {
-        let mut st = state();
-        match st.win_mut(frame) {
-            Some(w) => {
+        match window(frame) {
+            Some(mut w) => {
                 w.ops.push(QueuedOp { op, at: std::time::Instant::now(), from });
                 Some(w.ops.len())
             }
@@ -605,24 +810,39 @@ pub fn post_op(frame: HWND, op: Op, from: &'static str) {
 /// -- turn on that difference.
 pub fn add_window(frame: HWND) {
     let key = frame.0 as isize;
-    let mut st = state();
-    if st.windows.iter().any(|w| w.frame == key) {
+    let n = with_windows_mut(|ws| {
+        if ws.iter().any(|w| w.frame == key) {
+            return None;
+        }
+        ws.push(WindowState {
+            frame: key,
+            tabs: Vec::new(),
+            active: 0,
+            ops: Vec::new(),
+            min_w: 0,
+            min_h: 0,
+            max_w: 0,
+            max_h: 0,
+            pre_fullscreen: None,
+            // Replaced by the real DPI in `create_frame`, which measures the
+            // window it has just made. 1.0 is what a window's scale is before
+            // anybody has asked, not a guess at what it will turn out to be.
+            scale: 1.0,
+            initial: None,
+            last_pane_cwd: None,
+        });
+        Some(ws.len())
+    });
+    // **Logged outside the closure**, because `wlogf!` takes the same lock:
+    // `winid::tag` reads the frame registry and this file's rule is that no
+    // guard is held across a call that can take one.
+    match n {
+        Some(n) => wlogf!(frame, "[win] state registered; {} window(s) tracked", n),
         // Not silently ignored: a second registration means two things think
         // they created this window, and the count is what the shutdown rule
         // reads.
-        drop(st);
-        wlogf!(frame, "[win] add_window: already registered");
-        return;
+        None => wlogf!(frame, "[win] add_window: already registered"),
     }
-    st.windows.push(WindowState {
-        frame: key,
-        tabs: Vec::new(),
-        active: 0,
-        ops: Vec::new(),
-    });
-    let n = st.windows.len();
-    drop(st);
-    wlogf!(frame, "[win] state registered; {} window(s) tracked", n);
 }
 
 /// Stop tracking a window, once Windows has destroyed it.
@@ -632,32 +852,34 @@ pub fn add_window(frame: HWND) {
 /// answer the first one already gave correctly.
 pub fn remove_window(frame: HWND) {
     let key = frame.0 as isize;
-    let mut st = state();
-    let before = st.windows.len();
-    // **What was still queued for it, counted before it goes.** Dropping a
-    // closed window's ops is this design's normal completion rather than a
-    // fault (see `WindowState::ops`), and normal or not it is a thing that
-    // happened to work the user asked for -- so it is said out loud with a
-    // number, not left as the absence of a line.
-    let pending: Vec<&'static str> = st
-        .win(frame)
-        .map(|w| w.ops.iter().map(|q| q.op.name()).collect())
-        .unwrap_or_default();
-    st.windows.retain(|w| w.frame != key);
-    let after = st.windows.len();
-    drop(st);
-    if before != after {
-        if !pending.is_empty() {
-            wlogf!(
-                frame,
-                "[ops] dropped {} queued op(s) with {}: {}",
-                pending.len(),
-                crate::winid::tag(frame),
-                pending.join(", ")
-            );
-        }
-        wlogf!(frame, "[win] state dropped; {} window(s) tracked", after);
+    let (dropped, pending, after) = with_windows_mut(|ws| {
+        let before = ws.len();
+        // **What was still queued for it, counted before it goes.** Dropping
+        // a closed window's ops is this design's normal completion rather
+        // than a fault (see `WindowState::ops`), and normal or not it is work
+        // the user asked for that will not happen -- so it is said out loud
+        // with a number, not left as the absence of a line.
+        let pending: Vec<&'static str> = ws
+            .iter()
+            .find(|w| w.frame == key)
+            .map(|w| w.ops.iter().map(|q| q.op.name()).collect())
+            .unwrap_or_default();
+        ws.retain(|w| w.frame != key);
+        (before != ws.len(), pending, ws.len())
+    });
+    if !dropped {
+        return;
     }
+    if !pending.is_empty() {
+        wlogf!(
+            frame,
+            "[ops] dropped {} queued op(s) with {}: {}",
+            pending.len(),
+            crate::winid::tag(frame),
+            pending.join(", ")
+        );
+    }
+    wlogf!(frame, "[win] state dropped; {} window(s) tracked", after);
 }
 
 /// **The first window's frame.**
@@ -670,19 +892,58 @@ pub fn remove_window(frame: HWND) {
 /// finding the right window for each is a question per caller, not one blanket
 /// answer, and giving them a plausible blanket answer here is how it would
 /// stop being asked.
-pub fn frame_hwnd() -> HWND {
-    let st = state();
-    match st.windows.first() {
+/// The window a **floating panel** should attach itself to.
+///
+/// **This is a named gap, not an answer.** Today it is the first window, which
+/// is what every one of its callers used to say inline by calling
+/// `tabs::frame_hwnd()`. The command palette, the search box, the settings and
+/// about dialogs, the key-sequence overlay, the size HUD and the float-on-top
+/// toggle all want the same thing: *the window the person is looking at*. This
+/// host has no notion of that yet -- nothing tracks which frame has the
+/// foreground -- and inventing one here, per call site, is how six slightly
+/// different notions of "the current window" get written.
+///
+/// So the gap is in one place, with one name, and `B1-f` is the cell that
+/// replaces the body of this function. Until then the honest description of
+/// the behaviour is: **panels open over window 1 wherever they were invoked
+/// from.** That is wrong and visible, which is the right kind of wrong -- as
+/// opposed to the same call scattered across six files, which was wrong and
+/// looked deliberate.
+///
+/// **There is no longer a `frame_hwnd` beside this.** There was, returning the
+/// same handle under the name "the first window", and the two were kept apart
+/// on the argument that some callers genuinely mean the first one. After the
+/// conversion none did: all fifteen wanted the window in front. A second
+/// function that returns the same value and has no callers is not a
+/// distinction, it is a place for the next person to land by accident.
+// window-free: **the known gap, not an exemption.** It answers with the first
+// window because this host cannot yet say which one has the foreground; the
+// doc comment above is the whole reason, and B1-f replaces the body.
+pub fn overlay_frame() -> HWND {
+    with_windows(|ws| match ws.first() {
         Some(w) => HWND(w.frame as *mut c_void),
         None => HWND(std::ptr::null_mut()),
-    }
+    })
 }
 
 use crate::strip::strip_h;
 
-/// The content scale, for whoever needs to turn unscaled sizes into pixels.
-pub fn scale_of() -> f64 {
-    state().scale
+/// **This window's** content scale, for turning unscaled sizes into pixels.
+///
+/// **The window is a parameter now, and that is G7's structural half.** There
+/// was one `scale` for the process, so every caller got the DPI of whichever
+/// window was measured last. On one screen that is always the right number,
+/// which is exactly why it survived: the defect needs two displays of
+/// different DPI to show, and the machine this is tested on has one. What can
+/// be checked without a second monitor is that the two are separately
+/// addressable and that `WM_DPICHANGED` writes only the window it arrived at
+/// -- **not** "print both and compare", which on one screen cannot fail.
+///
+/// 1.0 for a window this does not know: a scale of 1 draws something the
+/// right shape at the wrong size, where 0 would divide by zero and a panic
+/// would take the process down over a repaint.
+pub fn scale_of(frame: HWND) -> f64 {
+    window(frame).map(|w| w.scale).unwrap_or(1.0)
 }
 
 /// Put the active tab's child window over the client area below the strip,
@@ -722,7 +983,7 @@ pub fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
             // we measured and the one the model calls the frame answers that
             // without another round trip.
             //
-            // The frame comes from an atomic, not from `state()`: this runs
+            // The frame comes from an atomic, not from the lock: this runs
             // inside `layout`'s critical section.
             let expect = crate::frame_hwnd_cached();
             wlogf!(frame, 
@@ -761,16 +1022,18 @@ pub fn content_bounds(frame: HWND, sh: i32) -> Option<TreeRect> {
 /// draggable thing, none of the tree code changes.
 pub fn layout(frame: HWND) {
     // Pure work under the lock, Windows calls after it: `SetWindowPos` sends
-    // WM_SIZE back into this thread, which takes the same lock. See `state()`.
+    // WM_SIZE back into this thread, which takes the same lock.
     #[allow(clippy::type_complexity)]
     let (place, hide, orphans): (
         Vec<(PaneId, HWND, TreeRect)>,
         Vec<(PaneId, HWND)>,
         Vec<PaneId>,
     ) = {
-        let st = state();
         let mut orphans: Vec<PaneId> = Vec::new();
-        let sh = strip_h(st.scale);
+        let Some(win) = window(frame) else {
+            return;
+        };
+        let sh = strip_h(win.scale);
         let Some(bounds) = content_bounds(frame, sh) else {
             return;
         };
@@ -783,14 +1046,11 @@ pub fn layout(frame: HWND) {
         // terminal out inside window 2's client rectangle.
         //
         // (The move call is deliberately not named here. This block is inside
-        // the `state()` guard, and `borrow-across-dispatch.py` matches the
+        // the state guard, and `borrow-across-dispatch.py` matches the
         // names of dispatching calls against the guard's whole scope as raw
         // text -- so writing one in a comment reports a deadlock that is not
         // there. Worth knowing before wording the next comment in a critical
         // section.)
-        let Some(win) = st.win(frame) else {
-            return;
-        };
         for (i, tab) in win.tabs.iter().enumerate() {
             if i != win.active {
                 hide.extend(tab.panes.iter().map(|p| (p.id, HWND(p.hwnd as *mut c_void))));
@@ -908,7 +1168,7 @@ fn create_pane(
     r: TreeRect,
     spec: NewTab,
 ) -> Option<Pane> {
-    let scale = state().scale;
+    let scale = scale_of(frame);
     let (x, y) = (r.x as i32, r.y as i32);
     let (w, h) = ((r.w as i32).max(1), (r.h as i32).max(1));
 
@@ -948,7 +1208,7 @@ fn create_pane(
 
     // Taken, not borrowed: only the first pane gets it, and the CString has
     // to outlive `surface_new`, which is what this binding is for.
-    let initial_input = state().initial_input.take();
+    let initial_input = shared().initial_input.take();
     if let Some(cmd) = &initial_input {
         sc.initial_input = cmd.as_ptr();
     }
@@ -968,7 +1228,9 @@ fn create_pane(
     };
     // **Written where the pointer is set.** This is what the restore line
     // reports, so that line cannot say `cwd=X` while the surface got nothing.
-    state().last_pane_cwd = cwd_c.as_ref().map(|c| c.to_string_lossy().to_string());
+    if let Some(mut w) = window(frame) {
+        w.last_pane_cwd = cwd_c.as_ref().map(|c| c.to_string_lossy().to_string());
+    }
     if let Some(c) = &cwd_c {
         sc.working_directory = c.as_ptr();
         logf!("[pane] {} starting in {:?}", id, c);
@@ -1035,7 +1297,7 @@ fn create_pane(
 
 /// The next identity. Shared by panes and tabs; see `TabId`.
 fn take_id() -> u64 {
-    let mut st = state();
+    let mut st = shared();
     let id = st.next_id;
     st.next_id += 1;
     id
@@ -1087,7 +1349,7 @@ pub fn create_tab_with(
     hinst: windows::Win32::Foundation::HINSTANCE,
     spec: NewTab,
 ) -> bool {
-    let sh = strip_h(state().scale);
+    let sh = strip_h(scale_of(frame));
     let Some(bounds) = content_bounds(frame, sh) else {
         wlogf!(frame, "[tab] no client area yet; not creating a tab");
         return false;
@@ -1120,12 +1382,10 @@ pub fn create_tab_with(
     // because the first copy did not stop the second instance.
     let pending_cwd = take_pending_cwd(pane_surface);
     {
-        let mut st = state();
         // **The tab goes into the window it was asked for.** Nothing else
         // here changed when windows became plural; this line is the whole of
         // where a new tab decides which strip it appears on.
-        let Some(win) = st.win_mut(frame) else {
-            drop(st);
+        let Some(mut win) = window(frame) else {
             wlogf!(frame, "[tab] created a pane for a window that is not tracked; dropping it");
             return false;
         };
@@ -1161,12 +1421,11 @@ fn split_focused(
     dir: NewSplit,
 ) {
     let (bounds, focused, tree) = {
-        let st = state();
-        let sh = strip_h(st.scale);
-        let Some(bounds) = content_bounds(frame, sh) else {
+        let Some(win) = window(frame) else {
             return;
         };
-        let Some(win) = st.win(frame) else {
+        let sh = strip_h(win.scale);
+        let Some(bounds) = content_bounds(frame, sh) else {
             return;
         };
         let Some(tab) = win.tabs.get(win.active) else {
@@ -1197,8 +1456,7 @@ fn split_focused(
         return;
     };
     {
-        let mut st = state();
-        if let Some(win) = st.win_mut(frame) {
+        if let Some(mut win) = window(frame) {
             let a = win.active;
             if let Some(tab) = win.tabs.get_mut(a) {
                 tab.tree = new_tree;
@@ -1215,8 +1473,7 @@ fn split_focused(
 /// Close one pane. The tab goes with it when it was the last one.
 fn close_pane(frame: HWND, id: PaneId) {
     let (hwnd, surface, tab_empty, tab_idx) = {
-        let mut st = state();
-        let Some(win) = st.win_mut(frame) else {
+        let Some(mut win) = window(frame) else {
             return;
         };
         let Some((idx, _)) = win
@@ -1300,8 +1557,7 @@ pub fn close_all_tabs_of(frame: HWND) {
 /// snapshot is E3's failure exactly: an action in window 2 changes what
 /// window 1 draws.
 pub fn strip_snapshot(frame: HWND) -> (Vec<(TabId, String)>, usize) {
-    let st = state();
-    match st.win(frame) {
+    match window(frame) {
         Some(w) => (
             w.tabs.iter().map(|t| (t.id, t.title.clone())).collect(),
             w.active,
@@ -1313,8 +1569,7 @@ pub fn strip_snapshot(frame: HWND) -> (Vec<(TabId, String)>, usize) {
 /// Make a tab active by identity.
 pub fn activate_tab(frame: HWND, id: TabId) {
     let idx = {
-        let st = state();
-        st.win(frame).and_then(|w| w.tabs.iter().position(|t| t.id == id))
+        window(frame).and_then(|w| w.tabs.iter().position(|t| t.id == id))
     };
     if let Some(idx) = idx {
         set_active(frame, idx);
@@ -1324,8 +1579,7 @@ pub fn activate_tab(frame: HWND, id: TabId) {
 /// Close a tab by identity, with every pane in it.
 pub fn close_tab(frame: HWND, id: TabId) {
     let idx = {
-        let st = state();
-        st.win(frame).and_then(|w| w.tabs.iter().position(|t| t.id == id))
+        window(frame).and_then(|w| w.tabs.iter().position(|t| t.id == id))
     };
     let Some(idx) = idx else { return };
     destroy_tab_at(frame, idx);
@@ -1350,8 +1604,7 @@ pub fn close_tab(frame: HWND, id: TabId) {
 /// that the identity travelled the whole way instead of degenerating into
 /// "the current one" somewhere in the middle.
 pub fn index_of(frame: HWND, id: TabId) -> Option<(usize, usize)> {
-    let st = state();
-    let win = st.win(frame)?;
+    let win = window(frame)?;
     let n = win.tabs.len();
     win.tabs.iter().position(|t| t.id == id).map(|i| (i, n))
 }
@@ -1362,13 +1615,15 @@ pub fn index_of(frame: HWND, id: TabId) -> Option<(usize, usize)> {
 /// answer for everything a context menu does, because the tab that was
 /// right-clicked is usually not the tab that has focus.
 pub fn surface_of_tab(frame: HWND, id: TabId) -> Surface {
-    let st = state();
-    let found = st
-        .win(frame)
-        .and_then(|w| w.tabs.iter().find(|t| t.id == id))
-        .and_then(|t| t.focused_pane());
+    let found = window(frame).and_then(|w| {
+        w.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.focused_pane())
+            .map(|p| p.surface)
+    });
     match found {
-        Some(p) => p.surface as Surface,
+        Some(surface) => surface as Surface,
         None => std::ptr::null_mut(),
     }
 }
@@ -1395,8 +1650,7 @@ pub fn binding_on_tab(frame: HWND, id: TabId, name: &str) -> bool {
 /// name, so they are different functions.
 pub fn close_other_tabs(frame: HWND, id: TabId) {
     let victims: Vec<usize> = {
-        let st = state();
-        let Some(win) = st.win(frame) else { return };
+        let Some(win) = window(frame) else { return };
         let keep = win.tabs.iter().position(|t| t.id == id);
         match keep {
             None => return,
@@ -1413,8 +1667,7 @@ pub fn close_other_tabs(frame: HWND, id: TabId) {
 /// Close every tab to the right of one, **named by identity**. Same reason.
 pub fn close_tabs_right_of(frame: HWND, id: TabId) {
     let victims: Vec<usize> = {
-        let st = state();
-        let Some(win) = st.win(frame) else { return };
+        let Some(win) = window(frame) else { return };
         match win.tabs.iter().position(|t| t.id == id) {
             None => return,
             Some(at) => (at + 1..win.tabs.len()).rev().collect(),
@@ -1435,21 +1688,28 @@ pub fn close_tabs_right_of(frame: HWND, id: TabId) {
 /// one; writing every `pwd` onto whichever tab is in front would quietly give
 /// tab A's directory to tab B, and the only place it would ever show is a
 /// reopened tab landing somewhere the user never was.
+// window-free: keyed by surface, which is unique in the process
 pub fn set_cwd_for_surface(surface: Surface, cwd: String) -> bool {
     let key = surface as usize;
-    let mut st = state();
     // **Every window, because a surface names itself.** The lookup key is
     // globally unique, so searching all windows is not a widening of scope --
     // it is the same question asked where the answer can now be.
-    for win in st.windows.iter_mut() {
-        for tab in win.tabs.iter_mut() {
-            if tab.panes.iter().any(|p| p.surface == key) {
-                tab.cwd = Some(cwd);
-                return true;
+    let landed = with_windows_mut(|ws| {
+        for win in ws.iter_mut() {
+            for tab in win.tabs.iter_mut() {
+                if tab.panes.iter().any(|p| p.surface == key) {
+                    tab.cwd = Some(cwd.clone());
+                    return true;
+                }
             }
         }
+        false
+    });
+    if landed {
+        return true;
     }
     // No tab yet: it is still being built. Held until `create_tab` collects it.
+    let mut st = shared();
     st.pending_cwd.retain(|(s, _)| *s != key);
     st.pending_cwd.push((key, cwd));
     false
@@ -1457,7 +1717,7 @@ pub fn set_cwd_for_surface(surface: Surface, cwd: String) -> bool {
 
 /// Take whatever `pwd` arrived for a surface before its tab existed.
 fn take_pending_cwd(surface: usize) -> Option<String> {
-    let mut st = state();
+    let mut st = shared();
     let at = st.pending_cwd.iter().position(|(s, _)| *s == surface)?;
     Some(st.pending_cwd.remove(at).1)
 }
@@ -1490,8 +1750,7 @@ pub fn install_reopen_opener() {
 /// the bug it writes -- colours right, order wrong -- is invisible until two
 /// tabs happen to be different colours.
 pub fn tab_colors(frame: HWND) -> Vec<(TabId, u8)> {
-    let st = state();
-    match st.win(frame) {
+    match window(frame) {
         Some(w) => w.tabs.iter().map(|t| (t.id, t.color)).collect(),
         None => Vec::new(),
     }
@@ -1499,23 +1758,21 @@ pub fn tab_colors(frame: HWND) -> Vec<(TabId, u8)> {
 
 /// A tab's colour, and how to set it. 0 is "none".
 pub fn tab_color(frame: HWND, id: TabId) -> u8 {
-    let st = state();
-    st.win(frame)
-        .and_then(|w| w.tabs.iter().find(|t| t.id == id))
-        .map(|t| t.color)
+    window(frame)
+        .and_then(|w| w.tabs.iter().find(|t| t.id == id).map(|t| t.color))
         .unwrap_or(0)
 }
 
 pub fn set_tab_color(frame: HWND, id: TabId, color: u8) -> bool {
-    let found = {
-        let mut st = state();
-        match st.win_mut(frame).and_then(|w| w.tabs.iter_mut().find(|t| t.id == id)) {
+    let found = match window(frame) {
+        Some(mut w) => match w.tabs.iter_mut().find(|t| t.id == id) {
             Some(tab) => {
                 tab.color = color;
                 true
             }
             None => false,
-        }
+        },
+        None => false,
     };
     if found {
         unsafe {
@@ -1527,10 +1784,8 @@ pub fn set_tab_color(frame: HWND, id: TabId, color: u8) -> bool {
 
 /// What Poltergeist has made of a tab: `(role, shielded)`.
 pub fn tab_mark(frame: HWND, id: TabId) -> (u8, bool) {
-    let st = state();
-    st.win(frame)
-        .and_then(|w| w.tabs.iter().find(|t| t.id == id))
-        .map(|t| (t.role, t.shielded))
+    window(frame)
+        .and_then(|w| w.tabs.iter().find(|t| t.id == id).map(|t| (t.role, t.shielded)))
         .unwrap_or((0, false))
 }
 
@@ -1542,16 +1797,17 @@ pub fn tab_mark(frame: HWND, id: TabId) -> (u8, bool) {
 /// gone wrong four times tonight (the menu's target, the close batch, the
 /// mark's landing tab, and the button width), each time by two stores of one
 /// fact drifting apart with nothing to report it.
+// window-free: keyed by surface, which is unique in the process
 pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool)> {
     let key = surface as usize;
-    let st = state();
     // Every window: a surface is unique in the process, so the window it is
     // in is an answer rather than a parameter.
-    st.windows
-        .iter()
-        .flat_map(|w| w.tabs.iter())
-        .find(|t| t.panes.iter().any(|p| p.surface == key))
-        .map(|t| (t.role, t.shielded))
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .find(|t| t.panes.iter().any(|p| p.surface == key))
+            .map(|t| (t.role, t.shielded))
+    })
 }
 
 /// Record a `poltergeist_mark` against **the surface it was sent for**.
@@ -1562,19 +1818,21 @@ pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool)> {
 /// mark can be made on a tab that is not in front (from this very menu, or
 /// from a supervisor elsewhere), and applying it to the active tab would put
 /// the tick on the wrong row while looking completely normal.
+// window-free: keyed by surface, which is unique in the process
 pub fn set_mark_for_surface(surface: Surface, role: u8, shielded: bool) -> bool {
     let key = surface as usize;
-    let mut st = state();
-    for win in st.windows.iter_mut() {
-        for tab in win.tabs.iter_mut() {
-            if tab.panes.iter().any(|p| p.surface == key) {
-                tab.role = role;
-                tab.shielded = shielded;
-                return true;
+    with_windows_mut(|ws| {
+        for win in ws.iter_mut() {
+            for tab in win.tabs.iter_mut() {
+                if tab.panes.iter().any(|p| p.surface == key) {
+                    tab.role = role;
+                    tab.shielded = shielded;
+                    return true;
+                }
             }
         }
-    }
-    false
+        false
+    })
 }
 
 /// Rename a tab **because the user said so** -- the in-place editor, the tab
@@ -1589,10 +1847,11 @@ pub fn set_mark_for_surface(surface: Surface, role: u8, shielded: bool) -> bool 
 /// next `cd`.
 pub fn rename_tab(frame: HWND, id: TabId, title: String) {
     {
-        let mut st = state();
-        if let Some(tab) = st.win_mut(frame).and_then(|w| w.tabs.iter_mut().find(|t| t.id == id)) {
-            tab.title = title.clone();
-            tab.title_override = Some(title);
+        if let Some(mut w) = window(frame) {
+            if let Some(tab) = w.tabs.iter_mut().find(|t| t.id == id) {
+                tab.title = title.clone();
+                tab.title_override = Some(title);
+            }
         }
     }
     unsafe {
@@ -1624,27 +1883,29 @@ pub enum ShellTitle {
     NoSuchSurface,
 }
 
+// window-free: keyed by surface; it reports which window it landed in
 fn set_shell_title(surface: usize, title: String) -> ShellTitle {
-    let mut st = state();
     // Which window, then which tab in it. Searched rather than assumed: the
     // surface is the only thing the action carried.
-    let found = st.windows.iter().enumerate().find_map(|(wi, w)| {
-        w.tabs
-            .iter()
-            .position(|t| t.panes.iter().any(|p| p.surface == surface))
-            .map(|ti| (wi, ti))
-    });
-    let Some((wi, idx)) = found else {
-        return ShellTitle::NoSuchSurface;
-    };
-    let win = &mut st.windows[wi];
-    let (owner, n) = (win.frame, win.tabs.len());
-    let tab = &mut win.tabs[idx];
-    if tab.title_override.is_some() {
-        return ShellTitle::Overridden(owner, idx, n);
-    }
-    tab.title = title;
-    ShellTitle::Applied(owner, idx, n)
+    with_windows_mut(|ws| {
+        let found = ws.iter().enumerate().find_map(|(wi, w)| {
+            w.tabs
+                .iter()
+                .position(|t| t.panes.iter().any(|p| p.surface == surface))
+                .map(|ti| (wi, ti))
+        });
+        let Some((wi, idx)) = found else {
+            return ShellTitle::NoSuchSurface;
+        };
+        let win = &mut ws[wi];
+        let (owner, n) = (win.frame, win.tabs.len());
+        let tab = &mut win.tabs[idx];
+        if tab.title_override.is_some() {
+            return ShellTitle::Overridden(owner, idx, n);
+        }
+        tab.title = title;
+        ShellTitle::Applied(owner, idx, n)
+    })
 }
 
 
@@ -1666,8 +1927,7 @@ fn set_shell_title(surface: usize, title: String) -> ShellTitle {
 /// the contents follow) therefore tests the model, not this function.
 pub fn move_tab_to(frame: HWND, id: TabId, to: usize) {
     let moved = {
-        let mut st = state();
-        let Some(win) = st.win_mut(frame) else { return };
+        let Some(mut win) = window(frame) else { return };
         let Some(from) = win.tabs.iter().position(|t| t.id == id) else {
             logf!("[tab] move: {:?} no longer exists", id);
             return;
@@ -1692,10 +1952,8 @@ pub fn move_tab_to(frame: HWND, id: TabId, to: usize) {
 
 /// Panes in the active tab.
 pub fn pane_count(frame: HWND) -> usize {
-    let st = state();
-    st.win(frame)
-        .and_then(|w| w.tabs.get(w.active))
-        .map(|t| t.panes.len())
+    window(frame)
+        .and_then(|w| w.tabs.get(w.active).map(|t| t.panes.len()))
         .unwrap_or(0)
 }
 
@@ -1706,10 +1964,10 @@ pub fn pane_count(frame: HWND) -> usize {
 /// against. They are set together here so they cannot drift apart.
 pub fn focus_active(frame: HWND) {
     let child = {
-        let st = state();
-        let found = st.win(frame).and_then(|w| w.tabs.get(w.active)).and_then(|t| t.focused_pane());
+        let found = window(frame)
+            .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused_pane()).map(|p| p.hwnd));
         match found {
-            Some(p) => HWND(p.hwnd as *mut c_void),
+            Some(hwnd) => HWND(hwnd as *mut c_void),
             None => return,
         }
     };
@@ -1724,31 +1982,30 @@ pub fn focus_active(frame: HWND) {
 }
 
 pub fn set_initial_input(cmd: &str) {
-    let mut st = state();
-    st.initial_input = std::ffi::CString::new(cmd).ok();
+    shared().initial_input = std::ffi::CString::new(cmd).ok();
 }
 
 /// The window of the active tab, or a null HWND when there is none.
 pub fn active_hwnd(frame: HWND) -> HWND {
-    let st = state();
-    let found = st.win(frame).and_then(|w| w.tabs.get(w.active)).and_then(|t| t.focused_pane());
+    let found = window(frame)
+        .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused_pane()).map(|p| p.hwnd));
     match found {
-        Some(p) => HWND(p.hwnd as *mut c_void),
+        Some(hwnd) => HWND(hwnd as *mut c_void),
         None => HWND(std::ptr::null_mut()),
     }
 }
 
 /// How many tabs are in **one window**.
 pub fn count(frame: HWND) -> usize {
-    state().win(frame).map(|w| w.tabs.len()).unwrap_or(0)
+    window(frame).map(|w| w.tabs.len()).unwrap_or(0)
 }
 
 /// The surface of the focused pane of the active tab -- "where typing goes".
 pub fn active_surface(frame: HWND) -> Surface {
-    let st = state();
-    let found = st.win(frame).and_then(|w| w.tabs.get(w.active)).and_then(|t| t.focused_pane());
+    let found = window(frame)
+        .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused_pane()).map(|p| p.surface));
     match found {
-        Some(p) => p.surface as Surface,
+        Some(surface) => surface as Surface,
         None => std::ptr::null_mut(),
     }
 }
@@ -1759,12 +2016,14 @@ pub fn active_surface(frame: HWND) -> Surface {
 /// `Target` at all, so it is the one queueing site that cannot go through
 /// `origin_window`. A pane id comes out of the one process-wide counter, so
 /// it names exactly one pane wherever that pane is.
+// window-free: keyed by pane id, which is unique in the process -- this is the
+// function that turns such a key *into* a window
 pub fn frame_of_pane(pane: PaneId) -> Option<HWND> {
-    let st = state();
-    st.windows
-        .iter()
-        .find(|w| w.tabs.iter().any(|t| t.panes.iter().any(|p| p.id == pane)))
-        .map(|w| HWND(w.frame as *mut c_void))
+    with_windows(|ws| {
+        ws.iter()
+            .find(|w| w.tabs.iter().any(|t| t.panes.iter().any(|p| p.id == pane)))
+            .map(|w| HWND(w.frame as *mut c_void))
+    })
 }
 
 /// Which window a surface is in.
@@ -1775,35 +2034,36 @@ pub fn frame_of_pane(pane: PaneId) -> Option<HWND> {
 /// not a guess. The alternative on offer was `frame_hwnd()` -- the first
 /// window -- which is right exactly once and silently wrong for every window
 /// opened after it. Every queued op now reaches its window through here.
+// window-free: keyed by surface -- this is the function that turns such a key
+// *into* a window
 pub fn frame_of_surface(surface: Surface) -> Option<HWND> {
     let key = surface as usize;
-    let st = state();
-    st.windows
-        .iter()
-        .find(|w| {
-            w.tabs
-                .iter()
-                .any(|t| t.panes.iter().any(|p| p.surface == key))
-        })
-        .map(|w| HWND(w.frame as *mut c_void))
+    with_windows(|ws| {
+        ws.iter()
+            .find(|w| {
+                w.tabs
+                    .iter()
+                    .any(|t| t.panes.iter().any(|p| p.surface == key))
+            })
+            .map(|w| HWND(w.frame as *mut c_void))
+    })
 }
 
 /// The surface bound to a particular pane window, for that window's wndproc.
 pub fn surface_of(hwnd: HWND) -> Surface {
     let key = hwnd.0 as isize;
-    let st = state();
     // Every window: an HWND is unique in the process, so this is a lookup,
     // not a scope decision.
-    for win in st.windows.iter() {
-        for tab in win.tabs.iter() {
-            for p in tab.panes.iter() {
-                if p.hwnd == key {
-                    return p.surface as Surface;
-                }
-            }
-        }
+    let found = with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.hwnd == key)
+            .map(|p| p.surface)
+    });
+    if let Some(surface) = found {
+        return surface as Surface;
     }
-    drop(st);
     // The quick terminal's surface lives in its own module but uses this same
     // window class and window procedure, so the lookup falls through to it.
     crate::quick::surface_of(hwnd)
@@ -1818,17 +2078,18 @@ pub fn surface_of(hwnd: HWND) -> Surface {
 /// click in window 2 comes to activate a tab in window 1.
 pub fn pane_of(hwnd: HWND) -> Option<(HWND, usize, PaneId)> {
     let key = hwnd.0 as isize;
-    let st = state();
-    for win in st.windows.iter() {
-        for (i, tab) in win.tabs.iter().enumerate() {
-            for p in tab.panes.iter() {
-                if p.hwnd == key {
-                    return Some((HWND(win.frame as *mut c_void), i, p.id));
+    with_windows(|ws| {
+        for win in ws.iter() {
+            for (i, tab) in win.tabs.iter().enumerate() {
+                for p in tab.panes.iter() {
+                    if p.hwnd == key {
+                        return Some((HWND(win.frame as *mut c_void), i, p.id));
+                    }
                 }
             }
         }
-    }
-    None
+        None
+    })
 }
 
 /// Focus follows the click: the pane clicked becomes the focused one, and its
@@ -1842,8 +2103,7 @@ pub fn focus_pane_at(hwnd: HWND) {
         return;
     };
     let changed = {
-        let mut st = state();
-        let Some(win) = st.win_mut(frame) else { return };
+        let Some(mut win) = window(frame) else { return };
         let was = (win.active, win.tabs.get(win.active).map(|t| t.focused));
         win.active = tab_idx;
         if let Some(tab) = win.tabs.get_mut(tab_idx) {
@@ -1859,8 +2119,7 @@ pub fn focus_pane_at(hwnd: HWND) {
 
 fn set_active(frame: HWND, idx: usize) {
     {
-        let mut st = state();
-        let Some(win) = st.win_mut(frame) else { return };
+        let Some(mut win) = window(frame) else { return };
         if win.tabs.is_empty() {
             return;
         }
@@ -1872,8 +2131,7 @@ fn set_active(frame: HWND, idx: usize) {
 }
 
 pub fn active_index(frame: HWND) -> usize {
-    let st = state();
-    st.win(frame).map(|w| w.active).unwrap_or(0)
+    window(frame).map(|w| w.active).unwrap_or(0)
 }
 
 /// Destroy a whole tab: every pane's surface and window.
@@ -1915,8 +2173,7 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
     // Both come out of the one critical section: the panes to free, and what
     // `reopen.rs` should be told once the guard is gone.
     let (doomed, remembered): (Vec<(PaneId, isize, usize)>, Option<(TabId, String, String)>) = {
-        let mut st = state();
-        let Some(win) = st.win_mut(frame) else {
+        let Some(mut win) = window(frame) else {
             return;
         };
         if idx >= win.tabs.len() {
@@ -2067,27 +2324,25 @@ pub fn read_clipboard_text() -> Result<String, &'static str> {
 /// for it, and neither callback has to fall back to "whichever surface has
 /// focus". That fallback would be wrong in exactly the way tonight's other
 /// three defects were wrong, and here it costs nothing to avoid.
+// window-free: keyed by pane id, which is unique in the process
 pub fn surface_of_pane(pane: u64) -> Surface {
-    let st = state();
     // Every window: a `PaneId` comes out of one process-wide counter, so it
     // names exactly one pane wherever that pane is.
-    for win in st.windows.iter() {
-        for tab in win.tabs.iter() {
-            for p in tab.panes.iter() {
-                if p.id == pane {
-                    return p.surface as Surface;
-                }
-            }
-        }
-    }
-    std::ptr::null_mut()
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.id == pane)
+            .map(|p| p.surface as Surface)
+            .unwrap_or(std::ptr::null_mut())
+    })
 }
 
 fn go_fullscreen(frame: HWND) {
     // Same rule as `layout`: every call below re-enters this thread's window
     // procedures, which take the lock. The saved placement is taken out and
     // put back in short critical sections around them, never held across one.
-    let saved = { state().pre_fullscreen.take() };
+    let saved = { window(frame).and_then(|mut w| w.pre_fullscreen.take()) };
     unsafe {
         if let Some((wp, style)) = saved {
             SetWindowLongPtrW(frame, GWL_STYLE, style);
@@ -2124,7 +2379,9 @@ fn go_fullscreen(frame: HWND) {
 
         // Recorded before the window changes, so a re-entrant layout during
         // SetWindowPos sees the state that matches the window it is laying out.
-        state().pre_fullscreen = Some((wp, style));
+        if let Some(mut w) = window(frame) {
+            w.pre_fullscreen = Some((wp, style));
+        }
 
         let r = mi.rcMonitor;
         SetWindowLongPtrW(
@@ -2154,8 +2411,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
     let delay = ops_delay_ms();
     loop {
         let (op, from, behind) = {
-            let mut st = state();
-            let Some(w) = st.win_mut(frame) else {
+            let Some(mut w) = window(frame) else {
                 // The window went while its own pump was draining. Nothing
                 // left to run for it, and its queue went with it.
                 return;
@@ -2232,7 +2488,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // is the last one -- and it is picked up **by identity here**,
                 // before anything else can reorder, so the rename and the move
                 // below cannot land on a different tab.
-                let Some(id) = state().win(frame).and_then(|w| w.tabs.last()).map(|t| t.id) else {
+                let Some(id) = window(frame).and_then(|w| w.tabs.last().map(|t| t.id)) else {
                     continue;
                 };
                 // **Only if there is one to restore**, and the log below says
@@ -2254,7 +2510,9 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // W3's K1 floor compares this line against the `cd` output on
                 // screen, and a line printed from the copy on the stack would
                 // agree with itself while the shell stood somewhere else.
-                let used = state().last_pane_cwd.clone().unwrap_or_default();
+                let used = window(frame)
+                    .and_then(|w| w.last_pane_cwd.clone())
+                    .unwrap_or_default();
                 let at = index_of(frame, id).map(|(i, _)| i).unwrap_or(0);
                 // **The log claims only what is on the strip.** These two
                 // lines are different claims, and the reason they are two is
@@ -2330,8 +2588,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // Resolve to an identity here, on the main thread, and hand
                 // the rest to the primitive.
                 let target = {
-                    let st = state();
-                    let Some(win) = st.win(frame) else { continue };
+                    let Some(win) = window(frame) else { continue };
                     let n = win.tabs.len() as i64;
                     if n < 2 {
                         None
@@ -2357,10 +2614,10 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 logf!("[win] maximize {} -> {}", zoomed, !zoomed);
             },
             Op::ResetWindowSize => {
-                let init = {
-                    let st = state();
-                    st.initial
-                };
+                // **This window's own first size.** One copy for the
+                // process meant `reset_window_size` in window 2 restored the
+                // size window 1's first surface had asked for.
+                let init = window(frame).and_then(|w| w.initial);
                 if let Some((w, h)) = init {
                     unsafe {
                         let _ = ShowWindow(frame, SW_RESTORE);
@@ -2414,10 +2671,8 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             }
             Op::CopyTitleToClipboard => {
                 let title = {
-                    let st = state();
-                    st.win(frame)
-                        .and_then(|w| w.tabs.get(w.active))
-                        .map(|t| t.title.clone())
+                    window(frame)
+                        .and_then(|w| w.tabs.get(w.active).map(|t| t.title.clone()))
                         .unwrap_or_default()
                 };
                 let ok = copy_to_clipboard(&title).is_ok();
@@ -2444,16 +2699,16 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     _ => Focus::Spatial(Side::Right),
                 };
                 let target = {
-                    let st = state();
-                    st.win(frame)
-                        .and_then(|w| w.tabs.get(w.active))
-                        .and_then(|t| t.tree.focus_target(f, t.focused))
+                    window(frame).and_then(|w| {
+                        w.tabs
+                            .get(w.active)
+                            .and_then(|t| t.tree.focus_target(f, t.focused))
+                    })
                 };
                 match target {
                     Some(id) => {
                         {
-                            let mut st = state();
-                            if let Some(win) = st.win_mut(frame) {
+                            if let Some(mut win) = window(frame) {
                                 let a = win.active;
                                 if let Some(tab) = win.tabs.get_mut(a) {
                                     tab.focused = id;
@@ -2477,9 +2732,9 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     _ => Side::Right,
                 };
                 let out = {
-                    let st = state();
-                    let sh = strip_h(st.scale);
-                    let cur = st.win(frame).and_then(|w| w.tabs.get(w.active));
+                    let Some(win) = window(frame) else { continue };
+                    let sh = strip_h(win.scale);
+                    let cur = win.tabs.get(win.active);
                     match (content_bounds(frame, sh), cur) {
                         (Some(b), Some(tab)) => {
                             Some((tab.tree.resize(tab.focused, amount, side, b), tab.focused))
@@ -2491,8 +2746,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     match res {
                         Ok(t) => {
                             {
-                                let mut st = state();
-                                if let Some(win) = st.win_mut(frame) {
+                                if let Some(mut win) = window(frame) {
                                     let a = win.active;
                                     if let Some(tab) = win.tabs.get_mut(a) {
                                         tab.tree = t;
@@ -2508,8 +2762,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             }
             Op::EqualizeSplits => {
                 {
-                    let mut st = state();
-                    if let Some(win) = st.win_mut(frame) {
+                    if let Some(mut win) = window(frame) {
                         let a = win.active;
                         if let Some(tab) = win.tabs.get_mut(a) {
                             tab.tree = tab.tree.equalize();
@@ -2521,18 +2774,17 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             }
             Op::ToggleSplitZoom => {
                 let zoomed = {
-                    let mut st = state();
-                    let cur = st.win_mut(frame).and_then(|w| {
-                        let a = w.active;
-                        w.tabs.get_mut(a)
-                    });
-                    match cur {
-                        Some(tab) => {
-                            tab.tree = tab.tree.toggle_zoom(tab.focused);
-                            tab.tree.zoomed()
-                        }
-                        None => None,
-                    }
+                    // **The toggle happens inside the closure**, because the
+                    // guard owns the lock and a `&mut Tab` cannot leave it.
+                    window(frame)
+                        .and_then(|mut w| {
+                            let a = w.active;
+                            w.tabs.get_mut(a).map(|tab| {
+                                tab.tree = tab.tree.toggle_zoom(tab.focused);
+                                tab.tree.zoomed()
+                            })
+                        })
+                        .flatten()
                 };
                 layout(frame);
                 logf!("[split] zoom -> {:?}", zoomed);
@@ -2554,10 +2806,15 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
 /// about the whole window, so the non-client area and the tab strip have to
 /// be added back or the terminal ends up one row short of what the core
 /// asked for.
-pub fn apply_min_max(mmi: *mut MINMAXINFO) {
-    let (min_w, min_h, max_w, max_h, scale) = {
-        let st = state();
-        (st.min_w, st.min_h, st.max_w, st.max_h, st.scale)
+/// **Answered for the frame the message arrived at.** `WM_GETMINMAXINFO` is
+/// per window, and the limits used to be one set for the process -- so a
+/// floor computed from window 2's cell grid became the size window 1 could
+/// not be dragged below.
+pub fn apply_min_max(frame: HWND, mmi: *mut MINMAXINFO) {
+    let Some((min_w, min_h, max_w, max_h, scale)) = window(frame)
+        .map(|w| (w.min_w, w.min_h, w.max_w, w.max_h, w.scale))
+    else {
+        return;
     };
     if min_w == 0 && min_h == 0 && max_w == 0 && max_h == 0 {
         return;

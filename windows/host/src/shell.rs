@@ -233,7 +233,7 @@ pub fn nc_calc_size(hwnd: HWND, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
 /// Returned in window-client coordinates, which is the same space the strip
 /// works in, so the strip can simply avoid this range.
 pub fn buttons(hwnd: HWND) -> [RECT; 3] {
-    let scale = tabs::scale_of();
+    let scale = tabs::scale_of(hwnd);
     let w = (BTN_W as f64 * scale) as i32;
     let h = crate::strip::strip_h(scale);
     let mut rc = RECT::default();
@@ -250,8 +250,8 @@ pub fn buttons(hwnd: HWND) -> [RECT; 3] {
 
 /// How much of the strip's width the buttons take. The strip subtracts this
 /// rather than being told where to stop, so there is one owner of the number.
-pub fn reserved_right() -> i32 {
-    (BTN_W as f64 * tabs::scale_of() * 3.0) as i32
+pub fn reserved_right(frame: HWND) -> i32 {
+    (BTN_W as f64 * tabs::scale_of(frame) * 3.0) as i32
 }
 
 /// `WM_NCHITTEST`: hand back the parts of the caption that must keep working.
@@ -278,7 +278,7 @@ pub fn hit_test(hwnd: HWND, screen_x: i32, screen_y: i32) -> LRESULT {
     unsafe {
         let _ = GetClientRect(hwnd, &mut rc);
     }
-    let scale = tabs::scale_of();
+    let scale = tabs::scale_of(hwnd);
     let border = (6.0 * scale) as i32;
     let sh = crate::strip::strip_h(scale);
 
@@ -404,7 +404,7 @@ fn fill(hdc: HDC, r: &RECT, color: u32) {
 /// different pixel at every DPI and every font substitution; three strokes do
 /// not. This is the same reason the tab close button is drawn.
 pub fn paint_buttons(hdc: HDC, hwnd: HWND, active: bool) {
-    let scale = tabs::scale_of();
+    let scale = tabs::scale_of(hwnd);
     let b = buttons(hwnd);
     let hover = HOVER.load(std::sync::atomic::Ordering::Relaxed);
     let glyph = if active { GLYPH } else { GLYPH_DIM };

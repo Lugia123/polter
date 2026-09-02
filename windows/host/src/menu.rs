@@ -573,7 +573,7 @@ fn default_state(flag: Flag) -> Option<bool> {
             // a menu that already knows its window; threading that through is
             // a change to the check-mark plumbing rather than to this batch,
             // so the assumption is written down instead of hidden.
-            let s = crate::tabs::active_surface(crate::tabs::frame_hwnd()) as usize;
+            let s = crate::tabs::active_surface(crate::tabs::overlay_frame()) as usize;
             if s == 0 {
                 None
             } else {
@@ -586,7 +586,7 @@ fn default_state(flag: Flag) -> Option<bool> {
         // `4 evaluable` out of five.
         Flag::FloatOnTop => Some(crate::prompt::is_float_on_top()),
         Flag::Supervisor | Flag::Watched | Flag::Shielded => {
-            let active = crate::tabs::active_surface(crate::tabs::frame_hwnd());
+            let active = crate::tabs::active_surface(crate::tabs::overlay_frame());
             let (role, shielded) = crate::tabs::mark_for_surface(active)?;
             Some(match flag {
                 Flag::Supervisor => role == ROLE_SUPERVISOR,

@@ -664,14 +664,6 @@ fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
     let scale = if dpi > 0.0 { dpi / 96.0 } else { 1.0 };
     if primary {
         HWND_G.store(hwnd.0 as *mut c_void, Ordering::Release);
-        let mut st = tabs::state();
-        // **`scale` is one number for the whole process, and that is a bug
-        // waiting for a second monitor**, not something this change makes
-        // worse: two frames on displays of different DPI already have one
-        // field between them. A second frame does not write it, so today the
-        // value is the first frame's -- which is at least a definite window's
-        // answer rather than whichever window was touched last.
-        st.scale = scale;
     }
     // **Before `ShowWindow`, because showing a window dispatches messages**
     // -- `WM_SIZE`, `WM_PAINT` -- and every one of those handlers asks this
@@ -679,6 +671,13 @@ fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
     // tracked spends those messages being told it does not exist, and the
     // strip paints empty.
     tabs::add_window(hwnd);
+    // **This window's own scale, measured from this window.** It used to be
+    // one number for the process written only by the first frame, so a second
+    // frame on a different display drew at the first one's DPI. Set after
+    // `add_window`, because there is nothing to set it on before that.
+    if let Some(mut w) = tabs::window(hwnd) {
+        w.scale = scale;
+    }
 
     shell::init_frame(hwnd);
 
@@ -726,10 +725,24 @@ pub fn paint_tick() -> u32 {
     PAINTS.fetch_add(1, Ordering::Relaxed) + 1
 }
 
-/// Content scale. `ghostty_surface_ime_point` answers in unscaled units;
-/// every pixel this host hands to Windows is physical.
+/// Content scale **of the window the input method is composing in**.
+///
+/// `ghostty_surface_ime_point` answers in unscaled units; every pixel this
+/// host hands to Windows is physical. Which window's scale that is matters
+/// once the two can differ: a caret rectangle scaled by the other monitor's
+/// DPI puts the candidate list next to the wrong glyph.
 fn scale() -> f64 {
-    tabs::state().scale
+    let hwnd = IME.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|st| st.ime.try_borrow().ok().map(|i| i.hwnd))
+    });
+    // A pane window, so its frame is its parent.
+    let frame = match hwnd {
+        Some(h) if !h.0.is_null() => unsafe { GetParent(h) }.unwrap_or_default(),
+        _ => HWND(std::ptr::null_mut()),
+    };
+    tabs::scale_of(frame)
 }
 
 // ------------------------------------------------- bridge used by tsf.rs
@@ -1119,7 +1132,9 @@ extern "C" fn cb_confirm_read_clipboard(
         let b: Vec<u16> = body.encode_utf16().chain(Some(0)).collect();
         let t: Vec<u16> = "确认粘贴".encode_utf16().chain(Some(0)).collect();
         MessageBoxW(
-            Some(tabs::frame_hwnd()),
+            // The confirmation is modal over a window; which one is the
+            // same gap every panel has. See `tabs::overlay_frame`.
+            Some(tabs::overlay_frame()),
             windows::core::PCWSTR(b.as_ptr()),
             windows::core::PCWSTR(t.as_ptr()),
             MB_YESNO | MB_ICONWARNING,
@@ -1459,11 +1474,19 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         }
 
         ACTION_INITIAL_SIZE => {
-            let (w, h) = action.as_size();
-            logf!("[action] initial_size {}x{}", w, h);
-            let mut st = tabs::state();
-            if st.initial.is_none() {
-                st.initial = Some((w, h));
+            // `iw`/`ih` rather than `w`/`h`: `w` is the window below.
+            let (iw, ih) = action.as_size();
+            logf!("[action] initial_size {}x{}", iw, ih);
+            // **The window the surface is in.** `reset_window_size` resizes
+            // one window back to what its own first surface asked for; one
+            // copy for the process meant the second window remembered the
+            // first one's size.
+            match origin.and_then(tabs::window) {
+                Some(mut w) if w.initial.is_none() => w.initial = Some((iw, ih)),
+                Some(_) => {}
+                // process-wide: the action names no window, so there is
+                // nothing to record the size against
+                None => plogf!("[action] initial_size names no window; not recorded"),
             }
             true
         }
@@ -1481,12 +1504,19 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // implementation to copy.
         ACTION_SIZE_LIMIT => {
             let (min_w, min_h, max_w, max_h) = action.as_size_limit();
-            {
-                let mut st = tabs::state();
-                st.min_w = min_w;
-                st.min_h = min_h;
-                st.max_w = max_w;
-                st.max_h = max_h;
+            // `WM_GETMINMAXINFO` is answered per frame, so the limit is
+            // stored per frame. Shared, a limit derived from one window's
+            // cell grid became the floor the other could not be dragged
+            // below.
+            match origin.and_then(tabs::window) {
+                Some(mut w) => {
+                    w.min_w = min_w;
+                    w.min_h = min_h;
+                    w.max_w = max_w;
+                    w.max_h = max_h;
+                }
+                // process-wide: the action names no window to limit
+                None => plogf!("[action] size_limit names no window; not applied"),
             }
             logf!(
                 "[action] size_limit min {}x{} max {}x{} (0 max = unlimited)",
@@ -1976,7 +2006,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
             // The core's cell-derived floor, expressed to Windows.
             WM_GETMINMAXINFO => {
-                tabs::apply_min_max(lp.0 as *mut MINMAXINFO);
+                tabs::apply_min_max(hwnd, lp.0 as *mut MINMAXINFO);
                 LRESULT(0)
             }
 
@@ -1998,9 +2028,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             WM_DPICHANGED => {
                 let dpi = (wp.0 & 0xFFFF) as f64;
                 let scale = dpi / 96.0;
-                {
-                    let mut st = tabs::state();
-                    st.scale = scale;
+                // **Only the window the message arrived at.** This is the
+                // one place a second monitor's DPI enters the host, and with
+                // one `scale` for the process, dragging window 2 onto a
+                // different display rescaled window 1's strip and panes too.
+                if let Some(mut w) = tabs::window(hwnd) {
+                    w.scale = scale;
                 }
                 let s = tabs::active_surface(hwnd);
                 if !s.is_null() {
@@ -2217,7 +2250,7 @@ pub fn binding_on(surface: ffi::Surface, name: &str) -> bool {
 /// through the accelerator table is its own change. Written down here so the
 /// next reader sees an assumption instead of an answer.
 pub fn binding(name: &str) -> bool {
-    let s = tabs::active_surface(tabs::frame_hwnd());
+    let s = tabs::active_surface(tabs::overlay_frame());
     if s.is_null() {
         return false;
     }
@@ -2725,7 +2758,7 @@ fn main() {
             configured_size,
             cw,
             ch,
-            tabs::state().initial.is_some()
+            tabs::window(hwnd).map(|w| w.initial.is_some()).unwrap_or(false)
         );
         session::restore(hwnd, !(has_x || has_y), !configured_size);
     }

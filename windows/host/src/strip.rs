@@ -128,13 +128,13 @@ fn tab_x(inset: i32, i: usize, tw: i32, scroll: i32) -> i32 {
 }
 
 /// The whole strip's content width, and how far it can be scrolled.
-fn extent(strip_w: i32, tw: i32, n: usize, overflowing: bool, inset: i32) -> (i32, i32) {
+fn extent(scale: f64, strip_w: i32, tw: i32, n: usize, overflowing: bool, inset: i32) -> (i32, i32) {
     let content = tw * n as i32;
     // The button's width is gone from the visible span too, not just from the
     // tabs' start: leaving it in here scrolls the strip 46px past its end,
     // and the symptom is a last tab that cannot be reached.
     let visible = if overflowing {
-        strip_w - inset - (OVERFLOW_W as f64 * tabs::scale_of()) as i32
+        strip_w - inset - (OVERFLOW_W as f64 * scale) as i32
     } else {
         strip_w - inset
     };
@@ -203,7 +203,7 @@ struct Geometry {
 
 fn slots(frame: HWND) -> Geometry {
     let (tabs_now, _) = tabs::strip_snapshot(frame);
-    let scale = tabs::scale_of();
+    let scale = tabs::scale_of(frame);
     let mut rc = RECT::default();
     unsafe {
         if GetClientRect(frame, &mut rc).is_err() {
@@ -220,11 +220,11 @@ fn slots(frame: HWND) -> Geometry {
     // strip *is* the caption. Their width comes out of the space the tabs
     // get; **this is the only thing about the shell the strip knows.** The
     // drag-position arithmetic below is untouched by it.
-    let strip_w = (rc.right - rc.left - crate::shell::reserved_right()).max(1);
+    let strip_w = (rc.right - rc.left - crate::shell::reserved_right(frame)).max(1);
     let n = tabs_now.len();
     let inset = menu_w(scale);
     let (tw, overflowing) = layout(strip_w, scale, n, inset);
-    let (_, max_scroll) = extent(strip_w, tw, n, overflowing, inset);
+    let (_, max_scroll) = extent(scale, strip_w, tw, n, overflowing, inset);
 
     let scroll = with_ui(frame, |u| {
         u.scroll = u.scroll.clamp(0, max_scroll);
@@ -574,7 +574,7 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         // The inset comes back out of the pointer position along with the
         // scroll, for the same reason: both shift where tab 0 starts, and a
         // drag that forgets either lands one slot off at every position.
-        let inset = menu_w(tabs::scale_of());
+        let inset = menu_w(tabs::scale_of(frame));
         let want = ((x + scroll - inset).max(0) / tw.max(1))
             .clamp(0, g.slots.len().saturating_sub(1) as i32) as usize;
         let at = g.slots.iter().position(|s| s.id == id);
@@ -589,7 +589,7 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
 pub fn on_wheel(frame: HWND, delta: i16) {
     // One notch moves about a tab and a half: enough to feel responsive,
     // little enough to stop where you meant to.
-    let step = (TAB_MIN_W as f64 * tabs::scale_of() * 1.5) as i32;
+    let step = (TAB_MIN_W as f64 * tabs::scale_of(frame) * 1.5) as i32;
     let by = -(delta as i32) / 120 * step;
     if by == 0 {
         return;
@@ -672,8 +672,8 @@ fn scroll_into_view(frame: HWND, id: TabId) {
             return;
         }
     }
-    let right_edge = rc.right - (OVERFLOW_W as f64 * tabs::scale_of()) as i32;
-    let inset = menu_w(tabs::scale_of());
+    let right_edge = rc.right - (OVERFLOW_W as f64 * tabs::scale_of(frame)) as i32;
+    let inset = menu_w(tabs::scale_of(frame));
     with_ui(frame, |u| {
         if slot.rect.left < inset {
             u.scroll += slot.rect.left - inset;
@@ -870,25 +870,25 @@ fn fill(hdc: HDC, r: &RECT, color: u32) {
 /// cannot say whether the window changed or the arithmetic did. That question
 /// came up the first time these two lines were compared across runs.
 pub fn state_line(frame: HWND) -> String {
-    let (tabs_now, active) = tabs::strip_snapshot(frame);
+    // The count is all the strip half needs now; the identities and the
+    // active index come from `state_fields`, which owns every model fact.
+    let (tabs_now, _) = tabs::strip_snapshot(frame);
     let g = slots(frame);
     let mut rc = RECT::default();
     unsafe {
         let _ = GetClientRect(frame, &mut rc);
     }
-    let listed: Vec<String> = tabs_now
-        .iter()
-        .map(|(id, t)| format!("{}:{}", id.0, t))
-        .collect();
+    let model = tabs::window(frame)
+        .map(|w| w.state_fields())
+        .unwrap_or_else(|| "frame=? (no such window)".to_string());
     let onscreen = g
         .slots
         .iter()
         .filter(|s| s.rect.right > 0 && s.rect.left < rc.right)
         .count();
-    let active_id = tabs_now.get(active).map(|(id, _)| id.0).unwrap_or(0);
-    let scale = tabs::scale_of();
+    let scale = tabs::scale_of(frame);
     let (tw, _) = layout(
-        (rc.right - crate::shell::reserved_right()).max(1),
+        (rc.right - crate::shell::reserved_right(frame)).max(1),
         scale,
         tabs_now.len(),
         menu_w(scale),
@@ -897,10 +897,18 @@ pub fn state_line(frame: HWND) -> String {
     // where the first tab starts, and a line that prints only the tab width
     // cannot say whether the inset was applied, skipped, or applied twice.
     format!(
-        "tabs=[{}] active={} n={} client={}x{} inset={} tab0={} tw={} scroll={} overflow={} onscreen={} paints={}",
-        listed.join(","),
-        active_id,
-        tabs_now.len(),
+        "{} client={}x{} inset={} tab0={} tw={} scroll={} overflow={} onscreen={} paints={}",
+        // **Every field of `WindowState`, from `WindowState` itself.** The
+        // model half of this line used to be spelled out here -- `tabs=`,
+        // `active=`, `n=` -- which meant a new per-window field had to be
+        // remembered in a second file. It is now produced by an exhaustive
+        // destructuring next to the struct, so forgetting is a compile error
+        // rather than a criterion that quietly stops covering something.
+        //
+        // What stays here is what belongs to the *strip* rather than the
+        // window: the client rectangle it was laid out in, the geometry that
+        // came out, and the interaction state.
+        model,
         rc.right - rc.left,
         rc.bottom - rc.top,
         menu_w(scale),
@@ -931,7 +939,7 @@ pub fn paint(frame: HWND) {
     with_ui(frame, |u| u.paints += 1);
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(frame, &mut rc) };
-    let scale = tabs::scale_of();
+    let scale = tabs::scale_of(frame);
     let sh = strip_h(scale);
     let strip = RECT { left: 0, top: 0, right: rc.right, bottom: sh };
 
@@ -1650,7 +1658,7 @@ pub fn on_nc_right_click(frame: HWND, screen_x: i32, screen_y: i32) -> bool {
     unsafe {
         let _ = ScreenToClient(frame, &mut pt);
     }
-    let sh = strip_h(tabs::scale_of());
+    let sh = strip_h(tabs::scale_of(frame));
     if pt.y < 0 || pt.y >= sh || pt.x < 0 {
         return false;
     }
@@ -1661,7 +1669,7 @@ pub fn on_nc_right_click(frame: HWND, screen_x: i32, screen_y: i32) -> bool {
         }
     }
     // The minimise/maximise/close buttons keep their own behaviour.
-    if pt.x >= rc.right - crate::shell::reserved_right() {
+    if pt.x >= rc.right - crate::shell::reserved_right(frame) {
         return false;
     }
     on_right_click(frame, pt.x, pt.y);
@@ -1718,7 +1726,7 @@ fn reachable_point(frame: HWND, index: usize) -> Result<(i32, i32), String> {
             return Err("no client rect".to_string());
         }
     }
-    let strip_w = (rc.right - rc.left - crate::shell::reserved_right()).max(1);
+    let strip_w = (rc.right - rc.left - crate::shell::reserved_right(frame)).max(1);
     let y = (s.rect.top + s.rect.bottom) / 2;
     let covers: Vec<(i32, i32)> = [Some(g.new), g.overflow]
         .into_iter()
@@ -1919,7 +1927,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
         // first slot starts after the button; `state_line` now prints both
         // `inset=` and `tab0=` so the two can be compared without an image.
         27 => {
-            let scale = tabs::scale_of();
+            let scale = tabs::scale_of(frame);
             let want = menu_w(scale);
             let got = centre_of(frame, 0)
                 .and_then(|_| {
@@ -2010,7 +2018,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
         // point one pixel past it must. Without this pair, step 28 passes on
         // an implementation that has no inset at all.
         29 => {
-            let scale = tabs::scale_of();
+            let scale = tabs::scale_of(frame);
             let w = menu_w(scale);
             let y = strip_h(scale) / 2;
             let on_button = tab_menu_target(frame, w / 2, y).is_some();

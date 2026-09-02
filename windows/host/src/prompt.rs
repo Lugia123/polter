@@ -102,7 +102,9 @@ const COL_TEXT: u32 = 0x00ffffff;
 /// confidently wrong -- which is the shape of the bug that made read-only
 /// per-surface.
 pub fn is_float_on_top() -> bool {
-    let frame = crate::tabs::frame_hwnd();
+    // The menu tick reports the window the panel logic acts on, which is the
+    // same gap `float_window` has; see `tabs::overlay_frame`.
+    let frame = crate::tabs::overlay_frame();
     if frame.0.is_null() {
         return false;
     }
@@ -112,7 +114,10 @@ pub fn is_float_on_top() -> bool {
 
 /// Put the window above the others, or stop. **Main thread only.**
 fn float_window(mode: i32) {
-    let frame = crate::tabs::frame_hwnd();
+    // **Floats window 1, wherever the toggle was used.** `float_window` is a
+    // per-window operation with no window in the action; see
+    // `tabs::overlay_frame` for why that is a named gap rather than a choice.
+    let frame = crate::tabs::overlay_frame();
     if frame.0.is_null() {
         logf!("[action] float_window {mode}: no frame window");
         return;
@@ -234,7 +239,13 @@ pub fn prompt_title(scope: i32, surface: usize) {
     // **Fetched before the first thing that can fail**, so the lines below can
     // say which window did not get a box. The value is not used for anything
     // else until the box is built.
-    let frame = crate::tabs::frame_hwnd();
+    //
+    // **Answered from the surface, not from "the" window.** The rename was
+    // asked for on a particular terminal, and that terminal is in exactly one
+    // window -- so the box belongs over that window, and the lines below name
+    // it correctly even when the person is renaming a tab in window 2.
+    let frame = crate::tabs::frame_of_surface(surface as crate::ffi::Surface)
+        .unwrap_or_else(crate::tabs::overlay_frame);
 
     let Some((action, label)) = scope_of(scope) else {
         // Said rather than swallowed: a new scope in the core would otherwise
@@ -250,7 +261,7 @@ pub fn prompt_title(scope: i32, surface: usize) {
         plogf!("[prompt] no frame window; {label} box not shown");
         return;
     }
-    let scale = crate::tabs::scale_of();
+    let scale = crate::tabs::scale_of(frame);
     let s = |v: i32| ((v as f64) * scale).round() as i32;
 
     // The tab's current name, so the box opens on what is being changed

@@ -128,14 +128,15 @@ pub fn on_readonly_for(surface: usize, on: bool) {
 /// splits, and it would be wrong exactly while a split is being made.
 fn pane_rect_for(surface: usize) -> Option<RECT> {
     let hwnd = {
-        let st = crate::tabs::state();
-        // Every window: the key is a surface, which is unique in the process.
-        st.windows
-            .iter()
-            .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.panes.iter())
-            .find(|p| p.surface == surface)
-            .map(|p| HWND(p.hwnd as *mut c_void))?
+        // Every window: the key is a surface, which is unique in the process,
+        // so this is a search rather than a choice of window.
+        crate::tabs::with_windows(|ws| {
+            ws.iter()
+                .flat_map(|w| w.tabs.iter())
+                .flat_map(|t| t.panes.iter())
+                .find(|p| p.surface == surface)
+                .map(|p| HWND(p.hwnd as *mut c_void))
+        })?
     };
     let mut r = RECT::default();
     if unsafe { GetWindowRect(hwnd, &mut r) }.is_err() {
@@ -150,15 +151,15 @@ fn pane_rect_for(surface: usize) -> Option<RECT> {
 /// leave its `true` behind, and surface pointers get reused.
 fn prune_and_count() -> usize {
     let live: Vec<usize> = {
-        let st = crate::tabs::state();
         // Every window: a surface that closed in window 2 has to leave this
         // list too, or its stale `read-only` sticks to a reused pointer.
-        st.windows
-            .iter()
-            .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.panes.iter())
-            .map(|p| p.surface)
-            .collect()
+        crate::tabs::with_windows(|ws| {
+            ws.iter()
+                .flat_map(|w| w.tabs.iter())
+                .flat_map(|t| t.panes.iter())
+                .map(|p| p.surface)
+                .collect()
+        })
     };
     let Ok(mut v) = READONLY.lock() else { return 0 };
     let before = v.len();
@@ -196,7 +197,7 @@ fn grid() -> Option<(i32, i32, i32, i32, i32, i32)> {
     // process and has no frame of its own to ask about; which window it
     // should be measuring is a question for whoever gives the HUD a window,
     // and it is left visibly unanswered rather than quietly answered.
-    let hwnd = crate::tabs::active_hwnd(crate::tabs::frame_hwnd());
+    let hwnd = crate::tabs::active_hwnd(crate::tabs::overlay_frame());
     if hwnd.0.is_null() {
         return None;
     }
@@ -333,7 +334,7 @@ fn show_size(me: HWND) {
     });
 
     unsafe {
-        let frame = crate::tabs::frame_hwnd();
+        let frame = crate::tabs::overlay_frame();
         let mut fr = RECT::default();
         if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
             return;
