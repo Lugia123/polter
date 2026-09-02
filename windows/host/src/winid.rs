@@ -40,14 +40,40 @@ use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT};
 /// a window as the one the message loop uses.
 static FRAMES: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
-/// A window has been created. **Called at creation, not at first sighting.**
+/// A window has been created: **both registries learn about it here, and
+/// there is nowhere to stand between them.**
 ///
-/// `of` assigns a name lazily, which is enough for a log line but not for
-/// counting: a window that has not logged yet does not exist as far as a lazy
-/// registry is concerned, and "how many windows are there" is exactly the
-/// question the shutdown rule turns on.
+/// A frame is recorded in two places -- `FRAMES` for its identity and number,
+/// `tabs::Registry` for its state -- and they are rightly separate things
+/// (see `per-window.md` §3). But two registrations written as two statements
+/// leave a moment when one has happened and the other has not, and that
+/// moment is a place code can be added later.
+///
+/// **The moment was real and it was wide.** Until `57c7384a9` the two calls
+/// sat on either side of `ShowWindow`, which dispatches messages
+/// synchronously -- so window procedures genuinely ran while `tabs` knew
+/// about the frame and `winid` did not. Moving them adjacent narrowed it to
+/// "between two statements with no message pump", which has no observer.
+/// **That is a fact about today's code, not about the code**: one call that
+/// pumps messages, added between them by somebody who has not read this,
+/// puts it back -- and nothing goes red when they do. `wlogf!` would print a
+/// perfectly good window number (`FRAMES` already says yes), and
+/// `window-tagged-logs.py` counts `hlogf!` as classified wherever it sits.
+///
+/// So the two are one act with one name. **The order inside is load-bearing**
+/// and is the only reason this is a function rather than a comment:
+/// `tabs::add_window` logs through `wlogf!`, which asks this module for a
+/// number, so the number has to exist before it runs.
+///
+/// The remaining seam is that `tabs::add_window` is still reachable on its
+/// own from anywhere in the crate. Rust has no narrower word than
+/// `pub(crate)` for "only this function may call you", so that half is a
+/// sentence on `add_window` rather than a rule the compiler keeps -- said
+/// here so the gap is known rather than assumed shut.
 pub fn created(frame: HWND) -> u32 {
     let id = assign(frame);
+    // **Second, not first.** See above: `add_window` logs with `wlogf!`.
+    crate::tabs::add_window(frame);
     crate::logf!("[win] w{} created; {} window(s)", id, count());
     id
 }
@@ -93,6 +119,70 @@ pub fn destroyed(frame: HWND) -> usize {
     left
 }
 
+/// The whole of what [`empty_agrees`] objects to, as a function of two
+/// numbers.
+///
+/// **Separated so it can be pinned.** The one way this invariant goes wrong
+/// without anybody noticing is by quietly widening from "they disagree about
+/// *empty*" to "they are not equal" -- a one-character edit, and the result
+/// fires on the two legitimate disagreements every window has. The tests
+/// below hold both halves: that `0` vs `n` is caught, and that `n` vs `m` is
+/// **not**.
+fn disagrees_about_empty(mine: usize, theirs: usize) -> bool {
+    (mine == 0) != (theirs == 0)
+}
+
+/// **Do the two registries agree that there are no windows left?**
+///
+/// Called at the end of `WM_DESTROY`, once both have been updated.
+///
+/// **It asserts zero and nothing else, and that restraint is the whole
+/// design.** `winid::FRAMES` and `tabs::Registry` are legitimately two
+/// different things -- one holds identity, one holds state -- and they are
+/// *supposed* to disagree for a moment twice in every window's life: between
+/// `created` and `tabs::add_window` on the way in, and between
+/// `window_finished` and `tabs::remove_window` on the way out. An invariant
+/// that demanded the two counts be equal at all times would fire on the
+/// normal path, and **an invariant that cries wolf is switched off, which
+/// leaves less behind than never having written it.**
+///
+/// Zero is different. Zero is the value the shutdown rule turns on, it is
+/// checked at the one moment both registries have finished with this window,
+/// and there is no legitimate way for one of them to be empty while the other
+/// is not.
+///
+/// **This exists because the disagreement was already in the log and nobody
+/// read it as one.** On the run that would not exit, these two lines were
+/// printed one after the other:
+///
+/// ```text
+/// w2 [win] 1 window(s) remain; the process stays
+/// w2 [win] state dropped; 0 window(s) tracked
+/// ```
+///
+/// One and zero, adjacent, and the contradiction *was* the answer -- but
+/// nothing anywhere said those two numbers had to agree, so a reader takes
+/// agreement as corroboration and disagreement as noise. **Two numbers
+/// printed side by side are not a cross-check until something says they must
+/// match.** This is that something.
+pub fn empty_agrees(frame: HWND) {
+    let mine = count();
+    let theirs = crate::tabs::with_windows(|ws| ws.len());
+    if !disagrees_about_empty(mine, theirs) {
+        return;
+    }
+    // process-wide: how many windows the process has left is not a fact about
+    // any one window, and by this point the window this ran for is gone
+    crate::plogf!(
+        "[win] REGISTRIES DISAGREE: winid has {} window(s), tabs has {} -- \
+         one of them is empty and the other is not, just after frame {:?} \
+         was destroyed. The quit decision reads the first of those two.",
+        mine,
+        theirs,
+        frame.0
+    );
+}
+
 /// Every window, in the order they were created.
 ///
 /// Handed out so a caller can print one line per window **at one instant**.
@@ -107,7 +197,17 @@ pub fn all() -> Vec<HWND> {
 }
 
 /// How many windows exist right now.
-pub fn count() -> usize {
+///
+/// **Private, and that is the point of it being private.** This number is
+/// read by exactly one rule -- "the last window closed, so quit" -- and until
+/// now it was `pub` with no caller outside this file. "Only one reader" was
+/// therefore a fact about today rather than about the code, and a fact about
+/// today stops being true without anything saying so.
+///
+/// A caller elsewhere that wants to know whether any windows are left is
+/// asking the question [`empty_agrees`] answers, and should ask it there --
+/// where the two registries that could disagree about it are both consulted.
+fn count() -> usize {
     FRAMES.lock().map(|f| f.len()).unwrap_or(0)
 }
 
@@ -295,11 +395,18 @@ pub fn of(frame: HWND) -> u32 {
 /// `w1`, for embedding in a line.
 /// The terminal window a handle belongs to, when it belongs to one.
 ///
-/// **`of` will name any handle it is given**, and that is the trap this
-/// closes. Hand it a pane and it mints a number for a window that does not
-/// exist; the log then has a `w4` nobody can find, which reads exactly like a
-/// real one. So a handle is walked to its root and the root is *checked
-/// against the registry* rather than assumed to be in it.
+/// **This asks a different registry from [`of`], and the difference is the
+/// whole reason it exists.** `of` answers from `FRAMES` -- identity -- and it
+/// answers about the handle it is given, whatever that handle is. A pane is
+/// not a frame, so `of` would say `0` for it and the line would be tagged
+/// `w?`: not wrong, but not an answer either. This walks the handle to its
+/// root and checks that root against the *state* registry, so the caller gets
+/// "the window this thing lives in" rather than "this thing".
+///
+/// (It used to close a sharper trap. `of` minted a number for any handle it
+/// was handed, so a pane reaching it invented a window that does not exist --
+/// and that entry never left `FRAMES`, whose size decides when the process
+/// quits. `of` only looks now; `57c7384a9`.)
 ///
 /// **`None` is a real answer, not a failure**, and it has two causes the port
 /// actually has:
@@ -544,5 +651,46 @@ mod registry_tests {
         assert_eq!(destroyed(w), 0);
         assert_eq!(destroyed(w), 0);
         assert_eq!(count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod invariant_tests {
+    use super::disagrees_about_empty as d;
+
+    /// The case it exists for: one registry empty, the other not. This is
+    /// what the log showed on the run that would not exit -- `1` next to
+    /// `0`, adjacent lines, and nothing saying they had to agree.
+    #[test]
+    fn one_empty_and_one_not_is_a_disagreement() {
+        assert!(d(1, 0));
+        assert!(d(0, 1));
+        assert!(d(0, 3));
+        assert!(d(7, 0));
+    }
+
+    /// **The half that keeps it quiet, and the half that would be lost by a
+    /// one-character edit.**
+    ///
+    /// `(mine == 0) != (theirs == 0)` becoming `mine != theirs` looks like a
+    /// simplification and is not: every window legitimately spends two short
+    /// moments counted by one registry and not the other -- between `created`
+    /// and `tabs::add_window`, and between `window_finished` and
+    /// `tabs::remove_window`. An invariant that fired there would be switched
+    /// off, and a switched-off invariant leaves less behind than one never
+    /// written.
+    #[test]
+    fn unequal_but_both_present_is_not_a_disagreement() {
+        assert!(!d(1, 2), "the create-side gap must not fire this");
+        assert!(!d(2, 1), "the destroy-side gap must not fire this");
+        assert!(!d(3, 9));
+    }
+
+    /// Agreement, both directions. The zero case is the one the shutdown rule
+    /// reads; the non-zero case is every other moment.
+    #[test]
+    fn agreement_is_silent() {
+        assert!(!d(0, 0));
+        assert!(!d(4, 4));
     }
 }

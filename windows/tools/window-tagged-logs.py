@@ -302,8 +302,12 @@ def bad_sites(src: str, name: str):
         # `hlogf!(hwnd, ...)` is the same shape one level down: `wlogf!` when
         # the handle resolves to a *registered* frame and `plogf!` when it does
         # not, with the reason written once at the macro. The resolution is the
-        # point -- `winid::of` names any handle it is given, so a pane or a null
-        # would otherwise mint a window number for a window that does not exist.
+        # point: `wlogf!` answers "which window" from the *identity* registry
+        # and `hlogf!` from the *state* one, so a pane or a stale handle gets a
+        # line that says it is about no window rather than one that names the
+        # wrong one. (`winid::of` used to mint a number for any handle it was
+        # handed, which is how a destroyed window got back into the count that
+        # decides when to quit; it only looks now.)
         if macro in ("wlogf", "alogf", "hlogf") or ALREADY_NAMED.search(args):
             continue
         if macro == "plogf":

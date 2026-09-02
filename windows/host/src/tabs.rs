@@ -808,7 +808,20 @@ pub fn post_op(frame: HWND, op: Op, from: &'static str) {
 /// tell "a window exists" from "somebody asked about a handle", and both of
 /// the questions this file has to answer -- how many windows, and whose tabs
 /// -- turn on that difference.
-pub fn add_window(frame: HWND) {
+/// **Called only by `winid::created`, which registers the other half.**
+///
+/// A window is recorded in two registries and they must be written as one
+/// act: a frame that is in `tabs` and not in `winid` (or the reverse) is a
+/// state every reader can observe and none of them expects, and the gap
+/// between two statements is where somebody later adds a third.
+/// `winid::created` is that one act; see its documentation for what the gap
+/// used to cost and why nothing goes red when it comes back.
+///
+/// `pub(crate)` is as narrow as Rust goes here -- it stops other crates, not
+/// other modules -- so "only `winid::created` calls this" is a sentence and
+/// not a rule the compiler keeps. It is written down because an unwritten
+/// convention and an unnoticed second caller look the same from here.
+pub(crate) fn add_window(frame: HWND) {
     let key = frame.0 as isize;
     let n = with_windows_mut(|ws| {
         if ws.iter().any(|w| w.frame == key) {

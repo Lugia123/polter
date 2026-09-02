@@ -667,23 +667,19 @@ fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
     if primary {
         HWND_G.store(hwnd.0 as *mut c_void, Ordering::Release);
     }
-    // **First, because from here on every line about this window wants its
-    // number.** `winid::of` no longer mints one for a handle it has not seen
-    // -- that is what let a log line put a destroyed window back into the
-    // count -- so a frame that is not registered yet tags its lines `w?`.
-    // Everything below logs: `add_window` says how many windows are tracked,
-    // and `ShowWindow` dispatches `WM_SIZE`/`WM_PAINT` into handlers that log
-    // too. Registering here costs nothing and keeps those lines nameable.
+    // **Both registries, in one call, before anything can ask either of
+    // them.** `winid::created` records the identity *and* the state -- see
+    // its own documentation for why those two cannot be two statements here.
+    //
+    // It has to happen before `ShowWindow`, because showing a window
+    // dispatches messages -- `WM_SIZE`, `WM_PAINT` -- and every one of those
+    // handlers asks about the window's tabs. A frame that is visible before
+    // it is tracked spends those messages being told it does not exist, and
+    // the strip paints empty.
     //
     // Nothing between `CreateWindowExW` and this point can be counted as a
     // window by anybody, because nothing has asked yet.
     winid::created(hwnd);
-    // **Before `ShowWindow`, because showing a window dispatches messages**
-    // -- `WM_SIZE`, `WM_PAINT` -- and every one of those handlers asks this
-    // registry for the window's tabs. A frame that is visible before it is
-    // tracked spends those messages being told it does not exist, and the
-    // strip paints empty.
-    tabs::add_window(hwnd);
     // **This window's own scale, measured from this window.** It used to be
     // one number for the process written only by the first frame, so a second
     // frame on a different display drew at the first one's DPI. Set after
@@ -2191,6 +2187,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // `HWND`s, so an entry left under a dead handle can be found
                 // again by the next window that gets it.
                 strip::forget(hwnd);
+                // **Last, because it is the only moment both registries have
+                // finished with this window.** Anywhere earlier it would be
+                // reading one of the two legitimate disagreements. See
+                // `winid::empty_agrees` for why it checks zero and nothing
+                // else.
+                winid::empty_agrees(hwnd);
                 LRESULT(0)
             }
 
