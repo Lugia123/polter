@@ -12,13 +12,204 @@
 //! cross-compiled from. But it must not be silent either -- **an exe with no
 //! manifest is exactly the defect this file exists to fix**, and it looks
 //! completely normal until somebody notices the controls are from 1995.
+//!
+//! **What happens when the manifest is there and broken.** The build fails,
+//! and that difference is deliberate. A missing manifest costs you the 1995
+//! look; a malformed one costs you the program: the loader refuses an exe
+//! whose manifest does not parse, so it does not start at all, and nothing
+//! about the build says so. `windres` embeds the bytes without reading them,
+//! the `.rsrc` section is present, the manifest text is inside the exe, and
+//! `cargo build` exits 0 -- every check that asks "is it in there" passes.
+//! None of them ask "does it still run".
+//!
+//! That is not a hypothetical either. The manifest shipped with two hyphens in
+//! a row inside its own comment, which XML forbids, and the resulting exe
+//! could not be launched. The prose in a comment was inert to the loader in
+//! the sense that mattered to the reader, and very much not inert to the
+//! parser.
 
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Where a manifest stops being well formed, as `(line, column, what)`.
+///
+/// **What this reads, and what it does not.** It is the small part of XML a
+/// manifest is: elements, attributes, comments, one processing instruction,
+/// no text content. It checks the rules that a hand-written manifest actually
+/// breaks -- two hyphens inside a comment, a comment that never ends, a tag
+/// that never closes, mismatched or unclosed element names, an unquoted or
+/// unterminated attribute value, more than one root -- and reports the first
+/// one with a line and column, the way a parser would.
+///
+/// It is not a validator. It says nothing about whether the assembly means
+/// what it should: a manifest that parses and declares the wrong version, or
+/// omits the dependency entirely, passes here and is a matter for the reader.
+/// `windows/tools/manifest-parses.py` runs a real XML parser over the same
+/// file for a second opinion; this one is here because it must run on every
+/// build, with no interpreter and no crate to fetch.
+fn manifest_fault(src: &str) -> Option<(usize, usize, String)> {
+    let b: Vec<char> = src.chars().collect();
+    let (mut line, mut col, mut i) = (1usize, 1usize, 0usize);
+    let mut stack: Vec<(String, usize, usize)> = Vec::new();
+    let mut roots = 0usize;
+    // Advance one character, keeping the position a person can look at.
+    macro_rules! bump {
+        ($n:expr) => {{
+            for _ in 0..$n {
+                if i < b.len() {
+                    if b[i] == '\n' {
+                        line += 1;
+                        col = 1;
+                    } else {
+                        col += 1;
+                    }
+                    i += 1;
+                }
+            }
+        }};
+    }
+    let starts = |i: usize, s: &str| src[..].chars().skip(i).take(s.chars().count()).eq(s.chars());
+
+    while i < b.len() {
+        if starts(i, "<!--") {
+            let (l0, c0) = (line, col);
+            bump!(4);
+            loop {
+                if i >= b.len() {
+                    return Some((l0, c0, "a comment that is never closed".into()));
+                }
+                if starts(i, "-->") {
+                    bump!(3);
+                    break;
+                }
+                if starts(i, "--") {
+                    return Some((
+                        line,
+                        col,
+                        "two hyphens in a row inside a comment. XML forbids the \
+                         sequence, the loader refuses the exe, and nothing else in \
+                         the build notices"
+                            .into(),
+                    ));
+                }
+                if b[i] == '-' && starts(i + 1, "->") {
+                    return Some((line, col, "a comment ending in a hyphen".into()));
+                }
+                bump!(1);
+            }
+        } else if starts(i, "<?") {
+            while i < b.len() && !starts(i, "?>") {
+                bump!(1);
+            }
+            if i >= b.len() {
+                return Some((line, col, "a processing instruction with no `?>`".into()));
+            }
+            bump!(2);
+        } else if b[i] == '<' {
+            let (l0, c0) = (line, col);
+            bump!(1);
+            let closing = i < b.len() && b[i] == '/';
+            if closing {
+                bump!(1);
+            }
+            let mut name = String::new();
+            while i < b.len() && !b[i].is_whitespace() && b[i] != '>' && b[i] != '/' {
+                name.push(b[i]);
+                bump!(1);
+            }
+            if name.is_empty() {
+                return Some((l0, c0, "a `<` that begins no tag".into()));
+            }
+            // Attributes, and the quoting that goes with them.
+            let mut selfclose = false;
+            loop {
+                if i >= b.len() {
+                    return Some((l0, c0, format!("`<{name}` is never closed by `>`")));
+                }
+                if b[i] == '"' || b[i] == '\'' {
+                    let q = b[i];
+                    let (ql, qc) = (line, col);
+                    bump!(1);
+                    while i < b.len() && b[i] != q {
+                        bump!(1);
+                    }
+                    if i >= b.len() {
+                        return Some((ql, qc, "an attribute value with no closing quote".into()));
+                    }
+                    bump!(1);
+                    continue;
+                }
+                if b[i] == '/' {
+                    selfclose = true;
+                    bump!(1);
+                    continue;
+                }
+                if b[i] == '>' {
+                    bump!(1);
+                    break;
+                }
+                selfclose = false;
+                bump!(1);
+            }
+            if closing {
+                match stack.pop() {
+                    Some((open, _, _)) if open == name => {}
+                    Some((open, ol, oc)) => {
+                        return Some((
+                            l0,
+                            c0,
+                            format!("`</{name}>` closes `<{open}>`, opened at line {ol} column {oc}"),
+                        ))
+                    }
+                    None => return Some((l0, c0, format!("`</{name}>` closes nothing"))),
+                }
+            } else if !selfclose {
+                if stack.is_empty() {
+                    roots += 1;
+                    if roots > 1 {
+                        return Some((l0, c0, format!("`<{name}>` is a second root element")));
+                    }
+                }
+                stack.push((name, l0, c0));
+            } else if stack.is_empty() {
+                roots += 1;
+                if roots > 1 {
+                    return Some((l0, c0, format!("`<{name}/>` is a second root element")));
+                }
+            }
+        } else {
+            bump!(1);
+        }
+    }
+    if let Some((open, ol, oc)) = stack.pop() {
+        return Some((ol, oc, format!("`<{open}>` is never closed")));
+    }
+    if roots == 0 {
+        return Some((1, 1, "no root element at all".into()));
+    }
+    None
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=polter.rc");
     println!("cargo:rerun-if-changed=polter.manifest");
+
+    // **Before the target check, on purpose.** A manifest that does not parse
+    // is broken on every machine, and the one that reads it last is the
+    // loader on a user's desktop. Failing here is the only moment where the
+    // fault is cheap.
+    let manifest = std::fs::read_to_string("polter.manifest")
+        .unwrap_or_else(|e| panic!("polter.manifest could not be read: {e}"));
+    if let Some((line, col, what)) = manifest_fault(&manifest) {
+        panic!(
+            "polter.manifest is not well-formed XML: line {line} column {col}: {what}.\n\
+             \n\
+             This is a hard failure and not a warning. An exe with a malformed \
+             manifest does not start, and every other signal is green: windres \
+             embeds the bytes without reading them, the .rsrc section is there, \
+             the text is inside the exe, and the build exits 0."
+        );
+    }
 
     let target = std::env::var("TARGET").unwrap_or_default();
     if !target.contains("windows") {

@@ -53,10 +53,19 @@ const HEIGHT: i32 = 38;
 const PAD: i32 = 8;
 const BTN_W: i32 = 22;
 
-const COL_BG: u32 = 0x00201f1d;
-const COL_TEXT: u32 = 0x00ffffff;
-const COL_DIM: u32 = 0x00a0a0a0;
-const COL_NONE: u32 = 0x006464e0; // BGR: a muted red for "no matches"
+use crate::theme;
+
+/// **The one colour with no system source**, for the same reason
+/// `theme::warn` has none: nothing in the palette means "nothing matched".
+/// It gives way to plain text under high contrast, where a fixed red is what
+/// stops being readable.
+fn col_none() -> u32 {
+    if crate::theme::high_contrast() {
+        crate::theme::text()
+    } else {
+        0x0064_64e0
+    }
+}
 
 static HWND_SEARCH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -428,6 +437,22 @@ extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 LRESULT(0)
             }
 
+            // The needle box is a native `EDIT`: it asks its parent what
+            // colours to use and honours the answer, which is the whole of
+            // making it dark. Under high contrast `ctl_color` answers `None`,
+            // this falls through, and the system's colours stand.
+            WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
+                match crate::theme::ctl_color(windows::Win32::Graphics::Gdi::HDC(
+                    wp.0 as *mut std::ffi::c_void,
+                )) {
+                    Some(b) => LRESULT(b.0 as isize),
+                    None => DefWindowProcW(hwnd, msg, wp, lp),
+                }
+            }
+            WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                crate::theme::repaint_all(hwnd);
+                LRESULT(0)
+            }
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 paint(hwnd);
@@ -523,7 +548,7 @@ fn paint(hwnd: HWND) {
         let dpi = GetDpiForWindow(hwnd).max(96) as i32;
         let sc = |v: i32| v * dpi / 96;
 
-        let bg = CreateSolidBrush(COLORREF(COL_BG));
+        let bg = CreateSolidBrush(COLORREF(theme::bg()));
         FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg.into());
         SetBkMode(hdc, TRANSPARENT);
@@ -537,10 +562,10 @@ fn paint(hwnd: HWND) {
             // The counter. Three distinct states, and they must look
             // different: not answered yet, answered zero, answered n.
             let (label, colour) = match (st.total, st.selected) {
-                (None, _) => (String::new(), COL_DIM),
-                (Some(0), _) => ("0/0".to_string(), COL_NONE),
-                (Some(t), Some(s)) => (format!("{}/{}", s, t), COL_TEXT),
-                (Some(t), None) => (format!("-/{}", t), COL_DIM),
+                (None, _) => (String::new(), theme::dim()),
+                (Some(0), _) => ("0/0".to_string(), col_none()),
+                (Some(t), Some(s)) => (format!("{}/{}", s, t), theme::text()),
+                (Some(t), None) => (format!("-/{}", t), theme::dim()),
             };
 
             let next_x = rc.right - sc(PAD) - sc(BTN_W);
@@ -558,7 +583,7 @@ fn paint(hwnd: HWND) {
                 DrawTextW(hdc, &mut wide, &mut tr, DT_RIGHT | DT_SINGLELINE);
             }
 
-            SetTextColor(hdc, COLORREF(COL_DIM));
+            SetTextColor(hdc, COLORREF(theme::dim()));
             for (x, glyph) in [(prev_x, "\u{2039}"), (next_x, "\u{203A}")] {
                 let mut g: Vec<u16> = glyph.encode_utf16().collect();
                 let mut br = RECT {
