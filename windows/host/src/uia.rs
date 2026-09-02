@@ -586,7 +586,18 @@ impl IRawElementProviderFragment_Impl for WindowRoot_Impl {
         }
     }
 
+    /// **Gated like every other entry point on this provider.**
+    ///
+    /// The gate is not here for uniqueness -- `UiaAppendRuntimeId` gets that
+    /// from the framework. It is here because `on_get_object` refuses a
+    /// window that has left the registry, and a provider whose two entry
+    /// points give different answers to "is this still a window" is the same
+    /// shape as a fact with two owners. A UIA client holds its elements after
+    /// they are gone and keeps asking; this is the method it asks with.
     fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        if !live(self.hwnd()) {
+            return Err(gone());
+        }
         runtime_id(winid::of(self.hwnd()), KIND_ROOT, 0)
     }
 
@@ -713,7 +724,18 @@ impl IRawElementProviderFragment_Impl for TabList_Impl {
         }
     }
 
+    /// **Gated like every other entry point on this provider.**
+    ///
+    /// The gate is not here for uniqueness -- `UiaAppendRuntimeId` gets that
+    /// from the framework. It is here because `on_get_object` refuses a
+    /// window that has left the registry, and a provider whose two entry
+    /// points give different answers to "is this still a window" is the same
+    /// shape as a fact with two owners. A UIA client holds its elements after
+    /// they are gone and keeps asking; this is the method it asks with.
     fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        if !live(self.hwnd()) {
+            return Err(gone());
+        }
         runtime_id(winid::of(self.hwnd()), KIND_TABLIST, 0)
     }
     fn BoundingRectangle(&self) -> WResult<UiaRect> {
@@ -793,7 +815,18 @@ impl IRawElementProviderFragment_Impl for TabItem_Impl {
             _ => Err(gone()),
         }
     }
+    /// **Gated like every other entry point on this provider.**
+    ///
+    /// The gate is not here for uniqueness -- `UiaAppendRuntimeId` gets that
+    /// from the framework. It is here because `on_get_object` refuses a
+    /// window that has left the registry, and a provider whose two entry
+    /// points give different answers to "is this still a window" is the same
+    /// shape as a fact with two owners. A UIA client holds its elements after
+    /// they are gone and keeps asking; this is the method it asks with.
     fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        if !live(self.hwnd()) {
+            return Err(gone());
+        }
         runtime_id(winid::of(self.hwnd()), KIND_TABITEM, self.tab.0)
     }
     fn BoundingRectangle(&self) -> WResult<UiaRect> {
@@ -887,7 +920,18 @@ impl IRawElementProviderFragment_Impl for Document_Impl {
             _ => Err(gone()),
         }
     }
+    /// **Gated like every other entry point on this provider.**
+    ///
+    /// The gate is not here for uniqueness -- `UiaAppendRuntimeId` gets that
+    /// from the framework. It is here because `on_get_object` refuses a
+    /// window that has left the registry, and a provider whose two entry
+    /// points give different answers to "is this still a window" is the same
+    /// shape as a fact with two owners. A UIA client holds its elements after
+    /// they are gone and keeps asking; this is the method it asks with.
     fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        if !live(self.hwnd()) {
+            return Err(gone());
+        }
         runtime_id(winid::of(self.hwnd()), KIND_DOCUMENT, self.tab.0)
     }
     fn BoundingRectangle(&self) -> WResult<UiaRect> {

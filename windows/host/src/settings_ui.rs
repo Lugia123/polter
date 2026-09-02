@@ -96,7 +96,7 @@ fn head_layout(win: HWND, p: &Plugin) -> (RECT, RECT, i32) {
         }
         unsafe {
             let hdc = GetDC(Some(win));
-            let font = ST.with(|c| c.borrow().font);
+            let font = font();
             let old = SelectObject(hdc, font.into());
             let mut wide: Vec<u16> = text.encode_utf16().collect();
             // `DT_CALCRECT` fills the rectangle instead of drawing; the width
@@ -185,6 +185,32 @@ static HWND_SETTINGS: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_ERRORS: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_ABOUT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
+/// The page's font.
+///
+/// **Out of `ST` on purpose, and this is the fix for a crash rather than a
+/// tidy-up.** It is written once in `init` and read nine times, and three of
+/// those reads are on the *drawing* path -- `draw_button`, the owner-drawn
+/// combo item, the paint handlers. The drawing path is entered synchronously
+/// from inside our own code: `SetWindowTextW` on a custom-drawn `BUTTON`
+/// sends `WM_NOTIFY`/`NM_CUSTOMDRAW` to **this window's procedure** before it
+/// returns. So a `borrow_mut` held across that call met a `borrow` in
+/// `draw_button`, and the page aborted the instant it was opened with any
+/// plugin installed.
+///
+/// Narrowing the borrow would have fixed that one call. Taking the value out
+/// of the cell means **the drawing path cannot reach the mutable state at
+/// all** -- there is no borrow to conflict with, so there is nothing to keep
+/// right in a future edit. An `AtomicPtr` rather than a `Cell` for the same
+/// reason the three window handles above are: a value read from a paint that
+/// might one day arrive on another thread should not silently be a different
+/// value there, and a null `HFONT` is *legal* (it means "the system font"),
+/// so that mistake would not announce itself.
+static FONT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+fn font() -> HFONT {
+    HFONT(FONT.load(Ordering::Acquire))
+}
+
 struct Field {
     /// Parameter name, as the manifest and the settings file spell it.
     name: String,
@@ -194,7 +220,6 @@ struct Field {
 
 #[derive(Default)]
 struct State {
-    font: HFONT,
     plugins: Vec<Plugin>,
     selected: usize,
     visible: bool,
@@ -326,10 +351,7 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
             w!("Segoe UI"),
         );
 
-        ST.with(|c| {
-            let mut st = c.borrow_mut();
-            st.font = font;
-        });
+        FONT.store(font.0, Ordering::Release);
         let ha = match make(w!("PolterAbout"), 420, 220) {
             Ok(h) => h,
             Err(e) => {
@@ -430,7 +452,7 @@ unsafe fn draw_button(cd: &NMCUSTOMDRAW) {
         let is_check = kind == BS_AUTOCHECKBOX || kind == BS_CHECKBOX;
 
         let mut rc = cd.rc;
-        let font = ST.with(|c| c.borrow().font);
+        let font = font();
         let old_font = SelectObject(hdc, font.into());
         SetBkMode(hdc, TRANSPARENT);
 
@@ -599,7 +621,7 @@ unsafe fn draw_combo_item(dis: &DRAWITEMSTRUCT) {
         if n <= 0 {
             return;
         }
-        let font = ST.with(|c| c.borrow().font);
+        let font = font();
         let old = SelectObject(dis.hDC, font.into());
         SetBkMode(dis.hDC, TRANSPARENT);
         SetTextColor(dis.hDC, COLORREF(fg));
@@ -625,32 +647,42 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
     let sc = dpi_scale(win);
     let s = |v: i32| v * sc / 96;
 
-    let (plugin, font) = ST.with(|c| {
+    let plugin = ST.with(|c| {
         let st = c.borrow();
-        (st.plugins.get(st.selected).cloned(), st.font)
+        st.plugins.get(st.selected).cloned()
     });
+    // Read once, from outside the cell. It used to come out of `ST` in the
+    // same borrow as the plugin; it no longer lives there at all.
+    let font = font();
 
-    ST.with(|c| {
+    // **Take the handles out, then destroy them with the cell released.**
+    //
+    // `DestroyWindow` on a visible child makes the parent repaint what the
+    // child was covering, and this parent's repaint reads `ST`. Destroying
+    // inside the `borrow_mut` was the same shape as the crash below it, one
+    // call earlier -- it survived only because the uncovered area happened
+    // not to contain a custom-drawn control. That is a property of the
+    // layout, not of the code, and it is not one anybody would think to
+    // preserve.
+    let doomed: Vec<HWND> = ST.with(|c| {
         let mut st = c.borrow_mut();
-        for f in st.fields.drain(..) {
-            unsafe {
-                let _ = DestroyWindow(f.hwnd);
-            }
-        }
+        let mut v: Vec<HWND> = st.fields.drain(..).map(|f| f.hwnd).collect();
         if !st.enabled_box.0.is_null() {
-            unsafe {
-                let _ = DestroyWindow(st.enabled_box);
-            }
+            v.push(st.enabled_box);
             st.enabled_box = HWND(std::ptr::null_mut());
         }
         if !st.save_btn.0.is_null() {
-            unsafe {
-                let _ = DestroyWindow(st.save_btn);
-            }
+            v.push(st.save_btn);
             st.save_btn = HWND(std::ptr::null_mut());
         }
         st.complaint.clear();
+        v
     });
+    for h in doomed {
+        unsafe {
+            let _ = DestroyWindow(h);
+        }
+    }
 
     let Some(p) = plugin else { return };
     let x = s(LIST_W + PAD * 2);
@@ -824,26 +856,45 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
         ID_SAVE,
     );
 
+    // **The crash was here, and the shape is the one to remember.**
+    //
+    // This block used to hold `borrow_mut` while calling `set_text`.
+    // `SetWindowTextW` on a `BUTTON` this page custom-draws does not return
+    // before the button has been repainted, and the repaint arrives as
+    // `WM_NOTIFY`/`NM_CUSTOMDRAW` **at this window's own procedure**, which
+    // reaches `draw_button`, which borrowed `ST`. `panic = abort`, so the
+    // whole process went -- every time the page was opened with at least one
+    // plugin present. With none, `rebuild_fields` returns above and no button
+    // is ever made, which is why an empty plugin directory looked fine.
+    //
+    // **The messages go first, with nothing borrowed; the cell is taken only
+    // to record the handles.** Nothing between the two touches `ST`, so there
+    // is no window in which a dispatch can find a borrow held.
+    if let Ok(e) = enabled {
+        unsafe {
+            SendMessageW(e, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+            SendMessageW(
+                e,
+                BM_SETCHECK,
+                Some(WPARAM(if p.enabled { 1 } else { 0 })),
+                Some(LPARAM(0)),
+            );
+        }
+        set_text(e, "Enabled");
+    }
+    if let Ok(b) = save {
+        unsafe {
+            SendMessageW(b, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        }
+        set_text(b, "Save");
+    }
+
     ST.with(|c| {
         let mut st = c.borrow_mut();
         if let Ok(e) = enabled {
-            unsafe {
-                SendMessageW(e, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-                SendMessageW(
-                    e,
-                    BM_SETCHECK,
-                    Some(WPARAM(if p.enabled { 1 } else { 0 })),
-                    Some(LPARAM(0)),
-                );
-            }
-            set_text(e, "Enabled");
             st.enabled_box = e;
         }
         if let Ok(b) = save {
-            unsafe {
-                SendMessageW(b, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-            }
-            set_text(b, "Save");
             st.save_btn = b;
         }
         st.fields = fields;
@@ -857,7 +908,7 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
 fn ensure_buttons(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
     let sc = dpi_scale(win);
     let s = |v: i32| v * sc / 96;
-    let font = ST.with(|c| c.borrow().font);
+    let font = font();
     let have = ST.with(|c| !c.borrow().open_cfg_btn.0.is_null());
     if have {
         return;
@@ -996,9 +1047,11 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     FillRect(hdc, &rc, b);
                     let _ = DeleteObject(b.into());
                     SetBkMode(hdc, TRANSPARENT);
-                    ST.with(|c| {
-                        let st = c.borrow();
-                        let old = SelectObject(hdc, st.font.into());
+                    ST.with(|_c| {
+                        // The borrow that used to be here read one field, `font`, and
+                        // that field is no longer in the cell: this paint touches no
+                        // shared state at all.
+                        let old = SelectObject(hdc, font().into());
                         let mut y = s(PAD * 2);
                         for (i, line) in about_lines().iter().enumerate() {
                             let mut r = RECT {
@@ -1042,40 +1095,60 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
 
 /// Collect the controls and write the file.
 fn save_selected() {
-    let (key, enabled, values, missing) = ST.with(|c| {
+    // **The handles come out first; every message is sent with the cell
+    // released.** `BM_GETCHECK` and `WM_GETTEXT` do not repaint today, so
+    // this one was not the crash -- but it was covered by the same
+    // hand-written exemption that was wrong about the one that was, and
+    // "safe for a reason nobody rechecks" is the state this whole class of
+    // bug lives in. Taking the borrow out means the question stops being
+    // asked.
+    let (key, enabled_box, wanted, required) = ST.with(|c| {
         let st = c.borrow();
         let Some(p) = st.plugins.get(st.selected) else {
-            return (String::new(), false, BTreeMap::new(), Vec::new());
+            return (String::new(), HWND(std::ptr::null_mut()), Vec::new(), Vec::new());
         };
-        let enabled = unsafe {
-            SendMessageW(st.enabled_box, BM_GETCHECK, None, None).0 == 1
-        };
+        (
+            p.key.clone(),
+            st.enabled_box,
+            st.fields
+                .iter()
+                .map(|f| (f.name.clone(), f.hwnd, f.control.clone()))
+                .collect::<Vec<_>>(),
+            p.params
+                .iter()
+                .filter(|pa| pa.required)
+                .map(|pa| (pa.name.clone(), pa.title.clone()))
+                .collect::<Vec<_>>(),
+        )
+    });
+
+    let (enabled, values, missing) = {
+        let enabled = unsafe { SendMessageW(enabled_box, BM_GETCHECK, None, None).0 == 1 };
         let mut values: BTreeMap<String, String> = BTreeMap::new();
-        for f in &st.fields {
-            let v = match &f.control {
+        for (name, h, control) in &wanted {
+            let v = match control {
                 Control::Flag => {
-                    let on = unsafe { SendMessageW(f.hwnd, BM_GETCHECK, None, None).0 == 1 };
+                    let on = unsafe { SendMessageW(*h, BM_GETCHECK, None, None).0 == 1 };
                     // Stored as the text `true`/`false`: `Plugin.Param.value`
                     // is a string on both sides of the wire.
                     (if on { "true" } else { "false" }).to_string()
                 }
-                _ => get_text(f.hwnd),
+                _ => get_text(*h),
             };
             if !v.is_empty() {
-                values.insert(f.name.clone(), v);
+                values.insert(name.clone(), v);
             }
         }
         // Required parameters that are still empty. Reported rather than
         // refused: the user may be halfway through, and a page that will not
         // save is worse than one that says what is missing.
-        let missing: Vec<String> = p
-            .params
+        let missing: Vec<String> = required
             .iter()
-            .filter(|pa| pa.required && !values.contains_key(&pa.name))
-            .map(|pa| pa.title.clone())
+            .filter(|(name, _)| !values.contains_key(name))
+            .map(|(_, title)| title.clone())
             .collect();
-        (p.key.clone(), enabled, values, missing)
-    });
+        (enabled, values, missing)
+    };
 
     if key.is_empty() {
         return;
@@ -1350,12 +1423,13 @@ unsafe extern "system" fn settings_proc(
                 LRESULT(0)
             }
             WM_DESTROY => {
-                ST.with(|c| {
-                    let f = c.borrow().font;
-                    if !f.0.is_null() {
-                        let _ = DeleteObject(f.into());
-                    }
-                });
+                // **No `ST` here any more.** The font left the cell, and a
+                // borrow taken for nothing is still a borrow that a dispatch
+                // can arrive during.
+                let f = font();
+                if !f.0.is_null() {
+                    let _ = DeleteObject(f.into());
+                }
                 LRESULT(0)
             }
             _ => DefWindowProcW(win, msg, wp, lp),
@@ -1402,7 +1476,7 @@ fn paint_settings(win: HWND) {
 
         ST.with(|c| {
             let st = c.borrow();
-            let old = SelectObject(hdc, st.font.into());
+            let old = SelectObject(hdc, font().into());
 
             if st.plugins.is_empty() {
                 let mut r = RECT {
@@ -1674,7 +1748,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     SetBkMode(hdc, TRANSPARENT);
                     ST.with(|c| {
                         let st = c.borrow();
-                        let old = SelectObject(hdc, st.font.into());
+                        let old = SelectObject(hdc, font().into());
                         let mut r = RECT {
                             left: s(PAD),
                             top: s(PAD),
