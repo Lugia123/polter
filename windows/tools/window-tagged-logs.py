@@ -123,6 +123,16 @@ LIST_LINES = 12
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
+# 39 -> 41 (measured on e0e9d270b + this change alone): **a rise, and not a
+# regression.** `surface` came off `ALREADY_NAMED`, so 8 lines stopped being
+# exempt: 3 were already `hlogf!`, 3 were fixed here (`hud.rs` x2,
+# `ctxmenu.rs` x1) and 2 are left -- `main.rs`'s `[action] poltergeist_mark`,
+# whose arm has `origin` and does not pass it, and `tabs.rs`'s
+# `ShellTitle::NoSuchSurface`. **A count is only comparable to itself under one
+# rule**: when the rule gets stricter the number goes up, the same way it went
+# 217 -> 254 when the process-wide table was deleted. Measured on the tree
+# about to be committed, not by arithmetic on two earlier measurements -- the
+# same reason the previous commit gives.
 # 106 -> 77: `dnd.rs` 8, `ctxmenu.rs` 6 of 7, `hud.rs` 6, `keyseq.rs` 6,
 # `overlay.rs` 3. The one `ctxmenu.rs` keeps is `on_poltergeist_mark`, which is
 # about one terminal and is not given it -- a `plogf!` there would be a false
@@ -131,7 +141,7 @@ LIST_LINES = 12
 # an `Option<TabId>`. The option is not a missing argument -- the put-back
 # after a failed reopen names a tab destroyed long ago, and inventing an id
 # there would be the only line in the file whose subject does not exist.
-BASELINE_UNTAGGED = 39
+BASELINE_UNTAGGED = 41
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`
@@ -144,7 +154,26 @@ PROCESS_WIDE_COMMENT = re.compile(r"//\s*process-wide:\s*(\S.*)$")
 # Something process-unique in the call's ARGUMENTS makes the window implicit.
 # **Arguments only, not the message text.** Matching the text exempted two
 # lines in `strip.rs` because the English word "id" appeared in a sentence.
-ALREADY_NAMED = re.compile(r"\bid\b|TabId|PaneId|pane|surface|\.id")
+#
+# **`surface` used to be on this list and was taken off.** The exemption's
+# premise is that the argument names the line's subject unambiguously *for as
+# long as the log lasts*, and the two kinds of argument differ on exactly that:
+#
+#  - a `TabId`/`PaneId` comes from one monotonic counter -- `next_id` and
+#    `take_id` in `tabs.rs`, which `check_ids_are_process_wide` below exists to
+#    keep true -- so `pane 7` an hour later is the same pane, and two lines
+#    naming it are talking about one thing;
+#  - a surface is a pointer to memory that is freed and handed out again.
+#    `hud.rs` prunes its read-only list for precisely this reason ("surface
+#    pointers get reused", and a stale entry "sticks to a reused pointer"), so
+#    `surface 0x7ff...` is unique only among the surfaces alive at that
+#    instant. Two lines with the same value can be two different terminals.
+#
+# **What is true of both, and is not what this list claims:** neither answers
+# "which window". An id identifies the subject; the window tag says where it
+# was. Keeping ids exempt is a deliberate limit on the scope of this check, not
+# a finding that those lines are readable in a two-window log.
+ALREADY_NAMED = re.compile(r"\bid\b|TabId|PaneId|pane|\.id")
 
 
 # **One list, read twice.** The macro names used to be spelled out in both
@@ -232,6 +261,10 @@ CANARY_UNREASONED = 'plogf!("[menu] built {} groups", n);'
 # work being done.
 CANARY_ALOGF = 'alogf!(origin, "[action] new_tab");'
 CANARY_HLOGF = 'hlogf!(hwnd, "[drop] {:?} revoked", hwnd.0);'
+# Naming a surface is not naming a window: this must be *reported*. Written
+# down because putting `surface` back in `ALREADY_NAMED` is a one-word edit
+# that silently lowers the count, and a lower count reads like progress.
+CANARY_SURFACE = 'logf!("[hud] readonly off for surface {:#x}", surface);'
 
 # A reason spread over two lines, with the marker on the first. **Its own
 # canary because the rule changed for it**: requiring the marker on the line
@@ -295,6 +328,11 @@ def self_test() -> None:
         if list(bad_sites(canary, "<canary>")):
             print(f"FAIL: `{name}!` was reported as unclassified.")
             sys.exit(2)
+    if not list(bad_sites(CANARY_SURFACE, "<canary>")):
+        print("FAIL: a line whose only identifier is a surface was treated as already "
+              "named. A surface pointer says which terminal, not which window, and it "
+              "is reused after the terminal closes.")
+        sys.exit(2)
     seen = list(sites(CANARY_ALOGF))
     if len(seen) != 1 or seen[0][1] != "alogf":
         print(f"FAIL: `alogf!` is not recognised as a log site: {seen}")

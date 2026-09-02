@@ -405,7 +405,8 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
         // except a split -- which is not a state a log reader can assume was
         // set up. It is printed from the variable the call actually used, not
         // from a copy taken earlier.
-        logf!(
+        hlogf!(
+            surface_hwnd,
             "[ctx] pick {:?} on surface {:?} -> {:?} binding_action = {}",
             row.label,
             surface,

@@ -35,7 +35,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::{hlogf, logf, plogf};
+use crate::{hlogf, plogf};
 
 const WM_HUD_SYNC: u32 = WM_APP + 7;
 /// Timer id for "the resize is over".
@@ -485,7 +485,8 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         // process-wide: the count is over every window's panes,
                         // which is the whole point of saying it
                         plogf!(
-                            "[hud] {} other surface(s) still read-only and unbadged (one badge,                              many panes)",
+                            "[hud] {} other surface(s) still read-only and unbadged \
+                             (one badge, many panes)",
                             n_readonly
                         );
                     }
@@ -500,7 +501,8 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let Some(fr) = pane_rect_for(surface) else {
                     hlogf!(
                         frame_hwnd_of(surface),
-                        "[hud] readonly on for surface {:#x}, but no pane owns it; badge hidden                          rather than drawn somewhere arbitrary",
+                        "[hud] readonly on for surface {:#x}, but no pane owns it; \
+                         badge hidden rather than drawn somewhere arbitrary",
                         surface
                     );
                     let _ = ShowWindow(hwnd, SW_HIDE);
@@ -525,7 +527,8 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 );
                 let _ = InvalidateRect(Some(hwnd), None, true);
                 RO_SHOWN_FOR.store(surface, Ordering::Release);
-                logf!(
+                hlogf!(
+                    frame_hwnd_of(surface),
                     "[hud] readonly on for surface {:#x}; badge at {},{} over pane {},{}..{},{}",
                     surface,
                     x,
@@ -536,8 +539,10 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     fr.bottom
                 );
                 if n_readonly > 1 {
-                    logf!(
-                        "[hud] {} surfaces are read-only; the badge shows {:#x} (one badge, many                          panes)",
+                    hlogf!(
+                        frame_hwnd_of(surface),
+                        "[hud] {} surfaces are read-only; the badge shows {:#x} \
+                         (one badge, many panes)",
                         n_readonly,
                         surface
                     );
