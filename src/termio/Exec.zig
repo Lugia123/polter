@@ -2077,10 +2077,20 @@ fn execCommand(
                 // (extra process in the tree, per-process cmd AutoRun
                 // state not reaching the user's actual shell).
                 //
-                // Values with arguments are split on whitespace. This
-                // does not honor Windows CLI quoting rules; users who
-                // need quoted arguments should use the direct command
-                // form, which takes an argv array as-is.
+                // Values with arguments are split on whitespace, and
+                // Windows CLI quoting rules are not honored.
+                //
+                // **There is no other form that does.** This comment used
+                // to send anyone needing a quoted argument to `direct:`,
+                // "which takes an argv array as-is" -- but a `direct:`
+                // value written in a config file is split on spaces just
+                // as naively (`config/command.zig`, `parseCLI`). So on
+                // Windows an argument containing whitespace cannot be
+                // expressed by either form, and the advice pointed at a
+                // road that is not there. Saying so is worth more than
+                // the suggestion was: somebody following it spends a
+                // round finding out, and concludes their quoting is
+                // wrong rather than that nothing supports it.
                 //
                 // Note we don't free any of the memory below since it is
                 // allocated in the arena.

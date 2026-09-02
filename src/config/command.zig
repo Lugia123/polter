@@ -247,6 +247,37 @@ pub const Command = union(enum) {
         try testing.expectEqualStrings(v.direct[1], "hello");
     }
 
+    // **A limitation, written as a test so it is findable.**
+    //
+    // Neither form can express an argument that contains a space when the
+    // value comes from a config file: `direct:` splits on spaces here, and
+    // the `shell` form is handed to a shell everywhere except Windows,
+    // where it is tokenised on whitespace (`termio/Exec.zig`).
+    //
+    // This is asserted rather than merely commented because the comment
+    // that used to describe this said the opposite -- it sent people
+    // needing quotes to `direct:`, "which takes an argv array as-is" --
+    // and prose that is wrong stays wrong quietly. If somebody teaches
+    // this parser about quoting, this test goes red, and that is the
+    // right moment to find it.
+    test "Command: parseCLI direct cannot express an argument with a space" {
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var v: Self = undefined;
+        try v.parseCLI(alloc, "direct:cmd \"a b\"");
+        try testing.expect(v == .direct);
+
+        // Three arguments, not two: the quotes are ordinary characters and
+        // the space inside them still separates.
+        try testing.expectEqual(@as(usize, 3), v.direct.len);
+        try testing.expectEqualStrings("cmd", v.direct[0]);
+        try testing.expectEqualStrings("\"a", v.direct[1]);
+        try testing.expectEqualStrings("b\"", v.direct[2]);
+    }
+
     test "Command: argIterator shell" {
         const testing = std.testing;
         const alloc = testing.allocator;
