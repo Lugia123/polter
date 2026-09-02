@@ -2011,6 +2011,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // would be one route answering "how many windows are left"
                 // with a number that has already had this one taken off it.
                 tabs::remove_window(hwnd);
+                // The strip's own per-window state goes the same way, and for
+                // a reason the tab state does not have: Windows recycles
+                // `HWND`s, so an entry left under a dead handle can be found
+                // again by the next window that gets it.
+                strip::forget(hwnd);
                 LRESULT(0)
             }
 

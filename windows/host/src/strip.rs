@@ -30,7 +30,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::{logf, wlogf};
+use crate::{logf, plogf, wlogf};
 use crate::menu::{draw_menu_button, show_root_menu};
 use crate::tabs::{self, TabId};
 
@@ -226,7 +226,7 @@ fn slots(frame: HWND) -> Geometry {
     let (tw, overflowing) = layout(strip_w, scale, n, inset);
     let (_, max_scroll) = extent(strip_w, tw, n, overflowing, inset);
 
-    let scroll = with_ui(|u| {
+    let scroll = with_ui(frame, |u| {
         u.scroll = u.scroll.clamp(0, max_scroll);
         u.scroll
     });
@@ -333,6 +333,26 @@ enum Drag {
     Dragging { id: TabId },
 }
 
+/// One strip's interaction state. **All four fields are per-window**, and the
+/// test applied to each was the same one: for somebody with two windows open,
+/// is this fact one thing or two?
+///
+///  - `scroll` -- two. The windows have different widths and different
+///    numbers of tabs, so they do not even have the same range.
+///  - `hover` -- two. The pointer leaves one strip and enters the other;
+///    shared, moving the pointer over window 2 lights a tab up in window 1.
+///  - `drag` -- two. Shared, pressing a tab in window 2 makes window 1 draw
+///    one of *its* tabs as picked up, and `on_button_up` in either window
+///    consumes the gesture the other one started.
+///  - `editing` -- two, **and this is the one that loses a handle**. It holds
+///    the rename box's `HWND`, and `end_rename` is what destroys it. Shared,
+///    opening a rename in window 2 while one is open in window 1 overwrites
+///    the `Some`, and window 1's edit control is never destroyed and never
+///    closed -- a live control on screen that nothing can now reach.
+///
+/// **Not split by which was easy.** `scroll` is the one E3 reads and the only
+/// one anybody had a criterion for; the other three are the same fact about
+/// the same window and were left in only because nothing was measuring them.
 struct Interaction {
     drag: Drag,
     hover: Hit,
@@ -341,6 +361,12 @@ struct Interaction {
     scroll: i32,
     /// The in-place rename editor, when one is open, and what it is renaming.
     editing: Option<(isize, TabId)>,
+}
+
+impl Interaction {
+    const fn new() -> Self {
+        Interaction { drag: Drag::Idle, hover: Hit::None, scroll: 0, editing: None }
+    }
 }
 
 thread_local! {
@@ -356,21 +382,85 @@ thread_local! {
     ///
     /// A `RefCell` on the owning thread cannot be entered twice without
     /// saying so: it panics, with a stack, at the line that did it.
-    static UI: RefCell<Interaction> = RefCell::new(Interaction {
-        drag: Drag::Idle,
-        hover: Hit::None,
-        scroll: 0,
-        editing: None,
-    });
+    ///
+    /// **One entry per frame, keyed by its `HWND`.** It was a single
+    /// `Interaction` for the process, which was the right shape for exactly
+    /// as long as there was one strip to interact with.
+    static UI: RefCell<Vec<(isize, Interaction)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Do something with the interaction state.
+/// Do something with **one window's** interaction state.
 ///
 /// Kept as a closure rather than handing out a borrow: a returned borrow can
 /// be held across a Win32 call by accident, and that is precisely the shape
 /// that has cost this port two days.
-fn with_ui<R>(f: impl FnOnce(&mut Interaction) -> R) -> R {
-    UI.with(|c| f(&mut c.borrow_mut()))
+///
+/// **A frame this has not seen gets a fresh `Interaction`, and that is not
+/// the same decision `tabs::State::win` made.** There it returns `None`,
+/// because inventing an empty tab list for an unknown handle would answer a
+/// caller's bug with a plausible screen. Here the default *is* the true
+/// answer: a strip nobody has touched is not scrolled, has nothing hovered,
+/// has no drag in flight and no rename open. There is no state to be wrong
+/// about yet, so there is nothing for a fallback to hide.
+///
+/// The entries are dropped by `forget`, from `WM_DESTROY`, so a session that
+/// opens and closes windows does not accumulate them.
+fn with_ui<R>(frame: HWND, f: impl FnOnce(&mut Interaction) -> R) -> R {
+    let key = frame.0 as isize;
+    UI.with(|c| {
+        let mut v = c.borrow_mut();
+        let at = match v.iter().position(|(k, _)| *k == key) {
+            Some(i) => i,
+            None => {
+                v.push((key, Interaction::new()));
+                v.len() - 1
+            }
+        };
+        f(&mut v[at].1)
+    })
+}
+
+/// The frame whose rename box this is.
+///
+/// **Asked of our own record rather than of `GetParent`**, and the split is
+/// what makes the difference matter. `edit_proc` took the parent and passed
+/// it on; when that call failed it passed a null `HWND`, which used to be
+/// harmless because there was one `Interaction` and it was found anyway. With
+/// one per window, a null frame finds an empty entry instead, `editing.take()`
+/// gives `None`, `end_rename` returns early -- and the edit control it was
+/// supposed to destroy stays on screen with nothing left holding its handle.
+///
+/// The entry that holds this control is the exact answer to "which window's
+/// rename is this", so it is what gets asked; `GetParent` stays as the
+/// fallback rather than the other way round.
+fn frame_of_edit(edit: HWND) -> Option<HWND> {
+    let key = edit.0 as isize;
+    UI.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|(_, u)| matches!(u.editing, Some((h, _)) if h == key))
+            .map(|(k, _)| HWND(*k as *mut std::ffi::c_void))
+    })
+}
+
+/// Drop a window's interaction state, once its frame is gone.
+///
+/// **Not merely tidiness.** `HWND`s are recycled by Windows, so a stale entry
+/// left behind under a closed window's handle can be found again by the next
+/// window that happens to get that handle -- which would open with somebody
+/// else's scroll offset and, worse, somebody else's `editing` pointing at a
+/// destroyed edit control.
+pub fn forget(frame: HWND) {
+    let key = frame.0 as isize;
+    let dropped = UI.with(|c| {
+        let mut v = c.borrow_mut();
+        let before = v.len();
+        v.retain(|(k, _)| *k != key);
+        before != v.len()
+    });
+    if dropped {
+        wlogf!(frame, "[strip] interaction state dropped");
+    }
 }
 
 fn repaint(frame: HWND) {
@@ -405,12 +495,12 @@ pub fn on_button_down(frame: HWND, x: i32, y: i32) {
         Hit::Close(id) => {
             // Act on release, the way every other close button does: pressing
             // and sliding off has to be a way out.
-            with_ui(|u| u.drag = Drag::Pressed { id, x });
+            with_ui(frame, |u| u.drag = Drag::Pressed { id, x });
         }
         Hit::Tab(id) => {
             logf!("[strip] click -> activate {:?}", id);
             tabs::activate_tab(frame, id);
-            with_ui(|u| u.drag = Drag::Pressed { id, x });
+            with_ui(frame, |u| u.drag = Drag::Pressed { id, x });
             unsafe {
                 SetCapture(frame);
             }
@@ -436,7 +526,7 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
     }
 
     let h = hit(&g, x, y);
-    let (started, dragging_id) = with_ui(|u| {
+    let (started, dragging_id) = with_ui(frame, |u| {
         if u.hover != h {
             u.hover = h;
         }
@@ -460,7 +550,7 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         // scroll offset has to come back out of the pointer position -- a
         // dragged tab in a scrolled strip otherwise lands one screenful off.
         let tw = g.slots.first().map(|s| s.rect.right - s.rect.left + 1).unwrap_or(1);
-        let scroll = with_ui(|u| u.scroll);
+        let scroll = with_ui(frame, |u| u.scroll);
         // The inset comes back out of the pointer position along with the
         // scroll, for the same reason: both shift where tab 0 starts, and a
         // drag that forgets either lands one slot off at every position.
@@ -484,8 +574,8 @@ pub fn on_wheel(frame: HWND, delta: i16) {
     if by == 0 {
         return;
     }
-    with_ui(|u| u.scroll += by);
-    wlogf!(frame, "[strip] wheel {} -> scroll {}", by, with_ui(|u| u.scroll));
+    with_ui(frame, |u| u.scroll += by);
+    wlogf!(frame, "[strip] wheel {} -> scroll {}", by, with_ui(frame, |u| u.scroll));
     // The clamp lives in `slots`, which is about to run: it is the only place
     // that knows the current content width.
     repaint(frame);
@@ -564,7 +654,7 @@ fn scroll_into_view(frame: HWND, id: TabId) {
     }
     let right_edge = rc.right - (OVERFLOW_W as f64 * tabs::scale_of()) as i32;
     let inset = menu_w(tabs::scale_of());
-    with_ui(|u| {
+    with_ui(frame, |u| {
         if slot.rect.left < inset {
             u.scroll += slot.rect.left - inset;
         } else if slot.rect.right > right_edge {
@@ -574,13 +664,13 @@ fn scroll_into_view(frame: HWND, id: TabId) {
 }
 
 pub fn on_mouse_leave(frame: HWND) {
-    with_ui(|u| u.hover = Hit::None);
+    with_ui(frame, |u| u.hover = Hit::None);
     repaint(frame);
 }
 
 pub fn on_button_up(frame: HWND, x: i32, y: i32) {
     let g = slots(frame);
-    let was = with_ui(|u| std::mem::replace(&mut u.drag, Drag::Idle));
+    let was = with_ui(frame, |u| std::mem::replace(&mut u.drag, Drag::Idle));
     unsafe {
         let _ = ReleaseCapture();
     }
@@ -667,13 +757,13 @@ fn begin_rename(frame: HWND, id: TabId, rect: RECT) {
     // focused one or the IME keeps composing into the surface behind the box.
     crate::ime_focus(false);
 
-    with_ui(|u| u.editing = Some((edit.0 as isize, id)));
+    with_ui(frame, |u| u.editing = Some((edit.0 as isize, id)));
     logf!("[strip] rename {:?} started", id);
 }
 
 /// Close the editor, keeping what was typed if `commit`.
 pub fn end_rename(frame: HWND, commit: bool) {
-    let Some((hwnd, id)) = with_ui(|u| u.editing.take()) else {
+    let Some((hwnd, id)) = with_ui(frame, |u| u.editing.take()) else {
         return;
     };
     let edit = HWND(hwnd as *mut std::ffi::c_void);
@@ -696,22 +786,36 @@ pub fn end_rename(frame: HWND, commit: bool) {
     repaint(frame);
 }
 
+/// The frame a rename box belongs to: our own record first, `GetParent` as
+/// the fallback. See `frame_of_edit` for why that order.
+fn owning_frame(edit: HWND) -> HWND {
+    if let Some(f) = frame_of_edit(edit) {
+        return f;
+    }
+    let parent = unsafe { GetParent(edit) }.unwrap_or_default();
+    if parent.0.is_null() {
+        // Said out loud: from here `end_rename` can do nothing, and the
+        // control it would have destroyed is about to be unreachable.
+        // process-wide: no window could be established for this control, which is the fact being reported
+        plogf!("[strip] rename box {:?} belongs to no known window", edit.0);
+    }
+    parent
+}
+
 extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let prev = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
         if msg == WM_KEYDOWN {
             let vk = wp.0 as u16;
             if vk == VK_RETURN.0 || vk == VK_ESCAPE.0 {
-                let frame = GetParent(hwnd).unwrap_or_default();
-                end_rename(frame, vk == VK_RETURN.0);
+                end_rename(owning_frame(hwnd), vk == VK_RETURN.0);
                 return LRESULT(0);
             }
         }
         if msg == WM_KILLFOCUS {
-            let frame = GetParent(hwnd).unwrap_or_default();
             // Clicking away keeps the edit, which is what a rename box that
             // was typed into should do.
-            end_rename(frame, true);
+            end_rename(owning_frame(hwnd), true);
             return LRESULT(0);
         }
         let f: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
@@ -787,7 +891,7 @@ pub fn state_line(frame: HWND) -> String {
         menu_w(scale),
         g.slots.first().map(|s| s.rect.left).unwrap_or(-1),
         tw,
-        with_ui(|u| u.scroll),
+        with_ui(frame, |u| u.scroll),
         g.overflow.is_some(),
         onscreen,
         PAINTS.load(std::sync::atomic::Ordering::Relaxed)
@@ -829,7 +933,7 @@ pub fn paint(frame: HWND) {
         let (tabs_now, active) = tabs::strip_snapshot(frame);
         let colours = tabs::tab_colors(frame);
         let Geometry { slots, overflow, new, menu } = slots(frame);
-        let (hover, dragging) = with_ui(|u| {
+        let (hover, dragging) = with_ui(frame, |u| {
             (
                 u.hover,
                 match u.drag {
@@ -1828,7 +1932,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
         28 => {
             let n = tabs::count(frame);
             let (mut ok, mut bad, mut untested) = (0, 0, 0);
-            let scroll_was = with_ui(|u| u.scroll);
+            let scroll_was = with_ui(frame, |u| u.scroll);
             for i in 0..n {
                 // A tab scrolled out of the strip is not a defect -- it is a
                 // tab you would scroll to before right-clicking it. So the
@@ -1877,7 +1981,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
                     }
                 }
             }
-            with_ui(|u| u.scroll = scroll_was);
+            with_ui(frame, |u| u.scroll = scroll_was);
             // **All three counts on one line.** `0 mismatches` alone cannot
             // say whether seventeen tabs passed or four passed and thirteen
             // were never reached, and those are very different readings.
