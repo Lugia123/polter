@@ -909,7 +909,14 @@ pub fn ime_set_window(hwnd: HWND) {
         if let Some(st) = c.borrow().as_ref() {
             match st.ime.try_borrow_mut() {
                 Ok(mut ime) => ime.hwnd = hwnd,
-                Err(_) => logf!("[ime] set_window skipped: composition in flight"),
+                // **The frame, not the surface.** `winid::of` registers any
+                // handle it is given as a new window number, so passing a pane
+                // here would mint a "window" that is not one; `GA_ROOT` walks
+                // the child up to the frame it lives in.
+                Err(_) => wlogf!(
+                    unsafe { GetAncestor(hwnd, GA_ROOT) },
+                    "[ime] set_window skipped: composition in flight"
+                ),
             }
         }
     });
@@ -927,35 +934,41 @@ fn ime_init(hwnd: HWND) -> bool {
     use windows::Win32::UI::TextServices::*;
     unsafe {
         if let Err(e) = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok() {
-            logf!("[ime] CoInitializeEx failed: {e:?}");
+            // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+            plogf!("[ime] CoInitializeEx failed: {e:?}");
             return false;
         }
         let thread_mgr: ITfThreadMgr =
             match CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) {
                 Ok(t) => t,
                 Err(e) => {
-                    logf!("[ime] CoCreateInstance(TF_ThreadMgr) failed: {e:?}");
+                    // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+                    plogf!("[ime] CoCreateInstance(TF_ThreadMgr) failed: {e:?}");
                     return false;
                 }
             };
         let ex: ITfThreadMgrEx = match thread_mgr.cast() {
             Ok(x) => x,
             Err(e) => {
-                logf!("[ime] ITfThreadMgrEx cast failed: {e:?}");
+                // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+                plogf!("[ime] ITfThreadMgrEx cast failed: {e:?}");
                 return false;
             }
         };
         let mut client_id = 0u32;
         if let Err(e) = ex.ActivateEx(&mut client_id, 0) {
-            logf!("[ime] ActivateEx failed: {e:?}");
+            // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+            plogf!("[ime] ActivateEx failed: {e:?}");
             return false;
         }
-        logf!("[ime] ActivateEx ok, clientId={client_id}");
+        // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+        plogf!("[ime] ActivateEx ok, clientId={client_id}");
 
         let doc_mgr = match thread_mgr.CreateDocumentMgr() {
             Ok(d) => d,
             Err(e) => {
-                logf!("[ime] CreateDocumentMgr failed: {e:?}");
+                // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+                plogf!("[ime] CreateDocumentMgr failed: {e:?}");
                 return false;
             }
         };
@@ -967,23 +980,27 @@ fn ime_init(hwnd: HWND) -> bool {
         let mut ctx: Option<ITfContext> = None;
         let mut edit_cookie = 0u32;
         if let Err(e) = doc_mgr.CreateContext(client_id, 0, &punk, &mut ctx, &mut edit_cookie) {
-            logf!("[ime] CreateContext failed: {e:?}");
+            // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+            plogf!("[ime] CreateContext failed: {e:?}");
             return false;
         }
         let ctx = match ctx {
             Some(c) => c,
             None => {
-                logf!("[ime] CreateContext gave no context");
+                // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+                plogf!("[ime] CreateContext gave no context");
                 return false;
             }
         };
         if let Err(e) = doc_mgr.Push(&ctx) {
-            logf!("[ime] Push failed: {e:?}");
+            // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+            plogf!("[ime] Push failed: {e:?}");
             return false;
         }
         let _ = thread_mgr.AssociateFocus(hwnd, &doc_mgr);
         let _ = thread_mgr.SetFocus(&doc_mgr);
-        logf!("[ime] context pushed, editCookie={edit_cookie}  <<< TSF READY");
+        // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+        plogf!("[ime] context pushed, editCookie={edit_cookie}  <<< TSF READY");
 
         IME.with(|c| {
             *c.borrow_mut() = Some(ImeState {
@@ -1242,7 +1259,9 @@ extern "C" fn cb_close_surface(ud: *mut c_void, _confirm: bool) {
     if id == 0 {
         // No pane id means we cannot tell which one; closing nothing is safer
         // than closing the wrong one.
-        logf!("[action] close_surface with no pane id -- ignored");
+        // process-wide: with no pane id there is no window to name -- that is
+        // exactly what this line reports
+        plogf!("[action] close_surface with no pane id -- ignored");
         return;
     }
     // **The window comes from the pane, not from the target.** This callback
@@ -1297,6 +1316,29 @@ fn origin_window(target: &Target) -> Option<HWND> {
 /// thing this must never do is fall back to a window -- an action with no
 /// window that runs on "the current one" is a tab appearing in a window
 /// nobody asked, with a log that reads entirely normal.
+/// One `[action]` line, from the window the action came from.
+///
+/// **Every arm of `cb_action` is about one window** -- the core performed
+/// something for a surface, and `origin` is the frame that surface lives in.
+/// With two windows open, `[action] new_tab` says nothing a reader can use;
+/// with the origin in front of it, it says which window just grew a tab.
+///
+/// The `None` arm is not a fallback: an action that names no surface is a
+/// fact about the process, and it says so rather than picking a window. Both
+/// halves go through `wlogf!`/`plogf!`, so the log checker still sees a
+/// classified site here -- and `alogf!` itself is spelled out in that
+/// checker, because a macro it does not know about is a site it cannot see.
+macro_rules! alogf {
+    ($origin:expr, $($a:tt)*) => {{
+        match $origin {
+            Some(__f) => $crate::wlogf!(__f, $($a)*),
+            // process-wide: the action named no surface, so there is no window
+            // this line could belong to
+            None => $crate::plogf!($($a)*),
+        }
+    }};
+}
+
 fn queue_from(origin: Option<HWND>, op: tabs::Op, from: &'static str) -> bool {
     match origin {
         Some(frame) => {
@@ -1371,7 +1413,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             let mode = action.as_i32();
             let s = unsafe { (api().config_open_path)() };
             if s.ptr.is_null() || s.len == 0 {
-                logf!("[action] open_config: the core reported no path");
+                alogf!(origin, "[action] open_config: the core reported no path");
                 return false;
             }
             let bytes = unsafe { std::slice::from_raw_parts(s.ptr as *const u8, s.len) };
@@ -1379,7 +1421,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             unsafe { (api().string_free)(s) };
 
             if mode != 0 {
-                logf!("[action] open_config mode {} not supported; opening with the OS", mode);
+                alogf!(origin, "[action] open_config mode {} not supported; opening with the OS", mode);
             }
             let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
             let r = unsafe {
@@ -1394,7 +1436,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             };
             // ShellExecuteW returns a fake HINSTANCE; <= 32 means it failed.
             let ok = r.0 as usize > 32;
-            logf!("[action] open_config {:?} -> {}", path, ok);
+            alogf!(origin, "[action] open_config {:?} -> {}", path, ok);
             ok
         }
 
@@ -1428,7 +1470,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // never sent; these two lines are the difference between "this host
         // does not do that yet" and "the menu is broken".
         ffi::ACTION_INSPECTOR => {
-            logf!(
+            // process-wide: a fact about what libghostty publishes on this
+            // platform, the same for every window there will ever be
+            plogf!(
                 "[action] inspector requested (mode {}), but libghostty publishes no renderer for \
                  it outside Apple: ghostty_inspector_metal_* in include/ghostty.h sits inside \
                  #ifdef __APPLE__. Not a missing host feature -- a missing C API.",
@@ -1445,7 +1489,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // strip already does -- and a toggle that hunted for "the chat tab" to
         // close would need to decide which one when there are two.
         ffi::ACTION_TOGGLE_POLTERGEIST_CHAT => {
-            logf!("[action] poltergeist chat requested");
+            alogf!(origin, "[action] poltergeist chat requested");
             queue_from(
                 origin,
                 tabs::Op::NewTabWith(tabs::NewTab {
@@ -1466,9 +1510,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             match target_surface(&target) {
                 Some(s) => {
                     hud::on_readonly_for(s as usize, on);
-                    logf!("[action] readonly={} surface={:?}", on, s);
+                    alogf!(origin, "[action] readonly={} surface={:?}", on, s);
                 }
-                None => logf!("[action] readonly={} with no surface (tag={}); dropped", on, target.tag),
+                None => alogf!(origin, "[action] readonly={} with no surface (tag={}); dropped", on, target.tag),
             }
             true
         }
@@ -1476,7 +1520,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         ACTION_INITIAL_SIZE => {
             // `iw`/`ih` rather than `w`/`h`: `w` is the window below.
             let (iw, ih) = action.as_size();
-            logf!("[action] initial_size {}x{}", iw, ih);
+            alogf!(origin, "[action] initial_size {}x{}", iw, ih);
             // **The window the surface is in.** `reset_window_size` resizes
             // one window back to what its own first surface asked for; one
             // copy for the process meant the second window remembered the
@@ -1494,7 +1538,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             let (w, h) = action.as_size();
             CELL_W.store(w, Ordering::Release);
             CELL_H.store(h, Ordering::Release);
-            logf!("[action] cell_size {}x{}", w, h);
+            alogf!(origin, "[action] cell_size {}x{}", w, h);
             true
         }
 
@@ -1518,7 +1562,8 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 // process-wide: the action names no window to limit
                 None => plogf!("[action] size_limit names no window; not applied"),
             }
-            logf!(
+            alogf!(
+                origin,
                 "[action] size_limit min {}x{} max {}x{} (0 max = unlimited)",
                 min_w, min_h, max_w, max_h
             );
@@ -1528,7 +1573,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         ACTION_SET_TITLE => {
             if let Some(t) = action.as_cstr() {
                 let t = t.to_string_lossy().to_string();
-                logf!("[action] set_title {:?}", t);
+                alogf!(origin, "[action] set_title {:?}", t);
                 let mut wide: Vec<u16> = t.encode_utf16().collect();
                 wide.push(0);
                 let h = HWND_G.load(Ordering::Acquire);
@@ -1548,7 +1593,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                     Some(s) => {
                         queue_from(origin, Op::SetTabTitle { surface: s as usize, title: t }, "set_title action");
                     }
-                    None => logf!("[action] set_title with no surface (tag={}); tab label unchanged", target.tag),
+                    None => alogf!(origin, "[action] set_title with no surface (tag={}); tab label unchanged", target.tag),
                 }
             }
             true
@@ -1568,9 +1613,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                     // `surface_new`, before the tab exists, and is held until
                     // it does. It is logged because "held" and "lost" would
                     // otherwise look the same.
-                    logf!("[action] pwd {:?} surface={:?} attached={}", cwd, s, attached as u8);
+                    alogf!(origin, "[action] pwd {:?} surface={:?} attached={}", cwd, s, attached as u8);
                 }
-                None => logf!("[action] pwd {:?} with no surface (tag={}); dropped", cwd, target.tag),
+                None => alogf!(origin, "[action] pwd {:?} with no surface (tag={}); dropped", cwd, target.tag),
             }
             true
         }
@@ -1585,12 +1630,12 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         ACTION_SET_TAB_TITLE => {
             if let Some(t) = action.as_cstr() {
                 let t = t.to_string_lossy().to_string();
-                logf!("[action] set_tab_title {:?}", t);
+                alogf!(origin, "[action] set_tab_title {:?}", t);
                 match target_surface(&target) {
                     Some(s) => {
                         queue_from(origin, Op::SetTabTitle { surface: s as usize, title: t }, "set_title action");
                     }
-                    None => logf!("[action] set_tab_title with no surface (tag={}); dropped", target.tag),
+                    None => alogf!(origin, "[action] set_tab_title with no surface (tag={}); dropped", target.tag),
                 }
             }
             true
@@ -1621,91 +1666,91 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         }
 
         ACTION_COPY_TITLE_TO_CLIPBOARD => {
-            logf!("[action] copy_title_to_clipboard");
+            alogf!(origin, "[action] copy_title_to_clipboard");
             queue_from(origin, Op::CopyTitleToClipboard, "copy_title_to_clipboard action")
         }
 
         ACTION_NEW_SPLIT => {
             let dir = action.as_i32();
-            logf!("[action] new_split dir={}", dir);
+            alogf!(origin, "[action] new_split dir={}", dir);
             queue_from(origin, Op::NewSplit(dir), "new_split action")
         }
         ACTION_GOTO_SPLIT => {
             let v = action.as_i32();
-            logf!("[action] goto_split {}", v);
+            alogf!(origin, "[action] goto_split {}", v);
             queue_from(origin, Op::GotoSplit(v), "goto_split action")
         }
         ACTION_RESIZE_SPLIT => {
             let (amount, dir) = action.as_resize_split();
-            logf!("[action] resize_split {} dir={}", amount, dir);
+            alogf!(origin, "[action] resize_split {} dir={}", amount, dir);
             queue_from(origin, Op::ResizeSplit(amount, dir), "resize_split action")
         }
         ACTION_EQUALIZE_SPLITS => {
-            logf!("[action] equalize_splits");
+            alogf!(origin, "[action] equalize_splits");
             queue_from(origin, Op::EqualizeSplits, "equalize_splits action")
         }
         ACTION_TOGGLE_SPLIT_ZOOM => {
-            logf!("[action] toggle_split_zoom");
+            alogf!(origin, "[action] toggle_split_zoom");
             queue_from(origin, Op::ToggleSplitZoom, "toggle_split_zoom action")
         }
 
         ACTION_TOGGLE_QUICK_TERMINAL => {
-            logf!("[action] toggle_quick_terminal");
+            alogf!(origin, "[action] toggle_quick_terminal");
             queue_from(origin, Op::ToggleQuickTerminal, "toggle_quick_terminal action")
         }
         ACTION_NEW_TAB => {
-            logf!("[action] new_tab");
+            alogf!(origin, "[action] new_tab");
             queue_from(origin, Op::NewTab, "new_tab action")
         }
         ACTION_CLOSE_TAB => {
             let mode = action.as_i32();
-            logf!("[action] close_tab mode={}", mode);
+            alogf!(origin, "[action] close_tab mode={}", mode);
             queue_from(origin, Op::CloseTab(mode), "close_tab action")
         }
         ACTION_GOTO_TAB => {
             let v = action.as_i32();
-            logf!("[action] goto_tab {}", v);
+            alogf!(origin, "[action] goto_tab {}", v);
             queue_from(origin, Op::GotoTab(v), "goto_tab action")
         }
         ACTION_MOVE_TAB => {
             let d = action.as_isize();
-            logf!("[action] move_tab {}", d);
+            alogf!(origin, "[action] move_tab {}", d);
             queue_from(origin, Op::MoveTabBy(d), "move_tab action")
         }
 
         ACTION_TOGGLE_FULLSCREEN => {
-            logf!("[action] toggle_fullscreen mode={}", action.as_i32());
+            alogf!(origin, "[action] toggle_fullscreen mode={}", action.as_i32());
             queue_from(origin, Op::ToggleFullscreen, "toggle_fullscreen action")
         }
         ACTION_TOGGLE_MAXIMIZE => {
-            logf!("[action] toggle_maximize");
+            alogf!(origin, "[action] toggle_maximize");
             queue_from(origin, Op::ToggleMaximize, "toggle_maximize action")
         }
         ACTION_RESET_WINDOW_SIZE => {
-            logf!("[action] reset_window_size");
+            alogf!(origin, "[action] reset_window_size");
             queue_from(origin, Op::ResetWindowSize, "reset_window_size action")
         }
 
         ACTION_RENDERER_HEALTH => {
-            logf!("[action] renderer_health (payload[0]={})", action.payload[0]);
+            alogf!(origin, "[action] renderer_health (payload[0]={})", action.payload[0]);
             true
         }
         ACTION_PRESENT_TERMINAL => {
-            logf!("[action] present_terminal");
+            alogf!(origin, "[action] present_terminal");
             queue_from(origin, Op::PresentTerminal, "present_terminal action")
         }
         ACTION_MOUSE_SHAPE | ACTION_MOUSE_VISIBILITY => true,
         ACTION_RING_BELL => {
-            logf!("[action] ring_bell");
+            alogf!(origin, "[action] ring_bell");
             true
         }
         ACTION_CONFIG_CHANGE | ACTION_RELOAD_CONFIG => {
             settings_ui::request_errors();
-            logf!("[action] config_change/reload_config");
+            alogf!(origin, "[action] config_change/reload_config");
             true
         }
         ACTION_SHOW_CHILD_EXITED => {
-            logf!("[action] show_child_exited");
+            alogf!(origin, "[action] show_child_exited");
             true
         }
 
@@ -1753,7 +1798,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             match owner {
                 Some(frame) => {
                     winid::close_requested(frame, winid::CloseVia::CoreCloseWindow);
-                    logf!("[action] close_window/quit tag={} -> w{}", action.tag, winid::of(frame));
+                    alogf!(origin, "[action] close_window/quit tag={} -> w{}", action.tag, winid::of(frame));
                     // **The same terminus as the other three.** This route
                     // used to call `window_finished` directly, which recorded
                     // the window as gone and quit without ever destroying it
@@ -2048,7 +2093,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // foreground application -- that is the entire point of it, and
             // the reason it is a `RegisterHotKey` and not an accelerator.
             WM_HOTKEY => {
-                logf!("[quick] hotkey pressed (foreground={:?})", GetForegroundWindow().0);
+                // process-wide: the hotkey is registered once for the process
+                // and fires whatever is in front -- the window it happens to
+                // be delivered to is an accident of registration, not a fact
+                // about which terminal the person meant
+                plogf!("[quick] hotkey pressed (foreground={:?})", GetForegroundWindow().0);
                 let app = APP.load(Ordering::Acquire);
                 let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
                 quick::toggle(app, hinst);
@@ -2152,7 +2201,8 @@ fn announce_resources_dir() {
     // and silently replacing it would make that impossible to notice.
     if let Ok(v) = std::env::var("POLTER_RESOURCES_DIR") {
         if !v.is_empty() {
-            logf!("[res] POLTER_RESOURCES_DIR already set to {:?}; leaving it", v);
+            // process-wide: the resources directory is one per process; every window reads the same one
+            plogf!("[res] POLTER_RESOURCES_DIR already set to {:?}; leaving it", v);
             report_resources_dir(std::path::Path::new(&v));
             return;
         }
@@ -2161,11 +2211,13 @@ fn announce_resources_dir() {
     // `<exe dir>/../share/ghostty`, which is the layout `zig build` produces
     // (`bin/` beside `share/`) and the one the core's own climb expects.
     let Ok(exe) = std::env::current_exe() else {
-        logf!("[res] current_exe() failed; POLTER_RESOURCES_DIR not set, so plugins, skills, themes and shell integration will all be absent");
+        // process-wide: the resources directory is one per process; every window reads the same one
+        plogf!("[res] current_exe() failed; POLTER_RESOURCES_DIR not set, so plugins, skills, themes and shell integration will all be absent");
         return;
     };
     let Some(bin) = exe.parent() else {
-        logf!("[res] the executable has no parent directory; POLTER_RESOURCES_DIR not set");
+        // process-wide: the resources directory is one per process; every window reads the same one
+        plogf!("[res] the executable has no parent directory; POLTER_RESOURCES_DIR not set");
         return;
     };
 
@@ -2181,7 +2233,8 @@ fn announce_resources_dir() {
         if cand.join("poltergeist").is_dir() {
             let s = cand.to_string_lossy().into_owned();
             std::env::set_var("POLTER_RESOURCES_DIR", &s);
-            logf!("[res] POLTER_RESOURCES_DIR = {:?}", s);
+            // process-wide: the resources directory is one per process; every window reads the same one
+            plogf!("[res] POLTER_RESOURCES_DIR = {:?}", s);
             report_resources_dir(cand);
             return;
         }
@@ -2190,7 +2243,8 @@ fn announce_resources_dir() {
     // **Nothing was set, and this says what was looked at.** Setting a path
     // that fails the core's probe is the same as setting nothing, so guessing
     // would buy nothing and would cost the reader this list.
-    logf!(
+    // process-wide: the resources directory is one per process; every window reads the same one
+    plogf!(
         "[res] no resources directory found next to the executable; POLTER_RESOURCES_DIR left unset. Looked at: {}",
         candidates
             .iter()
@@ -2198,7 +2252,8 @@ fn announce_resources_dir() {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    logf!(
+    // process-wide: the resources directory is one per process; every window reads the same one
+    plogf!(
         "[res] consequence: plugins, skills, themes and shell integration are all unavailable, and none of them reports its own absence"
     );
 }
@@ -2209,7 +2264,8 @@ fn announce_resources_dir() {
 /// feature going quiet and the core reports none of them.
 fn report_resources_dir(dir: &std::path::Path) {
     let has = |sub: &str| dir.join(sub).is_dir();
-    logf!(
+    // process-wide: the resources directory is one per process; every window reads the same one
+    plogf!(
         "[res] exists={} has_poltergeist={} has_shell-integration={} has_polter/plugins={} has_themes={}",
         dir.is_dir(),
         // The core's own probe (`looksLikeOurs`). False here means the
@@ -2237,7 +2293,8 @@ pub fn config_handle() -> ffi::Config {
 /// one changes.
 pub fn binding_on(surface: ffi::Surface, name: &str) -> bool {
     if surface.is_null() {
-        logf!("[action] binding {:?} asked for on a null surface; nothing done", name);
+        // process-wide: a null surface names no window; that is the report
+        plogf!("[action] binding {:?} asked for on a null surface; nothing done", name);
         return false;
     }
     unsafe { (api().surface_binding_action)(surface, name.as_ptr(), name.len()) }
@@ -2781,12 +2838,14 @@ fn main() {
     // associated with the same document manager as it is created.
     let first = tabs::active_hwnd(hwnd);
     if !first.0.is_null() && ime_init(first) {
-        logf!("[ime] TSF up; switch to a Chinese IME and type");
+        // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+        plogf!("[ime] TSF up; switch to a Chinese IME and type");
         unsafe {
             let _ = SetFocus(Some(first));
         }
     } else {
-        logf!("[ime] TSF init FAILED -- terminal still works, IME does not");
+        // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
+        plogf!("[ime] TSF init FAILED -- terminal still works, IME does not");
     }
 
     // The self-test drives the same entry point the accelerators do, so a
@@ -3071,7 +3130,7 @@ fn main() {
                 let _ = GetClientRect(sw, &mut rc);
             }
             resize_before = Some((rc.right - rc.left, rc.bottom - rc.top));
-            logf!(
+            wlogf!(hwnd, 
                 "[resize] before: surface client {}x{} center_pixel=0x{:06x}",
                 rc.right - rc.left,
                 rc.bottom - rc.top,
@@ -3080,7 +3139,7 @@ fn main() {
             unsafe {
                 let _ = SetWindowPos(hwnd, None, 0, 0, 1240, 820, SWP_NOMOVE | SWP_NOZORDER);
             }
-            logf!("[resize] frame SetWindowPos -> 1240x820 issued");
+            wlogf!(hwnd, "[resize] frame SetWindowPos -> 1240x820 issued");
         }
         if selfresize && ticks == 750 {
             let sw = tabs::active_hwnd(hwnd);
@@ -3089,7 +3148,7 @@ fn main() {
                 let _ = GetClientRect(sw, &mut rc);
             }
             let new = (rc.right - rc.left, rc.bottom - rc.top);
-            logf!(
+            wlogf!(hwnd, 
                 "[resize] after: surface client {}x{} center_pixel=0x{:06x}",
                 new.0,
                 new.1,
@@ -3102,7 +3161,7 @@ fn main() {
             match resize_before.and_then(|old| newly_exposed_point(old, new).map(|p| (old, p))) {
                 Some((old, (px, py))) => {
                     let c = pixel_at(sw, px, py);
-                    logf!(
+                    wlogf!(hwnd, 
                         "[resize] new-region pixel at ({},{}) = 0x{:06x}  (was outside {}x{}; \
                          0x000000 means nothing was drawn there)",
                         px,
@@ -3112,7 +3171,8 @@ fn main() {
                         old.1
                     );
                 }
-                None => logf!(
+                None => wlogf!(
+                    hwnd,
                     "[resize] nothing grew ({:?} -> {:?}); the new-region criterion does not apply",
                     resize_before,
                     new

@@ -50,6 +50,10 @@ import os
 import re
 import sys
 
+# How many of the remaining unclassified sites to print with their line
+# numbers. A number, not all of them: a reader needs somewhere to start.
+LIST_LINES = 12
+
 # How many per-window lines were still untagged when this ratchet was set.
 #
 # **Measured, not chosen**, and it has gone up once on purpose:
@@ -123,7 +127,7 @@ import sys
 # an `Option<TabId>`. The option is not a missing argument -- the put-back
 # after a failed reopen names a tab destroyed long ago, and inventing an id
 # there would be the only line in the file whose subject does not exist.
-BASELINE_UNTAGGED = 170
+BASELINE_UNTAGGED = 106
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`
@@ -148,7 +152,7 @@ def sites(src: str):
     counted as neither tagged nor untagged, which is the worst of the three.
     """
     for m in re.finditer(
-        r"\b(wlogf|plogf|logf)!\(\s*((?:[^,\"()]|\([^()]*\))*,\s*)?\"(\[[a-z]+\])([^\"]*)\"",
+        r"\b(wlogf|plogf|alogf|logf)!\(\s*((?:[^,\"()]|\([^()]*\))*,\s*)?\"(\[[a-z]+\])([^\"]*)\"",
         src,
     ):
         depth, k = 1, m.end()
@@ -175,7 +179,7 @@ def untagged_calls(src: str) -> int:
     Reported rather than ignored: a checker that can say how much it cannot see
     is a different instrument from one that implies it saw everything.
     """
-    total = len(re.findall(r"\b(?:wlogf|plogf|logf)!\(", src))
+    total = len(re.findall(r"\b(?:wlogf|plogf|alogf|logf)!\(", src))
     return total - sum(1 for _ in sites(src))
 
 
@@ -211,6 +215,11 @@ plogf!("[build] sha256 {}", sha);
 # checker would let `plogf!` be used as a way to make a number go down.
 CANARY_UNREASONED = 'plogf!("[menu] built {} groups", n);'
 
+# `alogf!` must be seen and accepted; if this checker stops knowing the name,
+# thirty-odd sites go invisible and the count falls for a reason that is not
+# work being done.
+CANARY_ALOGF = 'alogf!(origin, "[action] new_tab");'
+
 # A reason spread over two lines, with the marker on the first. **Its own
 # canary because the rule changed for it**: requiring the marker on the line
 # immediately above silently rejected every two-line reason, and the failure
@@ -230,7 +239,12 @@ def bad_sites(src: str, name: str):
     lines = src.split("\n")
     for start, macro, tag, args in sites(src):
         line_no = src[:start].count("\n") + 1
-        if macro == "wlogf" or ALREADY_NAMED.search(args):
+        # `alogf!(origin, ...)` is `wlogf!` when the action named a window and
+        # `plogf!` when it did not -- both halves are inside the macro, with
+        # the reason written there once. **Spelled out here on purpose**: a
+        # macro this checker has never heard of is a site it cannot see, and
+        # an invisible site reads exactly like a classified one.
+        if macro in ("wlogf", "alogf") or ALREADY_NAMED.search(args):
             continue
         if macro == "plogf":
             # The reason is the point. `plogf!` on its own only moves a line
@@ -254,6 +268,13 @@ def bad_sites(src: str, name: str):
 
 
 def self_test() -> None:
+    seen = list(sites(CANARY_ALOGF))
+    if len(seen) != 1 or seen[0][1] != "alogf":
+        print(f"FAIL: `alogf!` is not recognised as a log site: {seen}")
+        sys.exit(1)
+    if list(bad_sites(CANARY_ALOGF, "<canary>")):
+        print("FAIL: `alogf!` is reported as unclassified; it names its window by construction.")
+        sys.exit(1)
     if not list(bad_sites(CANARY_BAD, "<canary>")):
         print("FAIL: the probe cannot see an untagged per-window line.")
         sys.exit(1)
@@ -325,6 +346,23 @@ def main() -> int:
     for tag, n in Counter(t for _, _, t in rest).most_common():
         where = sorted({f for f, _, t in rest if t == tag})
         print(f"  {tag:12s} {n:3d} unclassified   ({', '.join(where)})")
+
+    # **And where they are.** A per-tag count says how much is left; it does
+    # not say what to open. The floor for this checker is "inject one untagged
+    # line and see it named", and until this loop existed the answer was a
+    # number that moved -- true, but not something anybody could act on
+    # without grepping the tag themselves. Capped, because the point is to
+    # give a reader somewhere to start, not to print the whole backlog.
+    if rest:
+        # Everything, when the count went *up*: that is the moment somebody
+        # needs to find the line they just added, and a capped list sorted by
+        # file name is unlikely to contain it.
+        cap = len(rest) if n > BASELINE_UNTAGGED else LIST_LINES
+        shown = sorted(rest, key=lambda h: (h[0], h[1]))[:cap]
+        for name, line, tag in shown:
+            print(f"       {name}:{line}  {tag}")
+        if len(rest) > len(shown):
+            print(f"       ... and {len(rest) - len(shown)} more")
 
     n = len(bad)
     tagged, exempt, process, invisible = summary_at
