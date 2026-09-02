@@ -1,0 +1,31 @@
+{
+  "key": "w1-controls",
+  "name": "Control shapes (test fixture)",
+  "summary": "Not a real plugin. It declares one parameter of each shape so the settings page has all three controls on one page at once -- the checkbox has otherwise never been drawn, because no shipped plugin declares a boolean.",
+  "exec": "controls.ps1",
+  "wants": { "events": ["provision"] },
+  "params": {
+    "type": "object",
+    "required": ["a_text"],
+    "properties": {
+      "a_text": {
+        "type": "string",
+        "title": "A text field",
+        "description": "Required, so its label carries the asterisk. Type anything."
+      },
+      "b_choice": {
+        "type": "string",
+        "title": "A closed set",
+        "description": "An enum, so the page must render a dropdown and not a text box.",
+        "enum": ["first", "second", "third"],
+        "default": "second"
+      },
+      "c_flag": {
+        "type": "boolean",
+        "title": "A boolean",
+        "description": "The shape that had never been drawn. Ticking it must write the string \"true\" -- the settings file holds strings only.",
+        "default": "false"
+      }
+    }
+  }
+}

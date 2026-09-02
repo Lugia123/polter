@@ -594,20 +594,54 @@ pub fn render_settings(enabled: bool, values: &BTreeMap<String, String>) -> Stri
 }
 
 fn read_settings(key: &str) -> (bool, BTreeMap<String, String>) {
-    let mut values = BTreeMap::new();
     let Some(path) = settings_path(key) else {
-        return (false, values);
+        return (false, BTreeMap::new());
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return (false, values);
+        return (false, BTreeMap::new());
     };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+    parse_settings(key, &text)
+}
+
+/// One plugin's settings file, as the page reads it.
+///
+/// **Values that are not strings are dropped, and that is not this file being
+/// fussy -- it is agreeing with the reader that decides what actually runs.**
+/// `Plugin.Settings.read` in the core keeps only string values (`plugins.md`:
+/// 「只认得 `enabled` 和 `params` 里的**字符串**值；别的键、非字符串的值，读的
+/// 时候被丢掉」). A page that read `{"skills": true}` as a ticked box would
+/// show a value the core has already thrown away -- the page and the terminal
+/// would disagree about what is configured, and the page would be the
+/// convincing one.
+fn parse_settings(key: &str, text: &str) -> (bool, BTreeMap<String, String>) {
+    let mut values = BTreeMap::new();
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
         // process-wide: a plugin's settings file on disk, read once
         plogf!("[plug] {}: settings will not parse, treating as unconfigured", key);
         return (false, values);
     };
     let Some(obj) = v.as_object() else {
         return (false, values);
+    };
+
+    let mut take = |k: &String, val: &serde_json::Value| match val {
+        serde_json::Value::String(sv) => {
+            values.insert(k.clone(), sv.clone());
+        }
+        other => {
+            // process-wide: a plugin's settings file on disk, read once
+            plogf!(
+                "[plug] {}: params.{} is {}, not a string; the core drops it and so does this page",
+                key,
+                k,
+                match other {
+                    serde_json::Value::Bool(_) => "a JSON boolean",
+                    serde_json::Value::Number(_) => "a number",
+                    serde_json::Value::Null => "null",
+                    _ => "not a string",
+                }
+            );
+        }
     };
 
     // The older shape was the parameters alone, with "is it on" living in the
@@ -617,7 +651,7 @@ fn read_settings(key: &str) -> (bool, BTreeMap<String, String>) {
     let modern = obj.contains_key("params") || obj.contains_key("enabled");
     if !modern {
         for (k, val) in obj {
-            values.insert(k.clone(), as_str(val));
+            take(k, val);
         }
         return (true, values);
     }
@@ -625,7 +659,7 @@ fn read_settings(key: &str) -> (bool, BTreeMap<String, String>) {
     let enabled = obj.get("enabled").and_then(|b| b.as_bool()).unwrap_or(false);
     if let Some(p) = obj.get("params").and_then(|p| p.as_object()) {
         for (k, val) in p {
-            values.insert(k.clone(), as_str(val));
+            take(k, val);
         }
     }
     (enabled, values)
@@ -1014,5 +1048,111 @@ mod locale_tests {
         assert_eq!(p.params[0].help, "English help");
         assert!(p.params[0].required, "required is the schema's, not the sidecar's");
         assert!(matches!(p.params[0].control, Control::Choice(_)));
+    }
+}
+
+// --------------------------------------- the three control shapes, and the
+// string round-trip the boolean one implies
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+
+    /// The fixture that exists because no shipped plugin declares a boolean.
+    /// Kept as text here rather than read from `windows/test-fixtures/`: this
+    /// test is about the parse and the round-trip, and a test that needs a
+    /// file to be somewhere is a test that stops running when somebody moves
+    /// the file.
+    const FIXTURE: &str = r#"{
+      "key": "w1-controls",
+      "name": "Control shapes",
+      "summary": "one of each",
+      "exec": "controls.ps1",
+      "wants": { "events": ["provision"] },
+      "params": {
+        "type": "object",
+        "required": ["a_text"],
+        "properties": {
+          "a_text":   { "type": "string",  "title": "A text field" },
+          "b_choice": { "type": "string",  "title": "A closed set", "enum": ["first", "second"] },
+          "c_flag":   { "type": "boolean", "title": "A boolean" }
+        }
+      }
+    }"#;
+
+    fn fixture() -> Plugin {
+        parse_manifest("w1-controls", std::path::Path::new("."), FIXTURE).expect("fixture parses")
+    }
+
+    /// **One of each shape, from one manifest.** The page draws three
+    /// different native controls off this, and until this fixture existed the
+    /// checkbox branch had never run: every shipped plugin spells its
+    /// yes/no as `enum: ["yes","no"]`, which is a dropdown.
+    #[test]
+    fn a_manifest_can_ask_for_all_three_shapes() {
+        let p = fixture();
+        let by = |n: &str| p.params.iter().find(|x| x.name == n).expect(n).control.clone();
+        assert!(matches!(by("a_text"), Control::Text));
+        assert!(matches!(by("b_choice"), Control::Choice(ref c) if c.len() == 2));
+        assert!(matches!(by("c_flag"), Control::Flag));
+        assert!(p.params.iter().find(|x| x.name == "a_text").unwrap().required);
+    }
+
+    /// **A closed set beats the declared type.** A `string` with an `enum` is
+    /// a dropdown; if this ever flipped, the page would offer a text box for
+    /// a field that takes three values -- the defect the docs cite Tinia for.
+    #[test]
+    fn an_enum_wins_over_the_type() {
+        let spec: serde_json::Value =
+            serde_json::from_str(r#"{"type":"string","enum":["a","b"]}"#).unwrap();
+        assert!(matches!(control_of(&spec), Control::Choice(_)));
+        let boolean: serde_json::Value = serde_json::from_str(r#"{"type":"boolean"}"#).unwrap();
+        assert!(matches!(control_of(&boolean), Control::Flag));
+        let plain: serde_json::Value = serde_json::from_str(r#"{"type":"string"}"#).unwrap();
+        assert!(matches!(control_of(&plain), Control::Text));
+    }
+
+    /// **The round trip the checkbox implies, and the only place it can be
+    /// checked.** The core never reads `type`: every value it stores and
+    /// hands to a plugin is a string. So a ticked box has to be spelled as
+    /// one, and the spelling is this host's own -- nothing in the core or in
+    /// any shipped plugin says which string a boolean is.
+    #[test]
+    fn a_ticked_box_is_written_as_the_string_true_and_read_back_as_one() {
+        let mut values = BTreeMap::new();
+        values.insert("c_flag".to_string(), "true".to_string());
+        let text = render_settings(true, &values);
+        assert!(text.contains("\"c_flag\": \"true\""), "not a JSON string: {text}");
+        assert!(!text.contains("\"c_flag\": true"), "written as a JSON boolean: {text}");
+
+        let (enabled, back) = parse_settings("w1-controls", &text);
+        assert!(enabled);
+        assert_eq!(back.get("c_flag").map(String::as_str), Some("true"));
+
+        // And unticked is the other string, not a missing key: a page that
+        // dropped the value would leave the plugin reading whatever it
+        // shipped with.
+        values.insert("c_flag".to_string(), "false".to_string());
+        let text = render_settings(true, &values);
+        let (_, back) = parse_settings("w1-controls", &text);
+        assert_eq!(back.get("c_flag").map(String::as_str), Some("false"));
+    }
+
+    /// **The floor for the test above.** A JSON boolean in the file is not a
+    /// value: the core drops it (`plugins.md`), so the page must drop it too.
+    /// If this came back as `"true"`, the page would show a ticked box for a
+    /// setting the terminal does not have.
+    #[test]
+    fn a_json_boolean_in_the_file_is_not_read_as_a_value() {
+        let (enabled, values) =
+            parse_settings("w1-controls", r#"{"enabled": true, "params": {"c_flag": true}}"#);
+        assert!(enabled, "`enabled` itself is a real JSON boolean and is read");
+        assert_eq!(values.get("c_flag"), None, "a non-string param value must be dropped");
+
+        // A number is the same case, and so is null.
+        let (_, values) =
+            parse_settings("k", r#"{"params": {"a": 1, "b": null, "c": "kept"}}"#);
+        assert_eq!(values.get("a"), None);
+        assert_eq!(values.get("b"), None);
+        assert_eq!(values.get("c").map(String::as_str), Some("kept"));
     }
 }
