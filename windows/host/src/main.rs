@@ -2098,7 +2098,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     (api().surface_set_content_scale)(s, scale, scale);
                 }
                 tabs::layout(hwnd);
-                logf!("[win] dpi changed -> scale {}", scale);
+                wlogf!(hwnd, "[win] dpi changed -> scale {}", scale);
                 LRESULT(0)
             }
 
@@ -2837,7 +2837,10 @@ fn main() {
     // keeps the stack and `tabs.rs` builds the tabs; this is the one line
     // where the two are introduced.
     tabs::install_reopen_opener();
-    logf!("[reopen] opener installed; stack {:?}", reopen::stack_depth());
+    // process-wide: one closed-tab stack for the whole process, installed once
+    // at startup -- there is no window for this line to belong to, and the
+    // stack it reports is shared by all of them
+    plogf!("[reopen] opener installed; stack {:?}", reopen::stack_depth());
 
     // ---- first tab ----
     if !tabs::create_tab(hwnd, app, hinst) {

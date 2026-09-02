@@ -40,7 +40,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::ffi::*;
-use crate::{api, logf};
+use crate::{api, plogf};
 
 /// The hotkey's registration id. One is enough; the value only has to be
 /// unique within this window.
@@ -259,7 +259,8 @@ fn read_config(config: Config) -> (bool, (u32, f32), Edge) {
             return (autohide, size, edge);
         };
         let Some(p) = GetProcAddress(m, s!("ghostty_config_get")) else {
-            logf!("[quick] ghostty_config_get not exported; using defaults");
+            // process-wide: the quick terminal is one window for the whole process, not one per frame
+            plogf!("[quick] ghostty_config_get not exported; using defaults");
             return (autohide, size, edge);
         };
         let get: unsafe extern "C" fn(Config, *mut c_void, *const u8, usize) -> bool =
@@ -307,14 +308,16 @@ fn read_config(config: Config) -> (bool, (u32, f32), Edge) {
             let s = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
             match Edge::parse(&s) {
                 Some(e) => edge = e,
-                None => logf!(
+                // process-wide: the quick terminal is one window for the whole process, not one per frame
+                None => plogf!(
                     "[quick] quick-terminal-position = {:?} is not a name this host knows; \
                      using top",
                     s
                 ),
             }
         } else {
-            logf!("[quick] quick-terminal-position could not be read; using top");
+            // process-wide: the quick terminal is one window for the whole process, not one per frame
+            plogf!("[quick] quick-terminal-position could not be read; using top");
         }
     }
     (autohide, size, edge)
@@ -336,7 +339,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
             ..Default::default()
         };
         if RegisterClassExW(&wc) == 0 {
-            logf!("[quick] RegisterClassExW failed");
+            // process-wide: the quick terminal is one window for the whole process, not one per frame
+            plogf!("[quick] RegisterClassExW failed");
             return;
         }
 
@@ -359,7 +363,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
             None,
         );
         let Ok(hwnd) = hwnd else {
-            logf!("[quick] CreateWindowExW failed");
+            // process-wide: the quick terminal is one window for the whole process, not one per frame
+            plogf!("[quick] CreateWindowExW failed");
             return;
         };
 
@@ -401,7 +406,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
         use crate::keys::Lookup;
         let resolved = match crate::keys::trigger_lookup("toggle_quick_terminal") {
             Lookup::NoLookup => {
-                logf!(
+                // process-wide: the quick terminal is one window for the whole process, not one per frame
+                plogf!(
                     "[quick] ghostty_config_trigger is not exported by this core, so no \
                      configured hotkey can be read at all; using the built-in {}",
                     HOTKEY_COMBO
@@ -409,7 +415,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
                 None
             }
             Lookup::NoConfig => {
-                logf!(
+                // process-wide: the quick terminal is one window for the whole process, not one per frame
+                plogf!(
                     "[quick] no config handle yet, so the hotkey could not be looked up; \
                      using the built-in {}",
                     HOTKEY_COMBO
@@ -417,7 +424,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
                 None
             }
             Lookup::Unbound => {
-                logf!(
+                // process-wide: the quick terminal is one window for the whole process, not one per frame
+                plogf!(
                     "[quick] the config was read and toggle_quick_terminal has no keybind \
                      in it; using the built-in {}",
                     HOTKEY_COMBO
@@ -431,7 +439,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
                     // mods are in the line because without them it says only
                     // "something was bound and I could not use it", which is
                     // exactly where the last investigation stalled.
-                    logf!(
+                    // process-wide: the quick terminal is one window for the whole process, not one per frame
+                    plogf!(
                         "[quick] toggle_quick_terminal IS bound (tag={} key=0x{:x} mods=0x{:x} \
                          = {:?}) but this host cannot turn it into a RegisterHotKey \
                          combination; using the built-in {}",
@@ -457,9 +466,11 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config, owner:
             windows::Win32::Foundation::GetLastError().0
         };
         for line in hotkey_lines(&combo, r.is_ok(), err) {
-            logf!("{}", line);
+            // process-wide: the quick terminal is one window for the whole process, not one per frame
+            plogf!("{}", line);
         }
-        logf!(
+        // process-wide: the quick terminal is one window for the whole process, not one per frame
+        plogf!(
             "[quick] window ready; edge={:?} autohide={} size={:?} monitors={}",
             edge,
             autohide,
@@ -709,7 +720,8 @@ pub fn toggle(app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
 
 fn show(app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
     let Some((device, work)) = target_monitor() else {
-        logf!("[quick] no monitor; not showing");
+        // process-wide: the quick terminal is one window for the whole process, not one per frame
+        plogf!("[quick] no monitor; not showing");
         return;
     };
 
@@ -756,7 +768,8 @@ fn show(app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
     // screenshot on a one-screen machine, and the name is the half of it that
     // still can be: a host that never asked `GetMonitorInfo` for a name has
     // nothing to print here.
-    logf!(
+    // process-wide: the quick terminal is one window for the whole process, not one per frame
+    plogf!(
         "[quick] shown on {} at {},{} {}x{} edge={:?} work={}x{}+{}+{} monitors={}",
         device,
         rect.left,
@@ -785,7 +798,8 @@ fn hide() {
         // would let the panel open exactly once, and the second press would
         // do nothing with no line in the log to say why.
     }
-    logf!("[quick] hidden | {}", state_line());
+    // process-wide: the quick terminal is one window for the whole process, not one per frame
+    plogf!("[quick] hidden | {}", state_line());
 }
 
 fn create_surface(
@@ -818,7 +832,8 @@ fn create_surface(
         )
     };
     let Ok(child) = child else {
-        logf!("[quick] surface window failed");
+        // process-wide: the quick terminal is one window for the whole process, not one per frame
+        plogf!("[quick] surface window failed");
         return;
     };
 
@@ -828,7 +843,8 @@ fn create_surface(
     sc.scale_factor = scale;
     let s = unsafe { (api().surface_new)(app, &sc) };
     if s.is_null() {
-        logf!("[quick] ghostty_surface_new returned null");
+        // process-wide: the quick terminal is one window for the whole process, not one per frame
+        plogf!("[quick] ghostty_surface_new returned null");
         unsafe {
             let _ = DestroyWindow(child);
         }
@@ -848,7 +864,8 @@ fn create_surface(
         q.child = child;
         q.surface = s as usize;
     });
-    logf!("[quick] surface = {:?} on {:?} {}x{}", s, child.0, w, h);
+    // process-wide: the quick terminal is one window for the whole process, not one per frame
+    plogf!("[quick] surface = {:?} on {:?} {}x{}", s, child.0, w, h);
 }
 
 /// One frame of the slide, `eased` running 0 → 1.
@@ -984,7 +1001,8 @@ pub fn state_line() -> String {
 }
 
 pub fn log_state(tag: &str) {
-    logf!("[quick] {} | {}", tag, state_line());
+    // process-wide: the quick terminal is one window for the whole process, not one per frame
+    plogf!("[quick] {} | {}", tag, state_line());
 }
 
 /// `--qttest`: drop in and out without a hotkey, printing the inputs each
@@ -1015,7 +1033,8 @@ pub fn script_step(app: App, hinst: windows::Win32::Foundation::HINSTANCE, step:
         }
         4 => {
             toggle(app, hinst);
-            logf!(
+            // process-wide: the quick terminal is one window for the whole process, not one per frame
+            plogf!(
                 "[quick] qttest done -- the hotkey itself is NOT covered: press Ctrl+` \
                  while another application is focused and look for a [quick] show line"
             );

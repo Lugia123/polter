@@ -36,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use polter_split_tree::{Focus, NewSplit, PaneId, Placement, Rect as TreeRect, Side, Tree};
 
 use crate::ffi::*;
-use crate::{api, logf, wlogf};
+use crate::{api, logf, plogf, wlogf};
 
 /// Posted to the frame window when the action queue has something in it.
 pub const WM_POLTER_OP: u32 = WM_APP + 1;
@@ -1547,7 +1547,7 @@ fn split_focused(
     let new_tree = match tree.insert(id, focused, dir) {
         Ok(t) => t,
         Err(e) => {
-            logf!("[split] insert failed: {:?}", e);
+            wlogf!(frame, "[split] insert failed: {:?}", e);
             return;
         }
     };
@@ -1557,7 +1557,7 @@ fn split_focused(
     let Some((_, Placement::Visible(r))) =
         new_tree.layout(bounds).into_iter().find(|(p, _)| *p == id)
     else {
-        logf!("[split] the new pane is not in the layout; refusing to create it");
+        wlogf!(frame, "[split] the new pane is not in the layout; refusing to create it");
         return;
     };
 
@@ -2465,7 +2465,7 @@ fn go_fullscreen(frame: HWND) {
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
             );
-            logf!("[win] fullscreen OFF");
+            wlogf!(frame, "[win] fullscreen OFF");
             return;
         }
 
@@ -2482,7 +2482,7 @@ fn go_fullscreen(frame: HWND) {
             ..Default::default()
         };
         if !GetMonitorInfoW(mon, &mut mi).as_bool() {
-            logf!("[win] fullscreen: GetMonitorInfoW failed, staying windowed");
+            wlogf!(frame, "[win] fullscreen: GetMonitorInfoW failed, staying windowed");
             return;
         }
 
@@ -2507,7 +2507,8 @@ fn go_fullscreen(frame: HWND) {
             r.bottom - r.top,
             SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
         );
-        logf!(
+        wlogf!(
+            frame,
             "[win] fullscreen ON  monitor {}x{}",
             r.right - r.left,
             r.bottom - r.top
@@ -2585,7 +2586,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     // Back on the stack: `reopen_last` already popped it, and
                     // an entry dropped here would make the next undo reopen
                     // the wrong tab with nothing to say why.
-                    logf!("[reopen] could not create the tab; putting {:?} back", title);
+                    wlogf!(frame, "[reopen] could not create the tab; putting {:?} back", title);
                     // **`None`: there is no tab.** The one this entry names
                     // was destroyed when it was closed, and the replacement
                     // was just refused -- so nothing here has an identity to
@@ -2628,7 +2629,8 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // that a single line saying `restored "tab-alpha"` was true of
                 // the host's intent and false of the screen a moment later.
                 if title.is_empty() {
-                    logf!(
+                    wlogf!(
+                        frame,
                         "[reopen] restored cwd={:?} at index {} of {}; no user title to restore, \
                          the shell names it",
                         used,
@@ -2636,7 +2638,8 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                         count(frame)
                     );
                 } else {
-                    logf!(
+                    wlogf!(
+                        frame,
                         "[reopen] restored {:?} cwd={:?} at index {} of {}",
                         title,
                         used,
@@ -2720,7 +2723,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             Op::ToggleMaximize => unsafe {
                 let zoomed = IsZoomed(frame).as_bool();
                 let _ = ShowWindow(frame, if zoomed { SW_RESTORE } else { SW_MAXIMIZE });
-                logf!("[win] maximize {} -> {}", zoomed, !zoomed);
+                wlogf!(frame, "[win] maximize {} -> {}", zoomed, !zoomed);
             },
             Op::ResetWindowSize => {
                 // **This window's own first size.** One copy for the
@@ -2740,7 +2743,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                             SWP_NOMOVE | SWP_NOZORDER,
                         );
                     }
-                    logf!("[win] reset_window_size -> {}x{}", w, h);
+                    wlogf!(frame, "[win] reset_window_size -> {}x{}", w, h);
                 }
             }
             Op::SetTabTitle { surface, title } => {
@@ -2785,7 +2788,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                         .unwrap_or_default()
                 };
                 let ok = copy_to_clipboard(&title).is_ok();
-                logf!("[win] copy_title_to_clipboard {:?} -> {}", title, ok);
+                wlogf!(frame, "[win] copy_title_to_clipboard {:?} -> {}", title, ok);
             }
             Op::NewSplit(dir) => {
                 // `ghostty_action_split_direction_e`
@@ -2829,7 +2832,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     }
                     // No pane that way. Doing nothing is the honest answer;
                     // wrapping would put focus somewhere the user did not aim.
-                    None => logf!("[split] no pane {:?} of the focused one", f),
+                    None => wlogf!(frame, "[split] no pane {:?} of the focused one", f),
                 }
             }
             Op::ResizeSplit(amount, dir) => {
@@ -2863,9 +2866,9 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                                 }
                             }
                             layout(frame);
-                            logf!("[split] resize pane {} by {} {:?}", focused, amount, side);
+                            wlogf!(frame, "[split] resize pane {} by {} {:?}", focused, amount, side);
                         }
-                        Err(e) => logf!("[split] resize refused: {:?}", e),
+                        Err(e) => wlogf!(frame, "[split] resize refused: {:?}", e),
                     }
                 }
             }
@@ -2879,7 +2882,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     }
                 }
                 layout(frame);
-                logf!("[split] equalized");
+                wlogf!(frame, "[split] equalized");
             }
             Op::ToggleSplitZoom => {
                 let zoomed = {
@@ -2896,14 +2899,14 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                         .flatten()
                 };
                 layout(frame);
-                logf!("[split] zoom -> {:?}", zoomed);
+                wlogf!(frame, "[split] zoom -> {:?}", zoomed);
             }
             Op::ClosePane(id) => close_pane(frame, id),
             Op::ToggleQuickTerminal => crate::quick::toggle(app, hinst),
             Op::PresentTerminal => unsafe {
                 let _ = ShowWindow(frame, SW_RESTORE);
                 let _ = SetForegroundWindow(frame);
-                logf!("[win] present_terminal");
+                wlogf!(frame, "[win] present_terminal");
             },
         }
     }
@@ -2997,10 +3000,38 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                     (api().surface_set_size)(s, w, h);
                     let n = SIZES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     if n <= 10 {
-                        logf!(
-                            "[win] surface {:?} WM_SIZE {}x{} -> set_size (#{})",
-                            hwnd.0, w, h, n
-                        );
+                        // **The frame is looked up, not assumed from `hwnd`.**
+                        // `hwnd` here is a *pane's* window; `wlogf!(hwnd, ..)`
+                        // compiles, and then `winid` issues it a window number
+                        // of its own -- a window that appears in the log and
+                        // has never existed.
+                        //
+                        // **`winid::frame_of_window`, not `pane_of`.** The
+                        // obvious version of this asks the tab model which
+                        // pane owns the handle -- and a pane is only in that
+                        // model *after* `create_pane` returns, while `WM_SIZE`
+                        // arrives during `CreateWindowExW` inside it. So
+                        // `pane_of` answers `None` for a perfectly ordinary
+                        // pane at exactly the moment this line is written.
+                        // Walking to the root window and checking *that*
+                        // against the registry works from the frame's
+                        // creation, because the frame is registered before it
+                        // is shown.
+                        match crate::winid::frame_of_window(hwnd) {
+                            Some(frame) => wlogf!(
+                                frame,
+                                "[win] surface {:?} WM_SIZE {}x{} -> set_size (#{})",
+                                hwnd.0, w, h, n
+                            ),
+                            // process-wide: the handle belongs to no
+                            // registered frame -- the quick terminal's surface,
+                            // or a pane whose window has already gone
+                            None => plogf!(
+                                "[win] surface {:?} WM_SIZE {}x{} -> set_size (#{}); \
+                                 in no tracked window",
+                                hwnd.0, w, h, n
+                            ),
+                        }
                     }
                 }
                 // The composition is somewhere else on screen now even though
