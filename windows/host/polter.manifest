@@ -1,23 +1,43 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
   Why this file exists: without a Common-Controls v6 dependency every standard
-  control in this process is drawn by comctl32 v5 -- the Windows 95 look. The
+  control in this process is drawn by comctl32 v5, the Windows 95 look. The
   font was right, the sizes were right, and the buttons still looked like
   1995, which is what a person reported as "the buttons are ugly".
 
   **DPI awareness is deliberately NOT declared here.** main.rs calls
   SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) at startup, and when
   both a manifest and a call say something about it **the manifest wins and
-  the call fails -- returning false, saying nothing**. One place says it, and
+  the call fails, returning false, saying nothing**. One place says it, and
   it is that one. If you are here to declare it in this file, delete that call
   in the same edit; leaving both is how the code stops meaning anything while
   still being read.
 
   This file contains no DPI element of any kind, and the element's name is
-  deliberately not spelled anywhere in it -- a comment is inert to the loader
+  deliberately not spelled anywhere in it: a comment is inert to the loader
   but not to a person or a script grepping the built exe for it, and a
   documented absence that answers "present" to every search is worse than no
   documentation. Searching the exe for that element must find nothing.
+
+  Search for it case sensitively, in the lower-case spelling a manifest uses.
+  That count is 0, and it is the question this paragraph is answering. A case
+  insensitive search is a different question and answers 7: the API call in
+  main.rs, its import and symbol names, and this paragraph, which ships inside
+  the exe with the rest of the file. All of them are the awareness *call*,
+  which is capitalised differently and is meant to be there. The first reading
+  of this was taken with a case sensitive grep and reported as a plain 0, which
+  was true and told the reader less than it seemed to.
+
+  The rule this paragraph nearly broke: it must not spell the element itself.
+  A draft of it did, to be helpful, and the built exe promptly answered
+  "present" to the very search described two lines above.
+
+  One rule for anyone editing this comment: **it must never contain two
+  hyphens in a row.** XML forbids that sequence inside a comment, so the
+  house dash used everywhere else in this port makes this file fail to parse
+  and the exe that embeds it fail to start, with nothing at build time saying
+  so. That is not hypothetical: it is what this comment did. `build.rs`
+  parses this file before embedding it, so a slip fails the build instead.
 -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity type="win32" name="Polter.Host" version="1.0.0.0" processorArchitecture="amd64"/>
