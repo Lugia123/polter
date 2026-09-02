@@ -10,6 +10,26 @@ const global = @import("../global.zig");
 
 const log = std.log.scoped(.shell_integration);
 
+/// The three reasons no integration was injected, as named constants.
+///
+/// **They are constants so that a test can hold them against each other.**
+/// The defect these replace was one sentence covering all three: a user whose
+/// own `-Command` had correctly suppressed the injection was told their shell
+/// could not be detected, and went to look for a fault in their shell
+/// configuration that was not there. The floor for that fix is that the
+/// wordings stay distinguishable, and a floor nobody can run is a hope --
+/// `messages stay distinguishable` below is that floor.
+const msg_undetected =
+    "shell could not be detected, no automatic shell integration will be injected";
+const msg_declined =
+    "shell integration for {s} was not injected; the shell was detected " ++
+    "but its integration declined to run";
+const msg_powershell_terminal_arg =
+    "shell integration not injected: the configured command already " ++
+    "contains {s}, which consumes the rest of the command line. " ++
+    "Remove it to get automatic integration, or keep it and set " ++
+    "up the integration by hand.";
+
 /// Shell types we support
 pub const Shell = enum {
     bash,
@@ -55,8 +75,20 @@ pub fn setup(
     force_shell: ?Shell,
 ) !?ShellIntegration {
     const shell: Shell = force_shell orelse
-        try detectShell(alloc_arena, command) orelse
+        try detectShell(alloc_arena, command) orelse {
+        // **This sentence lives here because this is the only place that
+        // knows it is true.** It used to be logged by the caller, on the
+        // `null` this function returns -- and that `null` has three
+        // different meanings by the time it arrives there. Saying "could
+        // not be detected" for all of them sent a user whose shell had
+        // been detected perfectly well off to check their shell
+        // configuration.
+        log.warn(
+            "shell could not be detected, no automatic shell integration will be injected",
+            .{},
+        );
         return null;
+    };
 
     const new_command: config.Command = switch (shell) {
         .bash => try setupBash(
@@ -91,7 +123,15 @@ pub fn setup(
             if (!try setupXdgDataDirs(alloc_arena, resource_dir, env)) return null;
             break :xdg try command.clone(alloc_arena);
         },
-    } orelse return null;
+    } orelse {
+        // Detected, and declined. A different fact from the one above, and it
+        // points a reader somewhere different: the shell is fine, the setup
+        // for it did not go ahead. The specific reason, when there is one, is
+        // logged by the `setup*` function that knows it -- naming the shell
+        // here is what makes those lines findable.
+        log.warn(msg_declined, .{@tagName(shell)});
+        return null;
+    };
 
     return .{
         .shell = shell,
@@ -1003,7 +1043,13 @@ fn setupPowershell(
     while (iter.next()) |arg| {
         // Prefixes, because PowerShell accepts any unambiguous abbreviation:
         // `-com`, `-Command` and `-c` are the same switch.
-        if (isPowershellTerminalArg(arg)) return null;
+        if (isPowershellTerminalArg(arg)) {
+            // **Names the switch, because "one of your arguments" is not
+            // actionable.** The user wrote it; telling them which one turns
+            // the message into an instruction.
+            log.warn(msg_powershell_terminal_arg, .{arg});
+            return null;
+        }
         try args.append(alloc, try alloc.dupeZ(u8, arg));
     }
 
@@ -1038,6 +1084,63 @@ fn isPowershellTerminalArg(arg: []const u8) bool {
         }
     }
     return false;
+}
+
+test "the three not-injected messages stay distinguishable" {
+    const testing = std.testing;
+
+    // **The floor for task 117, as a test rather than as an eyeball.**
+    //
+    // The defect was one sentence used for three different situations. Two of
+    // them send a reader in opposite directions: "your shell was not
+    // recognised" means go and look at the shell configuration, "your own
+    // `-Command` suppressed this" means the configuration is fine and the
+    // choice was yours. Only the first may carry the old wording.
+    const detect_phrase = "could not be detected";
+    try testing.expect(std.mem.indexOf(u8, msg_undetected, detect_phrase) != null);
+    try testing.expect(std.mem.indexOf(u8, msg_declined, detect_phrase) == null);
+    try testing.expect(std.mem.indexOf(u8, msg_powershell_terminal_arg, detect_phrase) == null);
+
+    // Pairwise distinct, which is what "distinguishable" has to mean when the
+    // reader is grepping a log.
+    try testing.expect(!std.mem.eql(u8, msg_undetected, msg_declined));
+    try testing.expect(!std.mem.eql(u8, msg_declined, msg_powershell_terminal_arg));
+    try testing.expect(!std.mem.eql(u8, msg_undetected, msg_powershell_terminal_arg));
+
+    // The two that can name something must actually take a parameter -- a
+    // message that says "one of your arguments" is not an instruction.
+    try testing.expect(std.mem.indexOf(u8, msg_declined, "{s}") != null);
+    try testing.expect(std.mem.indexOf(u8, msg_powershell_terminal_arg, "{s}") != null);
+}
+
+test "powershell: a command line carrying -Command declines through setup, not just setupPowershell" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var res: TmpResourcesDir = try .init(.powershell);
+    defer res.deinit();
+
+    // End to end through `setup`, because that is the path the caller takes
+    // and the one whose `null` used to be mislabelled.
+    {
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+        const result = try setup(alloc, res.path, .{ .shell = "pwsh -Command Get-Date" }, &env, null);
+        try testing.expect(result == null);
+    }
+
+    // And the floor from the other direction: the same command line without
+    // that switch is injected. Without this, an implementation that declined
+    // everything would satisfy the test above.
+    {
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+        const result = try setup(alloc, res.path, .{ .shell = "pwsh -NoLogo" }, &env, null);
+        try testing.expect(result != null);
+        try testing.expectEqual(Shell.powershell, result.?.shell);
+    }
 }
 
 test "powershell: the command line is direct, not a shell string" {

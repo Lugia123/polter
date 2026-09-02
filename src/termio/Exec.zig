@@ -855,7 +855,16 @@ const Subprocess = struct {
                 &env,
                 force,
             ) orelse {
-                log.warn("shell could not be detected, no automatic shell integration will be injected", .{});
+                // **The outcome, not a reason.** This line used to say
+                // "shell could not be detected", which is one of at least
+                // three ways `setup` returns null and was the wrong one for a
+                // user whose own `-Command` had (correctly) suppressed the
+                // injection: it sent them to check their shell configuration
+                // for a fault that was not there. By the time the `null`
+                // arrives here the reason is gone, so the reasons are logged
+                // where they are known, inside `shell_integration`, and this
+                // line reports only what happened.
+                log.warn("no automatic shell integration was injected", .{});
                 break :shell default_shell_command;
             };
 
