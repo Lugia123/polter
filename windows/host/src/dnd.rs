@@ -62,7 +62,7 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
-use crate::{logf, plogf};
+use crate::{hlogf, plogf};
 
 /// One target per surface window. It holds the window, and nothing else --
 /// **the surface is looked up per drop, not cached**, because a pane's
@@ -110,7 +110,11 @@ fn has_files(data: &IDataObject) -> bool {
 /// Calling (3) with a buffer sized from (1) is the natural mistake and gives
 /// truncated paths for every file after the first -- which the shell then
 /// reports as "file not found" on a name that looks almost right.
-fn paths_of(data: &IDataObject) -> Vec<String> {
+///
+/// **`owner` is only ever the log's subject.** It is the window the drop
+/// arrived on, carried in so this function's one failure line can say which
+/// terminal window lost the drop; nothing here reads it for any other reason.
+fn paths_of(data: &IDataObject, owner: HWND) -> Vec<String> {
     let fmt = FORMATETC {
         cfFormat: CF_HDROP.0,
         ptd: std::ptr::null_mut(),
@@ -121,7 +125,7 @@ fn paths_of(data: &IDataObject) -> Vec<String> {
     let mut out = Vec::new();
     unsafe {
         let Ok(mut medium) = data.GetData(&fmt) else {
-            logf!("[drop] the data object has no CF_HDROP after all");
+            hlogf!(owner, "[drop] the data object has no CF_HDROP after all");
             return out;
         };
         let hdrop = HDROP(medium.u.hGlobal.0);
@@ -192,10 +196,10 @@ impl IDropTarget_Impl for DropTarget_Impl {
         self.effect.set(DROPEFFECT_NONE.0);
 
         let Ok(data) = pDataObj.ok() else {
-            logf!("[drop] no data object");
+            hlogf!(self.hwnd, "[drop] no data object");
             return Ok(());
         };
-        let paths = paths_of(data);
+        let paths = paths_of(data, self.hwnd);
         let text = polter_droppath::join(&paths);
 
         // The surface this window is, resolved now. Not the focused one: a
@@ -203,7 +207,8 @@ impl IDropTarget_Impl for DropTarget_Impl {
         // right-click menu does.
         let surface = crate::tabs::surface_of(self.hwnd);
         if surface.is_null() {
-            logf!(
+            hlogf!(
+                self.hwnd,
                 "[drop] {} files onto {:?} but it has no surface; inserted 0 chars",
                 paths.len(),
                 self.hwnd.0
@@ -221,7 +226,8 @@ impl IDropTarget_Impl for DropTarget_Impl {
         // silence at the prompt; the file count separates them. And a count
         // without a length would not catch a path list that came back empty
         // of names, which is what a truncating `DragQueryFileW` looks like.
-        logf!(
+        hlogf!(
+            self.hwnd,
             "[drop] {} files onto surface {:?}; inserted {} chars",
             paths.len(),
             surface,
@@ -230,7 +236,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
         // The paths themselves, once, so a wrong quoting rule is readable
         // rather than inferred from a character count.
         if !text.is_empty() {
-            logf!("[drop] text = {:?}", text);
+            hlogf!(self.hwnd, "[drop] text = {:?}", text);
         }
         Ok(())
     }
@@ -276,9 +282,18 @@ fn ensure_ole() -> bool {
 /// Called next to `crate::ime_attach`, from wherever a surface window is
 /// created. Safe to call on a window that is already registered -- the second
 /// call is refused by OLE and logged rather than silently doubling anything.
+///
+/// **The log lines here resolve their window through the root, not through
+/// the pane table.** `attach` runs inside `make_pane`, *before* the pane is
+/// put in its window's list -- so `tabs::pane_of(hwnd)` is `None` for every
+/// legitimate pane at this moment, and using it would quietly declare all
+/// three of these lines process-wide. The frame is in the registry from the
+/// moment it is created, which is long before any pane, so walking to the
+/// root and checking membership answers correctly here *and* keeps saying
+/// "not a terminal window" for the quick terminal, which attaches too.
 pub fn attach(hwnd: HWND) {
     if !ensure_ole() {
-        logf!("[drop] OLE is not initialised; {:?} will not accept files", hwnd.0);
+        hlogf!(hwnd, "[drop] OLE is not initialised; {:?} will not accept files", hwnd.0);
         return;
     }
     let target: IDropTarget = DropTarget {
@@ -291,12 +306,13 @@ pub fn attach(hwnd: HWND) {
     // target's.
     let r = unsafe { RegisterDragDrop(hwnd, &target) };
     match r {
-        Ok(()) => logf!("[drop] {:?} registered as a drop target", hwnd.0),
+        Ok(()) => hlogf!(hwnd, "[drop] {:?} registered as a drop target", hwnd.0),
         // **Named, because the number is not readable.** `E_OUTOFMEMORY` here
         // almost never means memory; it is what OLE returns when the thread
         // never had `OleInitialize`. `DRAGDROP_E_ALREADYREGISTERED` means
         // `attach` ran twice for one window.
-        Err(e) => logf!(
+        Err(e) => hlogf!(
+            hwnd,
             "[drop] RegisterDragDrop({:?}) FAILED hr=0x{:08x} -- \
              0x8007000E means OleInitialize never ran on this thread, \
              0x80040101 means this window was already registered",
@@ -312,7 +328,7 @@ pub fn attach(hwnd: HWND) {
 /// window that no longer exists.
 pub fn detach(hwnd: HWND) {
     let r = unsafe { RevokeDragDrop(hwnd) };
-    logf!("[drop] {:?} revoked ok={}", hwnd.0, r.is_ok());
+    hlogf!(hwnd, "[drop] {:?} revoked ok={}", hwnd.0, r.is_ok());
 }
 
 #[cfg(test)]

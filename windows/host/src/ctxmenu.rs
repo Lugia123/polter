@@ -42,7 +42,7 @@ use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::ffi::Surface;
-use crate::logf;
+use crate::{hlogf, logf, plogf};
 
 /// Which state bit ticks a row.
 ///
@@ -159,6 +159,15 @@ const ROLE_WATCHED: u8 = 2;
 /// So all this does is say the notification happened, which is worth a line:
 /// a mark that never reaches the host and a mark that reaches it and changes
 /// nothing are different bugs.
+///
+/// **Deliberately still untagged, and this is the reason.** The mark is about
+/// one terminal, so "which window" has an answer -- it is just not in this
+/// function: the arm in `cb_action` that calls it now has `origin`, and does
+/// not pass it. Tagging this with the active window instead would be a wrong
+/// answer where there is currently a visibly missing one, and a `plogf!`
+/// would be a false claim: this line is not process-wide. It becomes
+/// answerable the day this function is allowed to take the surface, which is
+/// an edit in `main.rs` and not in this batch.
 pub fn on_poltergeist_mark(role: i32, shielded: bool) {
     logf!("[ctx] poltergeist mark notified: role={} shielded={}", role, shielded);
 }
@@ -187,13 +196,14 @@ fn mark_of(surface: Surface) -> Option<(u8, bool)> {
 /// keyboard, where "the focused surface" is the right answer by definition;
 /// a menu opened with the right button has a different right answer, and the
 /// two are different operations that happen to share a name.
-fn binding_on(surface: Surface, name: &str) -> bool {
+/// `owner` is the window the menu was opened on, for the log line only.
+fn binding_on(surface: Surface, owner: HWND, name: &str) -> bool {
     if surface.is_null() {
         // **Not a fall back to the focused surface.** Silently retargeting is
         // the bug this function exists to remove, and it would come back
         // wearing a `null` check. A menu on a window with no surface should
         // do nothing and say so.
-        logf!("[ctx] no surface for this window; {:?} not sent", name);
+        hlogf!(owner, "[ctx] no surface for this window; {:?} not sent", name);
         return false;
     }
     unsafe { (crate::api().surface_binding_action)(surface, name.as_ptr(), name.len()) }
@@ -296,7 +306,7 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
         let menu = match CreatePopupMenu() {
             Ok(m) => m,
             Err(e) => {
-                logf!("[ctx] CreatePopupMenu failed: {e:?}");
+                hlogf!(surface_hwnd, "[ctx] CreatePopupMenu failed: {e:?}");
                 return;
             }
         };
@@ -326,14 +336,18 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
         // not being reachable, and without this number that symptom is
         // invisible -- the menu looks fine, it is just silently back to
         // having no shortcut text at all.
-        logf!(
+        hlogf!(
+            surface_hwnd,
             "[ctx] built {} items, {} with shortcuts, {} separators",
             shown,
             with_shortcut,
             items.len() - shown
         );
         if mark.is_none() && !PG_NEVER_TOLD_LOGGED.swap(true, Ordering::AcqRel) {
-            logf!(
+            // process-wide: no mark has reached *the host*, which is a fact
+            // about the process and is why it is said once and not once per
+            // window -- the `swap` above is a process-wide latch
+            plogf!(
                 "[ctx] no GHOSTTY_ACTION_POLTERGEIST_MARK has reached this host; \
                  the three agent rows are drawn unticked because their state is \
                  unknown, not because it is off"
@@ -360,7 +374,7 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
             // 0 means dismissed. Logged because "the menu did nothing" and
             // "the menu never appeared" are different bugs and look the same
             // from the other side of the screen.
-            logf!("[ctx] menu dismissed without a choice");
+            hlogf!(surface_hwnd, "[ctx] menu dismissed without a choice");
             return;
         }
         let Some(row) = ROWS.get(id - ID_BASE) else {
@@ -381,7 +395,7 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
         // This is the same trap as §3.3's menu target, one window further
         // down: the identity was already resolved at the top of this
         // function and then thrown away at the point of use.
-        let ok = binding_on(surface, action);
+        let ok = binding_on(surface, surface_hwnd, action);
         // **The action name and the surface are both in the log on purpose.**
         // The action name says which row went dead if the core ever renames
         // one. The surface pointer is the only external evidence that this
@@ -422,7 +436,7 @@ pub fn on_context_menu(surface_hwnd: HWND, lparam: isize) {
     } else {
         ((lparam & 0xFFFF) as i16 as i32, ((lparam >> 16) & 0xFFFF) as i16 as i32)
     };
-    logf!("[ctx] context menu at {},{}", x, y);
+    hlogf!(surface_hwnd, "[ctx] context menu at {},{}", x, y);
     show(surface_hwnd, x, y);
 }
 
@@ -663,7 +677,7 @@ mod tests {
     /// The only safe answer is to do nothing, loudly.
     #[test]
     fn a_null_surface_sends_no_action() {
-        assert!(!binding_on(std::ptr::null_mut(), "copy_to_clipboard"));
+        assert!(!binding_on(std::ptr::null_mut(), HWND::default(), "copy_to_clipboard"));
     }
 
     // ------------------------------------------------------------- ticks

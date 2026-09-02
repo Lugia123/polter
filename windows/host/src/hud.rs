@@ -35,7 +35,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::{logf, plogf};
+use crate::{hlogf, logf, plogf};
 
 const WM_HUD_SYNC: u32 = WM_APP + 7;
 /// Timer id for "the resize is over".
@@ -71,12 +71,28 @@ static READONLY: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Ve
 /// The surface the badge is currently showing for, or 0.
 static RO_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// The window a surface is in, as a handle a log line can be tagged with.
+///
+/// Null when no window owns it, which `hlogf!` reports as "not a terminal
+/// window" rather than inventing one. **A surface pointer in the text is not
+/// a substitute**: it names a terminal, and the question a reader of a
+/// two-window log is asking is which *window* the line came from.
+fn frame_hwnd_of(surface: usize) -> HWND {
+    crate::tabs::frame_of_surface(surface as crate::ffi::Surface).unwrap_or_default()
+}
+
 struct State {
     font: HFONT,
     /// Last measured grid, painted by the size sign.
     cols: i32,
     rows: i32,
     size_visible: bool,
+    /// The frame the size sign was last put over, so the line that hides it
+    /// half a second later can name the same window the line that showed it
+    /// did. Read from here rather than asked again: by then the focus may
+    /// have moved, and `overlay_frame` would answer about the wrong window --
+    /// and a wrong window is worse than none.
+    size_frame: isize,
     ro_visible: bool,
 }
 
@@ -106,7 +122,9 @@ pub fn is_readonly_for(surface: usize) -> bool {
 /// `GHOSTTY_ACTION_READONLY` for one surface. **Safe from any thread.**
 pub fn on_readonly_for(surface: usize, on: bool) {
     if surface == 0 {
-        logf!("[hud] readonly {} for surface 0 -- ignored, that names no terminal", on);
+        // process-wide: the action named surface 0, so there is no terminal
+        // and therefore no window this line could belong to
+        plogf!("[hud] readonly {} for surface 0 -- ignored, that names no terminal", on);
         return;
     }
     if let Ok(mut v) = READONLY.lock() {
@@ -165,7 +183,10 @@ fn prune_and_count() -> usize {
     let before = v.len();
     v.retain(|(s, _)| live.contains(s));
     if v.len() != before {
-        logf!("[hud] forgot {} closed surface(s) from the read-only list", before - v.len());
+        // process-wide: one read-only list for every window; this line is
+        // about pruning the list, and the surfaces it drops came from windows
+        // that no longer exist
+        plogf!("[hud] forgot {} closed surface(s) from the read-only list", before - v.len());
     }
     v.iter().filter(|(_, on)| *on).count()
 }
@@ -297,6 +318,7 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
                 cols: 0,
                 rows: 0,
                 size_visible: false,
+                size_frame: 0,
                 ro_visible: false,
             });
         });
@@ -316,9 +338,17 @@ fn show_size(me: HWND) {
         // No measurement, no sign. Logged because "the size overlay never
         // appeared" and "the core never sent cell_size" look identical on
         // screen and are different bugs.
-        logf!("[hud] size: no measurement (cell_size or client rect missing)");
+        hlogf!(
+            crate::tabs::overlay_frame(),
+            "[hud] size: no measurement (cell_size or client rect missing)"
+        );
         return;
     };
+
+    // **Hoisted out of the placement block below.** The window the sign is
+    // put over is the window its log lines are about, and the "hidden" line
+    // that follows a second later has no other way to know which one it was.
+    let frame = crate::tabs::overlay_frame();
 
     let changed = STATE.with(|c| {
         c.borrow_mut()
@@ -328,13 +358,13 @@ fn show_size(me: HWND) {
                 st.cols = cols;
                 st.rows = rows;
                 st.size_visible = true;
+                st.size_frame = frame.0 as isize;
                 ch
             })
             .unwrap_or(false)
     });
 
     unsafe {
-        let frame = crate::tabs::overlay_frame();
         let mut fr = RECT::default();
         if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
             return;
@@ -368,7 +398,8 @@ fn show_size(me: HWND) {
         // that quietly stops being checkable, so the arithmetic is closed here
         // instead: client pixels, cell size, and the quotient, in one line
         // nobody else can throttle.
-        logf!(
+        hlogf!(
+            frame,
             "[hud] size {}x{} from client {}x{} cell {}x{}",
             cols, rows, px_w, px_h, cell_w, cell_h
         );
@@ -392,7 +423,9 @@ unsafe extern "system" fn size_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 });
                 if was {
                     let _ = ShowWindow(hwnd, SW_HIDE);
-                    logf!("[hud] size hidden");
+                    let over = STATE
+                        .with(|c| c.borrow().as_ref().map(|st| st.size_frame).unwrap_or(0));
+                    hlogf!(HWND(over as *mut c_void), "[hud] size hidden");
                 }
                 LRESULT(0)
             }
@@ -440,12 +473,18 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         let _ = ShowWindow(hwnd, SW_HIDE);
                     }
                     RO_SHOWN_FOR.store(0, Ordering::Release);
-                    logf!("[hud] readonly off for surface {:#x}", surface);
+                    hlogf!(
+                        frame_hwnd_of(surface),
+                        "[hud] readonly off for surface {:#x}",
+                        surface
+                    );
                     // One badge, and more than one pane can be read-only. Say
                     // so rather than leaving a read-only pane unmarked and
                     // unexplained.
                     if n_readonly > 0 {
-                        logf!(
+                        // process-wide: the count is over every window's panes,
+                        // which is the whole point of saying it
+                        plogf!(
                             "[hud] {} other surface(s) still read-only and unbadged (one badge,                              many panes)",
                             n_readonly
                         );
@@ -459,7 +498,8 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 // that was not read-only, and nothing about the badge said
                 // which pane it meant.
                 let Some(fr) = pane_rect_for(surface) else {
-                    logf!(
+                    hlogf!(
+                        frame_hwnd_of(surface),
                         "[hud] readonly on for surface {:#x}, but no pane owns it; badge hidden                          rather than drawn somewhere arbitrary",
                         surface
                     );

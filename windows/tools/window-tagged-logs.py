@@ -123,11 +123,15 @@ LIST_LINES = 12
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
+# 106 -> 77: `dnd.rs` 8, `ctxmenu.rs` 6 of 7, `hud.rs` 6, `keyseq.rs` 6,
+# `overlay.rs` 3. The one `ctxmenu.rs` keeps is `on_poltergeist_mark`, which is
+# about one terminal and is not given it -- a `plogf!` there would be a false
+# claim, so it stays visible instead.
 # 170 (this commit): `reopen.rs`'s last 3. `remember` now takes the frame *and*
 # an `Option<TabId>`. The option is not a missing argument -- the put-back
 # after a failed reopen names a tab destroyed long ago, and inventing an id
 # there would be the only line in the file whose subject does not exist.
-BASELINE_UNTAGGED = 106
+BASELINE_UNTAGGED = 77
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`
@@ -143,6 +147,14 @@ PROCESS_WIDE_COMMENT = re.compile(r"//\s*process-wide:\s*(\S.*)$")
 ALREADY_NAMED = re.compile(r"\bid\b|TabId|PaneId|pane|surface|\.id")
 
 
+# **One list, read twice.** The macro names used to be spelled out in both
+# regexes below, and the two lists disagreeing is not a hypothetical: a macro
+# missing from the first is a site this checker cannot see, and one missing
+# from the second is a site it cannot even count as unseen. `hlogf!` was added
+# to the first and would have been forgotten in the second.
+MACROS = ("wlogf", "plogf", "alogf", "hlogf", "logf")
+
+
 def sites(src: str):
     """Yield (offset, macro, tag, args) for every tagged log call.
 
@@ -152,7 +164,7 @@ def sites(src: str):
     counted as neither tagged nor untagged, which is the worst of the three.
     """
     for m in re.finditer(
-        r"\b(wlogf|plogf|alogf|logf)!\(\s*((?:[^,\"()]|\([^()]*\))*,\s*)?\"(\[[a-z]+\])([^\"]*)\"",
+        r"\b(" + "|".join(MACROS) + r")!\(\s*((?:[^,\"()]|\([^()]*\))*,\s*)?\"(\[[a-z]+\])([^\"]*)\"",
         src,
     ):
         depth, k = 1, m.end()
@@ -179,7 +191,7 @@ def untagged_calls(src: str) -> int:
     Reported rather than ignored: a checker that can say how much it cannot see
     is a different instrument from one that implies it saw everything.
     """
-    total = len(re.findall(r"\b(?:wlogf|plogf|alogf|logf)!\(", src))
+    total = len(re.findall(r"\b(?:" + "|".join(MACROS) + r")!\(", src))
     return total - sum(1 for _ in sites(src))
 
 
@@ -219,6 +231,7 @@ CANARY_UNREASONED = 'plogf!("[menu] built {} groups", n);'
 # thirty-odd sites go invisible and the count falls for a reason that is not
 # work being done.
 CANARY_ALOGF = 'alogf!(origin, "[action] new_tab");'
+CANARY_HLOGF = 'hlogf!(hwnd, "[drop] {:?} revoked", hwnd.0);'
 
 # A reason spread over two lines, with the marker on the first. **Its own
 # canary because the rule changed for it**: requiring the marker on the line
@@ -244,7 +257,12 @@ def bad_sites(src: str, name: str):
         # the reason written there once. **Spelled out here on purpose**: a
         # macro this checker has never heard of is a site it cannot see, and
         # an invisible site reads exactly like a classified one.
-        if macro in ("wlogf", "alogf") or ALREADY_NAMED.search(args):
+        # `hlogf!(hwnd, ...)` is the same shape one level down: `wlogf!` when
+        # the handle resolves to a *registered* frame and `plogf!` when it does
+        # not, with the reason written once at the macro. The resolution is the
+        # point -- `winid::of` names any handle it is given, so a pane or a null
+        # would otherwise mint a window number for a window that does not exist.
+        if macro in ("wlogf", "alogf", "hlogf") or ALREADY_NAMED.search(args):
             continue
         if macro == "plogf":
             # The reason is the point. `plogf!` on its own only moves a line
@@ -268,6 +286,15 @@ def bad_sites(src: str, name: str):
 
 
 def self_test() -> None:
+    for name, canary in (("alogf", CANARY_ALOGF), ("hlogf", CANARY_HLOGF)):
+        if not list(sites(canary)):
+            print(f"FAIL: `{name}!` is not seen as a log site at all -- every one of "
+                  "them reads exactly like a classified line, and they are not "
+                  "even counted among the calls this checker cannot see.")
+            sys.exit(2)
+        if list(bad_sites(canary, "<canary>")):
+            print(f"FAIL: `{name}!` was reported as unclassified.")
+            sys.exit(2)
     seen = list(sites(CANARY_ALOGF))
     if len(seen) != 1 or seen[0][1] != "alogf":
         print(f"FAIL: `alogf!` is not recognised as a log site: {seen}")

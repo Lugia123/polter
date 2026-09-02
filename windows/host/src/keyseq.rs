@@ -37,7 +37,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::logf;
+use crate::{hlogf, plogf, wlogf};
 
 const WM_KEYSEQ_SYNC: u32 = WM_APP + 6;
 
@@ -145,7 +145,10 @@ pub(crate) fn key_label(tag: i32, key: u32) -> String {
         // print. Reaching here now means an ordinal outside the enum the
         // header declares -- a core newer than the header this was built
         // against.
-        logf!("[keys] no label for physical key #{key}; the header has {} entries", key_names().len());
+        // process-wide: the key table comes from the core's header and is
+        // the same for every window; a missing name is a fact about the
+        // build, not about where the key was pressed
+        plogf!("[keys] no label for physical key #{key}; the header has {} entries", key_names().len());
         return format!("key#{key}");
     };
     label_for_name(name)
@@ -231,6 +234,11 @@ struct State {
     tables: Vec<String>,
     font: HFONT,
     visible: bool,
+    /// The frame the sign was last put in the corner of, so the line that
+    /// clears it names the window it was actually over. Asking
+    /// `overlay_frame` again at clear time would answer about wherever focus
+    /// is *now*, which is a different window as soon as there are two.
+    over: isize,
 }
 
 thread_local! {
@@ -290,7 +298,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
             ..Default::default()
         };
         if RegisterClassExW(&wc) == 0 {
-            logf!("[keyseq] RegisterClassExW failed");
+            // process-wide: a window class is registered once for the process
+            plogf!("[keyseq] RegisterClassExW failed");
             return;
         }
         // `WS_EX_NOACTIVATE`: this thing must never take focus. It is a sign,
@@ -312,7 +321,9 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         ) {
             Ok(h) => h,
             Err(e) => {
-                logf!("[keyseq] CreateWindowExW failed: {e:?}");
+                // process-wide: one sign for the whole process -- and at this
+                // point it does not exist, so there is nothing to name either
+                plogf!("[keyseq] CreateWindowExW failed: {e:?}");
                 return;
             }
         };
@@ -335,7 +346,9 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         );
         STATE.with(|c| c.borrow_mut().font = font);
         HWND_KEYSEQ.store(hwnd.0, Ordering::Release);
-        logf!("[keyseq] ready");
+        // process-wide: the sign is one window for the whole process, and it
+        // belongs to no frame until it is placed over one
+        plogf!("[keyseq] ready");
     }
 }
 
@@ -401,7 +414,8 @@ fn sync() {
         if !want {
             if was {
                 let _ = ShowWindow(me, SW_HIDE);
-                logf!("[keyseq] cleared");
+                let over = STATE.with(|c| c.borrow().over);
+                hlogf!(HWND(over as *mut c_void), "[keyseq] cleared");
             }
             return;
         }
@@ -433,7 +447,9 @@ fn sync() {
             SWP_SHOWWINDOW | SWP_NOACTIVATE,
         );
         let _ = InvalidateRect(Some(me), None, true);
-        logf!("[keyseq] pending {:?}", text);
+        // Non-null: the early return above is the only way past a null frame.
+        STATE.with(|c| c.borrow_mut().over = frame.0 as isize);
+        wlogf!(frame, "[keyseq] pending {:?}", text);
     }
 }
 

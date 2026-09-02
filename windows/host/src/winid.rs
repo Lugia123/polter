@@ -31,6 +31,7 @@
 use std::sync::Mutex;
 
 use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT};
 
 /// Frames in the order they were first seen. The index plus one is the tag.
 ///
@@ -204,6 +205,17 @@ pub fn close_requested(frame: HWND, via: CloseVia) {
 /// The tag for a frame, assigning one if this is the first sighting.
 pub fn of(frame: HWND) -> u32 {
     let key = frame.0 as isize;
+    // **A null handle is not a window, and must not become one.** `of` names
+    // whatever it is handed, so a caller that resolved a frame and got
+    // nothing -- `overlay_frame` with every window closed, a pane whose
+    // window has already gone -- would otherwise mint `w4 = frame 0x0`, and
+    // that entry never leaves `FRAMES`: `count` reports it forever, and
+    // `count` is what "the last window closed, so quit" is read from. `0`
+    // reads as "no window", which is true and visibly not a window number --
+    // the same answer the poisoned lock gives below, for the same reason.
+    if key == 0 {
+        return 0;
+    }
     let mut frames = match FRAMES.lock() {
         Ok(f) => f,
         // A poisoned lock must not take the log down with it: `0` reads as
@@ -223,6 +235,34 @@ pub fn of(frame: HWND) -> u32 {
 }
 
 /// `w1`, for embedding in a line.
+/// The terminal window a handle belongs to, when it belongs to one.
+///
+/// **`of` will name any handle it is given**, and that is the trap this
+/// closes. Hand it a pane and it mints a number for a window that does not
+/// exist; the log then has a `w4` nobody can find, which reads exactly like a
+/// real one. So a handle is walked to its root and the root is *checked
+/// against the registry* rather than assumed to be in it.
+///
+/// **`None` is a real answer, not a failure**, and it has two causes the port
+/// actually has:
+///
+///  - the quick terminal is one window for the whole process and is
+///    deliberately not a registered frame, and `dnd::attach` runs for its
+///    surface as well as for panes;
+///  - a pane torn down after its window left the registry has no window left
+///    to name.
+///
+/// Both are "this line is not about one of the terminal windows", which is
+/// what the caller wants to say, and neither is "some window, unknown".
+pub fn frame_of_window(hwnd: HWND) -> Option<HWND> {
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let key = root.0 as isize;
+    crate::tabs::with_windows(|ws| ws.iter().any(|w| w.frame == key)).then_some(root)
+}
+
 pub fn tag(frame: HWND) -> String {
     format!("w{}", of(frame))
 }
@@ -278,5 +318,28 @@ macro_rules! wlogf {
     ($frame:expr, $($a:tt)*) => {{
         let __w = $crate::winid::tag($frame);
         $crate::log_line(&format!("{} {}", __w, format_args!($($a)*)));
+    }};
+}
+/// `logf!` for a line whose subject is a **handle**, which may or may not be
+/// one of the terminal windows.
+///
+/// It is `wlogf!` when the handle resolves to a registered frame and `plogf!`
+/// when it does not -- see [`frame_of_window`] for the two ways that happens.
+/// The reason a `plogf!` normally has to carry at its call site is written
+/// here instead, once, because it is the same reason at every one of them:
+/// the alternative was the same sentence copied to a dozen sites, which is a
+/// dozen places for one fact to be right.
+///
+/// **A macro the checker has not been taught is a site it cannot see**, and
+/// an invisible site reads exactly like a classified one -- so
+/// `windows/tools/window-tagged-logs.py` knows this name and has a canary for
+/// it.
+#[macro_export]
+macro_rules! hlogf {
+    ($hwnd:expr, $($a:tt)*) => {{
+        match $crate::winid::frame_of_window($hwnd) {
+            Some(__f) => $crate::wlogf!(__f, $($a)*),
+            None => $crate::plogf!($($a)*),
+        }
     }};
 }

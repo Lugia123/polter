@@ -36,7 +36,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWLP_USERDATA, GWLP_WNDPROC, WM_KEYDOWN,
 };
 
-use crate::logf;
+use crate::hlogf;
+
+/// Which window an overlay belongs to, for its log lines.
+///
+/// **`tabs::overlay_frame`, not the control's own ancestry.** An overlay is a
+/// popup, so `GA_ROOT` from its edit control is the popup itself and answers
+/// nothing; `GA_ROOTOWNER` would answer for the ones that were given an owner
+/// and silently answer "no window" for the ones that were not. `overlay_frame`
+/// is the project's single answer to this question -- the same one that
+/// decides where the overlay is *placed* -- so if it is ever wrong, it is
+/// wrong in one place for everybody rather than in a second way here.
+fn frame() -> windows::Win32::Foundation::HWND {
+    crate::tabs::overlay_frame()
+}
 
 /// Hand the TSF document back and move focus into an overlay's edit control.
 ///
@@ -52,7 +65,7 @@ pub fn focus_to_edit(edit: HWND, who: &str) -> HWND {
     if !edit.0.is_null() {
         let _ = unsafe { SetFocus(Some(edit)) };
     }
-    logf!("[overlay] {} took focus, ime document released", who);
+    hlogf!(frame(), "[overlay] {} took focus, ime document released", who);
     prev
 }
 
@@ -63,11 +76,11 @@ pub fn focus_back(prev: HWND, who: &str) {
         // it pointed at an overlay that is gone -- the terminal will take it
         // again on its next `WM_SETFOCUS`.
         crate::ime_focus(false);
-        logf!("[overlay] {} closed with no previous focus", who);
+        hlogf!(frame(), "[overlay] {} closed with no previous focus", who);
         return;
     }
     let _ = unsafe { SetFocus(Some(prev)) };
-    logf!("[overlay] {} closed, focus returned to the surface", who);
+    hlogf!(frame(), "[overlay] {} closed, focus returned to the surface", who);
 }
 
 // --------------------------------------------------- letting Escape through
