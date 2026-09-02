@@ -2185,6 +2185,27 @@ pub fn surface_of(hwnd: HWND) -> Surface {
 /// own window procedure, which knows the pane and not the frame -- and asking
 /// the caller to supply a frame would mean asking it to guess, which is how a
 /// click in window 2 comes to activate a tab in window 1.
+///
+/// # It answers `None` for an ordinary pane, at a moment you will meet
+///
+/// A pane enters the model when `create_tab_with` pushes the finished `Tab`
+/// -- **after** `create_pane` has returned. Windows sends `WM_SIZE`, and the
+/// drop target is attached, *during* `CreateWindowExW` inside `create_pane`.
+/// So at those moments this function answers `None` for a pane that is
+/// perfectly normal and about to be perfectly registered.
+///
+/// That makes it the wrong thing to base a decision on there, and the failure
+/// is the quiet kind: the `None` branch is usually worded as "this pane is in
+/// no window", which is a true-sounding sentence that runs **every time**. Two
+/// call sites have already been written that way and corrected -- `dnd::attach`
+/// and the surface window's `WM_SIZE` line.
+///
+/// **Use `winid::frame_of_window` when the question is only "which frame".**
+/// It walks to the root window and checks *that* against the registry, and a
+/// frame is registered before it is ever shown -- so it is right from the
+/// first message a pane receives. Reach for `pane_of` when you genuinely need
+/// the tab index or the `PaneId`, and then treat `None` as "not yet", not as
+/// "not ours".
 pub fn pane_of(hwnd: HWND) -> Option<(HWND, usize, PaneId)> {
     let key = hwnd.0 as isize;
     with_windows(|ws| {
