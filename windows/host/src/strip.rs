@@ -592,6 +592,7 @@ pub fn on_button_up(frame: HWND, x: i32, y: i32) {
         // same close button, that is a click on it.
         if hit(&g, x, y) == Hit::Close(id) {
             logf!("[strip] close {:?}", id);
+            crate::winid::close_requested(frame, crate::winid::CloseVia::StripCross);
             tabs::close_tab(frame, id);
             return;
         }
@@ -1329,6 +1330,11 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
 
     let ok = match cmd {
         TabCmd::Close => {
+            // **Recorded where the request is made, not where it ends.** This
+            // and the close cross below both call `close_tab`, so the ending
+            // cannot say which one a person used -- and they are two different
+            // gestures that a fix might cover only one of.
+            crate::winid::close_requested(frame, crate::winid::CloseVia::Menu);
             tabs::close_tab(frame, id);
             report_remaining(frame, &before, &format!("closed tab {}", at));
             true

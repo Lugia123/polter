@@ -1,4 +1,4 @@
-//! Which window a log line is about.
+//! Which window a log line is about, and how many there are.
 //!
 //! **Written before multi-window, and that is the point.** Today there is one
 //! frame, so every line in the host is unambiguous by default and the tag is
@@ -38,6 +38,86 @@ use windows::Win32::Foundation::HWND;
 /// thread the core is on, and a log line from there must get the same name for
 /// a window as the one the message loop uses.
 static FRAMES: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+/// A window has been created. **Called at creation, not at first sighting.**
+///
+/// `of` assigns a name lazily, which is enough for a log line but not for
+/// counting: a window that has not logged yet does not exist as far as a lazy
+/// registry is concerned, and "how many windows are there" is exactly the
+/// question the shutdown rule turns on.
+pub fn created(frame: HWND) -> u32 {
+    let id = of(frame);
+    crate::logf!("[win] w{} created; {} window(s)", id, count());
+    id
+}
+
+/// A window has gone. Returns how many are left.
+///
+/// **The count is on the same line as the destruction, and so is the
+/// consequence.** "w2 destroyed" and "0 windows left" and "therefore the
+/// process is quitting" are three facts a reader would otherwise have to
+/// assemble from three lines written at three moments -- and the assembling
+/// is where the wrong conclusion gets drawn, because the interesting case is
+/// precisely the one where the third does not follow from the second.
+pub fn destroyed(frame: HWND) -> usize {
+    let id = of(frame);
+    let key = frame.0 as isize;
+    if let Ok(mut frames) = FRAMES.lock() {
+        frames.retain(|f| *f != key);
+    }
+    let left = count();
+    crate::logf!(
+        "[win] w{} destroyed; {} window(s) left{}",
+        id,
+        left,
+        if left == 0 { " -> quitting" } else { "" }
+    );
+    left
+}
+
+/// Every window, in the order they were created.
+///
+/// Handed out so a caller can print one line per window **at one instant**.
+/// Reading two windows' state lines out of a log where each was printed when
+/// it happened to change is comparing two different moments of the world, and
+/// a diff of those says nothing about whether the two windows are independent.
+pub fn all() -> Vec<HWND> {
+    FRAMES
+        .lock()
+        .map(|f| f.iter().map(|k| HWND(*k as *mut std::ffi::c_void)).collect())
+        .unwrap_or_default()
+}
+
+/// How many windows exist right now.
+pub fn count() -> usize {
+    FRAMES.lock().map(|f| f.len()).unwrap_or(0)
+}
+
+/// Where a request to close something came from.
+///
+/// **Four routes, one destination.** Closing the last tab from the menu, from
+/// the strip's cross, from the window's own X (or Alt+F4), and from the core's
+/// `close_window` all end at the same `PostQuitMessage` today, so a log that
+/// records only the ending cannot say which of the four a person used -- and
+/// an implementation that fixes three of them looks complete until somebody
+/// uses the fourth, which is the one they use most.
+#[derive(Clone, Copy, Debug)]
+pub enum CloseVia {
+    Menu,
+    StripCross,
+    WindowXOrAltF4,
+    CoreCloseWindow,
+}
+
+pub fn close_requested(frame: HWND, via: CloseVia) {
+    let what = match via {
+        CloseVia::Menu => "menu",
+        CloseVia::StripCross => "strip-x",
+        CloseVia::WindowXOrAltF4 => "alt-f4",
+        CloseVia::CoreCloseWindow => "core close_window",
+    };
+    crate::wlogf!(frame, "[win] close requested via {}", what);
+}
 
 /// The tag for a frame, assigning one if this is the first sighting.
 pub fn of(frame: HWND) -> u32 {

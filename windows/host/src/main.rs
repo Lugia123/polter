@@ -91,6 +91,12 @@ fn now_str() -> String {
 /// old process read as proof that the new process's message loop was alive
 /// while it was in fact deadlocked before ever reaching it. One file per
 /// process makes that mistake impossible to make again.
+/// The file whose presence asks for a state dump. Deleted as it is read, so
+/// one write produces exactly one dump.
+fn dumpstate_path() -> Option<std::path::PathBuf> {
+    Some(plugins::user_dir()?.parent()?.join("dumpstate"))
+}
+
 fn log_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("POLTER_HOST_LOG") {
         return std::path::PathBuf::from(p);
@@ -1490,6 +1496,12 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // Returning false is the honest answer and is what macOS does for
         // the nine actions it does not implement either.
         ACTION_CLOSE_WINDOW | ACTION_QUIT => {
+            // **`frame_hwnd()` here is a stand-in and is marked as one.** The
+            // action carries a target, but a target is a *surface*, and the
+            // window that owns it cannot be asked for until there is more than
+            // one. B1 has to replace this; until then the line is true because
+            // there is only one window for it to be true of.
+            winid::close_requested(tabs::frame_hwnd(), winid::CloseVia::CoreCloseWindow);
             logf!("[action] close_window/quit tag={}", action.tag);
             unsafe { PostQuitMessage(0) };
             true
@@ -1696,7 +1708,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
 
+            // **Asked to close, before anything has been destroyed.** The X
+            // and Alt+F4 both arrive here; they are one entry point because
+            // the user cannot tell them apart either.
+            WM_CLOSE => {
+                winid::close_requested(hwnd, winid::CloseVia::WindowXOrAltF4);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+
             WM_DESTROY => {
+                // The count, and whether that count means the process is
+                // finished, on one line. Today the answer is always "quit",
+                // because there is one window; B1-e is the change that makes
+                // the two facts able to disagree.
+                let left = winid::destroyed(hwnd);
+                let _ = left;
                 PostQuitMessage(0);
                 LRESULT(0)
             }
@@ -2315,6 +2341,12 @@ fn main() {
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
+    // **Before anything else mentions it.** `winid::of` would name this window
+    // the first time some other line talked about it, which is enough for
+    // reading a log and not enough for counting: the shutdown rule turns on
+    // how many windows exist, and a window that has not logged yet does not
+    // exist to a lazy registry.
+    winid::created(hwnd);
 
     // ---- put the window back where it was
     //
@@ -2759,10 +2791,45 @@ fn main() {
                 center_pixel(sw)
             );
         }
+        // ---- P-1: every window's state line, at a moment the tester picks
+        //
+        // **A file, not a hotkey and not a timer.** A timer prints each
+        // window's line whenever that window happens to change, and comparing
+        // two such lines is comparing two different moments -- which is the
+        // one thing this reading must not do, since the question is whether
+        // one window moved while the other did not. A hotkey would go through
+        // the key path, and the key path is where this port's injector is
+        // blind. A sentinel file is a trigger the tester holds: write it, and
+        // the next tick prints one line per window and deletes it.
+        if ticks % 12 == 0 {
+            if let Some(mark) = dumpstate_path() {
+                if mark.exists() {
+                    let _ = std::fs::remove_file(&mark);
+                    let wins = winid::all();
+                    // process-wide: the dump spans every window, so it belongs
+                    // to none of them; the per-window lines follow it
+                    plogf!("[dump] state of {} window(s), taken at one instant", wins.len());
+                    for w in wins {
+                        strip::log_state(w, "dump");
+                    }
+                }
+            }
+        }
+
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
 
-    logf!("exiting");
+    // ---- P-3: what leaving actually did, once, and only when leaving
+    //
+    // **Printed after the message loop, which is the only place that means
+    // "really exiting".** A line printed next to `PostQuitMessage` would be
+    // printed by every path that asks to quit, including the ones B1-e is
+    // about to make not quit.
+    let open_tabs = tabs::count();
+    session::flush_if_dirty(hwnd);
+    // process-wide: the process is leaving; by this point no window is left
+    // for the line to be about
+    plogf!("[main] exiting: session flushed, {} tabs were open", open_tabs);
 }
 
 
