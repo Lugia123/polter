@@ -361,11 +361,31 @@ struct Interaction {
     scroll: i32,
     /// The in-place rename editor, when one is open, and what it is renaming.
     editing: Option<(isize, TabId)>,
+    /// How many times **this** strip has actually painted. **"The strip was
+    /// asked to repaint" and "the strip painted" are different claims**, and
+    /// a strip that vanishes could be either; only a counter tells them
+    /// apart.
+    ///
+    /// **Moved out of a process-wide `AtomicU32`, and E3 is why.** It is
+    /// printed in `state_line` as `paints=`, and that line is the whole of
+    /// how "window 2 changed and window 1 did not" is measured -- the
+    /// criterion is that window 1's line is *byte for byte* the same. With
+    /// one counter for the process, scrolling window 2 repaints window 2,
+    /// increments the count, and changes window 1's line. E3's first
+    /// criterion would have failed, and it would have failed pointing at the
+    /// split that had just landed, which had nothing to do with it.
+    ///
+    /// **In this struct rather than a second table keyed by frame.** A
+    /// parallel map from `HWND` to a count is the shape this codebase forbids
+    /// everywhere else, for the reason it would bite here: two tables indexed
+    /// by the same key, and on the day only one of them gets updated the
+    /// symptom is "it is right sometimes".
+    paints: u32,
 }
 
 impl Interaction {
     const fn new() -> Self {
-        Interaction { drag: Drag::Idle, hover: Hit::None, scroll: 0, editing: None }
+        Interaction { drag: Drag::Idle, hover: Hit::None, scroll: 0, editing: None, paints: 0 }
     }
 }
 
@@ -834,11 +854,6 @@ fn fill(hdc: HDC, r: &RECT, color: u32) {
     }
 }
 
-/// How many times the strip has actually painted. **"The strip was asked to
-/// repaint" and "the strip painted" are different claims**, and a strip that
-/// vanishes could be either; only a counter tells them apart.
-static PAINTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
 /// One line that says everything the strip believes.
 ///
 /// **Machine-readable on purpose.** Every strip defect so far was diagnosed
@@ -894,7 +909,7 @@ pub fn state_line(frame: HWND) -> String {
         with_ui(frame, |u| u.scroll),
         g.overflow.is_some(),
         onscreen,
-        PAINTS.load(std::sync::atomic::Ordering::Relaxed)
+        with_ui(frame, |u| u.paints)
     )
 }
 
@@ -913,7 +928,7 @@ pub fn paint(frame: HWND) {
         wlogf!(frame, "[strip] BeginPaint failed; nothing drawn");
         return;
     }
-    PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    with_ui(frame, |u| u.paints += 1);
     let mut rc = RECT::default();
     let _ = unsafe { GetClientRect(frame, &mut rc) };
     let scale = tabs::scale_of();
