@@ -160,16 +160,25 @@ const ROLE_WATCHED: u8 = 2;
 /// a mark that never reaches the host and a mark that reaches it and changes
 /// nothing are different bugs.
 ///
-/// **Deliberately still untagged, and this is the reason.** The mark is about
-/// one terminal, so "which window" has an answer -- it is just not in this
-/// function: the arm in `cb_action` that calls it now has `origin`, and does
-/// not pass it. Tagging this with the active window instead would be a wrong
-/// answer where there is currently a visibly missing one, and a `plogf!`
-/// would be a false claim: this line is not process-wide. It becomes
-/// answerable the day this function is allowed to take the surface, which is
-/// an edit in `main.rs` and not in this batch.
-pub fn on_poltergeist_mark(role: i32, shielded: bool) {
-    logf!("[ctx] poltergeist mark notified: role={} shielded={}", role, shielded);
+/// **`surface` is which terminal the mark was for, and it is not stored
+/// either.** It is passed so this line can say what it is about: the mark can
+/// be made on a terminal that is not in front, so "a mark arrived" and "a mark
+/// arrived for the pane you are looking at" are different events that used to
+/// print the same sentence. The window follows from the surface --
+/// `tabs::frame_of_surface` is the one place that mapping is done -- so the
+/// tag is a lookup here rather than a second argument that could disagree
+/// with the first.
+///
+/// A null surface is the core naming no terminal, and `hlogf!` says so rather
+/// than picking the window in front.
+pub fn on_poltergeist_mark(surface: Surface, role: i32, shielded: bool) {
+    hlogf!(
+        crate::tabs::frame_of_surface(surface).unwrap_or_default(),
+        "[ctx] poltergeist mark notified for surface {:?}: role={} shielded={}",
+        surface,
+        role,
+        shielded
+    );
 }
 
 static PG_NEVER_TOLD_LOGGED: AtomicBool = AtomicBool::new(false);

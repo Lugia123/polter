@@ -2774,7 +2774,14 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                             n
                         )
                     }
-                    ShellTitle::NoSuchSurface => logf!(
+                    // process-wide: no tab in any window owns this surface,
+                    // so there is no window this line belongs to. **`frame` is
+                    // in scope and is the wrong answer**: it is the window
+                    // draining the queue, and the two arms above deliberately
+                    // tag with the window the title *landed* in for exactly
+                    // that reason. Naming the pump here would read like a
+                    // window that dropped a title, which no window did.
+                    ShellTitle::NoSuchSurface => plogf!(
                         "[tab] set_tab_title {:?} dropped: no tab owns surface {:?}",
                         title,
                         surface as *const std::ffi::c_void

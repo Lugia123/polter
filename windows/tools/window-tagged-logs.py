@@ -123,6 +123,15 @@ LIST_LINES = 12
 # **Lower this number when it drops.** The check insists on it, because a
 # baseline that is allowed to be stale is a baseline that hides a regression
 # behind work somebody else did.
+# 41 -> 38 (measured on 43a340504 + this change alone): the two lines the
+# previous commit named, and the one they were half of. `cb_action`'s
+# poltergeist_mark arm resolved the surface, gave it to
+# `set_mark_for_surface`, and did not give it to the notification -- so
+# `ctxmenu`'s line could not say which terminal, which is why it was left
+# untagged there rather than tagged with a guess. Passing it fixes both ends;
+# the log tag is a consequence, not the reason. `tabs.rs`'s `NoSuchSurface`
+# became a `plogf!`: `frame` is in scope there and is the wrong answer, being
+# the window that happened to be draining the queue.
 # 39 -> 41 (measured on e0e9d270b + this change alone): **a rise, and not a
 # regression.** `surface` came off `ALREADY_NAMED`, so 8 lines stopped being
 # exempt: 3 were already `hlogf!`, 3 were fixed here (`hud.rs` x2,
@@ -141,7 +150,7 @@ LIST_LINES = 12
 # an `Option<TabId>`. The option is not a missing argument -- the put-back
 # after a failed reopen names a tab destroyed long ago, and inventing an id
 # there would be the only line in the file whose subject does not exist.
-BASELINE_UNTAGGED = 41
+BASELINE_UNTAGGED = 38
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`
