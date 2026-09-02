@@ -354,8 +354,11 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
     let mut y = s(PAD + HEAD_H);
     let field_w = s(W - LIST_W - PAD * 4);
 
+    // **Every control this page makes goes through here**, which is why the
+    // Escape forwarding is installed here rather than at each call site: a
+    // control added later gets it without anybody remembering to.
     let mk = |class: PCWSTR, style: WINDOW_STYLE, yy: i32, hh: i32, id: usize| unsafe {
-        CreateWindowExW(
+        let made = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class,
             PCWSTR::null(),
@@ -368,7 +371,11 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
             Some(HMENU(id as *mut c_void)),
             Some(hinst),
             None,
-        )
+        );
+        if let Ok(h) = made {
+            crate::overlay::forward_escape_to_parent(h);
+        }
+        made
     };
 
     // The on/off switch, first, because it is the thing most visits are for.
@@ -543,6 +550,7 @@ fn ensure_buttons(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
         if let Ok(h) = h {
             SendMessageW(h, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
             set_text(h, label);
+            crate::overlay::forward_escape_to_parent(h);
             return h;
         }
         HWND(std::ptr::null_mut())
@@ -872,6 +880,21 @@ unsafe extern "system" fn settings_proc(
                         rebuild_fields(win, hinst);
                     }
                 }
+                LRESULT(0)
+            }
+
+            // **The chord that opens this page has to close it from inside
+            // it, too.** `Ctrl+Shift+,` is a host accelerator in `keys.rs`,
+            // and that path runs only for a *surface* window -- so once focus
+            // is in this page, the key never reaches the code that would
+            // toggle it. Handled here as well, so the way in is also a way
+            // out no matter where focus is.
+            WM_KEYDOWN
+                if wp.0 as u16 == VK_OEM_COMMA.0
+                    && (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0
+                    && (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 =>
+            {
+                hide(win);
                 LRESULT(0)
             }
 
