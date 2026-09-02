@@ -938,8 +938,10 @@ fn close_pane(frame: HWND, id: PaneId) {
     if tab_empty {
         destroy_tab_at(frame, tab_idx);
         if count() == 0 {
-            wlogf!(frame, "[tab] last tab closed -> quitting");
-            unsafe { PostQuitMessage(0) };
+            wlogf!(frame, "[tab] last tab closed");
+            // Through the one point, so every route leaves the same record
+            // the window's own X does.
+            crate::winid::window_finished(frame);
             return;
         }
         set_active(frame, active_index());
@@ -983,8 +985,10 @@ pub fn close_tab(frame: HWND, id: TabId) {
     let Some(idx) = idx else { return };
     destroy_tab_at(frame, idx);
     if count() == 0 {
-        wlogf!(frame, "[tab] last tab closed -> quitting");
-        unsafe { PostQuitMessage(0) };
+        wlogf!(frame, "[tab] last tab closed");
+        // Through the one point, so every route leaves the same record
+        // the window's own X does.
+        crate::winid::window_finished(frame);
         return;
     }
     set_active(frame, active_index());
@@ -1791,8 +1795,10 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     _ => {
                         destroy_tab_at(frame, active);
                         if count() == 0 {
-                            wlogf!(frame, "[tab] last tab closed -> quitting");
-                            unsafe { PostQuitMessage(0) };
+                            wlogf!(frame, "[tab] last tab closed");
+                            // Through the one point, so every route leaves the same record
+                            // the window's own X does.
+                            crate::winid::window_finished(frame);
                         } else {
                             set_active(frame, active_index());
                         }

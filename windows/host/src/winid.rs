@@ -60,8 +60,22 @@ pub fn created(frame: HWND) -> u32 {
 /// is where the wrong conclusion gets drawn, because the interesting case is
 /// precisely the one where the third does not follow from the second.
 pub fn destroyed(frame: HWND) -> usize {
-    let id = of(frame);
     let key = frame.0 as isize;
+    // **Idempotent, and that is not tidiness.** One path records the window as
+    // gone and then quits; another lets Windows destroy it and records it in
+    // `WM_DESTROY`. If both ever run for one window, a naive second call would
+    // find the frame missing, `of` would treat it as a window never seen
+    // before, and the log would grow a `w2` that never existed. A phantom
+    // window in the one log line the shutdown rule is read from is worse than
+    // no line at all.
+    let known = FRAMES
+        .lock()
+        .map(|f| f.iter().any(|k| *k == key))
+        .unwrap_or(false);
+    if !known {
+        return count();
+    }
+    let id = of(frame);
     if let Ok(mut frames) = FRAMES.lock() {
         frames.retain(|f| *f != key);
     }
@@ -107,6 +121,30 @@ pub enum CloseVia {
     StripCross,
     WindowXOrAltF4,
     CoreCloseWindow,
+}
+
+/// This window is finished: record it, and quit if it was the last one.
+///
+/// **One function, because there are four ways in and one thing to say.**
+/// Three of the four routes called `PostQuitMessage` directly and never
+/// destroyed anything, so `WM_DESTROY` -- and with it the only record that a
+/// window had gone -- ran on exactly one of them. The asymmetry did not make
+/// any criterion fail; it made "how many windows are left" unanswerable on
+/// three routes out of four, and an unanswerable reading is the kind nobody
+/// re-runs.
+///
+/// **This is also the seam B1-e changes.** Today it always quits, because
+/// there is always exactly one window. When there can be two, the quit moves
+/// behind `left == 0`, and it moves in one place.
+pub fn window_finished(frame: HWND) {
+    let left = destroyed(frame);
+    if left == 0 {
+        unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
+    } else {
+        // Unreachable while there is one window; written now so the day it
+        // becomes reachable, the line that says so already exists.
+        crate::wlogf!(frame, "[win] {} window(s) remain; the process stays", left);
+    }
 }
 
 pub fn close_requested(frame: HWND, via: CloseVia) {

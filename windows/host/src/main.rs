@@ -1503,7 +1503,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // there is only one window for it to be true of.
             winid::close_requested(tabs::frame_hwnd(), winid::CloseVia::CoreCloseWindow);
             logf!("[action] close_window/quit tag={}", action.tag);
-            unsafe { PostQuitMessage(0) };
+            winid::window_finished(tabs::frame_hwnd());
             true
         }
         ACTION_RENDER => true,
@@ -1721,9 +1721,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // finished, on one line. Today the answer is always "quit",
                 // because there is one window; B1-e is the change that makes
                 // the two facts able to disagree.
-                let left = winid::destroyed(hwnd);
-                let _ = left;
-                PostQuitMessage(0);
+                // Same point as the other three. Windows has already torn the
+                // window down by the time this arrives, so the record is made
+                // here rather than earlier -- and `destroyed` is idempotent,
+                // so a route that recorded it on the way in is not counted
+                // twice.
+                winid::window_finished(hwnd);
                 LRESULT(0)
             }
 
