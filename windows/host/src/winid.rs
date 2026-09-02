@@ -47,7 +47,7 @@ static FRAMES: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 /// registry is concerned, and "how many windows are there" is exactly the
 /// question the shutdown rule turns on.
 pub fn created(frame: HWND) -> u32 {
-    let id = of(frame);
+    let id = assign(frame);
     crate::logf!("[win] w{} created; {} window(s)", id, count());
     id
 }
@@ -76,6 +76,9 @@ pub fn destroyed(frame: HWND) -> usize {
     if !known {
         return count();
     }
+    // **Read before the removal, and that ordering is now load-bearing.**
+    // `of` no longer mints, so after the `retain` below this frame has no
+    // number at all and this line would say `w0`.
     let id = of(frame);
     if let Ok(mut frames) = FRAMES.lock() {
         frames.retain(|f| *f != key);
@@ -202,17 +205,40 @@ pub fn close_requested(frame: HWND, via: CloseVia) {
     crate::wlogf!(frame, "[win] close requested via {}", what);
 }
 
-/// The tag for a frame, assigning one if this is the first sighting.
-pub fn of(frame: HWND) -> u32 {
+/// Take a number for a window. **The only place a frame enters `FRAMES`.**
+///
+/// **Split out of `of`, and the split is the whole of this fix.** `of` used
+/// to do both jobs: it named a frame, and if it had not seen the handle
+/// before it minted a number and kept it. That is fine for the one caller
+/// that means "this window now exists" and wrong for the twenty that mean
+/// "which window is this line about" -- because `count()` is read by exactly
+/// one rule, "the last window closed, so quit", and a naming call is not
+/// supposed to be able to change it.
+///
+/// It did change it, on the path where it mattered most. `window_finished`
+/// takes the count *after* the frame is gone, then logs the answer with
+/// `wlogf!` -- and `wlogf!` names the frame it was handed, which was the one
+/// just removed. So the count that decided not to quit was followed
+/// immediately by that same handle being put back under a fresh number. With
+/// one window nothing showed: `PostQuitMessage` had already gone out before
+/// the log line ran. With two, the first window's handle was re-registered
+/// when it closed, and the second close counted it and stopped at one.
+/// Windows all gone, process still running, and every line in the log
+/// individually correct.
+///
+/// **The number is the index plus one, and numbers are therefore reused.**
+/// That is worth stating because it is what made the defect hard to see from
+/// the log: the re-registered handle came back as `w2` on a run that really
+/// did have a `w2`, so "every `wN` has a `created` line" was true while the
+/// process refused to exit. The reading that does hold is the handle -- the
+/// pairing line for one `frame 0x...` appearing twice.
+fn assign(frame: HWND) -> u32 {
     let key = frame.0 as isize;
-    // **A null handle is not a window, and must not become one.** `of` names
-    // whatever it is handed, so a caller that resolved a frame and got
-    // nothing -- `overlay_frame` with every window closed, a pane whose
-    // window has already gone -- would otherwise mint `w4 = frame 0x0`, and
-    // that entry never leaves `FRAMES`: `count` reports it forever, and
-    // `count` is what "the last window closed, so quit" is read from. `0`
-    // reads as "no window", which is true and visibly not a window number --
-    // the same answer the poisoned lock gives below, for the same reason.
+    // **A null handle is not a window, and must not become one.** A caller
+    // that resolved a frame and got nothing would otherwise mint
+    // `w4 = frame 0x0`, and that entry never leaves `FRAMES`: `count` reports
+    // it forever, and `count` is what "the last window closed, so quit" is
+    // read from.
     if key == 0 {
         return 0;
     }
@@ -230,8 +256,40 @@ pub fn of(frame: HWND) -> u32 {
     drop(frames);
     // The pairing, printed once. This is the line that makes the tag mean
     // something to somebody who was not here when it was assigned.
+    //
+    // **Once per registration, not once per window.** If this line ever
+    // appears twice for one `frame 0x...`, a handle was registered, removed
+    // and registered again -- which is the defect above, and this is the
+    // reading that shows it.
     crate::logf!("[win] w{} = frame {:?}", id, frame.0);
     id
+}
+
+/// The number of a window that is registered right now, or `0`.
+///
+/// **This only looks.** An unknown handle gets `0`, which reads as "no
+/// window" and is visibly not a window number -- the same answer a null
+/// handle and a poisoned lock get, for the same reason. See [`assign`] for
+/// what used to happen instead and what it cost.
+///
+/// `0` has three causes and they are all "this is not one of the terminal
+/// windows *now*": never registered (a pane, the quick terminal), already
+/// removed (any line logged after `destroyed`), or a handle that is not a
+/// window at all. A caller that needs to tell them apart is asking a question
+/// this function does not answer; [`frame_of_window`] is the one that checks
+/// against the window registry.
+pub fn of(frame: HWND) -> u32 {
+    let key = frame.0 as isize;
+    if key == 0 {
+        return 0;
+    }
+    let Ok(frames) = FRAMES.lock() else {
+        return 0;
+    };
+    match frames.iter().position(|f| *f == key) {
+        Some(i) => i as u32 + 1,
+        None => 0,
+    }
 }
 
 /// `w1`, for embedding in a line.
@@ -263,8 +321,24 @@ pub fn frame_of_window(hwnd: HWND) -> Option<HWND> {
     crate::tabs::with_windows(|ws| ws.iter().any(|w| w.frame == key)).then_some(root)
 }
 
+/// **`w?` when the handle is not a registered window**, which is a real
+/// answer and not a failure.
+///
+/// The lines this happens on are the ones logged *after* a window is gone --
+/// `window_finished`'s own "the process stays", `tabs::remove_window`,
+/// `strip::forget`. They lose the window's number, and that is a loss worth
+/// naming: it is information the previous version appeared to keep.
+///
+/// **It only appeared to.** What it printed there was a *fresh* number for a
+/// handle that already had one -- `w2` for what the reader had been calling
+/// `w1` for the whole run. A wrong number is read as a right one; `w?` is
+/// read as what it is. And the cost of appearing to keep it was `count()`
+/// never reaching zero.
 pub fn tag(frame: HWND) -> String {
-    format!("w{}", of(frame))
+    match of(frame) {
+        0 => "w?".to_string(),
+        id => format!("w{}", id),
+    }
 }
 
 /// `logf!` for a line that is about one window.
@@ -342,4 +416,133 @@ macro_rules! hlogf {
             None => $crate::plogf!($($a)*),
         }
     }};
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    /// `FRAMES` is one static and the tests below all write it, so they take
+    /// turns. **Not `#[serial]`**: this crate has no such dependency, and a
+    /// lock held for the body of each test is the same guarantee.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    /// A fresh registry, and the guard that keeps it fresh for one test.
+    fn empty() -> std::sync::MutexGuard<'static, ()> {
+        let g = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(mut f) = FRAMES.lock() {
+            f.clear();
+        }
+        g
+    }
+
+    fn h(n: isize) -> HWND {
+        HWND(n as *mut std::ffi::c_void)
+    }
+
+    /// **The floor for everything below.** If `assign` stopped registering,
+    /// every "the count did not move" assertion would pass while saying
+    /// nothing, because the count would never move for anybody.
+    #[test]
+    fn assign_registers_and_numbers_from_one() {
+        let _g = empty();
+        assert_eq!(assign(h(0x1000)), 1);
+        assert_eq!(count(), 1);
+        assert_eq!(assign(h(0x2000)), 2);
+        assert_eq!(count(), 2);
+        // Asking again is not a second registration.
+        assert_eq!(assign(h(0x1000)), 1);
+        assert_eq!(count(), 2);
+    }
+
+    /// **The defect, in the order it happened.**
+    ///
+    /// `window_finished` takes the count after the frame is gone and then
+    /// logs the answer with `wlogf!`, which names the frame it was handed --
+    /// the one just removed. While `of` minted, that naming call put the
+    /// handle back, and the *next* window's close counted it and stopped at
+    /// one. Windows all gone, process still running.
+    ///
+    /// With one window it was invisible: `PostQuitMessage` went out before
+    /// the log line ran. So the test needs two.
+    #[test]
+    fn naming_a_destroyed_window_does_not_put_it_back() {
+        let _g = empty();
+        let (w1, w2) = (h(0xa0930), h(0x1107b2));
+        assign(w1);
+        assign(w2);
+
+        assert_eq!(destroyed(w1), 1, "one window left after the first closes");
+        // This is `window_finished`'s own log line, and `tabs::remove_window`
+        // and `strip::forget` after it: three calls that name a handle which
+        // is no longer registered.
+        let _ = tag(w1);
+        let _ = tag(w1);
+        let _ = tag(w1);
+        assert_eq!(count(), 1, "naming a gone window must not register it");
+
+        // The reading the shutdown rule turns on.
+        assert_eq!(destroyed(w2), 0, "the last window leaves none behind");
+    }
+
+    /// **`N = 2`, because the numbers are reused.**
+    ///
+    /// The id is the index plus one, so a handle put back after a removal
+    /// takes a number that already belonged to somebody. That aliasing is
+    /// what made the log look clean, and it is why closing one window before
+    /// the last is not a sufficient test: a run that only ever closes one
+    /// could land on an arrangement where the stale entry is the one being
+    /// removed anyway.
+    #[test]
+    fn the_count_reaches_zero_after_two_windows_have_been_closed() {
+        let _g = empty();
+        let ws = [h(0x11), h(0x22), h(0x33)];
+        for w in ws {
+            assign(w);
+        }
+        assert_eq!(destroyed(ws[0]), 2);
+        let _ = tag(ws[0]);
+        assert_eq!(destroyed(ws[1]), 1);
+        let _ = tag(ws[1]);
+        assert_eq!(destroyed(ws[2]), 0, "no window may be left over");
+        assert_eq!(count(), 0);
+    }
+
+    /// An unknown handle has no number, and `tag` says so rather than
+    /// inventing one. **`w?` is the visible half of the fix**: the previous
+    /// version printed a fresh `wN` here, which reads exactly like a real
+    /// window number and was one.
+    #[test]
+    fn an_unknown_handle_is_not_a_window() {
+        let _g = empty();
+        assign(h(0x1000));
+        assert_eq!(of(h(0xdead)), 0);
+        assert_eq!(tag(h(0xdead)), "w?");
+        assert_eq!(count(), 1, "asking about a stranger must not admit it");
+        // A registered one still names itself.
+        assert_eq!(tag(h(0x1000)), "w1");
+    }
+
+    /// A null handle is not a window. It was minted as one once, and the
+    /// entry never left `FRAMES`.
+    #[test]
+    fn a_null_handle_is_never_registered() {
+        let _g = empty();
+        assert_eq!(assign(h(0)), 0);
+        assert_eq!(of(h(0)), 0);
+        assert_eq!(tag(h(0)), "w?");
+        assert_eq!(count(), 0);
+    }
+
+    /// `destroyed` is idempotent, and the second call must not re-admit the
+    /// frame either -- it reads the count and leaves.
+    #[test]
+    fn destroying_twice_does_not_resurrect() {
+        let _g = empty();
+        let w = h(0x77);
+        assign(w);
+        assert_eq!(destroyed(w), 0);
+        assert_eq!(destroyed(w), 0);
+        assert_eq!(count(), 0);
+    }
 }

@@ -667,6 +667,17 @@ fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
     if primary {
         HWND_G.store(hwnd.0 as *mut c_void, Ordering::Release);
     }
+    // **First, because from here on every line about this window wants its
+    // number.** `winid::of` no longer mints one for a handle it has not seen
+    // -- that is what let a log line put a destroyed window back into the
+    // count -- so a frame that is not registered yet tags its lines `w?`.
+    // Everything below logs: `add_window` says how many windows are tracked,
+    // and `ShowWindow` dispatches `WM_SIZE`/`WM_PAINT` into handlers that log
+    // too. Registering here costs nothing and keeps those lines nameable.
+    //
+    // Nothing between `CreateWindowExW` and this point can be counted as a
+    // window by anybody, because nothing has asked yet.
+    winid::created(hwnd);
     // **Before `ShowWindow`, because showing a window dispatches messages**
     // -- `WM_SIZE`, `WM_PAINT` -- and every one of those handlers asks this
     // registry for the window's tabs. A frame that is visible before it is
@@ -686,12 +697,6 @@ fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
-    // **Before anything else mentions it.** `winid::of` would name this window
-    // the first time some other line talked about it, which is enough for
-    // reading a log and not enough for counting: the shutdown rule turns on
-    // how many windows exist, and a window that has not logged yet does not
-    // exist to a lazy registry.
-    winid::created(hwnd);
     // **After `created`, so the tag in this line is one `winid` has already
     // paired with the handle.** Logged per window rather than process-wide
     // because dpi and scale are this window's, and the day the two frames sit
@@ -911,10 +916,18 @@ pub fn ime_set_window(hwnd: HWND) {
         if let Some(st) = c.borrow().as_ref() {
             match st.ime.try_borrow_mut() {
                 Ok(mut ime) => ime.hwnd = hwnd,
-                // **The frame, not the surface.** `winid::of` registers any
-                // handle it is given as a new window number, so passing a pane
-                // here would mint a "window" that is not one; `GA_ROOT` walks
-                // the child up to the frame it lives in.
+                // **The frame, not the surface.** A pane is not a
+                // registered window, so `wlogf!` would tag this line `w?` and
+                // the line would say nothing about which terminal it is
+                // reporting; `GA_ROOT` walks the child up to the frame it
+                // lives in.
+                //
+                // It used to be worse than an unnameable line: `winid::of`
+                // registered any handle it was handed, so a pane here minted
+                // a "window" that is not one and `count()` -- the number the
+                // shutdown rule reads -- carried it forever. `of` only looks
+                // now, which is why the cost of getting this wrong is a
+                // missing name rather than a process that will not exit.
                 Err(_) => wlogf!(
                     unsafe { GetAncestor(hwnd, GA_ROOT) },
                     "[ime] set_window skipped: composition in flight"
