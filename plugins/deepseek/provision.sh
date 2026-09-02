@@ -50,4 +50,13 @@ host_skills_dir() {
   printf ''
 }
 
+# **Nothing, on purpose.** This CLI may well read a rules file on every
+# turn, but which one is a convention nobody here has checked -- and
+# writing into the wrong file in somebody's home directory is worse than
+# not writing. The sentence it would have carried is still reachable
+# through `skill_read`. Fill this in once the convention is confirmed.
+host_rules_file() {
+  printf ''
+}
+
 polter_provision_main

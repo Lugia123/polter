@@ -92,4 +92,10 @@ function Get-HostSkillsDir {
     Join-Path $script:PolterHome '.qwen\skills'
 }
 
+# **Nothing, on purpose.** Which rules file this CLI reads is a convention
+# nobody here has checked, and writing into the wrong file in somebody's
+# home directory is worse than not writing. The sentence it would have
+# carried stays reachable through `skill_read`.
+function Get-HostRulesFile { '' }
+
 Invoke-PolterProvisionMain
