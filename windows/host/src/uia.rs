@@ -1167,6 +1167,40 @@ fn anyone_listening() -> bool {
     unsafe { UiaClientsAreListening() }.as_bool()
 }
 
+/// Decide whether to announce, **and say so either way**.
+///
+/// # Why the skip is logged as loudly as the raise
+///
+/// Without this, "no line in the log" means three different things -- the
+/// change never happened, it happened and no client was attached, or it
+/// happened and the window had already gone. On a machine where events were
+/// not arriving, those are exactly the three that have to be told apart, and
+/// silence tells them apart from nothing.
+///
+/// # And why it reports what `UiaClientsAreListening` said
+///
+/// **The documented meaning of that call is coarse and I did not want to rely
+/// on remembering it.** The question that matters here is whether it counts a
+/// client that has *registered* or one whose delivery is actually working --
+/// and on the test machine those came apart: a subscription succeeded and not
+/// one event was delivered. Rather than settle that from memory, the answer is
+/// printed. Whatever the function means, the log says which branch was taken.
+fn announce_gate(frame: HWND, what: &str) -> bool {
+    let listening = anyone_listening();
+    let alive = live(frame);
+    if listening && alive {
+        return true;
+    }
+    wlogf!(
+        frame,
+        "[uia] {} not announced (clients_listening={} window_live={})",
+        what,
+        listening,
+        alive
+    );
+    false
+}
+
 /// Tabs were added, removed or reordered in this window.
 ///
 /// **`ChildrenInvalidated`, not `ChildAdded`/`ChildRemoved`.** The honest thing
@@ -1180,7 +1214,7 @@ fn anyone_listening() -> bool {
 /// client about only the first leaves it with a document list that no longer
 /// matches the window.
 pub fn tabs_changed(frame: HWND) {
-    if !anyone_listening() || !live(frame) {
+    if !announce_gate(frame, "structure change") {
         return;
     }
     let f = frame.0 as isize;
@@ -1191,6 +1225,16 @@ pub fn tabs_changed(frame: HWND) {
     let root: IRawElementProviderSimple = WindowRoot { frame: f }.into();
     let mut root_id = runtime_parts(win, KIND_ROOT, 0);
 
+    // **Two lines, one on each side of the call, and that pairing is the
+    // point.** Raising an event hands control to UIAutomationCore, which can
+    // call straight back into this file and take the `tabs` lock a second time
+    // on this thread -- which hangs rather than panicking. A hang leaves no
+    // stack and no message; what it leaves is a log that stops. With only one
+    // line, a log that stops *before* it says nothing about where. With this
+    // pair, a log ending at `raising` and never reaching `raised` names the
+    // call, and that is the difference between finding it in a round and
+    // finding it in a night.
+    wlogf!(frame, "[uia] raising structure change");
     unsafe {
         let _ = UiaRaiseStructureChangedEvent(
             &list,
@@ -1205,7 +1249,7 @@ pub fn tabs_changed(frame: HWND) {
             root_id.len() as i32,
         );
     }
-    wlogf!(frame, "[uia] structure changed announced");
+    wlogf!(frame, "[uia] structure change raised");
 }
 
 /// A different tab is now the active one.
@@ -1222,7 +1266,7 @@ pub fn tabs_changed(frame: HWND) {
 /// element being named**: it is the one gaining focus. The element losing it
 /// is not announced at all, which is what UIA's focus model expects.
 pub fn active_tab_changed(frame: HWND, tab: TabId, pane: PaneId) {
-    if !anyone_listening() || !live(frame) {
+    if !announce_gate(frame, "focus change") {
         return;
     }
     let f = frame.0 as isize;
@@ -1231,6 +1275,7 @@ pub fn active_tab_changed(frame: HWND, tab: TabId, pane: PaneId) {
 
     let was = variant_bool(false);
     let now = variant_bool(true);
+    wlogf!(frame, "[uia] raising focus change for tab {}", tab.0);
     unsafe {
         // No `VariantClear` for these two: `VT_BOOL` owns nothing. The
         // string-valued one below is the case that does.
@@ -1247,7 +1292,7 @@ pub fn active_tab_changed(frame: HWND, tab: TabId, pane: PaneId) {
             &now,
         );
     }
-    wlogf!(frame, "[uia] focus change announced for tab {}", tab.0);
+    wlogf!(frame, "[uia] focus change raised for tab {}", tab.0);
 }
 
 /// A tab's name changed -- the user renamed it, or the program in it did.
@@ -1265,7 +1310,7 @@ pub fn active_tab_changed(frame: HWND, tab: TabId, pane: PaneId) {
 /// the call has returned. Getting this wrong is a leak of one string per
 /// rename, which is small until something renames on a timer.
 pub fn tab_renamed(frame: HWND, tab: TabId, name: &str) {
-    if !anyone_listening() || !live(frame) {
+    if !announce_gate(frame, "name change") {
         return;
     }
     let f = frame.0 as isize;
@@ -1273,10 +1318,11 @@ pub fn tab_renamed(frame: HWND, tab: TabId, name: &str) {
 
     let old = variant_empty();
     let mut new = variant_bstr(name);
+    wlogf!(frame, "[uia] raising name change for tab {}", tab.0);
     unsafe {
         let _ = UiaRaiseAutomationPropertyChangedEvent(&item, UIA_NamePropertyId, &old, &new);
         // See the note above. `VT_EMPTY` needs no clearing; this one does.
         let _ = VariantClear(&mut new);
     }
-    wlogf!(frame, "[uia] name change announced for tab {}", tab.0);
+    wlogf!(frame, "[uia] name change raised for tab {}", tab.0);
 }
