@@ -1953,6 +1953,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if is_primary_frame(hwnd) {
                     session::mark_dirty();
                 }
+                // **Which terminal window the person is on, recorded here and
+                // nowhere else.** The low word distinguishes activation from
+                // deactivation; only activation is a new answer, and a
+                // deactivation is not "no window" -- clicking a panel
+                // deactivates the frame the panel belongs to.
+                //
+                // This runs in the frame window procedure, and the class it
+                // serves (`PolterHost`) belongs to `create_frame` alone -- so
+                // a panel taking the focus cannot reach this line. That is why
+                // `tabs::overlay_frame` can be a record rather than a query.
+                if (wp.0 & 0xFFFF) as u32 != WA_INACTIVE {
+                    tabs::note_activated(hwnd);
+                }
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 DefWindowProcW(hwnd, msg, wp, lp)
             }

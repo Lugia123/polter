@@ -870,6 +870,7 @@ pub fn remove_window(frame: HWND) {
     if !dropped {
         return;
     }
+    forget_activated(frame);
     if !pending.is_empty() {
         wlogf!(
             frame,
@@ -882,48 +883,156 @@ pub fn remove_window(frame: HWND) {
     wlogf!(frame, "[win] state dropped; {} window(s) tracked", after);
 }
 
-/// **The first window's frame.**
+/// The frame that was activated most recently. 0 when none has been.
 ///
-/// **Not "the frame", though every one of its callers was written when that
-/// was the same thing.** Each remaining call site is a place that has not yet
-/// been asked which window it means, and they are now wrong rather than
-/// vacuously right: a prompt, a palette or a search box opened from window 2
-/// still centres itself on window 1. They are left as they are on purpose --
-/// finding the right window for each is a question per caller, not one blanket
-/// answer, and giving them a plausible blanket answer here is how it would
-/// stop being asked.
-/// The window a **floating panel** should attach itself to.
-///
-/// **This is a named gap, not an answer.** Today it is the first window, which
-/// is what every one of its callers used to say inline by calling
-/// `tabs::frame_hwnd()`. The command palette, the search box, the settings and
-/// about dialogs, the key-sequence overlay, the size HUD and the float-on-top
-/// toggle all want the same thing: *the window the person is looking at*. This
-/// host has no notion of that yet -- nothing tracks which frame has the
-/// foreground -- and inventing one here, per call site, is how six slightly
-/// different notions of "the current window" get written.
-///
-/// So the gap is in one place, with one name, and `B1-f` is the cell that
-/// replaces the body of this function. Until then the honest description of
-/// the behaviour is: **panels open over window 1 wherever they were invoked
-/// from.** That is wrong and visible, which is the right kind of wrong -- as
-/// opposed to the same call scattered across six files, which was wrong and
-/// looked deliberate.
+/// **This is what the fifteen panel call sites were waiting for.** They spent
+/// one cell calling `frame_hwnd()` -- the first window -- each with its own
+/// inline comment about it. Concentrating that into one named function was
+/// the whole value of the previous cell: the fix is a function body, and not
+/// one of the fifteen changes.
 ///
 /// **There is no longer a `frame_hwnd` beside this.** There was, returning the
-/// same handle under the name "the first window", and the two were kept apart
-/// on the argument that some callers genuinely mean the first one. After the
-/// conversion none did: all fifteen wanted the window in front. A second
-/// function that returns the same value and has no callers is not a
-/// distinction, it is a place for the next person to land by accident.
-// window-free: **the known gap, not an exemption.** It answers with the first
-// window because this host cannot yet say which one has the foreground; the
-// doc comment above is the whole reason, and B1-f replaces the body.
+/// first window, and the two were kept apart on the argument that some callers
+/// genuinely mean the first one. After the conversion none did: all fifteen
+/// wanted the window in front. A second function that returns the same value
+/// and has no callers is not a distinction, it is a place for the next person
+/// to land by accident.
+///
+/// **Ours, recorded in `WM_ACTIVATE`, and that is a choice among three.**
+/// Win32 offers at least three answers to "which window is the user on", and
+/// the two obvious ones are wrong here for the same reason -- they are right
+/// about the *window* and wrong about the *terminal window*:
+///
+///  - **`GetForegroundWindow()`** is whatever is in front on the whole
+///    desktop, which is frequently not ours at all. Alt-tab to a browser and
+///    it answers with the browser; a panel that centred itself on that would
+///    be centred on another program's rectangle, and `own_and_place` would
+///    set `GWLP_HWNDPARENT` to a window in another process.
+///  - **`GetFocus()`** is this thread's focused *control*, so inside our own
+///    process it answers with whatever has the caret -- a pane's child window,
+///    the settings page's edit box, the command palette's input. **And that is
+///    exactly the moment this function is asked**: the settings page calls it
+///    while showing itself, so `GetFocus` would hand the page back its own
+///    handle and it would become its own owner.
+///
+/// Only a record we keep ourselves answers the question actually being asked,
+/// which is "which of *our terminal windows* was the person last looking at".
+/// It survives a panel taking the focus for free -- panels are not frames, so
+/// they never enter this record. The frame class `PolterHost` is used by
+/// `create_frame` and by nothing else, so the `WM_ACTIVATE` that writes this
+/// can only ever be a frame's.
+static ACTIVE_FRAME: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// A frame has been activated. Called from its `WM_ACTIVATE`.
+pub fn note_activated(frame: HWND) {
+    let key = frame.0 as isize;
+    if ACTIVE_FRAME.swap(key, std::sync::atomic::Ordering::Release) != key {
+        wlogf!(frame, "[win] activated; panels now open over this window");
+    }
+}
+
+/// Forget a frame that is going away.
+///
+/// **Not strictly required, because `overlay_frame` validates.** Kept because
+/// leaving a dead handle in a variable named "the active frame" makes the next
+/// reader's job harder than it needs to be, and because a stale record that is
+/// only ever corrected on the way out is a fact with two states of truth.
+fn forget_activated(frame: HWND) {
+    let key = frame.0 as isize;
+    let _ = ACTIVE_FRAME.compare_exchange(
+        key,
+        0,
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+// window-free: it answers "which window is the person on", which is a property
+// of the process rather than an argument any caller could supply
+/// The window a **floating panel** should attach itself to: the terminal
+/// window the person was last on.
+///
+/// **Validated against the live registry on every call, and that is the whole
+/// of the degenerate path.** The recorded handle can name a window that has
+/// since been destroyed -- close the focused window and a panel can be asked
+/// for before any other frame reports activation -- and **handing a destroyed
+/// `HWND` back would be worse than handing back nothing**. Nothing is
+/// checkable: every caller already tests `is_null`. A dead handle is not: it
+/// passes that test, and then `GetWindowRect` fails and is ignored, or
+/// `SetWindowLongPtrW(GWLP_HWNDPARENT)` succeeds against a handle Windows has
+/// recycled for somebody else's window.
+///
+/// So the order is: the recorded frame **if it is still one of ours**, else
+/// any live window, else null.
+///
+/// **The middle step is deliberate rather than tidy.** Falling straight to
+/// null when the record is stale would leave a panel ownerless for the moment
+/// between one window closing and the next being activated -- which is a real
+/// moment, because closing a window is exactly when something else gets shown.
+/// A live window is a worse answer than the right window and a much better one
+/// than no window.
 pub fn overlay_frame() -> HWND {
-    with_windows(|ws| match ws.first() {
-        Some(w) => HWND(w.frame as *mut c_void),
-        None => HWND(std::ptr::null_mut()),
-    })
+    let want = ACTIVE_FRAME.load(std::sync::atomic::Ordering::Acquire);
+    let picked = with_windows(|ws| {
+        let live: Vec<isize> = ws.iter().map(|w| w.frame).collect();
+        pick_overlay(want, &live)
+    });
+    HWND(picked as *mut c_void)
+}
+
+/// The whole of the choice `overlay_frame` makes, as arithmetic.
+///
+/// **Split out so it can be run on the machine the port is written on.**
+/// Everything around it is Win32 and only executes on the target, and the part
+/// worth testing is not the Win32 -- it is the degenerate path: what happens
+/// when the remembered window has been destroyed, and when there is no window
+/// at all. Those are the two cases nobody produces by accident while clicking
+/// around, and they are the two where a wrong answer is a recycled `HWND`
+/// rather than a visible mistake.
+///
+/// `0` means "no window", which is what `HWND(null)` is on the other side.
+fn pick_overlay(want: isize, live: &[isize]) -> isize {
+    // The remembered one, but **only if it is still one of ours**. This is the
+    // line that stops a destroyed handle being handed out.
+    if want != 0 && live.contains(&want) {
+        return want;
+    }
+    // Any live window beats no window: closing a window is exactly when
+    // something else gets shown, and the moment between that close and the
+    // next activation is real.
+    live.first().copied().unwrap_or(0)
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::pick_overlay;
+
+    #[test]
+    fn the_remembered_window_wins_while_it_is_alive() {
+        assert_eq!(pick_overlay(20, &[10, 20, 30]), 20);
+    }
+
+    /// **The case this function exists for.** The remembered window has been
+    /// destroyed; handing its handle back would pass every `is_null` check the
+    /// callers make and then fail inside Windows, or land on whatever window
+    /// has been given that handle since.
+    #[test]
+    fn a_destroyed_window_is_never_handed_out() {
+        assert_eq!(pick_overlay(20, &[10, 30]), 10);
+    }
+
+    #[test]
+    fn nothing_remembered_yet_falls_back_to_a_live_window() {
+        assert_eq!(pick_overlay(0, &[10, 30]), 10);
+    }
+
+    /// No windows at all: `0`, which becomes a null `HWND`. **Null is a
+    /// checkable answer and every caller checks it**; a stale handle is not.
+    #[test]
+    fn no_windows_is_no_window() {
+        assert_eq!(pick_overlay(0, &[]), 0);
+        assert_eq!(pick_overlay(20, &[]), 0);
+    }
 }
 
 use crate::strip::strip_h;
