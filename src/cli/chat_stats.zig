@@ -45,13 +45,20 @@ pub const Task = struct {
     state: []const u8,
 };
 
-/// One message, reduced to the two things a count needs.
+/// One message, reduced to what a count needs.
 pub const Message = struct {
     at_ms: i64,
 
-    /// Who said it. The user's own messages arrive with no id, and are
-    /// counted as the user rather than dropped: "nobody said 312 things"
-    /// is a worse answer than naming the person at the keyboard.
+    /// Who said it, as the `0x…` id. **The id and not the name**, because
+    /// the name is the only thing a closed terminal leaves behind in the
+    /// members list -- which is to say nothing at all -- while the id is on
+    /// every message it ever sent and on every task it ever held. Counting
+    /// by name meant a night's worth of speakers vanished the moment their
+    /// tabs closed.
+    from: []const u8,
+
+    /// What that terminal was called when it said this. The record is the
+    /// only place a closed terminal's name still exists.
     author: []const u8,
     from_user: bool,
 };
@@ -116,7 +123,15 @@ pub const Speaker = struct {
     said: usize,
     doing: usize,
 
+    /// By whichever of the two numbers is larger, so a terminal that holds
+    /// work and never spoke does not sink below one that said three things
+    /// and holds nothing. Both mismatches are the point, and an ordering
+    /// that hid one of them would be the ranking these two columns refuse
+    /// to be.
     fn loudestFirst(_: void, a: Speaker, b: Speaker) bool {
+        const am = @max(a.said, a.doing);
+        const bm = @max(b.said, b.doing);
+        if (am != bm) return am > bm;
         if (a.said != b.said) return a.said > b.said;
         return a.doing > b.doing;
     }
@@ -289,43 +304,94 @@ fn waiting(alloc: Allocator, in: Input) Allocator.Error![]const Waiting {
 }
 
 /// Said and doing, per terminal, loudest first.
+///
+/// **Everyone the record remembers, not everyone still in the group.** This
+/// used to walk the members list, which is the list of terminals that are
+/// open *now* -- so the morning after a night's work it held one entry, the
+/// person at the keyboard, and eleven terminals that had talked all night
+/// were simply not there. The panel said "you: said 0, doing 11" and looked
+/// like a bug in the counting rather than what it was: the wrong list.
+///
+/// Keyed by id, because the id is the one thing that survives. A closed
+/// terminal is gone from the members list but is on every message it sent
+/// and every task it held; its *name* survives only in the messages, which
+/// is where this reads it from.
 fn speakers(alloc: Allocator, in: Input) Allocator.Error![]const Speaker {
     var out: std.ArrayListUnmanaged(Speaker) = .empty;
     errdefer out.deinit(alloc);
 
-    // The members list is the only place an id has a name, so it is what
-    // this walks. A terminal that has since closed keeps whatever name it
-    // used in the messages; see below.
-    for (in.members) |m| {
-        var said: usize = 0;
-        for (in.messages) |msg| {
-            if (msg.from_user and std.mem.eql(u8, m.id, user_id)) {
-                said += 1;
-                continue;
+    const find = struct {
+        fn f(list: *std.ArrayListUnmanaged(Speaker), id: []const u8) ?*Speaker {
+            for (list.items) |*sp| {
+                if (std.mem.eql(u8, sp.id, id)) return sp;
             }
-            if (!msg.from_user and std.mem.eql(u8, msg.author, m.title)) said += 1;
+            return null;
         }
+    }.f;
 
-        // Distinct tasks, not assignments: a task handed back and given
-        // again is one thing this terminal was asked to do, and counting
-        // the handovers would make the terminal that was messed about look
-        // like the busiest one in the group.
-        var doing: usize = 0;
-        for (in.tasks) |t| {
-            if (std.mem.eql(u8, t.owner, m.id)) doing += 1;
+    // The members first, so a terminal that is still here is named the way
+    // its tab names it now rather than the way it named itself last night.
+    for (in.members) |m| {
+        if (find(&out, m.id) != null) continue;
+        try out.append(alloc, .{ .id = m.id, .title = m.title, .said = 0, .doing = 0 });
+    }
+
+    for (in.messages) |msg| {
+        const id = if (msg.from_user) user_id else msg.from;
+        if (id.len == 0) continue;
+
+        if (find(&out, id)) |sp| {
+            sp.said += 1;
+
+            // A name only if there is not one already: a member's own title
+            // wins over what the record remembers it being called.
+            if (sp.title.len == 0 and msg.author.len > 0) sp.title = msg.author;
+            continue;
         }
 
         try out.append(alloc, .{
-            .id = m.id,
-            .title = m.title,
-            .said = said,
-            .doing = doing,
+            .id = id,
+            .title = if (msg.author.len > 0) msg.author else id,
+            .said = 1,
+            .doing = 0,
+        });
+    }
+
+    // Distinct tasks, not assignments: a task handed back and given again
+    // is one thing this terminal was asked to do, and counting the
+    // handovers would make the terminal that was messed about look like the
+    // busiest one in the group.
+    for (in.tasks) |t| {
+        if (t.owner.len == 0 or std.mem.eql(u8, t.owner, nobody)) continue;
+
+        if (find(&out, t.owner)) |sp| {
+            sp.doing += 1;
+            continue;
+        }
+
+        // Holding work and never having said a word. Worth a row of its
+        // own -- it is one of the two mismatches these two columns exist
+        // to show.
+        try out.append(alloc, .{
+            .id = t.owner,
+            .title = shortId(t.owner),
+            .said = 0,
+            .doing = 1,
         });
     }
 
     const items = try out.toOwnedSlice(alloc);
     std.mem.sort(Speaker, items, {}, Speaker.loudestFirst);
     return items;
+}
+
+/// The last four hex digits of an id, for a terminal nothing remembers the
+/// name of. Better than the whole `0x0000000000009999`, which is eighteen
+/// columns of leading zeroes, and better than nothing, which cannot be
+/// matched against anything.
+fn shortId(id: []const u8) []const u8 {
+    if (id.len <= 4) return id;
+    return id[id.len - 4 ..];
 }
 
 fn session(in: Input) Session {
@@ -556,7 +622,7 @@ test "an open task is measured from its own last event, not from the talk" {
 
     // Plenty of recent conversation, none of which touches task 93.
     const messages = [_]Message{
-        .{ .at_ms = 99 * hour, .author = "W1", .from_user = false },
+        .{ .at_ms = 99 * hour, .from = "0x1111", .author = "W1", .from_user = false },
     };
 
     var s = try compute(alloc, .{
@@ -619,8 +685,8 @@ test "the session counts events by what happened, and handovers once each" {
         .{ .id = 2, .title = "b", .owner = nobody, .state = "closed" },
     };
     const messages = [_]Message{
-        .{ .at_ms = hour, .author = "W1", .from_user = false },
-        .{ .at_ms = 2 * hour, .author = "W1", .from_user = false },
+        .{ .at_ms = hour, .from = "0x1111", .author = "W1", .from_user = false },
+        .{ .at_ms = 2 * hour, .from = "0x1111", .author = "W1", .from_user = false },
     };
 
     var s = try compute(alloc, .{
@@ -688,9 +754,9 @@ test "the longest silence includes the one that has not ended yet" {
     // the quiet spell before last.
     const alloc = testing.allocator;
     const messages = [_]Message{
-        .{ .at_ms = 0, .author = "W1", .from_user = false },
-        .{ .at_ms = 2 * hour, .author = "W1", .from_user = false },
-        .{ .at_ms = 3 * hour, .author = "W1", .from_user = false },
+        .{ .at_ms = 0, .from = "0x1111", .author = "W1", .from_user = false },
+        .{ .at_ms = 2 * hour, .from = "0x1111", .author = "W1", .from_user = false },
+        .{ .at_ms = 3 * hour, .from = "0x1111", .author = "W1", .from_user = false },
     };
 
     var s = try compute(alloc, .{
@@ -719,10 +785,10 @@ test "the longest silence includes the one that has not ended yet" {
 test "the rhythm buckets by local hour and names the busiest" {
     const alloc = testing.allocator;
     const messages = [_]Message{
-        .{ .at_ms = 11 * hour, .author = "W1", .from_user = false },
-        .{ .at_ms = 11 * hour + 5 * minute, .author = "W1", .from_user = false },
-        .{ .at_ms = 11 * hour + 9 * minute, .author = "W4", .from_user = false },
-        .{ .at_ms = 14 * hour, .author = "W4", .from_user = false },
+        .{ .at_ms = 11 * hour, .from = "0x1111", .author = "W1", .from_user = false },
+        .{ .at_ms = 11 * hour + 5 * minute, .from = "0x1111", .author = "W1", .from_user = false },
+        .{ .at_ms = 11 * hour + 9 * minute, .from = "0x1111", .author = "W4", .from_user = false },
+        .{ .at_ms = 14 * hour, .from = "0x1111", .author = "W4", .from_user = false },
     };
 
     var s = try compute(alloc, .{
@@ -746,13 +812,13 @@ test "said and doing are counted apart, and neither is a score" {
     const members = [_]Member{
         .{ .id = "0x1111", .title = "W1" },
         .{ .id = "0x2222", .title = "W4" },
-        .{ .id = user_id, .title = "你" },
+        .{ .id = user_id, .title = "you" },
     };
     const messages = [_]Message{
-        .{ .at_ms = hour, .author = "W1", .from_user = false },
-        .{ .at_ms = hour, .author = "W1", .from_user = false },
-        .{ .at_ms = hour, .author = "W4", .from_user = false },
-        .{ .at_ms = hour, .author = "", .from_user = true },
+        .{ .at_ms = hour, .from = "0x1111", .author = "W1", .from_user = false },
+        .{ .at_ms = hour, .from = "0x1111", .author = "W1", .from_user = false },
+        .{ .at_ms = hour, .from = "0x2222", .author = "W4", .from_user = false },
+        .{ .at_ms = hour, .from = "", .author = "", .from_user = true },
     };
     const tasks = [_]Task{
         .{ .id = 1, .title = "a", .owner = "0x2222", .state = "open" },
@@ -784,8 +850,58 @@ test "said and doing are counted apart, and neither is a score" {
 
     // The user's own messages arrive with no author, and are still counted
     // as somebody rather than as nobody.
-    try testing.expectEqualStrings("你", s.speakers[2].title);
+    try testing.expectEqualStrings("you", s.speakers[2].title);
     try testing.expectEqual(@as(usize, 1), s.speakers[2].said);
+}
+
+test "a terminal that has closed is still counted for what it said" {
+    // The failure this is written from, seen on a real panel the morning
+    // after: eleven terminals had worked all night, all eleven tabs were
+    // shut, and the column read "you: said 0, doing 11" -- because it
+    // walked the members list, which is who is open *now*.
+    const alloc = testing.allocator;
+    const members = [_]Member{.{ .id = user_id, .title = "you" }};
+    const messages = [_]Message{
+        .{ .at_ms = hour, .from = "0x9999", .author = "W1", .from_user = false },
+        .{ .at_ms = hour, .from = "0x9999", .author = "W1", .from_user = false },
+        .{ .at_ms = hour, .from = "0x8888", .author = "W4", .from_user = false },
+    };
+    const tasks = [_]Task{
+        .{ .id = 1, .title = "a", .owner = "0x9999", .state = "open" },
+        .{ .id = 2, .title = "b", .owner = "0x7777", .state = "open" },
+    };
+
+    var s = try compute(alloc, .{
+        .now_ms = 2 * hour,
+        .stale_ms = 1,
+        .events = &.{},
+        .tasks = &tasks,
+        .messages = &messages,
+        .members = &members,
+        .hour_of = testHour,
+    });
+    defer s.deinit(alloc);
+
+    // Four rows: two closed terminals that spoke, one that only ever held
+    // work, and the person at the keyboard who did neither.
+    try testing.expectEqual(@as(usize, 4), s.speakers.len);
+
+    // The record remembers what it was called, even though the members
+    // list has never heard of it.
+    try testing.expectEqualStrings("W1", s.speakers[0].title);
+    try testing.expectEqual(@as(usize, 2), s.speakers[0].said);
+    try testing.expectEqual(@as(usize, 1), s.speakers[0].doing);
+
+    // Holding work and never having said a word gets a row of its own,
+    // named by the tail of its id because nothing remembers more than that.
+    var silent: ?Speaker = null;
+    for (s.speakers) |sp| {
+        if (std.mem.eql(u8, sp.id, "0x7777")) silent = sp;
+    }
+    try testing.expect(silent != null);
+    try testing.expectEqual(@as(usize, 0), silent.?.said);
+    try testing.expectEqual(@as(usize, 1), silent.?.doing);
+    try testing.expectEqualStrings("7777", silent.?.title);
 }
 
 test "a terminal that has closed still counts as having been here" {

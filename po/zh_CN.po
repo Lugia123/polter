@@ -1094,3 +1094,186 @@ msgstr "Ghostty"
 #: src/input/command.zig:709
 msgid "Put a little Ghostty in your terminal."
 msgstr "把一只小 Ghostty 塞进终端里。"
+
+#. The conversations window (`polter +chat`).
+#. Placeholders are numbered so a translation may reorder them.
+
+msgid "  (no groups yet)"
+msgstr "  (还没有群)"
+
+msgid "  (summary)"
+msgstr "  (摘要)"
+
+msgid "  {0} handed round · {1} progress reports / {2}"
+msgstr "  重派 {0} 个 · 进度上报 {1} 次 / {2}"
+
+msgid "  {0} in the group now, {1} in the record"
+msgstr "  现在 {0} 个在群里，记录里出现过 {1} 个"
+
+
+msgid "  00:00{0}23:00"
+msgstr "  0时{0}23时"
+
+msgid "  a day {0}"
+msgstr "  一天 {0}"
+
+msgid "  and {0} more"
+msgstr "  还有 {0} 个"
+
+msgid "  and {0} more still open"
+msgstr "  还有 {0} 个开着的"
+
+msgid "  busiest {0}:00 ({1} messages)"
+msgstr "  最忙 {0}:00（{1} 条）"
+
+msgid "  fastest {0} · median {1} · slowest {2} (over {3})"
+msgstr "  最快 {0} · 中位 {1} · 最慢 {2}（{3} 个）"
+
+msgid "  first line {0} · {1} since · {2} messages"
+msgstr "  第一句 {0} · 至今 {1} · 消息 {2}"
+
+msgid "  last message {0} ago"
+msgstr "  最近一条 {0}前"
+
+msgid "  longest silence {0} (from {1})"
+msgstr "  最长静默 {0}（{1} 起）"
+
+msgid "  made {0} · closed {1} · cancelled {2} · open {3}"
+msgstr "  建 {0} · 关 {1} · 取消 {2} · 开着 {3}"
+
+msgid "  No tasks in this group yet."
+msgstr "  这个群还没有任务。"
+
+msgid "  Nobody has been in this group."
+msgstr "  这个群还没有成员。"
+
+msgid "  Nothing has been closed yet."
+msgstr "  还没有关掉的任务。"
+
+msgid "  Nothing open."
+msgstr "  没有开着的任务。"
+
+msgid "  The task record has not been read yet."
+msgstr "  还没有读到任务记录。"
+
+msgid "── nothing older ──"
+msgstr "── 没有更早的了 ──"
+
+msgid "· unassigned"
+msgstr "· 未分配"
+
+msgid "{0} d"
+msgstr "{0} 天"
+
+msgid "{0} d {1} h"
+msgstr "{0} 天 {1} 小时"
+
+msgid "{0} h"
+msgstr "{0} 小时"
+
+msgid "{0} h {1} min"
+msgstr "{0} 小时 {1} 分"
+
+msgid "{0} min"
+msgstr "{0} 分钟"
+
+
+msgid "<state>/chat/, to be read and grepped later."
+msgstr "以后还能翻、还能 grep。"
+
+msgid "Chat"
+msgstr "群聊"
+
+msgid "every day of it stays exactly as it is under"
+msgstr "<state>/chat/ 里的每一天原样保留，"
+
+msgid "GROUPS   d removes"
+msgstr "群聊 / GROUPS  d 移除"
+
+msgid "How long tasks lived"
+msgstr "任务寿命"
+
+msgid "MEMBERS"
+msgstr "成员 / MEMBERS"
+
+msgid "No groups. Tasks will appear here once a supervisor makes one."
+msgstr "  没有群聊。总管建群之后，任务会出现在这里。"
+
+msgid "No groups. The conversation will appear here once a supervisor makes one."
+msgstr "  没有群聊。总管建群之后，对话会出现在这里。"
+
+msgid "No groups. There will be numbers here once a supervisor makes one."
+msgstr "  没有群聊。总管建群之后，这里会有数字。"
+
+msgid "No tasks in this group yet."
+msgstr "  这个群还没有任务。"
+
+msgid "Not one word of the conversation is deleted:"
+msgstr "聊天记录一个字都不会删：磁盘上"
+
+msgid "Rhythm"
+msgstr "节奏"
+
+msgid "Saying · doing"
+msgstr "谁在说 · 谁在做"
+
+msgid "Stats"
+msgstr "统计"
+
+msgid "Task mix"
+msgstr "任务构成"
+
+msgid "Tasks"
+msgstr "任务"
+
+msgid "Terminals"
+msgstr "终端"
+
+msgid "This session"
+msgstr "这一场"
+
+msgid "under a minute"
+msgstr "不到 1 分钟"
+
+msgid "Waiting on you"
+msgstr "在等你"
+
+msgid "What goes is one row of this list."
+msgstr "移除的只是这个列表里的一行。"
+
+msgid "Where it stopped"
+msgstr "停摆"
+
+msgid "y to confirm    any other key cancels"
+msgstr "y 确认    其他任意键取消"
+
+msgid "Take the group \"{0}\" off this list?"
+msgstr "把群「{0}」从列表里移除？"
+
+msgid "said"
+msgstr "说"
+
+msgid "doing"
+msgstr "做"
+
+msgid "with nothing happening"
+msgstr "没动静"
+
+msgid "  {0} {1} {2} {3}  {4} {5} {6}"
+msgstr "  {0} {1} {2} {3}  {4} {5} {6}"
+
+msgid "#{0}  {1} {2}  {3}"
+msgstr "#{0}  {1} {2}  {3}"
+
+msgid "closed {0}"
+msgstr "关 {0}"
+
+msgid "past the mark {0}"
+msgstr "跨阈值 {0}"
+
+msgid "open {0}"
+msgstr "开 {0}"
+
+msgid "cancelled {0}"
+msgstr "取消 {0}"
+
