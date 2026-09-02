@@ -2627,13 +2627,210 @@ fn load_api() -> Option<Api> {
     }
 }
 
+// ------------------------------------------------------- dying out loud
+
+/// Where the log goes, resolved once while the process is healthy.
+///
+/// **Resolved at hook install, not at panic time.** `log_path` reads an
+/// environment variable and asks for the executable's path; neither takes a
+/// lock, but both allocate, and the panic path is the one place where doing
+/// less is worth more than doing it lazily.
+static PANIC_LOG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Set while the hook is running, so a panic *inside* the hook does not
+/// recurse into it.
+static IN_PANIC_HOOK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Write bytes to the real stderr handle, **taking no Rust lock**.
+///
+/// `eprintln!` goes through `std::io::Stderr`, which holds a lock. That lock
+/// is re-entrant for the same thread and would almost certainly be fine --
+/// and "almost certainly fine" is the wrong standard for the one code path
+/// that only ever runs when something has already gone wrong.
+fn raw_stderr(bytes: &[u8]) {
+    use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
+    unsafe {
+        if let Ok(h) = GetStdHandle(STD_ERROR_HANDLE) {
+            if !h.is_invalid() {
+                let mut wrote = 0u32;
+                let _ = windows::Win32::Storage::FileSystem::WriteFile(
+                    h,
+                    Some(bytes),
+                    Some(&mut wrote),
+                    None,
+                );
+            }
+        }
+    }
+}
+
+/// **Say so in the log file before dying.**
+///
+/// Without this, a panic in this program leaves *no evidence anywhere we
+/// collect*. Three separate reasons, and each of them alone is enough:
+///
+///  - `[main] exiting` is printed **after** the message loop, so no abnormal
+///    termination reaches it.
+///  - The default hook writes to **stderr**, and `log_line` writes stdout and
+///    the file. Nothing tees stderr into the file, and the file is the only
+///    artifact anybody collects off the test machine.
+///  - The process is launched detached, so its console -- this is a
+///    `WINDOWS_CUI` binary, measured, not assumed -- is attached to nobody.
+///
+/// The result is that "no panic, no stderr, no exiting line" was recorded as
+/// an unexplained death **twice**, when those three readings are true of
+/// every panic this binary can have. They were never facts about the defect;
+/// they were facts about where we were looking.
+///
+/// # What it takes no lock for, and why that is the whole design
+///
+/// **A panic hook runs before unwinding, so every lock the panicking thread
+/// holds is still held.** A hook that needs one of them deadlocks -- a hung
+/// process, which is harder to diagnose than the crash it replaced -- or
+/// panics again, and `panic while panicking` aborts immediately with *less*
+/// output than the default hook would have produced.
+///
+/// So this path touches nothing the rest of the program locks:
+///
+///  - the log path is already resolved (`PANIC_LOG`);
+///  - the file is opened fresh here, so no shared handle and no `Mutex`;
+///  - stderr is written through `WriteFile`, not `std::io::Stderr`;
+///  - **it does not call `logf!`/`wlogf!`.** `wlogf!` would ask `winid` for a
+///    window number, which takes `FRAMES` -- and a panic inside anything that
+///    already holds `FRAMES` would then hang instead of reporting.
+///
+/// # What it does not catch, said out loud
+///
+/// Only Rust panics. An access violation, a stack overflow, an `abort()` from
+/// the C side, an OOM kill: none of them come through here and none will
+/// write a line. **That is not a shortcoming, it is the reading this buys.**
+/// After this exists, a silent death with an empty log *rules panics out* --
+/// which is a fact nobody could establish before.
+fn install_panic_hook() {
+    let _ = PANIC_LOG.set(log_path());
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::sync::atomic::Ordering as O;
+        // A panic inside this hook must not come back round. It gets one
+        // fixed line through the lock-free path and nothing else.
+        if IN_PANIC_HOOK.swap(true, O::SeqCst) {
+            raw_stderr(b"[panic] panicked while reporting a panic; giving up\n");
+            return;
+        }
+
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>").to_string();
+        let where_ = match info.location() {
+            Some(l) => format!("{}:{}:{}", l.file(), l.line(), l.column()),
+            None => "<no location>".to_string(),
+        };
+        // `PanicHookInfo::payload_as_str` is not stable in this edition, so
+        // the two shapes the standard library actually produces are read
+        // directly. Anything else is reported as unrenderable rather than
+        // silently becoming an empty message.
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<panic payload is not a string>".to_string()
+        };
+
+        let line = format!(
+            "[{}] [panic] thread {:?} panicked at {}: {}\n",
+            now_str(),
+            name,
+            where_,
+            msg
+        );
+
+        // The file first: it is the artifact that leaves the machine.
+        if let Some(path) = PANIC_LOG.get() {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+            }
+        }
+        raw_stderr(line.as_bytes());
+
+        IN_PANIC_HOOK.store(false, O::SeqCst);
+        // **The default hook still runs.** It prints the backtrace, which
+        // this does not reproduce; taking that away to add a log line would
+        // trade one kind of evidence for another.
+        previous(info);
+    }));
+}
+
+/// `--panic-test[=MODE]`: panic on purpose, so the hook can be shown to work.
+///
+/// **A hook nobody has seen speak is indistinguishable from no hook**, and
+/// the way that failure presents itself is the next silent death being
+/// recorded as unexplained again -- except that this time everyone believes
+/// the instrument is installed.
+///
+/// Three modes, because "the hook writes a line" is easy in the easy case and
+/// silent deaths do not happen in the easy case:
+///
+///  - `--panic-test` -- plain panic on the main thread.
+///  - `--panic-test=locked` -- panic **while holding the window-state lock**,
+///    which is the case the design above exists for: a hook that reached for
+///    that lock would hang here instead of reporting.
+///  - `--panic-test=thread` -- panic on a spawned thread. In a debug build
+///    (`panic = "abort"` is set only on `[profile.release]`) this kills the
+///    thread and **leaves the process running**, so the log line is the only
+///    evidence the thread ever died.
+///
+/// It is an instrument, not a detour: nothing about the ordinary path changes
+/// because this exists, and without the argument none of it runs.
+fn maybe_panic_test() {
+    let Some(arg) = std::env::args().find(|a| a.starts_with("--panic-test")) else {
+        return;
+    };
+    let mode = arg.strip_prefix("--panic-test=").unwrap_or("plain").to_string();
+    logf!("--panic-test={mode}: panicking on purpose to prove the hook speaks");
+    match mode.as_str() {
+        "locked" => {
+            tabs::with_windows_mut(|_ws| {
+                panic!("--panic-test=locked: panicking with the window-state lock held");
+            });
+        }
+        "thread" => {
+            let h = std::thread::Builder::new()
+                .name("polter-panic-test".into())
+                .spawn(|| panic!("--panic-test=thread: panicking off the main thread"))
+                .expect("could not spawn the panic-test thread");
+            // Joining an already-panicked thread returns `Err`; reported
+            // rather than unwrapped, because unwrapping here would panic a
+            // second time and confuse the reading this test exists to give.
+            let joined_ok = h.join().is_ok();
+            logf!(
+                "--panic-test=thread: the thread has ended (joined_ok={joined_ok}); \
+                 the process is still running, which is the point"
+            );
+        }
+        _ => panic!("--panic-test: panicking on the main thread on purpose"),
+    }
+}
+
 fn main() {
     let _ = std::fs::remove_file(log_path());
+    // **First, ahead of the banner.** Everything below can panic, and a panic
+    // before the hook is installed leaves exactly the evidence the last two
+    // silent deaths left: none.
+    install_panic_hook();
     logf!(
         "=== Polter host (Windows) === pid={} log={}",
         std::process::id(),
         log_path().display()
     );
+    maybe_panic_test();
 
     if std::env::args().any(|a| a == "--draw-on-paint") {
         DRAW_ON_PAINT.store(1, Ordering::Relaxed);
