@@ -249,9 +249,16 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
             }
         }
 
+        // **No `WS_EX_TOPMOST`.** These three windows had it, which is not
+        // "above Polter" -- it is above *everything*, including other programs
+        // and the system's own surfaces. A person switched to Notepad and this
+        // page was still in front of it. What was wanted all along is an
+        // **owned** window: always above the terminal it belongs to,
+        // minimising and restoring with it, and behind whatever the person
+        // switches to. The owner is set at show time; see `own_and_place`.
         let make = |class: PCWSTR, w: i32, h: i32| {
             CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                WS_EX_TOOLWINDOW,
                 class,
                 w!("Polter"),
                 WS_POPUP | WS_CLIPCHILDREN,
@@ -269,7 +276,17 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         let hs = match make(w!("PolterSettings"), W, H) {
             Ok(h) => h,
             Err(e) => {
-                // process-wide: the settings window: there is one, by the S4-B ruling, and no window owns it
+                // process-wide: the settings window, one per process by the
+                // S4-B ruling.
+                //
+                // **The rest of this line used to read "and no window owns
+                // it", and that was a conclusion drawn from the wrong
+                // premise.** One page for the process is a fact about how many
+                // there are; which terminal window it belongs to is a
+                // different question, and the answer is not "none" -- it is
+                // "the one it was opened from". Read as a design note, it kept
+                // an ownerless, always-on-top window in front of other
+                // people's programs.
                 plogf!("[set] CreateWindowExW failed: {e:?}");
                 return;
             }
@@ -674,7 +691,7 @@ fn show_about() {
         let (w, hh) = (420 * sc / 96, 220 * sc / 96);
         let x = fr.left + ((fr.right - fr.left) - w) / 2;
         let y = fr.top + ((fr.bottom - fr.top) - hh) / 2;
-        let _ = SetWindowPos(h, Some(HWND_TOPMOST), x, y, w, hh, SWP_SHOWWINDOW);
+        own_and_place(h, x, y, w, hh);
         let _ = InvalidateRect(Some(h), None, true);
     }
     // process-wide: the about window is one per process
@@ -834,7 +851,7 @@ fn show(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
         let (w, h) = (W * sc / 96, H * sc / 96);
         let x = fr.left + ((fr.right - fr.left) - w) / 2;
         let y = fr.top + ((fr.bottom - fr.top) - h) / 2;
-        let _ = SetWindowPos(win, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
+        own_and_place(win, x, y, w, h);
     }
 
     ensure_buttons(win, hinst);
@@ -852,6 +869,38 @@ fn show(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
     }
     // process-wide: the settings window is one per process; it is not shown *for* a window
     plogf!("[set] shown");
+}
+
+/// Give `win` an owner, put it over that owner, and show it.
+///
+/// **Owned, not topmost.** An owned window is always above its owner, hides
+/// when the owner is minimised and comes back with it, and never covers
+/// another program. That is the behaviour these three windows were reaching
+/// for with `WS_EX_TOPMOST`, which buys the first half by taking the whole
+/// screen hostage.
+///
+/// **The owner is set here rather than at creation**, and that is not
+/// bookkeeping: these windows are made once, at startup, and there is going
+/// to be more than one terminal window. Which window this page belongs to is
+/// a fact about *this* opening -- the one whose keystroke asked for it -- so
+/// it is answered every time it opens. `GWLP_HWNDPARENT` on an already-made
+/// window is how Win32 spells "re-own".
+///
+/// **`frame_hwnd()` is today's answer and tomorrow's edit.** B1-a is
+/// converting that call to `overlay_frame()` -- "the window the person is
+/// looking at" -- at thirteen sites, and this is one of them. Written with the
+/// name HEAD has, so this fix can land without waiting for that one; it
+/// becomes `overlay_frame()` along with the rest.
+fn own_and_place(win: HWND, x: i32, y: i32, w: i32, h: i32) {
+    let owner = crate::tabs::frame_hwnd();
+    unsafe {
+        if !owner.0.is_null() {
+            SetWindowLongPtrW(win, GWLP_HWNDPARENT, owner.0 as isize);
+        }
+        // `HWND_TOP`, not `HWND_TOPMOST`: at the front of its own owner's
+        // stack. The z-order this window needs is the one being owned gives it.
+        let _ = SetWindowPos(win, Some(HWND_TOP), x, y, w, h, SWP_SHOWWINDOW);
+    }
 }
 
 fn hide(win: HWND) {
@@ -1213,7 +1262,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let (w, h) = (560 * sc / 96, 320 * sc / 96);
                 let x = fr.left + ((fr.right - fr.left) - w) / 2;
                 let y = fr.top + ((fr.bottom - fr.top) - h) / 2;
-                let _ = SetWindowPos(win, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
+                own_and_place(win, x, y, w, h);
                 let _ = InvalidateRect(Some(win), None, true);
                 LRESULT(0)
             }
