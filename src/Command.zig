@@ -430,9 +430,57 @@ fn startWindows(self: *Command, arena: Allocator) !void {
         if (cwd_w) |w| w.ptr else null,
         @ptrCast(&startup_info_ex.StartupInfo),
         &process_information,
-    ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
+    ) == windows.FALSE) return spawnError(windows.GetLastError());
 
     self.pid = process_information.hProcess;
+}
+
+/// Name what `CreateProcessW` refused to do.
+///
+/// **`unexpectedError` was here, and it threw away the one fact anybody
+/// needed.** `GetLastError` had already said `FILE_NOT_FOUND`; the call
+/// turned that into `error.Unexpected`, and the layer above then printed
+/// "this is usually due to exhausting a system resource" -- a sentence that
+/// sends a person to check memory and close programs for a command that is
+/// simply not on `PATH`. **A wrong cause costs more than no cause**: it does
+/// not leave someone not knowing where to look, it sends them somewhere there
+/// is nothing to find.
+///
+/// Only codes whose answer is *different* are named. Everything else still
+/// goes to `unexpectedError`, which is honest about not knowing -- the point
+/// is not to enumerate Win32, it is that the common failure stops being
+/// anonymous.
+///
+/// **`SystemResources` is in this list on purpose.** It is the one case where
+/// "you are out of a system resource" is true, and naming it here is what
+/// lets the message above say so *only* then.
+fn spawnError(err: windows.Win32Error) error{
+    // Spelled out rather than merged with an alias for
+    // `windows.unexpectedError`'s return set: the fallback below has to stay
+    // reachable, and a merge would hide the day it stops being.
+    Unexpected,
+    FileNotFound,
+    AccessDenied,
+    InvalidExe,
+    IsDir,
+    BadPathName,
+    SystemResources,
+} {
+    return switch (err) {
+        // The command is not where the search looked. For a bare name that
+        // means it is not on PATH; `CreateProcessW` searches the parent
+        // application's directory, the CWD, the system directories and then
+        // PATH, so this really does mean "nowhere any of those".
+        .FILE_NOT_FOUND, .PATH_NOT_FOUND => error.FileNotFound,
+        .ACCESS_DENIED, .SHARING_VIOLATION => error.AccessDenied,
+        // Found, and not a program: a script without an interpreter, a 16-bit
+        // binary, a text file with a .exe name.
+        .BAD_EXE_FORMAT, .BAD_FORMAT => error.InvalidExe,
+        .DIRECTORY => error.IsDir,
+        .INVALID_NAME, .FILENAME_EXCED_RANGE => error.BadPathName,
+        .NOT_ENOUGH_MEMORY, .OUTOFMEMORY, .NO_SYSTEM_RESOURCES, .TOO_MANY_OPEN_FILES => error.SystemResources,
+        else => windows.unexpectedError(err),
+    };
 }
 
 fn setupFd(src: File.Handle, target: i32) !void {
@@ -1343,4 +1391,35 @@ test "Command: ConPTY B, an interactive shell echoes back" {
     try testing.expectEqual(@as(windows.DWORD, @intCast(script.len)), written);
     try testing.expect(has_hi);
     try testing.expect(has_42);
+}
+
+test "spawnError names the code CreateProcessW reported" {
+    // **Runs on macOS**, which is the point of testing the mapping rather
+    // than the spawn: this is a pure function of a Win32 code, and a check
+    // that only runs on the test machine is a check that runs once a day.
+    //
+    // What it pins is the defect this function exists to close: a command
+    // that is not on `PATH` must not come out as `error.Unexpected`, because
+    // one layer up an `else` arm turns "unexpected" into a claim about
+    // system resources. The two facts are one bug, and this is the half of
+    // it that can be held still here.
+
+    try testing.expectEqual(error.FileNotFound, spawnError(.FILE_NOT_FOUND));
+    try testing.expectEqual(error.FileNotFound, spawnError(.PATH_NOT_FOUND));
+    try testing.expectEqual(error.AccessDenied, spawnError(.ACCESS_DENIED));
+    try testing.expectEqual(error.InvalidExe, spawnError(.BAD_EXE_FORMAT));
+    try testing.expectEqual(error.IsDir, spawnError(.DIRECTORY));
+    try testing.expectEqual(error.BadPathName, spawnError(.INVALID_NAME));
+
+    // The one code that may legitimately produce the sentence about system
+    // resources. **Pinned so the sentence keeps a source**: if this ever maps
+    // elsewhere, the message above it becomes unreachable and nothing else
+    // would say so.
+    try testing.expectEqual(error.SystemResources, spawnError(.NOT_ENOUGH_MEMORY));
+    try testing.expectEqual(error.SystemResources, spawnError(.NO_SYSTEM_RESOURCES));
+
+    // The negative control. A code with no entry must still reach
+    // `unexpectedError` -- a mapping that quietly named everything would pass
+    // every assertion above and would be a different bug.
+    try testing.expectEqual(error.Unexpected, spawnError(.INVALID_FUNCTION));
 }
