@@ -33,8 +33,9 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -161,82 +162,17 @@ fn subscription_line(events: &[String]) -> String {
 
 // ------------------------------------------------------------------ colour
 //
-// **These were six dark literals, and the controls never agreed with them.**
-// The page draws its own background and text; BUTTON, EDIT and COMBOBOX are
-// drawn by the system. So there were two sets of colours that had to be kept
-// in step and only one of them was ever set: a near-black page with white
-// text, and native controls in the system's light theme. What a person saw
-// was a black background, grey buttons and white input boxes, and the fix
-// they asked for was "make it all dark, or make it all light".
+// **The palette is not here any more.** It was six literals in this file, and
+// three other windows had their own copies of the same idea; the day one of
+// them changed, the app was half one colour and half another. `theme.rs` is
+// the single source now, and it is also what answers "is high contrast on",
+// which every drawing path below has to ask before it paints a control
+// itself.
 //
-// **All dark was investigated and is not on offer.** Under the Common-Controls
-// v6 manifest these controls are theme-drawn, and there is no supported way to
-// ask for a dark theme: what exists is a set of undocumented `uxtheme` exports
-// called by ordinal, which are not part of any contract, are version
-// dependent, and do not reach a combo box's drop-down list at all. Owner-draw
-// covers a button but not the list, and the honest end of that road is a
-// half-dark page, which is where this started.
-//
-// So: light, from the system, which is a different thing from six new light
-// literals. **The page and the controls now read one source.** There is no
-// pair to keep in step, and a person on a themed, high-contrast or otherwise
-// non-default desktop gets a page that matches their controls rather than one
-// that matches ours.
-//
-// **Read at paint time, never captured into a `static`.** A colour folded in
-// at startup is a second copy again -- one that was right once -- and the
-// visible cost is that the page does not follow a theme change while it is
-// open. `GetSysColor` is a table lookup; this is not a place where a cached
-// value buys anything.
+// The names below are this page's vocabulary for that palette, not a second
+// copy of it: each one is a call.
 
-/// The form's ground: the right-hand side, and what the controls sit on.
-fn col_face() -> u32 {
-    unsafe { GetSysColor(COLOR_BTNFACE) }
-}
-
-/// A content area's ground: the plugin list, the about box, the error box.
-fn col_list() -> u32 {
-    unsafe { GetSysColor(COLOR_WINDOW) }
-}
-
-/// Text on `col_face`.
-fn col_face_text() -> u32 {
-    unsafe { GetSysColor(COLOR_BTNTEXT) }
-}
-
-/// Text on `col_list`.
-fn col_text() -> u32 {
-    unsafe { GetSysColor(COLOR_WINDOWTEXT) }
-}
-
-/// Secondary text: a help line, a summary, a disabled row.
-fn col_dim() -> u32 {
-    unsafe { GetSysColor(COLOR_GRAYTEXT) }
-}
-
-/// The selected row, and **the text that goes on it**. The pair is taken
-/// together on purpose: a highlight colour with unrelated text over it is
-/// unreadable on the themes where the highlight is not the one we imagined,
-/// which is the whole class of bug this change is about.
-fn col_sel() -> u32 {
-    unsafe { GetSysColor(COLOR_HIGHLIGHT) }
-}
-
-fn col_sel_text() -> u32 {
-    unsafe { GetSysColor(COLOR_HIGHLIGHTTEXT) }
-}
-
-/// **The one literal left, and why it stays one.** There is no system colour
-/// that means "this is a complaint": the palette has window, button, text,
-/// grey text, highlight and so on, and nothing for an error. Taking one of the
-/// others would be picking a slot for a meaning it does not have, and the next
-/// person would read the name and believe it.
-///
-/// What it costs: this red does not follow a high-contrast theme, so on such a
-/// desktop it is a fixed colour among system ones. That is a real gap and it
-/// is named rather than hidden -- the alternative, falling back to plain text
-/// colour, would make a complaint indistinguishable from a label.
-const COL_WARN: u32 = 0x004040e0;
+use crate::theme;
 
 /// Control ids. `1..` are parameter fields, offset by their index.
 const ID_ENABLED: usize = 1000;
@@ -457,6 +393,233 @@ fn get_text(h: HWND) -> String {
     String::from_utf16_lossy(&buf[..n])
 }
 
+// ------------------------------------------------------- drawing controls
+//
+// **Why the buttons are custom drawn and the fields are not.** A themed
+// `EDIT`, `STATIC` or list box asks its parent what colours to use, through
+// `WM_CTLCOLOR*`, and honours the answer -- so those need no drawing code at
+// all, only an answer. A themed `BUTTON` asks nobody: it is painted by the
+// visual style, and the only ways in are to owner-draw it or to answer its
+// custom-draw notification. Custom draw is the one that keeps the control's
+// own behaviour -- a check box stays an auto check box, `BM_GETCHECK` still
+// answers, and the hot state arrives as a flag rather than as mouse tracking
+// this file would have to write.
+//
+// Every path here begins by asking `theme::custom_drawing()`. Under high
+// contrast none of them run and the system paints its own controls.
+
+/// The six states a button can be in, drawn from the flags custom draw hands
+/// over. **All six, because the ones that are missed are the ones nobody
+/// walks through**: a button that is right at rest and light when hot is a
+/// defect a person meets by moving the mouse and no screenshot records.
+unsafe fn draw_button(cd: &NMCUSTOMDRAW) {
+    unsafe {
+        let h = cd.hdr.hwndFrom;
+        let hdc = cd.hdc;
+        let st8 = cd.uItemState;
+        let has = |f: NMCUSTOMDRAW_DRAW_STATE_FLAGS| st8.contains(f);
+        let (hot, down, disabled, focus, default) = (
+            has(CDIS_HOT),
+            has(CDIS_SELECTED),
+            has(CDIS_DISABLED),
+            has(CDIS_FOCUS),
+            has(CDIS_DEFAULT),
+        );
+        let style = GetWindowLongPtrW(h, GWL_STYLE) as u32;
+        let kind = (style & BS_TYPEMASK as u32) as i32;
+        let is_check = kind == BS_AUTOCHECKBOX || kind == BS_CHECKBOX;
+
+        let mut rc = cd.rc;
+        let font = ST.with(|c| c.borrow().font);
+        let old_font = SelectObject(hdc, font.into());
+        SetBkMode(hdc, TRANSPARENT);
+
+        let mut text = [0u16; 256];
+        let n = GetWindowTextW(h, &mut text) as usize;
+        let label = String::from_utf16_lossy(&text[..n]);
+        let fg = if disabled { theme::dim() } else { theme::btn_text() };
+
+        if is_check {
+            // A check box sits on the page, so its ground is the page's.
+            let b = CreateSolidBrush(COLORREF(theme::bg()));
+            FillRect(hdc, &rc, b);
+            let _ = DeleteObject(b.into());
+
+            let side = (rc.bottom - rc.top).min(16).max(12);
+            let top = rc.top + ((rc.bottom - rc.top) - side) / 2;
+            let box_r = RECT {
+                left: rc.left,
+                top,
+                right: rc.left + side,
+                bottom: top + side,
+            };
+            let fill = CreateSolidBrush(COLORREF(if hot {
+                theme::btn_hot()
+            } else {
+                theme::field_bg()
+            }));
+            FillRect(hdc, &box_r, fill);
+            let _ = DeleteObject(fill.into());
+            frame(hdc, &box_r, if focus { theme::focus() } else { theme::border() });
+
+            let checked = SendMessageW(h, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0 == 1;
+            if checked {
+                // The tick, as two strokes. A glyph from a font would be a
+                // second thing to keep in step with the box's size.
+                let pen = CreatePen(PS_SOLID, 2, COLORREF(fg));
+                let old = SelectObject(hdc, pen.into());
+                let (l, t, r2, b2) = (box_r.left, box_r.top, box_r.right, box_r.bottom);
+                let mut pt = POINT::default();
+                let _ = MoveToEx(hdc, l + side / 5, t + side / 2, Some(&mut pt));
+                let _ = LineTo(hdc, l + side * 2 / 5, b2 - side / 4);
+                let _ = LineTo(hdc, r2 - side / 5, t + side / 4);
+                SelectObject(hdc, old);
+                let _ = DeleteObject(pen.into());
+            }
+
+            let mut tr = RECT {
+                left: box_r.right + 8,
+                top: rc.top,
+                right: rc.right,
+                bottom: rc.bottom,
+            };
+            SetTextColor(hdc, COLORREF(fg));
+            let wide: Vec<u16> = label.encode_utf16().collect();
+            DrawTextW(
+                hdc,
+                &mut wide.clone(),
+                &mut tr,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+            SelectObject(hdc, old_font);
+            return;
+        }
+
+        // A push button: face, border, label, and a focus ring that is a
+        // different colour from the border rather than a second border.
+        let face = if disabled {
+            theme::btn_face()
+        } else if down {
+            theme::btn_down()
+        } else if hot {
+            theme::btn_hot()
+        } else {
+            theme::btn_face()
+        };
+        let b = CreateSolidBrush(COLORREF(face));
+        FillRect(hdc, &rc, b);
+        let _ = DeleteObject(b.into());
+        frame(
+            hdc,
+            &rc,
+            if default && !disabled {
+                theme::focus()
+            } else {
+                theme::border()
+            },
+        );
+        if focus && !disabled {
+            let inner = RECT {
+                left: rc.left + 3,
+                top: rc.top + 3,
+                right: rc.right - 3,
+                bottom: rc.bottom - 3,
+            };
+            frame(hdc, &inner, theme::focus());
+        }
+        if down {
+            // Pressed moves the label a pixel, the way every native button
+            // does; without it a click on a button that is already dark
+            // gives no feedback at all.
+            rc.top += 1;
+            rc.left += 1;
+        }
+        SetTextColor(hdc, COLORREF(fg));
+        let wide: Vec<u16> = label.encode_utf16().collect();
+        DrawTextW(
+            hdc,
+            &mut wide.clone(),
+            &mut rc,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+        SelectObject(hdc, old_font);
+    }
+}
+
+/// A one pixel rectangle, in a colour, without disturbing the fill.
+unsafe fn frame(hdc: HDC, r: &RECT, colour: u32) {
+    unsafe {
+        let b = CreateSolidBrush(COLORREF(colour));
+        let _ = FrameRect(hdc, r, b);
+        let _ = DeleteObject(b.into());
+    }
+}
+
+/// One combo box item: the closed control's own line, and each row of the
+/// drop-down list.
+///
+/// **What this does not reach**, written here because it is the one thing in
+/// the port that cannot be made dark: the combo's frame and its drop-down
+/// arrow in the closed state, and the drop-down list's border and scroll bar
+/// when it is open, are drawn by the visual style. `WM_CTLCOLORLISTBOX`
+/// covers the list's background, and this covers every row; the frame around
+/// them does not belong to either.
+unsafe fn draw_combo_item(dis: &DRAWITEMSTRUCT) {
+    unsafe {
+        if dis.itemID == u32::MAX {
+            let b = CreateSolidBrush(COLORREF(theme::field_bg()));
+            FillRect(dis.hDC, &dis.rcItem, b);
+            let _ = DeleteObject(b.into());
+            return;
+        }
+        let selected = dis.itemState.0 & ODS_SELECTED.0 != 0;
+        let in_edit = dis.itemState.0 & ODS_COMBOBOXEDIT.0 != 0;
+        let bg = if selected && !in_edit {
+            theme::sel()
+        } else {
+            theme::field_bg()
+        };
+        let fg = if selected && !in_edit {
+            theme::sel_text()
+        } else {
+            theme::text()
+        };
+        let b = CreateSolidBrush(COLORREF(bg));
+        FillRect(dis.hDC, &dis.rcItem, b);
+        let _ = DeleteObject(b.into());
+
+        let mut buf = [0u16; 256];
+        let n = SendMessageW(
+            dis.hwndItem,
+            CB_GETLBTEXT,
+            Some(WPARAM(dis.itemID as usize)),
+            Some(LPARAM(buf.as_mut_ptr() as isize)),
+        )
+        .0;
+        if n <= 0 {
+            return;
+        }
+        let font = ST.with(|c| c.borrow().font);
+        let old = SelectObject(dis.hDC, font.into());
+        SetBkMode(dis.hDC, TRANSPARENT);
+        SetTextColor(dis.hDC, COLORREF(fg));
+        let mut r = RECT {
+            left: dis.rcItem.left + 4,
+            ..dis.rcItem
+        };
+        let mut wide = buf[..n as usize].to_vec();
+        DrawTextW(dis.hDC, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        // **Focus has to be findable.** With owner drawing the system stops
+        // drawing the combo's focus rectangle and expects this to, and a
+        // control that looks identical focused and not is unusable by anyone
+        // working from the keyboard.
+        if in_edit && dis.itemState.0 & ODS_FOCUS.0 != 0 {
+            frame(dis.hDC, &dis.rcItem, theme::focus());
+        }
+        SelectObject(dis.hDC, old);
+    }
+}
+
 /// Destroy the current parameter controls and build the selected plugin's.
 fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
     let sc = dpi_scale(win);
@@ -562,9 +725,21 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
                 h
             }
             Control::Choice(options) => {
+                // **`CBS_HASSTRINGS` stays.** Owner drawing here is about
+                // paint only: the control keeps the strings, so `CB_GETLBTEXT`
+                // and the save path go on reading it the same way. The style
+                // is chosen each time the page is built rather than once,
+                // because turning high contrast on has to be able to give the
+                // system its drawing back -- which is why a theme change
+                // rebuilds these controls instead of only repainting them.
+                let owner_draw = if theme::custom_drawing() {
+                    CBS_OWNERDRAWFIXED
+                } else {
+                    0
+                };
                 let h = mk(
                     w!("COMBOBOX"),
-                    WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_HASSTRINGS) as u32),
+                    WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_HASSTRINGS | owner_draw) as u32),
                     y,
                     s(200),
                     id,
@@ -596,10 +771,23 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
                 // `ES_PASSWORD` only when the manifest declared it. Guessing
                 // would either mask something that is not a secret or, worse,
                 // fail to mask one that is.
-                let style = if param.secret {
-                    WINDOW_STYLE((ES_AUTOHSCROLL | ES_PASSWORD) as u32) | WS_BORDER
+                // **`WS_BORDER` is dropped when this page does its own
+                // drawing.** With visual styles on, that border is painted by
+                // the theme in the system's light grey -- a one pixel line
+                // around every field that no `WM_CTLCOLOR*` answer can reach,
+                // because it is not part of the control's client area. The
+                // page draws the frame instead, in the shared border colour.
+                // Under high contrast the style comes back and the system
+                // draws its own, which is the point.
+                let border = if theme::custom_drawing() {
+                    WINDOW_STYLE(0)
                 } else {
-                    WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER
+                    WS_BORDER
+                };
+                let style = if param.secret {
+                    WINDOW_STYLE((ES_AUTOHSCROLL | ES_PASSWORD) as u32) | border
+                } else {
+                    WINDOW_STYLE(ES_AUTOHSCROLL as u32) | border
                 };
                 let h = mk(w!("EDIT"), style, y, s(FIELD_H), id);
                 if let Ok(h) = h {
@@ -792,7 +980,7 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             // would look like, which would make the two indistinguishable
             // from outside.
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
-                let _ = InvalidateRect(Some(win), None, true);
+                theme::repaint_all(win);
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
@@ -804,7 +992,7 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     let _ = GetClientRect(win, &mut rc);
                     let sc = dpi_scale(win);
                     let s = |v: i32| v * sc / 96;
-                    let b = CreateSolidBrush(COLORREF(col_list()));
+                    let b = CreateSolidBrush(COLORREF(theme::panel()));
                     FillRect(hdc, &rc, b);
                     let _ = DeleteObject(b.into());
                     SetBkMode(hdc, TRANSPARENT);
@@ -824,7 +1012,7 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                                 line,
                                 &mut r,
                                 DT_LEFT | DT_SINGLELINE,
-                                if i == 0 { col_text() } else { col_dim() },
+                                if i == 0 { theme::text() } else { theme::dim() },
                             );
                             y += s(24);
                         }
@@ -839,7 +1027,7 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                             "Esc or click to dismiss",
                             &mut fr,
                             DT_LEFT | DT_SINGLELINE,
-                            col_dim(),
+                            theme::dim(),
                         );
                         SelectObject(hdc, old);
                     });
@@ -1024,6 +1212,53 @@ unsafe extern "system" fn settings_proc(
                 LRESULT(0)
             }
 
+            // The controls that ask their parent what colours to use: an
+            // `EDIT`, a `STATIC`, and the combo's drop-down list. Answering is
+            // the whole of making them dark -- and under high contrast
+            // `ctl_color` answers `None`, the message falls through, and the
+            // system's own colours stand.
+            WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN => {
+                match theme::ctl_color(HDC(wp.0 as *mut c_void)) {
+                    Some(b) => LRESULT(b.0 as isize),
+                    None => DefWindowProcW(win, msg, wp, lp),
+                }
+            }
+
+            // A button's paint, arriving as a notification rather than as a
+            // message to the button.
+            WM_NOTIFY => {
+                let nm = &*(lp.0 as *const NMHDR);
+                if nm.code == NM_CUSTOMDRAW && theme::custom_drawing() {
+                    let cd = &*(lp.0 as *const NMCUSTOMDRAW);
+                    if cd.dwDrawStage == CDDS_PREPAINT {
+                        draw_button(cd);
+                        return LRESULT(CDRF_SKIPDEFAULT as isize);
+                    }
+                }
+                DefWindowProcW(win, msg, wp, lp)
+            }
+
+            WM_DRAWITEM => {
+                let dis = &*(lp.0 as *const DRAWITEMSTRUCT);
+                if dis.CtlType == ODT_COMBOBOX && theme::custom_drawing() {
+                    draw_combo_item(dis);
+                    return LRESULT(1);
+                }
+                DefWindowProcW(win, msg, wp, lp)
+            }
+
+            // An owner-drawn combo box has no idea how tall a row is until it
+            // is told. Left out, the rows come out the default height and the
+            // text is clipped -- which reads as a font problem and is not one.
+            WM_MEASUREITEM => {
+                let mis = &mut *(lp.0 as *mut MEASUREITEMSTRUCT);
+                if mis.CtlType == ODT_COMBOBOX {
+                    mis.itemHeight = (dpi_scale(win) * 20 / 96) as u32;
+                    return LRESULT(1);
+                }
+                DefWindowProcW(win, msg, wp, lp)
+            }
+
             WM_COMMAND => {
                 let id = (wp.0 & 0xFFFF) as usize;
                 if id == ID_SAVE {
@@ -1099,7 +1334,14 @@ unsafe extern "system" fn settings_proc(
             // would look like, which would make the two indistinguishable
             // from outside.
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
-                let _ = InvalidateRect(Some(win), None, true);
+                // **Rebuilt, not just repainted.** Whether these controls are
+                // drawn by this file or by the system is decided by a window
+                // style, and a style is fixed when the control is created. A
+                // page that only repainted would keep its owner-drawn combo
+                // boxes after a person switched high contrast on, which is the
+                // one case where our drawing has to stop.
+                rebuild_fields(win, hinst);
+                theme::repaint_all(win);
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
@@ -1144,7 +1386,7 @@ fn paint_settings(win: HWND) {
         let sc = dpi_scale(win);
         let s = |v: i32| v * sc / 96;
 
-        let bg = CreateSolidBrush(COLORREF(col_face()));
+        let bg = CreateSolidBrush(COLORREF(theme::bg()));
         FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg.into());
         let panel = RECT {
@@ -1153,7 +1395,7 @@ fn paint_settings(win: HWND) {
             right: s(LIST_W),
             bottom: rc.bottom,
         };
-        let pb = CreateSolidBrush(COLORREF(col_list()));
+        let pb = CreateSolidBrush(COLORREF(theme::panel()));
         FillRect(hdc, &panel, pb);
         let _ = DeleteObject(pb.into());
         SetBkMode(hdc, TRANSPARENT);
@@ -1194,7 +1436,7 @@ fn paint_settings(win: HWND) {
                             .to_string()
                     }
                 };
-                draw_text(hdc, &msg, &mut r, DT_LEFT | DT_WORDBREAK, col_dim());
+                draw_text(hdc, &msg, &mut r, DT_LEFT | DT_WORDBREAK, theme::dim());
             }
 
             for (i, p) in st.plugins.iter().enumerate() {
@@ -1206,7 +1448,7 @@ fn paint_settings(win: HWND) {
                     bottom: y + s(ROW_H),
                 };
                 if i == st.selected {
-                    let b = CreateSolidBrush(COLORREF(col_sel()));
+                    let b = CreateSolidBrush(COLORREF(theme::sel()));
                     FillRect(hdc, &row, b);
                     let _ = DeleteObject(b.into());
                 }
@@ -1232,11 +1474,11 @@ fn paint_settings(win: HWND) {
                     // the highlight is not something a second colour can be
                     // asked to guess.
                     if i == st.selected {
-                        col_sel_text()
+                        theme::sel_text()
                     } else if p.enabled {
-                        col_text()
+                        theme::text()
                     } else {
-                        col_dim()
+                        theme::dim()
                     },
                 );
             }
@@ -1250,7 +1492,7 @@ fn paint_settings(win: HWND) {
                     right,
                     bottom: s(PAD + 24),
                 };
-                draw_text(hdc, &p.name, &mut r, DT_LEFT | DT_SINGLELINE, col_face_text());
+                draw_text(hdc, &p.name, &mut r, DT_LEFT | DT_SINGLELINE, theme::text());
                 // **Measured once, by the same function the control layout
                 // uses.** The summary is the plugin author's sentence and
                 // wraps to as many lines as it wraps to.
@@ -1260,7 +1502,7 @@ fn paint_settings(win: HWND) {
                     &p.summary,
                     &mut r2,
                     DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS,
-                    col_dim(),
+                    theme::dim(),
                 );
 
                 // What it subscribes to, from its own `wants.events`.
@@ -1269,7 +1511,7 @@ fn paint_settings(win: HWND) {
                     &subscription_line(&p.events),
                     &mut r3,
                     DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS,
-                    col_dim(),
+                    theme::dim(),
                 );
 
                 // Labels above each control, in the same order the controls
@@ -1295,13 +1537,39 @@ fn paint_settings(win: HWND) {
                     } else {
                         format!("{label}  —  {}", param.help)
                     };
-                    draw_text(hdc, &label, &mut lr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, col_dim());
+                    draw_text(hdc, &label, &mut lr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, theme::dim());
                     y += s(18);
                     y += match param.control {
                         Control::Flag => s(28),
                         Control::Choice(_) => s(FIELD_H + 6),
                         Control::Text => s(FIELD_H + 6),
                     };
+                }
+
+                // The frame around every text field, drawn from the control's
+                // own rectangle rather than from a second copy of the layout
+                // arithmetic. A combo box is skipped: its frame is the theme's
+                // and is the one part of this page that stays light.
+                if theme::custom_drawing() {
+                    for f in st.fields.iter() {
+                        if matches!(f.control, Control::Text) {
+                            let mut wr = RECT::default();
+                            if GetWindowRect(f.hwnd, &mut wr).is_ok() {
+                                let mut pts = [
+                                    POINT { x: wr.left, y: wr.top },
+                                    POINT { x: wr.right, y: wr.bottom },
+                                ];
+                                let _ = MapWindowPoints(Some(HWND::default()), Some(win), &mut pts);
+                                let r = RECT {
+                                    left: pts[0].x - 1,
+                                    top: pts[0].y - 1,
+                                    right: pts[1].x + 1,
+                                    bottom: pts[1].y + 1,
+                                };
+                                frame(hdc, &r, theme::border());
+                            }
+                        }
+                    }
                 }
 
                 if !st.complaint.is_empty() {
@@ -1311,7 +1579,7 @@ fn paint_settings(win: HWND) {
                         right,
                         bottom: rc.bottom - s(PAD + 36),
                     };
-                    draw_text(hdc, &st.complaint, &mut cr, DT_LEFT | DT_WORDBREAK, COL_WARN);
+                    draw_text(hdc, &st.complaint, &mut cr, DT_LEFT | DT_WORDBREAK, theme::warn());
                 }
             }
 
@@ -1388,7 +1656,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
             // would look like, which would make the two indistinguishable
             // from outside.
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
-                let _ = InvalidateRect(Some(win), None, true);
+                theme::repaint_all(win);
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
@@ -1400,7 +1668,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     let _ = GetClientRect(win, &mut rc);
                     let sc = dpi_scale(win);
                     let s = |v: i32| v * sc / 96;
-                    let b = CreateSolidBrush(COLORREF(col_list()));
+                    let b = CreateSolidBrush(COLORREF(theme::panel()));
                     FillRect(hdc, &rc, b);
                     let _ = DeleteObject(b.into());
                     SetBkMode(hdc, TRANSPARENT);
@@ -1418,7 +1686,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                             "Configuration errors",
                             &mut r,
                             DT_LEFT | DT_SINGLELINE,
-                            COL_WARN,
+                            theme::warn(),
                         );
                         let mut y = s(PAD + 30);
                         for e in &st.errors {
@@ -1428,7 +1696,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                                 right: rc.right - s(PAD),
                                 bottom: y + s(40),
                             };
-                            draw_text(hdc, e, &mut er, DT_LEFT | DT_WORDBREAK, col_text());
+                            draw_text(hdc, e, &mut er, DT_LEFT | DT_WORDBREAK, theme::text());
                             y += s(42);
                         }
                         let mut fr = RECT {
@@ -1442,7 +1710,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                             "Esc or click to dismiss",
                             &mut fr,
                             DT_LEFT | DT_SINGLELINE,
-                            col_dim(),
+                            theme::dim(),
                         );
                         SelectObject(hdc, old);
                     });

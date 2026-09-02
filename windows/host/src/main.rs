@@ -51,6 +51,7 @@ mod search;
 mod shell;
 mod strip;
 mod tabs;
+mod theme;
 mod tsf;
 
 use ffi::*;

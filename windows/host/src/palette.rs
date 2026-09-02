@@ -63,10 +63,7 @@ const PAD: i32 = 8;
 const MAX_ROWS: i32 = 12;
 const WIDTH: i32 = 560;
 
-const COL_BG: u32 = 0x00201f1d;
-const COL_ROW_SEL: u32 = 0x00403f3d;
-const COL_TEXT: u32 = 0x00ffffff;
-const COL_DIM: u32 = 0x00a0a0a0;
+use crate::theme;
 
 /// The palette window, readable from any thread so `request_toggle` can post
 /// to it. Null until `init` has run.
@@ -682,6 +679,22 @@ extern "system" fn palette_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
                 LRESULT(0)
             }
 
+            // The filter box is a native `EDIT`: it asks its parent what
+            // colours to use and honours the answer, which is the whole of
+            // making it dark. Under high contrast `ctl_color` answers `None`,
+            // this falls through, and the system's colours stand.
+            WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
+                match crate::theme::ctl_color(windows::Win32::Graphics::Gdi::HDC(
+                    wp.0 as *mut std::ffi::c_void,
+                )) {
+                    Some(b) => LRESULT(b.0 as isize),
+                    None => DefWindowProcW(hwnd, msg, wp, lp),
+                }
+            }
+            WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                crate::theme::repaint_all(hwnd);
+                LRESULT(0)
+            }
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 paint(hwnd);
@@ -796,7 +809,7 @@ fn paint(hwnd: HWND) {
         let dpi = GetDpiForWindow(hwnd).max(96) as i32;
         let sc = |v: i32| v * dpi / 96;
 
-        let bg = CreateSolidBrush(COLORREF(COL_BG));
+        let bg = CreateSolidBrush(COLORREF(theme::bg()));
         FillRect(hdc, &rc, bg);
         let _ = DeleteObject(bg.into());
 
@@ -809,7 +822,7 @@ fn paint(hwnd: HWND) {
             let old_font = SelectObject(hdc, wins.font.into());
 
             if st.filtered.is_empty() {
-                SetTextColor(hdc, COLORREF(COL_DIM));
+                SetTextColor(hdc, COLORREF(theme::dim()));
                 let mut wide: Vec<u16> = "no matching command".encode_utf16().collect();
                 let mut tr = RECT {
                     left: sc(PAD * 2),
@@ -834,12 +847,12 @@ fn paint(hwnd: HWND) {
                     bottom: y + sc(ROW_H),
                 };
                 if idx == st.selected {
-                    let sel = CreateSolidBrush(COLORREF(COL_ROW_SEL));
+                    let sel = CreateSolidBrush(COLORREF(theme::sel()));
                     FillRect(hdc, &row, sel);
                     let _ = DeleteObject(sel.into());
                 }
 
-                SetTextColor(hdc, COLORREF(COL_TEXT));
+                SetTextColor(hdc, COLORREF(theme::text()));
                 let mut wide: Vec<u16> = cmd.title.encode_utf16().collect();
                 let mut tr = RECT {
                     left: sc(PAD * 2),
@@ -855,7 +868,7 @@ fn paint(hwnd: HWND) {
                 );
 
                 if !cmd.description.is_empty() {
-                    SetTextColor(hdc, COLORREF(COL_DIM));
+                    SetTextColor(hdc, COLORREF(theme::dim()));
                     let mut dw: Vec<u16> = cmd.description.encode_utf16().collect();
                     let mut dr = RECT {
                         left: rc.right / 2,

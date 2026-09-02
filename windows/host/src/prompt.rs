@@ -91,8 +91,7 @@ thread_local! {
 }
 
 const PAD: i32 = 12;
-const COL_BG: u32 = 0x00403f3d;
-const COL_TEXT: u32 = 0x00ffffff;
+use crate::theme;
 
 /// Is the window pinned above the others right now?
 ///
@@ -302,7 +301,20 @@ pub fn prompt_title(scope: i32, surface: usize) {
             WINDOW_EX_STYLE::default(),
             w!("EDIT"),
             PCWSTR(wide.as_ptr()),
-            WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            // **No `WS_BORDER` while this box draws itself.** With visual
+            // styles on, that border is the theme's light grey hairline and no
+            // `WM_CTLCOLOR*` answer reaches it -- it is not part of the
+            // control's client area. The field's own darker ground is what
+            // marks it out instead. Under high contrast the border comes back
+            // and the system draws it.
+            WS_CHILD
+                | WS_VISIBLE
+                | if crate::theme::custom_drawing() {
+                    WINDOW_STYLE(0)
+                } else {
+                    WS_BORDER
+                }
+                | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
             s(PAD),
             s(44),
             w - s(PAD * 2),
@@ -427,6 +439,22 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 }
                 LRESULT(0)
             }
+            // The title box is a native `EDIT`: it asks its parent what
+            // colours to use and honours the answer, which is the whole of
+            // making it dark. Under high contrast `ctl_color` answers `None`,
+            // this falls through, and the system's colours stand.
+            WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
+                match crate::theme::ctl_color(windows::Win32::Graphics::Gdi::HDC(
+                    wp.0 as *mut std::ffi::c_void,
+                )) {
+                    Some(b) => LRESULT(b.0 as isize),
+                    None => DefWindowProcW(hwnd, msg, wp, lp),
+                }
+            }
+            WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                crate::theme::repaint_all(hwnd);
+                LRESULT(0)
+            }
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 let label = OPEN.with(|c| c.borrow().as_ref().map(|o| o.label).unwrap_or(""));
@@ -435,11 +463,11 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 if !hdc.is_invalid() {
                     let mut rc = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rc);
-                    let b = CreateSolidBrush(COLORREF(COL_BG));
+                    let b = CreateSolidBrush(COLORREF(theme::float_bg()));
                     FillRect(hdc, &rc, b);
                     let _ = DeleteObject(b.into());
                     SetBkMode(hdc, TRANSPARENT);
-                    SetTextColor(hdc, COLORREF(COL_TEXT));
+                    SetTextColor(hdc, COLORREF(theme::text()));
                     let font = GetStockObject(DEFAULT_GUI_FONT);
                     let old = SelectObject(hdc, font);
                     let mut wide: Vec<u16> = label.encode_utf16().collect();
