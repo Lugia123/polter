@@ -107,7 +107,7 @@ pub fn unshifted_codepoint(vk: u32) -> u32 {
 static KEYS_LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 use crate::ffi::{self, Surface};
-use crate::{api, hlogf, logf};
+use crate::{api, hlogf, logf, plogf};
 use windows::Win32::Foundation::{HWND, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -777,5 +777,117 @@ mod accelerator_mod_tests {
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), 3, "each case must be distinguishable in the log");
+    }
+}
+
+// ---------------------------------------- would the core have wanted this?
+
+/// `ghostty_surface_key_is_binding`, resolved lazily.
+///
+/// **Not in `ffi::Api`, and that is the difference between a diagnostic and a
+/// dependency.** `Api` is loaded with `sym!`, which aborts startup when a
+/// symbol is missing -- correct for the entry points the terminal cannot run
+/// without, wrong for this one. A `ghostty-internal.dll` older than this
+/// question should still start; it just cannot answer it. Same shape, and the
+/// same reason, as `config_trigger_fn` above.
+static KEY_IS_BINDING: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+type KeyIsBindingFn =
+    unsafe extern "C" fn(Surface, ffi::KeyEvent, *mut std::os::raw::c_int) -> bool;
+
+/// `ghostty_binding_flags_e`: `include/ghostty.h` gives `PERFORMABLE = 1 << 3`.
+const BINDING_FLAG_PERFORMABLE: std::os::raw::c_int = 1 << 3;
+
+fn key_is_binding_fn() -> Option<KeyIsBindingFn> {
+    use std::sync::atomic::Ordering;
+    use windows::core::s;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+    let cached = KEY_IS_BINDING.load(Ordering::Acquire);
+    if cached != usize::MAX {
+        return if cached == 0 {
+            None
+        } else {
+            Some(unsafe { std::mem::transmute::<usize, KeyIsBindingFn>(cached) })
+        };
+    }
+    let addr = unsafe {
+        GetModuleHandleA(s!("ghostty-internal.dll"))
+            .ok()
+            .and_then(|m| GetProcAddress(m, s!("ghostty_surface_key_is_binding")))
+            .map(|p| p as usize)
+            .unwrap_or(0)
+    };
+    KEY_IS_BINDING.store(addr, Ordering::Release);
+    if addr == 0 {
+        // process-wide: a symbol is present or absent in the loaded DLL, which
+        // is a fact about this process and not about any one window
+        plogf!(
+            "[key] ghostty_surface_key_is_binding not exported; \
+             cannot say whether an intercepted key was one of ours"
+        );
+        return None;
+    }
+    Some(unsafe { std::mem::transmute::<usize, KeyIsBindingFn>(addr) })
+}
+
+/// **Would this key have run one of our bindings, had it reached the core?**
+///
+/// # Why this exists, and why it only writes a line
+///
+/// While an input method is composing, TSF claims keys before the core is
+/// ever offered them -- **including chords that are ours**. A real machine
+/// showed `ctrl`, `shift` and `c` all taken with `composing=Some(true)`, so
+/// `ctrl+shift+c` did nothing while a candidate window was open. Every
+/// application shortcut is unavailable in that state.
+///
+/// The fix would be to keep such chords away from TSF. **This is not that
+/// fix**: it asks the question and writes the answer down, because the number
+/// that decides whether the fix is worth its risk -- *how many of the keys
+/// taken during composition were ours* -- is not known, and guessing it is
+/// what the risk is made of.
+///
+/// # The trap this call sits next to
+///
+/// `keyEventIsBinding` answers "would this trigger a binding", and its own
+/// documentation says it **does not check `performable`**. So `ctrl+shift+c`
+/// with no selection answers *yes* here, while the core would decline it if
+/// actually sent. **An interception built on the bare boolean would take such
+/// a key away from the input method, have the core refuse it, have the host
+/// accelerator table refuse it too, and the key would simply vanish** -- worse
+/// than today, where at least the IME uses it. That is why the flags are read
+/// and reported separately: the number worth acting on is
+/// `binding=yes performable=no`, not `binding=yes`.
+pub fn binding_probe(msg: u32, wp: WPARAM, lp: LPARAM) -> &'static str {
+    if msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN {
+        return "n/a (not a keydown)";
+    }
+    let Some(f) = key_is_binding_fn() else {
+        return "unknown (symbol missing)";
+    };
+    let surface = crate::tabs::active_surface(crate::tabs::overlay_frame());
+    if surface.is_null() {
+        // Not a failure: no window has been activated yet, or the last one
+        // has gone. Reported as its own answer so it cannot be read as "no".
+        return "unknown (no focused surface)";
+    }
+    let ev = ffi::KeyEvent {
+        action: if is_repeat(lp) { ACTION_REPEAT } else { ACTION_PRESS },
+        mods: mods(),
+        consumed_mods: 0,
+        keycode: keycode(lp),
+        text: std::ptr::null(),
+        unshifted_codepoint: unshifted_codepoint(wp.0 as u32),
+        composing: false,
+    };
+    let mut flags: std::os::raw::c_int = 0;
+    if !unsafe { f(surface, ev, &mut flags) } {
+        return "binding=no";
+    }
+    if flags & BINDING_FLAG_PERFORMABLE != 0 {
+        // **The one that must not be counted as a win.** See above.
+        "binding=yes performable=yes (intercepting this one would lose the key)"
+    } else {
+        "binding=yes performable=no"
     }
 }

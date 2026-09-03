@@ -3689,10 +3689,16 @@ fn main() {
                                 // process-wide: the pump serves the thread
                                 plogf!(
                                     "[key] pump swallowed msg=0x{:x} vk=0x{:02x} \
-                                     (removed from the queue and never returned; composing={:?})",
+                                     (removed from the queue and never returned; \
+                                     composing={:?} {})",
                                     id.0,
                                     id.1 as u16,
-                                    composing_now()
+                                    composing_now(),
+                                    crate::keys::binding_probe(
+                                        id.0,
+                                        WPARAM(id.1),
+                                        LPARAM(id.2),
+                                    )
                                 );
                             }
                             if n == SWALLOW_LOG_CAP {
@@ -3751,10 +3757,12 @@ fn main() {
                     let n = TSF_ATE.fetch_add(1, Ordering::Relaxed) + 1;
                     if n <= 40 {
                         logf!(
-                            "[key] TSF ate msg=0x{:x} vk=0x{:02x} composing={:?} (not dispatched)",
+                            "[key] TSF ate msg=0x{:x} vk=0x{:02x} composing={:?} {} \
+                             (not dispatched)",
                             msg.message,
                             msg.wParam.0 as u16,
-                            composing_now()
+                            composing_now(),
+                            crate::keys::binding_probe(msg.message, msg.wParam, msg.lParam)
                         );
                     }
                     // **Say when the cap is reached.** Without this the line
