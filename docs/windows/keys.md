@@ -44,6 +44,23 @@
 `builtin.target.os.tag.isDarwin() == false`、`inputpkg.ctrlOrSuper() == ctrl`
 （`src/input/key.zig` 的 `ctrlOrSuper`）解出来的结果。
 
+> ⚠️ **在 macOS 上改这段代码：`zig build test` 全绿不代表你写的东西编得过。**
+>
+> 那些绑定在 `if (comptime !builtin.target.os.tag.isDarwin())` 里。在 mac 上构建时这个
+> 条件是 comptime-false，**Zig 不分析走不到的分支**——所以我们平时用来确认「没写坏」的
+> 那个动作，**在这段代码上什么都不证明**。
+>
+> **它比「测试没跑」更阴：这次是代码根本没有被编译。**
+>
+> 唯一能让它被分析的是交叉编译：
+>
+> ```
+> zig build -Dtarget=x86_64-windows-gnu -Dapp-runtime=none -Drenderer=opengl
+> ```
+>
+> **而且要在动手之前先跑一次。** 改完才第一次跑，编不过时分不清是自己写坏的、还是它
+> 本来就不编——**一个没有地板的红，和一个有地板的红，值的信息量差一整轮排查。**
+
 ---
 
 ## 一、测试路径：先问「这需求需要 GUI 吗」
@@ -237,6 +254,12 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 | `Ctrl+Insert` | `copy_to_clipboard` | 核·非mac | |
 | `Shift+Insert` | **`paste_from_selection`** | 核·非mac | ⚠️ 见 3.3(b) |
 | `Ctrl+Shift+A` | `select_all` | 核·非mac | |
+| `Ctrl+Shift+X` | `close_surface`（关闭分屏） | 核·非mac | **本 fork 新增**，见 3.3(b) |
+| `Ctrl+Shift+K` | `clear_screen`（清屏） | 核·非mac | **本 fork 新增** |
+| `F3` | `navigate_search:next`（查找下一个） | 核·非mac | **本 fork 新增**，performable——**没搜索时 F3 照常进 pty**，见 7.1（四） |
+| `Shift+F3` | `navigate_search:previous`（查找上一个） | 核·非mac | **本 fork 新增**，performable |
+| `Ctrl+Shift+Home` / `Ctrl+Shift+End` | `adjust_selection:home/end` | 核·非mac | **本 fork 新增** |
+| `Alt+Shift+PageUp` / `Alt+Shift+PageDown` | `adjust_selection:page_up/page_down` | 核·非mac | **本 fork 新增**。和上一行不同形，理由见 3.3(b) |
 | `Ctrl+Shift+F` | `start_search` | 核·非mac | performable |
 | `Escape`（裸键） | `end_search` | 核·非mac | ⚠️ performable，见 3.3(c) |
 
@@ -373,15 +396,32 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 已经删了——它们只在核心「因 performable 而拒绝」时才跑，也就是只剩一个标签时，于是
 「只有一个标签时按了会移动标签，多个标签时按了会切换标签」。
 
-**（b）同一个和弦被写了两次，后写的赢。** ✅ **真机已验**（判据 C-b1；菜单侧独立印证：
-「关闭分屏」显示为空、「关闭标签」显示 `Ctrl+Shift+W`，而按下去关的正是标签）
+**（b）同一个和弦被写了两次，后写的赢。** ✅ **真机已验**
+
+> **读数取自这次补键之前的构建**：判据 C-b1，加上菜单侧独立印证——「关闭分屏」显示为空、
+> 「关闭标签」显示 `Ctrl+Shift+W`，而按下去关的正是标签。
+>
+> **那个现象现在已经被改掉了**（`close_surface` 有了自己的键），所以**这条读数是历史，
+> 不要拿去重跑**：今天再看，「关闭分屏」会显示 `Ctrl+Shift+X`。**留着它是因为它证明的
+> 机制没变**（后写覆盖先写、反向表丢掉输的那个），变的只是这一个实例。
+
 `Binding.zig` 的 `Set.putFlags` 里那句 `gop.value_ptr.* = .{ .leaf = ... }` 是无条件覆盖：
 
-| 和弦 | 先写的 | 后写的（**实际生效**） | 源 |
-|---|---|---|---|
-| `Ctrl+Shift+W` | `close_surface` | `close_tab:this` | 两条都在 核·非mac |
-| `Shift+Insert` | `paste_from_clipboard` | `paste_from_selection` | 两条都在 核·非mac |
-| `Shift+Home/End/PageUp/PageDown` | `adjust_selection` | `scroll_to_*` / `scroll_page_*` | 核·共通 → 核·非mac |
+| 和弦 | 先写的 | 后写的（**实际生效**） | 输的那个今天有没有键 | 源 |
+|---|---|---|---|---|
+| ~~`Ctrl+Shift+W`~~ | ~~`close_surface`~~ | `close_tab:this` | **这一处已消除**：死绑定删了，`close_surface` 改到 `Ctrl+Shift+X` | 核·非mac |
+| `Shift+Insert` | `paste_from_clipboard` | `paste_from_selection` | 有（`Ctrl+Shift+V`） | 两条都在 核·非mac |
+| `Shift+Home/End` | `adjust_selection` | `scroll_to_top/bottom` | **有了**：`Ctrl+Shift+Home/End` | 核·共通 → 核·非mac |
+| `Shift+PageUp/PageDown` | `adjust_selection` | `scroll_page_up/down` | **有了**：`Alt+Shift+PageUp/PageDown` | 核·共通 → 核·非mac |
+
+> **后两行仍然是「被覆盖」，但不再是「没有键」。** 覆盖没有被拆掉——滚动那四个键是人已经
+> 在用的，动它们不是补缺口而是改行为。所以做法是给选区**另找键**。
+>
+> **代价写在这里，因为它看起来像疏忽**：选区那四个键**不是一套**——行首/行尾是
+> `Ctrl+Shift`，翻页是 `Alt+Shift`。原因是 `Ctrl+Shift+PageUp/PageDown` 已经被
+> **移动标签**占了。**不要「顺手统一一下」**：唯一能统一的做法是把滚动从 `Shift+` 挪走，
+> 那会改变现在就在用的行为，是另一个该被单独决定的取舍。（同样的话写在
+> `Config.zig` 那几行旁边，因为改代码的人不一定读这份文件。）
 
 **并且菜单上显示的快捷键是另一张表算出来的，两张表会给出不同的答案。**
 `ghostty_config_trigger`（菜单快捷键那一半问的就是它，`keys.rs::shortcut_for`）读的是
@@ -874,6 +914,41 @@ mac 分支里有 **6 条**用到 `Ctrl`，**没有一条是裸 `Ctrl`，全部�
 **这一类的问题不是「译错了」，是规则在这里根本不适用**，而这两种在报告里长得一样、
 处置完全不同。
 
+**（四）mac 用「加一个 Shift」表示反向，而这个习惯在非 mac 上活不下来。**
+
+mac 说「反方向」的办法是加一个 `Shift`：`Cmd+G` / `Cmd+Shift+G`、`Cmd+[` / `Cmd+Shift+[`。
+**翻过来就不成立了，因为 `Ctrl+Shift+<字母>` 里的那个 `Shift` 已经被花掉**——它正是用来
+躲开第（一）条的。**再加一个 `Shift` 表示反向，两个 `Shift` 塌成一个。**
+
+**这和第（二）条是同一件事**：非 mac 的命名空间**比 mac 少一个可用的修饰键**，而 mac 那些
+「用修饰键表达配对关系」的习惯，翻过来时**第一个失效的就是它们**。
+
+**而绕道 `Alt` 是堵死的，不是难走：**
+
+- `Ctrl+Alt+<字母>` **就是 `AltGr`**。欧洲布局用它打第三层字符（`@`、`€`、`{`、`}` 等），
+  绑了就是从那些用户手里拿走一个可打印字符。
+- `Ctrl+Shift+Alt+<字母>` 是 `AltGr+Shift`，也就是有第四层的布局上的第四层。**更少见，
+  而更少见意味着更难归因，不意味着更安全。**
+- **而且我们分辨不出来。** `src/input/key_mods.zig` 的 `Mods.binding()` 只保留
+  `shift/ctrl/alt/super` 四个笼统位，**把左右侧位丢掉了**——尽管 Windows 宿主其实知道
+  AltGr 的签名是「左 Ctrl + 右 Alt」（`keys.rs::mods()` 会置 `MODS_ALT_RIGHT`）。
+  所以 `AltGr+Shift+G` 和真按四个键，**在绑定匹配那一步是同一个和弦**。
+- **危害的机制在我们自己的代码里**：`handle_key_message` 会先偷看 `WM_CHAR`，
+  **一旦 `surface_key` 消费了这个事件就把它删掉**——用户失去的就是那个字符本身。
+
+> **「`AltGr+Shift` 到底会不会产生第四层字符」这一条，仓里没有依据，我也没法在这台机器上
+> 测，所以它是未答的。** 但上面那条机制**不依赖它成不成立**：只要有任何布局把某个字符放在
+> 那儿，我们就会吃掉它，而且分辨不出来。**按「可能成立」处置。**
+
+**所以「查找下一个/上一个」用的是 `F3` / `Shift+F3`。** 功能键**根本不参与修饰键命名空间的
+争夺**，而且代价是**条件性**的：它们是 `performable`，没有搜索开着时核心让路，
+F3 照常被编码进 pty（`Surface.zig`：`if (leaf.flags.performable and !performed) return null;`
+之后 `keyCallback` 走到 `encodeKey`）。**「F3 归终端，除非搜索开着」——这是一句能讲给用户听
+的话，而「在某些布局的某些字符上可能出问题」不是。**
+
+（一个没验的前提：这依赖 `navigate_search` 在没有搜索时确实报告「没执行」。那是上游标它
+`performable` 的用意，但我没有读它的实现。）
+
 **（三）同一族动作在两边的和弦数不同。** 关窗族 mac 有四个、非 mac 只有两个：
 
 | | mac | 非 mac |
@@ -897,11 +972,11 @@ mac 分支里有 **6 条**用到 `Ctrl`，**没有一条是裸 `Ctrl`，全部�
 
 | 和弦 | 被覆盖的 | 生效的 | 输的那个还有别的键吗 |
 |---|---|---|---|
-| `Ctrl+Shift+W` | `close_surface` | `close_tab:this` | **没有了** |
-| `Shift+Home` | `adjust_selection:home` | `scroll_to_top` | **没有了** |
-| `Shift+End` | `adjust_selection:end` | `scroll_to_bottom` | **没有了** |
-| `Shift+PageUp` | `adjust_selection:page_up` | `scroll_page_up` | **没有了** |
-| `Shift+PageDown` | `adjust_selection:page_down` | `scroll_page_down` | **没有了** |
+| ~~`Ctrl+Shift+W`~~ | ~~`close_surface`~~ | `close_tab:this` | ✅ **已补** `Ctrl+Shift+X`（死绑定已删） |
+| `Shift+Home` | `adjust_selection:home` | `scroll_to_top` | ✅ **已补** `Ctrl+Shift+Home` |
+| `Shift+End` | `adjust_selection:end` | `scroll_to_bottom` | ✅ **已补** `Ctrl+Shift+End` |
+| `Shift+PageUp` | `adjust_selection:page_up` | `scroll_page_up` | ✅ **已补** `Alt+Shift+PageUp` |
+| `Shift+PageDown` | `adjust_selection:page_down` | `scroll_page_down` | ✅ **已补** `Alt+Shift+PageDown` |
 | `Shift+Insert` | `paste_from_clipboard` | `paste_from_selection` | 有（`Ctrl+Shift+V`） |
 
 **前五行是五个动作在非 mac 上没有任何键。** mac 上它们都有（`Shift+Home` 等在 mac 分支
@@ -912,15 +987,20 @@ mac 分支里有 **6 条**用到 `Ctrl`，**没有一条是裸 `Ctrl`，全部�
 
 #### 形态二：从来没绑过
 
-| 动作 | mac | 非 mac | 备注 |
+| 动作 | mac | 非 mac | 处置 |
 |---|---|---|---|
-| `close_all_windows` | `Cmd+Opt+Shift+W` | 无 | |
-| `equalize_splits` | `Cmd+Ctrl+=` | **核心无** | ⚠️ 见 7.5 |
-| `clear_screen` | `Cmd+K` | 无 | |
-| `undo` / `redo` | `Cmd+Z` / `Cmd+Shift+Z` | 无 | |
-| `scroll_to_selection` | `Cmd+J` | 无 | |
-| `search_selection` | `Cmd+E` | 无 | |
-| `navigate_search:next` / `:previous` | `Cmd+G` / `Cmd+Shift+G` | 无 | |
+| `clear_screen` | `Cmd+K` | ✅ **`Ctrl+Shift+K`** | 已补 |
+| `navigate_search:next` / `:previous` | `Cmd+G` / `Cmd+Shift+G` | ✅ **`F3`** / **`Shift+F3`** | 已补。**不是 `Ctrl+Shift+G` 一系**——理由见 7.1（四） |
+| `close_all_windows` | `Cmd+Opt+Shift+W` | 无 | **有意不绑**：mac 自己就放在四修饰键上——那是留给「不常用且误触代价高」的动作的位置 |
+| `undo` / `redo` | `Cmd+Z` / `Cmd+Shift+Z` | 无 | **有意不绑**：终端里「重做」几乎没有语义；这个宿主的「撤销」实际是「重开关闭的标签」，两者不成对 |
+| `scroll_to_selection` | `Cmd+J` | 无 | **有意不绑**：很少用，鼠标滚一下就到 |
+| `search_selection` | `Cmd+E` | 无 | **有意不绑**：要先有选区，属于「知道的人会去菜单里找」的那类 |
+| `equalize_splits` | `Cmd+Ctrl+=` | **核心无**，宿主 `Ctrl+Shift+=` 顶着 | ⚠️ 见 7.5：对用户不是缺口，但是一枚定时器 |
+
+> **⚠️ 「查找下一个/上一个」绑上了，但菜单里仍然不会显示这两个快捷键。**
+> 它们是 `performable`，而 performable 的绑定**不进反向表**（3.3(b)），菜单快捷键那一半
+> 读的正是反向表。**macOS 上同样不显示**——上游行为，不是这次改动带来的。**键能用，
+> 只是菜单不写出来。**
 
 **这一族要分清两句话，因为它们只有一句是理由**：
 「`Ctrl+K`/`Ctrl+Z`/`Ctrl+E`/`Ctrl+G` 被终端占了」**解释了为什么直译的和弦不能用**；
@@ -997,6 +1077,39 @@ mac `Cmd+Shift+D` = `new_split:down`；非 mac 的 `new_split:down` 是 `Ctrl+Sh
 > 也是这条冲突无法两全的地方**：让 `Ctrl+C` 复制，就拿走了中断。
 
 **写成意见是因为我们测不了它，也不该假装能测。** 用户可以一眼推翻它。
+
+### 7.6b 判据 E：这批新绑定（**两段，第一段不过第二段不算数**）
+
+**八个新和弦，每一个都要跑两段。** 第一段问「这个键到得了我们的窗口吗」，第二段才问
+「它触发了正确的动作吗」——**因为这一列的「系统/终端会不会截走」全部是待验的**，而一次
+「没反应」在第一段没过的时候读不出任何结论。
+
+**先做地板，每一轮一次**：按一个**已知能用**的和弦（`Ctrl+Shift+T` 新建标签），确认它
+产生了 `[key]` 行。**没有这一步，「新键没有 `[key]` 行」可能只是那一轮日志没在记**——
+真机上出现过五分钟一条 `[key]` 都没有而键全都在工作（见 2.1）。
+
+| 和弦 | 第一段：到达 | 第二段：动作 |
+|---|---|---|
+| `Ctrl+Shift+X` | 有 `[key] … vk=0x58 … ` 行 | 当前**分屏**关闭，标签还在（在一个有两个分屏的标签里按） |
+| `Ctrl+Shift+K` | 有 `[key] … vk=0x4b …` 行 | 屏幕清空 |
+| `F3` | 有 `[key] … vk=0x72 …` 行 | **先开搜索并有匹配**，跳到下一个匹配 |
+| `Shift+F3` | 同上 | 跳到上一个匹配 |
+| **`F3`（没有搜索时）** | 有 `[key]` 行 | **必须照常送进终端**——这是 performable 让路那一半，**没有它，「F3 归我们了」就是永久的**。在 `vi` 之类会回应 F3 的程序里按一次 |
+| `Ctrl+Shift+Home` / `Ctrl+Shift+End` | 有 `[key]` 行 | **出现选区高亮**（不是视口跳动） |
+| `Alt+Shift+PageUp` / `Alt+Shift+PageDown` | 有 `[key]` 行，**且 `mods=` 含 `0x01`(Shift) 和 `0x04`(Alt)** | 选区按页扩展 |
+
+> **`Alt+Shift+PageUp` 那一行的 `mods=` 是必看的**，理由见 2.2：翻页键要带
+> `KEYEVENTF_EXTENDEDKEY` 才不会走成小键盘孪生扫描码，而 Windows 对「Shift+小键盘」会做
+> shift-cancellation **把 Shift 摘掉**。**摘掉之后这个和弦就不是我们绑的那个了**，而
+> 「没反应」和「和弦没绑」长得一模一样。
+
+> **`Alt+Shift+PageUp/PageDown` 是这批里唯一带 Alt 的**，Alt 会让它成为 `WM_SYSKEYDOWN`。
+> 这条链路已经从源码上确认过（`tabs.rs` 的窗口过程把四种键消息一起交给
+> `handle_key_message`，`WM_SYSKEYDOWN` 也算 `is_down`），**但没有真机读数**——
+> 所以它是这批里最该先跑的一条。
+
+**反向对照（不做就分不出「绑上了」和「什么都没变」）**：按 `Ctrl+Shift+W`，**必须仍然是
+关闭标签**。这一条同时确认那条被删掉的死绑定没有把 `close_tab` 一起带走。
 
 ### 7.7 待验清单（交 WT，不混进结论）
 
