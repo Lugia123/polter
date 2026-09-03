@@ -299,17 +299,34 @@ pub(crate) mod test_log {
     /// This is the defect the copies had. Without it, one failing assertion
     /// inside a closure sends the rest of the process's log to a temporary
     /// file, and every later test that reads a log reads the wrong one.
+    /// ⚠️ **It does not compare against a snapshot of the variable**, and
+    /// the first version of it did. Sampling `POLTER_HOST_LOG` before the
+    /// call reads it **outside the turn**, so in parallel it picks up
+    /// whichever redirect another module happens to have in force, and the
+    /// comparison then fails 24 times out of 24 while nothing is wrong:
+    ///
+    /// ```text
+    /// assertion `left == right` failed: the redirect leaked past a panicking body
+    ///   left: None
+    ///  right: Some("...\\polter-deadlock-detector-21820-ThreadId(163).log")
+    /// ```
+    ///
+    /// **The test fell into its own subject** -- one process-wide variable,
+    /// two moments -- while the code under test did not: `Restore` samples
+    /// `previous` *inside* the turn. What it asserts instead needs no
+    /// snapshot and cannot be perturbed by another thread: after a panicking
+    /// body, the variable must not still name **this** call's file. That is
+    /// exactly the leak, and only this call's tag can appear in it.
     #[test]
     fn a_panic_inside_the_body_still_puts_the_variable_back() {
-        let before = std::env::var("POLTER_HOST_LOG").ok();
         let r = std::panic::catch_unwind(|| {
             logged("floor-panic", || panic!("on purpose"));
         });
         assert!(r.is_err(), "the panic must not be swallowed");
-        assert_eq!(
-            std::env::var("POLTER_HOST_LOG").ok(),
-            before,
-            "the redirect leaked past a panicking body"
+        let after = std::env::var("POLTER_HOST_LOG").unwrap_or_default();
+        assert!(
+            !after.contains("floor-panic"),
+            "the redirect leaked past a panicking body: {after}"
         );
         assert!(!this_thread_has_the_redirect(), "and the turn was released");
     }
