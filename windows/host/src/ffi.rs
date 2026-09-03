@@ -117,6 +117,17 @@ pub const CLOSE_TAB_THIS: i32 = 0;
 pub const CLOSE_TAB_OTHER: i32 = 1;
 pub const CLOSE_TAB_RIGHT: i32 = 2;
 
+// `ghostty_input_mouse_state_e`.
+pub const MOUSE_RELEASE: i32 = 0;
+pub const MOUSE_PRESS: i32 = 1;
+
+// `ghostty_input_mouse_button_e`. Only the three this host forwards are
+// named; the enum runs to eleven and the rest have no Win32 message here.
+pub const MOUSE_UNKNOWN: i32 = 0;
+pub const MOUSE_LEFT: i32 = 1;
+pub const MOUSE_RIGHT: i32 = 2;
+pub const MOUSE_MIDDLE: i32 = 3;
+
 pub const PLATFORM_WIN32: u32 = 3;
 
 // `ghostty_clipboard_e`.
@@ -514,6 +525,28 @@ pub struct Api {
     /// comment there saying so, and saying why is unknown). At scale 1.0 the
     /// difference does not show.
     pub surface_ime_point: unsafe extern "C" fn(Surface, *mut f64, *mut f64, *mut f64, *mut f64),
+
+    // --- mouse ---
+    /// `(surface, state, button, mods) -> consumed`.
+    ///
+    /// **The core owns the selection**, the same way it owns the search: this
+    /// host reports what the pointer did and never decides what a drag means.
+    /// Nothing here had ever been called, so the core had never been told this
+    /// terminal has a mouse at all -- which is why a drag produced no
+    /// highlight and `copy_to_clipboard` declined for want of a selection.
+    pub surface_mouse_button: unsafe extern "C" fn(Surface, i32, i32, i32) -> bool,
+    /// `(surface, x, y, mods)`.
+    ///
+    /// **The coordinates are unscaled**, which is the one thing about this
+    /// call that is easy to get wrong and invisible when wrong: the core
+    /// multiplies them by the content scale itself
+    /// (`embedded.zig`'s `cursorPosToPixels`). A Win32 client coordinate in a
+    /// per-monitor-aware process is already in physical pixels, so it has to
+    /// be **divided** by the same scale this host passed to
+    /// `surface_set_content_scale` before it is handed over. Send physical
+    /// pixels and the selection lands somewhere else on a high-DPI display
+    /// while looking perfect at 100%.
+    pub surface_mouse_pos: unsafe extern "C" fn(Surface, f64, f64, i32),
 
     // --- reading the screen ---
     /// Copy some of the terminal's text out. **The core takes its own

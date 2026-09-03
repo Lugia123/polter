@@ -31,6 +31,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use polter_split_tree::{Focus, NewSplit, PaneId, Placement, Rect as TreeRect, Side, Tree};
@@ -3195,6 +3196,54 @@ static PAINT_MSGS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::
 
 /// The window that owns one surface: a child of the frame, or -- under
 /// `--toplevel` -- a top-level window of its own.
+/// Tell the core where the pointer is.
+///
+/// # The one conversion that is wrong invisibly
+///
+/// `LPARAM` carries client coordinates, and in a per-monitor-aware process
+/// those are **physical pixels**. The core wants **unscaled** ones: its
+/// `cursorPosCallback` multiplies by the content scale itself
+/// (`embedded.zig`'s `cursorPosToPixels`), using the very scale this host
+/// passed to `ghostty_surface_set_content_scale`.
+///
+/// So the two have to be divided back out here. **At 100% the bug is
+/// invisible** -- scale is 1 and the wrong version is the right version --
+/// and it only appears on a display where somebody would report it as "the
+/// selection is offset", which points at the selection code rather than at
+/// this line.
+///
+/// The scale is taken from the window rather than measured from anything
+/// drawn: a screenshot's reported scale on the test machine is not the real
+/// one, and geometry read back from an image would inherit that.
+fn mouse_pos(pane: HWND, lp: LPARAM) {
+    let s = surface_of(pane);
+    if s.is_null() {
+        return;
+    }
+    let Some(frame) = crate::winid::frame_of_window(pane) else {
+        return;
+    };
+    let scale = scale_of(frame).max(0.01);
+    let x = (lp.0 & 0xFFFF) as i16 as f64;
+    let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f64;
+    unsafe { (api().surface_mouse_pos)(s, x / scale, y / scale, crate::keys::mods()) };
+}
+
+/// Tell the core a button went down or came up.
+///
+/// **Position first, always.** The core resolves a click against wherever it
+/// last believes the pointer is, so a button reported before the position it
+/// happened at selects from the previous point. Every caller here sends
+/// `mouse_pos` immediately before -- except the capture-lost arm, which has
+/// no position to report and must not invent one.
+fn mouse_button(pane: HWND, state: i32, button: i32) {
+    let s = surface_of(pane);
+    if s.is_null() {
+        return;
+    }
+    unsafe { (api().surface_mouse_button)(s, state, button, crate::keys::mods()) };
+}
+
 pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -3320,6 +3369,44 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 // that arrived at a pane which may belong to any window.
                 // `focus_pane_at` now works the frame out from the pane.
                 focus_pane_at(hwnd);
+
+                // **Capture, so a drag that leaves the window keeps arriving.**
+                // Without it the pointer crossing into the next pane stops
+                // sending us `WM_MOUSEMOVE` and the selection freezes where it
+                // was, which reads as "selection stops halfway".
+                let _ = SetCapture(hwnd);
+                mouse_pos(hwnd, lp);
+                mouse_button(hwnd, crate::ffi::MOUSE_PRESS, crate::ffi::MOUSE_LEFT);
+                LRESULT(0)
+            }
+
+            WM_MOUSEMOVE => {
+                mouse_pos(hwnd, lp);
+                LRESULT(0)
+            }
+
+            WM_LBUTTONUP => {
+                mouse_pos(hwnd, lp);
+                mouse_button(hwnd, crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_LEFT);
+                let _ = ReleaseCapture();
+                LRESULT(0)
+            }
+
+            // **Capture taken away from us, rather than given back.**
+            //
+            // Windows sends this when something else claims the mouse, when
+            // the window is destroyed under a held button, and when an
+            // Alt+Tab or a modal steals it. **The button is never released as
+            // far as the core is concerned**, so without this arm a drag
+            // interrupted that way leaves the core believing the button is
+            // still down: every later pointer movement goes on extending a
+            // selection nobody is dragging.
+            //
+            // `ReleaseCapture` is deliberately **not** called here -- capture
+            // is already gone, and asking for it back is how the pair stops
+            // meaning anything.
+            WM_CAPTURECHANGED => {
+                mouse_button(hwnd, crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_LEFT);
                 LRESULT(0)
             }
 

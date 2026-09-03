@@ -3030,6 +3030,8 @@ fn load_api() -> Option<Api> {
             surface_text: sym!(internal, "ghostty_surface_text"),
             surface_preedit: sym!(internal, "ghostty_surface_preedit"),
             surface_ime_point: sym!(internal, "ghostty_surface_ime_point"),
+            surface_mouse_button: sym!(internal, "ghostty_surface_mouse_button"),
+            surface_mouse_pos: sym!(internal, "ghostty_surface_mouse_pos"),
             surface_read_text: sym!(internal, "ghostty_surface_read_text"),
             surface_free_text: sym!(internal, "ghostty_surface_free_text"),
             cli_try_action: sym!(internal, "ghostty_cli_try_action"),
