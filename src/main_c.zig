@@ -31,6 +31,74 @@ comptime {
 /// Global options so we can log. This is identical to main.
 pub const std_options = main.std_options;
 
+/// **Windows DLL entry point, so that C++ global constructors actually run.**
+///
+/// Defining this here is not a style choice; it is the documented way to opt
+/// out of a default that silently breaks this DLL. `std/start.zig` exports its
+/// own `_DllMainCRTStartup` for a Windows dynamic library **only when the root
+/// source file does not declare one** -- and its version is `return TRUE` and
+/// nothing else. mingw's real entry, `DllMainCRTStartup` in `dllcrt2.obj`,
+/// calls `_CRT_INIT`, and `_CRT_INIT` ends with `__main()`, which is the
+/// function that walks `__CTOR_LIST__`. **That walk is the only thing that
+/// runs a C++ global constructor in this build.**
+///
+/// **The failure this fixes did not look like a missing constructor.** It
+/// looked like a crash on startup at `0xc0000005`, in
+/// `simdutf::convert_utf8_to_utf32_with_errors`, on the instruction that
+/// dereferences `simdutf::active_implementation_instance` -- a pointer that
+/// lives in `.bss`, has no base relocation, and is therefore zero at load
+/// until its constructor assigns it. `simdutf.obj` has exactly one `.ctors`
+/// entry (`_GLOBAL__sub_I_simdutf.cpp`) and it never ran.
+///
+/// **The link line was never the problem, which is why this took a night.**
+/// `dllcrt2.obj` and `libmingw32.lib` are both linked in, and lld is passed
+/// `-ALTERNATENAME:_DllMainCRTStartup=DllMainCRTStartup`. That alternatename
+/// is a *weak fallback*: it only takes effect when `_DllMainCRTStartup` is
+/// undefined. Zig's stub defined it, so the fallback never fired, mingw's
+/// entry had no referrer, and it was garbage collected. **"Not linked in" and
+/// "linked in but referenced by nobody" leave an identical product** -- and
+/// they have opposite fixes, because adding link flags here would collide
+/// with the symbol Zig already exports.
+///
+/// **Only one optimization level ever crashed, and that is not reassuring.**
+/// Under `ReleaseFast` the same global lands in `.data` with initialized bytes
+/// and `simdutf.obj` has no `.ctors` at all, so it happens not to need the
+/// machinery that was dead. A build that runs and a build that is correct
+/// looked exactly alike; every other C++ global with dynamic initialization
+/// was equally uninitialized, and we only reached the one that crashes.
+/// (There are two `.ctors` entries in the whole library: this one and
+/// `doc.obj` from SPIRV-Tools.)
+///
+/// **The whole thing is inside a comptime branch, and a `return .TRUE` guard
+/// in the body is not enough.** `callconv(.winapi)` is part of the
+/// *signature*, and on aarch64-macos the compiler rejects it outright:
+/// `calling convention 'aarch64_aapcs_win' not supported by compiler backend`.
+/// A body that never runs does not help when the header is what fails. Only an
+/// unselected comptime branch is left unanalyzed.
+///
+/// `std/start.zig` asks `@hasDecl(root, "_DllMainCRTStartup")`, and only on
+/// Windows, so a plain `void` off-Windows satisfies every reader of this name.
+///
+/// > **`zig build test` stayed green through the version that did not
+/// > compile** (4027/4046, unchanged) -- the test step does not build this
+/// > library target. Same shape as the warning in `docs/windows/keys.md`:
+/// > the check we reach for does not cover this code.
+pub const _DllMainCRTStartup = if (builtin.os.tag == .windows) struct {
+    extern fn DllMainCRTStartup(
+        hinstDLL: std.os.windows.HINSTANCE,
+        fdwReason: std.os.windows.DWORD,
+        lpReserved: std.os.windows.LPVOID,
+    ) callconv(.winapi) std.os.windows.BOOL;
+
+    fn entry(
+        hinstDLL: std.os.windows.HINSTANCE,
+        fdwReason: std.os.windows.DWORD,
+        lpReserved: std.os.windows.LPVOID,
+    ) callconv(.winapi) std.os.windows.BOOL {
+        return DllMainCRTStartup(hinstDLL, fdwReason, lpReserved);
+    }
+}.entry else {};
+
 comptime {
     // These structs need to be referenced so the `export` functions
     // are truly exported by the C API lib.
