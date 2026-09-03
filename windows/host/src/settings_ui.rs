@@ -56,6 +56,34 @@ const LIST_W: i32 = 220;
 const ROW_H: i32 = 30;
 const PAD: i32 = 12;
 const FIELD_H: i32 = 26;
+/// One row of a drop-down, in DIP. **Named once and used twice**: the height
+/// a `COMBOBOX` is created with is `FIELD_H` plus this many rows, and
+/// `WM_MEASUREITEM` answers with this same number scaled. Two copies of it
+/// would agree until one of them changed, and the symptom would be a list
+/// created for a row height it does not use.
+const CHOICE_ROW_H: i32 = 20;
+/// How many rows a drop-down is created tall.
+///
+/// **This is the height of the whole control, list included** -- that is what
+/// `CreateWindowExW`'s height parameter means for a `COMBOBOX`, and it is the
+/// thing the number that used to be here (a bare `200`) did not correspond to.
+///
+/// **Themed comctl32 ignores it**, sizing the list from `CB_SETMINVISIBLE`
+/// instead (default 30, measured on the test machine at two different row
+/// heights). So on the build this port ships, changing this changes nothing --
+/// which is exactly why it was wrong and harmless at the same time, and why it
+/// is worth being right: `windows/host/polter.manifest` is what puts this
+/// process on the themed path, and that file exists for a reason unrelated to
+/// this one. **Take the manifest away and this number becomes the cap**: at
+/// 200 it was about eight rows.
+///
+/// 30 so that the two comctl32 paths agree. It is deliberately **not** shared
+/// with `plugins::MOUSE_REACHABLE_OPTIONS`, which is also 30 and comes from
+/// the same measurement: that one is "how many the themed control lets a mouse
+/// reach", this one is "how many we ask for". They are equal today and could
+/// legitimately stop being -- asking for forty rows would not make the themed
+/// control show forty.
+const CHOICE_LIST_ROWS: i32 = 30;
 /// The name line, above the summary. Fixed: it is one line by construction.
 const NAME_H: i32 = 24;
 /// How tall the summary and the subscription line are allowed to grow before
@@ -773,7 +801,10 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
                     w!("COMBOBOX"),
                     WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_HASSTRINGS | owner_draw) as u32),
                     y,
-                    s(200),
+                    // The closed field plus room for the list. See
+                    // `CHOICE_LIST_ROWS` for why this is not the small number
+                    // the layout below advances by.
+                    s(FIELD_H + CHOICE_LIST_ROWS * CHOICE_ROW_H),
                     id,
                 );
                 if let Ok(h) = h {
@@ -1397,7 +1428,7 @@ unsafe extern "system" fn settings_proc(
             WM_MEASUREITEM => {
                 let mis = &mut *(lp.0 as *mut MEASUREITEMSTRUCT);
                 if mis.CtlType == ODT_COMBOBOX {
-                    mis.itemHeight = (dpi_scale(win) * 20 / 96) as u32;
+                    mis.itemHeight = (dpi_scale(win) * CHOICE_ROW_H / 96) as u32;
                     return LRESULT(1);
                 }
                 DefWindowProcW(win, msg, wp, lp)
