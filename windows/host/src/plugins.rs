@@ -1570,15 +1570,45 @@ mod shipped_manifest_tests {
     /// **The count is the whole test.** Every one of these was read as zero,
     /// and zero parameters is exactly what "the page has only an on/off
     /// switch" looks like from a chair.
+    ///
+    /// **All five are compared in one assertion, on purpose.** Written as five
+    /// `assert_eq!`s it stopped at the first mismatch, and when `rules` was
+    /// added to three manifests the failure named only `claude-code`. Fixing
+    /// that one moved the red to `codex`, and then to `gemini`: three rounds
+    /// to learn what one run could have said. **A test that stops at the
+    /// first disagreement reports the first cause, and a reader has no way to
+    /// tell that from the only cause.**
+    ///
+    /// The expectation carries the names rather than a bare number, so a
+    /// failure says *which* parameter appeared or went missing. A count alone
+    /// answers "how many" to a question that is always really "which".
     #[test]
     fn the_shipped_manifests_declare_the_parameters_they_declare() {
-        assert_eq!(parse("archive", ARCHIVE).params.len(), 2, "archive: dir, sign_key");
-        assert_eq!(parse("claude-code", CLAUDE_CODE).params.len(), 2, "claude-code: scope, skills");
-        assert_eq!(parse("codex", CODEX).params.len(), 1, "codex: skills");
-        assert_eq!(parse("gemini", GEMINI).params.len(), 1, "gemini: skills");
-        // And one that really does declare none, so a parser that answered
-        // "two" to everything would not pass either.
-        assert_eq!(parse("kimi", KIMI).params.len(), 0, "kimi declares none");
+        let names = |k: &str, text: &str| {
+            let mut v: Vec<String> = parse(k, text).params.iter().map(|p| p.name.clone()).collect();
+            v.sort();
+            (k.to_string(), v)
+        };
+        let found = vec![
+            names("archive", ARCHIVE),
+            names("claude-code", CLAUDE_CODE),
+            names("codex", CODEX),
+            names("gemini", GEMINI),
+            // And one that really does declare none, so a parser that answered
+            // "two" to everything would not pass either.
+            names("kimi", KIMI),
+        ];
+        let expected: Vec<(String, Vec<String>)> = [
+            ("archive", &["dir", "sign_key"][..]),
+            ("claude-code", &["rules", "scope", "skills"][..]),
+            ("codex", &["rules", "skills"][..]),
+            ("gemini", &["rules", "skills"][..]),
+            ("kimi", &[][..]),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
+        .collect();
+        assert_eq!(found, expected, "a shipped manifest's parameters changed");
     }
 
     /// The shapes, from the same outside ruler: a closed set is a dropdown and
