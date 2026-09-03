@@ -254,7 +254,27 @@ def self_test() -> None:
 
 def main() -> int:
     self_test()
+
+    # **A gate that scanned nothing exits 0 and reads as green.**
+    # Measured, not assumed: pointed at a tree where `windows/host/src/` is
+    # empty, this gate printed `looked at 0 file reads` and then
+    # `one reader per fact`, and returned 0. The count was already on the
+    # screen -- nothing acted on it, and "the reading exists and nobody looked
+    # at it" is the same failure the gate itself is about.
+    #
+    # `ps1-parses.py` is the model: `if not scripts: FAIL; sys.exit(1)`.
+    # The subject set, not the hit count, is what has to be non-empty --
+    # zero hits is a real pass, zero files is not an answer.
+    sources = sorted(glob.glob(os.path.join(ROOT, "*.rs")))
+    if not sources:
+        print(f"FAIL: no .rs file under {ROOT}; this gate is looking in the "
+              f"wrong place. **It did not find a clean tree -- it found "
+              f"nothing to look at, and those two exit the same way unless "
+              f"this line exists.**")
+        return 1
+
     reads, hits, callers, order_sites, path_sites = scan()
+    print(f"scanned {len(sources)} file(s)")
 
     print(
         f"looked at {reads} file reads; "
