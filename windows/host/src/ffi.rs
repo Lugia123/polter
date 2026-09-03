@@ -547,6 +547,28 @@ pub struct Api {
     /// pixels and the selection lands somewhere else on a high-DPI display
     /// while looking perfect at 100%.
     pub surface_mouse_pos: unsafe extern "C" fn(Surface, f64, f64, i32),
+    /// `(surface, xoff, yoff, scroll_mods)`.
+    ///
+    /// **`yoff` is wheel *ticks*, not lines and not pixels** -- unless
+    /// `scroll_mods` says the event is high precision, in which case it is
+    /// pixels. `Surface.zig`'s `scrollCallback` says so directly, and it
+    /// multiplies by the cell height and the user's
+    /// `mouse-scroll-multiplier` **itself**. So a host that pre-multiplies by
+    /// either of those is applying it twice, and the symptom is a wheel that
+    /// feels wrong in a way nobody can attribute.
+    ///
+    /// Fractional ticks are expected and handled: high-resolution wheels
+    /// report less than one notch at a time.
+    ///
+    /// **Signs pass straight through.** Win32 says a positive `wDelta` is the
+    /// wheel rotated away from the user; the core says positive is up. Same
+    /// direction, no negation -- and getting that wrong is invisible to any
+    /// criterion that only asks whether the view moved.
+    ///
+    /// `scroll_mods` is `ghostty_input_scroll_mods_t`, a bitmask: bit 0 is
+    /// `precision`, bits 1-3 are the momentum phase. Zero is "an ordinary
+    /// notched wheel", which is all Win32 gives us.
+    pub surface_mouse_scroll: unsafe extern "C" fn(Surface, f64, f64, i32),
 
     // --- reading the screen ---
     /// Copy some of the terminal's text out. **The core takes its own

@@ -3198,6 +3198,42 @@ static LAYOUTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 /// How many times the surface was resized and told the core.
 static SIZES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Which wheel a notch came from. The conversion is identical on both axes;
+/// only the system setting and which offset the core is handed differ.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WheelAxis {
+    Vertical,
+    Horizontal,
+}
+
+impl WheelAxis {
+    /// The per-axis system preference. **Both are "how far one notch goes",
+    /// set by the user**, and both are read rather than assumed for the same
+    /// reason: on this platform the wheel speed a person expects is the one
+    /// they set in Windows.
+    fn setting(self) -> windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_ACTION {
+        match self {
+            WheelAxis::Vertical => {
+                windows::Win32::UI::WindowsAndMessaging::SPI_GETWHEELSCROLLLINES
+            }
+            WheelAxis::Horizontal => {
+                windows::Win32::UI::WindowsAndMessaging::SPI_GETWHEELSCROLLCHARS
+            }
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            WheelAxis::Vertical => "vertical",
+            WheelAxis::Horizontal => "horizontal",
+        }
+    }
+}
+
+/// How many wheel notches have been forwarded, so the first few can be logged
+/// without a line per notch for the life of the process.
+static WHEELS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// How many WM_PAINT the surface window has been sent.
 static PAINT_MSGS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -3296,6 +3332,168 @@ static MOUSE_SAMPLE: std::sync::atomic::AtomicBool =
 /// last believes the pointer is, so a button reported before the position it
 /// happened at selects from the previous point. Every caller here sends
 /// `mouse_pos` immediately before -- except the capture-lost arm, which has
+/// `WM_MOUSEWHEEL`: hand the notch to the core as wheel ticks.
+///
+/// # Three different features come out of this one call
+///
+/// It is worth knowing before touching it, because "the wheel works now" can
+/// be true of one of them and false of the other two:
+///
+///   1. scrolling the scrollback, when nothing else claims the wheel;
+///   2. **mouse reporting** -- with `?1000h` and friends on, `scrollCallback`
+///      turns each notch into a button-4/5 report, which is how a mouse-aware
+///      full-screen program sees the wheel;
+///   3. **alternate scroll** -- on the alt screen with no reporting enabled,
+///      the same call turns notches into cursor keys, which is what makes the
+///      wheel work in `less`, `man` and `vim`.
+///
+/// All three are on the far side of `ghostty_surface_mouse_scroll`, so none
+/// of them existed while this was unwired, and all three arrive together.
+///
+/// # What Windows gives, and what the core wants
+///
+/// `wDelta` arrives as a multiple of `WHEEL_DELTA` (120), so dividing by 120
+/// gives notches; a high-resolution wheel sends less than 120 at a time and
+/// the fraction is passed through, which the core supports.
+///
+/// **The core wants ticks and multiplies by the cell height and the user's
+/// `mouse-scroll-multiplier` itself**, so neither of those is applied here.
+///
+/// # Why the system setting *is* applied here, and where that diverges
+///
+/// `SPI_GETWHEELSCROLLLINES` is the number of lines Windows says one notch
+/// moves -- three by default, and **the user sets it**. Ghostty's own model is
+/// one notch equals one cell times its own multiplier, so on other platforms
+/// that system preference plays no part.
+///
+/// **This host applies it, and that is a deliberate divergence from the other
+/// platforms**, on the same grounds as the eight keybindings this fork adds:
+/// a terminal on Windows is a Windows program, and the wheel speed a person
+/// expects is the one they set in Windows. Without it the wheel is three times
+/// slower than every other window on the machine and the setting they changed
+/// does nothing.
+///
+/// **The two multipliers are not the same quantity**: the system setting is
+/// the platform convention (notch -> lines), `mouse-scroll-multiplier` is the
+/// person's preference about *this* application. Applying both is correct;
+/// applying either one twice is not.
+///
+/// **Divergences are fine, silent divergences are not**, which is why this
+/// paragraph is here and why the value is logged the first few times.
+///
+/// # `WHEEL_PAGESCROLL`
+///
+/// That setting can be `WHEEL_PAGESCROLL` (`0xFFFF_FFFF`), meaning "one notch
+/// scrolls a screenful". **It is a real option in the Windows mouse control
+/// panel, not a theoretical edge**, and multiplying by it as if it were a line
+/// count gives four billion lines per notch. It gets its own branch, and a log
+/// line, because a wheel that scrolls to the end of the buffer on one notch
+/// would otherwise look like a scrolling bug rather than a setting.
+///
+/// # Horizontal, and a wrong reason that was nearly kept
+///
+/// `WM_MOUSEHWHEEL` goes through here too, on the other axis.
+///
+/// **It was first left out, and the argument for leaving it out was itself
+/// unverified**: "almost no mouse can produce one, so it would be code that
+/// ships without ever being run". Nobody measured that. It is false --
+/// **Windows precision touchpads send `WM_MOUSEHWHEEL` for a two-finger
+/// sideways swipe**, and tilt wheels send it too; on a laptop it is ordinary
+/// input.
+///
+/// The reasoning is worth keeping because of *which* lesson it misused. The
+/// rule about code that is written and never run demands **finding out
+/// whether it runs**; it was used instead to justify *assuming* it does not.
+/// **A reason that sounds sufficient is the thing that stops the checking.**
+///
+/// The machine these are tested on is a desktop with an external mouse, so
+/// the horizontal path most likely cannot be exercised there. It is written
+/// anyway, and the criteria say **"cannot be verified here"** rather than
+/// leaving the row out: an item marked unverifiable and an item that is
+/// missing look different on a list, and only the second one gets read as
+/// done.
+fn mouse_wheel(pane: HWND, wp: WPARAM, axis: WheelAxis) {
+    let s = surface_of(pane);
+    if s.is_null() {
+        return;
+    }
+    let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
+    let notches = delta / 120.0;
+
+    let mut lines_raw: u32 = 3;
+    let ok = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+            axis.setting(),
+            0,
+            Some(&mut lines_raw as *mut u32 as *mut std::ffi::c_void),
+            windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    if ok.is_err() {
+        // Not fatal and not silent: three is Windows' own default, so the
+        // wheel still behaves like the rest of the system, but a reader
+        // comparing speeds needs to know the setting was never read.
+        crate::hlogf!(
+            pane,
+            "[mouse] {} wheel: SystemParametersInfoW failed; falling back to 3 per notch",
+            axis.name()
+        );
+        lines_raw = 3;
+    }
+
+    const WHEEL_PAGESCROLL: u32 = u32::MAX;
+    // **Anything past this is treated as a mistake rather than a preference.**
+    // The documented sentinel is handled by name below; this catches the rest
+    // -- a value that is neither the sentinel nor plausible. Without it, one
+    // unexpected number turns every notch into a jump to the end of the
+    // buffer, and that reads as a scrolling bug rather than as a setting.
+    const ABSURD: u32 = 100;
+    let (lines, paged) = if lines_raw == WHEEL_PAGESCROLL {
+        // "One screenful per notch." Sent as a large-but-sane number rather
+        // than the sentinel; the core scrolls by rows and has no page concept
+        // at this entry point.
+        (25.0_f64, true)
+    } else if lines_raw > ABSURD {
+        crate::hlogf!(
+            pane,
+            "[mouse] {} wheel: the system says {} per notch, which is past anything \
+             plausible; using 3. (Not silently: a wheel behaving oddly should be \
+             traceable to the number it was given.)",
+            axis.name(),
+            lines_raw
+        );
+        (3.0_f64, false)
+    } else {
+        (lines_raw as f64, false)
+    };
+
+    let off = notches * lines;
+    let n = WHEELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n <= 5 || paged {
+        crate::hlogf!(
+            pane,
+            "[mouse] wheel axis={} delta={} notches={:.3} per_notch={}{} -> off={:.3}",
+            axis.name(),
+            delta,
+            notches,
+            lines,
+            if paged { " (WHEEL_PAGESCROLL: one screenful per notch, sent as 25)" } else { "" },
+            off
+        );
+    }
+
+    // **Signs pass straight through on both axes.** Win32: a positive
+    // vertical delta is away from the user, a positive horizontal delta is to
+    // the right. The core: positive is up, positive is right. No negation --
+    // and a negation added "to be safe" would be invisible to any criterion
+    // that only asks whether the view moved.
+    let (xoff, yoff) = match axis {
+        WheelAxis::Vertical => (0.0, off),
+        WheelAxis::Horizontal => (off, 0.0),
+    };
+    unsafe { (api().surface_mouse_scroll)(s, xoff, yoff, 0) };
+}
+
 /// no position to report and must not invent one.
 fn mouse_button(pane: HWND, state: i32, button: i32) {
     let s = surface_of(pane);
@@ -3444,6 +3642,22 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
 
             WM_MOUSEMOVE => {
                 mouse_pos(hwnd, lp);
+                LRESULT(0)
+            }
+
+            // **No `mouse_pos` first here, unlike the button arms.**
+            // `WM_MOUSEWHEEL`'s lParam is in *screen* coordinates, not client
+            // ones -- passing it to `mouse_pos`, which assumes client, would
+            // move the core's idea of the pointer to somewhere off the pane.
+            WM_MOUSEWHEEL => {
+                mouse_wheel(hwnd, wp, WheelAxis::Vertical);
+                LRESULT(0)
+            }
+
+            // The other axis: precision touchpads send this for a two-finger
+            // sideways swipe, and tilt wheels for a tilt.
+            WM_MOUSEHWHEEL => {
+                mouse_wheel(hwnd, wp, WheelAxis::Horizontal);
                 LRESULT(0)
             }
 
