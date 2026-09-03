@@ -37,6 +37,7 @@
 | `核·共通` | `src/config/Config.zig` → `Keybinds.init()` 的平台无关部分 |
 | `核·非mac` | 同上，`if (comptime !builtin.target.os.tag.isDarwin())` 块内 |
 | `核·数字` | 同上，`alt+1..9` 的 `inline while` 块（非 mac 上 `mods = .alt`） |
+| `核·win` | 同上，`if (builtin.target.os.tag == .windows)` 块内——**只有 Windows 有的绑定** |
 | `宿主` | `windows/host/src/keys.rs` → `accelerator()` |
 | `宿主·热键` | `windows/host/src/quick.rs` → `RegisterHotKey` |
 
@@ -375,6 +376,8 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 |---|---|---|---|
 | `Ctrl+Shift+C` | `copy_to_clipboard` | 核·共通 | performable |
 | `Ctrl+Shift+V` | `paste_from_clipboard` | 核·共通 | performable |
+| `Ctrl+C` | `copy_to_clipboard` | 核·win | **本 fork 新增**，performable——**没选区时照常中断**，见 3.3(e) |
+| `Ctrl+V` | `paste_from_clipboard` | 核·win | **本 fork 新增**，performable——**剪贴板有文字时 `C-v` 再也进不了 pty**，见 3.3(e) |
 | `Ctrl+Insert` | `copy_to_clipboard` | 核·非mac | |
 | `Shift+Insert` | **`paste_from_selection`** | 核·非mac | ⚠️ 见 3.3(b) |
 | `Ctrl+Shift+A` | `select_all` | 核·非mac | |
@@ -598,6 +601,68 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 >
 > **写在这里而不是收进某份「未知清单」，是因为要读到它的人正是此刻正在依赖这句话的人。**
 > 它读起来完全像一条已确认的机制——而那正是它需要这行标注的原因。
+>
+> **并且它现在有了一处确定的反例，见 3.3(e)：中间还有一步。** 拒绝之后先走
+> `encodeKey`，**编得出东西就到此为止**，宿主表根本不会被问到。`Ctrl+C` 就是这一类。
+> 所以上面这句话的正确读法是「拒绝 **且编不出编码** 的键会掉到宿主表」——
+> `Ctrl+Shift+C` 那次真机事故属于后者，而它看起来像是前者的证据。
+
+**（e）`Ctrl+C` / `Ctrl+V`：一个键上的两种行为。**
+
+`核·win` 那两行是本 fork 对上游的**有意分叉**，理由和滚轮读系统设置那次同类：
+Windows 上的终端是个 Windows 程序，`Ctrl+C` 复制是这台机器上每个别的程序的行为。
+连带 `selection-clear-on-copy` 的默认值在 Windows 上也改成了 `true`——**这两件事是一对，
+不能只做一半**：选区留着，下一次 `Ctrl+C` 会再复制一遍同样的文字而不是中断，于是这个键
+在用户想不到去点一下别处之前，悄悄不再是中断键。
+
+| 状态 | `Ctrl+C` 做什么 | 怎么发生的 |
+|---|---|---|
+| 有选区 | 复制，并**清掉选区** | 绑定 performed → consumed，**不编码**，0x03 不发 |
+| 无选区 | **中断**（0x03 进 pty） | 绑定拒绝 → `encodeKey` 编出 0x03 → consumed |
+
+**⚠️ 这一段同时修正 3.3(d)：performable 拒绝之后，下一站不是宿主表，是 `encodeKey`。**
+
+`Surface.zig::keyCallback` 的顺序是 `maybeHandleBinding` → （performable 拒绝时返回
+`null`）→ `encodeKey`。**只有 `encodeKey` 也交不出东西时**才 `return .ignored`，
+`ghostty_surface_key` 才答 `false`，第 3 步的宿主表才轮得到。3.3(d) 把中间这一步漏掉了，
+读起来像「拒绝 → 宿主表」。
+
+**这一条改变的不是机制，是判据。** 无选区按 `Ctrl+C`：
+
+- `surface_key` 是 **`true`**，不是 `false`——`Ctrl+C` 一定编得出 0x03。
+- 所以**「日志里出现 `surface_key=false`」不能当成「performable 让路了」的证据**，
+  它在这条路上永远不会出现。一份照 3.3(d) 写出来的判据，会在一个完全正常的构建上判红。
+- 能分开「让路了」和「压根没绑上」的是**宿主的 `[clip] write` 行**（`main.rs`
+  的 `cb_write_clipboard`）：有选区那次必须有，无选区那次必须没有。
+
+**那么 `Ctrl+Shift+C` 当初是怎么掉到宿主表的？——这是推论，不是读数，标出来免得它被引用。**
+按上面的顺序，它要掉下去就必须是 `encodeKey` **也**交不出编码。这说得通（`Ctrl+C` 编 0x03
+是终端最基本的编码，`Ctrl+Shift+C` 编什么则取决于键盘协议），**但本轮没有核过 `encodeKey`
+对 `Ctrl+Shift+C` 的行为，也没有真机读数**。
+
+**已经确定的只有一半**：`Ctrl+C` 拒绝之后不会到宿主表。**没确定的那一半**是
+`Ctrl+Shift+C` 为什么会。**同一个 `performable` 标志，两个键的下场可以不同,而差别落在
+编码那一步**——这句话是这一段的用处，不是它已经证明的东西。
+
+**`Ctrl+V` 的代价，写在这里因为它不可逆。** `paste_from_clipboard` 只在**没东西可粘**时
+拒绝（`startClipboardRequest` 对 `.paste` 一律放行，返回值来自宿主的
+`cb_read_clipboard`，而它只在剪贴板没有文本时返回 false）。所以**只要剪贴板里有文字，
+`Ctrl+V` 就再也送不出 0x16**——`readline` / `emacs` 的 quoted-insert 没了。
+这是 Windows 用户的预期，也是这条绑定存在的理由；要拿回来只能
+`keybind = ctrl+v=unbind`。
+
+**菜单不受影响，而这一条是特意去核过的。** `putFlags` 里 `track_reverse = !performable`，
+这两条根本不进反向表，`shortcut_for("copy_to_clipboard")` 仍然答 `Ctrl+Insert`——
+和加它们之前**一模一样**。（136/137 咬过一次的正是这里，所以它有一条断言：
+`Config.zig` 的 `test "Keybinds: windows binds bare ctrl+c and ctrl+v"`。）
+
+> ⚠️ **那条测试在 mac 和 Linux 上是 `SkipZigTest`，不是 pass。**
+> `Keybinds.init` 的 `builtin.target.os.tag == .windows` 块在别的平台是 comptime-dead，
+> Zig 不分析它。**这是量过的，不是推的**：把 `paste_from_clipboard` 故意打错一个字，
+> `zig build -Dtarget=x86_64-windows-gnu -Dapp-runtime=none -Drenderer=opengl` 退 1，
+> 而 mac 上的 `zig build` 退 **0**。
+> **所以这两行代码在 mac 上没有任何自动检查**，改它必须交叉编译，最好再跑一次
+> Windows 测试 exe。
 
 ### 3.4 核心把键编码进 pty —— 宿主表**永远**够不到
 
@@ -666,8 +731,12 @@ argus v1.40 修了 `key` 注入的扫描码（修之前 `sent` 里 `scan` 全是
 
 ## 五、给 WT 的真机判据
 
-下面三条是我**最没把握**的三条，不是最好写的三条。三条问的都是「按下去发生了什么」，
+下面这几条是我**最没把握**的几条，不是最好写的几条。它们问的都是「按下去发生了什么」，
 不是「这个键有没有被绑定」——后者源码里就能读出来，不值得占一次真机。
+
+**A / B / C 三条写在 §2.0 那批规矩之前，组 P 写在之后**，所以 5.0.1 那张回扫表对它们的
+处置不一样。**组 P 是唯一一条「这个键有没有绑上」也必须占真机的**，理由不是绑定读不出来
+（读得出），而是它在 mac 上**没有任何自动检查**——见 3.3(e) 末尾那条警告。
 
 ### 5.0 每一条判据都从这三步开始（**先于它自己的第 1 步**）
 
@@ -708,6 +777,7 @@ argus v1.40 修了 `key` 注入的扫描码（修之前 `sent` 里 `scan` 全是
 | **C-b** 覆盖 | ⚠️ 同上 | ✅ **本来就干净**：有 `SENTINEL-Cb2` 正对照 | ✅ | 无需改 |
 | **C-c** 裸 Escape | ⚠️ 同上 | ✅ **本来就干净**：已记录过两次修正（Escape 不进 `[key]`、`[search]` 行形状不同） | ✅ 已按真机原文改过 | 无需改 |
 | **C-d** performable 让路 | ⚠️ 同上 | ✅ **本来就干净**：有「选中文字再按一次」的正对照 | ✅ | 无需改 |
+| **P** `Ctrl+C`/`Ctrl+V` | ✅ 自带「点一下窗口」并写明不要用置前函数 | ✅ 自带：P1/P2 互为对照，且明写「只跑 P2 等于没跑」 | ✅ `[clip] write` / `[clip] read` 已对 `main.rs` 的字面量核过 | 写在规矩之后，无需回补 |
 | **§六 / §七 的清单** | —— | ✅ **本来就干净**：明写「先做地板，每一轮一次」，并解释了为什么 | ✅ | 无需改 |
 
 **读法**：❌ = 缺；⚠️ = 有但不完整，或被 §5.0 统一覆盖了；✅ = 本来就成立。
@@ -722,7 +792,7 @@ argus v1.40 修了 `key` 注入的扫描码（修之前 `sent` 里 `scan` 全是
 **判据的完整性，不能靠执行者恰好记得。** 一条缺了前置步骤的判据，在一个刚栽过跟头的人
 手里会通过 —— 而那次通过，读起来和「这条判据是完整的」一模一样。
 
-**七条里有四条本来就是干净的**，而且干净的那几条**都带着自己的理由**（对照组、地板、
+**八条里有五条本来就是干净的**，而且干净的那几条**都带着自己的理由**（对照组、地板、
 已修正的记录）——它们不是碰巧对，是写的时候就想到了。**缺的四处集中在最早写的两条**
 （A 和 C-a），这和它们写在规矩之前是一致的。
 
@@ -1017,6 +1087,72 @@ argus v1.40 修了 `key` 注入的扫描码（修之前 `sent` 里 `scan` 全是
 
 ---
 
+### 组 P —— 3.3(e)：`Ctrl+C` 在同一个键上的两种行为
+
+**这一组的形状和别的判据不一样，值得先说清楚。** 这里没有一格能单独证明什么：
+P1 和 P2 **互为对照**。只看 P2（无选区、中断了、剪贴板没变）读起来像通过，但一个
+**根本没绑上** 的构建给出的读数一模一样——键没绑，`Ctrl+C` 照样编码成 0x03 照样中断，
+剪贴板当然也不变。**是 P1 把「没绑上」排除掉的。** 两格都过才算过；只跑 P2 等于没跑。
+
+> ⚠️ **不要拿 `surface_key=false` 当判据，它在这条路上永远不出现。**
+> 无选区按 `Ctrl+C` 时核心答的是 **`true`**（拒绝之后 `encodeKey` 编出了 0x03），
+> 理由见 3.3(e)。C-d 那条判据里的 `surface_key=false` 是给 `Ctrl+Shift+C` 写的，
+> **照抄到这里会在一个完全正常的构建上判红。**
+>
+> 这一组能分开「让路了」和「没绑上」的日志行是宿主的 **`[clip] write`**
+> （`main.rs::cb_write_clipboard`）：P1 必须有，P2 必须没有。
+
+**前置（照 §2.0 / §2.0.1 做，不要跳）**：**用真鼠标点一下被测窗口**，不要只调置前函数；
+并确认这一轮里没有进过输入法组字态。
+
+> **P1 —— 有选区：复制，并清掉选区**
+> 1. `set_clipboard("SENTINEL-P1")`（L1）。
+> 2. 终端里打出一行已知文字，**拖选其中一段**。
+> 3. 按 `Ctrl+C`。
+> 4. `get_clipboard()`。
+>
+> - 剪贴板 == **选中的那段**（不是 `SENTINEL-P1`，不是窗口标题）。
+> - **选区在画面上消失**——这是 `selection-clear-on-copy` 在 Windows 上默认
+>   `true` 的读数。**选区还在 = 分叉没生效**，而那样 P2 在第二次按时会失效。
+> - 日志：有 `[clip] write ... -> ok`。
+>
+> **P2 —— 无选区：中断，剪贴板不变**（关键格）
+> 1. `set_clipboard("SENTINEL-P2")`。
+> 2. 跑 `ping -t 127.0.0.1`。
+> 3. **不选任何东西**，按 `Ctrl+C`。
+> 4. `get_clipboard()`。
+>
+> - `ping` **停了**（提示符回来）。
+> - 剪贴板**仍是 `SENTINEL-P2`**。
+> - 日志：**没有** `[clip] write` 行，**也没有** `host accelerator` 行。
+> - `surface_key` 是 **`true`**，见上面那条警告。
+>
+> **P3（地板）—— `Ctrl+Shift+C` 没被弄坏**
+> 重复 P1，但按 `Ctrl+Shift+C`。剪贴板必须变成选中的那段。
+> **它不变，则 P1 的通过不能归给新绑定**——复制这条路整个就是通的或不通的，
+> 而这一格是唯一能分开「新绑定生效」和「复制本来就好使」的对照。
+>
+> **P4 —— `Ctrl+V`**
+> 1. `set_clipboard("SENTINEL-P4")`。
+> 2. 在提示符上按 `Ctrl+V`。
+> - 命令行上出现 `SENTINEL-P4`。日志有 `[clip] read ... completing`。
+>
+> **P5 —— 菜单没有跟着变**（136/137 的回归防护）
+> 打开「编辑」菜单，看「复制」那一行。
+> - 它必须仍然显示 **`Ctrl+Insert`**，**不是** `Ctrl+C`、也不是 `Ctrl+Shift+C`。
+> - 显示成 `Ctrl+C` 说明 `performable` 没设上（或反向表逻辑变了），
+>   **而那种构建的 P2 会失败**：键会被无条件消费，`ping` 停不下来。
+>
+> **P6（可选，划掉 `Ctrl+V` 那笔账的下界）—— 剪贴板为空时 `Ctrl+V` 仍进 pty**
+> 把剪贴板清空（或放一张图片），在 `cat` 里按 `Ctrl+V`，期望**打出 `^V`**。
+> 这一格证明的是取舍的**边界**：拒绝只发生在没东西可粘时，不是所有时候。
+> 它红了不算功能坏，只说明 3.3(e) 里那段关于代价范围的描述要改。
+
+**这一组里没有一格用截图当判据。** 唯一必须看画面的是 P1 的「选区消失」和 P5 的菜单
+文字；两者都要在同一轮里连着 P2 一起做，因为它们共享同一个前台前提。
+
+---
+
 ### 关于 C-b1 的那份日志：它的用途变了
 
 **C-b1 的日志原文仍然单独报回来，但读它的方式已经不同了。**
@@ -1041,6 +1177,8 @@ argus v1.40 修了 `key` 注入的扫描码（修之前 `sent` 里 `scan` 全是
 | 改了这个 | 本表哪部分过期 | 会不会有人发现 |
 |---|---|---|
 | `src/config/Config.zig` `Keybinds.init()` | 3.1 全部、3.3 的覆盖关系 | **不会**。加一条绑定不会让任何测试变红 |
+| 同上，`builtin.target.os.tag == .windows` 那个块（3.3(e) 的两条） | 3.1 的 `核·win` 两行、3.3(e)、判据组 P | **不会，而且比上一行还坏一档**：那个块在 mac/Linux 上是 comptime-dead，`zig build` 连**语法以外的错都不报**——把动作名打错一个字，mac 上照样退 0（量过）。唯一的检查是交叉编译，或 Windows 测试 exe 上的 `test "Keybinds: windows binds bare ctrl+c and ctrl+v"` |
+| `src/config/Config.zig` 的 `selection-clear-on-copy` 默认值 | 3.3(e)、判据 P1 | **不会**。它和 `ctrl+c` 是一对，但代码里没有任何东西把这两处绑在一起——只有两边的注释互相点名 |
 | `src/input/Binding.zig` `putFlags()` 的覆盖 / 反向表逻辑 | 3.3(b) 的全部推论、判据 C 第一部分 | **不会** |
 | `src/input/key.zig` `ctrlOrSuper()` | 3.1 里所有 `Ctrl+…` 的行 | 不会（Windows 上换成 super 就全错） |
 | `src/input/keycodes.zig` 的 `native_idx` 或 win 列 | 第四节、判据 A | 不会 |
