@@ -3096,6 +3096,46 @@ fn cli_action_requested() -> bool {
     std::env::args().skip(1).any(|a| a.starts_with('+'))
 }
 
+/// Say whether the tester's notes are beside this program.
+///
+/// # Why this is a reading and not a pointer
+///
+/// The obvious line is "see TESTING.md next to this program". **That sentence
+/// is false whenever the file was not copied**, which is the case it exists
+/// to help with -- and a false line is worse than none, because someone who
+/// looks and finds nothing concludes the log is stale rather than that the
+/// packaging missed a file.
+///
+/// So this looks, and says which. **Present**: go and read it. **Absent**:
+/// there is such a document and this copy did not come with one, so ask for
+/// it. Nothing here can make the file arrive; what it can do is make its
+/// absence visible instead of silent, which is the same bargain the build
+/// identity line above strikes with a mismatched pair.
+///
+/// A missing file is not an error and nothing is refused because of it.
+fn log_testing_notes() {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("TESTING.md")));
+    match beside {
+        // process-wide: a file beside the executable; no window is involved
+        Some(p) if p.is_file() => plogf!("[build] tester's notes: {}", p.display()),
+        // process-wide: as above -- the absence of a file beside the
+        // executable belongs to the process, not to any window
+        Some(p) => plogf!(
+            "[build] tester's notes: NOT here ({} does not exist). \
+             There is such a document; this copy did not come with one, so ask \
+             whoever built it for TESTING.md.",
+            p.display()
+        ),
+        // process-wide: as above
+        None => plogf!(
+            "[build] tester's notes: cannot tell -- this program cannot find its own \
+             directory, so it cannot say whether TESTING.md is beside it."
+        ),
+    }
+}
+
 fn main() {
     let _ = std::fs::remove_file(log_path());
     // **First, ahead of the banner.** Everything below can panic, and a panic
@@ -3115,6 +3155,7 @@ fn main() {
     }
 
     log_build_identity();
+    log_testing_notes();
 
     let api_box = match load_api() {
         Some(a) => Box::leak(Box::new(a)),
