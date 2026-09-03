@@ -1073,6 +1073,61 @@ pub fn ending_because_of_host_shuffle() -> bool {
 /// pane is what a composition belongs to. Asking for the active tab of the
 /// first window instead would deliver a candidate the user picked in window 2
 /// into window 1 -- and it would look entirely normal at the call site.
+/// The pane a composition started in, for as long as it is in flight.
+///
+/// # Sending the right thing to the wrong pane
+///
+/// `ime_surface()` answers "the pane the input method is pointed at **now**".
+/// That is the correct answer to a different question. When a composition is
+/// interrupted by the host rearranging panes, the retarget has already
+/// happened by the time the composition ends, so the preedit clear went to the
+/// pane that had just been created:
+///
+/// ```text
+/// set_preedit("ni") -> surface 0x…40f0     <- pane 1, where the typing was
+/// [pane] 6 surface = 0x…7bc0               <- a new pane
+/// set_preedit("ni") -> surface 0x…7bc0     <- pane 6
+/// set_preedit("")   -> surface 0x…7bc0     <- pane 6
+/// ```
+///
+/// Pane 1 never got the clear, so the underlined `ni` stayed on it: enter did
+/// not run it and backspace did not delete it, because as far as the terminal
+/// was concerned there was nothing there.
+///
+/// **The log had been telling the truth the whole time.** Every one of those
+/// lines printed a real surface; nobody had asked *which* surface. **A line
+/// that prints a correct value and a line that prints the correct object are
+/// not the same line.**
+///
+/// So the pane is remembered when the composition starts and used until it
+/// ends. **The hwnd is stored rather than the surface pointer**: a pane can be
+/// destroyed mid-composition, and `surface_of` then answers null, where a
+/// stale pointer would answer something that looks usable.
+static COMPOSING_HWND: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Called from `tsf.rs` when a composition starts and ends.
+pub fn ime_composition_owner(hwnd: Option<HWND>) {
+    COMPOSING_HWND.store(
+        hwnd.map(|h| h.0).unwrap_or(std::ptr::null_mut()),
+        Ordering::Release,
+    );
+}
+
+/// The surface a composition's text belongs to: the pane it started in while
+/// one is in flight, otherwise whatever the IME is pointed at now.
+fn composing_surface() -> ffi::Surface {
+    let h = COMPOSING_HWND.load(Ordering::Acquire);
+    if !h.is_null() {
+        let s = tabs::surface_of(HWND(h));
+        if !s.is_null() {
+            return s;
+        }
+        // The pane went away mid-composition. Falling through is right: there
+        // is nothing to draw on, and `ime_surface` will say so too.
+    }
+    ime_surface()
+}
+
 fn ime_surface() -> ffi::Surface {
     let hwnd = IME.with(|c| {
         c.borrow()
@@ -1107,7 +1162,7 @@ fn ime_surface() -> ffi::Surface {
 /// now says so. **A silent early return is a fork in the diagnosis that leaves
 /// no trace of which way it went.**
 pub fn ime_set_preedit(text: &str) {
-    let s = ime_surface();
+    let s = composing_surface();
     if s.is_null() {
         ime_log(&format!(
             "set_preedit({:?}) SKIPPED: no surface to send it to \
@@ -1123,7 +1178,7 @@ pub fn ime_set_preedit(text: &str) {
 
 /// The user chose a candidate: feed it to the terminal as input.
 pub fn ime_commit(text: &str) {
-    let s = ime_surface();
+    let s = composing_surface();
     if s.is_null() {
         // Same reason as `ime_set_preedit`: a silent skip here means the
         // chosen text vanished, which reads as "the IME dropped my word".

@@ -464,8 +464,18 @@ impl ITextStoreACP_Impl for TextStore_Impl {
 /// with an empty buffer and so commits nothing, which is the same code path.
 impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
     fn OnStartComposition(&self, _pcomposition: Ref<ITfCompositionView>) -> Result<BOOL> {
-        self.ime.borrow_mut().composing = true;
-        crate::ime_log("OnStartComposition");
+        // **Remember which pane this composition belongs to.** Everything sent
+        // for it afterwards -- the preedit as it grows, the clear that removes
+        // it -- goes to this pane and not to whichever one is active by then.
+        // See `COMPOSING_HWND` in `main.rs` for the reading that made this
+        // necessary.
+        let hwnd = {
+            let mut ime = self.ime.borrow_mut();
+            ime.composing = true;
+            ime.hwnd
+        };
+        crate::ime_composition_owner(Some(hwnd));
+        crate::ime_log(&format!("OnStartComposition (owner pane hwnd {:?})", hwnd.0));
         Ok(BOOL(1))
     }
 
@@ -520,6 +530,10 @@ impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
         if !committed.is_empty() && !ours {
             crate::ime_commit(&committed);
         }
+        // **After both, not before.** The clear and the commit are the last
+        // two things that belong to this composition, and they are the reason
+        // the owner was remembered at all.
+        crate::ime_composition_owner(None);
         Ok(())
     }
 }
