@@ -242,6 +242,21 @@ pub fn handle_key_message(
             keycode: keycode(lp),
             text: text_ptr,
             unshifted_codepoint: unshifted_codepoint(wp.0 as u32),
+            // **This is hard-coded, and the core therefore never learns that
+            // the host is composing.** `tsf.rs` knows -- `Ime::composing` is
+            // set and cleared by `OnStartComposition` / `OnEndComposition` --
+            // and that answer is simply not passed on here.
+            //
+            // **Read this before leaving it as it is.** It is harmless today
+            // only because nothing in the core reads the field, and that is a
+            // fact about somebody else's code on some other day. The moment
+            // the core decides anything by it -- "while composing, do not
+            // treat a key as a binding" is the obvious one -- a constant
+            // `false` sends that decision down the wrong branch **every single
+            // time**, and nothing raises so much as a warning: the key is
+            // handled, just as though no input method were running. The
+            // symptom would be an IME user losing composition to a keybind,
+            // which reads as a keybind bug rather than as this line.
             composing: false,
         };
         let vk = wp.0 as u16;
