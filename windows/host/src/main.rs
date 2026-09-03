@@ -714,6 +714,9 @@ static PUMP_SWALLOWED: AtomicU32 = AtomicU32::new(0);
 /// The keyboard layout in force the last time a key message went past, so a
 /// change can be logged at the moment it matters rather than polled.
 static LAST_HKL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Whether the "pump returned a different key" diagnostic has been printed.
+static MISMATCH_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// How many `[key] pump swallowed` lines to print before going quiet.
 ///
@@ -3611,7 +3614,15 @@ fn main() {
                 )
                 .as_bool()
                 {
-                    Some((waiting.message, waiting.wParam.0, waiting.lParam.0, waiting.time))
+                    // **`time` is deliberately not part of this.** The first
+                    // version compared it too, and the identity never matched
+                    // once in seventeen key messages: every one was recorded as
+                    // swallowed while the `[key]` line for the same key showed
+                    // up about one loop iteration later. A message that goes
+                    // through `ITfKeystrokeMgr` can come back with a different
+                    // timestamp; `message`/`wParam`/`lParam` are what say
+                    // *which key*, and that is the question here.
+                    Some((waiting.message, waiting.wParam.0, waiting.lParam.0))
                 } else {
                     None
                 };
@@ -3636,11 +3647,29 @@ fn main() {
                 if let Some(id) = waiting_key {
                     PUMP_KEYS_SEEN.fetch_add(1, Ordering::Relaxed);
                     log_hkl_if_changed();
-                    let returned = got
-                        && (msg.message, msg.wParam.0, msg.lParam.0, msg.time) == id;
+                    let returned =
+                        got && (msg.message, msg.wParam.0, msg.lParam.0) == id;
                     if returned {
                         PUMP_KEYS_RETURNED.fetch_add(1, Ordering::Relaxed);
                     } else {
+                        // **When the pump hands back a key that is not the one
+                        // we saw, say so once.** If this identity check is
+                        // wrong again, this line names the two tuples instead
+                        // of leaving a pile of false `swallowed` counts to be
+                        // discovered on a machine.
+                        if got
+                            && (WM_KEYFIRST..=WM_KEYLAST).contains(&msg.message)
+                            && !MISMATCH_LOGGED.swap(true, Ordering::Relaxed)
+                        {
+                            // process-wide: about the probe, not a window
+                            plogf!(
+                                "[key] pump probe: expected msg=0x{:x} wp=0x{:x} lp=0x{:x}, \
+                                 pump returned msg=0x{:x} wp=0x{:x} lp=0x{:x} \
+                                 (reported once; if `returned` stays 0 the identity check is wrong)",
+                                id.0, id.1, id.2,
+                                msg.message, msg.wParam.0, msg.lParam.0
+                            );
+                        }
                         // Not returned. It may simply still be queued -- the
                         // pump is allowed to hand back something else first --
                         // so being gone is the part that means anything.
@@ -3653,7 +3682,7 @@ fn main() {
                             PM_NOREMOVE,
                         )
                         .as_bool()
-                            && (after.message, after.wParam.0, after.lParam.0, after.time) == id;
+                            && (after.message, after.wParam.0, after.lParam.0) == id;
                         if !still {
                             let n = PUMP_SWALLOWED.fetch_add(1, Ordering::Relaxed) + 1;
                             if n <= SWALLOW_LOG_CAP {
@@ -3959,14 +3988,39 @@ fn main() {
     // past while the probe was watching, and only then is the zero worth
     // something.
     //
-    // process-wide: totals for the process
-    plogf!(
-        "[key] pump totals: seen={} returned={} swallowed={} tsf_ate={}",
+    let (seen, returned, swallowed) = (
         PUMP_KEYS_SEEN.load(Ordering::Relaxed),
         PUMP_KEYS_RETURNED.load(Ordering::Relaxed),
         PUMP_SWALLOWED.load(Ordering::Relaxed),
+    );
+    // process-wide: totals for the process
+    plogf!(
+        "[key] pump totals: seen={} returned={} swallowed={} tsf_ate={}",
+        seen,
+        returned,
+        swallowed,
         TSF_ATE.load(Ordering::Relaxed)
     );
+    // **The floor for the counter above, and it exists because the first
+    // version shipped without one.** That version recorded all seventeen key
+    // messages of a run as "swallowed" -- the identity check never matched
+    // once -- and the numbers looked like a discovery rather than a broken
+    // probe. `seen` is what gave it away, by being exactly equal to
+    // `swallowed`.
+    //
+    // **A probe that cannot report its own failure hands you seventeen
+    // findings instead of one fault**, so this says it plainly: in any run
+    // where keys were pressed at all, some of them must have come back.
+    if seen > 0 && returned == 0 {
+        // process-wide: about the probe, not a window
+        plogf!(
+            "[key] pump probe is BROKEN: {} key message(s) went past and not one was \
+             recognised coming back, so `swallowed={}` counts nothing but the check \
+             failing. Do not read it as evidence of lost keys.",
+            seen,
+            swallowed
+        );
+    }
 }
 
 
