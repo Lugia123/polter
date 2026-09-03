@@ -1226,12 +1226,44 @@ pub fn layout(frame: HWND) {
     let verbose = n <= 40;
     unsafe {
         // Hide before showing, so a zoom toggle does not flash both.
-        for (id, hw) in hide {
-            let ok = ShowWindow(hw, SW_HIDE).as_bool();
-            if verbose {
-                logf!("[layout #{}] pane {} -> hide (was visible: {})", n, id, ok);
+        //
+        // # Hiding a *visible* pane ends any composition it is carrying
+        //
+        // TSF ends the composition synchronously inside `ShowWindow`, and the
+        // handler in `tsf.rs` would then commit the half-typed text into the
+        // terminal -- so pressing a keybinding while composing opened the tab
+        // **and** typed the syllable. `with_host_shuffle` marks this window so
+        // that ending is discarded instead.
+        //
+        // **The trigger is hiding, not opening a tab.** Two earlier attempts
+        // guarded the focus change further down this function, and both missed
+        // it: the composition was already over 38ms before that ran. Anything
+        // that rearranges panes reaches this loop -- splitting, zooming,
+        // closing a tab -- so guarding the loop covers them all, while
+        // guarding the caller covers one.
+        //
+        // **And it is specifically a pane that was on screen.** The log line
+        // below carries `ShowWindow`'s return value, which is exactly "was it
+        // visible", and a real machine shows the two cases side by side in one
+        // layout pass:
+        //
+        // ```text
+        // [layout #6] pane 1 -> hide (was visible: false)   <- nothing happens
+        // [ime] OnEndComposition commit="ni"
+        // [layout #6] pane 3 -> hide (was visible: true)    <- this one
+        // ```
+        //
+        // So a reader arriving here does not need to defend against every
+        // `hide`: **hiding an already-hidden pane cannot end a composition,
+        // because there is no composition on a window nobody can see.**
+        crate::with_host_shuffle(|| {
+            for (id, hw) in hide {
+                let ok = ShowWindow(hw, SW_HIDE).as_bool();
+                if verbose {
+                    logf!("[layout #{}] pane {} -> hide (was visible: {})", n, id, ok);
+                }
             }
-        }
+        });
         for (id, hw, r) in place {
             let res = SetWindowPos(
                 hw,
@@ -2216,7 +2248,7 @@ pub fn focus_active(frame: HWND) {
     // exists this guard is known to be **insufficient, not wrong**: it still
     // covers a real focus change, it just is not where the reported symptom
     // comes from.
-    crate::with_refocus(|| {
+    crate::with_host_shuffle(|| {
         crate::ime_set_window(child);
         unsafe {
             let _ = SetFocus(Some(child));

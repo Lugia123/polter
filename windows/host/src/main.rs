@@ -1015,7 +1015,7 @@ pub fn ime_log(msg: &str) {
     log_line(&format!("[ime] {msg}"));
 }
 
-/// Set while the host is moving the keyboard focus between its own panes.
+/// Set while the host is rearranging its own windows.
 ///
 /// **This exists because "the composition ended" and "the user finished a
 /// word" are not the same event, and TSF reports only the first.**
@@ -1023,36 +1023,46 @@ pub fn ime_log(msg: &str) {
 /// `OnEndComposition` fires for both, with the same signature and with the
 /// composed text still in the buffer either way. The handler used to commit
 /// whatever it found there, on the stated assumption that a cancelled
-/// composition arrives with an empty buffer. **That assumption holds for a
-/// composition the user abandoned and not for one the host interrupted**: when
-/// a keybinding opens a tab, the host moves focus, TSF ends the composition on
-/// the way, and the half-typed syllable was committed into the terminal. The
-/// person pressed `ctrl+shift+t` and got a new tab *and* the word `ni`.
-static REFOCUSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Run `body` with [`REFOCUSING`] set, so a composition ended by the focus
-/// change inside it is discarded rather than committed.
+/// composition arrives with an empty buffer. **That holds for a composition
+/// the user abandoned and not for one the host interrupted**: the person
+/// pressed `ctrl+shift+t`, got a new tab *and* the half-typed word `ni`.
 ///
-/// **A guard rather than a pair of calls**: `SetFocus` re-enters through TSF
-/// and can end the composition synchronously, so the flag has to be up for the
-/// whole of the handoff and down afterwards even if something in between
-/// returns early.
-pub fn with_refocus<R>(body: impl FnOnce() -> R) -> R {
+/// # It used to be called `REFOCUSING`, and the name was itself a wrong answer
+///
+/// The first two explanations both blamed focus -- `SetFocus` on the new
+/// pane, then focus generally -- and both were refuted by timestamps: the
+/// composition ended before any focus moved. **The actual trigger is
+/// `ShowWindow(SW_HIDE)` on the pane that is carrying the composition**, in
+/// the layout pass that runs when panes are rearranged.
+///
+/// The name is now about what the host is doing rather than about which
+/// mechanism was guessed to matter, **because two of those guesses have
+/// already been wrong and the name outlived both.**
+static HOST_SHUFFLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Run `body` with [`HOST_SHUFFLING`] set, so a composition ended by the
+/// window shuffling inside it is discarded rather than committed.
+///
+/// **A guard rather than a pair of calls**: `ShowWindow` (and `SetFocus`)
+/// re-enter through TSF and can end the composition **synchronously**, so the
+/// flag has to be up for the whole of the operation and down afterwards even
+/// if something in between returns early.
+pub fn with_host_shuffle<R>(body: impl FnOnce() -> R) -> R {
     use std::sync::atomic::Ordering;
     struct Guard;
     impl Drop for Guard {
         fn drop(&mut self) {
-            REFOCUSING.store(false, Ordering::Release);
+            HOST_SHUFFLING.store(false, Ordering::Release);
         }
     }
-    REFOCUSING.store(true, Ordering::Release);
+    HOST_SHUFFLING.store(true, Ordering::Release);
     let _g = Guard;
     body()
 }
 
 /// Whether a composition ending right now is one the host caused.
-pub fn ending_because_we_moved_focus() -> bool {
-    REFOCUSING.load(std::sync::atomic::Ordering::Acquire)
+pub fn ending_because_of_host_shuffle() -> bool {
+    HOST_SHUFFLING.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// The surface the input method is composing into.
