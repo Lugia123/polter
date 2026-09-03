@@ -969,6 +969,46 @@ pub fn ime_log(msg: &str) {
     log_line(&format!("[ime] {msg}"));
 }
 
+/// Set while the host is moving the keyboard focus between its own panes.
+///
+/// **This exists because "the composition ended" and "the user finished a
+/// word" are not the same event, and TSF reports only the first.**
+///
+/// `OnEndComposition` fires for both, with the same signature and with the
+/// composed text still in the buffer either way. The handler used to commit
+/// whatever it found there, on the stated assumption that a cancelled
+/// composition arrives with an empty buffer. **That assumption holds for a
+/// composition the user abandoned and not for one the host interrupted**: when
+/// a keybinding opens a tab, the host moves focus, TSF ends the composition on
+/// the way, and the half-typed syllable was committed into the terminal. The
+/// person pressed `ctrl+shift+t` and got a new tab *and* the word `ni`.
+static REFOCUSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Run `body` with [`REFOCUSING`] set, so a composition ended by the focus
+/// change inside it is discarded rather than committed.
+///
+/// **A guard rather than a pair of calls**: `SetFocus` re-enters through TSF
+/// and can end the composition synchronously, so the flag has to be up for the
+/// whole of the handoff and down afterwards even if something in between
+/// returns early.
+pub fn with_refocus<R>(body: impl FnOnce() -> R) -> R {
+    use std::sync::atomic::Ordering;
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            REFOCUSING.store(false, Ordering::Release);
+        }
+    }
+    REFOCUSING.store(true, Ordering::Release);
+    let _g = Guard;
+    body()
+}
+
+/// Whether a composition ending right now is one the host caused.
+pub fn ending_because_we_moved_focus() -> bool {
+    REFOCUSING.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// The surface the input method is composing into.
 ///
 /// **The window TSF is attached to, not "the active tab".** They were the
@@ -2520,20 +2560,59 @@ fn announce_resources_dir() {
         return;
     };
 
-    // Two candidates, in order. The second is for a flat deployment -- an exe
-    // and a `share/` beside it, no `bin/` -- which is how this has actually
-    // been put on the test machine, and getting it wrong there would look
-    // exactly like getting it wrong everywhere.
-    let candidates = [
-        bin.join("..").join("share").join("ghostty"),
-        bin.join("share").join("ghostty"),
-    ];
-    for cand in &candidates {
+    // Two candidates: a `share/` beside the executable (a flat deployment,
+    // which is how a test build is handed out), and one a level up next to
+    // `bin/` (the layout `zig build` produces and the core's own climb
+    // expects).
+    //
+    // # The order is the specific one first, and that is a fix rather than a
+    // preference
+    //
+    // It used to be the other way round, because that was the canonical
+    // install layout and the flat one read as the special case. **Nothing had
+    // decided what should happen when both exist**, and on the test machine
+    // both did: a build unpacked into `D:\polter\polter-<commit>\` found
+    // `D:\polter\share\ghostty`, left over from an older deployment, and
+    // used it.
+    //
+    // **That failure is worse than the one this function already reports.**
+    // A missing directory leaves a line saying so, and somebody can read it.
+    // This one logged a directory, logged that all four of its parts were
+    // present, and then ran another version's plugins and themes -- so the
+    // report that comes back is "the theme is wrong" and "a plugin behaves
+    // oddly", with nothing in it about resources at all.
+    //
+    // Checking the flat location first cannot cost the canonical layout
+    // anything: an install with `bin/` beside `share/` has no `share/` next
+    // to the executable, so it falls through. The reverse is not true, which
+    // is the whole asymmetry -- **the more specific location is the one that
+    // cannot be claimed by accident.**
+    //
+    // Deliberately overriding from outside is still possible and still comes
+    // first: `POLTER_RESOURCES_DIR`, handled above.
+    //
+    // **`parent()` rather than joining `..`**, so the path that reaches the
+    // log and the environment is already normalised. The old form printed
+    // `…\polter-<commit>\..\share\ghostty`, which reads as "inside the
+    // package" unless somebody notices the two dots.
+    let up = bin.parent().map(|p| p.join("share").join("ghostty"));
+    let candidates: Vec<(std::path::PathBuf, &str)> = match up {
+        Some(u) => vec![
+            (bin.join("share").join("ghostty"), "beside the executable"),
+            (u, "one level above the executable, NOT part of this package"),
+        ],
+        None => vec![(bin.join("share").join("ghostty"), "beside the executable")],
+    };
+    for (cand, where_) in &candidates {
         if cand.join("poltergeist").is_dir() {
             let s = cand.to_string_lossy().into_owned();
             std::env::set_var("POLTER_RESOURCES_DIR", &s);
+            // **Where it came from, in words, on the same line.** A reader
+            // comparing two paths character by character is a reader who will
+            // eventually not bother; a clause saying which of the two it is
+            // does not need comparing.
             // process-wide: the resources directory is one per process; every window reads the same one
-            plogf!("[res] POLTER_RESOURCES_DIR = {:?}", s);
+            plogf!("[res] POLTER_RESOURCES_DIR = {:?} ({})", s, where_);
             report_resources_dir(cand);
             return;
         }
@@ -2547,7 +2626,7 @@ fn announce_resources_dir() {
         "[res] no resources directory found next to the executable; POLTER_RESOURCES_DIR left unset. Looked at: {}",
         candidates
             .iter()
-            .map(|c| format!("{:?}", c.to_string_lossy()))
+            .map(|(c, w)| format!("{:?} ({})", c.to_string_lossy(), w))
             .collect::<Vec<_>>()
             .join(", ")
     );
@@ -3145,8 +3224,46 @@ fn log_testing_notes() {
     }
 }
 
+/// Start the log file with a UTF-8 byte order mark.
+///
+/// # The log was never written wrong; it was read wrong
+///
+/// `log_line` hands a Rust `String` to `writeln!`, which writes its UTF-8
+/// bytes and nothing else -- there is no re-encoding anywhere in this host.
+/// So a line reading `commit="浣犲搱濂?"` is not a mangled write. It is a
+/// correct file **decoded as GBK**, which is what several standard Windows
+/// tools do by default on a Chinese system: Windows PowerShell 5.1's
+/// `Get-Content` uses the ANSI code page unless told otherwise, and so does
+/// `type` in a console whose code page is 936.
+///
+/// **The trailing `?` is the tell**: it is a lossy replacement, which only
+/// happens on the way *in*, not on the way out.
+///
+/// # So why change anything
+///
+/// Because "the file is fine, you read it wrong" is a fact that has to be
+/// known before it helps, and the person reading a log at 3am does not know
+/// it. **A three-byte mark makes the file say what it is**, and the same
+/// tools then decode it correctly with no argument: PowerShell, Notepad, VS
+/// Code and Windows' own editors all honour it.
+///
+/// **What it costs**, said plainly: the three bytes sit at the start of the
+/// first line, so a `findstr` pattern anchored to the very beginning of the
+/// file will not match. The first line is the startup banner, which nobody
+/// anchors to.
+fn write_log_bom() {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::File::create(log_path()) {
+        let _ = f.write_all("\u{feff}".as_bytes());
+    }
+}
+
 fn main() {
     let _ = std::fs::remove_file(log_path());
+    // **Before the first line, and before the panic hook.** A mark written
+    // later would sit in the middle of the file, where it is not a mark but a
+    // stray character.
+    write_log_bom();
     // **First, ahead of the banner.** Everything below can panic, and a panic
     // before the hook is installed leaves exactly the evidence the last two
     // silent deaths left: none.

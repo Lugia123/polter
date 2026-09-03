@@ -53,7 +53,19 @@ polter-<构建号>\
 - **群聊**：`Agents ▸ 终端对话`。**这一版第一次能打字了** —— 按 `Enter` 出现输入行，打完再按 `Enter` 发送，`Esc` 放弃。
 - **中文输入**：在终端里、在设置页的输入框里、在群聊的输入行里各打几个字。
 
-**几个键和 macOS 不一样，试的时候别按老习惯**：关闭当前分屏是 `Ctrl+Shift+X`（不是 `Ctrl+Shift+W`，那个是关标签）；清屏 `Ctrl+Shift+K`；滚到顶/底 `Ctrl+Shift+Home` / `End`；翻页选择 `Alt+Shift+PageUp` / `PageDown`。
+**几个键和 macOS 不一样，试的时候别按老习惯**：
+
+| 键 | 做什么 |
+| --- | --- |
+| `Ctrl+Shift+X` | 关掉当前分屏（**不是** `Ctrl+Shift+W`，那个是关标签） |
+| `Ctrl+Shift+K` | 清屏 |
+| `Shift+Home` / `Shift+End` | 滚到最顶 / 最底 |
+| `Shift+PageUp` / `PageDown` | 上下翻页 |
+| `Ctrl+Shift+Home` / `Ctrl+Shift+End` | **把已有的选区**扩到最开头 / 最末尾 |
+| `Alt+Shift+PageUp` / `PageDown` | **把已有的选区**上下扩一页 |
+| `F3` / `Shift+F3` | 查找的下一个 / 上一个（只在查找条开着时属于我们） |
+
+**最后三行那几个是「扩展选区」，不是滚动，而且它们需要先有一个选区。** 没选任何东西的时候按下去，**屏幕一动不动是对的** —— 那不是坏了。要试它：先用鼠标拖选一段（或者按住 `Shift` 敲几下方向键），再按 `Ctrl+Shift+Home`。
 
 ---
 

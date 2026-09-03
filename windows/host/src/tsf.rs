@@ -483,9 +483,30 @@ impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
             ime.sel_end = 0;
             s
         };
-        crate::ime_log(&format!("OnEndComposition commit={:?}", committed));
+        // **Two different events arrive here, and TSF does not distinguish
+        // them.** One is "the user chose this text"; the other is "something
+        // took the composition away". The buffer looks the same in both.
+        //
+        // The comment above this impl used to say a cancelled composition
+        // arrives empty, so committing whatever is present was safe. **That is
+        // true of a composition the user abandoned and false of one the host
+        // interrupted**: a keybinding that opens a tab moves the focus, TSF
+        // ends the composition on the way out, and the half-typed syllable was
+        // being typed into the terminal -- a new tab *and* a stray `ni`.
+        //
+        // So the one case the host can recognise is recognised: while it is
+        // moving focus between its own panes, an ending composition is
+        // discarded. Everything else still commits, including a genuine
+        // focus loss to another application, which is what Windows users
+        // expect.
+        let ours = crate::ending_because_we_moved_focus();
+        crate::ime_log(&format!(
+            "OnEndComposition commit={:?}{}",
+            committed,
+            if ours { " (discarded: the host was moving focus)" } else { "" }
+        ));
         crate::ime_set_preedit("");
-        if !committed.is_empty() {
+        if !committed.is_empty() && !ours {
             crate::ime_commit(&committed);
         }
         Ok(())

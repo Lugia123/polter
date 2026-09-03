@@ -2199,10 +2199,19 @@ pub fn focus_active(frame: HWND) {
             None => return,
         }
     };
-    crate::ime_set_window(child);
-    unsafe {
-        let _ = SetFocus(Some(child));
-    }
+    // **Wrapped, because this focus move can end somebody's composition.**
+    //
+    // `SetFocus` re-enters TSF, which ends any composition in flight and calls
+    // back into `tsf.rs` with the half-typed text still in the buffer. Without
+    // this guard that text is committed to the terminal -- so pressing a
+    // keybinding mid-composition opened the tab *and* typed the syllable. See
+    // `REFOCUSING` in `main.rs`.
+    crate::with_refocus(|| {
+        crate::ime_set_window(child);
+        unsafe {
+            let _ = SetFocus(Some(child));
+        }
+    });
     let s = active_surface(frame);
     if !s.is_null() {
         unsafe { (api().surface_set_focus)(s, true) };
