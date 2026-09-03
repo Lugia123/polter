@@ -30,6 +30,46 @@
 //! `tabs.rs`. TSF is apartment-bound to the main thread and is only ever
 //! touched from there.
 
+//! # Why this is a GUI subsystem binary
+//!
+//! **A console subsystem binary launched from Explorer is given a console
+//! window by Windows, and nobody asked for it.** That window was Polter's
+//! second window: it opened beside the terminal and scrolled, because
+//! `log_line` printed every line to stdout and `GHOSTTY_LOG=stderr` sent
+//! libghostty's own log to the same place. It is a black box a user cannot
+//! close without killing the program.
+//!
+//! **The debug build carries the same attribute, and that is deliberate.**
+//! The obvious concession -- hide it in release, keep it in debug -- makes the
+//! debug build differ from the shipped one *on exactly the axis being fixed*:
+//! whether this process has a console decides whether a console child
+//! (a `.ps1` plugin) inherits ours or is given a window of its own. A build
+//! that cannot reproduce the defect cannot be used to verify the repair.
+//!
+//! **What a console was carrying, and where each part went instead.** Nothing
+//! here may quietly become "no output":
+//!
+//!  - `log_line`'s stdout copy: **deleted**. The file copy was always the one
+//!    this program trusts (flushed per line; it is the artifact that leaves
+//!    the machine), and the stdout copy also took Rust's global stdout lock on
+//!    a path the watchdog must never block on -- see `wd_log`.
+//!  - libghostty's log, which on Windows has **no sink but stderr**
+//!    (`global.zig` parses `GHOSTTY_LOG` into a struct whose only other field
+//!    is macOS unified logging): `adopt_std_handles` gives stderr a real file
+//!    when Windows gave us nothing, so those lines keep landing in the log.
+//!  - the default panic hook's backtrace, which also goes to stderr: same
+//!    answer, and that is why `adopt_std_handles` runs *before*
+//!    `install_panic_hook`.
+//!
+//! **What this does cost**: a `+action` run by hand from a terminal
+//! (`polter-host.exe +chat`) no longer paints on that terminal -- a GUI
+//! subsystem process does not attach to the console that started it. A
+//! `+mcp` server started by an agent CLI is unaffected, because there the
+//! stdio handles are inherited pipes rather than a console. Giving the CLI
+//! path its console back means `AttachConsole(ATTACH_PARENT_PROCESS)` and is
+//! deliberately not done here; it is its own change with its own reading.
+#![windows_subsystem = "windows"]
+
 mod ctxmenu;
 mod divider;
 mod dnd;
@@ -664,11 +704,14 @@ fn log_build_identity() {
 
 pub fn log_line(msg: &str) {
     let s = &format!("[{}] {}", now_str(), msg);
-    println!("{s}");
     use std::io::Write as _;
-    let _ = std::io::stdout().flush();
-    // A redirected stdout is block-buffered, so a crash would lose everything.
-    // The file copy is flushed on every line and is the one we trust.
+    // **The file is the only copy, and it always was the one we trust**: it is
+    // flushed on every line and it is the artifact that leaves the machine.
+    // There used to be a `println!` here as well. It went with the console
+    // window (see the `windows_subsystem` note at the top of this file), and
+    // it took two hazards with it: Rust's global stdout lock, which the
+    // watchdog must never be able to block on (`wd_log`), and a banner
+    // printed onto the stdout that a `+mcp` server speaks its protocol over.
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -3444,6 +3487,109 @@ fn log_testing_notes() {
     }
 }
 
+/// Give this process a stdout and a stderr **when Windows gave it none**.
+///
+/// # What this is for
+///
+/// A GUI subsystem process started from Explorer has no console, so
+/// `GetStdHandle` answers with nothing for both streams. Two things write
+/// there and have nowhere else to go: libghostty's log (`GHOSTTY_LOG=stderr`
+/// is the only sink the core has on Windows) and the default panic hook's
+/// backtrace. Pointing the missing handles at the log file keeps both, so
+/// "the window is gone" cannot quietly also mean "the log is gone".
+///
+/// # Only the ones nobody gave us, and that rule is the whole design
+///
+/// A handle we already have came from whoever started us, and it is theirs,
+/// not ours to redirect: a tester running `polter-host.exe > out.log 2>&1`
+/// asked for that file, and an agent CLI that started `polter-host.exe +mcp`
+/// handed us a **pipe it is speaking a protocol over**. Redirecting either
+/// would be this change taking away output while claiming to take away a
+/// window. So each stream is examined on its own and an existing one is left
+/// exactly alone.
+///
+/// # Ordering
+///
+/// After `write_log_bom`, which is a `File::create` and therefore truncates:
+/// a handle opened before it would be pointing into a file that then went
+/// back to length zero. Before `install_panic_hook`, so that the default
+/// hook's backtrace -- which this program does not reproduce itself -- has
+/// somewhere to land from the first moment it could be needed.
+///
+/// The file handle is opened `FILE_APPEND_DATA` and deliberately never
+/// closed. Append access is what makes the interleaving safe: every write
+/// goes to the end of the file as one operation, so the core writing through
+/// this handle and `log_line` opening the same path per line cannot land on
+/// top of each other.
+///
+/// Returns the line to log about what it did. **It is returned rather than
+/// logged here because the log banner has not been written yet**, and a line
+/// above the banner is a line a reader cannot attribute to this run.
+fn adopt_std_handles() -> String {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        OPEN_ALWAYS,
+    };
+    use windows::Win32::System::Console::{
+        GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    let have = |id: STD_HANDLE| -> bool {
+        match unsafe { GetStdHandle(id) } {
+            Ok(h) => !h.is_invalid(),
+            Err(_) => false,
+        }
+    };
+
+    let missing: Vec<(STD_HANDLE, &str)> = [(STD_OUTPUT_HANDLE, "stdout"), (STD_ERROR_HANDLE, "stderr")]
+        .into_iter()
+        .filter(|(id, _)| !have(*id))
+        .collect();
+
+    if missing.is_empty() {
+        return "[stdio] stdout and stderr both came from whoever started us;                 leaving them alone"
+            .to_string();
+    }
+
+    let mut wide: Vec<u16> = log_path().as_os_str().encode_wide().collect();
+    wide.push(0);
+    let file = unsafe {
+        CreateFileW(
+            PCWSTR::from_raw(wide.as_ptr()),
+            FILE_APPEND_DATA.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    };
+    let Ok(file) = file else {
+        // Said out loud: from here the core's log and any backtrace have
+        // nowhere to go, and the shape of that failure is silence.
+        return format!(
+            "[stdio] {} missing and the log file could not be opened for them;              libghostty's log and any panic backtrace have NO sink this run",
+            missing.iter().map(|(_, n)| *n).collect::<Vec<_>>().join(" and ")
+        );
+    };
+
+    let mut adopted: Vec<&str> = Vec::new();
+    let mut refused: Vec<&str> = Vec::new();
+    for (id, name) in missing {
+        match unsafe { SetStdHandle(id, file) } {
+            Ok(()) => adopted.push(name),
+            Err(_) => refused.push(name),
+        }
+    }
+
+    let mut line = format!("[stdio] no console: {} now point at this log file", adopted.join(" and "));
+    if !refused.is_empty() {
+        line.push_str(&format!("; SetStdHandle refused {}", refused.join(" and ")));
+    }
+    line
+}
+
 /// Start the log file with a UTF-8 byte order mark.
 ///
 /// # The log was never written wrong; it was read wrong
@@ -3484,6 +3630,10 @@ fn main() {
     // later would sit in the middle of the file, where it is not a mark but a
     // stray character.
     write_log_bom();
+    // **After the mark and before the hook**, for the two reasons written on
+    // the function. Its verdict is logged below rather than here, because
+    // there is no banner above this point to attribute a line to.
+    let stdio = adopt_std_handles();
     // **First, ahead of the banner.** Everything below can panic, and a panic
     // before the hook is installed leaves exactly the evidence the last two
     // silent deaths left: none.
@@ -3493,6 +3643,7 @@ fn main() {
         std::process::id(),
         log_path().display()
     );
+    logf!("{stdio}");
     maybe_panic_test();
 
     if std::env::args().any(|a| a == "--draw-on-paint") {

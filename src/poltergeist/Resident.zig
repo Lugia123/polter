@@ -1582,6 +1582,36 @@ fn main(self: *Resident) void {
                     // map is only ever read for `secret.resolve`.
                     .environ_map = &self.environ,
 
+                    // **No console window for a plugin, and note that this
+                    // does not touch the three streams below.**
+                    //
+                    // Windows will not run a `.ps1` itself, so a PowerShell
+                    // plugin is started through `powershell.exe`, which is a
+                    // console program. While this host was a console
+                    // subsystem binary that cost nothing -- the child
+                    // inherited our console and no window appeared. The host
+                    // is a GUI subsystem binary now (see the note at the top
+                    // of `windows/host/src/main.rs`), and a GUI process
+                    // starting a console program is exactly the case where
+                    // Windows hands the child **a console window of its
+                    // own**. So the flag arrives in the same change that
+                    // removed the host's console; separating them trades one
+                    // permanent window for one window per plugin.
+                    //
+                    // **`CREATE_NO_WINDOW` suppresses the console, not the
+                    // output.** stdin/stdout/stderr below are still pipes and
+                    // still deliver -- which is the whole point, because
+                    // `status=provisioned` and everything else a plugin says
+                    // is read off them. `DETACHED_PROCESS` is the flag that
+                    // would take both, and it is not this one.
+                    //
+                    // Zig's default is the trap here: `SpawnOptions
+                    // .create_no_window` is `false` while `RunOptions`
+                    // (`std.process.run`) defaults it to `true`. The two read
+                    // like the same setting and are opposite, so anything
+                    // spawning a process on Windows has to say this out loud.
+                    .create_no_window = true,
+
                     .stdin = .pipe,
 
                     // The one shape difference from a one-shot plugin: it

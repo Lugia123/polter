@@ -311,25 +311,127 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
   **那个对照不成立，「缺陷在我们这边」退回未检验**：`cmd` 不看扫描码，
   而扫描码正是这条路唯一依赖的东西。详见**第五之三节**，那里有跑之前写死的判据表。
   已在宿主两侧加日志区分「核心拒绝」和「核心根本没被问到」（TSF 在消息泵里先吃掉）。
-- **品牌两处新暴露**：console 子系统带出来的黑框要去掉
-  （`#![windows_subsystem = "windows"]`，日志已落文件不靠 stdout）；框架窗口标题
-  跟随 shell 是对的，但**还没有标题时的兜底必须是 Polter**（当前建窗口时就是
-  `Polter`，等真机确认）。归到第五节品牌那条一起做。
+- ~~**品牌两处新暴露**：console 子系统带出来的黑框~~ → **黑框那条已落地（任务 171，
+  2026-09-03），欠一次真机确认**；框架窗口标题跟随 shell 是对的，但**还没有标题时的
+  兜底必须是 Polter**（当前建窗口时就是 `Polter`，等真机确认）。
 
-  > ⚠️ **顺序依赖：黑框那条必须排在 panic hook 之后做。**
+  > **销案依据，以及当初为什么拖着。**
   >
-  > 「日志已落文件不靠 stdout」这句**只对 stdout 成立，对 stderr 不成立**。
-  > panic 消息是默认 hook 写 stderr 的，而 `log_line` 只写 stdout 和文件——
-  > 没有任何东西把 stderr 引进文件。今天这个 exe 是 `WINDOWS_CUI`（读 PE 头
-  > 可选头 offset 68 量的，`Subsystem = 3`），所以 panic 消息**唯一的去处**
-  > 就是那个黑框对应的控制台。
+  > 这条带着一条顺序依赖：**黑框那条必须排在 panic hook 之后做**。理由（原文保留
+  > 在下面）是：panic 消息由默认 hook 写 stderr，而 `log_line` 只写 stdout 和文件，
+  > 没有任何东西把 stderr 引进文件；exe 是 `WINDOWS_CUI` 时，panic 消息唯一的去处
+  > 就是那个黑框对应的控制台。**先去掉黑框、后装 hook，会把每一次 panic 从「写在
+  > 没人看的控制台里」变成「彻底不存在」——现象一样，证据更少。**
   >
-  > 先去掉黑框、后装 hook，会把每一次 panic 从「写在没人看的控制台里」变成
-  > **「彻底不存在」——现象一样，证据更少**。
+  > **那个前提今天已满足**：`install_panic_hook` 已落地，P0–P3 四格全过（见本文
+  > panic hook 一节），而且 hook **先写日志文件、再写裸 stderr**，所以它不依赖
+  > 控制台。于是这条依赖解除，黑框才动。
   >
-  > **这条依赖不在任何一件事自己的描述里**：一件是外观，一件是可观测性，
-  > 两边单独看都没有问题，是做的顺序决定了第二件还有没有可能。不写下来就
-  > 没人看得见。
+  > **落地的是四处，不是一处**（`#![windows_subsystem = "windows"]` 单独一行会
+  > 换来别的窗口和别的沉默）：
+  >
+  > 1. `main.rs` 顶部 `#![windows_subsystem = "windows"]`，**debug 不分档**——
+  >    用 `cfg` 分档会让 debug 构建在**正好被修的那根轴上**与 release 不同
+  >    （有没有控制台，决定了 `.ps1` 插件是继承我们的还是自己领一个窗口），
+  >    于是唯一能调试它的构建再也复现不了它。
+  > 2. `log_line` 的 `println!` 删掉。文件那份本来就是「我们信的那份」；顺带
+  >    消掉两个隐患：看门狗被 Rust 全局 stdout 锁堵住（`wd_log` 的注释记着），
+  >    以及横幅打进 `+mcp` 用来讲协议的那条 stdout。
+  > 3. `adopt_std_handles`（`main.rs`）：**只有当 Windows 一个句柄都没给我们时**，
+  >    才把 stdout/stderr 用 `SetStdHandle` 接到日志文件（`FILE_APPEND_DATA`，
+  >    所以与 `log_line` 的逐行追加不会互相覆盖）。已经有句柄的不碰——那可能是
+  >    测试者的 `> out.log 2>&1`，也可能是 agent CLI 给 `+mcp` 的管道。
+  >    **位置在 `write_log_bom` 之后（它是 `File::create`，会截断）、
+  >    `install_panic_hook` 之前（默认 hook 的 backtrace 从第一刻起就要有落点）。**
+  >    它写一行 `[stdio] …` 说明这一次走的是哪条路。
+  > 4. `Resident.zig` 插件 spawn 加 `.create_no_window = true`，`os/open.zig`
+  >    的 `rundll32` 同上。**这个标志压的是控制台，不是输出**：stdio 仍是管道，
+  >    `status=provisioned` 照旧读得到。（`DETACHED_PROCESS` 才是两个一起掐的那个。）
+  >
+  > **本机读数（不是真机）**：同一台 mac、同一条 `cargo build --release
+  > --target x86_64-pc-windows-gnu`，改前的 exe 读 PE 可选头 offset 68 得
+  > `Subsystem = 3`，改后得 `Subsystem = 2`。改前那个数与本文下面记的真机读数一致。
+  > **判据写在这里而不是只在群里**，因为一组只能被转述的判据，没有人能整组读一遍。
+  >
+  > **启动方式是判据的一部分，不是背景。** 这几格必须用 `schtasks /it` 起
+  > （最接近双击）。**不许用 `start` 或从一个已经有控制台的 shell 里起**：那样
+  > polter-host 会继承那个控制台、不再弹新窗口，而**那个假阴性和「已修复」的读数
+  > 长得一模一样**。怎么跑决定了这一格有没有分辨力。
+  >
+  > **地板（已由 WT 在真机上取得，2026-09-03，用的是修复前的构建）**
+  >
+  > - **F1 ✅ 那个窗口是谁的，量到了毫秒**：`polter-host.exe` pid 2780 起来后
+  >   **+5ms 由它自己分配 `conhost.exe`**，+24ms `OpenConsole.exe -Embedding`
+  >   完成 handoff（父进程 svchost），+82ms 出现 `WindowsTerminal.exe`
+  >   ——**那就是用户看到的那个窗口**，标题字面写着
+  >   `…\polter-448e6e226\polter-host.exe`。用户叫它「PowerShell」，
+  >   是因为这台机器的默认终端宿主是 Windows Terminal。
+  > - **F1 的负向格 ✅**：+441ms 起来的两个 `provision.ps1`，**窗口句柄都是 0**。
+  >   插件那条候选在真机上被排除，不再是从 `Resident.zig` 的 `.pipe` 推的。
+  > - **F2 ✅ 「不停刷」的是什么**：截图上目视到 `[loop] … center_pixel=0x…`
+  >   ——`main.rs` 里每 125 tick 一条的主线程心跳，走 `logf!`。
+  >   **它同时写文件**，所以砍掉 stdout 之后它照样在日志文件里；
+  >   变的只是「不再画在屏幕上」。
+  > - **F3 ✅**：`Subsystem = 3`（真机读 PE 头 offset 68 量过，见上一节；
+  >   本机对 HEAD 的 `main.rs` 交叉编译出的 exe 复量同样是 3）。
+  >
+  > **为什么不是 `FreeConsole`（这条路评估过，否掉，理由留在这里）**
+  >
+  > 1. **它救不了那个窗口，只能把它变成一闪。** 上面那条时间线说明控制台在
+  >    **+5ms** 就分配好了、窗口在 **+82ms** 就在屏幕上了，而 `FreeConsole`
+  >    最早也要等到 `main()`（Rust 运行时起完、DLL 载完之后）。用户会看到一个
+  >    黑框闪一下——**「有时候会闪个黑框」是最难被报准的那类缺陷**。
+  > 2. **它要买的那样东西，其实不需要它买。** 留 `FreeConsole` 的理由是
+  >    「从命令行跑时还有控制台」，而真正担心的那一格（`--panic-test` 还说不说话）
+  >    **本来就不经过控制台**：`maybe_panic_test` 的那行走 `logf!` 进文件，
+  >    panic hook **先写日志文件、再写裸 stderr**。控制台独有的只有默认 hook 的
+  >    backtrace，而那一份今天的去处是「没人看的控制台」（见本文 panic 一节），
+  >    改动后由 `adopt_std_handles` 接进日志文件——**比今天多，不是少**。
+  > 3. **要把终端那条路还回来，应该是 `AttachConsole(ATTACH_PARENT_PROCESS)`**：
+  >    在知道自己要它的那一刻（`+action`）主动去要，而不是留一个控制台在那里
+  >    等着被发现。单列一条。
+  >
+  > > ⚠️ **不要用 `GetConsoleWindow` 做这几格的判据，理由写在这里而不是留在
+  > > 谁的脑子里**：它对「本进程没有控制台」和「有控制台但那个控制台没有窗口」
+  > > 返回同一个值（NULL）。改成 GUI 子系统之后它返回 NULL 是**正确行为**，
+  > > 不是「窗口没了」的证据——这两件事会给出同一个返回值，所以它分不开成功和
+  > > 一种失败。用 PE 头的 Subsystem 值（离线、可重复），窗口本身用眼睛看。
+  >
+  > **主判据（改后 release，真机仍欠）**
+  >
+  > - **M1**：exe 的 Subsystem == `2`。（本机已量到 2，真机上量的是真正要装的那份。）
+  > - **M2**：**用 `schtasks /it` 起**，屏幕上除 Polter 窗口外没有别的窗口；
+  >   进程树里也不该再有 `conhost.exe` / `OpenConsole.exe` 从 polter-host 派生
+  >   （F1 那条链的头一环）；开两个标签、各跑一条命令，仍然没有。
+  > - **M3**：插件常驻期间没有闪出、也没有留下 powershell 窗口。**与 M2 分开看**：
+  >   M2 是宿主自己的控制台，M3 是 `create_no_window` 那一格，两者的修法不同，
+  >   而漏掉后者的表现是「大部分时候没窗口，某个操作会闪一个出来」。
+  >
+  > **负向格（证明没有把输出一起掐掉）**
+  >
+  > **这几格问的都是「日志文件里还有没有」，不是「控制台上还有没有」。**
+  > 改动之后这两件事必然不同——控制台上什么都没有正是本次要的结果——
+  > **只看控制台会把成功读成「日志死了」。**
+  >
+  > - **N1**：日志文件仍在增长（`[loop] … center_pixel=` 那条心跳还在往里写），且含插件的 `status=provisioned`。
+  > - **N2**：目标 CLI 配置里 `mcpServers.polter` 仍被写入，**内容读回来核过**。
+  > - **N3**：**核心日志仍有落点**——文件里出现只有核心会写的行，用
+  >   `info(app): poltergeist:` 开头那条。判据是这种行，**不是「文件存在」**；
+  >   同一份日志里还要有 `[stdio] no console: …` 那行，它说明这一次确实走了
+  >   重定向那条路（若显示 `leaving them alone`，说明这次是从终端带着重定向起的，
+  >   那不是用户报的那种起法，M2 这一次不成立）。
+  > - **N4**：`--panic-test` 仍说话——日志文件里 `[panic] thread "main" panicked at …`
+  >   还在，且同一份日志里有启动横幅（P1 的重跑）。**这一格是本次最重要的一格**：
+  >   它回答的是「我们有没有用一个缺陷换掉一个观测手段的死亡」。
+  > - **N5**：`polter-host.exe` 从 **PowerShell 里带重定向**跑一次
+  >   （`.\polter-host.exe > out.log 2>&1`），确认 `out.log` 里有核心日志——
+  >   这一格量的是 `adopt_std_handles` 的「别人给了句柄就不碰」那条分支，
+  >   它和 N3 走的是相反的两条路，只验一条等于没验那个 if。
+  >
+  > **已知的、这次不修的代价**：GUI 子系统下，从终端手打 `polter-host.exe +chat`
+  > 这类 `+action` 不会再在那个终端上作画（GUI 进程不附着启动它的控制台）。
+  > 被 agent CLI 用管道拉起的 `+mcp` 不受影响（那是继承的管道，不是控制台）。
+  > 要把 CLI 那条路还回来是 `AttachConsole(ATTACH_PARENT_PROCESS)`，**单列一条**。
 
 ## 三、四条线的最终状态
 
@@ -377,8 +479,15 @@ Windows 目标下两支都进不去），**且 `resourcesdir.zig:79` 明写
    缩放期间的重绘只来自渲染线程（表现为一圈黑边）。两个选项：让上下文按帧易主
    （每帧一次 `makeCurrent`，真正满足契约），或明确写下「WGL 不支持主线程 drawFrame」。**未裁。**
 2. ~~**libghostty 的日志在真机上看不见**~~ → **已销（2026-09-03）**。`main.rs` 启动时
-   设 `GHOSTTY_LOG=stderr`，而这个宿主是 console 子系统程序，stderr 就是日志文件那条流。
-   **不需要改核心**：`global.zig` 本来就读这个变量，只是 lib artifact 的默认值是关。
+   设 `GHOSTTY_LOG=stderr`。**不需要改核心**：`global.zig` 本来就读这个变量，只是
+   lib artifact 的默认值是关。
+   > **销案理由在同一天换过一次，而现象没变，所以这里写明白。** 原来的理由是
+   > 「这个宿主是 console 子系统程序，stderr 就是日志文件那条流」——那句话依赖的是
+   > 控制台，而任务 171 把控制台去掉了。现在支撑它的是 `adopt_std_handles`：没有
+   > 控制台时把 stderr 接到日志文件。**核心在 Windows 上只有 stderr 这一个 sink**
+   > （`global.zig` 的 `Logging` 另一个字段是 macOS 统一日志），所以这一格不是锦上添花，
+   > 它是这条账目今天还成不成立的全部依据。判据是文件里出现**只有核心会写**的行
+   > （例如 `info(app): poltergeist: N plugin(s) ready`），不是「文件存在」。
 3. **ConPTY 测试 harness**：`ConPTY B` 仍 skip。已定性为「控制台归属未检验，仍是最有希望的候选」
    （`GetConsoleCP=936`，测试进程确实附着控制台；m1host 是 GUI 子系统所以能工作）。
 4. **品牌六处未做**：AppUserModelID（不设的话换目录就变两个任务栏图标，且决定 toast 身份）、
