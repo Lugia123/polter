@@ -2199,13 +2199,23 @@ pub fn focus_active(frame: HWND) {
             None => return,
         }
     };
-    // **Wrapped, because this focus move can end somebody's composition.**
+    // **Wrapped, because this focus move can end somebody's composition --
+    // but a real machine says it is not the only thing that does, and not the
+    // first.**
     //
     // `SetFocus` re-enters TSF, which ends any composition in flight and calls
-    // back into `tsf.rs` with the half-typed text still in the buffer. Without
-    // this guard that text is committed to the terminal -- so pressing a
-    // keybinding mid-composition opened the tab *and* typed the syllable. See
-    // `REFOCUSING` in `main.rs`.
+    // back into `tsf.rs` with the half-typed text still in the buffer; without
+    // the guard that text is committed to the terminal.
+    //
+    // **That was written as the explanation of the whole symptom, and the
+    // timestamps refuted it**: pressing a keybinding mid-composition still
+    // typed the syllable, and the composition had ended 38ms *before* this
+    // function ran -- 5ms before the tab it opens even existed. So something
+    // earlier, on the interception path itself, ends it first. `main.rs`'s
+    // `trace_intercept` is there to say which step, and until that reading
+    // exists this guard is known to be **insufficient, not wrong**: it still
+    // covers a real focus change, it just is not where the reported symptom
+    // comes from.
     crate::with_refocus(|| {
         crate::ime_set_window(child);
         unsafe {

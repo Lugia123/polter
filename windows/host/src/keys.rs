@@ -288,7 +288,9 @@ pub fn handle_key_message(
         // Read out what the log needs before the event is handed over: the
         // C struct is passed by value and moves.
         let (ev_keycode, ev_mods) = (ev.keycode, ev.mods);
+        crate::trace_intercept("before surface_key");
         let consumed_by_core = (api().surface_key)(surface, ev);
+        crate::trace_intercept("after surface_key");
         let mut consumed = consumed_by_core;
 
         // **Log every key with a modifier, and the first few of everything.**

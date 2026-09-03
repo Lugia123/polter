@@ -723,6 +723,52 @@ const KEY_IDENTITY_LPARAM: isize = 0x01FF_0000;
 
 /// Key messages kept away from TSF because the core called them bindings.
 static INTERCEPTED: AtomicU32 = AtomicU32::new(0);
+/// Set while an intercepted key is being translated and dispatched, so the
+/// few lines that trace that window can be printed without tracing every key.
+static TRACING_INTERCEPT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// How many intercepted keys have been traced. Bounded: this is a question,
+/// not a permanent feature.
+static TRACED: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the current dispatch is one we are tracing (`keys.rs` asks).
+pub fn tracing_intercept() -> bool {
+    TRACING_INTERCEPT.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// One line of the interception trace.
+///
+/// # What this is measuring, and why guessing was not allowed
+///
+/// Intercepting a chord mid-composition ends the composition, and the
+/// half-typed syllable reaches the terminal. The first explanation was that
+/// the host's own focus move -- opening a tab, then `SetFocus` on the new
+/// pane -- was what ended it, and a guard was put around that. **A real
+/// machine refuted it by timestamp**: the composition ended **38ms after the
+/// key was kept from TSF and 5ms before the tab existed**, so it was already
+/// over before the focus moved at all.
+///
+/// **That is the same mistake twice in one evening**: finding something that
+/// genuinely does end a composition, and stopping there, when an earlier
+/// cause was sitting in front of it.
+///
+/// So this brackets the four steps between the two known timestamps.
+/// Wherever `[ime] OnEndComposition` falls among these lines is the step that
+/// ended it -- and the two candidates need opposite fixes:
+///
+///   * **inside `TranslateMessage`** -- TSF is reacting to a key it saw go
+///     past the pump without being offered to it. Nothing we call; the guard
+///     has to cover the whole window instead.
+///   * **inside `DispatchMessageW`** -- something on our own dispatch path
+///     does it, and that thing can be found and addressed directly.
+pub fn trace_intercept(where_: &str) {
+    if !tracing_intercept() {
+        return;
+    }
+    // process-wide: a step in the message pump, which serves the thread
+    plogf!("[key] trace {}", where_);
+}
+
 /// Whether the "pump returned a different key" diagnostic has been printed.
 static MISMATCH_LOGGED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -3973,6 +4019,11 @@ fn main() {
                 // with `ctrl` and no `shift`.
                 let ours = crate::keys::ask_binding(msg.message, msg.wParam, msg.lParam);
                 if ours.may_intercept() {
+                    // Trace only the first few, and only these: the question
+                    // is where one interception loses a composition, not what
+                    // every key does.
+                    let t = TRACED.fetch_add(1, Ordering::Relaxed) + 1;
+                    TRACING_INTERCEPT.store(t <= 10, Ordering::Release);
                     let n = INTERCEPTED.fetch_add(1, Ordering::Relaxed) + 1;
                     if n <= 40 {
                         // process-wide: the pump serves the thread, and this
@@ -4060,9 +4111,13 @@ fn main() {
                         );
                     }
                 } else {
+                    trace_intercept("before TranslateMessage");
                     let _ = TranslateMessage(&msg);
+                    trace_intercept("after TranslateMessage / before DispatchMessageW");
                     DispatchMessageW(&msg);
+                    trace_intercept("after DispatchMessageW");
                 }
+                TRACING_INTERCEPT.store(false, Ordering::Release);
             }
             (api_box.app_tick)(app);
         }

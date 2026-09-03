@@ -498,7 +498,15 @@ impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
         // moving focus between its own panes, an ending composition is
         // discarded. Everything else still commits, including a genuine
         // focus loss to another application, which is what Windows users
-        // expect.
+        // expect -- and that half is confirmed on a real machine.
+        //
+        // **The reported symptom is still not covered, and saying so here is
+        // the point.** Pressing a keybinding mid-composition still commits
+        // the syllable: the composition ends 38ms before the host moves any
+        // focus, so this guard is simply not up yet when the end arrives.
+        // **A guard whose scope is wrong and a guard that is absent produce
+        // the same log line**, which is why the scope is being measured
+        // (`trace_intercept` in `main.rs`) rather than adjusted by guesswork.
         let ours = crate::ending_because_we_moved_focus();
         crate::ime_log(&format!(
             "OnEndComposition commit={:?}{}",
