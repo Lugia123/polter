@@ -714,6 +714,15 @@ static PUMP_SWALLOWED: AtomicU32 = AtomicU32::new(0);
 /// The keyboard layout in force the last time a key message went past, so a
 /// change can be logged at the moment it matters rather than polled.
 static LAST_HKL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The bits of `WM_KEY*` lParam that name the key rather than describe the
+/// moment: scan code (16-23) and the extended flag (24). Everything else --
+/// repeat count, context code, and the previous/transition state bits that
+/// broke two versions of the pump probe -- varies between two observations of
+/// one message.
+const KEY_IDENTITY_LPARAM: isize = 0x01FF_0000;
+
+/// Key messages kept away from TSF because the core called them bindings.
+static INTERCEPTED: AtomicU32 = AtomicU32::new(0);
 /// Whether the "pump returned a different key" diagnostic has been printed.
 static MISMATCH_LOGGED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -3655,15 +3664,38 @@ fn main() {
                 )
                 .as_bool()
                 {
-                    // **`time` is deliberately not part of this.** The first
-                    // version compared it too, and the identity never matched
-                    // once in seventeen key messages: every one was recorded as
-                    // swallowed while the `[key]` line for the same key showed
-                    // up about one loop iteration later. A message that goes
-                    // through `ITfKeystrokeMgr` can come back with a different
-                    // timestamp; `message`/`wParam`/`lParam` are what say
-                    // *which key*, and that is the question here.
-                    Some((waiting.message, waiting.wParam.0, waiting.lParam.0))
+                    // **Only the parts of a key message that identify the
+                    // key.** Two earlier versions of this got it wrong, and the
+                    // way they were wrong is worth more than the fix.
+                    //
+                    // The first compared `time` as well; that was removed on
+                    // the theory that a message passing through
+                    // `ITfKeystrokeMgr` can come back with a different
+                    // timestamp. **That theory was not wrong, it was
+                    // incomplete** -- the identity still never matched, and the
+                    // diagnostic below finally named the field:
+                    //
+                    // ```
+                    // expected  lp=0x40310001
+                    // returned  lp=0x00310001
+                    // ```
+                    //
+                    // The difference is `0x40000000`, **bit 30 of lParam: the
+                    // previous key state.** It describes the keyboard at the
+                    // moment of observation, not the key -- so it can and does
+                    // differ between two looks at the same message. Bit 31
+                    // (transition state) is the same kind of thing.
+                    //
+                    // **Finding one field that really does vary is what stopped
+                    // the search**, and there was a second one behind it. So
+                    // this now keeps only what cannot drift: the message, the
+                    // virtual key, and lParam's scan code (bits 16-23) with its
+                    // extended flag (bit 24).
+                    Some((
+                        waiting.message,
+                        waiting.wParam.0,
+                        waiting.lParam.0 & KEY_IDENTITY_LPARAM,
+                    ))
                 } else {
                     None
                 };
@@ -3688,29 +3720,11 @@ fn main() {
                 if let Some(id) = waiting_key {
                     PUMP_KEYS_SEEN.fetch_add(1, Ordering::Relaxed);
                     log_hkl_if_changed();
-                    let returned =
-                        got && (msg.message, msg.wParam.0, msg.lParam.0) == id;
+                    let returned = got
+                        && (msg.message, msg.wParam.0, msg.lParam.0 & KEY_IDENTITY_LPARAM) == id;
                     if returned {
                         PUMP_KEYS_RETURNED.fetch_add(1, Ordering::Relaxed);
                     } else {
-                        // **When the pump hands back a key that is not the one
-                        // we saw, say so once.** If this identity check is
-                        // wrong again, this line names the two tuples instead
-                        // of leaving a pile of false `swallowed` counts to be
-                        // discovered on a machine.
-                        if got
-                            && (WM_KEYFIRST..=WM_KEYLAST).contains(&msg.message)
-                            && !MISMATCH_LOGGED.swap(true, Ordering::Relaxed)
-                        {
-                            // process-wide: about the probe, not a window
-                            plogf!(
-                                "[key] pump probe: expected msg=0x{:x} wp=0x{:x} lp=0x{:x}, \
-                                 pump returned msg=0x{:x} wp=0x{:x} lp=0x{:x} \
-                                 (reported once; if `returned` stays 0 the identity check is wrong)",
-                                id.0, id.1, id.2,
-                                msg.message, msg.wParam.0, msg.lParam.0
-                            );
-                        }
                         // Not returned. It may simply still be queued -- the
                         // pump is allowed to hand back something else first --
                         // so being gone is the part that means anything.
@@ -3723,7 +3737,37 @@ fn main() {
                             PM_NOREMOVE,
                         )
                         .as_bool()
-                            && (after.message, after.wParam.0, after.lParam.0) == id;
+                            && (
+                                after.message,
+                                after.wParam.0,
+                                after.lParam.0 & KEY_IDENTITY_LPARAM,
+                            ) == id;
+
+                        // **Reported once, whichever branch we are in.**
+                        //
+                        // The first version only spoke when the pump had handed
+                        // back a *key* message. It happened to fire -- and that
+                        // was luck: had the pump returned something else, or
+                        // nothing, it would have stayed silent and `returned=0`
+                        // would have been an unexplained number all over again.
+                        // **A diagnostic that only covers one branch has a
+                        // silence that means several different things**, which
+                        // is the fault it was added to remove.
+                        if !MISMATCH_LOGGED.swap(true, Ordering::Relaxed) {
+                            // process-wide: about the probe, not a window
+                            plogf!(
+                                "[key] pump probe: expected msg=0x{:x} wp=0x{:x} lp=0x{:x}; \
+                                 got={} returned msg=0x{:x} wp=0x{:x} lp=0x{:x}; \
+                                 still_queued={} (reported once. When got=false the returned \
+                                 fields are stale and mean nothing.)",
+                                id.0, id.1, id.2,
+                                got,
+                                msg.message, msg.wParam.0,
+                                msg.lParam.0 & KEY_IDENTITY_LPARAM,
+                                still
+                            );
+                        }
+
                         if !still {
                             let n = PUMP_SWALLOWED.fetch_add(1, Ordering::Relaxed) + 1;
                             if n <= SWALLOW_LOG_CAP {
@@ -3761,8 +3805,84 @@ fn main() {
                     break 'outer;
                 }
 
+                // **Chords that are ours are not offered to TSF at all.**
+                //
+                // While an input method composes, TSF claims keys before the
+                // core is ever asked -- a real machine showed `ctrl`, `shift`
+                // and `c` all taken with `composing=Some(true)`, so every
+                // application shortcut was dead for as long as a candidate
+                // window was open. This is the one point where that can be
+                // changed: `TestKeyDown` is the earliest we are consulted, and
+                // a key TSF takes never reaches a window procedure at all.
+                //
+                // # Only `performable=no`, and that is not a safety margin
+                //
+                // We ask the core here, and the core will decide again after
+                // dispatch. Two evaluations, and state could differ between
+                // them -- **except for exactly the class we intercept**: a
+                // binding that is *not* `performable` does not depend on
+                // terminal state, which is what "not performable" means. So
+                // the one kind of key we take away is the one kind whose two
+                // answers cannot disagree. **The risk is not mitigated here,
+                // it is absent.**
+                //
+                // Intercepting a `performable` binding would be the opposite:
+                // the core would decline it after we had already taken it from
+                // the input method, the host accelerator table would decline
+                // it too, and the key would be handled by nobody -- **worse
+                // than today, where at least the IME uses it.**
+                //
+                // # What this changes outside composition, and when that stops
+                //   being harmless
+                //
+                // This is not conditional on composing -- deliberately: the
+                // `composing` flag is unreliable for the first key of a
+                // composition, and it is not needed, because that first key is
+                // a bare letter and answers `binding=no` anyway. **One less
+                // piece of state is one less thing to be wrong.**
+                //
+                // The consequence is that input methods now never see any
+                // chord we bind non-performably, composing or not. **Today
+                // that costs nothing**, because nothing in our table is a
+                // chord an IME wants: `ctrl+space` (IME on/off), `ctrl+.`
+                // (punctuation width) and `ctrl+shift` (layout switch) are all
+                // unbound by us.
+                //
+                // **That is a sentence about today.** The day somebody binds
+                // one of them -- and we added eight bindings in a single
+                // afternoon -- this line takes it away from the input method
+                // silently: no error, no log, the key simply stops doing what
+                // the IME user expects. Check that list before adding a chord
+                // with `ctrl` and no `shift`.
+                let ours = crate::keys::ask_binding(msg.message, msg.wParam, msg.lParam);
+                if ours.may_intercept() {
+                    let n = INTERCEPTED.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n <= 40 {
+                        // process-wide: the pump serves the thread, and this
+                        // says what the pump did with a message
+                        plogf!(
+                            "[key] kept from TSF msg=0x{:x} vk=0x{:02x} composing={:?} \
+                             ({})",
+                            msg.message,
+                            msg.wParam.0 as u16,
+                            composing_now(),
+                            ours.label()
+                        );
+                    }
+                    if n == 40 {
+                        // process-wide: about the log, not a window
+                        plogf!(
+                            "[key] kept from TSF: reached the 40 line cap; further ones are \
+                             counted, not printed. The total is on the exit line."
+                        );
+                    }
+                }
+
+                // Not offered to TSF when it is ours: it falls through to
+                // `TranslateMessage` + `DispatchMessageW` below, exactly as if
+                // TSF had been asked and had declined.
                 let mut eaten = false;
-                if let Some(k) = &keystrokes {
+                if let Some(k) = &keystrokes.as_ref().filter(|_| !ours.may_intercept()) {
                     match msg.message {
                         WM_KEYDOWN | WM_SYSKEYDOWN => {
                             if k.TestKeyDown(msg.wParam, msg.lParam)
@@ -3803,7 +3923,11 @@ fn main() {
                             msg.message,
                             msg.wParam.0 as u16,
                             composing_now(),
-                            crate::keys::binding_probe(msg.message, msg.wParam, msg.lParam)
+                            // **The same answer the decision used**, not a
+                            // second call: two calls could disagree, and a log
+                            // line that disagrees with the branch it is
+                            // describing is worse than no line.
+                            ours.label()
                         );
                     }
                     // **Say when the cap is reached.** Without this the line
@@ -4044,11 +4168,12 @@ fn main() {
     );
     // process-wide: totals for the process
     plogf!(
-        "[key] pump totals: seen={} returned={} swallowed={} tsf_ate={}",
+        "[key] pump totals: seen={} returned={} swallowed={} tsf_ate={} kept_from_tsf={}",
         seen,
         returned,
         swallowed,
-        TSF_ATE.load(Ordering::Relaxed)
+        TSF_ATE.load(Ordering::Relaxed),
+        INTERCEPTED.load(Ordering::Relaxed)
     );
     // **The floor for the counter above, and it exists because the first
     // version shipped without one.** That version recorded all seventeen key

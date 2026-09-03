@@ -858,18 +858,55 @@ fn key_is_binding_fn() -> Option<KeyIsBindingFn> {
 /// than today, where at least the IME uses it. That is why the flags are read
 /// and reported separately: the number worth acting on is
 /// `binding=yes performable=no`, not `binding=yes`.
-pub fn binding_probe(msg: u32, wp: WPARAM, lp: LPARAM) -> &'static str {
+/// What the core says about a key, in the three shapes that matter here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingAnswer {
+    /// A binding, and its answer does not depend on terminal state.
+    /// **The only kind that may be taken away from the input method.**
+    Ours,
+    /// A binding, but `performable`: the core will decline it when the
+    /// conditions are not met. Taking it from the input method would mean
+    /// nobody handles it at all.
+    Performable,
+    /// Not one of ours; the input method is welcome to it.
+    NotOurs,
+    /// The question could not be asked. **Its own answer, never folded into
+    /// `NotOurs`** -- "we did not ask" and "we asked and it said no" lead to
+    /// opposite conclusions about whether the numbers below are complete.
+    Unknown(&'static str),
+}
+
+impl BindingAnswer {
+    /// For the log line. One string per case, so a reader can tell all four
+    /// apart without knowing the enum.
+    pub fn label(self) -> &'static str {
+        match self {
+            BindingAnswer::Ours => "binding=yes performable=no",
+            BindingAnswer::Performable => {
+                "binding=yes performable=yes (intercepting this one would lose the key)"
+            }
+            BindingAnswer::NotOurs => "binding=no",
+            BindingAnswer::Unknown(why) => why,
+        }
+    }
+
+    /// **May this key be kept away from TSF?** Only the first case.
+    pub fn may_intercept(self) -> bool {
+        matches!(self, BindingAnswer::Ours)
+    }
+}
+
+/// Ask the core what it would do with this key, without sending it.
+pub fn ask_binding(msg: u32, wp: WPARAM, lp: LPARAM) -> BindingAnswer {
     if msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN {
-        return "n/a (not a keydown)";
+        return BindingAnswer::Unknown("n/a (not a keydown)");
     }
     let Some(f) = key_is_binding_fn() else {
-        return "unknown (symbol missing)";
+        return BindingAnswer::Unknown("unknown (symbol missing)");
     };
     let surface = crate::tabs::active_surface(crate::tabs::overlay_frame());
     if surface.is_null() {
-        // Not a failure: no window has been activated yet, or the last one
-        // has gone. Reported as its own answer so it cannot be read as "no".
-        return "unknown (no focused surface)";
+        return BindingAnswer::Unknown("unknown (no focused surface)");
     }
     let ev = ffi::KeyEvent {
         action: if is_repeat(lp) { ACTION_REPEAT } else { ACTION_PRESS },
@@ -882,12 +919,16 @@ pub fn binding_probe(msg: u32, wp: WPARAM, lp: LPARAM) -> &'static str {
     };
     let mut flags: std::os::raw::c_int = 0;
     if !unsafe { f(surface, ev, &mut flags) } {
-        return "binding=no";
+        return BindingAnswer::NotOurs;
     }
     if flags & BINDING_FLAG_PERFORMABLE != 0 {
-        // **The one that must not be counted as a win.** See above.
-        "binding=yes performable=yes (intercepting this one would lose the key)"
+        BindingAnswer::Performable
     } else {
-        "binding=yes performable=no"
+        BindingAnswer::Ours
     }
+}
+
+/// The same question, formatted for a log line.
+pub fn binding_probe(msg: u32, wp: WPARAM, lp: LPARAM) -> &'static str {
+    ask_binding(msg, wp, lp).label()
 }
