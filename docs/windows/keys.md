@@ -74,12 +74,27 @@
 
 | 想知道 | 命令 |
 |---|---|
-| 进程还在不在、有几个 | `tasklist /fi "imagename eq polter.exe"` |
-| 残留进程有没有窗口 | PowerShell：`Get-Process polter \| Select Id,MainWindowHandle,MainWindowTitle` |
+| 进程还在不在、有几个 | PowerShell：`Get-Process -Name 'polter*' -ErrorAction SilentlyContinue \| Select Id,ProcessName,StartTime` |
+| 残留进程有没有窗口 | PowerShell：`Get-Process -Name 'polter*' -ErrorAction SilentlyContinue \| Select Id,ProcessName,MainWindowHandle,MainWindowTitle` |
 | 某个 action 有没有触发 | `findstr /c:"[action]" <日志>` |
 | 某个键有没有到 `handle_key_message` | `findstr /c:"[key]" <日志>` |
 | 加速键有没有真的开火 | `findstr /c:"host accelerator" <日志>` |
 | 窗口登记表数到几 | `findstr /c:"window(s) left" <日志>` |
+
+> **这两行原来写的是 `Get-Process polter` 和 `tasklist /fi "imagename eq polter.exe"`，
+> 两条都永远取不到东西。** 进程叫 `polter-host`，测试构建叫 `polter-wt-<commit>`，
+> **而 `Get-Process polter` 不带通配符要求精确匹配**。一条永远返回空的检查，和一条通过
+> 的检查，输出一模一样——**而空读起来就是「机器是干净的」**。
+>
+> 同一个错的另一个版本在真机上兑现过：整晚用 `taskkill /f /im polter-host.exe` 清场，
+> 而产物有五六个名字，**两个实例活了四小时没被碰过**，每一次 `tasklist` 都说干净。
+> 换成 `-Name 'polter*'` 之后一次全出来。
+>
+> **所以这一类命令有两条规矩**：**过滤条件要能覆盖你实际造过的所有名字**；
+> **取不到时要出声，不许静默返回空**（`windows/tools/uia-tree-dump.ps1` 是这么写的：
+> `if ($p.Count -eq 0) { throw "no $ProcessName process is running" }`）。
+> 上面两行留了 `-ErrorAction SilentlyContinue` 是因为它们是**探查**，读的人在场；
+> **写进脚本当判据时要换成 `throw`。**
 
 **判据里写日志原文，不要写「界面上应该看到 X」。** 截图证明不了因果——它只说结果，
 说不出是谁做的。日志里那行 `[key] ... -> surface_key=false` 才能把「核心不认这个键」
