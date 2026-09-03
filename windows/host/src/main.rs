@@ -699,6 +699,62 @@ static CELL_H: AtomicU32 = AtomicU32::new(0);
 static DRAW_ON_PAINT: AtomicU32 = AtomicU32::new(0);
 /// How many key messages `ITfKeystrokeMgr` claimed before dispatch.
 static TSF_ATE: AtomicU32 = AtomicU32::new(0);
+/// Key messages that were sitting in the queue when the pump was asked.
+///
+/// **This counter is what makes "no swallows" a reading.** A probe that only
+/// prints when something is wrong cannot tell "it did not happen" from "the
+/// probe was not looking" -- which is exactly how a log with `TSF ate` zero
+/// times came to be treated as evidence and was not.
+static PUMP_KEYS_SEEN: AtomicU32 = AtomicU32::new(0);
+/// …and how many of those the pump handed back to us.
+static PUMP_KEYS_RETURNED: AtomicU32 = AtomicU32::new(0);
+/// …and how many vanished: removed from the queue by the pump and never
+/// returned. See `pump_probe` for why this path leaves no other trace.
+static PUMP_SWALLOWED: AtomicU32 = AtomicU32::new(0);
+/// The keyboard layout in force the last time a key message went past, so a
+/// change can be logged at the moment it matters rather than polled.
+static LAST_HKL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many `[key] pump swallowed` lines to print before going quiet.
+///
+/// **Reaching it prints a line saying so.** A cap that saturates in silence
+/// converts "the line is absent" from a reading into nothing at all, which is
+/// the fault this whole probe exists to remove; the total is printed at exit
+/// either way.
+const SWALLOW_LOG_CAP: u32 = 40;
+
+/// `composing`, if TSF is up and is not mid-borrow.
+///
+/// `None` means "could not ask", and is printed as such: the difference
+/// between *not composing* and *unable to tell* is the whole reason this is
+/// in the line at all.
+fn composing_now() -> Option<bool> {
+    IME.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|st| st.ime.try_borrow().ok().map(|i| i.composing))
+    })
+}
+
+/// Log the keyboard layout when it changes, at the moment a key goes past.
+///
+/// **Not a `WM_INPUTLANGCHANGE` handler**, deliberately: that message goes to
+/// whichever window has focus, and the question here is "what layout was in
+/// force for *this* key". Reading it beside the key ties the two together
+/// without depending on which window a message happened to reach.
+fn log_hkl_if_changed() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+    let hkl = unsafe { GetKeyboardLayout(0) }.0 as usize;
+    if LAST_HKL.swap(hkl, Ordering::Relaxed) == hkl {
+        return;
+    }
+    // process-wide: the layout belongs to the thread, not to any one window
+    plogf!(
+        "[key] keyboard layout now HKL=0x{:08x} (langid 0x{:04x})",
+        hkl,
+        (hkl & 0xFFFF) as u16
+    );
+}
 /// How many times WM_PAINT actually made the *main thread* call
 /// ghostty_surface_draw. Without this number, a clean-looking resize proves
 /// nothing: it could just mean no paint was ever requested.
@@ -3524,6 +3580,34 @@ fn main() {
     'outer: loop {
         unsafe {
             loop {
+                // **What was waiting before we asked** -- see `PUMP_SWALLOWED`.
+                //
+                // `ITfMessagePump::PeekMessageW` is called with `PM_REMOVE`, so
+                // TSF takes the message off the queue and then decides whether
+                // to hand it back. **A key it removes and does not return
+                // leaves no trace anywhere**: `TestKeyDown` is never asked, so
+                // there is no `TSF ate` line; nothing is dispatched, so there
+                // is no `[key]` line. That is not a hypothetical -- a log with
+                // 3,530 lines and `TSF ate` zero times still lost two
+                // keydowns.
+                //
+                // `PM_NOREMOVE` only looks. It does not change which code the
+                // key goes through, only whether we can see that it did.
+                let mut waiting = MSG::default();
+                let waiting_key = if PeekMessageW(
+                    &mut waiting,
+                    None,
+                    WM_KEYFIRST,
+                    WM_KEYLAST,
+                    PM_NOREMOVE,
+                )
+                .as_bool()
+                {
+                    Some((waiting.message, waiting.wParam.0, waiting.lParam.0, waiting.time))
+                } else {
+                    None
+                };
+
                 let got = match &pump {
                     Some(p) => {
                         let mut ok = windows::core::BOOL(0);
@@ -3540,6 +3624,52 @@ fn main() {
                     }
                     None => PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool(),
                 };
+
+                if let Some(id) = waiting_key {
+                    PUMP_KEYS_SEEN.fetch_add(1, Ordering::Relaxed);
+                    log_hkl_if_changed();
+                    let returned = got
+                        && (msg.message, msg.wParam.0, msg.lParam.0, msg.time) == id;
+                    if returned {
+                        PUMP_KEYS_RETURNED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        // Not returned. It may simply still be queued -- the
+                        // pump is allowed to hand back something else first --
+                        // so being gone is the part that means anything.
+                        let mut after = MSG::default();
+                        let still = PeekMessageW(
+                            &mut after,
+                            None,
+                            WM_KEYFIRST,
+                            WM_KEYLAST,
+                            PM_NOREMOVE,
+                        )
+                        .as_bool()
+                            && (after.message, after.wParam.0, after.lParam.0, after.time) == id;
+                        if !still {
+                            let n = PUMP_SWALLOWED.fetch_add(1, Ordering::Relaxed) + 1;
+                            if n <= SWALLOW_LOG_CAP {
+                                // process-wide: the pump serves the thread
+                                plogf!(
+                                    "[key] pump swallowed msg=0x{:x} vk=0x{:02x} \
+                                     (removed from the queue and never returned; composing={:?})",
+                                    id.0,
+                                    id.1 as u16,
+                                    composing_now()
+                                );
+                            }
+                            if n == SWALLOW_LOG_CAP {
+                                // process-wide: about the log, not a window
+                                plogf!(
+                                    "[key] pump swallowed: reached the {} line cap; further ones \
+                                     are counted, not printed. The total is on the exit line.",
+                                    SWALLOW_LOG_CAP
+                                );
+                            }
+                        }
+                    }
+                }
+
                 if !got {
                     break;
                 }
@@ -3584,9 +3714,22 @@ fn main() {
                     let n = TSF_ATE.fetch_add(1, Ordering::Relaxed) + 1;
                     if n <= 40 {
                         logf!(
-                            "[key] TSF ate msg=0x{:x} vk=0x{:02x} (not dispatched)",
+                            "[key] TSF ate msg=0x{:x} vk=0x{:02x} composing={:?} (not dispatched)",
                             msg.message,
-                            msg.wParam.0 as u16
+                            msg.wParam.0 as u16,
+                            composing_now()
+                        );
+                    }
+                    // **Say when the cap is reached.** Without this the line
+                    // stops appearing and "no more were eaten" and "we stopped
+                    // writing them down" become the same reading -- which is
+                    // how a count of forty came to look like a count of forty
+                    // events rather than a saturated counter.
+                    if n == 40 {
+                        // process-wide: about the log, not a window
+                        plogf!(
+                            "[key] TSF ate: reached the 40 line cap; further ones are counted, \
+                             not printed. The total is on the exit line."
                         );
                     }
                 } else {
@@ -3801,6 +3944,21 @@ fn main() {
     // process-wide: the process is leaving; by this point no window is left
     // for the line to be about
     plogf!("[main] exiting: session flushed, {} tabs were open", open_tabs);
+    // **The counters, so an absence becomes a reading.**
+    //
+    // `swallowed=0` means nothing on its own -- it is also what a probe that
+    // never ran prints. Next to `seen`, it says how many key messages went
+    // past while the probe was watching, and only then is the zero worth
+    // something.
+    //
+    // process-wide: totals for the process
+    plogf!(
+        "[key] pump totals: seen={} returned={} swallowed={} tsf_ate={}",
+        PUMP_KEYS_SEEN.load(Ordering::Relaxed),
+        PUMP_KEYS_RETURNED.load(Ordering::Relaxed),
+        PUMP_SWALLOWED.load(Ordering::Relaxed),
+        TSF_ATE.load(Ordering::Relaxed)
+    );
 }
 
 
