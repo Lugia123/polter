@@ -1321,6 +1321,71 @@ B 是关键的那一半：它模拟的正是 `test_arena` 注释里预警过的�
 **「恢复后仍然红」或「恢复后就绿了」都可能是根本没重编的假象。**
 
 
+### （十五）任务 188：三个测试写同一个进程级 `static`，而这个文件里没有任何串行设施
+
+**现场三份，逐字，行号按本仓规矩挖掉。** 同一个二进制（`fixed.exe`）并行 22 次，红 3 次：
+
+    ---- hud::tests::a_surface_can_be_toggled_back_and_keeps_one_entry ----
+    panicked at hud.rs:<A>: assertion `left == right` failed: one entry per surface
+      left: 2      ← r07
+     right: 1
+
+    ---- hud::tests::a_surface_can_be_toggled_back_and_keeps_one_entry ----
+    panicked at hud.rs:<A>: assertion `left == right` failed: one entry per surface
+      left: 0      ← s11，同一条断言，方向相反
+     right: 1
+
+    ---- hud::tests::one_surface_going_readonly_does_not_answer_for_another ----
+    panicked at hud.rs:<B>: assertion failed: is_readonly_for(0x1111)
+
+**三格全都红过，组合不止一种**（`r07`/`s11` 是同两格，`s02` 是第三格单独红）。
+
+#### 成因是**构造出来的，不是测出来的**
+
+三个测试各自 `clear()` → 写 → 断言 → `clear()`，而 `READONLY` 是**一个进程级
+`static Mutex<Vec<…>>`**，`hud.rs` 里 `ONE_AT_A_TIME` / `test_arena` / `exclusive`
+**全部零命中**——这个文件没有任何轮次设施。于是并行时：
+
+| 别的测试恰好做了什么 | 受害断言看到 |
+| --- | --- |
+| 它的 `clear()` 落在我的写和我的断言之间 | `left: 0`（我的条目被抹了） |
+| 它的 `on_readonly_for` 落在同一处 | `left: 2`（多了一条不是我的） |
+| 同上 | `is_readonly_for(0x1111)` 为假 |
+
+**那两个方向相反的读数不是两个病，是同一个病的两侧**，而这正是它最容易被误诊成
+「断言写错了」的地方。
+
+`PoisonError` 是**次生**的：断言写成 `READONLY.lock().unwrap().len()`，
+临时 guard 活到整条语句结束，**panic 发生时锁还握在手里**，于是毒化，
+后面每个 `.unwrap()` 都跟着红。`clear()` 用的是 `if let Ok(..)`，所以它不受影响——
+**同一个文件里，两种取锁写法对毒化的反应相反**，而这解释了为什么失败正文有两种长相。
+
+#### ⚠️ 修的时候最容易犯的那个错：**别把它挂到 `tabs::test_arena` 上**
+
+189 刚立的规矩是「轮次的边界跟着对象走」。**这里的对象是 `READONLY`，不是 `STATE`。**
+`hud` 的测试**一个 locker 都够不到**（独立量过），所以把它塞进 tabs 的竞技场是**多余的串行**——
+而**多余的串行是绿的，永远不会有人发现它没必要**。它要的是自己的轮次。
+
+**同样别把射程放大**：这个文件里还有 `RO_SHOWN_FOR` 等几个进程级 `static`，
+但这三个测试**够不到它们**（只走 `on_readonly_for` / `is_readonly_for`）。
+**今天的证据只支持给 `READONLY` 一个轮次。**
+
+**状态**：半验（现场三份、写者与「无串行设施」都回源码核过；**成因是构造的，未做变异验证**）·
+**销案**：给 `READONLY` 一个轮次之后，同一个二进制并行 22 次以上零命中，
+**并且**先造一个「轮次没生效」的变异证明那条判据会红。
+
+#### 顺带：复核者第二次推翻了自己更早的计数
+
+它先前报「179 那轮 3 次里红 1 次、红了 3 格」。这次回去翻档，
+`C:\app\wt179\` 只剩两份 txt，其中 `pair.txt` 是按 `invariant_floor+deadlock` 过滤跑的，
+**一条 `hud::tests` 都没有**。
+
+> **那句话今天只存在于它的会话记录里，没有留盘证据。**
+
+和 193 那次「我有三份原文」是同一类，而它两次都是自己主动查出来并报上来的。
+**留盘的 22 次是有档可查的那部分**，先前那笔按未留证处理。
+
+
 ## 五之二、五条裁决（2026-09-01 已定）
 
 **这一节和第五节不同。** 第五节是技术账——有确切位置、有人能查下去。
