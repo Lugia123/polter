@@ -1453,7 +1453,9 @@ fn create_pane(
     // **The other half of the pair `[mouse] divisor=` is compared against.**
     // These two numbers come from the same expression at two different
     // moments; if they ever differ, the round trip through the core does not
-    // cancel and a pointer lands somewhere a person did not point.
+    // cancel and a pointer lands somewhere a person did not point. They were
+    // equal the first time anybody looked -- which is how a suspected DPI
+    // defect turned out to be a mis-measurement rather than a fault here.
     logf!("[pane] {} content_scale={} (told to the core at creation)", id, scale);
     unsafe {
         (api().surface_set_content_scale)(s, scale, scale);
@@ -3233,22 +3235,40 @@ fn mouse_pos(pane: HWND, lp: LPARAM) {
     let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f64;
     unsafe { (api().surface_mouse_pos)(s, x / scale, y / scale, crate::keys::mods()) };
 
-    // **The divisor, said out loud, because two different faults produce the
-    // same screen and only this number tells them apart.**
+    // **This is not here for a defect. It is here because two causes would
+    // have produced the same screen, and the reading told them apart.**
     //
-    // A selection landing at exactly 1.5x the pointer on a 150% display has
-    // two possible causes, and their fixes are opposite:
+    // A selection was reported landing at exactly 1.5x the pointer on a 150%
+    // display. That single observation has two causes with opposite fixes:
+    // the conversion is inverted and should multiply, or the conversion is
+    // right and this divisor is 1.0 -- dividing by nothing while the core
+    // goes on multiplying by its own 1.5. Flipping the arithmetic would make
+    // the second *look* fixed at 150% and be wrong at every other scale
+    // (1.56x at 125%, 3.06x at 175%), so the number was printed before
+    // anything was changed.
     //
-    //   * the conversion is inverted -- it should multiply;
-    //   * **the conversion is right and this divisor is 1.0**, so dividing
-    //     did nothing while the core went on multiplying by its own 1.5.
+    // **The real machine then said `content_scale=1.5` and `divisor=1.5`,
+    // and `31 / 1.5 * 1.5 = 31`.** The conversion here was never wrong.
     //
-    // Flipping the arithmetic would make the second case *look* fixed on a
-    // 150% display and be wrong again at any other -- at 125% by 1.56, at
-    // 175% by 3.06 -- so the number has to be read before anything is
-    // changed. Compare it with the `content_scale=` on the `[pane]` line:
-    // equal means the conversion is at fault, different means this value's
-    // source is.
+    // The 1.5 was in the measurement: the probe injecting the coordinates was
+    // a DPI-unaware process, so Windows scaled everything it asked for by 1.5
+    // on the way to the desktop, and it then compared the coordinates *it had
+    // asked for* against a screenshot in physical pixels. The highlight had
+    // been under the pointer the whole time.
+    //
+    // **So these two lines stay, and what they are for has changed**: they
+    // are not evidence of a fault, they are what makes this arithmetic
+    // checkable the next time somebody suspects it -- and the next suspicion
+    // is likely, because everything here is invisible at 100%.
+    //
+    // # The rule that would have caught it at the source
+    //
+    // **Any probe that injects mouse coordinates must make its own process
+    // DPI-aware first, and must read the position back with `GetCursorPos`
+    // after `SetCursorPos`.** A read-back that does not equal the request
+    // means the probe is working in a different coordinate space from the
+    // thing it is measuring, and every number it produces afterwards is
+    // consistent, plausible, and about something else.
     //
     // **Once per drag, not once per move.** A line per `WM_MOUSEMOVE` is
     // thousands of lines a second and would push the interesting ones out of
