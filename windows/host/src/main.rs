@@ -38,6 +38,7 @@ mod keys;
 mod hud;
 mod keyseq;
 mod menu;
+mod mouse;
 mod overlay;
 mod palette;
 mod plugins;
@@ -2188,7 +2189,82 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             alogf!(origin, "[action] present_terminal");
             queue_from(origin, Op::PresentTerminal, "present_terminal action")
         }
-        ACTION_MOUSE_SHAPE | ACTION_MOUSE_VISIBILITY => true,
+        // **Per surface, because a pointer shape is about one pane.** After a
+        // split the pointer is over exactly one of them, and a shape stored
+        // once for the process would put the pane under the pointer's shape on
+        // whichever pane redrew last.
+        //
+        // **Recording it is only half.** The pane's window class carries
+        // `IDC_ARROW`, so `DefWindowProc` restores the arrow on the next mouse
+        // message; `mouse::apply`, called from the pane's `WM_SETCURSOR`, is
+        // what makes the recorded shape survive the pointer moving. See
+        // `mouse.rs`.
+        ACTION_MOUSE_SHAPE => {
+            let shape = action.as_i32();
+            match target_surface(&target) {
+                Some(s) => {
+                    let p = mouse::record_shape(s as usize, shape);
+                    // **The fidelity is in the line, not implied by it.** A
+                    // shape that fell back to the arrow and a shape that was
+                    // mapped correctly are indistinguishable on screen.
+                    alogf!(
+                        origin,
+                        "[action] mouse_shape {} ({}) -> {} [{}]",
+                        shape, p.shape, p.cursor_name, p.fidelity.name()
+                    );
+                }
+                None => alogf!(
+                    origin,
+                    "[action] mouse_shape {} with no surface (tag={}); dropped",
+                    shape, target.tag
+                ),
+            }
+            true
+        }
+
+        // `ghostty_action_mouse_visibility_e`: 0 visible, 1 hidden.
+        //
+        // **The post is the point.** Windows sends `WM_SETCURSOR` when the
+        // pointer moves, and the core hides the pointer when the user *types*
+        // -- so waiting for `WM_SETCURSOR` would hide it never while looking
+        // like an implementation. The pane hides it on the thread that owns
+        // the window, and only if the pointer is actually over that pane.
+        ACTION_MOUSE_VISIBILITY => {
+            let v = action.as_i32();
+            let hidden = v == 1;
+            match target_surface(&target) {
+                Some(s) => {
+                    mouse::record_visibility(s as usize, hidden);
+                    let posted = match tabs::pane_hwnd_of_surface(s) {
+                        Some(pane) => unsafe {
+                            PostMessageW(
+                                Some(pane),
+                                mouse::WM_POLTER_MOUSE_VISIBILITY,
+                                WPARAM(0),
+                                LPARAM(0),
+                            )
+                            .is_ok()
+                        },
+                        // The quick terminal's surface is not a pane, so there
+                        // is no pane window to post to. Its shape still
+                        // follows -- `tabs::surface_of` falls through to it --
+                        // and only this immediate hide is out of reach.
+                        None => false,
+                    };
+                    alogf!(
+                        origin,
+                        "[action] mouse_visibility {} (hidden={}) posted={}",
+                        v, hidden as u8, posted as u8
+                    );
+                }
+                None => alogf!(
+                    origin,
+                    "[action] mouse_visibility {} with no surface (tag={}); dropped",
+                    v, target.tag
+                ),
+            }
+            true
+        }
         ACTION_RING_BELL => {
             alogf!(origin, "[action] ring_bell");
             true

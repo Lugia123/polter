@@ -248,15 +248,75 @@ pub fn stack_depth() -> (usize, usize) {
 mod tests {
     use super::*;
 
-    /// The tests share one global stack, so they run one after another rather
-    /// than pretending to be independent.
-    fn reset() {
-        if let Ok(mut s) = STACK.lock() {
-            s.clear();
-        }
-        // The opener is a `OnceLock` on purpose (installed once, at startup);
-        // tests here never install one, which is why `reopen_last` is only
-        // exercised for its refusal paths.
+    /// One test at a time, because there is one stack.
+    ///
+    /// The comment that used to sit here said the tests "run one after
+    /// another rather than pretending to be independent". **Nothing made
+    /// that true.** `cargo test` runs them on a thread pool, so any two of
+    /// the seven overlapped and cleared or filled each other's stack.
+    ///
+    /// # Why a lock and not a habit
+    ///
+    /// Which tests failed was pure scheduling. Eighteen parallel runs on the
+    /// real machine: eight red with one to three failures each, and the names
+    /// moving between runs --
+    ///
+    /// ```text
+    /// 5/10  a_refused_reopen_keeps_the_entry
+    /// 5/10  a_tab_with_no_cwd_is_not_remembered
+    /// 3/10  an_empty_stack_reopens_nothing
+    /// 3/10  a_tab_with_a_cwd_is_remembered
+    /// 2/10  the_stack_is_bounded_and_drops_the_oldest
+    /// 2/10  the_stack_is_last_in_first_out
+    /// 1/10  a_tab_with_no_chosen_name_is_still_remembered
+    /// ```
+    ///
+    /// -- **and one run came back completely green.** That run is why this is
+    /// a lock in the file and not a note asking people to be careful: a green
+    /// result from a race says only that nothing collided that time, and one
+    /// such run is enough to close the investigation by mistake.
+    ///
+    /// # Why not `--test-threads=1`
+    ///
+    /// That is a flag on the command. It lives in whatever anybody happens to
+    /// type rather than in the repository, so it is absent from the next run
+    /// by default -- and it serialises every unrelated test in the crate to
+    /// fix seven. **It also treats the symptom**: the suite would go quiet
+    /// while the tests still each assumed they owned a process-wide stack,
+    /// and the next test written here would inherit that assumption with
+    /// nothing to correct it.
+    ///
+    /// The stack being one stack is **not** the defect. It is the design -- a
+    /// tab closed in one window is reopenable from another. What was wrong
+    /// was seven tests each believing they owned it.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    /// Take the stack for the duration of this test, and start it empty.
+    ///
+    /// **Bind the result**: `let _stack = exclusive();`. Writing
+    /// `let _ = exclusive();` drops the guard on the spot and the test runs
+    /// unprotected -- which is exactly how these behaved before this existed,
+    /// so nothing would look wrong.
+    ///
+    /// **Clearing happens on the way in and nowhere else.** Clearing on the
+    /// way out is a promise a test that panics cannot keep, and a stack left
+    /// dirty by a failing test would then appear as a second, invented
+    /// failure in whichever test ran next.
+    ///
+    /// **A poisoned lock is recovered from rather than propagated.** A test
+    /// that fails while holding this poisons it, and every test after it
+    /// would then fail on the lock instead of on its own subject -- one real
+    /// failure wearing six false ones, which is harder to read than the race
+    /// was.
+    ///
+    /// The opener is a `OnceLock` on purpose (installed once, at startup);
+    /// tests here never install one, which is why `reopen_last` is only
+    /// exercised for its refusal paths.
+    #[must_use]
+    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+        let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        STACK.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        guard
     }
 
     /// **The `HWND` and the `TabId` these tests pass do not take part in what
@@ -267,7 +327,7 @@ mod tests {
     /// id was checked.
     #[test]
     fn a_tab_with_no_cwd_is_not_remembered() {
-        reset();
+        let _stack = exclusive();
         remember(HWND::default(), Some(TabId(41)), 0, "no cwd", "");
         assert_eq!(stack_depth().0, 0);
         assert!(!can_reopen());
@@ -278,11 +338,10 @@ mod tests {
     /// directory and lets the tab reopen somewhere else.
     #[test]
     fn a_tab_with_a_cwd_is_remembered() {
-        reset();
+        let _stack = exclusive();
         remember(HWND::default(), Some(TabId(42)), 3, "build", "C:\\work\\alpha");
         assert_eq!(stack_depth().0, 1);
         assert!(can_reopen());
-        reset();
     }
 
     /// **A tab with no chosen name is still worth reopening.** The directory
@@ -292,16 +351,15 @@ mod tests {
     /// that looks exactly like "no cwd known".
     #[test]
     fn a_tab_with_no_chosen_name_is_still_remembered() {
-        reset();
+        let _stack = exclusive();
         remember(HWND::default(), Some(TabId(43)), 2, "", "C:\\work\\gamma");
         assert_eq!(stack_depth().0, 1);
         assert!(can_reopen());
-        reset();
     }
 
     #[test]
     fn the_stack_is_last_in_first_out() {
-        reset();
+        let _stack = exclusive();
         remember(HWND::default(), None, 0, "x", "C:\\x");
         remember(HWND::default(), None, 1, "y", "C:\\y");
         remember(HWND::default(), None, 2, "z", "C:\\z");
@@ -313,14 +371,13 @@ mod tests {
             }
         }
         assert_eq!(order, vec!["z", "y", "x"]);
-        reset();
     }
 
     /// The bound holds, and it drops the *oldest*. Dropping the newest would
     /// also keep the length at twenty and would break undo instead.
     #[test]
     fn the_stack_is_bounded_and_drops_the_oldest() {
-        reset();
+        let _stack = exclusive();
         for i in 0..(LIMIT + 5) {
             remember(HWND::default(), Some(TabId(i as u64)), i, &format!("tab{i}"), "C:\\somewhere");
         }
@@ -335,7 +392,7 @@ mod tests {
     /// reopens the tab before it.
     #[test]
     fn a_refused_reopen_keeps_the_entry() {
-        reset();
+        let _stack = exclusive();
         remember(HWND::default(), None, 1, "keeps", "C:\\work\\alpha");
         // **`HWND::default()` is honest here, not a placeholder.** These
         // tests exercise the stack, which is process-wide; the frame only
@@ -343,13 +400,12 @@ mod tests {
         // handed the same null frame for the same reason.
         assert!(!reopen_last(HWND::default()), "no opener is installed in tests");
         assert_eq!(stack_depth().0, 1, "the entry must still be there");
-        reset();
     }
 
     /// An empty stack answers no, and does not panic doing it.
     #[test]
     fn an_empty_stack_reopens_nothing() {
-        reset();
+        let _stack = exclusive();
         assert!(!reopen_last(HWND::default()));
         assert_eq!(stack_depth().0, 0);
     }

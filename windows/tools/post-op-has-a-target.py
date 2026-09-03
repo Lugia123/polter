@@ -186,6 +186,20 @@ print(
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host", "src")
 files = sorted(glob.glob(os.path.join(root, "*.rs")))
+
+# **A gate that scanned nothing exits 0 and reads as green.**
+# Measured, not assumed: pointed at a tree where `windows/host/src/` is empty,
+# this gate printed `scanned 0 files` and then its own all-clear, and returned
+# 0. **The count was already on the screen -- nothing acted on it.**
+#
+# `ps1-parses.py` is the model. What has to be non-empty is the *subject set*,
+# not the hit count: zero hits is a real pass, zero files is not an answer.
+if not files:
+    print(f"FAIL: no .rs file under {root}; this gate is looking in the wrong "
+          f"place. It did not find a clean tree -- it found nothing to look "
+          f"at, and those two exit the same way unless this line exists.")
+    sys.exit(1)
+
 untargeted = []
 first_window = []
 calls = 0

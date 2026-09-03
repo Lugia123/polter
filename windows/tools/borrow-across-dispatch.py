@@ -483,8 +483,23 @@ if not list(scan_mutex_guard(CANARY_UIA, "<canary>")):
     sys.exit(1)
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host", "src")
+sources = sorted(glob.glob(os.path.join(root, "*.rs")))
+
+# **A gate that scanned nothing exits 0 and reads as green.**
+# Measured, not assumed: pointed at a tree where `windows/host/src/` is empty,
+# this gate printed `scanned 0 files` and then its own all-clear, and returned
+# 0. **The count was already on the screen -- nothing acted on it.**
+#
+# `ps1-parses.py` is the model. What has to be non-empty is the *subject set*,
+# not the hit count: zero hits is a real pass, zero files is not an answer.
+if not sources:
+    print(f"FAIL: no .rs file under {root}; this gate is looking in the wrong "
+          f"place. It did not find a clean tree -- it found nothing to look "
+          f"at, and those two exit the same way unless this line exists.")
+    sys.exit(1)
+
 found, unexpected = {}, []
-for path in sorted(glob.glob(os.path.join(root, "*.rs"))):
+for path in sources:
     name = os.path.basename(path)
     with open(path, encoding="utf-8") as fh:
         for _, ln, hits in scan(fh.read(), name):
@@ -493,7 +508,7 @@ for path in sorted(glob.glob(os.path.join(root, "*.rs"))):
 print("probe self-test: OK (RefCell borrow; guards spelled `state()`, "
       "`let ... else` and `if let`; temporaries ignored; UIA raises seen; "
       "local wrappers; comments ignored)")
-print(f"scanned {len(glob.glob(os.path.join(root, '*.rs')))} files\n")
+print(f"scanned {len(sources)} files\n")  # the list above, not a second glob
 for name, sites in sorted(found.items()):
     note = KNOWN.get(name)
     for ln, hits in sites:
