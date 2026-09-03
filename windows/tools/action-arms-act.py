@@ -128,9 +128,17 @@ def reason_for(main_src: str, line: int) -> str | None:
 # because a list that only ever shrinks keeps a slot open for whatever takes
 # that name next, and a slot that outlives its reason is an exemption nobody
 # granted.
+#
+# **Paid off so far**, kept as a note rather than as entries, because a name
+# left in the set is an exemption and a name in a comment is a record:
+#
+#   `ACTION_MOUSE_SHAPE`, `ACTION_MOUSE_VISIBILITY` -- task 161. The shape is
+#   recorded per surface and applied from the pane's `WM_SETCURSOR`, which is
+#   the half that makes it survive the pointer moving; the visibility is
+#   pushed to the pane so that hiding-while-typing can happen at all. This
+#   gate went red on the "no longer lie" side first, which is the run that
+#   showed that half of the ratchet works on a real repair.
 OWED = {
-    "ACTION_MOUSE_SHAPE",
-    "ACTION_MOUSE_VISIBILITY",
     "ACTION_RENDER",
     "ACTION_RENDERER_HEALTH",
     "ACTION_RING_BELL",

@@ -2357,6 +2357,26 @@ pub fn frame_of_surface(surface: Surface) -> Option<HWND> {
     })
 }
 
+/// The **pane window** a surface is bound to, for anything that has to post a
+/// message to it.
+///
+/// The twin of `frame_of_surface`, one level down. `None` is a real answer and
+/// not a gap: the quick terminal's surface is not a pane, and a surface still
+/// inside `ghostty_surface_new` has no `Tab` yet. Callers refuse rather than
+/// pick a window -- posting a pane's message to the frame would be delivered
+/// to a window procedure that has never heard of it.
+// window-free: keyed by surface, which is unique in the process
+pub fn pane_hwnd_of_surface(surface: Surface) -> Option<HWND> {
+    let key = surface as usize;
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.surface == key)
+            .map(|p| HWND(p.hwnd as *mut c_void))
+    })
+}
+
 /// The surface bound to a particular pane window, for that window's wndproc.
 pub fn surface_of(hwnd: HWND) -> Surface {
     let key = hwnd.0 as isize;
@@ -2490,6 +2510,11 @@ fn free_pane(id: PaneId, hwnd: isize, surface: usize) {
     // HWND. Destroy the window first and OLE is left clutching a dead handle
     // -- and nothing says so at the time.
     crate::dnd::detach(HWND(hwnd as *mut c_void));
+    // **Before the surface is freed, and not for tidiness.** Surface pointers
+    // are heap addresses and the allocator reuses them; a row left behind is
+    // one the next surface at that address inherits, opening a fresh pane with
+    // a closed one's pointer shape -- or with its pointer hidden.
+    crate::mouse::forget(surface);
     let t0 = std::time::Instant::now();
     logf!("[close] pane {} -> ghostty_surface_free …", id);
     unsafe {
@@ -3508,6 +3533,45 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
         match msg {
             // Same contract as the frame had in M1: we own every pixel.
             WM_ERASEBKGND => LRESULT(1),
+
+            // **The half that makes a pointer shape stick.** The core
+            // announces a shape once; Windows asks this question again on
+            // every pointer movement, and `DefWindowProcW` answers it with the
+            // window class's `IDC_ARROW`. Answering it here -- and returning
+            // `1` so nothing downstream gets to answer it again -- is what
+            // turns "the shape was recorded" into "the shape is on screen".
+            //
+            // **`HTCLIENT` only.** The low word is the hit-test code, and a
+            // pane is a child window that is almost always client area; the
+            // guard is there so that a resize border or a scroll bar, if one
+            // ever appears, keeps the cursor Windows chose for it.
+            //
+            // `false` from `mouse::apply` means the core has not said anything
+            // about this surface yet. That falls through rather than defaulting
+            // to an arrow here, so the class cursor stays the single place the
+            // default is written.
+            WM_SETCURSOR => {
+                if (lp.0 & 0xFFFF) as u32 == HTCLIENT as u32 {
+                    let s = surface_of(hwnd);
+                    if !s.is_null() && crate::mouse::apply(hwnd, s as usize) {
+                        return LRESULT(1);
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+
+            // The core changed the pointer's visibility. Posted rather than
+            // done in the action, because `SetCursor` belongs to the thread
+            // that owns the window and the action arrives on whichever thread
+            // the core is on. See `mouse::on_visibility_message` for why the
+            // pointer's position is consulted before anything is hidden.
+            crate::mouse::WM_POLTER_MOUSE_VISIBILITY => {
+                let s = surface_of(hwnd);
+                if !s.is_null() {
+                    crate::mouse::on_visibility_message(hwnd, s as usize);
+                }
+                LRESULT(0)
+            }
 
             WM_PAINT => {
                 // Logged whether or not we draw: "the surface window is being

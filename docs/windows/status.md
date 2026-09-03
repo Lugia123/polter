@@ -398,6 +398,24 @@ Windows 目标下两支都进不去），**且 `resourcesdir.zig:79` 明写
      用户会以为自己没选中。
    - **两条腿不会一起坏，也不能互相当对照**：ctrl+c 好不代表 ctrl+shift+c 好，反之亦然。
 
+9. **快速终端拿不到「立刻隐藏光标」那一下**（任务 161，2026-09-03，**已落地未验证**）。
+
+   `ACTION_MOUSE_SHAPE` / `ACTION_MOUSE_VISIBILITY` 已实现：形状按 surface 记下，
+   由 pane 的 `WM_SETCURSOR` 应用——**后者才是让它持续生效的那一半**，因为 pane 的
+   窗口类带 `IDC_ARROW`，`DefWindowProc` 会在鼠标一动时把它换回去。可见性另走一条
+   投递（`mouse::WM_POLTER_MOUSE_VISIBILITY`），因为核心是在**用户打字时**要求隐藏的，
+   而那正是不会有 `WM_SETCURSOR` 的时刻。
+
+   - **形状对快速终端是好的**：`tabs::surface_of` 查不到 pane 时会兜到
+     `quick::surface_of`，而快速终端用的是同一个窗口过程和同一个窗口类。
+   - **够不着的只有「立刻隐藏」**：那条投递要一个 pane 的窗口句柄，而
+     `tabs::pane_hwnd_of_surface` 走的是「窗口 → 标签 → pane」这张表，
+     **快速终端的 surface 不在这张表里**（它不是 pane，也不属于任何标签）。
+     所以它答 `None`，动作里记一行 `posted=0` 就过去了。
+   - **后果**：在快速终端里打字，光标不会隐藏；移动鼠标时形状照常跟随。
+   - 要修的话，得让那条投递能问到「这个 surface 的窗口是谁」而不是「它的 pane 是谁」——
+     `quick.rs` 自己知道答案，缺的是把它接进同一个查询。
+
 ### 9. 三条只有开了核心日志才看得见的事（2026-09-01）
 
 **背景**：`libghostty` 的 `std.log` 在真机上「看不见」这笔账，**根本不是欠账**——
