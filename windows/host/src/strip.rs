@@ -1707,17 +1707,67 @@ pub fn on_nc_right_click(frame: HWND, screen_x: i32, screen_y: i32) -> bool {
         let _ = ScreenToClient(frame, &mut pt);
     }
     let sh = strip_h(tabs::scale_of(frame));
-    if pt.y < 0 || pt.y >= sh || pt.x < 0 {
-        return false;
-    }
+
+    // **Read before deciding, so one line can report the decision and the two
+    // numbers that made it.** Both are pure reads -- `reserved_right` is
+    // `BTN_W * scale * 3` and `GetClientRect` asks Windows for a rectangle --
+    // so moving them above the tests changes when they run and not what this
+    // function does.
     let mut rc = RECT::default();
-    unsafe {
-        if GetClientRect(frame, &mut rc).is_err() {
-            return false;
-        }
-    }
-    // The minimise/maximise/close buttons keep their own behaviour.
-    if pt.x >= rc.right - crate::shell::reserved_right(frame) {
+    let have_rc = unsafe { GetClientRect(frame, &mut rc) }.is_ok();
+    let reserved = crate::shell::reserved_right(frame);
+
+    // `None` means the click is ours; `Some(why)` is the refusal, in the words
+    // the log will use.
+    let refused: Option<&str> = if pt.y < 0 || pt.y >= sh || pt.x < 0 {
+        Some("outside the strip")
+    } else if !have_rc {
+        Some("no client rect")
+    } else if pt.x >= rc.right - reserved {
+        // The minimise/maximise/close buttons keep their own behaviour.
+        Some("window buttons")
+    } else {
+        None
+    };
+
+    // # One line per message, whatever the outcome
+    //
+    // **The three refusals above used to be silent**, and each of them ends
+    // with the system menu instead of ours. What a person sees is "right-click
+    // on the empty strip gives no menu", and that reading is four things at
+    // once:
+    //
+    //   * the message never arrived (routing);
+    //   * it arrived and one of these rules refused it -- **which is correct**;
+    //   * it arrived, was accepted, and `show_strip_menu` failed;
+    //   * the menu appeared and was missed.
+    //
+    // Only the third has ever had a line. The sibling function below already
+    // knew this -- it logs a right-click on the `≡` button *even though
+    // nothing happens*, saying "silence here reads exactly the same as the
+    // right-click never reaching the strip at all". This is that rule applied
+    // to the function next door.
+    //
+    // **One line at the entry rather than one at each refusal**: three log
+    // sites drift apart, and a reader comparing them cannot tell a wording
+    // change from a behaviour change.
+    //
+    // **The two numbers are the ones that decided.** If the decision is wrong,
+    // this line says which value was wrong instead of leaving it to be
+    // guessed -- `strip_h` especially: it is `strip_h(scale_of(frame))`, so a
+    // wrong scale makes the whole strip refuse, and that looks exactly like a
+    // broken menu.
+    wlogf!(
+        frame,
+        "[strip] nc right-click client=({},{}) strip_h={} reserved_right={} -> {}",
+        pt.x,
+        pt.y,
+        sh,
+        reserved,
+        refused.unwrap_or("handed on")
+    );
+
+    if refused.is_some() {
         return false;
     }
     on_right_click(frame, pt.x, pt.y);
