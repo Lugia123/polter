@@ -52,6 +52,13 @@
 #                         version returns non-zero; that is the whole of the
 #                         difference, and `Invoke-PolterCli` does the throwing
 #                         for the hosts that shell out.
+#   Get-HostRulesFile     returns the user-level rules file this CLI reads on
+#                         every turn -- `$HOME\.claude\CLAUDE.md`. **Returning
+#                         nothing means nothing is written**, which is the right
+#                         default for a host whose convention nobody here has
+#                         checked: writing into the wrong file in somebody's
+#                         home directory is worse than not writing. Never a
+#                         project file. See `Set-PolterRules`.
 #   Get-HostSkillsDir     returns the user-level skills directory, built from
 #                         `$script:PolterHome`.
 #                         **Returning nothing means this host has no skills**,
@@ -404,6 +411,18 @@ function Invoke-PolterProvision {
         $script:PolterWrote = $true
     }
 
+    # --- the rules block ------------------------------------------------------
+    #
+    # Everything above makes the tools *reachable*. This is about one sentence
+    # being *read*. A skill is matched against what the user asked for, and
+    # nothing matches "you have just finished a task" -- so a worker finishes,
+    # writes its account to its own screen, and stops, and nothing on that
+    # screen reaches anybody. See the same block in `provision.sh`.
+    if (-not (Set-PolterRules)) {
+        Write-PolterFailure 'rules' 'could not write the rules block'
+        return $false
+    }
+
     if ($script:PolterWantSkills -ne 'yes') {
         Write-PolterProvisionDone
         return $true
@@ -627,6 +646,118 @@ function Write-PolterAck {
     $script:PolterOut.Write('{"ok":' + $(if ($Ok) { 'true' } else { 'false' }) + "}`n")
 }
 
+# The block, byte for byte, markers included.
+#
+# **Markers rather than a whole file of our own**, because these CLIs read one
+# rules file and a second one is a file the CLI never opens. The user's own
+# words stay above and below it untouched, and `rules=no` takes exactly this
+# much back out again.
+#
+# It says the mechanism, not the rules: "what you print reaches nobody" is a
+# fact about how this works that cannot be derived from instructions kept
+# anywhere else. The rules themselves are in the skill, where they can be as
+# long as they need to be without costing every turn.
+function Get-PolterRulesText {
+    @(
+        '<!-- BEGIN POLTER (managed -- rewritten by Polter; edit above or below) -->'
+        '## Polter'
+        ''
+        'This terminal runs under Polter: another agent may be supervising it, and'
+        'several terminals may share a group chat and a task panel.'
+        ''
+        '**What you print here reaches nobody.** Your supervisor cannot see your screen'
+        '-- it only learns that the screen stopped moving, which looks the same whether'
+        'you finished or died. So when you finish a task or get stuck, say so with'
+        '`task_progress`, and put the result in the group with `group_post`. A summary'
+        'printed to this terminal is a summary nobody receives.'
+        ''
+        '`skill_read("operating-a-terminal")` has the rest.'
+        '<!-- END POLTER -->'
+    )
+}
+
+$script:PolterRulesBegin = '<!-- BEGIN POLTER (managed'
+$script:PolterRulesEnd = '<!-- END POLTER -->'
+
+# Write, replace or remove the block in this host's rules file.
+#
+# Read before writing, the same as the MCP step and for the same reason: this
+# is a file the user edits by hand, and rewriting it at every launch for no
+# reason is asking for the one race that eats somebody's notes.
+function Set-PolterRules {
+    $file = ''
+    try { $file = ((Get-HostRulesFile | Out-String).Trim()) } catch { $file = '' }
+    if (-not $file) { return $true }
+
+    if ($script:PolterWantRules -ne 'yes') {
+        return (Remove-PolterRules $file)
+    }
+
+    $want = Get-PolterRulesText
+    $existing = @()
+    if (Test-Path -LiteralPath $file) {
+        try { $existing = @(Get-Content -LiteralPath $file -ErrorAction Stop) } catch { return $false }
+
+        # Already exactly this: nothing to do, and nothing said.
+        $have = @()
+        $inside = $false
+        foreach ($lineText in $existing) {
+            if ($lineText.StartsWith($script:PolterRulesBegin)) { $inside = $true }
+            if ($inside) { $have += $lineText }
+            if ($inside -and $lineText.StartsWith($script:PolterRulesEnd)) { break }
+        }
+        if (($have -join "`n") -eq ($want -join "`n")) { return $true }
+    }
+
+    # **`@(...)` around the call, not just around the return.** PowerShell
+    # unwraps a one-element pipeline to a scalar and an empty one to `$null`,
+    # so a rules file that was nothing but our own block came back as `$null`
+    # and `$null.Count` is an error under StrictMode. Found by running this
+    # against a real pwsh rather than by reading it.
+    $kept = @(Remove-PolterRulesLines $existing)
+    $out = @()
+    if ($kept.Count -gt 0) { $out += $kept; $out += '' }
+    $out += $want
+
+    $dir = Split-Path -Parent $file
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch { return $false }
+    }
+
+    try { Set-Content -LiteralPath $file -Value $out -Encoding UTF8 -ErrorAction Stop } catch { return $false }
+    $script:PolterWrote = $true
+    return $true
+}
+
+# Take the block back out, leaving everything else exactly as it was.
+function Remove-PolterRules {
+    param($File)
+    if (-not (Test-Path -LiteralPath $File)) { return $true }
+
+    $existing = @()
+    try { $existing = @(Get-Content -LiteralPath $File -ErrorAction Stop) } catch { return $false }
+
+    $kept = @(Remove-PolterRulesLines $existing)
+    if ($kept.Count -eq $existing.Count) { return $true }
+
+    try { Set-Content -LiteralPath $File -Value $kept -Encoding UTF8 -ErrorAction Stop } catch { return $false }
+    $script:PolterWrote = $true
+    return $true
+}
+
+# Everything that is not between the markers, in order.
+function Remove-PolterRulesLines {
+    param($Lines)
+    $kept = @()
+    $skipping = $false
+    foreach ($lineText in $Lines) {
+        if ($lineText.StartsWith($script:PolterRulesBegin)) { $skipping = $true; continue }
+        if ($skipping -and $lineText.StartsWith($script:PolterRulesEnd)) { $skipping = $false; continue }
+        if (-not $skipping) { $kept += $lineText }
+    }
+    return $kept
+}
+
 function Invoke-PolterProvisionMain {
     $hello = $script:PolterIn.ReadLine()
     if ($null -eq $hello) { exit 0 }
@@ -642,12 +773,15 @@ function Invoke-PolterProvisionMain {
     # host puts it. Nothing repeats them per batch.
     $script:PolterScope = 'user'
     $script:PolterWantSkills = 'yes'
+    $script:PolterWantRules = 'yes'
     try {
         $params = Get-PolterProp (ConvertFrom-Json $hello) 'params'
         $scope = Get-PolterProp $params 'scope' ''
         $skills = Get-PolterProp $params 'skills' ''
+        $rules = Get-PolterProp $params 'rules' ''
         if ($scope) { $script:PolterScope = $scope }
         if ($skills) { $script:PolterWantSkills = $skills }
+        if ($rules) { $script:PolterWantRules = $rules }
     } catch {
         Write-PolterLog "could not read the parameters out of the greeting; using the defaults ($($_.Exception.Message))"
     }

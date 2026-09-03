@@ -6,7 +6,12 @@ const Config = @import("Config.zig");
 const gresource = @import("../apprt/gtk/build/gresource.zig");
 const locales = @import("../os/i18n_locales.zig").locales;
 
-const domain = "com.mitchellh.ghostty";
+/// The gettext domain, which **must** be the same string the runtime asks
+/// for: `i18n._` calls `dgettext(build_config.bundle_id, …)`, and a catalog
+/// installed under any other name is one it will never find. They were two
+/// separate literals until a fork changed the id in one of them; see
+/// `bundle_id.zig`.
+const domain = @import("bundle_id.zig").value;
 
 owner: *std.Build,
 steps: []*std.Build.Step,
@@ -68,6 +73,13 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
         "--keyword=_",
         "--keyword=N_",
         "--keyword=C_:1c,2",
+
+        // The conversations window's own wrapper around `_`. Without this
+        // its strings are not in the template, and the next `msgmerge`
+        // marks every translation of them obsolete -- the strings would
+        // still work until somebody updated the translations, and then
+        // quietly stop.
+        "--keyword=tr",
     });
 
     // Collect to intermediate .pot file
@@ -153,6 +165,14 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     const command_palette_path = "src/input/command.zig";
     xgettext.addArg(command_palette_path);
     xgettext.addFileInput(b.path(command_palette_path));
+
+    // The conversations window. It is a CLI action rather than part of an
+    // apprt, so the walk over `src/apprt/gtk` above does not reach it --
+    // which is why every string in it was a Chinese literal for as long as
+    // it existed: there was nowhere for a translation of one to go.
+    const chat_path = "src/cli/chat.zig";
+    xgettext.addArg(chat_path);
+    xgettext.addFileInput(b.path(chat_path));
 
     // Add support for localizing our `nautilus` integration
     const xgettext_py = b.addSystemCommand(&.{

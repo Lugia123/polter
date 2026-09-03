@@ -142,6 +142,203 @@ fn render(
     try s.endObject();
 }
 
+/// One line of the record, read back.
+///
+/// The words stay words for the same reason `Tasks` writes them as words:
+/// a build that does not recognise `blocked` should still hand it over,
+/// because the reader is a person and an unfamiliar word is readable while
+/// a dropped field is not. Everything here belongs to the allocator passed
+/// to `history`; free it with `freePage`.
+pub const Event = struct {
+    /// Where this line sits in the group's record, counted from one, in the
+    /// order the lines were written.
+    ///
+    /// Made here rather than written down: nothing in a task line carries a
+    /// sequence number, because the task's own id is its identity. But
+    /// paging needs a cursor, and the record is append-only -- no file in a
+    /// `daylog` tree is ever rewritten, trimmed or reordered -- so the
+    /// position of a line is as stable as a number written into it would
+    /// have been, and costs no new field.
+    seq: u64,
+
+    at_ms: i64,
+    op: []const u8,
+    task: Tasks.TaskId,
+    title: []const u8,
+    owner: Tasks.Id,
+    state: []const u8,
+    progress: []const u8,
+};
+
+pub const Page = struct {
+    /// Oldest first, the same direction `restore` replays and the same one
+    /// `ChatLog.history` hands back.
+    events: []const Event,
+
+    /// Whether there is older still to ask for.
+    more: bool,
+};
+
+/// The most one `history` call will hand back however much is asked for.
+pub const max_history_limit: usize = 500;
+
+/// Events in `group` older than `before_seq`, the newest end of that first.
+///
+/// `before_seq` of zero means the newest, which is what an opening call
+/// wants; page back by passing the `seq` of the oldest event handed over.
+///
+/// **The whole group is read to answer this**, oldest day first, which is
+/// what makes `seq` mean the same thing on every call. That is affordable
+/// here in a way it would not be for the chat record: a night of work is a
+/// few hundred lines of under two hundred bytes each, and `restore` already
+/// reads exactly the same bytes at every startup. If a group ever grows
+/// past that, the fix is a cursor written into the line, not a cleverer
+/// walk over a record that has none.
+///
+/// Reading fails the way writing does -- quietly. A day file that will not
+/// open is skipped; what is handed back is short rather than wrong.
+pub fn history(
+    self: *TaskLog,
+    alloc: Allocator,
+    group: []const u8,
+    before_seq: u64,
+    limit: usize,
+) Allocator.Error!Page {
+    if (limit == 0) return .{ .events = &.{}, .more = false };
+    const want = @min(limit, max_history_limit);
+
+    var found: std.ArrayListUnmanaged(Event) = .empty;
+    errdefer {
+        for (found.items) |e| freeEvent(alloc, e);
+        found.deinit(alloc);
+    }
+
+    // True once something older than what is being handed back has been
+    // read and let go of. Only older counts: events newer than the cursor
+    // are not "more", they are what the caller already has.
+    var dropped = false;
+
+    var days = try self.tree.days(alloc, group);
+    defer days.deinit(alloc);
+
+    // `days` sorts newest first, which is the direction a chat log is
+    // walked and the wrong one here: the numbering has to start at the
+    // oldest line or it would move every time a new day began.
+    std.mem.reverse(daylog.Tree.DayFile, days.items);
+
+    var seq: u64 = 0;
+    walk: for (days.items) |day| {
+        const path = try self.tree.partPath(alloc, group, day.day, day.part);
+        defer alloc.free(path);
+
+        const bytes = std.Io.Dir.readFileAlloc(
+            .cwd(),
+            self.io,
+            path,
+            alloc,
+            .limited(max_replay_bytes),
+        ) catch continue;
+        defer alloc.free(bytes);
+
+        var lines = std.mem.splitScalar(u8, bytes, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+
+            // Numbered after parsing, so a torn line -- which `daylog`
+            // tolerates and this file skips -- does not consume a number
+            // and shift everything after it.
+            var ev = (parseEvent(alloc, line) catch continue) orelse continue;
+            seq += 1;
+            ev.seq = seq;
+
+            // Everything from here on is newer than the cursor, because
+            // the numbers only go up.
+            if (before_seq != 0 and seq >= before_seq) {
+                freeEvent(alloc, ev);
+                break :walk;
+            }
+
+            try found.append(alloc, ev);
+            if (found.items.len > want) {
+                freeEvent(alloc, found.orderedRemove(0));
+                dropped = true;
+            }
+        }
+    }
+
+    return .{ .events = try found.toOwnedSlice(alloc), .more = dropped };
+}
+
+pub fn freePage(alloc: Allocator, page: Page) void {
+    for (page.events) |e| freeEvent(alloc, e);
+    alloc.free(page.events);
+}
+
+fn freeEvent(alloc: Allocator, e: Event) void {
+    alloc.free(e.op);
+    alloc.free(e.title);
+    alloc.free(e.state);
+    alloc.free(e.progress);
+}
+
+/// One line into an `Event`, or null for a line that is not one.
+///
+/// Null rather than an error for anything the line itself is wrong about,
+/// and an error only for running out of memory, so that the caller can tell
+/// "skip this line" from "stop".
+fn parseEvent(alloc: Allocator, line: []const u8) Allocator.Error!?Event {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+
+    const parsed = std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        line,
+        .{},
+    ) catch return null;
+
+    const obj = switch (parsed) {
+        .object => |o| o,
+        else => return null,
+    };
+
+    const task: Tasks.TaskId = switch (obj.get("task") orelse return null) {
+        .integer => |n| if (n < 0) return null else @intCast(n),
+        else => return null,
+    };
+
+    const at_ms: i64 = switch (obj.get("at_ms") orelse std.json.Value{ .integer = 0 }) {
+        .integer => |n| n,
+        else => 0,
+    };
+
+    const owner: Tasks.Id = if (str(obj, "owner")) |t|
+        std.fmt.parseUnsigned(Tasks.Id, t, 0) catch Tasks.nobody
+    else
+        Tasks.nobody;
+
+    // Duplicated one at a time with an errdefer each, because a failure
+    // halfway through leaves the ones before it to be given back.
+    const op = try alloc.dupe(u8, str(obj, "op") orelse "");
+    errdefer alloc.free(op);
+    const title = try alloc.dupe(u8, str(obj, "title") orelse "");
+    errdefer alloc.free(title);
+    const state = try alloc.dupe(u8, str(obj, "state") orelse "");
+    errdefer alloc.free(state);
+    const progress = try alloc.dupe(u8, str(obj, "progress") orelse "");
+
+    return .{
+        .seq = 0,
+        .at_ms = at_ms,
+        .op = op,
+        .task = task,
+        .title = title,
+        .owner = owner,
+        .state = state,
+        .progress = progress,
+    };
+}
+
 /// Rebuild the panel out of the record.
 ///
 /// Every group's directory, oldest day first, every line in order. A line
@@ -341,6 +538,145 @@ test "the panel comes back after a restart" {
 
     // And a fresh task does not land on a number the record already used.
     try testing.expect(try tasks.create("build", "new") > 3);
+}
+
+test "the record pages back through what happened" {
+    // What the statistics page is for: the panel says where things stand,
+    // and only the events say when each one got there.
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    const at: i64 = 1_700_000_000_000;
+
+    var tasks: Tasks = .init(alloc, .{});
+    defer tasks.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+
+    const one = try tasks.create("build", "get the core building");
+    l.append(at, .created, tasks.get(one).?);
+    try tasks.assign(one, 0x2222);
+    l.append(at + 1000, .assigned, tasks.get(one).?);
+    try tasks.setProgress(one, 0x2222, .working);
+    l.append(at + 2000, .progressed, tasks.get(one).?);
+    try tasks.close(one);
+    l.append(at + 3000, .closed, tasks.get(one).?);
+
+    // Another group's events must not turn up in this one's count.
+    const other = try tasks.create("ops", "watch the deploy");
+    l.append(at + 500, .created, tasks.get(other).?);
+
+    {
+        const page = try l.history(alloc, "build", 0, 100);
+        defer TaskLog.freePage(alloc, page);
+
+        try testing.expectEqual(@as(usize, 4), page.events.len);
+        try testing.expect(!page.more);
+
+        // Oldest first, numbered from one, with the words kept as words.
+        try testing.expectEqual(@as(u64, 1), page.events[0].seq);
+        try testing.expectEqualStrings("created", page.events[0].op);
+        try testing.expectEqualStrings("closed", page.events[3].op);
+        try testing.expectEqual(@as(u64, 4), page.events[3].seq);
+
+        try testing.expectEqual(at + 1000, page.events[1].at_ms);
+        try testing.expectEqual(@as(Tasks.Id, 0x2222), page.events[1].owner);
+        try testing.expectEqualStrings("get the core building", page.events[1].title);
+        try testing.expectEqualStrings("working", page.events[2].progress);
+    }
+
+    // A short page is the newest end, and says there is more behind it.
+    const older: u64 = older: {
+        const page = try l.history(alloc, "build", 0, 2);
+        defer TaskLog.freePage(alloc, page);
+
+        try testing.expectEqual(@as(usize, 2), page.events.len);
+        try testing.expect(page.more);
+        try testing.expectEqualStrings("progressed", page.events[0].op);
+        break :older page.events[0].seq;
+    };
+
+    // And paging by that number hands over what was behind it, without
+    // repeating the line the cursor names.
+    {
+        const page = try l.history(alloc, "build", older, 100);
+        defer TaskLog.freePage(alloc, page);
+
+        try testing.expectEqual(@as(usize, 2), page.events.len);
+        try testing.expect(!page.more);
+        try testing.expectEqualStrings("created", page.events[0].op);
+        try testing.expectEqualStrings("assigned", page.events[1].op);
+    }
+}
+
+test "a group with no record pages back to nothing" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+
+    const page = try l.history(alloc, "never-said-anything", 0, 100);
+    defer TaskLog.freePage(alloc, page);
+    try testing.expectEqual(@as(usize, 0), page.events.len);
+    try testing.expect(!page.more);
+
+    // Asking for none is answered with none rather than with everything.
+    const zero = try l.history(alloc, "never-said-anything", 0, 0);
+    defer TaskLog.freePage(alloc, zero);
+    try testing.expectEqual(@as(usize, 0), zero.events.len);
+}
+
+test "a torn line does not consume a number" {
+    // The numbering is the cursor, so a line that cannot be parsed must
+    // not shift every number after it -- a page read before the tear and
+    // one read after it would disagree about what `seq` 5 is.
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    var tasks: Tasks = .init(alloc, .{});
+    defer tasks.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+
+    const at: i64 = 1_700_000_000_000;
+    const one = try tasks.create("build", "kept");
+    l.append(at, .created, tasks.get(one).?);
+    l.tree.write("build", at, "{\"op\":\"crea\n");
+    try tasks.close(one);
+    l.append(at + 1, .closed, tasks.get(one).?);
+
+    const page = try l.history(alloc, "build", 0, 100);
+    defer TaskLog.freePage(alloc, page);
+
+    try testing.expectEqual(@as(usize, 2), page.events.len);
+    try testing.expectEqual(@as(u64, 1), page.events[0].seq);
+    try testing.expectEqual(@as(u64, 2), page.events[1].seq);
+    try testing.expectEqualStrings("closed", page.events[1].op);
 }
 
 test "a cancelled task comes back cancelled, not open" {

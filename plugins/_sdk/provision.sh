@@ -47,6 +47,13 @@
 #                        which is a degradation and not a failure: the tools
 #                        still arrive, and the tool-family map in `initialize`
 #                        arrives with them. See docs/poltergeist/provisioning.md.
+#   host_rules_file()    prints the user-level rules file this CLI reads on
+#                        every turn -- `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`.
+#                        **Printing nothing means nothing is written**, which is
+#                        the right default for a host whose convention nobody
+#                        here has checked: writing into the wrong file in
+#                        somebody's home directory is worse than not writing.
+#                        Never a project file. See `polter_rules_apply`.
 
 # One value out of the line. Every key used here appears once, which is what
 # makes this safe with sed rather than a JSON parser -- `sed` is greedy, so a
@@ -252,6 +259,27 @@ polter_provision() {
       return 1
     fi
     wrote=yes
+  fi
+
+  # --- the rules block ------------------------------------------------------
+  #
+  # Everything above makes the tools *reachable*. This is about one sentence
+  # being *read*, and it is here because a skill is not enough on its own.
+  #
+  # A skill is matched against what the user asked for; nothing matches "you
+  # have just finished a task". So a worker finishes, writes its account to
+  # its own screen, and stops -- and nothing on that screen reaches anybody.
+  # The supervisor sees a still screen and cannot tell "done" from "dead"
+  # without going to look. On the record this was written against, 71 tasks
+  # produced 15 `done` reports and one `blocked`.
+  #
+  # A rules file is the one place these CLIs read on *every* turn, which is
+  # why the sentence goes there and why it stays that short: it is the most
+  # expensive prose on the machine, and it competes with what the user wrote.
+  # Everything else stays in the skill, which this block points at.
+  if ! polter_rules_apply; then
+    fail rules "could not write the rules block"
+    return 1
   fi
 
   [ "$want_skills" = yes ] || { polter_provision_done; return 0; }
@@ -463,6 +491,117 @@ ack() {
 # in another, and a shell has no other way to carry them across.
 POLTER_SCOPE=user
 POLTER_WANT_SKILLS=yes
+POLTER_WANT_RULES=yes
+
+# The block, byte for byte, markers included.
+#
+# **Markers rather than a whole file of our own**, because these CLIs read one
+# rules file and a second one is a file the CLI never opens. The user's own
+# words stay above and below it untouched, and `POLTER_WANT_RULES=no` takes
+# exactly this much back out again.
+#
+# It says the mechanism, not the rules. "What you print reaches nobody" is a
+# fact about how this works that no amount of instruction elsewhere can be
+# derived from; the rules themselves are in the skill, which is where they can
+# be as long as they need to be without costing every turn.
+polter_rules_text() {
+  cat <<'POLTER_RULES_EOF'
+<!-- BEGIN POLTER (managed -- rewritten by Polter; edit above or below) -->
+## Polter
+
+This terminal runs under Polter: another agent may be supervising it, and
+several terminals may share a group chat and a task panel.
+
+**What you print here reaches nobody.** Your supervisor cannot see your screen
+-- it only learns that the screen stopped moving, which looks the same whether
+you finished or died. So when you finish a task or get stuck, say so with
+`task_progress`, and put the result in the group with `group_post`. A summary
+printed to this terminal is a summary nobody receives.
+
+`skill_read("operating-a-terminal")` has the rest.
+<!-- END POLTER -->
+POLTER_RULES_EOF
+}
+
+POLTER_RULES_BEGIN='<!-- BEGIN POLTER (managed'
+POLTER_RULES_END='<!-- END POLTER -->'
+
+# Write, replace or remove the block in this host'"'"'s rules file.
+#
+# Read before writing, the same as the MCP step and for the same reason: this
+# is a file the user edits by hand, and rewriting it at every launch for no
+# reason is asking for the one race that eats somebody'"'"'s notes.
+polter_rules_apply() {
+  rules_file=$(host_rules_file 2>/dev/null || printf '')
+  [ -n "$rules_file" ] || return 0
+
+  if [ "$POLTER_WANT_RULES" != yes ]; then
+    polter_rules_remove "$rules_file"
+    return $?
+  fi
+
+  want=$(polter_rules_text)
+
+  if [ -f "$rules_file" ]; then
+    have=$(awk -v b="$POLTER_RULES_BEGIN" -v e="$POLTER_RULES_END" '
+      index($0, b) == 1 { inside = 1 }
+      inside { print }
+      index($0, e) == 1 && inside { exit }
+    ' "$rules_file")
+
+    # Already exactly this. Nothing to do, and nothing said: a line printed
+    # at every launch is a line nobody reads.
+    [ "$have" = "$want" ] && return 0
+  fi
+
+  dir=${rules_file%/*}
+  [ "$dir" = "$rules_file" ] || mkdir -p "$dir" 2>/dev/null || return 1
+
+  tmp="$rules_file.polter.$$"
+
+  # Replaced in place when the markers are there, appended when they are not,
+  # and the rest of the file is copied through byte for byte. Written to a
+  # temporary file and moved over, so a failure halfway leaves the original.
+  if [ -f "$rules_file" ]; then
+    {
+      awk -v b="$POLTER_RULES_BEGIN" -v e="$POLTER_RULES_END" '
+        index($0, b) == 1 { skipping = 1; next }
+        skipping && index($0, e) == 1 { skipping = 0; next }
+        !skipping { print }
+      ' "$rules_file"
+    } > "$tmp" || { rm -f "$tmp"; return 1; }
+
+    # One blank line between whatever was there and what we add, and none if
+    # the file was empty.
+    [ -s "$tmp" ] && printf '\n' >> "$tmp"
+  else
+    : > "$tmp" || return 1
+  fi
+
+  polter_rules_text >> "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$rules_file" || { rm -f "$tmp"; return 1; }
+
+  wrote=yes
+  return 0
+}
+
+# Take the block back out, leaving everything else exactly as it was.
+polter_rules_remove() {
+  file=$1
+  [ -f "$file" ] || return 0
+  grep -q "$POLTER_RULES_END" "$file" 2>/dev/null || return 0
+
+  tmp="$file.polter.$$"
+  awk -v b="$POLTER_RULES_BEGIN" -v e="$POLTER_RULES_END" '
+    index($0, b) == 1 { skipping = 1; next }
+    skipping && index($0, e) == 1 { skipping = 0; next }
+    !skipping { print }
+  ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+
+  mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+  wrote=yes
+  return 0
+}
 
 polter_provision_main() {
   IFS= read -r hello || exit 0
@@ -471,8 +610,10 @@ polter_provision_main() {
     *'"hello"'*)
       _scope=$(printf '%s' "$hello" | sed -n 's/.*"scope":"\([^"]*\)".*/\1/p')
       _skills=$(printf '%s' "$hello" | sed -n 's/.*"skills":"\([^"]*\)".*/\1/p')
+      _rules=$(printf '%s' "$hello" | sed -n 's/.*"rules":"\([^"]*\)".*/\1/p')
       [ -z "$_scope" ] || POLTER_SCOPE=$_scope
       [ -z "$_skills" ] || POLTER_WANT_SKILLS=$_skills
+      [ -z "$_rules" ] || POLTER_WANT_RULES=$_rules
       ack true
       ;;
     *)

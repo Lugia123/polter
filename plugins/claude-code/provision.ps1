@@ -50,4 +50,10 @@ function Get-HostSkillsDir {
     Join-Path $script:PolterHome '.claude\skills'
 }
 
+# The file this CLI reads on every turn. **User level, never a project
+# file**: a project's CLAUDE.md belongs to whoever owns the repository, and
+# Polter being installed on this machine is not a fact about their
+# repository.
+function Get-HostRulesFile { Join-Path $script:PolterHome '.claude\CLAUDE.md' }
+
 Invoke-PolterProvisionMain

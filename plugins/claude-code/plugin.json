@@ -3,19 +3,20 @@
   "name": "Claude Code",
   "version": "1.0.0",
   "description": "Tells Claude Code that Polter is here: registers the MCP server under the user scope and mirrors Polter's skills into ~/.claude/skills/polter-*. Without it an agent has the socket and the token in its environment and no way to use either.",
-
   "exec": "provision.sh",
   "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
-
   "wants": {
-    "events": ["provision"],
+    "events": [
+      "provision"
+    ],
     "calls": [],
     "groups": [],
     "network": false,
-    "exec": ["claude"]
+    "exec": [
+      "claude"
+    ]
   },
-
   "params": {
     "type": "object",
     "properties": {
@@ -23,14 +24,30 @@
         "type": "string",
         "title": "Which Claude Code scope to register in",
         "description": "user puts the server in ~/.claude.json for every directory; local puts it in this machine's project entry only. user is the point of doing this at all -- a project scope is exactly the case that already worked.",
-        "enum": ["user", "local"],
+        "enum": [
+          "user",
+          "local"
+        ],
         "default": "user"
       },
       "skills": {
         "type": "string",
         "title": "Install skills as well",
         "description": "yes mirrors Polter's skills into ~/.claude/skills/polter-*. Claude Code matches its own skills against what the user asked for; Polter's skill_read has to be thought of first, which is why a supervisor told to mind some terminals reaches for a subagent instead. no registers the MCP server and nothing else.",
-        "enum": ["yes", "no"],
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "yes"
+      },
+      "rules": {
+        "type": "string",
+        "title": "Write Polter's note into this CLI's rules file",
+        "description": "yes writes a marked block into the user-level rules file (never a project one) saying that what an agent prints reaches nobody, and pointing at the operating-a-terminal skill. It is there because a skill is matched against what the user asked for and nothing matches \"you have just finished a task\": on real records, 71 tasks produced 15 done reports. Everything outside the markers is left untouched, and no takes the block back out.",
+        "enum": [
+          "yes",
+          "no"
+        ],
         "default": "yes"
       }
     }

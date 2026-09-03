@@ -268,6 +268,31 @@ pub const Entry = struct {
     /// When this terminal last produced a notice, for rate limiting.
     last_notice_ms: ?u64 = null,
 
+    /// A line the host has asked to put in *this supervisor's* box.
+    ///
+    /// **Text rather than a kind, and that is the whole design.** Every
+    /// other notice is about a terminal, and the bus knows what a terminal
+    /// is. This one is about a group -- a task nothing has happened to in
+    /// two days, a conversation that stopped at two in the morning -- and
+    /// the bus knows nothing about groups, tasks or panels, which is why
+    /// it has stayed the size it is. So the host works out the sentence
+    /// and the bus does what it is actually for: holding it until the
+    /// supervisor may be interrupted, and handing it over exactly once.
+    ///
+    /// One slot, overwritten rather than queued, the same as `pending`.
+    /// The host recomputes the whole sentence each time it looks, so the
+    /// newer one is the true one and an older one that had not been
+    /// delivered yet is not worth keeping.
+    ///
+    /// Only ever set on a supervisor's own entry; `leaveNote` refuses
+    /// anybody else.
+    memo: [memo_bytes]u8 = undefined,
+    memo_len: usize = 0,
+
+    /// Hand-overs this memo has already ridden along on, counted the way
+    /// `handed_over` counts a terminal's.
+    memo_handed: u8 = 0,
+
     /// How long the screen had been unchanged as of the last report, and
     /// when that report arrived. Together these give the current figure
     /// exactly; see `Bus.quietMs`.
@@ -777,6 +802,16 @@ pub fn tabMark(self: *const Bus, id: Id, now_ms: u64, quiet_after_ms: u64) TabMa
 /// a supervisor that wants it.
 const max_listed = 5;
 
+/// The most one memo may say.
+///
+/// Short because it shares a line with the terminal reports and that line
+/// shares a fixed buffer with everything else -- and short for the better
+/// reason too: a memo is a pointer at something to go and look at, not the
+/// looking. Anything longer belongs in the statistics tab, which is where
+/// the person reading it can see the whole picture rather than one
+/// sentence of it.
+pub const memo_bytes = 160;
+
 /// Everything the supervisor has not been shown, written into `buf`, and
 /// cleared as it goes.
 ///
@@ -811,6 +846,40 @@ pub const Take = enum {
 /// of itself for as long as the terminal is quiet. Three is enough to
 /// cover an agent busy through a couple of intervals.
 const max_hand_overs = 3;
+
+/// Put a line in one supervisor's box, to ride out with its next hand-over.
+///
+/// **The same box and the same clock as the quiet reports**, on purpose.
+/// `notice_interval_ms` exists to bound how often a supervisor is
+/// interrupted at all; a second channel with its own schedule would be a
+/// way round the one number the user set to answer that question, however
+/// good the reason for the interruption was.
+///
+/// Refused for anybody who is not a supervisor -- there is no box to put
+/// it in -- and for a line too long to hold, rather than a line cut in
+/// half at whatever byte the buffer ended on. Answers whether it was
+/// taken.
+///
+/// An empty `text` clears the slot, which is how the host says "what I
+/// told you before is no longer true": the sentence is recomputed from
+/// scratch each time, so a memo that has stopped applying has to be able
+/// to go away before it is ever read.
+pub fn leaveNote(self: *Bus, to: Id, text: []const u8) bool {
+    const e = self.entries.getPtr(to) orelse return false;
+    if (e.role != .supervisor) return false;
+
+    if (text.len == 0) {
+        e.memo_len = 0;
+        e.memo_handed = 0;
+        return true;
+    }
+
+    if (text.len > e.memo.len) return false;
+    @memcpy(e.memo[0..text.len], text);
+    e.memo_len = text.len;
+    e.memo_handed = 0;
+    return true;
+}
 
 pub fn drain(self: *Bus, to: Id, now_ms: u64, buf: []u8) ?[]u8 {
     return self.take(to, now_ms, buf, .consume);
@@ -868,6 +937,7 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
         if (listed >= max_listed) continue;
 
         const sep = if (listed == 0) " " else ", ";
+        const mark = w.end;
         const written = switch (kind) {
             .quiescent, .still_quiescent => w.print(
                 "{s}0x{x:0>16} quiet {d}s",
@@ -879,11 +949,55 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
             ),
         };
 
-        // Out of room. What is written already stands, and the rest is
-        // covered by the count below. The `pending` flags are cleared
-        // either way: they have been accounted for.
-        written catch break;
+        // Out of room. What is written already stands -- wound back to
+        // the end of the last whole entry, because a failed `print` fills
+        // the buffer before it reports, and half of `0x2222 quiet 90s` is
+        // an id nobody can look up. The rest is covered by the count
+        // below, and the `pending` flags are cleared either way: they have
+        // been accounted for.
+        written catch {
+            w.end = mark;
+            break;
+        };
         listed += 1;
+    }
+
+    // The supervisor's own line, after the terminals and before the count
+    // of what would not fit. Written last because it is the one part that
+    // is about the work rather than about a screen, and a reader scanning
+    // for an id should not have to step over it.
+    //
+    // Fetched again rather than reusing `minder`: `take` walks the map,
+    // and a map that grew moved every pointer into it.
+    if (self.entries.getPtr(to)) |box| {
+        if (box.memo_len > 0) {
+            total += 1;
+
+            // Wound back if it did not fit whole: a failed `print` fills
+            // the buffer and *then* reports the failure, so without this
+            // the line ends halfway through a sentence.
+            const sep = if (listed == 0) " " else " · ";
+            const mark = w.end;
+            if (w.print("{s}{s}", .{ sep, box.memo[0..box.memo_len] })) |_| {
+                listed += 1;
+            } else |_| {
+                w.end = mark;
+            }
+
+            switch (how) {
+                .consume => {
+                    box.memo_len = 0;
+                    box.memo_handed = 0;
+                },
+                .hand_over => {
+                    box.memo_handed +|= 1;
+                    if (box.memo_handed >= max_hand_overs) {
+                        box.memo_len = 0;
+                        box.memo_handed = 0;
+                    }
+                },
+            }
+        }
     }
 
     if (total == 0) return null;
@@ -957,6 +1071,121 @@ test "an unclaimed terminal reports to whoever is asking" {
     var buf: [255]u8 = undefined;
     const line = b.drain(boss, 1_000, &buf) orelse return error.ExpectedANotice;
     try testing.expect(std.mem.indexOf(u8, line, "quiet") != null);
+}
+
+test "a note rides out in the same line as the quiet reports" {
+    // The point of putting it in this box rather than sending it: one
+    // interruption, on the one clock the user set, whatever there is to
+    // say.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    _ = b.report(worker, quiet(60_000), 0);
+    try testing.expect(b.leaveNote(boss, "build: #93 untouched 49h"));
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 1_000, &buf) orelse return error.ExpectedANotice;
+
+    try testing.expect(std.mem.indexOf(u8, line, "quiet") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "#93 untouched 49h") != null);
+
+    // Read once, gone -- the same rule the terminal reports keep.
+    try testing.expect(b.drain(boss, 2_000, &buf) == null);
+}
+
+test "a note on its own is worth an interruption" {
+    // Nothing quiet, nothing resumed, and still something to say: a night
+    // where every screen is moving can be a night where a task has been
+    // sitting untouched since yesterday.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try testing.expect(b.leaveNote(boss, "build: quiet 3h40m"));
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 1_000, &buf) orelse return error.ExpectedANotice;
+    try testing.expect(std.mem.indexOf(u8, line, "quiet 3h40m") != null);
+}
+
+test "a note waits for the interval the same as everything else" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try testing.expect(b.leaveNote(boss, "build: #93 untouched 49h"));
+
+    // Delivered once...
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drainIfDue(boss, 0, &buf) != null);
+
+    // ...and the next one waits out `notice_interval_ms`, which is the one
+    // number the user set to say how often this may happen at all.
+    try testing.expect(b.leaveNote(boss, "build: #71 untouched 40h"));
+    try testing.expect(b.drainIfDue(boss, 1_000, &buf) == null);
+    try testing.expect(b.drainIfDue(boss, std.time.ms_per_min + 1, &buf) != null);
+}
+
+test "a note nobody reads stops repeating itself" {
+    // A hand-over is typed into an input box and typing is not arrival, so
+    // it is held rather than consumed -- and bounded, or an unread note
+    // pastes itself in for ever.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try testing.expect(b.leaveNote(boss, "build: #93 untouched 49h"));
+
+    var buf: [255]u8 = undefined;
+    var at: u64 = 0;
+    for (0..3) |_| {
+        try testing.expect(b.drainIfDue(boss, at, &buf) != null);
+        at += std.time.ms_per_min + 1;
+    }
+    try testing.expect(b.drainIfDue(boss, at, &buf) == null);
+}
+
+test "a note that has stopped being true can be taken back" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try testing.expect(b.leaveNote(boss, "build: #93 untouched 49h"));
+    try testing.expect(b.leaveNote(boss, ""));
+
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 1_000, &buf) == null);
+}
+
+test "only a supervisor has a box to leave a note in" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    try testing.expect(!b.leaveNote(worker, "not yours"));
+    try testing.expect(!b.leaveNote(0x9999, "nobody at all"));
+
+    // And a line too long is refused whole rather than cut in half.
+    const long = "x" ** (memo_bytes + 1);
+    try testing.expect(!b.leaveNote(boss, long));
+}
+
+test "one supervisor's note does not turn up in another's box" {
+    var b = testBus();
+    defer b.deinit();
+
+    const second: Id = 0x4444;
+    try b.addSupervisor(boss);
+    try b.addSupervisor(second);
+    try testing.expect(b.leaveNote(boss, "build: #93 untouched 49h"));
+
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(second, 1_000, &buf) == null);
+    try testing.expect(b.drain(boss, 1_000, &buf) != null);
 }
 
 test "a claimed terminal reports only to the supervisor minding it" {

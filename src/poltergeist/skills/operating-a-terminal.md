@@ -212,8 +212,29 @@ believe it is finished; closing it is the supervisor's word after checking.
 Report in the group as well, naming the task number, so the supervisor does
 not have to read prose to work out which piece you mean.
 
+`task_history(group)` is open to you too, and it is worth one call when you
+are picking up work you cannot remember: it is the panel's own record —
+created, assigned, progressed, closed — each line with a timestamp. If you
+have just been restarted and are holding a task you have no memory of, that
+is where the story of it is, and it costs you nothing to read one group's
+worth.
+
 If a task of yours is cancelled you will be told here, in this terminal, in
 so many words. Stop when you are.
+
+**Finishing is the half that gets dropped, so it is worth saying plainly:
+what you print in this terminal reaches nobody.** Your supervisor cannot see
+your screen. It learns that the screen stopped moving — and a screen that
+stopped because you finished looks exactly like one that stopped because you
+died. A careful hand-over written here and nowhere else is, to everybody
+else, a terminal that went quiet. On the record this skill is written
+against, 71 tasks produced 15 `done` reports and one `blocked`.
+
+So: `task_progress` when you finish or get stuck, and `group_post` with the
+result. If you have been still a while with work still open, Polter may say
+so in this terminal — that line is a reminder, not an accusation, and
+"neither: still working" is a perfectly good answer to it. What it must not
+get is a `done` you do not mean.
 
 **Answer in the group, not through your runtime's own cross-session
 messaging.** A `group_post` goes into Polter's chat log and onto the user's

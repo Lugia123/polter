@@ -44,4 +44,10 @@ function Get-HostSkillsDir {
     Join-Path $script:PolterHome '.codex\skills'
 }
 
+# The file this CLI reads on every turn. **User level, never a project
+# file**: a project's AGENTS.md belongs to whoever owns the repository, and
+# Polter being installed on this machine is not a fact about their
+# repository.
+function Get-HostRulesFile { Join-Path $script:PolterHome '.codex\AGENTS.md' }
+
 Invoke-PolterProvisionMain

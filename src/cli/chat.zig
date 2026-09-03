@@ -32,6 +32,7 @@ const Allocator = std.mem.Allocator;
 const transport = @import("../poltergeist/transport.zig");
 const vaxis = @import("vaxis");
 const layout = @import("chat_layout.zig");
+const chat_stats = @import("chat_stats.zig");
 const args = @import("args.zig");
 const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
@@ -148,6 +149,14 @@ fn complain(io: std.Io, missing: []const u8) u8 {
 const Host = struct {
     alloc: Allocator,
     io: std.Io,
+
+    /// Kept because the state directory is the one that holds it: the
+    /// statistics read `session.json` out of there, and deriving the
+    /// directory from the socket means this window never has a second
+    /// opinion about where Polter's state lives. Borrowed from the caller,
+    /// which holds it for the life of the program.
+    socket_path: []const u8,
+
     stream: transport.Conn,
     read_buf: []u8,
     write_buf: []u8,
@@ -186,6 +195,7 @@ const Host = struct {
         var self: Host = .{
             .alloc = alloc,
             .io = io,
+            .socket_path = path,
             .stream = stream,
             .read_buf = read_buf,
             .write_buf = write_buf,
@@ -310,6 +320,13 @@ fn boolField(v: std.json.Value, name: []const u8) ?bool {
 
 /// One message, copied out of a reply so it outlives the read buffer.
 const Message = struct {
+    /// The `0x…` id of whoever said it.
+    ///
+    /// Kept because the statistics count by id: a terminal that has closed
+    /// is gone from the members list but is still on every message it sent,
+    /// and counting by name loses it the moment its tab goes away.
+    from: []const u8 = "",
+
     /// Where this landed in the log on disk, or 0 for a message that was
     /// never written down. Zero is the end of the road for paging back:
     /// there is nothing to join onto, and joining onto the wrong thing is
@@ -329,12 +346,28 @@ const Message = struct {
 /// into an enum here would mean this view refusing to draw a value a newer
 /// host knows about, and a blank row is a worse answer than an unfamiliar
 /// one.
+/// Blanks to pad a column with, long enough for any task number a group
+/// will ever hold.
+const spaces = " " ** 20;
+
 const Task = struct {
     id: u64,
     title: []const u8,
     owner: []const u8,
     state: []const u8,
     progress: []const u8,
+};
+
+/// One terminal as `session.json` remembers it from last time.
+///
+/// No id: `Surface.id` is a fresh random number every run, so the session
+/// file deliberately does not keep one -- see `poltergeist/Session.zig`.
+/// What is here is what a person can match against: what the tab was
+/// called, where it was working, and what it was doing.
+const Recalled = struct {
+    title: []const u8,
+    cwd: []const u8,
+    role: []const u8,
 };
 
 /// One member, with the id as well as the name.
@@ -414,7 +447,40 @@ const Chat = struct {
     groups: std.ArrayListUnmanaged(Group) = .empty,
     current: usize = 0,
 
-    /// Which of the right-hand column's two tabs is showing.
+    /// The panel's history for the group being looked at, and the name of
+    /// the group it belongs to.
+    ///
+    /// **One group's, not every group's.** The statistics are about the
+    /// group in front of you, and reading every group's record on every
+    /// poll would spend the whole night's disk on tabs nobody has open.
+    /// Held in its own arena because it is thrown away and read again
+    /// rather than accumulated: `store` never shrinks, and a window left
+    /// open for days would grow a copy of the record every few seconds.
+    events_arena: std.heap.ArenaAllocator,
+    events: std.ArrayListUnmanaged(chat_stats.Event) = .empty,
+    events_group: []const u8 = "",
+
+    /// Polls left before the record is read again. Zero reads on the next
+    /// pass; see `fetchEvents` for why this is not every poll.
+    events_wait: usize = 0,
+
+    /// Who was in this group when Polter was last shut down.
+    ///
+    /// **The one thing a person needs that the live state cannot give.** A
+    /// restart brings a group back as a shell -- its name and its note, and
+    /// nobody in it, because deciding which terminal on screen now is which
+    /// one from last night is a judgement and the program does not make it
+    /// (`Chat.restoreShell`). That is right, and it leaves the person at
+    /// the keyboard looking at a list of `claude -r` sessions with no way to
+    /// tell which was the supervisor.
+    ///
+    /// So this is read straight off `session.json`, which records exactly
+    /// that: each member's title, its working directory, and its role. It
+    /// is the same material `session_recall` hands the supervisor, shown to
+    /// the person instead of to an agent.
+    recalled: std.ArrayListUnmanaged(Recalled) = .empty,
+
+    /// Which of the right-hand column's tabs is showing.
     ///
     /// **On the right only.** The group list on the left does not move,
     /// because a task belongs to a group: switching tab must not change
@@ -429,7 +495,7 @@ const Chat = struct {
     /// into the same frame of reference the tab spans were recorded in.
     /// The spans are relative to that column, not to the screen.
     tabs_left: u16 = 0,
-    tab_spans: [2]struct { from: u16 = 0, to: u16 = 0 } = .{ .{}, .{} },
+    tab_spans: [3]struct { from: u16 = 0, to: u16 = 0 } = .{ .{}, .{}, .{} },
 
     /// How far the message pane is scrolled back, **in rendered rows**.
     ///
@@ -494,7 +560,27 @@ const Chat = struct {
     /// stale complaint on screen.
     err: ?[]const u8 = null,
 
-    const View = enum { chat, tasks };
+    const View = enum {
+        chat,
+        tasks,
+        stats,
+
+        /// The next tab round, so left and right wrap rather than stop.
+        /// Written over the enum rather than as two `if`s at the key
+        /// handler, because a tab added later is then a change in one
+        /// place and not three.
+        fn next(self: View) View {
+            const all = std.enums.values(View);
+            const i = @intFromEnum(self);
+            return all[(i + 1) % all.len];
+        }
+
+        fn prev(self: View) View {
+            const all = std.enums.values(View);
+            const i = @intFromEnum(self);
+            return all[(i + all.len - 1) % all.len];
+        }
+    };
 
     /// A group name held while the box is up.
     ///
@@ -558,6 +644,7 @@ const Chat = struct {
             .arena = .init(alloc),
             .store = .init(alloc),
             .frame = .init(alloc),
+            .events_arena = .init(alloc),
             .tty = try .init(io, tty_buf),
             .vx = undefined,
             .env = env,
@@ -584,6 +671,7 @@ const Chat = struct {
         self.frame.deinit();
         self.arena.deinit();
         self.store.deinit();
+        self.events_arena.deinit();
     }
 
     fn run(self: *Chat) !void {
@@ -626,7 +714,22 @@ const Chat = struct {
             // After the events, because scrolling to the top is an event,
             // and before the draw, because a frame has to be redrawable and
             // a socket call is not.
-            if (self.at_top) self.fetchHistory() catch |err| {
+            // **Also while the statistics are showing, and not only when
+            // somebody has scrolled to the top.** The numbers are over
+            // whatever this window happens to hold, and what it holds by
+            // default is what arrived since it opened -- so a group with a
+            // night behind it reported "23 messages" and dated its first
+            // line to whenever the window was opened. Both were wrong in
+            // the direction that looks right. One batch per pass until the
+            // log says there is no more.
+            if (self.at_top or self.view == .stats) self.fetchHistory() catch |err| {
+                self.err = @errorName(err);
+            };
+
+            // Only while the tab is showing: the numbers are read to be
+            // looked at, and reading them for a tab nobody has open is a
+            // walk over the record every ten seconds for nothing.
+            if (self.view == .stats) self.fetchEvents() catch |err| {
                 self.err = @errorName(err);
             };
 
@@ -757,6 +860,7 @@ const Chat = struct {
 
                     try group.messages.append(store, .{
                         .log_seq = u64Field(item, "log_seq"),
+                        .from = try store.dupe(u8, from),
                         .author = try store.dupe(u8, stringField(item, "author") orelse "?"),
                         .at_ms = intField(item, "at_ms") orelse 0,
                         .summary = boolField(item, "summary") orelse false,
@@ -905,6 +1009,7 @@ const Chat = struct {
             const from = stringField(item, "from") orelse "";
             try batch.append(temp, .{
                 .log_seq = u64Field(item, "log_seq"),
+                .from = try store.dupe(u8, from),
                 .author = try store.dupe(u8, stringField(item, "author") orelse "?"),
 
                 // Already wall clock, the same as `group_read` hands over.
@@ -931,6 +1036,149 @@ const Chat = struct {
         // claims, or the loop asks forever for nothing.
         if (batch.items.len == 0) group.history_done = true;
         if (!(boolField(v, "more") orelse false)) group.history_done = true;
+    }
+
+    /// How many polls between rereads of the panel's record.
+    ///
+    /// Twenty polls is ten seconds. Not every poll, because unlike the
+    /// conversation this is not a cursor asking for what is new -- there
+    /// is no "since" for the record, so a reread is the whole thing again,
+    /// and the whole thing is a few hundred lines off disk. Ten seconds is
+    /// far below how fast anybody reads a page of numbers and far above
+    /// what the host notices.
+    const events_every = 20;
+
+    /// How many events one page asks for, and how many pages one reread
+    /// walks back through. The product is the ceiling on what the
+    /// statistics are computed over: past it the oldest end is simply not
+    /// counted, which understates rather than invents.
+    const events_batch = 200;
+    const events_pages = 8;
+
+    /// Read the panel's own history for the group being looked at.
+    ///
+    /// Tolerated rather than required, the same way `task_list` is: a host
+    /// that does not know the tool leaves the tab saying it has nothing to
+    /// count, which is the honest picture and not a reason to take the
+    /// window down.
+    fn fetchEvents(self: *Chat) !void {
+        if (self.groups.items.len == 0) return;
+        const name = self.groups.items[self.current].name;
+
+        // A different group is read at once, however recently the last one
+        // was: what is on screen has changed, and counting down would leave
+        // the previous group's numbers under the new group's name.
+        if (std.mem.eql(u8, self.events_group, name) and self.events_wait > 0) {
+            self.events_wait -= 1;
+            return;
+        }
+
+        _ = self.events_arena.reset(.retain_capacity);
+        const arena = self.events_arena.allocator();
+        self.events = .empty;
+        self.events_group = try arena.dupe(u8, name);
+        self.events_wait = events_every;
+
+        var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+        defer scratch.deinit();
+        const temp = scratch.allocator();
+
+        // Backwards, a page at a time, the way the record is paged. Each
+        // page arrives oldest first, so each goes in front of the one
+        // before it and the whole list ends up in the order things
+        // happened.
+        var before: u64 = 0;
+        var page: usize = 0;
+        while (page < events_pages) : (page += 1) {
+            var buf: [256]u8 = undefined;
+            const line = try std.fmt.bufPrint(
+                &buf,
+                "{{\"method\":\"task_history\",\"params\":{{\"group\":\"{s}\",\"before_seq\":{d},\"limit\":{d}}}}}",
+                .{ name, before, events_batch },
+            );
+            const v = self.host.callJson(temp, line) catch return;
+
+            var batch: std.ArrayListUnmanaged(chat_stats.Event) = .empty;
+            for (arrayField(v, "events") catch &.{}) |item| {
+                try batch.append(temp, .{
+                    .seq = u64Field(item, "seq"),
+                    .at_ms = intField(item, "at_ms") orelse 0,
+                    .op = try arena.dupe(u8, stringField(item, "op") orelse ""),
+                    .task = u64Field(item, "task"),
+                    .title = try arena.dupe(u8, stringField(item, "title") orelse ""),
+                    .owner = try arena.dupe(u8, stringField(item, "owner") orelse ""),
+                    .state = try arena.dupe(u8, stringField(item, "state") orelse ""),
+                    .progress = try arena.dupe(u8, stringField(item, "progress") orelse ""),
+                });
+            }
+
+            if (batch.items.len == 0) break;
+            try self.events.insertSlice(arena, 0, batch.items);
+
+            // The oldest of this page is where the next one joins on. A
+            // short page is not the end -- the host caps by bytes as well
+            // as by count and says which in `more`.
+            before = batch.items[0].seq;
+            if (!(boolField(v, "more") orelse false)) break;
+        }
+
+        self.readRecalled(arena, name) catch {};
+    }
+
+    /// Read last night's members for `group` out of `session.json`.
+    ///
+    /// **A file rather than a call**, and this is the one place this window
+    /// touches the state directory. The tool that hands this material over
+    /// the socket, `session_recall`, is the supervisor's -- it is prose
+    /// written for an agent to act on. What is wanted here is the same
+    /// facts as a table, for the person, and inventing a second tool to
+    /// carry them to the one program that is definitionally running as the
+    /// user seemed worse than reading the file the user owns.
+    ///
+    /// The directory is found from the socket, which sits in it, so nothing
+    /// here has a second opinion about where the state lives.
+    ///
+    /// Failure is silence: no file, unreadable, or a shape this does not
+    /// recognise all leave the list empty, and an empty list draws nothing.
+    fn readRecalled(self: *Chat, arena: Allocator, group: []const u8) !void {
+        // `.empty`, not `clearRetainingCapacity`: the list's own buffer was
+        // allocated from the arena that `fetchEvents` has just reset, so
+        // keeping the capacity keeps a pointer into freed memory. The
+        // events list a few lines up does the same thing for the same
+        // reason.
+        self.recalled = .empty;
+
+        const dir = std.fs.path.dirname(self.host.socket_path) orelse return;
+        const path = try std.fs.path.join(arena, &.{ dir, "session.json" });
+
+        const bytes = std.Io.Dir.readFileAlloc(
+            .cwd(),
+            self.io,
+            path,
+            arena,
+            .limited(1024 * 1024),
+        ) catch return;
+
+        const parsed = std.json.parseFromSliceLeaky(
+            std.json.Value,
+            arena,
+            bytes,
+            .{},
+        ) catch return;
+
+        for (arrayField(parsed, "groups") catch return) |g| {
+            const name = stringField(g, "name") orelse continue;
+            if (!std.mem.eql(u8, name, group)) continue;
+
+            for (arrayField(g, "members") catch continue) |m| {
+                try self.recalled.append(arena, .{
+                    .title = try arena.dupe(u8, stringField(m, "title") orelse ""),
+                    .cwd = try arena.dupe(u8, stringField(m, "cwd") orelse ""),
+                    .role = try arena.dupe(u8, stringField(m, "role") orelse ""),
+                });
+            }
+            return;
+        }
     }
 
     fn update(self: *Chat, event: Event) !void {
@@ -1028,14 +1276,17 @@ const Chat = struct {
                 }
 
                 // Left and right move between the right-hand column's
-                // two tabs, the way up and down move through the groups.
+                // tabs, the way up and down move through the groups.
                 // `t` as well, because the arrows are a reach when one
                 // hand is on the mouse.
                 if (key.matches(vaxis.Key.right, .{}) or
-                    key.matches(vaxis.Key.left, .{}) or
                     key.matches('t', .{}))
                 {
-                    self.selectView(if (self.view == .chat) .tasks else .chat);
+                    self.selectView(self.view.next());
+                    return;
+                }
+                if (key.matches(vaxis.Key.left, .{})) {
+                    self.selectView(self.view.prev());
                     return;
                 }
 
@@ -1267,6 +1518,11 @@ const Chat = struct {
         self.view = view;
         self.scroll = 0;
 
+        // Opening the tab is the one moment somebody is definitely waiting
+        // for the numbers, so the next pass reads rather than counting
+        // down. Everything else about the schedule is in `fetchEvents`.
+        if (view == .stats) self.events_wait = 0;
+
         // And what was on screen was the conversation's top. Left set, the
         // next pass spends a read on the log for a view that is not even
         // showing.
@@ -1314,7 +1570,7 @@ const Chat = struct {
                     for (self.tab_spans, 0..) |span, i| {
                         if (span.to == span.from) continue;
                         if (x >= span.from and x < span.to) {
-                            self.selectView(if (i == 0) .chat else .tasks);
+                            self.selectView(@enumFromInt(i));
                             return;
                         }
                     }
@@ -1469,21 +1725,17 @@ const Chat = struct {
 
         const alloc = self.frame.allocator();
 
-        const title = std.fmt.allocPrint(
-            alloc,
-            "把群「{s}」从列表里移除？",
-            .{c.name()},
-        ) catch "把这个群从列表里移除？";
+        const title = fill(alloc, tr("Take the group \"{0}\" off this list?"), &.{c.name()});
 
         const lines = [_][]const u8{
             title,
             "",
-            "聊天记录一个字都不会删：磁盘上",
-            "<state>/chat/ 里的每一天原样保留，",
-            "以后还能翻、还能 grep。",
-            "移除的只是这个列表里的一行。",
+            tr("Not one word of the conversation is deleted:"),
+            tr("every day of it stays exactly as it is under"),
+            tr("<state>/chat/, to be read and grepped later."),
+            tr("What goes is one row of this list."),
             "",
-            "y 确认    其他任意键取消",
+            tr("y to confirm    any other key cancels"),
         };
 
         var inner_w: u16 = 0;
@@ -1541,11 +1793,11 @@ const Chat = struct {
         // The key is named here because it is otherwise unfindable: this
         // view has no menu and no help line, so a key nobody is told about
         // is a key that does not exist.
-        self.heading(win, "群聊 / GROUPS  d 移除");
+        self.heading(win, tr("GROUPS   d removes"));
 
         if (self.groups.items.len == 0) {
             _ = win.printSegment(.{
-                .text = "  (还没有群)",
+                .text = tr("  (no groups yet)"),
                 .style = .{ .fg = c_dim, .italic = true },
             }, .{ .row_offset = 1, .col_offset = 0 });
             return;
@@ -1593,7 +1845,7 @@ const Chat = struct {
     fn drawMembers(self: *Chat, win: vaxis.Window) void {
         if (win.height == 0 or win.width < 4) return;
 
-        self.heading(win, "成员 / MEMBERS");
+        self.heading(win, tr("MEMBERS"));
         if (self.groups.items.len == 0) return;
 
         const group = self.groups.items[self.current];
@@ -1696,6 +1948,7 @@ const Chat = struct {
         switch (self.view) {
             .chat => try self.drawMessages(body),
             .tasks => self.drawTasks(body),
+            .stats => self.drawStats(body),
         }
 
         if (composing) self.drawCompose(win.child(.{
@@ -1767,16 +2020,16 @@ const Chat = struct {
     /// entirely rather than squeezing it.
     fn drawTabs(self: *Chat, win: vaxis.Window) void {
         self.tab_row = 0;
-        self.tab_spans = .{ .{}, .{} };
+        self.tab_spans = .{ .{}, .{}, .{} };
 
-        const labels = tabLabels(win.width);
+        const labels = tabLabels(self.frame.allocator());
 
         var col: u16 = 1;
         for (labels, 0..) |label, i| {
             const width = measure(label);
             if (col + width >= win.width) break;
 
-            const on = (i == 0) == (self.view == .chat);
+            const on = i == @intFromEnum(self.view);
             _ = win.printSegment(.{
                 .text = label,
                 .style = if (on) .{
@@ -1804,7 +2057,7 @@ const Chat = struct {
 
         if (self.groups.items.len == 0) {
             _ = win.printSegment(.{
-                .text = "  没有群聊。总管建群之后，任务会出现在这里。",
+                .text = tr("No groups. Tasks will appear here once a supervisor makes one."),
                 .style = .{ .fg = c_dim, .italic = true },
             }, .{ .row_offset = 0, .col_offset = 0 });
             return;
@@ -1813,13 +2066,29 @@ const Chat = struct {
         const group = self.groups.items[self.current];
         if (group.tasks.items.len == 0) {
             _ = win.printSegment(.{
-                .text = "  这个群还没有任务。",
+                .text = tr("No tasks in this group yet."),
                 .style = .{ .fg = c_dim, .italic = true },
             }, .{ .row_offset = 0, .col_offset = 0 });
             return;
         }
 
         const alloc = self.frame.allocator();
+
+        // How wide the number column has to be for this group.
+        //
+        // The number is the one handle everything else in this system
+        // takes: `task_assign`, `task_close` and `task_cancel` all address
+        // a task by it, `task_progress` asks a worker to report with it,
+        // and the group says "#93" out loud. A row without it can be read
+        // but not acted on -- you have to go back to the messages to find
+        // the number. Sized to the group rather than fixed, so a night of
+        // two-digit tasks does not pay for the width of a five-digit one.
+        var id_width: usize = 1;
+        {
+            var widest: u64 = 0;
+            for (group.tasks.items) |task| widest = @max(widest, task.id);
+            while (widest >= 10) : (widest /= 10) id_width += 1;
+        }
 
         // Clamped here rather than where the key is handled, the same as
         // the messages: how far you can scroll depends on what was drawn.
@@ -1838,10 +2107,16 @@ const Chat = struct {
                 .style = .{ .fg = if (shut) c_dim else c_author, .bold = true },
             }, .{ .row_offset = y, .col_offset = 1 });
 
-            // Progress before the title, so the column of words lines up
-            // and "blocked" can be found by running an eye down it -- that
-            // is the one a supervisor is looking for.
-            const line = std.fmt.allocPrint(alloc, "{s: <8}  {s}  {s}", .{
+            // Number first, then progress before the title, so both
+            // columns line up and "blocked" can be found by running an eye
+            // down one of them -- that is the one a supervisor is looking
+            // for.
+            const id_text = std.fmt.allocPrint(alloc, "#{d}", .{task.id}) catch "#";
+            const pad = @min(id_width -| (id_text.len -| 1), spaces.len);
+
+            const line = std.fmt.allocPrint(alloc, "{s}{s}  {s: <8}  {s}  {s}", .{
+                id_text,
+                spaces[0..pad],
                 if (shut) task.state else task.progress,
                 task.title,
                 self.ownerName(task.owner),
@@ -1863,17 +2138,699 @@ const Chat = struct {
         }
     }
 
-    /// What the two tabs are called at this width.
+    /// The third tab: what the night was, in numbers.
     ///
-    /// Short forms on a narrow window rather than truncated long ones,
-    /// which is the precedent the side column already sets: it is dropped
-    /// entirely below sixty columns rather than squeezed into something
-    /// unreadable.
-    fn tabLabels(width: u16) [2][]const u8 {
-        return if (width >= 34)
-            .{ " 群聊 / CHAT ", " 任务 / TASKS " }
-        else
-            .{ " 群聊 ", " 任务 " };
+    /// **Eight boxes in two columns, and the columns are not arbitrary.**
+    /// The left is "does anything need me now" -- what is waiting, where
+    /// the talking stopped, who is saying and doing what, who is here. The
+    /// right is "what shape did this session have" -- totals, the mix of
+    /// tasks, how long they lived, when the hours were busy. Somebody
+    /// checking before bed reads the left column twice; the right one is
+    /// for the morning.
+    ///
+    /// Narrower than `two_column_width` the boxes stack in one column in
+    /// the same order, because dropping to one column loses nothing but
+    /// squeezing two into forty would.
+    fn drawStats(self: *Chat, win: vaxis.Window) void {
+        if (win.height == 0 or win.width < 8) return;
+
+        if (self.groups.items.len == 0) {
+            _ = win.printSegment(.{
+                .text = tr("No groups. There will be numbers here once a supervisor makes one."),
+                .style = .{ .fg = c_dim, .italic = true },
+            }, .{ .row_offset = 0, .col_offset = 0 });
+            return;
+        }
+
+        const alloc = self.frame.allocator();
+        const group = self.groups.items[self.current];
+
+        // The events are the current group's or nobody's: `fetchEvents`
+        // throws the previous group's away before it reads. Checked rather
+        // than assumed, because a poll can land between the switch and the
+        // read, and last group's numbers under this group's name is the
+        // one wrong answer here that looks right.
+        const mine = std.mem.eql(u8, self.events_group, group.name);
+        const events: []const chat_stats.Event = if (mine) self.events.items else &.{};
+
+        var tasks: std.ArrayListUnmanaged(chat_stats.Task) = .empty;
+        for (group.tasks.items) |t| tasks.append(alloc, .{
+            .id = t.id,
+            .title = t.title,
+            .owner = t.owner,
+            .state = t.state,
+        }) catch break;
+
+        var msgs: std.ArrayListUnmanaged(chat_stats.Message) = .empty;
+        for (group.messages.items) |m| msgs.append(alloc, .{
+            .at_ms = m.at_ms,
+            .from = m.from,
+            .author = m.author,
+            .from_user = m.from_user,
+        }) catch break;
+
+        var members: std.ArrayListUnmanaged(chat_stats.Member) = .empty;
+        for (group.members.items) |m| members.append(alloc, .{
+            .id = m.id,
+            .title = m.title,
+        }) catch break;
+
+        const s = chat_stats.compute(alloc, .{
+            .now_ms = nowMs(self.io),
+            .stale_ms = stale_ms,
+            .events = events,
+            .tasks = tasks.items,
+            .messages = msgs.items,
+            .members = members.items,
+            .hour_of = localHour,
+        }) catch return;
+
+        if (win.width >= two_column_width) {
+            const half = win.width / 2;
+            _ = self.drawNowBoxes(win.child(.{
+                .x_off = 0,
+                .y_off = 0,
+                .width = half -| 1,
+                .height = win.height,
+            }), s, events.len > 0);
+            _ = self.drawShapeBoxes(win.child(.{
+                .x_off = half,
+                .y_off = 0,
+                .width = win.width -| half,
+                .height = win.height,
+            }), s, events.len > 0);
+            return;
+        }
+
+        const used = self.drawNowBoxes(win, s, events.len > 0);
+        if (used + 2 >= win.height) return;
+        _ = self.drawShapeBoxes(win.child(.{
+            .x_off = 0,
+            .y_off = used + 1,
+            .width = win.width,
+            .height = win.height -| (used + 1),
+        }), s, events.len > 0);
+    }
+
+    /// Where two columns stop fitting. Below this the boxes stack.
+    const two_column_width = 76;
+
+    /// The most columns a terminal's name may take before it is cut.
+    ///
+    /// A tab's title follows whatever is running in it and can be a whole
+    /// sentence; past this the row would be a title with a chart squeezed
+    /// onto the end of it.
+    const max_name_cols = 14;
+
+    /// How long a task has to have been untouched before its row is
+    /// marked.
+    ///
+    /// **A mark, not a verdict**, and this is the number that has to be
+    /// looked at with that in mind: twelve hours is long enough that an
+    /// ordinary task does not trip it -- the record this was written
+    /// against has a median life of two and a half hours -- and short
+    /// enough to catch a night that went wrong at two. A standing lease
+    /// trips it every time and is meant to; the row says how long, and the
+    /// supervisor says what that means.
+    const stale_ms: u64 = 12 * 60 * 60 * 1000;
+
+    /// The left column: what might need somebody now.
+    ///
+    /// Returns how many rows it used, so the one-column layout knows where
+    /// the other half starts.
+    fn drawNowBoxes(
+        self: *Chat,
+        win: vaxis.Window,
+        s: chat_stats.Stats,
+        have_record: bool,
+    ) u16 {
+        const alloc = self.frame.allocator();
+        var y: u16 = 0;
+
+        // **What to do with a tall window.** Every box has a floor and two
+        // of them can use whatever is left: the list of open tasks and the
+        // list of terminals. Both were pinned at four rows, so on a window
+        // twice as tall as it needed to be the panel drew a quarter of what
+        // it knew and left the bottom half empty.
+        //
+        // The floors are the heads, the three lines of "where it stopped",
+        // the one line of "terminals", and the three blank rows between boxes
+        // -- thirteen in all. The
+        // waiting list is served first because it is the one somebody
+        // checks before going to bed.
+        const spare = win.height -| 13;
+        const want_waiting = s.waiting.len +| (if (s.waiting.len > 0) @as(usize, 0) else 1);
+        const waiting_rows = @min(want_waiting, @max(spare / 2, 3));
+        const speaker_rows = @max(spare -| waiting_rows, 3);
+
+        y = self.statHead(win, y, tr("Waiting on you"));
+        if (!have_record) {
+            y = statLine(win, y, tr("  The task record has not been read yet."), .{ .fg = c_dim, .italic = true });
+        } else if (s.waiting.len == 0) {
+            y = statLine(win, y, tr("  Nothing open."), .{ .fg = c_dim, .italic = true });
+        } else {
+            const shown = @min(s.waiting.len, waiting_rows);
+
+            // Measured before anything is drawn, for the reason the box
+            // below is: "22 h 42 min" and "2 h 5 min" are not the same
+            // width, so a title that starts right after one starts in a
+            // different place on every row.
+            var id_w: u16 = 1;
+            var silent_w: u16 = 1;
+            for (s.waiting[0..shown]) |w| {
+                id_w = @max(id_w, columns(num(alloc, w.task)));
+                silent_w = @max(silent_w, columns(humanMs(alloc, w.silent_ms)));
+            }
+
+            const used = 4 + id_w + 2 + silent_w + 2 +
+                columns(tr("with nothing happening"));
+
+            for (s.waiting[0..shown]) |w| {
+                if (y >= win.height) break;
+
+                _ = win.printSegment(.{
+                    .text = if (w.over) "▓" else "○",
+                    .style = .{ .fg = if (w.over) c_alarm else c_dim, .bold = w.over },
+                }, .{ .row_offset = y, .col_offset = 1 });
+
+                const line = fill(alloc, tr("#{0}  {1} {2}  {3}"), &.{
+                    padLeft(alloc, num(alloc, w.task), id_w),
+                    padRight(alloc, humanMs(alloc, w.silent_ms), silent_w),
+                    tr("with nothing happening"),
+                    clip(w.title, win.width -| used),
+                });
+                y = statLine(win, y, line, if (w.over) .{} else .{ .fg = c_dim });
+            }
+            if (s.waiting.len > shown) {
+                const more = fill(alloc, tr("  and {0} more still open"), &.{
+                    num(alloc, s.waiting.len - shown),
+                });
+                y = statLine(win, y, more, .{ .fg = c_dim });
+            }
+        }
+
+        y = self.statHead(win, y +| 1, tr("Where it stopped"));
+        {
+            // Half an hour to a cell, widened to whatever the column has:
+            // a day drawn 48 columns wide in a 90-column pane left half the
+            // box empty for no reason.
+            const avail: usize = @intCast(win.width -| 8);
+            const per: usize = @max(1, @min(3, avail / chat_stats.Silence.day_cells));
+            const cells = @min(avail / per, chat_stats.Silence.day_cells);
+            y = statLine(win, y, fill(alloc, tr("  a day {0}"), &.{
+                dayBar(alloc, s.silence.day, cells, per),
+            }), .{ .fg = c_author });
+
+            y = statLine(win, y, fill(alloc, tr("  last message {0} ago"), &.{
+                humanMs(alloc, s.silence.since_last_ms),
+            }), .{});
+
+            if (s.silence.longest_ms > 0) {
+                y = statLine(win, y, fill(
+                    alloc,
+                    tr("  longest silence {0} (from {1})"),
+                    &.{
+                        humanMs(alloc, s.silence.longest_ms),
+                        formatTime(alloc, s.silence.longest_from_ms),
+                    },
+                ), .{ .fg = c_dim });
+            }
+        }
+
+        y = self.statHead(win, y +| 1, tr("Saying · doing"));
+        if (s.speakers.len == 0) {
+            y = statLine(win, y, tr("  Nobody has been in this group."), .{ .fg = c_dim, .italic = true });
+        } else {
+            const shown = @min(s.speakers.len, speaker_rows);
+
+            // **Measured, then drawn.** Every column here is as wide as the
+            // widest thing that will go in it, and no wider.
+            //
+            // It used to pad the name with `{s: <10}`, which counts *bytes*
+            // -- so a name holding two Chinese characters was padded four
+            // columns short of one holding six Latin letters, and the whole
+            // row set off from a different place. `chat_layout.zig` opens
+            // with this rule and this box broke it: on this terminal a
+            // column is a column, and a CJK character occupies two.
+            var name_w: u16 = 0;
+            var loudest: usize = 1;
+            var busiest: usize = 1;
+            var said_w: u16 = 1;
+            var doing_w: u16 = 1;
+
+            for (s.speakers[0..shown]) |sp| {
+                name_w = @max(name_w, columns(clip(sp.title, max_name_cols)));
+                loudest = @max(loudest, sp.said);
+                busiest = @max(busiest, sp.doing);
+                said_w = @max(said_w, columns(num(alloc, sp.said)));
+                doing_w = @max(doing_w, columns(num(alloc, sp.doing)));
+            }
+
+            // What is left after the fixed parts goes to the two bars,
+            // evenly, so they are the same length as each other whatever
+            // the names and the numbers came out at. The words themselves
+            // are the same on every row, so their width does not have to be
+            // measured to keep the rows aligned -- but it does have to be
+            // spent, or the bars run off the edge in a language whose word
+            // for "said" is longer than this one's.
+            const fixed = 2 + name_w + 1 + columns(tr("said")) + 1 + said_w + 1 +
+                2 + columns(tr("doing")) + 1 + doing_w + 1;
+            const room: usize = @intCast(win.width -| fixed -| 1);
+            const width = @min(room / 2, 16);
+
+            for (s.speakers[0..shown]) |sp| {
+                if (y >= win.height) break;
+
+                // Two bars, each against its own column's largest, because
+                // the two counts are not in the same units -- and reading
+                // "said" against "doing" as though they were is the ranking
+                // these two columns exist to refuse.
+                const line = fill(alloc, tr("  {0} {1} {2} {3}  {4} {5} {6}"), &.{
+                    padRight(alloc, clip(sp.title, max_name_cols), name_w),
+                    tr("said"),
+                    padLeft(alloc, num(alloc, sp.said), said_w),
+                    bar(alloc, sp.said * width / loudest, width),
+                    tr("doing"),
+                    padLeft(alloc, num(alloc, sp.doing), doing_w),
+                    bar(alloc, sp.doing * width / busiest, width),
+                });
+                y = statLine(win, y, line, .{});
+            }
+            if (s.speakers.len > speaker_rows) {
+                const more = fill(alloc, tr("  and {0} more"), &.{
+                    num(alloc, s.speakers.len - speaker_rows),
+                });
+                y = statLine(win, y, more, .{ .fg = c_dim });
+            }
+        }
+
+        y = self.statHead(win, y +| 1, tr("Terminals"));
+        y = statLine(win, y, fill(
+            alloc,
+            tr("  {0} in the group now, {1} in the record"),
+            &.{ num(alloc, s.terminals.now), num(alloc, s.terminals.ever) },
+        ), .{});
+
+        // **What was here when Polter was last shut down.**
+        //
+        // A restart brings a group back with nobody in it, on purpose:
+        // deciding which terminal on screen now is which one from last
+        // night is a judgement, and the program does not make it. The cost
+        // falls on the person, who is looking at a list of `claude -r`
+        // sessions with no way to tell which one was the supervisor. These
+        // rows are the answer -- the title to recognise it by, the
+        // directory to resume it in, and which one was minding the others.
+        if (self.recalled.items.len > 0 and y + 1 < win.height) {
+            // **Only the supervisor, and it is named as one in words.**
+            //
+            // The first version listed every member with a glyph in front
+            // of the supervisor's row. That was unreadable for a reason
+            // worth writing down: a terminal's *title* already begins with
+            // a mark Polter puts there -- `✳`, `◑`, `◐` for on duty, quiet,
+            // off duty -- so a second column of glyphs produced rows
+            // reading "○ ✳" and "◐ ◑", and no reader can be expected to
+            // know which of the two was ours.
+            //
+            // And the workers were noise anyway. What this box is for is
+            // one question the program can otherwise not answer after a
+            // restart: **which of these `claude -r` sessions was the
+            // supervisor.** So the supervisor gets the words "last
+            // supervisor" beside it, its whole title on one line -- that is
+            // what gets matched against the session list, and truncating it
+            // defeats the purpose -- and its directory below, which is
+            // where the resume has to be run. Everybody else is a count.
+            var bosses: usize = 0;
+            for (self.recalled.items) |r| {
+                if (std.mem.eql(u8, r.role, "supervisor")) bosses += 1;
+            }
+
+            if (bosses == 0) {
+                y = statLine(win, y, tr("  no supervisor was recorded"), .{ .fg = c_dim });
+            } else {
+                y = statLine(win, y, tr("  last supervisor:"), .{ .fg = c_dim });
+
+                for (self.recalled.items) |r| {
+                    if (!std.mem.eql(u8, r.role, "supervisor")) continue;
+                    if (y + 1 >= win.height) break;
+
+                    y = statLine(win, y, std.fmt.allocPrint(alloc, "    {s}", .{
+                        clip(r.title, win.width -| 6),
+                    }) catch "", .{ .bold = true });
+
+                    y = statLine(win, y, std.fmt.allocPrint(alloc, "      {s}", .{
+                        clip(
+                            shortPath(alloc, r.cwd, self.env.get("HOME") orelse ""),
+                            win.width -| 8,
+                        ),
+                    }) catch "", .{ .fg = c_dim });
+                }
+            }
+
+            const others = self.recalled.items.len - bosses;
+            if (others > 0 and y < win.height) {
+                y = statLine(win, y, fill(alloc, tr("  and {0} other terminals"), &.{
+                    num(alloc, others),
+                }), .{ .fg = c_dim });
+            }
+        }
+
+        return y;
+    }
+
+    /// The right column: the shape of the session.
+    fn drawShapeBoxes(
+        self: *Chat,
+        win: vaxis.Window,
+        s: chat_stats.Stats,
+        have_record: bool,
+    ) u16 {
+        const alloc = self.frame.allocator();
+        var y: u16 = 0;
+
+        // The two charts take whatever is left over. Their floors, plus
+        // every other line in this column, come to sixteen rows; anything
+        // beyond that is height they can actually use, split between them.
+        //
+        // **A one-row chart is a sparkline, and a sparkline is what this
+        // column had.** Twenty-four buckets an eighth of a row tall says
+        // where the shape rises and falls and nothing else -- on a window
+        // forty rows deep, with the bottom half blank.
+        const spare = win.height -| 16;
+        const chart_h: u16 = @intCast(@min(@max(spare / 2, 1), 10));
+
+        y = self.statHead(win, y, tr("This session"));
+        {
+            if (s.session.started_ms > 0) {
+                y = statLine(win, y, fill(
+                    alloc,
+                    tr("  first line {0} · {1} since · {2} messages"),
+                    &.{
+                        formatStamp(alloc, s.session.started_ms),
+                        humanMs(alloc, @intCast(@max(
+                            nowMs(self.io) - s.session.started_ms,
+                            0,
+                        ))),
+                        num(alloc, s.session.messages),
+                    },
+                ), .{});
+            }
+
+            if (have_record) {
+                y = statLine(win, y, fill(
+                    alloc,
+                    tr("  made {0} · closed {1} · cancelled {2} · open {3}"),
+                    &.{
+                        num(alloc, s.session.created),
+                        num(alloc, s.session.closed),
+                        num(alloc, s.session.cancelled),
+                        num(alloc, s.session.open),
+                    },
+                ), .{});
+
+                // Two facts that are only worth anything as a pair. On the
+                // record this was written against it read "24 / 71": most
+                // tasks never reported at all, which a chart of progress
+                // states would have drawn as a queue nobody was working.
+                y = statLine(win, y, fill(
+                    alloc,
+                    tr("  {0} handed round · {1} progress reports / {2}"),
+                    &.{
+                        num(alloc, s.session.reassigned),
+                        num(alloc, s.session.progressed),
+                        num(alloc, s.session.tasks_total),
+                    },
+                ), .{ .fg = c_dim });
+            } else {
+                y = statLine(win, y, tr("  The task record has not been read yet."), .{ .fg = c_dim, .italic = true });
+            }
+        }
+
+        y = self.statHead(win, y +| 1, tr("Task mix"));
+        {
+            var over: usize = 0;
+            for (s.waiting) |w| {
+                if (w.over) over += 1;
+            }
+            const total = s.session.tasks_total;
+            if (total == 0) {
+                y = statLine(win, y, tr("  No tasks in this group yet."), .{ .fg = c_dim, .italic = true });
+            } else {
+                const width: usize = @intCast(win.width -| 12);
+                const closed_w = s.session.closed * width / total;
+                const over_w = over * width / total;
+                const open_w = (s.session.open -| over) * width / total;
+
+                // **The bar and its key are drawn from one list**, so a
+                // colour cannot be right in one of them and wrong in the
+                // other. It was: the bar took the default foreground and
+                // the whole key line was dimmed, so the same `█` was white
+                // above and grey below, and the three segments -- closed,
+                // past the mark, still open -- were told apart only by the
+                // shade of the glyph.
+                //
+                // The colours carry the meaning now: `c_alarm` appears
+                // here and in the waiting list and nowhere else, so red on
+                // this page always means the same thing.
+                const closed_style: vaxis.Style = .{ .fg = c_author };
+                const over_style: vaxis.Style = .{ .fg = c_alarm };
+                const open_style: vaxis.Style = .{ .fg = c_dim };
+
+                y = statSegments(win, y, &.{
+                    .{ .text = "  ", .style = .{} },
+                    .{ .text = repeat(alloc, "█", closed_w), .style = closed_style },
+                    .{ .text = repeat(alloc, "▓", over_w), .style = over_style },
+                    .{ .text = repeat(alloc, "░", open_w), .style = open_style },
+                    .{ .text = std.fmt.allocPrint(alloc, "  {d}", .{total}) catch "", .style = .{} },
+                });
+
+                y = statSegments(win, y, &.{
+                    .{ .text = "  █ ", .style = closed_style },
+                    .{
+                        .text = fill(alloc, tr("closed {0}"), &.{num(alloc, s.session.closed)}),
+                        .style = .{ .fg = c_dim },
+                    },
+                    .{ .text = "  ▓ ", .style = over_style },
+                    .{
+                        .text = fill(alloc, tr("past the mark {0}"), &.{num(alloc, over)}),
+                        .style = .{ .fg = c_dim },
+                    },
+                    .{ .text = "  ░ ", .style = open_style },
+                    .{
+                        .text = fill(alloc, tr("open {0}"), &.{num(alloc, s.session.open)}),
+                        .style = .{ .fg = c_dim },
+                    },
+                    .{ .text = "  ✗ ", .style = .{ .fg = c_dim } },
+                    .{
+                        .text = fill(alloc, tr("cancelled {0}"), &.{num(alloc, s.session.cancelled)}),
+                        .style = .{ .fg = c_dim },
+                    },
+                });
+            }
+        }
+
+        y = self.statHead(win, y +| 1, tr("How long tasks lived"));
+        if (s.life.counted == 0) {
+            y = statLine(win, y, tr("  Nothing has been closed yet."), .{ .fg = c_dim, .italic = true });
+        } else {
+            var widened: [chat_stats.Life.buckets_len]u32 = undefined;
+            for (s.life.buckets, 0..) |v, i| widened[i] = v;
+            y = drawBars(alloc, win, y, chart_h, &widened, .{ .fg = c_author });
+
+            y = statLine(win, y, fill(
+                alloc,
+                tr("  fastest {0} · median {1} · slowest {2} (over {3})"),
+                &.{
+                    humanMs(alloc, s.life.fastest_ms),
+                    humanMs(alloc, s.life.median_ms),
+                    humanMs(alloc, s.life.slowest_ms),
+                    num(alloc, s.life.counted),
+                },
+            ), .{ .fg = c_dim });
+        }
+
+        y = self.statHead(win, y +| 1, tr("Rhythm"));
+        {
+            y = drawBars(alloc, win, y, chart_h, &s.rhythm.hours, .{ .fg = c_author });
+
+            // The scale under the bars rather than around them, so the bars
+            // start at the same column the other chart's do.
+            y = statLine(win, y, fill(
+                alloc,
+                tr("  00:00{0}23:00"),
+                &.{spaces[0..@min(@as(usize, @intCast(win.width -| 12)), spaces.len)]},
+            ), .{ .fg = c_dim });
+
+            y = statLine(win, y, fill(
+                alloc,
+                tr("  busiest {0}:00 ({1} messages)"),
+                &.{
+                    std.fmt.allocPrint(alloc, "{d:0>2}", .{s.rhythm.busiest}) catch "",
+                    num(alloc, s.rhythm.busiest_count),
+                },
+            ), .{ .fg = c_dim });
+        }
+
+        return y;
+    }
+
+    /// A bar chart, `height` rows tall, one bar per value.
+    ///
+    /// **Eighths, not rows.** A terminal cell can be an eighth full through
+    /// to completely full (`▁` … `█`), so a chart `h` rows tall has `8h`
+    /// levels rather than `h` of them. That is what makes three rows worth
+    /// drawing at all: at one level per row, a bucket holding a fifth of
+    /// the tallest would round to nothing and the chart would say the hour
+    /// was empty when it was not.
+    ///
+    /// Returns the row after the chart, the same as `statLine`.
+    fn drawBars(
+        alloc: Allocator,
+        win: vaxis.Window,
+        y: u16,
+        height: u16,
+        values: []const u32,
+        style: vaxis.Style,
+    ) u16 {
+        if (height == 0 or values.len == 0) return y;
+        if (y >= win.height) return y;
+
+        var tallest: u32 = 0;
+        for (values) |v| tallest = @max(tallest, v);
+        if (tallest == 0) return y;
+
+        const avail: usize = @intCast(win.width -| 4);
+        const per: usize = @max(1, @min(3, avail / values.len));
+        const shown = @min(values.len, avail / per);
+
+        var row: u16 = 0;
+        while (row < height and y + row < win.height) : (row += 1) {
+            // Top row first, because that is the order they are drawn in;
+            // `below` is how many whole rows sit under this one.
+            const below: u32 = height - 1 - row;
+
+            // **The frame arena, never a stack buffer.** vaxis keeps the
+            // slice it is handed rather than copying it, so a line written
+            // into a local array is read back after this function has
+            // returned and its stack has been reused -- which draws
+            // whatever happens to be there now. The comment on `frame` says
+            // exactly this, having been written the first time it happened;
+            // it happened again here, and the screen filled with fragments
+            // of other people's strings.
+            var line: std.ArrayListUnmanaged(u8) = .empty;
+            line.appendSlice(alloc, "  ") catch break;
+
+            for (values[0..shown]) |v| {
+                const eighths: u32 = @intCast(
+                    @as(u64, v) * height * 8 / tallest,
+                );
+                const here = std.math.clamp(
+                    @as(i64, eighths) - @as(i64, below) * 8,
+                    0,
+                    8,
+                );
+
+                const glyph = if (here == 0)
+                    " "
+                else
+                    spark_glyphs[@intCast(here - 1)];
+
+                for (0..per) |_| line.appendSlice(alloc, glyph) catch break;
+            }
+
+            _ = win.printSegment(.{
+                .text = line.items,
+                .style = style,
+            }, .{ .row_offset = y + row, .col_offset = 0 });
+        }
+
+        return y + row;
+    }
+
+    /// One box's heading, with a rule to the right of it.
+    fn statHead(self: *Chat, win: vaxis.Window, y: u16, text: []const u8) u16 {
+        if (y >= win.height) return y;
+        const alloc = self.frame.allocator();
+
+        _ = win.printSegment(.{
+            .text = text,
+            .style = .{ .fg = c_title, .bold = true },
+        }, .{ .row_offset = y, .col_offset = 1 });
+
+        const used = measure(text) + 2;
+        if (used < win.width) {
+            _ = win.printSegment(.{
+                .text = repeat(alloc, "─", win.width - used - 1),
+                .style = .{ .fg = c_frame },
+            }, .{ .row_offset = y, .col_offset = used + 1 });
+        }
+        return y + 1;
+    }
+
+    /// One piece of a row: some text and the style it is drawn in.
+    const Piece = struct { text: []const u8, style: vaxis.Style };
+
+    /// One line of a box, drawn in pieces so that parts of it can differ.
+    ///
+    /// Each piece is clipped to what is left of the row, so a long one
+    /// stops at the edge instead of wrapping -- `statLine` says why that
+    /// matters: a wrapped line silently takes two rows and every box below
+    /// it is then drawn one row off.
+    fn statSegments(win: vaxis.Window, y: u16, pieces: []const Piece) u16 {
+        if (y >= win.height) return y;
+
+        var col: u16 = 0;
+        for (pieces) |p| {
+            if (col + 1 >= win.width) break;
+
+            const text = clip(p.text, win.width -| col -| 1);
+            if (text.len == 0) continue;
+
+            _ = win.printSegment(.{
+                .text = text,
+                .style = p.style,
+            }, .{ .row_offset = y, .col_offset = col });
+
+            col += columns(text);
+        }
+
+        return y + 1;
+    }
+
+    /// One line of a box, clipped to the column it belongs to.
+    ///
+    /// Clipped rather than left to wrap: vaxis wraps inside the window, so
+    /// a long line does not spill into the next column -- it silently
+    /// takes two rows, and every box below it is then drawn one row off.
+    fn statLine(
+        win: vaxis.Window,
+        y: u16,
+        text: []const u8,
+        style: vaxis.Style,
+    ) u16 {
+        if (y >= win.height) return y;
+        _ = win.printSegment(.{
+            .text = clip(text, win.width -| 1),
+            .style = style,
+        }, .{ .row_offset = y, .col_offset = 0 });
+        return y + 1;
+    }
+
+    /// What the tabs are called at this width.
+    ///
+    /// **One language, not two.** These read "群聊 / CHAT" for as long as
+    /// the window was Chinese-only: the English half was there so that
+    /// somebody who did not read Chinese could still find the tab. Now that
+    /// the window is translated, the pair is redundant in one language and
+    /// wrong in every other -- a French reader has no use for either half.
+    ///
+    /// Padded here rather than in the translation, so a translator cannot
+    /// accidentally lose the space that separates one tab from the next.
+    fn tabLabels(alloc: Allocator) [3][]const u8 {
+        return .{
+            std.fmt.allocPrint(alloc, " {s} ", .{tr("Chat")}) catch " Chat ",
+            std.fmt.allocPrint(alloc, " {s} ", .{tr("Tasks")}) catch " Tasks ",
+            std.fmt.allocPrint(alloc, " {s} ", .{tr("Stats")}) catch " Stats ",
+        };
     }
 
     /// One glyph for where a task stands, and the progress word with it.
@@ -1896,7 +2853,7 @@ const Chat = struct {
     /// are different things and the person has to be able to tell.
     fn ownerName(self: *const Chat, owner: []const u8) []const u8 {
         if (owner.len == 0) return "";
-        if (std.mem.eql(u8, owner, "0x0000000000000000")) return "· 未分配";
+        if (std.mem.eql(u8, owner, "0x0000000000000000")) return tr("· unassigned");
 
         for (self.groups.items[self.current].members.items) |m| {
             if (std.mem.eql(u8, m.id, owner)) return m.title;
@@ -1920,7 +2877,7 @@ const Chat = struct {
         if (win.height == 0 or win.width < 8) return;
         if (self.groups.items.len == 0) {
             _ = win.printSegment(.{
-                .text = "  没有群聊。总管建群之后，对话会出现在这里。",
+                .text = tr("No groups. The conversation will appear here once a supervisor makes one."),
                 .style = .{ .fg = c_dim, .italic = true },
             }, .{ .row_offset = 0, .col_offset = 0 });
             return;
@@ -1943,7 +2900,7 @@ const Chat = struct {
         // is still empty, which is what inserting at the front means here.
         if (group.history_done) {
             try rows.append(alloc, .{
-                .text = "── 没有更早的了 ──",
+                .text = tr("── nothing older ──"),
                 .kind = .notice,
                 .message = 0,
             });
@@ -1954,7 +2911,7 @@ const Chat = struct {
             const header = std.fmt.allocPrint(alloc, "{s}  {s}{s}", .{
                 stamp,
                 m.author,
-                if (m.summary) "  (摘要)" else "",
+                if (m.summary) tr("  (summary)") else "",
             }) catch m.author;
 
             try rows.append(alloc, .{
@@ -2076,12 +3033,353 @@ fn formatTime(alloc: Allocator, at_ms: i64) []const u8 {
     ) catch "";
 }
 
+/// One translated string.
+///
+/// **Everything a person reads in this window goes through here.** It was
+/// all written as Chinese literals, which meant the window ignored the
+/// language the rest of Polter respects: somebody who had switched to
+/// English got an English menu, an English settings page, and a
+/// conversations view still in Chinese. There is no per-window setting to
+/// find and no bug in the switching -- the strings simply were not
+/// translatable.
+///
+/// The msgid is English, the way every other translatable string in this
+/// repository is, and `po/` carries the rest. An untranslated locale falls
+/// back to the msgid, which is a readable answer rather than a blank.
+fn tr(comptime msgid: [:0]const u8) []const u8 {
+    return std.mem.span(internal_os.i18n._(msgid.ptr));
+}
+
+/// A translated string with values put into it.
+///
+/// **Why not `std.fmt`.** A format string has to be known at compile time
+/// and a translated one is by definition not: it comes out of a `.mo` file
+/// at run time. So the placeholders are numbered -- `{0}`, `{1}` -- and
+/// filled by substitution, which also lets a translation put them in a
+/// different order, and languages do: "3 tasks in 2 groups" and its
+/// Chinese counterpart do not put the numbers in the same places.
+///
+/// Anything that is not a `{digit}` is copied through, so a translation
+/// containing braces for other reasons keeps them.
+fn fill(alloc: Allocator, template: []const u8, values: []const []const u8) []const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+
+    var i: usize = 0;
+    while (i < template.len) {
+        const rest = template.len - i;
+        if (rest >= 3 and
+            template[i] == '{' and
+            template[i + 2] == '}' and
+            template[i + 1] >= '0' and
+            template[i + 1] <= '9')
+        {
+            const at: usize = template[i + 1] - '0';
+
+            // A placeholder the caller did not supply is left as it stands
+            // rather than dropped: a visible `{3}` is a translation to fix,
+            // and a silent gap is a sentence that reads as though it were
+            // written that way.
+            if (at < values.len) {
+                out.appendSlice(alloc, values[at]) catch return template;
+                i += 3;
+                continue;
+            }
+        }
+
+        out.append(alloc, template[i]) catch return template;
+        i += 1;
+    }
+
+    return out.items;
+}
+
+/// One number as text, for `fill`.
+fn num(alloc: Allocator, v: anytype) []const u8 {
+    return std.fmt.allocPrint(alloc, "{d}", .{v}) catch "?";
+}
+
+/// The wall clock in milliseconds.
+///
+/// Wall rather than the loop's awake clock: everything it is compared
+/// against -- a message's `at_ms`, an event's -- was stamped off the real
+/// clock, and a machine that spent four hours suspended would otherwise
+/// report the night as four hours shorter than it was.
+fn nowMs(io: std.Io) i64 {
+    const wall: std.Io.Timestamp = .now(io, .real);
+    return @intCast(@divFloor(wall.nanoseconds, std.time.ns_per_ms));
+}
+
+/// The local hour of the day, or 24 for "cannot tell".
+///
+/// Twenty-four rather than zero, because zero is a real hour: a machine
+/// whose libc would not answer would otherwise pile every message it could
+/// not place onto midnight and report the night's busiest hour as 00:00.
+fn localHour(at_ms: i64) u8 {
+    if (at_ms <= 0) return 24;
+    const secs: i64 = @divTrunc(at_ms, std.time.ms_per_s);
+    var tm: Tm = undefined;
+    if (localtime_r(&secs, &tm) == null) return 24;
+    return @intCast(@mod(tm.hour, 24));
+}
+
+/// `MM-DD HH:MM` in the reader's own timezone.
+fn formatStamp(alloc: Allocator, at_ms: i64) []const u8 {
+    if (at_ms <= 0) return "";
+
+    const secs: i64 = @divTrunc(at_ms, std.time.ms_per_s);
+    var tm: Tm = undefined;
+    if (localtime_r(&secs, &tm) == null) return "";
+
+    return std.fmt.allocPrint(alloc, "{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
+        @as(u32, @intCast(@mod(tm.mon + 1, 13))),
+        @as(u32, @intCast(tm.mday)),
+        @as(u32, @intCast(@mod(tm.hour, 24))),
+        @as(u32, @intCast(@mod(tm.min, 60))),
+    }) catch "";
+}
+
+/// A duration as somebody would say it out loud.
+///
+/// Coarse on purpose: the difference between 49 and 50 hours changes
+/// nothing anybody would do, and a row that reported it to the minute
+/// would be asking to be read as a measurement rather than as a rough
+/// shape. Whole units all the way up, and never more than two of them.
+fn humanMs(alloc: Allocator, ms: u64) []const u8 {
+    const secs = ms / 1000;
+    if (secs < 60) return tr("under a minute");
+
+    const mins = secs / 60;
+    if (mins < 60) return fill(alloc, tr("{0} min"), &.{num(alloc, mins)});
+
+    const hours = mins / 60;
+    if (hours < 48) {
+        const rest = mins % 60;
+        if (rest == 0) return fill(alloc, tr("{0} h"), &.{num(alloc, hours)});
+        return fill(alloc, tr("{0} h {1} min"), &.{ num(alloc, hours), num(alloc, rest) });
+    }
+
+    const days = hours / 24;
+    const rest = hours % 24;
+    if (rest == 0) return fill(alloc, tr("{0} d"), &.{num(alloc, days)});
+    return fill(alloc, tr("{0} d {1} h"), &.{ num(alloc, days), num(alloc, rest) });
+}
+
+/// `text` cut to `width` display columns.
+///
+/// By column and never mid-character: a line cut inside a multi-byte
+/// character is not a shorter line, it is a broken one, and the terminal
+/// draws the replacement glyph. The same rule `chat_layout.wrap` keeps,
+/// for the same reason.
+fn clip(text: []const u8, width: u16) []const u8 {
+    if (width == 0) return "";
+    if (columns(text) <= width) return text;
+
+    var used: u16 = 0;
+    var end: usize = 0;
+    var it = (std.unicode.Utf8View.init(text) catch return text).iterator();
+    while (it.nextCodepointSlice()) |slice| {
+        const w = columns(slice);
+        if (used + w > width) break;
+        used += w;
+        end += slice.len;
+    }
+    return text[0..end];
+}
+
+/// What a string will occupy on this terminal, in columns.
+///
+/// The same measurement `Chat.measure` makes; this is the one the helpers
+/// below a `Chat` can reach.
+fn columns(text: []const u8) u16 {
+    return vaxis.gwidth.gwidth(text, .unicode);
+}
+
+/// `text` padded with spaces on the right to `cols` display columns.
+///
+/// **Columns, not bytes.** `{s: <10}` pads to ten bytes, which is ten
+/// columns only for text that happens to be all ASCII -- a name with two
+/// CJK characters in it is six bytes and four columns, and padding it by
+/// bytes leaves the row starting from a different place than its
+/// neighbours. That is what made the two-column box ragged.
+fn padRight(alloc: Allocator, text: []const u8, cols: u16) []const u8 {
+    const have = columns(text);
+    if (have >= cols) return text;
+
+    const gap = @min(@as(usize, cols - have), spaces.len);
+    return std.fmt.allocPrint(alloc, "{s}{s}", .{ text, spaces[0..gap] }) catch text;
+}
+
+/// The same, on the left, for numbers.
+fn padLeft(alloc: Allocator, text: []const u8, cols: u16) []const u8 {
+    const have = columns(text);
+    if (have >= cols) return text;
+
+    const gap = @min(@as(usize, cols - have), spaces.len);
+    return std.fmt.allocPrint(alloc, "{s}{s}", .{ spaces[0..gap], text }) catch text;
+}
+
+/// A path with the home directory written as `~`.
+///
+/// Not decoration: the row it goes in is what somebody types `claude -r`
+/// into, and an absolute path under `/Users/…` costs a dozen columns to say
+/// something they already know.
+fn shortPath(alloc: Allocator, path: []const u8, home: []const u8) []const u8 {
+    if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
+    return std.fmt.allocPrint(alloc, "~{s}", .{path[home.len..]}) catch path;
+}
+
+/// One glyph repeated, `n` times.
+fn repeat(alloc: Allocator, glyph: []const u8, n: usize) []const u8 {
+    if (n == 0) return "";
+    const capped = @min(n, 120);
+    const out = alloc.alloc(u8, glyph.len * capped) catch return "";
+    for (0..capped) |i| @memcpy(out[i * glyph.len ..][0..glyph.len], glyph);
+    return out;
+}
+
+/// A bar `width` cells wide with `filled` of them solid.
+fn bar(alloc: Allocator, filled: usize, width: usize) []const u8 {
+    const on = @min(filled, width);
+    return std.fmt.allocPrint(alloc, "{s}{s}", .{
+        repeat(alloc, "█", on),
+        repeat(alloc, "░", width - on),
+    }) catch "";
+}
+
+/// The last day, one cell per half hour, newest on the right.
+///
+/// Sampled rather than scaled when the column is narrow: each cell of the
+/// drawing takes the *or* of the cells it covers, so a half hour somebody
+/// said something in never disappears into a rounding. A gap that is not
+/// really there is the failure mode worth avoiding here -- it is the one
+/// that would have somebody get up in the night.
+fn dayBar(
+    alloc: Allocator,
+    day: [chat_stats.Silence.day_cells]bool,
+    cells: usize,
+    per: usize,
+) []const u8 {
+    if (cells == 0 or per == 0) return "";
+    const width = @min(cells, chat_stats.Silence.day_cells);
+
+    // Each drawn cell covers its own share of the day, worked out from
+    // both ends rather than from a width per cell. Dividing first and
+    // stepping by the result loses whatever does not divide evenly -- and
+    // what it loses is the *end* of the range, which here is the last few
+    // hours: the one part of the day somebody checking at three in the
+    // morning is actually looking at.
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    for (0..width) |i| {
+        const from = i * chat_stats.Silence.day_cells / width;
+        const to = @max(from + 1, (i + 1) * chat_stats.Silence.day_cells / width);
+
+        var any = false;
+        for (day[from..@min(to, chat_stats.Silence.day_cells)]) |on| any = any or on;
+        for (0..per) |_| {
+            out.appendSlice(alloc, if (any) "█" else "░") catch return out.items;
+        }
+    }
+    return out.items;
+}
+
+/// The eight heights a sparkline is drawn with.
+const spark_glyphs = [_][]const u8{ "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" };
+
+/// A sparkline, scaled to its own tallest bar.
+///
+/// Scaled to itself rather than to a fixed ceiling, because what these are
+/// read for is where the shape rises and falls -- and a shared scale would
+/// flatten a quiet group into a straight line at the bottom.
+fn sparkU32(alloc: Allocator, values: []const u32) []const u8 {
+    if (values.len == 0) return "";
+
+    var tallest: u32 = 0;
+    for (values) |v| tallest = @max(tallest, v);
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    for (values) |v| {
+        // Zero is the floor glyph, not the first step above it: a bucket
+        // nothing landed in has to look different from the smallest one
+        // that something did.
+        const level: usize = if (tallest == 0 or v == 0)
+            0
+        else
+            1 + (v - 1) * (spark_glyphs.len - 2) / @max(tallest - 1, 1);
+
+        out.appendSlice(alloc, spark_glyphs[@min(level, spark_glyphs.len - 1)]) catch break;
+    }
+    return out.items;
+}
+
 // -- tests ------------------------------------------------------------------
 
 const testing = std.testing;
 
 test {
     _ = layout;
+    _ = chat_stats;
+}
+
+test "the last hours of the day survive a narrow column" {
+    // The failure this is written from: dividing forty-eight half hours
+    // into a forty-cell column and stepping by the quotient drew the first
+    // forty and dropped the last eight -- four hours of "nothing was said"
+    // that had in fact just happened.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var day: [chat_stats.Silence.day_cells]bool = @splat(false);
+    day[chat_stats.Silence.day_cells - 1] = true;
+
+    const drawn = dayBar(alloc, day, 40, 1);
+    try testing.expect(std.mem.endsWith(u8, drawn, "█"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, drawn, "█"));
+
+    // And a full-width column is one cell to one half hour.
+    const wide = dayBar(alloc, day, chat_stats.Silence.day_cells, 1);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, wide, "█"));
+    try testing.expect(std.mem.endsWith(u8, wide, "█"));
+}
+
+test "a sparkline keeps an empty bucket different from the smallest full one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const drawn = sparkU32(alloc, &.{ 0, 1, 8 });
+
+    // Three glyphs, three bytes each, and the first is the floor.
+    try testing.expect(std.mem.startsWith(u8, drawn, "▁"));
+    try testing.expect(!std.mem.startsWith(u8, drawn[3..], "▁"));
+    try testing.expect(std.mem.endsWith(u8, drawn, "█"));
+}
+
+test "a duration is said the way somebody would say it" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The msgids, because a test process has no locale bound and `t`
+    // hands back what it was given. That is the fallback every
+    // untranslated language gets too, so this is also a check that the
+    // fallback reads as a sentence rather than as a template.
+    try testing.expectEqualStrings("under a minute", humanMs(alloc, 30 * 1000));
+    try testing.expectEqualStrings("42 min", humanMs(alloc, 42 * 60 * 1000));
+    try testing.expectEqualStrings("3 h", humanMs(alloc, 3 * 60 * 60 * 1000));
+    try testing.expectEqualStrings("3 h 40 min", humanMs(alloc, (3 * 60 + 40) * 60 * 1000));
+    try testing.expectEqualStrings("2 d 1 h", humanMs(alloc, 49 * 60 * 60 * 1000));
+}
+
+test "clipping counts columns, and never cuts a character in half" {
+    // A CJK character is two columns and three bytes, and the bug this
+    // guards is cutting between the two: the terminal draws the
+    // replacement glyph, which is wider than what it replaced.
+    try testing.expectEqualStrings("真机", clip("真机批次三", 4));
+    try testing.expectEqualStrings("真机", clip("真机批次三", 5));
+    try testing.expectEqualStrings("真机批", clip("真机批次三", 6));
+    try testing.expectEqualStrings("", clip("真机", 1));
+    try testing.expectEqualStrings("abc", clip("abc", 8));
 }
 
 test "a poll leaves the live messages capped where it always did" {
@@ -2159,17 +3457,60 @@ test "the next batch joins onto the oldest message held" {
     try testing.expectEqual(@as(u64, 41), seam.before);
 }
 
-test "the tabs shrink rather than being cut in half" {
-    // The side column's precedent: a narrow window drops what it cannot
-    // draw properly instead of squeezing it.
-    const wide = Chat.tabLabels(80);
-    try testing.expect(std.mem.indexOf(u8, wide[0], "CHAT") != null);
-    try testing.expect(std.mem.indexOf(u8, wide[1], "TASKS") != null);
+test "a tab is named once, in one language" {
+    // These read "群聊 / CHAT" while the window was Chinese-only: the
+    // English half was there so somebody who could not read the Chinese
+    // could still find the tab. Once the window is translated that pair is
+    // redundant in one language and wrong in every other -- a French reader
+    // has no use for either half.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
 
-    const narrow = Chat.tabLabels(30);
-    try testing.expect(std.mem.indexOf(u8, narrow[0], "CHAT") == null);
-    try testing.expect(std.mem.indexOf(u8, narrow[0], "群聊") != null);
-    try testing.expect(std.mem.indexOf(u8, narrow[1], "任务") != null);
+    const labels = Chat.tabLabels(arena.allocator());
+
+    // No locale is bound in a test process, so what comes back is the
+    // msgid -- which is also what an untranslated language gets.
+    try testing.expectEqualStrings(" Chat ", labels[0]);
+    try testing.expectEqualStrings(" Tasks ", labels[1]);
+    try testing.expectEqualStrings(" Stats ", labels[2]);
+
+    // The padding is ours rather than the translation's, so a translator
+    // cannot lose the space that separates one tab from the next.
+    for (labels) |l| {
+        try testing.expect(std.mem.startsWith(u8, l, " "));
+        try testing.expect(std.mem.endsWith(u8, l, " "));
+    }
+}
+
+test "a translation puts the values where its own grammar wants them" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    try testing.expectEqualStrings(
+        "made 71 · closed 60",
+        fill(alloc, "made {0} · closed {1}", &.{ "71", "60" }),
+    );
+
+    // The reason the placeholders are numbered rather than positional:
+    // a translation may need them the other way round.
+    try testing.expectEqualStrings(
+        "60 closed of 71",
+        fill(alloc, "{1} closed of {0}", &.{ "71", "60" }),
+    );
+
+    // A placeholder nobody supplied stays visible -- a translation to fix,
+    // rather than a sentence with a silent hole in it.
+    try testing.expectEqualStrings(
+        "one 1 and {3}",
+        fill(alloc, "one {0} and {3}", &.{"1"}),
+    );
+
+    // And a brace that is not a placeholder is left alone.
+    try testing.expectEqualStrings(
+        "{} {a} 1",
+        fill(alloc, "{} {a} {0}", &.{"1"}),
+    );
 }
 
 test "the confirmation box takes yes for an answer and nothing else for one" {

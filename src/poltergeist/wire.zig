@@ -224,6 +224,15 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
             .before_seq = try optionalU64(params, "before_seq", 0),
             .limit = try optionalU64(params, "limit", 0),
+            .since_ms = try optionalI64(params, "since_ms", 0),
+            .until_ms = try optionalI64(params, "until_ms", 0),
+            .match = (try optionalString(aa, params, "match")) orelse "",
+        } },
+
+        .task_history => .{ .task_history = .{
+            .group = try requireString(aa, params, "group"),
+            .before_seq = try optionalU64(params, "before_seq", 0),
+            .limit = try optionalU64(params, "limit", 0),
         } },
 
         .plugin_list => .{ .plugin_list = .{
@@ -375,6 +384,24 @@ fn optionalHistory(params: ?std.json.ObjectMap) ParseError!rpc.History {
     return switch (v) {
         .string => |str| std.meta.stringToEnum(rpc.History, str) orelse
             error.BadParams,
+        else => error.BadParams,
+    };
+}
+
+/// The same, for a value that may be negative.
+///
+/// Wall-clock milliseconds are what needs this: they are `i64` everywhere in
+/// this program because an instant before 1970 is a real instant, and a
+/// parser that refused one would refuse a clock that is merely set wrong.
+fn optionalI64(
+    params: ?std.json.ObjectMap,
+    key: []const u8,
+    default: i64,
+) ParseError!i64 {
+    const p = params orelse return default;
+    const v = p.get(key) orelse return default;
+    return switch (v) {
+        .integer => |i| i,
         else => error.BadParams,
     };
 }
@@ -552,6 +579,17 @@ pub const Response = union(enum) {
 
     tasks: []const rpc.TaskView,
 
+    /// What happened to a panel, answering `task_history`.
+    task_events: struct {
+        events: []const rpc.TaskEvent,
+
+        /// Whether there is older still to ask for -- the same flag
+        /// `messages` carries, for the same reason: a page cut short by
+        /// the budget is otherwise indistinguishable from the beginning
+        /// of the record.
+        more: bool = false,
+    },
+
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -626,6 +664,16 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                     try s.objectField("brief");
                     try s.write(g.brief);
                 }
+
+                // The same rule, pointed the other way: written only when
+                // it is false, because a listing where every entry says
+                // `joined: true` is a field that has never told anybody
+                // anything. False means the group is there and the caller
+                // is not in it -- which is what a restart leaves.
+                if (!g.joined) {
+                    try s.objectField("joined");
+                    try s.write(false);
+                }
                 try s.endObject();
             }
             try s.endArray();
@@ -658,6 +706,35 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.write(m.summary);
                 try s.objectField("text");
                 try s.write(m.text);
+                try s.endObject();
+            }
+            try s.endArray();
+        },
+        .task_events => |v| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("more");
+            try s.write(v.more);
+            try s.objectField("events");
+            try s.beginArray();
+            for (v.events) |e| {
+                try s.beginObject();
+                try s.objectField("seq");
+                try s.write(e.seq);
+                try s.objectField("at_ms");
+                try s.write(e.at_ms);
+                try s.objectField("op");
+                try s.write(e.op);
+                try s.objectField("task");
+                try s.write(e.task);
+                try s.objectField("title");
+                try s.write(e.title);
+                try s.objectField("owner");
+                try writeId(&s, e.owner);
+                try s.objectField("state");
+                try s.write(e.state);
+                try s.objectField("progress");
+                try s.write(e.progress);
                 try s.endObject();
             }
             try s.endArray();
@@ -1274,6 +1351,51 @@ test "a history request may omit the cursor and the limit" {
     defer p.deinit();
     try testing.expectEqual(@as(u64, 0), p.value.group_history.before_seq);
     try testing.expectEqual(@as(u64, 0), p.value.group_history.limit);
+}
+
+test "task_history parses its cursor and its limit, and may omit both" {
+    var p = try parse(
+        \\{"method":"task_history","params":{"group":"build","before_seq":42,"limit":20}}
+    );
+    defer p.deinit();
+    try testing.expectEqualStrings("build", p.value.task_history.group);
+    try testing.expectEqual(@as(u64, 42), p.value.task_history.before_seq);
+    try testing.expectEqual(@as(u64, 20), p.value.task_history.limit);
+
+    var bare = try parse(
+        \\{"method":"task_history","params":{"group":"build"}}
+    );
+    defer bare.deinit();
+    try testing.expectEqual(@as(u64, 0), bare.value.task_history.before_seq);
+    try testing.expectEqual(@as(u64, 0), bare.value.task_history.limit);
+}
+
+test "a panel history reply carries the event, its cursor and its clock" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const events = [_]rpc.TaskEvent{.{
+        .seq = 7,
+        .at_ms = 1_700_000_000_000,
+        .op = "assigned",
+        .task = 93,
+        .title = "get the core building",
+        .owner = 0x2222,
+        .state = "open",
+        .progress = "working",
+    }};
+    try writeResponse(&w, .{ .task_events = .{ .events = &events, .more = true } });
+    const out = w.buffered();
+
+    try testing.expect(std.mem.indexOf(u8, out, "\"seq\":7") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"op\":\"assigned\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"task\":93") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"at_ms\":1700000000000") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"more\":true") != null);
+
+    // The owner is written the way every other id in this protocol is, so
+    // one reader parses them all.
+    try testing.expect(std.mem.indexOf(u8, out, "\"owner\":\"0x0000000000002222\"") != null);
 }
 
 test "a history reply carries the log cursor beside the group seq" {

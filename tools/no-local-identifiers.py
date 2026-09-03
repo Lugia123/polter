@@ -151,6 +151,14 @@ def digest(token: str) -> str:
 # key: "path:needle-text-lowered" -> why it may stay.
 KNOWN = {
     "src/build_config.zig": "bundle id com.lugia.polter is the application's identity",
+    # The one place the id is now written, which is the point of the file:
+    # `build_config.zig` above and the build graph both read it from here,
+    # so the fork can no longer change one copy and leave the other. Neither
+    # branch was red on its own -- this checker and that file arrived from
+    # opposite sides of a merge, and a gate can be green on both parents and
+    # red on the child.
+    "src/build/bundle_id.zig":
+        "the single definition of the bundle id both sides of the build read",
     "src/apprt/gtk/build/info.zig": "GTK application id, same identity as the bundle id",
     "src/main_ghostty.zig": "log predicate in a comment quotes the bundle id",
     "src/build/PolterVersion.zig": "names the fork's own remote, Lugia123/polter",

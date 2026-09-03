@@ -97,11 +97,16 @@ pub fn write(
     path: []const u8,
     snapshot: Snapshot,
 ) void {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+
+    const merged = keepEmptyGroupsAsTheyWere(arena.allocator(), io, path, snapshot);
+
     var buf: std.Io.Writer.Allocating = .init(alloc);
     defer buf.deinit();
 
     var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
-    writeJson(&s, snapshot) catch |err| {
+    writeJson(&s, merged) catch |err| {
         log.warn("session: could not render err={}", .{err});
         return;
     };
@@ -135,6 +140,56 @@ pub fn write(
     atomic.replace(io) catch |err| {
         log.warn("session: could not commit err={}", .{err});
     };
+}
+
+/// A group with nobody in it keeps whatever members the file already had.
+///
+/// **Because the first restart used to erase the thing this file is for.**
+/// A group comes back from disk as a shell -- name and note, no members,
+/// deliberately, since deciding which terminal on screen now is which one
+/// from last night is a judgement. The next save then wrote that shell back
+/// out, `members: []`, over the record of who had been in it. So
+/// `session_recall` answered the first restart with last night's
+/// arrangement and every restart after that with nothing, and the failure
+/// was silent: the file was there, well formed, and empty in exactly the
+/// field somebody needed.
+///
+/// Empty never overwrites non-empty, and that is the whole rule. The cost
+/// is that a group genuinely emptied on purpose keeps stale names in the
+/// file until somebody joins it again -- which is a record of what was
+/// true, not a claim about now, and this file has never claimed to describe
+/// now: it is material for rebuilding, and material nobody can use is worse
+/// than material slightly out of date.
+///
+/// A file that cannot be read leaves the snapshot exactly as it came in.
+fn keepEmptyGroupsAsTheyWere(
+    arena: Allocator,
+    io: std.Io,
+    path: []const u8,
+    snapshot: Snapshot,
+) Snapshot {
+    var any_empty = false;
+    for (snapshot.groups) |g| {
+        if (g.members.len == 0) any_empty = true;
+    }
+    if (!any_empty) return snapshot;
+
+    const old = read(arena, io, path) orelse return snapshot;
+
+    var groups = arena.alloc(Group, snapshot.groups.len) catch return snapshot;
+    for (snapshot.groups, 0..) |g, i| {
+        groups[i] = g;
+        if (g.members.len > 0) continue;
+
+        for (old.groups) |was| {
+            if (!std.mem.eql(u8, was.name, g.name)) continue;
+            if (was.members.len == 0) break;
+            groups[i].members = was.members;
+            break;
+        }
+    }
+
+    return .{ .groups = groups, .terminals = snapshot.terminals };
 }
 
 fn writeJson(s: *std.json.Stringify, snapshot: Snapshot) !void {
@@ -414,6 +469,63 @@ test "what is written comes back" {
     // A group nobody said anything about still round-trips.
     try testing.expectEqualStrings("research", back.groups[1].name);
     try testing.expectEqualStrings("", back.groups[1].brief);
+}
+
+test "a restart does not erase who was in the group" {
+    // The sequence this is written from, exactly as it happened: Polter
+    // restarts, the groups come back as shells with nobody in them, the
+    // next save writes those shells out, and last night's arrangement --
+    // the whole reason this file exists -- is gone. `session_recall`
+    // answered the first restart and nothing after it, and said so with a
+    // well-formed file rather than an error.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-sess-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const path = try defaultPath(alloc, dir);
+
+    const members = [_]Member{
+        .{ .cwd = "/work/repo", .title = "◑ the supervisor", .role = .supervisor },
+        .{ .cwd = "/work/repo", .title = "✳ a worker", .role = .watched },
+    };
+    write(alloc, io, path, .{
+        .groups = &[_]Group{.{ .name = "build", .brief = "the port", .members = &members }},
+    });
+
+    // The restart: same group, same note, nobody in it.
+    write(alloc, io, path, .{
+        .groups = &[_]Group{.{ .name = "build", .brief = "the port" }},
+    });
+
+    const back = read(alloc, io, path) orelse return error.NothingRead;
+    try testing.expectEqual(@as(usize, 1), back.groups.len);
+    try testing.expectEqual(@as(usize, 2), back.groups[0].members.len);
+    try testing.expectEqualStrings("◑ the supervisor", back.groups[0].members[0].title);
+    try testing.expectEqual(Bus.Role.supervisor, back.groups[0].members[0].role);
+
+    // And once somebody is actually put back in, that is what stands: the
+    // rule is "empty does not overwrite", not "the first list wins".
+    write(alloc, io, path, .{
+        .groups = &[_]Group{.{
+            .name = "build",
+            .brief = "the port",
+            .members = &[_]Member{.{ .cwd = "/work/repo", .title = "◑ someone new" }},
+        }},
+    });
+
+    const now = read(alloc, io, path) orelse return error.NothingRead;
+    try testing.expectEqual(@as(usize, 1), now.groups[0].members.len);
+    try testing.expectEqualStrings("◑ someone new", now.groups[0].members[0].title);
 }
 
 test "nothing written reads as nothing, not as an error" {

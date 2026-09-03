@@ -357,6 +357,12 @@ pub fn createdBy(self: *const Chat, name: []const u8) Error!Id {
     return group.created_by;
 }
 
+/// Whether `id` is in `name`. False for a group that is not there at all.
+pub fn hasMember(self: *const Chat, name: []const u8, id: Id) bool {
+    const group = self.groups.getPtr(name) orelse return false;
+    return group.members.contains(id);
+}
+
 pub fn briefOf(self: *const Chat, name: []const u8) Error![]const u8 {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     return group.brief;
@@ -692,6 +698,24 @@ pub fn compact(
     return seq;
 }
 
+/// How much text this group is carrying, in bytes.
+///
+/// **What has not been compacted away**, which is the useful reading: the
+/// messages a compaction replaces are freed from here, so this number falls
+/// when one happens and climbs again afterwards. It is what the reminder to
+/// compact is measured against.
+///
+/// The text only. Authors, ids and timestamps are the same handful of bytes
+/// on every line and counting them would make the number about the number of
+/// messages, which `log.items.len` already says.
+pub fn bytesOf(self: *const Chat, name: []const u8) usize {
+    const group = self.groups.getPtr(name) orelse return 0;
+
+    var total: usize = 0;
+    for (group.log.items) |m| total += m.text.len;
+    return total;
+}
+
 /// How many messages `id` has not been shown in this group.
 pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
     const group = self.groups.getPtr(name) orelse return 0;
@@ -818,12 +842,37 @@ pub fn groupsFor(
     id: Id,
     live: []const Id,
 ) Allocator.Error![]const []const u8 {
+    return self.groupsSeenBy(alloc, id, live, false);
+}
+
+/// The same, optionally including groups `id` is not in.
+///
+/// **`all` is for whoever is arranging the groups, and it exists because of
+/// what a restart leaves behind.** A group comes back from disk as a shell:
+/// its name and its note, and nobody in it but the person at the keyboard,
+/// because deciding which terminal on screen now is which one from last
+/// night is a judgement (`restoreShell`). That is right, and it had one
+/// consequence nobody followed through: a supervisor asking `group_list`
+/// after a restart is not a member of anything, so it is told there are no
+/// groups -- and concludes last night is gone and starts over, on top of a
+/// panel that is still there.
+///
+/// A worker still sees only its own. What its peers are arranged into is
+/// not its business and would only cost it context. This is the same split
+/// `task_list` makes, for the same reason.
+pub fn groupsSeenBy(
+    self: *const Chat,
+    alloc: Allocator,
+    id: Id,
+    live: []const Id,
+    all: bool,
+) Allocator.Error![]const []const u8 {
     var out: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer out.deinit(alloc);
 
     var it = self.groups.iterator();
     while (it.next()) |kv| {
-        if (kv.value_ptr.members.contains(id)) try out.append(alloc, kv.key_ptr.*);
+        if (all or kv.value_ptr.members.contains(id)) try out.append(alloc, kv.key_ptr.*);
     }
 
     const owned = try out.toOwnedSlice(alloc);
@@ -946,6 +995,66 @@ test "there can be several groups at once" {
     _ = try chat.post("build", boss, "for the builders", 0);
     try testing.expectEqual(@as(usize, 1), chat.unread("build", a));
     try testing.expectEqual(@as(usize, 0), chat.unread("research", b));
+}
+
+test "a shell left by a restart is invisible to the one who has to take it up" {
+    // The failure this is written from, in full: Polter restarts, the
+    // groups come back as shells with nobody in them, a supervisor asks
+    // what groups there are, is told none, and rebuilds a group that is
+    // sitting right there with its note intact and its task panel behind
+    // it. Every part of that behaved as designed.
+    const alloc = testing.allocator;
+    var chat = testChat();
+    defer chat.deinit();
+
+    // What `restoreShell` leaves: the group exists and only the user is in
+    // it.
+    try chat.restoreShell("windows-port", "the port", 1_000);
+
+    {
+        const mine = try chat.groupsFor(alloc, boss, &.{});
+        defer alloc.free(mine);
+        try testing.expectEqual(@as(usize, 0), mine.len);
+    }
+
+    // Asking for all of them finds it, which is what a supervisor needs
+    // before it can decide anything about it.
+    {
+        const every = try chat.groupsSeenBy(alloc, boss, &.{}, true);
+        defer alloc.free(every);
+        try testing.expectEqual(@as(usize, 1), every.len);
+        try testing.expectEqualStrings("windows-port", every[0]);
+    }
+
+    // And the listing can say which it is, so "there and not yours" is
+    // distinguishable from "yours".
+    try testing.expect(!chat.hasMember("windows-port", boss));
+    try testing.expect(chat.hasMember("windows-port", user_id));
+
+    try chat.add("windows-port", boss, .all, .{});
+    try testing.expect(chat.hasMember("windows-port", boss));
+
+    const mine = try chat.groupsFor(alloc, boss, &.{});
+    defer alloc.free(mine);
+    try testing.expectEqual(@as(usize, 1), mine.len);
+}
+
+test "a worker is shown its own groups and nobody else's" {
+    // The other half, and the reason `all` is a parameter rather than the
+    // new behaviour: what its peers are arranged into is not a worker's
+    // business, and would cost it context to be told.
+    const alloc = testing.allocator;
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.create("research", boss);
+    try chat.add("build", a, .none, .{});
+
+    const mine = try chat.groupsFor(alloc, a, &.{});
+    defer alloc.free(mine);
+    try testing.expectEqual(@as(usize, 1), mine.len);
+    try testing.expectEqualStrings("build", mine[0]);
 }
 
 test "only members may post" {

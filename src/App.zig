@@ -58,6 +58,10 @@ tasks: poltergeistpkg.Tasks,
 /// directory, which is the same condition that leaves `chat_log` null.
 task_log: ?poltergeistpkg.TaskLog = null,
 
+/// The hourly snapshot of what each group looked like. Written by the
+/// program, read by nobody until somebody goes looking; see `StatsLog`.
+stats_log: ?poltergeistpkg.StatsLog = null,
+
 /// The group shells on disk, so the list has last night's groups in it.
 ///
 /// The same state directory and the same condition as `chat_log`, because
@@ -73,6 +77,32 @@ group_log: ?poltergeistpkg.GroupLog = null,
 /// whatever the hour, because holding one back protects nobody's sleep --
 /// it just leaves a terminal stopped until morning.
 poltergeist_notify_window: ?poltergeistpkg.notify.Window = null,
+
+/// When the group notes were last worked out. See `considerGroupNotes`.
+poltergeist_notes_ms: ?u64 = null,
+
+/// `poltergeist-task-idle-after` and `poltergeist-group-quiet-after`, in
+/// milliseconds. Zero for either means that half says nothing.
+poltergeist_task_idle_ms: u64 = 0,
+poltergeist_group_quiet_ms: u64 = 0,
+
+/// `poltergeist-worker-nudge-after`, in milliseconds. Zero switches it off.
+poltergeist_worker_nudge_ms: u64 = 0,
+
+/// `poltergeist-compact-after`, in bytes. Zero switches it off.
+poltergeist_compact_after: usize = 0,
+
+/// Tasks whose owner has already been reminded to report on them.
+///
+/// **Once per task.** A reminder that arrives every quarter of an hour is
+/// one that gets ignored, and worse, one that competes with what the
+/// supervisor is typing into the same box. Cleared when the task is handed
+/// out afresh, because that is a new piece of work rather than the same one
+/// going quiet again -- see `logTask`.
+///
+/// In memory only: a restart forgets, and one extra reminder after a
+/// restart is a better failure than a reminder that never comes.
+poltergeist_nudged: std.AutoHashMapUnmanaged(u64, void) = .empty,
 
 /// The whole configuration, rendered the way `+show-config` renders it, so
 /// that an agent can be told what it is working under.
@@ -323,6 +353,8 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_config_text.len > 0) self.alloc.free(self.poltergeist_config_text);
     if (self.chat_log) |*l| l.deinit();
     if (self.task_log) |*l| l.deinit();
+    if (self.stats_log) |*l| l.deinit();
+    self.poltergeist_nudged.deinit(self.alloc);
     if (self.group_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
@@ -375,6 +407,14 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
         config.@"poltergeist-notice-interval".duration / std.time.ns_per_ms;
     self.poltergeist.config.stand_down_allowed =
         config.@"poltergeist-supervisor-stand-down";
+
+    self.poltergeist_task_idle_ms =
+        config.@"poltergeist-task-idle-after".duration / std.time.ns_per_ms;
+    self.poltergeist_group_quiet_ms =
+        config.@"poltergeist-group-quiet-after".duration / std.time.ns_per_ms;
+    self.poltergeist_worker_nudge_ms =
+        config.@"poltergeist-worker-nudge-after".duration / std.time.ns_per_ms;
+    self.poltergeist_compact_after = config.@"poltergeist-compact-after".value;
 
     self.poltergeist_notify_window =
         poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
@@ -457,7 +497,219 @@ fn poltergeistReport(
     // that gets ignored or switched off.
     _ = self.poltergeist.report(from, event, now_ms);
 
+    // Before the hand-over, so anything worked out this pass rides out in
+    // the same line rather than waiting a whole interval behind it.
+    self.considerGroupNotes(now_ms);
+    self.considerWorkerNudge(from, event);
     self.deliverPoltergeistNotices(now_ms);
+}
+
+/// Remind one worker that printing is not reporting, once, when it stops.
+///
+/// **The asymmetry this closes.** A supervisor reaches a worker by typing
+/// into it -- that is what `task_assign` and `terminal_send` do. A worker
+/// reaches its supervisor only by calling `task_progress` or `group_post`
+/// of its own accord, and nothing anywhere asks it to. So a worker that
+/// finishes writes its account to its own screen and stops, and what the
+/// system observes is a still screen: **done and stuck look identical**,
+/// and the supervisor has to go and read the terminal to tell which.
+///
+/// This does not fix that by asking for a report. It puts the two calls in
+/// front of the worker at the moment it has just stopped, and says plainly
+/// that doing nothing is one of the answers -- see `notes.nudge` for why
+/// that wording matters.
+fn considerWorkerNudge(
+    self: *App,
+    id: poltergeistpkg.Bus.Id,
+    event: poltergeistpkg.Sampler.Event,
+) void {
+    if (self.poltergeist_worker_nudge_ms == 0) return;
+
+    // Only a screen that has stopped. `resumed` is the opposite of the
+    // case this is for.
+    const quiet_ms: u64 = switch (event) {
+        .quiescent, .still_quiescent => |r| r.quiet_ms,
+        .resumed => return,
+    };
+    if (quiet_ms < self.poltergeist_worker_nudge_ms) return;
+
+    // A terminal that has clocked off is supposed to be quiet, and a
+    // supervisor is not holding work of its own.
+    const entry = self.poltergeist.get(id) orelse return;
+    if (entry.duty == .off) return;
+    if (entry.role == .supervisor) return;
+
+    // What this terminal is holding, across every group. Nothing open
+    // means there is nothing to report on, and nothing to say.
+    var open: std.ArrayListUnmanaged(u64) = .empty;
+    defer open.deinit(self.alloc);
+
+    var groups = self.chat.groups.keyIterator();
+    while (groups.next()) |name| {
+        const mine = self.tasks.forWorker(self.alloc, name.*, id) catch continue;
+        defer self.alloc.free(mine);
+
+        for (mine) |t| {
+            if (t.state != .open) continue;
+            if (self.poltergeist_nudged.contains(t.id)) continue;
+            open.append(self.alloc, t.id) catch break;
+        }
+    }
+    if (open.items.len == 0) return;
+
+    var buf: [poltergeistpkg.provision.max_message]u8 = undefined;
+    const line = poltergeistpkg.notes.nudge(&buf, quiet_ms, open.items);
+    if (line.len == 0) return;
+
+    // Marked before the telling, not after: `tellSurface` cannot say
+    // whether the agent read it, and a reminder that repeats because the
+    // delivery could not be confirmed is exactly the nagging this is
+    // bounded to avoid.
+    for (open.items) |task| {
+        self.poltergeist_nudged.put(self.alloc, task, {}) catch {};
+    }
+
+    self.tellSurface(id, line);
+}
+/// How often the group notes are worked out again.
+///
+/// Five minutes because working them out reads the panel's record off
+/// disk, and because nothing they report changes faster than that: the
+/// shortest thing they say is measured in hours. The hand-over that
+/// carries them is separately bounded by `poltergeist-notice-interval`,
+/// which is the number that decides how often anybody is interrupted.
+const notes_every_ms = 5 * std.time.ms_per_min;
+
+/// The most events one note is worked out over.
+///
+/// A night of real work is a few hundred, so this is a wall rather than a
+/// budget. Past it the oldest end is not counted, which understates the
+/// silences rather than inventing one.
+const notes_max_events = 4000;
+
+/// Work out what each group's supervisor should be told, and leave it in
+/// that supervisor's box.
+///
+/// **Into the same box and on the same clock as the quiet reports.**
+/// `poltergeist-notice-interval` exists to bound how often a supervisor is
+/// interrupted at all, and a second channel with its own schedule would be
+/// a way round the one number the user set to answer that question --
+/// however good the reason for the interruption.
+///
+/// Driven by reports arriving rather than by a timer of its own, the same
+/// way `deliverPoltergeistNotices` is. That leaves one gap and it is worth
+/// naming: a window with no watched terminal in it produces no reports, so
+/// nothing here runs. Such a window has no supervision arrangement at all,
+/// and the statistics tab is the thing that answers for it -- it is read
+/// rather than delivered.
+fn considerGroupNotes(self: *App, now_ms: u64) void {
+    if (self.poltergeist_notes_ms) |last| {
+        if (now_ms -| last < notes_every_ms) return;
+    }
+    self.poltergeist_notes_ms = now_ms;
+
+    const wall = self.poltergeistWallMs();
+
+    var it = self.chat.groups.iterator();
+    while (it.next()) |kv| {
+        const name = kv.key_ptr.*;
+        const owner = kv.value_ptr.created_by;
+
+        // **A group nobody has taken up has nobody to tell.** After a
+        // restart every group comes back as a shell owned by `user_id`,
+        // which is not a claim that the person made it -- it is the
+        // absence of a claim, and it stands until a supervisor takes the
+        // group up. Leaving a note for id zero would be leaving it for a
+        // terminal that does not exist.
+        //
+        // The snapshot is not conditional on that, and deliberately: it
+        // interrupts nobody, and a group running with no supervisor is
+        // exactly the case where the morning has nothing else to read.
+        const tell: ?poltergeistpkg.Bus.Id = if (owner != poltergeistpkg.Chat.user_id and
+            self.poltergeist.isSupervisor(owner)) owner else null;
+        const snap = if (self.stats_log) |*l| l.due(name, wall) else false;
+        if (tell == null and !snap) continue;
+
+        self.readGroupRecord(name, kv.value_ptr.last_ms, wall, tell, snap);
+    }
+}
+
+/// Read one group's panel and record once, and use it for both jobs.
+///
+/// Once, because both of them want the same two reads off disk and this
+/// runs on the app thread. The judgement-free arithmetic is in
+/// `poltergeist/notes.zig` and `StatsLog.summarise`, which have tests;
+/// what is left here is the fetching, which this file cannot test anyway.
+fn readGroupRecord(
+    self: *App,
+    group: []const u8,
+    last_said_ms: u64,
+    wall_ms: i64,
+    /// The supervisor to leave the line with, or null for a group nobody
+    /// has taken up.
+    tell: ?poltergeistpkg.Bus.Id,
+    snap: bool,
+) void {
+    const l = if (self.task_log) |*v| v else return;
+
+    const page = l.history(self.alloc, group, 0, notes_max_events) catch return;
+    defer poltergeistpkg.TaskLog.freePage(self.alloc, page);
+
+    const panel = self.tasks.inGroup(self.alloc, group) catch return;
+    defer self.alloc.free(panel);
+
+    if (tell) |to| {
+        var open: std.ArrayListUnmanaged(poltergeistpkg.notes.Task) = .empty;
+        defer open.deinit(self.alloc);
+        for (panel) |t| open.append(self.alloc, .{
+            .id = t.id,
+            .open = t.state == .open,
+        }) catch break;
+
+        var buf: [poltergeistpkg.Bus.memo_bytes]u8 = undefined;
+        const line = poltergeistpkg.notes.line(&buf, .{
+            .group = group,
+            .now_ms = wall_ms,
+            .last_said_ms = @intCast(last_said_ms),
+            .task_idle_ms = self.poltergeist_task_idle_ms,
+            .group_quiet_ms = self.poltergeist_group_quiet_ms,
+            .chat_bytes = self.chat.bytesOf(group),
+            .compact_after_bytes = self.poltergeist_compact_after,
+            .tasks = open.items,
+            .events = page.events,
+        });
+
+        // An empty line clears the slot rather than leaving yesterday's
+        // sentence to be handed over as though it were still true.
+        _ = self.poltergeist.leaveNote(to, line);
+    }
+
+    if (!snap) return;
+    const sl = if (self.stats_log) |*v| v else return;
+
+    var counted: std.ArrayListUnmanaged(poltergeistpkg.StatsLog.Task) = .empty;
+    defer counted.deinit(self.alloc);
+    for (panel) |t| counted.append(self.alloc, .{
+        .id = t.id,
+        .state = switch (t.state) {
+            .open => .open,
+            .closed => .closed,
+            .cancelled => .cancelled,
+        },
+    }) catch break;
+
+    const silent: u64 = if (last_said_ms > 0)
+        @intCast(@max(wall_ms - @as(i64, @intCast(last_said_ms)), 0))
+    else
+        0;
+
+    sl.append(wall_ms, group, poltergeistpkg.StatsLog.summarise(
+        wall_ms,
+        self.poltergeist_task_idle_ms,
+        silent,
+        counted.items,
+        page.events,
+    ));
 }
 
 /// Hand the box to the supervisor, if it is time and there is anything in
@@ -955,6 +1207,14 @@ pub fn ensureChatLog(self: *App, want: bool) void {
         if (self.task_log) |*t| t.restore(&self.tasks);
     } else |err| {
         log.warn("poltergeist: could not open the task log err={}", .{err});
+    }
+
+    // Beside it, and never read back here: the hourly snapshot is for the
+    // morning, and the morning reads it with `cat`.
+    if (poltergeistpkg.StatsLog.open(self.alloc, io, state_dir)) |l| {
+        self.stats_log = l;
+    } else |err| {
+        log.warn("poltergeist: could not open the stats log err={}", .{err});
     }
 
     // And the groups those tasks are filed under. **Before this, the panel
@@ -1766,6 +2026,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .taskCancel = taskCancel,
         .taskProgress = taskProgress,
         .taskList = taskList,
+        .taskHistory = taskHistory,
     } };
 }
 
@@ -2680,6 +2941,13 @@ fn taskWallMs(self: *App) i64 {
 
 /// Write one thing that happened, if there is anywhere to write it.
 fn logTask(self: *App, op: poltergeistpkg.TaskLog.Op, id: u64) void {
+    // A task handed to somebody is a fresh piece of work, whether it is a
+    // new owner or the same one being given it again -- so the reminder
+    // this task has already had does not count against the new stretch.
+    // Every other event leaves the mark alone: a worker that reported and
+    // carried on does not need telling twice.
+    if (op == .assigned) _ = self.poltergeist_nudged.remove(id);
+
     const l = if (self.task_log) |*v| v else return;
     const task = self.tasks.get(id) orelse return;
     l.append(self.taskWallMs(), op, task);
@@ -2779,6 +3047,64 @@ fn taskList(
         .progress = @tagName(t.progress),
     };
     return out;
+}
+
+/// What happened to a group's panel, out of the record on disk.
+///
+/// Membership is asked the way `chatHistory` asks it, through the same one
+/// call: whether this terminal is in the group and how far back it may look
+/// are the same fact, and answering only the first would hand a terminal
+/// added with `history: none` a column-by-column account of the night it
+/// was added not to see. `NoSuchGroup` and `NotAMember` travel up as they
+/// are.
+fn taskHistory(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    group: []const u8,
+    id: poltergeistpkg.Bus.Id,
+    before_seq: u64,
+    limit: usize,
+) anyerror!poltergeistpkg.rpc.TaskPage {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const floor = try self.chat.floorOf(group, id);
+
+    // Nothing was ever written down, so there is nothing behind the panel
+    // to page back into.
+    const l = if (self.task_log) |*v| v else return .{ .events = &.{}, .more = false };
+
+    // A member kept out of what was said is kept out of what was done.
+    //
+    // The chat log's floor is a line number in *that* record and there is
+    // nothing to map it onto here -- the task record carries no such
+    // number, by design. So the floor is read as the one thing it says
+    // plainly: this member was not there for the beginning. Which events
+    // predate its joining cannot be worked out, so none are handed over
+    // rather than some. The supervisor and the person at the keyboard have
+    // no floor and see all of it, which is who the statistics page is for.
+    if (floor.seq > 0) return .{ .events = &.{}, .more = false };
+
+    const page = try l.history(alloc, group, before_seq, limit);
+
+    // Handed straight across. Both sides already own their strings through
+    // `alloc`, so this is a change of type and nothing else -- but the two
+    // types stay separate: `TaskLog.Event` is what the record holds and
+    // `rpc.TaskEvent` is what the protocol promises, and a record that
+    // grows a field should not silently become a protocol that has one.
+    const out = try alloc.alloc(poltergeistpkg.rpc.TaskEvent, page.events.len);
+    for (page.events, 0..) |e, i| out[i] = .{
+        .seq = e.seq,
+        .at_ms = e.at_ms,
+        .op = e.op,
+        .task = e.task,
+        .title = e.title,
+        .owner = e.owner,
+        .state = e.state,
+        .progress = e.progress,
+    };
+    alloc.free(page.events);
+
+    return .{ .events = out, .more = page.more };
 }
 
 fn chatAdd(
@@ -3194,7 +3520,12 @@ fn chatGroupInfo(
     const live = try self.liveTerminals(alloc);
     defer alloc.free(live);
 
-    const names = try self.chat.groupsFor(alloc, id, live);
+    // The brief and the whole list travel together: both are for whoever
+    // is arranging the groups, which is the supervisor and the person whose
+    // machine this is. `want_brief` is already that question answered, so
+    // it is the one asked here too rather than a second rule that could
+    // drift from it.
+    const names = try self.chat.groupsSeenBy(alloc, id, live, want_brief);
     defer alloc.free(names);
 
     const out = try alloc.alloc(poltergeistpkg.rpc.ChatGroupInfo, names.len);
@@ -3214,8 +3545,9 @@ fn chatGroupInfo(
             const b = self.chat.briefOf(n) catch "";
             break :brief if (b.len > 0) try alloc.dupe(u8, b) else "";
         } else "";
+        const joined = self.chat.hasMember(n, id);
 
-        out[i] = .{ .name = try alloc.dupe(u8, n), .brief = brief };
+        out[i] = .{ .name = try alloc.dupe(u8, n), .brief = brief, .joined = joined };
         filled += 1;
     }
     return out;
@@ -3324,6 +3656,7 @@ fn chatHistory(
     id: poltergeistpkg.Bus.Id,
     before_seq: u64,
     limit: usize,
+    filter: poltergeistpkg.rpc.ChatFilter,
 ) anyerror!poltergeistpkg.rpc.ChatPage {
     const self: *App = @ptrCast(@alignCast(ctx));
 
@@ -3344,7 +3677,7 @@ fn chatHistory(
     // give less rather than risk giving more.
     if (floor.seq > 0 and floor.log_seq == 0) return .{ .lines = &.{}, .more = false };
 
-    const page = try l.history(alloc, group, before_seq, limit);
+    const page = try l.history(alloc, group, before_seq, limit, filter);
 
     // Entries come back oldest first, so anything barred is a prefix.
     var k: usize = 0;

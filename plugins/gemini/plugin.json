@@ -29,6 +29,16 @@
           "no"
         ],
         "default": "yes"
+      },
+      "rules": {
+        "type": "string",
+        "title": "Write Polter's note into this CLI's rules file",
+        "description": "yes writes a marked block into the user-level rules file (never a project one) saying that what an agent prints reaches nobody, and pointing at the operating-a-terminal skill. It is there because a skill is matched against what the user asked for and nothing matches \"you have just finished a task\": on real records, 71 tasks produced 15 done reports. Everything outside the markers is left untouched, and no takes the block back out.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "yes"
       }
     }
   }

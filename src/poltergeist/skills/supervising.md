@@ -16,7 +16,11 @@ you remember. Four calls before you plan anything, in this order.
 
 1. `me` — whether you are still the supervisor, and whether somebody is now
    watching you.
-2. `group_list`, then `group_read` on each group you are in, to the end.
+2. `group_list`. **Read `joined` on each entry.** A group marked
+   `joined: false` is one that came back from disk without you in it — after
+   a restart that is all of them — and `group_read` on it answers
+   `NotAMember`. `group_add` yourself first; the group, its note and its task
+   panel are all still there. Then `group_read` each one to the end.
    **This is where the work you are about to redo is already written down.**
    Your workers reported into the group while you were busy; an unread report
    is either a finished piece of work you are about to start again or a
@@ -183,8 +187,10 @@ The order, and step 2 is a note to yourself:
    with the acceptance test in it.
 4. `task_assign(task, id)` so the panel says who has it. **This types a line
    into that terminal saying the task is theirs, and the panel is only
-   written if that lands** — read the reply. It carries the task number and
-   nothing else; step 3 is still where the work is described.
+   written if that lands** — read the reply. That line names the task and
+   tells the worker to report with `task_progress` when it finishes or gets
+   stuck; it does not say what the work is. **Step 3 is still where the work
+   is described**, acceptance test and all.
 
 **Never hand work over by announcing it.** A hand-over said in the group, or
 written in a reply to somebody else, reaches nobody: the terminal you are
@@ -204,6 +210,23 @@ leaves its list**, because a task that merely stopped being there leaves the
 worker carrying on with work nobody wants. Read the reply: it says whether the
 worker was actually told. If its terminal has gone, the call refuses and the
 task stays open rather than pretending.
+
+`task_history(group, before_seq, limit)` is the other question. The panel says
+where each task stands **now**; this says **when it got there** — one line per
+thing that happened, created through cancelled, each with a timestamp. That is
+what answers "what happened while I was asleep": how long a task has sat
+untouched, which ones came back and were handed to a third terminal, how many
+were closed overnight. Page it the way `group_history` is paged — the smallest
+`seq` you have seen becomes the next `before_seq`, and `more: false` is the
+beginning of the record.
+
+**Read the numbers; do not let them read you.** A task open for two days may
+be stalled, or it may be a standing lease that is *meant* to stay open — the
+terminal holding a machine nobody else may touch is a task by design. Nothing
+in the record can tell those apart, and neither can any rule you could write
+over it. The arithmetic is yours to be handed; the judgement is yours to make,
+and it is the same line `set_quiescence_threshold` draws: measure how long
+something has been still, never declare it stuck.
 
 The panel is not a task system and will not become one: no dependencies, no
 priorities, no due dates, no sub-tasks. Anything a line cannot hold has a
@@ -248,6 +271,25 @@ Nothing arriving means everyone is working, not that the mechanism stopped.
 Two durations. *Screen unchanged* means nothing visible moved; *pty silent*
 means nothing was written at all. A program redrawing the same frame is
 unchanged but not silent, and is alive. One that has stopped is both.
+
+The same line can carry one more clause, about a **group** you are the
+supervisor of rather than about a screen:
+
+    [poltergeist] 0x0000000000002222 quiet 185s · build: #93 untouched 49h, nothing said for 3h40m
+
+It arrives in the same box, on the same interval, because that interval is
+the one number the user set to say how often you may be interrupted at all.
+Everything in it is arithmetic over records that already exist — how long
+since each open task's last event, how long since anybody spoke, how many
+times a task has been handed round. **None of it says a task is stuck**, and
+neither should you until you have looked: a task open for two days may be a
+standing lease that is *meant* to stay open. `task_history` is where you
+read what actually happened to it; the thresholds are
+`poltergeist-task-idle-after` and `poltergeist-group-quiet-after`, and
+either at zero says nothing.
+
+A group nobody has taken up gets no such line — there is nobody to tell.
+After a restart that is every group, until a supervisor takes one up.
 
 Then:
 
@@ -413,10 +455,27 @@ what you have not seen, `group_members(group)` says who is there.
 holds — page with `log_seq`, not `seq`: the per-group `seq` restarts every
 time Polter does, so paging by it reads the wrong night.
 
+**It also takes `match`, `since_ms` and `until_ms`, and those are usually
+what you want.** Paging a night back one screen at a time to find one
+sentence spends exactly the context a compaction was for;
+`group_history(group, match: "IDropTarget")` takes back the four lines that
+mention it. `match` is a substring of the message text with ASCII case
+ignored, the two clocks bound it by wall time, and they compose.
+
 `group_compact(group, through, summary)` replaces everything up to `through`
 with one line you write, freeing the members' context. **It is not
 deletion** — the log on disk keeps what was said, and the summary is written
-after the messages rather than over them.
+after the messages rather than over them, so `group_history` still reaches it.
+
+**Nothing asks you to do this, so it is on you to notice.** Every member's
+`group_read` carries the whole conversation, and past 96KB one read cannot
+even fit in a reply. When the size crosses `poltergeist-compact-after` your
+hand-over says so — `build: 71KB of conversation not compacted` — with the
+size and no verdict, because a night of one-line reports and a night of
+pasted stack traces are the same number of bytes and not the same decision.
+Compact through the last seq that is safely behind everybody, and write a
+summary somebody could act on tomorrow: what was decided and what is still
+open, not a list of who said what.
 
 What ran in each terminal is recorded without you asking, at
 `~/.local/state/polter/terminals/<terminal>/<date>.jsonl`: the lines that
@@ -484,10 +543,22 @@ and you go back to it once there is a group again.
 `session_recall` hands back what Polter wrote down: the groups, what each was
 for, and every terminal's `cwd` and `title`.
 
-**Nothing has been restored** — it is a description. Read the notes,
-`terminal_list` what is open, match on directory and title, and put back the
-ones you can place: `set_watch`, rebuild the group, `group_add`, write the
-brief again. No permission needed. For the rest, say so and ask; do not guess.
+**The groups themselves are already back.** Their names and their notes come
+off disk on their own, and so do their task panels — what does *not* come back
+is who was in them, because deciding which terminal on screen now is which one
+from last night is a judgement, and judgements are yours.
+
+So `group_list` after a restart shows them with **`joined: false`**: they
+exist, you are simply not in one yet. **That is not an empty night, and the
+move is `group_add`, not `group_create`** — rebuilding a group that is already
+there gets you `GroupExists` at best, and at worst a second group beside a
+panel of tasks you have just orphaned. `task_list` on the old name will show
+you last night's work still sitting there.
+
+Then read the notes, `terminal_list` what is open, match on directory and
+title, and put back the ones you can place: `set_watch`, `group_add`, write
+the brief again if it needs changing. No permission needed. For the rest, say
+so and ask; do not guess.
 
 - **`session_recall` empty with terminals open** means last night was never
   recorded, usually because no group was made. Say that first; inferring from

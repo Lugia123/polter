@@ -50,4 +50,13 @@ host_skills_dir() {
   printf '%s/.claude/skills' "$home"
 }
 
+# The file this CLI reads on every turn. **User level, never a project
+# file**: a project's CLAUDE.md belongs to whoever owns the repository, and
+# Polter being installed on this machine is not a fact about their
+# repository. The block is marked and is taken back out if the parameter
+# is switched off; see `polter_rules_apply` in the SDK.
+host_rules_file() {
+  printf '%s/.claude/CLAUDE.md' "$home"
+}
+
 polter_provision_main
