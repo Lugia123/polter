@@ -1413,6 +1413,28 @@ command: ?Command = null,
 /// Set it to zero to say nothing about silence.
 @"poltergeist-group-quiet-after": Duration = .{ .duration = 60 * std.time.ns_per_min },
 
+/// How much uncompacted conversation a group may carry before the
+/// supervisor is reminded to tidy it.
+///
+/// `group_compact` replaces a stretch of a group's messages with one line
+/// the supervisor writes. **Nothing else asks for that to happen**: it is
+/// the one piece of housekeeping here with no clock behind it, and a
+/// supervisor with a night's work in front of it does not think of it.
+/// Meanwhile the cost is paid by every member — a `group_read` carries the
+/// whole thing, and past 96KB a single read cannot even fit in one reply.
+///
+/// Measured over the text a compaction has *not* already replaced, so the
+/// number falls when one happens and climbs again afterwards. The reminder
+/// rides out with the supervisor's next hand-over, in the same line and on
+/// the same clock as everything else it is told; see
+/// `poltergeist-notice-interval`.
+///
+/// **It says the size and stops there.** Whether a conversation is worth
+/// compacting depends on what is in it -- a night of one-line reports and
+/// a night of pasted stack traces are the same number of bytes and not the
+/// same decision. Set it to zero to say nothing about size.
+@"poltergeist-compact-after": Limit(usize, 64 * 1024) = .default,
+
 /// Whether a supervisor may take itself off duty.
 ///
 /// A supervisor is woken on `poltergeist-notice-interval` for as long as it

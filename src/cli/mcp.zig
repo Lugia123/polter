@@ -367,9 +367,9 @@ const tools = [_]Tool{
     },
     .{
         .name = "group_history",
-        .description = "Read further back in a group than it still holds, out of the log on disk. `group_read` hands you what is current; this hands you what came before it. Page with `log_seq`: pass the smallest one you have seen as `before_seq` and you get the batch before that. `more: false` means you have reached the beginning of what was kept. The per-group `seq` is 0 here -- the log does not record it.",
+        .description = "Read further back in a group than it still holds, out of the log on disk. `group_read` hands you what is current; this hands you what came before it -- including everything a `group_compact` replaced, which is gone from the group itself but never from the record. Page with `log_seq`: pass the smallest one you have seen as `before_seq` and you get the batch before that. `more: false` means you have reached the beginning of what was kept. The per-group `seq` is 0 here -- the log does not record it. **Prefer `match` and the two clocks to paging.** Reading a night back one screenful at a time to find one sentence spends exactly the context a compaction was meant to save: `match` is a substring of the message text with ASCII case ignored, `since_ms` and `until_ms` bound it by wall clock (since includes its instant, until excludes it). They compose, and a day outside the range is not even opened.",
         .schema =
-        \\{"type":"object","properties":{"group":{"type":"string"},"before_seq":{"type":"integer"},"limit":{"type":"integer"}},"required":["group"]}
+        \\{"type":"object","properties":{"group":{"type":"string"},"before_seq":{"type":"integer"},"limit":{"type":"integer"},"since_ms":{"type":"integer","description":"Wall-clock ms; only messages at or after this"},"until_ms":{"type":"integer","description":"Wall-clock ms; only messages before this"},"match":{"type":"string","description":"Substring of the message text, ASCII case ignored"}},"required":["group"]}
         ,
     },
     .{

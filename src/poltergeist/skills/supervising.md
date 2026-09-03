@@ -455,10 +455,27 @@ what you have not seen, `group_members(group)` says who is there.
 holds — page with `log_seq`, not `seq`: the per-group `seq` restarts every
 time Polter does, so paging by it reads the wrong night.
 
+**It also takes `match`, `since_ms` and `until_ms`, and those are usually
+what you want.** Paging a night back one screen at a time to find one
+sentence spends exactly the context a compaction was for;
+`group_history(group, match: "IDropTarget")` takes back the four lines that
+mention it. `match` is a substring of the message text with ASCII case
+ignored, the two clocks bound it by wall time, and they compose.
+
 `group_compact(group, through, summary)` replaces everything up to `through`
 with one line you write, freeing the members' context. **It is not
 deletion** — the log on disk keeps what was said, and the summary is written
-after the messages rather than over them.
+after the messages rather than over them, so `group_history` still reaches it.
+
+**Nothing asks you to do this, so it is on you to notice.** Every member's
+`group_read` carries the whole conversation, and past 96KB one read cannot
+even fit in a reply. When the size crosses `poltergeist-compact-after` your
+hand-over says so — `build: 71KB of conversation not compacted` — with the
+size and no verdict, because a night of one-line reports and a night of
+pasted stack traces are the same number of bytes and not the same decision.
+Compact through the last seq that is safely behind everybody, and write a
+summary somebody could act on tomorrow: what was decided and what is still
+open, not a list of who said what.
 
 What ran in each terminal is recorded without you asking, at
 `~/.local/state/polter/terminals/<terminal>/<date>.jsonl`: the lines that

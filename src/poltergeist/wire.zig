@@ -224,6 +224,9 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
             .before_seq = try optionalU64(params, "before_seq", 0),
             .limit = try optionalU64(params, "limit", 0),
+            .since_ms = try optionalI64(params, "since_ms", 0),
+            .until_ms = try optionalI64(params, "until_ms", 0),
+            .match = (try optionalString(aa, params, "match")) orelse "",
         } },
 
         .task_history => .{ .task_history = .{
@@ -381,6 +384,24 @@ fn optionalHistory(params: ?std.json.ObjectMap) ParseError!rpc.History {
     return switch (v) {
         .string => |str| std.meta.stringToEnum(rpc.History, str) orelse
             error.BadParams,
+        else => error.BadParams,
+    };
+}
+
+/// The same, for a value that may be negative.
+///
+/// Wall-clock milliseconds are what needs this: they are `i64` everywhere in
+/// this program because an instant before 1970 is a real instant, and a
+/// parser that refused one would refuse a clock that is merely set wrong.
+fn optionalI64(
+    params: ?std.json.ObjectMap,
+    key: []const u8,
+    default: i64,
+) ParseError!i64 {
+    const p = params orelse return default;
+    const v = p.get(key) orelse return default;
+    return switch (v) {
+        .integer => |i| i,
         else => error.BadParams,
     };
 }

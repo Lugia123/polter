@@ -698,6 +698,24 @@ pub fn compact(
     return seq;
 }
 
+/// How much text this group is carrying, in bytes.
+///
+/// **What has not been compacted away**, which is the useful reading: the
+/// messages a compaction replaces are freed from here, so this number falls
+/// when one happens and climbs again afterwards. It is what the reminder to
+/// compact is measured against.
+///
+/// The text only. Authors, ids and timestamps are the same handful of bytes
+/// on every line and counting them would make the number about the number of
+/// messages, which `log.items.len` already says.
+pub fn bytesOf(self: *const Chat, name: []const u8) usize {
+    const group = self.groups.getPtr(name) orelse return 0;
+
+    var total: usize = 0;
+    for (group.log.items) |m| total += m.text.len;
+    return total;
+}
+
 /// How many messages `id` has not been shown in this group.
 pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
     const group = self.groups.getPtr(name) orelse return 0;

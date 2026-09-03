@@ -47,6 +47,13 @@ pub const Input = struct {
     task_idle_ms: u64 = 0,
     group_quiet_ms: u64 = 0,
 
+    /// How much text the group is carrying that no compaction has replaced,
+    /// and the size at which that is worth mentioning
+    /// (`poltergeist-compact-after`). Zero for the threshold switches it
+    /// off.
+    chat_bytes: usize = 0,
+    compact_after_bytes: usize = 0,
+
     tasks: []const Task,
     events: []const TaskLog.Event,
 };
@@ -85,6 +92,29 @@ pub fn line(buf: []u8, in: Input) []const u8 {
     w.print("{s}:", .{in.group}) catch return "";
 
     if (in.task_idle_ms > 0) said += tasks(&w, in);
+
+    // **Nothing else asks for this to happen.** Compaction is the one piece
+    // of housekeeping here that has no clock and no trigger: a supervisor
+    // does it when it thinks of it, and a supervisor with a night's work in
+    // front of it does not think of it. Meanwhile every member's
+    // `group_read` carries the whole thing, and past a point one read
+    // cannot even fit in a reply.
+    //
+    // A size, not a message count: forty pasted stack traces and four
+    // hundred one-line reports cost the reader very different amounts, and
+    // it is the bytes that arrive in a context window.
+    if (in.compact_after_bytes > 0 and in.chat_bytes >= in.compact_after_bytes) {
+        var size: [16]u8 = undefined;
+        const mark = w.end;
+        if (w.print("{s} {s} of conversation not compacted", .{
+            if (said == 0) "" else ",",
+            kb(&size, in.chat_bytes),
+        })) |_| {
+            said += 1;
+        } else |_| {
+            w.end = mark;
+        }
+    }
 
     if (in.group_quiet_ms > 0 and in.last_said_ms > 0) {
         const silent: u64 = @intCast(@max(in.now_ms - in.last_said_ms, 0));
@@ -213,6 +243,22 @@ pub fn nudge(buf: []u8, quiet_ms: u64, open: []const u64) []const u8 {
     ) catch return "";
 
     return w.buffered();
+}
+
+/// A size in the shortest form that still says which unit it is.
+///
+/// Rounded to whole units for the reason durations are: this is a line
+/// typed into somebody's input box to prompt a decision, and the decision
+/// does not change between 61 and 62 kilobytes.
+pub fn kb(buf: []u8, bytes: usize) []const u8 {
+    if (bytes < 1024) return std.fmt.bufPrint(buf, "{d}B", .{bytes}) catch "?";
+    if (bytes < 1024 * 1024) {
+        return std.fmt.bufPrint(buf, "{d}KB", .{bytes / 1024}) catch "?";
+    }
+    return std.fmt.bufPrint(buf, "{d}.{d}MB", .{
+        bytes / (1024 * 1024),
+        (bytes % (1024 * 1024)) * 10 / (1024 * 1024),
+    }) catch "?";
 }
 
 /// A duration in the shortest form that still says which unit it is.
@@ -356,6 +402,54 @@ test "a task that is both says both, in one clause" {
         },
     });
     try testing.expectEqualStrings("build: #12 untouched 70h, handed out 3 times", out);
+}
+
+test "a group nobody has tidied says how big it has got" {
+    // Compaction is the one piece of housekeeping with no clock behind it,
+    // and a supervisor with a night's work in front of it does not think of
+    // it -- while every member's `group_read` carries the whole thing.
+    var buf: [160]u8 = undefined;
+    const out = line(&buf, .{
+        .group = "build",
+        .now_ms = 100 * hour,
+        .chat_bytes = 71 * 1024,
+        .compact_after_bytes = 64 * 1024,
+        .tasks = &.{},
+        .events = &.{},
+    });
+    try testing.expectEqualStrings("build: 71KB of conversation not compacted", out);
+}
+
+test "under the mark, and with the mark off, it says nothing" {
+    var buf: [160]u8 = undefined;
+
+    const under = line(&buf, .{
+        .group = "build",
+        .now_ms = 100 * hour,
+        .chat_bytes = 40 * 1024,
+        .compact_after_bytes = 64 * 1024,
+        .tasks = &.{},
+        .events = &.{},
+    });
+    try testing.expectEqualStrings("", under);
+
+    var buf2: [160]u8 = undefined;
+    const off = line(&buf2, .{
+        .group = "build",
+        .now_ms = 100 * hour,
+        .chat_bytes = 900 * 1024,
+        .compact_after_bytes = 0,
+        .tasks = &.{},
+        .events = &.{},
+    });
+    try testing.expectEqualStrings("", off);
+}
+
+test "a size says which unit it is" {
+    var buf: [16]u8 = undefined;
+    try testing.expectEqualStrings("512B", kb(&buf, 512));
+    try testing.expectEqualStrings("71KB", kb(&buf, 71 * 1024));
+    try testing.expectEqualStrings("1.5MB", kb(&buf, 1024 * 1024 + 512 * 1024));
 }
 
 test "silence is reported as a duration and nothing more" {

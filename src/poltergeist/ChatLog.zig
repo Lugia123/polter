@@ -457,6 +457,50 @@ pub const Entry = struct {
     text: []const u8,
 };
 
+/// What a caller is looking for, when it is not simply "the page before
+/// this one".
+///
+/// **This is what makes compaction a boundary rather than a suggestion.**
+/// Once the group's own log stops carrying the messages a supervisor
+/// compacted away, the only way back to them is here -- and paging back
+/// through a night one screenful at a time to find one sentence spends
+/// exactly the context the compaction was meant to save. With a date and a
+/// word, an agent takes back the four lines it actually needs.
+///
+/// Every field is optional and they compose: a zero clock is no bound in
+/// that direction, and an empty `match` matches everything.
+pub const Filter = struct {
+    /// Wall-clock milliseconds. `since_ms` includes its instant, `until_ms`
+    /// excludes it, so two adjacent ranges neither overlap nor leave a gap.
+    since_ms: i64 = 0,
+    until_ms: i64 = 0,
+
+    /// A substring of the message text. ASCII case is ignored; anything
+    /// else is compared as written, which is the only thing that can be
+    /// said about case without knowing the language.
+    match: []const u8 = "",
+
+    /// Whether this filter would let `text` said at `at_ms` through.
+    fn admits(self: Filter, at_ms: i64, text: []const u8) bool {
+        if (self.since_ms != 0 and at_ms < self.since_ms) return false;
+        if (self.until_ms != 0 and at_ms >= self.until_ms) return false;
+        if (self.match.len == 0) return true;
+        return std.ascii.indexOfIgnoreCase(text, self.match) != null;
+    }
+
+    /// Whether a day file could hold anything this filter wants.
+    ///
+    /// The cheap half of the same question: a day outside the range cannot
+    /// hold a message inside it, and the file name already says which day
+    /// it is. A week's search over a month of logs opens seven files
+    /// instead of thirty.
+    fn admitsDay(self: Filter, day: u32) bool {
+        if (self.since_ms != 0 and day < daylog.dayOf(self.since_ms)) return false;
+        if (self.until_ms != 0 and day > daylog.dayOf(self.until_ms)) return false;
+        return true;
+    }
+};
+
 pub const Page = struct {
     /// Oldest first, the same order as the file and the same order
     /// `group_read` uses. Read backwards, handed back forwards.
@@ -484,6 +528,7 @@ pub fn history(
     group: []const u8,
     before_seq: u64,
     limit: usize,
+    filter: Filter,
 ) Allocator.Error!Page {
     if (limit == 0) return .{ .entries = &.{}, .exhausted = false };
 
@@ -492,6 +537,7 @@ pub fn history(
         .io = self.io,
         .group = group,
         .before_seq = before_seq,
+        .filter = filter,
         .want = @min(limit, max_history_limit),
         .arena = .init(alloc),
         .scratch = try alloc.alloc(u8, scan_chunk_bytes),
@@ -517,6 +563,11 @@ pub fn history(
     // direction the walk inside each file goes.
     var exhausted = true;
     for (days.items) |d| {
+        // A day the filter cannot want is not opened at all. Skipping it
+        // does not make the page short of the beginning -- there was
+        // nothing in it to hand over -- so `exhausted` stands.
+        if (!filter.admitsDay(d.day)) continue;
+
         const path = try self.tree.partPath(alloc, group, d.day, d.part);
         defer alloc.free(path);
 
@@ -1015,6 +1066,7 @@ const Walk = struct {
     io: std.Io,
     group: []const u8,
     before_seq: u64,
+    filter: Filter = .{},
     want: usize,
 
     /// Newest first until the very last step of `history`.
@@ -1107,6 +1159,12 @@ const Walk = struct {
             // hashes collide, and a file put there by hand can say
             // anything at all. The line is what is believed.
             if (!std.mem.eql(u8, parsed.group, w.group)) continue;
+
+            // Asked after the group and the cursor, before anything is
+            // copied: a line the caller did not ask for should cost a
+            // comparison, not an allocation.
+            if (!w.filter.admits(parsed.at_ms, parsed.text)) continue;
+
             const from = std.fmt.parseUnsigned(Bus.Id, parsed.from, 0) catch continue;
 
             const group = try w.alloc.dupe(u8, parsed.group);
@@ -1398,6 +1456,102 @@ fn testSeed(l: *ChatLog) void {
     _ = l.append("research", 0xdeadbeef, "worker-core", 1004, false, "y");
 }
 
+test "a word and a date take back only what was asked for" {
+    // **What makes a compaction a boundary instead of a wall.** Once the
+    // group's own log stops carrying what was compacted away, the only
+    // road back is this one -- and paging a night back one screen at a
+    // time to find one sentence spends exactly the context the compaction
+    // was for.
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    testSeed(&l);
+
+    // By word. ASCII case is ignored, which is the only thing that can be
+    // said about case without knowing the language.
+    {
+        const page = try l.history(alloc, "build", 0, 10, .{ .match = "TW" });
+        defer ChatLog.freePage(alloc, page);
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqualStrings("two", page.entries[0].text);
+    }
+
+    // A word nobody said is an empty page, not an error.
+    {
+        const page = try l.history(alloc, "build", 0, 10, .{ .match = "nowhere" });
+        defer ChatLog.freePage(alloc, page);
+        try testing.expectEqual(@as(usize, 0), page.entries.len);
+    }
+
+    // By clock: `since` includes its instant and `until` excludes it, so
+    // two adjacent ranges neither overlap nor leave a gap.
+    {
+        const page = try l.history(alloc, "build", 0, 10, .{ .since_ms = 1002 });
+        defer ChatLog.freePage(alloc, page);
+        try testing.expectEqual(@as(usize, 2), page.entries.len);
+        try testing.expectEqualStrings("two", page.entries[0].text);
+    }
+    {
+        const page = try l.history(alloc, "build", 0, 10, .{ .until_ms = 1002 });
+        defer ChatLog.freePage(alloc, page);
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqualStrings("one", page.entries[0].text);
+    }
+
+    // And the two compose, along with the group the walk was already
+    // filing by.
+    {
+        const page = try l.history(alloc, "build", 0, 10, .{
+            .since_ms = 1001,
+            .until_ms = 1003,
+            .match = "o",
+        });
+        defer ChatLog.freePage(alloc, page);
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqualStrings("two", page.entries[0].text);
+    }
+
+    // An empty filter is what every existing caller passes, and it changes
+    // nothing.
+    {
+        const page = try l.history(alloc, "build", 0, 10, .{});
+        defer ChatLog.freePage(alloc, page);
+        try testing.expectEqual(@as(usize, 3), page.entries.len);
+    }
+}
+
+test "a day the filter cannot want is not opened" {
+    // The cheap half of the same question. A day outside the range cannot
+    // hold a message inside it, and the file name already says which day
+    // it is -- so a week's search over a month of logs opens seven files,
+    // not thirty.
+    const day: u32 = daylog.dayOf(1_700_000_000_000);
+    const f: Filter = .{ .since_ms = 1_700_000_000_000 };
+
+    try testing.expect(f.admitsDay(day));
+    try testing.expect(f.admitsDay(day + 1));
+    try testing.expect(!f.admitsDay(day - 1));
+
+    const until: Filter = .{ .until_ms = 1_700_000_000_000 };
+    try testing.expect(until.admitsDay(day));
+    try testing.expect(!until.admitsDay(day + 1));
+
+    // No bounds admits every day, which is what an unfiltered page needs.
+    const none: Filter = .{};
+    try testing.expect(none.admitsDay(day));
+    try testing.expect(none.admitsDay(0));
+}
+
 test "history hands back one group's messages, oldest first" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -1416,7 +1570,7 @@ test "history hands back one group's messages, oldest first" {
 
     // Read back through the same handle that just wrote it: what the log
     // holds is what is on the disk, not what is still in a buffer.
-    const page = try l.history(testing.allocator, "build", 0, 10);
+    const page = try l.history(testing.allocator, "build", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, page);
 
     try testing.expectEqual(@as(usize, 3), page.entries.len);
@@ -1459,7 +1613,7 @@ test "before_seq is a bound the page never touches" {
     testSeed(&l);
 
     {
-        const page = try l.history(testing.allocator, "build", 4, 10);
+        const page = try l.history(testing.allocator, "build", 4, 10, .{});
         defer ChatLog.freePage(testing.allocator, page);
 
         try testing.expectEqual(@as(usize, 2), page.entries.len);
@@ -1470,13 +1624,13 @@ test "before_seq is a bound the page never touches" {
     // And the loop a caller actually runs: hand the oldest seq you were
     // given back as the next bound, and the two pages meet without an
     // overlap and without a gap.
-    const first = try l.history(testing.allocator, "build", 0, 2);
+    const first = try l.history(testing.allocator, "build", 0, 2, .{});
     defer ChatLog.freePage(testing.allocator, first);
     try testing.expectEqual(@as(usize, 2), first.entries.len);
     try testing.expectEqual(@as(u64, 3), first.entries[0].seq);
     try testing.expectEqual(@as(u64, 4), first.entries[1].seq);
 
-    const second = try l.history(testing.allocator, "build", first.entries[0].seq, 2);
+    const second = try l.history(testing.allocator, "build", first.entries[0].seq, 2, .{});
     defer ChatLog.freePage(testing.allocator, second);
     try testing.expectEqual(@as(usize, 1), second.entries.len);
     try testing.expectEqual(@as(u64, 1), second.entries[0].seq);
@@ -1502,13 +1656,13 @@ test "a page that fills up says there may be more" {
     }
 
     {
-        const page = try l.history(testing.allocator, "build", 0, 2);
+        const page = try l.history(testing.allocator, "build", 0, 2, .{});
         defer ChatLog.freePage(testing.allocator, page);
         try testing.expectEqual(@as(usize, 2), page.entries.len);
         try testing.expect(!page.exhausted);
     }
     {
-        const page = try l.history(testing.allocator, "build", 0, 100);
+        const page = try l.history(testing.allocator, "build", 0, 100, .{});
         defer ChatLog.freePage(testing.allocator, page);
         try testing.expectEqual(@as(usize, 5), page.entries.len);
         try testing.expect(page.exhausted);
@@ -1533,7 +1687,7 @@ test "asking for nothing reads nothing" {
 
     // Not `exhausted`: a caller that asked for nothing has not been told
     // anything about where the beginning is.
-    const page = try l.history(testing.allocator, "build", 0, 0);
+    const page = try l.history(testing.allocator, "build", 0, 0, .{});
     try testing.expectEqual(@as(usize, 0), page.entries.len);
     try testing.expect(!page.exhausted);
 }
@@ -1564,7 +1718,7 @@ test "a line with no seq is not a line a cursor can point at" {
 
     _ = l.append("build", 1, "worker", 1002, false, "three");
 
-    const page = try l.history(testing.allocator, "build", 0, 10);
+    const page = try l.history(testing.allocator, "build", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, page);
 
     try testing.expectEqual(@as(usize, 2), page.entries.len);
@@ -1605,7 +1759,7 @@ test "paging back over a file larger than one window loses nothing at the seams"
     var before: u64 = 0;
     var count: usize = 0;
     while (true) {
-        const page = try l.history(testing.allocator, "build", before, 200);
+        const page = try l.history(testing.allocator, "build", before, 200, .{});
         defer ChatLog.freePage(testing.allocator, page);
 
         for (page.entries, 0..) |e, i| {
@@ -1628,7 +1782,7 @@ test "paging back over a file larger than one window loses nothing at the seams"
     for (seen[1..]) |s| try testing.expect(s);
 
     // And the wall a caller cannot argue with.
-    const greedy = try l.history(testing.allocator, "build", 0, 1000);
+    const greedy = try l.history(testing.allocator, "build", 0, 1000, .{});
     defer ChatLog.freePage(testing.allocator, greedy);
     try testing.expectEqual(@as(usize, 200), greedy.entries.len);
     try testing.expect(!greedy.exhausted);
@@ -1651,13 +1805,13 @@ test "a log nothing was ever said into is already at its beginning" {
 
     // Nothing to read is not the same as could not read: the caller has
     // seen everything there is and must be told to stop asking.
-    const page = try l.history(testing.allocator, "build", 0, 10);
+    const page = try l.history(testing.allocator, "build", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 0), page.entries.len);
     try testing.expect(page.exhausted);
 
     // Same answer for a group that was never spoken in at all.
-    const other = try l.history(testing.allocator, "never-mentioned", 0, 10);
+    const other = try l.history(testing.allocator, "never-mentioned", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, other);
     try testing.expectEqual(@as(usize, 0), other.entries.len);
     try testing.expect(other.exhausted);
@@ -1694,7 +1848,7 @@ test "a line longer than the window stops the walk instead of spinning on it" {
 
     _ = l.append("build", 1, "worker", 1002, false, "reachable");
 
-    const page = try l.history(testing.allocator, "build", 0, 10);
+    const page = try l.history(testing.allocator, "build", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, page);
 
     // Everything on the near side of the wall, and nothing beyond it.
@@ -2402,7 +2556,7 @@ test "a group name that means somewhere else writes here anyway" {
     // Reading it back finds it under the name it was said in, not under
     // the mangled one: the directory is a filing decision, the `group`
     // field is what the message says about itself.
-    const page = try l.history(testing.allocator, escape, 0, 10);
+    const page = try l.history(testing.allocator, escape, 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 1), page.entries.len);
     try testing.expectEqualStrings("hello", page.entries[0].text);
@@ -2443,7 +2597,7 @@ test "a day of its own gets a file of its own, and paging crosses the two" {
 
     // And a page walks out of the newer file and into the older one
     // without a seam: oldest first, nothing missing, nothing twice.
-    const page = try l.history(testing.allocator, "build", 0, 10);
+    const page = try l.history(testing.allocator, "build", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 3), page.entries.len);
     try testing.expectEqualStrings("yesterday", page.entries[0].text);
@@ -2452,7 +2606,7 @@ test "a day of its own gets a file of its own, and paging crosses the two" {
     try testing.expect(page.exhausted);
 
     // Paging by the cursor lands on the same seam from the other side.
-    const older = try l.history(testing.allocator, "build", 2, 10);
+    const older = try l.history(testing.allocator, "build", 2, 10, .{});
     defer ChatLog.freePage(testing.allocator, older);
     try testing.expectEqual(@as(usize, 1), older.entries.len);
     try testing.expectEqualStrings("yesterday", older.entries[0].text);
@@ -2484,7 +2638,7 @@ test "compacting a group leaves the messages the summary stands for" {
     // above, which memory now holds instead of them.
     _ = l.append("build", 1, "supervisor", 1003, true, "three things happened");
 
-    const page = try l.history(testing.allocator, "build", 0, 10);
+    const page = try l.history(testing.allocator, "build", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, page);
 
     // All four, in the order they were said. The summary was written
@@ -2529,7 +2683,7 @@ test "a record that has fallen behind the stream is filled in on the next start"
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    const page = try l.history(testing.allocator, "build", 0, 10);
+    const page = try l.history(testing.allocator, "build", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 3), page.entries.len);
     try testing.expectEqualStrings("one", page.entries[0].text);
@@ -2537,7 +2691,7 @@ test "a record that has fallen behind the stream is filled in on the next start"
     try testing.expect(page.exhausted);
 
     // The other group came across too, and into its own directory.
-    const other = try l.history(testing.allocator, "research", 0, 10);
+    const other = try l.history(testing.allocator, "research", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, other);
     try testing.expectEqual(@as(usize, 2), other.entries.len);
     try testing.expectEqualStrings("x", other.entries[0].text);
@@ -2570,7 +2724,7 @@ test "filling in twice does not write anything twice" {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
 
-        const page = try l.history(testing.allocator, "build", 0, 20);
+        const page = try l.history(testing.allocator, "build", 0, 20, .{});
         defer ChatLog.freePage(testing.allocator, page);
         try testing.expectEqual(@as(usize, 3), page.entries.len);
     }
@@ -2615,7 +2769,7 @@ test "a day past the cap carries on in a part beside it" {
 
     // The newest part is read first, so the last thing said comes back
     // even though it is not in the file the day is named for.
-    const page = try l.history(testing.allocator, "build", 0, 1);
+    const page = try l.history(testing.allocator, "build", 0, 1, .{});
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 1), page.entries.len);
     try testing.expectEqualStrings("last", page.entries[0].text);
@@ -2624,7 +2778,7 @@ test "a day past the cap carries on in a part beside it" {
     // is more, which is the honest answer rather than a loss: the first
     // part is four times one page's scanning budget, so reaching its
     // front takes several calls.
-    const oldest = try l.history(testing.allocator, "build", 2, 1);
+    const oldest = try l.history(testing.allocator, "build", 2, 1, .{});
     defer ChatLog.freePage(testing.allocator, oldest);
     try testing.expectEqual(@as(usize, 0), oldest.entries.len);
     try testing.expect(!oldest.exhausted);
@@ -2674,7 +2828,7 @@ test "the record is not disturbed by the stream rotating" {
     // care: it was never reading the stream.
     try testing.expectEqual(@as(u64, 0), l.written);
 
-    const page = try l.history(testing.allocator, "build", 0, 10);
+    const page = try l.history(testing.allocator, "build", 0, 10, .{});
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 3), page.entries.len);
     try testing.expectEqualStrings("one", page.entries[0].text);

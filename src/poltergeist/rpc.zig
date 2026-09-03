@@ -299,7 +299,19 @@ pub const Request = union(Method) {
     group_list,
     group_post: struct { group: []const u8, text: []const u8 },
     group_read: struct { group: []const u8, since: u64 = 0 },
-    group_history: struct { group: []const u8, before_seq: u64 = 0, limit: u64 = 0 },
+    group_history: struct {
+        group: []const u8,
+        before_seq: u64 = 0,
+        limit: u64 = 0,
+
+        // What to look for, when paging back one screen at a time is the
+        // wrong shape. See `ChatLog.Filter`: this is what keeps a
+        // compaction from turning "find the one line about IDropTarget"
+        // into reading the whole night back in.
+        since_ms: i64 = 0,
+        until_ms: i64 = 0,
+        match: []const u8 = "",
+    },
 
     plugin_list: struct { key: []const u8 = "" },
     plugin_configure: struct {
@@ -3019,6 +3031,11 @@ pub const Guard = struct {
 };
 
 /// A batch read back out of the log on disk.
+/// What a `group_history` call is looking for. The log's own type, not a
+/// second copy of it: two structs with the same three fields is exactly the
+/// drift this repository keeps writing tests against.
+pub const ChatFilter = @import("ChatLog.zig").Filter;
+
 pub const ChatPage = struct {
     lines: []const ChatLine,
 
@@ -3418,6 +3435,7 @@ pub const Host = struct {
             id: Bus.Id,
             before_seq: u64,
             limit: usize,
+            filter: ChatFilter,
         ) anyerror!ChatPage,
 
         /// Every plugin installed -- **including the ones switched off**,
@@ -3745,8 +3763,9 @@ pub const Host = struct {
         id: Bus.Id,
         before_seq: u64,
         limit: usize,
+        filter: ChatFilter,
     ) anyerror!ChatPage {
-        return self.vtable.chatHistory(self.ctx, alloc, group, id, before_seq, limit);
+        return self.vtable.chatHistory(self.ctx, alloc, group, id, before_seq, limit, filter);
     }
 
     fn pluginList(
@@ -4453,8 +4472,11 @@ pub fn dispatch(
             else
                 @intCast(@min(p.limit, @as(u64, max_history_limit)));
 
-            const page = host.chatHistory(alloc, p.group, caller, p.before_seq, want) catch |err|
-                return chatFailure(err);
+            const page = host.chatHistory(alloc, p.group, caller, p.before_seq, want, .{
+                .since_ms = p.since_ms,
+                .until_ms = p.until_ms,
+                .match = p.match,
+            }) catch |err| return chatFailure(err);
 
             // Two ways there can be more: the log said so, or the budget
             // cut the batch short. Either leaves something older that the
@@ -5079,7 +5101,12 @@ const FakeHost = struct {
 
     /// What the last `group_history` asked for, and what the fake says
     /// about there being older still.
-    history_asked: ?struct { group: []const u8, before_seq: u64, limit: usize } = null,
+    history_asked: ?struct {
+        group: []const u8,
+        before_seq: u64,
+        limit: usize,
+        filter: ChatFilter = .{},
+    } = null,
     history_more: bool = false,
 
     /// The same, for `task_history`.
@@ -5536,6 +5563,7 @@ const FakeHost = struct {
         _: Bus.Id,
         before_seq: u64,
         limit: usize,
+        filter: ChatFilter,
     ) anyerror!ChatPage {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NotAMember;
@@ -5543,6 +5571,7 @@ const FakeHost = struct {
             .group = group,
             .before_seq = before_seq,
             .limit = limit,
+            .filter = filter,
         };
 
         const one = try alloc.alloc(ChatLine, 1);

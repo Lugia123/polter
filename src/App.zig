@@ -89,6 +89,9 @@ poltergeist_group_quiet_ms: u64 = 0,
 /// `poltergeist-worker-nudge-after`, in milliseconds. Zero switches it off.
 poltergeist_worker_nudge_ms: u64 = 0,
 
+/// `poltergeist-compact-after`, in bytes. Zero switches it off.
+poltergeist_compact_after: usize = 0,
+
 /// Tasks whose owner has already been reminded to report on them.
 ///
 /// **Once per task.** A reminder that arrives every quarter of an hour is
@@ -411,6 +414,7 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
         config.@"poltergeist-group-quiet-after".duration / std.time.ns_per_ms;
     self.poltergeist_worker_nudge_ms =
         config.@"poltergeist-worker-nudge-after".duration / std.time.ns_per_ms;
+    self.poltergeist_compact_after = config.@"poltergeist-compact-after".value;
 
     self.poltergeist_notify_window =
         poltergeistpkg.notify.Window.parse(config.@"poltergeist-notify-window");
@@ -669,6 +673,8 @@ fn readGroupRecord(
             .last_said_ms = @intCast(last_said_ms),
             .task_idle_ms = self.poltergeist_task_idle_ms,
             .group_quiet_ms = self.poltergeist_group_quiet_ms,
+            .chat_bytes = self.chat.bytesOf(group),
+            .compact_after_bytes = self.poltergeist_compact_after,
             .tasks = open.items,
             .events = page.events,
         });
@@ -3593,6 +3599,7 @@ fn chatHistory(
     id: poltergeistpkg.Bus.Id,
     before_seq: u64,
     limit: usize,
+    filter: poltergeistpkg.rpc.ChatFilter,
 ) anyerror!poltergeistpkg.rpc.ChatPage {
     const self: *App = @ptrCast(@alignCast(ctx));
 
@@ -3613,7 +3620,7 @@ fn chatHistory(
     // give less rather than risk giving more.
     if (floor.seq > 0 and floor.log_seq == 0) return .{ .lines = &.{}, .more = false };
 
-    const page = try l.history(alloc, group, before_seq, limit);
+    const page = try l.history(alloc, group, before_seq, limit, filter);
 
     // Entries come back oldest first, so anything barred is a prefix.
     var k: usize = 0;
