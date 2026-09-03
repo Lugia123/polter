@@ -1242,20 +1242,41 @@ pub fn layout(frame: HWND) {
         // closing a tab -- so guarding the loop covers them all, while
         // guarding the caller covers one.
         //
-        // **And it is specifically a pane that was on screen.** The log line
-        // below carries `ShowWindow`'s return value, which is exactly "was it
-        // visible", and a real machine shows the two cases side by side in one
-        // layout pass:
+        // # What is actually known, and what was believed for one afternoon
+        //
+        // The log line below carries `ShowWindow`'s return value, which is
+        // exactly "was it visible", and one real run put the two cases side by
+        // side inside a single layout pass:
         //
         // ```text
-        // [layout #6] pane 1 -> hide (was visible: false)   <- nothing happens
+        // [layout #6] pane 1 -> hide (was visible: false)
         // [ime] OnEndComposition commit="ni"
-        // [layout #6] pane 3 -> hide (was visible: true)    <- this one
+        // [layout #6] pane 3 -> hide (was visible: true)
         // ```
         //
-        // So a reader arriving here does not need to defend against every
-        // `hide`: **hiding an already-hidden pane cannot end a composition,
-        // because there is no composition on a window nobody can see.**
+        // That reads as "hiding a *visible* pane is what ends it", and it was
+        // written down here as exactly that. **It is not true.** Splitting a
+        // pane mid-composition ends the composition too, and in that run
+        // **both** hidden panes reported `was visible: false`.
+        //
+        // So the honest statement is narrower than the one that fits:
+        //
+        //   * the composition ends somewhere inside this loop -- measured, in
+        //     two different runs;
+        //   * *which* `ShowWindow` does it, and on what condition, **is not
+        //     known**. Visibility was the first hypothesis and it is refuted.
+        //
+        // **This guard therefore works by covering the whole loop, not by
+        // knowing the trigger.** That is a real difference and it has a
+        // consequence for whoever edits this function: the floor that proves
+        // the guard is not simply always-on (`H5`: type a word normally and
+        // watch it commit) **belongs to this code, not to the guard**. Move a
+        // `ShowWindow` out of this loop, or add a path around it, and that
+        // floor has to be run again -- the guard cannot tell you it stopped
+        // covering something.
+        //
+        // The open question is recorded in `docs/windows/status.md`; it is a
+        // debt, not a blocker, because the wide guard is safe.
         crate::with_host_shuffle(|| {
             for (id, hw) in hide {
                 let ok = ShowWindow(hw, SW_HIDE).as_bool();

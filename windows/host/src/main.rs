@@ -1086,11 +1086,38 @@ fn ime_surface() -> ffi::Surface {
 }
 
 /// Hand the in-flight composition to the core so it draws it at the cursor.
+///
+/// # The empty string is the interesting call, and it used to fail in silence
+///
+/// Clearing the preedit is how the underlined text under the cursor goes
+/// away. When a composition is discarded, that clear is the *only* thing that
+/// removes it -- and if it does not happen, an unremovable `ni` sits on the
+/// screen following the caret: enter does not run it, backspace does not
+/// delete it, because as far as the terminal is concerned it is not there.
+///
+/// **The skip below was unreported**, and that made two very different faults
+/// produce the same screen:
+///
+///   * the clear was never issued, because `ime_surface()` could not resolve
+///     one (`try_borrow` losing to a TSF callback already inside the store,
+///     or `ime.hwnd` pointing at a pane that has gone);
+///   * the clear *was* issued and something afterwards drew the overlay again.
+///
+/// They need opposite fixes and they look identical from a chair, so the skip
+/// now says so. **A silent early return is a fork in the diagnosis that leaves
+/// no trace of which way it went.**
 pub fn ime_set_preedit(text: &str) {
     let s = ime_surface();
     if s.is_null() {
+        ime_log(&format!(
+            "set_preedit({:?}) SKIPPED: no surface to send it to \
+             (clearing an empty preedit is how the overlay is removed, so a skip \
+             here leaves it on screen)",
+            text
+        ));
         return;
     }
+    ime_log(&format!("set_preedit({:?}) -> surface {:?}", text, s));
     unsafe { (api().surface_preedit)(s, text.as_ptr() as *const _, text.len()) };
 }
 
@@ -1098,6 +1125,9 @@ pub fn ime_set_preedit(text: &str) {
 pub fn ime_commit(text: &str) {
     let s = ime_surface();
     if s.is_null() {
+        // Same reason as `ime_set_preedit`: a silent skip here means the
+        // chosen text vanished, which reads as "the IME dropped my word".
+        ime_log(&format!("commit({:?}) SKIPPED: no surface to send it to", text));
         return;
     }
     unsafe { (api().surface_text)(s, text.as_ptr() as *const _, text.len()) };
