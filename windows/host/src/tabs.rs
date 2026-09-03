@@ -931,46 +931,21 @@ mod deadlock_detector_tests {
         serial
     }
 
-    /// Run `body` with the log redirected to a fresh file, and hand back
-    /// everything written to it.
+    /// Run `body` with the log redirected, and hand back what was written.
     ///
-    /// `log_path` reads `POLTER_HOST_LOG` on every call, so these lines go
-    /// through exactly the path they go through in the product -- no hook of
-    /// this module's own sits between `reg()` and the file.
+    /// **The redirect is `crate::test_log`'s, not this module's**, and the
+    /// comment that used to stand here is why it had to move. It said the
+    /// copy was deliberate -- sharing a helper across two `#[cfg(test)]`
+    /// modules "would make each module's floor depend on the other's, and a
+    /// floor that can be broken from somewhere else is not one".
     ///
-    /// Same device as `winid`'s invariant floor, **and the reason given here
-    /// for copying it rather than sharing it did not survive task 189.** It
-    /// read: a helper reaching across two `#[cfg(test)]` modules would make
-    /// each module's floor depend on the other's, and a floor that can be
-    /// broken from somewhere else is not one.
-    ///
-    /// **The independence it was protecting never existed.** These two
-    /// modules' floors already depended on each other -- not through a shared
-    /// helper, but through the one `STATE` they both reach, which is how D2
-    /// came to panic inside `winid`'s tests. Copying the helper bought
-    /// nothing against that, and it cost something else: **both copies set
-    /// the process-wide `POLTER_HOST_LOG`**, so before they shared a turn
-    /// they could overwrite each other's redirect. That is task 187, and it
-    /// is not fixed here -- **sharing the turn removes its symptom while
-    /// leaving both writers in place**, so 187 needs a criterion that does
-    /// not depend on the two ever overlapping again.
+    /// **The independence it was protecting never existed.** These two copies
+    /// set one process-wide variable between them, so each module's floor
+    /// could already be broken from the other -- not through a shared helper,
+    /// through the variable. Task 187. See `crate::test_log` for the trace it
+    /// left and for why its criterion is a static one.
     fn logged(body: impl FnOnce()) -> String {
-        let path = std::env::temp_dir().join(format!(
-            "polter-deadlock-detector-{}-{:?}.log",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        let previous = std::env::var("POLTER_HOST_LOG").ok();
-        std::env::set_var("POLTER_HOST_LOG", &path);
-        body();
-        match previous {
-            Some(p) => std::env::set_var("POLTER_HOST_LOG", p),
-            None => std::env::remove_var("POLTER_HOST_LOG"),
-        }
-        let out = std::fs::read_to_string(&path).unwrap_or_default();
-        let _ = std::fs::remove_file(&path);
-        out
+        crate::test_log::logged("deadlock-detector", body)
     }
 
     /// Spawn a thread that holds `STATE` for `hold`, and return only once it
@@ -1124,9 +1099,14 @@ mod deadlock_detector_tests {
                 .name("state-lock-waiter".into())
                 .spawn(|| drop(reg()))
                 .expect("could not spawn the waiting thread");
-            // **Taken here, asserted outside**: an assertion that fails inside
-            // `logged` skips the restore of `POLTER_HOST_LOG` and sends every
-            // later line in this process to a temporary file.
+            // **Taken here, asserted outside.** The reason has changed and
+            // the practice has not: it used to be that an assertion failing
+            // inside `logged` skipped the restore of `POLTER_HOST_LOG` and
+            // sent every later line in the process to a temporary file.
+            // `crate::test_log` restores in a `Drop` now, so that is no
+            // longer true -- but the join handles below still have to be
+            // waited on, and a panic through the middle of this closure
+            // leaks the holder thread instead of the redirect.
             waiter_panicked = waiter.join().is_err();
             holder.join().expect("the lock-holding thread panicked");
         });

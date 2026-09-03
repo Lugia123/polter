@@ -938,29 +938,15 @@ mod invariant_floor {
         );
     }
 
-    /// Run `body` with the log redirected to a fresh file, and hand back
-    /// everything that was written to it.
+    /// Run `body` with the log redirected, and hand back what was written.
     ///
-    /// `log_path` reads `POLTER_HOST_LOG` on every call, so this needs no
-    /// hook of its own -- the lines go through exactly the path they go
-    /// through in the product.
+    /// **`crate::test_log`'s redirect, not a copy of it.** This module and
+    /// `tabs::deadlock_detector_tests` each had one, and both set the same
+    /// process-wide `POLTER_HOST_LOG`; in parallel they overwrote each
+    /// other, and a test here once failed on a line it had never written.
+    /// Task 187.
     fn logged(body: impl FnOnce()) -> String {
-        let path = std::env::temp_dir().join(format!(
-            "polter-invariant-floor-{}-{:?}.log",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        let previous = std::env::var("POLTER_HOST_LOG").ok();
-        std::env::set_var("POLTER_HOST_LOG", &path);
-        body();
-        match previous {
-            Some(p) => std::env::set_var("POLTER_HOST_LOG", p),
-            None => std::env::remove_var("POLTER_HOST_LOG"),
-        }
-        let out = std::fs::read_to_string(&path).unwrap_or_default();
-        let _ = std::fs::remove_file(&path);
-        out
+        crate::test_log::logged("invariant-floor", body)
     }
 
     const MARKER: &str = "REGISTRIES DISAGREE";

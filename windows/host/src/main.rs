@@ -136,6 +136,185 @@ fn now_str() -> String {
 /// old process read as proof that the new process's message loop was alive
 /// while it was in fact deadlocked before ever reaching it. One file per
 /// process makes that mistake impossible to make again.
+/// **The turn for `POLTER_HOST_LOG`, and the one way tests redirect it.**
+///
+/// It lives beside `log_path` -- the only reader of that variable in the
+/// process -- rather than inside a test module, because **the boundary of
+/// "one at a time" follows the object, not whoever wrote about it first.**
+/// The object here is a process-wide environment variable; `tabs`'
+/// `test_arena` is the same rule applied to the state mutex.
+///
+/// # What this replaces
+///
+/// `tabs::deadlock_detector_tests` and `winid::invariant_floor` each had
+/// their own copy of `logged`, under a comment saying the copy was
+/// deliberate: sharing a helper across two `#[cfg(test)]` modules "would
+/// make each module's floor depend on the other's, and a floor that can be
+/// broken from somewhere else is not one".
+///
+/// **The independence that reasoning was protecting did not exist.** Both
+/// copies set one process-wide variable, so in parallel they overwrote each
+/// other's redirect -- and the one surviving trace of it is a `winid` test
+/// that failed **with no `DEADLOCK` line at all**, because the log it read
+/// back held a line it had never written:
+///
+/// ```text
+/// [00:44:54.624] w? [win] state registered; 1 window(s) tracked
+/// ```
+///
+/// A test reading somebody else's log and failing on its contents is a
+/// failure in one module manufactured entirely by another -- the same shape
+/// as task 189, one object along.
+///
+/// **The symptom went first and the defect second**, and that ordering is the
+/// thing to remember: 189 made the two modules take turns, which made this
+/// impossible to reproduce **while both writers were still there**. Any
+/// criterion of the form "run it in parallel and see" has been green since
+/// that day and says nothing. The criterion for this is static -- how many
+/// files write the variable -- for exactly that reason.
+#[cfg(test)]
+pub(crate) mod test_log {
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    thread_local! {
+        /// Whether **this thread** holds the redirect. Per-thread for the
+        /// reason `tabs::test_arena` spells out: "somebody holds it" is a
+        /// question that answers `true` on an unwired tree whenever another
+        /// thread happens to hold it, and a floor that can pass without its
+        /// subject being wired up is not a floor.
+        static HAS_THE_TURN: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// For a caller's floor to assert the redirect is really in force.
+    pub(crate) fn this_thread_has_the_redirect() -> bool {
+        HAS_THE_TURN.with(|c| c.get())
+    }
+
+    /// Puts `POLTER_HOST_LOG` back, **whether or not `body` returned.**
+    ///
+    /// The copies this replaces restored it on the line after `body()`, so an
+    /// assertion that failed inside the closure left the redirect in place
+    /// and sent every later line in the process to a temporary file. One of
+    /// them said so in a comment and worked around it by hoisting its
+    /// assertions out of the closure; the other did not. **A promise made on
+    /// the way out is one a panicking test cannot keep.**
+    ///
+    /// **That sentence was already written, twelve lines from the function
+    /// that broke it.** It stands in `tabs`' `exclusive`, about clearing
+    /// `CONTENDED` on the way in -- in the same module, by the same hand, and
+    /// the next function down restored an environment variable on the way
+    /// out. **Writing a lesson down and applying it are separate acts**, and
+    /// the moment they come apart most easily is right after the writing,
+    /// when it feels like the guarding is already done.
+    struct Restore {
+        previous: Option<String>,
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(p) => std::env::set_var("POLTER_HOST_LOG", p),
+                None => std::env::remove_var("POLTER_HOST_LOG"),
+            }
+            HAS_THE_TURN.with(|c| c.set(false));
+        }
+    }
+
+    /// Run `body` with the log redirected to a fresh file named for `tag`,
+    /// and hand back everything written to it.
+    ///
+    /// `log_path` reads `POLTER_HOST_LOG` on every call, so the lines go
+    /// through exactly the path they go through in the product -- no hook
+    /// sits between the code under test and the file.
+    ///
+    /// **Lock order, if this is ever held with another turn**: `tabs`'
+    /// `test_arena` outermost, then a module's own registry lock, then this.
+    /// Today every caller is already inside the first, and nothing takes this
+    /// one before those -- **which is a property of there being two callers,
+    /// not a rule anything enforces**, so it is written down here.
+    pub(crate) fn logged(tag: &str, body: impl FnOnce()) -> String {
+        assert!(
+            !this_thread_has_the_redirect(),
+            "`logged` is already redirecting on this thread. Nested calls \
+             would deadlock on the turn below, and a hang says nothing about \
+             why -- this says it. Restructure so the inner one runs outside \
+             the outer's closure."
+        );
+        let turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+
+        let path = std::env::temp_dir().join(format!(
+            "polter-{}-{}-{:?}.log",
+            tag,
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let restore = Restore {
+            previous: std::env::var("POLTER_HOST_LOG").ok(),
+            _turn: turn,
+        };
+        std::env::set_var("POLTER_HOST_LOG", &path);
+        HAS_THE_TURN.with(|c| c.set(true));
+
+        body();
+
+        drop(restore);
+        let out = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    /// **The floor for the redirect being in force while `body` runs.**
+    ///
+    /// Deterministic: it does not wait for two modules to collide, it asks
+    /// whether this thread is the one holding the redirect at the moment the
+    /// closure runs. A mutation that drops the turn early -- the `let _ =`
+    /// shape -- is red here on every run rather than on some of them.
+    #[test]
+    fn the_redirect_is_in_force_for_the_body_and_gone_afterwards() {
+        assert!(!this_thread_has_the_redirect(), "not before");
+        let mut inside = false;
+        let out = logged("floor", || {
+            inside = this_thread_has_the_redirect();
+            // process-wide: a probe for the redirect itself, not a report
+            // about a window -- no window exists in this test, and the whole
+            // of its content is "the log path took".
+            crate::plogf!("[floor] the shared redirect works");
+        });
+        assert!(inside, "the redirect was not in force inside the closure");
+        assert!(!this_thread_has_the_redirect(), "and it is released after");
+        assert!(
+            out.contains("[floor] the shared redirect works"),
+            "the redirect did not take. Log was:\n{out}"
+        );
+    }
+
+    /// **And that the restore survives a panic in `body`.**
+    ///
+    /// This is the defect the copies had. Without it, one failing assertion
+    /// inside a closure sends the rest of the process's log to a temporary
+    /// file, and every later test that reads a log reads the wrong one.
+    #[test]
+    fn a_panic_inside_the_body_still_puts_the_variable_back() {
+        let before = std::env::var("POLTER_HOST_LOG").ok();
+        let r = std::panic::catch_unwind(|| {
+            logged("floor-panic", || panic!("on purpose"));
+        });
+        assert!(r.is_err(), "the panic must not be swallowed");
+        assert_eq!(
+            std::env::var("POLTER_HOST_LOG").ok(),
+            before,
+            "the redirect leaked past a panicking body"
+        );
+        assert!(!this_thread_has_the_redirect(), "and the turn was released");
+    }
+}
+
 /// The file whose presence asks for a state dump. Deleted as it is read, so
 /// one write produces exactly one dump.
 fn dumpstate_path() -> Option<std::path::PathBuf> {
