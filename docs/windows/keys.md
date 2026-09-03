@@ -635,14 +635,41 @@ Windows 上的终端是个 Windows 程序，`Ctrl+C` 复制是这台机器上每
 - 能分开「让路了」和「压根没绑上」的是**宿主的 `[clip] write` 行**（`main.rs`
   的 `cb_write_clipboard`）：有选区那次必须有，无选区那次必须没有。
 
-**那么 `Ctrl+Shift+C` 当初是怎么掉到宿主表的？——这是推论，不是读数，标出来免得它被引用。**
-按上面的顺序，它要掉下去就必须是 `encodeKey` **也**交不出编码。这说得通（`Ctrl+C` 编 0x03
-是终端最基本的编码，`Ctrl+Shift+C` 编什么则取决于键盘协议），**但本轮没有核过 `encodeKey`
-对 `Ctrl+Shift+C` 的行为，也没有真机读数**。
+**那么 `Ctrl+Shift+C` 当初是怎么掉到宿主表的？——源码已核，链在下面。**
+（上一轮这里写的是「这是推论」。**核完了，推论成立，而机制比「编不出来」精确得多**，
+所以整段重写；精确在哪一步是这一段的用处。）
 
-**已经确定的只有一半**：`Ctrl+C` 拒绝之后不会到宿主表。**没确定的那一半**是
-`Ctrl+Shift+C` 为什么会。**同一个 `performable` 标志，两个键的下场可以不同,而差别落在
-编码那一步**——这句话是这一段的用处，不是它已经证明的东西。
+两个键的 `event.utf8` **都是空的**：Windows 上它们的 `WM_CHAR` 都是 `0x03`，而
+`keys.rs::handle_key_message` 里那句 `if c >= 0x20`（注释原话：*Control characters are
+the key's business, not text*）把控制字符挡在 `text` 之外。
+
+utf8 空，于是 `key_encode.zig` 的 `ctrlSeq` 走 `logical_key.codepoint()` 那一支，
+**而那一支开头就是一句早退**：
+
+> 只有**恰好只按着 ctrl** 时才认这个键。源码注释说明了理由：shift 会改变这个键，
+> 而这里没有布局信息，做不了正确的变换，**所以带 shift 的要留给 CSIu 去编**。
+
+| 键 | 摘掉锁键/alt 之后剩下的修饰键 | `ctrlSeq` | 结果 |
+|---|---|---|---|
+| `Ctrl+C` | 只有 ctrl | `'c'` → 查表 → **3** | 写出 `0x03`，consumed，`surface_key=true` |
+| `Ctrl+Shift+C` | ctrl **＋ shift** | **早退 `null`** | 见下 |
+
+`ctrlSeq` 交出 `null` 之后，`legacy()` 落进 `utf8.len == 0` 那支，`legacyAltPrefix`
+没有 alt 也返回 null，**于是一个字节都不写**。`encodeKey` 看到 `written.len == 0` 就
+`return null`，`keyCallback` 走 `return .ignored`，`ghostty_surface_key` 答 **`false`**
+——**宿主表这才轮得到**。这正是那次事故的形状。
+
+**现成的断言**：`src/input/key_encode.zig` 的 `test "ctrlseq: shift does not generate
+ctrl seq"`，两行都断言带 shift 时返回 `null`。**不是我为这一轮新写的**，它一直在那里。
+
+> ⚠️ **这条链有一个前提，写出来是因为它一旦不成立，上面整张表都翻过来。**
+> `ctrlSeq` 那一支要 `logical_key.codepoint()` 给得出 `'c'`，也就是
+> `keycodes.zig` 的 win 列**把这个扫描码认成 `.key_c`**。**认不出来的话，
+> `Ctrl+C` 同样编不出东西、同样掉到宿主表**，「`Ctrl+C` 不会走到那里」就不成立了。
+> 第四节那条扫描码线索问的正是这一步。
+>
+> ⚠️ **另一个前提：kitty 键盘协议关着。** 开着时走的是 CSIu，`Ctrl+Shift+C`
+> **编得出东西**，于是它也不会掉到宿主表。上面这张表描述的是 legacy 编码。
 
 **`Ctrl+V` 的代价，写在这里因为它不可逆。** `paste_from_clipboard` 只在**没东西可粘**时
 拒绝（`startClipboardRequest` 对 `.paste` 一律放行，返回值来自宿主的
