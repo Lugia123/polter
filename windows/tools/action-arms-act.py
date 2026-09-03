@@ -50,7 +50,8 @@ subsumes the other. **They do share their reading of the source**:
 two readers.
 
 Run:  python3 windows/tools/action-arms-act.py
-Exit: 0 when every arm that answers `true` either acts or carries a reason.
+Exit: 0 when every arm that answers `true` acts, carries a reason, or is on
+      the bill below -- and the bill matches the tree exactly.
 """
 
 import os
@@ -106,6 +107,47 @@ def reason_for(main_src: str, line: int) -> str | None:
     return None
 
 
+# The arms that answer `true` without acting **today**, by the constant they
+# name. Measured, not chosen: 2 bare and 3 log-only when this gate was written.
+#
+# # This is a bill, not an approval
+#
+# **Nothing on this list is correct.** Each one still tells the core an action
+# was performed and performs nothing; they are recorded so that the gate can
+# be green on a tree that already contains them, because a gate that is red
+# from its first day is a gate people learn to scroll past -- and the line they
+# learn to scroll past is where the next real one dies.
+#
+# **Keyed by name, never by count.** A count would let somebody fix
+# `ACTION_RING_BELL`, add a new lying arm, and stay at five: the total agrees
+# while the membership changed. That is the same shape as using a position for
+# an identity, which this port has already paid for once.
+#
+# **Removing a name is required, not optional.** When an arm is fixed the gate
+# goes red for the opposite reason -- a debt listed that is no longer owed --
+# because a list that only ever shrinks keeps a slot open for whatever takes
+# that name next, and a slot that outlives its reason is an exemption nobody
+# granted.
+OWED = {
+    "ACTION_MOUSE_SHAPE",
+    "ACTION_MOUSE_VISIBILITY",
+    "ACTION_RENDER",
+    "ACTION_RENDERER_HEALTH",
+    "ACTION_RING_BELL",
+    "ACTION_SHOW_CHILD_EXITED",
+}
+
+
+def verdict(now, owed):
+    """`(newly lying, listed but no longer lying)`.
+
+    Split out so both directions can be pinned by the self-test. **The second
+    return value is the one an author will be tempted to drop**, and it is the
+    half that keeps the list from turning into a permanent exemption.
+    """
+    return sorted(set(now) - set(owed)), sorted(set(owed) - set(now))
+
+
 def scan(main_src: str):
     for pattern, body, line in cb.arms(main_src):
         tags = cb.tags_of(pattern)
@@ -120,9 +162,16 @@ def scan(main_src: str):
 # -- self-test ---------------------------------------------------------------
 #
 # **A gate that has never been red and a gate that does not exist look the
-# same when green.** These four samples are the whole of what it claims, in
-# both directions, and they run before the tree is read so a broken probe
-# cannot report a clean tree.
+# same when green.** These samples are the whole of what this claims, in both
+# directions, and they run before the tree is read so a broken probe cannot
+# report a clean tree.
+#
+# The ratchet halves were also measured end to end on the real tree rather
+# than only through `verdict`, by copying this file, editing `OWED`, and
+# running it: dropping a name that is still lying gave `exit=1` with "not on
+# the list", and adding a name that is not gave `exit=1` with "no longer
+# lie". **A pure function passing its own unit test is not the same as the
+# script going red**, and the two can come apart at the reporting.
 
 CANARY = '''
 extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
@@ -161,7 +210,19 @@ if found.get("ACTION_EXCUSED", (None, None))[1] is None:
           "there is no way to record a genuine one.")
     sys.exit(1)
 
-print("probe self-test: OK (bare, log-only, acting, and excused -- all four)")
+# The ratchet, in both directions. **The second assertion is the one that
+# stops the list becoming a permanent exemption**, and it is the reason this is
+# a function rather than two lines of set arithmetic inside the report.
+_new, _settled = verdict({"A", "B"}, {"B", "C"})
+if _new != ["A"]:
+    print("FAIL: the probe does not notice an arm that is lying and not on the list.")
+    sys.exit(1)
+if _settled != ["C"]:
+    print("FAIL: the probe does not notice a debt that has been paid and left on "
+          "the list -- so the list would go on excusing whatever takes that name.")
+    sys.exit(1)
+
+print("probe self-test: OK (bare, log-only, acting, excused; ratchet both ways)")
 
 # -- the tree ----------------------------------------------------------------
 
@@ -171,35 +232,57 @@ with open(main_rs, encoding="utf-8") as fh:
     src = fh.read()
 
 hits = list(scan(src))
-unreasoned = [h for h in hits if h[3] is None]
+lying = {tag for _, tags, _, why in hits if why is None for tag in tags.split(" | ")}
+new, settled = verdict(lying, OWED)
 
 print(f"scanned `cb_action`: {sum(1 for _ in cb.arms(src))} arms")
 print()
 
 for line, tags, kind, why in hits:
-    mark = "     " if why else "*** "
-    print(f"  {mark}main.rs:{line}  {tags}")
-    print(f"       answers true, {'and only logs' if kind == 'log-only' else 'and does nothing'}")
+    names = set(tags.split(" | "))
     if why:
-        print(f"       reason: {why}")
+        mark = "excused"
+    elif names - OWED:
+        mark = "NEW    "
+    else:
+        mark = "owed   "
+    print(f"  {mark} main.rs:{line}  {tags}")
+    print(f"          answers true, {'and only logs' if kind == 'log-only' else 'and does nothing'}")
+    if why:
+        print(f"          reason: {why}")
 print()
 
-if not unreasoned:
-    print(f"OK: {len(hits)} arm(s) answer `true` without acting, and each says why.")
+if not new and not settled:
+    print(f"OK: {len(lying)} action(s) across {len(hits)} arm(s) still owe the core "
+          f"an implementation, and they are the ones on the bill.")
+    print("    None of them is correct. They are recorded so this gate can be read,")
+    print("    not because doing nothing became the right answer.")
     sys.exit(0)
 
-print(f"FAIL: {len(unreasoned)} arm(s) tell the core an action was performed and "
-      f"perform nothing.")
-print("      The core stops looking for another route for an action it believes")
-print("      was done, so this is not an unfinished feature -- it is a claim it")
-print("      cannot check.")
-print()
-print("      Either do the work, or return false, or -- if doing nothing really")
-print("      is correct here -- write the reason beside the arm:")
-print()
-print("          // answers true: <why nothing is the right answer>")
-print()
-print("      **Floor when this gate was written: 2 bare, 3 log-only.** If you are")
-print("      reading a different number, something moved; find out which before")
-print("      changing the arm you came for.")
+if new:
+    print(f"FAIL: {len(new)} arm(s) tell the core an action was performed and perform")
+    print("      nothing, and are not on the list:")
+    for t in new:
+        print(f"        {t}")
+    print()
+    print("      The core stops looking for another route for an action it believes")
+    print("      was done, so this is not an unfinished feature -- it is a claim it")
+    print("      cannot check. Either do the work, or return false, or -- if doing")
+    print("      nothing really is correct here -- write the reason beside the arm:")
+    print()
+    print("          // answers true: <why nothing is the right answer>")
+    print()
+    print("      Adding it to OWED is the last resort, not the first: that list is")
+    print("      a bill.")
+
+if settled:
+    print(f"FAIL, and it is good news: {len(settled)} arm(s) on the list no longer")
+    print("      lie to the core. Remove them from OWED in this file:")
+    for t in settled:
+        print(f"        {t}")
+    print()
+    print("      This fails on purpose. A list that only ever shrinks by accident")
+    print("      keeps a slot open for whatever takes that name next, and that slot")
+    print("      is an exemption nobody granted.")
+
 sys.exit(1)
