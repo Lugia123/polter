@@ -325,10 +325,43 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 
 - **只在 surface 有焦点时才可能跑。** `handle_key_message` 是 surface 的窗口过程。
   命令面板 / 搜索栏 / 设置页 / 提示框各有自己的 `WM_KEYDOWN` 处理（见 3.5）。
-- **不检查 Alt/Win 有没有一起按下。** `accelerator()` 只看 `VK_CONTROL` 和 `VK_SHIFT`，
-  所以 `Ctrl+Shift+Alt+M` 也会触发 `toggle_maximize`。
+- **~~不检查 Alt/Win 有没有一起按下~~ —— 已修。** 从前 `accelerator()` 只看
+  `VK_CONTROL` 和 `VK_SHIFT`，所以 `Ctrl+Shift+Alt+M` 也会触发 `toggle_maximize`，
+  `Ctrl+Shift+Win+M` 同理——**而那些和弦在别的软件和输入法里是有主的**。现在多按任何
+  一个修饰键都不再触发，**并且会打一行说明是哪一个**：
+
+  ```
+  [key] host accelerator "toggle_maximize" NOT fired: Alt also held (this table matches Ctrl+Shift exactly)
+  ```
+
+  **那行日志不是装饰。** 一个「收紧了条件、然后什么都不做」的改动，会把「这个键不工作」
+  变成沉默，**而沉默和「这个键根本没进来」分不开**——后者在这个宿主上正是一个未定位的
+  问题（见 2.3）。
+
+  **修的时候差点引入第二个缺陷，记在这里**：第一版写成了「记一行然后 `return`」。
+  但 `Alt` 会让这条消息变成 `WM_SYSKEYDOWN`，而本函数末尾**故意**把这类消息交给
+  `DefWindowProcW`——吞掉它们会连 `Alt+F4` 和系统菜单一起拿走。现在这一支**只记不吞**，
+  `consumed` 保持 false，消息照常走到它原本的结局。（那条不变量就写在几十行之外的注释里，
+  是它把这次拦下来的。）
 - **它们没有被真机验过。** 见判据 B——「核心不绑这个和弦」不等于「核心不消费这个键」，
   核心还可能把它编码进 pty（3.4）。
+
+**判据 D（多按修饰键不再触发）——分两段写，因为其中一段今天验不了**
+
+> **D1（今天能验）**：精确按 `Ctrl+Shift+M`，**必须**出现
+> `[key] host accelerator "toggle_maximize" -> binding_action = true`，窗口最大化。
+> **这一段不受丢键问题影响**：丢键是间歇的，没反应就重试，成功一次即为通过。
+>
+> **D2（今天验不了，要等 147）**：按 `Ctrl+Shift+Alt+M`，期望是**不最大化**，且出现
+> `[key] host accelerator … NOT fired: Alt also held`。
+>
+> **⚠️ 一次「没反应」在今天读不出结论。** `Ctrl+Shift+<字母>` 的 keydown 会被间歇吞掉
+> （147），所以「窗口没最大化」既可能是这条修复生效了，**也可能是那个键根本没进来**——
+> **而这两者今天分不开。**
+>
+> **所以 D2 的通过条件不是「没最大化」，是「那一行 `NOT fired` 出现了」。** 没有那一行
+> 就不算通过，只算没测到。**等 147 的新仪器给出 `seen` / `swallowed` 计数之后再跑，
+> 或者先确认这一轮里同一个和弦的 `[key]` 行是在的。**
 
 ### 3.3 表上有、但行为不是你以为的那个 ⚠️
 

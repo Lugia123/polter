@@ -107,7 +107,7 @@ pub fn unshifted_codepoint(vk: u32) -> u32 {
 static KEYS_LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 use crate::ffi::{self, Surface};
-use crate::{api, logf};
+use crate::{api, hlogf, logf};
 use windows::Win32::Foundation::{HWND, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -144,6 +144,31 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 /// fires -- they are supposed to fire, so the line is a signal rather than
 /// noise, and when the core grows a default the line will stop appearing,
 /// which is the reading that says a row can retire.
+/// The modifiers that must **not** be held for a host accelerator to fire,
+/// named rather than counted.
+///
+/// **The table below is matched on `Ctrl` and `Shift` alone, so without this
+/// every row also answered to any number of extra modifiers**:
+/// `Ctrl+Shift+Alt+M` maximised the window, and so did `Ctrl+Shift+Win+M`.
+/// Those are chords other software and input methods own -- pressing one and
+/// having a window maximise is the kind of thing nobody traces back to a
+/// terminal.
+///
+/// **It returns the name, not a bool, because the rejection has to be
+/// legible.** A tightened condition that merely does nothing turns "this key
+/// does not work" into silence, and silence is indistinguishable from the key
+/// never having arrived -- which is a live, unresolved problem in this host
+/// (see `docs/windows/keys.md` §2.3). So the caller logs *which* modifier
+/// stopped it.
+fn blocking_mods(alt: bool, win: bool) -> Option<&'static str> {
+    match (alt, win) {
+        (true, true) => Some("Alt and Win"),
+        (true, false) => Some("Alt"),
+        (false, true) => Some("Win"),
+        (false, false) => None,
+    }
+}
+
 fn accelerator(vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<&'static str> {
     match (ctrl, shift, vk) {
         // **`ctrl+shift+,` was here, and the argument for keeping it was
@@ -292,7 +317,41 @@ pub fn handle_key_message(
         if !consumed && is_down {
             let ctrl = down(VK_CONTROL);
             let shift = down(VK_SHIFT);
-            if let Some(name) = accelerator(VIRTUAL_KEY(vk), ctrl, shift) {
+            // **Checked here rather than inside the table**, so the table
+            // stays a plain list of chords and the policy has one home --
+            // next to the log line that has to explain it.
+            let extra = blocking_mods(
+                down(VK_MENU),
+                down(VK_LWIN) || down(VK_RWIN),
+            );
+            // **Refused, and refused *without consuming the key*.**
+            //
+            // An early return here would be a second defect wearing the
+            // first one's clothes: `Alt` makes this a `WM_SYSKEYDOWN`, and
+            // the tail of this function hands those to `DefWindowProcW` on
+            // purpose -- swallowing them takes `Alt+F4` and the system menu
+            // with them. So this arm only writes a line; `consumed` stays
+            // false and the message goes on to its normal ending.
+            match (accelerator(VIRTUAL_KEY(vk), ctrl, shift), extra) {
+                (Some(name), Some(held)) => {
+                    // **Said out loud, not silently dropped.** Somebody
+                    // pressing this combination and getting nothing needs to
+                    // be able to tell "the host refused it" from "the key
+                    // never arrived"; those two look the same from a chair,
+                    // and this host has an open question about exactly that
+                    // (`docs/windows/keys.md` §2.3).
+                    // `hlogf!`, not `logf!`: this is about one window, and
+                    // the handle is a surface, so it is walked up to its frame
+                    // (or the line says it is about no window at all).
+                    hlogf!(
+                        hwnd,
+                        "[key] host accelerator {:?} NOT fired: {} also held \
+                         (this table matches Ctrl+Shift exactly)",
+                        name,
+                        held
+                    );
+                }
+                (Some(name), None) => {
                 // Two kinds of entry live in that table. Most are core action
                 // names and go to `ghostty_surface_binding_action`. A `__polter_`
                 // one names something the core has never heard of -- sending it
@@ -318,6 +377,8 @@ pub fn handle_key_message(
                     ok
                 );
                 consumed = ok;
+                }
+                (None, _) => {}
             }
         }
 
@@ -669,5 +730,52 @@ mod shortcut_tests {
         let (sa, sb) = (format_trigger(a), format_trigger(b));
         assert_eq!(sb.as_deref(), Some("Alt+Y"));
         assert_ne!(sa, sb, "two bindings must not render to the same label");
+    }
+}
+
+#[cfg(test)]
+mod accelerator_mod_tests {
+    use super::blocking_mods;
+
+    /// **The table matches `Ctrl+Shift` and nothing else**, so anything else
+    /// held has to stop it. Before this, `Ctrl+Shift+Alt+M` maximised the
+    /// window and so did `Ctrl+Shift+Win+M` -- chords that belong to other
+    /// software and to input methods.
+    #[test]
+    fn an_extra_modifier_blocks_the_chord() {
+        assert!(blocking_mods(true, false).is_some(), "Alt must block");
+        assert!(blocking_mods(false, true).is_some(), "Win must block");
+        assert!(blocking_mods(true, true).is_some(), "both must block");
+    }
+
+    /// **The floor for the test above.** A `blocking_mods` that returned
+    /// `Some` unconditionally would pass it while stopping every accelerator
+    /// in the table -- and the symptom of that is "the shortcut stopped
+    /// working", reported by somebody who will not connect it to this change.
+    #[test]
+    fn the_plain_chord_is_not_blocked() {
+        assert!(blocking_mods(false, false).is_none());
+    }
+
+    /// **It has to say *which* one.** The rejection is written into the log so
+    /// that "the host refused this" can be told apart from "the key never
+    /// arrived" -- and a line that says only "refused" leaves the reader with
+    /// the same question they started with.
+    #[test]
+    fn it_names_the_modifier_that_stopped_it() {
+        assert_eq!(blocking_mods(true, false), Some("Alt"));
+        assert_eq!(blocking_mods(false, true), Some("Win"));
+        assert_eq!(blocking_mods(true, true), Some("Alt and Win"));
+        // Three different situations, three different strings: a reader who
+        // sees one knows which key to let go of.
+        let all = [
+            blocking_mods(true, false),
+            blocking_mods(false, true),
+            blocking_mods(true, true),
+        ];
+        let mut seen = all.to_vec();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 3, "each case must be distinguishable in the log");
     }
 }
