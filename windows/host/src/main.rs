@@ -1585,7 +1585,15 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // core's thread, and the `start_search` needle is only valid for the
         // duration of this call.
         ffi::ACTION_START_SEARCH => {
-            search::on_start(action.as_cstr().and_then(|c| c.to_str().ok()));
+            // **The target travels with the needle.** The core says which
+            // surface it started searching; without passing it on, the host
+            // knows a search is open and not whose, and everything it sends
+            // back goes to whichever surface happens to be focused. See
+            // `search::Model::surface`.
+            search::on_start(
+                action.as_cstr().and_then(|c| c.to_str().ok()),
+                target_surface(&target),
+            );
             true
         }
         ffi::ACTION_END_SEARCH => {

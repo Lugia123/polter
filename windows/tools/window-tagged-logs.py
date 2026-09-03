@@ -150,7 +150,7 @@ LIST_LINES = 12
 # an `Option<TabId>`. The option is not a missing argument -- the put-back
 # after a failed reopen names a tab destroyed long ago, and inventing an id
 # there would be the only line in the file whose subject does not exist.
-BASELINE_UNTAGGED = 38
+BASELINE_UNTAGGED = 35
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`
