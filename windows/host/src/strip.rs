@@ -1075,10 +1075,43 @@ pub fn paint(frame: HWND) {
                 let old_pen = SelectObject(mem, pen.into());
                 let pad = (4.0 * scale) as i32;
                 let c = slot.close;
-                let _ = MoveToEx(mem, c.left + pad, c.top + pad, None);
-                let _ = LineTo(mem, c.right - pad, c.bottom - pad);
-                let _ = MoveToEx(mem, c.right - pad, c.top + pad, None);
-                let _ = LineTo(mem, c.left + pad, c.bottom - pad);
+                // **Two off-by-ones meet here, and one of them used to cancel
+                // the other -- which is why only half of this was visibly
+                // wrong.**
+                //
+                //  1. `c.right` and `c.bottom` are a `RECT`'s *exclusive*
+                //     edges. The last pixel is at `right - 1`, `bottom - 1`,
+                //     so `c.right - pad` names a column one to the right of
+                //     the symmetric partner of `c.left + pad`.
+                //  2. `LineTo` does not paint its endpoint.
+                //
+                // Vertically the two cancel: both strokes end at the bottom,
+                // so both drop their last row, which is exactly the row (1)
+                // had wrongly included. **The cross was centred vertically at
+                // every scale** -- checked, and it is why a criterion that
+                // measured only the centre would have found nothing.
+                //
+                // Horizontally they do not. The `\` stroke ends on the right
+                // and drops its rightmost column, cancelling (1); the `/`
+                // stroke ends on the *left* and drops its leftmost column,
+                // which compounds it. **So the `/` sat one column to the right
+                // of the `\`, at every DPI scale**, and the glyph read as a
+                // sheared cross rather than an X -- at 1.5x the two strokes
+                // do not even meet in one pixel, they run side by side through
+                // the middle.
+                //
+                // The fix is to name the *last painted pixel* and then aim one
+                // step past it, in the direction of travel, so `LineTo`'s
+                // exclusive end lands on the step beyond rather than inside
+                // the glyph.
+                let x0 = c.left + pad;
+                let y0 = c.top + pad;
+                let x1 = c.right - 1 - pad;
+                let y1 = c.bottom - 1 - pad;
+                let _ = MoveToEx(mem, x0, y0, None);
+                let _ = LineTo(mem, x1 + 1, y1 + 1);
+                let _ = MoveToEx(mem, x1, y0, None);
+                let _ = LineTo(mem, x0 - 1, y1 + 1);
                 SelectObject(mem, old_pen);
                 let _ = DeleteObject(pen.into());
             }
