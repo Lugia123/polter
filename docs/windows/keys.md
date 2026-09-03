@@ -590,3 +590,191 @@ argus v1.40 修了 `key` 注入的扫描码（修之前 `sent` 里 `scan` 全是
 恰好就是它查的东西——不会有 `settings-one-reader` 那种名实不符的问题。
 指向符号名（`keyseq.rs::mods_label`、`Config.zig` 的 `Keybinds.init`）代价一样低，
 而且改名时会被搜索找到，行号不会。
+
+---
+
+## 七、和 macOS 对账：哪些偏离是对的，哪些是漏的
+
+**这一节回答的是另一个问题**，和 3.1–3.4 那几张表不同：那些说「Windows 上按键去哪儿」，
+这一节说「同一个动作在两个平台上的键为什么不一样，以及哪些不一样是没道理的」。
+
+**起因是一条很自然的规则**：mac 的键换算过来应该就是 `Cmd→Ctrl`、`Opt→Alt`。
+**这条规则不成立，而它不成立的三种方式，正是这份对账的全部内容。**
+
+**数据来自 `Config.zig::Keybinds.init` 的原文**（不是本文前面那几张表——那是副本，
+副本会漂，见第六节），按 `builtin.target.os.tag.isDarwin()` 两个分支各解一遍：
+**mac 85 个和弦，Windows/Linux 72 个。**
+
+### 7.1 那条规则的三处失效
+
+**（一）`Ctrl+字母` 不属于应用，属于终端。**
+核心自己的清单在 `src/input/paste.zig`：`0x03 VINTR (Ctrl+C)`、`0x15 VKILL (Ctrl+U)`、
+`0x1A VSUSP (Ctrl+Z)`、`0x17 VWERASE (Ctrl+W)` …… 这些是 termios 特殊字符。
+把 `Cmd+W` 译成 `Ctrl+W`，拿走的是 shell 里「删除前一个词」。
+**所以非 mac 分支整体改用 `Ctrl+Shift+字母`——这不是随意选的命名空间，是唯一没被占的那个。**
+
+**（二）`Cmd+Ctrl+X` 译过去会丢掉一个修饰键。**
+mac 分支里有 **6 条**用到 `Ctrl`，**没有一条是裸 `Ctrl`，全部是 `Cmd+Ctrl+X`**：
+
+| mac | 动作 |
+|---|---|
+| `Cmd+Ctrl+↑ ↓ ← →` | `resize_split` |
+| `Cmd+Ctrl+=` | `equalize_splits` |
+| `Cmd+Ctrl+F` | `toggle_fullscreen` |
+
+照规则译是 `Ctrl+Ctrl+X`，**两个修饰键塌成一个，变成 `Ctrl+X`**——正好落回第（一）条。
+**这一类的问题不是「译错了」，是规则在这里根本不适用**，而这两种在报告里长得一样、
+处置完全不同。
+
+**（三）同一族动作在两边的和弦数不同。** 关窗族 mac 有四个、非 mac 只有两个：
+
+| | mac | 非 mac |
+|---|---|---|
+| `close_surface` | `Cmd+W` | **无** |
+| `close_tab:this` | `Cmd+Opt+W` | `Ctrl+Shift+W` |
+| `close_window` | `Cmd+Shift+W` | `Alt+F4` |
+| `close_all_windows` | `Cmd+Opt+Shift+W` | **无** |
+
+**四个塌成两个，掉了两个动作**，而其中一个（`close_surface`）是被**同一个和弦的第二次
+`put` 静默覆盖**的，不是「没写」。
+
+### 7.2 乙类：漏掉的（有行动价值的一节）
+
+**两种形态，第二种只能靠扫和弦重复找出来，看清单看不见。**
+
+#### 形态一：同一个和弦写了两次，后写的赢，先写的那个动作没了键
+
+`Binding.zig` 的 `putFlags` 里那句 `gop.value_ptr.* = .{ .leaf = ... }` 是无条件赋值。
+非 mac 生效集里**有 6 处**：
+
+| 和弦 | 被覆盖的 | 生效的 | 输的那个还有别的键吗 |
+|---|---|---|---|
+| `Ctrl+Shift+W` | `close_surface` | `close_tab:this` | **没有了** |
+| `Shift+Home` | `adjust_selection:home` | `scroll_to_top` | **没有了** |
+| `Shift+End` | `adjust_selection:end` | `scroll_to_bottom` | **没有了** |
+| `Shift+PageUp` | `adjust_selection:page_up` | `scroll_page_up` | **没有了** |
+| `Shift+PageDown` | `adjust_selection:page_down` | `scroll_page_down` | **没有了** |
+| `Shift+Insert` | `paste_from_clipboard` | `paste_from_selection` | 有（`Ctrl+Shift+V`） |
+
+**前五行是五个动作在非 mac 上没有任何键。** mac 上它们都有（`Shift+Home` 等在 mac 分支
+里没有被 `scroll_*` 覆盖，因为 mac 的滚动用的是 `Cmd+Home/End/PageUp/PageDown`）。
+
+**用户看得见的后果**：在 Windows/Linux 上按 `Shift+Home` 不会「把选区扩展到行首」，
+而是**跳到回滚缓冲的顶端**；`Shift+PageUp` 同理。这和 mac 的行为相反。
+
+#### 形态二：从来没绑过
+
+| 动作 | mac | 非 mac | 备注 |
+|---|---|---|---|
+| `close_all_windows` | `Cmd+Opt+Shift+W` | 无 | |
+| `equalize_splits` | `Cmd+Ctrl+=` | **核心无** | ⚠️ 见 7.5 |
+| `clear_screen` | `Cmd+K` | 无 | |
+| `undo` / `redo` | `Cmd+Z` / `Cmd+Shift+Z` | 无 | |
+| `scroll_to_selection` | `Cmd+J` | 无 | |
+| `search_selection` | `Cmd+E` | 无 | |
+| `navigate_search:next` / `:previous` | `Cmd+G` / `Cmd+Shift+G` | 无 | |
+
+**这一族要分清两句话，因为它们只有一句是理由**：
+「`Ctrl+K`/`Ctrl+Z`/`Ctrl+E`/`Ctrl+G` 被终端占了」**解释了为什么直译的和弦不能用**；
+**它没有解释为什么没有给一个 `Ctrl+Shift+…`**。前者是甲，后者是乙——
+**同一行里可以同时成立，而只看前半句就会把整行归成「刻意偏离」。**
+
+### 7.3 甲类：偏离是对的（按理由分组，不逐条列）
+
+逐条列会让这一节变成那张没人读的表。**理由只有四条，覆盖了 31 条「译不过去」里的大部分。**
+
+| 理由 | 覆盖 | 说明 |
+|---|---|---|
+| **`Ctrl+字母` 属于终端** | `start_search` `close_tab` `new_tab` `new_window` `quit` `select_all` `new_split` `inspector` `goto_split` … | mac 的 `Cmd+X` → 非 mac `Ctrl+Shift+X`。**唯一没被占的命名空间。** |
+| **数字用 Alt 不用 Ctrl** | `goto_tab 1..8`、`last_tab` | mac `Cmd+1..9` → 非 mac `Alt+1..9`。这是 Linux 终端一贯的做法。 |
+| **平台自己的惯例更强** | `close_window`：`Cmd+Shift+W` → **`Alt+F4`** | Windows 上关窗就是 `Alt+F4`，照译成 `Ctrl+Shift+W` 反而不合习惯（而且那个和弦已经被占了）。 |
+| **底层按键本来就能直接打出来** | `Cmd+→/←/Backspace`（`\x05` `\x01` `\x15`）、`Opt+←/→`（`ESC b` / `ESC f`） | 这五条在 mac 上是**别名**：macOS 用户按 `Cmd+→` 表示「到行尾」。在 Windows/Linux 上 `Ctrl+E` `Ctrl+A` `Ctrl+U` `Alt+B` `Alt+F` **本来就直接可用**，不需要别名。**它们的缺席是对的。** |
+
+### 7.4 丙类：没有理由的不一致
+
+**（一）滚动在两边是两套键，而且和选区那套撞了。**
+mac 用 `Cmd+Home/End/PageUp/PageDown` 滚动，`Shift+…` 留给扩展选区；
+非 mac 把滚动放到了 `Shift+…` 上，于是把扩展选区那四条挤掉了（见 7.2 形态一）。
+**这不是平台约束——`Ctrl+Home` 之类在非 mac 上并没有被占。** 两边行为相反，且是静默的。
+
+**（二）`move_tab` 只有非 mac 有。** `Ctrl+Shift+PageUp/PageDown`，mac 没有对应绑定。
+这是「多出来的」而不是「缺的」，无害，但它是一处不对称，记在这里以免下次被当成新发现。
+
+**（三）`Ctrl+Shift+D` 在两边指向不同的东西。**
+mac `Cmd+Shift+D` = `new_split:down`；非 mac 的 `new_split:down` 是 `Ctrl+Shift+E`，
+而 `Ctrl+Shift+D` 在 Polter 里是**宿主加速键表的「右分屏」**。
+**照 mac 直觉去按，方向是错的。**
+
+### 7.5 Windows 上要按 Win 键的和弦——七条，这一节最该有人看
+
+非 mac 分支里有 **7 个和弦用到 `super`**，而在 Windows 上 `super` 就是 **Win 键**：
+
+| 和弦 | 动作 |
+|---|---|
+| `Ctrl+Win+[` / `Ctrl+Win+]` | `goto_split:previous` / `:next` |
+| `Ctrl+Shift+Win+↑ ↓ ← →` | `resize_split` |
+| `Ctrl+Shift+Win+J` | `write_screen_file:copy` |
+
+**在 macOS 上 `Cmd` 是应用的修饰键；在 Windows 上 `Win` 是操作系统的修饰键。**
+这一族是「把 mac 的 `super` 原样搬过来」的结果，而不是为 Windows 选的。
+
+**这里不下结论，因为「系统会不会吃掉它」是可测的事实而不是意见**——见 7.6 第二块，
+七条全部进 WT 的待验清单。
+
+### 7.6 冲突检查：三块，可信度不同，分开写
+
+**混着三种可信度的一份报告，读的人会按最高的那一档去信全部，而错的那部分正是他最会
+照着做的。** 所以分块，每块开头写明它是哪一类。
+
+#### （甲）终端会吃掉的——**有仓内证据**
+
+`src/input/paste.zig` 的清单，逐字：
+`0x03 VINTR (Ctrl+C)`、`0x1C VQUIT (Ctrl+\)`、`0x15 VKILL (Ctrl+U)`、`0x1A VSUSP (Ctrl+Z)`、
+`0x11 VSTART (Ctrl+Q)`、`0x13 VSTOP (Ctrl+S)`、`0x17 VWERASE (Ctrl+W)`、`0x16 VLNEXT (Ctrl+V)`、
+`0x12 VREPRINT (Ctrl+R)`、`0x0F VDISCARD (Ctrl+O)`，外加 `0x04 EOT`、`0x1B ESC`、`0x7F DEL`。
+
+**当前默认集里没有任何一条占用这些和弦**，这是这一块的结论：非 mac 的
+`Ctrl+Shift+…` 选择是有效的。
+
+#### （乙）系统会不会吃掉——**待验，不是未验**
+
+这些是**事实，而且在那台机器上按一次就知道**，所以不写结论，写清单（见 7.7）。
+要问的是同一件事：**这个和弦到不到得了我们的窗口**——判据是日志里有没有那一行
+`[key] ...`（3.4 说过：静态读不出来）。
+
+#### （丙）平台习惯——**这是意见，不是发现，一句话，可以被推翻**
+
+> Windows 用户对 `Ctrl+C/V/X/Z/A/F/S/N/T/W` 的期待很强，而其中 `Ctrl+C` `Ctrl+V`
+> `Ctrl+Z` `Ctrl+S` `Ctrl+W` 在终端里另有含义——**这正是 `Ctrl+Shift+` 这套存在的原因，
+> 也是这条冲突无法两全的地方**：让 `Ctrl+C` 复制，就拿走了中断。
+
+**写成意见是因为我们测不了它，也不该假装能测。** 用户可以一眼推翻它。
+
+### 7.7 待验清单（交 WT，不混进结论）
+
+**每一条都是「按一次就知道」的事实**，判据统一：按下去，看日志里有没有对应的
+`[key] msg=… vk=… keycode=… -> surface_key=…` 行。**没有那一行 = 这个和弦没到达我们的窗口。**
+
+| # | 和弦 | 问什么 |
+|---|---|---|
+| 1 | `Ctrl+Win+[` / `Ctrl+Win+]` | Windows 有没有截走 |
+| 2 | `Ctrl+Shift+Win+↑ ↓ ← →` | 同上（`Win+↑↓←→` 是贴靠，`Ctrl+Win+←→` 是切换虚拟桌面——**加了 Shift 之后还归不归系统，我不知道，这正是要按的原因**） |
+| 3 | `Ctrl+Shift+Win+J` | 同上 |
+| 4 | `Ctrl+Shift+Esc` | 系统保留（任务管理器），预期**到不了**我们的窗口——**这一条是这份清单的地板**：它必须是「没到」，否则说明这份清单的读法本身不成立 |
+| 5 | `Alt+F4` | 预期到达并关窗（它是我们绑的） |
+| 6 | `Shift+Home` / `Shift+PageUp` | 确认 7.2 那五行的实际行为是「滚动」而不是「扩展选区」 |
+
+**第 4 条是地板，不要跳过。** 一份全是「预期能到达」的清单，无法把「都到达了」和
+「这个读法根本不起作用」分开。
+
+### 7.8 宿主加速键表的交叉检查
+
+`keys.rs::accelerator()` 那四行（`Ctrl+Shift+M/D/Z/=`）与核心默认集**今天不冲突**。
+
+**但 `equalize_splits` 是一枚已经排好队的哑弹**：核心在非 mac 上没有绑定它，
+宿主用 `Ctrl+Shift+=` 顶着。**核心哪天补上这个绑定，宿主那一行就会静默变成死代码**
+——不报错、没有日志、菜单照常显示，只是某天开始不响应。今晚在
+`F11 → toggle_fullscreen` 上刚见过一模一样的死法（3.4）。
+
+**所以 7.2 形态二里给 `equalize_splits` 补键这件事，必须连宿主那一行一起处理**，
+否则修好一处会静默弄坏另一处。
