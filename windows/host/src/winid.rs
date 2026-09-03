@@ -864,6 +864,14 @@ mod invariant_floor {
 
     /// A clean pair of registries, and the guard that keeps them clean.
     ///
+    /// **Two turns, because two process-wide things are being written**:
+    /// `tabs::test_arena` for `STATE`, and `registry_tests`' lock for
+    /// `FRAMES`. Its siblings `registry_tests` and `numbering_tests` need
+    /// only the second -- **measured, not assumed**: their `count` and
+    /// `destroyed` are `winid`'s own and never reach `tabs`. Giving them the
+    /// arena as well would be surplus, and **surplus serialisation is green,
+    /// so nobody would ever find out it was unnecessary.**
+    ///
     /// **`registry_tests::reset` only clears `winid`.** These tests write
     /// `tabs` as well, and they clean up after themselves -- but a test that
     /// fails part-way does not reach its cleanup, and the residue would make
@@ -872,12 +880,62 @@ mod invariant_floor {
     /// test costs somebody an afternoon changing something that was not
     /// broken**, so the clearing happens on the way in as well as on the way
     /// out.
-    fn clean(handles: &[HWND]) -> std::sync::MutexGuard<'static, ()> {
-        let g = super::registry_tests::reset();
+    fn clean(handles: &[HWND]) -> Turn {
+        // **The arena first, always.** It is the outer, process-wide turn;
+        // `reset()` takes `winid`'s own registry lock inside it. Taking them
+        // the other way round in some future test would be a cycle, and the
+        // rule is written in `tabs::test_arena` as well as here because the
+        // only thing keeping it true today is that this is the one place
+        // both are taken.
+        let arena = crate::tabs::test_arena::exclusive();
+        let winid = super::registry_tests::reset();
+        // Reaches `STATE`, so it has to be inside the arena turn.
         for h in handles {
             crate::tabs::remove_window(*h);
         }
-        g
+        Turn { _winid: winid, _arena: arena }
+    }
+
+    /// Both turns, released in the order they were taken.
+    ///
+    /// Struct fields drop in declaration order, so `_winid` goes first and
+    /// the arena last -- the mirror of `clean`'s acquisition. Writing them
+    /// the other way round would release the outer turn while still holding
+    /// the inner one, which is the shape a lock-order bug is usually found in.
+    struct Turn {
+        _winid: std::sync::MutexGuard<'static, ()>,
+        _arena: crate::tabs::test_arena::Turn,
+    }
+
+    /// **The floor for the wiring itself, and it is deterministic.**
+    ///
+    /// These tests reach `STATE` -- `add_window`, `remove_window`,
+    /// `with_windows`, and `empty_agrees` behind them -- while
+    /// `tabs::deadlock_detector_tests`' D2 holds it for 5.8 seconds. Before
+    /// task 189 the two modules took turns in two different arenas, so they
+    /// could run at once, and this module's tests panicked with a `DEADLOCK`
+    /// naming D2's holding thread. **That failure was intermittent and it
+    /// arrived wearing this module's name**, which is the expensive part: the
+    /// evidence points at the subject rather than at the instrument.
+    ///
+    /// This asserts the wiring instead of waiting for the collision, so it is
+    /// red on an unwired tree on every run rather than on some of them.
+    ///
+    /// ⚠️ **`this_thread_has_the_turn`, not "somebody holds the arena".** The
+    /// obvious spelling -- `try_lock().is_err()` -- **passes on an unwired
+    /// tree** whenever D2 is holding the arena on another thread at that
+    /// moment, which is precisely when this module is in danger. A floor that
+    /// can pass without its subject being wired up is not a floor.
+    #[test]
+    fn these_tests_wait_for_the_same_turn_as_the_state_lock_tests() {
+        let _turn = clean(&[]);
+        assert!(
+            crate::tabs::test_arena::this_thread_has_the_turn(),
+            "`clean` did not take `tabs::test_arena`'s turn. These tests reach \
+             `STATE`, so without it they can run while D2 holds the lock for \
+             5.8 seconds, wait out the five-second deadline, and panic with a \
+             `DEADLOCK` that names D2's thread and this module's test."
+        );
     }
 
     /// Run `body` with the log redirected to a fresh file, and hand back

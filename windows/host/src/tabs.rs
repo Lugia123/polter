@@ -719,6 +719,124 @@ pub fn with_windows_mut<R>(f: impl FnOnce(&mut Vec<WindowState>) -> R) -> R {
     f(&mut g.windows)
 }
 
+/// **The turn every test that can reach `STATE` waits for.**
+///
+/// It lives next to the lock rather than inside the test module that first
+/// needed it, and that placement is the whole of what task 189 was:
+///
+/// > **The boundary of "one at a time" has to follow the object, not the
+/// > module that happens to be writing about it.**
+///
+/// The serialiser this replaces was `deadlock_detector_tests`' own, with a
+/// comment saying it stopped D2 from being an instrument that reddens other
+/// people's tests. **It did not.** D2 holds `STATE` for 5.8 seconds; a turn
+/// taken only inside that module leaves every *other* module that reaches
+/// `reg()` free to run at the same time, wait out the five-second deadline
+/// and panic -- and the panic names D2's holding thread, in somebody else's
+/// subject:
+///
+/// ```text
+/// ---- winid::invariant_floor::it_speaks_when_tabs_has_one_and_winid_has_none ----
+/// panicked at tabs.rs:<L>:
+/// [state] DEADLOCK: tabs.rs:<L> waited 5s; holder is tabs.rs:<H>
+/// ```
+///
+/// **The two line numbers are elided on purpose.** `<L>` was the
+/// `with_windows_mut` inside `remove_window` -- the waiter, reached from
+/// `winid`'s cleanup -- and `<H>` was D2's deliberate holding thread. Copying
+/// the digits across would pin this comment to the build that produced them
+/// and say nothing on the day it stopped being right; **the payload is that
+/// the holder named by the panic is in the other module's test, and the
+/// subject named by the harness is this one.**
+///
+/// Three parallel runs of a healthy tree, three different sets of failures;
+/// `--test-threads=1` gave 187 passed, and `--skip deadlock_detector_tests`
+/// gave a clean floor in 0.09 seconds. **The tree was not red. The instrument
+/// was.**
+///
+/// # Who has to take it, and how that was decided
+///
+/// **Two modules reach `STATE`: this file's `deadlock_detector_tests` and
+/// `winid`'s `invariant_floor`.** That is measured, not assumed -- and the
+/// first measurement was wrong in a way worth writing down, because its
+/// error was invisible:
+///
+/// A scan for "test modules that call something reaching `reg()`" returned
+/// six. Three were false: `strip`'s `menu_inset_tests` and
+/// `close_affordance_tests` call **`strip`'s own pure `layout`**, which
+/// shares nothing but a name with `tabs::layout`; `winid`'s `registry_tests`
+/// and `numbering_tests` use **`winid`'s own `count` and `destroyed`**, which
+/// touch `FRAMES` and never reach this file.
+///
+/// > **Had those been taken at face value, two modules that cannot reach this
+/// > lock would have been given a turn to wait for -- and that surplus is
+/// > green. Nobody would ever have found out it was unnecessary.**
+///
+/// `hud`'s tests reach no locker at all, which is what separates their
+/// intermittent failures (a race of their own) from this one. **It also gives
+/// a reading in the other direction: if this change makes `hud` go green,
+/// something here is wrong.**
+///
+/// # Order, if a second lock is ever taken with this one
+///
+/// **This one first.** It is the outer, process-wide turn; a module's own
+/// registry lock is taken inside it. Today only `winid::invariant_floor`
+/// takes both, so no cycle is possible -- **and that is an accident of there
+/// being one such place, not a rule**, which is why the rule is written here.
+#[cfg(test)]
+pub(crate) mod test_arena {
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    thread_local! {
+        /// **Whether *this thread* holds the turn**, which is not the same
+        /// question as whether anybody does.
+        ///
+        /// The floor in `winid::invariant_floor` asserts a module is wired up
+        /// to this arena. Written as `ONE_AT_A_TIME.try_lock().is_err()` --
+        /// "somebody holds it" -- that assertion **passes on an unfixed tree**
+        /// whenever D2 happens to be holding the arena on another thread, and
+        /// a floor that can pass without its subject being wired up is not a
+        /// floor. This flag is per-thread, so it cannot answer for someone
+        /// else's turn.
+        static HAS_THE_TURN: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// A turn in the arena. **Bind it** -- `let _turn = exclusive();` --
+    /// because `let _ = exclusive();` drops it on the spot and the test then
+    /// runs unprotected, which looks like nothing at all.
+    pub(crate) struct Turn {
+        _inner: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Turn {
+        fn drop(&mut self) {
+            HAS_THE_TURN.with(|c| c.set(false));
+        }
+    }
+
+    /// Wait for the turn.
+    ///
+    /// **A poisoned lock is recovered from rather than propagated**: a test
+    /// that panics while holding the turn is one failure, and propagating the
+    /// poison would dress every test after it in a second one, each red on
+    /// the lock instead of on its own subject. **D2 panics a thread on
+    /// purpose**, so this is not hypothetical here.
+    #[must_use]
+    pub(crate) fn exclusive() -> Turn {
+        let inner = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        HAS_THE_TURN.with(|c| c.set(true));
+        Turn { _inner: inner }
+    }
+
+    /// For a module's floor to assert it is wired up to this arena.
+    pub(crate) fn this_thread_has_the_turn() -> bool {
+        HAS_THE_TURN.with(|c| c.get())
+    }
+}
+
 /// **Proving the deadlock detector speaks.** Four criteria, D0-D3.
 ///
 /// # Why this exists
@@ -768,20 +886,23 @@ mod deadlock_detector_tests {
     use super::*;
     use std::time::Duration;
 
-    /// One test at a time, because there is one `STATE` and D2 holds it for
-    /// more than five seconds.
+    /// Take the turn for this test, and reset the log throttle.
     ///
-    /// **Without this, D2 is an instrument that reddens other people's
-    /// tests.** Anything touching `STATE` while D2 holds it takes the
+    /// **The turn is `super::test_arena`'s, not this module's**, and that
+    /// sentence is the whole of task 189. This module used to own a private
+    /// `ONE_AT_A_TIME`, under a comment reading *"without this, D2 is an
+    /// instrument that reddens other people's tests"*.
+    ///
+    /// **With it, D2 was still that instrument.** The comment was right about
+    /// the mechanism -- anything touching `STATE` while D2 holds it takes the
     /// contended path, and a test unlucky enough to wait out the deadline
-    /// **panics with `DEADLOCK` naming D2's holder** -- a failure in someone
-    /// else's subject, manufactured entirely here.
-    ///
-    /// Modelled on `reopen`'s `ONE_AT_A_TIME`, including the two things that
-    /// module learned the hard way; see `exclusive`.
-    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-
-    /// Take `STATE` for this test alone, and reset the log throttle.
+    /// panics with `DEADLOCK` naming D2's holder, *a failure in someone
+    /// else's subject, manufactured entirely here*. It was wrong about the
+    /// reach: **a turn scoped to this module cannot serialise anything
+    /// outside it, and the lock it is protecting is process-wide.**
+    /// `winid::invariant_floor` reaches `reg()` too, and that is exactly the
+    /// failure the comment described, in the module the comment was written
+    /// in. See `super::test_arena` for the measurement and the rule.
     ///
     /// **Bind the result**: `let _serial = exclusive();`. Writing `let _ =
     /// exclusive();` drops the guard on the spot and the test runs
@@ -800,12 +921,12 @@ mod deadlock_detector_tests {
     /// promise made on the way out is one a panicking test cannot keep, and
     /// **D2 panics a thread on purpose.**
     ///
-    /// **A poisoned lock is recovered from rather than propagated**, also
-    /// `reopen`'s: otherwise one real failure here wears three false ones,
-    /// each red on the lock instead of on its own subject.
+    /// Poison recovery lives in `test_arena::exclusive`, for `reopen`'s
+    /// reason: otherwise one real failure here wears three false ones, each
+    /// red on the lock instead of on its own subject.
     #[must_use]
-    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
-        let serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    fn exclusive() -> super::test_arena::Turn {
+        let serial = super::test_arena::exclusive();
         CONTENDED.store(0, std::sync::atomic::Ordering::Relaxed);
         serial
     }
@@ -817,10 +938,22 @@ mod deadlock_detector_tests {
     /// through exactly the path they go through in the product -- no hook of
     /// this module's own sits between `reg()` and the file.
     ///
-    /// Same device as `winid`'s invariant floor. It is written out again
-    /// rather than shared because a helper reaching across two
-    /// `#[cfg(test)]` modules would make each module's floor depend on the
-    /// other's, and a floor that can be broken from somewhere else is not one.
+    /// Same device as `winid`'s invariant floor, **and the reason given here
+    /// for copying it rather than sharing it did not survive task 189.** It
+    /// read: a helper reaching across two `#[cfg(test)]` modules would make
+    /// each module's floor depend on the other's, and a floor that can be
+    /// broken from somewhere else is not one.
+    ///
+    /// **The independence it was protecting never existed.** These two
+    /// modules' floors already depended on each other -- not through a shared
+    /// helper, but through the one `STATE` they both reach, which is how D2
+    /// came to panic inside `winid`'s tests. Copying the helper bought
+    /// nothing against that, and it cost something else: **both copies set
+    /// the process-wide `POLTER_HOST_LOG`**, so before they shared a turn
+    /// they could overwrite each other's redirect. That is task 187, and it
+    /// is not fixed here -- **sharing the turn removes its symptom while
+    /// leaving both writers in place**, so 187 needs a criterion that does
+    /// not depend on the two ever overlapping again.
     fn logged(body: impl FnOnce()) -> String {
         let path = std::env::temp_dir().join(format!(
             "polter-deadlock-detector-{}-{:?}.log",
