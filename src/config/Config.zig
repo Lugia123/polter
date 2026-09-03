@@ -6988,9 +6988,22 @@ pub const Keybinds = struct {
                 .{ .key = .{ .unicode = 'n' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .new_window = {} },
             );
+            // **`close_surface` is `ctrl+shift+x` here, and this is a
+            // deliberate divergence from upstream. See the note above
+            // `close_tab` below for why.**
+            //
+            // It used to be `ctrl+shift+w`, twenty lines above the `close_tab`
+            // binding that uses the same chord -- and `Set.putFlags` overwrites
+            // unconditionally, so that `put` was dead from the day it was
+            // written. **The dead line is gone rather than left in place**: it
+            // was not merely ineffective, it read as a live binding, so anyone
+            // counting chords saw two actions contending for `ctrl+shift+w`
+            // when in fact the chord has one owner. That misleads a reader and
+            // it misleads any tool that scans for duplicate chords -- which is
+            // exactly how this whole family of gaps was found.
             try self.set.put(
                 alloc,
-                .{ .key = .{ .unicode = 'w' }, .mods = .{ .ctrl = true, .shift = true } },
+                .{ .key = .{ .unicode = 'x' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .close_surface = {} },
             );
             try self.set.put(
@@ -7008,6 +7021,36 @@ pub const Keybinds = struct {
                 .{ .key = .{ .unicode = 't' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .new_tab = {} },
             );
+            // # This fork's non-macOS defaults diverge from upstream here
+            //
+            // **The reason is not that we wanted different keys.** It is that
+            // the macOS branch gives the closing family four chords and this
+            // branch has two, and when the four were collapsed into two, two
+            // actions were left with no key at all:
+            //
+            //   * `close_surface` -- bound to `ctrl+shift+w` and then
+            //     overwritten by the `close_tab` binding just below, twenty
+            //     lines later. Silent: `Set.putFlags` replaces without
+            //     complaint, and the reverse map drops the loser, so the menu
+            //     row for it simply showed no shortcut.
+            //   * `close_all_windows` -- never bound outside macOS.
+            //
+            // The same collapse cost four more: `adjust_selection` for
+            // `home`, `end`, `page_up` and `page_down`, all four overwritten
+            // by the scrolling bindings on `shift+`. See the comment beside
+            // them below.
+            //
+            // **What was changed here**: `close_surface` moved to
+            // `ctrl+shift+x`; `adjust_selection` got new chords. Nothing that
+            // already worked was moved. `close_all_windows` is still unbound
+            // on purpose -- macOS puts it on a four-modifier chord, which is
+            // where a rarely-wanted and expensive-to-mistake action belongs.
+            //
+            // **To whoever is merging upstream and has hit a conflict here:**
+            // this is not a taste change to drop. Re-applying upstream's
+            // version restores two actions with no keyboard route, and the
+            // way you will find out is a user reporting that a menu item has
+            // no shortcut -- months later, from a different direction.
             try self.set.put(
                 alloc,
                 .{ .key = .{ .unicode = 'w' }, .mods = .{ .ctrl = true, .shift = true } },
@@ -7184,6 +7227,122 @@ pub const Keybinds = struct {
                 alloc,
                 .{ .key = .{ .unicode = 'a' }, .mods = .{ .shift = true, .ctrl = true } },
                 .{ .select_all = {} },
+            );
+
+            // # Extending the selection, and why these four are not one set
+            //
+            // On macOS these are `shift+home` / `end` / `page_up` /
+            // `page_down`, which is also what almost every other program on
+            // Windows uses. **Here those four chords scroll instead**: the
+            // bindings a few lines above bind `shift+…` to `scroll_to_top`
+            // and friends, and being written later they overwrite the
+            // `adjust_selection` bindings from the shared section. Nothing
+            // reports that; the four selection actions simply end up with no
+            // key.
+            //
+            // **The scrolling was left where it is on purpose.** People are
+            // using `shift+page_up` to scroll today, and this change is meant
+            // to fill gaps rather than move things somebody already relies
+            // on.
+            //
+            // **Which is why these four are not a matched set**, and it will
+            // look like an oversight to the next reader:
+            //
+            //   home / end       -> ctrl+shift+…   (free)
+            //   page_up / down   -> alt+shift+…    (ctrl+shift+page_* is
+            //                                       already `move_tab`)
+            //
+            // **Do not "tidy this up" by moving the scrolling off `shift+`.**
+            // That is the other half of a choice that was made deliberately:
+            // it would give all four selection keys one shape and match
+            // macOS, at the cost of changing a behaviour people already use.
+            // If that trade is ever taken it should be taken on purpose, by
+            // someone who knows they are changing existing behaviour -- not
+            // as a side effect of making four lines look alike.
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .home }, .mods = .{ .ctrl = true, .shift = true } },
+                .{ .adjust_selection = .home },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .end }, .mods = .{ .ctrl = true, .shift = true } },
+                .{ .adjust_selection = .end },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .page_up }, .mods = .{ .alt = true, .shift = true } },
+                .{ .adjust_selection = .page_up },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .page_down }, .mods = .{ .alt = true, .shift = true } },
+                .{ .adjust_selection = .page_down },
+                .{ .performable = true },
+            );
+
+            // Clearing the screen. `cmd+k` on macOS; `ctrl+k` is not
+            // available here because a bare `ctrl+<letter>` belongs to the
+            // terminal (`ctrl+k` is a line-editing key in every shell), so
+            // this takes the same letter one namespace up.
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'k' }, .mods = .{ .ctrl = true, .shift = true } },
+                .{ .clear_screen = {} },
+            );
+
+            // Walking the search results. Without these the search bar can be
+            // opened from the keyboard and then only continued with a mouse,
+            // which is half a feature.
+            //
+            // # Why function keys, and not `ctrl+shift+g` with something on top
+            //
+            // macOS says "the other direction" by adding a `shift`:
+            // `cmd+g` / `cmd+shift+g`. **That idiom cannot survive the
+            // translation**, because the `shift` in `ctrl+shift+<letter>` is
+            // already spent -- it is what keeps this off `ctrl+<letter>`,
+            // which belongs to the terminal. Adding a second `shift` to mean
+            // "backwards" collapses into the first one.
+            //
+            // The obvious escape is another modifier, and **that road is shut,
+            // not merely narrow**:
+            //
+            //   * `ctrl+alt+<letter>` *is* `AltGr` on Windows. European
+            //     layouts type third-level characters with it, so binding it
+            //     takes a printable character away from those users -- and the
+            //     symptom is "I can no longer type this symbol", which nobody
+            //     traces back to a terminal's shortcuts.
+            //   * `ctrl+shift+alt+<letter>` is `AltGr+shift`, which is the
+            //     fourth level on layouts that have one. Rarer, and **being
+            //     rarer makes it harder to attribute, not safer**.
+            //   * **And we cannot tell the two apart.** `Mods.binding()`
+            //     (`src/input/key_mods.zig`) keeps only `shift/ctrl/alt/super`
+            //     and drops the sided bits, so `AltGr+shift+g` and a genuine
+            //     four-finger chord arrive here identical -- even though the
+            //     Windows host does know which side each modifier was on.
+            //
+            // **Function keys sidestep the whole namespace**, and the cost is
+            // conditional rather than permanent: these are `performable`, so
+            // with no search open the core declines and the key goes on to be
+            // encoded to the pty exactly as it does today
+            // (`Surface.zig`: `if (leaf.flags.performable and !performed)
+            // return null;`, after which `keyCallback` reaches `encodeKey`).
+            // **`f3` belongs to the terminal except while a search is open** --
+            // which is a sentence a user can be told.
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .f3 } },
+                .{ .navigate_search = .next },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .f3 }, .mods = .{ .shift = true } },
+                .{ .navigate_search = .previous },
+                .{ .performable = true },
             );
 
             // Selection clipboard paste

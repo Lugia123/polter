@@ -1561,10 +1561,67 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
         return;
     }];
 
-    var environ_map = global.environMap() catch return;
+    // # Two silent exits used to be here, and the silence was the defect
+    //
+    // Neither of these can stop provisioning from being *wanted*; they can
+    // only stop it from being *told*. A `return` with nothing said turns
+    // "the whole AI-runtime integration is missing" into a symptom with no
+    // trail: the plugin still starts, still completes its handshake, and
+    // then waits on a batch that is never published. What comes back is
+    // "the plugin does nothing", and nothing in any log points here.
+    //
+    // So both say what happened **and what it costs**. A log line that
+    // reports a fact without its consequence gets read as noise and
+    // stepped over.
+    var environ_map = global.environMap() catch |err| {
+        log.warn(
+            "poltergeist: cannot read this process's environment err={}; " ++
+                "no provisioning plugin will be told that Polter exists, so no " ++
+                "agent runtime will be registered",
+            .{err},
+        );
+        return;
+    };
     defer environ_map.deinit();
 
-    const home = environ_map.get("HOME") orelse return;
+    // **`HOME` is a POSIX name and Windows does not set it.**
+    //
+    // This line read the variable directly and returned when it was absent,
+    // which on Windows is always -- so on that platform this function has
+    // never reached its `publish` below, and every provisioning plugin has
+    // sat on an empty queue since the day it was written.
+    //
+    // The repository already knew: `os/homedir.zig` has a Windows branch
+    // reading `HOMEDRIVE` + `HOMEPATH`. **Only this line did not.** Asking
+    // that function is the whole of the platform fix, and it changes nothing
+    // on POSIX, where it reads `HOME` first.
+    //
+    // **And when it still cannot be found, the batch goes out anyway.** The
+    // value is carried in the event and is not used here for anything, so
+    // withholding the entire event over it trades a plugin that can report
+    // its own problem for one that cannot say anything at all -- and the
+    // plugin SDK already handles an empty home explicitly, logging
+    // `status=failed step=parse` into its own file, which is where somebody
+    // looking would look. **A failure in the plugin's log beats a silence in
+    // ours.**
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home: []const u8 = home: {
+        const found = internal_os.home(io, &environ_map, &home_buf) catch |err| {
+            log.warn("poltergeist: home directory lookup failed err={}", .{err});
+            break :home null;
+        };
+        break :home found;
+    } orelse blk: {
+        log.warn(
+            "poltergeist: cannot determine the home directory (looked at HOME on " ++
+                "POSIX, HOMEDRIVE+HOMEPATH on Windows); the provisioning event is " ++
+                "still published with an empty one, so the plugin will report " ++
+                "`status=failed step=parse` in its own log rather than waiting " ++
+                "silently for a batch that never comes",
+            .{},
+        );
+        break :blk "";
+    };
 
     // Before anything is published, because a subscription starts empty by
     // definition: an event handed to the feed before the plugins subscribe

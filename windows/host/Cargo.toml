@@ -20,9 +20,19 @@ features = [
     "Win32_Graphics_Gdi",
     "Win32_Graphics_OpenGL",
     "Win32_Security_Cryptography",
+    # `WriteFile` and `GetStdHandle`, for the panic hook only. It reports
+    # through the raw handles rather than `std::io::Stderr` because a panic
+    # hook runs while the panicking thread still holds every lock it had, and
+    # `Stderr` is a re-entrant lock around a `RefCell` -- re-entering it from
+    # inside a failed write is a second panic, and `panic while panicking`
+    # aborts with *less* output than doing nothing would have produced.
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_Console",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_DataExchange",
+    # `WriteFile` is gated on this one as well -- it takes an `OVERLAPPED`.
+    "Win32_System_IO",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Ole",

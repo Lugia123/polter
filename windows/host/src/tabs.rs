@@ -31,6 +31,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use polter_split_tree::{Focus, NewSplit, PaneId, Placement, Rect as TreeRect, Side, Tree};
@@ -808,7 +809,20 @@ pub fn post_op(frame: HWND, op: Op, from: &'static str) {
 /// tell "a window exists" from "somebody asked about a handle", and both of
 /// the questions this file has to answer -- how many windows, and whose tabs
 /// -- turn on that difference.
-pub fn add_window(frame: HWND) {
+/// **Called only by `winid::created`, which registers the other half.**
+///
+/// A window is recorded in two registries and they must be written as one
+/// act: a frame that is in `tabs` and not in `winid` (or the reverse) is a
+/// state every reader can observe and none of them expects, and the gap
+/// between two statements is where somebody later adds a third.
+/// `winid::created` is that one act; see its documentation for what the gap
+/// used to cost and why nothing goes red when it comes back.
+///
+/// `pub(crate)` is as narrow as Rust goes here -- it stops other crates, not
+/// other modules -- so "only `winid::created` calls this" is a sentence and
+/// not a rule the compiler keeps. It is written down because an unwritten
+/// convention and an unnoticed second caller look the same from here.
+pub(crate) fn add_window(frame: HWND) {
     let key = frame.0 as isize;
     let n = with_windows_mut(|ws| {
         if ws.iter().any(|w| w.frame == key) {
@@ -1213,12 +1227,65 @@ pub fn layout(frame: HWND) {
     let verbose = n <= 40;
     unsafe {
         // Hide before showing, so a zoom toggle does not flash both.
-        for (id, hw) in hide {
-            let ok = ShowWindow(hw, SW_HIDE).as_bool();
-            if verbose {
-                logf!("[layout #{}] pane {} -> hide (was visible: {})", n, id, ok);
+        //
+        // # Hiding a *visible* pane ends any composition it is carrying
+        //
+        // TSF ends the composition synchronously inside `ShowWindow`, and the
+        // handler in `tsf.rs` would then commit the half-typed text into the
+        // terminal -- so pressing a keybinding while composing opened the tab
+        // **and** typed the syllable. `with_host_shuffle` marks this window so
+        // that ending is discarded instead.
+        //
+        // **The trigger is hiding, not opening a tab.** Two earlier attempts
+        // guarded the focus change further down this function, and both missed
+        // it: the composition was already over 38ms before that ran. Anything
+        // that rearranges panes reaches this loop -- splitting, zooming,
+        // closing a tab -- so guarding the loop covers them all, while
+        // guarding the caller covers one.
+        //
+        // # What is actually known, and what was believed for one afternoon
+        //
+        // The log line below carries `ShowWindow`'s return value, which is
+        // exactly "was it visible", and one real run put the two cases side by
+        // side inside a single layout pass:
+        //
+        // ```text
+        // [layout #6] pane 1 -> hide (was visible: false)
+        // [ime] OnEndComposition commit="ni"
+        // [layout #6] pane 3 -> hide (was visible: true)
+        // ```
+        //
+        // That reads as "hiding a *visible* pane is what ends it", and it was
+        // written down here as exactly that. **It is not true.** Splitting a
+        // pane mid-composition ends the composition too, and in that run
+        // **both** hidden panes reported `was visible: false`.
+        //
+        // So the honest statement is narrower than the one that fits:
+        //
+        //   * the composition ends somewhere inside this loop -- measured, in
+        //     two different runs;
+        //   * *which* `ShowWindow` does it, and on what condition, **is not
+        //     known**. Visibility was the first hypothesis and it is refuted.
+        //
+        // **This guard therefore works by covering the whole loop, not by
+        // knowing the trigger.** That is a real difference and it has a
+        // consequence for whoever edits this function: the floor that proves
+        // the guard is not simply always-on (`H5`: type a word normally and
+        // watch it commit) **belongs to this code, not to the guard**. Move a
+        // `ShowWindow` out of this loop, or add a path around it, and that
+        // floor has to be run again -- the guard cannot tell you it stopped
+        // covering something.
+        //
+        // The open question is recorded in `docs/windows/status.md`; it is a
+        // debt, not a blocker, because the wide guard is safe.
+        crate::with_host_shuffle(|| {
+            for (id, hw) in hide {
+                let ok = ShowWindow(hw, SW_HIDE).as_bool();
+                if verbose {
+                    logf!("[layout #{}] pane {} -> hide (was visible: {})", n, id, ok);
+                }
             }
-        }
+        });
         for (id, hw, r) in place {
             let res = SetWindowPos(
                 hw,
@@ -1383,6 +1450,13 @@ fn create_pane(
         }
         return None;
     }
+    // **The other half of the pair `[mouse] divisor=` is compared against.**
+    // These two numbers come from the same expression at two different
+    // moments; if they ever differ, the round trip through the core does not
+    // cancel and a pointer lands somewhere a person did not point. They were
+    // equal the first time anybody looked -- which is how a suspected DPI
+    // defect turned out to be a mis-measurement rather than a fault here.
+    logf!("[pane] {} content_scale={} (told to the core at creation)", id, scale);
     unsafe {
         (api().surface_set_content_scale)(s, scale, scale);
         (api().surface_set_size)(s, w as u32, h as u32);
@@ -1515,6 +1589,12 @@ pub fn create_tab_with(
     layout(frame);
     focus_active(frame);
     wlogf!(frame, "[tab] created; count now {}", count(frame));
+    // **After the guard above is gone, and that is load-bearing.** Raising a
+    // UIA event can call straight back into `uia.rs`, which takes this
+    // module's lock -- and taking it twice on one thread hangs rather than
+    // panics. See the rule at the head of `uia.rs`'s events section;
+    // `borrow-across-dispatch.py` enforces it.
+    crate::uia::tabs_changed(frame);
     true
 }
 
@@ -1729,6 +1809,88 @@ pub fn surface_of_tab(frame: HWND, id: TabId) -> Surface {
             .iter()
             .find(|t| t.id == id)
             .and_then(|t| t.focused_pane())
+            .map(|p| p.surface)
+    });
+    match found {
+        Some(surface) => surface as Surface,
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// One tab, as the UIA provider needs to see it: identity first, then the
+/// things that are only true right now.
+///
+/// **Every field is owned, and the lock is not held when this is returned.**
+/// That is the point of the type rather than a convenience: `uia.rs` must
+/// call into libghostty to read the screen, and libghostty takes the core's
+/// renderer lock -- so the registry lock has to be gone by then. See the lock
+/// rule at the top of `uia.rs`.
+pub struct TabInfo {
+    pub id: TabId,
+    pub title: String,
+    /// The tab's focused pane. **Carried so the provider can name a pane by
+    /// identity** rather than holding a `Surface` pointer across calls: a
+    /// pane can be closed between one UIA call and the next, and a stale
+    /// `Surface` is the one mistake here that is not recoverable.
+    pub pane: PaneId,
+    /// That pane's window. **Carried in the same snapshot as the id, not
+    /// looked up afterwards**: two lookups a moment apart can straddle a
+    /// pane being closed, and the pair would then describe two different
+    /// panes while looking like one.
+    pub pane_hwnd: isize,
+}
+
+/// Every tab of one window, and which of them is active.
+///
+/// The twin of `strip_snapshot`, which the strip uses to paint. Kept
+/// separate rather than widened because the strip's version is called on
+/// every `WM_PAINT` and has no business growing a field for a caller that
+/// runs when a screen reader asks.
+pub fn tab_infos(frame: HWND) -> (Vec<TabInfo>, usize) {
+    match window(frame) {
+        Some(w) => (
+            w.tabs
+                .iter()
+                .map(|t| TabInfo {
+                    id: t.id,
+                    // The name the user gave wins over the one the program
+                    // announced -- the same precedence the strip paints with.
+                    title: t.title_override.clone().unwrap_or_else(|| t.title.clone()),
+                    pane: t.focused,
+                    pane_hwnd: t
+                        .panes
+                        .iter()
+                        .find(|p| p.id == t.focused)
+                        .map(|p| p.hwnd)
+                        .unwrap_or(0),
+                })
+                .collect(),
+            w.active,
+        ),
+        None => (Vec::new(), 0),
+    }
+}
+
+/// Resolve a `(frame, tab, pane)` triple to a live surface, or null.
+///
+/// **All three have to still agree**, which is what makes this different
+/// from `surface_of_pane`: a pane id is unique in the process, so looking it
+/// up alone would happily answer for a pane that has since been moved into
+/// another window -- and the UIA provider would then read window 2's
+/// terminal while claiming to be window 1's. Checking the whole triple is
+/// how "this element is gone" stays distinguishable from "this element now
+/// means something else".
+///
+/// A null return is the provider's cue to answer `UIA_E_ELEMENTNOTAVAILABLE`.
+/// **Not an empty string**: a terminal that has been closed and a terminal
+/// showing nothing are different facts, and a screen reader that is told the
+/// second one will sit reading a blank document that no longer exists.
+pub fn surface_of_tab_pane(frame: HWND, tab: TabId, pane: PaneId) -> Surface {
+    let found = window(frame).and_then(|w| {
+        w.tabs
+            .iter()
+            .find(|t| t.id == tab)
+            .and_then(|t| t.panes.iter().find(|p| p.id == pane))
             .map(|p| p.surface)
     });
     match found {
@@ -1955,16 +2117,30 @@ pub fn set_mark_for_surface(surface: Surface, role: u8, shielded: bool) -> bool 
 /// built to a mis-stated rule, which is why a renamed tab lost its name at the
 /// next `cd`.
 pub fn rename_tab(frame: HWND, id: TabId, title: String) {
-    {
+    // **Whether the rename actually landed**, taken inside the block and read
+    // outside it. Announcing a name that was never stored -- because the tab
+    // had gone -- would tell a client to re-read a property that has not
+    // changed, which is a smaller lie than the alternative but still a lie.
+    let renamed = {
         if let Some(mut w) = window(frame) {
-            if let Some(tab) = w.tabs.iter_mut().find(|t| t.id == id) {
-                tab.title = title.clone();
-                tab.title_override = Some(title);
+            match w.tabs.iter_mut().find(|t| t.id == id) {
+                Some(tab) => {
+                    tab.title = title.clone();
+                    tab.title_override = Some(title.clone());
+                    true
+                }
+                None => false,
             }
+        } else {
+            false
         }
-    }
+    };
     unsafe {
         let _ = InvalidateRect(Some(frame), None, false);
+    }
+    // Outside the block, same rule as the other four.
+    if renamed {
+        crate::uia::tab_renamed(frame, id, &title);
     }
 }
 
@@ -2057,6 +2233,10 @@ pub fn move_tab_to(frame: HWND, id: TabId, to: usize) {
     };
     layout(frame);
     logf!("[tab] moved {:?} from {} to {}", id, moved.0, moved.1);
+    // A reorder **is** a structure change: the children come back in a
+    // different order, and a client holding the old order is holding a wrong
+    // one. Outside the block above, for the reason written there.
+    crate::uia::tabs_changed(frame);
 }
 
 /// Panes in the active tab.
@@ -2080,10 +2260,29 @@ pub fn focus_active(frame: HWND) {
             None => return,
         }
     };
-    crate::ime_set_window(child);
-    unsafe {
-        let _ = SetFocus(Some(child));
-    }
+    // **Wrapped, because this focus move can end somebody's composition --
+    // but a real machine says it is not the only thing that does, and not the
+    // first.**
+    //
+    // `SetFocus` re-enters TSF, which ends any composition in flight and calls
+    // back into `tsf.rs` with the half-typed text still in the buffer; without
+    // the guard that text is committed to the terminal.
+    //
+    // **That was written as the explanation of the whole symptom, and the
+    // timestamps refuted it**: pressing a keybinding mid-composition still
+    // typed the syllable, and the composition had ended 38ms *before* this
+    // function ran -- 5ms before the tab it opens even existed. So something
+    // earlier, on the interception path itself, ends it first. `main.rs`'s
+    // `trace_intercept` is there to say which step, and until that reading
+    // exists this guard is known to be **insufficient, not wrong**: it still
+    // covers a real focus change, it just is not where the reported symptom
+    // comes from.
+    crate::with_host_shuffle(|| {
+        crate::ime_set_window(child);
+        unsafe {
+            let _ = SetFocus(Some(child));
+        }
+    });
     let s = active_surface(frame);
     if !s.is_null() {
         unsafe { (api().surface_set_focus)(s, true) };
@@ -2185,6 +2384,27 @@ pub fn surface_of(hwnd: HWND) -> Surface {
 /// own window procedure, which knows the pane and not the frame -- and asking
 /// the caller to supply a frame would mean asking it to guess, which is how a
 /// click in window 2 comes to activate a tab in window 1.
+///
+/// # It answers `None` for an ordinary pane, at a moment you will meet
+///
+/// A pane enters the model when `create_tab_with` pushes the finished `Tab`
+/// -- **after** `create_pane` has returned. Windows sends `WM_SIZE`, and the
+/// drop target is attached, *during* `CreateWindowExW` inside `create_pane`.
+/// So at those moments this function answers `None` for a pane that is
+/// perfectly normal and about to be perfectly registered.
+///
+/// That makes it the wrong thing to base a decision on there, and the failure
+/// is the quiet kind: the `None` branch is usually worded as "this pane is in
+/// no window", which is a true-sounding sentence that runs **every time**. Two
+/// call sites have already been written that way and corrected -- `dnd::attach`
+/// and the surface window's `WM_SIZE` line.
+///
+/// **Use `winid::frame_of_window` when the question is only "which frame".**
+/// It walks to the root window and checks *that* against the registry, and a
+/// frame is registered before it is ever shown -- so it is right from the
+/// first message a pane receives. Reach for `pane_of` when you genuinely need
+/// the tab index or the `PaneId`, and then treat `None` as "not yet", not as
+/// "not ours".
 pub fn pane_of(hwnd: HWND) -> Option<(HWND, usize, PaneId)> {
     let key = hwnd.0 as isize;
     with_windows(|ws| {
@@ -2237,6 +2457,17 @@ fn set_active(frame: HWND, idx: usize) {
     layout(frame);
     focus_active(frame);
     wlogf!(frame, "[tab] active -> {} of {}", active_index(frame) + 1, count(frame));
+    // **A property change, not a structure change**: switching tabs does not
+    // alter the shape of the tree, only which element has focus. The identity
+    // is read back here rather than carried down from the block above, so the
+    // announcement is about the tab that ended up active -- `idx` was clamped.
+    let now = {
+        let (tabs_now, active) = tab_infos(frame);
+        tabs_now.get(active).map(|t| (t.id, t.pane))
+    };
+    if let Some((id, pane)) = now {
+        crate::uia::active_tab_changed(frame, id, pane);
+    }
 }
 
 pub fn active_index(frame: HWND) -> usize {
@@ -2322,6 +2553,8 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
     logf!("[close] tab index {} panes gone; laying out", idx);
     layout(frame);
     wlogf!(frame, "[tab] closed index {}; count now {}", idx, count(frame));
+    // Same rule as the creation side: the critical section ended far above.
+    crate::uia::tabs_changed(frame);
 }
 
 /// `CF_UNICODETEXT`. Spelled numerically because the constant lives behind a
@@ -2965,11 +3198,311 @@ static LAYOUTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 /// How many times the surface was resized and told the core.
 static SIZES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Which wheel a notch came from. The conversion is identical on both axes;
+/// only the system setting and which offset the core is handed differ.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WheelAxis {
+    Vertical,
+    Horizontal,
+}
+
+impl WheelAxis {
+    /// The per-axis system preference. **Both are "how far one notch goes",
+    /// set by the user**, and both are read rather than assumed for the same
+    /// reason: on this platform the wheel speed a person expects is the one
+    /// they set in Windows.
+    fn setting(self) -> windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_ACTION {
+        match self {
+            WheelAxis::Vertical => {
+                windows::Win32::UI::WindowsAndMessaging::SPI_GETWHEELSCROLLLINES
+            }
+            WheelAxis::Horizontal => {
+                windows::Win32::UI::WindowsAndMessaging::SPI_GETWHEELSCROLLCHARS
+            }
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            WheelAxis::Vertical => "vertical",
+            WheelAxis::Horizontal => "horizontal",
+        }
+    }
+}
+
+/// How many wheel notches have been forwarded, so the first few can be logged
+/// without a line per notch for the life of the process.
+static WHEELS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// How many WM_PAINT the surface window has been sent.
 static PAINT_MSGS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The window that owns one surface: a child of the frame, or -- under
 /// `--toplevel` -- a top-level window of its own.
+/// Tell the core where the pointer is.
+///
+/// # The one conversion that is wrong invisibly
+///
+/// `LPARAM` carries client coordinates, and in a per-monitor-aware process
+/// those are **physical pixels**. The core wants **unscaled** ones: its
+/// `cursorPosCallback` multiplies by the content scale itself
+/// (`embedded.zig`'s `cursorPosToPixels`), using the very scale this host
+/// passed to `ghostty_surface_set_content_scale`.
+///
+/// So the two have to be divided back out here. **At 100% the bug is
+/// invisible** -- scale is 1 and the wrong version is the right version --
+/// and it only appears on a display where somebody would report it as "the
+/// selection is offset", which points at the selection code rather than at
+/// this line.
+///
+/// The scale is taken from the window rather than measured from anything
+/// drawn: a screenshot's reported scale on the test machine is not the real
+/// one, and geometry read back from an image would inherit that.
+fn mouse_pos(pane: HWND, lp: LPARAM) {
+    let s = surface_of(pane);
+    if s.is_null() {
+        return;
+    }
+    let Some(frame) = crate::winid::frame_of_window(pane) else {
+        return;
+    };
+    let scale = scale_of(frame).max(0.01);
+    let x = (lp.0 & 0xFFFF) as i16 as f64;
+    let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f64;
+    unsafe { (api().surface_mouse_pos)(s, x / scale, y / scale, crate::keys::mods()) };
+
+    // **This is not here for a defect. It is here because two causes would
+    // have produced the same screen, and the reading told them apart.**
+    //
+    // A selection was reported landing at exactly 1.5x the pointer on a 150%
+    // display. That single observation has two causes with opposite fixes:
+    // the conversion is inverted and should multiply, or the conversion is
+    // right and this divisor is 1.0 -- dividing by nothing while the core
+    // goes on multiplying by its own 1.5. Flipping the arithmetic would make
+    // the second *look* fixed at 150% and be wrong at every other scale
+    // (1.56x at 125%, 3.06x at 175%), so the number was printed before
+    // anything was changed.
+    //
+    // **The real machine then said `content_scale=1.5` and `divisor=1.5`,
+    // and `31 / 1.5 * 1.5 = 31`.** The conversion here was never wrong.
+    //
+    // The 1.5 was in the measurement: the probe injecting the coordinates was
+    // a DPI-unaware process, so Windows scaled everything it asked for by 1.5
+    // on the way to the desktop, and it then compared the coordinates *it had
+    // asked for* against a screenshot in physical pixels. The highlight had
+    // been under the pointer the whole time.
+    //
+    // **So these two lines stay, and what they are for has changed**: they
+    // are not evidence of a fault, they are what makes this arithmetic
+    // checkable the next time somebody suspects it -- and the next suspicion
+    // is likely, because everything here is invisible at 100%.
+    //
+    // # The rule that would have caught it at the source
+    //
+    // **Any probe that injects mouse coordinates must make its own process
+    // DPI-aware first, and must read the position back with `GetCursorPos`
+    // after `SetCursorPos`.** A read-back that does not equal the request
+    // means the probe is working in a different coordinate space from the
+    // thing it is measuring, and every number it produces afterwards is
+    // consistent, plausible, and about something else.
+    //
+    // **Once per drag, not once per move.** A line per `WM_MOUSEMOVE` is
+    // thousands of lines a second and would push the interesting ones out of
+    // reach; the divisor cannot change within one drag, so the first sample
+    // after each press says everything a whole drag would.
+    if MOUSE_SAMPLE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        wlogf!(
+            frame,
+            "[mouse] pos client=({},{}) divisor={} -> sent=({:.2},{:.2})",
+            x, y, scale, x / scale, y / scale
+        );
+    }
+}
+
+/// Set on each button press so the next motion reports its arithmetic once.
+///
+/// **An instrument, and it changes only what is visible**: nothing reads it
+/// to decide where a message goes, and clearing it cannot alter a coordinate.
+static MOUSE_SAMPLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Tell the core a button went down or came up.
+///
+/// **Position first, always.** The core resolves a click against wherever it
+/// last believes the pointer is, so a button reported before the position it
+/// happened at selects from the previous point. Every caller here sends
+/// `mouse_pos` immediately before -- except the capture-lost arm, which has
+/// `WM_MOUSEWHEEL`: hand the notch to the core as wheel ticks.
+///
+/// # Three different features come out of this one call
+///
+/// It is worth knowing before touching it, because "the wheel works now" can
+/// be true of one of them and false of the other two:
+///
+///   1. scrolling the scrollback, when nothing else claims the wheel;
+///   2. **mouse reporting** -- with `?1000h` and friends on, `scrollCallback`
+///      turns each notch into a button-4/5 report, which is how a mouse-aware
+///      full-screen program sees the wheel;
+///   3. **alternate scroll** -- on the alt screen with no reporting enabled,
+///      the same call turns notches into cursor keys, which is what makes the
+///      wheel work in `less`, `man` and `vim`.
+///
+/// All three are on the far side of `ghostty_surface_mouse_scroll`, so none
+/// of them existed while this was unwired, and all three arrive together.
+///
+/// # What Windows gives, and what the core wants
+///
+/// `wDelta` arrives as a multiple of `WHEEL_DELTA` (120), so dividing by 120
+/// gives notches; a high-resolution wheel sends less than 120 at a time and
+/// the fraction is passed through, which the core supports.
+///
+/// **The core wants ticks and multiplies by the cell height and the user's
+/// `mouse-scroll-multiplier` itself**, so neither of those is applied here.
+///
+/// # Why the system setting *is* applied here, and where that diverges
+///
+/// `SPI_GETWHEELSCROLLLINES` is the number of lines Windows says one notch
+/// moves -- three by default, and **the user sets it**. Ghostty's own model is
+/// one notch equals one cell times its own multiplier, so on other platforms
+/// that system preference plays no part.
+///
+/// **This host applies it, and that is a deliberate divergence from the other
+/// platforms**, on the same grounds as the eight keybindings this fork adds:
+/// a terminal on Windows is a Windows program, and the wheel speed a person
+/// expects is the one they set in Windows. Without it the wheel is three times
+/// slower than every other window on the machine and the setting they changed
+/// does nothing.
+///
+/// **The two multipliers are not the same quantity**: the system setting is
+/// the platform convention (notch -> lines), `mouse-scroll-multiplier` is the
+/// person's preference about *this* application. Applying both is correct;
+/// applying either one twice is not.
+///
+/// **Divergences are fine, silent divergences are not**, which is why this
+/// paragraph is here and why the value is logged the first few times.
+///
+/// # `WHEEL_PAGESCROLL`
+///
+/// That setting can be `WHEEL_PAGESCROLL` (`0xFFFF_FFFF`), meaning "one notch
+/// scrolls a screenful". **It is a real option in the Windows mouse control
+/// panel, not a theoretical edge**, and multiplying by it as if it were a line
+/// count gives four billion lines per notch. It gets its own branch, and a log
+/// line, because a wheel that scrolls to the end of the buffer on one notch
+/// would otherwise look like a scrolling bug rather than a setting.
+///
+/// # Horizontal, and a wrong reason that was nearly kept
+///
+/// `WM_MOUSEHWHEEL` goes through here too, on the other axis.
+///
+/// **It was first left out, and the argument for leaving it out was itself
+/// unverified**: "almost no mouse can produce one, so it would be code that
+/// ships without ever being run". Nobody measured that. It is false --
+/// **Windows precision touchpads send `WM_MOUSEHWHEEL` for a two-finger
+/// sideways swipe**, and tilt wheels send it too; on a laptop it is ordinary
+/// input.
+///
+/// The reasoning is worth keeping because of *which* lesson it misused. The
+/// rule about code that is written and never run demands **finding out
+/// whether it runs**; it was used instead to justify *assuming* it does not.
+/// **A reason that sounds sufficient is the thing that stops the checking.**
+///
+/// The machine these are tested on is a desktop with an external mouse, so
+/// the horizontal path most likely cannot be exercised there. It is written
+/// anyway, and the criteria say **"cannot be verified here"** rather than
+/// leaving the row out: an item marked unverifiable and an item that is
+/// missing look different on a list, and only the second one gets read as
+/// done.
+fn mouse_wheel(pane: HWND, wp: WPARAM, axis: WheelAxis) {
+    let s = surface_of(pane);
+    if s.is_null() {
+        return;
+    }
+    let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
+    let notches = delta / 120.0;
+
+    let mut lines_raw: u32 = 3;
+    let ok = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+            axis.setting(),
+            0,
+            Some(&mut lines_raw as *mut u32 as *mut std::ffi::c_void),
+            windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    if ok.is_err() {
+        // Not fatal and not silent: three is Windows' own default, so the
+        // wheel still behaves like the rest of the system, but a reader
+        // comparing speeds needs to know the setting was never read.
+        crate::hlogf!(
+            pane,
+            "[mouse] {} wheel: SystemParametersInfoW failed; falling back to 3 per notch",
+            axis.name()
+        );
+        lines_raw = 3;
+    }
+
+    const WHEEL_PAGESCROLL: u32 = u32::MAX;
+    // **Anything past this is treated as a mistake rather than a preference.**
+    // The documented sentinel is handled by name below; this catches the rest
+    // -- a value that is neither the sentinel nor plausible. Without it, one
+    // unexpected number turns every notch into a jump to the end of the
+    // buffer, and that reads as a scrolling bug rather than as a setting.
+    const ABSURD: u32 = 100;
+    let (lines, paged) = if lines_raw == WHEEL_PAGESCROLL {
+        // "One screenful per notch." Sent as a large-but-sane number rather
+        // than the sentinel; the core scrolls by rows and has no page concept
+        // at this entry point.
+        (25.0_f64, true)
+    } else if lines_raw > ABSURD {
+        crate::hlogf!(
+            pane,
+            "[mouse] {} wheel: the system says {} per notch, which is past anything \
+             plausible; using 3. (Not silently: a wheel behaving oddly should be \
+             traceable to the number it was given.)",
+            axis.name(),
+            lines_raw
+        );
+        (3.0_f64, false)
+    } else {
+        (lines_raw as f64, false)
+    };
+
+    let off = notches * lines;
+    let n = WHEELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n <= 5 || paged {
+        crate::hlogf!(
+            pane,
+            "[mouse] wheel axis={} delta={} notches={:.3} per_notch={}{} -> off={:.3}",
+            axis.name(),
+            delta,
+            notches,
+            lines,
+            if paged { " (WHEEL_PAGESCROLL: one screenful per notch, sent as 25)" } else { "" },
+            off
+        );
+    }
+
+    // **Signs pass straight through on both axes.** Win32: a positive
+    // vertical delta is away from the user, a positive horizontal delta is to
+    // the right. The core: positive is up, positive is right. No negation --
+    // and a negation added "to be safe" would be invisible to any criterion
+    // that only asks whether the view moved.
+    let (xoff, yoff) = match axis {
+        WheelAxis::Vertical => (0.0, off),
+        WheelAxis::Horizontal => (off, 0.0),
+    };
+    unsafe { (api().surface_mouse_scroll)(s, xoff, yoff, 0) };
+}
+
+/// no position to report and must not invent one.
+fn mouse_button(pane: HWND, state: i32, button: i32) {
+    let s = surface_of(pane);
+    if s.is_null() {
+        return;
+    }
+    unsafe { (api().surface_mouse_button)(s, state, button, crate::keys::mods()) };
+}
+
 pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -3095,6 +3628,61 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 // that arrived at a pane which may belong to any window.
                 // `focus_pane_at` now works the frame out from the pane.
                 focus_pane_at(hwnd);
+
+                // **Capture, so a drag that leaves the window keeps arriving.**
+                // Without it the pointer crossing into the next pane stops
+                // sending us `WM_MOUSEMOVE` and the selection freezes where it
+                // was, which reads as "selection stops halfway".
+                let _ = SetCapture(hwnd);
+                MOUSE_SAMPLE.store(true, std::sync::atomic::Ordering::Relaxed);
+                mouse_pos(hwnd, lp);
+                mouse_button(hwnd, crate::ffi::MOUSE_PRESS, crate::ffi::MOUSE_LEFT);
+                LRESULT(0)
+            }
+
+            WM_MOUSEMOVE => {
+                mouse_pos(hwnd, lp);
+                LRESULT(0)
+            }
+
+            // **No `mouse_pos` first here, unlike the button arms.**
+            // `WM_MOUSEWHEEL`'s lParam is in *screen* coordinates, not client
+            // ones -- passing it to `mouse_pos`, which assumes client, would
+            // move the core's idea of the pointer to somewhere off the pane.
+            WM_MOUSEWHEEL => {
+                mouse_wheel(hwnd, wp, WheelAxis::Vertical);
+                LRESULT(0)
+            }
+
+            // The other axis: precision touchpads send this for a two-finger
+            // sideways swipe, and tilt wheels for a tilt.
+            WM_MOUSEHWHEEL => {
+                mouse_wheel(hwnd, wp, WheelAxis::Horizontal);
+                LRESULT(0)
+            }
+
+            WM_LBUTTONUP => {
+                mouse_pos(hwnd, lp);
+                mouse_button(hwnd, crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_LEFT);
+                let _ = ReleaseCapture();
+                LRESULT(0)
+            }
+
+            // **Capture taken away from us, rather than given back.**
+            //
+            // Windows sends this when something else claims the mouse, when
+            // the window is destroyed under a held button, and when an
+            // Alt+Tab or a modal steals it. **The button is never released as
+            // far as the core is concerned**, so without this arm a drag
+            // interrupted that way leaves the core believing the button is
+            // still down: every later pointer movement goes on extending a
+            // selection nobody is dragging.
+            //
+            // `ReleaseCapture` is deliberately **not** called here -- capture
+            // is already gone, and asking for it back is how the pair stops
+            // meaning anything.
+            WM_CAPTURECHANGED => {
+                mouse_button(hwnd, crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_LEFT);
                 LRESULT(0)
             }
 

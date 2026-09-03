@@ -75,22 +75,32 @@ pub fn init(opts: InitOpts) !void {
             // UNICODE_STRING (aka []u16, a WTF-16 string) so that it can be
             // passed into std.process.Args.Vector directly.
             //
-            // We give Windows an empty command line rather than widening the
-            // C ABI, because nothing on this target actually reads it:
+            // Windows takes the real command line from the process rather
+            // than the C `argv`, and this **is** the cheap upgrade the
+            // previous version of this comment described and declined:
             //
-            //   - `.args` feeds `Io.Threaded.Argv0.init`, which ignores its
-            //     argument on every target except OpenBSD/Haiku.
-            //   - It feeds `cli.action.detectArgs`, whose iterator yields
-            //     nothing for an empty command line, so `action` is null --
-            //     the same result an embedded host gets by passing argc=0.
+            //   "If Windows later wants them, the cheap upgrade is
+            //    `GetCommandLineW()` here, which is still no ABI change."
             //
-            // The cost is that CLI actions (`ghostty_cli_try_action`) are
-            // inert for the Windows C API; an embedded host owns its own
-            // command line anyway. If Windows later wants them, the cheap
-            // upgrade is `GetCommandLineW()` here, which is still no ABI
-            // change.
+            // Windows now wants them. `ghostty_cli_try_action` was inert on
+            // this target, so `polter-host.exe +chat` opened an ordinary
+            // terminal instead of the chat -- the CLI action was parsed from
+            // an empty string and came out null. The note was right that no
+            // ABI change is needed: the C `argv` stays exactly as it was and
+            // is still used by every other target.
+            //
+            // **The buffer is the process's own and is never freed.** It
+            // outlives everything here, which is what lets a slice of it be
+            // stored in global state.
+            //
+            // One property worth stating because it is shared with the POSIX
+            // branch rather than introduced here: argv[0] is part of what
+            // `detectIter` walks, so an executable whose *path* begins with
+            // `+` would be read as an action. That is equally true on POSIX
+            // today and is left alone rather than special-cased on one
+            // platform, which would be a difference nobody could predict.
             .c => |c| .{ .vector = if (builtin.os.tag == .windows)
-                &[_]u16{}
+                std.mem.span(internal_os.windows.exp.kernel32.GetCommandLineW())
             else
                 c.argv[0..c.argc] },
         },

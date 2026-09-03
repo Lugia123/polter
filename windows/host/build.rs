@@ -190,7 +190,86 @@ fn manifest_fault(src: &str) -> Option<(usize, usize, String)> {
     None
 }
 
+/// The commit this host is being built from, and whether the tree was clean.
+///
+/// **Emitted for every target, before anything else can return early.** A
+/// provenance stamp that is only present on some builds is worse than none:
+/// the check that reads it would then have to treat "absent" as "fine", and
+/// absent is exactly the state it exists to object to.
+///
+/// # Why the same git command the core uses
+///
+/// The core stamps itself with `git log --pretty=format:%h -n 1`
+/// (`src/build/GitVersion.zig`). `%h` abbreviates to whatever `core.abbrev`
+/// says -- seven characters usually, nine in this repository, and it grows
+/// as the history does. **Running a different command here would make the
+/// two stamps differ in length for a reason that has nothing to do with
+/// whether they match**, and a length difference read as a mismatch is a
+/// false alarm. Same command, same abbreviation, by construction.
+///
+/// # What "dirty" is and is not
+///
+/// `git status --porcelain` says the working tree had uncommitted changes.
+/// **It says nothing about which**, and it over-reports on purpose: an edit
+/// to a document marks the build dirty even though no byte of the binary
+/// changed. That is the safe direction -- the flag downgrades how much a
+/// matching commit is worth, and never turns a match into a mismatch.
+///
+/// This matters here more than it would elsewhere: several people edit this
+/// one tree at the same time, so "same commit" and "same source" come apart
+/// routinely.
+///
+/// # The unknown case
+///
+/// No git, no repository, a source tarball: the stamp is **empty**. Empty is
+/// not a value that can accidentally equal anything -- which is the whole
+/// point, because the core has a fallback of its own (`0000000`) and two
+/// fallbacks comparing equal would manufacture a match out of two absences.
+fn emit_provenance() {
+    // `windows/host` -> the repository root.
+    let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+        .join("..")
+        .join("..");
+
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+
+    // Identical to `GitVersion.zig`'s, deliberately -- see above.
+    let commit = git(&["-c", "log.showSignature=false", "log", "--pretty=format:%h", "-n", "1"])
+        .unwrap_or_default();
+    let dirty = match git(&["status", "--porcelain"]) {
+        Some(s) => !s.is_empty(),
+        // Could not ask. Not "clean": an unanswered question must not be
+        // recorded as a reassuring answer.
+        None => false,
+    };
+
+    println!("cargo:rustc-env=POLTER_HOST_COMMIT={commit}");
+    println!("cargo:rustc-env=POLTER_HOST_DIRTY={}", if dirty { "1" } else { "0" });
+
+    // So a new commit actually re-stamps the binary. Missing paths are
+    // harmless here: cargo re-runs the script, which is the safe direction.
+    for p in ["HEAD", "index"] {
+        println!("cargo:rerun-if-changed={}", root.join(".git").join(p).display());
+    }
+}
+
 fn main() {
+    // **First.** Everything below can return early for a non-Windows target,
+    // and a stamp that depends on the target is a stamp the reader has to
+    // reason about.
+    emit_provenance();
+
     println!("cargo:rerun-if-changed=polter.rc");
     println!("cargo:rerun-if-changed=polter.manifest");
 

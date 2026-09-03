@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Two readers of one file, disagreeing about it.
+"""Two readers of the **settings file**, disagreeing about it.
+
+**This checker is about `settings.json` and nothing else.** It was called
+`one-reader-per-fact.py`, and that name promised something it has never
+delivered: it reads as "every fact in this tree has one reader", and it is
+green whatever any other fact does. A green light that says more than it
+checked is the kind that gets quoted as "already ruled out" -- so the name
+now says the subject, and the boundary below says the rest.
 
 **Three times on one page, and the same shape each time.** The plugin settings
 page showed a plugin as off with empty fields while the core ran it from the
@@ -25,14 +32,37 @@ Three facts, one reader each:
      decided in one place, and the writer's single path is not a second
      opinion about it.
 
-**What this cannot see, said out loud:** a read whose path was computed a few
-lines earlier into a local with an innocent name. The check is textual -- it
-follows the words `settings_path` and `settings.json` -- so a reader that
-launders the path through `let p = ...;` three statements up is invisible to
-it. That is why it prints how many reads it looked at, not only how many it
-objected to.
+WHAT THIS DOES NOT CHECK
+------------------------
 
-Exit: 0 when no fact has a second reader, 1 otherwise.
+**The most useful half of a checker's documentation is its edge**, because a
+reader who knows what it covers still has to guess at what it does not, and
+the guess is generous every time.
+
+- **Any fact other than the settings file.** The scan is textual and matches
+  on `settings_path` and `settings.json`; a source file containing neither is
+  invisible to it no matter how many readers its own facts have.
+
+  The case that named this boundary: **"how many terminal windows exist" had
+  two holders and they disagreed.** `tabs::Registry` counted down to 0 while
+  `winid::FRAMES` still said 1 -- and they disagreed *at the moment the
+  number was used to decide something*, which is the only moment that
+  matters: the count is what "the last window closed, so quit" reads, so the
+  process kept running with no windows on screen. This checker was green
+  throughout, correctly: `winid.rs` and `tabs.rs` do not contain a single
+  token it looks for. Fixing `winid::of` made the two agree again, but
+  **nothing decided which of them owns that fact** -- today they agree because
+  they happen to stay in step, which is the state this checker exists to
+  refuse for `settings.json` and does not police anywhere else.
+
+- **A read whose path was computed a few lines earlier into a local with an
+  innocent name.** The check follows the words, so a reader that launders the
+  path through `let p = ...;` three statements up is invisible. That is why
+  it prints how many reads it looked at, not only how many it objected to.
+
+- **Whether the one reader is right.** See above: it counts readers.
+
+Exit: 0 when no settings fact has a second reader, 1 otherwise.
 """
 
 import glob

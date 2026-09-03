@@ -41,7 +41,7 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::{logf, plogf, wlogf};
+use crate::{plogf, wlogf};
 
 /// `WM_APP + 1` is the tab op queue, `+ 2` the command palette.
 const WM_SEARCH_SHOW: u32 = WM_APP + 3;
@@ -74,12 +74,16 @@ static HWND_SEARCH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 struct Inbox {
     /// `Some(needle)` from `start_search`; the inner value may be empty.
     show: Option<String>,
+    /// The surface `start_search` was aimed at, travelling with the needle so
+    /// the two cannot be taken from different moments.
+    owner: Option<usize>,
     total: Option<i64>,
     selected: Option<i64>,
 }
 
 static INBOX: Mutex<Inbox> = Mutex::new(Inbox {
     show: None,
+    owner: None,
     total: None,
     selected: None,
 });
@@ -104,6 +108,21 @@ struct Windows {
 /// on `Windows` instead.
 struct Model {
     visible: bool,
+    /// **Whose search this is**, as the core said when it opened the bar.
+    ///
+    /// Not state: the core holds the search, and this is only the address to
+    /// send back to. It is here because without it the host knows *that* a
+    /// search is open and not *whose* -- half a fact, and the half it keeps is
+    /// the one it cannot act on.
+    ///
+    /// `None` means **the core's `start_search` named no surface**, not "we
+    /// forgot to look": `target_surface` already refuses a null pointer and an
+    /// app-targeted action, so there is no third state where this is `Some`
+    /// and useless. The log below spells the difference out, because a blank
+    /// column would not.
+    ///
+    /// Stored as `usize` for the same reason `tabs::Pane` does it.
+    surface: Option<usize>,
     /// Straight from the core. `None` means it has not answered yet, which is
     /// different from zero and is painted differently.
     total: Option<i64>,
@@ -141,9 +160,13 @@ fn post(msg: u32) {
 ///
 /// The needle is copied here rather than passed along: the pointer belongs to
 /// the core and is only valid until this call returns.
-pub fn on_start(needle: Option<&str>) {
+pub fn on_start(needle: Option<&str>, surface: Option<crate::ffi::Surface>) {
     if let Ok(mut inbox) = INBOX.lock() {
         inbox.show = Some(needle.unwrap_or("").to_string());
+        // **Carried, not looked up later.** By the time the bar is drawn the
+        // focused surface may be a different one; the only moment this is
+        // knowable is the moment the core says so.
+        inbox.owner = surface.map(|s| s as usize);
     }
     post(WM_SEARCH_SHOW);
 }
@@ -266,6 +289,7 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         STATE.with(|c| {
             *c.borrow_mut() = Some(Model {
                 visible: false,
+                surface: None,
                 total: None,
                 selected: None,
             });
@@ -278,11 +302,16 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
 
 // ------------------------------------------------------------ show / hide
 
-fn show(needle: &str) {
+fn show(needle: &str, owner: Option<usize>) {
     let me = hwnd();
     if me.0.is_null() {
         return;
     }
+    STATE.with(|c| {
+        if let Some(st) = c.borrow_mut().as_mut() {
+            st.surface = owner;
+        }
+    });
     unsafe {
         // Opens over window 1 wherever it was invoked; see `tabs::overlay_frame`.
         let frame = crate::tabs::overlay_frame();
@@ -342,6 +371,10 @@ fn hide() {
             .map(|st| {
                 st.total = None;
                 st.selected = None;
+                // **Cleared with the bar.** A stale owner would be an address
+                // for a search that has ended -- the same half-fact one step
+                // later, and harder to see because it looks like knowledge.
+                st.surface = None;
                 std::mem::replace(&mut st.visible, false)
             })
             .unwrap_or(false)
@@ -377,9 +410,58 @@ fn push_needle() {
     });
 
     let action = format!("search:{}", text);
-    let ok = crate::binding(&action);
-    logf!("[search] needle={:?} -> binding_action = {}", text, ok);
+    to_owner(&action);
     let _ = unsafe { InvalidateRect(Some(hwnd()), None, true) };
+}
+
+/// Send an action **to the surface this search belongs to**.
+///
+/// `crate::binding` sends to "the first window's focused surface", and its own
+/// documentation calls that a gap rather than a decision. A find bar is
+/// exactly where that gap bites: the core starts a search on one surface, and
+/// by the time anything is sent back the focused surface can be a different
+/// one -- another pane of a split, another tab, another window. Then
+/// `end_search` ends nothing (`performable`, so it declines and returns
+/// false), and worse, **`search:<text>` searches the wrong terminal and shows
+/// the wrong count**.
+///
+/// The address was available the whole time: the core names the surface in the
+/// action it sends. See `Model::surface`.
+///
+/// **When there is no owner this falls back to the old behaviour and says so.**
+/// Refusing instead would make the bar impossible to close if the core ever
+/// sends an app-targeted `start_search`; a guess that announces itself is the
+/// lesser of the two, and the line below is what tells a reader which of them
+/// happened.
+fn to_owner(action: &str) -> bool {
+    let owner = STATE.with(|c| c.borrow().as_ref().and_then(|st| st.surface));
+    let (surface, how) = match owner {
+        Some(s) => (s as crate::ffi::Surface, "owner"),
+        // Named separately from `crate::binding` so the line below can say
+        // what it actually reached rather than "somewhere".
+        None => (
+            crate::tabs::active_surface(crate::tabs::overlay_frame()),
+            "guess: start_search named no surface, so this is the active surface of the overlay frame",
+        ),
+    };
+    let ok = crate::binding_on(surface, action);
+    // **Tagged with the window the surface belongs to, not the one in front.**
+    // A search is a fact about one terminal, and the whole point of this
+    // function is that those two can differ.
+    match crate::tabs::frame_of_surface(surface) {
+        Some(frame) => wlogf!(
+            frame,
+            "[search] {} -> binding_action = {} (to {:?}, {})",
+            action, ok, surface, how
+        ),
+        // process-wide: the surface belongs to no live window, so there is no
+        // window this line is about -- which is itself the reading
+        None => plogf!(
+            "[search] {} -> binding_action = {} (to {:?}, {}; that surface is in no live window)",
+            action, ok, surface, how
+        ),
+    }
+    ok
 }
 
 fn navigate(next: bool) {
@@ -388,16 +470,24 @@ fn navigate(next: bool) {
     } else {
         "navigate_search:previous"
     };
-    let ok = crate::binding(action);
-    logf!("[search] {} -> binding_action = {}", action, ok);
+    to_owner(action);
 }
 
 fn end_from_host() {
-    // Tell the core first: it owns the search state and the highlighting.
-    // Hiding without telling it leaves the matches lit with no way to clear
-    // them.
-    let ok = crate::binding("end_search");
-    logf!("[search] end_search -> binding_action = {}", ok);
+    // **Tell the core first, and tell the right one.**
+    //
+    // The core owns the search state and the highlighting, so hiding the bar
+    // without ending the search leaves the matches lit with no way to clear
+    // them -- the entry point that would clear them is the bar that just
+    // disappeared.
+    //
+    // **The risk this guards against has moved.** It used to be "the host
+    // forgets to tell the core"; that has not been possible since this call
+    // existed. What remained was telling the *wrong* surface, which produces
+    // the same lit-and-unclearable screen while the log shows a call that was
+    // made -- so it reads as done. `to_owner` is what closes that, and the
+    // line it logs is how a reader tells the two apart afterwards.
+    to_owner("end_search");
     hide();
 }
 
@@ -407,8 +497,12 @@ extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     unsafe {
         match msg {
             WM_SEARCH_SHOW => {
-                let needle = INBOX.lock().ok().and_then(|mut i| i.show.take());
-                show(&needle.unwrap_or_default());
+                let (needle, owner) = INBOX
+                    .lock()
+                    .ok()
+                    .map(|mut i| (i.show.take(), i.owner.take()))
+                    .unwrap_or((None, None));
+                show(&needle.unwrap_or_default(), owner);
                 LRESULT(0)
             }
             WM_SEARCH_HIDE => {

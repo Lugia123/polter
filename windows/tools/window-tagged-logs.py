@@ -150,7 +150,7 @@ LIST_LINES = 12
 # an `Option<TabId>`. The option is not a missing argument -- the put-back
 # after a failed reopen names a tab destroyed long ago, and inventing an id
 # there would be the only line in the file whose subject does not exist.
-BASELINE_UNTAGGED = 38
+BASELINE_UNTAGGED = 35
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`
@@ -302,8 +302,12 @@ def bad_sites(src: str, name: str):
         # `hlogf!(hwnd, ...)` is the same shape one level down: `wlogf!` when
         # the handle resolves to a *registered* frame and `plogf!` when it does
         # not, with the reason written once at the macro. The resolution is the
-        # point -- `winid::of` names any handle it is given, so a pane or a null
-        # would otherwise mint a window number for a window that does not exist.
+        # point: `wlogf!` answers "which window" from the *identity* registry
+        # and `hlogf!` from the *state* one, so a pane or a stale handle gets a
+        # line that says it is about no window rather than one that names the
+        # wrong one. (`winid::of` used to mint a number for any handle it was
+        # handed, which is how a destroyed window got back into the count that
+        # decides when to quit; it only looks now.)
         if macro in ("wlogf", "alogf", "hlogf") or ALREADY_NAMED.search(args):
             continue
         if macro == "plogf":
@@ -417,9 +421,9 @@ def main() -> int:
 
     from collections import Counter
     rest = [h for h in bad if h not in unreasoned]
-    for tag, n in Counter(t for _, _, t in rest).most_common():
+    for tag, count in Counter(t for _, _, t in rest).most_common():
         where = sorted({f for f, _, t in rest if t == tag})
-        print(f"  {tag:12s} {n:3d} unclassified   ({', '.join(where)})")
+        print(f"  {tag:12s} {count:3d} unclassified   ({', '.join(where)})")
 
     # **And where they are.** A per-tag count says how much is left; it does
     # not say what to open. The floor for this checker is "inject one untagged
@@ -431,7 +435,17 @@ def main() -> int:
         # Everything, when the count went *up*: that is the moment somebody
         # needs to find the line they just added, and a capped list sorted by
         # file name is unlikely to contain it.
-        cap = len(rest) if n > BASELINE_UNTAGGED else LIST_LINES
+        #
+        # **This branch never once ran until it was fixed.** The comparison
+        # used `n`, which at this point in the function is not the total at
+        # all -- it is whatever the per-tag loop above left behind, the count
+        # of the *smallest* tag. Against a baseline of dozens that is always
+        # false, so the list was always capped, including on the one run where
+        # the whole point was to show everything. `len(bad)` is spelled out
+        # here rather than reusing a name, because reusing the name is what
+        # broke it: a condition that silently compares the wrong quantity
+        # reads exactly like a condition that is simply not met.
+        cap = len(rest) if len(bad) > BASELINE_UNTAGGED else LIST_LINES
         shown = sorted(rest, key=lambda h: (h[0], h[1]))[:cap]
         for name, line, tag in shown:
             print(f"       {name}:{line}  {tag}")

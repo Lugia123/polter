@@ -1935,6 +1935,74 @@ pub const ReadThread = struct {
 /// may not be allocated and args may or may not be allocated (or copied).
 /// Pointers in the return value may point to pointers in the command
 /// struct.
+/// Split a Windows command string into argv, honouring double quotes.
+///
+/// **A pure function on purpose.** The behaviour it implements is only
+/// reachable on Windows, but the rule it implements -- where a token ends --
+/// is not platform-specific in any way that a test needs a Windows machine to
+/// observe. Keeping it separate is what lets the tests below run on the
+/// machine the port is written on, which for this repository is the
+/// difference between a check that runs on every build and one that runs when
+/// somebody remembers to boot the test box.
+///
+/// The rules, deliberately the small subset rather than `CommandLineToArgvW`'s
+/// full set:
+///
+///   - whitespace separates arguments;
+///   - a double quote begins a run in which whitespace does not separate, and
+///     the next double quote ends it;
+///   - the quotes themselves are removed;
+///   - a backslash is an ordinary character, **including before a quote**.
+///
+/// The last one is where this stops short of the Win32 rules, and it is a
+/// deliberate stop rather than an oversight: `\\` and `\"` sequences are only
+/// meaningful because `CommandLineToArgvW` has to undo what
+/// `windowsCreateCommandLine` did, and nothing here is round-tripping through
+/// that. Treating a backslash as ordinary is what makes `C:\path\to\x.exe`
+/// mean itself. **The re-quoting on the way out is `windowsCreateCommandLine`'s
+/// job**, and it does handle the full rules -- so a path with spaces that
+/// arrives here as one token leaves `Command.startWindows` correctly quoted.
+fn splitWindowsShell(
+    alloc: Allocator,
+    v: []const u8,
+) Allocator.Error![]const [:0]const u8 {
+    var args: std.ArrayList([:0]const u8) = .empty;
+    defer args.deinit(alloc);
+
+    var cur: std.ArrayList(u8) = .empty;
+    defer cur.deinit(alloc);
+
+    var quoted = false;
+    var any = false;
+    for (v) |ch| {
+        switch (ch) {
+            '"' => {
+                quoted = !quoted;
+                // **An empty quoted run is still an argument.** `""` means a
+                // literal empty string, and dropping it would shift every
+                // argument after it one place left.
+                any = true;
+            },
+            ' ', '\t' => {
+                if (quoted) {
+                    try cur.append(alloc, ch);
+                } else if (any) {
+                    try args.append(alloc, try alloc.dupeZ(u8, cur.items));
+                    cur.clearRetainingCapacity();
+                    any = false;
+                }
+            },
+            else => {
+                try cur.append(alloc, ch);
+                any = true;
+            },
+        }
+    }
+    if (any) try args.append(alloc, try alloc.dupeZ(u8, cur.items));
+
+    return try args.toOwnedSlice(alloc);
+}
+
 fn execCommand(
     alloc: Allocator,
     command: configpkg.Command,
@@ -2077,20 +2145,24 @@ fn execCommand(
                 // (extra process in the tree, per-process cmd AutoRun
                 // state not reaching the user's actual shell).
                 //
-                // Values with arguments are split on whitespace, and
-                // Windows CLI quoting rules are not honored.
+                // Values with arguments are split by `splitWindowsShell`,
+                // **which honours double quotes**. The comment here used to
+                // say they were split on whitespace and that quoting rules
+                // were not honoured, and went on:
                 //
-                // **There is no other form that does.** This comment used
-                // to send anyone needing a quoted argument to `direct:`,
-                // "which takes an argv array as-is" -- but a `direct:`
-                // value written in a config file is split on spaces just
-                // as naively (`config/command.zig`, `parseCLI`). So on
-                // Windows an argument containing whitespace cannot be
-                // expressed by either form, and the advice pointed at a
-                // road that is not there. Saying so is worth more than
-                // the suggestion was: somebody following it spends a
-                // round finding out, and concludes their quoting is
-                // wrong rather than that nothing supports it.
+                //   "So on Windows an argument containing whitespace cannot
+                //    be expressed by either form."
+                //
+                // That was true and it was a wall. A host that wants to run
+                // its own executable has no choice about the path: on
+                // Windows programs live under `C:\\Program Files`, and the
+                // only way to name one is to quote it. `polter-host.exe`
+                // launching itself for `+chat` is exactly that case, and it
+                // could not be written down at all.
+                //
+                // The `direct:` form is still split naively in
+                // `config/Command.zig`'s `parseCLI`, so it is still not the
+                // road the old comment pointed at. This one is.
                 //
                 // Note we don't free any of the memory below since it is
                 // allocated in the arena.
@@ -2107,10 +2179,7 @@ fn execCommand(
                         try alloc.dupe(u8, v);
                     try args.append(alloc, try alloc.dupeZ(u8, argv0));
                 } else {
-                    var it = std.mem.tokenizeAny(u8, v, " \t");
-                    while (it.next()) |tok| {
-                        try args.append(alloc, try alloc.dupeZ(u8, tok));
-                    }
+                    break :shell try splitWindowsShell(alloc, v);
                 }
                 break :shell try args.toOwnedSlice(alloc);
             } else {
@@ -2411,4 +2480,68 @@ test "execCommand windows: direct command is passed through unchanged" {
     try testing.expectEqual(2, result.len);
     try testing.expectEqualStrings("C:\\tools\\foo.exe", result[0]);
     try testing.expectEqualStrings("arg with spaces", result[1]);
+}
+
+test "splitWindowsShell: a quoted path with spaces is one argument" {
+    // **Runs everywhere.** The behaviour is Windows-only; the rule is not,
+    // and this repository has already learned what it costs when the only
+    // check for a thing lives on the machine nobody has in front of them.
+    //
+    // This is the case the port actually needs: `polter-host.exe` launching
+    // itself for `+chat` from a directory whose name has a space in it, which
+    // on Windows is where programs live.
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const out = try splitWindowsShell(
+        alloc,
+        "\"C:\\Program Files\\Polter\\polter-host.exe\" +chat",
+    );
+    try std.testing.expectEqual(@as(usize, 2), out.len);
+    try std.testing.expectEqualStrings("C:\\Program Files\\Polter\\polter-host.exe", out[0]);
+    try std.testing.expectEqualStrings("+chat", out[1]);
+}
+
+test "splitWindowsShell: unquoted values still split on whitespace" {
+    // The behaviour that was there before, kept. `wsl ~` and `pwsh -NoLogo`
+    // are the common case and must not change -- a fix for the quoted path
+    // that moved these would be a regression nobody asked for.
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const out = try splitWindowsShell(alloc, "wsl   ~");
+    try std.testing.expectEqual(@as(usize, 2), out.len);
+    try std.testing.expectEqualStrings("wsl", out[0]);
+    try std.testing.expectEqualStrings("~", out[1]);
+}
+
+test "splitWindowsShell: backslashes are ordinary, including before a quote" {
+    // The deliberate stop short of `CommandLineToArgvW`. A path is full of
+    // backslashes and means itself; treating `\\` as an escape would turn
+    // `C:\\dir\\` into `C:\dir\` and name a directory that is not there.
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const out = try splitWindowsShell(alloc, "C:\\a\\\\b\\c.exe arg");
+    try std.testing.expectEqual(@as(usize, 2), out.len);
+    try std.testing.expectEqualStrings("C:\\a\\\\b\\c.exe", out[0]);
+    try std.testing.expectEqualStrings("arg", out[1]);
+}
+
+test "splitWindowsShell: an empty quoted run is still an argument" {
+    // The negative control for the `any` flag. Without it `""` vanishes and
+    // every argument after it shifts one place left -- a corruption that
+    // looks like the caller passed the wrong thing.
+    var arena = ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const out = try splitWindowsShell(alloc, "prog \"\" tail");
+    try std.testing.expectEqual(@as(usize, 3), out.len);
+    try std.testing.expectEqualStrings("prog", out[0]);
+    try std.testing.expectEqualStrings("", out[1]);
+    try std.testing.expectEqualStrings("tail", out[2]);
 }

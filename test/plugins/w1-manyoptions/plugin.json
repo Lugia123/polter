@@ -1,0 +1,68 @@
+{
+  "key": "w1-manyoptions",
+  "name": "Forty options",
+  "summary": "A combo box with more options than the drop-down can show at once.",
+  "exec": "noop.ps1",
+  "params": {
+    "type": "object",
+    "properties": {
+      "many": {
+        "type": "string",
+        "title": "Forty options",
+        "enum": [
+          "option-01",
+          "option-02",
+          "option-03",
+          "option-04",
+          "option-05",
+          "option-06",
+          "option-07",
+          "option-08",
+          "option-09",
+          "option-10",
+          "option-11",
+          "option-12",
+          "option-13",
+          "option-14",
+          "option-15",
+          "option-16",
+          "option-17",
+          "option-18",
+          "option-19",
+          "option-20",
+          "option-21",
+          "option-22",
+          "option-23",
+          "option-24",
+          "option-25",
+          "option-26",
+          "option-27",
+          "option-28",
+          "option-29",
+          "option-30",
+          "option-31",
+          "option-32",
+          "option-33",
+          "option-34",
+          "option-35",
+          "option-36",
+          "option-37",
+          "option-38",
+          "option-39",
+          "option-40"
+        ],
+        "default": "option-01"
+      },
+      "few": {
+        "type": "string",
+        "title": "Three options (control)",
+        "enum": [
+          "alpha",
+          "beta",
+          "gamma"
+        ],
+        "default": "alpha"
+      }
+    }
+  }
+}

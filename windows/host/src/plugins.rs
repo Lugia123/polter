@@ -197,6 +197,19 @@ fn as_str(v: &serde_json::Value) -> String {
     }
 }
 
+/// How many options of a drop-down a person can reach with the mouse.
+///
+/// **Not a number anybody chose.** It is the documented default for
+/// `CB_SETMINVISIBLE`, and it is what two measurements on the test machine
+/// came back with independently: a 40-option list drew 602px at our 20px rows
+/// and 572px at the system's 19px rows -- thirty rows both times.
+///
+/// Past it the list **scrolls and the keyboard arrives** (`LB_SETTOPINDEX(10)`
+/// moves it, `End` selects item 39) but **grows no scroll bar**, so a mouse
+/// cannot get there. Task 138 has the whole shape, including the one-line fix
+/// that was tried and is dead.
+const MOUSE_REACHABLE_OPTIONS: usize = 30;
+
 /// Turn one JSON-Schema property into a control.
 fn control_of(spec: &serde_json::Value) -> Control {
     // A closed set beats the declared type: a string with an `enum` is a
@@ -260,6 +273,38 @@ fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
     let mut params = Vec::new();
     if let Some(props) = props {
         for (pname, spec) in props {
+            let control = control_of(spec);
+            // **Said at the moment the manifest is read, which is the moment
+            // the person who can fix it is looking.**
+            //
+            // This file's rule at the top is that a schema this build cannot
+            // turn into a control falls back rather than disappearing,
+            // "because refusing to show a setting is how a plugin ends up
+            // unconfigurable with no error anywhere". **A field the mouse
+            // cannot reach the end of is the same family** -- the setting is
+            // on the page and the person cannot get to it -- so it gets the
+            // same treatment: it still works, and the fact is said out loud.
+            //
+            // **A notice, not a gate.** Nothing here refuses the manifest and
+            // nothing stops the author; the options past the thirtieth are
+            // still reachable by keyboard. Making it a gate would mean the
+            // settings page saying it on screen, which is a larger change and
+            // is deliberately not proposed here.
+            if let Control::Choice(opts) = &control {
+                if opts.len() > MOUSE_REACHABLE_OPTIONS {
+                    // process-wide: a plugin's manifest on disk; the same file
+                    // whatever window is in front
+                    plogf!(
+                        "[plug] {}: parameter {} declares {} options; only the first {} \
+                         can be reached with the mouse (the list scrolls and the keyboard \
+                         reaches the rest -- see task 138)",
+                        key,
+                        pname,
+                        opts.len(),
+                        MOUSE_REACHABLE_OPTIONS
+                    );
+                }
+            }
             params.push(Parameter {
                 name: pname.clone(),
                 title: spec
@@ -270,7 +315,7 @@ fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
                 help: spec.get("description").map(as_str).unwrap_or_default(),
                 required: required.iter().any(|r| r == pname),
                 secret: spec.get("secret").and_then(|s| s.as_bool()).unwrap_or(false),
-                control: control_of(spec),
+                control: control,
                 default: spec.get("default").map(as_str).filter(|s| !s.is_empty()),
             });
         }

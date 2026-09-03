@@ -117,6 +117,17 @@ pub const CLOSE_TAB_THIS: i32 = 0;
 pub const CLOSE_TAB_OTHER: i32 = 1;
 pub const CLOSE_TAB_RIGHT: i32 = 2;
 
+// `ghostty_input_mouse_state_e`.
+pub const MOUSE_RELEASE: i32 = 0;
+pub const MOUSE_PRESS: i32 = 1;
+
+// `ghostty_input_mouse_button_e`. Only the three this host forwards are
+// named; the enum runs to eleven and the rest have no Win32 message here.
+pub const MOUSE_UNKNOWN: i32 = 0;
+pub const MOUSE_LEFT: i32 = 1;
+pub const MOUSE_RIGHT: i32 = 2;
+pub const MOUSE_MIDDLE: i32 = 3;
+
 pub const PLATFORM_WIN32: u32 = 3;
 
 // `ghostty_clipboard_e`.
@@ -324,6 +335,12 @@ const _: () = {
     assert!(std::mem::size_of::<Diagnostic>() == 8);
     assert!(std::mem::size_of::<KeyEvent>() == 32);
     assert!(std::mem::align_of::<KeyEvent>() == 8);
+    // Measured the same way the rest of this file was, against
+    // `include/ghostty.h`: two doubles, two u32s, then an 8-aligned pointer
+    // and a usize.
+    assert!(std::mem::size_of::<Text>() == 40);
+    assert!(std::mem::size_of::<Point>() == 16);
+    assert!(std::mem::size_of::<Selection>() == 36);
 };
 
 /// Resolved entry points. We load at runtime rather than link, because the
@@ -358,6 +375,85 @@ pub struct Info {
 #[repr(C)]
 pub struct Diagnostic {
     pub message: *const c_char,
+}
+
+// --- reading the screen, for the UIA provider (`uia.rs`) ---
+
+/// `ghostty_point_tag_e`.
+pub const POINT_ACTIVE: i32 = 0;
+pub const POINT_VIEWPORT: i32 = 1;
+pub const POINT_SCREEN: i32 = 2;
+pub const POINT_SURFACE: i32 = 3;
+
+/// `ghostty_point_coord_e`.
+pub const COORD_EXACT: i32 = 0;
+pub const COORD_TOP_LEFT: i32 = 1;
+pub const COORD_BOTTOM_RIGHT: i32 = 2;
+
+/// `ghostty_point_s`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Point {
+    pub tag: i32,
+    pub coord: i32,
+    pub x: u32,
+    pub y: u32,
+}
+
+/// `ghostty_selection_s`.
+///
+/// **`rectangle` is a `bool` after two 16-byte points, so the struct is 36
+/// bytes and not 40.** Both fields being 4-aligned is what keeps the tail
+/// from rounding up to 8; the assertion below is what makes a wrong guess a
+/// build failure rather than a selection the core reads past the end of.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Selection {
+    pub tl: Point,
+    pub br: Point,
+    pub rectangle: bool,
+}
+
+impl Selection {
+    /// The whole of what is on screen right now, scrollback excluded.
+    ///
+    /// The `x`/`y` are ignored for the `TOP_LEFT`/`BOTTOM_RIGHT` coords --
+    /// they name the corner, they do not carry it. This is the same pair
+    /// macOS builds for `cachedVisibleContents`.
+    pub fn viewport() -> Selection {
+        Selection {
+            tl: Point { tag: POINT_VIEWPORT, coord: COORD_TOP_LEFT, x: 0, y: 0 },
+            br: Point { tag: POINT_VIEWPORT, coord: COORD_BOTTOM_RIGHT, x: 0, y: 0 },
+            rectangle: false,
+        }
+    }
+}
+
+/// `ghostty_text_s`. **The core owns `text`**; it comes back from
+/// `surface_read_text` and goes back through `surface_free_text`. Nothing
+/// here may outlive that pair -- see the lock rule at the top of `uia.rs`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Text {
+    pub tl_px_x: f64,
+    pub tl_px_y: f64,
+    pub offset_start: u32,
+    pub offset_len: u32,
+    pub text: *const c_char,
+    pub text_len: usize,
+}
+
+impl Default for Text {
+    fn default() -> Text {
+        Text {
+            tl_px_x: 0.0,
+            tl_px_y: 0.0,
+            offset_start: 0,
+            offset_len: 0,
+            text: std::ptr::null(),
+            text_len: 0,
+        }
+    }
 }
 
 pub struct Api {
@@ -429,6 +525,77 @@ pub struct Api {
     /// comment there saying so, and saying why is unknown). At scale 1.0 the
     /// difference does not show.
     pub surface_ime_point: unsafe extern "C" fn(Surface, *mut f64, *mut f64, *mut f64, *mut f64),
+
+    // --- mouse ---
+    /// `(surface, state, button, mods) -> consumed`.
+    ///
+    /// **The core owns the selection**, the same way it owns the search: this
+    /// host reports what the pointer did and never decides what a drag means.
+    /// Nothing here had ever been called, so the core had never been told this
+    /// terminal has a mouse at all -- which is why a drag produced no
+    /// highlight and `copy_to_clipboard` declined for want of a selection.
+    pub surface_mouse_button: unsafe extern "C" fn(Surface, i32, i32, i32) -> bool,
+    /// `(surface, x, y, mods)`.
+    ///
+    /// **The coordinates are unscaled**, which is the one thing about this
+    /// call that is easy to get wrong and invisible when wrong: the core
+    /// multiplies them by the content scale itself
+    /// (`embedded.zig`'s `cursorPosToPixels`). A Win32 client coordinate in a
+    /// per-monitor-aware process is already in physical pixels, so it has to
+    /// be **divided** by the same scale this host passed to
+    /// `surface_set_content_scale` before it is handed over. Send physical
+    /// pixels and the selection lands somewhere else on a high-DPI display
+    /// while looking perfect at 100%.
+    pub surface_mouse_pos: unsafe extern "C" fn(Surface, f64, f64, i32),
+    /// `(surface, xoff, yoff, scroll_mods)`.
+    ///
+    /// **`yoff` is wheel *ticks*, not lines and not pixels** -- unless
+    /// `scroll_mods` says the event is high precision, in which case it is
+    /// pixels. `Surface.zig`'s `scrollCallback` says so directly, and it
+    /// multiplies by the cell height and the user's
+    /// `mouse-scroll-multiplier` **itself**. So a host that pre-multiplies by
+    /// either of those is applying it twice, and the symptom is a wheel that
+    /// feels wrong in a way nobody can attribute.
+    ///
+    /// Fractional ticks are expected and handled: high-resolution wheels
+    /// report less than one notch at a time.
+    ///
+    /// **Signs pass straight through.** Win32 says a positive `wDelta` is the
+    /// wheel rotated away from the user; the core says positive is up. Same
+    /// direction, no negation -- and getting that wrong is invisible to any
+    /// criterion that only asks whether the view moved.
+    ///
+    /// `scroll_mods` is `ghostty_input_scroll_mods_t`, a bitmask: bit 0 is
+    /// `precision`, bits 1-3 are the momentum phase. Zero is "an ordinary
+    /// notched wheel", which is all Win32 gives us.
+    pub surface_mouse_scroll: unsafe extern "C" fn(Surface, f64, f64, i32),
+
+    // --- reading the screen ---
+    /// Copy some of the terminal's text out. **The core takes its own
+    /// `renderer_state.mutex` and hands back a copy** (`embedded.zig`'s
+    /// `readTextLocked` -> `dumpTextLocked`), so what arrives is a snapshot
+    /// and not a view onto a buffer the terminal thread is still writing.
+    ///
+    /// The core's own comment on it: *"This is an expensive operation so it
+    /// shouldn't be called too often. We recommend that callers cache the
+    /// result and throttle calls to this function."* `uia.rs` does.
+    pub surface_read_text: unsafe extern "C" fn(Surface, Selection, *mut Text) -> bool,
+    /// The other half of `surface_read_text`. **Not optional**: the text is
+    /// the core's allocation, and skipping this leaks it once per read --
+    /// which, at a screen reader's polling rate, is a leak with a slope.
+    pub surface_free_text: unsafe extern "C" fn(Surface, *mut Text),
+
+    // --- CLI actions ---
+    /// Run a `+action` from this process's command line, if there is one.
+    ///
+    /// **It does not return when there is one**: it runs the action and
+    /// exits. That is the whole contract, and it is the same one
+    /// `macos/Sources/App/main.swift` relies on at line 51.
+    ///
+    /// It was inert on Windows until `global.zig` was taught to read
+    /// `GetCommandLineW()`: the C API handed that target an empty command
+    /// line, so `global.action()` was always null and this returned at once.
+    pub cli_try_action: unsafe extern "C" fn(),
 
     // from ghostty-vt.dll -- proves both DLLs are loaded and callable
     pub codepoint_width: unsafe extern "C" fn(u32) -> u8,

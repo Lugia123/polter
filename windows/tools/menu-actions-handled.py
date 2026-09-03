@@ -40,11 +40,29 @@ row, and nothing anywhere says why it went grey. So every row that is greyed
 separately: its greyness moves, and a number that moves is a reading.
 
 Exit: 0 if the unreasoned count equals the baseline, 1 otherwise.
+
+# What this does NOT check, and which gate does
+
+**"Is there an arm" and "does the arm do anything" are different questions.**
+This one finds a menu row naming an action `cb_action` has no branch for --
+clicking it does nothing and logs nothing. It says nothing about a branch that
+exists, answers `true`, and performs nothing; that is
+`action-arms-act.py`, and it exists because a hand-sweep of eighteen such arms
+left two behind.
+
+Two gates rather than one because an action can fail either without failing
+the other, in both directions. They share one reading of the source
+(`_cb_action.py`) so that the arms are parsed once.
 """
 
 import glob
 import os
+import os
 import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _cb_action  # noqa: E402
 import sys
 
 # **Measured, not chosen.** Two classes, counted together because the remedy is
@@ -135,51 +153,25 @@ def menu_rows():
 def handled_tags(main_src: str):
     """The `ACTION_*` constants `cb_action` has a branch for.
 
-    **Parsed as match arms, not by searching the body**, because the spellings
-    vary in three ways that each cost a wrong answer when guessed: `ffi::ACTION_X`
-    and bare `ACTION_X` are both used, and or-patterns (`A | B =>`) put two
-    names on one arm. Counting occurrences of `ACTION_` in the function body
-    instead would also collect the ones mentioned inside arm *bodies*.
-    """
-    at = main_src.index('extern "C" fn cb_action')
-    # The `match` the arms live in, not the function's own braces.
-    m = main_src.index("match action.tag {", at)
-    open_brace = main_src.index("{", m)
-    depth, k = 0, open_brace
-    while k < len(main_src):
-        if main_src[k] == "{":
-            depth += 1
-        elif main_src[k] == "}":
-            depth -= 1
-            if depth == 0:
-                break
-        k += 1
-    body = main_src[open_brace + 1 : k]
+    **The walk itself lives in `_cb_action.py`**, shared with
+    `action-arms-act.py`. The two gates ask different questions of these arms
+    -- this one "is there a branch", that one "does the branch do anything" --
+    and a second walker would be a second reader of one fact. Moving it out
+    changed no number here: 43 arms naming 46 constants, before and after.
 
+    It is parsed as match arms rather than by searching the body because the
+    spellings vary in three ways that each cost a wrong answer when guessed:
+    `ffi::ACTION_X` and bare `ACTION_X` are both used, or-patterns (`A | B =>`)
+    put two names on one arm, and a body-wide search would also collect the
+    constants mentioned inside arm *bodies*.
+    """
     tags = set()
     arms = 0
-    depth = 0
-    pattern_start = 0
-    i = 0
-    while i < len(body):
-        c = body[i]
-        if c in "{([":
-            depth += 1
-        elif c in "})]":
-            depth -= 1
-            if depth == 0:
-                pattern_start = i + 1  # an arm body just ended
-        elif c == "," and depth == 0:
-            pattern_start = i + 1
-        elif body[i : i + 2] == "=>" and depth == 0:
-            pattern = body[pattern_start:i]
-            found = re.findall(r"\bACTION_[A-Z0-9_]+", pattern)
-            if found:
-                arms += 1
-                tags.update(found)
-            pattern_start = i + 2
-            i += 1
-        i += 1
+    for pattern, _body, _line in _cb_action.arms(main_src):
+        found = _cb_action.tags_of(pattern)
+        if found:
+            arms += 1
+            tags.update(found)
     return tags, arms
 
 

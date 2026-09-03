@@ -161,6 +161,43 @@ const sample: Input = .{
     },
 };
 
+test "an unknown home is published rather than withheld" {
+    // **The half of the seam that can be held still on any machine.**
+    //
+    // `App.ensureMcpRegistered` used to `return` when it could not find the
+    // home directory, which on Windows was every time -- so the event below
+    // was never built and every provisioning plugin waited on an empty queue
+    // with nothing in any log to say why. The fix publishes anyway with an
+    // empty home, because the plugin SDK reports that case itself
+    // (`status=failed step=parse`) and a failure in the plugin's own log
+    // beats a silence in ours.
+    //
+    // **What this test cannot reach, said plainly rather than implied:**
+    //
+    //   * it does not run `ensureMcpRegistered`. That function appears twice
+    //     in the whole tree -- its definition and its one call site -- and no
+    //     test touches it, which is exactly why the defect survived: the
+    //     batch-rendering tests build their own event array, so "who produces
+    //     an event" was never in the part being tested.
+    //   * it cannot exercise the Windows lookup. `os/homedir.zig` dispatches
+    //     on `builtin.os.tag`, so the `HOMEDRIVE`+`HOMEPATH` branch is not
+    //     even analysed on this machine. **A green run here says nothing
+    //     about the platform the bug was on.**
+    //
+    // What it does pin is the decision: an absent home must not become an
+    // absent event.
+    const ev = published(.{
+        .exe = "C:\\app\\polter-host.exe",
+        .version = "1.2.3-test",
+        .home = "",
+        .skills = &.{},
+    }, 1786819271275);
+
+    try testing.expectEqual(Plugin.Event.provision, ev.kind());
+    try testing.expectEqualStrings("", ev.provision.home);
+    try testing.expectEqualStrings("C:\\app\\polter-host.exe", ev.provision.exe);
+}
+
 test "the data a runtime needs is all in the event the plugin is handed" {
     // Written against the two things the old hard-coded version actually
     // did: register `<exe> +mcp` with a build marker, and install the

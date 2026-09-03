@@ -464,8 +464,18 @@ impl ITextStoreACP_Impl for TextStore_Impl {
 /// with an empty buffer and so commits nothing, which is the same code path.
 impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
     fn OnStartComposition(&self, _pcomposition: Ref<ITfCompositionView>) -> Result<BOOL> {
-        self.ime.borrow_mut().composing = true;
-        crate::ime_log("OnStartComposition");
+        // **Remember which pane this composition belongs to.** Everything sent
+        // for it afterwards -- the preedit as it grows, the clear that removes
+        // it -- goes to this pane and not to whichever one is active by then.
+        // See `COMPOSING_HWND` in `main.rs` for the reading that made this
+        // necessary.
+        let hwnd = {
+            let mut ime = self.ime.borrow_mut();
+            ime.composing = true;
+            ime.hwnd
+        };
+        crate::ime_composition_owner(Some(hwnd));
+        crate::ime_log(&format!("OnStartComposition (owner pane hwnd {:?})", hwnd.0));
         Ok(BOOL(1))
     }
 
@@ -483,11 +493,47 @@ impl ITfContextOwnerCompositionSink_Impl for TextStore_Impl {
             ime.sel_end = 0;
             s
         };
-        crate::ime_log(&format!("OnEndComposition commit={:?}", committed));
+        // **Two different events arrive here, and TSF does not distinguish
+        // them.** One is "the user chose this text"; the other is "something
+        // took the composition away". The buffer looks the same in both.
+        //
+        // The comment above this impl used to say a cancelled composition
+        // arrives empty, so committing whatever is present was safe. **That is
+        // true of a composition the user abandoned and false of one the host
+        // interrupted**: a keybinding that opens a tab moves the focus, TSF
+        // ends the composition on the way out, and the half-typed syllable was
+        // being typed into the terminal -- a new tab *and* a stray `ni`.
+        //
+        // So the one case the host can recognise is recognised: while it is
+        // rearranging its own windows, an ending composition is discarded.
+        // Everything else still commits, including a genuine focus loss to
+        // another application, which is what Windows users expect -- and that
+        // half is confirmed on a real machine.
+        //
+        // # The scope of that flag was wrong twice, and it was measured, not guessed
+        //
+        // It first covered the `SetFocus` on a newly opened pane, then focus
+        // generally. Both missed: timestamps put the composition's end 38ms
+        // before any focus moved. **A guard whose scope is wrong and a guard
+        // that is absent produce the same log line**, which is why the third
+        // attempt came from a reading -- five trace lines bracketing the
+        // dispatch showed the end landing after all of them, next to
+        // `ShowWindow(SW_HIDE)` on the pane that was carrying the
+        // composition. The flag is now raised around that (`tabs.rs`).
+        let ours = crate::ending_because_of_host_shuffle();
+        crate::ime_log(&format!(
+            "OnEndComposition commit={:?}{}",
+            committed,
+            if ours { " (discarded: the host was rearranging its own windows)" } else { "" }
+        ));
         crate::ime_set_preedit("");
-        if !committed.is_empty() {
+        if !committed.is_empty() && !ours {
             crate::ime_commit(&committed);
         }
+        // **After both, not before.** The clear and the commit are the last
+        // two things that belong to this composition, and they are the reason
+        // the owner was remembered at all.
+        crate::ime_composition_owner(None);
         Ok(())
     }
 }
