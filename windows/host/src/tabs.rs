@@ -2475,6 +2475,23 @@ fn set_active(frame: HWND, idx: usize) {
         win.active = idx.min(win.tabs.len() - 1);
     }
     layout(frame);
+    // **One line, and it exists to split a dark stretch.** A main-thread
+    // freeze on a tab click left `[strip] click -> activate` and then the
+    // watchdog, with nothing in between -- and the two calls either side of
+    // this line are both known to be able to stop: `layout` once deadlocked
+    // by holding the window lock across `SetWindowPos`, and `focus_active`
+    // re-enters TSF synchronously through `SetFocus`. Without a mark here,
+    // telling those two apart costs a second run and a differential.
+    //
+    // **Present means `layout` returned**; missing with the click line above
+    // it means the freeze is inside `layout`. It says nothing about
+    // `focus_active`, which is what the line below it is for.
+    //
+    // It records and does nothing else -- no lock, no ordering change, no
+    // timeout -- because what it is used to catch is timing-dependent, and
+    // an instrument that shifts the timing is not measuring this bug. For
+    // the same reason it is one line and not four.
+    wlogf!(frame, "[tab] layout returned; focusing");
     focus_active(frame);
     wlogf!(frame, "[tab] active -> {} of {}", active_index(frame) + 1, count(frame));
     // **A property change, not a structure change**: switching tabs does not
