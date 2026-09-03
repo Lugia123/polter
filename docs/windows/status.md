@@ -421,24 +421,6 @@ Windows 目标下两支都进不去），**且 `resourcesdir.zig:79` 明写
      用户会以为自己没选中。
    - **两条腿不会一起坏，也不能互相当对照**：ctrl+c 好不代表 ctrl+shift+c 好，反之亦然。
 
-9. **快速终端拿不到「立刻隐藏光标」那一下**（任务 161，2026-09-03，**已落地未验证**）。
-
-   `ACTION_MOUSE_SHAPE` / `ACTION_MOUSE_VISIBILITY` 已实现：形状按 surface 记下，
-   由 pane 的 `WM_SETCURSOR` 应用——**后者才是让它持续生效的那一半**，因为 pane 的
-   窗口类带 `IDC_ARROW`，`DefWindowProc` 会在鼠标一动时把它换回去。可见性另走一条
-   投递（`mouse::WM_POLTER_MOUSE_VISIBILITY`），因为核心是在**用户打字时**要求隐藏的，
-   而那正是不会有 `WM_SETCURSOR` 的时刻。
-
-   - **形状对快速终端是好的**：`tabs::surface_of` 查不到 pane 时会兜到
-     `quick::surface_of`，而快速终端用的是同一个窗口过程和同一个窗口类。
-   - **够不着的只有「立刻隐藏」**：那条投递要一个 pane 的窗口句柄，而
-     `tabs::pane_hwnd_of_surface` 走的是「窗口 → 标签 → pane」这张表，
-     **快速终端的 surface 不在这张表里**（它不是 pane，也不属于任何标签）。
-     所以它答 `None`，动作里记一行 `posted=0` 就过去了。
-   - **后果**：在快速终端里打字，光标不会隐藏；移动鼠标时形状照常跟随。
-   - 要修的话，得让那条投递能问到「这个 surface 的窗口是谁」而不是「它的 pane 是谁」——
-     `quick.rs` 自己知道答案，缺的是把它接进同一个查询。
-
 ### 9. 三条只有开了核心日志才看得见的事（2026-09-01）
 
 **背景**：`libghostty` 的 `std.log` 在真机上「看不见」这笔账，**根本不是欠账**——
@@ -653,6 +635,116 @@ w1 [strip] nc right-click client=(600,20)  strip_h=45 reserved_right=207 -> hand
 
 **坐标从窗口矩形算**（`GetWindowRect` + 客户区偏移），不要从截图量 —— 截图报的 scale
 是假的（`keys.md` §2.0）。
+
+### （五）任务 161：快速终端拿不到「立刻隐藏光标」那一下
+
+**状态**：未验（整条 161 都未验；这一格是其中**明知够不着**的那一小块）· **销案**：让
+那条投递能问到「这个 surface 的窗口是谁」而不是「它的 pane 是谁」之后，在快速终端里
+打字，日志出现 `[action] mouse_visibility 1 (hidden=1) posted=1` 而不是 `posted=0`。
+
+`ACTION_MOUSE_SHAPE` / `ACTION_MOUSE_VISIBILITY` 已实现：形状按 surface 记下，由 pane
+的 `WM_SETCURSOR` 应用——**后者才是让它持续生效的那一半**，因为 pane 的窗口类带
+`IDC_ARROW`，`DefWindowProc` 会在鼠标一动时把它换回去。可见性另走一条投递
+（`mouse::WM_POLTER_MOUSE_VISIBILITY`），因为核心是在**用户打字时**要求隐藏的，而那
+正是不会有 `WM_SETCURSOR` 的时刻。
+
+- **形状对快速终端是好的**：`tabs::surface_of` 查不到 pane 时会兜到
+  `quick::surface_of`，而快速终端用的是同一个窗口过程和同一个窗口类。
+- **够不着的只有「立刻隐藏」**：那条投递要一个 pane 的窗口句柄，而
+  `tabs::pane_hwnd_of_surface` 走的是「窗口 → 标签 → pane」这张表，**快速终端的
+  surface 不在这张表里**（它不是 pane，也不属于任何标签）。所以它答 `None`，动作里
+  记一行 `posted=0` 就过去了。
+- **后果**：在快速终端里打字，光标不会隐藏；移动鼠标时形状照常跟随。
+- 要修的话，`quick.rs` 自己知道那个窗口是谁，缺的是把它接进同一个查询。
+
+### （六）任务 167：`ghostty_app_free` 从未被绑定、从未被调用
+
+**状态**：不可观测（这条路上每一件外部效果，要么已经由宿主每关一个 pane 就走的那条路
+做掉了，要么是 POSIX 专有、Windows 上根本不存在，要么进程一退系统就收；**而出货构建
+是 `ReleaseSmall`，路上那句唯一的断言被编掉了**——所以就算不变量真的破了，这台机器上
+也不会有任何东西说话）· **销案**：**没有属于它自己的判据，而且不该为它造一个。** 它的
+销案条件是别人的：**哪天关停期真的需要做一件今天没做的事**（比如要在退出前把某样东西
+写下来），那一次的地板就是这一条的判据。在那之前，改动它只有风险没有收益。
+
+**事实本身没有被推翻，它是读源码得到的**：`windows/host/src/ffi.rs` 的 `Api` 结构里
+只有 `app_new` 和 `app_tick`，**没有 `app_free`**；全仓 grep 不到任何一处调用。宿主的
+`main` 从消息循环返回后直接结束进程，所以 `App.deinit` 整条关停路径——surface 的关闭、
+IO 线程的停、ConPTY 的收、Poltergeist 服务端、插件回收——**在 Windows 上从未执行过一次**。
+**macOS 是调的**（`Ghostty.App.swift`），也没有兜底。
+
+#### 它曾经的那个症状，已经被撤回了
+
+这条最初是任务 155 的根因：真机上强杀宿主之后，`provision.ps1` 的两个 powershell 还在。
+**那两个不是孤儿**——它们的父进程一直活着，而那两个父进程是四小时前起的、**换过名字的
+测试构建**，整晚按映像名过滤的清场命令一次都没碰到它们。
+
+WT 随后的读数：**优雅关闭和强杀，插件子进程都会消失**，机制是宿主进程一消失、stdin
+管道写端关闭、`provision.ps1` 里那句 `while ($null -ne (... ReadLine()))` 收到 `null`、
+脚本自己 `exit 0`。二十多次起停，机器上没有多出任何东西。
+
+#### 为什么它没有可观察后果
+
+查法是反着来的：**「系统还不了」的基本只有一类——留在磁盘上的东西**，而代码里凡是要删的，
+就是它曾经创建过、系统不会替它收的。所以扫的是 `deleteFile` / `deleteTree` / `unlink`
+在 `src/` 下的全部非测试命中——**四处，没有一处在这条路上**（`TempDir` 的唯一非测试用户
+是 `Surface.writeScreenFile`，自带 `defer`；`resourcesdir` 是函数内自闭合；kitty 图形是
+每张图自己的生命周期；`ssh-cache` 是用户显式动作）。
+
+逐格：
+
+| `App.deinit` 的一格 | 不跑的后果 |
+| --- | --- |
+| `for (surfaces) \|s\| s.deinit()` | 表是空的——宿主 `WM_CLOSE` 里 `close_all_tabs_of` → `free_pane` → `ghostty_surface_free`，而那条路会 `deleteSurface`，真的把 surface 从表里摘掉 |
+| `poltergeist_server.deinit()` | 关句柄，加 `transport.unlink(path)`——**而 `transport_windows` 的 `unlink` 是个空函数**。命名管道是内核对象，磁盘上不留东西。POSIX 那边它删的是 `.sock` 文件，**这条路上唯一「系统还不了」的东西是 POSIX 专有的** |
+| `residents.destroy()` | 见上面那节，副作用已覆盖 |
+| 三个日志 + feed + arena | `ChatLog` / `TaskLog` / `GroupLog` 的 `deinit` 都只是 close+free，**不 flush**，因为不需要：`daylog.Tree.write` 是 `writePositionalAll`，每条消息当场落盘。`PluginLog` 同样 |
+| 会话状态 | 更干脆——`App.saveSession` 是即时写的，注释自己说明了原因：*"Not at exit: the cases this exists for are the machine shutting down and Polter being killed, and neither of those runs an exit path."* **它本来就假定退出路径靠不住** |
+| `assert(font_grid_set.count() == 0)` | `-Doptimize=ReleaseSmall` 关掉运行时安全，这句被编掉。**所以它既不会让出货 exe 崩，也永远不会告诉我们不变量破了** |
+
+#### 接上它会让一件事变差
+
+**这一节单独立着，因为下一个人最可能的动作是「这看起来只是漏了一个调用，补上就行」，
+而这一节是唯一拦得住他的东西。**
+
+`Resident.collect` 的顺序是：
+
+```zig
+if (c.id) |pid| reap.kill(pid) catch {};   // 先 TerminateProcess
+if (c.stdin) |f| { f.close(...); }          // 然后才关管道
+```
+
+**先硬杀，再关管道。** 而今天走的那条路是：宿主消失 → 管道关闭 → 插件自己 `exit 0`。
+
+> **接上 `app_free` 会把插件的优雅退出换成硬杀。所以在这一维上，它的收益不是零，是负的。**
+
+`collect` 的注释为此辩护过——「无宽限期是故意的，已确认的东西插件已经存下来了」。
+**那句话的意思是「硬杀不会丢东西」，不是「硬杀比优雅退出好」。这个区分极容易在转述里
+丢掉**，而丢掉之后，注释读起来就像是在说这条路更好。
+
+#### 这个结论的边界，两句一起写
+
+上面第一格「表是空的」依赖一个前提：**每条退出路都先关了 pane**。`PostQuitMessage`
+全仓只有一处（`winid::window_finished`，在 `WM_DESTROY` 里、计数归零时），`WM_CLOSE`
+确实先 `close_all_tabs_of`；但 `remove_window` 本身**只丢账本、不释放 surface**，
+而**「有没有哪条路绕过 `WM_CLOSE` 直接 `DestroyWindow`」没有逐条走完。**
+
+**这个前提不成立也不改变结论**：真漏了一个 surface，漏掉的是 IO 线程、渲染线程、
+ConPTY 和那个 shell——**全是进程一死系统就收的**，而且和插件同源（ConPTY 句柄一关，
+shell 收到 EOF）。**它影响的是「有多不干净」，不是「可不可观测」。**
+
+**旁证**：WT 那二十多次起停、机器上什么都没多，**不只回答了插件**——它同时说明没有
+`cmd.exe` 残留，也就是这个前提就算破了，也确实没留下东西。
+
+#### 真要接的话，第一件事是装仪器——而仪器要能在接上之前就用
+
+今天没有任何导出的读法能报出退出时 `App.surfaces` 还剩几个、residents 还剩几个。
+
+**而这个仪器的要求比「加个 getter」更强：它要能在今天这条不执行的路径上，报出「如果
+执行了会遇到什么」。** 一个只有在改动落地之后才能读的仪器，**没法用来判断那次改动安不
+安全**——它和被它评估的那次改动同时到达，第一次读数出问题时，分不清是路径坏了还是仪器
+坏了。
+
+先证明观测手段会说话，再去改被观测的东西。
 
 ## 五之二、五条裁决（2026-09-01 已定）
 
