@@ -719,6 +719,353 @@ pub fn with_windows_mut<R>(f: impl FnOnce(&mut Vec<WindowState>) -> R) -> R {
     f(&mut g.windows)
 }
 
+/// **Proving the deadlock detector speaks.** Four criteria, D0-D3.
+///
+/// # Why this exists
+///
+/// `reg()` has two ways to report a contended lock -- `resolved` on the way
+/// out of a wait that ended, `DEADLOCK` on a wait that did not -- and until
+/// this module was written **neither had ever been read back by anything.**
+///
+/// That is not a hypothetical cost. A hundred-second freeze was ruled *not* to
+/// be a wait on this lock because no `DEADLOCK` line appeared in the log; then
+/// all 23 logs on the test machine were searched and **not one contained it**,
+/// with a positive control (the same search for `[build]`, 23 of 23) proving
+/// the search reached the files. **A detector that has never been heard from
+/// and a broken one leave the same log**, so that exclusion was withdrawn.
+///
+/// This is what `maybe_panic_test` does for the panic hook, brought over to
+/// the other instrument in this file. **The shape is what is copied -- four
+/// criteria, one of which proves the device itself is connected -- not the
+/// delivery.** The panic hook can only be shown to speak in a real process,
+/// so it needs a command-line switch; lock contention can be made right here,
+/// and a switch would put a deliberate five-second hang in the shipped binary.
+///
+/// # What this covers, and what it does not
+///
+/// **It proves the detector speaks. It does not prove the process survives.**
+/// Tests run unwinding -- `panic = "abort"` is set only on
+/// `[profile.release]` -- so D2's reading that the waiting thread really
+/// panicked comes from `JoinHandle::join` returning `Err`, **and that reading
+/// does not exist under abort.**
+///
+/// **The half that is covered is the half an investigation uses**: the line is
+/// written before `panic!`, and the line is the whole of what anybody reads
+/// afterwards. Nothing here is evidence that "the deadlock detector is
+/// verified" -- only that it is not mute.
+///
+/// # Where the asserted strings come from
+///
+/// **Off `reg()` and `holder_str()` as they are now, not off the log that
+/// recorded a real deadlock.** That log (`status.md` item 45, 2026-09-02) came
+/// from before G1, when there was a single `state()`: it padded `DEADLOCK:`
+/// out with several spaces and named line numbers that no longer exist.
+/// **A criterion quoting an older log goes red on a healthy build, and that
+/// red is indistinguishable from a mute detector** -- which is the very
+/// confusion this module is here to end.
+#[cfg(test)]
+mod deadlock_detector_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// One test at a time, because there is one `STATE` and D2 holds it for
+    /// more than five seconds.
+    ///
+    /// **Without this, D2 is an instrument that reddens other people's
+    /// tests.** Anything touching `STATE` while D2 holds it takes the
+    /// contended path, and a test unlucky enough to wait out the deadline
+    /// **panics with `DEADLOCK` naming D2's holder** -- a failure in someone
+    /// else's subject, manufactured entirely here.
+    ///
+    /// Modelled on `reopen`'s `ONE_AT_A_TIME`, including the two things that
+    /// module learned the hard way; see `exclusive`.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    /// Take `STATE` for this test alone, and reset the log throttle.
+    ///
+    /// **Bind the result**: `let _serial = exclusive();`. Writing `let _ =
+    /// exclusive();` drops the guard on the spot and the test runs
+    /// unprotected, which looks like nothing at all.
+    ///
+    /// **Resetting `CONTENDED` is instrumentation, not a detour.** It changes
+    /// what gets *printed* -- `reg()` reports a wait only on the first one and
+    /// every ten-thousandth -- and changes nothing about which code a
+    /// contended `reg()` runs through. It is here because the second
+    /// contention in a process prints no `resolved` line at all, **and that
+    /// silence is indistinguishable from the mute detector this module was
+    /// written to rule out.** It is `#[cfg(test)]`, so in the product it is
+    /// absent rather than merely uncalled.
+    ///
+    /// **Clearing on the way in and nowhere else**, for `reopen`'s reason: a
+    /// promise made on the way out is one a panicking test cannot keep, and
+    /// **D2 panics a thread on purpose.**
+    ///
+    /// **A poisoned lock is recovered from rather than propagated**, also
+    /// `reopen`'s: otherwise one real failure here wears three false ones,
+    /// each red on the lock instead of on its own subject.
+    #[must_use]
+    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+        let serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        CONTENDED.store(0, std::sync::atomic::Ordering::Relaxed);
+        serial
+    }
+
+    /// Run `body` with the log redirected to a fresh file, and hand back
+    /// everything written to it.
+    ///
+    /// `log_path` reads `POLTER_HOST_LOG` on every call, so these lines go
+    /// through exactly the path they go through in the product -- no hook of
+    /// this module's own sits between `reg()` and the file.
+    ///
+    /// Same device as `winid`'s invariant floor. It is written out again
+    /// rather than shared because a helper reaching across two
+    /// `#[cfg(test)]` modules would make each module's floor depend on the
+    /// other's, and a floor that can be broken from somewhere else is not one.
+    fn logged(body: impl FnOnce()) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "polter-deadlock-detector-{}-{:?}.log",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let previous = std::env::var("POLTER_HOST_LOG").ok();
+        std::env::set_var("POLTER_HOST_LOG", &path);
+        body();
+        match previous {
+            Some(p) => std::env::set_var("POLTER_HOST_LOG", p),
+            None => std::env::remove_var("POLTER_HOST_LOG"),
+        }
+        let out = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    /// Spawn a thread that holds `STATE` for `hold`, and return only once it
+    /// really has it.
+    ///
+    /// **The handshake is the point.** Sleeping in the caller and trusting the
+    /// other thread to have got there first produces, on the runs where it did
+    /// not, a `reg()` that took the lock on the first try: **no `contended`
+    /// line, no `resolved` line, no `DEADLOCK` line.** That is precisely the
+    /// reading a mute detector gives. D0 is what catches it; the handshake is
+    /// what keeps it from happening.
+    fn hold_the_lock_for(hold: Duration) -> std::thread::JoinHandle<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let holder = std::thread::Builder::new()
+            .name("state-lock-holder".into())
+            .spawn(move || {
+                let held = reg();
+                tx.send(()).expect("the test asking for the lock is gone");
+                std::thread::sleep(hold);
+                drop(held);
+            })
+            .expect("could not spawn the lock-holding thread");
+        rx.recv()
+            .expect("the lock-holding thread died before it took the lock");
+        holder
+    }
+
+    /// **D0 -- the premise, and it is not in the detector's code.**
+    ///
+    /// Two halves, and D1-D3 are unreadable without both.
+    ///
+    /// **(i) The redirect took.** Every assertion in this module is of the
+    /// form "the log did (or did not) contain a string". If `logged` always
+    /// returned an empty string -- a wrong path, a redirect that did not take,
+    /// a file that could not be read -- **D3 would pass while proving
+    /// nothing**, and D1/D2 would fail in a way that reads like a mute
+    /// detector rather than a broken harness.
+    ///
+    /// **(ii) The contention device really contends.** When the two threads do
+    /// not overlap, `reg()` takes the lock uncontended and says nothing --
+    /// and "nothing" is the exact reading this module exists to tell apart
+    /// from a broken detector.
+    ///
+    /// **D1 and D2 each re-assert (ii) for themselves**, which is how "D0 runs
+    /// first" is honoured in a harness that picks its own order: there is no
+    /// schedule in which D0 is red and D1 or D2 is green.
+    #[test]
+    fn d0_the_harness_and_the_contention_device_both_work() {
+        let _serial = exclusive();
+
+        // process-wide: a probe for the redirect itself, not a report about a
+        // window -- it is written before any window exists and the whole of
+        // its content is "the log path took".
+        let out = logged(|| crate::plogf!("[floor] the redirect works"));
+        assert!(
+            out.contains("[floor] the redirect works"),
+            "POLTER_HOST_LOG redirect did not take, which leaves every other \
+             criterion in this module unreadable. Log was:\n{out}"
+        );
+
+        let out = logged(|| {
+            let holder = hold_the_lock_for(Duration::from_millis(200));
+            drop(reg());
+            holder.join().expect("the lock-holding thread panicked");
+        });
+        assert!(
+            out.contains("[state] contended #1: waiter "),
+            "the two threads never overlapped, so nothing was contended and \
+             D1/D2 would be reading silence rather than a detector. Log \
+             was:\n{out}"
+        );
+        assert!(
+            out.contains(", holder "),
+            "the contended line must carry both ends of the story. Log \
+             was:\n{out}"
+        );
+    }
+
+    /// **D1 -- a wait that ends says how long it waited.**
+    ///
+    /// The everyday outcome, and **the half whose silence would go unnoticed
+    /// the longest.** A mute `DEADLOCK` costs one withdrawn exclusion; a mute
+    /// `resolved` removes the only reading that separates ten thousand
+    /// momentary waits from one wait that never ends -- which is the
+    /// distinction the line was added to make, after an earlier version of it
+    /// described only the second and a real build printed 24 MB of the first.
+    ///
+    /// **`contended #1`, not `contended #`**, and the number is load-bearing:
+    /// `resolved` is printed only for the first wait and every
+    /// ten-thousandth, so this asserts the throttle's starting point instead
+    /// of assuming `exclusive` reset it. **The premise is read here rather
+    /// than trusted** -- if it were trusted and wrong, the missing `resolved`
+    /// line would look exactly like the thing being tested for.
+    #[test]
+    fn d1_a_wait_that_ends_reports_the_time_it_waited() {
+        let _serial = exclusive();
+        let out = logged(|| {
+            let holder = hold_the_lock_for(Duration::from_millis(300));
+            drop(reg());
+            holder.join().expect("the lock-holding thread panicked");
+        });
+        assert!(
+            out.contains("[state] contended #1: waiter "),
+            "D0(ii) does not hold in this run, so nothing below it can be \
+             read. Log was:\n{out}"
+        );
+        assert!(
+            out.contains("resolved after "),
+            "the wait ended and the detector said nothing about it. **This is \
+             the outcome the everyday path takes**, and a log that reports \
+             only deadlocks cannot tell churn from a hang. Log was:\n{out}"
+        );
+        assert!(
+            out.contains("(churn, not a deadlock)"),
+            "the resolved line must say which of the two illnesses this was. \
+             Log was:\n{out}"
+        );
+        assert!(
+            !out.contains("DEADLOCK"),
+            "a wait of 300ms was reported as a deadlock. Log was:\n{out}"
+        );
+    }
+
+    /// **D2 -- a wait that times out names the holder.**
+    ///
+    /// The outcome the withdrawn exclusion rested on. Three separate readings,
+    /// because the line has three jobs and any one of them can be mute while
+    /// the others work:
+    ///
+    ///  * the `DEADLOCK` line is written at all,
+    ///  * it says who was waiting and for how long,
+    ///  * and **it names the holder** -- which is the whole of what it is
+    ///    worth. `holder_str` answers `nobody (released between ...)` when the
+    ///    holder let go between the failed try and the read, and a report that
+    ///    cannot say who held the lock sends the next reader nowhere.
+    ///
+    /// **The waiting thread's panic is read from `join`, and only unwinding
+    /// makes that readable** -- see this module's own note on which half is
+    /// covered. The log line, which is written first, is the part the product
+    /// relies on.
+    #[test]
+    fn d2_a_wait_that_times_out_names_the_holder() {
+        let _serial = exclusive();
+        let mut waiter_panicked = false;
+        let out = logged(|| {
+            // Held past the five-second deadline, with enough margin that the
+            // release cannot race the timeout: a holder that let go first
+            // would produce a `resolved` line and read as D2 failing.
+            let holder = hold_the_lock_for(Duration::from_millis(5_800));
+            let waiter = std::thread::Builder::new()
+                .name("state-lock-waiter".into())
+                .spawn(|| drop(reg()))
+                .expect("could not spawn the waiting thread");
+            // **Taken here, asserted outside**: an assertion that fails inside
+            // `logged` skips the restore of `POLTER_HOST_LOG` and sends every
+            // later line in this process to a temporary file.
+            waiter_panicked = waiter.join().is_err();
+            holder.join().expect("the lock-holding thread panicked");
+        });
+        assert!(
+            out.contains("[state] contended #1: waiter "),
+            "D0(ii) does not hold in this run, so nothing below it can be \
+             read. Log was:\n{out}"
+        );
+        assert!(
+            out.contains("[state] DEADLOCK: "),
+            "the wait outlived the deadline and the detector said nothing. \
+             **This is the reading a hundred-second freeze was excluded on.** \
+             Log was:\n{out}"
+        );
+        assert!(
+            out.contains(" waited 5s; holder is "),
+            "the DEADLOCK line must say how long and whose lock. Log \
+             was:\n{out}"
+        );
+        assert!(
+            !out.contains("holder is nobody"),
+            "the detector fired but could not name the holder, which is the \
+             half that makes it worth having. Log was:\n{out}"
+        );
+        assert!(
+            waiter_panicked,
+            "the DEADLOCK line was written but the waiting thread carried on. \
+             **Under unwinding the panic is what stops a hung caller**; this \
+             says the detector reports and then returns into the hang."
+        );
+    }
+
+    /// **D3 -- the negative control, and D1/D2 do not count without it.**
+    ///
+    /// An uncontended take says nothing at all. Without this, a `reg()` that
+    /// printed `contended` and `DEADLOCK` unconditionally would pass both D1
+    /// and D2, and a log full of deadlocks that never happened is worse than
+    /// no line at all -- it is the noise that trains people to skip the line.
+    ///
+    /// **It carries its own floor, and it has to.** Every assertion here is
+    /// "the log does *not* contain", and an empty string satisfies all of
+    /// them. The marker line is what separates "nothing was logged because
+    /// nothing was contended" from "nothing was logged".
+    #[test]
+    fn d3_an_uncontended_take_says_nothing() {
+        let _serial = exclusive();
+        let out = logged(|| {
+            // process-wide: the floor for this criterion's own reading, not a
+            // report about a window -- without it an empty log would satisfy
+            // both assertions below.
+            crate::plogf!("[floor] this run contended nothing");
+            drop(reg());
+            drop(reg());
+            with_windows(|ws| ws.len());
+        });
+        assert!(
+            out.contains("[floor] this run contended nothing"),
+            "the log was not reaching the file, so 'it stayed quiet' below is \
+             not a reading. Log was:\n{out}"
+        );
+        assert!(
+            !out.contains("[state] contended"),
+            "an uncontended take reported contention, which would put this \
+             line in every log and end its usefulness. Log was:\n{out}"
+        );
+        assert!(
+            !out.contains("DEADLOCK"),
+            "an uncontended take reported a deadlock. Log was:\n{out}"
+        );
+    }
+}
+
 /// Queue an op and wake the main thread. Safe from any thread.
 /// How long a queued op waits before it is allowed to run, in milliseconds.
 ///
