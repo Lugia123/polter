@@ -1450,6 +1450,11 @@ fn create_pane(
         }
         return None;
     }
+    // **The other half of the pair `[mouse] divisor=` is compared against.**
+    // These two numbers come from the same expression at two different
+    // moments; if they ever differ, the round trip through the core does not
+    // cancel and a pointer lands somewhere a person did not point.
+    logf!("[pane] {} content_scale={} (told to the core at creation)", id, scale);
     unsafe {
         (api().surface_set_content_scale)(s, scale, scale);
         (api().surface_set_size)(s, w as u32, h as u32);
@@ -3227,7 +3232,43 @@ fn mouse_pos(pane: HWND, lp: LPARAM) {
     let x = (lp.0 & 0xFFFF) as i16 as f64;
     let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f64;
     unsafe { (api().surface_mouse_pos)(s, x / scale, y / scale, crate::keys::mods()) };
+
+    // **The divisor, said out loud, because two different faults produce the
+    // same screen and only this number tells them apart.**
+    //
+    // A selection landing at exactly 1.5x the pointer on a 150% display has
+    // two possible causes, and their fixes are opposite:
+    //
+    //   * the conversion is inverted -- it should multiply;
+    //   * **the conversion is right and this divisor is 1.0**, so dividing
+    //     did nothing while the core went on multiplying by its own 1.5.
+    //
+    // Flipping the arithmetic would make the second case *look* fixed on a
+    // 150% display and be wrong again at any other -- at 125% by 1.56, at
+    // 175% by 3.06 -- so the number has to be read before anything is
+    // changed. Compare it with the `content_scale=` on the `[pane]` line:
+    // equal means the conversion is at fault, different means this value's
+    // source is.
+    //
+    // **Once per drag, not once per move.** A line per `WM_MOUSEMOVE` is
+    // thousands of lines a second and would push the interesting ones out of
+    // reach; the divisor cannot change within one drag, so the first sample
+    // after each press says everything a whole drag would.
+    if MOUSE_SAMPLE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        wlogf!(
+            frame,
+            "[mouse] pos client=({},{}) divisor={} -> sent=({:.2},{:.2})",
+            x, y, scale, x / scale, y / scale
+        );
+    }
 }
+
+/// Set on each button press so the next motion reports its arithmetic once.
+///
+/// **An instrument, and it changes only what is visible**: nothing reads it
+/// to decide where a message goes, and clearing it cannot alter a coordinate.
+static MOUSE_SAMPLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 /// Tell the core a button went down or came up.
 ///
@@ -3375,6 +3416,7 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 // sending us `WM_MOUSEMOVE` and the selection freezes where it
                 // was, which reads as "selection stops halfway".
                 let _ = SetCapture(hwnd);
+                MOUSE_SAMPLE.store(true, std::sync::atomic::Ordering::Relaxed);
                 mouse_pos(hwnd, lp);
                 mouse_button(hwnd, crate::ffi::MOUSE_PRESS, crate::ffi::MOUSE_LEFT);
                 LRESULT(0)
