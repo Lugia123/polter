@@ -231,6 +231,11 @@ pub export fn ghostty_cli_try_action() void {
     std.log.info("executing CLI action={}", .{action});
     posix.system.exit(action.run(global.alloc()) catch |err| {
         std.log.err("CLI action failed error={}", .{err});
+        // **This is the copy macOS and Windows reach**, and the one the first
+        // attempt at this missed: both call libghostty rather than the GTK
+        // executable, so a fix made only in `main_ghostty.zig` compiled, was
+        // green, and was not on the path under test.
+        action.reportFailure(err);
         posix.system.exit(1);
     });
 

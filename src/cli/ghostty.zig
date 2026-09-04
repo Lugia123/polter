@@ -119,6 +119,79 @@ pub const Action = enum {
     /// This should be returned by actions that want to print the help text.
     pub const help_error = error.ActionHelpRequested;
 
+    /// Say on stderr that this action failed, because the log line beside
+    /// every call to `run` cannot.
+    ///
+    /// # What this replaces
+    ///
+    /// Both callers of `run` follow it with `std.log.err("CLI action failed
+    /// error={}")`, and that goes nowhere unless `GHOSTTY_LOG` is set -- which
+    /// for anybody not developing Ghostty it is not. Measured on an ordinary
+    /// action making an ordinary mistake:
+    ///
+    /// ```text
+    /// $ polter +show-config --config-file=/nonexistent/nope.conf
+    /// exit 1, stdout 0 bytes, stderr: four lines of unrelated sentry noise
+    ///
+    /// $ GHOSTTY_LOG=stderr polter +show-config --config-file=/nonexistent/nope.conf
+    /// error: CLI action failed error=error.InvalidField
+    /// ```
+    ///
+    /// **The same run knows exactly what went wrong and says it only to
+    /// whoever already knew to ask.**
+    ///
+    /// # Why it lives here and not at either call site
+    ///
+    /// **This method exists because there are two entry points and the first
+    /// attempt at the fix found only one of them.**
+    ///
+    /// `main_ghostty.zig` is the GTK executable's entry. macOS and Windows
+    /// both arrive through `main_c.zig`'s `ghostty_cli_try_action` instead,
+    /// because on those two the CLI is libghostty being called by a host. The
+    /// fix went into the first, compiled, and was **not on the path it was
+    /// written for**; it surfaced as the new string being absent from a
+    /// freshly built binary while an older string from the same session was
+    /// present -- which is what separates "changed the wrong place" from
+    /// "ran the wrong binary", and only the second is cured by rebuilding.
+    ///
+    /// **The general shape, because it had already appeared once that day in
+    /// another costume**: a sweep for one form of a defect finds none of the
+    /// other form, and **"found one" and "found them all" are not distinguished
+    /// by anything that happens on its own.** Both times the wrong answer
+    /// arrived as *"I looked, there is nothing else"*.
+    ///
+    /// A method on `Action` cannot be added at one entry point and forgotten
+    /// at the other, which is exactly the property the two `catch` blocks did
+    /// not have. **That is the lesson put into the structure rather than into
+    /// a comment**: a comment has to be read by whoever is about to need it.
+    ///
+    /// # stderr, never stdout
+    ///
+    /// ⚠️ **This sits above every action, so it changes what all of them
+    /// print on failure.** Actions whose output *is* their result --
+    /// `+version`, `+list-fonts`, `+show-config` -- speak on stdout, and
+    /// `+mcp` speaks JSON-RPC there. A line added to stdout here would corrupt
+    /// the output of a program that failed, which is worse than the silence it
+    /// replaces. stderr is free on every one of these paths.
+    ///
+    /// # Deliberately terse
+    ///
+    /// One line: the action and the error, and nothing about what to do. An
+    /// action that knows what to advise says so itself before returning -- see
+    /// `cli/chat.zig::complain` and `cli/mcp.zig::complain`. **This is the
+    /// floor under those, not a replacement**: it guarantees a failure is
+    /// never silent, and leaves being helpful to the code with the context.
+    pub fn reportFailure(self: Action, err: anyerror) void {
+        var buffer: [256]u8 = undefined;
+        var stderr: std.Io.File = .stderr();
+        var writer = stderr.writer(global.io(), &buffer);
+        writer.interface.print(
+            "polter: +{s} failed: {t}\n",
+            .{ @tagName(self), err },
+        ) catch return;
+        writer.end() catch {};
+    }
+
     /// Run the action. This returns the exit code to exit with.
     pub fn run(self: Action, alloc: Allocator) !u8 {
         return self.runMain(alloc) catch |err| switch (err) {
