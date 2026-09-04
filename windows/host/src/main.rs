@@ -338,15 +338,53 @@ fn dumpstate_path() -> Option<std::path::PathBuf> {
     Some(plugins::user_dir()?.parent()?.join("dumpstate"))
 }
 
+/// Does this process own the log file, or is it a guest in somebody else's?
+///
+/// **A `+action` run is a guest.** The file's own words for it: *a CLI action
+/// is a terminal program*. It is started by an agent CLI or by hand, it lives
+/// for one job, and the log that matters at that moment belongs to the GUI
+/// instance somebody is watching.
+///
+/// # The defect this answers
+///
+/// `POLTER_HOST_LOG` pins the log to one path, and **every** invocation of
+/// this exe used to begin by deleting that path and recreating it -- both
+/// statements above the point where anything looks at the command line. So
+/// an agent CLI started from a Polter terminal inherited the variable, handed
+/// it to the `polter-host.exe +mcp` it spawned, and that child **deleted the
+/// GUI's log**: 3214 lines to 284, measured, with both copies kept.
+///
+/// It gets to delete it because every write here is `open`/`append`/`close`
+/// per line -- no handle is held, and a file with no open handle is one
+/// Windows will let you remove. **A choice made for another reason is what
+/// made the deletion possible.**
+///
+/// `polter-host-<pid>.log` already kept instances apart. **Only the pinned
+/// path was exempt -- and the person who pins it is the person debugging**,
+/// which is to say the defect waited for the moment its cost was highest.
+///
+/// # Why the guest does not share the file either
+///
+/// Appending rather than deleting would be harmless to the bytes and wrong
+/// anyway. `log_path` below is pinned per process for a reason written from
+/// an incident: *an old process read as proof that the new process's message
+/// loop was alive while it was in fact deadlocked before ever reaching it.
+/// **One file per process makes that mistake impossible to make again.**"*
+/// Interleaving two processes' lines into one file puts back exactly what
+/// that sentence rules out -- for the reader who pinned the path in order to
+/// read it.
+///
+/// **So a guest writes its own `polter-host-<pid>.log` and says so on
+/// stderr**; see the `+action` branch in `main`. Without that line, "the log
+/// went back to per-pid" reaches the person debugging as "the log is gone".
+fn owns_the_log() -> bool {
+    static OWNS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // Answered once: `log_path` is called on every line, and this walks argv.
+    *OWNS.get_or_init(|| !cli_action_requested())
+}
+
 fn log_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("POLTER_HOST_LOG") {
-        return std::path::PathBuf::from(p);
-    }
-    let name = format!("polter-host-{}.log", std::process::id());
-    match std::env::current_exe() {
-        Ok(exe) => exe.with_file_name(name),
-        Err(_) => std::path::PathBuf::from(name),
-    }
+    log_path_given(owns_the_log(), std::env::var("POLTER_HOST_LOG").ok())
 }
 
 /// The identity of one binary: SHA-256 prefix, byte size, and mtime.
@@ -3640,7 +3678,89 @@ fn own_exe_path() -> Option<String> {
 /// `GHOSTTY_LOG=stderr`. Logging to stderr underneath a full-screen TUI
 /// scribbles over it. The other is that there is no reason to open a window.
 fn cli_action_requested() -> bool {
-    std::env::args().skip(1).any(|a| a.starts_with('+'))
+    cli_action_in(std::env::args())
+}
+
+/// The same question, asked of an argument list rather than of this process.
+///
+/// Split out so `owns_the_log`'s rule has a floor: the real one reads `argv`
+/// and is answered once per process, which leaves nothing a test can vary.
+fn cli_action_in(args: impl Iterator<Item = String>) -> bool {
+    args.skip(1).any(|a| a.starts_with('+'))
+}
+
+/// Where the log goes, given the two facts that decide it.
+///
+/// **The whole of the `owns_the_log` rule is this function**, so that the rule
+/// can be asserted without a process whose `argv` cannot be changed.
+fn log_path_given(owns: bool, pinned: Option<String>) -> std::path::PathBuf {
+    if owns {
+        if let Some(p) = pinned {
+            return std::path::PathBuf::from(p);
+        }
+    }
+    let name = format!("polter-host-{}.log", std::process::id());
+    match std::env::current_exe() {
+        Ok(exe) => exe.with_file_name(name),
+        Err(_) => std::path::PathBuf::from(name),
+    }
+}
+
+#[cfg(test)]
+mod log_ownership_tests {
+    use super::*;
+
+    /// **The floor for the split itself.** If this stopped agreeing with the
+    /// real `argv` question, every assertion below would be about a rule the
+    /// program does not use.
+    #[test]
+    fn the_argument_question_is_the_one_the_process_asks() {
+        let mine: Vec<String> = std::env::args().collect();
+        assert_eq!(
+            cli_action_in(mine.into_iter()),
+            cli_action_requested(),
+            "`cli_action_in` and `cli_action_requested` disagree about this \
+             very process, so the tests below are about a different rule"
+        );
+    }
+
+    #[test]
+    fn a_plus_argument_makes_this_a_guest_and_argv_zero_is_not_one() {
+        let a = |v: &[&str]| cli_action_in(v.iter().map(|s| s.to_string()));
+        assert!(a(&["polter-host.exe", "+mcp"]));
+        assert!(a(&["polter-host.exe", "--x", "+chat"]));
+        assert!(!a(&["polter-host.exe"]));
+        assert!(!a(&["polter-host.exe", "--draw-on-paint"]));
+        // The program's own path is skipped: a directory called `+tools` on
+        // somebody's disk must not turn every run into a CLI action.
+        assert!(!a(&["C:\\+tools\\polter-host.exe"]));
+    }
+
+    /// **The defect, stated as an assertion.** A guest that honours the pin
+    /// is a guest that deletes the owner's log, because `main` clears
+    /// `log_path()` on the way in.
+    #[test]
+    fn a_guest_never_resolves_to_the_pinned_path() {
+        let pinned = "C:\\app\\the-gui-instance.log";
+        assert_eq!(
+            log_path_given(true, Some(pinned.to_string())),
+            std::path::PathBuf::from(pinned),
+            "the owner must still honour POLTER_HOST_LOG -- the tests that \
+             redirect the log depend on it"
+        );
+        let guest = log_path_given(false, Some(pinned.to_string()));
+        assert_ne!(
+            guest,
+            std::path::PathBuf::from(pinned),
+            "a +action resolved to the pinned path; `main` would then delete it"
+        );
+        assert!(
+            guest.to_string_lossy().contains(&std::process::id().to_string()),
+            "a guest must fall back to the per-pid name, not to some third \
+             thing: {}",
+            guest.display()
+        );
+    }
 }
 
 /// Say whether the tester's notes are beside this program.
@@ -3821,11 +3941,18 @@ fn write_log_bom() {
 }
 
 fn main() {
-    let _ = std::fs::remove_file(log_path());
-    // **Before the first line, and before the panic hook.** A mark written
-    // later would sit in the middle of the file, where it is not a mark but a
-    // stray character.
-    write_log_bom();
+    // **Only the instance that owns the log clears it.** These two statements
+    // used to run unconditionally, above everything -- including above the
+    // point where this program first looks at its own command line -- so a
+    // `+mcp` child deleted the GUI's pinned log before it knew it was a CLI
+    // action at all. See `owns_the_log`.
+    if owns_the_log() {
+        let _ = std::fs::remove_file(log_path());
+        // **Before the first line, and before the panic hook.** A mark written
+        // later would sit in the middle of the file, where it is not a mark but
+        // a stray character.
+        write_log_bom();
+    }
     // **After the mark and before the hook**, for the two reasons written on
     // the function. Its verdict is logged below rather than here, because
     // there is no banner above this point to attribute a line to.
@@ -3976,6 +4103,27 @@ fn main() {
     // null, so `polter-host.exe +chat` opened an ordinary shell. That is the
     // half of "terminal group chat does nothing" that is on this side.
     if cli_action_requested() {
+        // **The cost of `owns_the_log`, paid back where it is felt.** This
+        // process ignored `POLTER_HOST_LOG` on purpose so it could not delete
+        // the log of whoever set it -- but the person who set it did so in
+        // order to read it, and to them an ignored pin is indistinguishable
+        // from a log that vanished. So it is said, once, to the one stream a
+        // `+action` may use.
+        //
+        // **Only when the pin was actually ignored.** With no pin there is
+        // nothing surprising to report, and `+chat` is a full-screen TUI that
+        // owns stderr from here on -- an unconditional line would scribble on
+        // it for no reader's benefit. ⚠️ Never stdout: `+mcp` speaks JSON-RPC
+        // over it.
+        if std::env::var("POLTER_HOST_LOG").is_ok() {
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr(),
+                "Polter: this is a +action, so POLTER_HOST_LOG was left alone \
+                 and this process logs to {}",
+                log_path().display()
+            );
+        }
         // process-wide: a CLI action runs before any window exists, and this
         // path never makes one
         plogf!("[cli] a +action was asked for; handing over to the core");
