@@ -3940,6 +3940,40 @@ fn write_log_bom() {
     }
 }
 
+/// Leave with a non-zero exit code, having already said why in the log.
+///
+/// # What this replaces
+///
+/// Every fatal path in `main` ended in a bare `return`, and a `return` from
+/// `main` is exit **0**. Seven of the eight had just written a line beginning
+/// `FATAL`; the eighth is a `+action` the core did not recognise. **All eight
+/// told the log they had failed and told the operating system they had
+/// succeeded.**
+///
+/// It surfaced as a smaller question -- `polter-host.exe +bogus-action-xyz`
+/// exiting 0 -- and the smaller question had a bigger answer: an unrecognised
+/// action is one of eight, and the others include *could not load
+/// libghostty*, *could not create the first frame* and *could not create the
+/// first tab*. **Those are exactly the failures the "silent death"
+/// investigations in `status.md` were about**, and every launcher, script and
+/// scheduled task that checked the exit code was told they had gone fine.
+///
+/// # Why `exit` rather than returning an `ExitCode` from `main`
+///
+/// Returning `ExitCode` is the tidier Rust, and it would touch the success
+/// path -- every implicit fall-through would have to name a value. **The
+/// criterion for this change is that a successful run is unchanged, byte for
+/// byte and code for code**, and the cheapest way to be sure of that is to
+/// not edit the success path at all. Nothing here owns a resource whose
+/// destructor matters at this point: the process is ending either way, and it
+/// was ending either way before this too.
+///
+/// **The log line stays where it is.** This is about the exit code alone;
+/// what a failure *says* is task 207's subject and is answered separately.
+fn die() -> ! {
+    std::process::exit(1)
+}
+
 fn main() {
     // **Only the instance that owns the log clears it.** These two statements
     // used to run unconditionally, above everything -- including above the
@@ -3981,7 +4015,7 @@ fn main() {
         Some(a) => Box::leak(Box::new(a)),
         None => {
             logf!("FATAL could not load libghostty");
-            return;
+            die();
         }
     };
     API.store(api_box as *mut Api as *mut c_void, Ordering::Release);
@@ -4088,7 +4122,7 @@ fn main() {
     logf!("ghostty_init -> {}", rc);
     if rc != 0 {
         logf!("FATAL ghostty_init failed");
-        return;
+        die();
     }
 
     // **A `+action` ends here, and the call does not come back.**
@@ -4134,7 +4168,7 @@ fn main() {
         // terminal looks like the action ran.
         // process-wide: same path, still no window -- that is what the line says
         plogf!("[cli] the core did not recognise it; not opening a window");
-        return;
+        die();
     }
 
     let config = unsafe {
@@ -4160,7 +4194,7 @@ fn main() {
     let app = unsafe { (api_box.app_new)(&rt, config) };
     if app.is_null() {
         logf!("FATAL ghostty_app_new returned null");
-        return;
+        die();
     }
     APP.store(app, Ordering::Release);
     logf!("ghostty_app_new -> {:?}", app);
@@ -4186,7 +4220,7 @@ fn main() {
     };
     if unsafe { RegisterClassExW(&wc) } == 0 {
         logf!("FATAL RegisterClassExW(frame) failed");
-        return;
+        die();
     }
 
     let surf_class = w!("PolterSurface");
@@ -4204,12 +4238,12 @@ fn main() {
     };
     if unsafe { RegisterClassExW(&wc2) } == 0 {
         logf!("FATAL RegisterClassExW(surface) failed");
-        return;
+        die();
     }
 
     let Some(hwnd) = create_frame(hinst, true) else {
         logf!("FATAL could not create the first frame");
-        return;
+        die();
     };
 
     // A static prompt cannot distinguish "renderer still drawing" from
@@ -4318,7 +4352,7 @@ fn main() {
     // ---- first tab ----
     if !tabs::create_tab(hwnd, app, hinst) {
         logf!("FATAL could not create the first tab");
-        return;
+        die();
     }
     tabs::layout(hwnd);
     logf!("tab count = {}", tabs::count(hwnd));
