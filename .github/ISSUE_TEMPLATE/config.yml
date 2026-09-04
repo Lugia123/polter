@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A bug in the terminal itself
+    url: https://github.com/ghostty-org/ghostty/issues
+    about: Rendering, fonts, escape sequences, keybindings, configuration — that is upstream Ghostty's code, and upstream is where it gets fixed.
+  - name: Ghostty documentation
+    url: https://ghostty.org/docs
+    about: All of it applies here, with `ghostty` spelled `polter`.

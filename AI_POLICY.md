@@ -1,5 +1,16 @@
 # AI Usage Policy
 
+> **This policy is inherited from upstream Ghostty and applies to Polter
+> unchanged.** It is kept because it is right, not because it came with the
+> fork. Two notes specific to this project:
+>
+> - **Polter itself is written with heavy AI assistance, and says so.** That is
+>   not an exemption from anything below — the rule that matters is the second
+>   one, that a human understands the code, and it applies to this fork's own
+>   commits as much as to a patch from a stranger.
+> - Where the text below says "Ghostty", read it as this project too. The
+>   denouncement list is upstream's; this fork does not keep one.
+
 The Ghostty project has strict rules for AI usage:
 
 - **All AI usage in any form must be disclosed.** You must state

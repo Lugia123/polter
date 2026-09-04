@@ -443,3 +443,7 @@ MIT 协议，和上游一样；见 [LICENSE](LICENSE)，原始版权声明保留
 运行、调试的唯一权威，[`docs/README.md`](docs/README.md) 是其余文档的索引。上面这
 些东西的设计推演在 [`docs/poltergeist/`](docs/poltergeist/README.md) —— 从它的
 `README.md` 开始读，那是其余各章都要回答的那部宪法。
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) 讲清楚这棵树哪一半是 Polter 的、哪一半是
+上游 Ghostty 的 —— 动手写补丁前值得花两分钟看，猜错了要重做。
+[`ROADMAP.md`](ROADMAP.md) 是活到哪了，包括 Windows 上还缺什么。

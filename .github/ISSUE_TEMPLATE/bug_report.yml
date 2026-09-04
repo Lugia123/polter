@@ -1,0 +1,83 @@
+name: Bug report
+description: Something in Polter behaves differently from what it says it does.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **First, one question that saves everyone time.**
+
+        Polter is a fork of [Ghostty](https://github.com/ghostty-org/ghostty).
+        Everything about the terminal itself — escape sequences, rendering,
+        fonts, configuration, keybindings — is upstream's, and upstream is
+        where those get fixed. What is Polter's own is the supervising side:
+        `src/poltergeist/`, the MCP tools, the group chat, the task panel,
+        the terminal transcript and the plugin host.
+
+        If you can reproduce it in Ghostty, please report it there instead —
+        it will reach the people who wrote that code.
+
+  - type: checkboxes
+    attributes:
+      label: Does it happen in upstream Ghostty too?
+      options:
+        - label: I checked, and it does not (or it is clearly about supervising, groups, tasks or plugins)
+          required: false
+        - label: I could not check
+          required: false
+
+  - type: input
+    attributes:
+      label: Version
+      description: "`polter +version`, or Polter → About. Please give the whole line, including the commit."
+      placeholder: "0.5.447 (22446b64a)"
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows
+        - Linux (built from source)
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Which agent CLI
+      description: Claude Code, Codex, Gemini, Qwen, opencode, Kimi, DeepSeek… and its version if you have it.
+      placeholder: "Claude Code 2.x"
+
+  - type: textarea
+    attributes:
+      label: What happened, and what you expected instead
+      description: |
+        Please separate the two. "It didn't work" is hard to act on; "the
+        supervisor was told the task was assigned, but the worker's terminal
+        received nothing" is a bug report.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a tab, start an agent
+        2. Agents → Make This Terminal a Supervisor
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Logs
+      description: |
+        Polter writes to `~/.local/state/polter/` (macOS and Linux) and beside
+        the executable on Windows. Plugin logs are under `plugins/`. Paste the
+        part around the failure rather than the whole file.
+
+        **Please read what you paste before pasting it.** A terminal transcript
+        can contain your own code, paths and anything an agent printed.
+      render: text

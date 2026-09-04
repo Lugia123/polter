@@ -1,0 +1,34 @@
+name: Idea
+description: Something Polter should do, or should do differently.
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Polter has one rule it will not break, and it is worth knowing before
+        you write: **it measures, it does not judge.** It reports how long a
+        screen has been unchanged; it will not decide that this means "stuck".
+        That call belongs to whoever is reading — a supervisor, or you.
+
+        Ideas that ask Polter to conclude something about an agent's state will
+        get a slow answer. Ideas that give a supervisor a better measurement,
+        or a better way to act on one, will get a fast one.
+
+        See "What it will never do" in the README for the rest of the line.
+
+  - type: textarea
+    attributes:
+      label: What are you trying to do that you can't do now?
+      description: The situation, not the solution. What were you doing when you wanted this?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: What did you do instead?
+      description: A workaround, however ugly, is the most useful thing in this form — it says what the shape of the gap is.
+
+  - type: textarea
+    attributes:
+      label: What you have in mind
+      description: Optional. If you already know what it should look like, say so.
