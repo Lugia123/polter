@@ -330,6 +330,15 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
             "If not specified, git will be used. This must be a semantic version.",
     );
 
+    // The commit git reported, if it was asked and answered. Hoisted out of
+    // the block below because `lib_version` needs it too: both artifacts are
+    // built from one tree and "which tree" is one question, asked twice.
+    //
+    // Stays null when git was never asked (an explicit version string, or
+    // Ghostty built as a dependency) and when it was asked and could not
+    // answer. **Explicit beats detected**, in both places it applies.
+    var detected_commit: ?[]const u8 = null;
+
     config.version = if (version_string) |v|
         // If an explicit version is given, we always use it.
         try std.SemanticVersion.parse(v)
@@ -362,6 +371,11 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
 
             else => return err,
         };
+
+        // Both break paths below are reached only when git answered, so this
+        // covers the tagged release as well as the ordinary one.
+        detected_commit = vsn.short_hash;
+
         if (vsn.tag) |tag| {
             // Tip releases behave just like any other pre-release so we skip.
             if (!std.mem.eql(u8, tag, "tip")) {
@@ -401,10 +415,48 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
             "If not specified, git will be used. This must be a semantic version.",
     );
 
+    // **Only the build metadata slot is filled in.** `major`, `minor`, `patch`
+    // and `pre` come through untouched, so the version libghostty-vt declares
+    // to its consumers does not move: SemVer excludes build metadata from
+    // precedence, and every place this value reaches a name or an ABI --
+    // the versioned dylib filename, the soname, `-current_version` -- reads
+    // only major/minor/patch. What changes is `ghostty_build_info` answering
+    // `GHOSTTY_BUILD_INFO_VERSION_BUILD`, which the public header already
+    // documents as "the build metadata string (e.g. commit hash)". This fills
+    // a slot the library's own contract set aside; it does not widen it.
+    //
+    // Note the `-dev` in `0.1.0-dev` is a statement about the library's API
+    // maturity -- 0.1.0 has not been released -- and not the residue of a
+    // failed detection. The app version has a `-dev` of its own that *is*
+    // that residue, and the two must not be read as the same thing.
+    //
+    // # When git could not answer, this is left empty on purpose
+    //
+    // The header says: "Has zero length if no build metadata is present."
+    // **Zero length is this library's documented way of saying it does not
+    // know**, and it has the property the other one lacks: it does not look
+    // like an answer. The full Ghostty build stamps a hex-shaped `0000000`
+    // in the same situation, and that is a defect on its own ledger, not a
+    // precedent to follow -- a value-shaped absence is exactly what makes a
+    // reader stop looking. So the two artifacts deliberately differ here,
+    // and the direction of the difference matters: **this is the correct
+    // one.** Do not "unify" them by teaching this one to lie too.
+    //
+    // The build that could not name its commit still says so out loud, once,
+    // at build time -- see `warnUnknownProvenance`, which runs for every
+    // artifact because version detection happens before any of them exist.
     config.lib_version = if (lib_version_string) |v|
         try std.SemanticVersion.parse(v)
-    else
-        try std.SemanticVersion.parse(libVersion);
+    else lib_version: {
+        const base = try std.SemanticVersion.parse(libVersion);
+        break :lib_version .{
+            .major = base.major,
+            .minor = base.minor,
+            .patch = base.patch,
+            .pre = base.pre,
+            .build = base.build orelse detected_commit,
+        };
+    };
 
     //---------------------------------------------------------------
     // Binary Properties
