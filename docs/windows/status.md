@@ -1923,6 +1923,72 @@ nothing to do」，否则直接滑到另一端。**必红地板 = 一个「无�
 包那一格因此没有用「目录在不在」下结论，用的是 **602 行 vs 0 行**的行为差。
 
 
+### （二十三）⚠️ 发版阻塞：checkout 一个 tag 的人编不过，而这条在最新代码上仍然成立
+
+`22446b64a` 的提交信息写着它要保护的是
+*whoever clones the repository and checks the tag out, which is everyone the release is for*。
+**而那个动作产生的状态，正是这个检查会误判的状态。**
+
+    git checkout <tag>              →  游离 HEAD
+    PolterVersion.branch()          →  对游离 HEAD 显式 return null（"Not an error"）
+    major/minor                     →  落到回落值 0.1
+    countCommits                    →  不依赖分支，照常算出 452
+    expected                        →  v0.1.452，而 tag 是 v0.4.452  →  panic
+
+看见的原文：
+
+    thread panic: tagged release v0.4.452 does not match this build's version v0.1.452.
+    Polter's version comes from the branch name and the commit count, so a tag has to be
+    made on the branch it names.
+
+#### 两半证据，两个人各量一半，中间没有推理
+
+| | 量了什么 | 怎么量的 |
+| --- | --- | --- |
+| git 那一半 | 游离 HEAD 下 `--abbrev-ref` 返回 `HEAD`、**而 `--exact-match` 照样返回 tag** | 一次性克隆仓，真 tag 真 checkout |
+| 构建那一半 | 那个 panic 的原文 | git 垫片（只拦两个查询、其余 `exec` 真 git）**共享树一字节没动** |
+
+**两个条件必须同时成立才会咬人**：tag 找得到（所以检查会跑）、分支名找不到（所以期望值算成 0.1）。
+
+**关键的是第三格对照**：同样游离 HEAD、只把 tag 换成回落值 `v0.1.452`，**干净通过**。
+**它排掉了「游离 HEAD 下这个构建本来就会炸」这个平凡解释——红的是那个比较，不是那个状态。**
+
+#### ⚠️ 它是怎么躲过验证的，这一点比缺陷本身值得记
+
+那条提交信息写着，而且写得对：
+
+> *Verified in both directions, because a check that has only ever been seen to pass is not a check:
+> `v9.9.9` on this commit panics, and `v0.5.446` builds clean.*
+
+**两个方向都验了，而两次都站在分支上。** 对照 B 复现了其中「绿」那一次——**它确实绿。**
+
+> **双向验证覆盖的是「判据会不会红」，不覆盖「验的时候我站在哪个状态」。
+> 而这个检查要保护的对象，只存在于另一个状态里。**
+
+这和本文档记的其它几条同族——**地板取在了不该取的地方**。不同的是
+**这次连「必红」那一格也取在同一个地方，所以两格一起偏了、互相看不出来。**
+
+#### 顺带：tag 名不是可以挑的
+
+`expected` = `v{分支名推出的 major.minor}.{fork 起的提交数}`。本仓此刻是 `v0.4.452`，
+**而每多一个提交这个名字就作废一次。** 所以「打个 `v0.4.x`」不是自由取名。
+
+#### 待修的是那一处复用，不是被复用的东西
+
+`PolterVersion` 的回落是**对的**，它自己写着理由：
+*a build that cannot tell what version it is should say the earliest one rather than guess upward*。
+对「窗口标题显示什么」这个用途，回落到 0.1 完全正确。
+
+**错的是 tag 检查把一个「说不出版本号的来源」当成了权威版本号**——
+而在这个场合，版本号其实就写在 tag 里。
+
+⚠️ **所以去改 `PolterVersion` 本身的人，要同时守住「窗口显示」那条路——那是两个判据，不是一个。**
+
+**状态**：已验（两半各有实测，含排除平凡解释的第三格对照）·
+**销案**：修好之后，**在游离 HEAD 上**打一个正确的 tag 并构建，必须绿；
+**而地板要在游离 HEAD 上取**——这条的全部教训就是地板站错了地方。
+
+
 ## 五之二、五条裁决（2026-09-01 已定）
 
 **这一节和第五节不同。** 第五节是技术账——有确切位置、有人能查下去。
