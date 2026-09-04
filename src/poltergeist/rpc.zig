@@ -1221,6 +1221,76 @@ fn declares(caller: Bus.Caller, method: Method) bool {
 /// host that cannot say is treated as not saying no: inventing a refusal
 /// out of an allocation failure would be worse than letting the call
 /// through, because the caller would go and correct an id that was right.
+/// The line a supervisor gets back when the group it just touched still
+/// has only one terminal in it.
+///
+/// Making a group and never filling it is the mistake this catches, and it
+/// is invisible from where the supervisor sits: `group_create` succeeded,
+/// the group is on the list, and posting into it feels like addressing a
+/// team. It is a room with one chair. The same hole opens the other way
+/// after a restart, where rejoining a `joined: false` group with
+/// `group_add` puts the supervisor back in a group whose workers are all
+/// gone.
+///
+/// Bounded to the facts of right now, the way the `group_post` note is:
+/// how many terminals are in the group, and how many are open outside it.
+/// It stops the moment somebody else is in, so a supervisor that fills its
+/// group is never told anything and this cannot become a line that gets
+/// tuned out. Null means there is nothing to say.
+fn aloneNote(
+    alloc: std.mem.Allocator,
+    host: Host,
+    group: []const u8,
+    did: []const u8,
+) ?[]const u8 {
+    const members = host.chatMembers(alloc, group) catch return null;
+
+    // Freed here rather than left to the caller's arena, because
+    // `dispatch` is handed a plain allocator by the tests and an arena
+    // only in the sidecar. A note that leaks whenever it is *not* worth
+    // printing is the sort of thing that only shows up as a test failure
+    // in some unrelated case.
+    defer {
+        for (members) |m| alloc.free(m.title);
+        alloc.free(members);
+    }
+
+    // Two is enough for the group to be a conversation, which is all this
+    // note is about. Zero happens too -- a supervisor may own a group it
+    // is not in -- and is the same story.
+    if (members.len > 1) return null;
+
+    var others: usize = 0;
+    if (host.openTerminals(alloc)) |places| {
+        defer alloc.free(places);
+        outer: for (places) |place| {
+            for (members) |m| if (m.id == place.id) continue :outer;
+            others += 1;
+        }
+    } else |_| {}
+
+    // Which half of the advice is worth giving depends on whether there is
+    // anything to add: telling a supervisor to call `group_add` when no
+    // other terminal is open sends it looking for something that is not
+    // there.
+    if (others == 0) return std.fmt.allocPrint(
+        alloc,
+        "{s}. {d} terminals are in this group, and no other terminal is " ++
+            "open -- a post here reaches nobody. terminal_open starts one, " ++
+            "then group_add puts it in.",
+        .{ did, members.len },
+    ) catch null;
+
+    return std.fmt.allocPrint(
+        alloc,
+        "{s}. {d} terminals are in this group and {d} more are open " ++
+            "outside it -- a post here reaches nobody else. terminal_list " ++
+            "names them, group_add puts each one in, and task_create/" ++
+            "task_assign is what makes the work outlive this conversation.",
+        .{ did, members.len, others },
+    ) catch null;
+}
+
 fn isOpenTerminal(alloc: std.mem.Allocator, host: Host, id: Bus.Id) bool {
     const places = host.openTerminals(alloc) catch return true;
     defer alloc.free(places);
@@ -2005,14 +2075,16 @@ test "the supervisor chooses what a terminal it adds can see" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    _ = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+    const none = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .group_add = .{ .group = "build", .id = worker, .history = .none },
     });
+    if (none == .text) testing.allocator.free(none.text);
     try testing.expectEqual(History.none, fake.added.?.history);
 
-    _ = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+    const all = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .group_add = .{ .group = "build", .id = worker, .history = .all },
     });
+    if (all == .text) testing.allocator.free(all.text);
     try testing.expectEqual(History.all, fake.added.?.history);
 }
 
@@ -2038,7 +2110,59 @@ test "adding a terminal that does not exist is refused" {
     const ok = try dispatch(testing.allocator, &b, open_host.host(), term(boss), .{
         .group_add = .{ .group = "build", .id = 0x7777 },
     });
-    try testing.expect(ok == .ok);
+    // A note, not a bare ok: the fake's group has one member, which is
+    // what `aloneNote` is for. Not a failure is what this test is about.
+    try testing.expect(ok != .failed);
+    testing.allocator.free(ok.text);
+}
+
+test "making a group says it is still empty, and stops saying so once it is not" {
+    // The mistake: `group_create`, then `group_post` the plan, and nobody
+    // is in the group to read it. Nothing about that looks wrong from the
+    // supervisor's side, so the moment after making the group is where it
+    // gets said.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    const places = [_]Place{ .{ .id = 0x7777 }, .{ .id = 0x8888 } };
+    var fake: FakeHost = .{ .open = &places };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .group_create = .{ .group = "build" },
+    });
+    defer testing.allocator.free(res.text);
+
+    // The counts, because that is the part a supervisor acts on: one in,
+    // two outside. And `group_add` by name -- advice with no call in it is
+    // something to agree with rather than something to do.
+    try testing.expect(std.mem.indexOf(u8, res.text, "1 terminals are in this group") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "2 more are open") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "group_add") != null);
+
+    // And once the group holds a conversation, silence. A note that keeps
+    // arriving after it has been acted on is a note that stops being read.
+    var filled: FakeHost = .{ .open = &places, .member_count = 2 };
+    const quiet = try dispatch(testing.allocator, &b, filled.host(), term(boss), .{
+        .group_create = .{ .group = "build" },
+    });
+    try testing.expect(quiet == .ok);
+}
+
+test "an empty group with no terminal open is told to open one" {
+    // The other half: pointing at `group_add` when there is nothing to add
+    // sends the supervisor looking for terminals that are not there. This
+    // is the shape of the first group of the morning.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .open = &.{} };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .group_create = .{ .group = "build" },
+    });
+    defer testing.allocator.free(res.text);
+
+    try testing.expect(std.mem.indexOf(u8, res.text, "terminal_open") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "terminal_list") == null);
 }
 
 test "a supervisor can be pulled into another supervisor's group" {
@@ -2055,7 +2179,8 @@ test "a supervisor can be pulled into another supervisor's group" {
     const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
         .group_add = .{ .group = "build", .id = other },
     });
-    try testing.expect(res == .ok);
+    try testing.expect(res != .failed);
+    if (res == .text) testing.allocator.free(res.text);
     try testing.expectEqual(other, fake.added.?.id);
 }
 
@@ -4353,6 +4478,13 @@ pub fn dispatch(
 
         .group_create => |p| {
             host.chatCreate(p.group, caller) catch |err| return chatFailure(err);
+
+            // **A group with one terminal in it is the most common way a
+            // night goes nowhere**, and the moment after making one is
+            // when saying so costs nothing.
+            if (aloneNote(alloc, host, p.group, "created")) |note| {
+                return .{ .text = note };
+            }
             return .ok;
         },
 
@@ -4382,6 +4514,13 @@ pub fn dispatch(
             }
 
             host.chatAdd(p.group, p.id, p.history) catch |err| return chatFailure(err);
+
+            // Rejoining after a restart lands here: the group comes back
+            // from disk with its name, its note and its panel, and with
+            // nobody in it. Adding yourself is one member, not a team.
+            if (aloneNote(alloc, host, p.group, "added")) |note| {
+                return .{ .text = note };
+            }
             return .ok;
         },
 
