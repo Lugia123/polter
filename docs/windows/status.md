@@ -1994,6 +1994,26 @@ nothing to do」，否则直接滑到另一端。**必红地板 = 一个「无�
 **拿它当固定版本的名字，会让「这个 tag 指向哪个提交」变成一个可以改变的事实——
 而发版的全部意义正是让它不可改变。**
 
+#### 受害集合是量出来的，不是从那句「everyone」估出来的
+
+| 谁 | 结果 |
+| --- | --- |
+| `git checkout <tag>` / `git clone --branch <tag>` | ⚠️ **panic** |
+| `git clone` + `checkout feature/v0.4` | **编得过**（实测 rc=0） |
+| GitHub「Download ZIP」/ 任何无 `.git` 的源码包 | **编得过**（实测 rc=0） |
+| 只拿二进制 zip 的测试者 | 不涉及，根本不编 |
+
+**第二行是反直觉的那一格，而它把成因钉死**：tag **就在**那个提交上、
+`describe --exact-match` **找得到**、检查**跑了**——**而它过了**，因为分支名还在，
+期望值算出 `v0.4.452`，和 tag 相等。
+
+> **坏的不是「有 tag」，是「HEAD 游离」。
+> 同一个提交、同一个 tag，checkout 分支能编、checkout tag 编不过。**
+
+所以那句注释里的「everyone the release is for」**估大了**：受害的是
+「点了 release 页面上那个 tag 链接、或者 `git checkout` 了 tag 的人」。
+**但那恰恰是 release 页面最显眼的那条路径**，所以小不等于可忽略。
+
 #### 顺带：tag 名不是可以挑的
 
 `expected` = `v{分支名推出的 major.minor}.{fork 起的提交数}`。本仓此刻是 `v0.4.452`，
