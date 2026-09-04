@@ -70,18 +70,26 @@ pub fn run(alloc: Allocator) !u8 {
     var stdout_writer = std.Io.File.stdout().writerStreaming(global.io(), &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.Io.File.stdout().writerStreaming(global.io(), &stderr_buffer);
-    const stderr = &stderr_writer.interface;
+    // **Named for the stream it is not.** This is a second writer over
+    // *stdout*, kept because `runArgs` below wants two sinks; calling it
+    // `alt_out` said the opposite of what it does, and a reader tracing where
+    // a message went would have looked at the wrong stream. Task 215.
+    //
+    // (Until task 214 it was also a second *positional* writer over the same
+    // file as the one above, so the two overwrote each other. That half is
+    // fixed; this is the name.)
+    var second_buffer: [1024]u8 = undefined;
+    var second_writer = std.Io.File.stdout().writerStreaming(global.io(), &second_buffer);
+    const second_out = &second_writer.interface;
 
     const result = runArgs(
         alloc,
         &iter,
         stdout,
-        stderr,
+        second_out,
     );
     stdout.flush() catch {};
-    stderr.flush() catch {};
+    second_writer.interface.flush() catch {};
     return result;
 }
 
@@ -89,11 +97,13 @@ fn runArgs(
     alloc_gpa: Allocator,
     argsIter: anytype,
     stdout: *std.Io.Writer,
-    stderr: *std.Io.Writer,
+    // Named `err` rather than `alt_out`: the caller hands it a second writer
+    // over **stdout**. See the note at the call site (task 215).
+    alt_out: *std.Io.Writer,
 ) !u8 {
     // Its possible to build Ghostty without font discovery!
     if (comptime font.Discover == void) {
-        try stderr.print(
+        try alt_out.print(
             \\Ghostty was built without a font discovery mechanism. This is a compile-time
             \\option. Please review how Ghostty was built from source, contact the
             \\maintainer to enable a font discovery mechanism, and try again.
@@ -109,7 +119,7 @@ fn runArgs(
     args.parse(Options, alloc_gpa, &opts, argsIter) catch |err| switch (err) {
         error.ActionHelpRequested => return err,
         else => {
-            try stderr.print("Error parsing args: {}\n", .{err});
+            try alt_out.print("Error parsing args: {}\n", .{err});
             return 1;
         },
     };
@@ -124,7 +134,7 @@ fn runArgs(
             inner: inline for (@typeInfo(Options).@"struct".fields) |field| {
                 if (field.name[0] == '_') continue :inner;
                 if (std.mem.eql(u8, field.name, diagnostic.key)) {
-                    try stderr.print("config error: {f}\n", .{diagnostic});
+                    try alt_out.print("config error: {f}\n", .{diagnostic});
                     exit = true;
                 }
             }
@@ -137,12 +147,12 @@ fn runArgs(
     const alloc = arena.allocator();
 
     if (opts.cp == null and opts.string == null) {
-        try stderr.print("You must specify a codepoint with --cp or a string with --string\n", .{});
+        try alt_out.print("You must specify a codepoint with --cp or a string with --string\n", .{});
         return 1;
     }
 
     var config = Config.load(alloc) catch |err| {
-        try stderr.print("Unable to load config: {}", .{err});
+        try alt_out.print("Unable to load config: {}", .{err});
         return 1;
     };
     defer config.deinit();
@@ -156,12 +166,12 @@ fn runArgs(
                 if (field.name[0] == '_') continue :inner;
                 if (std.mem.eql(u8, field.name, diagnostic.key) and (diagnostic.location == .none or diagnostic.location == .cli)) continue :outer;
             }
-            try stderr.print("config error: {f}\n", .{diagnostic});
+            try alt_out.print("config error: {f}\n", .{diagnostic});
         }
     }
 
     var font_grid_set = font.SharedGridSet.init(alloc) catch |err| {
-        try stderr.print("Unable to initialize font grid set: {}", .{err});
+        try alt_out.print("Unable to initialize font grid set: {}", .{err});
         return 1;
     };
     errdefer font_grid_set.deinit();
@@ -173,7 +183,7 @@ fn runArgs(
     };
 
     var font_config = font.SharedGridSet.DerivedConfig.init(alloc, config) catch |err| {
-        try stderr.print("Unable to initialize font config: {}", .{err});
+        try alt_out.print("Unable to initialize font config: {}", .{err});
         return 1;
     };
 
@@ -181,22 +191,22 @@ fn runArgs(
         &font_config,
         font_size,
     ) catch |err| {
-        try stderr.print("Unable to get font grid: {}", .{err});
+        try alt_out.print("Unable to get font grid: {}", .{err});
         return 1;
     };
     defer font_grid_set.deref(font_grid_key);
 
     if (opts.cp) |cp| {
-        if (try lookup(alloc, stdout, stderr, font_grid, opts.style, opts.presentation, cp)) |rc| return rc;
+        if (try lookup(alloc, stdout, alt_out, font_grid, opts.style, opts.presentation, cp)) |rc| return rc;
     }
     if (opts.string) |string| {
         const view = std.unicode.Utf8View.init(string) catch |err| {
-            try stderr.print("Unable to parse string as unicode: {}", .{err});
+            try alt_out.print("Unable to parse string as unicode: {}", .{err});
             return 1;
         };
         var it = view.iterator();
         while (it.nextCodepoint()) |cp| {
-            if (try lookup(alloc, stdout, stderr, font_grid, opts.style, opts.presentation, cp)) |rc| return rc;
+            if (try lookup(alloc, stdout, alt_out, font_grid, opts.style, opts.presentation, cp)) |rc| return rc;
         }
     }
 
@@ -206,7 +216,7 @@ fn runArgs(
 fn lookup(
     alloc: std.mem.Allocator,
     stdout: *std.Io.Writer,
-    stderr: *std.Io.Writer,
+    alt_out: *std.Io.Writer,
     font_grid: *font.SharedGrid,
     style: font.Style,
     presentation: ?font.Presentation,
@@ -223,14 +233,14 @@ fn lookup(
             return null;
         },
         else => {
-            try stderr.print("Unable to get face: {}", .{err});
+            try alt_out.print("Unable to get face: {}", .{err});
             return 1;
         },
     };
 
     var buf: [1024]u8 = undefined;
     const name = face.name(&buf) catch |err| {
-        try stderr.print("Unable to get name of face: {}", .{err});
+        try alt_out.print("Unable to get name of face: {}", .{err});
         return 1;
     };
 
