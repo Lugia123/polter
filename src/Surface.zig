@@ -2853,7 +2853,15 @@ pub fn keyCallback(
     // Note that somebody is at this terminal, so Poltergeist keeps out of
     // the way. Releases count too: a key held down during a pause in typing
     // still means a person is here.
-    self.last_key_time = .now(global.io(), .awake);
+    //
+    // `.boot` rather than `.awake`, and it has to match the clock the
+    // comparison below uses. `.awake` is `CLOCK_UPTIME_RAW` on macOS and
+    // does not count the time the machine is asleep, so the last keystroke
+    // of the night and the first delivery of the morning were a few
+    // *awake* seconds apart across a closed lid -- and every notice in the
+    // ten seconds after the lid opened was held back on account of
+    // somebody who had gone to bed.
+    self.last_key_time = .now(global.io(), .boot);
 
     // Setup our inspector event if we have an inspector.
     var insp_ev: ?inspectorpkg.KeyEvent = if (self.inspector != null) ev: {
@@ -3779,10 +3787,27 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
     // sits past column zero even when nothing has been typed -- testing the
     // cursor would mean never delivering anything. It also avoids reading
     // terminal state from this thread without the renderer lock.
+    //
+    // **What it measures is narrower than what it is named after**, and
+    // the gap has been read the wrong way round: a key event reached this
+    // surface recently, which is not the same as a person sitting at it.
+    // Modifiers on their own count, so do releases, and so does the burst
+    // of synthetic releases `focusCallback` sends when a window loses
+    // focus -- so a user holding cmd to switch away marks the terminal
+    // they just left. Nothing here knows who, and nothing here reads the
+    // input line. Whoever acts on the refusal has to be told the
+    // measurement, not a conclusion about a person; see the wording in
+    // `rpc.zig`.
+    //
+    // The clock must be the one `keyCallback` stamps with.
     if (self.last_key_time) |last| {
-        const now: std.Io.Timestamp = .now(global.io(), .awake);
+        const now: std.Io.Timestamp = .now(global.io(), .boot);
         if (last.durationTo(now).toMilliseconds() < notice_quiet_keyboard_ms) {
-            log.info("poltergeist: notice deferred, the user is typing", .{});
+            log.info(
+                "poltergeist: notice deferred, a key reached this surface " ++
+                    "in the last {d}ms",
+                .{notice_quiet_keyboard_ms},
+            );
             return error.UserPresent;
         }
     }

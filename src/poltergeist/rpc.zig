@@ -4154,12 +4154,7 @@ pub fn dispatch(
                         "running in there to read what you send.",
                 ),
 
-                error.UserPresent => hostFailure(
-                    "UserPresent",
-                    "somebody is typing in that terminal right now. Nothing was sent, " ++
-                        "because it would have landed in the middle of what they were " ++
-                        "writing and submitted it. Try again shortly.",
-                ),
+                error.UserPresent => hostFailure("UserPresent", key_arrived),
 
                 else => hostFailure("SendFailed", "could not type into that terminal"),
             };
@@ -4712,8 +4707,8 @@ pub fn dispatch(
 
                     error.UserPresent => hostFailure(
                         "UserPresent",
-                        "somebody is typing in that terminal right now, so nothing was " ++
-                            "said and nothing was assigned. Try again shortly.",
+                        key_arrived ++ " Nothing was said, so nothing was assigned: " ++
+                            "the panel is unchanged.",
                     ),
 
                     else => hostFailure(
@@ -5042,6 +5037,37 @@ fn chatFailure(err: anyerror) wire.Response {
     };
 }
 
+/// What `UserPresent` actually measured, in the words of the measurement.
+///
+/// **This used to say "somebody is typing in that terminal right now",
+/// and a supervisor believed it.** It ran a whole day on that reading:
+/// twice refused, twice reported to the user as "you are at that
+/// terminal", and a task held back on account of it -- and the user had
+/// not touched the machine. The refusal is a fact about a surface, and it
+/// was being handed over as a fact about a person.
+///
+/// What the guard in `Surface.typePoltergeistText` looks at is one thing:
+/// how long ago a key event reached that surface. Not who sent it, not
+/// whether anything was typed, not the input line -- it never reads the
+/// input line, deliberately, because an agent CLI draws its own prompt and
+/// the cursor is never at column zero. A modifier on its own counts. So
+/// does letting one go. So does the burst of synthetic releases Ghostty
+/// sends when a window loses focus, which means holding cmd to switch
+/// *away* from a terminal marks it for the next ten seconds.
+///
+/// So the sentence says what was measured and stops. Whether somebody is
+/// there is a judgement, and it belongs to whoever is reading -- the same
+/// division the rest of this program keeps: it measures how long a
+/// terminal has been still and never says it is stuck.
+const key_arrived =
+    "a key reached that terminal within the last ten seconds, so nothing " ++
+    "was typed into it: text arriving mid-keystroke lands inside whatever " ++
+    "is being written and submits it. This says a key arrived and nothing " ++
+    "more -- not who sent it, not that anyone is there, and nothing about " ++
+    "what is in the input line, which this never reads. A modifier by " ++
+    "itself counts, so does releasing one, and so does switching away " ++
+    "from the window. Try again shortly.";
+
 /// Said when the host has the tools but this build has not wired them up.
 ///
 /// Kept distinct from `HostRefused` so a half-landed build says the true
@@ -5098,13 +5124,12 @@ fn taskFailure(err: anyerror) wire.Response {
                 "The task is still open: assign it to nobody with task_assign if you " ++
                 "want it off somebody's list.",
         ),
-        // Somebody is at that keyboard right now, so nothing was typed
+        // A key reached that terminal a moment ago, so nothing was typed
         // into it -- the same guard every other write to a terminal keeps.
         // The task is untouched, and asking again in a moment works.
         error.UserPresent => hostFailure(
             "NotTold",
-            "somebody is typing in that terminal, so it was not told and the task " ++
-                "is still open. Try again in a moment.",
+            key_arrived ++ " It was not told, and the task is still open.",
         ),
         error.NotImplemented => hostFailure("NotImplemented", not_wired_up),
         else => hostFailure("HostRefused", "the panel could not do that"),

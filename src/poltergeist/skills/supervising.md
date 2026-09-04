@@ -108,8 +108,20 @@ and one of them concluded long messages were rejected and went back to
 posting orders in the group. Multi-line sends now go through as a framed
 paste wherever the target has bracketed paste on, which every agent CLI does.
 If one is refused you get a named reason now: `UnbracketedMultiline` means a
-bare shell, `UserPresent` means somebody is typing there, `ChildExited` means
-there is nothing running to read it.
+bare shell, `ChildExited` means there is nothing running to read it, and
+`UserPresent` means a key reached that terminal in the last ten seconds.
+
+Read that last one as narrowly as it is written. It does not say the user is
+there, and it does not say what is in the input line -- it never looks at the
+input line. A modifier pressed on its own counts, so does letting one go, and
+so does the burst of releases a window gets when somebody holds cmd to switch
+*away* from it. A supervisor that read it as "the user is at that terminal"
+spent a day on that reading: it reported the user's whereabouts to them twice,
+decided on that basis that two drafts left in input boxes were the user's, and
+held a task back. None of it was true. If you want to know who is at a
+terminal, `terminal_read` shows you what is on its screen; this refusal
+answers a different question, and the only thing to do about it is send
+again in a moment.
 
 Context is the only thing here that actually runs out. Measured on this
 program supervising its own development: six supervisor posts in twenty
