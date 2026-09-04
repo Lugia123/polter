@@ -145,7 +145,7 @@ It is younger than the macOS side and not at parity:
 | --- | --- |
 | Verified on a Windows 11 machine | The window opens, tabs work, a shell starts, text including CJK renders, IME composition types Chinese, the menu and its accelerators work, the resources directory is found, and the provisioning plugins start. |
 | Known missing | **Splits** — the layout algorithm is ported (`windows/split-tree/`) but not wired to the window tree. **Some keybinding actions** are not implemented yet; the count is tracked in [`docs/windows/status.md`](docs/windows/status.md). **Shell integration** is not injected. **The `archive` plugin** is installed and enabled but never starts, because plugins have no way yet to declare which systems they can run on. |
-| Untried | Nobody has held a conversation through the group chat on Windows. The view is the same shared code as on macOS and the menu opens it, so it is expected to work — but expected is not the same as seen, so it is listed here. |
+| Also missing | **The group chat view does not come up.** Tested on 0.5.447: the menu item works, the tab is created, and the log shows the right command line — but the tab stays blank. The chat is a TUI run as a tab (`polter-host.exe +chat`), and the host is a GUI-subsystem program, which is where this is being chased. Groups and the task panel still work through the MCP tools; it is the on-screen view that is missing. |
 
 [`ROADMAP.md`](ROADMAP.md) is where these get closed.
 
