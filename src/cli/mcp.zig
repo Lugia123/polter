@@ -120,22 +120,69 @@ pub fn run(alloc: Allocator) !u8 {
 
     const socket_path = opts.socket orelse
         env.get("GHOSTTY_POLTER_SOCKET") orelse
-        {
-            log.err("no socket: is `poltergeist-mcp` enabled, and is this running inside Ghostty?", .{});
-            return 1;
-        };
+        return complain(io, "GHOSTTY_POLTER_SOCKET");
 
     const token = opts.token orelse
         env.get("GHOSTTY_POLTER_TOKEN") orelse
-        {
-            log.err("no token: is `poltergeist-mcp` enabled, and is this running inside Ghostty?", .{});
-            return 1;
-        };
+        return complain(io, "GHOSTTY_POLTER_TOKEN");
 
     var host: Host = try .connect(alloc, io, socket_path, token);
     defer host.deinit();
 
     return serve(alloc, io, &host);
+}
+
+/// Say why this will not start, where whoever ran it will see it.
+///
+/// # Why not `log.err`, which is what this was
+///
+/// Both lines below used to be `log.err`, and `GHOSTTY_LOG` is unset for
+/// almost everybody who will ever hit them. The measured result of running
+/// `+mcp` outside Polter was **exit 1, stdout 0 bytes, and not one word about
+/// why** -- an MCP client shows its user `MCP server(s) failed to start` and
+/// there is nothing anywhere to add to it.
+///
+/// **A diagnostic that was written and then thrown away costs more than none**,
+/// because its author believes the user has been told.
+///
+/// # `chat.zig::complain` is the precedent, and it is a deliberate citation
+///
+/// The sibling action solved this first and wrote down the incident with it:
+/// *"a `log.err` here is a terminal that closes after a tenth of a second
+/// having said nothing at all, which is exactly how this was first reported."*
+/// **Same path, same lesson, one file over, and this file did not get it.**
+/// Naming it here is not courtesy: when somebody meets this a third time, two
+/// call sites doing it the same way are what makes the answer findable.
+///
+/// # stderr, and never stdout
+///
+/// **`+mcp` speaks JSON-RPC over stdout.** A diagnostic printed there does not
+/// help the user, it corrupts the protocol stream -- trading a silent failure
+/// for one that is harder to diagnose. The host says the same thing about the
+/// banner it removed: *"a banner printed onto the stdout that a `+mcp` server
+/// speaks its protocol over"*. So this is stderr, and it stays stderr.
+fn complain(io: std.Io, missing: []const u8) u8 {
+    var buffer: [512]u8 = undefined;
+    var stderr: std.Io.File = .stderr();
+    var writer = stderr.writer(io, &buffer);
+
+    writer.interface.print(
+        \\Polter: no {s} in this terminal, so there is nothing to steer.
+        \\
+        \\`+mcp` is not run by hand: it is started by an agent CLI from inside
+        \\a Polter terminal, and it finds that terminal through the agent
+        \\socket, which is off by default. Put this in
+        \\$XDG_CONFIG_HOME/polter/config.polter and restart Polter:
+        \\
+        \\    poltergeist-mcp = true
+        \\
+    , .{missing}) catch return 1;
+    writer.end() catch {};
+
+    // **Still 1, and that half was never the defect.** It did fail, and an MCP
+    // client reads a non-zero exit as "the server did not start". What is
+    // being removed here is the silence, not the code.
+    return 1;
 }
 
 /// The connection back to Ghostty.
@@ -197,7 +244,24 @@ const Host = struct {
         const reply = (try self.reader.interface.takeDelimiter('\n')) orelse
             return error.EndOfStream;
         if (std.mem.indexOf(u8, reply, "\"ok\":true") == null) {
-            log.err("ghostty refused this token", .{});
+            // **The second one on this path, and it was just as invisible.**
+            // Found by asking judgement 5 -- "how many more `log.err` can a
+            // user reach while `GHOSTTY_LOG` is unset" -- rather than by
+            // noticing it. A stale or mismatched token fails at startup
+            // exactly like a missing one, and said nothing for the same
+            // reason. stderr for `complain`'s reason: stdout is the protocol.
+            var buffer: [256]u8 = undefined;
+            var stderr: std.Io.File = .stderr();
+            var w = stderr.writer(io, &buffer);
+            w.interface.print(
+                \\Polter refused this terminal's token.
+                \\
+                \\The token is issued per terminal and does not outlive it, so
+                \\this is what a stale one looks like: start the agent CLI from
+                \\the Polter terminal it should be steering.
+                \\
+            , .{}) catch {};
+            w.end() catch {};
             return error.AuthFailed;
         }
 
