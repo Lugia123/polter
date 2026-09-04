@@ -69,6 +69,80 @@ is_dep: bool = false,
 /// Environmental properties
 env: *const std.process.Environ.Map,
 
+/// The build metadata stamped when this build cannot name its own commit.
+///
+/// **It is not a commit. It is the absence of one, written in the shape of
+/// one** -- seven hex characters, indistinguishable at a glance from a real
+/// abbreviated hash. Anything comparing two builds must special-case this
+/// value rather than compare it, because two absences comparing equal would
+/// manufacture a match out of two unknowns.
+const unknown_commit = "0000000";
+
+/// Say, at build time, that this build cannot name the commit it came from.
+///
+/// # Why a build that does not know itself must say so
+///
+/// Without this, the only trace is `unknown_commit` in the version string --
+/// and that is a value-shaped absence, so it does not read as a problem to
+/// anyone who is not already looking for one. The failure surfaces days
+/// later, as a binary whose provenance nobody can establish, and by then the
+/// only way to find out is to go looking through artifacts one at a time.
+/// **The moment the artifact is made is the only cheap moment.**
+///
+/// # The two causes are told apart on purpose
+///
+/// A warning that reported every failure as "git is missing" would be green
+/// on both, and it would send the next reader to look for git on a machine
+/// that has it. **"The warning fired" and "the warning named the right
+/// cause" are two different things**, so the two are worded separately and
+/// each says what it actually observed.
+///
+/// # This also fires on a legitimate source tarball, and that is not a bug
+///
+/// A source tarball ships a `VERSION` file and no `.git`, so a perfectly
+/// correct tarball build lands here too and gets this warning. That is
+/// **not** a false alarm to be silenced: at this point in the build the two
+/// cases are genuinely indistinguishable, because whether the version came
+/// from a `VERSION` file is not threaded down to here -- `init` receives a
+/// version string and cannot tell where it was read from. Making the
+/// legitimate case distinguishable means changing that, which is a separate
+/// change; until then, a tarball build is expected to print this.
+///
+/// # Not the whole answer
+///
+/// This is only heard by someone watching a build. A build running unattended
+/// -- CI, a container -- will print this into a log nobody reads and produce
+/// the same unidentifiable artifact. Closing that half means failing the
+/// build rather than warning, which is a policy decision and not one this
+/// function should make quietly.
+fn warnUnknownProvenance(err: anyerror) void {
+    switch (err) {
+        error.GitNotFound => std.log.warn(
+            "this build cannot name its own commit: git is not on PATH.",
+            .{},
+        ),
+
+        error.GitNotRepository => std.log.warn(
+            "this build cannot name its own commit: git ran, but the build " ++
+                "root is not a git repository.",
+            .{},
+        ),
+
+        else => std.log.warn(
+            "this build cannot name its own commit: git failed unexpectedly.",
+            .{},
+        ),
+    }
+
+    std.log.warn(
+        "the version will be stamped with build metadata '" ++ unknown_commit ++
+            "', which is not a commit -- it is this build saying it does not " ++
+            "know which tree it came from. Checks that ask whether two " ++
+            "artifacts were built together will answer 'not checked'.",
+        .{},
+    );
+}
+
 pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Config {
     // Setup our standard Zig target and optimize options, i.e.
     // `-Doptimize` and `-Dtarget`.
@@ -271,15 +345,19 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
 
         // If no explicit version is given, we try to detect it from git.
         const vsn = GitVersion.detect(b) catch |err| switch (err) {
-            // If Git isn't available we just make an unknown dev version.
+            // If Git isn't available we just make an unknown dev version --
+            // but we say so. See `warnUnknownProvenance`.
             error.GitNotFound,
             error.GitNotRepository,
-            => break :version .{
-                .major = app_version.major,
-                .minor = app_version.minor,
-                .patch = app_version.patch,
-                .pre = "dev",
-                .build = "0000000",
+            => {
+                warnUnknownProvenance(err);
+                break :version .{
+                    .major = app_version.major,
+                    .minor = app_version.minor,
+                    .patch = app_version.patch,
+                    .pre = "dev",
+                    .build = unknown_commit,
+                };
             },
 
             else => return err,
