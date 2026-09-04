@@ -15,6 +15,7 @@ const expandPath = @import("../os/path.zig").expand;
 
 const gtk = @import("gtk.zig");
 const GitVersion = @import("GitVersion.zig");
+const PolterVersion = @import("PolterVersion.zig");
 
 /// Standard build configuration options.
 optimize: std.builtin.OptimizeMode,
@@ -379,14 +380,33 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         if (vsn.tag) |tag| {
             // Tip releases behave just like any other pre-release so we skip.
             if (!std.mem.eql(u8, tag, "tip")) {
-                const expected = b.fmt("v{d}.{d}.{d}", .{
-                    app_version.major,
-                    app_version.minor,
-                    app_version.patch,
-                });
+                // **The tag is checked against Polter's version, not
+                // `build.zig.zon`'s.** Upstream's rule is that a tagged
+                // release must match the version written in the zon file,
+                // which is right for a project whose releases and whose zon
+                // are the same numbering. Here they are not: the zon still
+                // carries Ghostty's `1.3.2`, and Polter's releases are
+                // `0.5.446` -- branch for major.minor, commits since the
+                // fork for patch (see `PolterVersion.zig`).
+                //
+                // Left as it was, tagging a release made the tagged commit
+                // unbuildable: `git describe --exact-match` finds the tag,
+                // the comparison fails, and the build panics. Not at
+                // release time -- the artefacts are built before the tag
+                // exists -- but for **whoever clones the repository and
+                // checks the tag out**, which is everyone the release is
+                // for. A release that only its author can build is worse
+                // than no release.
+                const polter = PolterVersion.detect(b);
+                const expected = b.fmt("v{s}", .{polter.string});
 
                 if (!std.mem.eql(u8, tag, expected)) {
-                    @panic("tagged releases must be in vX.Y.Z format matching build.zig");
+                    std.debug.panic(
+                        "tagged release {s} does not match this build's version {s}. " ++
+                            "Polter's version comes from the branch name and the commit " ++
+                            "count, so a tag has to be made on the branch it names.",
+                        .{ tag, expected },
+                    );
                 }
 
                 break :version .{
