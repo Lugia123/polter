@@ -118,11 +118,11 @@ pub fn run(gpa_alloc: std.mem.Allocator) !u8 {
 
     var stdout_buf: [4096]u8 = undefined;
     var stdout_file: std.Io.File = .stdout();
-    var stdout_writer = stdout_file.writer(global.io(), &stdout_buf);
+    var stdout_writer = stdout_file.writerStreaming(global.io(), &stdout_buf);
     const stdout = &stdout_writer.interface;
 
     var stderr_buf: [4096]u8 = undefined;
-    var stderr_writer = std.Io.File.stderr().writer(global.io(), &stderr_buf);
+    var stderr_writer = std.Io.File.stderr().writerStreaming(global.io(), &stderr_buf);
     const stderr = &stderr_writer.interface;
 
     const resources_dir = global.resourcesDir().app();

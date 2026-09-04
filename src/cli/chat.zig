@@ -124,7 +124,7 @@ pub fn run(alloc: Allocator) !u8 {
 fn complain(io: std.Io, missing: []const u8) u8 {
     var buffer: [512]u8 = undefined;
     var stderr: std.Io.File = .stderr();
-    var writer = stderr.writer(io, &buffer);
+    var writer = stderr.writerStreaming(io, &buffer);
 
     writer.interface.print(
         \\Polter: no {s} in this terminal, so there is nothing to talk to.

@@ -190,7 +190,7 @@ pub fn run(alloc_gpa: Allocator) !u8 {
 
     var stderr_buffer: [1024]u8 = undefined;
     var stderr_file: std.Io.File = .stderr();
-    var stderr_writer = stderr_file.writer(global.io(), &stderr_buffer);
+    var stderr_writer = stderr_file.writerStreaming(global.io(), &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
     // Any diagnostic from the arg parser is an unknown flag or bad

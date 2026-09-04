@@ -184,7 +184,7 @@ pub const Action = enum {
     pub fn reportFailure(self: Action, err: anyerror) void {
         var buffer: [256]u8 = undefined;
         var stderr: std.Io.File = .stderr();
-        var writer = stderr.writer(global.io(), &buffer);
+        var writer = stderr.writerStreaming(global.io(), &buffer);
         writer.interface.print(
             "polter: +{s} failed: {t}\n",
             .{ @tagName(self), err },
@@ -192,6 +192,48 @@ pub const Action = enum {
         writer.end() catch {};
     }
 
+    /// # How every action's output reaches a file, and how it used to destroy one
+    ///
+    /// **`polter +version >> log` run twice used to leave one copy in `log`,
+    /// and appending to a file that already had anything in it destroyed
+    /// what was there.** Measured: 319 bytes after the first run, 319 after
+    /// the second; a file pre-loaded with a line came back holding only the
+    /// action's own output.
+    ///
+    /// **`>` was always fine, and so was a pipe** -- `>` truncates before the
+    /// program starts, so writing from position zero is correct, and a pipe
+    /// cannot be written positionally at all. **So the defect was invisible
+    /// in the two ordinary ways of running these commands and appeared only
+    /// when somebody accumulated output**, which is to say only for the
+    /// person collecting evidence.
+    ///
+    /// That is the same victim as task 182: **the extra thing done in order
+    /// to keep a record is the thing that destroys it.**
+    ///
+    /// The cause was `std.Io.File.writer`, which is documented as *"defaults
+    /// to positional... falls back to streaming"* -- its logical position
+    /// starts at zero, so every writer over a seekable stdout or stderr began
+    /// by overwriting the file. `writerStreaming` appends at the descriptor's
+    /// own offset, which is what a standard stream is. **Forty call sites
+    /// across this repository had the first one**; all forty were checked to
+    /// be stdout or stderr rather than a random-access file, and the value of
+    /// that check was proving there was no exception, not finding one.
+    ///
+    /// # Why nothing caught it, which is the part worth keeping
+    ///
+    /// Three fixes shipped the same morning to make failures speak --
+    /// `cli/mcp.zig::complain`, `cli/chat.zig::complain` and
+    /// `reportFailure` above -- and all three were verified through a pipe.
+    ///
+    /// > **A criterion exercised through a pipe says nothing at all about the
+    /// > file path, and all three verifications happened to pick the channel
+    /// > that could not expose this.**
+    ///
+    /// **That is not a criterion written loosely. It is a criterion and a
+    /// defect sharing one blind spot** -- and the reading that looked most
+    /// careful at the time (measuring that stderr was *not* empty, 196 bytes
+    /// of unrelated noise) was taken through that same pipe.
+    ///
     /// Run the action. This returns the exit code to exit with.
     pub fn run(self: Action, alloc: Allocator) !u8 {
         return self.runMain(alloc) catch |err| switch (err) {
@@ -205,7 +247,7 @@ pub const Action = enum {
 
                     if (std.mem.eql(u8, field.name, @tagName(self))) {
                         var buffer: [1024]u8 = undefined;
-                        var stdout_writer = std.Io.File.stdout().writer(
+                        var stdout_writer = std.Io.File.stdout().writerStreaming(
                             global.io(),
                             &buffer,
                         );

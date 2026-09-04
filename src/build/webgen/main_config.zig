@@ -4,7 +4,7 @@ const help_strings = @import("help_strings");
 
 pub fn main(init: std.process.Init) !void {
     var buffer: [2048]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(init.io, &buffer);
+    var stdout_writer = std.Io.File.stdout().writerStreaming(init.io, &buffer);
     const stdout = &stdout_writer.interface;
     try genConfig(stdout);
 }

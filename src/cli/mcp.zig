@@ -164,7 +164,7 @@ pub fn run(alloc: Allocator) !u8 {
 fn complain(io: std.Io, missing: []const u8) u8 {
     var buffer: [512]u8 = undefined;
     var stderr: std.Io.File = .stderr();
-    var writer = stderr.writer(io, &buffer);
+    var writer = stderr.writerStreaming(io, &buffer);
 
     writer.interface.print(
         \\Polter: no {s} in this terminal, so there is nothing to steer.
@@ -252,7 +252,7 @@ const Host = struct {
             // reason. stderr for `complain`'s reason: stdout is the protocol.
             var buffer: [256]u8 = undefined;
             var stderr: std.Io.File = .stderr();
-            var w = stderr.writer(io, &buffer);
+            var w = stderr.writerStreaming(io, &buffer);
             w.interface.print(
                 \\Polter refused this terminal's token.
                 \\
@@ -667,7 +667,14 @@ fn serve(alloc: Allocator, io: std.Io, host: *Host) !u8 {
     var stdin: std.Io.File = .stdin();
     var stdout: std.Io.File = .stdout();
     var reader = stdin.reader(io, &in_buf);
-    var writer = stdout.writer(io, &out_buf);
+    // **Streaming, and this one was checked rather than swept up.** It is the
+    // JSON-RPC stream, and it is one long-lived writer over many replies: a
+    // positional writer advances its own logical position, so it never
+    // overwrote its own output. What it did overwrite was anything already in
+    // the file when the process started, which only shows up when somebody
+    // points `+mcp`'s stdout at a file to read the protocol back. Over a pipe
+    // -- how an agent CLI actually runs it -- the two are byte for byte alike.
+    var writer = stdout.writerStreaming(io, &out_buf);
 
     while (true) {
         // A null line is end of stdin: the client closed, so we are done.

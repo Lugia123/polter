@@ -18,7 +18,7 @@ pub const Options = struct {};
 pub fn run(alloc: Allocator) !u8 {
     var buffer: [1024]u8 = undefined;
     const stdout_file: std.Io.File = .stdout();
-    var stdout_writer = stdout_file.writer(global.io(), &buffer);
+    var stdout_writer = stdout_file.writerStreaming(global.io(), &buffer);
 
     var environ_map = try global.environMap();
     defer environ_map.deinit();

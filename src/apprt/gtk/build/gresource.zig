@@ -143,7 +143,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var buf: [4096]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(init.io, &buf);
+    var stdout = std.Io.File.stdout().writerStreaming(init.io, &buf);
     const writer = &stdout.interface;
     try writer.writeAll(
         \\<?xml version="1.0" encoding="UTF-8"?>

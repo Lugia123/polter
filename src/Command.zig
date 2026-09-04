@@ -266,7 +266,11 @@ fn startPosix(self: *Command, arena: Allocator) !void {
     // something reasonable. Its important to note we MUST NOT return
     // any other error condition from here on out.
     var stderr_buf: [1024]u8 = undefined;
-    var stderr_writer = std.Io.File.stderr().writer(global.io(), &stderr_buf);
+    // **Streaming, not positional.** Saying something is the only thing left
+    // to do here, and until task 214 the way it was done overwrote the
+    // parent's redirected stderr from byte zero -- so the one act available
+    // to this process destroyed the record it was trying to add to.
+    var stderr_writer = std.Io.File.stderr().writerStreaming(global.io(), &stderr_buf);
     const stderr = &stderr_writer.interface;
     switch (err) {
         posix.system.E.NOENT => stderr.print(

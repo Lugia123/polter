@@ -41,7 +41,7 @@ pub fn run(alloc_gpa: Allocator) !u8 {
 
     var buffer: [1024]u8 = undefined;
     var stdout_file: std.Io.File = .stdout();
-    var stdout_writer = stdout_file.writer(global.io(), &buffer);
+    var stdout_writer = stdout_file.writerStreaming(global.io(), &buffer);
     const stdout = &stdout_writer.interface;
 
     var environ_map = try global.environMap();
