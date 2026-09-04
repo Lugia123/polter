@@ -514,3 +514,8 @@ authority on building, running and debugging, and
 [`docs/README.md`](docs/README.md) indexes the rest. The design of everything
 above is argued out in [`docs/poltergeist/`](docs/poltergeist/README.md) — start
 with its `README.md`, which is the constitution the other chapters answer to.
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) says which half of this tree is Polter's
+and which half is upstream Ghostty's — worth two minutes before writing a
+patch, because guessing wrong costs you a rebase. [`ROADMAP.md`](ROADMAP.md)
+is where the work actually is, including what is missing on Windows.

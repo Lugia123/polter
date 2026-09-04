@@ -150,6 +150,12 @@ def digest(token: str) -> str:
 # Hits that are the fork's own identity, or a documented reason to keep it.
 # key: "path:needle-text-lowered" -> why it may stay.
 KNOWN = {
+    # The copyright line. A licence has to name a copyright holder, and the
+    # holder's name is the fork's public identity -- the same one already in
+    # the bundle id and the repository URL. Adding it was the point: MIT
+    # requires upstream's line to be kept, and without a second line the legal
+    # text says nothing about who owns this fork's own work.
+    "LICENSE": "the copyright holder of this fork, beside upstream's line",
     "src/build_config.zig": "bundle id com.lugia.polter is the application's identity",
     # The one place the id is now written, which is the point of the file:
     # `build_config.zig` above and the build graph both read it from here,
