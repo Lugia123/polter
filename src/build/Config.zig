@@ -730,6 +730,53 @@ pub fn omitFramePointer(self: *const Config) bool {
     return self.strip;
 }
 
+/// Whether artifacts carry unwind tables.
+///
+/// **Always yes, including in stripped release builds.** This used to be
+/// `if (strip) .none else .sync`, which tied "can this binary be walked" to
+/// "does this binary carry symbols" -- two questions with no reason to share
+/// an answer. On Windows the cost of that tie was total: `.pdata` held only
+/// the C and C++ dependencies, so a crash anywhere in Zig gave a report with
+/// one offset in it and nothing else, because the OS could not walk past the
+/// faulting frame.
+///
+/// Measured on the shipping artifact (`x86_64-windows-gnu`, `ReleaseSmall`,
+/// `ghostty-internal.dll`) by asking, for each exported code symbol, whether
+/// any `RUNTIME_FUNCTION` in `.pdata` covers its RVA:
+///
+///     before   17,123 entries    7 of 91 exports covered
+///     after    21,078 entries   71 of 91 exports covered   +114,688 bytes (+0.45%)
+///
+/// **The 7 are not a fraction of the same population.** All seven are
+/// `ImGui_ImplOpenGL3_*` -- C++ from dcimgui. Of the 84 Zig exports, **none**
+/// were covered. The reading is a switch, not a degree, which is why a fix
+/// that flips a switch is the right shape for it.
+///
+/// # 91 of 91 is unreachable, and that is correct
+///
+/// The 20 exports still uncovered after this change are **all leaf
+/// functions**, verified one at a time rather than sampled: disassembled from
+/// the shipping DLL, none has a `call`, a `sub rsp`, or a push of a
+/// non-volatile register before its first `ret` or tail `jmp`. The x64
+/// Windows ABI does not give leaf functions a `RUNTIME_FUNCTION` -- the
+/// return address is simply at `[rsp]` -- so their absence is the ABI working,
+/// not coverage missing. **The criterion is "every non-leaf export", not
+/// "every export"**: a criterion that can never go green and a criterion that
+/// was written wrong look the same in someone else's hands.
+///
+/// # What this does not buy
+///
+/// Stripped stays stripped, so a walked stack is **a list of RVAs, not a list
+/// of function names**. Turning those into names needs a symbol-bearing build
+/// of byte-identical code, and today's `-Dstrip=false` is not that: it moves
+/// `.text` by 197,072 bytes, while decoupling unwind tables alone moves it by
+/// 976. That gap is almost certainly `omit_frame_pointer`, which is still
+/// tied to `strip` just above. Untying it is its own task.
+pub fn unwindTables(self: *const Config) std.builtin.UnwindTables {
+    _ = self;
+    return .sync;
+}
+
 /// Returns the minimum OS version for the given OS tag. This shouldn't
 /// be used generally, it should only be used for Darwin-based OS currently.
 pub fn osVersionMin(tag: std.Target.Os.Tag) ?std.Target.Query.OsVersion {
