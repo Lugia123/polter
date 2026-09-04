@@ -69,6 +69,80 @@ is_dep: bool = false,
 /// Environmental properties
 env: *const std.process.Environ.Map,
 
+/// The build metadata stamped when this build cannot name its own commit.
+///
+/// **It is not a commit. It is the absence of one, written in the shape of
+/// one** -- seven hex characters, indistinguishable at a glance from a real
+/// abbreviated hash. Anything comparing two builds must special-case this
+/// value rather than compare it, because two absences comparing equal would
+/// manufacture a match out of two unknowns.
+const unknown_commit = "0000000";
+
+/// Say, at build time, that this build cannot name the commit it came from.
+///
+/// # Why a build that does not know itself must say so
+///
+/// Without this, the only trace is `unknown_commit` in the version string --
+/// and that is a value-shaped absence, so it does not read as a problem to
+/// anyone who is not already looking for one. The failure surfaces days
+/// later, as a binary whose provenance nobody can establish, and by then the
+/// only way to find out is to go looking through artifacts one at a time.
+/// **The moment the artifact is made is the only cheap moment.**
+///
+/// # The two causes are told apart on purpose
+///
+/// A warning that reported every failure as "git is missing" would be green
+/// on both, and it would send the next reader to look for git on a machine
+/// that has it. **"The warning fired" and "the warning named the right
+/// cause" are two different things**, so the two are worded separately and
+/// each says what it actually observed.
+///
+/// # This also fires on a legitimate source tarball, and that is not a bug
+///
+/// A source tarball ships a `VERSION` file and no `.git`, so a perfectly
+/// correct tarball build lands here too and gets this warning. That is
+/// **not** a false alarm to be silenced: at this point in the build the two
+/// cases are genuinely indistinguishable, because whether the version came
+/// from a `VERSION` file is not threaded down to here -- `init` receives a
+/// version string and cannot tell where it was read from. Making the
+/// legitimate case distinguishable means changing that, which is a separate
+/// change; until then, a tarball build is expected to print this.
+///
+/// # Not the whole answer
+///
+/// This is only heard by someone watching a build. A build running unattended
+/// -- CI, a container -- will print this into a log nobody reads and produce
+/// the same unidentifiable artifact. Closing that half means failing the
+/// build rather than warning, which is a policy decision and not one this
+/// function should make quietly.
+fn warnUnknownProvenance(err: anyerror) void {
+    switch (err) {
+        error.GitNotFound => std.log.warn(
+            "this build cannot name its own commit: git is not on PATH.",
+            .{},
+        ),
+
+        error.GitNotRepository => std.log.warn(
+            "this build cannot name its own commit: git ran, but the build " ++
+                "root is not a git repository.",
+            .{},
+        ),
+
+        else => std.log.warn(
+            "this build cannot name its own commit: git failed unexpectedly.",
+            .{},
+        ),
+    }
+
+    std.log.warn(
+        "the version will be stamped with build metadata '" ++ unknown_commit ++
+            "', which is not a commit -- it is this build saying it does not " ++
+            "know which tree it came from. Checks that ask whether two " ++
+            "artifacts were built together will answer 'not checked'.",
+        .{},
+    );
+}
+
 pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Config {
     // Setup our standard Zig target and optimize options, i.e.
     // `-Doptimize` and `-Dtarget`.
@@ -256,6 +330,15 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
             "If not specified, git will be used. This must be a semantic version.",
     );
 
+    // The commit git reported, if it was asked and answered. Hoisted out of
+    // the block below because `lib_version` needs it too: both artifacts are
+    // built from one tree and "which tree" is one question, asked twice.
+    //
+    // Stays null when git was never asked (an explicit version string, or
+    // Ghostty built as a dependency) and when it was asked and could not
+    // answer. **Explicit beats detected**, in both places it applies.
+    var detected_commit: ?[]const u8 = null;
+
     config.version = if (version_string) |v|
         // If an explicit version is given, we always use it.
         try std.SemanticVersion.parse(v)
@@ -271,19 +354,28 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
 
         // If no explicit version is given, we try to detect it from git.
         const vsn = GitVersion.detect(b) catch |err| switch (err) {
-            // If Git isn't available we just make an unknown dev version.
+            // If Git isn't available we just make an unknown dev version --
+            // but we say so. See `warnUnknownProvenance`.
             error.GitNotFound,
             error.GitNotRepository,
-            => break :version .{
-                .major = app_version.major,
-                .minor = app_version.minor,
-                .patch = app_version.patch,
-                .pre = "dev",
-                .build = "0000000",
+            => {
+                warnUnknownProvenance(err);
+                break :version .{
+                    .major = app_version.major,
+                    .minor = app_version.minor,
+                    .patch = app_version.patch,
+                    .pre = "dev",
+                    .build = unknown_commit,
+                };
             },
 
             else => return err,
         };
+
+        // Both break paths below are reached only when git answered, so this
+        // covers the tagged release as well as the ordinary one.
+        detected_commit = vsn.short_hash;
+
         if (vsn.tag) |tag| {
             // Tip releases behave just like any other pre-release so we skip.
             if (!std.mem.eql(u8, tag, "tip")) {
@@ -323,10 +415,48 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
             "If not specified, git will be used. This must be a semantic version.",
     );
 
+    // **Only the build metadata slot is filled in.** `major`, `minor`, `patch`
+    // and `pre` come through untouched, so the version libghostty-vt declares
+    // to its consumers does not move: SemVer excludes build metadata from
+    // precedence, and every place this value reaches a name or an ABI --
+    // the versioned dylib filename, the soname, `-current_version` -- reads
+    // only major/minor/patch. What changes is `ghostty_build_info` answering
+    // `GHOSTTY_BUILD_INFO_VERSION_BUILD`, which the public header already
+    // documents as "the build metadata string (e.g. commit hash)". This fills
+    // a slot the library's own contract set aside; it does not widen it.
+    //
+    // Note the `-dev` in `0.1.0-dev` is a statement about the library's API
+    // maturity -- 0.1.0 has not been released -- and not the residue of a
+    // failed detection. The app version has a `-dev` of its own that *is*
+    // that residue, and the two must not be read as the same thing.
+    //
+    // # When git could not answer, this is left empty on purpose
+    //
+    // The header says: "Has zero length if no build metadata is present."
+    // **Zero length is this library's documented way of saying it does not
+    // know**, and it has the property the other one lacks: it does not look
+    // like an answer. The full Ghostty build stamps a hex-shaped `0000000`
+    // in the same situation, and that is a defect on its own ledger, not a
+    // precedent to follow -- a value-shaped absence is exactly what makes a
+    // reader stop looking. So the two artifacts deliberately differ here,
+    // and the direction of the difference matters: **this is the correct
+    // one.** Do not "unify" them by teaching this one to lie too.
+    //
+    // The build that could not name its commit still says so out loud, once,
+    // at build time -- see `warnUnknownProvenance`, which runs for every
+    // artifact because version detection happens before any of them exist.
     config.lib_version = if (lib_version_string) |v|
         try std.SemanticVersion.parse(v)
-    else
-        try std.SemanticVersion.parse(libVersion);
+    else lib_version: {
+        const base = try std.SemanticVersion.parse(libVersion);
+        break :lib_version .{
+            .major = base.major,
+            .minor = base.minor,
+            .patch = base.patch,
+            .pre = base.pre,
+            .build = base.build orelse detected_commit,
+        };
+    };
 
     //---------------------------------------------------------------
     // Binary Properties
@@ -728,6 +858,53 @@ pub fn fromOptions() Config {
 pub fn omitFramePointer(self: *const Config) bool {
     if (self.target.result.os.tag.isDarwin()) return false;
     return self.strip;
+}
+
+/// Whether artifacts carry unwind tables.
+///
+/// **Always yes, including in stripped release builds.** This used to be
+/// `if (strip) .none else .sync`, which tied "can this binary be walked" to
+/// "does this binary carry symbols" -- two questions with no reason to share
+/// an answer. On Windows the cost of that tie was total: `.pdata` held only
+/// the C and C++ dependencies, so a crash anywhere in Zig gave a report with
+/// one offset in it and nothing else, because the OS could not walk past the
+/// faulting frame.
+///
+/// Measured on the shipping artifact (`x86_64-windows-gnu`, `ReleaseSmall`,
+/// `ghostty-internal.dll`) by asking, for each exported code symbol, whether
+/// any `RUNTIME_FUNCTION` in `.pdata` covers its RVA:
+///
+///     before   17,123 entries    7 of 91 exports covered
+///     after    21,078 entries   71 of 91 exports covered   +114,688 bytes (+0.45%)
+///
+/// **The 7 are not a fraction of the same population.** All seven are
+/// `ImGui_ImplOpenGL3_*` -- C++ from dcimgui. Of the 84 Zig exports, **none**
+/// were covered. The reading is a switch, not a degree, which is why a fix
+/// that flips a switch is the right shape for it.
+///
+/// # 91 of 91 is unreachable, and that is correct
+///
+/// The 20 exports still uncovered after this change are **all leaf
+/// functions**, verified one at a time rather than sampled: disassembled from
+/// the shipping DLL, none has a `call`, a `sub rsp`, or a push of a
+/// non-volatile register before its first `ret` or tail `jmp`. The x64
+/// Windows ABI does not give leaf functions a `RUNTIME_FUNCTION` -- the
+/// return address is simply at `[rsp]` -- so their absence is the ABI working,
+/// not coverage missing. **The criterion is "every non-leaf export", not
+/// "every export"**: a criterion that can never go green and a criterion that
+/// was written wrong look the same in someone else's hands.
+///
+/// # What this does not buy
+///
+/// Stripped stays stripped, so a walked stack is **a list of RVAs, not a list
+/// of function names**. Turning those into names needs a symbol-bearing build
+/// of byte-identical code, and today's `-Dstrip=false` is not that: it moves
+/// `.text` by 197,072 bytes, while decoupling unwind tables alone moves it by
+/// 976. That gap is almost certainly `omit_frame_pointer`, which is still
+/// tied to `strip` just above. Untying it is its own task.
+pub fn unwindTables(self: *const Config) std.builtin.UnwindTables {
+    _ = self;
+    return .sync;
 }
 
 /// Returns the minimum OS version for the given OS tag. This shouldn't

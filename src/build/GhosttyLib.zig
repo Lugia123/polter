@@ -30,7 +30,7 @@ pub fn initStatic(
             .optimize = deps.config.optimize,
             .strip = deps.config.strip,
             .omit_frame_pointer = deps.config.omitFramePointer(),
-            .unwind_tables = if (deps.config.strip) .none else .sync,
+            .unwind_tables = deps.config.unwindTables(),
             .link_libc = true,
         }),
 
@@ -101,7 +101,7 @@ pub fn initShared(
             .optimize = deps.config.optimize,
             .strip = deps.config.strip,
             .omit_frame_pointer = deps.config.omitFramePointer(),
-            .unwind_tables = if (deps.config.strip) .none else .sync,
+            .unwind_tables = deps.config.unwindTables(),
         }),
 
         // Fails on self-hosted x86_64

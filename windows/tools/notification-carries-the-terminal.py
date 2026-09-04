@@ -66,7 +66,12 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #
 #   5 (this commit): ACTION_PROMPT_TITLE, ACTION_READONLY, ACTION_PWD,
 #                    ACTION_POLTERGEIST_MARK, ACTION_NEW_WINDOW.
-MIN_CARRYING_ARMS = 5
+#
+#   8 (task 161): ACTION_MOUSE_SHAPE and ACTION_MOUSE_VISIBILITY joined, both
+#                 keying `mouse.rs` on the surface the action names. A pointer
+#                 shape stored once for the process is the same defect this
+#                 gate was written for, one pane over.
+MIN_CARRYING_ARMS = 8
 
 # The call is deliberately identity-free, with the reason written next to it.
 # **Default is "must carry"**, and the exception is the thing that has to be

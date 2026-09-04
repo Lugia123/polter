@@ -19,7 +19,11 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             .optimize = cfg.optimize,
             .strip = cfg.strip,
             .omit_frame_pointer = cfg.omitFramePointer(),
-            .unwind_tables = if (cfg.strip) .none else .sync,
+            // Inert on Windows -- that target's app runtime is `.none`, so this
+            // executable is never installed there and the fix that motivated this
+            // change lands in `GhosttyLib`. Changed anyway: one rule written two
+            // ways reads as a deliberate difference to whoever finds it next.
+            .unwind_tables = cfg.unwindTables(),
         }),
         // Crashes on x86_64 self-hosted on 0.15.1
         .use_llvm = true,

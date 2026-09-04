@@ -68,6 +68,96 @@ static HWND_RO: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 /// list is walked on every sync anyway to drop surfaces that no longer exist.
 static READONLY: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
 
+/// **The turn every test that writes `READONLY` waits for.**
+///
+/// Next to the thing it guards, not inside the test module that needs it:
+/// **the boundary of "one at a time" follows the object.** `tabs`'
+/// `test_arena` is the same rule over the state mutex, and
+/// `crate::test_log` over the log destination.
+///
+/// # What it is for
+///
+/// Three tests here each `clear()` -> write -> assert -> `clear()` on this
+/// one process-wide `Vec`, and there was no serialisation in this file at
+/// all. Twenty-two parallel runs went red three times, and **all three tests
+/// failed at one time or another**. The give-away is that one assertion
+/// produced two opposite readings: `left: 2` when a neighbour's
+/// `on_readonly_for` landed between this test's write and its assertion, and
+/// `left: 0` when a neighbour's `clear()` did. **Not two defects -- two sides
+/// of one.**
+///
+/// # What is deliberately *not* in the turn, and on what evidence
+///
+/// **Not `tabs::test_arena`.** These tests reach no function that takes
+/// `STATE` -- measured, and it is what separated this from task 189 in the
+/// first place. Putting them in that arena would be surplus serialisation,
+/// **and surplus serialisation is green, so nobody would ever find out it
+/// was unnecessary.**
+///
+/// **Not `RO_SHOWN_FOR`.** Neither `on_readonly_for` nor `is_readonly_for`
+/// touches it; it lives only in the paint and sync paths, which no test here
+/// enters.
+///
+/// **Not `ctxmenu::tests`, and this one needs its reason spelled out because
+/// the fact alone is misleading.** A reachability scan says those tests do
+/// reach `READONLY`: they call `tick_state`, and `tick_state` has an arm
+/// `Tick::Readonly => is_readonly_for(..)`. The names are right and the call
+/// is real. **The arm is never selected** -- every call there passes
+/// `PgSupervisor`, `PgWatched` or `PgShielded`, and the one loop over ticks
+/// lists those three literally.
+///
+/// > **Reachability stops at function granularity; the only path to this
+/// > object is one `match` arm the caller never chooses.**
+///
+/// **So the reason it is out is conditional, not structural.** Add
+/// `Tick::Readonly` to that loop and those tests join this race that day --
+/// **and they will be green while they do it.** If that changes, they need
+/// this turn.
+#[cfg(test)]
+mod readonly_arena {
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    thread_local! {
+        /// Per-thread, for `tabs::test_arena`'s reason: "somebody holds it"
+        /// answers `true` on an unwired tree whenever another thread happens
+        /// to hold it.
+        static HAS_THE_TURN: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// A turn. **Bind it** -- `let _turn = exclusive();`. Writing
+    /// `let _ = exclusive();` drops it on the spot and the test then runs
+    /// unprotected, which on its own looks like nothing at all; what makes
+    /// that mutation visible is the flag below, cleared by this `Drop`, and
+    /// the check in `tests::clear`.
+    pub(super) struct Turn {
+        _inner: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Turn {
+        fn drop(&mut self) {
+            HAS_THE_TURN.with(|c| c.set(false));
+        }
+    }
+
+    /// **Poison is recovered from, not propagated.** These tests assert on a
+    /// lock they hold; one real failure would otherwise dress every test
+    /// after it in a second one, each red on the lock instead of on its own
+    /// subject.
+    #[must_use]
+    pub(super) fn exclusive() -> Turn {
+        let inner = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        HAS_THE_TURN.with(|c| c.set(true));
+        Turn { _inner: inner }
+    }
+
+    pub(super) fn this_thread_has_the_turn() -> bool {
+        HAS_THE_TURN.with(|c| c.get())
+    }
+}
+
 /// The surface the badge is currently showing for, or 0.
 static RO_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -597,10 +687,51 @@ fn paint(hwnd: HWND, label: &str, bg: u32, fg: u32) {
 mod tests {
     use super::*;
 
+    /// Empty the table -- **and refuse to do it without the turn.**
+    ///
+    /// Every test below starts `let _turn = readonly_arena::exclusive();` and
+    /// then calls this, so this is where a missing or dropped turn is caught.
+    /// It is what makes the `let _ = exclusive();` mutation visible: that
+    /// spelling drops the guard on the spot, `Drop` clears the flag, and the
+    /// next line fails **in the mutated test and nowhere else**, on every run
+    /// rather than on the unlucky ones.
     fn clear() {
+        assert!(
+            readonly_arena::this_thread_has_the_turn(),
+            "this test is about to write the process-wide READONLY table \
+             without holding `readonly_arena`'s turn. Start it with \
+             `let _turn = readonly_arena::exclusive();` -- and bind it: \
+             `let _ = exclusive();` drops the turn on the spot."
+        );
         if let Ok(mut v) = READONLY.lock() {
             v.clear();
         }
+    }
+
+    /// **The floor for the line above: it has to be shown to fire.**
+    ///
+    /// A guard nobody has watched refuse is indistinguishable from one that
+    /// cannot. This calls `clear` with no turn held and requires the panic,
+    /// so the enforcement point is exercised on every run instead of only on
+    /// the day somebody mutates a test.
+    ///
+    /// ⚠️ **It prints a panic backtrace, and no hook is installed to silence
+    /// it.** `std::panic::set_hook` is process-wide, and `tabs`' D2 panics a
+    /// thread on purpose -- muting this would mute somebody else's evidence.
+    /// Noise is the cheaper of the two.
+    ///
+    /// It takes no turn and touches nothing: `clear` panics before it reaches
+    /// the table, so this is safe to run beside the three tests below.
+    #[test]
+    fn clear_refuses_to_run_without_the_turn() {
+        assert!(!readonly_arena::this_thread_has_the_turn());
+        let refused = std::panic::catch_unwind(clear).is_err();
+        assert!(
+            refused,
+            "`clear` wrote the table with no turn held. The check that makes \
+             a dropped turn visible is not doing anything, so the three tests \
+             below could lose their serialisation silently."
+        );
     }
 
     /// **The regression this file was rewritten for.** Read-only used to be
@@ -610,6 +741,7 @@ mod tests {
     /// about must be `false`, not "whatever the last surface said".
     #[test]
     fn one_surface_going_readonly_does_not_answer_for_another() {
+        let _turn = readonly_arena::exclusive();
         clear();
         on_readonly_for(0x1111, true);
         assert!(is_readonly_for(0x1111));
@@ -621,11 +753,18 @@ mod tests {
     /// appended, or the list would answer with whichever copy came first.
     #[test]
     fn a_surface_can_be_toggled_back_and_keeps_one_entry() {
+        let _turn = readonly_arena::exclusive();
         clear();
         on_readonly_for(0x3333, true);
         on_readonly_for(0x3333, false);
         assert!(!is_readonly_for(0x3333));
-        assert_eq!(READONLY.lock().unwrap().len(), 1, "one entry per surface");
+        // **Read out, then assert.** `READONLY.lock().unwrap().len()` inside
+        // the assertion holds the guard until the end of the statement, so a
+        // failing assertion panics with the lock still held and poisons it --
+        // and the next test's `unwrap()` then fails on the poison rather than
+        // on its own subject. One real failure wearing three.
+        let entries = READONLY.lock().map(|v| v.len()).unwrap_or_default();
+        assert_eq!(entries, 1, "one entry per surface");
         clear();
     }
 
@@ -633,10 +772,13 @@ mod tests {
     /// surface" caller a shared answer, which is the original bug in miniature.
     #[test]
     fn surface_zero_is_never_readonly_and_is_never_stored() {
+        let _turn = readonly_arena::exclusive();
         clear();
         on_readonly_for(0, true);
         assert!(!is_readonly_for(0));
-        assert!(READONLY.lock().unwrap().is_empty());
+        // Read out before asserting, for the reason above.
+        let empty = READONLY.lock().map(|v| v.is_empty()).unwrap_or_default();
+        assert!(empty);
         clear();
     }
 }

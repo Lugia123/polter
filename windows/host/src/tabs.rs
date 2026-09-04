@@ -31,6 +31,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use polter_split_tree::{Focus, NewSplit, PaneId, Placement, Rect as TreeRect, Side, Tree};
@@ -718,6 +719,466 @@ pub fn with_windows_mut<R>(f: impl FnOnce(&mut Vec<WindowState>) -> R) -> R {
     f(&mut g.windows)
 }
 
+/// **The turn every test that can reach `STATE` waits for.**
+///
+/// It lives next to the lock rather than inside the test module that first
+/// needed it, and that placement is the whole of what task 189 was:
+///
+/// > **The boundary of "one at a time" has to follow the object, not the
+/// > module that happens to be writing about it.**
+///
+/// The serialiser this replaces was `deadlock_detector_tests`' own, with a
+/// comment saying it stopped D2 from being an instrument that reddens other
+/// people's tests. **It did not.** D2 holds `STATE` for 5.8 seconds; a turn
+/// taken only inside that module leaves every *other* module that reaches
+/// `reg()` free to run at the same time, wait out the five-second deadline
+/// and panic -- and the panic names D2's holding thread, in somebody else's
+/// subject:
+///
+/// ```text
+/// ---- winid::invariant_floor::it_speaks_when_tabs_has_one_and_winid_has_none ----
+/// panicked at tabs.rs:<L>:
+/// [state] DEADLOCK: tabs.rs:<L> waited 5s; holder is tabs.rs:<H>
+/// ```
+///
+/// **The two line numbers are elided on purpose.** `<L>` was the
+/// `with_windows_mut` inside `remove_window` -- the waiter, reached from
+/// `winid`'s cleanup -- and `<H>` was D2's deliberate holding thread. Copying
+/// the digits across would pin this comment to the build that produced them
+/// and say nothing on the day it stopped being right; **the payload is that
+/// the holder named by the panic is in the other module's test, and the
+/// subject named by the harness is this one.**
+///
+/// Three parallel runs of a healthy tree, three different sets of failures;
+/// `--test-threads=1` gave 187 passed, and `--skip deadlock_detector_tests`
+/// gave a clean floor in 0.09 seconds. **The tree was not red. The instrument
+/// was.**
+///
+/// # Who has to take it, and how that was decided
+///
+/// **Two modules reach `STATE`: this file's `deadlock_detector_tests` and
+/// `winid`'s `invariant_floor`.** That is measured, not assumed -- and the
+/// first measurement was wrong in a way worth writing down, because its
+/// error was invisible:
+///
+/// A scan for "test modules that call something reaching `reg()`" returned
+/// six. Three were false: `strip`'s `menu_inset_tests` and
+/// `close_affordance_tests` call **`strip`'s own pure `layout`**, which
+/// shares nothing but a name with `tabs::layout`; `winid`'s `registry_tests`
+/// and `numbering_tests` use **`winid`'s own `count` and `destroyed`**, which
+/// touch `FRAMES` and never reach this file.
+///
+/// > **Had those been taken at face value, two modules that cannot reach this
+/// > lock would have been given a turn to wait for -- and that surplus is
+/// > green. Nobody would ever have found out it was unnecessary.**
+///
+/// `hud`'s tests reach no locker at all, which is what separates their
+/// intermittent failures (a race of their own) from this one. **It also gives
+/// a reading in the other direction: if this change makes `hud` go green,
+/// something here is wrong.**
+///
+/// # Order, if a second lock is ever taken with this one
+///
+/// **This one first.** It is the outer, process-wide turn; a module's own
+/// registry lock is taken inside it. Today only `winid::invariant_floor`
+/// takes both, so no cycle is possible -- **and that is an accident of there
+/// being one such place, not a rule**, which is why the rule is written here.
+#[cfg(test)]
+pub(crate) mod test_arena {
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    thread_local! {
+        /// **Whether *this thread* holds the turn**, which is not the same
+        /// question as whether anybody does.
+        ///
+        /// The floor in `winid::invariant_floor` asserts a module is wired up
+        /// to this arena. Written as `ONE_AT_A_TIME.try_lock().is_err()` --
+        /// "somebody holds it" -- that assertion **passes on an unfixed tree**
+        /// whenever D2 happens to be holding the arena on another thread, and
+        /// a floor that can pass without its subject being wired up is not a
+        /// floor. This flag is per-thread, so it cannot answer for someone
+        /// else's turn.
+        static HAS_THE_TURN: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// A turn in the arena. **Bind it** -- `let _turn = exclusive();` --
+    /// because `let _ = exclusive();` drops it on the spot and the test then
+    /// runs unprotected, which looks like nothing at all.
+    pub(crate) struct Turn {
+        _inner: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Turn {
+        fn drop(&mut self) {
+            HAS_THE_TURN.with(|c| c.set(false));
+        }
+    }
+
+    /// Wait for the turn.
+    ///
+    /// **A poisoned lock is recovered from rather than propagated**: a test
+    /// that panics while holding the turn is one failure, and propagating the
+    /// poison would dress every test after it in a second one, each red on
+    /// the lock instead of on its own subject. **D2 panics a thread on
+    /// purpose**, so this is not hypothetical here.
+    #[must_use]
+    pub(crate) fn exclusive() -> Turn {
+        let inner = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        HAS_THE_TURN.with(|c| c.set(true));
+        Turn { _inner: inner }
+    }
+
+    /// For a module's floor to assert it is wired up to this arena.
+    pub(crate) fn this_thread_has_the_turn() -> bool {
+        HAS_THE_TURN.with(|c| c.get())
+    }
+}
+
+/// **Proving the deadlock detector speaks.** Four criteria, D0-D3.
+///
+/// # Why this exists
+///
+/// `reg()` has two ways to report a contended lock -- `resolved` on the way
+/// out of a wait that ended, `DEADLOCK` on a wait that did not -- and until
+/// this module was written **neither had ever been read back by anything.**
+///
+/// That is not a hypothetical cost. A hundred-second freeze was ruled *not* to
+/// be a wait on this lock because no `DEADLOCK` line appeared in the log; then
+/// all 23 logs on the test machine were searched and **not one contained it**,
+/// with a positive control (the same search for `[build]`, 23 of 23) proving
+/// the search reached the files. **A detector that has never been heard from
+/// and a broken one leave the same log**, so that exclusion was withdrawn.
+///
+/// This is what `maybe_panic_test` does for the panic hook, brought over to
+/// the other instrument in this file. **The shape is what is copied -- four
+/// criteria, one of which proves the device itself is connected -- not the
+/// delivery.** The panic hook can only be shown to speak in a real process,
+/// so it needs a command-line switch; lock contention can be made right here,
+/// and a switch would put a deliberate five-second hang in the shipped binary.
+///
+/// # What this covers, and what it does not
+///
+/// **It proves the detector speaks. It does not prove the process survives.**
+/// Tests run unwinding -- `panic = "abort"` is set only on
+/// `[profile.release]` -- so D2's reading that the waiting thread really
+/// panicked comes from `JoinHandle::join` returning `Err`, **and that reading
+/// does not exist under abort.**
+///
+/// **The half that is covered is the half an investigation uses**: the line is
+/// written before `panic!`, and the line is the whole of what anybody reads
+/// afterwards. Nothing here is evidence that "the deadlock detector is
+/// verified" -- only that it is not mute.
+///
+/// # Where the asserted strings come from
+///
+/// **Off `reg()` and `holder_str()` as they are now, not off the log that
+/// recorded a real deadlock.** That log (`status.md` item 45, 2026-09-02) came
+/// from before G1, when there was a single `state()`: it padded `DEADLOCK:`
+/// out with several spaces and named line numbers that no longer exist.
+/// **A criterion quoting an older log goes red on a healthy build, and that
+/// red is indistinguishable from a mute detector** -- which is the very
+/// confusion this module is here to end.
+#[cfg(test)]
+mod deadlock_detector_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Take the turn for this test, and reset the log throttle.
+    ///
+    /// **The turn is `super::test_arena`'s, not this module's**, and that
+    /// sentence is the whole of task 189. This module used to own a private
+    /// `ONE_AT_A_TIME`, under a comment reading *"without this, D2 is an
+    /// instrument that reddens other people's tests"*.
+    ///
+    /// **With it, D2 was still that instrument.** The comment was right about
+    /// the mechanism -- anything touching `STATE` while D2 holds it takes the
+    /// contended path, and a test unlucky enough to wait out the deadline
+    /// panics with `DEADLOCK` naming D2's holder, *a failure in someone
+    /// else's subject, manufactured entirely here*. It was wrong about the
+    /// reach: **a turn scoped to this module cannot serialise anything
+    /// outside it, and the lock it is protecting is process-wide.**
+    /// `winid::invariant_floor` reaches `reg()` too, and that is exactly the
+    /// failure the comment described, in the module the comment was written
+    /// in. See `super::test_arena` for the measurement and the rule.
+    ///
+    /// **Bind the result**: `let _serial = exclusive();`. Writing `let _ =
+    /// exclusive();` drops the guard on the spot and the test runs
+    /// unprotected, which looks like nothing at all.
+    ///
+    /// **Resetting `CONTENDED` is instrumentation, not a detour.** It changes
+    /// what gets *printed* -- `reg()` reports a wait only on the first one and
+    /// every ten-thousandth -- and changes nothing about which code a
+    /// contended `reg()` runs through. It is here because the second
+    /// contention in a process prints no `resolved` line at all, **and that
+    /// silence is indistinguishable from the mute detector this module was
+    /// written to rule out.** It is `#[cfg(test)]`, so in the product it is
+    /// absent rather than merely uncalled.
+    ///
+    /// **Clearing on the way in and nowhere else**, for `reopen`'s reason: a
+    /// promise made on the way out is one a panicking test cannot keep, and
+    /// **D2 panics a thread on purpose.**
+    ///
+    /// Poison recovery lives in `test_arena::exclusive`, for `reopen`'s
+    /// reason: otherwise one real failure here wears three false ones, each
+    /// red on the lock instead of on its own subject.
+    #[must_use]
+    fn exclusive() -> super::test_arena::Turn {
+        let serial = super::test_arena::exclusive();
+        CONTENDED.store(0, std::sync::atomic::Ordering::Relaxed);
+        serial
+    }
+
+    /// Run `body` with the log redirected, and hand back what was written.
+    ///
+    /// **The redirect is `crate::test_log`'s, not this module's**, and the
+    /// comment that used to stand here is why it had to move. It said the
+    /// copy was deliberate -- sharing a helper across two `#[cfg(test)]`
+    /// modules "would make each module's floor depend on the other's, and a
+    /// floor that can be broken from somewhere else is not one".
+    ///
+    /// **The independence it was protecting never existed.** These two copies
+    /// set one process-wide variable between them, so each module's floor
+    /// could already be broken from the other -- not through a shared helper,
+    /// through the variable. Task 187. See `crate::test_log` for the trace it
+    /// left and for why its criterion is a static one.
+    fn logged(body: impl FnOnce()) -> String {
+        crate::test_log::logged("deadlock-detector", body)
+    }
+
+    /// Spawn a thread that holds `STATE` for `hold`, and return only once it
+    /// really has it.
+    ///
+    /// **The handshake is the point.** Sleeping in the caller and trusting the
+    /// other thread to have got there first produces, on the runs where it did
+    /// not, a `reg()` that took the lock on the first try: **no `contended`
+    /// line, no `resolved` line, no `DEADLOCK` line.** That is precisely the
+    /// reading a mute detector gives. D0 is what catches it; the handshake is
+    /// what keeps it from happening.
+    fn hold_the_lock_for(hold: Duration) -> std::thread::JoinHandle<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let holder = std::thread::Builder::new()
+            .name("state-lock-holder".into())
+            .spawn(move || {
+                let held = reg();
+                tx.send(()).expect("the test asking for the lock is gone");
+                std::thread::sleep(hold);
+                drop(held);
+            })
+            .expect("could not spawn the lock-holding thread");
+        rx.recv()
+            .expect("the lock-holding thread died before it took the lock");
+        holder
+    }
+
+    /// **D0 -- the premise, and it is not in the detector's code.**
+    ///
+    /// Two halves, and D1-D3 are unreadable without both.
+    ///
+    /// **(i) The redirect took.** Every assertion in this module is of the
+    /// form "the log did (or did not) contain a string". If `logged` always
+    /// returned an empty string -- a wrong path, a redirect that did not take,
+    /// a file that could not be read -- **D3 would pass while proving
+    /// nothing**, and D1/D2 would fail in a way that reads like a mute
+    /// detector rather than a broken harness.
+    ///
+    /// **(ii) The contention device really contends.** When the two threads do
+    /// not overlap, `reg()` takes the lock uncontended and says nothing --
+    /// and "nothing" is the exact reading this module exists to tell apart
+    /// from a broken detector.
+    ///
+    /// **D1 and D2 each re-assert (ii) for themselves**, which is how "D0 runs
+    /// first" is honoured in a harness that picks its own order: there is no
+    /// schedule in which D0 is red and D1 or D2 is green.
+    #[test]
+    fn d0_the_harness_and_the_contention_device_both_work() {
+        let _serial = exclusive();
+
+        // process-wide: a probe for the redirect itself, not a report about a
+        // window -- it is written before any window exists and the whole of
+        // its content is "the log path took".
+        let out = logged(|| crate::plogf!("[floor] the redirect works"));
+        assert!(
+            out.contains("[floor] the redirect works"),
+            "POLTER_HOST_LOG redirect did not take, which leaves every other \
+             criterion in this module unreadable. Log was:\n{out}"
+        );
+
+        let out = logged(|| {
+            let holder = hold_the_lock_for(Duration::from_millis(200));
+            drop(reg());
+            holder.join().expect("the lock-holding thread panicked");
+        });
+        assert!(
+            out.contains("[state] contended #1: waiter "),
+            "the two threads never overlapped, so nothing was contended and \
+             D1/D2 would be reading silence rather than a detector. Log \
+             was:\n{out}"
+        );
+        assert!(
+            out.contains(", holder "),
+            "the contended line must carry both ends of the story. Log \
+             was:\n{out}"
+        );
+    }
+
+    /// **D1 -- a wait that ends says how long it waited.**
+    ///
+    /// The everyday outcome, and **the half whose silence would go unnoticed
+    /// the longest.** A mute `DEADLOCK` costs one withdrawn exclusion; a mute
+    /// `resolved` removes the only reading that separates ten thousand
+    /// momentary waits from one wait that never ends -- which is the
+    /// distinction the line was added to make, after an earlier version of it
+    /// described only the second and a real build printed 24 MB of the first.
+    ///
+    /// **`contended #1`, not `contended #`**, and the number is load-bearing:
+    /// `resolved` is printed only for the first wait and every
+    /// ten-thousandth, so this asserts the throttle's starting point instead
+    /// of assuming `exclusive` reset it. **The premise is read here rather
+    /// than trusted** -- if it were trusted and wrong, the missing `resolved`
+    /// line would look exactly like the thing being tested for.
+    #[test]
+    fn d1_a_wait_that_ends_reports_the_time_it_waited() {
+        let _serial = exclusive();
+        let out = logged(|| {
+            let holder = hold_the_lock_for(Duration::from_millis(300));
+            drop(reg());
+            holder.join().expect("the lock-holding thread panicked");
+        });
+        assert!(
+            out.contains("[state] contended #1: waiter "),
+            "D0(ii) does not hold in this run, so nothing below it can be \
+             read. Log was:\n{out}"
+        );
+        assert!(
+            out.contains("resolved after "),
+            "the wait ended and the detector said nothing about it. **This is \
+             the outcome the everyday path takes**, and a log that reports \
+             only deadlocks cannot tell churn from a hang. Log was:\n{out}"
+        );
+        assert!(
+            out.contains("(churn, not a deadlock)"),
+            "the resolved line must say which of the two illnesses this was. \
+             Log was:\n{out}"
+        );
+        assert!(
+            !out.contains("DEADLOCK"),
+            "a wait of 300ms was reported as a deadlock. Log was:\n{out}"
+        );
+    }
+
+    /// **D2 -- a wait that times out names the holder.**
+    ///
+    /// The outcome the withdrawn exclusion rested on. Three separate readings,
+    /// because the line has three jobs and any one of them can be mute while
+    /// the others work:
+    ///
+    ///  * the `DEADLOCK` line is written at all,
+    ///  * it says who was waiting and for how long,
+    ///  * and **it names the holder** -- which is the whole of what it is
+    ///    worth. `holder_str` answers `nobody (released between ...)` when the
+    ///    holder let go between the failed try and the read, and a report that
+    ///    cannot say who held the lock sends the next reader nowhere.
+    ///
+    /// **The waiting thread's panic is read from `join`, and only unwinding
+    /// makes that readable** -- see this module's own note on which half is
+    /// covered. The log line, which is written first, is the part the product
+    /// relies on.
+    #[test]
+    fn d2_a_wait_that_times_out_names_the_holder() {
+        let _serial = exclusive();
+        let mut waiter_panicked = false;
+        let out = logged(|| {
+            // Held past the five-second deadline, with enough margin that the
+            // release cannot race the timeout: a holder that let go first
+            // would produce a `resolved` line and read as D2 failing.
+            let holder = hold_the_lock_for(Duration::from_millis(5_800));
+            let waiter = std::thread::Builder::new()
+                .name("state-lock-waiter".into())
+                .spawn(|| drop(reg()))
+                .expect("could not spawn the waiting thread");
+            // **Taken here, asserted outside.** The reason has changed and
+            // the practice has not: it used to be that an assertion failing
+            // inside `logged` skipped the restore of `POLTER_HOST_LOG` and
+            // sent every later line in the process to a temporary file.
+            // `crate::test_log` restores in a `Drop` now, so that is no
+            // longer true -- but the join handles below still have to be
+            // waited on, and a panic through the middle of this closure
+            // leaks the holder thread instead of the redirect.
+            waiter_panicked = waiter.join().is_err();
+            holder.join().expect("the lock-holding thread panicked");
+        });
+        assert!(
+            out.contains("[state] contended #1: waiter "),
+            "D0(ii) does not hold in this run, so nothing below it can be \
+             read. Log was:\n{out}"
+        );
+        assert!(
+            out.contains("[state] DEADLOCK: "),
+            "the wait outlived the deadline and the detector said nothing. \
+             **This is the reading a hundred-second freeze was excluded on.** \
+             Log was:\n{out}"
+        );
+        assert!(
+            out.contains(" waited 5s; holder is "),
+            "the DEADLOCK line must say how long and whose lock. Log \
+             was:\n{out}"
+        );
+        assert!(
+            !out.contains("holder is nobody"),
+            "the detector fired but could not name the holder, which is the \
+             half that makes it worth having. Log was:\n{out}"
+        );
+        assert!(
+            waiter_panicked,
+            "the DEADLOCK line was written but the waiting thread carried on. \
+             **Under unwinding the panic is what stops a hung caller**; this \
+             says the detector reports and then returns into the hang."
+        );
+    }
+
+    /// **D3 -- the negative control, and D1/D2 do not count without it.**
+    ///
+    /// An uncontended take says nothing at all. Without this, a `reg()` that
+    /// printed `contended` and `DEADLOCK` unconditionally would pass both D1
+    /// and D2, and a log full of deadlocks that never happened is worse than
+    /// no line at all -- it is the noise that trains people to skip the line.
+    ///
+    /// **It carries its own floor, and it has to.** Every assertion here is
+    /// "the log does *not* contain", and an empty string satisfies all of
+    /// them. The marker line is what separates "nothing was logged because
+    /// nothing was contended" from "nothing was logged".
+    #[test]
+    fn d3_an_uncontended_take_says_nothing() {
+        let _serial = exclusive();
+        let out = logged(|| {
+            // process-wide: the floor for this criterion's own reading, not a
+            // report about a window -- without it an empty log would satisfy
+            // both assertions below.
+            crate::plogf!("[floor] this run contended nothing");
+            drop(reg());
+            drop(reg());
+            with_windows(|ws| ws.len());
+        });
+        assert!(
+            out.contains("[floor] this run contended nothing"),
+            "the log was not reaching the file, so 'it stayed quiet' below is \
+             not a reading. Log was:\n{out}"
+        );
+        assert!(
+            !out.contains("[state] contended"),
+            "an uncontended take reported contention, which would put this \
+             line in every log and end its usefulness. Log was:\n{out}"
+        );
+        assert!(
+            !out.contains("DEADLOCK"),
+            "an uncontended take reported a deadlock. Log was:\n{out}"
+        );
+    }
+}
+
 /// Queue an op and wake the main thread. Safe from any thread.
 /// How long a queued op waits before it is allowed to run, in milliseconds.
 ///
@@ -808,7 +1269,20 @@ pub fn post_op(frame: HWND, op: Op, from: &'static str) {
 /// tell "a window exists" from "somebody asked about a handle", and both of
 /// the questions this file has to answer -- how many windows, and whose tabs
 /// -- turn on that difference.
-pub fn add_window(frame: HWND) {
+/// **Called only by `winid::created`, which registers the other half.**
+///
+/// A window is recorded in two registries and they must be written as one
+/// act: a frame that is in `tabs` and not in `winid` (or the reverse) is a
+/// state every reader can observe and none of them expects, and the gap
+/// between two statements is where somebody later adds a third.
+/// `winid::created` is that one act; see its documentation for what the gap
+/// used to cost and why nothing goes red when it comes back.
+///
+/// `pub(crate)` is as narrow as Rust goes here -- it stops other crates, not
+/// other modules -- so "only `winid::created` calls this" is a sentence and
+/// not a rule the compiler keeps. It is written down because an unwritten
+/// convention and an unnoticed second caller look the same from here.
+pub(crate) fn add_window(frame: HWND) {
     let key = frame.0 as isize;
     let n = with_windows_mut(|ws| {
         if ws.iter().any(|w| w.frame == key) {
@@ -1213,12 +1687,65 @@ pub fn layout(frame: HWND) {
     let verbose = n <= 40;
     unsafe {
         // Hide before showing, so a zoom toggle does not flash both.
-        for (id, hw) in hide {
-            let ok = ShowWindow(hw, SW_HIDE).as_bool();
-            if verbose {
-                logf!("[layout #{}] pane {} -> hide (was visible: {})", n, id, ok);
+        //
+        // # Hiding a *visible* pane ends any composition it is carrying
+        //
+        // TSF ends the composition synchronously inside `ShowWindow`, and the
+        // handler in `tsf.rs` would then commit the half-typed text into the
+        // terminal -- so pressing a keybinding while composing opened the tab
+        // **and** typed the syllable. `with_host_shuffle` marks this window so
+        // that ending is discarded instead.
+        //
+        // **The trigger is hiding, not opening a tab.** Two earlier attempts
+        // guarded the focus change further down this function, and both missed
+        // it: the composition was already over 38ms before that ran. Anything
+        // that rearranges panes reaches this loop -- splitting, zooming,
+        // closing a tab -- so guarding the loop covers them all, while
+        // guarding the caller covers one.
+        //
+        // # What is actually known, and what was believed for one afternoon
+        //
+        // The log line below carries `ShowWindow`'s return value, which is
+        // exactly "was it visible", and one real run put the two cases side by
+        // side inside a single layout pass:
+        //
+        // ```text
+        // [layout #6] pane 1 -> hide (was visible: false)
+        // [ime] OnEndComposition commit="ni"
+        // [layout #6] pane 3 -> hide (was visible: true)
+        // ```
+        //
+        // That reads as "hiding a *visible* pane is what ends it", and it was
+        // written down here as exactly that. **It is not true.** Splitting a
+        // pane mid-composition ends the composition too, and in that run
+        // **both** hidden panes reported `was visible: false`.
+        //
+        // So the honest statement is narrower than the one that fits:
+        //
+        //   * the composition ends somewhere inside this loop -- measured, in
+        //     two different runs;
+        //   * *which* `ShowWindow` does it, and on what condition, **is not
+        //     known**. Visibility was the first hypothesis and it is refuted.
+        //
+        // **This guard therefore works by covering the whole loop, not by
+        // knowing the trigger.** That is a real difference and it has a
+        // consequence for whoever edits this function: the floor that proves
+        // the guard is not simply always-on (`H5`: type a word normally and
+        // watch it commit) **belongs to this code, not to the guard**. Move a
+        // `ShowWindow` out of this loop, or add a path around it, and that
+        // floor has to be run again -- the guard cannot tell you it stopped
+        // covering something.
+        //
+        // The open question is recorded in `docs/windows/status.md`; it is a
+        // debt, not a blocker, because the wide guard is safe.
+        crate::with_host_shuffle(|| {
+            for (id, hw) in hide {
+                let ok = ShowWindow(hw, SW_HIDE).as_bool();
+                if verbose {
+                    logf!("[layout #{}] pane {} -> hide (was visible: {})", n, id, ok);
+                }
             }
-        }
+        });
         for (id, hw, r) in place {
             let res = SetWindowPos(
                 hw,
@@ -1383,6 +1910,13 @@ fn create_pane(
         }
         return None;
     }
+    // **The other half of the pair `[mouse] divisor=` is compared against.**
+    // These two numbers come from the same expression at two different
+    // moments; if they ever differ, the round trip through the core does not
+    // cancel and a pointer lands somewhere a person did not point. They were
+    // equal the first time anybody looked -- which is how a suspected DPI
+    // defect turned out to be a mis-measurement rather than a fault here.
+    logf!("[pane] {} content_scale={} (told to the core at creation)", id, scale);
     unsafe {
         (api().surface_set_content_scale)(s, scale, scale);
         (api().surface_set_size)(s, w as u32, h as u32);
@@ -1515,6 +2049,12 @@ pub fn create_tab_with(
     layout(frame);
     focus_active(frame);
     wlogf!(frame, "[tab] created; count now {}", count(frame));
+    // **After the guard above is gone, and that is load-bearing.** Raising a
+    // UIA event can call straight back into `uia.rs`, which takes this
+    // module's lock -- and taking it twice on one thread hangs rather than
+    // panics. See the rule at the head of `uia.rs`'s events section;
+    // `borrow-across-dispatch.py` enforces it.
+    crate::uia::tabs_changed(frame);
     true
 }
 
@@ -1729,6 +2269,88 @@ pub fn surface_of_tab(frame: HWND, id: TabId) -> Surface {
             .iter()
             .find(|t| t.id == id)
             .and_then(|t| t.focused_pane())
+            .map(|p| p.surface)
+    });
+    match found {
+        Some(surface) => surface as Surface,
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// One tab, as the UIA provider needs to see it: identity first, then the
+/// things that are only true right now.
+///
+/// **Every field is owned, and the lock is not held when this is returned.**
+/// That is the point of the type rather than a convenience: `uia.rs` must
+/// call into libghostty to read the screen, and libghostty takes the core's
+/// renderer lock -- so the registry lock has to be gone by then. See the lock
+/// rule at the top of `uia.rs`.
+pub struct TabInfo {
+    pub id: TabId,
+    pub title: String,
+    /// The tab's focused pane. **Carried so the provider can name a pane by
+    /// identity** rather than holding a `Surface` pointer across calls: a
+    /// pane can be closed between one UIA call and the next, and a stale
+    /// `Surface` is the one mistake here that is not recoverable.
+    pub pane: PaneId,
+    /// That pane's window. **Carried in the same snapshot as the id, not
+    /// looked up afterwards**: two lookups a moment apart can straddle a
+    /// pane being closed, and the pair would then describe two different
+    /// panes while looking like one.
+    pub pane_hwnd: isize,
+}
+
+/// Every tab of one window, and which of them is active.
+///
+/// The twin of `strip_snapshot`, which the strip uses to paint. Kept
+/// separate rather than widened because the strip's version is called on
+/// every `WM_PAINT` and has no business growing a field for a caller that
+/// runs when a screen reader asks.
+pub fn tab_infos(frame: HWND) -> (Vec<TabInfo>, usize) {
+    match window(frame) {
+        Some(w) => (
+            w.tabs
+                .iter()
+                .map(|t| TabInfo {
+                    id: t.id,
+                    // The name the user gave wins over the one the program
+                    // announced -- the same precedence the strip paints with.
+                    title: t.title_override.clone().unwrap_or_else(|| t.title.clone()),
+                    pane: t.focused,
+                    pane_hwnd: t
+                        .panes
+                        .iter()
+                        .find(|p| p.id == t.focused)
+                        .map(|p| p.hwnd)
+                        .unwrap_or(0),
+                })
+                .collect(),
+            w.active,
+        ),
+        None => (Vec::new(), 0),
+    }
+}
+
+/// Resolve a `(frame, tab, pane)` triple to a live surface, or null.
+///
+/// **All three have to still agree**, which is what makes this different
+/// from `surface_of_pane`: a pane id is unique in the process, so looking it
+/// up alone would happily answer for a pane that has since been moved into
+/// another window -- and the UIA provider would then read window 2's
+/// terminal while claiming to be window 1's. Checking the whole triple is
+/// how "this element is gone" stays distinguishable from "this element now
+/// means something else".
+///
+/// A null return is the provider's cue to answer `UIA_E_ELEMENTNOTAVAILABLE`.
+/// **Not an empty string**: a terminal that has been closed and a terminal
+/// showing nothing are different facts, and a screen reader that is told the
+/// second one will sit reading a blank document that no longer exists.
+pub fn surface_of_tab_pane(frame: HWND, tab: TabId, pane: PaneId) -> Surface {
+    let found = window(frame).and_then(|w| {
+        w.tabs
+            .iter()
+            .find(|t| t.id == tab)
+            .and_then(|t| t.panes.iter().find(|p| p.id == pane))
             .map(|p| p.surface)
     });
     match found {
@@ -1955,16 +2577,30 @@ pub fn set_mark_for_surface(surface: Surface, role: u8, shielded: bool) -> bool 
 /// built to a mis-stated rule, which is why a renamed tab lost its name at the
 /// next `cd`.
 pub fn rename_tab(frame: HWND, id: TabId, title: String) {
-    {
+    // **Whether the rename actually landed**, taken inside the block and read
+    // outside it. Announcing a name that was never stored -- because the tab
+    // had gone -- would tell a client to re-read a property that has not
+    // changed, which is a smaller lie than the alternative but still a lie.
+    let renamed = {
         if let Some(mut w) = window(frame) {
-            if let Some(tab) = w.tabs.iter_mut().find(|t| t.id == id) {
-                tab.title = title.clone();
-                tab.title_override = Some(title);
+            match w.tabs.iter_mut().find(|t| t.id == id) {
+                Some(tab) => {
+                    tab.title = title.clone();
+                    tab.title_override = Some(title.clone());
+                    true
+                }
+                None => false,
             }
+        } else {
+            false
         }
-    }
+    };
     unsafe {
         let _ = InvalidateRect(Some(frame), None, false);
+    }
+    // Outside the block, same rule as the other four.
+    if renamed {
+        crate::uia::tab_renamed(frame, id, &title);
     }
 }
 
@@ -2057,6 +2693,10 @@ pub fn move_tab_to(frame: HWND, id: TabId, to: usize) {
     };
     layout(frame);
     logf!("[tab] moved {:?} from {} to {}", id, moved.0, moved.1);
+    // A reorder **is** a structure change: the children come back in a
+    // different order, and a client holding the old order is holding a wrong
+    // one. Outside the block above, for the reason written there.
+    crate::uia::tabs_changed(frame);
 }
 
 /// Panes in the active tab.
@@ -2080,10 +2720,29 @@ pub fn focus_active(frame: HWND) {
             None => return,
         }
     };
-    crate::ime_set_window(child);
-    unsafe {
-        let _ = SetFocus(Some(child));
-    }
+    // **Wrapped, because this focus move can end somebody's composition --
+    // but a real machine says it is not the only thing that does, and not the
+    // first.**
+    //
+    // `SetFocus` re-enters TSF, which ends any composition in flight and calls
+    // back into `tsf.rs` with the half-typed text still in the buffer; without
+    // the guard that text is committed to the terminal.
+    //
+    // **That was written as the explanation of the whole symptom, and the
+    // timestamps refuted it**: pressing a keybinding mid-composition still
+    // typed the syllable, and the composition had ended 38ms *before* this
+    // function ran -- 5ms before the tab it opens even existed. So something
+    // earlier, on the interception path itself, ends it first. `main.rs`'s
+    // `trace_intercept` is there to say which step, and until that reading
+    // exists this guard is known to be **insufficient, not wrong**: it still
+    // covers a real focus change, it just is not where the reported symptom
+    // comes from.
+    crate::with_host_shuffle(|| {
+        crate::ime_set_window(child);
+        unsafe {
+            let _ = SetFocus(Some(child));
+        }
+    });
     let s = active_surface(frame);
     if !s.is_null() {
         unsafe { (api().surface_set_focus)(s, true) };
@@ -2158,6 +2817,26 @@ pub fn frame_of_surface(surface: Surface) -> Option<HWND> {
     })
 }
 
+/// The **pane window** a surface is bound to, for anything that has to post a
+/// message to it.
+///
+/// The twin of `frame_of_surface`, one level down. `None` is a real answer and
+/// not a gap: the quick terminal's surface is not a pane, and a surface still
+/// inside `ghostty_surface_new` has no `Tab` yet. Callers refuse rather than
+/// pick a window -- posting a pane's message to the frame would be delivered
+/// to a window procedure that has never heard of it.
+// window-free: keyed by surface, which is unique in the process
+pub fn pane_hwnd_of_surface(surface: Surface) -> Option<HWND> {
+    let key = surface as usize;
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.surface == key)
+            .map(|p| HWND(p.hwnd as *mut c_void))
+    })
+}
+
 /// The surface bound to a particular pane window, for that window's wndproc.
 pub fn surface_of(hwnd: HWND) -> Surface {
     let key = hwnd.0 as isize;
@@ -2185,6 +2864,27 @@ pub fn surface_of(hwnd: HWND) -> Surface {
 /// own window procedure, which knows the pane and not the frame -- and asking
 /// the caller to supply a frame would mean asking it to guess, which is how a
 /// click in window 2 comes to activate a tab in window 1.
+///
+/// # It answers `None` for an ordinary pane, at a moment you will meet
+///
+/// A pane enters the model when `create_tab_with` pushes the finished `Tab`
+/// -- **after** `create_pane` has returned. Windows sends `WM_SIZE`, and the
+/// drop target is attached, *during* `CreateWindowExW` inside `create_pane`.
+/// So at those moments this function answers `None` for a pane that is
+/// perfectly normal and about to be perfectly registered.
+///
+/// That makes it the wrong thing to base a decision on there, and the failure
+/// is the quiet kind: the `None` branch is usually worded as "this pane is in
+/// no window", which is a true-sounding sentence that runs **every time**. Two
+/// call sites have already been written that way and corrected -- `dnd::attach`
+/// and the surface window's `WM_SIZE` line.
+///
+/// **Use `winid::frame_of_window` when the question is only "which frame".**
+/// It walks to the root window and checks *that* against the registry, and a
+/// frame is registered before it is ever shown -- so it is right from the
+/// first message a pane receives. Reach for `pane_of` when you genuinely need
+/// the tab index or the `PaneId`, and then treat `None` as "not yet", not as
+/// "not ours".
 pub fn pane_of(hwnd: HWND) -> Option<(HWND, usize, PaneId)> {
     let key = hwnd.0 as isize;
     with_windows(|ws| {
@@ -2235,8 +2935,36 @@ fn set_active(frame: HWND, idx: usize) {
         win.active = idx.min(win.tabs.len() - 1);
     }
     layout(frame);
+    // **One line, and it exists to split a dark stretch.** A main-thread
+    // freeze on a tab click left `[strip] click -> activate` and then the
+    // watchdog, with nothing in between -- and the two calls either side of
+    // this line are both known to be able to stop: `layout` once deadlocked
+    // by holding the window lock across `SetWindowPos`, and `focus_active`
+    // re-enters TSF synchronously through `SetFocus`. Without a mark here,
+    // telling those two apart costs a second run and a differential.
+    //
+    // **Present means `layout` returned**; missing with the click line above
+    // it means the freeze is inside `layout`. It says nothing about
+    // `focus_active`, which is what the line below it is for.
+    //
+    // It records and does nothing else -- no lock, no ordering change, no
+    // timeout -- because what it is used to catch is timing-dependent, and
+    // an instrument that shifts the timing is not measuring this bug. For
+    // the same reason it is one line and not four.
+    wlogf!(frame, "[tab] layout returned; focusing");
     focus_active(frame);
     wlogf!(frame, "[tab] active -> {} of {}", active_index(frame) + 1, count(frame));
+    // **A property change, not a structure change**: switching tabs does not
+    // alter the shape of the tree, only which element has focus. The identity
+    // is read back here rather than carried down from the block above, so the
+    // announcement is about the tab that ended up active -- `idx` was clamped.
+    let now = {
+        let (tabs_now, active) = tab_infos(frame);
+        tabs_now.get(active).map(|t| (t.id, t.pane))
+    };
+    if let Some((id, pane)) = now {
+        crate::uia::active_tab_changed(frame, id, pane);
+    }
 }
 
 pub fn active_index(frame: HWND) -> usize {
@@ -2259,6 +2987,11 @@ fn free_pane(id: PaneId, hwnd: isize, surface: usize) {
     // HWND. Destroy the window first and OLE is left clutching a dead handle
     // -- and nothing says so at the time.
     crate::dnd::detach(HWND(hwnd as *mut c_void));
+    // **Before the surface is freed, and not for tidiness.** Surface pointers
+    // are heap addresses and the allocator reuses them; a row left behind is
+    // one the next surface at that address inherits, opening a fresh pane with
+    // a closed one's pointer shape -- or with its pointer hidden.
+    crate::mouse::forget(surface);
     let t0 = std::time::Instant::now();
     logf!("[close] pane {} -> ghostty_surface_free …", id);
     unsafe {
@@ -2322,6 +3055,8 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
     logf!("[close] tab index {} panes gone; laying out", idx);
     layout(frame);
     wlogf!(frame, "[tab] closed index {}; count now {}", idx, count(frame));
+    // Same rule as the creation side: the critical section ended far above.
+    crate::uia::tabs_changed(frame);
 }
 
 /// `CF_UNICODETEXT`. Spelled numerically because the constant lives behind a
@@ -2965,16 +3700,355 @@ static LAYOUTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 /// How many times the surface was resized and told the core.
 static SIZES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Which wheel a notch came from. The conversion is identical on both axes;
+/// only the system setting and which offset the core is handed differ.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WheelAxis {
+    Vertical,
+    Horizontal,
+}
+
+impl WheelAxis {
+    /// The per-axis system preference. **Both are "how far one notch goes",
+    /// set by the user**, and both are read rather than assumed for the same
+    /// reason: on this platform the wheel speed a person expects is the one
+    /// they set in Windows.
+    fn setting(self) -> windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_ACTION {
+        match self {
+            WheelAxis::Vertical => {
+                windows::Win32::UI::WindowsAndMessaging::SPI_GETWHEELSCROLLLINES
+            }
+            WheelAxis::Horizontal => {
+                windows::Win32::UI::WindowsAndMessaging::SPI_GETWHEELSCROLLCHARS
+            }
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            WheelAxis::Vertical => "vertical",
+            WheelAxis::Horizontal => "horizontal",
+        }
+    }
+}
+
+/// How many wheel notches have been forwarded, so the first few can be logged
+/// without a line per notch for the life of the process.
+static WHEELS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// How many WM_PAINT the surface window has been sent.
 static PAINT_MSGS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The window that owns one surface: a child of the frame, or -- under
 /// `--toplevel` -- a top-level window of its own.
+/// Tell the core where the pointer is.
+///
+/// # The one conversion that is wrong invisibly
+///
+/// `LPARAM` carries client coordinates, and in a per-monitor-aware process
+/// those are **physical pixels**. The core wants **unscaled** ones: its
+/// `cursorPosCallback` multiplies by the content scale itself
+/// (`embedded.zig`'s `cursorPosToPixels`), using the very scale this host
+/// passed to `ghostty_surface_set_content_scale`.
+///
+/// So the two have to be divided back out here. **At 100% the bug is
+/// invisible** -- scale is 1 and the wrong version is the right version --
+/// and it only appears on a display where somebody would report it as "the
+/// selection is offset", which points at the selection code rather than at
+/// this line.
+///
+/// The scale is taken from the window rather than measured from anything
+/// drawn: a screenshot's reported scale on the test machine is not the real
+/// one, and geometry read back from an image would inherit that.
+fn mouse_pos(pane: HWND, lp: LPARAM) {
+    let s = surface_of(pane);
+    if s.is_null() {
+        return;
+    }
+    let Some(frame) = crate::winid::frame_of_window(pane) else {
+        return;
+    };
+    let scale = scale_of(frame).max(0.01);
+    let x = (lp.0 & 0xFFFF) as i16 as f64;
+    let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f64;
+    unsafe { (api().surface_mouse_pos)(s, x / scale, y / scale, crate::keys::mods()) };
+
+    // **This is not here for a defect. It is here because two causes would
+    // have produced the same screen, and the reading told them apart.**
+    //
+    // A selection was reported landing at exactly 1.5x the pointer on a 150%
+    // display. That single observation has two causes with opposite fixes:
+    // the conversion is inverted and should multiply, or the conversion is
+    // right and this divisor is 1.0 -- dividing by nothing while the core
+    // goes on multiplying by its own 1.5. Flipping the arithmetic would make
+    // the second *look* fixed at 150% and be wrong at every other scale
+    // (1.56x at 125%, 3.06x at 175%), so the number was printed before
+    // anything was changed.
+    //
+    // **The real machine then said `content_scale=1.5` and `divisor=1.5`,
+    // and `31 / 1.5 * 1.5 = 31`.** The conversion here was never wrong.
+    //
+    // The 1.5 was in the measurement: the probe injecting the coordinates was
+    // a DPI-unaware process, so Windows scaled everything it asked for by 1.5
+    // on the way to the desktop, and it then compared the coordinates *it had
+    // asked for* against a screenshot in physical pixels. The highlight had
+    // been under the pointer the whole time.
+    //
+    // **So these two lines stay, and what they are for has changed**: they
+    // are not evidence of a fault, they are what makes this arithmetic
+    // checkable the next time somebody suspects it -- and the next suspicion
+    // is likely, because everything here is invisible at 100%.
+    //
+    // # The rule that would have caught it at the source
+    //
+    // **Any probe that injects mouse coordinates must make its own process
+    // DPI-aware first, and must read the position back with `GetCursorPos`
+    // after `SetCursorPos`.** A read-back that does not equal the request
+    // means the probe is working in a different coordinate space from the
+    // thing it is measuring, and every number it produces afterwards is
+    // consistent, plausible, and about something else.
+    //
+    // **Once per drag, not once per move.** A line per `WM_MOUSEMOVE` is
+    // thousands of lines a second and would push the interesting ones out of
+    // reach; the divisor cannot change within one drag, so the first sample
+    // after each press says everything a whole drag would.
+    if MOUSE_SAMPLE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        wlogf!(
+            frame,
+            "[mouse] pos client=({},{}) divisor={} -> sent=({:.2},{:.2})",
+            x, y, scale, x / scale, y / scale
+        );
+    }
+}
+
+/// Set on each button press so the next motion reports its arithmetic once.
+///
+/// **An instrument, and it changes only what is visible**: nothing reads it
+/// to decide where a message goes, and clearing it cannot alter a coordinate.
+static MOUSE_SAMPLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Tell the core a button went down or came up.
+///
+/// **Position first, always.** The core resolves a click against wherever it
+/// last believes the pointer is, so a button reported before the position it
+/// happened at selects from the previous point. Every caller here sends
+/// `mouse_pos` immediately before -- except the capture-lost arm, which has
+/// `WM_MOUSEWHEEL`: hand the notch to the core as wheel ticks.
+///
+/// # Three different features come out of this one call
+///
+/// It is worth knowing before touching it, because "the wheel works now" can
+/// be true of one of them and false of the other two:
+///
+///   1. scrolling the scrollback, when nothing else claims the wheel;
+///   2. **mouse reporting** -- with `?1000h` and friends on, `scrollCallback`
+///      turns each notch into a button-4/5 report, which is how a mouse-aware
+///      full-screen program sees the wheel;
+///   3. **alternate scroll** -- on the alt screen with no reporting enabled,
+///      the same call turns notches into cursor keys, which is what makes the
+///      wheel work in `less`, `man` and `vim`.
+///
+/// All three are on the far side of `ghostty_surface_mouse_scroll`, so none
+/// of them existed while this was unwired, and all three arrive together.
+///
+/// # What Windows gives, and what the core wants
+///
+/// `wDelta` arrives as a multiple of `WHEEL_DELTA` (120), so dividing by 120
+/// gives notches; a high-resolution wheel sends less than 120 at a time and
+/// the fraction is passed through, which the core supports.
+///
+/// **The core wants ticks and multiplies by the cell height and the user's
+/// `mouse-scroll-multiplier` itself**, so neither of those is applied here.
+///
+/// # Why the system setting *is* applied here, and where that diverges
+///
+/// `SPI_GETWHEELSCROLLLINES` is the number of lines Windows says one notch
+/// moves -- three by default, and **the user sets it**. Ghostty's own model is
+/// one notch equals one cell times its own multiplier, so on other platforms
+/// that system preference plays no part.
+///
+/// **This host applies it, and that is a deliberate divergence from the other
+/// platforms**, on the same grounds as the eight keybindings this fork adds:
+/// a terminal on Windows is a Windows program, and the wheel speed a person
+/// expects is the one they set in Windows. Without it the wheel is three times
+/// slower than every other window on the machine and the setting they changed
+/// does nothing.
+///
+/// **The two multipliers are not the same quantity**: the system setting is
+/// the platform convention (notch -> lines), `mouse-scroll-multiplier` is the
+/// person's preference about *this* application. Applying both is correct;
+/// applying either one twice is not.
+///
+/// **Divergences are fine, silent divergences are not**, which is why this
+/// paragraph is here and why the value is logged the first few times.
+///
+/// # `WHEEL_PAGESCROLL`
+///
+/// That setting can be `WHEEL_PAGESCROLL` (`0xFFFF_FFFF`), meaning "one notch
+/// scrolls a screenful". **It is a real option in the Windows mouse control
+/// panel, not a theoretical edge**, and multiplying by it as if it were a line
+/// count gives four billion lines per notch. It gets its own branch, and a log
+/// line, because a wheel that scrolls to the end of the buffer on one notch
+/// would otherwise look like a scrolling bug rather than a setting.
+///
+/// # Horizontal, and a wrong reason that was nearly kept
+///
+/// `WM_MOUSEHWHEEL` goes through here too, on the other axis.
+///
+/// **It was first left out, and the argument for leaving it out was itself
+/// unverified**: "almost no mouse can produce one, so it would be code that
+/// ships without ever being run". Nobody measured that. It is false --
+/// **Windows precision touchpads send `WM_MOUSEHWHEEL` for a two-finger
+/// sideways swipe**, and tilt wheels send it too; on a laptop it is ordinary
+/// input.
+///
+/// The reasoning is worth keeping because of *which* lesson it misused. The
+/// rule about code that is written and never run demands **finding out
+/// whether it runs**; it was used instead to justify *assuming* it does not.
+/// **A reason that sounds sufficient is the thing that stops the checking.**
+///
+/// The machine these are tested on is a desktop with an external mouse, so
+/// the horizontal path most likely cannot be exercised there. It is written
+/// anyway, and the criteria say **"cannot be verified here"** rather than
+/// leaving the row out: an item marked unverifiable and an item that is
+/// missing look different on a list, and only the second one gets read as
+/// done.
+fn mouse_wheel(pane: HWND, wp: WPARAM, axis: WheelAxis) {
+    let s = surface_of(pane);
+    if s.is_null() {
+        return;
+    }
+    let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
+    let notches = delta / 120.0;
+
+    let mut lines_raw: u32 = 3;
+    let ok = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+            axis.setting(),
+            0,
+            Some(&mut lines_raw as *mut u32 as *mut std::ffi::c_void),
+            windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    if ok.is_err() {
+        // Not fatal and not silent: three is Windows' own default, so the
+        // wheel still behaves like the rest of the system, but a reader
+        // comparing speeds needs to know the setting was never read.
+        crate::hlogf!(
+            pane,
+            "[mouse] {} wheel: SystemParametersInfoW failed; falling back to 3 per notch",
+            axis.name()
+        );
+        lines_raw = 3;
+    }
+
+    const WHEEL_PAGESCROLL: u32 = u32::MAX;
+    // **Anything past this is treated as a mistake rather than a preference.**
+    // The documented sentinel is handled by name below; this catches the rest
+    // -- a value that is neither the sentinel nor plausible. Without it, one
+    // unexpected number turns every notch into a jump to the end of the
+    // buffer, and that reads as a scrolling bug rather than as a setting.
+    const ABSURD: u32 = 100;
+    let (lines, paged) = if lines_raw == WHEEL_PAGESCROLL {
+        // "One screenful per notch." Sent as a large-but-sane number rather
+        // than the sentinel; the core scrolls by rows and has no page concept
+        // at this entry point.
+        (25.0_f64, true)
+    } else if lines_raw > ABSURD {
+        crate::hlogf!(
+            pane,
+            "[mouse] {} wheel: the system says {} per notch, which is past anything \
+             plausible; using 3. (Not silently: a wheel behaving oddly should be \
+             traceable to the number it was given.)",
+            axis.name(),
+            lines_raw
+        );
+        (3.0_f64, false)
+    } else {
+        (lines_raw as f64, false)
+    };
+
+    let off = notches * lines;
+    let n = WHEELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n <= 5 || paged {
+        crate::hlogf!(
+            pane,
+            "[mouse] wheel axis={} delta={} notches={:.3} per_notch={}{} -> off={:.3}",
+            axis.name(),
+            delta,
+            notches,
+            lines,
+            if paged { " (WHEEL_PAGESCROLL: one screenful per notch, sent as 25)" } else { "" },
+            off
+        );
+    }
+
+    // **Signs pass straight through on both axes.** Win32: a positive
+    // vertical delta is away from the user, a positive horizontal delta is to
+    // the right. The core: positive is up, positive is right. No negation --
+    // and a negation added "to be safe" would be invisible to any criterion
+    // that only asks whether the view moved.
+    let (xoff, yoff) = match axis {
+        WheelAxis::Vertical => (0.0, off),
+        WheelAxis::Horizontal => (off, 0.0),
+    };
+    unsafe { (api().surface_mouse_scroll)(s, xoff, yoff, 0) };
+}
+
+/// no position to report and must not invent one.
+fn mouse_button(pane: HWND, state: i32, button: i32) {
+    let s = surface_of(pane);
+    if s.is_null() {
+        return;
+    }
+    unsafe { (api().surface_mouse_button)(s, state, button, crate::keys::mods()) };
+}
+
 pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
             // Same contract as the frame had in M1: we own every pixel.
             WM_ERASEBKGND => LRESULT(1),
+
+            // **The half that makes a pointer shape stick.** The core
+            // announces a shape once; Windows asks this question again on
+            // every pointer movement, and `DefWindowProcW` answers it with the
+            // window class's `IDC_ARROW`. Answering it here -- and returning
+            // `1` so nothing downstream gets to answer it again -- is what
+            // turns "the shape was recorded" into "the shape is on screen".
+            //
+            // **`HTCLIENT` only.** The low word is the hit-test code, and a
+            // pane is a child window that is almost always client area; the
+            // guard is there so that a resize border or a scroll bar, if one
+            // ever appears, keeps the cursor Windows chose for it.
+            //
+            // `false` from `mouse::apply` means the core has not said anything
+            // about this surface yet. That falls through rather than defaulting
+            // to an arrow here, so the class cursor stays the single place the
+            // default is written.
+            WM_SETCURSOR => {
+                if (lp.0 & 0xFFFF) as u32 == HTCLIENT as u32 {
+                    let s = surface_of(hwnd);
+                    if !s.is_null() && crate::mouse::apply(hwnd, s as usize) {
+                        return LRESULT(1);
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+
+            // The core changed the pointer's visibility. Posted rather than
+            // done in the action, because `SetCursor` belongs to the thread
+            // that owns the window and the action arrives on whichever thread
+            // the core is on. See `mouse::on_visibility_message` for why the
+            // pointer's position is consulted before anything is hidden.
+            crate::mouse::WM_POLTER_MOUSE_VISIBILITY => {
+                let s = surface_of(hwnd);
+                if !s.is_null() {
+                    crate::mouse::on_visibility_message(hwnd, s as usize);
+                }
+                LRESULT(0)
+            }
 
             WM_PAINT => {
                 // Logged whether or not we draw: "the surface window is being
@@ -3095,6 +4169,61 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 // that arrived at a pane which may belong to any window.
                 // `focus_pane_at` now works the frame out from the pane.
                 focus_pane_at(hwnd);
+
+                // **Capture, so a drag that leaves the window keeps arriving.**
+                // Without it the pointer crossing into the next pane stops
+                // sending us `WM_MOUSEMOVE` and the selection freezes where it
+                // was, which reads as "selection stops halfway".
+                let _ = SetCapture(hwnd);
+                MOUSE_SAMPLE.store(true, std::sync::atomic::Ordering::Relaxed);
+                mouse_pos(hwnd, lp);
+                mouse_button(hwnd, crate::ffi::MOUSE_PRESS, crate::ffi::MOUSE_LEFT);
+                LRESULT(0)
+            }
+
+            WM_MOUSEMOVE => {
+                mouse_pos(hwnd, lp);
+                LRESULT(0)
+            }
+
+            // **No `mouse_pos` first here, unlike the button arms.**
+            // `WM_MOUSEWHEEL`'s lParam is in *screen* coordinates, not client
+            // ones -- passing it to `mouse_pos`, which assumes client, would
+            // move the core's idea of the pointer to somewhere off the pane.
+            WM_MOUSEWHEEL => {
+                mouse_wheel(hwnd, wp, WheelAxis::Vertical);
+                LRESULT(0)
+            }
+
+            // The other axis: precision touchpads send this for a two-finger
+            // sideways swipe, and tilt wheels for a tilt.
+            WM_MOUSEHWHEEL => {
+                mouse_wheel(hwnd, wp, WheelAxis::Horizontal);
+                LRESULT(0)
+            }
+
+            WM_LBUTTONUP => {
+                mouse_pos(hwnd, lp);
+                mouse_button(hwnd, crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_LEFT);
+                let _ = ReleaseCapture();
+                LRESULT(0)
+            }
+
+            // **Capture taken away from us, rather than given back.**
+            //
+            // Windows sends this when something else claims the mouse, when
+            // the window is destroyed under a held button, and when an
+            // Alt+Tab or a modal steals it. **The button is never released as
+            // far as the core is concerned**, so without this arm a drag
+            // interrupted that way leaves the core believing the button is
+            // still down: every later pointer movement goes on extending a
+            // selection nobody is dragging.
+            //
+            // `ReleaseCapture` is deliberately **not** called here -- capture
+            // is already gone, and asking for it back is how the pair stops
+            // meaning anything.
+            WM_CAPTURECHANGED => {
+                mouse_button(hwnd, crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_LEFT);
                 LRESULT(0)
             }
 

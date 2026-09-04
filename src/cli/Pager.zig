@@ -30,7 +30,7 @@ pub fn writer(self: *Pager, buffer: []u8) *std.Io.Writer {
     if (self.child) |child| {
         self.file_writer = child.stdin.?.writer(global.io(), buffer);
     } else {
-        self.file_writer = std.Io.File.stdout().writer(global.io(), buffer);
+        self.file_writer = std.Io.File.stdout().writerStreaming(global.io(), buffer);
     }
     return &self.file_writer.interface;
 }

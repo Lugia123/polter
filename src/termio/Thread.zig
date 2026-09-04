@@ -225,6 +225,29 @@ pub fn threadMain(self: *Thread, io: *termio.Termio) void {
             OpenptyFailed,
             InputNotFound,
             InputFailed,
+            // Named by `Command.spawnError` on Windows. Listed here for the
+            // same reason the three above are: this switch has to be able to
+            // mention them on every target, or the arm that says something
+            // useful would only compile on one.
+            FileNotFound,
+            AccessDenied,
+            InvalidExe,
+            IsDir,
+            BadPathName,
+            SystemResources,
+        };
+
+        // The command that would not start, when there is one to name.
+        //
+        // **A message that says what failed is worth more than one that
+        // guesses why.** "polter: not found" is a sentence somebody can act
+        // on; "usually due to exhausting a system resource" is one they can
+        // only obey, and it sends them to the wrong place.
+        const cmd: ?[]const u8 = switch (io.backend) {
+            .exec => |*exec| if (exec.subprocess.args.len > 0)
+                exec.subprocess.args[0]
+            else
+                null,
         };
 
         switch (@as(Err, @errorCast(err))) {
@@ -262,18 +285,96 @@ pub fn threadMain(self: *Thread, io: *termio.Termio) void {
                 t.printString(str) catch {};
             },
 
-            else => {
+            // The command is not where the search looked. On Windows that
+            // means it is not in the application's directory, the working
+            // directory, the system directories or `PATH`; on POSIX, not on
+            // `PATH`. **This is the arm that used to fall through and be
+            // reported as a resource shortage**, which sent people to close
+            // programs and check memory for a command that was simply not
+            // installed or not on the path.
+            error.FileNotFound => {
                 const str = std.fmt.allocPrint(
                     alloc,
-                    \\error starting IO thread: {}
+                    \\Could not start `{s}`: no such command.
                     \\
-                    \\The underlying shell or command was unable to be started.
-                    \\This error is usually due to exhausting a system resource.
-                    \\If this looks like a bug, please report it.
+                    \\The program was not found in any of the places the system
+                    \\looks, which includes the directories on PATH. Nothing is
+                    \\wrong with this computer's memory or resources.
+                    \\
+                    \\Check that the program is installed and that its directory
+                    \\is on PATH, or give its full path instead.
                     \\
                     \\This terminal is non-functional. Please close it and try again.
                 ,
-                    .{err},
+                    .{cmd orelse "the configured command"},
+                ) catch
+                    \\Out of memory. This terminal is non-functional. Please close it and try again.
+                ;
+
+                t.eraseDisplay(.complete, false);
+                t.printString(str) catch {};
+            },
+
+            error.AccessDenied, error.IsDir, error.InvalidExe, error.BadPathName => {
+                const str = std.fmt.allocPrint(
+                    alloc,
+                    \\Could not start `{s}`: {t}
+                    \\
+                    \\The command was found but could not be run: it may not be
+                    \\executable by this user, may be a directory, or may not be
+                    \\a program this system can run.
+                    \\
+                    \\This terminal is non-functional. Please close it and try again.
+                ,
+                    .{ cmd orelse "the configured command", err },
+                ) catch
+                    \\Out of memory. This terminal is non-functional. Please close it and try again.
+                ;
+
+                t.eraseDisplay(.complete, false);
+                t.printString(str) catch {};
+            },
+
+            // **The only arm allowed to say "system resource"**, and it says
+            // it because something below actually reported one -- out of
+            // memory, out of handles. The sentence used to be in the
+            // catch-all, where it was said about every failure and was true
+            // of almost none.
+            error.SystemResources => {
+                const str =
+                    \\Your system is out of a resource this terminal needs
+                    \\(memory, handles, or processes).
+                    \\
+                    \\Closing some windows or programs and trying again is the
+                    \\usual remedy.
+                    \\
+                    \\This terminal is non-functional. Please close it and try again.
+                ;
+
+                t.eraseDisplay(.complete, false);
+                t.printString(str) catch {};
+            },
+
+            // **Says what happened and stops.** The sentence that used to be
+            // here -- "this error is usually due to exhausting a system
+            // resource" -- was a guess printed as a finding, for every
+            // startup failure this switch had not enumerated, on every
+            // platform. It was wrong in the one case anybody hit, and being
+            // wrong sent people to look somewhere there was nothing to find.
+            // If a cause belongs on the screen it belongs in an arm above,
+            // where something has actually established it.
+            else => {
+                const str = std.fmt.allocPrint(
+                    alloc,
+                    \\Could not start `{s}`: {t}
+                    \\
+                    \\That is what the system reported; this terminal has nothing
+                    \\further to add about why. If it looks like a bug, please
+                    \\report it with the error above.
+                    \\
+                    \\This terminal is non-functional. Please close it and try again.
+                ,
+                    .{ cmd orelse "the configured command", err },
                 ) catch
                     \\Out of memory. This terminal is non-functional. Please close it and try again.
                 ;

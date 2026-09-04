@@ -107,7 +107,7 @@ pub fn unshifted_codepoint(vk: u32) -> u32 {
 static KEYS_LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 use crate::ffi::{self, Surface};
-use crate::{api, logf};
+use crate::{api, hlogf, logf, plogf};
 use windows::Win32::Foundation::{HWND, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -144,6 +144,31 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 /// fires -- they are supposed to fire, so the line is a signal rather than
 /// noise, and when the core grows a default the line will stop appearing,
 /// which is the reading that says a row can retire.
+/// The modifiers that must **not** be held for a host accelerator to fire,
+/// named rather than counted.
+///
+/// **The table below is matched on `Ctrl` and `Shift` alone, so without this
+/// every row also answered to any number of extra modifiers**:
+/// `Ctrl+Shift+Alt+M` maximised the window, and so did `Ctrl+Shift+Win+M`.
+/// Those are chords other software and input methods own -- pressing one and
+/// having a window maximise is the kind of thing nobody traces back to a
+/// terminal.
+///
+/// **It returns the name, not a bool, because the rejection has to be
+/// legible.** A tightened condition that merely does nothing turns "this key
+/// does not work" into silence, and silence is indistinguishable from the key
+/// never having arrived -- which is a live, unresolved problem in this host
+/// (see `docs/windows/keys.md` §2.3). So the caller logs *which* modifier
+/// stopped it.
+fn blocking_mods(alt: bool, win: bool) -> Option<&'static str> {
+    match (alt, win) {
+        (true, true) => Some("Alt and Win"),
+        (true, false) => Some("Alt"),
+        (false, true) => Some("Win"),
+        (false, false) => None,
+    }
+}
+
 fn accelerator(vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<&'static str> {
     match (ctrl, shift, vk) {
         // **`ctrl+shift+,` was here, and the argument for keeping it was
@@ -242,13 +267,30 @@ pub fn handle_key_message(
             keycode: keycode(lp),
             text: text_ptr,
             unshifted_codepoint: unshifted_codepoint(wp.0 as u32),
+            // **This is hard-coded, and the core therefore never learns that
+            // the host is composing.** `tsf.rs` knows -- `Ime::composing` is
+            // set and cleared by `OnStartComposition` / `OnEndComposition` --
+            // and that answer is simply not passed on here.
+            //
+            // **Read this before leaving it as it is.** It is harmless today
+            // only because nothing in the core reads the field, and that is a
+            // fact about somebody else's code on some other day. The moment
+            // the core decides anything by it -- "while composing, do not
+            // treat a key as a binding" is the obvious one -- a constant
+            // `false` sends that decision down the wrong branch **every single
+            // time**, and nothing raises so much as a warning: the key is
+            // handled, just as though no input method were running. The
+            // symptom would be an IME user losing composition to a keybind,
+            // which reads as a keybind bug rather than as this line.
             composing: false,
         };
         let vk = wp.0 as u16;
         // Read out what the log needs before the event is handed over: the
         // C struct is passed by value and moves.
         let (ev_keycode, ev_mods) = (ev.keycode, ev.mods);
+        crate::trace_intercept("before surface_key");
         let consumed_by_core = (api().surface_key)(surface, ev);
+        crate::trace_intercept("after surface_key");
         let mut consumed = consumed_by_core;
 
         // **Log every key with a modifier, and the first few of everything.**
@@ -277,7 +319,41 @@ pub fn handle_key_message(
         if !consumed && is_down {
             let ctrl = down(VK_CONTROL);
             let shift = down(VK_SHIFT);
-            if let Some(name) = accelerator(VIRTUAL_KEY(vk), ctrl, shift) {
+            // **Checked here rather than inside the table**, so the table
+            // stays a plain list of chords and the policy has one home --
+            // next to the log line that has to explain it.
+            let extra = blocking_mods(
+                down(VK_MENU),
+                down(VK_LWIN) || down(VK_RWIN),
+            );
+            // **Refused, and refused *without consuming the key*.**
+            //
+            // An early return here would be a second defect wearing the
+            // first one's clothes: `Alt` makes this a `WM_SYSKEYDOWN`, and
+            // the tail of this function hands those to `DefWindowProcW` on
+            // purpose -- swallowing them takes `Alt+F4` and the system menu
+            // with them. So this arm only writes a line; `consumed` stays
+            // false and the message goes on to its normal ending.
+            match (accelerator(VIRTUAL_KEY(vk), ctrl, shift), extra) {
+                (Some(name), Some(held)) => {
+                    // **Said out loud, not silently dropped.** Somebody
+                    // pressing this combination and getting nothing needs to
+                    // be able to tell "the host refused it" from "the key
+                    // never arrived"; those two look the same from a chair,
+                    // and this host has an open question about exactly that
+                    // (`docs/windows/keys.md` §2.3).
+                    // `hlogf!`, not `logf!`: this is about one window, and
+                    // the handle is a surface, so it is walked up to its frame
+                    // (or the line says it is about no window at all).
+                    hlogf!(
+                        hwnd,
+                        "[key] host accelerator {:?} NOT fired: {} also held \
+                         (this table matches Ctrl+Shift exactly)",
+                        name,
+                        held
+                    );
+                }
+                (Some(name), None) => {
                 // Two kinds of entry live in that table. Most are core action
                 // names and go to `ghostty_surface_binding_action`. A `__polter_`
                 // one names something the core has never heard of -- sending it
@@ -303,6 +379,8 @@ pub fn handle_key_message(
                     ok
                 );
                 consumed = ok;
+                }
+                (None, _) => {}
             }
         }
 
@@ -655,4 +733,204 @@ mod shortcut_tests {
         assert_eq!(sb.as_deref(), Some("Alt+Y"));
         assert_ne!(sa, sb, "two bindings must not render to the same label");
     }
+}
+
+#[cfg(test)]
+mod accelerator_mod_tests {
+    use super::blocking_mods;
+
+    /// **The table matches `Ctrl+Shift` and nothing else**, so anything else
+    /// held has to stop it. Before this, `Ctrl+Shift+Alt+M` maximised the
+    /// window and so did `Ctrl+Shift+Win+M` -- chords that belong to other
+    /// software and to input methods.
+    #[test]
+    fn an_extra_modifier_blocks_the_chord() {
+        assert!(blocking_mods(true, false).is_some(), "Alt must block");
+        assert!(blocking_mods(false, true).is_some(), "Win must block");
+        assert!(blocking_mods(true, true).is_some(), "both must block");
+    }
+
+    /// **The floor for the test above.** A `blocking_mods` that returned
+    /// `Some` unconditionally would pass it while stopping every accelerator
+    /// in the table -- and the symptom of that is "the shortcut stopped
+    /// working", reported by somebody who will not connect it to this change.
+    #[test]
+    fn the_plain_chord_is_not_blocked() {
+        assert!(blocking_mods(false, false).is_none());
+    }
+
+    /// **It has to say *which* one.** The rejection is written into the log so
+    /// that "the host refused this" can be told apart from "the key never
+    /// arrived" -- and a line that says only "refused" leaves the reader with
+    /// the same question they started with.
+    #[test]
+    fn it_names_the_modifier_that_stopped_it() {
+        assert_eq!(blocking_mods(true, false), Some("Alt"));
+        assert_eq!(blocking_mods(false, true), Some("Win"));
+        assert_eq!(blocking_mods(true, true), Some("Alt and Win"));
+        // Three different situations, three different strings: a reader who
+        // sees one knows which key to let go of.
+        let all = [
+            blocking_mods(true, false),
+            blocking_mods(false, true),
+            blocking_mods(true, true),
+        ];
+        let mut seen = all.to_vec();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 3, "each case must be distinguishable in the log");
+    }
+}
+
+// ---------------------------------------- would the core have wanted this?
+
+/// `ghostty_surface_key_is_binding`, resolved lazily.
+///
+/// **Not in `ffi::Api`, and that is the difference between a diagnostic and a
+/// dependency.** `Api` is loaded with `sym!`, which aborts startup when a
+/// symbol is missing -- correct for the entry points the terminal cannot run
+/// without, wrong for this one. A `ghostty-internal.dll` older than this
+/// question should still start; it just cannot answer it. Same shape, and the
+/// same reason, as `config_trigger_fn` above.
+static KEY_IS_BINDING: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+type KeyIsBindingFn =
+    unsafe extern "C" fn(Surface, ffi::KeyEvent, *mut std::os::raw::c_int) -> bool;
+
+/// `ghostty_binding_flags_e`: `include/ghostty.h` gives `PERFORMABLE = 1 << 3`.
+const BINDING_FLAG_PERFORMABLE: std::os::raw::c_int = 1 << 3;
+
+fn key_is_binding_fn() -> Option<KeyIsBindingFn> {
+    use std::sync::atomic::Ordering;
+    use windows::core::s;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+    let cached = KEY_IS_BINDING.load(Ordering::Acquire);
+    if cached != usize::MAX {
+        return if cached == 0 {
+            None
+        } else {
+            Some(unsafe { std::mem::transmute::<usize, KeyIsBindingFn>(cached) })
+        };
+    }
+    let addr = unsafe {
+        GetModuleHandleA(s!("ghostty-internal.dll"))
+            .ok()
+            .and_then(|m| GetProcAddress(m, s!("ghostty_surface_key_is_binding")))
+            .map(|p| p as usize)
+            .unwrap_or(0)
+    };
+    KEY_IS_BINDING.store(addr, Ordering::Release);
+    if addr == 0 {
+        // process-wide: a symbol is present or absent in the loaded DLL, which
+        // is a fact about this process and not about any one window
+        plogf!(
+            "[key] ghostty_surface_key_is_binding not exported; \
+             cannot say whether an intercepted key was one of ours"
+        );
+        return None;
+    }
+    Some(unsafe { std::mem::transmute::<usize, KeyIsBindingFn>(addr) })
+}
+
+/// **Would this key have run one of our bindings, had it reached the core?**
+///
+/// # Why this exists, and why it only writes a line
+///
+/// While an input method is composing, TSF claims keys before the core is
+/// ever offered them -- **including chords that are ours**. A real machine
+/// showed `ctrl`, `shift` and `c` all taken with `composing=Some(true)`, so
+/// `ctrl+shift+c` did nothing while a candidate window was open. Every
+/// application shortcut is unavailable in that state.
+///
+/// The fix would be to keep such chords away from TSF. **This is not that
+/// fix**: it asks the question and writes the answer down, because the number
+/// that decides whether the fix is worth its risk -- *how many of the keys
+/// taken during composition were ours* -- is not known, and guessing it is
+/// what the risk is made of.
+///
+/// # The trap this call sits next to
+///
+/// `keyEventIsBinding` answers "would this trigger a binding", and its own
+/// documentation says it **does not check `performable`**. So `ctrl+shift+c`
+/// with no selection answers *yes* here, while the core would decline it if
+/// actually sent. **An interception built on the bare boolean would take such
+/// a key away from the input method, have the core refuse it, have the host
+/// accelerator table refuse it too, and the key would simply vanish** -- worse
+/// than today, where at least the IME uses it. That is why the flags are read
+/// and reported separately: the number worth acting on is
+/// `binding=yes performable=no`, not `binding=yes`.
+/// What the core says about a key, in the three shapes that matter here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingAnswer {
+    /// A binding, and its answer does not depend on terminal state.
+    /// **The only kind that may be taken away from the input method.**
+    Ours,
+    /// A binding, but `performable`: the core will decline it when the
+    /// conditions are not met. Taking it from the input method would mean
+    /// nobody handles it at all.
+    Performable,
+    /// Not one of ours; the input method is welcome to it.
+    NotOurs,
+    /// The question could not be asked. **Its own answer, never folded into
+    /// `NotOurs`** -- "we did not ask" and "we asked and it said no" lead to
+    /// opposite conclusions about whether the numbers below are complete.
+    Unknown(&'static str),
+}
+
+impl BindingAnswer {
+    /// For the log line. One string per case, so a reader can tell all four
+    /// apart without knowing the enum.
+    pub fn label(self) -> &'static str {
+        match self {
+            BindingAnswer::Ours => "binding=yes performable=no",
+            BindingAnswer::Performable => {
+                "binding=yes performable=yes (intercepting this one would lose the key)"
+            }
+            BindingAnswer::NotOurs => "binding=no",
+            BindingAnswer::Unknown(why) => why,
+        }
+    }
+
+    /// **May this key be kept away from TSF?** Only the first case.
+    pub fn may_intercept(self) -> bool {
+        matches!(self, BindingAnswer::Ours)
+    }
+}
+
+/// Ask the core what it would do with this key, without sending it.
+pub fn ask_binding(msg: u32, wp: WPARAM, lp: LPARAM) -> BindingAnswer {
+    if msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN {
+        return BindingAnswer::Unknown("n/a (not a keydown)");
+    }
+    let Some(f) = key_is_binding_fn() else {
+        return BindingAnswer::Unknown("unknown (symbol missing)");
+    };
+    let surface = crate::tabs::active_surface(crate::tabs::overlay_frame());
+    if surface.is_null() {
+        return BindingAnswer::Unknown("unknown (no focused surface)");
+    }
+    let ev = ffi::KeyEvent {
+        action: if is_repeat(lp) { ACTION_REPEAT } else { ACTION_PRESS },
+        mods: mods(),
+        consumed_mods: 0,
+        keycode: keycode(lp),
+        text: std::ptr::null(),
+        unshifted_codepoint: unshifted_codepoint(wp.0 as u32),
+        composing: false,
+    };
+    let mut flags: std::os::raw::c_int = 0;
+    if !unsafe { f(surface, ev, &mut flags) } {
+        return BindingAnswer::NotOurs;
+    }
+    if flags & BINDING_FLAG_PERFORMABLE != 0 {
+        BindingAnswer::Performable
+    } else {
+        BindingAnswer::Ours
+    }
+}
+
+/// The same question, formatted for a log line.
+pub fn binding_probe(msg: u32, wp: WPARAM, lp: LPARAM) -> &'static str {
+    ask_binding(msg, wp, lp).label()
 }

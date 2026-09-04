@@ -40,7 +40,7 @@ pub const Options = struct {
 /// Available since: 1.4.0
 pub fn run(alloc: Allocator) !u8 {
     var buf: [256]u8 = undefined;
-    var stderr_writer = std.Io.File.stderr().writer(global.io(), &buf);
+    var stderr_writer = std.Io.File.stderr().writerStreaming(global.io(), &buf);
     const stderr = &stderr_writer.interface;
 
     if (apprt.App.performIpc(

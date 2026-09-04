@@ -5,7 +5,7 @@ pub fn main(init: std.process.Init) !void {
     const alloc = init.arena.allocator();
 
     var buffer: [1024]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(init.io, &buffer);
+    var stdout_writer = std.Io.File.stdout().writerStreaming(init.io, &buffer);
     const writer = &stdout_writer.interface;
     try gen.substitute(alloc, @embedFile("ghostty_1_header.md"), writer);
     try gen.genActions(writer);

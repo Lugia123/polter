@@ -315,6 +315,65 @@ close_surface_cb
 > 零依赖、`cargo test` 在 macOS 上就能跑。它不依赖 Win32 也不依赖 libghostty，
 > 只回答「谁在哪、多大」，窗口创建仍然是宿主的活。
 
+### 4.0 宿主 crate：mac 上编得过，**测试只能上机跑**
+
+上面那句「`split-tree` 的 `cargo test` 在 macOS 上就能跑」很容易被读成「宿主的测试也
+差不多」。**不是。** 两者的差别写在这里，因为它决定了一条判据是当场能验的还是要排队上机。
+
+**mac 上能做的**（本机 mingw-w64 已装）：
+
+```sh
+cd windows
+CARGO_TARGET_DIR=/tmp/host-tgt cargo check --target x86_64-pc-windows-gnu -p polter-host
+CARGO_TARGET_DIR=/tmp/host-tgt cargo test  --no-run --target x86_64-pc-windows-gnu -p polter-host
+```
+
+第二条产出一个**可以送到真机跑的测试 exe**，路径在 cargo 最后那行
+`Executable unittests src/main.rs (...)` 里。
+
+**`CARGO_TARGET_DIR` 必须指到没有空格的路径。** 这个仓库的路径里有一个空格，
+而 `dlltool` 会把 `--temp-prefix` 按空格切成两半，红在 `windows-result` /
+`windows-strings` 这些依赖上——**症状长得像依赖版本坏了，而代码一个字都没问题。**
+
+**mac 上做不到的**：不带 `--target` 的 `cargo test`。`windows` 0.62 拖进的
+`windows-future` 只在 Windows 目标上成立，native 编译红在它身上（16 errors，退出码
+101，2026-09-03 实测）。**所以宿主 crate 的单元测试一次也没在 mac 上运行过**，
+每一条都要排队上机。
+
+#### 「编出来了」和「我的测试编进去了」是两个读数
+
+`cargo build` **不编译 `#[cfg(test)]` 代码**，而编译失败时目录里那个同名测试 exe
+照样在——所以改过测试的，`cargo build` 绿不算数，要 `cargo test --no-run` 绿。
+
+**而 `--no-run` 绿之后还有一格**：测试 exe 的体积变化是一个读数
+（一次实测 31,638,499 → 32,511,802），**但它只证明「有东西被编进去了」，
+不证明「编进去的是我写的那几个测试」。**
+
+⚠️ **而这个数只在大量级上是读数。** 同一份源码连编三次给出三个体积
+（32,511,802 / 32,511,858 / 32,511,886，**两次全新编译之间也差 28 字节**），
+所以**几十字节的差异什么都不说明**，上面那次差的 873,303 字节才是。
+**反过来「体积相同」也不能当「同一份源码」**——两份只差一行的源码给出过完全相同的体积。
+产物身份怎么判见 [status.md 判据 D0–D3 那一节](status.md)：**判据是「与一份已知产物的
+差异字节数」配一条「同源码两次编译」的基线**，`cmp -l a b | wc -l`，同源码约两万五、
+不同源码两千万,差三个数量级。
+
+便宜的补法是直接在 exe 里找测试名：
+
+```sh
+strings -a <测试 exe> | grep -c d2_a_wait_that_times_out_names_the_holder
+```
+
+**带一个负对照**（拿一个根本不存在的测试名再搜一次，必须 0），否则一个什么都匹配的
+搜法也会给出非零。
+
+#### 后台跑这条命令时，退出码在哪
+
+`cargo test --no-run > log 2>&1; echo "exit=$?"` 写成后台任务时，**任务汇总报的退出码
+属于整条串的最后一条命令，也就是那个 `echo`，恒为 0。** 真实退出码只在输出文件里
+自己打的那行字符串上。**这一条咬过一次**：一次编译失败（退出码 101）被汇总行报成
+「completed (exit code 0)」，差一点据此得出「native 能编测试」这个反向结论。
+同理不要把退出码接在管道后面取。
+
 ### 4.1 输入法：宿主要满足的第二份契约（TSF）
 
 除了 `ghostty_runtime_config_s` 那 6 个回调，Windows 宿主还要实现

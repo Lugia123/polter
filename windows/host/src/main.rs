@@ -30,6 +30,46 @@
 //! `tabs.rs`. TSF is apartment-bound to the main thread and is only ever
 //! touched from there.
 
+//! # Why this is a GUI subsystem binary
+//!
+//! **A console subsystem binary launched from Explorer is given a console
+//! window by Windows, and nobody asked for it.** That window was Polter's
+//! second window: it opened beside the terminal and scrolled, because
+//! `log_line` printed every line to stdout and `GHOSTTY_LOG=stderr` sent
+//! libghostty's own log to the same place. It is a black box a user cannot
+//! close without killing the program.
+//!
+//! **The debug build carries the same attribute, and that is deliberate.**
+//! The obvious concession -- hide it in release, keep it in debug -- makes the
+//! debug build differ from the shipped one *on exactly the axis being fixed*:
+//! whether this process has a console decides whether a console child
+//! (a `.ps1` plugin) inherits ours or is given a window of its own. A build
+//! that cannot reproduce the defect cannot be used to verify the repair.
+//!
+//! **What a console was carrying, and where each part went instead.** Nothing
+//! here may quietly become "no output":
+//!
+//!  - `log_line`'s stdout copy: **deleted**. The file copy was always the one
+//!    this program trusts (flushed per line; it is the artifact that leaves
+//!    the machine), and the stdout copy also took Rust's global stdout lock on
+//!    a path the watchdog must never block on -- see `wd_log`.
+//!  - libghostty's log, which on Windows has **no sink but stderr**
+//!    (`global.zig` parses `GHOSTTY_LOG` into a struct whose only other field
+//!    is macOS unified logging): `adopt_std_handles` gives stderr a real file
+//!    when Windows gave us nothing, so those lines keep landing in the log.
+//!  - the default panic hook's backtrace, which also goes to stderr: same
+//!    answer, and that is why `adopt_std_handles` runs *before*
+//!    `install_panic_hook`.
+//!
+//! **What this does cost**: a `+action` run by hand from a terminal
+//! (`polter-host.exe +chat`) no longer paints on that terminal -- a GUI
+//! subsystem process does not attach to the console that started it. A
+//! `+mcp` server started by an agent CLI is unaffected, because there the
+//! stdio handles are inherited pipes rather than a console. Giving the CLI
+//! path its console back means `AttachConsole(ATTACH_PARENT_PROCESS)` and is
+//! deliberately not done here; it is its own change with its own reading.
+#![windows_subsystem = "windows"]
+
 mod ctxmenu;
 mod divider;
 mod dnd;
@@ -38,6 +78,7 @@ mod keys;
 mod hud;
 mod keyseq;
 mod menu;
+mod mouse;
 mod overlay;
 mod palette;
 mod plugins;
@@ -53,6 +94,7 @@ mod strip;
 mod tabs;
 mod theme;
 mod tsf;
+mod uia;
 
 use ffi::*;
 use std::cell::RefCell;
@@ -63,7 +105,9 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use windows::core::{s, w, Interface, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{InvalidateRect, HBRUSH};
-use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryA};
+use windows::Win32::System::LibraryLoader::{
+    GetModuleFileNameW, GetModuleHandleW, GetProcAddress, LoadLibraryA,
+};
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -92,21 +136,255 @@ fn now_str() -> String {
 /// old process read as proof that the new process's message loop was alive
 /// while it was in fact deadlocked before ever reaching it. One file per
 /// process makes that mistake impossible to make again.
+/// **The turn for `POLTER_HOST_LOG`, and the one way tests redirect it.**
+///
+/// It lives beside `log_path` -- the only reader of that variable in the
+/// process -- rather than inside a test module, because **the boundary of
+/// "one at a time" follows the object, not whoever wrote about it first.**
+/// The object here is a process-wide environment variable; `tabs`'
+/// `test_arena` is the same rule applied to the state mutex.
+///
+/// # What this replaces
+///
+/// `tabs::deadlock_detector_tests` and `winid::invariant_floor` each had
+/// their own copy of `logged`, under a comment saying the copy was
+/// deliberate: sharing a helper across two `#[cfg(test)]` modules "would
+/// make each module's floor depend on the other's, and a floor that can be
+/// broken from somewhere else is not one".
+///
+/// **The independence that reasoning was protecting did not exist.** Both
+/// copies set one process-wide variable, so in parallel they overwrote each
+/// other's redirect -- and the one surviving trace of it is a `winid` test
+/// that failed **with no `DEADLOCK` line at all**, because the log it read
+/// back held a line it had never written:
+///
+/// ```text
+/// [00:44:54.624] w? [win] state registered; 1 window(s) tracked
+/// ```
+///
+/// A test reading somebody else's log and failing on its contents is a
+/// failure in one module manufactured entirely by another -- the same shape
+/// as task 189, one object along.
+///
+/// **The symptom went first and the defect second**, and that ordering is the
+/// thing to remember: 189 made the two modules take turns, which made this
+/// impossible to reproduce **while both writers were still there**. Any
+/// criterion of the form "run it in parallel and see" has been green since
+/// that day and says nothing. The criterion for this is static -- how many
+/// files write the variable -- for exactly that reason.
+#[cfg(test)]
+pub(crate) mod test_log {
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    thread_local! {
+        /// Whether **this thread** holds the redirect. Per-thread for the
+        /// reason `tabs::test_arena` spells out: "somebody holds it" is a
+        /// question that answers `true` on an unwired tree whenever another
+        /// thread happens to hold it, and a floor that can pass without its
+        /// subject being wired up is not a floor.
+        static HAS_THE_TURN: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// For a caller's floor to assert the redirect is really in force.
+    pub(crate) fn this_thread_has_the_redirect() -> bool {
+        HAS_THE_TURN.with(|c| c.get())
+    }
+
+    /// Puts `POLTER_HOST_LOG` back, **whether or not `body` returned.**
+    ///
+    /// The copies this replaces restored it on the line after `body()`, so an
+    /// assertion that failed inside the closure left the redirect in place
+    /// and sent every later line in the process to a temporary file. One of
+    /// them said so in a comment and worked around it by hoisting its
+    /// assertions out of the closure; the other did not. **A promise made on
+    /// the way out is one a panicking test cannot keep.**
+    ///
+    /// **That sentence was already written, twelve lines from the function
+    /// that broke it.** It stands in `tabs`' `exclusive`, about clearing
+    /// `CONTENDED` on the way in -- in the same module, by the same hand, and
+    /// the next function down restored an environment variable on the way
+    /// out. **Writing a lesson down and applying it are separate acts**, and
+    /// the moment they come apart most easily is right after the writing,
+    /// when it feels like the guarding is already done.
+    struct Restore {
+        previous: Option<String>,
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(p) => std::env::set_var("POLTER_HOST_LOG", p),
+                None => std::env::remove_var("POLTER_HOST_LOG"),
+            }
+            HAS_THE_TURN.with(|c| c.set(false));
+        }
+    }
+
+    /// Run `body` with the log redirected to a fresh file named for `tag`,
+    /// and hand back everything written to it.
+    ///
+    /// `log_path` reads `POLTER_HOST_LOG` on every call, so the lines go
+    /// through exactly the path they go through in the product -- no hook
+    /// sits between the code under test and the file.
+    ///
+    /// **Lock order, if this is ever held with another turn**: `tabs`'
+    /// `test_arena` outermost, then a module's own registry lock, then this.
+    /// Today every caller is already inside the first, and nothing takes this
+    /// one before those -- **which is a property of there being two callers,
+    /// not a rule anything enforces**, so it is written down here.
+    pub(crate) fn logged(tag: &str, body: impl FnOnce()) -> String {
+        assert!(
+            !this_thread_has_the_redirect(),
+            "`logged` is already redirecting on this thread. Nested calls \
+             would deadlock on the turn below, and a hang says nothing about \
+             why -- this says it. Restructure so the inner one runs outside \
+             the outer's closure."
+        );
+        let turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+
+        let path = std::env::temp_dir().join(format!(
+            "polter-{}-{}-{:?}.log",
+            tag,
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let restore = Restore {
+            previous: std::env::var("POLTER_HOST_LOG").ok(),
+            _turn: turn,
+        };
+        std::env::set_var("POLTER_HOST_LOG", &path);
+        HAS_THE_TURN.with(|c| c.set(true));
+
+        body();
+
+        drop(restore);
+        let out = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    /// **The floor for the redirect being in force while `body` runs.**
+    ///
+    /// Deterministic: it does not wait for two modules to collide, it asks
+    /// whether this thread is the one holding the redirect at the moment the
+    /// closure runs. A mutation that drops the turn early -- the `let _ =`
+    /// shape -- is red here on every run rather than on some of them.
+    #[test]
+    fn the_redirect_is_in_force_for_the_body_and_gone_afterwards() {
+        assert!(!this_thread_has_the_redirect(), "not before");
+        let mut inside = false;
+        let out = logged("floor", || {
+            inside = this_thread_has_the_redirect();
+            // process-wide: a probe for the redirect itself, not a report
+            // about a window -- no window exists in this test, and the whole
+            // of its content is "the log path took".
+            crate::plogf!("[floor] the shared redirect works");
+        });
+        assert!(inside, "the redirect was not in force inside the closure");
+        assert!(!this_thread_has_the_redirect(), "and it is released after");
+        assert!(
+            out.contains("[floor] the shared redirect works"),
+            "the redirect did not take. Log was:\n{out}"
+        );
+    }
+
+    /// **And that the restore survives a panic in `body`.**
+    ///
+    /// This is the defect the copies had. Without it, one failing assertion
+    /// inside a closure sends the rest of the process's log to a temporary
+    /// file, and every later test that reads a log reads the wrong one.
+    /// ⚠️ **It does not compare against a snapshot of the variable**, and
+    /// the first version of it did. Sampling `POLTER_HOST_LOG` before the
+    /// call reads it **outside the turn**, so in parallel it picks up
+    /// whichever redirect another module happens to have in force, and the
+    /// comparison then fails 24 times out of 24 while nothing is wrong:
+    ///
+    /// ```text
+    /// assertion `left == right` failed: the redirect leaked past a panicking body
+    ///   left: None
+    ///  right: Some("...\\polter-deadlock-detector-21820-ThreadId(163).log")
+    /// ```
+    ///
+    /// **The test fell into its own subject** -- one process-wide variable,
+    /// two moments -- while the code under test did not: `Restore` samples
+    /// `previous` *inside* the turn. What it asserts instead needs no
+    /// snapshot and cannot be perturbed by another thread: after a panicking
+    /// body, the variable must not still name **this** call's file. That is
+    /// exactly the leak, and only this call's tag can appear in it.
+    #[test]
+    fn a_panic_inside_the_body_still_puts_the_variable_back() {
+        let r = std::panic::catch_unwind(|| {
+            logged("floor-panic", || panic!("on purpose"));
+        });
+        assert!(r.is_err(), "the panic must not be swallowed");
+        let after = std::env::var("POLTER_HOST_LOG").unwrap_or_default();
+        assert!(
+            !after.contains("floor-panic"),
+            "the redirect leaked past a panicking body: {after}"
+        );
+        assert!(!this_thread_has_the_redirect(), "and the turn was released");
+    }
+}
+
 /// The file whose presence asks for a state dump. Deleted as it is read, so
 /// one write produces exactly one dump.
 fn dumpstate_path() -> Option<std::path::PathBuf> {
     Some(plugins::user_dir()?.parent()?.join("dumpstate"))
 }
 
+/// Does this process own the log file, or is it a guest in somebody else's?
+///
+/// **A `+action` run is a guest.** The file's own words for it: *a CLI action
+/// is a terminal program*. It is started by an agent CLI or by hand, it lives
+/// for one job, and the log that matters at that moment belongs to the GUI
+/// instance somebody is watching.
+///
+/// # The defect this answers
+///
+/// `POLTER_HOST_LOG` pins the log to one path, and **every** invocation of
+/// this exe used to begin by deleting that path and recreating it -- both
+/// statements above the point where anything looks at the command line. So
+/// an agent CLI started from a Polter terminal inherited the variable, handed
+/// it to the `polter-host.exe +mcp` it spawned, and that child **deleted the
+/// GUI's log**: 3214 lines to 284, measured, with both copies kept.
+///
+/// It gets to delete it because every write here is `open`/`append`/`close`
+/// per line -- no handle is held, and a file with no open handle is one
+/// Windows will let you remove. **A choice made for another reason is what
+/// made the deletion possible.**
+///
+/// `polter-host-<pid>.log` already kept instances apart. **Only the pinned
+/// path was exempt -- and the person who pins it is the person debugging**,
+/// which is to say the defect waited for the moment its cost was highest.
+///
+/// # Why the guest does not share the file either
+///
+/// Appending rather than deleting would be harmless to the bytes and wrong
+/// anyway. `log_path` below is pinned per process for a reason written from
+/// an incident: *an old process read as proof that the new process's message
+/// loop was alive while it was in fact deadlocked before ever reaching it.
+/// **One file per process makes that mistake impossible to make again.**"*
+/// Interleaving two processes' lines into one file puts back exactly what
+/// that sentence rules out -- for the reader who pinned the path in order to
+/// read it.
+///
+/// **So a guest writes its own `polter-host-<pid>.log` and says so on
+/// stderr**; see the `+action` branch in `main`. Without that line, "the log
+/// went back to per-pid" reaches the person debugging as "the log is gone".
+fn owns_the_log() -> bool {
+    static OWNS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // Answered once: `log_path` is called on every line, and this walks argv.
+    *OWNS.get_or_init(|| !cli_action_requested())
+}
+
 fn log_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("POLTER_HOST_LOG") {
-        return std::path::PathBuf::from(p);
-    }
-    let name = format!("polter-host-{}.log", std::process::id());
-    match std::env::current_exe() {
-        Ok(exe) => exe.with_file_name(name),
-        Err(_) => std::path::PathBuf::from(name),
-    }
+    log_path_given(owns_the_log(), std::env::var("POLTER_HOST_LOG").ok())
 }
 
 /// The identity of one binary: SHA-256 prefix, byte size, and mtime.
@@ -479,6 +757,289 @@ fn start_watchdog() {
     }
 }
 
+// ------------------------------------------------ are these two a pair?
+
+/// The commit this host was built from, or empty when git could not say.
+/// Stamped by `build.rs`.
+pub const HOST_COMMIT: &str = env!("POLTER_HOST_COMMIT");
+/// `"1"` when the host's tree had uncommitted changes at build time.
+pub const HOST_DIRTY: &str = env!("POLTER_HOST_DIRTY");
+
+/// The core's own fallback when git was unavailable to *it*
+/// (`src/build/Config.zig`). It is a real-looking hex string and means
+/// "unknown", so it must never take part in a comparison.
+const CORE_UNKNOWN: &str = "0000000";
+
+/// What the version string the core reports says about which tree it came
+/// from, or `None`.
+///
+/// The core reports something like `1.3.2-HEAD-+1fe09f51b`: a semantic
+/// version whose build metadata is the short commit. **This parses somebody
+/// else's format**, which is the one genuinely fragile step in this check --
+/// so every way of failing lands in `None`, and `None` is neither a match nor
+/// a mismatch.
+fn core_commit(version: &str) -> Option<&str> {
+    // Build metadata is everything after the last `+`, by SemVer.
+    let tail = version.rsplit_once('+')?.1;
+    if tail.is_empty() || tail == CORE_UNKNOWN {
+        return None;
+    }
+    if !tail.chars().all(|c| c.is_ascii_hexdigit()) || tail.len() < 4 || tail.len() > 40 {
+        return None;
+    }
+    Some(tail)
+}
+
+#[cfg(test)]
+mod sentinel_tests {
+    use super::*;
+
+    /// **The half `windows/tools/unknown-commit-sentinel-agrees.py` cannot
+    /// see.**
+    ///
+    /// That gate checks the two languages write the same sentinel, and that
+    /// the value is one no real commit can be. Both can hold while this is
+    /// broken: **delete the `tail == CORE_UNKNOWN` clause above and
+    /// `0000000` becomes seven hex digits**, parses as an ordinary
+    /// abbreviated hash, and a build that said "I do not know my commit" is
+    /// read as claiming one -- which raises `MISMATCH` on a matched pair, the
+    /// outcome `log_pairing`'s comment exists to rule out.
+    ///
+    /// ⚠️ **This runs only on Windows**, so on the machine where a merge
+    /// happens the gate is what there is. Same split as task 203, said out
+    /// loud rather than assumed away.
+    #[test]
+    fn the_sentinel_is_never_read_as_a_commit() {
+        assert!(
+            core_commit(&format!("1.3.2-dev+{CORE_UNKNOWN}")).is_none(),
+            "the absence marker parsed as a commit"
+        );
+        // **The rejection is by value, not by shape**, and that is why the
+        // two sides only have to agree rather than agree on something
+        // hex-shaped: change both to a ten-digit form and this still holds.
+        assert!(core_commit("1.3.2-dev+0000000000").is_some());
+        // A real abbreviated hash still comes through, or the check above
+        // would be passing because nothing parses.
+        assert_eq!(core_commit("1.3.2-dev+721d7f0"), Some("721d7f0"));
+    }
+}
+
+/// Do two abbreviated hashes name the same commit?
+///
+/// **A prefix comparison, and not out of laziness.** Both sides abbreviate
+/// with git's own rule, which lengthens as a repository grows, so the two
+/// stamps can legitimately differ in length while naming one commit.
+/// Comparing them as equal strings would report a mismatch for a reason that
+/// has nothing to do with the question -- and a false alarm here costs the
+/// whole line, because a line that cries wolf is a line that gets skipped.
+fn same_commit(a: &str, b: &str) -> bool {
+    let n = a.len().min(b.len());
+    n >= 4 && a[..n].eq_ignore_ascii_case(&b[..n])
+}
+
+/// Why the pairing could not be checked, said in the direction it happened.
+///
+/// # The sentence this replaces said the opposite of the truth
+///
+/// It was `"{which} reports a commit this build can read"`, with `which`
+/// naming **the side that had failed**:
+///
+/// ```text
+/// [build] cannot tell whether …: ghostty-internal.dll reports a commit this
+///         build can read (core version string was "1.3.2-dev+0000000").
+/// ```
+///
+/// `0000000` is the sentinel for *no commit*, so that line named the one side
+/// that had not reported a readable commit and said it had. The verdict on
+/// the next line (`It is 'not checked'`) was right, so **nothing downstream
+/// was wrong -- and a person reading this line goes looking somewhere else**,
+/// which costs more than a wrong verdict would, because a wrong verdict gets
+/// argued with.
+///
+/// **`"neither side"` was correct by accident**: a negative subject under an
+/// affirmative verb comes out true, so the branch that read properly was the
+/// one nobody would have suspected, and checking only the reported branch
+/// would have left the third alone. All three are spelled out here for that
+/// reason.
+///
+/// # The two failures are not the same failure
+///
+/// The host's commit is **absent** -- `POLTER_HOST_COMMIT` was empty when it
+/// was compiled, so nothing was embedded. The core's is **unreadable** --
+/// there is a version string and `core_commit` could not get a commit out of
+/// it, whether because it carries the `0000000` sentinel or is malformed. A
+/// single phrase for both would send the reader to the wrong build.
+///
+/// ⚠️ This is one of the paths the comment on `log_pairing` calls the ones
+/// most likely to rot unnoticed: it runs only when something is already
+/// unusual, so nobody reads it on an ordinary day.
+fn unknown_pairing_reason(host_missing: bool, core_readable: bool) -> &'static str {
+    match (host_missing, core_readable) {
+        (true, false) => "neither side carries a commit this build can read",
+        (true, true) => {
+            "the host carries no commit at all -- it was built without one embedded"
+        }
+        (false, false) => {
+            "ghostty-internal.dll's version string carries no commit this build can read"
+        }
+        // Both sides readable is a comparison, not an unknown; it is handled
+        // by the arms above this one and cannot arrive here.
+        (false, true) => "neither side could be compared, which should not be possible",
+    }
+}
+
+#[cfg(test)]
+mod pairing_wording_tests {
+    use super::*;
+
+    /// **All three reachable branches, because only one of them was right.**
+    ///
+    /// The failure this pins is not a wrong verdict, it is a true-sounding
+    /// sentence pointing at the wrong build -- so the assertion is on the
+    /// direction of the verb, not on the presence of a word.
+    #[test]
+    fn the_reason_names_the_side_that_failed_and_says_it_failed() {
+        let host_only = unknown_pairing_reason(true, true);
+        assert!(host_only.contains("host"), "{host_only}");
+        assert!(
+            host_only.contains("no commit"),
+            "the host is the side without a commit, so the verb has to be \
+             negative: {host_only}"
+        );
+        assert!(!host_only.contains("ghostty-internal.dll"), "{host_only}");
+
+        let core_only = unknown_pairing_reason(false, false);
+        assert!(core_only.contains("ghostty-internal.dll"), "{core_only}");
+        assert!(
+            core_only.contains("no commit"),
+            "this is the branch that shipped reading `ghostty-internal.dll \
+             reports a commit this build can read` while it reported none: \
+             {core_only}"
+        );
+
+        let neither = unknown_pairing_reason(true, false);
+        assert!(neither.contains("neither side"), "{neither}");
+        assert!(
+            neither.contains("no commit"),
+            "correct before this change only because a negative subject under \
+             an affirmative verb comes out true: {neither}"
+        );
+    }
+
+    /// The two failures must not be described the same way: one build has no
+    /// commit embedded, the other has a version string nothing can read, and
+    /// they send a reader to different places.
+    #[test]
+    fn the_two_sides_fail_for_reasons_that_read_differently() {
+        assert_ne!(
+            unknown_pairing_reason(true, true),
+            unknown_pairing_reason(false, false)
+        );
+    }
+
+    /// **The real artifacts, not a fixture.** `0000000` is the sentinel W1's
+    /// deliberately-unknown build carries, and it is what put the wrong
+    /// sentence on the screen.
+    #[test]
+    fn the_sentinel_version_string_lands_in_the_core_branch() {
+        assert!(core_commit("1.3.2-dev+0000000").is_none());
+        assert_eq!(
+            unknown_pairing_reason(false, core_commit("1.3.2-dev+0000000").is_some()),
+            unknown_pairing_reason(false, false)
+        );
+    }
+}
+
+/// **Say whether the host and the core it just loaded are a pair.**
+///
+/// # Why this is a verdict and not two more facts
+///
+/// `[build]` already prints sha, size and mtime for all three binaries, and
+/// on the day this mattered **all of that was in the log and nobody compared
+/// it**. A `ghostty-internal.dll` twenty-one hours older than the host had
+/// been in front of us the whole time. So the missing thing was never data;
+/// printing two more hashes would have changed nothing. **The missing thing
+/// was a judgement, made by the machine, once, out loud.**
+///
+/// # Why sha and mtime cannot answer this
+///
+/// A file's own hash says "this is that file". It does not say "this file and
+/// that other one were built together" -- two individually correct binaries
+/// from builds a day apart both hash correctly. `mtime` is weaker still:
+/// copying changes it, and release builds here are not reproducible, so equal
+/// sources do not imply equal hashes in either direction.
+///
+/// # Three outcomes, and the third is not a quiet version of the first
+///
+/// Unknown is its own answer. It must not read as agreement (two absences
+/// comparing equal would manufacture one) **and it must not read as
+/// disagreement** (a format this cannot parse would then raise an alarm on a
+/// perfectly matched pair, and the alarm would be believed once and ignored
+/// thereafter).
+fn log_pairing(core_version: &str) {
+    let dirty = HOST_DIRTY == "1";
+    match (HOST_COMMIT.is_empty(), core_commit(core_version)) {
+        (false, Some(core)) if same_commit(HOST_COMMIT, core) => {
+            // process-wide: which build this process is, not a fact about any
+            // one window
+            plogf!(
+                "[build] host and ghostty-internal.dll are a pair (both from {HOST_COMMIT})"
+            );
+            if dirty {
+                // process-wide: as above
+                plogf!(
+                    "[build] but the host was built from a tree with uncommitted changes, so \
+                     the same commit does not mean the same source. (The core carries no such \
+                     flag, so nothing here can say whether its tree was clean.)"
+                );
+            }
+        }
+
+        (false, Some(core)) => {
+            // process-wide: as above
+            plogf!(
+                "[build] MISMATCH: the host was built from {}{}, ghostty-internal.dll from {}.",
+                HOST_COMMIT,
+                if dirty { " (dirty)" } else { "" },
+                core
+            );
+            // process-wide: as above
+            plogf!(
+                "[build] These are different trees. Anything added to the core after {core} is \
+                 not in this process."
+            );
+            // **The line this whole check exists for.**
+            //
+            // Without it the reading stops at "the versions differ", which is
+            // a tidy fact nobody acts on. What actually happened is that a
+            // feature present in the source behaved exactly like a feature
+            // nobody had written -- and the person looking at it went hunting
+            // in the wrong place. The failure is silent by construction: an
+            // action the core does not recognise is declined, and a declined
+            // action is indistinguishable from an absent one.
+            //
+            // process-wide: as above
+            plogf!(
+                "[build] It will not fail loudly: an action the core does not know is declined \
+                 in silence, so a feature written after {core} looks exactly like a feature \
+                 nobody ever wrote."
+            );
+        }
+
+        (host_missing, parsed) => {
+            // process-wide: as above
+            plogf!(
+                "[build] cannot tell whether the host and ghostty-internal.dll are a pair: \
+                 {} (core version string was {:?}).",
+                unknown_pairing_reason(host_missing, parsed.is_some()),
+                core_version
+            );
+            // process-wide: as above
+            plogf!("[build] This is not agreement, and it is not disagreement. It is 'not checked'.");
+        }
+    }
+}
+
 fn log_build_identity() {
     // **A known answer, because three matching hashes prove nothing on their
     // own.** The cross-implementation check we have been relying on -- these
@@ -518,11 +1079,14 @@ fn log_build_identity() {
 
 pub fn log_line(msg: &str) {
     let s = &format!("[{}] {}", now_str(), msg);
-    println!("{s}");
     use std::io::Write as _;
-    let _ = std::io::stdout().flush();
-    // A redirected stdout is block-buffered, so a crash would lose everything.
-    // The file copy is flushed on every line and is the one we trust.
+    // **The file is the only copy, and it always was the one we trust**: it is
+    // flushed on every line and it is the artifact that leaves the machine.
+    // There used to be a `println!` here as well. It went with the console
+    // window (see the `windows_subsystem` note at the top of this file), and
+    // it took two hazards with it: Rust's global stdout lock, which the
+    // watchdog must never be able to block on (`wd_log`), and a banner
+    // printed onto the stdout that a `+mcp` server speaks its protocol over.
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -554,6 +1118,120 @@ static CELL_H: AtomicU32 = AtomicU32::new(0);
 static DRAW_ON_PAINT: AtomicU32 = AtomicU32::new(0);
 /// How many key messages `ITfKeystrokeMgr` claimed before dispatch.
 static TSF_ATE: AtomicU32 = AtomicU32::new(0);
+/// Key messages that were sitting in the queue when the pump was asked.
+///
+/// **This counter is what makes "no swallows" a reading.** A probe that only
+/// prints when something is wrong cannot tell "it did not happen" from "the
+/// probe was not looking" -- which is exactly how a log with `TSF ate` zero
+/// times came to be treated as evidence and was not.
+static PUMP_KEYS_SEEN: AtomicU32 = AtomicU32::new(0);
+/// …and how many of those the pump handed back to us.
+static PUMP_KEYS_RETURNED: AtomicU32 = AtomicU32::new(0);
+/// …and how many vanished: removed from the queue by the pump and never
+/// returned. See `pump_probe` for why this path leaves no other trace.
+static PUMP_SWALLOWED: AtomicU32 = AtomicU32::new(0);
+/// The keyboard layout in force the last time a key message went past, so a
+/// change can be logged at the moment it matters rather than polled.
+static LAST_HKL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The bits of `WM_KEY*` lParam that name the key rather than describe the
+/// moment: scan code (16-23) and the extended flag (24). Everything else --
+/// repeat count, context code, and the previous/transition state bits that
+/// broke two versions of the pump probe -- varies between two observations of
+/// one message.
+const KEY_IDENTITY_LPARAM: isize = 0x01FF_0000;
+
+/// Key messages kept away from TSF because the core called them bindings.
+static INTERCEPTED: AtomicU32 = AtomicU32::new(0);
+/// Set while an intercepted key is being translated and dispatched, so the
+/// few lines that trace that window can be printed without tracing every key.
+static TRACING_INTERCEPT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// How many intercepted keys have been traced. Bounded: this is a question,
+/// not a permanent feature.
+static TRACED: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the current dispatch is one we are tracing (`keys.rs` asks).
+pub fn tracing_intercept() -> bool {
+    TRACING_INTERCEPT.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// One line of the interception trace.
+///
+/// # What this is measuring, and why guessing was not allowed
+///
+/// Intercepting a chord mid-composition ends the composition, and the
+/// half-typed syllable reaches the terminal. The first explanation was that
+/// the host's own focus move -- opening a tab, then `SetFocus` on the new
+/// pane -- was what ended it, and a guard was put around that. **A real
+/// machine refuted it by timestamp**: the composition ended **38ms after the
+/// key was kept from TSF and 5ms before the tab existed**, so it was already
+/// over before the focus moved at all.
+///
+/// **That is the same mistake twice in one evening**: finding something that
+/// genuinely does end a composition, and stopping there, when an earlier
+/// cause was sitting in front of it.
+///
+/// So this brackets the four steps between the two known timestamps.
+/// Wherever `[ime] OnEndComposition` falls among these lines is the step that
+/// ended it -- and the two candidates need opposite fixes:
+///
+///   * **inside `TranslateMessage`** -- TSF is reacting to a key it saw go
+///     past the pump without being offered to it. Nothing we call; the guard
+///     has to cover the whole window instead.
+///   * **inside `DispatchMessageW`** -- something on our own dispatch path
+///     does it, and that thing can be found and addressed directly.
+pub fn trace_intercept(where_: &str) {
+    if !tracing_intercept() {
+        return;
+    }
+    // process-wide: a step in the message pump, which serves the thread
+    plogf!("[key] trace {}", where_);
+}
+
+/// Whether the "pump returned a different key" diagnostic has been printed.
+static MISMATCH_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// How many `[key] pump swallowed` lines to print before going quiet.
+///
+/// **Reaching it prints a line saying so.** A cap that saturates in silence
+/// converts "the line is absent" from a reading into nothing at all, which is
+/// the fault this whole probe exists to remove; the total is printed at exit
+/// either way.
+const SWALLOW_LOG_CAP: u32 = 40;
+
+/// `composing`, if TSF is up and is not mid-borrow.
+///
+/// `None` means "could not ask", and is printed as such: the difference
+/// between *not composing* and *unable to tell* is the whole reason this is
+/// in the line at all.
+fn composing_now() -> Option<bool> {
+    IME.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|st| st.ime.try_borrow().ok().map(|i| i.composing))
+    })
+}
+
+/// Log the keyboard layout when it changes, at the moment a key goes past.
+///
+/// **Not a `WM_INPUTLANGCHANGE` handler**, deliberately: that message goes to
+/// whichever window has focus, and the question here is "what layout was in
+/// force for *this* key". Reading it beside the key ties the two together
+/// without depending on which window a message happened to reach.
+fn log_hkl_if_changed() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+    let hkl = unsafe { GetKeyboardLayout(0) }.0 as usize;
+    if LAST_HKL.swap(hkl, Ordering::Relaxed) == hkl {
+        return;
+    }
+    // process-wide: the layout belongs to the thread, not to any one window
+    plogf!(
+        "[key] keyboard layout now HKL=0x{:08x} (langid 0x{:04x})",
+        hkl,
+        (hkl & 0xFFFF) as u16
+    );
+}
 /// How many times WM_PAINT actually made the *main thread* call
 /// ghostty_surface_draw. Without this number, a clean-looking resize proves
 /// nothing: it could just mean no paint was ever requested.
@@ -666,12 +1344,19 @@ fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
     if primary {
         HWND_G.store(hwnd.0 as *mut c_void, Ordering::Release);
     }
-    // **Before `ShowWindow`, because showing a window dispatches messages**
-    // -- `WM_SIZE`, `WM_PAINT` -- and every one of those handlers asks this
-    // registry for the window's tabs. A frame that is visible before it is
-    // tracked spends those messages being told it does not exist, and the
-    // strip paints empty.
-    tabs::add_window(hwnd);
+    // **Both registries, in one call, before anything can ask either of
+    // them.** `winid::created` records the identity *and* the state -- see
+    // its own documentation for why those two cannot be two statements here.
+    //
+    // It has to happen before `ShowWindow`, because showing a window
+    // dispatches messages -- `WM_SIZE`, `WM_PAINT` -- and every one of those
+    // handlers asks about the window's tabs. A frame that is visible before
+    // it is tracked spends those messages being told it does not exist, and
+    // the strip paints empty.
+    //
+    // Nothing between `CreateWindowExW` and this point can be counted as a
+    // window by anybody, because nothing has asked yet.
+    winid::created(hwnd);
     // **This window's own scale, measured from this window.** It used to be
     // one number for the process written only by the first frame, so a second
     // frame on a different display drew at the first one's DPI. Set after
@@ -685,12 +1370,6 @@ fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
-    // **Before anything else mentions it.** `winid::of` would name this window
-    // the first time some other line talked about it, which is enough for
-    // reading a log and not enough for counting: the shutdown rule turns on
-    // how many windows exist, and a window that has not logged yet does not
-    // exist to a lazy registry.
-    winid::created(hwnd);
     // **After `created`, so the tag in this line is one `winid` has already
     // paired with the handle.** Logged per window rather than process-wide
     // because dpi and scale are this window's, and the day the two frames sit
@@ -755,6 +1434,56 @@ pub fn ime_log(msg: &str) {
     log_line(&format!("[ime] {msg}"));
 }
 
+/// Set while the host is rearranging its own windows.
+///
+/// **This exists because "the composition ended" and "the user finished a
+/// word" are not the same event, and TSF reports only the first.**
+///
+/// `OnEndComposition` fires for both, with the same signature and with the
+/// composed text still in the buffer either way. The handler used to commit
+/// whatever it found there, on the stated assumption that a cancelled
+/// composition arrives with an empty buffer. **That holds for a composition
+/// the user abandoned and not for one the host interrupted**: the person
+/// pressed `ctrl+shift+t`, got a new tab *and* the half-typed word `ni`.
+///
+/// # It used to be called `REFOCUSING`, and the name was itself a wrong answer
+///
+/// The first two explanations both blamed focus -- `SetFocus` on the new
+/// pane, then focus generally -- and both were refuted by timestamps: the
+/// composition ended before any focus moved. **The actual trigger is
+/// `ShowWindow(SW_HIDE)` on the pane that is carrying the composition**, in
+/// the layout pass that runs when panes are rearranged.
+///
+/// The name is now about what the host is doing rather than about which
+/// mechanism was guessed to matter, **because two of those guesses have
+/// already been wrong and the name outlived both.**
+static HOST_SHUFFLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Run `body` with [`HOST_SHUFFLING`] set, so a composition ended by the
+/// window shuffling inside it is discarded rather than committed.
+///
+/// **A guard rather than a pair of calls**: `ShowWindow` (and `SetFocus`)
+/// re-enter through TSF and can end the composition **synchronously**, so the
+/// flag has to be up for the whole of the operation and down afterwards even
+/// if something in between returns early.
+pub fn with_host_shuffle<R>(body: impl FnOnce() -> R) -> R {
+    use std::sync::atomic::Ordering;
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HOST_SHUFFLING.store(false, Ordering::Release);
+        }
+    }
+    HOST_SHUFFLING.store(true, Ordering::Release);
+    let _g = Guard;
+    body()
+}
+
+/// Whether a composition ending right now is one the host caused.
+pub fn ending_because_of_host_shuffle() -> bool {
+    HOST_SHUFFLING.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// The surface the input method is composing into.
 ///
 /// **The window TSF is attached to, not "the active tab".** They were the
@@ -763,6 +1492,61 @@ pub fn ime_log(msg: &str) {
 /// pane is what a composition belongs to. Asking for the active tab of the
 /// first window instead would deliver a candidate the user picked in window 2
 /// into window 1 -- and it would look entirely normal at the call site.
+/// The pane a composition started in, for as long as it is in flight.
+///
+/// # Sending the right thing to the wrong pane
+///
+/// `ime_surface()` answers "the pane the input method is pointed at **now**".
+/// That is the correct answer to a different question. When a composition is
+/// interrupted by the host rearranging panes, the retarget has already
+/// happened by the time the composition ends, so the preedit clear went to the
+/// pane that had just been created:
+///
+/// ```text
+/// set_preedit("ni") -> surface 0x…40f0     <- pane 1, where the typing was
+/// [pane] 6 surface = 0x…7bc0               <- a new pane
+/// set_preedit("ni") -> surface 0x…7bc0     <- pane 6
+/// set_preedit("")   -> surface 0x…7bc0     <- pane 6
+/// ```
+///
+/// Pane 1 never got the clear, so the underlined `ni` stayed on it: enter did
+/// not run it and backspace did not delete it, because as far as the terminal
+/// was concerned there was nothing there.
+///
+/// **The log had been telling the truth the whole time.** Every one of those
+/// lines printed a real surface; nobody had asked *which* surface. **A line
+/// that prints a correct value and a line that prints the correct object are
+/// not the same line.**
+///
+/// So the pane is remembered when the composition starts and used until it
+/// ends. **The hwnd is stored rather than the surface pointer**: a pane can be
+/// destroyed mid-composition, and `surface_of` then answers null, where a
+/// stale pointer would answer something that looks usable.
+static COMPOSING_HWND: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Called from `tsf.rs` when a composition starts and ends.
+pub fn ime_composition_owner(hwnd: Option<HWND>) {
+    COMPOSING_HWND.store(
+        hwnd.map(|h| h.0).unwrap_or(std::ptr::null_mut()),
+        Ordering::Release,
+    );
+}
+
+/// The surface a composition's text belongs to: the pane it started in while
+/// one is in flight, otherwise whatever the IME is pointed at now.
+fn composing_surface() -> ffi::Surface {
+    let h = COMPOSING_HWND.load(Ordering::Acquire);
+    if !h.is_null() {
+        let s = tabs::surface_of(HWND(h));
+        if !s.is_null() {
+            return s;
+        }
+        // The pane went away mid-composition. Falling through is right: there
+        // is nothing to draw on, and `ime_surface` will say so too.
+    }
+    ime_surface()
+}
+
 fn ime_surface() -> ffi::Surface {
     let hwnd = IME.with(|c| {
         c.borrow()
@@ -776,18 +1560,48 @@ fn ime_surface() -> ffi::Surface {
 }
 
 /// Hand the in-flight composition to the core so it draws it at the cursor.
+///
+/// # The empty string is the interesting call, and it used to fail in silence
+///
+/// Clearing the preedit is how the underlined text under the cursor goes
+/// away. When a composition is discarded, that clear is the *only* thing that
+/// removes it -- and if it does not happen, an unremovable `ni` sits on the
+/// screen following the caret: enter does not run it, backspace does not
+/// delete it, because as far as the terminal is concerned it is not there.
+///
+/// **The skip below was unreported**, and that made two very different faults
+/// produce the same screen:
+///
+///   * the clear was never issued, because `ime_surface()` could not resolve
+///     one (`try_borrow` losing to a TSF callback already inside the store,
+///     or `ime.hwnd` pointing at a pane that has gone);
+///   * the clear *was* issued and something afterwards drew the overlay again.
+///
+/// They need opposite fixes and they look identical from a chair, so the skip
+/// now says so. **A silent early return is a fork in the diagnosis that leaves
+/// no trace of which way it went.**
 pub fn ime_set_preedit(text: &str) {
-    let s = ime_surface();
+    let s = composing_surface();
     if s.is_null() {
+        ime_log(&format!(
+            "set_preedit({:?}) SKIPPED: no surface to send it to \
+             (clearing an empty preedit is how the overlay is removed, so a skip \
+             here leaves it on screen)",
+            text
+        ));
         return;
     }
+    ime_log(&format!("set_preedit({:?}) -> surface {:?}", text, s));
     unsafe { (api().surface_preedit)(s, text.as_ptr() as *const _, text.len()) };
 }
 
 /// The user chose a candidate: feed it to the terminal as input.
 pub fn ime_commit(text: &str) {
-    let s = ime_surface();
+    let s = composing_surface();
     if s.is_null() {
+        // Same reason as `ime_set_preedit`: a silent skip here means the
+        // chosen text vanished, which reads as "the IME dropped my word".
+        ime_log(&format!("commit({:?}) SKIPPED: no surface to send it to", text));
         return;
     }
     unsafe { (api().surface_text)(s, text.as_ptr() as *const _, text.len()) };
@@ -910,10 +1724,18 @@ pub fn ime_set_window(hwnd: HWND) {
         if let Some(st) = c.borrow().as_ref() {
             match st.ime.try_borrow_mut() {
                 Ok(mut ime) => ime.hwnd = hwnd,
-                // **The frame, not the surface.** `winid::of` registers any
-                // handle it is given as a new window number, so passing a pane
-                // here would mint a "window" that is not one; `GA_ROOT` walks
-                // the child up to the frame it lives in.
+                // **The frame, not the surface.** A pane is not a
+                // registered window, so `wlogf!` would tag this line `w?` and
+                // the line would say nothing about which terminal it is
+                // reporting; `GA_ROOT` walks the child up to the frame it
+                // lives in.
+                //
+                // It used to be worse than an unnameable line: `winid::of`
+                // registered any handle it was handed, so a pane here minted
+                // a "window" that is not one and `count()` -- the number the
+                // shutdown rule reads -- carried it forever. `of` only looks
+                // now, which is why the cost of getting this wrong is a
+                // missing name rather than a process that will not exit.
                 Err(_) => wlogf!(
                     unsafe { GetAncestor(hwnd, GA_ROOT) },
                     "[ime] set_window skipped: composition in flight"
@@ -1375,7 +2197,15 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // core's thread, and the `start_search` needle is only valid for the
         // duration of this call.
         ffi::ACTION_START_SEARCH => {
-            search::on_start(action.as_cstr().and_then(|c| c.to_str().ok()));
+            // **The target travels with the needle.** The core says which
+            // surface it started searching; without passing it on, the host
+            // knows a search is open and not whose, and everything it sends
+            // back goes to whichever surface happens to be focused. See
+            // `search::Model::surface`.
+            search::on_start(
+                action.as_cstr().and_then(|c| c.to_str().ok()),
+                target_surface(&target),
+            );
             true
         }
         ffi::ACTION_END_SEARCH => {
@@ -1491,10 +2321,36 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // close would need to decide which one when there are two.
         ffi::ACTION_TOGGLE_POLTERGEIST_CHAT => {
             alogf!(origin, "[action] poltergeist chat requested");
+            // **Our own path, not the name `polter`.**
+            //
+            // This used to be the literal `"polter +chat"`, which asks
+            // `CreateProcessW` to search for a program of that name -- the
+            // application directory, the working directory, the system
+            // directories, then `PATH`. On Windows nothing puts Polter on
+            // `PATH`, so the search found nothing and the menu item did
+            // nothing. A process already knows where it is; asking the
+            // operating system to go and look for it is the step that could
+            // fail, and removing it is cheaper than any of the ways to make
+            // the search succeed.
+            //
+            // **The path is quoted as one unit and never taken apart.** The
+            // quotes are not a workaround for spaces, they are what keeps the
+            // whole answer one value: `splitWindowsShell` in the core reads
+            // the quoted run as a single argument and
+            // `windowsCreateCommandLine` re-quotes it on the way to
+            // `CreateProcessW`. Before that pair existed a path with a space
+            // in it could not be expressed here at all -- and the directory
+            // this is developed in has one.
+            let Some(exe) = own_exe_path() else {
+                alogf!(origin, "[action] chat: cannot find our own executable; not opening");
+                return true;
+            };
+            let command = format!("\"{exe}\" +chat");
+            alogf!(origin, "[action] chat command: {command}");
             queue_from(
                 origin,
                 tabs::Op::NewTabWith(tabs::NewTab {
-                    command: Some("polter +chat".to_string()),
+                    command: Some(command),
                     chat: true,
                     ..Default::default()
                 }),
@@ -1751,7 +2607,82 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             alogf!(origin, "[action] present_terminal");
             queue_from(origin, Op::PresentTerminal, "present_terminal action")
         }
-        ACTION_MOUSE_SHAPE | ACTION_MOUSE_VISIBILITY => true,
+        // **Per surface, because a pointer shape is about one pane.** After a
+        // split the pointer is over exactly one of them, and a shape stored
+        // once for the process would put the pane under the pointer's shape on
+        // whichever pane redrew last.
+        //
+        // **Recording it is only half.** The pane's window class carries
+        // `IDC_ARROW`, so `DefWindowProc` restores the arrow on the next mouse
+        // message; `mouse::apply`, called from the pane's `WM_SETCURSOR`, is
+        // what makes the recorded shape survive the pointer moving. See
+        // `mouse.rs`.
+        ACTION_MOUSE_SHAPE => {
+            let shape = action.as_i32();
+            match target_surface(&target) {
+                Some(s) => {
+                    let p = mouse::record_shape(s as usize, shape);
+                    // **The fidelity is in the line, not implied by it.** A
+                    // shape that fell back to the arrow and a shape that was
+                    // mapped correctly are indistinguishable on screen.
+                    alogf!(
+                        origin,
+                        "[action] mouse_shape {} ({}) -> {} [{}]",
+                        shape, p.shape, p.cursor_name, p.fidelity.name()
+                    );
+                }
+                None => alogf!(
+                    origin,
+                    "[action] mouse_shape {} with no surface (tag={}); dropped",
+                    shape, target.tag
+                ),
+            }
+            true
+        }
+
+        // `ghostty_action_mouse_visibility_e`: 0 visible, 1 hidden.
+        //
+        // **The post is the point.** Windows sends `WM_SETCURSOR` when the
+        // pointer moves, and the core hides the pointer when the user *types*
+        // -- so waiting for `WM_SETCURSOR` would hide it never while looking
+        // like an implementation. The pane hides it on the thread that owns
+        // the window, and only if the pointer is actually over that pane.
+        ACTION_MOUSE_VISIBILITY => {
+            let v = action.as_i32();
+            let hidden = v == 1;
+            match target_surface(&target) {
+                Some(s) => {
+                    mouse::record_visibility(s as usize, hidden);
+                    let posted = match tabs::pane_hwnd_of_surface(s) {
+                        Some(pane) => unsafe {
+                            PostMessageW(
+                                Some(pane),
+                                mouse::WM_POLTER_MOUSE_VISIBILITY,
+                                WPARAM(0),
+                                LPARAM(0),
+                            )
+                            .is_ok()
+                        },
+                        // The quick terminal's surface is not a pane, so there
+                        // is no pane window to post to. Its shape still
+                        // follows -- `tabs::surface_of` falls through to it --
+                        // and only this immediate hide is out of reach.
+                        None => false,
+                    };
+                    alogf!(
+                        origin,
+                        "[action] mouse_visibility {} (hidden={}) posted={}",
+                        v, hidden as u8, posted as u8
+                    );
+                }
+                None => alogf!(
+                    origin,
+                    "[action] mouse_visibility {} with no surface (tag={}); dropped",
+                    v, target.tag
+                ),
+            }
+            true
+        }
         ACTION_RING_BELL => {
             alogf!(origin, "[action] ring_bell");
             true
@@ -1927,6 +2858,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // The frame owns the strip only; it must still never let GDI
             // erase, or the strip flickers on every resize.
             WM_ERASEBKGND => LRESULT(1),
+
+            // Accessibility. **Before anything that could answer it by
+            // accident**: `WM_GETOBJECT` arrives with several different
+            // object ids, and only one of them is the UI Automation tree --
+            // `uia::on_get_object` answers `None` for the rest, including
+            // MSAA's `OBJID_CLIENT`, and those go to `DefWindowProcW`
+            // unchanged. Returning a provider for the wrong object id is how
+            // a window comes to look like it has two conflicting trees.
+            WM_GETOBJECT => match uia::on_get_object(hwnd, wp, lp) {
+                Some(r) => r,
+                None => DefWindowProcW(hwnd, msg, wp, lp),
+            },
 
             // --- the custom frame. See shell.rs for why each one is here. ---
             WM_NCCALCSIZE => match shell::nc_calc_size(hwnd, wp, lp) {
@@ -2165,6 +3108,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // `HWND`s, so an entry left under a dead handle can be found
                 // again by the next window that gets it.
                 strip::forget(hwnd);
+                // **Last, because it is the only moment both registries have
+                // finished with this window.** Anywhere earlier it would be
+                // reading one of the two legitimate disagreements. See
+                // `winid::empty_agrees` for why it checks zero and nothing
+                // else.
+                winid::empty_agrees(hwnd);
                 LRESULT(0)
             }
 
@@ -2246,20 +3195,59 @@ fn announce_resources_dir() {
         return;
     };
 
-    // Two candidates, in order. The second is for a flat deployment -- an exe
-    // and a `share/` beside it, no `bin/` -- which is how this has actually
-    // been put on the test machine, and getting it wrong there would look
-    // exactly like getting it wrong everywhere.
-    let candidates = [
-        bin.join("..").join("share").join("ghostty"),
-        bin.join("share").join("ghostty"),
-    ];
-    for cand in &candidates {
+    // Two candidates: a `share/` beside the executable (a flat deployment,
+    // which is how a test build is handed out), and one a level up next to
+    // `bin/` (the layout `zig build` produces and the core's own climb
+    // expects).
+    //
+    // # The order is the specific one first, and that is a fix rather than a
+    // preference
+    //
+    // It used to be the other way round, because that was the canonical
+    // install layout and the flat one read as the special case. **Nothing had
+    // decided what should happen when both exist**, and on the test machine
+    // both did: a build unpacked into `D:\polter\polter-<commit>\` found
+    // `D:\polter\share\ghostty`, left over from an older deployment, and
+    // used it.
+    //
+    // **That failure is worse than the one this function already reports.**
+    // A missing directory leaves a line saying so, and somebody can read it.
+    // This one logged a directory, logged that all four of its parts were
+    // present, and then ran another version's plugins and themes -- so the
+    // report that comes back is "the theme is wrong" and "a plugin behaves
+    // oddly", with nothing in it about resources at all.
+    //
+    // Checking the flat location first cannot cost the canonical layout
+    // anything: an install with `bin/` beside `share/` has no `share/` next
+    // to the executable, so it falls through. The reverse is not true, which
+    // is the whole asymmetry -- **the more specific location is the one that
+    // cannot be claimed by accident.**
+    //
+    // Deliberately overriding from outside is still possible and still comes
+    // first: `POLTER_RESOURCES_DIR`, handled above.
+    //
+    // **`parent()` rather than joining `..`**, so the path that reaches the
+    // log and the environment is already normalised. The old form printed
+    // `…\polter-<commit>\..\share\ghostty`, which reads as "inside the
+    // package" unless somebody notices the two dots.
+    let up = bin.parent().map(|p| p.join("share").join("ghostty"));
+    let candidates: Vec<(std::path::PathBuf, &str)> = match up {
+        Some(u) => vec![
+            (bin.join("share").join("ghostty"), "beside the executable"),
+            (u, "one level above the executable, NOT part of this package"),
+        ],
+        None => vec![(bin.join("share").join("ghostty"), "beside the executable")],
+    };
+    for (cand, where_) in &candidates {
         if cand.join("poltergeist").is_dir() {
             let s = cand.to_string_lossy().into_owned();
             std::env::set_var("POLTER_RESOURCES_DIR", &s);
+            // **Where it came from, in words, on the same line.** A reader
+            // comparing two paths character by character is a reader who will
+            // eventually not bother; a clause saying which of the two it is
+            // does not need comparing.
             // process-wide: the resources directory is one per process; every window reads the same one
-            plogf!("[res] POLTER_RESOURCES_DIR = {:?}", s);
+            plogf!("[res] POLTER_RESOURCES_DIR = {:?} ({})", s, where_);
             report_resources_dir(cand);
             return;
         }
@@ -2273,7 +3261,7 @@ fn announce_resources_dir() {
         "[res] no resources directory found next to the executable; POLTER_RESOURCES_DIR left unset. Looked at: {}",
         candidates
             .iter()
-            .map(|c| format!("{:?}", c.to_string_lossy()))
+            .map(|(c, w)| format!("{:?} ({})", c.to_string_lossy(), w))
             .collect::<Vec<_>>()
             .join(", ")
     );
@@ -2591,19 +3579,570 @@ fn load_api() -> Option<Api> {
             surface_text: sym!(internal, "ghostty_surface_text"),
             surface_preedit: sym!(internal, "ghostty_surface_preedit"),
             surface_ime_point: sym!(internal, "ghostty_surface_ime_point"),
+            surface_mouse_button: sym!(internal, "ghostty_surface_mouse_button"),
+            surface_mouse_pos: sym!(internal, "ghostty_surface_mouse_pos"),
+            surface_mouse_scroll: sym!(internal, "ghostty_surface_mouse_scroll"),
+            surface_read_text: sym!(internal, "ghostty_surface_read_text"),
+            surface_free_text: sym!(internal, "ghostty_surface_free_text"),
+            cli_try_action: sym!(internal, "ghostty_cli_try_action"),
             codepoint_width: sym!(vt, "ghostty_unicode_codepoint_width"),
             grapheme_width: sym!(vt, "ghostty_unicode_grapheme_width"),
         })
     }
 }
 
+// ------------------------------------------------------- dying out loud
+
+/// Where the log goes, resolved once while the process is healthy.
+///
+/// **Resolved at hook install, not at panic time.** `log_path` reads an
+/// environment variable and asks for the executable's path; neither takes a
+/// lock, but both allocate, and the panic path is the one place where doing
+/// less is worth more than doing it lazily.
+static PANIC_LOG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Set while the hook is running, so a panic *inside* the hook does not
+/// recurse into it.
+static IN_PANIC_HOOK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Write bytes to the real stderr handle, **taking no Rust lock**.
+///
+/// `eprintln!` goes through `std::io::Stderr`, which holds a lock. That lock
+/// is re-entrant for the same thread and would almost certainly be fine --
+/// and "almost certainly fine" is the wrong standard for the one code path
+/// that only ever runs when something has already gone wrong.
+fn raw_stderr(bytes: &[u8]) {
+    use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
+    unsafe {
+        if let Ok(h) = GetStdHandle(STD_ERROR_HANDLE) {
+            if !h.is_invalid() {
+                let mut wrote = 0u32;
+                let _ = windows::Win32::Storage::FileSystem::WriteFile(
+                    h,
+                    Some(bytes),
+                    Some(&mut wrote),
+                    None,
+                );
+            }
+        }
+    }
+}
+
+/// **Say so in the log file before dying.**
+///
+/// Without this, a panic in this program leaves *no evidence anywhere we
+/// collect*. Three separate reasons, and each of them alone is enough:
+///
+///  - `[main] exiting` is printed **after** the message loop, so no abnormal
+///    termination reaches it.
+///  - The default hook writes to **stderr**, and `log_line` writes stdout and
+///    the file. Nothing tees stderr into the file, and the file is the only
+///    artifact anybody collects off the test machine.
+///  - The process is launched detached, so its console -- this is a
+///    `WINDOWS_CUI` binary, measured, not assumed -- is attached to nobody.
+///
+/// The result is that "no panic, no stderr, no exiting line" was recorded as
+/// an unexplained death **twice**, when those three readings are true of
+/// every panic this binary can have. They were never facts about the defect;
+/// they were facts about where we were looking.
+///
+/// # What it takes no lock for, and why that is the whole design
+///
+/// **A panic hook runs before unwinding, so every lock the panicking thread
+/// holds is still held.** A hook that needs one of them deadlocks -- a hung
+/// process, which is harder to diagnose than the crash it replaced -- or
+/// panics again, and `panic while panicking` aborts immediately with *less*
+/// output than the default hook would have produced.
+///
+/// So this path touches nothing the rest of the program locks:
+///
+///  - the log path is already resolved (`PANIC_LOG`);
+///  - the file is opened fresh here, so no shared handle and no `Mutex`;
+///  - stderr is written through `WriteFile`, not `std::io::Stderr`;
+///  - **it does not call `logf!`/`wlogf!`.** `wlogf!` would ask `winid` for a
+///    window number, which takes `FRAMES` -- and a panic inside anything that
+///    already holds `FRAMES` would then hang instead of reporting.
+///
+/// # What it does not catch, said out loud
+///
+/// Only Rust panics. An access violation, a stack overflow, an `abort()` from
+/// the C side, an OOM kill: none of them come through here and none will
+/// write a line. **That is not a shortcoming, it is the reading this buys.**
+/// After this exists, a silent death with an empty log *rules panics out* --
+/// which is a fact nobody could establish before.
+fn install_panic_hook() {
+    let _ = PANIC_LOG.set(log_path());
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::sync::atomic::Ordering as O;
+        // A panic inside this hook must not come back round. It gets one
+        // fixed line through the lock-free path and nothing else.
+        if IN_PANIC_HOOK.swap(true, O::SeqCst) {
+            raw_stderr(b"[panic] panicked while reporting a panic; giving up\n");
+            return;
+        }
+
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>").to_string();
+        let where_ = match info.location() {
+            Some(l) => format!("{}:{}:{}", l.file(), l.line(), l.column()),
+            None => "<no location>".to_string(),
+        };
+        // `PanicHookInfo::payload_as_str` is not stable in this edition, so
+        // the two shapes the standard library actually produces are read
+        // directly. Anything else is reported as unrenderable rather than
+        // silently becoming an empty message.
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<panic payload is not a string>".to_string()
+        };
+
+        let line = format!(
+            "[{}] [panic] thread {:?} panicked at {}: {}\n",
+            now_str(),
+            name,
+            where_,
+            msg
+        );
+
+        // The file first: it is the artifact that leaves the machine.
+        if let Some(path) = PANIC_LOG.get() {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+            }
+        }
+        raw_stderr(line.as_bytes());
+
+        IN_PANIC_HOOK.store(false, O::SeqCst);
+        // **The default hook still runs.** It prints the backtrace, which
+        // this does not reproduce; taking that away to add a log line would
+        // trade one kind of evidence for another.
+        previous(info);
+    }));
+}
+
+/// `--panic-test[=MODE]`: panic on purpose, so the hook can be shown to work.
+///
+/// **A hook nobody has seen speak is indistinguishable from no hook**, and
+/// the way that failure presents itself is the next silent death being
+/// recorded as unexplained again -- except that this time everyone believes
+/// the instrument is installed.
+///
+/// Three modes, because "the hook writes a line" is easy in the easy case and
+/// silent deaths do not happen in the easy case:
+///
+///  - `--panic-test` -- plain panic on the main thread.
+///  - `--panic-test=locked` -- panic **while holding the window-state lock**,
+///    which is the case the design above exists for: a hook that reached for
+///    that lock would hang here instead of reporting.
+///  - `--panic-test=thread` -- panic on a spawned thread. In a debug build
+///    (`panic = "abort"` is set only on `[profile.release]`) this kills the
+///    thread and **leaves the process running**, so the log line is the only
+///    evidence the thread ever died.
+///
+/// It is an instrument, not a detour: nothing about the ordinary path changes
+/// because this exists, and without the argument none of it runs.
+fn maybe_panic_test() {
+    let Some(arg) = std::env::args().find(|a| a.starts_with("--panic-test")) else {
+        return;
+    };
+    let mode = arg.strip_prefix("--panic-test=").unwrap_or("plain").to_string();
+    logf!("--panic-test={mode}: panicking on purpose to prove the hook speaks");
+    match mode.as_str() {
+        "locked" => {
+            tabs::with_windows_mut(|_ws| {
+                panic!("--panic-test=locked: panicking with the window-state lock held");
+            });
+        }
+        "thread" => {
+            let h = std::thread::Builder::new()
+                .name("polter-panic-test".into())
+                .spawn(|| panic!("--panic-test=thread: panicking off the main thread"))
+                .expect("could not spawn the panic-test thread");
+            // Joining an already-panicked thread returns `Err`; reported
+            // rather than unwrapped, because unwrapping here would panic a
+            // second time and confuse the reading this test exists to give.
+            let joined_ok = h.join().is_ok();
+            logf!(
+                "--panic-test=thread: the thread has ended (joined_ok={joined_ok}); \
+                 the process is still running, which is the point"
+            );
+        }
+        _ => panic!("--panic-test: panicking on the main thread on purpose"),
+    }
+}
+
+/// This executable's own full path.
+///
+/// **The string the operating system gives back is used whole and is never
+/// taken apart.** `GetModuleFileNameW` already answers the question "where am
+/// I", correctly for a renamed executable and for one copied somewhere else,
+/// because it reports the module that is actually loaded rather than anything
+/// derived from `argv[0]` or from `PATH`. Every bug this function exists to
+/// avoid comes from *doing something* to that answer -- joining it to a
+/// directory, splitting it on a separator, re-resolving it -- and the
+/// directory this repository lives in has a space in its name, so a split
+/// would be wrong on the machine it is developed on.
+///
+/// The caller quotes it as one unit. That is not "handling spaces"; it is the
+/// same rule -- the path stays one value from here to `CreateProcessW`.
+fn own_exe_path() -> Option<String> {
+    // 32K units: the documented ceiling for a path with the `\\?\` prefix.
+    // Sized once rather than grown, because the retry loop is the part that
+    // gets the truncation case wrong.
+    let mut buf = vec![0u16; 32768];
+    let n = unsafe { GetModuleFileNameW(None, &mut buf) } as usize;
+    if n == 0 || n >= buf.len() {
+        // process-wide: this is about the executable, not any window
+        plogf!("[cli] GetModuleFileNameW failed or truncated (n={n})");
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buf[..n]))
+}
+
+/// Did the command line ask for a `+action`?
+///
+/// Answered here as well as by the core because two things depend on it
+/// before the core is initialised, and one of them is not obvious: a CLI
+/// action is a **terminal program**, and this host otherwise turns on
+/// `GHOSTTY_LOG=stderr`. Logging to stderr underneath a full-screen TUI
+/// scribbles over it. The other is that there is no reason to open a window.
+fn cli_action_requested() -> bool {
+    cli_action_in(std::env::args())
+}
+
+/// The same question, asked of an argument list rather than of this process.
+///
+/// Split out so `owns_the_log`'s rule has a floor: the real one reads `argv`
+/// and is answered once per process, which leaves nothing a test can vary.
+fn cli_action_in(args: impl Iterator<Item = String>) -> bool {
+    args.skip(1).any(|a| a.starts_with('+'))
+}
+
+/// Where the log goes, given the two facts that decide it.
+///
+/// **The whole of the `owns_the_log` rule is this function**, so that the rule
+/// can be asserted without a process whose `argv` cannot be changed.
+fn log_path_given(owns: bool, pinned: Option<String>) -> std::path::PathBuf {
+    if owns {
+        if let Some(p) = pinned {
+            return std::path::PathBuf::from(p);
+        }
+    }
+    let name = format!("polter-host-{}.log", std::process::id());
+    match std::env::current_exe() {
+        Ok(exe) => exe.with_file_name(name),
+        Err(_) => std::path::PathBuf::from(name),
+    }
+}
+
+#[cfg(test)]
+mod log_ownership_tests {
+    use super::*;
+
+    /// **The floor for the split itself.** If this stopped agreeing with the
+    /// real `argv` question, every assertion below would be about a rule the
+    /// program does not use.
+    #[test]
+    fn the_argument_question_is_the_one_the_process_asks() {
+        let mine: Vec<String> = std::env::args().collect();
+        assert_eq!(
+            cli_action_in(mine.into_iter()),
+            cli_action_requested(),
+            "`cli_action_in` and `cli_action_requested` disagree about this \
+             very process, so the tests below are about a different rule"
+        );
+    }
+
+    #[test]
+    fn a_plus_argument_makes_this_a_guest_and_argv_zero_is_not_one() {
+        let a = |v: &[&str]| cli_action_in(v.iter().map(|s| s.to_string()));
+        assert!(a(&["polter-host.exe", "+mcp"]));
+        assert!(a(&["polter-host.exe", "--x", "+chat"]));
+        assert!(!a(&["polter-host.exe"]));
+        assert!(!a(&["polter-host.exe", "--draw-on-paint"]));
+        // The program's own path is skipped: a directory called `+tools` on
+        // somebody's disk must not turn every run into a CLI action.
+        assert!(!a(&["C:\\+tools\\polter-host.exe"]));
+    }
+
+    /// **The defect, stated as an assertion.** A guest that honours the pin
+    /// is a guest that deletes the owner's log, because `main` clears
+    /// `log_path()` on the way in.
+    #[test]
+    fn a_guest_never_resolves_to_the_pinned_path() {
+        let pinned = "C:\\app\\the-gui-instance.log";
+        assert_eq!(
+            log_path_given(true, Some(pinned.to_string())),
+            std::path::PathBuf::from(pinned),
+            "the owner must still honour POLTER_HOST_LOG -- the tests that \
+             redirect the log depend on it"
+        );
+        let guest = log_path_given(false, Some(pinned.to_string()));
+        assert_ne!(
+            guest,
+            std::path::PathBuf::from(pinned),
+            "a +action resolved to the pinned path; `main` would then delete it"
+        );
+        assert!(
+            guest.to_string_lossy().contains(&std::process::id().to_string()),
+            "a guest must fall back to the per-pid name, not to some third \
+             thing: {}",
+            guest.display()
+        );
+    }
+}
+
+/// Say whether the tester's notes are beside this program.
+///
+/// # Why this is a reading and not a pointer
+///
+/// The obvious line is "see TESTING.md next to this program". **That sentence
+/// is false whenever the file was not copied**, which is the case it exists
+/// to help with -- and a false line is worse than none, because someone who
+/// looks and finds nothing concludes the log is stale rather than that the
+/// packaging missed a file.
+///
+/// So this looks, and says which. **Present**: go and read it. **Absent**:
+/// there is such a document and this copy did not come with one, so ask for
+/// it. Nothing here can make the file arrive; what it can do is make its
+/// absence visible instead of silent, which is the same bargain the build
+/// identity line above strikes with a mismatched pair.
+///
+/// A missing file is not an error and nothing is refused because of it.
+fn log_testing_notes() {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("TESTING.md")));
+    match beside {
+        // process-wide: a file beside the executable; no window is involved
+        Some(p) if p.is_file() => plogf!("[build] tester's notes: {}", p.display()),
+        // process-wide: as above -- the absence of a file beside the
+        // executable belongs to the process, not to any window
+        Some(p) => plogf!(
+            "[build] tester's notes: NOT here ({} does not exist). \
+             There is such a document; this copy did not come with one, so ask \
+             whoever built it for TESTING.md.",
+            p.display()
+        ),
+        // process-wide: as above
+        None => plogf!(
+            "[build] tester's notes: cannot tell -- this program cannot find its own \
+             directory, so it cannot say whether TESTING.md is beside it."
+        ),
+    }
+}
+
+/// Give this process a stdout and a stderr **when Windows gave it none**.
+///
+/// # What this is for
+///
+/// A GUI subsystem process started from Explorer has no console, so
+/// `GetStdHandle` answers with nothing for both streams. Two things write
+/// there and have nowhere else to go: libghostty's log (`GHOSTTY_LOG=stderr`
+/// is the only sink the core has on Windows) and the default panic hook's
+/// backtrace. Pointing the missing handles at the log file keeps both, so
+/// "the window is gone" cannot quietly also mean "the log is gone".
+///
+/// # Only the ones nobody gave us, and that rule is the whole design
+///
+/// A handle we already have came from whoever started us, and it is theirs,
+/// not ours to redirect: a tester running `polter-host.exe > out.log 2>&1`
+/// asked for that file, and an agent CLI that started `polter-host.exe +mcp`
+/// handed us a **pipe it is speaking a protocol over**. Redirecting either
+/// would be this change taking away output while claiming to take away a
+/// window. So each stream is examined on its own and an existing one is left
+/// exactly alone.
+///
+/// # Ordering
+///
+/// After `write_log_bom`, which is a `File::create` and therefore truncates:
+/// a handle opened before it would be pointing into a file that then went
+/// back to length zero. Before `install_panic_hook`, so that the default
+/// hook's backtrace -- which this program does not reproduce itself -- has
+/// somewhere to land from the first moment it could be needed.
+///
+/// The file handle is opened `FILE_APPEND_DATA` and deliberately never
+/// closed. Append access is what makes the interleaving safe: every write
+/// goes to the end of the file as one operation, so the core writing through
+/// this handle and `log_line` opening the same path per line cannot land on
+/// top of each other.
+///
+/// Returns the line to log about what it did. **It is returned rather than
+/// logged here because the log banner has not been written yet**, and a line
+/// above the banner is a line a reader cannot attribute to this run.
+fn adopt_std_handles() -> String {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        OPEN_ALWAYS,
+    };
+    use windows::Win32::System::Console::{
+        GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    let have = |id: STD_HANDLE| -> bool {
+        match unsafe { GetStdHandle(id) } {
+            Ok(h) => !h.is_invalid(),
+            Err(_) => false,
+        }
+    };
+
+    let missing: Vec<(STD_HANDLE, &str)> = [(STD_OUTPUT_HANDLE, "stdout"), (STD_ERROR_HANDLE, "stderr")]
+        .into_iter()
+        .filter(|(id, _)| !have(*id))
+        .collect();
+
+    if missing.is_empty() {
+        return "[stdio] stdout and stderr both came from whoever started us;                 leaving them alone"
+            .to_string();
+    }
+
+    let mut wide: Vec<u16> = log_path().as_os_str().encode_wide().collect();
+    wide.push(0);
+    let file = unsafe {
+        CreateFileW(
+            PCWSTR::from_raw(wide.as_ptr()),
+            FILE_APPEND_DATA.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    };
+    let Ok(file) = file else {
+        // Said out loud: from here the core's log and any backtrace have
+        // nowhere to go, and the shape of that failure is silence.
+        return format!(
+            "[stdio] {} missing and the log file could not be opened for them;              libghostty's log and any panic backtrace have NO sink this run",
+            missing.iter().map(|(_, n)| *n).collect::<Vec<_>>().join(" and ")
+        );
+    };
+
+    let mut adopted: Vec<&str> = Vec::new();
+    let mut refused: Vec<&str> = Vec::new();
+    for (id, name) in missing {
+        match unsafe { SetStdHandle(id, file) } {
+            Ok(()) => adopted.push(name),
+            Err(_) => refused.push(name),
+        }
+    }
+
+    let mut line = format!("[stdio] no console: {} now point at this log file", adopted.join(" and "));
+    if !refused.is_empty() {
+        line.push_str(&format!("; SetStdHandle refused {}", refused.join(" and ")));
+    }
+    line
+}
+
+/// Start the log file with a UTF-8 byte order mark.
+///
+/// # The log was never written wrong; it was read wrong
+///
+/// `log_line` hands a Rust `String` to `writeln!`, which writes its UTF-8
+/// bytes and nothing else -- there is no re-encoding anywhere in this host.
+/// So a line reading `commit="浣犲搱濂?"` is not a mangled write. It is a
+/// correct file **decoded as GBK**, which is what several standard Windows
+/// tools do by default on a Chinese system: Windows PowerShell 5.1's
+/// `Get-Content` uses the ANSI code page unless told otherwise, and so does
+/// `type` in a console whose code page is 936.
+///
+/// **The trailing `?` is the tell**: it is a lossy replacement, which only
+/// happens on the way *in*, not on the way out.
+///
+/// # So why change anything
+///
+/// Because "the file is fine, you read it wrong" is a fact that has to be
+/// known before it helps, and the person reading a log at 3am does not know
+/// it. **A three-byte mark makes the file say what it is**, and the same
+/// tools then decode it correctly with no argument: PowerShell, Notepad, VS
+/// Code and Windows' own editors all honour it.
+///
+/// **What it costs**, said plainly: the three bytes sit at the start of the
+/// first line, so a `findstr` pattern anchored to the very beginning of the
+/// file will not match. The first line is the startup banner, which nobody
+/// anchors to.
+fn write_log_bom() {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::File::create(log_path()) {
+        let _ = f.write_all("\u{feff}".as_bytes());
+    }
+}
+
+/// Leave with a non-zero exit code, having already said why in the log.
+///
+/// # What this replaces
+///
+/// Every fatal path in `main` ended in a bare `return`, and a `return` from
+/// `main` is exit **0**. Seven of the eight had just written a line beginning
+/// `FATAL`; the eighth is a `+action` the core did not recognise. **All eight
+/// told the log they had failed and told the operating system they had
+/// succeeded.**
+///
+/// It surfaced as a smaller question -- `polter-host.exe +bogus-action-xyz`
+/// exiting 0 -- and the smaller question had a bigger answer: an unrecognised
+/// action is one of eight, and the others include *could not load
+/// libghostty*, *could not create the first frame* and *could not create the
+/// first tab*. **Those are exactly the failures the "silent death"
+/// investigations in `status.md` were about**, and every launcher, script and
+/// scheduled task that checked the exit code was told they had gone fine.
+///
+/// # Why `exit` rather than returning an `ExitCode` from `main`
+///
+/// Returning `ExitCode` is the tidier Rust, and it would touch the success
+/// path -- every implicit fall-through would have to name a value. **The
+/// criterion for this change is that a successful run is unchanged, byte for
+/// byte and code for code**, and the cheapest way to be sure of that is to
+/// not edit the success path at all. Nothing here owns a resource whose
+/// destructor matters at this point: the process is ending either way, and it
+/// was ending either way before this too.
+///
+/// **The log line stays where it is.** This is about the exit code alone;
+/// what a failure *says* is task 207's subject and is answered separately.
+fn die() -> ! {
+    std::process::exit(1)
+}
+
 fn main() {
-    let _ = std::fs::remove_file(log_path());
+    // **Only the instance that owns the log clears it.** These two statements
+    // used to run unconditionally, above everything -- including above the
+    // point where this program first looks at its own command line -- so a
+    // `+mcp` child deleted the GUI's pinned log before it knew it was a CLI
+    // action at all. See `owns_the_log`.
+    if owns_the_log() {
+        let _ = std::fs::remove_file(log_path());
+        // **Before the first line, and before the panic hook.** A mark written
+        // later would sit in the middle of the file, where it is not a mark but
+        // a stray character.
+        write_log_bom();
+    }
+    // **After the mark and before the hook**, for the two reasons written on
+    // the function. Its verdict is logged below rather than here, because
+    // there is no banner above this point to attribute a line to.
+    let stdio = adopt_std_handles();
+    // **First, ahead of the banner.** Everything below can panic, and a panic
+    // before the hook is installed leaves exactly the evidence the last two
+    // silent deaths left: none.
+    install_panic_hook();
     logf!(
         "=== Polter host (Windows) === pid={} log={}",
         std::process::id(),
         log_path().display()
     );
+    logf!("{stdio}");
+    maybe_panic_test();
 
     if std::env::args().any(|a| a == "--draw-on-paint") {
         DRAW_ON_PAINT.store(1, Ordering::Relaxed);
@@ -2611,15 +4150,33 @@ fn main() {
     }
 
     log_build_identity();
+    log_testing_notes();
 
     let api_box = match load_api() {
         Some(a) => Box::leak(Box::new(a)),
         None => {
             logf!("FATAL could not load libghostty");
-            return;
+            die();
         }
     };
     API.store(api_box as *mut Api as *mut c_void, Ordering::Release);
+
+    // **As early as the core can be asked, and before anything uses it.** The
+    // verdict is worth most to a reader who has not yet started explaining a
+    // symptom to themselves -- once "this feature was never written" is in
+    // their head, a line further down the log is read as being about
+    // something else.
+    {
+        let info = unsafe { (api_box.info)() };
+        let version = if info.version.is_null() || info.version_len == 0 {
+            String::new()
+        } else {
+            let bytes =
+                unsafe { std::slice::from_raw_parts(info.version as *const u8, info.version_len) };
+            String::from_utf8_lossy(bytes).into_owned()
+        };
+        log_pairing(&version);
+    }
 
     unsafe {
         // Proves ghostty-vt.dll is not merely loaded but callable, and that
@@ -2654,8 +4211,35 @@ fn main() {
     // the log file already captures.
     //
     // An existing value is left alone: whoever set it meant it.
+    //
+    // # Everything above stops applying under a `+action`
+    //
+    // **Read this before deleting the guard below.** The person most likely
+    // to delete it is the one who arrives here wanting exactly what the
+    // paragraphs above argue for: they are debugging `+chat`, they can see no
+    // core logging, and turning it back on is one line away.
+    //
+    // What happens when they do is not "more output". `+chat` is a
+    // **full-screen TUI drawing on this same stderr**, so a log line is
+    // painted into the middle of it. The symptom is a chat window with
+    // debris in it, which reads as a broken TUI -- so the change that caused
+    // it is the last place anyone looks.
+    //
+    // **The escape hatch is already here and needs no edit**: the `Ok` arm
+    // above honours an explicit `GHOSTTY_LOG`. Set it in the environment for
+    // the run you are debugging, and redirect stderr somewhere the TUI is
+    // not. That gets the logging without leaving it on for every user who
+    // opens the chat.
+    //
+    // This host's own log file is unaffected either way -- `logf!` writes
+    // there, not to stderr -- so a `+action` still leaves a record.
     match std::env::var("GHOSTTY_LOG") {
         Ok(v) => logf!("GHOSTTY_LOG already set to {:?}; leaving it", v),
+        Err(_) if cli_action_requested() => {
+            // process-wide: a logging sink for the whole process, decided
+            // before any window exists
+            plogf!("[cli] +action: leaving GHOSTTY_LOG unset so the TUI owns stderr");
+        }
         Err(_) => {
             std::env::set_var("GHOSTTY_LOG", "stderr");
             logf!("GHOSTTY_LOG=stderr (core logging to this process's stderr)");
@@ -2667,13 +4251,65 @@ fn main() {
 
     // ghostty_init takes (argc, argv); argv is a non-optional pointer on the
     // Zig side, so hand it a real one rather than null.
+    //
+    // **This argv is not where the core gets our arguments on Windows.**
+    // `global.zig` takes the real command line from `GetCommandLineW()` on
+    // this target, because `std.process.Args.Vector` there is a WTF-16
+    // command-line string and not an argv array. This pair is still passed
+    // because the parameter is non-optional; it is not read.
     let arg0 = CString::new("polter-host.exe").unwrap();
     let argv: [*const std::os::raw::c_char; 2] = [arg0.as_ptr(), std::ptr::null()];
     let rc = unsafe { (api_box.init)(1, argv.as_ptr()) };
     logf!("ghostty_init -> {}", rc);
     if rc != 0 {
         logf!("FATAL ghostty_init failed");
-        return;
+        die();
+    }
+
+    // **A `+action` ends here, and the call does not come back.**
+    //
+    // The same line `macos/Sources/App/main.swift` has. It is placed after
+    // `ghostty_init` because that is what fills in `global.action()` -- before
+    // it there is nothing to run -- and before any window is made, because a
+    // CLI action is a terminal program and has no window.
+    //
+    // Until `global.zig` was taught to read `GetCommandLineW()` this was inert
+    // on Windows: the core parsed an action out of an empty string and got
+    // null, so `polter-host.exe +chat` opened an ordinary shell. That is the
+    // half of "terminal group chat does nothing" that is on this side.
+    if cli_action_requested() {
+        // **The cost of `owns_the_log`, paid back where it is felt.** This
+        // process ignored `POLTER_HOST_LOG` on purpose so it could not delete
+        // the log of whoever set it -- but the person who set it did so in
+        // order to read it, and to them an ignored pin is indistinguishable
+        // from a log that vanished. So it is said, once, to the one stream a
+        // `+action` may use.
+        //
+        // **Only when the pin was actually ignored.** With no pin there is
+        // nothing surprising to report, and `+chat` is a full-screen TUI that
+        // owns stderr from here on -- an unconditional line would scribble on
+        // it for no reader's benefit. ⚠️ Never stdout: `+mcp` speaks JSON-RPC
+        // over it.
+        if std::env::var("POLTER_HOST_LOG").is_ok() {
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr(),
+                "Polter: this is a +action, so POLTER_HOST_LOG was left alone \
+                 and this process logs to {}",
+                log_path().display()
+            );
+        }
+        // process-wide: a CLI action runs before any window exists, and this
+        // path never makes one
+        plogf!("[cli] a +action was asked for; handing over to the core");
+        unsafe { (api_box.cli_try_action)() };
+        // Reached only if the core found nothing to run -- a `+` argument
+        // that is not an action name. **Said out loud rather than falling
+        // through into a window**, because a typo that silently opens a
+        // terminal looks like the action ran.
+        // process-wide: same path, still no window -- that is what the line says
+        plogf!("[cli] the core did not recognise it; not opening a window");
+        die();
     }
 
     let config = unsafe {
@@ -2699,7 +4335,7 @@ fn main() {
     let app = unsafe { (api_box.app_new)(&rt, config) };
     if app.is_null() {
         logf!("FATAL ghostty_app_new returned null");
-        return;
+        die();
     }
     APP.store(app, Ordering::Release);
     logf!("ghostty_app_new -> {:?}", app);
@@ -2725,7 +4361,7 @@ fn main() {
     };
     if unsafe { RegisterClassExW(&wc) } == 0 {
         logf!("FATAL RegisterClassExW(frame) failed");
-        return;
+        die();
     }
 
     let surf_class = w!("PolterSurface");
@@ -2743,12 +4379,12 @@ fn main() {
     };
     if unsafe { RegisterClassExW(&wc2) } == 0 {
         logf!("FATAL RegisterClassExW(surface) failed");
-        return;
+        die();
     }
 
     let Some(hwnd) = create_frame(hinst, true) else {
         logf!("FATAL could not create the first frame");
-        return;
+        die();
     };
 
     // A static prompt cannot distinguish "renderer still drawing" from
@@ -2857,7 +4493,7 @@ fn main() {
     // ---- first tab ----
     if !tabs::create_tab(hwnd, app, hinst) {
         logf!("FATAL could not create the first tab");
-        return;
+        die();
     }
     tabs::layout(hwnd);
     logf!("tab count = {}", tabs::count(hwnd));
@@ -3012,6 +4648,65 @@ fn main() {
     'outer: loop {
         unsafe {
             loop {
+                // **What was waiting before we asked** -- see `PUMP_SWALLOWED`.
+                //
+                // `ITfMessagePump::PeekMessageW` is called with `PM_REMOVE`, so
+                // TSF takes the message off the queue and then decides whether
+                // to hand it back. **A key it removes and does not return
+                // leaves no trace anywhere**: `TestKeyDown` is never asked, so
+                // there is no `TSF ate` line; nothing is dispatched, so there
+                // is no `[key]` line. That is not a hypothetical -- a log with
+                // 3,530 lines and `TSF ate` zero times still lost two
+                // keydowns.
+                //
+                // `PM_NOREMOVE` only looks. It does not change which code the
+                // key goes through, only whether we can see that it did.
+                let mut waiting = MSG::default();
+                let waiting_key = if PeekMessageW(
+                    &mut waiting,
+                    None,
+                    WM_KEYFIRST,
+                    WM_KEYLAST,
+                    PM_NOREMOVE,
+                )
+                .as_bool()
+                {
+                    // **Only the parts of a key message that identify the
+                    // key.** Two earlier versions of this got it wrong, and the
+                    // way they were wrong is worth more than the fix.
+                    //
+                    // The first compared `time` as well; that was removed on
+                    // the theory that a message passing through
+                    // `ITfKeystrokeMgr` can come back with a different
+                    // timestamp. **That theory was not wrong, it was
+                    // incomplete** -- the identity still never matched, and the
+                    // diagnostic below finally named the field:
+                    //
+                    // ```
+                    // expected  lp=0x40310001
+                    // returned  lp=0x00310001
+                    // ```
+                    //
+                    // The difference is `0x40000000`, **bit 30 of lParam: the
+                    // previous key state.** It describes the keyboard at the
+                    // moment of observation, not the key -- so it can and does
+                    // differ between two looks at the same message. Bit 31
+                    // (transition state) is the same kind of thing.
+                    //
+                    // **Finding one field that really does vary is what stopped
+                    // the search**, and there was a second one behind it. So
+                    // this now keeps only what cannot drift: the message, the
+                    // virtual key, and lParam's scan code (bits 16-23) with its
+                    // extended flag (bit 24).
+                    Some((
+                        waiting.message,
+                        waiting.wParam.0,
+                        waiting.lParam.0 & KEY_IDENTITY_LPARAM,
+                    ))
+                } else {
+                    None
+                };
+
                 let got = match &pump {
                     Some(p) => {
                         let mut ok = windows::core::BOOL(0);
@@ -3028,6 +4723,88 @@ fn main() {
                     }
                     None => PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool(),
                 };
+
+                if let Some(id) = waiting_key {
+                    PUMP_KEYS_SEEN.fetch_add(1, Ordering::Relaxed);
+                    log_hkl_if_changed();
+                    let returned = got
+                        && (msg.message, msg.wParam.0, msg.lParam.0 & KEY_IDENTITY_LPARAM) == id;
+                    if returned {
+                        PUMP_KEYS_RETURNED.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        // Not returned. It may simply still be queued -- the
+                        // pump is allowed to hand back something else first --
+                        // so being gone is the part that means anything.
+                        let mut after = MSG::default();
+                        let still = PeekMessageW(
+                            &mut after,
+                            None,
+                            WM_KEYFIRST,
+                            WM_KEYLAST,
+                            PM_NOREMOVE,
+                        )
+                        .as_bool()
+                            && (
+                                after.message,
+                                after.wParam.0,
+                                after.lParam.0 & KEY_IDENTITY_LPARAM,
+                            ) == id;
+
+                        // **Reported once, whichever branch we are in.**
+                        //
+                        // The first version only spoke when the pump had handed
+                        // back a *key* message. It happened to fire -- and that
+                        // was luck: had the pump returned something else, or
+                        // nothing, it would have stayed silent and `returned=0`
+                        // would have been an unexplained number all over again.
+                        // **A diagnostic that only covers one branch has a
+                        // silence that means several different things**, which
+                        // is the fault it was added to remove.
+                        if !MISMATCH_LOGGED.swap(true, Ordering::Relaxed) {
+                            // process-wide: about the probe, not a window
+                            plogf!(
+                                "[key] pump probe: expected msg=0x{:x} wp=0x{:x} lp=0x{:x}; \
+                                 got={} returned msg=0x{:x} wp=0x{:x} lp=0x{:x}; \
+                                 still_queued={} (reported once. When got=false the returned \
+                                 fields are stale and mean nothing.)",
+                                id.0, id.1, id.2,
+                                got,
+                                msg.message, msg.wParam.0,
+                                msg.lParam.0 & KEY_IDENTITY_LPARAM,
+                                still
+                            );
+                        }
+
+                        if !still {
+                            let n = PUMP_SWALLOWED.fetch_add(1, Ordering::Relaxed) + 1;
+                            if n <= SWALLOW_LOG_CAP {
+                                // process-wide: the pump serves the thread
+                                plogf!(
+                                    "[key] pump swallowed msg=0x{:x} vk=0x{:02x} \
+                                     (removed from the queue and never returned; \
+                                     composing={:?} {})",
+                                    id.0,
+                                    id.1 as u16,
+                                    composing_now(),
+                                    crate::keys::binding_probe(
+                                        id.0,
+                                        WPARAM(id.1),
+                                        LPARAM(id.2),
+                                    )
+                                );
+                            }
+                            if n == SWALLOW_LOG_CAP {
+                                // process-wide: about the log, not a window
+                                plogf!(
+                                    "[key] pump swallowed: reached the {} line cap; further ones \
+                                     are counted, not printed. The total is on the exit line.",
+                                    SWALLOW_LOG_CAP
+                                );
+                            }
+                        }
+                    }
+                }
+
                 if !got {
                     break;
                 }
@@ -3035,8 +4812,89 @@ fn main() {
                     break 'outer;
                 }
 
+                // **Chords that are ours are not offered to TSF at all.**
+                //
+                // While an input method composes, TSF claims keys before the
+                // core is ever asked -- a real machine showed `ctrl`, `shift`
+                // and `c` all taken with `composing=Some(true)`, so every
+                // application shortcut was dead for as long as a candidate
+                // window was open. This is the one point where that can be
+                // changed: `TestKeyDown` is the earliest we are consulted, and
+                // a key TSF takes never reaches a window procedure at all.
+                //
+                // # Only `performable=no`, and that is not a safety margin
+                //
+                // We ask the core here, and the core will decide again after
+                // dispatch. Two evaluations, and state could differ between
+                // them -- **except for exactly the class we intercept**: a
+                // binding that is *not* `performable` does not depend on
+                // terminal state, which is what "not performable" means. So
+                // the one kind of key we take away is the one kind whose two
+                // answers cannot disagree. **The risk is not mitigated here,
+                // it is absent.**
+                //
+                // Intercepting a `performable` binding would be the opposite:
+                // the core would decline it after we had already taken it from
+                // the input method, the host accelerator table would decline
+                // it too, and the key would be handled by nobody -- **worse
+                // than today, where at least the IME uses it.**
+                //
+                // # What this changes outside composition, and when that stops
+                //   being harmless
+                //
+                // This is not conditional on composing -- deliberately: the
+                // `composing` flag is unreliable for the first key of a
+                // composition, and it is not needed, because that first key is
+                // a bare letter and answers `binding=no` anyway. **One less
+                // piece of state is one less thing to be wrong.**
+                //
+                // The consequence is that input methods now never see any
+                // chord we bind non-performably, composing or not. **Today
+                // that costs nothing**, because nothing in our table is a
+                // chord an IME wants: `ctrl+space` (IME on/off), `ctrl+.`
+                // (punctuation width) and `ctrl+shift` (layout switch) are all
+                // unbound by us.
+                //
+                // **That is a sentence about today.** The day somebody binds
+                // one of them -- and we added eight bindings in a single
+                // afternoon -- this line takes it away from the input method
+                // silently: no error, no log, the key simply stops doing what
+                // the IME user expects. Check that list before adding a chord
+                // with `ctrl` and no `shift`.
+                let ours = crate::keys::ask_binding(msg.message, msg.wParam, msg.lParam);
+                if ours.may_intercept() {
+                    // Trace only the first few, and only these: the question
+                    // is where one interception loses a composition, not what
+                    // every key does.
+                    let t = TRACED.fetch_add(1, Ordering::Relaxed) + 1;
+                    TRACING_INTERCEPT.store(t <= 10, Ordering::Release);
+                    let n = INTERCEPTED.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n <= 40 {
+                        // process-wide: the pump serves the thread, and this
+                        // says what the pump did with a message
+                        plogf!(
+                            "[key] kept from TSF msg=0x{:x} vk=0x{:02x} composing={:?} \
+                             ({})",
+                            msg.message,
+                            msg.wParam.0 as u16,
+                            composing_now(),
+                            ours.label()
+                        );
+                    }
+                    if n == 40 {
+                        // process-wide: about the log, not a window
+                        plogf!(
+                            "[key] kept from TSF: reached the 40 line cap; further ones are \
+                             counted, not printed. The total is on the exit line."
+                        );
+                    }
+                }
+
+                // Not offered to TSF when it is ours: it falls through to
+                // `TranslateMessage` + `DispatchMessageW` below, exactly as if
+                // TSF had been asked and had declined.
                 let mut eaten = false;
-                if let Some(k) = &keystrokes {
+                if let Some(k) = &keystrokes.as_ref().filter(|_| !ours.may_intercept()) {
                     match msg.message {
                         WM_KEYDOWN | WM_SYSKEYDOWN => {
                             if k.TestKeyDown(msg.wParam, msg.lParam)
@@ -3072,15 +4930,38 @@ fn main() {
                     let n = TSF_ATE.fetch_add(1, Ordering::Relaxed) + 1;
                     if n <= 40 {
                         logf!(
-                            "[key] TSF ate msg=0x{:x} vk=0x{:02x} (not dispatched)",
+                            "[key] TSF ate msg=0x{:x} vk=0x{:02x} composing={:?} {} \
+                             (not dispatched)",
                             msg.message,
-                            msg.wParam.0 as u16
+                            msg.wParam.0 as u16,
+                            composing_now(),
+                            // **The same answer the decision used**, not a
+                            // second call: two calls could disagree, and a log
+                            // line that disagrees with the branch it is
+                            // describing is worse than no line.
+                            ours.label()
+                        );
+                    }
+                    // **Say when the cap is reached.** Without this the line
+                    // stops appearing and "no more were eaten" and "we stopped
+                    // writing them down" become the same reading -- which is
+                    // how a count of forty came to look like a count of forty
+                    // events rather than a saturated counter.
+                    if n == 40 {
+                        // process-wide: about the log, not a window
+                        plogf!(
+                            "[key] TSF ate: reached the 40 line cap; further ones are counted, \
+                             not printed. The total is on the exit line."
                         );
                     }
                 } else {
+                    trace_intercept("before TranslateMessage");
                     let _ = TranslateMessage(&msg);
+                    trace_intercept("after TranslateMessage / before DispatchMessageW");
                     DispatchMessageW(&msg);
+                    trace_intercept("after DispatchMessageW");
                 }
+                TRACING_INTERCEPT.store(false, Ordering::Release);
             }
             (api_box.app_tick)(app);
         }
@@ -3289,6 +5170,47 @@ fn main() {
     // process-wide: the process is leaving; by this point no window is left
     // for the line to be about
     plogf!("[main] exiting: session flushed, {} tabs were open", open_tabs);
+    // **The counters, so an absence becomes a reading.**
+    //
+    // `swallowed=0` means nothing on its own -- it is also what a probe that
+    // never ran prints. Next to `seen`, it says how many key messages went
+    // past while the probe was watching, and only then is the zero worth
+    // something.
+    //
+    let (seen, returned, swallowed) = (
+        PUMP_KEYS_SEEN.load(Ordering::Relaxed),
+        PUMP_KEYS_RETURNED.load(Ordering::Relaxed),
+        PUMP_SWALLOWED.load(Ordering::Relaxed),
+    );
+    // process-wide: totals for the process
+    plogf!(
+        "[key] pump totals: seen={} returned={} swallowed={} tsf_ate={} kept_from_tsf={}",
+        seen,
+        returned,
+        swallowed,
+        TSF_ATE.load(Ordering::Relaxed),
+        INTERCEPTED.load(Ordering::Relaxed)
+    );
+    // **The floor for the counter above, and it exists because the first
+    // version shipped without one.** That version recorded all seventeen key
+    // messages of a run as "swallowed" -- the identity check never matched
+    // once -- and the numbers looked like a discovery rather than a broken
+    // probe. `seen` is what gave it away, by being exactly equal to
+    // `swallowed`.
+    //
+    // **A probe that cannot report its own failure hands you seventeen
+    // findings instead of one fault**, so this says it plainly: in any run
+    // where keys were pressed at all, some of them must have come back.
+    if seen > 0 && returned == 0 {
+        // process-wide: about the probe, not a window
+        plogf!(
+            "[key] pump probe is BROKEN: {} key message(s) went past and not one was \
+             recognised coming back, so `swallowed={}` counts nothing but the check \
+             failing. Do not read it as evidence of lost keys.",
+            seen,
+            swallowed
+        );
+    }
 }
 
 
@@ -3322,5 +5244,72 @@ mod wd_tests {
             l.s("x");
         }
         assert!(l.truncated);
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::{core_commit, same_commit};
+
+    /// The shape the core actually reports: a semantic version whose build
+    /// metadata is the abbreviated commit.
+    #[test]
+    fn the_commit_comes_out_of_a_real_version_string() {
+        assert_eq!(core_commit("1.3.2-HEAD-+1fe09f51b"), Some("1fe09f51b"));
+        assert_eq!(core_commit("0.1.71-feature/v0.4+abc1234"), Some("abc1234"));
+    }
+
+    /// **Every way of failing to parse lands on `None`, and `None` is neither
+    /// answer.**
+    ///
+    /// This is the rule the whole check turns on. The host's own commit is
+    /// compiled in and never parsed, so a parse failure here cannot produce a
+    /// false *match* -- it produces a false *mismatch*, which is worse in the
+    /// way that matters: an alarm on a correctly matched pair is believed
+    /// once and skipped forever after, and this line is worth something only
+    /// while it is still read.
+    #[test]
+    fn anything_unparseable_is_unknown_rather_than_wrong() {
+        for v in [
+            "",                       // the core said nothing
+            "1.3.2",                  // no build metadata at all
+            "1.3.2-HEAD-+",           // a `+` with nothing after it
+            "1.3.2-HEAD-+zzzz",       // not hexadecimal
+            "1.3.2-HEAD-+ab",         // too short to mean anything
+            "1.3.2+0123456789abcdef0123456789abcdef012345678", // too long to be a hash
+            "some entirely new format the core grew later",
+        ] {
+            assert_eq!(core_commit(v), None, "{v:?} must be unknown, not a verdict");
+        }
+    }
+
+    /// The core's own "git could not tell me" fallback is a real-looking hex
+    /// string. **Two fallbacks comparing equal would manufacture a match out
+    /// of two absences**, so it has to be refused by name.
+    #[test]
+    fn the_cores_unknown_fallback_is_not_a_commit() {
+        assert_eq!(core_commit("1.3.2-HEAD-+0000000"), None);
+    }
+
+    /// Both sides abbreviate with git's own rule, which lengthens as a
+    /// repository grows. **A length difference is not a mismatch**, and
+    /// treating it as one would raise an alarm on a matched pair.
+    #[test]
+    fn a_shorter_abbreviation_of_the_same_commit_still_matches() {
+        assert!(same_commit("1fe09f51b", "1fe09f5"));
+        assert!(same_commit("1fe09f5", "1fe09f51b"));
+        assert!(same_commit("ABC1234", "abc1234"), "hex case must not matter");
+    }
+
+    /// **The floor for the test above.** If `same_commit` answered `true` for
+    /// everything -- which is what a too-eager prefix rule does -- the
+    /// previous test would pass and the check would never fire again.
+    #[test]
+    fn different_commits_do_not_match() {
+        assert!(!same_commit("1fe09f51b", "2fe09f51b"));
+        assert!(!same_commit("abc1234", "abc1235"));
+        // Too little in common to be an abbreviation of anything.
+        assert!(!same_commit("ab", "abc1234"), "a stub must not match by prefix");
+        assert!(!same_commit("", "abc1234"));
     }
 }

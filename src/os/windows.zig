@@ -151,6 +151,15 @@ pub const OBJECT_ATTRIBUTES = windows.OBJECT.ATTRIBUTES;
 // Exported functions by library
 pub const exp = struct {
     pub const kernel32 = struct {
+        /// The process's own command line, WTF-16, argv[0] included.
+        ///
+        /// **The buffer belongs to the process and must not be freed or
+        /// written to.** It is what `global.zig` hands to
+        /// `std.process.Args.Vector` on Windows so that `+action` arguments
+        /// reach `cli.action.detectArgs`; without it that iterator is handed
+        /// an empty string and every CLI action is silently inert.
+        pub extern "kernel32" fn GetCommandLineW() callconv(.winapi) LPWSTR;
+
         pub extern "kernel32" fn CreatePipe(
             hReadPipe: *HANDLE,
             hWritePipe: *HANDLE,

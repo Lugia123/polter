@@ -197,6 +197,19 @@ fn as_str(v: &serde_json::Value) -> String {
     }
 }
 
+/// How many options of a drop-down a person can reach with the mouse.
+///
+/// **Not a number anybody chose.** It is the documented default for
+/// `CB_SETMINVISIBLE`, and it is what two measurements on the test machine
+/// came back with independently: a 40-option list drew 602px at our 20px rows
+/// and 572px at the system's 19px rows -- thirty rows both times.
+///
+/// Past it the list **scrolls and the keyboard arrives** (`LB_SETTOPINDEX(10)`
+/// moves it, `End` selects item 39) but **grows no scroll bar**, so a mouse
+/// cannot get there. Task 138 has the whole shape, including the one-line fix
+/// that was tried and is dead.
+const MOUSE_REACHABLE_OPTIONS: usize = 30;
+
 /// Turn one JSON-Schema property into a control.
 fn control_of(spec: &serde_json::Value) -> Control {
     // A closed set beats the declared type: a string with an `enum` is a
@@ -260,6 +273,38 @@ fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
     let mut params = Vec::new();
     if let Some(props) = props {
         for (pname, spec) in props {
+            let control = control_of(spec);
+            // **Said at the moment the manifest is read, which is the moment
+            // the person who can fix it is looking.**
+            //
+            // This file's rule at the top is that a schema this build cannot
+            // turn into a control falls back rather than disappearing,
+            // "because refusing to show a setting is how a plugin ends up
+            // unconfigurable with no error anywhere". **A field the mouse
+            // cannot reach the end of is the same family** -- the setting is
+            // on the page and the person cannot get to it -- so it gets the
+            // same treatment: it still works, and the fact is said out loud.
+            //
+            // **A notice, not a gate.** Nothing here refuses the manifest and
+            // nothing stops the author; the options past the thirtieth are
+            // still reachable by keyboard. Making it a gate would mean the
+            // settings page saying it on screen, which is a larger change and
+            // is deliberately not proposed here.
+            if let Control::Choice(opts) = &control {
+                if opts.len() > MOUSE_REACHABLE_OPTIONS {
+                    // process-wide: a plugin's manifest on disk; the same file
+                    // whatever window is in front
+                    plogf!(
+                        "[plug] {}: parameter {} declares {} options; only the first {} \
+                         can be reached with the mouse (the list scrolls and the keyboard \
+                         reaches the rest -- see task 138)",
+                        key,
+                        pname,
+                        opts.len(),
+                        MOUSE_REACHABLE_OPTIONS
+                    );
+                }
+            }
             params.push(Parameter {
                 name: pname.clone(),
                 title: spec
@@ -270,7 +315,7 @@ fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
                 help: spec.get("description").map(as_str).unwrap_or_default(),
                 required: required.iter().any(|r| r == pname),
                 secret: spec.get("secret").and_then(|s| s.as_bool()).unwrap_or(false),
-                control: control_of(spec),
+                control: control,
                 default: spec.get("default").map(as_str).filter(|s| !s.is_empty()),
             });
         }
@@ -373,12 +418,37 @@ fn tidy_tag(raw: &str) -> String {
     out
 }
 
-/// Ask Windows what a tag means, so `zh-CN` comes back as `zh-Hans-CN`.
+/// The nearest name Windows *supports* for this tag. **It does not add a
+/// script, and it takes one away.**
 ///
-/// **The script is filled in by the system, not by a table here.** A table of
-/// regions would go stale and would only ever have Chinese in it; `zh-CN`
-/// names no script, and what a Chinese reader cannot read is the other
-/// script. `ResolveLocaleName` is the same answer macOS gets from `Locale`.
+/// This function used to be documented as filling the script in -- "so
+/// `zh-CN` comes back as `zh-Hans-CN`" -- and that sentence was wrong from
+/// the day it was written. It was carried across from the macOS side, where
+/// `Locale(identifier:).language.script` really does maximise a tag, and the
+/// reasoning came with it while the API semantics did not:
+///
+///   * ICU's maximise answers **"what is the fullest form of this tag"**;
+///   * `ResolveLocaleName` answers **"which name that this system supports
+///     is closest to it"**.
+///
+/// On `zh` the two run in opposite directions. Measured on Win11 26200:
+///
+/// ```text
+/// ResolveLocaleName("zh-CN")      -> "zh-CN"     unchanged
+/// ResolveLocaleName("zh-Hans-CN") -> "zh-CN"     the script is REMOVED
+/// LOCALE_SNAME     ("zh-Hans-CN") -> "zh-CN"     a second path, same answer
+/// ```
+///
+/// And the mechanism was read directly rather than inferred from those
+/// samples, by listing the supported set with `EnumSystemLocalesEx`:
+/// **`zh-CN` is in it and `zh-Hans-CN` is not.** A name that is in the set is
+/// a fixed point, and a fixed point cannot grow a script. That is why this is
+/// not a quirk of one machine or one build -- it holds wherever `zh-CN` is
+/// the supported spelling, which it has been since Vista.
+///
+/// So this call is kept for what it is actually good at -- normalising to a
+/// name the system knows -- and the script is asked for separately, in
+/// `scripts_of`.
 fn resolved(tag: &str) -> Option<String> {
     let mut wide: Vec<u16> = tag.encode_utf16().chain(Some(0)).collect();
     let mut out = [0u16; 85];
@@ -399,15 +469,76 @@ fn resolved(tag: &str) -> Option<String> {
     }
 }
 
+/// The scripts Windows says this locale is written in, in the order it gives.
+///
+/// `LOCALE_SSCRIPTS` is the half `ResolveLocaleName` cannot do, and it means
+/// the mapping does not have to live in a table here -- which was the good
+/// half of the original reasoning and is still good. Measured on Win11 26200:
+///
+/// ```text
+/// zh-CN  -> "Hani;Hans;"      en-US -> "Latn;"
+/// sr-RS  -> "Latn;"           de-DE -> "Latn;"
+/// ```
+///
+/// # Do not take the first one
+///
+/// **`zh-CN` answers `Hani;Hans;` and the one we want is second.** `Hani` is
+/// Han script in general; `Hans` is the simplified writing a translator
+/// actually ships a `zh-Hans.json` for, and no translator ships a
+/// `zh-Hani.json`.
+///
+/// This is worth stating loudly because of its shape: **taking the first
+/// entry is correct for `en-US`, `de-DE` and `sr-RS`, and wrong for `zh-CN`.**
+/// Three of the four samples agree with the wrong rule, and the one that
+/// disagrees is the only one this whole file exists for. It is the same shape
+/// as the comment above it -- a rule that holds everywhere it was looked at
+/// and fails where it matters.
+///
+/// So the caller does not choose at all. **Every script goes into the ladder
+/// and the translator's file name decides**, which is the rule this file
+/// already runs on ("the first file that exists wins whole"). The order here
+/// only ever settles a plugin that ships both `zh-Hani.json` and
+/// `zh-Hans.json`, and serving the generic one to a `zh-CN` reader is not a
+/// wrong answer, so nothing rests on it.
+///
+/// # What this field is not
+///
+/// `sr-RS` answers `Latn;` although Serbian is written in both Latin and
+/// Cyrillic. **It is the scripts of this locale, not of this language** -- a
+/// narrower question than the name suggests, and the right one here.
+fn scripts_of(tag: &str) -> Vec<String> {
+    let wide: Vec<u16> = tag.encode_utf16().chain(Some(0)).collect();
+    let mut out = [0u16; 128];
+    let n = unsafe {
+        windows::Win32::Globalization::GetLocaleInfoEx(
+            windows::core::PCWSTR(wide.as_ptr()),
+            windows::Win32::Globalization::LOCALE_SSCRIPTS,
+            Some(&mut out),
+        )
+    };
+    if n <= 1 {
+        return Vec::new();
+    }
+    String::from_utf16_lossy(&out[..(n - 1) as usize])
+        .split(';')
+        .filter(|s| s.len() == 4 && s.chars().all(|c| c.is_ascii_alphabetic()))
+        .map(|s| {
+            let mut c = s.chars();
+            let head = c.next().unwrap().to_ascii_uppercase();
+            format!("{head}{}", c.as_str().to_ascii_lowercase())
+        })
+        .collect()
+}
+
 /// Which sidecar files to look for, in the order they should be tried.
 ///
 /// Each preferred language is expanded into a ladder from most specific to
 /// least:
 ///
 /// ```text
-/// zh-Hans-CN  ->  zh-Hans-CN, zh-Hans, zh-CN, zh
-/// zh_CN.UTF-8 ->  zh-Hans-CN, zh-Hans, zh-CN, zh
-/// zh          ->  zh-Hans, zh
+/// zh-Hans-CN  ->  zh-Hans-CN, zh-Hans, zh-Hani-CN, zh-Hani, zh-CN, zh
+/// zh_CN.UTF-8 ->  zh-Hani-CN, zh-Hani, zh-Hans-CN, zh-Hans, zh-CN, zh
+/// zh-Hans     ->  zh-Hans, zh-Hani, zh
 /// en-GB       ->  en-Latn-GB, en-Latn, en-GB, en
 /// ```
 ///
@@ -415,6 +546,12 @@ fn resolved(tag: &str) -> Option<String> {
 /// reader cannot read is the other script, while the region only changes
 /// vocabulary. A translator who ships one `zh-Hans.json` must reach somebody
 /// whose machine says `zh_CN`.
+///
+/// **A locale can be written in more than one script and all of them go in.**
+/// Windows answers `Hani;Hans;` for `zh-CN`, and choosing between those two
+/// here would mean choosing `Hani`, which no translator ships a file for.
+/// Nothing chooses: the ladder carries both and the file that exists wins.
+/// `scripts_of` has the reading and why the obvious rule is wrong.
 pub fn locale_candidates(preferred: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for raw in preferred {
@@ -422,19 +559,19 @@ pub fn locale_candidates(preferred: &[String]) -> Vec<String> {
         if tidy.is_empty() {
             continue;
         }
-        // The system's own expansion first, so a tag with no script written
-        // down gets one; then the tag as it was given, in case the system
-        // knows nothing about it.
+        // Normalise to a name the system knows. **This does not add a script
+        // and may remove one** -- see `resolved`; the script is asked for
+        // separately below.
         let full = resolved(&tidy).map(|r| tidy_tag(&r)).unwrap_or_else(|| tidy.clone());
 
         let mut lang = String::new();
-        let mut script: Option<String> = None;
+        let mut written: Option<String> = None;
         let mut region: Option<String> = None;
         for (i, part) in full.split('-').enumerate() {
             if i == 0 {
                 lang = part.to_string();
-            } else if part.len() == 4 && script.is_none() {
-                script = Some(part.to_string());
+            } else if part.len() == 4 && written.is_none() {
+                written = Some(part.to_string());
             } else {
                 region = Some(part.to_string());
             }
@@ -446,15 +583,37 @@ pub fn locale_candidates(preferred: &[String]) -> Vec<String> {
                 region = Some(given.to_string());
             }
         }
+        // And a script the person wrote down that the system then normalised
+        // away: `zh-Hans-CN` comes back as `zh-CN`. **Somebody who spelled
+        // the script out must not lose it to a round trip through Windows.**
+        if written.is_none() {
+            if let Some(given) = tidy.split('-').nth(1).filter(|p| p.len() == 4) {
+                written = Some(given.to_string());
+            }
+        }
         if lang.is_empty() || !is_tag(&lang) {
             continue;
         }
 
-        let mut ladder: Vec<String> = Vec::new();
-        if let (Some(s), Some(r)) = (&script, &region) {
-            ladder.push(format!("{lang}-{s}-{r}"));
+        // The script the tag itself names comes first, because it is the one
+        // statement of intent we have; then whatever Windows says this locale
+        // is written in. **Nothing here picks one of them** -- `zh-CN` answers
+        // `Hani;Hans;` and picking would be picking `Hani`. See `scripts_of`.
+        let mut scripts: Vec<String> = Vec::new();
+        if let Some(w) = written {
+            scripts.push(w);
         }
-        if let Some(s) = &script {
+        for s in scripts_of(&full) {
+            if !scripts.contains(&s) {
+                scripts.push(s);
+            }
+        }
+
+        let mut ladder: Vec<String> = Vec::new();
+        for s in &scripts {
+            if let Some(r) = &region {
+                ladder.push(format!("{lang}-{s}-{r}"));
+            }
             ladder.push(format!("{lang}-{s}"));
         }
         if let Some(r) = &region {
@@ -983,6 +1142,36 @@ mod locale_tests {
         std::fs::write(dir.join("i18n").join(format!("{tag}.json")), body).unwrap();
     }
 
+    /// What Windows answered, put into a failure message.
+    ///
+    /// **The tests below are integration tests wearing a unit test's
+    /// clothes.** `locale_candidates` asks Windows what a tag means, so the
+    /// candidate list belongs partly to the machine running the test and not
+    /// only to this file.
+    ///
+    /// Without the reading, a red says the candidate list was wrong and
+    /// nothing else -- and **"the product is wrong" and "this machine is
+    /// unusual" print exactly the same failure.** Those two need different
+    /// people to look at them, and the second one cannot even be *proposed*
+    /// by somebody holding only the old message.
+    ///
+    /// The note in brackets is mechanical -- did the answer differ from the
+    /// question -- and deliberately not an interpretation. Reading
+    /// `"zh-Hans" -> "zh-CN"` and deciding what it means is the reader's job;
+    /// a helper that decided it would be one more thing that can be wrong
+    /// while looking authoritative.
+    fn what_windows_said(tags: &[&str]) -> String {
+        let mut parts = Vec::new();
+        for tag in tags {
+            parts.push(match resolved(tag) {
+                Some(r) if r.eq_ignore_ascii_case(tag) => format!("{tag:?} -> {r:?} (unchanged)"),
+                Some(r) => format!("{tag:?} -> {r:?} (rewritten)"),
+                None => format!("{tag:?} -> no answer"),
+            });
+        }
+        format!("ResolveLocaleName on this machine: {}", parts.join(", "))
+    }
+
     /// **A POSIX locale must reach a translator's one file.** `zh_CN.UTF-8`
     /// names no script, and the file a translator ships is `zh-Hans.json`.
     /// Also pins the order: script before region, because what a reader
@@ -993,11 +1182,45 @@ mod locale_tests {
         let c = locale_candidates(&["zh_CN.UTF-8".to_string()]);
         let hans = c.iter().position(|x| x == "zh-Hans");
         let cn = c.iter().position(|x| x == "zh-CN");
-        assert!(hans.is_some(), "no zh-Hans candidate in {c:?}");
-        assert!(c.contains(&"zh".to_string()), "no bare zh in {c:?}");
+        // `zh_CN.UTF-8` is tidied to `zh-CN` before Windows is asked, so
+        // `zh-CN` is the reading that decides this test. The other two are
+        // there because **whether this API ever puts a script in is the
+        // question**, and one tag cannot answer it.
+        let said = what_windows_said(&["zh-CN", "zh-Hans", "zh-Hans-CN"]);
+        assert!(hans.is_some(), "no zh-Hans candidate in {c:?}\n  {said}");
+        assert!(
+            c.contains(&"zh".to_string()),
+            "no bare zh in {c:?}\n  {said}"
+        );
         if let (Some(h), Some(r)) = (hans, cn) {
-            assert!(h < r, "script must be tried before region: {c:?}");
+            assert!(h < r, "script must be tried before region: {c:?}\n  {said}");
         }
+    }
+
+    /// **The defect this file was reopened for.** A machine that says `zh-CN`
+    /// must reach the one file a translator shipped, `zh-Hans.json`.
+    ///
+    /// Windows will not spell the script into the tag -- `zh-CN` is a name it
+    /// supports, so it comes back unchanged -- and it answers `Hani;Hans;`
+    /// when asked what scripts the locale uses. **A version of this that took
+    /// the first script would look for `zh-Hani.json` and find nothing**,
+    /// which is why this test writes only `zh-Hans.json` and nothing else:
+    /// the generic script must not be able to satisfy it.
+    #[test]
+    fn a_zh_cn_machine_reaches_the_hans_file_and_not_a_hani_one() {
+        let dir = scratch("hans-from-cn");
+        write(&dir, "zh-Hans", r#"{"name":"简体"}"#);
+
+        let text = load_text(&dir, &["zh-CN".to_string()]);
+        assert_eq!(
+            text.name.as_deref(),
+            Some("简体"),
+            "a zh-CN machine did not reach zh-Hans.json\n  {}\n  scripts: {:?}\n  candidates: {:?}",
+            what_windows_said(&["zh-CN"]),
+            scripts_of("zh-CN"),
+            locale_candidates(&["zh-CN".to_string()])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Casing and separators are normalised before anything becomes a file
@@ -1030,11 +1253,20 @@ mod locale_tests {
         write(&dir, "zh-Hans", r#"{"name":"从 zh-Hans 来"}"#);
 
         let text = load_text(&dir, &["zh-Hans".to_string()]);
-        assert_eq!(text.name.as_deref(), Some("从 zh-Hans 来"));
+        let said = what_windows_said(&["zh-Hans"]);
+        let ladder = locale_candidates(&["zh-Hans".to_string()]);
+        assert_eq!(
+            text.name.as_deref(),
+            Some("从 zh-Hans 来"),
+            "zh-Hans.json was not the file that won\n  {said}\n  candidates: {ladder:?}"
+        );
         // The description exists in `zh.json` and only there. A merge would
         // put it here; the rule says the manifest's own English is what fills
         // that gap instead.
-        assert_eq!(text.summary, None, "zh.json must not be laid under zh-Hans.json");
+        assert_eq!(
+            text.summary, None,
+            "zh.json must not be laid under zh-Hans.json\n  {said}\n  candidates: {ladder:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1048,7 +1280,13 @@ mod locale_tests {
         write(&dir, "zh", r#"{"name":"从 zh 来"}"#);
 
         let text = load_text(&dir, &["zh-Hans".to_string()]);
-        assert_eq!(text, PluginText::default(), "the search must stop, not continue to zh.json");
+        assert_eq!(
+            text,
+            PluginText::default(),
+            "the search must stop, not continue to zh.json\n  {}\n  candidates: {:?}",
+            what_windows_said(&["zh-Hans"]),
+            locale_candidates(&["zh-Hans".to_string()])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1332,15 +1570,45 @@ mod shipped_manifest_tests {
     /// **The count is the whole test.** Every one of these was read as zero,
     /// and zero parameters is exactly what "the page has only an on/off
     /// switch" looks like from a chair.
+    ///
+    /// **All five are compared in one assertion, on purpose.** Written as five
+    /// `assert_eq!`s it stopped at the first mismatch, and when `rules` was
+    /// added to three manifests the failure named only `claude-code`. Fixing
+    /// that one moved the red to `codex`, and then to `gemini`: three rounds
+    /// to learn what one run could have said. **A test that stops at the
+    /// first disagreement reports the first cause, and a reader has no way to
+    /// tell that from the only cause.**
+    ///
+    /// The expectation carries the names rather than a bare number, so a
+    /// failure says *which* parameter appeared or went missing. A count alone
+    /// answers "how many" to a question that is always really "which".
     #[test]
     fn the_shipped_manifests_declare_the_parameters_they_declare() {
-        assert_eq!(parse("archive", ARCHIVE).params.len(), 2, "archive: dir, sign_key");
-        assert_eq!(parse("claude-code", CLAUDE_CODE).params.len(), 2, "claude-code: scope, skills");
-        assert_eq!(parse("codex", CODEX).params.len(), 1, "codex: skills");
-        assert_eq!(parse("gemini", GEMINI).params.len(), 1, "gemini: skills");
-        // And one that really does declare none, so a parser that answered
-        // "two" to everything would not pass either.
-        assert_eq!(parse("kimi", KIMI).params.len(), 0, "kimi declares none");
+        let names = |k: &str, text: &str| {
+            let mut v: Vec<String> = parse(k, text).params.iter().map(|p| p.name.clone()).collect();
+            v.sort();
+            (k.to_string(), v)
+        };
+        let found = vec![
+            names("archive", ARCHIVE),
+            names("claude-code", CLAUDE_CODE),
+            names("codex", CODEX),
+            names("gemini", GEMINI),
+            // And one that really does declare none, so a parser that answered
+            // "two" to everything would not pass either.
+            names("kimi", KIMI),
+        ];
+        let expected: Vec<(String, Vec<String>)> = [
+            ("archive", &["dir", "sign_key"][..]),
+            ("claude-code", &["rules", "scope", "skills"][..]),
+            ("codex", &["rules", "skills"][..]),
+            ("gemini", &["rules", "skills"][..]),
+            ("kimi", &[][..]),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
+        .collect();
+        assert_eq!(found, expected, "a shipped manifest's parameters changed");
     }
 
     /// The shapes, from the same outside ruler: a closed set is a dropdown and

@@ -728,7 +728,8 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// Available since: 1.2.0
 @"selection-clear-on-typing": bool = true,
 
-/// Whether to clear selected text after copying. This defaults to `false`.
+/// Whether to clear selected text after copying. This defaults to `false`
+/// everywhere except Windows, where it defaults to `true`.
 ///
 /// When set to `true`, the selection will be automatically cleared after
 /// any copy operation that invokes the `copy_to_clipboard` keyboard binding.
@@ -738,7 +739,22 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// When set to `false`, the selection remains visible after copying, allowing
 /// to see what was copied and potentially perform additional operations
 /// on the same selection.
-@"selection-clear-on-copy": bool = false,
+///
+/// **The Windows default is a deliberate divergence from upstream, and it is
+/// one half of a pair.** The other half is the `ctrl+c` binding in
+/// `Keybinds.init`; read that comment first, because this value on its own
+/// looks like a taste preference and is not one. On Windows `ctrl+c` copies
+/// when there is a selection and interrupts when there is not, which is what
+/// Windows Terminal does and what people arrive expecting. That only works if
+/// copying also *ends* the selection: leave it standing and the next `ctrl+c`
+/// copies the same text again instead of interrupting, so the key silently
+/// stops being an interrupt key until the user thinks to click somewhere.
+/// With `ctrl+shift+c` -- the binding every other platform uses -- there is no
+/// such trap, because nothing else is competing for the chord.
+///
+/// Diverging is not the problem; diverging quietly is. Set it explicitly in
+/// your config to get the old behaviour back on Windows.
+@"selection-clear-on-copy": bool = builtin.target.os.tag == .windows,
 
 /// Characters that mark word boundaries during text selection operations such
 /// as double-clicking. When selecting a word, the selection will stop at any
@@ -6873,6 +6889,63 @@ pub const Keybinds = struct {
                 .paste_from_clipboard,
                 .{ .performable = true },
             );
+
+            // **Windows also binds the bare `ctrl+c` / `ctrl+v`**, which the
+            // comment above explains why every other platform does not. This
+            // is a deliberate divergence and it is written down in three
+            // places -- here, `selection-clear-on-copy`, and
+            // `docs/windows/keys.md` -- because it is the kind of thing that
+            // reads as somebody not knowing about SIGINT.
+            //
+            // Windows Terminal, conhost and every Windows editor bind
+            // `ctrl+c` to copy. A terminal on Windows that does not is not
+            // "correct about SIGINT", it is the one program on the machine
+            // where the reflex fails, and the person finds out by losing a
+            // selection they meant to copy.
+            //
+            // **`performable` is what makes both behaviours fit on one key,
+            // and the mechanism is worth stating because it is not the one
+            // `keys.md` 3.3(d) describes.** With no selection,
+            // `copy_to_clipboard` returns false, `maybeHandleBinding` returns
+            // null (`Surface.zig`, the `leaf.flags.performable and !performed`
+            // branch), and the event falls through to `encodeKey` -- which
+            // encodes `ctrl+c` as 0x03 and consumes it. So the interrupt is
+            // delivered *by the core*, and `ghostty_surface_key` still answers
+            // **true**. The host accelerator table is never reached, and a
+            // criterion written against `surface_key=false` will fail on a
+            // build where this works perfectly.
+            //
+            // **`ctrl+v` carries a cost that `ctrl+c` does not, and it is
+            // paid knowingly.** Pasting declines only when there is nothing
+            // to paste: `startClipboardRequest` always allows `.paste`, so it
+            // returns whatever the host's `read_clipboard` says, and on
+            // Windows that is false only when the clipboard holds no text
+            // (`main.rs::cb_read_clipboard`). So while the clipboard holds
+            // text, **`ctrl+v` can no longer send 0x16 to the shell** -- no
+            // `readline`/`emacs` quoted-insert, no `C-v` in anything that
+            // wants it. That is the Windows expectation and it is what this
+            // binding is for; the escape hatch is `keybind = ctrl+v=unbind`,
+            // not a second chord.
+            //
+            // Neither line touches the menus. `putFlags` sets
+            // `track_reverse = !performable`, so these never enter the reverse
+            // map and `shortcut_for("copy_to_clipboard")` keeps answering
+            // `Ctrl+Insert`, exactly as it did before. That is the same reason
+            // `ctrl+shift+c` is not the one shown either.
+            if (builtin.target.os.tag == .windows) {
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .unicode = 'c' }, .mods = .{ .ctrl = true } },
+                    .{ .copy_to_clipboard = .mixed },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .unicode = 'v' }, .mods = .{ .ctrl = true } },
+                    .paste_from_clipboard,
+                    .{ .performable = true },
+                );
+            }
         }
 
         // Increase font size mapping for keyboards with dedicated plus keys (like german)
@@ -6988,9 +7061,22 @@ pub const Keybinds = struct {
                 .{ .key = .{ .unicode = 'n' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .new_window = {} },
             );
+            // **`close_surface` is `ctrl+shift+x` here, and this is a
+            // deliberate divergence from upstream. See the note above
+            // `close_tab` below for why.**
+            //
+            // It used to be `ctrl+shift+w`, twenty lines above the `close_tab`
+            // binding that uses the same chord -- and `Set.putFlags` overwrites
+            // unconditionally, so that `put` was dead from the day it was
+            // written. **The dead line is gone rather than left in place**: it
+            // was not merely ineffective, it read as a live binding, so anyone
+            // counting chords saw two actions contending for `ctrl+shift+w`
+            // when in fact the chord has one owner. That misleads a reader and
+            // it misleads any tool that scans for duplicate chords -- which is
+            // exactly how this whole family of gaps was found.
             try self.set.put(
                 alloc,
-                .{ .key = .{ .unicode = 'w' }, .mods = .{ .ctrl = true, .shift = true } },
+                .{ .key = .{ .unicode = 'x' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .close_surface = {} },
             );
             try self.set.put(
@@ -7008,6 +7094,36 @@ pub const Keybinds = struct {
                 .{ .key = .{ .unicode = 't' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .new_tab = {} },
             );
+            // # This fork's non-macOS defaults diverge from upstream here
+            //
+            // **The reason is not that we wanted different keys.** It is that
+            // the macOS branch gives the closing family four chords and this
+            // branch has two, and when the four were collapsed into two, two
+            // actions were left with no key at all:
+            //
+            //   * `close_surface` -- bound to `ctrl+shift+w` and then
+            //     overwritten by the `close_tab` binding just below, twenty
+            //     lines later. Silent: `Set.putFlags` replaces without
+            //     complaint, and the reverse map drops the loser, so the menu
+            //     row for it simply showed no shortcut.
+            //   * `close_all_windows` -- never bound outside macOS.
+            //
+            // The same collapse cost four more: `adjust_selection` for
+            // `home`, `end`, `page_up` and `page_down`, all four overwritten
+            // by the scrolling bindings on `shift+`. See the comment beside
+            // them below.
+            //
+            // **What was changed here**: `close_surface` moved to
+            // `ctrl+shift+x`; `adjust_selection` got new chords. Nothing that
+            // already worked was moved. `close_all_windows` is still unbound
+            // on purpose -- macOS puts it on a four-modifier chord, which is
+            // where a rarely-wanted and expensive-to-mistake action belongs.
+            //
+            // **To whoever is merging upstream and has hit a conflict here:**
+            // this is not a taste change to drop. Re-applying upstream's
+            // version restores two actions with no keyboard route, and the
+            // way you will find out is a user reporting that a menu item has
+            // no shortcut -- months later, from a different direction.
             try self.set.put(
                 alloc,
                 .{ .key = .{ .unicode = 'w' }, .mods = .{ .ctrl = true, .shift = true } },
@@ -7184,6 +7300,122 @@ pub const Keybinds = struct {
                 alloc,
                 .{ .key = .{ .unicode = 'a' }, .mods = .{ .shift = true, .ctrl = true } },
                 .{ .select_all = {} },
+            );
+
+            // # Extending the selection, and why these four are not one set
+            //
+            // On macOS these are `shift+home` / `end` / `page_up` /
+            // `page_down`, which is also what almost every other program on
+            // Windows uses. **Here those four chords scroll instead**: the
+            // bindings a few lines above bind `shift+…` to `scroll_to_top`
+            // and friends, and being written later they overwrite the
+            // `adjust_selection` bindings from the shared section. Nothing
+            // reports that; the four selection actions simply end up with no
+            // key.
+            //
+            // **The scrolling was left where it is on purpose.** People are
+            // using `shift+page_up` to scroll today, and this change is meant
+            // to fill gaps rather than move things somebody already relies
+            // on.
+            //
+            // **Which is why these four are not a matched set**, and it will
+            // look like an oversight to the next reader:
+            //
+            //   home / end       -> ctrl+shift+…   (free)
+            //   page_up / down   -> alt+shift+…    (ctrl+shift+page_* is
+            //                                       already `move_tab`)
+            //
+            // **Do not "tidy this up" by moving the scrolling off `shift+`.**
+            // That is the other half of a choice that was made deliberately:
+            // it would give all four selection keys one shape and match
+            // macOS, at the cost of changing a behaviour people already use.
+            // If that trade is ever taken it should be taken on purpose, by
+            // someone who knows they are changing existing behaviour -- not
+            // as a side effect of making four lines look alike.
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .home }, .mods = .{ .ctrl = true, .shift = true } },
+                .{ .adjust_selection = .home },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .end }, .mods = .{ .ctrl = true, .shift = true } },
+                .{ .adjust_selection = .end },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .page_up }, .mods = .{ .alt = true, .shift = true } },
+                .{ .adjust_selection = .page_up },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .page_down }, .mods = .{ .alt = true, .shift = true } },
+                .{ .adjust_selection = .page_down },
+                .{ .performable = true },
+            );
+
+            // Clearing the screen. `cmd+k` on macOS; `ctrl+k` is not
+            // available here because a bare `ctrl+<letter>` belongs to the
+            // terminal (`ctrl+k` is a line-editing key in every shell), so
+            // this takes the same letter one namespace up.
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'k' }, .mods = .{ .ctrl = true, .shift = true } },
+                .{ .clear_screen = {} },
+            );
+
+            // Walking the search results. Without these the search bar can be
+            // opened from the keyboard and then only continued with a mouse,
+            // which is half a feature.
+            //
+            // # Why function keys, and not `ctrl+shift+g` with something on top
+            //
+            // macOS says "the other direction" by adding a `shift`:
+            // `cmd+g` / `cmd+shift+g`. **That idiom cannot survive the
+            // translation**, because the `shift` in `ctrl+shift+<letter>` is
+            // already spent -- it is what keeps this off `ctrl+<letter>`,
+            // which belongs to the terminal. Adding a second `shift` to mean
+            // "backwards" collapses into the first one.
+            //
+            // The obvious escape is another modifier, and **that road is shut,
+            // not merely narrow**:
+            //
+            //   * `ctrl+alt+<letter>` *is* `AltGr` on Windows. European
+            //     layouts type third-level characters with it, so binding it
+            //     takes a printable character away from those users -- and the
+            //     symptom is "I can no longer type this symbol", which nobody
+            //     traces back to a terminal's shortcuts.
+            //   * `ctrl+shift+alt+<letter>` is `AltGr+shift`, which is the
+            //     fourth level on layouts that have one. Rarer, and **being
+            //     rarer makes it harder to attribute, not safer**.
+            //   * **And we cannot tell the two apart.** `Mods.binding()`
+            //     (`src/input/key_mods.zig`) keeps only `shift/ctrl/alt/super`
+            //     and drops the sided bits, so `AltGr+shift+g` and a genuine
+            //     four-finger chord arrive here identical -- even though the
+            //     Windows host does know which side each modifier was on.
+            //
+            // **Function keys sidestep the whole namespace**, and the cost is
+            // conditional rather than permanent: these are `performable`, so
+            // with no search open the core declines and the key goes on to be
+            // encoded to the pty exactly as it does today
+            // (`Surface.zig`: `if (leaf.flags.performable and !performed)
+            // return null;`, after which `keyCallback` reaches `encodeKey`).
+            // **`f3` belongs to the terminal except while a search is open** --
+            // which is a sentence a user can be told.
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .f3 } },
+                .{ .navigate_search = .next },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .physical = .f3 }, .mods = .{ .shift = true } },
+                .{ .navigate_search = .previous },
+                .{ .performable = true },
             );
 
             // Selection clipboard paste
@@ -7909,6 +8141,65 @@ pub const Keybinds = struct {
             \\
         ;
         try std.testing.expectEqualStrings(want, buf.written());
+    }
+
+    // **The Windows `ctrl+c` / `ctrl+v` divergence, pinned.**
+    //
+    // This test is the only automated check those two lines have, and on a
+    // non-Windows host it checks nothing at all -- `Keybinds.init`'s Windows
+    // block is comptime-dead there and Zig does not analyse it. That is
+    // measured, not assumed: with `paste_from_clipboard` deliberately
+    // misspelled, `zig build -Dtarget=x86_64-windows-gnu` fails and
+    // `zig build` on macOS exits 0.
+    //
+    // So it skips here rather than passing here, because a green that means
+    // nothing and a green that means something must not look alike. It is
+    // worth something on a Windows test exe (`-Demit-test-exe`), which is
+    // where it is meant to run.
+    test "Keybinds: windows binds bare ctrl+c and ctrl+v" {
+        if (comptime builtin.target.os.tag != .windows) return error.SkipZigTest;
+
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var keybinds: Keybinds = .{};
+        try keybinds.init(alloc);
+
+        // Bound, and bound `performable`. Without the flag the core would
+        // consume `ctrl+c` unconditionally and it would stop being an
+        // interrupt key -- which is the whole behaviour, not a detail.
+        const copy_bind = keybinds.set.get(.{
+            .key = .{ .unicode = 'c' },
+            .mods = .{ .ctrl = true },
+        }).?.value_ptr.leaf;
+        try testing.expect(std.meta.activeTag(copy_bind.action) == .copy_to_clipboard);
+        try testing.expect(copy_bind.action.copy_to_clipboard == .mixed);
+        try testing.expect(copy_bind.flags.performable);
+
+        const paste_bind = keybinds.set.get(.{
+            .key = .{ .unicode = 'v' },
+            .mods = .{ .ctrl = true },
+        }).?.value_ptr.leaf;
+        try testing.expect(std.meta.activeTag(paste_bind.action) == .paste_from_clipboard);
+        try testing.expect(paste_bind.flags.performable);
+
+        // `ctrl+shift+c` is still there. Adding a chord must not quietly
+        // replace the one people already use.
+        const shift_copy = keybinds.set.get(.{
+            .key = .{ .unicode = 'c' },
+            .mods = .{ .ctrl = true, .shift = true },
+        }).?.value_ptr.leaf;
+        try testing.expect(std.meta.activeTag(shift_copy.action) == .copy_to_clipboard);
+
+        // And neither new chord reaches a menu: `performable` keeps them out
+        // of the reverse map, so `shortcut_for("copy_to_clipboard")` still
+        // renders `Ctrl+Insert`. This is the half that bit us in 136/137.
+        const shown = keybinds.set.getTrigger(.{ .copy_to_clipboard = .mixed }).?;
+        try testing.expect(std.meta.activeTag(shown.key) == .physical);
+        try testing.expect(shown.key.physical == .insert);
+        try testing.expect(shown.mods.ctrl and !shown.mods.shift);
     }
 
     test "parseCLI table definition" {

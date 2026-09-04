@@ -41,7 +41,7 @@ pub fn run(alloc: std.mem.Allocator) !u8 {
     }
 
     var buffer: [1024]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(global.io(), &buffer);
+    var stdout_writer = std.Io.File.stdout().writerStreaming(global.io(), &buffer);
     const stdout = &stdout_writer.interface;
     const result = runInner(alloc, opts, stdout);
     try stdout_writer.end();

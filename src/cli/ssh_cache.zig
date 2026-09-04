@@ -66,12 +66,12 @@ pub fn run(alloc_gpa: Allocator) !u8 {
 
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_file: std.Io.File = .stdout();
-    var stdout_writer = stdout_file.writer(global.io(), &stdout_buffer);
+    var stdout_writer = stdout_file.writerStreaming(global.io(), &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     var stderr_buffer: [1024]u8 = undefined;
     var stderr_file: std.Io.File = .stderr();
-    var stderr_writer = stderr_file.writer(global.io(), &stderr_buffer);
+    var stderr_writer = stderr_file.writerStreaming(global.io(), &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
     // The cache is queried by a positional destination (`user@host` or a

@@ -6,16 +6,30 @@
 //! colours, and CJK display and input handled by the host surface rather
 //! than by us. See `docs/poltergeist/chatui.md`.
 //!
-//! It reads and writes over the same unix socket the agents use. What makes
-//! it the *user* rather than the terminal it happens to run in is that the
-//! host opened this surface for the chat and remembers doing so; see
+//! It reads and writes over the same endpoint the agents use -- a unix socket
+//! on POSIX, a named pipe on Windows; `poltergeist/transport.zig` chooses and
+//! explains why. **Both halves of that sentence were false and are worth a
+//! line each**, because a comment that describes an arrangement nobody built
+//! answers the question and stops the next person looking:
+//!
+//!   * "writes" was aspirational. Until the compose line existed this view
+//!     could browse, switch, scroll and delete, and could not say anything --
+//!     while this paragraph said it could.
+//!   * "unix socket" survived the move to `transport`, which the client had
+//!     also not been using; the client was fixed and this line was not.
+//!
+//! What makes it the *user* rather than the terminal it happens to run in is
+//! that the host opened this surface for the chat and remembers doing so; see
 //! `App.isChatSurface`. Nothing here declares an identity, because anything
-//! that could would work just as well for an agent.
+//! that could would work just as well for an agent -- and `group_post` needs
+//! none: the server takes the author from the connection (`rpc.zig`: "the
+//! method is about who is asking"), so nothing is sent but the group and the
+//! text.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
-const net = std.Io.net;
+const transport = @import("../poltergeist/transport.zig");
 const vaxis = @import("vaxis");
 const layout = @import("chat_layout.zig");
 const chat_stats = @import("chat_stats.zig");
@@ -110,7 +124,7 @@ pub fn run(alloc: Allocator) !u8 {
 fn complain(io: std.Io, missing: []const u8) u8 {
     var buffer: [512]u8 = undefined;
     var stderr: std.Io.File = .stderr();
-    var writer = stderr.writer(io, &buffer);
+    var writer = stderr.writerStreaming(io, &buffer);
 
     writer.interface.print(
         \\Polter: no {s} in this terminal, so there is nothing to talk to.
@@ -143,20 +157,34 @@ const Host = struct {
     /// which holds it for the life of the program.
     socket_path: []const u8,
 
-    stream: net.Stream,
+    stream: transport.Conn,
     read_buf: []u8,
     write_buf: []u8,
-    reader: net.Stream.Reader,
-    writer: net.Stream.Writer,
+    reader: transport.Reader,
+    writer: transport.Writer,
 
+    /// The pipe to Polter, **through `transport`**.
+    ///
+    /// **This used to be `net.UnixAddress.init(path)`, and on Windows that could
+    /// not work.** `transport.zig` picks a named pipe for that platform on
+    /// purpose -- it explains at length why, and the short version is that Zig
+    /// 0.16's Windows AF_UNIX accept path answers a cancelled request with
+    /// `unreachable`, so the supported way to stop a server panics. So
+    /// `GHOSTTY_POLTER_SOCKET` carries `\\.\pipe\polter-<hex>` there, and
+    /// opening that as a unix socket address fails every time.
+    ///
+    /// `transport.zig` already said this file used `connect`: "the client half,
+    /// **shared by** the MCP client, the chat client and the tests". **That
+    /// sentence was written as a statement of fact and was not one.** A comment
+    /// that describes an arrangement nobody implemented is worse than none: it
+    /// answers the question, so the next person stops looking.
     fn connect(
         alloc: Allocator,
         io: std.Io,
         path: []const u8,
         token: []const u8,
     ) !Host {
-        const addr = try net.UnixAddress.init(path);
-        const stream = try addr.connect(io);
+        const stream = try transport.connect(io, path);
         errdefer stream.close(io);
 
         const read_buf = try alloc.alloc(u8, max_line);
@@ -501,6 +529,14 @@ const Chat = struct {
 
     should_quit: bool = false,
 
+    /// The message being typed, or `null` when not composing.
+    ///
+    /// **`null` is the mode**, not a flag beside one: there is no state where
+    /// the bar is up and this is absent, or the reverse, because they are the
+    /// same value. The confirmation box above works the same way and for the
+    /// same reason.
+    compose: ?std.ArrayListUnmanaged(u8) = null,
+
     /// Where a complaint from the host is kept while it is on screen.
     ///
     /// A buffer rather than an allocation, because `err` is otherwise
@@ -638,6 +674,7 @@ const Chat = struct {
         self.env.deinit();
         self.groups.deinit(self.alloc);
         self.group_rows.deinit(self.alloc);
+        if (self.compose) |*c| c.deinit(self.alloc);
         self.frame.deinit();
         self.arena.deinit();
         self.store.deinit();
@@ -1172,11 +1209,46 @@ const Chat = struct {
                     return;
                 }
 
+                // **The compose line takes every key while it is up**, the
+                // same rule the confirmation box above keeps and for the same
+                // reason: a mode a stray key can walk out of is not a mode.
+                // Every binding below is a bare letter -- `q`, `d`, `t` -- so
+                // without this an `Enter` would be the last thing typed
+                // before the view quit itself.
+                //
+                // **Below the confirmation, deliberately.** A box asking "are
+                // you sure" that could be typed past would be answering a
+                // question nobody read.
+                //
+                // Nothing below this block changes. That is the whole reason
+                // the mode is modal rather than a focused input field: the
+                // eighteen existing bindings are not reached while composing,
+                // so none of them had to be re-decided.
+                if (self.compose != null) {
+                    self.composeKey(key);
+                    return;
+                }
+
                 if (key.matches('c', .{ .ctrl = true }) or
                     key.matches('q', .{ .ctrl = true }) or
                     key.matches('q', .{}))
                 {
                     self.should_quit = true;
+                    return;
+                }
+
+                // Start writing. **`Enter` because it is free**: the only
+                // other `enter` in this file belongs to the confirmation box,
+                // which has already returned above. It is also what a person
+                // arriving from any other chat window will try first.
+                //
+                // Only on the conversation tab, and only when there is a
+                // group to write to -- a compose line over the task panel
+                // would have nowhere to send.
+                if (key.matches(vaxis.Key.enter, .{})) {
+                    if (self.view == .chat and self.groups.items.len > 0) {
+                        self.compose = .empty;
+                    }
                     return;
                 }
 
@@ -1263,6 +1335,120 @@ const Chat = struct {
                 }
             },
         }
+    }
+
+    /// One key, while the compose line is up.
+    ///
+    /// **Everything that is not handled here is swallowed**, on purpose: the
+    /// bindings below the caller are bare letters, and letting an unhandled
+    /// key fall through to them is exactly the ambiguity this mode exists to
+    /// remove.
+    ///
+    /// # What this is not
+    ///
+    /// **Append and backspace, and no cursor.** There is no left, right,
+    /// home, end or delete-word, so a typo in the middle of a line is fixed
+    /// by backspacing to it. That is a real limitation and it is written
+    /// down rather than discovered.
+    ///
+    /// It is left out because it is a **prefix** of the editor rather than a
+    /// turning away from one: adding a cursor later moves nothing that is
+    /// here. The shape that was rejected -- an always-live input field, with
+    /// the letter keys belonging to it -- is the one that could not be
+    /// undone cheaply, because it would take `q`, `d` and `t` away from
+    /// people already using them.
+    fn composeKey(self: *Chat, key: vaxis.Key) void {
+        const line = &(self.compose orelse return);
+
+        if (key.matches(vaxis.Key.escape, .{})) {
+            line.deinit(self.alloc);
+            self.compose = null;
+            return;
+        }
+
+        if (key.matches(vaxis.Key.enter, .{})) {
+            self.sendComposed();
+            return;
+        }
+
+        if (key.matches(vaxis.Key.backspace, .{})) {
+            // **One character, not one byte.** Dropping a byte from the end
+            // of a multi-byte character leaves a fragment that is not text,
+            // and the fragment goes out with the next message rather than
+            // showing up here.
+            var n = line.items.len;
+            while (n > 0) {
+                n -= 1;
+                if (line.items[n] & 0xC0 != 0x80) break;
+            }
+            line.shrinkRetainingCapacity(n);
+            return;
+        }
+
+        // What the terminal says was typed, which is where an IME's
+        // composed text arrives as well -- this view does not have to know
+        // that a `你` took three keystrokes to produce.
+        if (key.text) |t| {
+            line.appendSlice(self.alloc, t) catch |err| {
+                self.err = @errorName(err);
+            };
+        }
+    }
+
+    /// Send what has been typed, and put the line away.
+    ///
+    /// **The request is serialised, not interpolated.** Every other call in
+    /// this file builds its JSON with `{s}` inside a string literal, which is
+    /// safe for the values those calls carry and is not safe for this one: a
+    /// message is arbitrary text, and one quotation mark in it would end the
+    /// string early and make the whole line unparseable at the far end. The
+    /// failure would be a message that vanishes, with a protocol error in a
+    /// log nobody is reading.
+    fn sendComposed(self: *Chat) void {
+        const line = &(self.compose orelse return);
+
+        // **An empty message is refused rather than sent.** `Enter` opens
+        // this line and `Enter` sends it, so pressing it twice is a thing
+        // people will do; posting nothing on the second press would put a
+        // blank line in front of everyone in the group.
+        if (std.mem.trim(u8, line.items, " \t").len == 0) return;
+
+        if (self.groups.items.len == 0) return;
+        const group = self.groups.items[self.current].name;
+
+        var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+        defer scratch.deinit();
+        const alloc = scratch.allocator();
+
+        const body = std.json.Stringify.valueAlloc(alloc, .{
+            .method = "group_post",
+            .params = .{ .group = group, .text = line.items },
+        }, .{}) catch |err| {
+            self.err = @errorName(err);
+            return;
+        };
+
+        const v = self.host.callJson(alloc, body) catch |err| {
+            self.err = @errorName(err);
+            return;
+        };
+        if (!(boolField(v, "ok") orelse false)) {
+            self.err = "the server refused the message";
+            return;
+        }
+
+        // **Cleared only after the server took it.** Clearing first and
+        // failing afterwards would lose what somebody typed, and they would
+        // have no way to get it back.
+        line.deinit(self.alloc);
+        self.compose = null;
+
+        // Ask for the group again rather than waiting up to `poll_ms` for the
+        // next round: a message that takes half a second to appear reads as
+        // one that did not send, and the reply above already said it did.
+        self.refresh() catch |err| {
+            self.err = @errorName(err);
+        };
     }
 
     /// Put the confirmation box up for whichever group is selected.
@@ -1767,11 +1953,18 @@ const Chat = struct {
         const body_top = head_height + 1;
         if (win.height <= body_top) return;
 
+        // The compose line takes the bottom row **from the messages**, not
+        // from the whole window: the error strip already owns the very last
+        // row of the screen and the two must not share it.
+        const composing = self.view == .chat and self.compose != null;
+        const body_h = win.height -| body_top -| @as(u16, if (composing) 1 else 0);
+        if (body_h == 0) return;
+
         const body = win.child(.{
             .x_off = 0,
             .y_off = body_top,
             .width = win.width,
-            .height = win.height -| body_top,
+            .height = body_h,
         });
 
         switch (self.view) {
@@ -1779,6 +1972,66 @@ const Chat = struct {
             .tasks => self.drawTasks(body),
             .stats => self.drawStats(body),
         }
+
+        if (composing) self.drawCompose(win.child(.{
+            .x_off = 0,
+            .y_off = body_top + body_h,
+            .width = win.width,
+            .height = 1,
+        }));
+    }
+
+    /// The line being typed, with a block where the next character will go.
+    ///
+    /// **The tail is what is shown, not the head.** A message longer than the
+    /// pane has to scroll somewhere, and showing the beginning would mean
+    /// typing blind from the moment the line fills -- the one part of a text
+    /// field nobody can do without is seeing the character they just typed.
+    /// There is no cursor to be anywhere else, so the tail is the whole of it.
+    ///
+    /// The prompt is drawn even when the line is empty: a mode that cannot be
+    /// seen is the worst kind, and this row appearing **is** how a person
+    /// knows the letter keys mean letters now.
+    fn drawCompose(self: *Chat, win: vaxis.Window) void {
+        if (win.width < 4) return;
+        const line = if (self.compose) |c| c.items else return;
+
+        var col: u16 = 0;
+        while (col < win.width) : (col += 1) {
+            win.writeCell(col, 0, .{
+                .char = .{ .grapheme = " ", .width = 1 },
+                .style = .{ .bg = c_selected_bg },
+            });
+        }
+
+        const prompt = "> ";
+        _ = win.printSegment(.{
+            .text = prompt,
+            .style = .{ .bg = c_selected_bg, .fg = c_title, .bold = true },
+        }, .{ .row_offset = 0, .col_offset = 0 });
+
+        // One column is kept for the block, so the character about to be
+        // typed has somewhere to appear.
+        const room = win.width -| @as(u16, @intCast(prompt.len)) -| 1;
+        var shown = line;
+        // Walk in from the left while it is too wide, on character
+        // boundaries -- cutting mid-character would print a fragment.
+        while (measure(shown) > room and shown.len > 0) {
+            var i: usize = 1;
+            while (i < shown.len and shown[i] & 0xC0 == 0x80) i += 1;
+            shown = shown[i..];
+        }
+
+        const at: u16 = @intCast(prompt.len + measure(shown));
+        _ = win.printSegment(.{
+            .text = shown,
+            .style = .{ .bg = c_selected_bg, .fg = c_selected_fg },
+        }, .{ .row_offset = 0, .col_offset = @intCast(prompt.len) });
+
+        win.writeCell(at, 0, .{
+            .char = .{ .grapheme = " ", .width = 1 },
+            .style = .{ .bg = c_selected_fg, .fg = c_selected_bg },
+        });
     }
 
     /// The two tabs across the top of the right-hand column.

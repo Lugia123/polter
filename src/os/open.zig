@@ -44,6 +44,15 @@ pub fn open(
     // Pipe stderr so we can log the stderr from the command. This must be set
     // before spawning the process.
     spawn_opts.stderr = .pipe;
+    // Windows only, and inert everywhere else. `rundll32` is a GUI subsystem
+    // program, so today it asks for no console either way -- this says so
+    // rather than relying on it, because the host that opens links is a GUI
+    // subsystem binary now and the failure this prevents is a console window
+    // blinking on screen when somebody clicks a link. An intermittent flash
+    // is the kind of defect that never gets reported precisely enough to
+    // find. It does not affect the pipes above: `CREATE_NO_WINDOW` withholds
+    // a console, not output.
+    spawn_opts.create_no_window = true;
 
     const exe = if (comptime build_config.snap) local_env: {
         // In the snap on Linux the launcher exports LD_LIBRARY_PATH

@@ -40,7 +40,7 @@ pub fn run(alloc: Allocator) !u8 {
 
     var stdout: std.Io.File = .stdout();
     var buffer: [4096]u8 = undefined;
-    var stdout_writer = stdout.writer(global.io(), &buffer);
+    var stdout_writer = stdout.writerStreaming(global.io(), &buffer);
     try helpgen_actions.generate(
         &stdout_writer.interface,
         .plaintext,
