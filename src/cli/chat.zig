@@ -488,7 +488,14 @@ const Chat = struct {
     group_rows: std.ArrayListUnmanaged(usize) = .empty,
 
     /// The bounds of the group pane last frame, for hit testing.
-    groups_top: u16 = 0,
+    ///
+    /// **Screen coordinates, like the mouse's.** They used to be the
+    /// pane's own, and turning a click into a pane row meant subtracting
+    /// the pane's top -- which counted the heading twice, because the rows
+    /// in `group_rows` are the ones `printSegment` was given and the
+    /// heading already took the first of them. Every click chose the group
+    /// above the pointer. Recording one frame of reference removes the
+    /// conversion, and with it the chance of getting it wrong again.
     groups_left: u16 = 0,
     groups_right: u16 = 0,
 
@@ -1359,6 +1366,18 @@ const Chat = struct {
         self.at_top = false;
     }
 
+    /// Which group was clicked, given the screen rows they were drawn at.
+    ///
+    /// A lookup and nothing else, which is the point: there is no offset
+    /// to apply here, because `drawGroups` already recorded these in the
+    /// frame of reference a click arrives in. The bug this replaced was an
+    /// offset applied twice, and it was invisible in the reading -- both
+    /// halves looked right on their own.
+    fn groupAt(rows: []const usize, row: u16) ?usize {
+        for (rows, 0..) |at, i| if (at == row) return i;
+        return null;
+    }
+
     fn onMouse(self: *Chat, m: vaxis.Mouse) void {
         switch (m.button) {
             // The wheel scrolls whatever is under it, and the message pane
@@ -1391,14 +1410,10 @@ const Chat = struct {
                 }
 
                 if (col < self.groups_left or col >= self.groups_right) return;
-                if (row < self.groups_top) return;
 
-                const offset: usize = row - self.groups_top;
-                for (self.group_rows.items, 0..) |at, i| {
-                    if (at == offset) {
-                        self.selectGroup(i);
-                        return;
-                    }
+                if (groupAt(self.group_rows.items, row)) |i| {
+                    self.selectGroup(i);
+                    return;
                 }
             },
 
@@ -1599,9 +1614,16 @@ const Chat = struct {
     fn drawGroups(self: *Chat, win: vaxis.Window) void {
         if (win.height == 0 or win.width < 4) return;
 
-        self.groups_top = 1;
-        self.groups_left = 0;
-        self.groups_right = win.width -| 1;
+        // Where this pane sits on screen, so every row and column put
+        // aside for hit testing below is in the mouse's own frame of
+        // reference. Clamped rather than cast: a window can be given a
+        // negative offset, and a pane off the top of the screen has
+        // nothing clickable in it anyway.
+        const pane_top: u16 = @intCast(@max(win.y_off, 0));
+        const pane_left: u16 = @intCast(@max(win.x_off, 0));
+
+        self.groups_left = pane_left;
+        self.groups_right = pane_left + (win.width -| 1);
         self.group_rows.clearRetainingCapacity();
 
         // The key is named here because it is otherwise unfindable: this
@@ -1620,7 +1642,7 @@ const Chat = struct {
         var row: u16 = 1;
         for (self.groups.items, 0..) |group, i| {
             if (row >= win.height) break;
-            self.group_rows.append(self.alloc, row) catch {};
+            self.group_rows.append(self.alloc, pane_top + row) catch {};
 
             const selected = i == self.current;
             const style: vaxis.Style = if (selected) .{
@@ -3116,6 +3138,20 @@ test "a duration is said the way somebody would say it" {
     try testing.expectEqualStrings("3 h", humanMs(alloc, 3 * 60 * 60 * 1000));
     try testing.expectEqualStrings("3 h 40 min", humanMs(alloc, (3 * 60 + 40) * 60 * 1000));
     try testing.expectEqualStrings("2 d 1 h", humanMs(alloc, 49 * 60 * 60 * 1000));
+}
+
+test "a click lands on the group under the pointer, heading and all" {
+    // The heading takes the pane's first row, so the first name is drawn
+    // one row down and `group_rows` starts at one. Subtracting that a
+    // second time on the way in was the bug: every click chose the group
+    // above the pointer, and the last one could not be chosen at all.
+    const rows = [_]usize{ 1, 2, 3 };
+
+    try testing.expectEqual(@as(?usize, null), Chat.groupAt(&rows, 0));
+    try testing.expectEqual(@as(?usize, 0), Chat.groupAt(&rows, 1));
+    try testing.expectEqual(@as(?usize, 1), Chat.groupAt(&rows, 2));
+    try testing.expectEqual(@as(?usize, 2), Chat.groupAt(&rows, 3));
+    try testing.expectEqual(@as(?usize, null), Chat.groupAt(&rows, 4));
 }
 
 test "clipping counts columns, and never cuts a character in half" {
