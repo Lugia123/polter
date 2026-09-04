@@ -803,6 +803,119 @@ fn same_commit(a: &str, b: &str) -> bool {
     n >= 4 && a[..n].eq_ignore_ascii_case(&b[..n])
 }
 
+/// Why the pairing could not be checked, said in the direction it happened.
+///
+/// # The sentence this replaces said the opposite of the truth
+///
+/// It was `"{which} reports a commit this build can read"`, with `which`
+/// naming **the side that had failed**:
+///
+/// ```text
+/// [build] cannot tell whether …: ghostty-internal.dll reports a commit this
+///         build can read (core version string was "1.3.2-dev+0000000").
+/// ```
+///
+/// `0000000` is the sentinel for *no commit*, so that line named the one side
+/// that had not reported a readable commit and said it had. The verdict on
+/// the next line (`It is 'not checked'`) was right, so **nothing downstream
+/// was wrong -- and a person reading this line goes looking somewhere else**,
+/// which costs more than a wrong verdict would, because a wrong verdict gets
+/// argued with.
+///
+/// **`"neither side"` was correct by accident**: a negative subject under an
+/// affirmative verb comes out true, so the branch that read properly was the
+/// one nobody would have suspected, and checking only the reported branch
+/// would have left the third alone. All three are spelled out here for that
+/// reason.
+///
+/// # The two failures are not the same failure
+///
+/// The host's commit is **absent** -- `POLTER_HOST_COMMIT` was empty when it
+/// was compiled, so nothing was embedded. The core's is **unreadable** --
+/// there is a version string and `core_commit` could not get a commit out of
+/// it, whether because it carries the `0000000` sentinel or is malformed. A
+/// single phrase for both would send the reader to the wrong build.
+///
+/// ⚠️ This is one of the paths the comment on `log_pairing` calls the ones
+/// most likely to rot unnoticed: it runs only when something is already
+/// unusual, so nobody reads it on an ordinary day.
+fn unknown_pairing_reason(host_missing: bool, core_readable: bool) -> &'static str {
+    match (host_missing, core_readable) {
+        (true, false) => "neither side carries a commit this build can read",
+        (true, true) => {
+            "the host carries no commit at all -- it was built without one embedded"
+        }
+        (false, false) => {
+            "ghostty-internal.dll's version string carries no commit this build can read"
+        }
+        // Both sides readable is a comparison, not an unknown; it is handled
+        // by the arms above this one and cannot arrive here.
+        (false, true) => "neither side could be compared, which should not be possible",
+    }
+}
+
+#[cfg(test)]
+mod pairing_wording_tests {
+    use super::*;
+
+    /// **All three reachable branches, because only one of them was right.**
+    ///
+    /// The failure this pins is not a wrong verdict, it is a true-sounding
+    /// sentence pointing at the wrong build -- so the assertion is on the
+    /// direction of the verb, not on the presence of a word.
+    #[test]
+    fn the_reason_names_the_side_that_failed_and_says_it_failed() {
+        let host_only = unknown_pairing_reason(true, true);
+        assert!(host_only.contains("host"), "{host_only}");
+        assert!(
+            host_only.contains("no commit"),
+            "the host is the side without a commit, so the verb has to be \
+             negative: {host_only}"
+        );
+        assert!(!host_only.contains("ghostty-internal.dll"), "{host_only}");
+
+        let core_only = unknown_pairing_reason(false, false);
+        assert!(core_only.contains("ghostty-internal.dll"), "{core_only}");
+        assert!(
+            core_only.contains("no commit"),
+            "this is the branch that shipped reading `ghostty-internal.dll \
+             reports a commit this build can read` while it reported none: \
+             {core_only}"
+        );
+
+        let neither = unknown_pairing_reason(true, false);
+        assert!(neither.contains("neither side"), "{neither}");
+        assert!(
+            neither.contains("no commit"),
+            "correct before this change only because a negative subject under \
+             an affirmative verb comes out true: {neither}"
+        );
+    }
+
+    /// The two failures must not be described the same way: one build has no
+    /// commit embedded, the other has a version string nothing can read, and
+    /// they send a reader to different places.
+    #[test]
+    fn the_two_sides_fail_for_reasons_that_read_differently() {
+        assert_ne!(
+            unknown_pairing_reason(true, true),
+            unknown_pairing_reason(false, false)
+        );
+    }
+
+    /// **The real artifacts, not a fixture.** `0000000` is the sentinel W1's
+    /// deliberately-unknown build carries, and it is what put the wrong
+    /// sentence on the screen.
+    #[test]
+    fn the_sentinel_version_string_lands_in_the_core_branch() {
+        assert!(core_commit("1.3.2-dev+0000000").is_none());
+        assert_eq!(
+            unknown_pairing_reason(false, core_commit("1.3.2-dev+0000000").is_some()),
+            unknown_pairing_reason(false, false)
+        );
+    }
+}
+
 /// **Say whether the host and the core it just loaded are a pair.**
 ///
 /// # Why this is a verdict and not two more facts
@@ -880,17 +993,11 @@ fn log_pairing(core_version: &str) {
         }
 
         (host_missing, parsed) => {
-            let which = if host_missing && parsed.is_none() {
-                "neither side"
-            } else if host_missing {
-                "the host"
-            } else {
-                "ghostty-internal.dll"
-            };
             // process-wide: as above
             plogf!(
                 "[build] cannot tell whether the host and ghostty-internal.dll are a pair: \
-                 {which} reports a commit this build can read (core version string was {:?}).",
+                 {} (core version string was {:?}).",
+                unknown_pairing_reason(host_missing, parsed.is_some()),
                 core_version
             );
             // process-wide: as above
