@@ -1665,6 +1665,78 @@ R2 的形状是对的（循环体挪进 `noinline fn …(out: *Config) Allocator
 **地板贵，但另外那四次全是运气。**
 
 
+### （二十）宿主的八条失败路径：对日志说失败，对操作系统说成功
+
+任务是按「未知 action 退 0，分派器的缺陷」立的。**对象错了。** Zig 侧早就退 1
+并打印出 action 是什么、怎么列；那个 0 来自 Windows 宿主，`+bogus` 只是恰好
+死在它八条失败路径的其中一条上。
+
+`fn main()` 里每一条失败都以裸 `return;` 结束，**而 main 里的 return 就是退 0**，
+七条先打了 `FATAL`：
+
+    FATAL could not load libghostty
+    FATAL ghostty_init failed              ← +bogus 死在这
+    FATAL ghostty_app_new returned null
+    FATAL RegisterClassExW(frame/surface) failed
+    FATAL could not create the first frame
+    FATAL could not create the first tab
+    [cli] the core did not recognise it
+
+> **八条都对日志说了「我失败了」，对操作系统说了「我成功了」。**
+
+里面 `could not load libghostty` / `could not create the first frame` /
+`could not create the first tab` **正是本文档几轮「静默死亡」调查查过的那些失败**，
+而每一个 launcher、脚本、`schtasks` 拿到的退出码都是「一切正常」。
+
+**差一点只修了 `+bogus` 那一条。** 先枚举 `main()` 全部 `return` 才动手，
+是把一个实例变成八个的唯一动作——**这是本周第三次「找到了一个」险些被记成「找完了」。**
+
+#### 真机四格
+
+| 场景 | 地板 | 修后 |
+| --- | --- | --- |
+| `+bogus-action-xyz` | **exit=0** | **exit=1** |
+| **坏 DLL（`FATAL could not load libghostty`）** | **exit=0** | **exit=1** |
+| `+version` / `+list-actions` / `+show-config` | 0，stdout 逐字节相同 | 同 |
+
+第二行比第一行重：**DLL 缺失、损坏、位数不对、被杀软隔离都会走它**，
+而不是一个要刻意构造的稀有情况。
+
+**状态**：已验（真机，地板与修后各一份原文）· **销案**：不需要。
+
+#### ⚠️ 而我写的判据里有一句是错的，复核者没有照抄
+
+我写「四支正对照**仍退 0**」。**在那台机器上 `+list-themes` 本来就退 1**
+（没有 resources 目录，`themes … unavailable`），**地板上就是 1**。
+204 没有改变它（1→1），**那才是判据真正要问的**；但「四支都退 0」这句话本身是错的。
+
+**而复核者同时拒绝把它算成一次通过**：`+list-themes` 两侧 stdout 都是 **0 字节**，
+
+> **两个空文件当然逐字节相同，这一格的「IDENTICAL」不证明任何东西。**
+
+**一个恒真的比较，和一个通过了的比较，在结果栏里长得一样。**
+
+#### 顺带：拿掉的是沉默，不是话
+
+`+bogus` 两侧 stderr **完全一样**——`ghostty: failed to initialize ghostty
+error=InvalidAction`。**说的话一个字没变，变的只有退出码。**
+和 191 那次（诊断早就写好了，只是送不出去）是同一形状的两面：
+**一次是话在而没送到，一次是话送到了而码在撒谎。**
+
+#### ⚠️ 后台退出码那个坑换了第二副面孔
+
+    (zig build … ; echo "ZIGRC=$?") & echo "zig started"
+
+**任务通知报「completed, exit code 0」——那是最后那个 `echo "zig started"` 的**，
+而构建当时还在跑。据此去 `ls` 产物得到「No such file」，**差点报成「这次没编出 DLL」**。
+
+上一次这个坑的面孔是「`; echo` 抢走了退出码」，这一次是
+**「`&` 把整条链放进后台，而通知盯的是前台那半」**。
+
+**判据只能是自己写进日志文件的那一行，加上产物真的在不在——
+而这两样都要在确认进程已经退出之后再看。**
+
+
 ## 五之二、五条裁决（2026-09-01 已定）
 
 **这一节和第五节不同。** 第五节是技术账——有确切位置、有人能查下去。
