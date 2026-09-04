@@ -32,10 +32,18 @@ jobs:
           # what this job is for.
           - os: ubuntu-latest
             args: "-Dapp-runtime=none"
+            # Build only. The first run measured it: macOS finishes build and
+            # the whole suite in 16 minutes, while GitHub's free Linux runner
+            # had not finished the tests at 60 and was killed by the timeout --
+            # its `Build` step had succeeded. Running the same suite twice is
+            # worth very little; what this job is uniquely for is the claim in
+            # ROADMAP.md that Linux still compiles, and `Build` is that claim.
+            test: false
           - os: macos-latest
             args: ""
+            test: true
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +58,7 @@ jobs:
         run: zig build -Demit-macos-app=false -Demit-xcframework=false ${{ matrix.args }}
 
       - name: Test
+        if: matrix.test
         run: zig build test -Demit-macos-app=false -Demit-xcframework=false ${{ matrix.args }} --summary all
 
   format:
