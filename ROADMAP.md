@@ -44,7 +44,9 @@ These are specific and each one has a place in the code.
   wired to the window tree yet. On Windows a split has to be several child
   windows, because a libghostty surface is bound to its `HWND` for life.
 - **Action parity.** Of the 72 keybinding actions, 54 are required for parity
-  and the host implements 24.
+  and the host implements 24 — the count is kept in
+  [`docs/windows/status.md`](docs/windows/status.md), which is where to check
+  it rather than here.
 - **Plugins should declare which systems they run on.** Today the host guesses
   from the file extension, so `archive.py` is installed, enabled, and never
   started on Windows — with a log line and nothing else. Whether a plugin can
@@ -53,7 +55,10 @@ These are specific and each one has a place in the code.
 
 ### Make the supervising side easier to get right
 
-- **The group chat TUI on Windows** is read-only for now.
+- **The group chat TUI on Windows** has not been exercised by anyone. The
+  view is shared Zig (`src/cli/chat.zig`) and can both read and post, and the
+  menu item opens it in a tab — but nobody has held a conversation through it
+  on Windows, so it belongs here rather than in the list above.
 - **Compaction** now reminds a supervisor when a group's conversation passes a
   size, and `group_history` can be searched by substring and time range. What
   is still missing is a visible divider in the chat view at the point where a

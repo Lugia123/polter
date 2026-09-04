@@ -14,6 +14,8 @@
     ·
     <a href="#what-it-gives-you">What it gives you</a>
     ·
+    <a href="#download">Download</a>
+    ·
     <a href="#quick-start">Quick start</a>
     ·
     <a href="#a-full-example">Example</a>
@@ -95,6 +97,57 @@ and if you try one, tell me what happened.
 - **Judgement you can edit.** How to supervise is a Markdown skill file you can
   change and version. What's forbidden is compiled in, so it can't fall out of a
   long session's context at 4am.
+- **A page of arithmetic about the night.** How long tasks lived, who spoke and
+  how much, which terminals sat still and for how long, hour by hour. It counts;
+  it does not conclude — a task past the line you set is marked `over`, which
+  says it passed your line and nothing about whether anything is wrong.
+
+## Download
+
+[**Latest release**](https://github.com/Lugia123/polter/releases/latest) —
+version numbers are `0.5.<n>`, where `n` counts the commits that are this
+fork's own.
+
+| | |
+| --- | --- |
+| **macOS 13+** | `Polter-*-macos-universal.zip` — Apple Silicon and Intel in one bundle. The platform this is developed on and used daily. |
+| **Windows 10+** | `Polter-*-windows-x64.zip` — new, and honestly described below. |
+| **Linux** | No binary. The GTK app builds, but nobody has run a supervised session on it, and shipping something nobody has started is not a thing to do quietly. Build from source. |
+
+### macOS: the builds are unsigned
+
+There is no Apple Developer certificate behind this, so the app is ad-hoc
+signed and not notarised. Gatekeeper refuses it until you say otherwise:
+
+```sh
+unzip Polter-*-macos-universal.zip
+xattr -dr com.apple.quarantine Polter.app
+mv Polter.app /Applications/
+```
+
+Then **open it from Finder or the Dock, not from a terminal.** The two have
+different `PATH`s, and the provisioning plugin that installs the supervisor's
+skills looks for your agent CLI on `PATH` — started from the wrong place it
+finds nothing and exits quietly.
+
+### Windows: what works and what doesn't
+
+Unzip anywhere and run `polter-host.exe`. **The two DLLs and `share/` must stay
+next to it** — the DLLs are loaded by name at startup, and `share/` is where
+the supervisor's skills and the provisioning plugins live. Unsigned, so
+SmartScreen will want a "Run anyway".
+
+The Windows shell is a separate Rust program (`windows/host/`) driving the same
+core through libghostty's C API, because Ghostty has no Windows GUI of its own.
+It is younger than the macOS side and not at parity:
+
+| | |
+| --- | --- |
+| Verified on a Windows 11 machine | The window opens, tabs work, a shell starts, text including CJK renders, IME composition types Chinese, the menu and its accelerators work, the resources directory is found, and the provisioning plugins start. |
+| Known missing | **Splits** — the layout algorithm is ported (`windows/split-tree/`) but not wired to the window tree. **Some keybinding actions** are not implemented yet; the count is tracked in [`docs/windows/status.md`](docs/windows/status.md). **Shell integration** is not injected. **The `archive` plugin** is installed and enabled but never starts, because plugins have no way yet to declare which systems they can run on. |
+| Untried | Nobody has held a conversation through the group chat on Windows. The view is the same shared code as on macOS and the menu opens it, so it is expected to work — but expected is not the same as seen, so it is listed here. |
+
+[`ROADMAP.md`](ROADMAP.md) is where these get closed.
 
 ## Quick start
 
@@ -123,7 +176,10 @@ starts the clocks itself. You don't need to name terminal ids or tools.
 ### 4. Go to bed
 
 Come back to **Agents → Terminal Conversations** (or `polter +chat`) to read
-what they said to each other.
+what they said to each other. `tab` and `shift+tab` move between three views of
+the same group: the conversation, the task panel, and a page of arithmetic
+about the night — task lifetimes, who did the talking, which terminals sat
+still and for how long.
 
 ## A full example
 
@@ -250,7 +306,7 @@ anyone, watched ones and supervisors to a supervisor, shielded ones to nobody.
 | `group_post`        | Say something in a group you're in. Others are told there's a message; when they read it is theirs to decide.                                                                                                   |
 | `group_read`        | The messages you haven't seen. Pass the last `seq` as `since` to carry on. A message marked `summary` stands in for older ones that were compacted away.                                                        |
 | `group_list`        | Which groups you're in.                                                                                                                                                                                         |
-| `group_history`     | Further back than memory holds, read from the day files. Page with `before_seq`, using the smallest `log_seq` you've seen; `more: false` means you're at the beginning. The in-group `seq` is always 0 here — the log doesn't record it. |
+| `group_history`     | Further back than memory holds, read from the day files. Page with `before_seq`, using the smallest `log_seq` you've seen; `more: false` means you're at the beginning. The in-group `seq` is always 0 here — the log doesn't record it. **Searchable**: `match` is a substring of the message text with ASCII case ignored, `since_ms` and `until_ms` bound it in wall-clock time. This is the road back to what a compaction took out of the group — without it, finding one sentence from last night means paging back through the whole night into the context the compaction existed to free. |
 | `group_compact` 🔑  | Replace everything up to `through` with a summary you write. `/compact`, for a conversation.                                                                                                                    |
 | `group_set_brief` 🔑 | Say what a group is for, in your own words. Write it right after creating one — in eight hours `group_list` shows a name you no longer recognise, and that's exactly when you have to decide whether it still needs minding. Only you and the person at the keyboard see it. |
 
@@ -268,6 +324,7 @@ Handing out work is four steps: `task_create` → `group_post` for the record �
 | `task_cancel` 🔑  | Call a task off. A line is typed into the worker's terminal telling it to stop, and only then does the task leave its list — otherwise it has no reason to look at the panel again and carries on with work nobody wants. **Read the reply**: it says whether the worker was actually told. If its terminal has gone, this refuses and the task stays open rather than pretending. |
 | `task_progress`   | Move one of your own along: `queued`, `working`, `blocked`, `done`. Yours only, and only while it's open — a closed or cancelled one refuses, which is how you find out you missed a cancellation. Set `blocked` the moment it's true; that's the one a supervisor is watching for. `done` says you believe it's finished, not that it's closed. Report in the group too, naming the number. |
 | `task_list`       | The tasks in a group. A supervisor is handed the whole panel, closed and cancelled included; anybody else is handed its own still-open tasks and nothing else — what your peers are doing isn't yours to spend context on. |
+| `task_history`    | Not what the panel says now, but **when it came to say it**: every create, assign, progress, close and cancel, with its time. `task_list` answers "where does this stand"; this answers "what happened overnight" — which of the two you want is usually obvious once you've asked the wrong one. Pages the same way the conversation does. |
 
 ### Who you are, and whether you're on duty
 
@@ -356,6 +413,13 @@ Both on by default, both `less`, `grep` and `jq` on the morning after:
 - `$XDG_STATE_HOME/polter/terminals/` — what actually happened in each terminal.
   One directory per terminal, one file per day, JSON per line. **Nothing is
   redacted; treat it like your shell history.**
+- `$XDG_STATE_HOME/polter/tasks/` — every change to a task panel, with its time.
+  This is what `task_history` reads.
+- `$XDG_STATE_HOME/polter/stats/` — one line per group per hour: how many tasks
+  were open, closed, cancelled, past the line, and how long the quietest and
+  the longest-untouched had been sitting. Written alongside the threshold that
+  was in force, because a count of "over" means nothing later if the line it
+  was counted against has since moved.
 
 ## Settings worth knowing
 
@@ -373,6 +437,10 @@ None are required. `polter +show-config --default --docs` prints all of them.
 | `poltergeist-notify-window`         | empty   | Hours you may be disturbed, as `HH:MM-HH:MM`. Authorisation prompts ignore it.                                       |
 | `poltergeist-chat-log`              | `true`  | Write the group chat to disk.                                                                                        |
 | `poltergeist-terminal-log`          | `true`  | Write each terminal's transcript to disk.                                                                            |
+| `poltergeist-task-idle-after`       | `12h`   | How long a task can go untouched before it's worth mentioning to the supervisor. Untouched, not stuck.               |
+| `poltergeist-group-quiet-after`     | `1h`    | How long a group can go without anybody saying anything before that's mentioned.                                     |
+| `poltergeist-worker-nudge-after`    | `10m`   | How long a worker can sit still with an open task before it's asked whether it meant to report something.            |
+| `poltergeist-compact-after`         | `64KB`  | How much uncompacted conversation a group may hold before the size rides out with the supervisor's next hand-over.    |
 
 ## If the agent says it has no polter tools
 
