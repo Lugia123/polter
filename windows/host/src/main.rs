@@ -790,6 +790,40 @@ fn core_commit(version: &str) -> Option<&str> {
     Some(tail)
 }
 
+#[cfg(test)]
+mod sentinel_tests {
+    use super::*;
+
+    /// **The half `windows/tools/unknown-commit-sentinel-agrees.py` cannot
+    /// see.**
+    ///
+    /// That gate checks the two languages write the same sentinel, and that
+    /// the value is one no real commit can be. Both can hold while this is
+    /// broken: **delete the `tail == CORE_UNKNOWN` clause above and
+    /// `0000000` becomes seven hex digits**, parses as an ordinary
+    /// abbreviated hash, and a build that said "I do not know my commit" is
+    /// read as claiming one -- which raises `MISMATCH` on a matched pair, the
+    /// outcome `log_pairing`'s comment exists to rule out.
+    ///
+    /// ⚠️ **This runs only on Windows**, so on the machine where a merge
+    /// happens the gate is what there is. Same split as task 203, said out
+    /// loud rather than assumed away.
+    #[test]
+    fn the_sentinel_is_never_read_as_a_commit() {
+        assert!(
+            core_commit(&format!("1.3.2-dev+{CORE_UNKNOWN}")).is_none(),
+            "the absence marker parsed as a commit"
+        );
+        // **The rejection is by value, not by shape**, and that is why the
+        // two sides only have to agree rather than agree on something
+        // hex-shaped: change both to a ten-digit form and this still holds.
+        assert!(core_commit("1.3.2-dev+0000000000").is_some());
+        // A real abbreviated hash still comes through, or the check above
+        // would be passing because nothing parses.
+        assert_eq!(core_commit("1.3.2-dev+721d7f0"), Some("721d7f0"));
+    }
+}
+
 /// Do two abbreviated hashes name the same commit?
 ///
 /// **A prefix comparison, and not out of laziness.** Both sides abbreviate
