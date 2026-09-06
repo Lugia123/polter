@@ -1,9 +1,9 @@
-<h1 align=「center」>
-  <img src=「images/icons/icon_256.png」 alt="「 width=」128">
+<h1 align="center">
+  <img src="images/icons/icon_256.png" alt="" width="128">
   <br>Polter
 </h1>
 
-<p align=「center」>
+<p align="center">
   <b>让一个 Claude Code 会话去管另外几个。</b><br>
   <sub>它替你读它们的屏幕、往里打字、开新 tab，你睡觉的时候替你盯着。<br>
   <b>Polter 自己不要账号、不要 API key、一个网络请求都不发</b>。被它盯着的那些
@@ -11,12 +11,12 @@
   <i>（想让它半夜叫醒你，得自己接一个二十行的通知脚本。发行包里不带。）</i></sub>
 </p>
 
-<p align=「center」>
-  <a href=「#下载」>下载</a> ·
-  <a href=「#五分钟上手」>五分钟上手</a> ·
-  <a href=「#完整例子」>完整例子</a> ·
-  <a href=「#它永远不会做的事」>它不做什么</a> ·
-  <a href=「README.md」>English</a>
+<p align="center">
+  <a href="#下载">下载</a> ·
+  <a href="#五分钟上手">五分钟上手</a> ·
+  <a href="#完整例子">完整例子</a> ·
+  <a href="#它永远不会做的事">它不做什么</a> ·
+  <a href="README.md">English</a>
 </p>
 
 ---
@@ -414,7 +414,7 @@ Polter 已经把 socket 路径和 token 放进了每个终端的环境变量，a
 插件「是什么」，取决于它订阅了什么：
 
 ```json
-{ 「wants」: { 「events」: [「chat」], 「calls」: [], 「groups」: [「*」] } }
+{ "wants": { "events": ["chat"], "calls": [], "groups": ["*"] } }
 ```
 
 - **`chat`**——群里有人说话了。
@@ -447,7 +447,7 @@ Polter 已经把 socket 路径和 token 放进了每个终端的环境变量，a
 
 通知渠道留给你自己接：这类东西有几十种，随便预装一个都会立刻过时。
 
-**`「network」: false` 是一句声明，不是一个沙箱。** Polter 只是把插件自称需要什么
+**`"network": false` 是一句声明，不是一个沙箱。** Polter 只是把插件自称需要什么
 记下来、摆给你看，它并不去限制它（`src/poltergeist/Plugin.zig` 里就是这么写
 的）。插件是你自己放进那个目录的一个可执行文件，以你的身份运行，你能干的它都能
 干。装之前先读一遍，跟对待任何一个 shell 脚本一样。
