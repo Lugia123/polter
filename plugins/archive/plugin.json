@@ -5,6 +5,7 @@
   "description": "Keeps an extra copy of every chat message as one file per day, all groups in one timeline. Polter's own record is kept whether this is on or off and is not what this reads: the plugin is handed live events. Point it at a synced folder or an external disk and the copy outlives this machine.",
 
   "exec": "archive.py",
+  "exec_windows": "archive.ps1",
   "timeout_ms": 30000,
 
   "wants": {
@@ -21,7 +22,7 @@
       "dir": {
         "type": "string",
         "title": "Where the extra copy goes",
-        "description": "A directory, absolute or starting with ~/. One file per local day, named YYYY-MM-DD.jsonl, appended to. Default ~/.local/state/polter/archive ($XDG_STATE_HOME/polter/archive when that is set) -- somewhere you can point elsewhere, not somewhere anything falls back to.",
+        "description": "A directory, absolute or starting with ~/. One file per local day, named YYYY-MM-DD.jsonl, appended to. Default ~/.local/state/polter/archive ($XDG_STATE_HOME/polter/archive when that is set), and %LOCALAPPDATA%\\polter\\archive on Windows -- the same directory the core resolves for its own state there. Somewhere you can point elsewhere, not somewhere anything falls back to.",
         "default": "~/.local/state/polter/archive"
       },
       "sign_key": {
