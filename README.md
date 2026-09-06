@@ -26,13 +26,29 @@
 
 ## The problem
 
-You already run agents in terminal tabs. It falls apart at four of them: one is
-stuck on a permission prompt nobody answered, one finished twenty minutes ago,
-one is quietly waiting for a build, and one has been "working" for forty
-minutes on something that died. You can't tell which is which without clicking
-through all four — and the one you most need to catch, the agent that stopped
-early or reported success on work it didn't finish, looks exactly like the one
-that's thinking hard.
+Four things I hit every day. You have probably hit them too.
+
+**One: too many terminals.** A few Claude Code, a few Codex CLI, several
+projects at once — frontend in one window, backend in another, tests in a
+third. Just keeping track of them is work.
+
+**Two: sub-agents are unreliable.** In Claude Code, starting one means it runs
+for a long time, often with several tasks of its own inside it. A step failing
+part-way through is routine. Worse: **when it reports back, it sometimes lies to
+the parent** — says it's done when it isn't.
+
+**Three: getting terminals to work together.** Claude Code has cross-session
+collaboration, but sessions get crossed and it isn't pleasant to use.
+
+**Four: I tell it to work through the night and it stops after two hours.**
+Usually an error killed it — some API failure — or it wrapped up halfway and
+called that finished.
+
+Two and four are the ones that hurt, because **you cannot see them on screen**.
+An agent that stopped early, or that reported success on work it didn't finish,
+looks exactly like one that's thinking hard. You can't tell which is which
+without clicking through every tab — and by the time you think to look, it's
+usually the next morning.
 
 ## What Polter does about it
 
@@ -55,6 +71,15 @@ long each screen has been still, with no verdict attached**. The tools are:
 You tell it the goal in English — *"build the export feature, split it three
 ways, don't wake me unless something needs a decision"* — and it writes the
 plan, opens a tab per piece of work, starts an agent in each, and minds them.
+
+Against those four:
+
+| | |
+| --- | --- |
+| One, too many terminals | The supervisor watches all of them; you stop clicking through tabs |
+| Two, sub-agents that lie | **A worker here is not a sub-agent — it's an independent session in its own terminal.** What it did is on screen and the supervisor can read it; work goes out with what "done" means attached, so "I finished" is no longer its own word for it |
+| Three, crossed sessions | Every terminal has its own id and token; the group and the task panel are explicit, not inferred from which session is which |
+| Four, stopping after two hours | How long a screen has been still is reported to the supervisor, which goes and reads that screen, decides whether it's stuck or thinking, and steps in if it should |
 
 Every "it" in that table is **the supervisor**. The supervisor and Polter are
 not the same thing, and everything below depends on that:
