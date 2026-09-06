@@ -339,6 +339,6 @@ test "a windows pipe path is built once, not twice" {
     const n = try toPipePath("\\\\.\\pipe\\polter-abc", &out);
 
     var back: [max_name_w]u8 = undefined;
-    const len = try std.unicode.wtf16LeToWtf8(&back, out[0..n]);
+    const len = std.unicode.wtf16LeToWtf8(&back, out[0..n]);
     try testing.expectEqualStrings("\\\\.\\pipe\\polter-abc", back[0..len]);
 }
