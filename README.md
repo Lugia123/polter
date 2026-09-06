@@ -55,14 +55,14 @@ usually the next morning.
 
 The mark goes on the tab; the supervisor is the agent inside it — an ordinary
 Claude Code session, not a dashboard and not a process manager. Marking it makes
-Polter do two things: open a set of tools that reach the other tabs, and collect
+Polter do two things: open its MCP surface to that agent so it can drive the other Polter terminals in this window, and collect
 what that agent hasn't been shown yet and hand it over every so often — **how
 long each screen has been still, with no verdict attached**. The tools are:
 
 | It can | Which means |
 | --- | --- |
 | **Read any tab's screen** | It sees the permission prompt your worker is stuck on. |
-| **Type into any tab** | It can unstick a worker or tell it to try something else. **It cannot press "yes" on a permission prompt** — that one wakes *you*, at any hour. |
+| **Type into any tab** | It can unstick a worker or tell it to try something else. **It cannot press "yes" on a permission prompt** — that one wakes *you*, at any hour. So for an overnight run, start the workers in an automatic mode (Claude Code's Auto Mode, `--permission-mode acceptEdits`) so the prompt never appears. |
 | **Open new tabs and start agents in them** | You never set up the workers yourself. |
 | **See how long each screen has sat unchanged** | The one number that tells it where to look first. |
 | **Run a group chat and a task panel** | Workers report to it; the panel survives a restart and a compaction. |
@@ -129,80 +129,8 @@ writing messages, so it spends like one. What decides how much: how many
 workers it is minding, how often it is interrupted with what it hasn't seen
 (`poltergeist-notice-interval`, one minute by default — raise it and the bill
 falls), and how much of a screen it reads each time it looks. Try it on one
-worker for an hour before you leave it running on four overnight. If you
-measure it, [tell me](https://github.com/Lugia123/polter/issues) and this
-paragraph gets a number in it.
+worker for an hour before you leave it running on four overnight.
 
-
-## Why a terminal, and not a library
-
-It is not that an outside process can't read a screen — it can, and
-if you drive agents from tmux with `capture-pane` you are already doing it. The
-reason is narrower and it is the thing that makes this different from an
-API-based orchestrator:
-
-**Polter never touches authentication, so it has no say in which CLI, model or
-account you run.**
-
-A framework that calls models for you needs your API key. It then owns the
-question of which model, which account, which billing. Polter calls nothing. It
-starts the CLI you name in a tab and reads the screen; how that CLI logs in is
-between it and its vendor. So:
-
-- **Your subscription counts.** If Claude Code is signed in on your plan, a
-  supervisor adds nothing to an API bill: it spends the plan you already have.
-  **That is not the same as free.** A supervisor reading screens all night
-  spends your plan's allowance, and that allowance is what you sit down to work
-  with in the morning. On a subscription, the ceiling is the cost to watch.
-- **Different tabs, different vendors, different billing.** One worker on
-  `codex` signed into a Codex plan, another on `claude` with a subscription, a
-  third on an API key, all in one group. Nothing in Polter has an opinion about
-  it, because nothing in Polter can see it.
-- **An expensive model where the judgement is, cheap ones where the typing
-  is.** The supervisor reads screens and decides; workers grind. They are
-  separate sessions and you pick each one's model on its own command line:
-
-  ```
-  claude --model <a cheaper model> --permission-mode acceptEdits
-  ```
-
-  That is a worker. The supervisor is whatever you started in the tab you
-  promoted. Neither knows what the other is paying.
-
-**What this costs you** is the thing above: it has to be your terminal. If your
-agents live in tmux on a remote box over SSH, there is no version of this that
-works for you today.
-
-**And one thing it is not:** this is a single-machine tool. The group chat, the
-task panel and the transcripts all live in your own state directory — they are
-between the agents on *this* machine, not between you and a colleague. Five
-people using Polter is five separate installs with nothing shared but what you
-tell each other.
-
-## What you get beyond that
-
-- **You can take the keyboard at any time.** Every worker is an ordinary tab
-  running an ordinary CLI. Type into one whenever you like; the supervisor is
-  not driving a simulation, and one tab crashing leaves the rest alone. They
-  don't all have to be the same CLI, either — though **only Claude Code has been
-  run end to end**. Mixing them is reasoning rather than experience
-  ([the details](#which-agents-this-works-with)).
-- **Two locks only you can set or lift.** Hold a tab to its work so the
-  supervisor can't let it clock off, or put a tab out of reach of the MCP tools
-  entirely so nothing can read or type into it. Both show on the tab, and
-  **neither can be undone through the tools** — an agent cannot unlock what you
-  locked.
-- **The whole night on disk, as JSON lines.** Every group message and everything
-  that scrolled past in every tab. `grep` and `jq` work on it in the morning.
-  Nothing is redacted, so treat it like your shell history.
-- **The rules are a file you can edit.** How to supervise is a Markdown skill
-  you can change and version. What's *forbidden* is compiled into the binary
-  instead — so it can't quietly fall out of the supervisor's context at 4am,
-  the way an instruction you gave it once can.
-- **A statistics view.** Task lifetimes, who did the talking, which terminals
-  sat still and for how long, hour by hour. It counts and stops there: a task
-  that has gone longer than the threshold *you* set is marked `over`, which
-  says it passed your line and nothing about whether anything is wrong.
 
 ## Download
 
@@ -272,9 +200,11 @@ set it, Polter types a line into that tab: what just happened, and an
 instruction to read its `supervising` skill. So it knows the mechanics before
 you say anything.
 
-**Check the tools are actually there before going further.** Ask it:
+**Check the tools are actually there before going further.** `me` is the
+simplest of the forty tools — it just makes an agent state who it is and what it
+can reach — which makes it the right probe. Ask it:
 
-> what does the `me` tool say?
+> call the `me` tool and tell me what it says.
 
 If it answers with an id and a list of what it can reach, you're set. If it says
 it has no such tool, stop here — nothing below will work, and the cause is
@@ -366,9 +296,11 @@ Three things worth knowing about that prompt:
 
 Both are visible on the tab itself, not just in a menu:
 
-- **Agents → Keep This Terminal Working** — this one must not be clocked off.
+- **Hold it to its work** — this one must not be clocked off.
   A supervisor asking to is refused. The tab's mark grows a ring (`◉` moving,
-  `◎` still).
+  `◎` still). **This one is not in the Agents menu right now** — find it in the
+  command palette as `Keep This Terminal Working`, or bind
+  `poltergeist_toggle_held`.
 - **Agents → Keep Agents Out of This Terminal** — out of reach of the tool
   surface entirely. Absolute: refuses supervisors and plugins too. The tab gets
   a padlock. Use it for the tab you read your mail in.
@@ -376,6 +308,78 @@ Both are visible on the tab itself, not just in a menu:
 Neither can be lifted through the tool surface. There is no tool for
 it — a supervisor that could unlock a tab would just unlock it and then clock it
 off.
+
+## Why a terminal, and not a library
+
+It is not that an outside process can't read a screen — it can, and
+if you drive agents from tmux with `capture-pane` you are already doing it. The
+reason is narrower and it is the thing that makes this different from an
+API-based orchestrator:
+
+**Polter never touches authentication, so it has no say in which CLI, model or
+account you run.**
+
+A framework that calls models for you needs your API key. It then owns the
+question of which model, which account, which billing. Polter calls nothing. It
+starts the CLI you name in a tab and reads the screen; how that CLI logs in is
+between it and its vendor. So:
+
+- **Your subscription counts.** If Claude Code is signed in on your plan, a
+  supervisor adds nothing to an API bill: it spends the plan you already have.
+  **That is not the same as free.** A supervisor reading screens all night
+  spends your plan's allowance, and that allowance is what you sit down to work
+  with in the morning. On a subscription, the ceiling is the cost to watch.
+- **Different tabs, different vendors, different billing.** One worker on
+  `codex` signed into a Codex plan, another on `claude` with a subscription, a
+  third on an API key, all in one group. Nothing in Polter has an opinion about
+  it, because nothing in Polter can see it.
+- **An expensive model where the judgement is, cheap ones where the typing
+  is.** The supervisor reads screens and decides; workers grind. They are
+  separate sessions, and which model each one uses is decided by how *you*
+  started it. Polter has no hand in it and could not take one.
+- **You can start a worker yourself and hand it over afterwards.** The
+  supervisor doesn't have to open the tab. Open one yourself, with whichever
+  CLI, model and account you want, get the context into it by hand — then have
+  the supervisor adopt it into the group. That path is the easy one for two
+  cases: when you want exact control over what a particular worker is, and when
+  you've driven a session for twenty minutes and now want to go to bed.
+
+**What this costs you** is the thing above: it has to be your terminal. If your
+agents live in tmux on a remote box over SSH, there is no version of this that
+works for you today.
+
+**And one thing it is not:** this is a single-machine tool. The group chat, the
+task panel and the transcripts all live in your own state directory — they are
+between the agents on *this* machine, not between you and a colleague. Five
+people using Polter is five separate installs with nothing shared but what you
+tell each other.
+
+
+## What you get beyond that
+
+- **You can take the keyboard at any time.** Every worker is an ordinary tab
+  running an ordinary CLI. Type into one whenever you like; the supervisor is
+  not driving a simulation, and one tab crashing leaves the rest alone. They
+  don't all have to be the same CLI, either — though **only Claude Code has been
+  run end to end**. Mixing them is reasoning rather than experience
+  ([the details](#which-agents-this-works-with)).
+- **Two locks only you can set or lift.** Hold a tab to its work so the
+  supervisor can't let it clock off, or put a tab out of reach of the MCP tools
+  entirely so nothing can read or type into it. Both show on the tab, and
+  **neither can be undone through the tools** — an agent cannot unlock what you
+  locked.
+- **The whole night on disk, as JSON lines.** Every group message and everything
+  that scrolled past in every tab. `grep` and `jq` work on it in the morning.
+  Nothing is redacted, so treat it like your shell history.
+- **The rules are a file you can edit.** How to supervise is a Markdown skill
+  you can change and version. What's *forbidden* is compiled into the binary
+  instead — so it can't quietly fall out of the supervisor's context at 4am,
+  the way an instruction you gave it once can.
+- **A statistics view.** Task lifetimes, who did the talking, which terminals
+  sat still and for how long, hour by hour. It counts and stops there: a task
+  that has gone longer than the threshold *you* set is marked `over`, which
+  says it passed your line and nothing about whether anything is wrong.
+
 
 ## What the supervisor can do
 
@@ -551,10 +555,15 @@ the same checks: an undeclared method is refused, a supervisor's method is
 refused because a plugin is never a supervisor, and a shielded terminal is out of
 its reach the same way it's out of a supervisor's.
 
-### The two that ship with it
+### What ships with it
 
-Both are installed with Polter and both are on by default. Neither asks for the
-network.
+Eight plugins: one `archive`, plus seven provisioning plugins, one per agent CLI
+(Claude Code, Codex, Gemini, Qwen, opencode, Kimi, DeepSeek). **Which of them
+actually run depends on which CLI is installed on your machine** — **Agents →
+Plugins** shows the current state, and it is the first place to look when the
+tools don't appear. None of them asks for the network.
+
+These two are the ones you'll deal with:
 
 - **`archive`** — keeps a second copy of every chat message as one file per day,
   every group on a single timeline, appended as JSON lines. Point `dir` at a
