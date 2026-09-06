@@ -572,6 +572,11 @@ const tools = [_]Tool{
             "in that directory with nothing running in it**, so whatever should " ++
             "run there is a separate terminal_send -- and it need not be an " ++
             "agent CLI: a build, a server, a log to tail are all ordinary uses. " ++
+            "**When it is an agent, start it in a mode that can run unattended** " ++
+            "-- an auto mode, off by default in most CLIs: " ++
+            "you cannot answer a permission prompt for it, no tool will, and a " ++
+            "worker stopped on one stays stopped until the user is fetched at " ++
+            "whatever hour it happens. " ++
             "Until something is running, that terminal has no bracketed paste, " ++
             "so the first send must be a single line. Supervisor only.",
         .schema =
