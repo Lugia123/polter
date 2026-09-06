@@ -77,7 +77,7 @@ Against those three:
 | --- | --- |
 | Too many terminals | The supervisor watches all of them; you stop clicking through tabs |
 | Can't see what a sub-agent did | **A worker here is not a sub-agent. It's an independent session in its own terminal.** What it did stays on that screen and lands on disk line by line. The supervisor can read it — and, more to the point, **you can `grep` it in the morning**. A sub-agent's working-out goes away with the session; a worker's doesn't |
-| Stopping after two hours | How long a screen has been still is reported to the supervisor, which goes and reads that screen, decides whether it's stuck or thinking, and steps in if it should |
+| Stopping after two hours | How long a screen has been still is reported to the supervisor. It goes and reads that screen — and what it does with what it reads is its call, not Polter's |
 
 **What the second row does not claim:** the supervisor is also an LLM reading
 what another LLM wrote, and it can just as easily take a screen full of green
@@ -114,7 +114,8 @@ Three things worth knowing before you spend ten minutes on this:
   [plugin](#plugins), deliberately — Polter has no opinion about whether you
   use Telegram, ntfy or `osascript`. **No notification plugin ships**, so out of
   the box the supervisor can watch all night but cannot reach your phone. The
-  script is short and there is a worked example, but you do have to write it.
+  script is short, but there is no example in this file yet and you do have to
+  write it.
 - **It is an experiment, and it has been run end to end on one agent CLI:**
   Claude Code. Underneath it is ordinary MCP — the protocol your agent CLI
   already uses to reach tools — over ordinary terminals, so others
@@ -149,8 +150,10 @@ starts the CLI you name in a tab and reads the screen; how that CLI logs in is
 between it and its vendor. So:
 
 - **Your subscription counts.** If Claude Code is signed in on your plan, a
-  supervisor costs you nothing extra in API billing — it spends the plan you
-  already have. Same for a worker.
+  supervisor adds nothing to an API bill: it spends the plan you already have.
+  **That is not the same as free.** A supervisor reading screens all night
+  spends your plan's allowance, and that allowance is what you sit down to work
+  with in the morning. On a subscription, the ceiling is the cost to watch.
 - **Different tabs, different vendors, different billing.** One worker on
   `codex` signed into a Codex plan, another on `claude` with a subscription, a
   third on an API key, all in one group. Nothing in Polter has an opinion about
@@ -250,7 +253,8 @@ It is younger than the macOS side and not at parity:
 
 ## Quick start
 
-One agent has to be in charge. Marking its tab is the whole setup.
+One agent has to be in charge, and you mark its tab. That is the whole of the
+setup — but check it took, because the one way it silently doesn't is step 2.
 
 ### 1. Open a tab and start Claude Code in it
 
