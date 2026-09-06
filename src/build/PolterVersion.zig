@@ -34,6 +34,11 @@ const std = @import("std");
 /// to exist locally.
 const fork_point = "f81dcadc82ea2afdcf2dc92929037701122f05b5";
 
+/// Named rather than three anonymous ones: in Zig each `struct { ... }`
+/// literal is its own type, so the three functions below could not hand
+/// their answers to each other.
+const MajorMinor = struct { major: u32, minor: u32 };
+
 const fallback_major = 0;
 const fallback_minor = 1;
 
@@ -76,8 +81,40 @@ fn branch(b: *std.Build) ?[]const u8 {
     return out;
 }
 
+/// The tag on this exact commit, or null when there is not one.
+///
+/// **`--tags` is not optional.** Without it `describe --exact-match`
+/// considers annotated tags only and answers "no tag exactly matches" for a
+/// lightweight one -- and the answer looks the same as "there is no tag",
+/// so the mistake reads as a fact about the repository rather than about the
+/// question. `GitVersion.zig` already carries the flag next door.
+fn exactTag(b: *std.Build) ?[]const u8 {
+    return git(b, &.{ "describe", "--exact-match", "--tags" });
+}
+
+/// `v0.4.484` -> 0.4. `tip`, `nightly-2026-09-06` and `v1` -> null.
+///
+/// **Not parsing is not an error.** A tag that does not name a version is an
+/// ordinary tag -- `tip` is one today -- and the answer for it is "ask the
+/// branch", not "fall back to the earliest version" and certainly not "stop
+/// the build".
+fn versionFromTag(name: []const u8) ?MajorMinor {
+    if (!std.mem.startsWith(u8, name, "v")) return null;
+    const rest = name[1..];
+
+    const first = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
+    const after = rest[first + 1 ..];
+    // A third component has to be there: `v1.2` names no patch, and guessing
+    // one would invent a release that was never made.
+    const second = std.mem.indexOfScalar(u8, after, '.') orelse return null;
+
+    const maj = std.fmt.parseUnsigned(u32, rest[0..first], 10) catch return null;
+    const min = std.fmt.parseUnsigned(u32, after[0..second], 10) catch return null;
+    return .{ .major = maj, .minor = min };
+}
+
 /// `feature/v0.2` -> 0, `feature/poltergeist` -> the fallback.
-fn versionFromBranch(b: *std.Build) ?struct { major: u32, minor: u32 } {
+fn versionFromBranch(b: *std.Build) ?MajorMinor {
     const name = branch(b) orelse return null;
 
     const prefix = "feature/v";
@@ -91,13 +128,36 @@ fn versionFromBranch(b: *std.Build) ?struct { major: u32, minor: u32 } {
     return .{ .major = maj, .minor = min };
 }
 
+/// **The tag first, then the branch.**
+///
+/// Both name the same thing, and they are available in different states.
+/// `git checkout <tag>` detaches HEAD, so the branch is gone exactly when
+/// somebody is building a release -- and asking only the branch made the same
+/// commit answer `0.4.484` for whoever tagged it and `0.1.484` for whoever
+/// checked that tag out. One commit, two versions, decided by how the reader
+/// arrived at it.
+///
+/// **Only `major.minor` comes from here.** The patch is a commit count and
+/// does not depend on either (`countCommits`), and nothing about a tag being
+/// present changes the rest of the version -- in particular the `+<commit>`
+/// build metadata stays, because the host reads the commit back out of that
+/// string to say whether it and the core it loaded were built together. A
+/// tagged build is the one users get; it is the last one that should go
+/// quiet.
+fn versionFromHere(b: *std.Build) ?MajorMinor {
+    if (exactTag(b)) |name| {
+        if (versionFromTag(name)) |v| return v;
+    }
+    return versionFromBranch(b);
+}
+
 fn major(b: *std.Build) u32 {
-    const v = versionFromBranch(b) orelse return fallback_major;
+    const v = versionFromHere(b) orelse return fallback_major;
     return v.major;
 }
 
 fn minor(b: *std.Build) u32 {
-    const v = versionFromBranch(b) orelse return fallback_minor;
+    const v = versionFromHere(b) orelse return fallback_minor;
     return v.minor;
 }
 

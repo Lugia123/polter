@@ -15,7 +15,6 @@ const expandPath = @import("../os/path.zig").expand;
 
 const gtk = @import("gtk.zig");
 const GitVersion = @import("GitVersion.zig");
-const PolterVersion = @import("PolterVersion.zig");
 
 /// Standard build configuration options.
 optimize: std.builtin.OptimizeMode,
@@ -377,45 +376,35 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         // covers the tagged release as well as the ordinary one.
         detected_commit = vsn.short_hash;
 
-        if (vsn.tag) |tag| {
-            // Tip releases behave just like any other pre-release so we skip.
-            if (!std.mem.eql(u8, tag, "tip")) {
-                // **The tag is checked against Polter's version, not
-                // `build.zig.zon`'s.** Upstream's rule is that a tagged
-                // release must match the version written in the zon file,
-                // which is right for a project whose releases and whose zon
-                // are the same numbering. Here they are not: the zon still
-                // carries Ghostty's `1.3.2`, and Polter's releases are
-                // `0.5.446` -- branch for major.minor, commits since the
-                // fork for patch (see `PolterVersion.zig`).
-                //
-                // Left as it was, tagging a release made the tagged commit
-                // unbuildable: `git describe --exact-match` finds the tag,
-                // the comparison fails, and the build panics. Not at
-                // release time -- the artefacts are built before the tag
-                // exists -- but for **whoever clones the repository and
-                // checks the tag out**, which is everyone the release is
-                // for. A release that only its author can build is worse
-                // than no release.
-                const polter = PolterVersion.detect(b);
-                const expected = b.fmt("v{s}", .{polter.string});
-
-                if (!std.mem.eql(u8, tag, expected)) {
-                    std.debug.panic(
-                        "tagged release {s} does not match this build's version {s}. " ++
-                            "Polter's version comes from the branch name and the commit " ++
-                            "count, so a tag has to be made on the branch it names.",
-                        .{ tag, expected },
-                    );
-                }
-
-                break :version .{
-                    .major = app_version.major,
-                    .minor = app_version.minor,
-                    .patch = app_version.patch,
-                };
-            }
-        }
+        // **The tag/version check that used to live here now lives in
+        // `tools/release-check.sh`, and the move is the point.**
+        //
+        // It compared `git describe --exact-match` against Polter's own
+        // version and panicked when they differed. It never fired for the
+        // person who could act on it: the artefacts of a release are built
+        // before the tag exists, so the one who tags never sees it. It fired
+        // for **whoever cloned the repository and checked that tag out** --
+        // and that person did not choose the tag, does not set the version,
+        // and can do nothing about either. The only thing a build-time error
+        // can ask of them is to give up.
+        //
+        // "The tag names the version" is a precondition of an action, not an
+        // invariant of a build. It belongs where the action happens.
+        //
+        // **A second effect went with it, deliberately.** On a tagged build
+        // the removed branch also produced a bare `1.3.2` -- no pre-release,
+        // no `+commit`. That is upstream's shape, where the tag and
+        // `build.zig.zon` are one numbering; here they are two, and the
+        // consequence was worse than cosmetic: the host asks whether it and
+        // the core it loaded were built together by reading the commit out of
+        // the version string, and a string with no `+` in it makes that
+        // answer "not checked". **A tagged build is the one users get, and it
+        // was the one where that check switched itself off.** So a tagged
+        // build now reports the same `1.3.2-<branch>+<commit>` as any other,
+        // and the pairing check keeps working on it.
+        //
+        // Nothing checks the tag name here any more. That is not an
+        // oversight to be corrected by adding it back.
 
         break :version .{
             .major = app_version.major,
