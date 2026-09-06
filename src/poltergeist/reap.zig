@@ -205,13 +205,59 @@ test {
 }
 
 /// A child that will sit there until something stops it.
+///
+/// **`/bin/sh` is not on Windows, and these three tests were red for that and
+/// only that.** The product already had its Windows arm -- `kill` reaches for
+/// `TerminateProcess` -- but the fixture could not start a child there, so
+/// that arm had never once been executed. Translating this one function is
+/// what runs it for the first time.
+///
+/// **Not `timeout` on Windows.** It reads the console input handle and
+/// refuses outright when stdin is redirected, which is exactly how these
+/// tests run it (`.stdin = .ignore`). Pinging loopback waits without a
+/// console and without touching a network.
+///
+/// The Windows name is bare rather than absolute, unlike the paths this
+/// project insists on in product code. The stakes differ: a product that
+/// cannot find its helper fails as a user's secret quietly not resolving,
+/// while a fixture that cannot find its helper fails as a red test with the
+/// spawn error in it. Loud is an acceptable failure mode for a fixture.
 fn sleeper(io: std.Io) !std.process.Child {
+    const argv: []const []const u8 = switch (builtin.os.tag) {
+        .windows => &.{ "ping.exe", "-n", "31", "127.0.0.1" },
+        else => &.{ "/bin/sh", "-c", "sleep 30" },
+    };
     return std.process.spawn(io, .{
-        .argv = &.{ "/bin/sh", "-c", "sleep 30" },
+        .argv = argv,
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
     });
+}
+
+/// Assert that the child was ended by `kill`, rather than having finished.
+///
+/// **Green is not the criterion; having run `kill` is.** A test that only
+/// looks at `reaper.killed()` reads a flag this file sets before it does
+/// anything, so it would stay green on a platform where the signal never
+/// landed -- which is the state Windows was in until this fixture could
+/// start a child at all.
+///
+/// The two systems say it differently, and both are the product's own
+/// choice rather than something invented here. `kill` passes `1` to
+/// `TerminateProcess` on purpose -- its comment: "a process killed from
+/// outside did not succeed at whatever it was doing, and anything reading
+/// the exit code should be able to tell" -- and the sleeper exits `0` when
+/// left alone, so `1` is not a value it can reach by itself. On POSIX
+/// `SIGKILL` shows up as a signal, which no ordinary exit produces.
+fn expectEndedByKill(term: std.process.Child.Term) !void {
+    switch (builtin.os.tag) {
+        .windows => try testing.expectEqual(std.process.Child.Term{ .exited = 1 }, term),
+        else => try testing.expectEqual(
+            std.process.Child.Term{ .signal = std.posix.SIG.KILL },
+            term,
+        ),
+    }
 }
 
 test "a reaper that is retired never signals" {
@@ -250,11 +296,13 @@ test "a reaper told to hurry does not wait out its deadline" {
 
     // Returns because the process is gone, not because anything here has a
     // timeout of its own.
-    _ = child.wait(io) catch {};
+    const term = try child.wait(io);
     reaper.retire();
     if (thread) |t| t.join();
 
     try testing.expect(reaper.killed());
+    // `killed()` is this file's own flag. This is the child agreeing.
+    try expectEndedByKill(term);
     // Would sit here for a minute if `hurry` only took effect at the
     // original deadline, which is exactly the shutdown cost it exists to
     // avoid.
@@ -277,9 +325,10 @@ test "a child handed over after hurry gets no grace either" {
     reaper.rearm(child.id, 60 * std.time.ms_per_s);
 
     const thread = std.Thread.spawn(.{}, Reaper.run, .{&reaper}) catch null;
-    _ = child.wait(io) catch {};
+    const term = try child.wait(io);
     reaper.retire();
     if (thread) |t| t.join();
 
     try testing.expect(reaper.killed());
+    try expectEndedByKill(term);
 }

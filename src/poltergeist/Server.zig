@@ -953,7 +953,26 @@ test "two socket paths in the same directory do not collide" {
     const b = try defaultPath(testing.allocator, io, "/run/user/1000/ghostty");
     defer testing.allocator.free(b);
 
-    try testing.expect(std.mem.startsWith(u8, a, "/run/user/1000/ghostty/polter-"));
-    try testing.expect(std.mem.endsWith(u8, a, ".sock"));
+    // **The test was wrong here, not the product.** It asserted a Unix
+    // socket path on every system, and on Windows `defaultName` ignores the
+    // directory it is handed and answers `\\.\pipe\polter-<hex>`. That is
+    // deliberate and is written down next to it: a pipe name lives in a
+    // kernel namespace, so there is no directory for it to be in and nothing
+    // to unlink afterwards.
+    //
+    // The shapes are asserted separately rather than dropped, because on
+    // each system the shape is a real property -- "it is in the directory it
+    // was given" is what stops two Ghostty users colliding on POSIX, and it
+    // is not a claim that can even be made on Windows. **Both arms run**;
+    // this is not a guard that skips one platform and quietly never retires.
+    switch (builtin.os.tag) {
+        .windows => try testing.expect(std.mem.startsWith(u8, a, "\\\\.\\pipe\\polter-")),
+        else => {
+            try testing.expect(std.mem.startsWith(u8, a, "/run/user/1000/ghostty/polter-"));
+            try testing.expect(std.mem.endsWith(u8, a, ".sock"));
+        },
+    }
+
+    // The one thing both systems owe, and the thing the test is named for.
     try testing.expect(!std.mem.eql(u8, a, b));
 }
