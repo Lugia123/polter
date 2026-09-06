@@ -1277,6 +1277,174 @@ test "Command: provenance -- the device handle, made inheritable" {
     try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
 }
 
+// # Cell E -- **a different way to open it, without asking why**
+//
+// `provenance` came back red: an inheritable `\Device\Null` handle, opened
+// with the product's exact parameters, still could not be written by a child.
+// So the handle's origin is a second variable, and the question splits into
+// "what is wrong with that origin" and "is there an origin that works".
+//
+// **This cell only asks the second one**, and that is the point of doing it
+// first. It opens the DOS name `NUL` through `CreateFileW` -- the ordinary
+// way, with an inheritable `SECURITY_ATTRIBUTES` -- and hands it to a child.
+// It requires nobody to have the right theory about `NtCreateFile`.
+//
+// ```text
+// try expect(indexOf(got, "ok") != null)
+//
+// green = "ok" present = a working way to open the null device exists, so
+//         the fix is to change HOW `null_fd` is opened; which flag was
+//         responsible remains unknown and does not have to be known
+// red   = "ok" absent  = even the ordinary open cannot be written by a child,
+//         so the fault is not in the opening at all and cell F, which only
+//         varies one flag of the opening, cannot help either
+// ```
+//
+// (Read off the assertion above, not from memory.)
+//
+// ⚠️ **`SECURITY_ATTRIBUTES.bInheritHandle` is a request, not a reading.**
+// The bit is read back below for the same reason `probe` reads it back: a
+// parameter that was ignored and a parameter that took effect produce the
+// same code path here, and only the read-back separates them.
+test "Command: E -- an ordinary CreateFileW(\"NUL\") handle as a child's stderr" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var td = try TempDir.init();
+    defer td.deinit();
+    var stdout = try createTestStdout(testing.io, td.dir);
+    defer stdout.close(testing.io);
+
+    var sa: windows.SECURITY_ATTRIBUTES = .{
+        .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES),
+        .lpSecurityDescriptor = null,
+        .bInheritHandle = windows.TRUE,
+    };
+    const path = [_:0]u16{ 'N', 'U', 'L' };
+    const fd = windows.exp.kernel32.CreateFileW(
+        &path,
+        windows.GENERIC_READ | windows.GENERIC_WRITE,
+        windows.FILE_SHARE_READ,
+        &sa,
+        windows.OPEN_EXISTING,
+        windows.FILE_ATTRIBUTE_NORMAL,
+        null,
+    );
+    if (fd == windows.INVALID_HANDLE_VALUE)
+        return windows.unexpectedError(windows.GetLastError());
+    defer _ = windows.exp.kernel32.CloseHandle(fd);
+
+    // Asked for above; read back here.
+    var flags: windows.DWORD = undefined;
+    if (windows.exp.kernel32.GetHandleInformation(fd, &flags) == windows.FALSE)
+        return windows.unexpectedError(windows.GetLastError());
+    try testing.expectEqual(
+        @as(windows.DWORD, windows.HANDLE_FLAG_INHERIT),
+        flags & windows.HANDLE_FLAG_INHERIT,
+    );
+
+    const dev: File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+    const got = try runInheritProbe(&stdout, dev);
+    defer testing.allocator.free(got);
+    errdefer std.debug.print(
+        "\nE: child wrote \"{s}\" -- empty means even an ordinary " ++
+            "CreateFileW(\"NUL\") handle is unwritable by a child, so the " ++
+            "fault is not in how the null device is opened.\n",
+        .{got},
+    );
+    try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
+}
+
+// # Cell F -- **one flag, and it is somebody's guess**
+//
+// The product asks `NtCreateFile` for `SYNCHRONIZE` access but passes only
+// `FILE_NON_DIRECTORY_FILE` in `CreateOptions`. The conjecture under test is
+// that without `FILE_SYNCHRONOUS_IO_NONALERT` the handle is asynchronous, and
+// a child writing to it with synchronous semantics fails.
+//
+// ⚠️ **This is a hypothesis, not a lead.** It is recorded here as one because
+// two earlier confident readings of this same file -- "the read-only access
+// mask is the cause" and "no cell has ever gone red, so the fixture cannot
+// see failure" -- were both wrong. F is worth one cell and no weight beyond
+// its own result.
+//
+// This cell is `provenance` with exactly one bit added to `CreateOptions`,
+// so its result is attributable to that bit and nothing else.
+//
+// ```text
+// try expect(indexOf(got, "ok") != null)
+//
+// green = "ok" present = that one flag is the whole difference, and the fix
+//         is one line in `start`
+// red   = "ok" absent  = the conjecture is out; the fix is whatever E found,
+//         and what `NtCreateFile` does differently is still unexplained
+// ```
+//
+// ⚠️ **Green here does not retire cell E**, and red here does not revive the
+// theory: F varies one flag against `provenance`, so it can only speak about
+// that flag. E answers a different question and answers it either way.
+//
+// ⚠️ Same four copied lines as `provenance`, same accepted drift risk, for
+// the same reason: the alternative is editing `start` to find out what is
+// wrong with `start`.
+test "Command: F -- the device handle, inheritable and synchronous" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var td = try TempDir.init();
+    defer td.deinit();
+    var stdout = try createTestStdout(testing.io, td.dir);
+    defer stdout.close(testing.io);
+
+    // Copied from `start`, deliberately and visibly. The single deliberate
+    // difference from `provenance` is `FILE_SYNCHRONOUS_IO_NONALERT` below.
+    const path = [_]u16{ '\\', 'D', 'e', 'v', 'i', 'c', 'e', '\\', 'N', 'u', 'l', 'l' };
+    var path_unicode_string: windows.UNICODE_STRING = .init(&path);
+    var attrs: windows.OBJECT_ATTRIBUTES = .{ .ObjectName = &path_unicode_string };
+    var fd: windows.HANDLE = undefined;
+    var io_status: windows.IO_STATUS_BLOCK = undefined;
+    const result = windows.exp.ntdll.NtCreateFile(
+        &fd,
+        .{
+            .GENERIC = .{ .READ = true, .WRITE = true },
+            .STANDARD = .{ .SYNCHRONIZE = true },
+        },
+        &attrs,
+        &io_status,
+        null,
+        windows.FILE_ATTRIBUTE_NORMAL,
+        windows.FILE_SHARE_READ,
+        windows.OPEN_EXISTING,
+        windows.FILE_NON_DIRECTORY_FILE | windows.FILE_SYNCHRONOUS_IO_NONALERT,
+        null,
+        0,
+    );
+    if (result != .SUCCESS) return windows.unexpectedStatus(result);
+    defer _ = windows.exp.kernel32.CloseHandle(fd);
+
+    if (windows.exp.kernel32.SetHandleInformation(
+        fd,
+        windows.HANDLE_FLAG_INHERIT,
+        windows.HANDLE_FLAG_INHERIT,
+    ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
+
+    var flags: windows.DWORD = undefined;
+    if (windows.exp.kernel32.GetHandleInformation(fd, &flags) == windows.FALSE)
+        return windows.unexpectedError(windows.GetLastError());
+    try testing.expectEqual(
+        @as(windows.DWORD, windows.HANDLE_FLAG_INHERIT),
+        flags & windows.HANDLE_FLAG_INHERIT,
+    );
+
+    const dev: File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+    const got = try runInheritProbe(&stdout, dev);
+    defer testing.allocator.free(got);
+    errdefer std.debug.print(
+        "\nF: child wrote \"{s}\" -- empty means FILE_SYNCHRONOUS_IO_NONALERT " ++
+            "is not the difference either, and that conjecture is out.\n",
+        .{got},
+    );
+    try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
+}
+
 /// Run `echo to-stderr 1>&2 && echo ok` and hand back what reached stdout.
 ///
 /// The `&&` is the whole instrument: the second half runs only if the first
