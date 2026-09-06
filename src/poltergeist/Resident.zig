@@ -2285,7 +2285,25 @@ test "the archive plugin we ship answers the greeting the host really writes" {
         // test would assert over its own idea of the command line: get
         // `launchArgv` wrong and it stays green while nothing starts. The
         // point of running the shipped script is to run it the shipped way.
-        .argv = (try Plugin.launchArgv(alloc, exec)).?,
+        .argv = (try Plugin.launchArgv(alloc, exec)) orelse {
+            // **Nothing on this system starts a file of that kind.**
+            //
+            // The `catch` below already meant to skip when the machine
+            // cannot run this -- and it could never fire, because `.argv`
+            // is evaluated before the call it guards. On Windows a `.sh`
+            // and a `.py` are both `.unsupported`, so `launchArgv` returns
+            // null, `.?` unwrapped it, and the test process died where a
+            // skip was intended. Everything after it in the run went
+            // unexecuted; that is how 155 tests were never once reached.
+            //
+            // ⚠️ **Not a bare skip.** A `null` here on POSIX would mean
+            // `launchArgv` itself had regressed -- exactly the failure the
+            // note above warns about, and a silent skip would hide it. So
+            // the skip is claimed only where it is true by construction,
+            // and anywhere else this fails loudly.
+            try testing.expect(builtin.os.tag == .windows);
+            return error.SkipZigTest;
+        },
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .inherit,
@@ -3508,7 +3526,25 @@ fn runShippedProvision(
         // test would assert over its own idea of the command line: get
         // `launchArgv` wrong and it stays green while nothing starts. The
         // point of running the shipped script is to run it the shipped way.
-        .argv = (try Plugin.launchArgv(alloc, exec)).?,
+        .argv = (try Plugin.launchArgv(alloc, exec)) orelse {
+            // **Nothing on this system starts a file of that kind.**
+            //
+            // The `catch` below already meant to skip when the machine
+            // cannot run this -- and it could never fire, because `.argv`
+            // is evaluated before the call it guards. On Windows a `.sh`
+            // and a `.py` are both `.unsupported`, so `launchArgv` returns
+            // null, `.?` unwrapped it, and the test process died where a
+            // skip was intended. Everything after it in the run went
+            // unexecuted; that is how 155 tests were never once reached.
+            //
+            // ⚠️ **Not a bare skip.** A `null` here on POSIX would mean
+            // `launchArgv` itself had regressed -- exactly the failure the
+            // note above warns about, and a silent skip would hide it. So
+            // the skip is claimed only where it is true by construction,
+            // and anywhere else this fails loudly.
+            try testing.expect(builtin.os.tag == .windows);
+            return error.SkipZigTest;
+        },
         .environ_map = &env,
         .stdin = .pipe,
         .stdout = .pipe,
