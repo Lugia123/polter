@@ -2450,10 +2450,87 @@ test "the opening line carries the subscription, the socket and the resolved val
     try testing.expectEqualStrings("postgres", got.get("backend").?.string);
 }
 
+/// The three lines every resident fixture needs on Windows, written once.
+///
+/// **Not ceremony, and not defensive.** The machine these run on has
+/// Windows PowerShell **5.1** and no PowerShell 7, which is where each of
+/// these stops being optional -- 7 would have given the first one for free:
+///
+///   * **UTF-8 with no BOM, on streams opened by hand.** `[Console]::In` and
+///     `Write-Output` use the console code page, which is 936 on a
+///     Chinese-locale machine. A batch line carries paths, and
+///     `C:\Users\张三` becomes mojibake going in and a directory that does
+///     not exist going out. The `$false` is the load-bearing argument: it
+///     means no byte-order mark, and a BOM on the first acknowledgement is a
+///     line the host cannot parse.
+///   * **`AutoFlush`.** `sh` flushes after every builtin; nothing here does.
+///     A fixture that buffers its acknowledgement is one the host times out,
+///     kills and restarts -- which from the fixture's side is indistinguishable
+///     from idling, and is the exact failure these tests exist to catch.
+///   * **Explicit `` `n ``, never `WriteLine`.** That writes
+///     `Environment.NewLine`, which here is CRLF; the protocol is one JSON
+///     object per `\n`.
+///
+/// All three are copied from `plugins/_sdk/provision.ps1`, where they were
+/// paid for once already -- **and they have since been walked end to end on
+/// the machine these will run on.** `archive.ps1`, on that PowerShell 5.1,
+/// was fed a batch carrying Chinese, emoji, quotes, tabs and newlines and
+/// produced bytes identical to what `archive.py` produced on macOS
+/// (`CC7C8673...`, 556 bytes), two acknowledgements, empty stderr, exit 0.
+/// **So this is not a rule with a reason behind it; it is a rule with a
+/// reading behind it**, which is the more durable of the two. **Keeping them here rather than in each fixture is
+/// the point of this function**: the part that is easy to get wrong has one
+/// implementation, and the nine bodies say only what they do.
+const ps_preamble =
+    \\Set-StrictMode -Version 2.0
+    \\$ErrorActionPreference = 'Stop'
+    \\$u8 = New-Object System.Text.UTF8Encoding($false)
+    \\$stdin  = New-Object System.IO.StreamReader([Console]::OpenStandardInput(),  $u8)
+    \\$stdout = New-Object System.IO.StreamWriter([Console]::OpenStandardOutput(), $u8)
+    \\$stderr = New-Object System.IO.StreamWriter([Console]::OpenStandardError(),  $u8)
+    \\$stdout.AutoFlush = $true
+    \\$stderr.AutoFlush = $true
+    \\
+;
+
 /// Write a throwaway script and give back its path, owned by `arena`.
-fn scriptFor(arena: Allocator, io: std.Io, body: []const u8) ![]const u8 {
+///
+/// # Two bodies, because a fixture is not a shell script -- it is a plugin
+///
+/// These fixtures stand in for a resident plugin, and what they are testing
+/// is the **protocol**: batches fed, half-acknowledgements, nonsense answers,
+/// dying before the handshake, having nothing to do, back-off, the log, and
+/// the child's environment. None of that is about `sh`.
+///
+/// **But the language is not incidental on Windows.** Nothing there starts a
+/// `.sh`, so `Plugin.launchArgv` returns null, the product writes *"nothing
+/// on this system can start ..."* and declines -- **which is the product
+/// working correctly**, and left these nine tests failing on an assertion
+/// about a plugin that was never started. Skipping them was the other option
+/// and it was rejected: the protocol layer would then be verified on no
+/// Windows machine ever, and what these tests exercise on the way through --
+/// the spawn path, the pipes, line framing over CRLF, reaping a child -- is
+/// exactly the part that differs there.
+///
+/// # The drift this creates, and why there is no byte-for-byte check
+///
+/// Two bodies for one behaviour can disagree. They are written **adjacent at
+/// each call site** so a change to one has the other in view, and the part
+/// most likely to be wrong -- the stream setup -- has only one implementation
+/// (`ps_preamble`).
+///
+/// **That does not remove the risk; it puts it where it is seen.** There is
+/// deliberately no "both bodies produce the same bytes" cell, and the reason
+/// is that these fixtures' output is already asserted by the tests that use
+/// them: a drift shows up as one of those going red on one platform, not as
+/// silence. A dedicated comparison would be a second statement of the same
+/// fact, and the first one is not quiet.
+fn scriptFor(arena: Allocator, io: std.Io, sh: []const u8, ps: []const u8) ![]const u8 {
     var raw: [6]u8 = undefined;
     io.random(&raw);
+
+    const windows = builtin.os.tag == .windows;
+    const name = if (windows) "run.ps1" else "run.sh";
 
     const dir = try std.fmt.allocPrint(arena, "/tmp/polter-arch-plug-{x}", .{&raw});
     try std.Io.Dir.cwd().createDirPath(io, dir);
@@ -2461,11 +2538,12 @@ fn scriptFor(arena: Allocator, io: std.Io, body: []const u8) ![]const u8 {
     var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
     defer d.close(io);
 
-    var f = try d.createFile(io, "run.sh", fixtureMode(0o755));
-    try f.writeStreamingAll(io, body);
+    var f = try d.createFile(io, name, fixtureMode(0o755));
+    if (windows) try f.writeStreamingAll(io, ps_preamble);
+    try f.writeStreamingAll(io, if (windows) ps else sh);
     f.close(io);
 
-    return std.fmt.allocPrint(arena, "{s}/run.sh", .{dir});
+    return std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, name });
 }
 
 /// A throwaway directory for a test plugin to write into, owned by
@@ -2594,6 +2672,10 @@ test "stopping a resident twice is stopping it once" {
         \\while IFS= read -r line; do
         \\  echo '{"ok":true}'
         \\done
+    ,
+        \\while ($null -ne ($line = $stdin.ReadLine())) {
+        \\  $stdout.Write('{"ok":true}' + "`n")
+        \\}
     );
 
     const env: std.process.Environ.Map = .init(testing.allocator);
@@ -2644,6 +2726,12 @@ test "a plugin is fed what happens and the cursor follows it" {
         \\  printf '%s\n' "$line" >> {s}
         \\  echo '{{"ok":true}}'
         \\done
+    , .{got}), try std.fmt.allocPrint(alloc,
+        \\while ($null -ne ($line = $stdin.ReadLine())) {{
+        \\  if ($line -like '*"hello"*') {{ $stdout.Write('{{"ok":true}}' + "`n"); continue }}
+        \\  [IO.File]::AppendAllText('{s}', $line + "`n", $u8)
+        \\  $stdout.Write('{{"ok":true}}' + "`n")
+        \\}}
     , .{got}));
 
     const env: std.process.Environ.Map = .init(testing.allocator);
@@ -2706,6 +2794,12 @@ test "a plugin that confirms half a batch is sent the rest again" {
         \\  printf '%s\n' "$line" >> {s}
         \\  echo '{{"ok":true,"cursor":1}}'
         \\done
+    , .{got}), try std.fmt.allocPrint(alloc,
+        \\while ($null -ne ($line = $stdin.ReadLine())) {{
+        \\  if ($line -like '*"hello"*') {{ $stdout.Write('{{"ok":true}}' + "`n"); continue }}
+        \\  [IO.File]::AppendAllText('{s}', $line + "`n", $u8)
+        \\  $stdout.Write('{{"ok":true,"cursor":1}}' + "`n")
+        \\}}
     , .{got}));
 
     const env: std.process.Environ.Map = .init(testing.allocator);
@@ -2762,6 +2856,12 @@ test "a plugin that answers with nonsense is stopped and started again" {
         \\  case "$line" in *'"hello"'*) echo '{{"ok":true}}'; continue;; esac
         \\  echo 'not an acknowledgement'
         \\done
+    , .{starts}), try std.fmt.allocPrint(alloc,
+        \\[IO.File]::AppendAllText('{s}', "started`n", $u8)
+        \\while ($null -ne ($line = $stdin.ReadLine())) {{
+        \\  if ($line -like '*"hello"*') {{ $stdout.Write('{{"ok":true}}' + "`n"); continue }}
+        \\  $stdout.Write('not an acknowledgement' + "`n")
+        \\}}
     , .{starts}));
 
     const env: std.process.Environ.Map = .init(testing.allocator);
@@ -2812,6 +2912,12 @@ test "a plugin that dies before answering is sent the same batch again" {
         \\echo '{{"ok":true}}'
         \\read -r batch
         \\printf '%s\n' "$batch" >> {s}
+        \\exit 0
+    , .{got}), try std.fmt.allocPrint(alloc,
+        \\$null = $stdin.ReadLine()
+        \\$stdout.Write('{{"ok":true}}' + "`n")
+        \\$batch = $stdin.ReadLine()
+        \\[IO.File]::AppendAllText('{s}', $batch + "`n", $u8)
         \\exit 0
     , .{got}));
 
@@ -2881,6 +2987,11 @@ test "a plugin with nothing to do is not killed for having nothing to do" {
         \\while IFS= read -r line; do
         \\  echo '{{"ok":true}}'
         \\done
+    , .{starts}), try std.fmt.allocPrint(alloc,
+        \\[IO.File]::AppendAllText('{s}', "started`n", $u8)
+        \\while ($null -ne ($line = $stdin.ReadLine())) {{
+        \\  $stdout.Write('{{"ok":true}}' + "`n")
+        \\}}
     , .{starts}));
 
     const env: std.process.Environ.Map = .init(testing.allocator);
@@ -3230,6 +3341,11 @@ test "a plugin that never fails never says anything" {
         \\  echo beat >> {s}
         \\  echo '{{"ok":true}}'
         \\done
+    , .{beats}), try std.fmt.allocPrint(alloc,
+        \\while ($null -ne ($line = $stdin.ReadLine())) {{
+        \\  [IO.File]::AppendAllText('{s}', "beat`n", $u8)
+        \\  $stdout.Write('{{"ok":true}}' + "`n")
+        \\}}
     , .{beats}));
 
     const env: std.process.Environ.Map = .init(testing.allocator);
@@ -3290,6 +3406,12 @@ test "what a plugin printed, and what Polter did to it, are in one file" {
         \\  echo beat >> {s}
         \\  echo '{{"ok":true}}'
         \\done
+    , .{beats}), try std.fmt.allocPrint(alloc,
+        \\$stderr.Write('could not reach the database' + "`n")
+        \\while ($null -ne ($line = $stdin.ReadLine())) {{
+        \\  [IO.File]::AppendAllText('{s}', "beat`n", $u8)
+        \\  $stdout.Write('{{"ok":true}}' + "`n")
+        \\}}
     , .{beats}));
 
     const env: std.process.Environ.Map = .init(testing.allocator);
@@ -3364,6 +3486,12 @@ test "a plugin can say something to the user, once, and it cannot draw with it" 
         \\  printf '%s\n' '{{"tell":"\u001b[2Jcould not write the skill file"}}'
         \\  printf '%s\n' '{{"ok":true}}'
         \\done
+    , .{beats}), try std.fmt.allocPrint(alloc,
+        \\while ($null -ne ($line = $stdin.ReadLine())) {{
+        \\  [IO.File]::AppendAllText('{s}', "beat`n", $u8)
+        \\  $stdout.Write('{{"tell":"\u001b[2Jcould not write the skill file"}}' + "`n")
+        \\  $stdout.Write('{{"ok":true}}' + "`n")
+        \\}}
     , .{beats}));
 
     const env: std.process.Environ.Map = .init(testing.allocator);
@@ -4446,6 +4574,25 @@ test "pruning removes what Polter no longer ships, and nothing else" {
 }
 
 test "a plugin's child gets the environment the host prepared, not the host's own" {
+    // **Skipped where the product says the question does not arise.**
+    //
+    // The nine fixtures around this one were translated to PowerShell so the
+    // protocol layer is exercised on Windows. **This one is not a language
+    // problem and translating it would not have helped.** Its subject is
+    // `login_path`, which declares itself inapplicable there --
+    // `login_path.supported` is `builtin.os.tag != .windows` and `widen`
+    // returns `.unsupported` before doing anything, under a comment reading
+    // *"There is no login shell and no bug"*. The assertion below, that the
+    // child's `PATH` carries what a login shell said, would then be asking
+    // after a mechanism nobody wrote. (The fixture also joins `PATH` with
+    // `:`, which is `;` there -- a second layer, made irrelevant by the
+    // first.)
+    //
+    // ⚠️ **Keyed on the product's flag, not on `builtin.os.tag`.** The two
+    // behave identically today. They differ on the day Windows grows an
+    // equivalent: this skip retires itself, and a platform check would sit
+    // there claiming the test does not apply long after it did.
+    if (comptime !login_path.supported) return error.SkipZigTest;
     // **Why this is asserted rather than assumed.** Until this round the
     // spawn passed no environment at all, so a child inherited Polter's
     // process environment and the map the resident holds was read for one
@@ -4483,6 +4630,11 @@ test "a plugin's child gets the environment the host prepared, not the host's ow
         \\while IFS= read -r line; do
         \\  echo '{{"ok":true}}'
         \\done
+    , .{seen}), try std.fmt.allocPrint(alloc,
+        \\[IO.File]::WriteAllText('{s}', $env:PATH + "`n", $u8)
+        \\while ($null -ne ($line = $stdin.ReadLine())) {{
+        \\  $stdout.Write('{{"ok":true}}' + "`n")
+        \\}}
     , .{seen}));
 
     {
