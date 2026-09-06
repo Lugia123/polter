@@ -325,75 +325,93 @@ fn startWindows(self: *Command, arena: Allocator) !void {
 
     const any_null_fd = self.stdin == null or self.stdout == null or self.stderr == null;
     const null_fd = if (any_null_fd) null_fd: {
-        // path = "\Device\Null"
-        const path = [_]u16{ '\\', 'D', 'e', 'v', 'i', 'c', 'e', '\\', 'N', 'u', 'l', 'l' };
-        var path_unicode_string: windows.UNICODE_STRING = .init(&path);
-        var attrs: windows.OBJECT_ATTRIBUTES = .{ .ObjectName = &path_unicode_string };
+        // **The null device, opened so that a child can actually write to
+        // it.** This one handle stands in for whichever of stdin, stdout and
+        // stderr the caller left unset, and two of those three are written
+        // to -- by the child, in its own process.
+        //
+        // # What was wrong, established on a real machine
+        //
+        // This used to open `\Device\Null` through `NtCreateFile`, and a
+        // child could not write to the result: `cmd.exe`'s `AutoRun` greeting
+        // went to stderr, failed, and took the rest of the command with it.
+        // The machine decided whether it showed -- a machine with a conda
+        // hook configured failed, one without passed -- **but the defect was
+        // in this code either way.**
+        //
+        // Six cells on the real machine, since removed, separated the causes.
+        // What they read, and what each one licenses:
+        //
+        //   - an inheritable ordinary file works as a child's stderr, and the
+        //     same file with `HANDLE_FLAG_INHERIT` cleared does not. **So
+        //     inheritance is one mechanism**, and the old `OBJECT_ATTRIBUTES`
+        //     set no `OBJ_INHERIT` while `CreateProcessW` is called with
+        //     `bInheritHandles = TRUE`.
+        //   - a knowingly broken stderr did fail, so the fixture could see
+        //     failure. **Without that cell the other greens meant nothing.**
+        //   - the device handle *made inheritable*, opened with the old
+        //     parameters, **still could not be written**. So inheritance was
+        //     necessary and **not sufficient**, and where the handle came
+        //     from was a second variable.
+        //   - that same handle plus `FILE_SYNCHRONOUS_IO_NONALERT` in
+        //     `CreateOptions` worked -- one flag, red to green, nothing else
+        //     varied. **The second variable is synchronous I/O semantics:**
+        //     the old handle was asynchronous, and the child writes to it
+        //     synchronously.
+        //   - an ordinary `CreateFileW("NUL")` with an inheritable
+        //     `SECURITY_ATTRIBUTES` worked. **That is the construction
+        //     below**, verified in that exact shape rather than reasoned to.
+        //
+        // ⚠️ **It takes both properties, not one.** The old handle had
+        // neither. "Just add the synchronous flag" is a misreading: that cell
+        // had inheritance already held fixed. The combination "not
+        // inheritable + synchronous" was never run, so the claim that
+        // inheritance is still required is **inference, not a reading** --
+        // which is why the fix takes the route where both properties are
+        // established together and measured that way.
+        //
+        // # Why `CreateFileW`, and not two edits to the `NtCreateFile` call
+        //
+        // `CreateFileW` gives a synchronous handle by default and takes
+        // inheritance as a parameter, so one documented Win32 call carries
+        // both properties, in the shape that was actually measured. The NT
+        // path would need a flag added in two different arguments, and that
+        // combination was only ever run in a copy of these lines, never here.
+        // Nothing about this handle needs the NT layer.
+        var sa: windows.SECURITY_ATTRIBUTES = .{
+            .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES),
+            .lpSecurityDescriptor = null,
+            // The half the old code never asked for. `CreateProcessW` below
+            // is called with `bInheritHandles = TRUE`, which hands the child
+            // the handles marked inheritable -- and this was not one.
+            .bInheritHandle = windows.TRUE,
+        };
 
-        var fd: windows.HANDLE = undefined;
-        var io_status: windows.IO_STATUS_BLOCK = undefined; // unused
-        const result = windows.exp.ntdll.NtCreateFile(
-            &fd,
-            // **Write as well as read, because this one handle is all three
-            // streams.** It stands in for whichever of stdin, stdout and
-            // stderr the caller left unset, and two of those three are
-            // written to. Asking only for read was wrong on its face.
-            //
-            // ⚠️ **It was not, however, the reason a child could not write to
-            // those streams, and this comment used to say it was.** Adding
-            // `WRITE` was measured on a real machine and the symptom did not
-            // move by one byte: the child still produced nothing and the
-            // `&&` in the regression test below still short-circuited. **A
-            // wrong cause written down with confidence is worse than no
-            // cause**, because the next person stops looking.
-            //
-            // What is established: `cmd.exe` runs an `AutoRun` command when
-            // the machine has one configured -- a conda hook, say -- and that
-            // greeting goes to stderr, so `Command: custom env vars` failed
-            // on a machine with one and passed on a machine without. **That
-            // part still holds**: the defect is in the code and the machine
-            // decides whether it shows.
-            //
-            // What is open is *which* property of this handle stops the
-            // write. Candidates and the experiment that separates them are
-            // in the two tests named `control --` and `probe --` below; the
-            // leading one is that the handle is never inherited, since
-            // `OBJECT_ATTRIBUTES` below sets no `OBJ_INHERIT` while
-            // `CreateProcessW` is called with `bInheritHandles = TRUE`.
-            //
-            // **The stdout half was never reached, and not because anything
-            // protected it.** Every Windows test that runs a child which
-            // prints to stdout sets `.stdout` to a real file; the ones that
-            // leave it unset either skip on Windows, spawn nothing, or go
-            // through the pseudoconsole branch above, which never touches
-            // this handle. One fix serves both halves because it is one
-            // handle -- see the test below, which exercises each direction.
-            .{
-                .GENERIC = .{ .READ = true, .WRITE = true },
-                .STANDARD = .{ .SYNCHRONIZE = true },
-            },
-            &attrs,
-            &io_status,
-            null,
-            windows.FILE_ATTRIBUTE_NORMAL,
-            // ⚠️ **Left as `SHARE_READ`, and that was a decision.** Asking
-            // for write while sharing only read is, for an ordinary file, a
-            // handle that can make somebody else's open fail -- and `NUL` is
-            // opened constantly by everything on the machine. It was not
-            // changed here for two reasons: this repository defines no
-            // `FILE_SHARE_WRITE` (`os/windows.zig` has only the read one),
-            // so it would widen a one-mask fix into a second file; and
-            // whether the null device enforces sharing at all is something
-            // nothing here can measure. **Reported rather than guessed at.**
+        // The DOS name, not `\Device\Null`: this is the Win32 call.
+        const path = [_:0]u16{ 'N', 'U', 'L' };
+        const fd = windows.exp.kernel32.CreateFileW(
+            &path,
+            // Read *and* write, because this one handle is all three streams
+            // and two of the three are written to.
+            windows.GENERIC_READ | windows.GENERIC_WRITE,
+            // ⚠️ **`SHARE_READ` was kept deliberately, and it is what the
+            // measured cell used.** Asking for write while sharing only read
+            // would, for an ordinary file, be a handle that can make somebody
+            // else's open fail -- and `NUL` is opened constantly by
+            // everything on the machine. Two reasons it was left alone:
+            // this repository defines no `FILE_SHARE_WRITE`, so changing it
+            // widens the fix into a second file; and whether the null device
+            // enforces sharing at all is not something measured here.
+            // **Reported rather than guessed at** -- and the construction
+            // below was green on the real machine with this value.
             windows.FILE_SHARE_READ,
+            &sa,
             windows.OPEN_EXISTING,
-            windows.FILE_NON_DIRECTORY_FILE,
+            windows.FILE_ATTRIBUTE_NORMAL,
             null,
-            0,
         );
-
-        if (result != .SUCCESS) {
-            return windows.unexpectedStatus(result);
+        if (fd == windows.INVALID_HANDLE_VALUE) {
+            return windows.unexpectedError(windows.GetLastError());
         }
 
         break :null_fd fd;
@@ -971,508 +989,6 @@ test "Command: redirect stdout to file" {
     };
     defer testing.allocator.free(contents);
     try testing.expect(contents.len > 0);
-}
-
-// **An experiment, not a fix.** Two cells that differ in exactly one bit.
-//
-// # What is being separated, and why it needs separating
-//
-// A child handed the null device for a stream nobody redirected cannot write
-// to it. Three explanations were on the table and **they are the same shape
-// from outside** -- the child writes nothing and `&&` short-circuits:
-//
-//   1. the handle is never inherited (`OBJECT_ATTRIBUTES.Attributes` is 0,
-//      so no `OBJ_INHERIT`, while `CreateProcessW` is called with
-//      `bInheritHandles = TRUE`, which only carries handles marked for it);
-//   2. the access mask (`GENERIC.READ` only, until `4fde7d2df`);
-//   3. the share mode (`FILE_SHARE_READ` only).
-//
-// **(2) has already been answered, and the answer was no.** Adding
-// `GENERIC.WRITE` changed the symptom by not one byte on a real machine.
-// That commit's message says the read-only mask was the cause; **it is not
-// established, and the note in `start` says so now.**
-//
-// # Why these cells answer it without touching the product
-//
-// Both use an ordinary file as the child's stderr, so the access mask and
-// the share mode are whatever `createFile` gives -- **identical between the
-// two cells, and known to work**, since that is what every green Windows
-// test here already passes. The only difference is `HANDLE_FLAG_INHERIT`.
-//
-// ⚠️ **The probe clears the flag rather than not setting it.** Those are the
-// same only if a fresh handle is non-inheritable by default, and that is an
-// assumption about Zig's `createFile` that nothing here has checked. Clearing
-// it says what is meant whichever the default is.
-//
-// # Reading the result -- **with the assertions quoted, on purpose**
-//
-// The first version of this table was inverted, and it was believed: it was
-// copied into an instruction, a run came back green, and "three candidates
-// eliminated" was reported from it. **A green/red table nobody checked
-// against the assertion reads exactly like one that was checked.** So each
-// row carries the line it is about.
-//
-// ```text
-// control  try expect(indexOf(got, "ok") != null)
-//            green = "ok" present = the child's write to stderr SUCCEEDED
-//
-// probe    try expect(indexOf(got, "ok") == null)
-//            green = "ok" ABSENT  = the child's write to stderr FAILED
-// ```
-//
-// So:
-//
-// ```text
-// control green, probe green   clearing one bit broke it -- inheritance IS
-//                              the mechanism, and `null_fd` never sets it
-// control green, probe red     an uninheritable handle was still writable --
-//                              inheritance is NOT it, look elsewhere
-// control red                  the experiment is broken, not the subject:
-//                              an inheritable real file must be writable
-// ```
-//
-// ⚠️ **The polarity is the trap.** `probe` asserts a *failure*, so its green
-// means the subject broke -- the opposite direction from every other cell
-// here. Reading "green" as "fine" is what inverted the table.
-//
-// **Whichever way the probe goes is the answer.** It is written as an
-// assertion so that the run reports it, not because failing is expected.
-test "Command: control -- an inheritable file works as a child's stderr" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
-
-    var td = try TempDir.init();
-    defer td.deinit();
-    var stdout = try createTestStdout(testing.io, td.dir);
-    defer stdout.close(testing.io);
-    var stderr = try createTestStderr(testing.io, td.dir);
-    defer stderr.close(testing.io);
-
-    const got = try runInheritProbe(&stdout, stderr);
-    defer testing.allocator.free(got);
-    errdefer std.debug.print("\ncontrol: child wrote \"{s}\"\n", .{got});
-    try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
-}
-
-test "Command: probe -- the same file with its inherit flag cleared" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
-
-    var td = try TempDir.init();
-    defer td.deinit();
-    var stdout = try createTestStdout(testing.io, td.dir);
-    defer stdout.close(testing.io);
-    var stderr = try createTestStderr(testing.io, td.dir);
-    defer stderr.close(testing.io);
-
-    // The one bit this experiment turns -- and then reads back.
-    //
-    // ⚠️ **"I called the setter" and "the bit is now zero" are two readings**,
-    // and only the second licenses a conclusion. Worked through against the
-    // assertion below (`expect(indexOf(got, "ok") == null)`), rather than
-    // from an impression of what green means:
-    //
-    // ```text
-    // setter worked, inheritance matters      "ok" absent   -> green
-    // setter worked, inheritance is not it    "ok" present  -> red
-    // setter silently did nothing             "ok" present  -> red
-    // ```
-    //
-    // **So a dead setter and a real negative are the same red**, and without
-    // the read-back nothing tells them apart -- one says "look elsewhere",
-    // the other says "this experiment never ran". The read-back turns that
-    // red into two.
-    //
-    // (This paragraph said the opposite on its first writing -- that a dead
-    // setter would leave the probe *green*. It was the third inverted
-    // green/red claim in this one experiment, and the reason every such
-    // claim here now quotes its assertion.)
-    if (windows.exp.kernel32.SetHandleInformation(
-        stderr.handle,
-        windows.HANDLE_FLAG_INHERIT,
-        0,
-    ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
-
-    var flags: windows.DWORD = undefined;
-    if (windows.exp.kernel32.GetHandleInformation(stderr.handle, &flags) == windows.FALSE)
-        return windows.unexpectedError(windows.GetLastError());
-    errdefer std.debug.print(
-        "\nprobe: handle flags read back as 0x{x}; the inherit bit is still " ++
-            "set, so this probe never tested what it says it tests.\n",
-        .{flags},
-    );
-    try testing.expectEqual(
-        @as(windows.DWORD, 0),
-        flags & windows.HANDLE_FLAG_INHERIT,
-    );
-
-    const got = try runInheritProbe(&stdout, stderr);
-    defer testing.allocator.free(got);
-    errdefer std.debug.print(
-        "\nprobe: child wrote \"{s}\" -- if this is not empty, an " ++
-            "uninheritable handle still worked, and inheritance is not what " ++
-            "stops the null device from being written to.\n",
-        .{got},
-    );
-    try testing.expect(std.mem.indexOf(u8, got, "ok") == null);
-}
-
-// **The positive control, and the reason it had to be written second.**
-//
-// `control` and `probe` were delivered together and both came back green,
-// and that was reported as "three candidates eliminated" -- **a conclusion
-// that came from reading the table rather than the assertions, and it was
-// backwards.**
-//
-// ⚠️ **The first reason written here for this cell was also wrong**, and it
-// is left recorded because the mistake is instructive. It said: neither cell
-// had ever been red, and a pair that cannot go red is indistinguishable from
-// a pair that found nothing. **That rule is sound and does not apply here**
-// -- the two cells assert opposite polarities (`!= null` against
-// `== null`), so "both green" is already a discriminating result. **A
-// correct rule applied to an object it does not fit**, and it was reached
-// the same way the inverted table was: without looking at the assertions.
-//
-// # What this cell is actually for
-//
-// `probe` green is read as *the child could not write*. That reading is only
-// worth something if "could not write" is a thing this fixture is capable of
-// reporting **and** capable of not reporting. `control` shows it can come
-// out the other way. **This shows the failing direction is real** and not
-// something the harness produces for every input.
-//
-// So this hands the child a stderr that is knowingly unusable and requires
-// the failure to show.
-//
-// ```text
-// try expect(indexOf(got, "ok") == null)
-//   green = "ok" absent = the child could NOT write to a handle that cannot
-//           exist = this fixture can see a failure when there is one
-//   red   = it wrote anyway = the instrument is blind, and every reading
-//           taken with it -- including `probe`'s -- goes back in the box
-// ```
-//
-// ⚠️ **This comment was inverted too, on its first writing**, in the same
-// direction as the table above and on the same day: the code asserted a
-// failure and the prose read the green as the failure. **Same polarity trap,
-// twice.** That is why every green/red claim in these cells now sits next to
-// the line it describes.
-test "Command: positive control -- a knowingly broken stderr does fail" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
-
-    var td = try TempDir.init();
-    defer td.deinit();
-    var stdout = try createTestStdout(testing.io, td.dir);
-    defer stdout.close(testing.io);
-
-    // Not a closed handle: closing one and then using it is undefined, and
-    // an experiment resting on undefined behaviour proves nothing about the
-    // subject. `INVALID_HANDLE_VALUE` is the documented way to hand
-    // `CreateProcessW` a stream the child cannot have.
-    const broken: File = .{
-        .handle = windows.INVALID_HANDLE_VALUE,
-        .flags = .{ .nonblocking = false },
-    };
-
-    const got = try runInheritProbe(&stdout, broken);
-    defer testing.allocator.free(got);
-    errdefer std.debug.print(
-        "\npositive control: child wrote \"{s}\" -- it managed to write to a " ++
-            "handle that cannot exist, so this pair of cells is not measuring " ++
-            "what it claims to.\n",
-        .{got},
-    );
-    try testing.expect(std.mem.indexOf(u8, got, "ok") == null);
-}
-
-// **The one variable the other three cells never touched: where the handle
-// came from.**
-//
-// `control` and `probe` both use a handle from `createFile`. The product's
-// comes from `NtCreateFile` on `\Device\Null`. So "same spawn path, one
-// writable and one not" still has an unisolated difference in it, and it is
-// not access, not sharing, and -- if `probe` is to be believed -- not
-// inheritance either.
-//
-// This cell opens the device **with the product's exact parameters** and then
-// does the one thing the product does not: marks it inheritable. It needs no
-// `OBJ_INHERIT` constant, which this repository does not define;
-// `SetHandleInformation` reaches the same bit from outside, and the tests
-// here already use it on every handle they hand a child.
-//
-// ```text
-// try expect(indexOf(got, "ok") != null)
-//
-// green = "ok" present = the device handle works once it is inheritable, so
-//         marking `null_fd` inheritable is the fix and this closes
-// red   = "ok" absent  = an inheritable device handle is still unwritable,
-//         so provenance is a second variable and inheritance alone is not
-//         enough; the next question is what else `NtCreateFile` did
-// ```
-//
-// (Checked against the assertion rather than remembered -- the two cells
-// above were both written with their polarity reversed.)
-//
-// ⚠️ **This duplicates four lines of the product**, which is a drift risk and
-// is accepted on purpose: the alternative is changing `start` to find out
-// what is wrong with `start`. If the parameters below stop matching the ones
-// in `start`, this cell stops answering the question it names.
-test "Command: provenance -- the device handle, made inheritable" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
-
-    var td = try TempDir.init();
-    defer td.deinit();
-    var stdout = try createTestStdout(testing.io, td.dir);
-    defer stdout.close(testing.io);
-
-    // Copied from `start`, deliberately and visibly.
-    const path = [_]u16{ '\\', 'D', 'e', 'v', 'i', 'c', 'e', '\\', 'N', 'u', 'l', 'l' };
-    var path_unicode_string: windows.UNICODE_STRING = .init(&path);
-    var attrs: windows.OBJECT_ATTRIBUTES = .{ .ObjectName = &path_unicode_string };
-    var fd: windows.HANDLE = undefined;
-    var io_status: windows.IO_STATUS_BLOCK = undefined;
-    const result = windows.exp.ntdll.NtCreateFile(
-        &fd,
-        .{
-            .GENERIC = .{ .READ = true, .WRITE = true },
-            .STANDARD = .{ .SYNCHRONIZE = true },
-        },
-        &attrs,
-        &io_status,
-        null,
-        windows.FILE_ATTRIBUTE_NORMAL,
-        windows.FILE_SHARE_READ,
-        windows.OPEN_EXISTING,
-        windows.FILE_NON_DIRECTORY_FILE,
-        null,
-        0,
-    );
-    if (result != .SUCCESS) return windows.unexpectedStatus(result);
-    defer _ = windows.exp.kernel32.CloseHandle(fd);
-
-    // The one thing the product does not do to it.
-    if (windows.exp.kernel32.SetHandleInformation(
-        fd,
-        windows.HANDLE_FLAG_INHERIT,
-        windows.HANDLE_FLAG_INHERIT,
-    ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
-
-    // Read back, for `probe`'s reason: calling the setter is not the same
-    // reading as the bit being set.
-    var flags: windows.DWORD = undefined;
-    if (windows.exp.kernel32.GetHandleInformation(fd, &flags) == windows.FALSE)
-        return windows.unexpectedError(windows.GetLastError());
-    try testing.expectEqual(
-        @as(windows.DWORD, windows.HANDLE_FLAG_INHERIT),
-        flags & windows.HANDLE_FLAG_INHERIT,
-    );
-
-    const dev: File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-    const got = try runInheritProbe(&stdout, dev);
-    defer testing.allocator.free(got);
-    errdefer std.debug.print(
-        "\nprovenance: child wrote \"{s}\" -- empty means an inheritable " ++
-            "device handle is still unwritable, so where the handle came from " ++
-            "is the remaining variable.\n",
-        .{got},
-    );
-    try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
-}
-
-// # Cell E -- **a different way to open it, without asking why**
-//
-// `provenance` came back red: an inheritable `\Device\Null` handle, opened
-// with the product's exact parameters, still could not be written by a child.
-// So the handle's origin is a second variable, and the question splits into
-// "what is wrong with that origin" and "is there an origin that works".
-//
-// **This cell only asks the second one**, and that is the point of doing it
-// first. It opens the DOS name `NUL` through `CreateFileW` -- the ordinary
-// way, with an inheritable `SECURITY_ATTRIBUTES` -- and hands it to a child.
-// It requires nobody to have the right theory about `NtCreateFile`.
-//
-// ```text
-// try expect(indexOf(got, "ok") != null)
-//
-// green = "ok" present = a working way to open the null device exists, so
-//         the fix is to change HOW `null_fd` is opened; which flag was
-//         responsible remains unknown and does not have to be known
-// red   = "ok" absent  = even the ordinary open cannot be written by a child,
-//         so the fault is not in the opening at all and cell F, which only
-//         varies one flag of the opening, cannot help either
-// ```
-//
-// (Read off the assertion above, not from memory.)
-//
-// ⚠️ **`SECURITY_ATTRIBUTES.bInheritHandle` is a request, not a reading.**
-// The bit is read back below for the same reason `probe` reads it back: a
-// parameter that was ignored and a parameter that took effect produce the
-// same code path here, and only the read-back separates them.
-test "Command: E -- an ordinary CreateFileW(\"NUL\") handle as a child's stderr" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
-
-    var td = try TempDir.init();
-    defer td.deinit();
-    var stdout = try createTestStdout(testing.io, td.dir);
-    defer stdout.close(testing.io);
-
-    var sa: windows.SECURITY_ATTRIBUTES = .{
-        .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES),
-        .lpSecurityDescriptor = null,
-        .bInheritHandle = windows.TRUE,
-    };
-    const path = [_:0]u16{ 'N', 'U', 'L' };
-    const fd = windows.exp.kernel32.CreateFileW(
-        &path,
-        windows.GENERIC_READ | windows.GENERIC_WRITE,
-        windows.FILE_SHARE_READ,
-        &sa,
-        windows.OPEN_EXISTING,
-        windows.FILE_ATTRIBUTE_NORMAL,
-        null,
-    );
-    if (fd == windows.INVALID_HANDLE_VALUE)
-        return windows.unexpectedError(windows.GetLastError());
-    defer _ = windows.exp.kernel32.CloseHandle(fd);
-
-    // Asked for above; read back here.
-    var flags: windows.DWORD = undefined;
-    if (windows.exp.kernel32.GetHandleInformation(fd, &flags) == windows.FALSE)
-        return windows.unexpectedError(windows.GetLastError());
-    try testing.expectEqual(
-        @as(windows.DWORD, windows.HANDLE_FLAG_INHERIT),
-        flags & windows.HANDLE_FLAG_INHERIT,
-    );
-
-    const dev: File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-    const got = try runInheritProbe(&stdout, dev);
-    defer testing.allocator.free(got);
-    errdefer std.debug.print(
-        "\nE: child wrote \"{s}\" -- empty means even an ordinary " ++
-            "CreateFileW(\"NUL\") handle is unwritable by a child, so the " ++
-            "fault is not in how the null device is opened.\n",
-        .{got},
-    );
-    try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
-}
-
-// # Cell F -- **one flag, and it is somebody's guess**
-//
-// The product asks `NtCreateFile` for `SYNCHRONIZE` access but passes only
-// `FILE_NON_DIRECTORY_FILE` in `CreateOptions`. The conjecture under test is
-// that without `FILE_SYNCHRONOUS_IO_NONALERT` the handle is asynchronous, and
-// a child writing to it with synchronous semantics fails.
-//
-// ⚠️ **This is a hypothesis, not a lead.** It is recorded here as one because
-// two earlier confident readings of this same file -- "the read-only access
-// mask is the cause" and "no cell has ever gone red, so the fixture cannot
-// see failure" -- were both wrong. F is worth one cell and no weight beyond
-// its own result.
-//
-// This cell is `provenance` with exactly one bit added to `CreateOptions`,
-// so its result is attributable to that bit and nothing else.
-//
-// ```text
-// try expect(indexOf(got, "ok") != null)
-//
-// green = "ok" present = that one flag is the whole difference, and the fix
-//         is one line in `start`
-// red   = "ok" absent  = the conjecture is out; the fix is whatever E found,
-//         and what `NtCreateFile` does differently is still unexplained
-// ```
-//
-// ⚠️ **Green here does not retire cell E**, and red here does not revive the
-// theory: F varies one flag against `provenance`, so it can only speak about
-// that flag. E answers a different question and answers it either way.
-//
-// ⚠️ Same four copied lines as `provenance`, same accepted drift risk, for
-// the same reason: the alternative is editing `start` to find out what is
-// wrong with `start`.
-test "Command: F -- the device handle, inheritable and synchronous" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
-
-    var td = try TempDir.init();
-    defer td.deinit();
-    var stdout = try createTestStdout(testing.io, td.dir);
-    defer stdout.close(testing.io);
-
-    // Copied from `start`, deliberately and visibly. The single deliberate
-    // difference from `provenance` is `FILE_SYNCHRONOUS_IO_NONALERT` below.
-    const path = [_]u16{ '\\', 'D', 'e', 'v', 'i', 'c', 'e', '\\', 'N', 'u', 'l', 'l' };
-    var path_unicode_string: windows.UNICODE_STRING = .init(&path);
-    var attrs: windows.OBJECT_ATTRIBUTES = .{ .ObjectName = &path_unicode_string };
-    var fd: windows.HANDLE = undefined;
-    var io_status: windows.IO_STATUS_BLOCK = undefined;
-    const result = windows.exp.ntdll.NtCreateFile(
-        &fd,
-        .{
-            .GENERIC = .{ .READ = true, .WRITE = true },
-            .STANDARD = .{ .SYNCHRONIZE = true },
-        },
-        &attrs,
-        &io_status,
-        null,
-        windows.FILE_ATTRIBUTE_NORMAL,
-        windows.FILE_SHARE_READ,
-        windows.OPEN_EXISTING,
-        windows.FILE_NON_DIRECTORY_FILE | windows.FILE_SYNCHRONOUS_IO_NONALERT,
-        null,
-        0,
-    );
-    if (result != .SUCCESS) return windows.unexpectedStatus(result);
-    defer _ = windows.exp.kernel32.CloseHandle(fd);
-
-    if (windows.exp.kernel32.SetHandleInformation(
-        fd,
-        windows.HANDLE_FLAG_INHERIT,
-        windows.HANDLE_FLAG_INHERIT,
-    ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
-
-    var flags: windows.DWORD = undefined;
-    if (windows.exp.kernel32.GetHandleInformation(fd, &flags) == windows.FALSE)
-        return windows.unexpectedError(windows.GetLastError());
-    try testing.expectEqual(
-        @as(windows.DWORD, windows.HANDLE_FLAG_INHERIT),
-        flags & windows.HANDLE_FLAG_INHERIT,
-    );
-
-    const dev: File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-    const got = try runInheritProbe(&stdout, dev);
-    defer testing.allocator.free(got);
-    errdefer std.debug.print(
-        "\nF: child wrote \"{s}\" -- empty means FILE_SYNCHRONOUS_IO_NONALERT " ++
-            "is not the difference either, and that conjecture is out.\n",
-        .{got},
-    );
-    try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
-}
-
-/// Run `echo to-stderr 1>&2 && echo ok` and hand back what reached stdout.
-///
-/// The `&&` is the whole instrument: the second half runs only if the first
-/// succeeded, so the presence of `ok` on the stream that certainly works is
-/// the child's answer about the stream under test. Caller frees.
-fn runInheritProbe(stdout: *File, stderr: File) ![]u8 {
-    var cmd: Command = .{
-        .path = "C:\\Windows\\System32\\cmd.exe",
-        .args = &.{
-            "C:\\Windows\\System32\\cmd.exe", "/C",
-            "echo to-stderr 1>&2 && echo ok",
-        },
-        .stdout = stdout.*,
-        .stderr = stderr,
-        .os_pre_exec = null,
-        .rt_pre_exec = null,
-        .rt_post_fork = null,
-        .rt_pre_exec_info = undefined,
-        .rt_post_fork_info = undefined,
-    };
-    try cmd.testingStart();
-    _ = try cmd.wait(true);
-
-    const size = (try stdout.stat(testing.io)).size;
-    const data = try testing.allocator.alloc(u8, size);
-    errdefer testing.allocator.free(data);
-    try testing.expectEqual(size, try stdout.readPositionalAll(testing.io, data, 0));
-    return data;
 }
 
 // **Both directions of the one handle that stands in for an unset stream.**

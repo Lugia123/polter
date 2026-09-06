@@ -96,11 +96,6 @@ pub const FILE_ATTRIBUTE_NORMAL = 0x80;
 pub const FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000;
 pub const FILE_FLAG_OVERLAPPED = 0x40000000;
 pub const FILE_NON_DIRECTORY_FILE = 0x00000040;
-/// Required by the `F` cell in Command.zig, which asks whether the null-device
-/// handle's missing synchronous-I/O mode is why a child cannot write to it.
-/// The cell's criterion is "`provenance` plus exactly this bit", so the bit has
-/// to be nameable here.
-pub const FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020;
 pub const FILE_SHARE_READ = 0x00000001;
 pub const GENERIC_READ = 0x80000000;
 pub const HANDLE_FLAG_INHERIT = 0x00000001;
@@ -233,17 +228,6 @@ pub const exp = struct {
             hObject: HANDLE,
             dwMask: DWORD,
             dwFlags: DWORD,
-        ) callconv(.winapi) BOOL;
-        /// **Declared for an experiment that could not be trusted without
-        /// it.** A test in `Command.zig` turns `HANDLE_FLAG_INHERIT` off and
-        /// concludes something from what follows. "I called the setter" and
-        /// "the bit is now zero" are two readings, and only the second one
-        /// licenses the conclusion -- without this, a setter that quietly did
-        /// nothing would produce a probe that is green for the wrong reason
-        /// and reads exactly like a negative result.
-        pub extern "kernel32" fn GetHandleInformation(
-            hObject: HANDLE,
-            lpdwFlags: *DWORD,
         ) callconv(.winapi) BOOL;
         pub extern "kernel32" fn CreateFileW(
             lpFileName: LPCWSTR,
