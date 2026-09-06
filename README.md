@@ -6,7 +6,9 @@
 <p align="center">
   <b>Put one Claude Code session in charge of the others.</b><br>
   <sub>It reads their screens, types into them, opens new tabs, and minds them
-  while you're asleep. All local — no account, no API key, no network calls.</sub>
+  while you're asleep. All local — no account, no API key, no network calls.<br>
+  <i>(Waking you needs a twenty-line notification plugin you write yourself —
+  none ships.)</i></sub>
 </p>
 
 <p align="center">
@@ -47,17 +49,19 @@ You tell it the goal in English — *"build the export feature, split it three
 ways, don't wake me unless something needs a decision"* — and it writes the
 plan, opens a tab per piece of work, starts an agent in each, and minds them.
 
-**Two words that are not the same thing**, because the rest of this document
-depends on the difference:
+Every "it" in that table is **the supervisor**. The supervisor and Polter are
+two different things, and the rest of this document leans on the difference:
 
-- **Polter** is the terminal — this program. It measures one thing (how long a
-  screen has been unchanged) and carries messages. **It never decides
-  anything.** Whether a still screen means "stuck" or "thinking hard" is a
-  question it refuses to answer, because answering it wrong is worse than not
-  answering.
-- **The supervisor** is the agent you put in charge. It reads the screens and
-  makes the calls. It is an ordinary Claude Code session; you can watch it work
-  and take the keyboard whenever you like.
+- **The supervisor** is the agent you put in charge — an ordinary Claude Code
+  session. Reading a screen, understanding what's on it, deciding whether to
+  step in: all of that is the supervisor's. You can watch it work and take the
+  keyboard whenever you like.
+- **Polter** is the terminal — this program. It doesn't read anything; it
+  carries. Screen contents to the supervisor, the supervisor's keystrokes into
+  another tab, and **one measurement: how long this screen has been
+  unchanged**. Whether a still screen means "stuck" or "thinking hard" is not a
+  question Polter answers — the answer is in what the screen says, and reading
+  that is the supervisor's job.
 
 ## Before you decide
 
@@ -80,9 +84,15 @@ Three things worth knowing before you spend ten minutes on this:
   developed on; [Windows is newer and partial](#download); Linux is
   build-from-source.
 
-The supervisor costs tokens like any other session — it is a Claude Code
-session, reading screens and writing messages all night. Give it a model and a
-budget you'd be happy to leave running.
+**On cost, honestly: there is no measured number here yet.** The supervisor is
+a Claude Code session like any other, and it runs all night reading screens and
+writing messages, so it spends like one. What decides how much: how many
+workers it is minding, how often it is interrupted with what it hasn't seen
+(`poltergeist-notice-interval`, one minute by default — raise it and the bill
+falls), and how much of a screen it reads each time it looks. Try it on one
+worker for an hour before you leave it running on four overnight. If you
+measure it, [tell me](https://github.com/Lugia123/polter/issues) and this
+paragraph gets a number in it.
 
 
 ## What you get beyond that
@@ -205,7 +215,10 @@ still and for how long.
 Say you want a REST API built overnight, and you don't want to babysit it.
 
 Open one tab, `cd` to the project, start `claude`, and turn it into a
-supervisor. Then type something like this:
+supervisor. Then type something like this — **this example names tools and
+arguments on purpose, so you can see what it will go and do.** You don't have
+to: "build this, split it three ways, wake me only for permission prompts" is
+enough, and it will work the rest out from its skill file.
 
 > You're the supervisor. Goal: a working REST API for the notes service in
 > `~/src/notes`, with tests passing and the OpenAPI spec updated.
@@ -256,8 +269,7 @@ Three things worth knowing about that prompt:
 
 ### Two switches that are yours alone
 
-Both show on the tab, because a guarantee you were told about once is one you
-won't remember at 3am:
+Both are visible on the tab itself, not just in a menu:
 
 - **Agents → Keep This Terminal Working** — this one must not be clocked off.
   A supervisor asking to is refused. The tab's mark grows a ring (`◉` moving,
@@ -298,9 +310,9 @@ a `cmd:` credential, switching a plugin off, answering an agent's permission
 prompt.
 
 Every tool, with what it does and what it refuses, is in
-**[`docs/tools.md`](docs/tools.md)** — it is a reference and it reads like one.
-You do not need it to use Polter: the supervisor reads its own skill file and
-calls these itself, and the [full example](#a-full-example) below is what
+**[`docs/tools.md`](docs/tools.md)**. It is a reference; read it when you want
+to know exactly what a call does. You do not need it to use Polter: the supervisor reads its own skill file and
+calls these itself, and the [full example](#a-full-example) above is what
 driving it actually looks like.
 
 The five families, so the names in this document mean something:
