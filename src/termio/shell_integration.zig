@@ -231,6 +231,43 @@ fn detectShell(alloc: Allocator, command: config.Command) !?Shell {
     return null;
 }
 
+// **The Windows default and the detector, tied together.**
+//
+// These are two decisions in two files: `Config.finalize` picks the shell to
+// start when nothing else names one, and `detectShell` decides whether shell
+// integration runs for it. They agreed once by inspection and then disagreed
+// for months -- `cmd.exe` was the default and is the one shell this function
+// cannot recognise, so the integration never ran on Windows at all.
+//
+// This asserts the agreement instead of trusting it, and it asserts it
+// against the same constant the default is built from rather than a second
+// copy of the string. It runs on any machine because it is a question about
+// two strings, not about a filesystem.
+test "the Windows default shell is one this can detect" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // **Asserted in two halves, because the whole cannot be asserted here.**
+    //
+    // `detectShell` takes `std.fs.path.basename` of its argument, and that is
+    // the POSIX one on this machine: it splits on `/` and leaves a Windows
+    // path as a single component. Asserting the absolute path directly would
+    // pass on Windows and fail here for a reason that has nothing to do with
+    // the agreement being checked.
+    //
+    // So: the path we build has the basename we think it has (Windows rules,
+    // stated explicitly), and that basename is one this detects. On Windows
+    // `basename` *is* the Windows one, which joins the two halves.
+    const absolute = "C:\\Windows" ++ internal_os.default_shell.powershell_relative;
+    try testing.expectEqualStrings("powershell.exe", std.fs.path.basenameWindows(absolute));
+    try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "powershell.exe" }));
+
+    // And the value both of them replaced, which is the whole reason this
+    // test exists: it must still be the one that cannot be detected, so a
+    // change back to it fails here rather than in a log nobody reads.
+    try testing.expectEqual(@as(?Shell, null), try detectShell(alloc, .{ .shell = "cmd.exe" }));
+}
+
 test detectShell {
     const testing = std.testing;
     const alloc = testing.allocator;

@@ -5028,8 +5028,41 @@ pub fn finalize(self: *Config) !void {
             switch (builtin.os.tag) {
                 .windows => {
                     if (self.command == null) {
-                        log.warn("no default shell found, will default to using cmd", .{});
-                        self.command = .{ .shell = "cmd.exe" };
+                        // **PowerShell if it is there, `cmd.exe` if it is
+                        // not -- and the log says which and why.**
+                        //
+                        // `cmd.exe` alone was the default, and it is the one
+                        // shell `detectShell` cannot recognise, so automatic
+                        // shell integration never ran on Windows: no cwd
+                        // reporting, no prompt marks, none of it. The
+                        // mechanism was all present; this was the value that
+                        // kept it from starting.
+                        //
+                        // **The fallback names its cause, not its result.**
+                        // "shell could not be detected" is already logged
+                        // downstream and has never helped anyone, because it
+                        // says what happened rather than why. A fallback that
+                        // only said "using cmd.exe" would be a fourth silent
+                        // cause sitting next to the three that were just
+                        // pulled apart.
+                        var buf: [std.fs.max_path_bytes]u8 = undefined;
+                        var environ_map = try global.environMap();
+                        defer environ_map.deinit();
+                        if (internal_os.default_shell.systemPowerShell(
+                            global.io(),
+                            &environ_map,
+                            &buf,
+                        )) |path| {
+                            log.info("default shell src=system value={s}", .{path});
+                            self.command = .{ .shell = try alloc.dupeZ(u8, path) };
+                        } else |err| {
+                            log.warn(
+                                "no PowerShell to default to ({s}); falling back to cmd.exe. " ++
+                                    "Automatic shell integration will not be injected.",
+                                .{@errorName(err)},
+                            );
+                            self.command = .{ .shell = "cmd.exe" };
+                        }
                     }
 
                     if (wd == .home) {

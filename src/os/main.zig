@@ -29,6 +29,7 @@ pub const passwd = @import("passwd.zig");
 pub const xdg = @import("xdg.zig");
 pub const windows = @import("windows.zig");
 pub const macos = @import("macos.zig");
+pub const default_shell = @import("default_shell.zig");
 pub const shell = @import("shell.zig");
 pub const stderr = @import("stderr.zig");
 pub const uri = @import("uri.zig");
@@ -66,6 +67,7 @@ test {
     _ = i18n;
     _ = path;
     _ = uri;
+    _ = default_shell;
     _ = shell;
 
     if (comptime builtin.os.tag == .linux) {

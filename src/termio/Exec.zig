@@ -811,9 +811,25 @@ const Subprocess = struct {
 
         // Setup our shell integration, if we can.
         const shell_command: configpkg.Command = shell: {
+            // **The Windows arm below is unreachable today, and changed
+            // anyway.**
+            //
+            // `Config.finalize` fills `command` in before this runs, so on
+            // Windows the `orelse` never fires and that value never reaches a
+            // process. Editing only this line would have looked exactly like
+            // a fix that did not work.
+            //
+            // It is changed for two reasons. One rule written two ways reads
+            // as a deliberate difference to whoever finds it next. And if
+            // `finalize`'s branch is ever removed, this becomes the only
+            // default there is -- at which point it had better not be the one
+            // shell that shell integration cannot recognise.
+            //
+            // A bare name rather than the absolute path `finalize` resolves,
+            // because there is no environment to resolve one from here.
             const default_shell_command: configpkg.Command =
                 cfg.command orelse .{ .shell = switch (builtin.os.tag) {
-                    .windows => "cmd.exe",
+                    .windows => "powershell.exe",
                     else => "sh",
                 } };
 
