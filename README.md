@@ -173,9 +173,16 @@ It is younger than the macOS side and not at parity:
 
 | | |
 | --- | --- |
-| Verified on a Windows 11 machine | The window opens, tabs work, a shell starts, text including CJK renders, IME composition types Chinese, the menu and its accelerators work, the resources directory is found, and the provisioning plugins start. |
-| Known missing | **Splits** — the layout algorithm is ported (`windows/split-tree/`) but not wired to the window tree. **Some keybinding actions** are not implemented yet; the count is tracked in [`docs/windows/status.md`](docs/windows/status.md). **Shell integration** is not injected. **The `archive` plugin** is installed and enabled but never starts, because plugins have no way yet to declare which systems they can run on. |
-| Broken, being chased | **The group chat view does not come up.** Tested on 0.5.447: the menu item works, the tab is created, and the log shows the right command line — but the tab stays blank. The chat is a TUI run as a tab (`polter-host.exe +chat`), and the host is a GUI-subsystem program, which is where this is being chased. Groups and the task panel still work through the MCP tools; it is the on-screen view that is missing. |
+| Verified on a Windows 11 machine | The window opens, tabs work, a shell starts, text including CJK renders, IME composition types Chinese, the menu and its accelerators work, the resources directory is found, and the provisioning plugins start. Since the first release, three more have a reading on the machine behind them: **splits** (two live panes in one tab, with the divider), **shell integration** (PowerShell detected and injected, working directory following it), and **the group chat view**. |
+| Known missing | **The `archive` plugin** is installed and enabled but never starts, and says so once in the log rather than failing at every spawn. It ships only `archive.py`, and nothing on Windows runs a `.py` directly. A plugin *can* name what to run per system — `exec_windows`, which the seven agent-CLI plugins use — so what `archive` is missing is a Windows script, not a way to declare one. **Some keybinding actions**: the host handles 46 of the core's 72. Which of the remaining 26 matter here has not been worked out, and some of them are GTK- or macOS-specific and are not wanted on Windows at all, so 26 is a difference, not a to-do list. |
+
+Two rows above used to say the opposite of what they say now — splits and the
+chat view were both described as missing after they worked. A note on how the
+chat one read, because the wording sent people the wrong way: it said the tab
+"stays blank", which describes something still loading. It was not loading. The
+process died 146 ms after the tab appeared, too fast to see the difference on
+screen — **and "never finished loading" and "failed immediately" send you to
+two different halves of the program to look.**
 
 [`ROADMAP.md`](ROADMAP.md) is where these get closed.
 

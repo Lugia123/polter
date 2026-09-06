@@ -39,35 +39,40 @@ daily, and that is the honest blocker.
 
 These are specific and each one has a place in the code.
 
-- **Splits.** The layout algorithm is already ported — `windows/split-tree/` is
-  a zero-dependency crate with 42 tests that runs on any machine. It is not
-  wired to the window tree yet. On Windows a split has to be several child
-  windows, because a libghostty surface is bound to its `HWND` for life.
-- **Action parity.** Of the 72 keybinding actions, 54 are required for parity
-  and the host implements 24 — the count is kept in
-  [`docs/windows/status.md`](docs/windows/status.md), which is where to check
-  it rather than here.
-- **Plugins should declare which systems they run on.** Today the host guesses
-  from the file extension, so `archive.py` is installed, enabled, and never
-  started on Windows — with a log line and nothing else. Whether a plugin can
-  run on a system is the plugin's own property, and it needs a field to say so.
-- **Shell integration.** Not injected on Windows; the shell is not detected.
+- **Action parity.** The host handles **46 of the core's 72** keybinding
+  actions. The remaining 26 are a difference, not a to-do list: some are GTK-
+  or macOS-specific and should never exist here, and which of the rest matter
+  on Windows has not been worked out. Both numbers are measured rather than
+  remembered, and the commands are in
+  [`docs/windows/status.md`](docs/windows/status.md) — **an earlier version of
+  this line said 24, from a command anchored to line numbers that had moved.**
+- **A Windows script for the `archive` plugin.** It ships only `archive.py`,
+  and nothing on Windows runs a `.py` directly, so it is refused at load with
+  a line saying so. Note what this is *not*: plugins can already say what to
+  run per system (`exec_windows`), and the seven agent-CLI plugins do. An `os`
+  field — "do not load me here at all" — was considered and **decided against**
+  (`docs/poltergeist/provisioning.md` §9.5), because `exec_<os>` expresses
+  today's only real case. What is missing is the script.
 
 ### Make the supervising side easier to get right
 
-- **The group chat TUI does not come up on Windows.** Measured on 0.5.447 by
-  clicking the menu item on a real machine: the action fires, the tab is
-  created, and the log carries the correct command line
-  (`"…\polter-host.exe" +chat`, `poltergeist_chat=true`) — and the tab stays
-  blank. So the host side is done and the failure is downstream of it, in a
-  TUI run as a tab by a GUI-subsystem process.
+- **Done, and left here for the way it was wrong.** Splits, shell integration
+  and the group chat TUI were all listed as missing above until each was
+  measured on a real machine and found working — the first two after they had
+  been fixed, the third after the fix that broke it was understood.
 
-  This line was wrong twice before it was measured, in both directions, and
-  that is worth leaving in view: first it said "read-only", inherited from a
-  note written before `src/cli/chat.zig` had a compose line; then it said
-  "expected to work", reasoned from the view being shared code. The shared
-  code *is* shared and it *can* post — and the tab is still blank. Neither
-  reading was checked against the screen.
+  The chat line was wrong three times, in three different ways, and that is
+  worth leaving in view. First it said "read-only", inherited from a note
+  written before `src/cli/chat.zig` had a compose line. Then it said "expected
+  to work", reasoned from the view being shared code. Then it said the tab
+  "stays blank" — which was measured, and still misleading: the process died
+  146 ms after the tab appeared, so nothing was loading. **"Never finished
+  loading" and "failed immediately" are different faults in different halves
+  of the program, and the first wording had people looking in the wrong one.**
+
+  The cause was the host being a GUI-subsystem binary: a tab is a ConPTY
+  pseudoconsole, and such a process does not attach to one, so the TUI got no
+  console handles at all. There are two binaries now, one per subsystem.
 - **Compaction** now reminds a supervisor when a group's conversation passes a
   size, and `group_history` can be searched by substring and time range. What
   is still missing is a visible divider in the chat view at the point where a
