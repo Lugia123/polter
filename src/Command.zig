@@ -334,11 +334,44 @@ fn startWindows(self: *Command, arena: Allocator) !void {
         var io_status: windows.IO_STATUS_BLOCK = undefined; // unused
         const result = windows.exp.ntdll.NtCreateFile(
             &fd,
-            .{ .GENERIC = .{ .READ = true }, .STANDARD = .{ .SYNCHRONIZE = true } },
+            // **Write as well as read, because this one handle is all three
+            // streams.** It stands in for whichever of stdin, stdout and
+            // stderr the caller left unset, and two of those three are
+            // written to. Opened `READ` only, a child that printed anything
+            // to a stream nobody redirected had that write refused.
+            //
+            // The symptom was not an error anybody saw. `cmd.exe` runs an
+            // `AutoRun` command if the machine has one configured -- a conda
+            // hook, say -- and that greeting goes to stderr; on a machine
+            // with one, `Command: custom env vars` failed, and on a machine
+            // without one it passed. **The defect was in the code the whole
+            // time and the machine decided whether it showed**, which is why
+            // "it is green here" said nothing about it.
+            //
+            // **The stdout half was never reached, and not because anything
+            // protected it.** Every Windows test that runs a child which
+            // prints to stdout sets `.stdout` to a real file; the ones that
+            // leave it unset either skip on Windows, spawn nothing, or go
+            // through the pseudoconsole branch above, which never touches
+            // this handle. One fix serves both halves because it is one
+            // handle -- see the test below, which exercises each direction.
+            .{
+                .GENERIC = .{ .READ = true, .WRITE = true },
+                .STANDARD = .{ .SYNCHRONIZE = true },
+            },
             &attrs,
             &io_status,
             null,
             windows.FILE_ATTRIBUTE_NORMAL,
+            // ⚠️ **Left as `SHARE_READ`, and that was a decision.** Asking
+            // for write while sharing only read is, for an ordinary file, a
+            // handle that can make somebody else's open fail -- and `NUL` is
+            // opened constantly by everything on the machine. It was not
+            // changed here for two reasons: this repository defines no
+            // `FILE_SHARE_WRITE` (`os/windows.zig` has only the read one),
+            // so it would widen a one-mask fix into a second file; and
+            // whether the null device enforces sharing at all is something
+            // nothing here can measure. **Reported rather than guessed at.**
             windows.FILE_SHARE_READ,
             windows.OPEN_EXISTING,
             windows.FILE_NON_DIRECTORY_FILE,
@@ -925,6 +958,115 @@ test "Command: redirect stdout to file" {
     };
     defer testing.allocator.free(contents);
     try testing.expect(contents.len > 0);
+}
+
+// **Both directions of the one handle that stands in for an unset stream.**
+//
+// # Constructed, because the way this was found cannot be relied on
+//
+// The defect surfaced through `cmd.exe`'s `AutoRun`: a machine with one
+// configured (a conda hook, here) has the child greet on stderr before it
+// runs anything, and that write landed on a read-only handle. A machine
+// without one saw nothing. **A criterion that needs the machine to be
+// configured a particular way is not a criterion**, so this asks the child
+// to write to the stream directly rather than hoping something else does.
+//
+// # How the child reports, and why not the exit code
+//
+// `echo x 1>&2 && echo ok` runs the second half **only if the first
+// succeeded**, so the presence of `ok` on the stream we *did* redirect is
+// the child's own answer about the stream we did not. Reading it out of the
+// exit code would depend on how `cmd.exe` scores a failed redirect, which
+// is a fact about `cmd.exe` rather than about this handle.
+//
+// # The stdout half is not decoration
+//
+// It has never been exercised: every Windows test that prints to stdout
+// sets `.stdout` to a real file, so the null handle was only ever used
+// there by tests that print nothing. **That is why one half of this defect
+// was visible and the other was not -- not because anything protected it.**
+//
+// # Making it red again
+//
+// Change the access mask in `start` back to `.{ .READ = true }`: both
+// halves fail, and they fail by the `ok` being absent rather than by any
+// error being reported.
+test "Command: a stream nobody redirected can still be written to" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    // --- stderr unset: the half a configured machine stumbled into --------
+    {
+        var td = try TempDir.init();
+        defer td.deinit();
+        var stdout = try createTestStdout(testing.io, td.dir);
+        defer stdout.close(testing.io);
+
+        var cmd: Command = .{
+            .path = "C:\\Windows\\System32\\cmd.exe",
+            .args = &.{
+                "C:\\Windows\\System32\\cmd.exe", "/C",
+                "echo to-stderr 1>&2 && echo ok",
+            },
+            .stdout = stdout,
+            .os_pre_exec = null,
+            .rt_pre_exec = null,
+            .rt_post_fork = null,
+            .rt_pre_exec_info = undefined,
+            .rt_post_fork_info = undefined,
+        };
+        try cmd.testingStart();
+        _ = try cmd.wait(true);
+
+        const size = (try stdout.stat(testing.io)).size;
+        const got = try testing.allocator.alloc(u8, size);
+        defer testing.allocator.free(got);
+        try testing.expectEqual(size, try stdout.readPositionalAll(testing.io, got, 0));
+
+        // **The `ok` is the child's answer about the other stream.** Its
+        // absence is the whole failure, so it is what the message shows.
+        errdefer std.debug.print(
+            "\nchild wrote {d} byte(s): \"{s}\"\n",
+            .{ got.len, got },
+        );
+        try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
+    }
+
+    // --- stdout unset: the half nothing had ever reached ------------------
+    {
+        var td = try TempDir.init();
+        defer td.deinit();
+        var stderr = try createTestStderr(testing.io, td.dir);
+        defer stderr.close(testing.io);
+
+        var cmd: Command = .{
+            .path = "C:\\Windows\\System32\\cmd.exe",
+            .args = &.{
+                "C:\\Windows\\System32\\cmd.exe", "/C",
+                "echo to-stdout && echo ok 1>&2",
+            },
+            .stderr = stderr,
+            .os_pre_exec = null,
+            .rt_pre_exec = null,
+            .rt_post_fork = null,
+            .rt_pre_exec_info = undefined,
+            .rt_post_fork_info = undefined,
+        };
+        try cmd.testingStart();
+        _ = try cmd.wait(true);
+
+        const size = (try stderr.stat(testing.io)).size;
+        const got = try testing.allocator.alloc(u8, size);
+        defer testing.allocator.free(got);
+        try testing.expectEqual(size, try stderr.readPositionalAll(testing.io, got, 0));
+
+        // **The `ok` is the child's answer about the other stream.** Its
+        // absence is the whole failure, so it is what the message shows.
+        errdefer std.debug.print(
+            "\nchild wrote {d} byte(s): \"{s}\"\n",
+            .{ got.len, got },
+        );
+        try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
+    }
 }
 
 test "Command: custom env vars" {
