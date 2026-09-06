@@ -229,6 +229,17 @@ pub const exp = struct {
             dwMask: DWORD,
             dwFlags: DWORD,
         ) callconv(.winapi) BOOL;
+        /// **Declared for an experiment that could not be trusted without
+        /// it.** A test in `Command.zig` turns `HANDLE_FLAG_INHERIT` off and
+        /// concludes something from what follows. "I called the setter" and
+        /// "the bit is now zero" are two readings, and only the second one
+        /// licenses the conclusion -- without this, a setter that quietly did
+        /// nothing would produce a probe that is green for the wrong reason
+        /// and reads exactly like a negative result.
+        pub extern "kernel32" fn GetHandleInformation(
+            hObject: HANDLE,
+            lpdwFlags: *DWORD,
+        ) callconv(.winapi) BOOL;
         pub extern "kernel32" fn CreateFileW(
             lpFileName: LPCWSTR,
             dwDesiredAccess: DWORD,

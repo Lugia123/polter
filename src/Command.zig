@@ -1004,17 +1004,36 @@ test "Command: redirect stdout to file" {
 // assumption about Zig's `createFile` that nothing here has checked. Clearing
 // it says what is meant whichever the default is.
 //
-// # Reading the result
+// # Reading the result -- **with the assertions quoted, on purpose**
+//
+// The first version of this table was inverted, and it was believed: it was
+// copied into an instruction, a run came back green, and "three candidates
+// eliminated" was reported from it. **A green/red table nobody checked
+// against the assertion reads exactly like one that was checked.** So each
+// row carries the line it is about.
 //
 // ```text
-// control green, probe green   inheritance is NOT the mechanism -- a device
-//                              handle differs from a file handle in some
-//                              other way, and (1) is not the answer either
-// control green, probe red     inheritance IS sufficient to produce the
-//                              symptom, and `null_fd` lacks the flag
+// control  try expect(indexOf(got, "ok") != null)
+//            green = "ok" present = the child's write to stderr SUCCEEDED
+//
+// probe    try expect(indexOf(got, "ok") == null)
+//            green = "ok" ABSENT  = the child's write to stderr FAILED
+// ```
+//
+// So:
+//
+// ```text
+// control green, probe green   clearing one bit broke it -- inheritance IS
+//                              the mechanism, and `null_fd` never sets it
+// control green, probe red     an uninheritable handle was still writable --
+//                              inheritance is NOT it, look elsewhere
 // control red                  the experiment is broken, not the subject:
 //                              an inheritable real file must be writable
 // ```
+//
+// ⚠️ **The polarity is the trap.** `probe` asserts a *failure*, so its green
+// means the subject broke -- the opposite direction from every other cell
+// here. Reading "green" as "fine" is what inverted the table.
 //
 // **Whichever way the probe goes is the answer.** It is written as an
 // assertion so that the run reports it, not because failing is expected.
@@ -1044,12 +1063,46 @@ test "Command: probe -- the same file with its inherit flag cleared" {
     var stderr = try createTestStderr(testing.io, td.dir);
     defer stderr.close(testing.io);
 
-    // The one bit this experiment turns.
+    // The one bit this experiment turns -- and then reads back.
+    //
+    // ⚠️ **"I called the setter" and "the bit is now zero" are two readings**,
+    // and only the second licenses a conclusion. Worked through against the
+    // assertion below (`expect(indexOf(got, "ok") == null)`), rather than
+    // from an impression of what green means:
+    //
+    // ```text
+    // setter worked, inheritance matters      "ok" absent   -> green
+    // setter worked, inheritance is not it    "ok" present  -> red
+    // setter silently did nothing             "ok" present  -> red
+    // ```
+    //
+    // **So a dead setter and a real negative are the same red**, and without
+    // the read-back nothing tells them apart -- one says "look elsewhere",
+    // the other says "this experiment never ran". The read-back turns that
+    // red into two.
+    //
+    // (This paragraph said the opposite on its first writing -- that a dead
+    // setter would leave the probe *green*. It was the third inverted
+    // green/red claim in this one experiment, and the reason every such
+    // claim here now quotes its assertion.)
     if (windows.exp.kernel32.SetHandleInformation(
         stderr.handle,
         windows.HANDLE_FLAG_INHERIT,
         0,
     ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
+
+    var flags: windows.DWORD = undefined;
+    if (windows.exp.kernel32.GetHandleInformation(stderr.handle, &flags) == windows.FALSE)
+        return windows.unexpectedError(windows.GetLastError());
+    errdefer std.debug.print(
+        "\nprobe: handle flags read back as 0x{x}; the inherit bit is still " ++
+            "set, so this probe never tested what it says it tests.\n",
+        .{flags},
+    );
+    try testing.expectEqual(
+        @as(windows.DWORD, 0),
+        flags & windows.HANDLE_FLAG_INHERIT,
+    );
 
     const got = try runInheritProbe(&stdout, stderr);
     defer testing.allocator.free(got);
@@ -1060,6 +1113,168 @@ test "Command: probe -- the same file with its inherit flag cleared" {
         .{got},
     );
     try testing.expect(std.mem.indexOf(u8, got, "ok") == null);
+}
+
+// **The positive control, and the reason it had to be written second.**
+//
+// `control` and `probe` were delivered together and both came back green,
+// and that was reported as "three candidates eliminated" -- **a conclusion
+// that came from reading the table rather than the assertions, and it was
+// backwards.**
+//
+// ⚠️ **The first reason written here for this cell was also wrong**, and it
+// is left recorded because the mistake is instructive. It said: neither cell
+// had ever been red, and a pair that cannot go red is indistinguishable from
+// a pair that found nothing. **That rule is sound and does not apply here**
+// -- the two cells assert opposite polarities (`!= null` against
+// `== null`), so "both green" is already a discriminating result. **A
+// correct rule applied to an object it does not fit**, and it was reached
+// the same way the inverted table was: without looking at the assertions.
+//
+// # What this cell is actually for
+//
+// `probe` green is read as *the child could not write*. That reading is only
+// worth something if "could not write" is a thing this fixture is capable of
+// reporting **and** capable of not reporting. `control` shows it can come
+// out the other way. **This shows the failing direction is real** and not
+// something the harness produces for every input.
+//
+// So this hands the child a stderr that is knowingly unusable and requires
+// the failure to show.
+//
+// ```text
+// try expect(indexOf(got, "ok") == null)
+//   green = "ok" absent = the child could NOT write to a handle that cannot
+//           exist = this fixture can see a failure when there is one
+//   red   = it wrote anyway = the instrument is blind, and every reading
+//           taken with it -- including `probe`'s -- goes back in the box
+// ```
+//
+// ⚠️ **This comment was inverted too, on its first writing**, in the same
+// direction as the table above and on the same day: the code asserted a
+// failure and the prose read the green as the failure. **Same polarity trap,
+// twice.** That is why every green/red claim in these cells now sits next to
+// the line it describes.
+test "Command: positive control -- a knowingly broken stderr does fail" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var td = try TempDir.init();
+    defer td.deinit();
+    var stdout = try createTestStdout(testing.io, td.dir);
+    defer stdout.close(testing.io);
+
+    // Not a closed handle: closing one and then using it is undefined, and
+    // an experiment resting on undefined behaviour proves nothing about the
+    // subject. `INVALID_HANDLE_VALUE` is the documented way to hand
+    // `CreateProcessW` a stream the child cannot have.
+    const broken: File = .{
+        .handle = windows.INVALID_HANDLE_VALUE,
+        .flags = .{ .nonblocking = false },
+    };
+
+    const got = try runInheritProbe(&stdout, broken);
+    defer testing.allocator.free(got);
+    errdefer std.debug.print(
+        "\npositive control: child wrote \"{s}\" -- it managed to write to a " ++
+            "handle that cannot exist, so this pair of cells is not measuring " ++
+            "what it claims to.\n",
+        .{got},
+    );
+    try testing.expect(std.mem.indexOf(u8, got, "ok") == null);
+}
+
+// **The one variable the other three cells never touched: where the handle
+// came from.**
+//
+// `control` and `probe` both use a handle from `createFile`. The product's
+// comes from `NtCreateFile` on `\Device\Null`. So "same spawn path, one
+// writable and one not" still has an unisolated difference in it, and it is
+// not access, not sharing, and -- if `probe` is to be believed -- not
+// inheritance either.
+//
+// This cell opens the device **with the product's exact parameters** and then
+// does the one thing the product does not: marks it inheritable. It needs no
+// `OBJ_INHERIT` constant, which this repository does not define;
+// `SetHandleInformation` reaches the same bit from outside, and the tests
+// here already use it on every handle they hand a child.
+//
+// ```text
+// try expect(indexOf(got, "ok") != null)
+//
+// green = "ok" present = the device handle works once it is inheritable, so
+//         marking `null_fd` inheritable is the fix and this closes
+// red   = "ok" absent  = an inheritable device handle is still unwritable,
+//         so provenance is a second variable and inheritance alone is not
+//         enough; the next question is what else `NtCreateFile` did
+// ```
+//
+// (Checked against the assertion rather than remembered -- the two cells
+// above were both written with their polarity reversed.)
+//
+// ⚠️ **This duplicates four lines of the product**, which is a drift risk and
+// is accepted on purpose: the alternative is changing `start` to find out
+// what is wrong with `start`. If the parameters below stop matching the ones
+// in `start`, this cell stops answering the question it names.
+test "Command: provenance -- the device handle, made inheritable" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var td = try TempDir.init();
+    defer td.deinit();
+    var stdout = try createTestStdout(testing.io, td.dir);
+    defer stdout.close(testing.io);
+
+    // Copied from `start`, deliberately and visibly.
+    const path = [_]u16{ '\\', 'D', 'e', 'v', 'i', 'c', 'e', '\\', 'N', 'u', 'l', 'l' };
+    var path_unicode_string: windows.UNICODE_STRING = .init(&path);
+    var attrs: windows.OBJECT_ATTRIBUTES = .{ .ObjectName = &path_unicode_string };
+    var fd: windows.HANDLE = undefined;
+    var io_status: windows.IO_STATUS_BLOCK = undefined;
+    const result = windows.exp.ntdll.NtCreateFile(
+        &fd,
+        .{
+            .GENERIC = .{ .READ = true, .WRITE = true },
+            .STANDARD = .{ .SYNCHRONIZE = true },
+        },
+        &attrs,
+        &io_status,
+        null,
+        windows.FILE_ATTRIBUTE_NORMAL,
+        windows.FILE_SHARE_READ,
+        windows.OPEN_EXISTING,
+        windows.FILE_NON_DIRECTORY_FILE,
+        null,
+        0,
+    );
+    if (result != .SUCCESS) return windows.unexpectedStatus(result);
+    defer _ = windows.exp.kernel32.CloseHandle(fd);
+
+    // The one thing the product does not do to it.
+    if (windows.exp.kernel32.SetHandleInformation(
+        fd,
+        windows.HANDLE_FLAG_INHERIT,
+        windows.HANDLE_FLAG_INHERIT,
+    ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
+
+    // Read back, for `probe`'s reason: calling the setter is not the same
+    // reading as the bit being set.
+    var flags: windows.DWORD = undefined;
+    if (windows.exp.kernel32.GetHandleInformation(fd, &flags) == windows.FALSE)
+        return windows.unexpectedError(windows.GetLastError());
+    try testing.expectEqual(
+        @as(windows.DWORD, windows.HANDLE_FLAG_INHERIT),
+        flags & windows.HANDLE_FLAG_INHERIT,
+    );
+
+    const dev: File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+    const got = try runInheritProbe(&stdout, dev);
+    defer testing.allocator.free(got);
+    errdefer std.debug.print(
+        "\nprovenance: child wrote \"{s}\" -- empty means an inheritable " ++
+            "device handle is still unwritable, so where the handle came from " ++
+            "is the remaining variable.\n",
+        .{got},
+    );
+    try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
 }
 
 /// Run `echo to-stderr 1>&2 && echo ok` and hand back what reached stdout.
