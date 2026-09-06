@@ -4,8 +4,46 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+# **Two binaries, one source, and the difference is the Windows subsystem.**
+#
+# `polter-host` is the GUI: it must not have a console, or every run puts a
+# second window on the screen scrolling the log (reported by the user; that is
+# what `windows_subsystem = "windows"` was for).
+#
+# `polter-cli` is the same program linked for the console subsystem, and it is
+# what a `+action` runs inside a terminal -- the chat tab above all. A GUI
+# subsystem process does not attach to the console that started it, and a
+# ConPTY pseudoconsole is a console: spawned into a tab, the GUI build got no
+# std handles at all, so the chat TUI's first `GetConsoleMode` failed with
+# `InvalidHandle` and the tab was dead 146 ms after it appeared.
+#
+# The subsystem is chosen per binary in `build.rs`, not by
+# `#![windows_subsystem]`, because that attribute belongs to the crate root
+# and one crate root cannot answer twice. See the note where it used to be, in
+# `src/main.rs`.
+#
+# ⚠️ **Cargo prints a warning about this and it is expected:**
+#
+#     file `.../src/main.rs` found to be present in multiple build targets:
+#       * `bin` target `polter-cli`
+#       * `bin` target `polter-host`
+#
+# **Do not fix it by giving `polter-cli` its own root file.** The obvious
+# shape -- `src/bin/polter-cli.rs` with `#[path = "../main.rs"] mod host;` --
+# does not compile: inside that module every `crate::` path in these four
+# thousand lines would resolve to the new root instead of to this one, and
+# `crate::tabs::…` is on nearly every page.
+#
+# The other way out is splitting the crate into a library and two thin
+# binaries. That is a structural change with its own reading, and it was
+# deliberately not done alongside a bug fix -- one change, one variable. If
+# the warning is worth removing, it is worth its own round.
 [[bin]]
 name = "polter-host"
+path = "src/main.rs"
+
+[[bin]]
+name = "polter-cli"
 path = "src/main.rs"
 
 [dependencies.windows]

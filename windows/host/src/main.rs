@@ -65,10 +65,39 @@
 //! (`polter-host.exe +chat`) no longer paints on that terminal -- a GUI
 //! subsystem process does not attach to the console that started it. A
 //! `+mcp` server started by an agent CLI is unaffected, because there the
-//! stdio handles are inherited pipes rather than a console. Giving the CLI
-//! path its console back means `AttachConsole(ATTACH_PARENT_PROCESS)` and is
-//! deliberately not done here; it is its own change with its own reading.
-#![windows_subsystem = "windows"]
+//! stdio handles are inherited pipes rather than a console.
+//!
+//! # The subsystem is chosen in `build.rs` now, and there are two of them
+//!
+//! **`#![windows_subsystem = "windows"]` used to stand on the line below.**
+//! It is gone from here, and nothing about the decision above changed: the
+//! GUI binary must still have no console, for the reason a user reported --
+//! a second window scrolling the log, every run.
+//!
+//! What changed is that **one crate root now produces two binaries**, and a
+//! crate-root attribute cannot answer twice:
+//!
+//!   * **`polter-host.exe` -- GUI.** What a person starts. No console.
+//!   * **`polter-cli.exe` -- console.** The same program, linked for the
+//!     console subsystem, and what a `+action` is run as.
+//!
+//! **Why the second one has to exist.** The cost recorded above turned out to
+//! reach further than the terminal a person types in. A chat tab spawns this
+//! program into a **ConPTY pseudoconsole**, and a pseudoconsole is a console:
+//! the GUI build does not attach to it either, so it received no standard
+//! handles at all, `vaxis`'s first `GetConsoleMode` failed with
+//! `InvalidHandle`, and the tab was dead 146 ms after it appeared -- looking,
+//! from the outside, exactly like a tab that never finished loading.
+//!
+//! **`AttachConsole(ATTACH_PARENT_PROCESS)` is not the answer for that path**,
+//! and the paragraph above is why: the parent is this GUI process, which has
+//! no console to attach to. It remains the answer for the hand-run case.
+//!
+//! ⚠️ **The failure to watch for is silence.** Remove the `build.rs`
+//! arguments and `rustc` quietly defaults both binaries to the console
+//! subsystem; the build stays green and the second window comes back. The
+//! criterion is the `Subsystem` byte in each PE optional header (2 = GUI,
+//! 3 = console), not a successful build. See `subsystems()` in `build.rs`.
 
 mod ctxmenu;
 mod divider;
@@ -2345,6 +2374,25 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 alogf!(origin, "[action] chat: cannot find our own executable; not opening");
                 return true;
             };
+            // **The console build, not this one.** A tab is a ConPTY
+            // pseudoconsole and a pseudoconsole is a console; this process is
+            // the GUI subsystem binary and does not attach to one, so run as
+            // itself it received no standard handles, failed its first
+            // `GetConsoleMode` with `InvalidHandle`, and died 146 ms after
+            // the tab appeared. See the module note at the top of this file.
+            let Some(exe) = cli_sibling(&exe) else {
+                // **Said, not fallen back to.** Starting the GUI binary here
+                // produces a tab that opens and is already dead, which reads
+                // as "the chat is broken" rather than "a file is missing" --
+                // and the file that is missing is named right here.
+                alogf!(
+                    origin,
+                    "[action] chat: {CLI_EXE} is not beside this executable; not opening. \
+                     The chat tab needs the console-subsystem build; a package missing it \
+                     is incomplete."
+                );
+                return true;
+            };
             let command = format!("\"{exe}\" +chat");
             alogf!(origin, "[action] chat command: {command}");
             queue_from(
@@ -3783,6 +3831,38 @@ fn maybe_panic_test() {
     }
 }
 
+/// The name of the console-subsystem build that a `+action` runs as.
+pub const CLI_EXE: &str = "polter-cli.exe";
+
+/// `polter-cli.exe` beside `exe`, or `None` when it is not there.
+///
+/// # Which binary runs which action, and why it is not one rule
+///
+///   * **`+chat` -> `polter-cli.exe`.** It draws a full-screen TUI, which
+///     needs real console handles; only the console-subsystem build attaches
+///     to the tab's pseudoconsole and gets them.
+///   * **`+mcp` -> `polter-host.exe`.** Unchanged, and deliberately: an agent
+///     CLI starts it with **inherited pipes**, not a console, so it never
+///     needed a console and the subsystem is irrelevant to it. It is also the
+///     path an installed `settings.json` already names -- pointing it
+///     somewhere else would break every machine that has one.
+///   * **`+version`, `+list-actions`, and the rest -> whichever was run.**
+///     They write to standard output and exit. Through a pipe (the usual
+///     case) both builds behave identically; from a terminal by hand, only
+///     the console build paints, which is the cost recorded at the top of
+///     this file and the reason this binary exists.
+///
+/// **Existence is checked rather than assumed.** The two are shipped
+/// together, so a missing one means an incomplete package -- and the caller
+/// says so instead of starting something that cannot work.
+fn cli_sibling(exe: &str) -> Option<String> {
+    let path = std::path::Path::new(exe).with_file_name(CLI_EXE);
+    if !path.is_file() {
+        return None;
+    }
+    Some(path.to_string_lossy().into_owned())
+}
+
 /// This executable's own full path.
 ///
 /// **The string the operating system gives back is used whole and is never
@@ -4207,8 +4287,16 @@ fn main() {
     // field **defaults to false for lib artifacts** (`app_runtime == .none`)
     // and whose only other sink is macOS unified logging -- which on Windows
     // leaves no sink at all. Setting the variable turns stderr back on, and
-    // this host is a console subsystem binary, so stderr is the same stream
-    // the log file already captures.
+    // `adopt_std_handles` above has already pointed stderr at the log file
+    // when nobody gave us one, so the lines land where the rest of the log is.
+    //
+    // ⚠️ **This used to read "this host is a console subsystem binary".** That
+    // stopped being true when the GUI subsystem was adopted, and it is now
+    // not even a question with one answer: there are two binaries, one of
+    // each subsystem (see the module note at the top). The sentence sat in
+    // the middle of the paragraphs about `+chat` and stderr -- **so whoever
+    // came to investigate the dead chat tab would read, at the place closest
+    // to the cause, a sentence that ruled the cause out.**
     //
     // An existing value is left alone: whoever set it meant it.
     //

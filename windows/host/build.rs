@@ -264,7 +264,40 @@ fn emit_provenance() {
     }
 }
 
+/// Pick the Windows subsystem for each binary.
+///
+/// # Why this is here and not `#![windows_subsystem]`
+///
+/// That attribute belongs to the crate root, and this crate has **two**
+/// binaries built from one root: `polter-host` (GUI) and `polter-cli`
+/// (console). One root cannot answer twice, so the answer moved here. The
+/// note where the attribute used to live, in `src/main.rs`, carries the
+/// reasoning; this function carries only the mechanism.
+///
+/// ⚠️ **The dangerous failure is silence.** With neither the attribute nor
+/// these arguments, `rustc` defaults to the console subsystem -- and a
+/// console-subsystem `polter-host` is the defect the attribute was added for:
+/// a second window on screen scrolling the log, every run. It does not fail
+/// to build and it does not fail to start; it just puts a window there. The
+/// criterion is the byte in the PE optional header (`Subsystem`: 2 = GUI,
+/// 3 = console), read from both binaries, not "the build was green".
+fn subsystems() {
+    let msvc = std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc");
+    let (gui, console) = if msvc {
+        ("/SUBSYSTEM:WINDOWS", "/SUBSYSTEM:CONSOLE")
+    } else {
+        // GNU ld. `--subsystem` alone leaves the entry point to the linker's
+        // default for that subsystem, which is what `#![windows_subsystem]`
+        // relies on too.
+        ("-Wl,--subsystem,windows", "-Wl,--subsystem,console")
+    };
+    println!("cargo:rustc-link-arg-bin=polter-host={gui}");
+    println!("cargo:rustc-link-arg-bin=polter-cli={console}");
+}
+
 fn main() {
+    subsystems();
+
     // **First.** Everything below can return early for a non-Windows target,
     // and a stamp that depends on the target is a stamp the reader has to
     // reason about.
