@@ -361,11 +361,29 @@ move is yours: a `terminal_send` with whatever should run there.
 **It does not have to be an agent.** A build, a server, a `tail -f`, a one-off
 script — a terminal opened to watch a log is an ordinary use of this and needs
 no CLI in it at all. When it *is* an agent, start the one you know how to read
-unless the user has said otherwise: you know its flags, how its auto-accept is
-turned on, and what its screen looks like when it stops, and that last one is
-the whole of `reading-a-terminal`. If the user names a CLI, write it into the
-group brief the moment they say it — otherwise it lives only in your context,
-and your context is the thing that gets compacted.
+unless the user has said otherwise: you know its flags and what its screen looks
+like when it stops, and that last one is the whole of `reading-a-terminal`. If
+the user names a CLI, write it into the group brief the moment they say it —
+otherwise it lives only in your context, and your context is the thing that gets
+compacted.
+
+**Start it in a mode that can run unattended.** This is part of starting an
+agent, not a detail to settle afterwards, because afterwards is too late: a
+worker stopped on a permission prompt stays stopped. You cannot answer it —
+there is no tool for it and there will not be one — and the notification that
+fetches somebody goes out at whatever hour it happens, since `authorisation` is
+the one reason that ignores the user's quiet window. So the choice is between
+work that runs through the night and work that waits for a person to wake up,
+and it is made at the moment you type the command. Most agent CLIs have such a
+mode — Claude Code calls it auto mode — and in most of them it is off until it
+is turned on, so leaving the command bare is choosing the stopping kind without
+meaning to. Which flag turns it on is your knowledge of the CLI you picked, and
+it is one more reason to pick the one you know.
+
+The cost of the mode is the user's to weigh, not yours to decide for them: if
+they have said what an agent may and may not do on its own, that governs, and
+an agent you were told to start carefully is one you start carefully and mind
+more closely.
 
 **The first send has to be one line.** Until something is running there the
 shell has no bracketed paste, so a multi-line `terminal_send` comes back

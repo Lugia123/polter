@@ -16,12 +16,25 @@ const protocol_version = "2024-11-05";
 /// place a compaction does not reach -- so unlike anything injected into the
 /// conversation, it does not need replaying.
 ///
-/// It is a map of the tool families and nothing else. It exists because of a
-/// specific, observed failure: a supervisor opened its night by writing out a
+/// It is a map of the tool families, the two jobs they serve, and an index
+/// from situation to tool. It exists because of two observed failures, and
+/// carries a part for each.
+///
+/// The map is there because a supervisor opened its night by writing out a
 /// tool list from memory of what it used yesterday, and `task_*` was not on
 /// it. Every later decision was then made without the panel on the table --
 /// not chosen against, never present. A skill cannot catch that, because the
 /// narrowing happens before anything gets read. See docs/poltergeist/tasks.md.
+///
+/// The index is there because knowing a tool exists is not the same as
+/// noticing you are standing in the situation it is for. A list answers
+/// "what is there"; every step an agent takes asks "what does this moment
+/// want", and nothing here used to answer that question in those terms.
+///
+/// Running your own work in a tab is stated first because it was missing
+/// entirely: every line here used to be about minding other agents, so an
+/// agent with no one to supervise read the whole note as somebody else's
+/// business and never learned it could put a dev server on the screen.
 const instructions =
     "Polter is the terminal multiplexer you are running inside. It gives you four\\n" ++
     "families of tools. tools/list has all of them, but narrowing your own tool set\\n" ++
@@ -40,15 +53,45 @@ const instructions =
     "that survives a restart, a compaction, and the night. A supervisor uses\\n" ++
     "task_create, task_assign, task_close, task_cancel. Anyone uses task_progress\\n" ++
     "on their own work, task_list to see where it stands, and task_history to see\\n" ++
-    "\\n" ++
     "when it got there -- which is the one that answers what happened overnight.\\n" ++
     "\\n" ++
-    "Handing work out is four steps, and dropping the panel out of them is the\\n" ++
-    "failure this note exists to prevent: task_create, then group_post the plan for\\n" ++
-    "the record, then terminal_send each worker its own instruction, then\\n" ++
-    "task_assign.\\n" ++
+    "me says who you are and what you may reach. skill_read has the full guidance,\\n" ++
+    "in three parts: supervising, operating-a-terminal, reading-a-terminal.\\n" ++
     "\\n" ++
-    "me says who you are and what you may reach. skill_read has the full guidance.\\n";
+    "Those tools serve two jobs. The second is the one that gets forgotten.\\n" ++
+    "\\n" ++
+    "Running your own work in a terminal. A tab is somewhere you can put a command\\n" ++
+    "where the person can see it. terminal_open makes one in a directory you name,\\n" ++
+    "terminal_send types into it, terminal_read shows what came back. No other agent\\n" ++
+    "is involved in any of that. It is how you run a dev server or a watcher that has\\n" ++
+    "to keep running while you carry on working, tail a log, or drive a program that\\n" ++
+    "will not go into the background because it wants a terminal. What it gets you\\n" ++
+    "over a backgrounded process is that the output stays on screen: the user comes\\n" ++
+    "back to it, sees what you saw, and can take it over by typing. A process you\\n" ++
+    "backgrounded is invisible to them and dies with you.\\n" ++
+    "\\n" ++
+    "Minding other agents. Handing work out is four steps, and dropping the panel out\\n" ++
+    "of them is the failure this note exists to prevent: task_create, then group_post\\n" ++
+    "the plan for the record, then terminal_send each worker its own instruction,\\n" ++
+    "then task_assign.\\n" ++
+    "\\n" ++
+    "Which situation you are in, and what it asks for:\\n" ++
+    "\\n" ++
+    "- something to run that outlives this reply -- terminal_open, then terminal_send\\n" ++
+    "- a server or watcher in another tab to stop or restart -- terminal_read to see\\n" ++
+    "  what it is doing, terminal_key for ctrl+c, terminal_send to start it again\\n" ++
+    "- work handed to you that will take a while -- task_progress when you pick it up\\n" ++
+    "- finished, or stuck -- task_progress, and group_post: what you print on your own\\n" ++
+    "  screen reaches nobody, and a screen that stopped moving looks the same whether\\n" ++
+    "  you finished or died\\n" ++
+    "- wondering what another terminal is doing -- terminal_list, then terminal_read\\n" ++
+    "- back after a restart or a compaction -- task_list, task_history\\n" ++
+    "- unsure who you are or what you may touch -- me\\n" ++
+    "\\n" ++
+    "Operating a terminal nobody has claimed needs no standing: read, send, key and\\n" ++
+    "action are open to every terminal. Arranging the work is the supervisor's --\\n" ++
+    "terminal_open, the group and task tools, set_watch -- and become_supervisor is\\n" ++
+    "the way in, open to any terminal that is not already being minded.\\n";
 
 /// The whole `initialize` result, kept as one literal so the test below
 /// parses the bytes that actually go out rather than a copy of them.
@@ -346,7 +389,9 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_read",
-        .description = "Read the visible screen of another terminal. Scrollback is not " ++
+        .description = "**Use this to find out what another terminal is doing** -- what " ++
+            "your dev server last printed, whether a build finished, whether an agent is " ++
+            "waiting on a prompt. It reads the visible screen. Scrollback is not " ++
             "available. You may read any terminal that carries no Polter mark; a " ++
             "terminal that is a supervisor, or that somebody is watching, is only " ++
             "reachable by a supervisor. A terminal the user has shielded is reachable " ++
@@ -357,7 +402,9 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_send",
-        .description = "Type text into another terminal, exactly as the user would. " ++
+        .description = "**Use this to start something running in another terminal, or " ++
+            "to answer a prompt one is sitting on.** It types text into that terminal, " ++
+            "exactly as the user would. " ++
             "Text only: control characters are stripped on the way in, so this cannot " ++
             "press ctrl+c or escape however they are spelled -- terminal_key does that. " ++
             "Same reach rule as terminal_read: unmarked terminals are open to anyone, " ++
@@ -431,7 +478,11 @@ const tools = [_]Tool{
     },
     .{
         .name = "group_post",
-        .description = "Say something to a group you are in. The others are told they have a message; they read it when they choose to.",
+        .description = "**Use this when you have finished something, got stuck, or " ++
+            "found something the others need** -- what you print on your own screen " ++
+            "reaches nobody, so a result that was only printed was never delivered. " ++
+            "It says something to a group you are in. The others are told they have a " ++
+            "message; they read it when they choose to.",
         .schema =
         \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"}},"required":["group","text"]}
         ,
@@ -506,7 +557,10 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_open",
-        .description = "Open a terminal in this window, starting in a directory you " ++
+        .description = "**Reach for this when you have something to run that outlives " ++
+            "this reply** -- a dev server, a watcher, a build, a log to tail, or a " ++
+            "program that will not go into the background because it wants a terminal. " ++
+            "It opens a terminal in this window, starting in a directory you " ++
             "choose. Use this rather than terminal_action(new_tab): a tab opened that way " ++
             "starts wherever the terminal that opened it is standing, so four pieces of " ++
             "work in four directories cannot be set up that way at all. `cwd` must be an " ++
@@ -518,6 +572,11 @@ const tools = [_]Tool{
             "in that directory with nothing running in it**, so whatever should " ++
             "run there is a separate terminal_send -- and it need not be an " ++
             "agent CLI: a build, a server, a log to tail are all ordinary uses. " ++
+            "**When it is an agent, start it in a mode that can run unattended** " ++
+            "-- an auto mode, off by default in most CLIs: " ++
+            "you cannot answer a permission prompt for it, no tool will, and a " ++
+            "worker stopped on one stays stopped until the user is fetched at " ++
+            "whatever hour it happens. " ++
             "Until something is running, that terminal has no bracketed paste, " ++
             "so the first send must be a single line. Supervisor only.",
         .schema =
@@ -555,7 +614,9 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_key",
-        .description = "Press a key in another terminal, as if the person at the " ++
+        .description = "**Use this to interrupt or stop something running in another " ++
+            "terminal** -- ctrl+c the server you are about to restart. It presses a key " ++
+            "there, as if the person at the " ++
             "keyboard had. `key` is a Ghostty keybinding trigger, written exactly as a " ++
             "config file writes one: `ctrl+c`, `escape`, `ctrl+z`, `ctrl+shift+k`, " ++
             "`f2`, `arrow_down`. This is how you interrupt something -- terminal_send " ++
@@ -594,7 +655,10 @@ const tools = [_]Tool{
     .{
         .name = "become_supervisor",
         .description = "Put yourself forward as a supervisor, when you can see work " ++
-            "that needs somebody co-ordinating it and nobody is. Takes no arguments: " ++
+            "that needs somebody co-ordinating it and nobody is. **Also the way in when " ++
+            "a tool you want is a supervisor's** -- terminal_open, the group and task " ++
+            "tools, set_watch -- so if you were refused for standing rather than reach, " ++
+            "this is the call that was missing, not a dead end. Takes no arguments: " ++
             "it is about you. Allowed if nobody is minding you. Refused if you are " ++
             "being watched -- you already have a supervisor, it would not hear of " ++
             "this, and text arriving in a watched terminal must not be able to " ++
@@ -633,7 +697,10 @@ const tools = [_]Tool{
     },
     .{
         .name = "task_progress",
-        .description = "Move one of your own tasks along: queued, working, blocked, done. Yours only, and only while it is open -- a task that was closed or cancelled refuses, which is how you find out you missed a cancellation. Set `blocked` the moment it is true; that is the one a supervisor watches for. `done` says you believe it is finished, not that it is closed -- closing is the supervisor's word after it has checked. Report in the group as well, naming the task number.",
+        .description = "**Call this when you pick a task up, when you get stuck, and " ++
+            "when you are done** -- a screen that has stopped moving looks the same " ++
+            "whether you finished or died, so a supervisor learns which one it was from " ++
+            "here and nowhere else. It moves one of your own tasks along: queued, working, blocked, done. Yours only, and only while it is open -- a task that was closed or cancelled refuses, which is how you find out you missed a cancellation. Set `blocked` the moment it is true; that is the one a supervisor watches for. `done` says you believe it is finished, not that it is closed -- closing is the supervisor's word after it has checked. Report in the group as well, naming the task number.",
         .schema =
         \\{"type":"object","properties":{"task":{"type":"integer"},"progress":{"type":"string","enum":["queued","working","blocked","done"]}},"required":["task","progress"],"additionalProperties":false}
         ,
@@ -1013,4 +1080,20 @@ test "the initialize result is valid JSON and puts the tool families in it" {
 
     // Prose, not a bare list: the four steps are the part that failed.
     try std.testing.expect(std.mem.indexOf(u8, text, "\n") != null);
+
+    // Running your own work in a tab is the half that was missing for a
+    // long time, and it is the half a rewrite drops first: everything else
+    // here is about minding other agents, so prose drifts back towards
+    // that on its own. `terminal_open` is how the work gets somewhere
+    // visible and `become_supervisor` is the standing it needs -- an agent
+    // told about the first and not the second tries it, is refused, and
+    // reads a missing call as a closed door.
+    for ([_][]const u8{
+        "terminal_open", "become_supervisor",
+    }) |name| {
+        std.testing.expect(std.mem.indexOf(u8, text, name) != null) catch |err| {
+            std.debug.print("instructions never names {s}\n", .{name});
+            return err;
+        };
+    }
 }

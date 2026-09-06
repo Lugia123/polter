@@ -44,7 +44,9 @@ These are specific and each one has a place in the code.
   wired to the window tree yet. On Windows a split has to be several child
   windows, because a libghostty surface is bound to its `HWND` for life.
 - **Action parity.** Of the 72 keybinding actions, 54 are required for parity
-  and the host implements 24.
+  and the host implements 24 — the count is kept in
+  [`docs/windows/status.md`](docs/windows/status.md), which is where to check
+  it rather than here.
 - **Plugins should declare which systems they run on.** Today the host guesses
   from the file extension, so `archive.py` is installed, enabled, and never
   started on Windows — with a log line and nothing else. Whether a plugin can
@@ -53,7 +55,19 @@ These are specific and each one has a place in the code.
 
 ### Make the supervising side easier to get right
 
-- **The group chat TUI on Windows** is read-only for now.
+- **The group chat TUI does not come up on Windows.** Measured on 0.5.447 by
+  clicking the menu item on a real machine: the action fires, the tab is
+  created, and the log carries the correct command line
+  (`"…\polter-host.exe" +chat`, `poltergeist_chat=true`) — and the tab stays
+  blank. So the host side is done and the failure is downstream of it, in a
+  TUI run as a tab by a GUI-subsystem process.
+
+  This line was wrong twice before it was measured, in both directions, and
+  that is worth leaving in view: first it said "read-only", inherited from a
+  note written before `src/cli/chat.zig` had a compose line; then it said
+  "expected to work", reasoned from the view being shared code. The shared
+  code *is* shared and it *can* post — and the tab is still blank. Neither
+  reading was checked against the screen.
 - **Compaction** now reminds a supervisor when a group's conversation passes a
   size, and `group_history` can be searched by substring and time range. What
   is still missing is a visible divider in the chat view at the point where a

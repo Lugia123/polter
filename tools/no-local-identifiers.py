@@ -172,6 +172,12 @@ KNOWN = {
     "macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift":
         "NSUserInterfaceItemIdentifier values namespaced by the bundle id",
     "macos/Sources/Features/About/AboutView.swift": "links to the fork's public repository",
+    # The download link. A README that tells people where to get the releases
+    # has to name the repository, and the repository's name is the fork's
+    # public identity -- the same one in the bundle id, the copyright line and
+    # the About window.
+    "README.md": "links to the releases page of this fork's own repository",
+    "README_CN.md": "links to the releases page of this fork's own repository",
     "macos/Sources/App/AppDelegate.swift": "links to the fork's public documentation",
     # **This one is here rather than skipped, and the difference matters.**
     # An earlier version of this file excluded the whole xcodeproj path, which
