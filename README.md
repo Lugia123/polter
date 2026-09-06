@@ -26,28 +26,27 @@
 
 ## The problem
 
-Four things I hit every day. You have probably hit them too.
+Three things I hit every day. You have probably hit them too.
 
-**One: too many terminals.** A few Claude Code, a few Codex CLI, several
-projects at once — frontend in one window, backend in another, tests in a
-third. Just keeping track of them is work.
+**Too many terminals.** A few Claude Code, a few Codex CLI, several projects at
+once: frontend in one window, backend in another, tests in a third. Just keeping
+track of them is work.
 
-**Two: sub-agents are unreliable.** In Claude Code, starting one means it runs
-for a long time, often with several tasks of its own inside it. A step failing
-part-way through is routine. Worse: **when it reports back, it sometimes lies to
-the parent** — says it's done when it isn't.
+**I can't see what a sub-agent did.** Starting one means it runs for a long
+time, often with several tasks of its own inside it, and a step failing part-way
+through is routine. The awkward part is the hand-back: **what I get is a
+paragraph that reads like a conclusion, and whether it verified anything is not
+visible in that paragraph.** The paragraph is all I get — what it tried, what it
+worked around, where it gave up, all of that went away with the session.
 
-**Three: getting terminals to work together.** Claude Code has cross-session
-collaboration, but sessions get crossed and it isn't pleasant to use.
+**I tell it to work through the night, and it stops after two hours.** Usually an
+error killed it (some API failure), or it wrapped up halfway and called that
+finished.
 
-**Four: I tell it to work through the night and it stops after two hours.**
-Usually an error killed it — some API failure — or it wrapped up halfway and
-called that finished.
-
-Two and four are the ones that hurt, because **you cannot see them on screen**.
+The last two are the ones that hurt, because **you cannot see them on screen**.
 An agent that stopped early, or that reported success on work it didn't finish,
 looks exactly like one that's thinking hard. You can't tell which is which
-without clicking through every tab — and by the time you think to look, it's
+without clicking through every tab. And by the time you think to look, it's
 usually the next morning.
 
 ## What Polter does about it
@@ -72,14 +71,19 @@ You tell it the goal in English — *"build the export feature, split it three
 ways, don't wake me unless something needs a decision"* — and it writes the
 plan, opens a tab per piece of work, starts an agent in each, and minds them.
 
-Against those four:
+Against those three:
 
 | | |
 | --- | --- |
-| One, too many terminals | The supervisor watches all of them; you stop clicking through tabs |
-| Two, sub-agents that lie | **A worker here is not a sub-agent — it's an independent session in its own terminal.** What it did is on screen and the supervisor can read it; work goes out with what "done" means attached, so "I finished" is no longer its own word for it |
-| Three, crossed sessions | Every terminal has its own id and token; the group and the task panel are explicit, not inferred from which session is which |
-| Four, stopping after two hours | How long a screen has been still is reported to the supervisor, which goes and reads that screen, decides whether it's stuck or thinking, and steps in if it should |
+| Too many terminals | The supervisor watches all of them; you stop clicking through tabs |
+| Can't see what a sub-agent did | **A worker here is not a sub-agent. It's an independent session in its own terminal.** What it did stays on that screen and lands on disk line by line. The supervisor can read it — and, more to the point, **you can `grep` it in the morning**. A sub-agent's working-out goes away with the session; a worker's doesn't |
+| Stopping after two hours | How long a screen has been still is reported to the supervisor, which goes and reads that screen, decides whether it's stuck or thinking, and steps in if it should |
+
+**What the second row does not claim:** the supervisor is also an LLM reading
+what another LLM wrote, and it can just as easily take a screen full of green
+output for "finished". **It is not verifying the work for you.** What changes is
+whether the evidence survives — a sub-agent hands back a paragraph and the rest
+is gone; a worker's attempt is still sitting there, for a person to check.
 
 Every "it" in that table is **the supervisor**. The supervisor and Polter are
 not the same thing, and everything below depends on that:
@@ -240,7 +244,7 @@ It is younger than the macOS side and not at parity:
 | --- | --- |
 | Verified on a Windows 11 machine | The window opens, tabs work, a shell starts, text including CJK renders, IME composition types Chinese, the menu and its accelerators work, the resources directory is found, and the provisioning plugins start. |
 | Known missing | **Splits** — the layout algorithm is ported (`windows/split-tree/`) but not wired to the window tree. **Some keybinding actions** are not implemented yet; the count is tracked in [`docs/windows/status.md`](docs/windows/status.md). **Shell integration** is not injected. **The `archive` plugin** is installed and enabled but never starts, because plugins have no way yet to declare which systems they can run on. |
-| Also missing | **The group chat view does not come up.** Tested on 0.5.447: the menu item works, the tab is created, and the log shows the right command line — but the tab stays blank. The chat is a TUI run as a tab (`polter-host.exe +chat`), and the host is a GUI-subsystem program, which is where this is being chased. Groups and the task panel still work through the MCP tools; it is the on-screen view that is missing. |
+| Broken, being chased | **The group chat view does not come up.** Tested on 0.5.447: the menu item works, the tab is created, and the log shows the right command line — but the tab stays blank. The chat is a TUI run as a tab (`polter-host.exe +chat`), and the host is a GUI-subsystem program, which is where this is being chased. Groups and the task panel still work through the MCP tools; it is the on-screen view that is missing. |
 
 [`ROADMAP.md`](ROADMAP.md) is where these get closed.
 
@@ -373,7 +377,7 @@ off.
 
 Everything goes through one MCP surface (`src/cli/mcp.zig` in front of
 `src/poltergeist/rpc.zig`), forty tools, twenty-three of them the
-supervisor's alone. Those are marked 🔑 below.
+supervisor's alone.
 
 **Arranging is the supervisor's.** Claiming terminals, the clock, making groups,
 the task panel, notifying you, opening tabs, the plugin tools — because a
@@ -568,8 +572,8 @@ network.
 Turn either off in **Agents → Plugins**. An agent can switch a plugin on but
 never off, so that's a decision only you make.
 
-Notification channels are yours to drop in; there are dozens and shipping any
-one would date immediately.
+Notification channels are yours to drop in; there are dozens, and shipping any
+one of them would be out of date within a year.
 
 **`"network": false` is a declaration, not a sandbox.** Polter records what a
 plugin says it needs and shows it to you; it does not confine it
