@@ -6,7 +6,10 @@
 <p align="center">
   <b>Put one Claude Code session in charge of the others.</b><br>
   <sub>It reads their screens, types into them, opens new tabs, and minds them
-  while you're asleep. All local — no account, no API key, no network calls.<br>
+  while you're asleep.<br>
+  <b>Polter itself has no account, no API key and makes no network calls of its
+  own</b> — but the agents it minds are your own CLIs, and they talk to their
+  models exactly as they already do, on whatever plan you already pay for.<br>
   <i>(Waking you needs a twenty-line notification plugin you write yourself —
   none ships.)</i></sub>
 </p>
@@ -69,17 +72,19 @@ Three things worth knowing before you spend ten minutes on this:
 
 - **This replaces your terminal app.** Polter is a fork of
   [Ghostty](https://github.com/ghostty-org/ghostty), so it has to be the
-  terminal you're running in — reading a screen and typing into it is not
-  something an outside process can do. The cost is lower than it sounds: it is
+  terminal your agents are running in. The cost is lower than it sounds: it is
   a complete, fast terminal on its own, and you can install it and use it as
-  one for a week before you ever make a tab a supervisor.
+  one for a week before you ever make a tab a supervisor. [Why it has to be the
+  terminal](#why-a-terminal-and-not-a-library) is worth two minutes if you
+  already drive agents from tmux or a script.
 - **Being woken up needs twenty lines of shell.** Notifications are a
   [plugin](#plugins), deliberately — Polter has no opinion about whether you
   use Telegram, ntfy or `osascript`. **No notification plugin ships**, so out of
   the box the supervisor can watch all night but cannot reach your phone. The
   script is short and there is a worked example, but you do have to write it.
 - **It is an experiment, and it has been run end to end on one agent CLI:**
-  Claude Code. Underneath it is ordinary MCP over ordinary terminals, so others
+  Claude Code. Underneath it is ordinary MCP — the protocol your agent CLI
+  already uses to reach tools — over ordinary terminals, so others
   *should* work — but nothing else has been tested. macOS is the platform it's
   developed on; [Windows is newer and partial](#download); Linux is
   build-from-source.
@@ -95,12 +100,56 @@ measure it, [tell me](https://github.com/Lugia123/polter/issues) and this
 paragraph gets a number in it.
 
 
+## Why a terminal, and not a library
+
+The honest reason is not "an outside process can't read a screen" — it can, and
+if you drive agents from tmux with `capture-pane` you are already doing it. The
+reason is narrower and it is the thing that makes this different from an
+API-based orchestrator:
+
+**Polter never touches authentication, so it never limits what your agents are.**
+
+A framework that calls models for you needs your API key. It then owns the
+question of which model, which account, which billing. Polter calls nothing. It
+starts the CLI you name in a tab and reads the screen; how that CLI logs in is
+between it and its vendor. So:
+
+- **Your subscription counts.** If Claude Code is signed in on your plan, a
+  supervisor costs you nothing extra in API billing — it spends the plan you
+  already have. Same for a worker.
+- **Different tabs, different vendors, different billing.** One worker on
+  `codex` signed into a Codex plan, another on `claude` with a subscription, a
+  third on an API key, all in one group. Nothing in Polter has an opinion about
+  it, because nothing in Polter can see it.
+- **An expensive model where the judgement is, cheap ones where the typing
+  is.** The supervisor reads screens and decides; workers grind. They are
+  separate sessions and you pick each one's model on its own command line:
+
+  ```
+  claude --model <a cheaper model> --permission-mode acceptEdits
+  ```
+
+  That is a worker. The supervisor is whatever you started in the tab you
+  promoted. Neither knows what the other is paying.
+
+**What this costs you** is the thing above: it has to be your terminal. If your
+agents live in tmux on a remote box over SSH, there is no version of this that
+works for you today, and that is the honest end of the conversation.
+
+**And one thing it is not:** this is a single-machine tool. The group chat, the
+task panel and the transcripts all live in your own state directory — they are
+between the agents on *this* machine, not between you and a colleague. Five
+people using Polter is five separate installs with nothing shared but what you
+tell each other.
+
 ## What you get beyond that
 
 - **You can take the keyboard at any time.** Every worker is an ordinary tab
   running an ordinary CLI. Type into one whenever you like; the supervisor is
   not driving a simulation, and one tab crashing leaves the rest alone. They
-  don't all have to be the same CLI, either.
+  don't all have to be the same CLI, either — though **only Claude Code has been
+  run end to end**, so mixing them is reasoning, not experience
+  ([the details](#which-agents-this-works-with)).
 - **Two locks only you can set or lift.** Hold a tab to its work so the
   supervisor can't let it clock off, or put a tab out of reach of the MCP tools
   entirely so nothing can read or type into it. Both show on the tab, and
@@ -203,6 +252,13 @@ That's your part done. It sets up the group, opens or claims the tabs, and
 starts the clocks itself. You don't need to name terminal ids or tools.
 
 ### 4. Go to bed
+
+**Not on the first night.** Out of the box nothing can wake you — notifications
+are a [plugin](#plugins) and none ships, so a worker that stops on a permission
+prompt at 1am is still sitting there at 8. Either sit with it for the first
+hour, or start your workers with `--permission-mode acceptEdits` so there is no
+prompt to stop on, or write the twenty lines first. The [full
+example](#a-full-example) below does the second one.
 
 Come back to **Agents → Terminal Conversations** (or `polter +chat`) to read
 what they said to each other. `tab` and `shift+tab` move between three views of
