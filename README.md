@@ -1,105 +1,111 @@
-<h1>
-<p align="center">
-  <img src="images/icons/icon_256.png" alt="Polter" width="128">
+<h1 align="center">
+  <img src="images/icons/icon_256.png" alt="" width="128">
   <br>Polter
 </h1>
-  <p align="center">
-    A terminal that keeps an eye on your AI agents while you sleep.
-    <br />
-    <sub>One tab supervises the others. Entirely local — no account, no API key,
-    nothing leaves the machine.</sub>
-    <br />
-    <br />
-    <a href="#what-it-is">What it is</a>
-    ·
-    <a href="#what-it-gives-you">What it gives you</a>
-    ·
-    <a href="#download">Download</a>
-    ·
-    <a href="#quick-start">Quick start</a>
-    ·
-    <a href="#a-full-example">Example</a>
-    ·
-    <a href="#what-the-supervisor-can-do">Tools &amp; skills</a>
-    ·
-    <a href="#what-it-will-never-do">What it won't do</a>
-    ·
-    <a href="#which-agents-this-works-with">Which agents</a>
-    ·
-    <a href="README_CN.md">中文</a>
-  </p>
+
+<p align="center">
+  <b>Put one Claude Code session in charge of the others.</b><br>
+  <sub>It reads their screens, types into them, opens new tabs, and minds them
+  while you're asleep. All local — no account, no API key, no network calls.</sub>
 </p>
 
-## What it is
+<p align="center">
+  <a href="#download">Download</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#a-full-example">Example</a> ·
+  <a href="#what-it-will-never-do">What it won't do</a> ·
+  <a href="README_CN.md">中文</a>
+</p>
 
-Polter is a terminal — a fork of [Ghostty](https://github.com/ghostty-org/ghostty) —
-that lets one of your tabs look after the others.
+---
 
-You run AI agents in terminal tabs already. The problem starts when there are
-four of them: one is stuck on a question nobody answered, one finished twenty
-minutes ago, one is quietly waiting for a build, and you can't tell which is
-which without clicking through all four.
+## The problem
 
-So make one tab the **supervisor**. It's just another Claude Code session, but
-it can see how long each of the other tabs has been sitting still, read what's
-on their screens, type into them, open new ones, and talk to them in a group
-chat. You tell it what the job is. It does the minding.
+You already run agents in terminal tabs. It falls apart at four of them: one is
+stuck on a permission prompt nobody answered, one finished twenty minutes ago,
+one is quietly waiting for a build, and one has been "working" for forty
+minutes on something that died. You can't tell which is which without clicking
+through all four — and the one you most need to catch, the agent that stopped
+early or reported success on work it didn't finish, looks exactly like the one
+that's thinking hard.
 
-Polter itself never judges. It measures one thing — **how long has this screen
-been unchanged** — and carries messages. Whether a still screen means "stuck"
-or "thinking hard" is a question it refuses to answer, because answering it
-wrong is worse than not answering. That call belongs to the supervisor.
+## What Polter does about it
 
-All of it runs on your machine. Polter opens a unix socket in your own runtime
-directory and does nothing else: no account, no service of ours to sign in to,
-no telemetry, no network call of its own. Your code, your screens and whatever
-your agents say to each other stay where they already are. And it never asks you
-for an API key, because it never talks to a model — the thinking is done by the
-agent CLI you already installed and already trust. Polter only watches, types,
-and carries messages. (Upstream Ghostty's crash handler is compiled in and it
-too stays local — it writes reports to disk instead of sending them, see
-`src/crash/sentry.zig`.)
+**One of your tabs becomes the supervisor.** It is not a dashboard and not a
+process manager — it is *another Claude Code session*, running in an ordinary
+tab, that has been handed tools to reach the other tabs:
 
-There is also nothing to set up. One menu item makes a tab the supervisor; every
-setting below has a default that works, and you can run the whole thing without
-touching any of them. Anything Polter deliberately doesn't do — notifications, in particular —
-is a [plugin](#plugins), and a twenty-line shell script is a complete one.
+| It can | Which means |
+| --- | --- |
+| **Read any tab's screen** | It sees the permission prompt your worker is stuck on. |
+| **Type into any tab** | It can unstick a worker, or tell it to try something else. **It cannot press "yes" on a permission prompt** — that one wakes *you*, at any hour. |
+| **Open new tabs and start agents in them** | You never set up the workers yourself. |
+| **See how long each screen has sat unchanged** | The one number that tells it where to look first. |
+| **Run a group chat and a task panel** | Workers report to it; the panel survives a restart and a compaction. |
 
-Status: **an experiment that works — on one agent CLI.** It's been run end to
-end with the real Claude Code CLI, and the bugs that found were ones no unit test
-could have. Everything underneath is ordinary MCP over ordinary terminals, so
-other agent CLIs should work too — but _should_ is the honest word here: nothing
-else has been tested. [The details are further down](#which-agents-this-works-with),
-and if you try one, tell me what happened.
+You tell it the goal in English — *"build the export feature, split it three
+ways, don't wake me unless something needs a decision"* — and it writes the
+plan, opens a tab per piece of work, starts an agent in each, and minds them.
 
-## What it gives you
+**Two words that are not the same thing**, because the rest of this document
+depends on the difference:
 
-- **A supervisor that sets its own work up.** Tell it the goal and it writes the
-  plan, opens a terminal per piece of work in the right directory
-  (`terminal_open`), starts an agent in each, puts them all in a group chat, and
-  claims each one so its clock starts. You never type a terminal id.
-- **One number per tab instead of a guess.** Polter measures how long each screen
-  has been unchanged and hands that over. Reading the screen and deciding what it
-  means is the supervisor's job — which is why nothing here breaks when an agent
-  CLI changes the way it draws.
-- **Real terminals, so you can take over.** Every worker is an ordinary tab
-  running an ordinary CLI. Grab the keyboard and type whenever you like; one tab
-  crashing leaves the rest alone, and they don't all have to be the same CLI.
-- **A group chat they actually use.** Workers talk to each other and to the
-  supervisor, the whole thing is on screen in `polter +chat`, and it survives a
-  restart.
-- **Locks only you can set or lift.** Hold a tab to its work, or put it out of
-  reach of the tool surface entirely. Both are visible on the tab, and neither
-  can be undone through the tool surface.
-- **A night you can read in the morning.** Every group message and everything
-  that scrolled past in every tab lands on disk as JSON lines. `grep` and `jq`
-  work on it.
-- **Judgement you can edit.** How to supervise is a Markdown skill file you can
-  change and version. What's forbidden is compiled in, so it can't fall out of a
-  long session's context at 4am.
-- **A page of arithmetic about the night.** How long tasks lived, who spoke and
-  how much, which terminals sat still and for how long, hour by hour. It counts;
-  it does not conclude — a task past the line you set is marked `over`, which
+- **Polter** is the terminal — this program. It measures one thing (how long a
+  screen has been unchanged) and carries messages. **It never decides
+  anything.** Whether a still screen means "stuck" or "thinking hard" is a
+  question it refuses to answer, because answering it wrong is worse than not
+  answering.
+- **The supervisor** is the agent you put in charge. It reads the screens and
+  makes the calls. It is an ordinary Claude Code session; you can watch it work
+  and take the keyboard whenever you like.
+
+## Before you decide
+
+Three things worth knowing before you spend ten minutes on this:
+
+- **This replaces your terminal app.** Polter is a fork of
+  [Ghostty](https://github.com/ghostty-org/ghostty), so it has to be the
+  terminal you're running in — reading a screen and typing into it is not
+  something an outside process can do. The cost is lower than it sounds: it is
+  a complete, fast terminal on its own, and you can install it and use it as
+  one for a week before you ever make a tab a supervisor.
+- **Being woken up needs twenty lines of shell.** Notifications are a
+  [plugin](#plugins), deliberately — Polter has no opinion about whether you
+  use Telegram, ntfy or `osascript`. **No notification plugin ships**, so out of
+  the box the supervisor can watch all night but cannot reach your phone. The
+  script is short and there is a worked example, but you do have to write it.
+- **It is an experiment, and it has been run end to end on one agent CLI:**
+  Claude Code. Underneath it is ordinary MCP over ordinary terminals, so others
+  *should* work — but nothing else has been tested. macOS is the platform it's
+  developed on; [Windows is newer and partial](#download); Linux is
+  build-from-source.
+
+The supervisor costs tokens like any other session — it is a Claude Code
+session, reading screens and writing messages all night. Give it a model and a
+budget you'd be happy to leave running.
+
+
+## What you get beyond that
+
+- **You can take the keyboard at any time.** Every worker is an ordinary tab
+  running an ordinary CLI. Type into one whenever you like; the supervisor is
+  not driving a simulation, and one tab crashing leaves the rest alone. They
+  don't all have to be the same CLI, either.
+- **Two locks only you can set or lift.** Hold a tab to its work so the
+  supervisor can't let it clock off, or put a tab out of reach of the MCP tools
+  entirely so nothing can read or type into it. Both show on the tab, and
+  **neither can be undone through the tools** — an agent cannot unlock what you
+  locked.
+- **The whole night on disk, as JSON lines.** Every group message and everything
+  that scrolled past in every tab. `grep` and `jq` work on it in the morning.
+  Nothing is redacted, so treat it like your shell history.
+- **The rules are a file you can edit.** How to supervise is a Markdown skill
+  you can change and version. What's *forbidden* is compiled into the binary
+  instead — so it can't quietly fall out of the supervisor's context at 4am,
+  the way an instruction you gave it once can.
+- **A statistics view.** Task lifetimes, who did the talking, which terminals
+  sat still and for how long, hour by hour. It counts and stops there: a task
+  that has gone longer than the threshold *you* set is marked `over`, which
   says it passed your line and nothing about whether anything is wrong.
 
 ## Download
@@ -167,6 +173,19 @@ and one window can hold several supervisors, each minding its own work.
 Polter immediately types a line into that tab telling the agent what just
 happened and to read its `supervising` skill. So it knows the mechanics before
 you say anything.
+
+**Check the tools are actually there before going further.** Ask it:
+
+> what does the `me` tool say?
+
+If it answers with an id and a list of what it can reach, you're set. If it says
+it has no such tool, stop here — nothing below will work, and the cause is
+almost always one of three things covered in
+[If the agent says it has no polter tools](#if-the-agent-says-it-has-no-polter-tools).
+The short version: a plugin has to tell Claude Code that Polter's tools exist,
+it does that by running `claude mcp add`, and it can only do that if `claude`
+was on `PATH` **when Polter started** — which is why the install note says to
+open Polter from the Dock rather than from a terminal.
 
 ### 3. Tell it what the job is
 
@@ -278,104 +297,21 @@ refused** and handed back to the supervisor as something to say to you out loud:
 a `cmd:` credential, switching a plugin off, answering an agent's permission
 prompt.
 
-### Seeing and driving a terminal
+Every tool, with what it does and what it refuses, is in
+**[`docs/tools.md`](docs/tools.md)** — it is a reference and it reads like one.
+You do not need it to use Polter: the supervisor reads its own skill file and
+calls these itself, and the [full example](#a-full-example) below is what
+driving it actually looks like.
 
-The reach rule above applies to this whole group: unmarked terminals are open to
-anyone, watched ones and supervisors to a supervisor, shielded ones to nobody.
+The five families, so the names in this document mean something:
 
-| Tool               | What it does                                                                                                                                                                                                                                                                                                     |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `terminal_list`    | Every terminal Polter knows about: how long each screen has been unchanged, and whether it's on duty. Durations only — `terminal_read` is how you see content.                                                                                                                                                    |
-| `terminal_read`    | The visible screen of another terminal. No scrollback; what's on screen now is all there is.                                                                                                                                                                                                                     |
-| `terminal_send`    | Type into a terminal exactly as the person at the keyboard would. Control characters are stripped on the way in, so this cannot press `ctrl+c`. `submit` defaults to true.                                                                                                                                        |
-| `terminal_key`     | Press a key, written as a Ghostty keybinding trigger: `ctrl+c`, `escape`, `f2`, `arrow_down`. This is the only way to interrupt something. An ordinary character like `a` is refused here — that's `terminal_send`'s job.                                                                                          |
-| `terminal_keys`    | The vocabulary `terminal_key` accepts, every modifier and key name. Read it rather than guess at one.                                                                                                                                                                                                             |
-| `terminal_action`  | Anything the menu bar does: `new_tab`, `close_surface`, `toggle_fullscreen`, `copy_to_clipboard`, `increase_font_size:1`, `goto_split:left`, `new_split:right`, `inspector:toggle`. `close_surface` can come back `AwaitingConfirmation` — an unmarked terminal with something still running in it gets the same confirmation a person clicking close would, and nothing here can press that button. One you're minding closes without asking. |
-| `terminal_actions` | Every action `terminal_action` will take, and which of them want a value after a colon.                                                                                                                                                                                                                          |
-| `terminal_open` 🔑 | Open a terminal in this window, starting in a directory you choose (`cwd` must be an absolute path that exists; one that isn't is refused rather than opened somewhere else quietly). Better than `new_tab`, which can only inherit the caller's directory — four pieces of work in four directories can't be set up that way at all. `watch: true` minds it from the moment it exists. The reply carries `id` when the tab was ready in time; without one it turns up in `terminal_list` shortly. |
-
-### Talking, and leaving a record
-
-| Tool                | What it does                                                                                                                                                                                                    |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `group_create` 🔑   | Make a group for terminals to talk in (lowercase letters, digits, dashes). The maker is a member.                                                                                                               |
-| `group_destroy` 🔑  | Take a group off the list. Every day file stays on disk; what goes is the group, its members and its tasks. Refused with `GroupActive` while any terminal in it is still open — `group_remove` them first, yourself included. |
-| `group_add` 🔑      | Put a terminal in a group. `history: none` starts it from now, `all` hands it everything still on the log.                                                                                                      |
-| `group_remove` 🔑   | Take a terminal out of a group.                                                                                                                                                                                 |
-| `group_members`     | Who is in a group and what each terminal is currently called. Worth reading before handing out work: a group can't reach a terminal that isn't in it.                                                            |
-| `group_post`        | Say something in a group you're in. Others are told there's a message; when they read it is theirs to decide.                                                                                                   |
-| `group_read`        | The messages you haven't seen. Pass the last `seq` as `since` to carry on. A message marked `summary` stands in for older ones that were compacted away.                                                        |
-| `group_list`        | Which groups you're in.                                                                                                                                                                                         |
-| `group_history`     | Further back than memory holds, read from the day files. Page with `before_seq`, using the smallest `log_seq` you've seen; `more: false` means you're at the beginning. The in-group `seq` is always 0 here — the log doesn't record it. **Searchable**: `match` is a substring of the message text with ASCII case ignored, `since_ms` and `until_ms` bound it in wall-clock time. This is the road back to what a compaction took out of the group — without it, finding one sentence from last night means paging back through the whole night into the context the compaction existed to free. |
-| `group_compact` 🔑  | Replace everything up to `through` with a summary you write. `/compact`, for a conversation.                                                                                                                    |
-| `group_set_brief` 🔑 | Say what a group is for, in your own words. Write it right after creating one — in eight hours `group_list` shows a name you no longer recognise, and that's exactly when you have to decide whether it still needs minding. Only you and the person at the keyboard see it. |
-
-### The task panel
-
-The panel is the only thing that survives a restart, a compaction and the night.
-Handing out work is four steps: `task_create` → `group_post` for the record →
-`terminal_send` with the actual instruction → `task_assign`.
-
-| Tool              | What it does                                                                                                                                                                                                          |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `task_create` 🔑  | Put one line on a group's panel; it answers with a task number. The acceptance test and the detail go in the message you send the worker, not here. Only in a group you made.                                          |
-| `task_assign` 🔑  | Say which terminal is doing it. A line is typed into that terminal saying the task is theirs, and only then does the panel record it — an assignment nobody was told about is one only you can see, and the group cannot carry it because a watched terminal isn't woken by a post. **Read the reply**: if the terminal could not be told, nothing was assigned. What the work *is* still goes in your own `terminal_send`. id `0` takes it back off somebody without cancelling it, and types nothing. |
-| `task_close` 🔑   | The work is done and you've checked it. Nothing is sent to the worker: it finished, it reported, this is you agreeing. It stays on the panel to read back in the morning and leaves the worker's own `task_list`.       |
-| `task_cancel` 🔑  | Call a task off. A line is typed into the worker's terminal telling it to stop, and only then does the task leave its list — otherwise it has no reason to look at the panel again and carries on with work nobody wants. **Read the reply**: it says whether the worker was actually told. If its terminal has gone, this refuses and the task stays open rather than pretending. |
-| `task_progress`   | Move one of your own along: `queued`, `working`, `blocked`, `done`. Yours only, and only while it's open — a closed or cancelled one refuses, which is how you find out you missed a cancellation. Set `blocked` the moment it's true; that's the one a supervisor is watching for. `done` says you believe it's finished, not that it's closed. Report in the group too, naming the number. |
-| `task_list`       | The tasks in a group. A supervisor is handed the whole panel, closed and cancelled included; anybody else is handed its own still-open tasks and nothing else — what your peers are doing isn't yours to spend context on. |
-| `task_history`    | Not what the panel says now, but **when it came to say it**: every create, assign, progress, close and cancel, with its time. `task_list` answers "where does this stand"; this answers "what happened overnight" — which of the two you want is usually obvious once you've asked the wrong one. Pages the same way the conversation does. |
-
-### Who you are, and whether you're on duty
-
-| Tool                | What it does                                                                                                                                                                                                     |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `me`                | Which terminal you're running in, and whether you're supervising or supervised.                                                                                                                                  |
-| `become_supervisor` | Put yourself forward, when there's work needing co-ordination and nobody is doing it. No arguments. Allowed if nobody is minding you; refused if somebody is — you already have a supervisor, and text arriving in a watched terminal must not be able to rearrange who may reach whom. |
-| `stand_down` 🔑     | Stop being one, once the work is finished. Let each terminal go with `set_watch(id, false)` first; refused while you still mind any. Say in the group that you're finishing and why, because afterwards only the user can appoint you again. If the user said the standing is theirs alone to withdraw this comes back `StandingInstruction`, and the answer is to say so rather than look for another way. |
-| `clock_out` 🔑      | Mark a terminal done for the day, so its going quiet stops being reported. Refused for one the user is holding to its work.                                                                                       |
-| `clock_in` 🔑       | Put one back on duty.                                                                                                                                                                                            |
-
-### Watching, and being told
-
-| Tool                           | What it does                                                                                                                                                                                          |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `set_watch` 🔑                 | Take a terminal under your eye, or let it go. Watching puts its quiet spells in your `notices` and marks the terminal, which is what puts it out of a non-supervisor's reach. It is _not_ why you can read it — any supervisor can read and type into any terminal. `watch` is required and must be spelled exactly; a wrong argument is refused rather than ignored, because the two directions are not equally easy to undo. |
-| `set_quiescence_threshold` 🔑  | How long a given terminal must sit still before it counts as quiet, in milliseconds.                                                                                                                  |
-| `notices` 🔑                   | What you haven't been shown yet: who went quiet and for how long, who came back. Reading clears them, so nothing arrives twice. You're handed this on a timer too, but calling it yourself each time you finish something beats being interrupted. |
-| `notify_user` 🔑               | Ask for the person to be told. `reason: authorisation` for a terminal stopped on a permission prompt — nobody may answer those for it, so they go out at any hour. `reason: scheduling` for a question you could answer yourself (keep going, change tack, give up); those are held back during the hours the user set aside and handed back to you to decide. **Read the reply**: it says whether the message went anywhere. |
-
-### Plugins and settings
-
-| Tool                  | What it does                                                                                                                                                                                                    |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `plugin_list` 🔑      | Which plugins are installed, whether they're on, and what each takes. Configured values don't come back in the clear: a reference (`env:`, `file:`, `keychain:`, `cmd:`) is shown as the user wrote it — where a secret is kept is not the secret — and a value typed in the clear is reported only as set. A long-running archiver also reports its progress and health. |
-| `plugin_configure` 🔑 | Switch a plugin on and set its arguments. Credentials may only be given as references — a parameter the plugin marks secret refuses plaintext and says so. `cmd:` is refused outright: that's a command Polter would run later on its own, outside whatever authorised you now, so describe the line and let the user write it. Switching a plugin **off** is refused too — that's the user's channel for hearing things. Read the reply to see whether the change took effect at once or wants a restart. |
-| `plugin_test` 🔑      | Prove a plugin works before the night that needs it. A notification plugin really does send one, in Polter's own words, whatever the hour — so do it once, on purpose. An archiver isn't started a second time; what comes back is how the running one is doing, which is usually the answer to "why is nothing being archived". |
-| `config_get` 🔑       | What the user has configured — `poltergeist-notice-interval`, `poltergeist-notify-window`, `poltergeist-supervisor-stand-down`, or everything with no key (long, and cut off at the same budget a conversation gets). Read only, and worth reading before you're refused something: the hours you may not disturb anybody and whether you may take yourself off duty are both in here. |
-
-### Surviving a restart, and the skills
-
-| Tool                | What it does                                                                                                                                                                                                     |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session_recall` 🔑 | Last night's arrangement, written down before the restart: the groups, what each was for, and for every terminal where it was working and what it was called. Read it first after a restart, then look at what's open now and work out for yourself which is which — nothing here does that matching for you, and a wrong guess attaches one terminal's supervision to another without saying so. |
-| `skill_read`        | The text of one of Polter's own skills, by `name`. Start with `supervising`.                                                                                                                                     |
-
-### The skills that ship with it
-
-Judgement lives in Markdown, not in the binary. Three files ship, all readable
-with `skill_read`:
-
-| Skill                  | When it's for                                                                                                                                                                    |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `supervising`          | Being the supervisor: making a group and handing out work, judging who's stuck from how long a screen has been still, deciding whether to nudge or wait, and writing the arrangement down so it survives a restart. Start here. |
-| `reading-a-terminal`   | Telling from what's on a screen what state the agent in it is in — thinking, stopped on a prompt, waiting for authorisation, finished, or actually dead. For when a quiet report lands and you're deciding whether to interrupt. Read it alongside `terminal_read`. |
-| `operating-a-terminal` | For an agent that isn't a supervisor but has to touch another tab in the window: reading the marks in `terminal_list` before touching anything, typing, interrupting with `ctrl+c`, stopping a service and starting it again — and why a call was refused. |
-
-A copy at `$XDG_CONFIG_HOME/polter/skills/<name>.md` is checked before the
-shipped one, so editing a file is how you change how Polter supervises without
-touching the install. The `claude-code` plugin also mirrors them into
-`~/.claude/skills/polter-*`, which is what makes Claude Code offer them by name.
+| | |
+| --- | --- |
+| `terminal_*` | See and drive a tab: read the screen, type, press a key, open one, run a menu action. |
+| `group_*` | The group chat. A record of what was said — **posting never wakes anybody**, which is why it is not how work gets handed out. |
+| `task_*` | The task panel. This is the part that survives a restart, a compaction and the night. |
+| `plugin_*` | List, configure and test the plugins. Supervisor only. |
+| Identity | `me`, `become_supervisor`, `stand_down`, `clock_in`/`clock_out`, `notices`, `notify_user`, `skill_read`, `session_recall`. |
 
 ## What it will never do
 
