@@ -121,41 +121,44 @@ test "a buffer that cannot hold the path is our fault, not the machine's" {
 }
 
 test "the probe answers both ways" {
-    // **Windows only, and both directions in one test on purpose.** A probe
-    // that only ever answers "present" is indistinguishable from a correct
-    // one on every machine we would normally run it on, so the cell that
-    // matters is the one where the answer has to be "not present".
+    // **Windows only, and both directions from one map on purpose.**
     //
-    // Skipped rather than faked elsewhere: `systemPowerShell` cannot be
-    // called off Windows at all (see its guard), and a version of this test
-    // that asserted something about a fixture would be a green cell that
-    // means nothing.
+    // A probe that only ever answers "present" is indistinguishable from a
+    // correct one on every machine we would normally run it on, so the cell
+    // that matters is the one where the answer has to be "not present".
+    //
+    // **Both halves start from the real environment, and the present half
+    // runs first.** An empty map would make the "not present" half pass for a
+    // reason that has nothing to do with the probe -- the mirror image of the
+    // failure this test exists to catch. If the map were empty, the assertion
+    // below and then the present half would both fail before the negative
+    // half is ever reached.
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var environ_map = try std.testing.environ.createMap(testing.allocator);
+    defer environ_map.deinit();
 
-    {
-        // Present: the real environment, the real component.
-        var environ_map = try std.process.Environ.Map.initFromEnviron(testing.allocator);
-        defer environ_map.deinit();
-        const path = try systemPowerShell(testing.io, &environ_map, &buf);
-        try testing.expect(std.mem.endsWith(u8, path, "powershell.exe"));
-    }
+    // The map is the machine's, not an empty one.
+    try testing.expect(environ_map.get("SystemRoot") != null);
 
-    {
-        // Not present: a root that exists and has nothing under it.
-        var td = try @import("TempDir.zig").init();
-        defer td.deinit();
-        var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const abs = try td.dir.realpath(testing.io, ".", &abs_buf);
+    // Present.
+    const path = try systemPowerShell(testing.io, &environ_map, &buf);
+    try testing.expect(std.mem.endsWith(u8, path, "powershell.exe"));
 
-        var environ_map: std.process.Environ.Map = .init(testing.allocator);
-        defer environ_map.deinit();
-        try environ_map.put("SystemRoot", abs);
+    // Not present: the same map, with a root that cannot be there.
+    //
+    // Derived from the real root rather than invented, so this half is still
+    // reading the machine's own environment -- and it is absolute for the
+    // same reason the real one is, which `accessAbsolute` requires.
+    var fake_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var fake: std.Io.Writer = .fixed(&fake_buf);
+    try fake.writeAll(environ_map.get("SystemRoot").?);
+    try fake.writeAll("\\__no_such_directory__");
+    try environ_map.put("SystemRoot", fake.buffered());
 
-        try testing.expectError(
-            Error.NotPresent,
-            systemPowerShell(testing.io, &environ_map, &buf),
-        );
-    }
+    try testing.expectError(
+        Error.NotPresent,
+        systemPowerShell(testing.io, &environ_map, &buf),
+    );
 }
