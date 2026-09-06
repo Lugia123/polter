@@ -337,16 +337,29 @@ fn startWindows(self: *Command, arena: Allocator) !void {
             // **Write as well as read, because this one handle is all three
             // streams.** It stands in for whichever of stdin, stdout and
             // stderr the caller left unset, and two of those three are
-            // written to. Opened `READ` only, a child that printed anything
-            // to a stream nobody redirected had that write refused.
+            // written to. Asking only for read was wrong on its face.
             //
-            // The symptom was not an error anybody saw. `cmd.exe` runs an
-            // `AutoRun` command if the machine has one configured -- a conda
-            // hook, say -- and that greeting goes to stderr; on a machine
-            // with one, `Command: custom env vars` failed, and on a machine
-            // without one it passed. **The defect was in the code the whole
-            // time and the machine decided whether it showed**, which is why
-            // "it is green here" said nothing about it.
+            // ⚠️ **It was not, however, the reason a child could not write to
+            // those streams, and this comment used to say it was.** Adding
+            // `WRITE` was measured on a real machine and the symptom did not
+            // move by one byte: the child still produced nothing and the
+            // `&&` in the regression test below still short-circuited. **A
+            // wrong cause written down with confidence is worse than no
+            // cause**, because the next person stops looking.
+            //
+            // What is established: `cmd.exe` runs an `AutoRun` command when
+            // the machine has one configured -- a conda hook, say -- and that
+            // greeting goes to stderr, so `Command: custom env vars` failed
+            // on a machine with one and passed on a machine without. **That
+            // part still holds**: the defect is in the code and the machine
+            // decides whether it shows.
+            //
+            // What is open is *which* property of this handle stops the
+            // write. Candidates and the experiment that separates them are
+            // in the two tests named `control --` and `probe --` below; the
+            // leading one is that the handle is never inherited, since
+            // `OBJECT_ATTRIBUTES` below sets no `OBJ_INHERIT` while
+            // `CreateProcessW` is called with `bInheritHandles = TRUE`.
             //
             // **The stdout half was never reached, and not because anything
             // protected it.** Every Windows test that runs a child which
@@ -960,6 +973,125 @@ test "Command: redirect stdout to file" {
     try testing.expect(contents.len > 0);
 }
 
+// **An experiment, not a fix.** Two cells that differ in exactly one bit.
+//
+// # What is being separated, and why it needs separating
+//
+// A child handed the null device for a stream nobody redirected cannot write
+// to it. Three explanations were on the table and **they are the same shape
+// from outside** -- the child writes nothing and `&&` short-circuits:
+//
+//   1. the handle is never inherited (`OBJECT_ATTRIBUTES.Attributes` is 0,
+//      so no `OBJ_INHERIT`, while `CreateProcessW` is called with
+//      `bInheritHandles = TRUE`, which only carries handles marked for it);
+//   2. the access mask (`GENERIC.READ` only, until `4fde7d2df`);
+//   3. the share mode (`FILE_SHARE_READ` only).
+//
+// **(2) has already been answered, and the answer was no.** Adding
+// `GENERIC.WRITE` changed the symptom by not one byte on a real machine.
+// That commit's message says the read-only mask was the cause; **it is not
+// established, and the note in `start` says so now.**
+//
+// # Why these cells answer it without touching the product
+//
+// Both use an ordinary file as the child's stderr, so the access mask and
+// the share mode are whatever `createFile` gives -- **identical between the
+// two cells, and known to work**, since that is what every green Windows
+// test here already passes. The only difference is `HANDLE_FLAG_INHERIT`.
+//
+// ⚠️ **The probe clears the flag rather than not setting it.** Those are the
+// same only if a fresh handle is non-inheritable by default, and that is an
+// assumption about Zig's `createFile` that nothing here has checked. Clearing
+// it says what is meant whichever the default is.
+//
+// # Reading the result
+//
+// ```text
+// control green, probe green   inheritance is NOT the mechanism -- a device
+//                              handle differs from a file handle in some
+//                              other way, and (1) is not the answer either
+// control green, probe red     inheritance IS sufficient to produce the
+//                              symptom, and `null_fd` lacks the flag
+// control red                  the experiment is broken, not the subject:
+//                              an inheritable real file must be writable
+// ```
+//
+// **Whichever way the probe goes is the answer.** It is written as an
+// assertion so that the run reports it, not because failing is expected.
+test "Command: control -- an inheritable file works as a child's stderr" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var td = try TempDir.init();
+    defer td.deinit();
+    var stdout = try createTestStdout(testing.io, td.dir);
+    defer stdout.close(testing.io);
+    var stderr = try createTestStderr(testing.io, td.dir);
+    defer stderr.close(testing.io);
+
+    const got = try runInheritProbe(&stdout, stderr);
+    defer testing.allocator.free(got);
+    errdefer std.debug.print("\ncontrol: child wrote \"{s}\"\n", .{got});
+    try testing.expect(std.mem.indexOf(u8, got, "ok") != null);
+}
+
+test "Command: probe -- the same file with its inherit flag cleared" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var td = try TempDir.init();
+    defer td.deinit();
+    var stdout = try createTestStdout(testing.io, td.dir);
+    defer stdout.close(testing.io);
+    var stderr = try createTestStderr(testing.io, td.dir);
+    defer stderr.close(testing.io);
+
+    // The one bit this experiment turns.
+    if (windows.exp.kernel32.SetHandleInformation(
+        stderr.handle,
+        windows.HANDLE_FLAG_INHERIT,
+        0,
+    ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
+
+    const got = try runInheritProbe(&stdout, stderr);
+    defer testing.allocator.free(got);
+    errdefer std.debug.print(
+        "\nprobe: child wrote \"{s}\" -- if this is not empty, an " ++
+            "uninheritable handle still worked, and inheritance is not what " ++
+            "stops the null device from being written to.\n",
+        .{got},
+    );
+    try testing.expect(std.mem.indexOf(u8, got, "ok") == null);
+}
+
+/// Run `echo to-stderr 1>&2 && echo ok` and hand back what reached stdout.
+///
+/// The `&&` is the whole instrument: the second half runs only if the first
+/// succeeded, so the presence of `ok` on the stream that certainly works is
+/// the child's answer about the stream under test. Caller frees.
+fn runInheritProbe(stdout: *File, stderr: File) ![]u8 {
+    var cmd: Command = .{
+        .path = "C:\\Windows\\System32\\cmd.exe",
+        .args = &.{
+            "C:\\Windows\\System32\\cmd.exe", "/C",
+            "echo to-stderr 1>&2 && echo ok",
+        },
+        .stdout = stdout.*,
+        .stderr = stderr,
+        .os_pre_exec = null,
+        .rt_pre_exec = null,
+        .rt_post_fork = null,
+        .rt_pre_exec_info = undefined,
+        .rt_post_fork_info = undefined,
+    };
+    try cmd.testingStart();
+    _ = try cmd.wait(true);
+
+    const size = (try stdout.stat(testing.io)).size;
+    const data = try testing.allocator.alloc(u8, size);
+    errdefer testing.allocator.free(data);
+    try testing.expectEqual(size, try stdout.readPositionalAll(testing.io, data, 0));
+    return data;
+}
+
 // **Both directions of the one handle that stands in for an unset stream.**
 //
 // # Constructed, because the way this was found cannot be relied on
@@ -986,11 +1118,17 @@ test "Command: redirect stdout to file" {
 // there by tests that print nothing. **That is why one half of this defect
 // was visible and the other was not -- not because anything protected it.**
 //
-// # Making it red again
+// # ⚠️ This test is red today, and that is not a stale expectation
 //
-// Change the access mask in `start` back to `.{ .READ = true }`: both
-// halves fail, and they fail by the `ok` being absent rather than by any
-// error being reported.
+// It was written alongside a change to the access mask, on the belief that
+// the mask was the cause. **On a real machine it failed anyway, and it is
+// still failing.** So it is doing its job -- it is a regression test for a
+// defect that is not fixed yet -- and the entry it guards should not be read
+// as "was broken, now covered".
+//
+// It also cannot be made red or green from macOS: it skips there, so the
+// change that was supposed to fix it looked, on the machine it was written
+// on, like a completed repair with a test to prove it.
 test "Command: a stream nobody redirected can still be written to" {
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
 
