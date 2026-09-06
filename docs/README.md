@@ -11,6 +11,7 @@
 
 ## 文档列表
 
+- [readme-reviews/](readme-reviews/README.md) — README 的陌生读者评审记录：每一轮给全新的 agent 一份去掉出处的 README、禁止它读代码，把原始反馈、据此做的改动、以及**没有采纳的部分和理由**都记下来。**读者是 LLM 扮演的，不是真人**，这一点在索引里写清楚了——它能发现术语和顺序的问题，替代不了真人。
 - [tools.md](tools.md) — **这一篇是给使用者的，不是给开发者的**：Polter 四十个 MCP 工具的完整参考，每个工具做什么、拒绝什么、哪些是总管专属。从 README 搬过来的——它是查阅材料，放在 README 里会把想了解产品的人挡在门外。
 - [architecture.md](architecture.md) — 模块地图、进程启动到第一帧的调用链、每个表面（surface）的线程模型与 mailbox 消息通道。
 - [terminal-core.md](terminal-core.md) — `src/terminal` 终端核心：VT 解析、`Screen`/`PageList`/`Page` 存储、OSC/DCS/APC 与 kitty 协议，以及 libghostty-vt 的 C API。
