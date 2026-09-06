@@ -2535,6 +2535,27 @@ const ps_preamble =
 /// Drop `SystemRoot` from the list: the eight fixtures that start an
 /// interpreter go back to `8009001d`, and they fail without any of them
 /// having run a line.
+/// ⚠️ **The caller must not `defer` a `deinit` on what this returns.**
+///
+/// `Resident.start` takes the map over the moment it is called, on its
+/// failure paths too, and says so: *"hand the map over and never write a
+/// `defer` for it."* The nine call sites here do hand it over.
+///
+/// **This warning is here because the rule was broken, by the change that
+/// added this function.** Ten `defer env.deinit()` lines went in beside it,
+/// and every one of them was a second `deinit` on a map a resident had
+/// already freed. `Map.deinit` ends with `self.* = undefined`, so the second
+/// call reads a poisoned length out of the map's own storage and hands it to
+/// the allocator -- which on Windows walked off the end of a `memset` and
+/// took the whole test process down at test 3957 of 4109, and everything
+/// after it with it.
+///
+/// **It is fatal whether or not the map has anything in it**, which is worth
+/// stating because the readings that led here looked like they were about
+/// the contents: constructed on macOS, an empty map deinitialised twice
+/// trips an integer overflow computing `capacity` before it can even reach a
+/// key. The contents change which safety check fires first, not whether one
+/// does.
 fn fixtureEnviron(alloc: Allocator) !std.process.Environ.Map {
     var env: std.process.Environ.Map = .init(alloc);
     errdefer env.deinit();
@@ -2733,8 +2754,7 @@ test "stopping a resident twice is stopping it once" {
         \\}
     );
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     const a = try start(testing.allocator, io, .{
         .key = "twice",
@@ -2790,8 +2810,7 @@ test "a plugin is fed what happens and the cursor follows it" {
         \\}}
     , .{got}));
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     const a = try start(testing.allocator, io, .{
         .key = "fed",
@@ -2859,8 +2878,7 @@ test "a plugin that confirms half a batch is sent the rest again" {
         \\}}
     , .{got}));
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     const a = try start(testing.allocator, io, .{
         .key = "half",
@@ -2922,8 +2940,7 @@ test "a plugin that answers with nonsense is stopped and started again" {
         \\}}
     , .{starts}));
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     const a = try start(testing.allocator, io, .{
         .key = "nonsense",
@@ -2980,8 +2997,7 @@ test "a plugin that dies before answering is sent the same batch again" {
         \\exit 0
     , .{got}));
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     const a = try start(testing.allocator, io, .{
         .key = "dies",
@@ -3054,8 +3070,7 @@ test "a plugin with nothing to do is not killed for having nothing to do" {
         \\}}
     , .{starts}));
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     // The shape every real manifest has: a timeout shorter than the gap
     // between heartbeats. The deadline bounds one exchange, and a plugin
@@ -3316,8 +3331,7 @@ test "a plugin that will not start is put on the user's screen, once" {
     var heard: Heard = .{ .alloc = testing.allocator, .io = io };
     defer heard.deinit();
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     const a = try start(testing.allocator, io, .{
         .key = "claude-code",
@@ -3410,8 +3424,7 @@ test "a plugin that never fails never says anything" {
         \\}}
     , .{beats}));
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     const a = try start(testing.allocator, io, .{
         .key = "fine",
@@ -3477,8 +3490,7 @@ test "what a plugin printed, and what Polter did to it, are in one file" {
         \\}}
     , .{beats}));
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     const a = try start(testing.allocator, io, .{
         .key = "noisy",
@@ -3558,8 +3570,7 @@ test "a plugin can say something to the user, once, and it cannot draw with it" 
         \\}}
     , .{beats}));
 
-    var env = try fixtureEnviron(testing.allocator);
-    defer env.deinit();
+    const env = try fixtureEnviron(testing.allocator);
 
     const a = try start(testing.allocator, io, .{
         .key = "claude-code",
