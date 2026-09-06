@@ -26,6 +26,23 @@
 //! `keychain:` exists as the zero-dependency default and is itself just a
 //! `cmd:` under the covers.
 //!
+//! **`cmd:` is run by the system's command interpreter, and that is a
+//! different program on each system.** `/bin/sh -c` on Unix,
+//! `cmd.exe /C` on Windows. The line written in a config file is handed
+//! over as typed, so what it may contain follows whichever of those will
+//! read it: `cmd:op read op://x | tr -d '\n'` is a Unix line and does not
+//! mean the same thing on Windows. This is deliberate -- there is no `sh`
+//! to standardise on there -- and it is written here rather than beside the
+//! code because it is a fact about what may be *configured*, and nobody
+//! reads a function body to find out what they may type.
+//!
+//! **`keychain:` has no resolver on Windows.** Polter does not talk to the
+//! Credential Manager: there is no command-line tool that will print a
+//! stored password (`cmdkey /list` withholds it by design), so the thing
+//! `keychain:` is -- a `cmd:` under the covers -- has nothing to be. A
+//! reference written there fails and says so; `cmd:` reaches any password
+//! manager that can print a secret, which is the way through.
+//!
 //! Nothing is cached. A vault that has locked must fail, and a cache would
 //! hide that it locked at all.
 
@@ -75,7 +92,7 @@ pub fn resolve(
         },
         .file => firstLineOf(alloc, io, env, rest),
         .keychain => fromKeychain(alloc, io, rest),
-        .cmd => fromCommand(alloc, io, rest),
+        .cmd => fromCommand(alloc, io, env, rest),
     };
 }
 
@@ -180,8 +197,32 @@ fn fromKeychain(alloc: Allocator, io: std.Io, spec: []const u8) Error![]const u8
     const service = spec[0..slash];
     const account = spec[slash + 1 ..];
 
+    // **Windows says so rather than trying.** The `else` arm below reaches
+    // for `secret-tool`, which is GNOME's; on Windows it is not there and
+    // never will be, so spawning it would fail -- and come back as the same
+    // `Unresolved` a locked vault and a missing entry come back as. Three
+    // causes, one word, and the one that means "this will never work here"
+    // is the one that most needs saying.
+    //
+    // Nothing replaces it. The Credential Manager has an API (`CredReadW`)
+    // but no command-line tool that will print a password -- `cmdkey /list`
+    // withholds it deliberately -- so there is no argv to put here, and
+    // reaching the API instead would be a second mechanism rather than a
+    // different command. That is its own piece of work, with its own
+    // question to answer first: `service/account` is two fields and
+    // `CredReadW` takes one key, and how they map is a decision about what
+    // a user's config means.
     const argv: []const []const u8 = switch (builtin.os.tag) {
         .macos => &.{ "security", "find-generic-password", "-w", "-s", service, "-a", account },
+        .windows => {
+            log.warn(
+                "secret: keychain: has no resolver on Windows -- Polter does not " ++
+                    "read the Credential Manager. Use cmd: with something that " ++
+                    "prints the secret ({s}/{s} was not looked up)",
+                .{ service, account },
+            );
+            return error.Unresolved;
+        },
         else => &.{ "secret-tool", "lookup", "service", service, "account", account },
     };
 
@@ -189,12 +230,59 @@ fn fromKeychain(alloc: Allocator, io: std.Io, spec: []const u8) Error![]const u8
 }
 
 /// Whatever a command prints, trimmed.
-fn fromCommand(alloc: Allocator, io: std.Io, command: []const u8) Error![]const u8 {
-    // Through a shell, so that a reference can be written the way it would
-    // be typed -- pipes, quoting and all. These commands come from the
-    // user's own config; there is no untrusted input here to be injected.
-    const argv: []const []const u8 = &.{ "/bin/sh", "-c", command };
-    return runCapturing(alloc, io, argv);
+///
+/// Through a shell, so that a reference can be written the way it would be
+/// typed -- pipes, quoting and all. These commands come from the user's own
+/// config; there is no untrusted input here to be injected.
+///
+/// **Which shell is not the same question on both systems**, and the answer
+/// changes what a user may write. See the note at the top of this file: that
+/// is where somebody deciding what to put in a config will look, and it is
+/// not here.
+fn fromCommand(
+    alloc: Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+    command: []const u8,
+) Error![]const u8 {
+    if (comptime builtin.os.tag == .windows) {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const shell = commandProcessor(env, &buf) catch |err| {
+            // Named, because "could not run resolver" would put this beside
+            // "the vault is locked" and "op is not signed in" -- and this one
+            // is not about the vault at all.
+            log.warn(
+                "secret: cannot run cmd: -- no command processor ({s})",
+                .{@errorName(err)},
+            );
+            return error.Unresolved;
+        };
+        return runCapturing(alloc, io, &.{ shell, "/C", command });
+    }
+
+    return runCapturing(alloc, io, &.{ "/bin/sh", "-c", command });
+}
+
+/// Where `cmd.exe` is, built from `%SystemRoot%`.
+///
+/// **An absolute path rather than the bare name.** A bare `cmd.exe` makes
+/// "will this start" a question about `CreateProcessW`'s search order,
+/// `PATH` and the application directory -- answerable only by trying, and by
+/// then a secret has failed to resolve for a reason that has nothing to do
+/// with the secret. An absolute path turns it into "is this file there".
+///
+/// The two ways it can fail are kept apart: an environment with no
+/// `SystemRoot` is a broken environment, and a path too long for the buffer
+/// would be ours.
+fn commandProcessor(
+    env: *const std.process.Environ.Map,
+    buf: []u8,
+) error{ NoSystemRoot, PathTooLong }![]const u8 {
+    const root = env.get("SystemRoot") orelse return error.NoSystemRoot;
+    var writer: std.Io.Writer = .fixed(buf);
+    writer.writeAll(root) catch return error.PathTooLong;
+    writer.writeAll("\\System32\\cmd.exe") catch return error.PathTooLong;
+    return writer.buffered();
 }
 
 fn runCapturing(
@@ -348,6 +436,20 @@ test "cmd: is whatever it printed" {
     );
 }
 
+// **`exit 1` and `exit 0` rather than a shell's own builtins**, so these two
+// run the same way under `/bin/sh -c` and under `cmd.exe /C`.
+//
+// The one they replace was `true`, which cmd has no notion of. That did not
+// show up as a failure: on Windows `/bin/sh` could not be started at all, so
+// the spawn failed, `resolve` returned `Unresolved` -- and `Unresolved` is
+// exactly what these two assert. **Both were green, and neither had ever run
+// the command it names.** An assertion that holds for a reason unrelated to
+// the one it was written for looks, from the summary line, like coverage.
+//
+// There is no flag guarding these. `/bin/sh` is on every Unix and `cmd.exe`
+// on every Windows, so a `supported` constant here would be true everywhere
+// and could never retire -- a guard that has never had a false value is not
+// a guard, it is a line the next reader assumes somebody is watching.
 test "a resolver that fails is a failure, not a fallback" {
     // The value must never come back as itself. Sending `cmd:op read ...`
     // to Feishu as though it were the key looks like it worked, and puts
@@ -379,7 +481,7 @@ test "a resolver that prints nothing has not resolved anything" {
 
     try testing.expectError(
         error.Unresolved,
-        resolve(arena.allocator(), threaded.io(), &env, "cmd:true"),
+        resolve(arena.allocator(), threaded.io(), &env, "cmd:exit 0"),
     );
 }
 
