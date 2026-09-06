@@ -36,9 +36,13 @@ that's thinking hard.
 
 ## What Polter does about it
 
-**One of your tabs becomes the supervisor.** It is not a dashboard and not a
-process manager — it is *another Claude Code session*, running in an ordinary
-tab, that has been handed tools to reach the other tabs:
+**You pick the agent you want in charge, and mark the tab it is running in.**
+
+The mark goes on the tab; the supervisor is the agent inside it — an ordinary
+Claude Code session, not a dashboard and not a process manager. Marking it makes
+Polter do two things: open a set of tools that reach the other tabs, and collect
+what that agent hasn't been shown yet and hand it over every so often — **how
+long each screen has been still, with no verdict attached**. The tools are:
 
 | It can | Which means |
 | --- | --- |
@@ -74,7 +78,7 @@ Three things worth knowing before you spend ten minutes on this:
   [Ghostty](https://github.com/ghostty-org/ghostty), so it has to be the
   terminal your agents are running in. The cost is lower than it sounds: it is
   a complete, fast terminal on its own, and you can install it and use it as
-  one for a week before you ever make a tab a supervisor. [Why it has to be the
+  one for a week before you ever put an agent in charge of anything. [Why it has to be the
   terminal](#why-a-terminal-and-not-a-library) matters most if you already drive
   agents from tmux or a script.
 - **Being woken up needs twenty lines of shell.** Notifications are a
@@ -217,20 +221,21 @@ It is younger than the macOS side and not at parity:
 
 ## Quick start
 
-You need one tab to be the boss. That's the whole setup.
+One agent has to be in charge. Marking its tab is the whole setup.
 
 ### 1. Open a tab and start Claude Code in it
 
 Just the way you always do. `cd` somewhere sensible first — a supervisor can
 open its own tabs later, but it starts where you left it.
 
-### 2. Make it the supervisor
+### 2. Mark that tab as the supervisor
 
 **Agents → Make This Terminal a Supervisor.** (Also in the command palette, and
 bindable as the `poltergeist_supervisor` action.) The same item toggles it off,
 and one window can hold several supervisors, each minding its own work.
 
-Polter immediately types a line into that tab: what just happened, and an
+The mark is on the tab; the tools go to the agent inside it. So the moment you
+set it, Polter types a line into that tab: what just happened, and an
 instruction to read its `supervising` skill. So it knows the mechanics before
 you say anything.
 
@@ -355,7 +360,7 @@ anything, so the chat tools are open to every member.
 pressing a key, doing a menu action — those are open to any agent, and what
 decides whether the call goes through is the _target's_ mark, not who's asking.
 An agent in one tab may restart a server in another tab that nobody is watching.
-It may not touch one that's watched, shielded, or a supervisor.
+It may not touch a tab marked watched, shielded, or supervisor.
 
 Two more properties run through the whole surface. **The group chat keeps a
 record; it does not push.** A terminal somebody is minding is not woken by a
