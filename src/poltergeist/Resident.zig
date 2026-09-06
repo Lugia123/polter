@@ -2493,6 +2493,61 @@ const ps_preamble =
     \\
 ;
 
+/// The least environment a fixture's interpreter needs in order to start.
+///
+/// # Empty was fine until the fixtures stopped being `sh`
+///
+/// These tests handed the child an empty map on purpose: the subject is the
+/// protocol, and an empty environment keeps what the child sees from
+/// depending on the machine the suite runs on. `sh` does not mind one.
+///
+/// **`powershell.exe` does not start at all with one.** Measured, with the
+/// controls that name the cause:
+///
+/// ```text
+/// inherited environment      exit 0          the fixture answered
+/// empty environment          exit -65536     Windows PowerShell 内部错误 ... 8009001d
+/// SystemRoot + PATH only     exit 0          the fixture answered
+/// ```
+///
+/// `8009001d` is `NTE_PROVIDER_DLL_FAIL`: the CLR never loaded, so not one
+/// line of the script ran. **Nine tests looked as though the translation to
+/// PowerShell had broken them, and what had actually happened is that they
+/// were starting a process for the first time** -- before that they were
+/// refused at `launchArgv` and never spawned at all.
+///
+/// # Why the minimum and not a copy of the real environment
+///
+/// The product hands a plugin a copy of Polter's own environment
+/// (`App.zig`: `global.environMap()`), so on Windows a real plugin has
+/// `SystemRoot` and this cannot happen to one. **The fixtures are not
+/// imitating the product here, and should not**: several of them assert on
+/// what the child received, and an inherited environment would make those
+/// assertions depend on the machine. So this adds the two variables the
+/// interpreter needs to exist and nothing else.
+///
+/// **Exactly the two that were measured.** Whether `SystemRoot` alone would
+/// do was not established -- the control that passed carried both -- and
+/// narrowing it here on reasoning would be inventing a reading.
+///
+/// # Making it red again
+///
+/// Drop `SystemRoot` from the list: the eight fixtures that start an
+/// interpreter go back to `8009001d`, and they fail without any of them
+/// having run a line.
+fn fixtureEnviron(alloc: Allocator) !std.process.Environ.Map {
+    var env: std.process.Environ.Map = .init(alloc);
+    errdefer env.deinit();
+    if (comptime builtin.os.tag != .windows) return env;
+
+    var real = try std.testing.environ.createMap(alloc);
+    defer real.deinit();
+    for ([_][]const u8{ "SystemRoot", "PATH" }) |key| {
+        if (real.get(key)) |v| try env.put(key, v);
+    }
+    return env;
+}
+
 /// Write a throwaway script and give back its path, owned by `arena`.
 ///
 /// # Two bodies, because a fixture is not a shell script -- it is a plugin
@@ -2678,7 +2733,8 @@ test "stopping a resident twice is stopping it once" {
         \\}
     );
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     const a = try start(testing.allocator, io, .{
         .key = "twice",
@@ -2734,7 +2790,8 @@ test "a plugin is fed what happens and the cursor follows it" {
         \\}}
     , .{got}));
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     const a = try start(testing.allocator, io, .{
         .key = "fed",
@@ -2802,7 +2859,8 @@ test "a plugin that confirms half a batch is sent the rest again" {
         \\}}
     , .{got}));
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     const a = try start(testing.allocator, io, .{
         .key = "half",
@@ -2864,7 +2922,8 @@ test "a plugin that answers with nonsense is stopped and started again" {
         \\}}
     , .{starts}));
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     const a = try start(testing.allocator, io, .{
         .key = "nonsense",
@@ -2921,7 +2980,8 @@ test "a plugin that dies before answering is sent the same batch again" {
         \\exit 0
     , .{got}));
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     const a = try start(testing.allocator, io, .{
         .key = "dies",
@@ -2994,7 +3054,8 @@ test "a plugin with nothing to do is not killed for having nothing to do" {
         \\}}
     , .{starts}));
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     // The shape every real manifest has: a timeout shorter than the gap
     // between heartbeats. The deadline bounds one exchange, and a plugin
@@ -3255,7 +3316,8 @@ test "a plugin that will not start is put on the user's screen, once" {
     var heard: Heard = .{ .alloc = testing.allocator, .io = io };
     defer heard.deinit();
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     const a = try start(testing.allocator, io, .{
         .key = "claude-code",
@@ -3348,7 +3410,8 @@ test "a plugin that never fails never says anything" {
         \\}}
     , .{beats}));
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     const a = try start(testing.allocator, io, .{
         .key = "fine",
@@ -3414,7 +3477,8 @@ test "what a plugin printed, and what Polter did to it, are in one file" {
         \\}}
     , .{beats}));
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     const a = try start(testing.allocator, io, .{
         .key = "noisy",
@@ -3494,7 +3558,8 @@ test "a plugin can say something to the user, once, and it cannot draw with it" 
         \\}}
     , .{beats}));
 
-    const env: std.process.Environ.Map = .init(testing.allocator);
+    var env = try fixtureEnviron(testing.allocator);
+    defer env.deinit();
 
     const a = try start(testing.allocator, io, .{
         .key = "claude-code",
