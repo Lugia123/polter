@@ -7,8 +7,8 @@
   <b>Put one Claude Code session in charge of the others.</b><br>
   <sub>It reads their screens, types into them, opens new tabs, and minds them
   while you're asleep.<br>
-  <b>Polter itself has no account, no API key and makes no network calls of its
-  own</b> — but the agents it minds are your own CLIs, and they talk to their
+  <b>Polter itself has no account and no API key, and makes no network calls of
+  its own</b>. But the agents it minds are your own CLIs, and they talk to their
   models exactly as they already do, on whatever plan you already pay for.<br>
   <i>(Waking you needs a twenty-line notification plugin you write yourself —
   none ships.)</i></sub>
@@ -43,7 +43,7 @@ tab, that has been handed tools to reach the other tabs:
 | It can | Which means |
 | --- | --- |
 | **Read any tab's screen** | It sees the permission prompt your worker is stuck on. |
-| **Type into any tab** | It can unstick a worker, or tell it to try something else. **It cannot press "yes" on a permission prompt** — that one wakes *you*, at any hour. |
+| **Type into any tab** | It can unstick a worker or tell it to try something else. **It cannot press "yes" on a permission prompt** — that one wakes *you*, at any hour. |
 | **Open new tabs and start agents in them** | You never set up the workers yourself. |
 | **See how long each screen has sat unchanged** | The one number that tells it where to look first. |
 | **Run a group chat and a task panel** | Workers report to it; the panel survives a restart and a compaction. |
@@ -53,14 +53,14 @@ ways, don't wake me unless something needs a decision"* — and it writes the
 plan, opens a tab per piece of work, starts an agent in each, and minds them.
 
 Every "it" in that table is **the supervisor**. The supervisor and Polter are
-two different things, and the rest of this document leans on the difference:
+not the same thing, and everything below depends on that:
 
 - **The supervisor** is the agent you put in charge — an ordinary Claude Code
   session. Reading a screen, understanding what's on it, deciding whether to
   step in: all of that is the supervisor's. You can watch it work and take the
   keyboard whenever you like.
 - **Polter** is the terminal — this program. It doesn't read anything; it
-  carries. Screen contents to the supervisor, the supervisor's keystrokes into
+  carries — screen contents to the supervisor, the supervisor's keystrokes into
   another tab, and **one measurement: how long this screen has been
   unchanged**. Whether a still screen means "stuck" or "thinking hard" is not a
   question Polter answers — the answer is in what the screen says, and reading
@@ -75,8 +75,8 @@ Three things worth knowing before you spend ten minutes on this:
   terminal your agents are running in. The cost is lower than it sounds: it is
   a complete, fast terminal on its own, and you can install it and use it as
   one for a week before you ever make a tab a supervisor. [Why it has to be the
-  terminal](#why-a-terminal-and-not-a-library) is worth two minutes if you
-  already drive agents from tmux or a script.
+  terminal](#why-a-terminal-and-not-a-library) matters most if you already drive
+  agents from tmux or a script.
 - **Being woken up needs twenty lines of shell.** Notifications are a
   [plugin](#plugins), deliberately — Polter has no opinion about whether you
   use Telegram, ntfy or `osascript`. **No notification plugin ships**, so out of
@@ -85,11 +85,11 @@ Three things worth knowing before you spend ten minutes on this:
 - **It is an experiment, and it has been run end to end on one agent CLI:**
   Claude Code. Underneath it is ordinary MCP — the protocol your agent CLI
   already uses to reach tools — over ordinary terminals, so others
-  *should* work — but nothing else has been tested. macOS is the platform it's
+  *should* work. Nothing else has been tested. macOS is the platform it's
   developed on; [Windows is newer and partial](#download); Linux is
   build-from-source.
 
-**On cost, honestly: there is no measured number here yet.** The supervisor is
+**There is no measured cost number here yet.** The supervisor is
 a Claude Code session like any other, and it runs all night reading screens and
 writing messages, so it spends like one. What decides how much: how many
 workers it is minding, how often it is interrupted with what it hasn't seen
@@ -102,12 +102,13 @@ paragraph gets a number in it.
 
 ## Why a terminal, and not a library
 
-The honest reason is not "an outside process can't read a screen" — it can, and
+It is not that an outside process can't read a screen — it can, and
 if you drive agents from tmux with `capture-pane` you are already doing it. The
 reason is narrower and it is the thing that makes this different from an
 API-based orchestrator:
 
-**Polter never touches authentication, so it never limits what your agents are.**
+**Polter never touches authentication, so it has no say in which CLI, model or
+account you run.**
 
 A framework that calls models for you needs your API key. It then owns the
 question of which model, which account, which billing. Polter calls nothing. It
@@ -134,7 +135,7 @@ between it and its vendor. So:
 
 **What this costs you** is the thing above: it has to be your terminal. If your
 agents live in tmux on a remote box over SSH, there is no version of this that
-works for you today, and that is the honest end of the conversation.
+works for you today.
 
 **And one thing it is not:** this is a single-machine tool. The group chat, the
 task panel and the transcripts all live in your own state directory — they are
@@ -148,7 +149,7 @@ tell each other.
   running an ordinary CLI. Type into one whenever you like; the supervisor is
   not driving a simulation, and one tab crashing leaves the rest alone. They
   don't all have to be the same CLI, either — though **only Claude Code has been
-  run end to end**, so mixing them is reasoning, not experience
+  run end to end**. Mixing them is reasoning rather than experience
   ([the details](#which-agents-this-works-with)).
 - **Two locks only you can set or lift.** Hold a tab to its work so the
   supervisor can't let it clock off, or put a tab out of reach of the MCP tools
@@ -176,7 +177,7 @@ fork's own.
 | | |
 | --- | --- |
 | **macOS 13+** | `Polter-*-macos-universal.zip` — Apple Silicon and Intel in one bundle. The platform this is developed on and used daily. |
-| **Windows 10+** | `Polter-*-windows-x64.zip` — new, and honestly described below. |
+| **Windows 10+** | `Polter-*-windows-x64.zip` — new. What works and what doesn't is below. |
 | **Linux** | No binary. The GTK app builds, but nobody has run a supervised session on it, and shipping something nobody has started is not a thing to do quietly. Build from source. |
 
 ### macOS: the builds are unsigned
@@ -229,8 +230,8 @@ open its own tabs later, but it starts where you left it.
 bindable as the `poltergeist_supervisor` action.) The same item toggles it off,
 and one window can hold several supervisors, each minding its own work.
 
-Polter immediately types a line into that tab telling the agent what just
-happened and to read its `supervising` skill. So it knows the mechanics before
+Polter immediately types a line into that tab: what just happened, and an
+instruction to read its `supervising` skill. So it knows the mechanics before
 you say anything.
 
 **Check the tools are actually there before going further.** Ask it:
@@ -334,22 +335,21 @@ Both are visible on the tab itself, not just in a menu:
   surface entirely. Absolute: refuses supervisors and plugins too. The tab gets
   a padlock. Use it for the tab you read your mail in.
 
-Neither can be lifted through the tool surface. There's deliberately no tool for
+Neither can be lifted through the tool surface. There is no tool for
 it — a supervisor that could unlock a tab would just unlock it and then clock it
 off.
 
 ## What the supervisor can do
 
 Everything goes through one MCP surface (`src/cli/mcp.zig` in front of
-`src/poltergeist/rpc.zig`), and the list is deliberately short: forty tools,
-twenty-three of which are the supervisor's alone. Those are marked 🔑 below.
+`src/poltergeist/rpc.zig`), forty tools, twenty-three of them the
+supervisor's alone. Those are marked 🔑 below.
 
 **Arranging is the supervisor's.** Claiming terminals, the clock, making groups,
 the task panel, notifying you, opening tabs, the plugin tools — because a
 terminal that could claim other terminals would be a second, quieter road to
 being in charge. Talking _inside_ a group you're already in isn't arranging
-anything, so the chat tools are open to every member: a team that can't talk
-isn't a team.
+anything, so the chat tools are open to every member.
 
 **Operating a terminal isn't arranging either.** Reading a screen, typing,
 pressing a key, doing a menu action — those are open to any agent, and what
@@ -359,7 +359,7 @@ It may not touch one that's watched, shielded, or a supervisor.
 
 Two more properties run through the whole surface. **The group chat keeps a
 record; it does not push.** A terminal somebody is minding is not woken by a
-group message, so posting is never how you get anybody moving — `terminal_send`
+group message, so posting is never how you get anybody moving: `terminal_send`
 is. And **anything that would make an irreversible decision on your behalf is
 refused** and handed back to the supervisor as something to say to you out loud:
 a `cmd:` credential, switching a plugin off, answering an agent's permission
@@ -394,7 +394,7 @@ Four of these, and they're the reason to trust the rest:
   work and whether it's finished — one line, one terminal, open or closed. Not
   the requirement, not dependencies, priorities or due dates, not subtasks,
   attachments or comments. It exists so that an instruction typed into a terminal
-  at 9pm still exists at 3am, and for nothing else; the argument for where that
+  at 9pm is still there at 3am, and for nothing else; the argument for where that
   line sits is [`docs/poltergeist/tasks.md`](docs/poltergeist/tasks.md).
 - **Never be a shortcut around your agent's own permissions.** An agent whose
   CLI keeps `Bash` behind an approval prompt doesn't get execution by way of
@@ -411,7 +411,7 @@ network, and a line of injected text must not be able to promote anybody).
 
 ## Where things get written
 
-Both on by default, both `less`, `grep` and `jq` on the morning after:
+Both are on by default, and both are plain text — `less`, `grep` and `jq` all work on them in the morning:
 
 - `$XDG_STATE_HOME/polter/chat/` — what the agents said to each other.
 - `$XDG_STATE_HOME/polter/terminals/` — what actually happened in each terminal.
@@ -444,7 +444,7 @@ None are required. `polter +show-config --default --docs` prints all of them.
 | `poltergeist-task-idle-after`       | `12h`   | How long a task can go untouched before it's worth mentioning to the supervisor. Untouched, not stuck.               |
 | `poltergeist-group-quiet-after`     | `1h`    | How long a group can go without anybody saying anything before that's mentioned.                                     |
 | `poltergeist-worker-nudge-after`    | `10m`   | How long a worker can sit still with an open task before it's asked whether it meant to report something.            |
-| `poltergeist-compact-after`         | `64KB`  | How much uncompacted conversation a group may hold before the size rides out with the supervisor's next hand-over.    |
+| `poltergeist-compact-after`         | `64KB`  | How much uncompacted conversation a group may hold before its size is reported in the supervisor's next hand-over.    |
 
 ## If the agent says it has no polter tools
 
@@ -457,7 +457,7 @@ Doing that configuration is a plugin's job, not the core's
 switched on and does it: `claude mcp add --scope user`, plus a copy of Polter's
 skills into `~/.claude/skills/polter-*`. So the usual causes are that the plugin
 is off, that `claude` wasn't on `PATH` when Polter started, or that
-`poltergeist-register-mcp` is off. When registration is wanted and no
+`poltergeist-register-mcp` is off. If you want registration and no
 provisioning plugin is on, Polter says so on a terminal screen rather than only
 in a log.
 
@@ -476,7 +476,8 @@ Code only":
 - **The server is ordinary MCP.** `polter +mcp` speaks standard MCP on stdio and
   relays to Polter over a unix socket. Any MCP client can run it. Every terminal
   gets `GHOSTTY_POLTER_SOCKET` and its own `GHOSTTY_POLTER_TOKEN`; the token is
-  what says which terminal an agent is, and an agent can't claim to be another.
+  what says which terminal an agent is speaking from, and an agent can't claim to
+  be another.
 - **What's Claude Code-specific is the setup, and it's a plugin.** The core
   publishes a description of this build — which binary serves the endpoint, which
   skills exist, where their files are — and the `claude-code` plugin turns that
