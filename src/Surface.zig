@@ -707,6 +707,11 @@ pub fn init(
         );
         app.ensurePlugins();
 
+        // The sixth thing on that list, and the one that was missing: an
+        // agent asking `config_get` before any reload was told the
+        // configuration had not been read.
+        app.ensurePoltergeistConfigText(config);
+
         if (app.poltergeist_server) |*srv| {
             if (srv.issueToken(self.id)) |token| {
                 try env.put("GHOSTTY_POLTER_SOCKET", srv.path);

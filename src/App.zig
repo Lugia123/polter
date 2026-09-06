@@ -2686,11 +2686,38 @@ fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
 /// is named. If none has, that is not a failure -- the tab is still opening
 /// -- and the caller is told to go and look. Waiting on it here would park
 /// the socket thread on something the UI thread has to finish.
+/// Render the configuration as text if that has not been done yet.
+///
+/// **Called as a surface starts, because `updateConfig` runs only on a
+/// config reload and neither apprt calls it at launch.** The same reason
+/// the socket, the chat log, the notify window and the plugins are all
+/// primed there -- this was the one thing on that list that was left to
+/// the reload.
+///
+/// What it cost: `config_get` answered *"the configuration has not been
+/// read yet"* to every agent that asked, on a running app with its windows
+/// open, until somebody happened to reload the config. The configuration
+/// had of course been read; **this rendering of it had not**, and the
+/// message named the wrong one of the two.
+///
+/// Idempotent, like the other `ensure` calls it sits with: every surface
+/// runs this and only the first does the work. The reload path still goes
+/// through `refreshPoltergeistConfigText` directly, because there the point
+/// is to replace what is already there.
+pub fn ensurePoltergeistConfigText(self: *App, config: *const Config) void {
+    if (self.poltergeist_config_text.len > 0) return;
+    self.refreshPoltergeistConfigText(config);
+}
+
 /// Re-render the configuration as text.
 ///
 /// Failure leaves the previous text in place rather than clearing it: an
 /// agent reading a slightly stale value is better off than one told there is
 /// no configuration at all, and the next reload will try again.
+///
+/// ⚠️ **On the very first render there is no previous text to leave**, so a
+/// failure here is the one way `poltergeistConfigText` can still answer
+/// `NoConfig` on a running app -- see the note there.
 fn refreshPoltergeistConfigText(self: *App, config: *const Config) void {
     const fmt: configpkg.FileFormatter = .{ .alloc = self.alloc, .config = config };
 
@@ -2717,6 +2744,14 @@ fn poltergeistConfigText(
     key: []const u8,
 ) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
+
+    // **Still reachable, and only one way in.** Every surface primes this
+    // as it starts (`ensurePoltergeistConfigText`), so an app with a window
+    // open has it -- which is what this branch used to answer wrongly. What
+    // is left is the render itself failing on its first try, which leaves
+    // the text empty because there is no earlier value to fall back to.
+    // Rare, and not the same thing as "not read yet", but a real state: the
+    // agent is better told there is nothing to give it than handed "".
     if (self.poltergeist_config_text.len == 0) return error.NoConfig;
     if (key.len == 0) return alloc.dupe(u8, self.poltergeist_config_text);
 
