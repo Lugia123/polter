@@ -854,19 +854,7 @@ test "Command: rt post fork 1" {
 }
 
 fn createTestStdout(io: std.Io, dir: std.Io.Dir) !File {
-    return createTestOutput(io, dir, "stdout.txt");
-}
-
-/// The same thing under a name the caller picks, so a test can capture
-/// the child's stderr as well as its stdout.
-///
-/// **Which matters more than it sounds.** A child that fails explains
-/// itself on stderr -- `cmd.exe` certainly does -- and a test that wires
-/// stdout only sends that explanation to `\\Device\\Null`. Capturing one
-/// stream and discarding the other is how a failure comes back as a code
-/// with nothing attached.
-fn createTestOutput(io: std.Io, dir: std.Io.Dir, name: []const u8) !File {
-    const file = try dir.createFile(io, name, .{ .read = true });
+    const file = try dir.createFile(io, "stdout.txt", .{ .read = true });
     if (builtin.os.tag == .windows) {
         if (windows.exp.kernel32.SetHandleInformation(
             file.handle,
@@ -944,9 +932,6 @@ test "Command: custom env vars" {
     defer td.deinit();
     var stdout = try createTestStdout(testing.io, td.dir);
     defer stdout.close(testing.io);
-    // Captured rather than discarded: see `createTestOutput`.
-    var stderr = try createTestOutput(testing.io, td.dir, "stderr.txt");
-    defer stderr.close(testing.io);
 
     var env = EnvMap.init(testing.allocator);
     defer env.deinit();
@@ -956,7 +941,6 @@ test "Command: custom env vars" {
         .path = "C:\\Windows\\System32\\cmd.exe",
         .args = &.{ "C:\\Windows\\System32\\cmd.exe", "/C", "echo %VALUE%" },
         .stdout = stdout,
-        .stderr = stderr,
         .env = &env,
         .os_pre_exec = null,
         .rt_pre_exec = null,
@@ -967,7 +951,6 @@ test "Command: custom env vars" {
         .path = "/bin/sh",
         .args = &.{ "/bin/sh", "-c", "echo $VALUE" },
         .stdout = stdout,
-        .stderr = stderr,
         .env = &env,
         .os_pre_exec = null,
         .rt_pre_exec = null,
@@ -988,6 +971,15 @@ test "Command: custom env vars" {
     // child's own account of what went wrong was still sitting unread in the
     // file below, thrown away by the early return. A child that fails
     // usually says why, and this discarded the sentence to report a word.
+    //
+    // **Only the order changed. The child is handed the same three handles
+    // it was before.** Giving it a real `stderr` instead of the null device
+    // would collect more -- and it also changes what the child is run with.
+    // That was tried, and this test went green; an instrument may change how
+    // much is recorded, never which code the subject runs, and a subject that
+    // stops failing after being altered has not been explained. Whether the
+    // handle is what flipped it is its own experiment, and it belongs in its
+    // own change.
     const contents = contents: {
         const size = (try stdout.stat(testing.io)).size;
         const data = try testing.allocator.alloc(u8, size);
@@ -997,20 +989,11 @@ test "Command: custom env vars" {
     };
     defer testing.allocator.free(contents);
 
-    const complaint = complaint: {
-        const size = (try stderr.stat(testing.io)).size;
-        const data = try testing.allocator.alloc(u8, size);
-        errdefer testing.allocator.free(data);
-        try testing.expectEqual(size, try stderr.readPositionalAll(testing.io, data, 0));
-        break :complaint data;
-    };
-    defer testing.allocator.free(complaint);
-
-    // Registered after the `defer`s above, so it runs first and both buffers
-    // are still there to read.
+    // Registered after the `defer` above, so it runs first and the buffer is
+    // still there to read.
     errdefer std.debug.print(
-        "\nchild exited {s}\n  stdout ({d}): \"{s}\"\n  stderr ({d}): \"{s}\"\n",
-        .{ @tagName(exit), contents.len, contents, complaint.len, complaint },
+        "\nchild exited {s}, and wrote {d} byte(s) to stdout: \"{s}\"\n",
+        .{ @tagName(exit), contents.len, contents },
     );
 
     // **`expectEqual`, not `expect`: the number is the diagnosis.** `1` is
