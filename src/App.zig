@@ -744,15 +744,11 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
             continue;
         };
 
-        var msg: apprt.surface.Message = .{ .poltergeist_notice = undefined };
-        const line = self.poltergeist.drainIfDue(
-            to,
-            now_ms,
-            &msg.poltergeist_notice,
-        ) orelse continue;
-        msg.poltergeist_notice[line.len] = 0;
+        var buf: [255:0]u8 = undefined;
+        const line = self.poltergeist.drainIfDue(to, now_ms, &buf) orelse continue;
+        buf[line.len] = 0;
 
-        self.surfaceMessage(surface, msg) catch |err| {
+        self.surfaceMessage(surface, self.noticeFor(to, buf)) catch |err| {
             log.warn("poltergeist: could not deliver notices err={}", .{err});
         };
     }
@@ -1989,6 +1985,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
     return .{ .ctx = self, .vtable = &.{
         .readTerminal = poltergeistRead,
         .sendText = poltergeistSend,
+        .agentPresent = poltergeistAgentPresent,
         .sendKey = poltergeistSendKey,
         .performAction = poltergeistPerformAction,
         .quietMs = poltergeistQuiet,
@@ -2659,6 +2656,11 @@ fn poltergeistStoodDown(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) void {
     _ = id;
     self.refreshPoltergeistTabs();
     self.saveSession();
+}
+
+fn poltergeistAgentPresent(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.agentPresent(id);
 }
 
 fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
@@ -3766,9 +3768,7 @@ fn tellTerminalsAboutMessages(self: *App) void {
                 continue;
             buf[line.len] = 0;
 
-            self.surfaceMessage(surface, .{
-                .poltergeist_notice = buf,
-            }) catch |err| {
+            self.surfaceMessage(surface, self.noticeFor(surface.id, buf)) catch |err| {
                 log.warn("poltergeist: could not deliver a message notice err={}", .{err});
             };
         }
@@ -3795,11 +3795,56 @@ pub fn tellSurface(self: *App, id: poltergeistpkg.Bus.Id, text: []const u8) void
     @memcpy(buf[0..text.len], text);
     buf[text.len] = 0;
 
-    self.surfaceMessage(surface, .{
-        .poltergeist_notice = buf,
-    }) catch |err| {
+    self.surfaceMessage(surface, self.noticeFor(id, buf)) catch |err| {
         log.warn("poltergeist: could not tell a terminal its standing err={}", .{err});
     };
+}
+
+/// Whether an agent is listening in this terminal right now.
+///
+/// `false` when Poltergeist's server is not running: there is then no
+/// socket for a sidecar to be on, so no terminal can have an agent
+/// reachable through one. It is also the safe answer -- see `noticeFor`.
+fn agentPresent(self: *App, id: poltergeistpkg.Bus.Id) bool {
+    if (self.poltergeist_server) |*srv| return srv.agentPresent(id);
+    return false;
+}
+
+/// Pick how a line reaches a terminal: typed at whatever is running there,
+/// or printed on the screen for the person.
+///
+/// # The defect this exists for
+///
+/// Every notice was typed into the pty, as if the user had typed it, and
+/// with a return after it. In a terminal running an agent that is right --
+/// it is how the agent is told anything. **In a terminal running a bare
+/// shell, the shell ran it.** Three terminals in one session answered a
+/// task notification with
+/// `expression or statement contains unexpected token "Task"`, in red, on
+/// the user's screen.
+///
+/// # Why this test and not the obvious one
+///
+/// `typePoltergeistText` already reads bracketed-paste mode, and the
+/// tempting move is to reuse it. Two reasons not to. It is consulted only
+/// for multi-line text, and every line here is one line, so it never had a
+/// say. And it would not have helped: bracketed paste frames a paste, it
+/// does not stop the return that follows, so a shell with the mode on runs
+/// the line just the same. A live MCP connection is the only signal a bare
+/// shell cannot produce.
+///
+/// **Printing is the safe answer**, which is why anything unknown lands
+/// there: a line printed to somebody running an agent is a line that agent
+/// does not read, and a line typed at a shell is a command it runs.
+fn noticeFor(
+    self: *App,
+    id: poltergeistpkg.Bus.Id,
+    buf: [255:0]u8,
+) apprt.surface.Message {
+    return if (self.agentPresent(id))
+        .{ .poltergeist_notice = buf }
+    else
+        .{ .poltergeist_alert = buf };
 }
 
 /// How long this app has been awake, in milliseconds. **A duration, never

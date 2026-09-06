@@ -48,6 +48,24 @@ const Slot = struct {
     thread: ?std.Thread = null,
     stream: ?transport.Conn = null,
 
+    /// Who this connection proved itself to be, once its handshake is
+    /// through. `null` until then, and `null` again the moment the
+    /// connection is over.
+    ///
+    /// **This is what makes "is an agent listening in that terminal" a
+    /// question anything can ask.** The handshake already resolves a token
+    /// to a `Caller` (see `connectionMain`), but it used to resolve it into
+    /// a local and nothing outside that thread could see it. Notices are
+    /// typed into a terminal as if a person had typed them, and typed into
+    /// one running a bare shell they are *executed* -- so the party doing
+    /// the typing has to be able to ask this.
+    ///
+    /// **Cleared where `stream` is cleared, not in `releaseSlot`.** The slot
+    /// is only wiped when the accept loop reaps the finished thread, which
+    /// is later -- and in between, this would still name a terminal whose
+    /// agent has already gone.
+    caller: ?Bus.Caller = null,
+
     /// Set by the connection thread on its way out, so the accept loop can
     /// reap it without blocking.
     finished: std.atomic.Value(bool) = .init(false),
@@ -539,6 +557,42 @@ fn claimSlot(self: *Server, stream: transport.Conn) ?usize {
     return null;
 }
 
+/// Whether a terminal has an agent listening in it right now.
+///
+/// **A live connection, not a connection that once happened.** An agent's
+/// sidecar connects when the agent CLI starts it and the connection lasts
+/// as long as the agent does, so this goes false by itself when the agent
+/// exits -- there is no mark for anybody to remember to clear, and a shell
+/// left behind in that terminal cannot inherit one.
+///
+/// **What it is evidence of.** A bare shell has no way to be here: reaching
+/// this requires having connected to the socket and passed the handshake
+/// with the token issued to that surface. It is the one signal about who is
+/// on the other end that the other end cannot fake. The alternatives were
+/// checked and each fails: the bus registers a terminal on a *keypress*, so
+/// an entry proves nothing; every surface gets the socket and token in its
+/// environment, shells included; and bracketed-paste mode is a mode a shell
+/// may well set.
+///
+/// ⚠️ **There is a window.** An agent whose sidecar has not finished its
+/// handshake answers false, and looks exactly like a bare shell. Whoever
+/// acts on a false has to say so -- see the wording in `rpc.zig`.
+pub fn agentPresent(self: *Server, id: Bus.Id) bool {
+    self.slots_mutex.lockUncancelable(self.io);
+    defer self.slots_mutex.unlock(self.io);
+
+    for (0..max_connections) |i| {
+        // A plugin connection carries no surface, so there is nothing here
+        // it could be mistaken for.
+        const caller = self.slots[i].caller orelse continue;
+        switch (caller) {
+            .terminal => |tid| if (tid == id) return true,
+            .plugin => {},
+        }
+    }
+    return false;
+}
+
 fn releaseSlot(self: *Server, index: usize) void {
     self.slots_mutex.lockUncancelable(self.io);
     defer self.slots_mutex.unlock(self.io);
@@ -592,6 +646,9 @@ fn connectionMain(self: *Server, index: usize) void {
         // descriptor, so nobody can act on one this thread has closed.
         self.slots_mutex.lockUncancelable(self.io);
         self.slots[index].stream = null;
+        // Same moment, same lock: the connection is over, so it no longer
+        // speaks for anybody.
+        self.slots[index].caller = null;
         self.slots_mutex.unlock(self.io);
 
         stream.close(self.io);
@@ -605,6 +662,13 @@ fn connectionMain(self: *Server, index: usize) void {
 
     // A connection says who it is once, before anything else.
     const caller = self.handshake(&reader, &writer) orelse return;
+
+    // Recorded, not just held: `agentPresent` is answered off this.
+    {
+        self.slots_mutex.lockUncancelable(self.io);
+        defer self.slots_mutex.unlock(self.io);
+        self.slots[index].caller = caller;
+    }
 
     while (self.running.load(.acquire)) {
         // `takeDelimiter`, not `takeDelimiterExclusive`: the latter leaves

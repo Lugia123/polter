@@ -3298,6 +3298,21 @@ pub const Host = struct {
             submit: bool,
         ) anyerror!void,
 
+        /// Whether an agent is listening in this terminal right now.
+        ///
+        /// **A fact, not a policy.** What to do about a `false` is decided
+        /// in this file, for the reason `task_cancel` already gives about
+        /// its own ordering: the host is the app, which has no tests of its
+        /// own, and this file is pure and checked exhaustively.
+        ///
+        /// True means a live authenticated connection from that terminal --
+        /// something a bare shell cannot produce. False also covers the
+        /// moment before an agent's sidecar has finished connecting.
+        agentPresent: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+        ) bool,
+
         /// The configuration as text, or the lines for one key.
         ///
         /// Text rather than a parsed value: the settings have thirty-odd
@@ -3691,6 +3706,10 @@ pub const Host = struct {
 
     fn sendText(self: Host, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
         return self.vtable.sendText(self.ctx, id, text, submit);
+    }
+
+    fn agentPresent(self: Host, id: Bus.Id) bool {
+        return self.vtable.agentPresent(self.ctx, id);
     }
 
     fn sendKey(self: Host, id: Bus.Id, key: []const u8) anyerror!void {
@@ -4129,6 +4148,19 @@ pub fn dispatch(
             // So each cause says what it is and what to do about it. This is
             // the cheaper half of the fix, and the half that would still
             // have been worth making if line breaks had stayed refused.
+            // ⚠️ **No `agentPresent` check here, and that is deliberate.**
+            // The notices in `task_assign` and `task_cancel` are gated on
+            // one because they are sent *at* a terminal by machinery, and a
+            // bare shell executes them. This is the opposite case: somebody
+            // asked for these exact keystrokes in that exact terminal, and
+            // the case it was written for -- see the test about an agent in
+            // one tab running `./start.sh` in another -- is precisely a
+            // terminal with no agent in it. **Typing at a shell is this
+            // tool's purpose, not its defect.**
+            //
+            // Said here because "deliberately not gated" and "forgotten"
+            // look the same in code, and the next person will find eight
+            // call sites with a check and this one without.
             host.sendText(p.id, p.text, p.submit) catch |err| return switch (err) {
                 error.NoSuchTerminal => failure(error.UnknownTerminal),
 
@@ -4667,6 +4699,26 @@ pub fn dispatch(
 
             var told: []const u8 = " Nobody is on it now.";
             if (p.id != 0) {
+                // **Nobody there to take it, so it is not handed over.**
+                // The notice below is typed into that terminal; typed at a
+                // bare shell it is executed rather than read, which is how
+                // this was found -- three terminals answered a task
+                // notification with a parser error on the user's screen.
+                //
+                // Refusing rather than printing-and-succeeding: an owner
+                // pointing at a terminal that will never read it looks
+                // exactly like a working assignment on the panel, and the
+                // supervisor would wait on work nobody has. A failure is at
+                // least seen.
+                if (!host.agentPresent(p.id)) return .{ .failed = .{
+                    .code = "NoAgentThere",
+                    .message = "there is no agent in that terminal (no live " ++
+                        "MCP connection), so nobody can take this task -- " ++
+                        "start an agent CLI there and assign it again. If you " ++
+                        "have only just started one, give it a moment: it " ++
+                        "counts once it has connected.",
+                } };
+
                 // **And how to hand it back.** This is the one moment the
                 // worker is certain to read something about this task, and
                 // reporting is the half of the arrangement that gets
@@ -4750,6 +4802,27 @@ pub fn dispatch(
             const what = host.taskOwner(p.task) catch |err| return taskFailure(err);
 
             var told: []const u8 = " Nobody was on it, so there was nobody to tell.";
+            if (what.owner != 0 and !host.agentPresent(what.owner)) {
+                // **Cancelled anyway, and this is the one case where that is
+                // right.** The rule below -- nothing is cancelled if the
+                // telling fails -- rests on a premise it states: the work
+                // "is still being done". With no agent in that terminal
+                // there is nobody doing it and nobody who will pick it up,
+                // so holding the cancellation open would keep a task alive
+                // that has no worker.
+                //
+                // ⚠️ This is the *only* case that skips the telling. A
+                // terminal that has an agent but would not take the text
+                // right now (somebody is typing in it) still blocks the
+                // cancellation, because there the premise holds.
+                host.taskCancel(p.task) catch |err| return taskFailure(err);
+                return .{ .text = try std.fmt.allocPrint(
+                    alloc,
+                    "Task {d} cancelled. There is no agent in that terminal, " ++
+                        "so nobody was told -- and nobody is working on it.",
+                    .{p.task},
+                ) };
+            }
             if (what.owner != 0) {
                 const line = try std.fmt.allocPrint(
                     alloc,
@@ -5367,10 +5440,19 @@ const FakeHost = struct {
     /// Whether a group was actually taken off the list.
     destroyed: bool = false,
 
+    /// Whether the terminals this fake stands for have an agent listening.
+    ///
+    /// **True by default because that is what every test written before
+    /// this existed assumed**: they check what an assignment or a
+    /// cancellation does once the notice has been delivered. A test for the
+    /// empty terminal sets it false.
+    agent_present: bool = true,
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
             .sendText = send,
+            .agentPresent = agentPresent,
             .sendKey = sendKey,
             .performAction = performAction,
             .openTerminal = openTerminal,
@@ -5780,6 +5862,11 @@ const FakeHost = struct {
         if (self.refuse) return error.Refused;
         if (self.send_error) |err| return err;
         self.sent = .{ .id = id, .text = text, .submit = submit };
+    }
+
+    fn agentPresent(ctx: *anyopaque, _: Bus.Id) bool {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.agent_present;
     }
 
     fn quietMs(ctx: *anyopaque, _: Bus.Id) u64 {
@@ -7537,6 +7624,84 @@ fn panelFixture(panel: *Tasks) FakeHost {
         .{ .id = worker, .title = "worker" },
         .{ .id = other, .title = "other" },
     } };
+}
+
+// **A terminal with no agent in it does not get the work.**
+//
+// The defect: the notice below is typed into the terminal as if a person had
+// typed it, and a terminal running a bare shell *ran* it. Three of them
+// answered a task notification with a parser error, in red, on the user's
+// screen.
+//
+// Both halves are asserted, and the second is the one that matters. Refusing
+// is easy; refusing **without leaving an owner behind** is the point. An
+// assignment pointing at a terminal that will never read it is
+// indistinguishable on the panel from one that worked.
+test "a terminal with no agent listening is not given the work" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    fake.agent_present = false;
+
+    const id = try panel.create("build", "take the machine");
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+    } });
+
+    try testing.expectEqualStrings("NoAgentThere", res.failed.code);
+
+    // Nothing was typed at it, and -- the half that would be silent --
+    // nobody owns the task.
+    try testing.expect(fake.sent == null);
+    try testing.expectEqual(@as(Bus.Id, 0), panel.get(id).?.owner);
+
+    // The supervisor is told what to do about it, and that a sidecar which
+    // has only just started has not connected yet.
+    try testing.expect(std.mem.indexOf(u8, res.failed.message, "start an agent") != null);
+    try testing.expect(std.mem.indexOf(u8, res.failed.message, "moment") != null);
+}
+
+// **Cancelling a task whose terminal no longer has an agent still cancels
+// it**, which is the one case that skips the telling.
+//
+// The rule it is an exception to is stated where it lives: nothing is
+// cancelled if the telling fails, because answering `ok` for a message
+// nobody heard would have the supervisor stop thinking about work that "is
+// still being done". That premise is what fails here -- with no agent there
+// is nobody doing it and nobody who will pick it up, and holding the
+// cancellation open would leave a task alive with no worker.
+test "cancelling reaches a task whose terminal has no agent left" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "take the machine");
+    try panel.assign(id, worker);
+
+    // The agent that was assigned it has since gone.
+    fake.agent_present = false;
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{
+        .task = id,
+    } });
+
+    // Cancelled, nothing typed at the empty terminal, and the supervisor is
+    // told both facts rather than being left to assume the worker heard.
+    try testing.expect(panel.get(id).?.state == .cancelled);
+    try testing.expect(fake.sent == null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "no agent") != null);
 }
 
 test "making and handing out work is the supervisor's" {
