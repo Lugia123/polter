@@ -703,6 +703,10 @@ typedef struct {
   const char* prefix;
   ghostty_action_poltergeist_role_e role;
   bool shielded;
+  // The user is holding this terminal to its work. Sent as its own field
+  // because it is not derivable out here: a terminal with no role carries no
+  // prefix whether it is held or not.
+  bool held;
 } ghostty_action_poltergeist_mark_s;
 
 // apprt.action.PromptTitle

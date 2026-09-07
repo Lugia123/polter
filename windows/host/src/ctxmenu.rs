@@ -171,13 +171,14 @@ const ROLE_WATCHED: u8 = 2;
 ///
 /// A null surface is the core naming no terminal, and `hlogf!` says so rather
 /// than picking the window in front.
-pub fn on_poltergeist_mark(surface: Surface, role: i32, shielded: bool) {
+pub fn on_poltergeist_mark(surface: Surface, role: i32, shielded: bool, held: bool) {
     hlogf!(
         crate::tabs::frame_of_surface(surface).unwrap_or_default(),
-        "[ctx] poltergeist mark notified for surface {:?}: role={} shielded={}",
+        "[ctx] poltergeist mark notified for surface {:?}: role={} shielded={} held={}",
         surface,
         role,
-        shielded
+        shielded,
+        held
     );
 }
 
@@ -192,7 +193,7 @@ static PG_NEVER_TOLD_LOGGED: AtomicBool = AtomicBool::new(false);
 /// screen from one whose state was never learned -- which is exactly the
 /// confusion §3.3 says these ticks exist to prevent. So the difference is
 /// stated in the log instead of left to be guessed at.
-fn mark_of(surface: Surface) -> Option<(u8, bool)> {
+fn mark_of(surface: Surface) -> Option<(u8, bool, bool)> {
     if surface.is_null() {
         return None;
     }
@@ -232,15 +233,19 @@ fn binding_on(surface: Surface, owner: HWND, name: &str) -> bool {
 /// **which surface the state is about** (`hud::is_readonly_for`).
 /// `hud::is_readonly()` exists and resolves the focused surface -- its own
 /// doc comment says a menu must not use it.
-fn tick_state(surface: Surface, mark: Option<(u8, bool)>, t: Tick) -> bool {
+fn tick_state(surface: Surface, mark: Option<(u8, bool, bool)>, t: Tick) -> bool {
     match t {
         Tick::Readonly => crate::hud::is_readonly_for(surface as usize),
         // **Three bits, read three times.** Sharing one getter between the
         // three is the most natural way to write this and would tick all
         // three together, which no test that only looks at one row can see.
-        Tick::PgSupervisor => matches!(mark, Some((r, _)) if r == ROLE_SUPERVISOR),
-        Tick::PgWatched => matches!(mark, Some((r, _)) if r == ROLE_WATCHED),
-        Tick::PgShielded => matches!(mark, Some((_, s)) if s),
+        // The fourth bit -- the hold -- is carried here too since task 276,
+        // and this menu has no row for it: the hold row lives on the strip
+        // menu alone, because only the person at the keyboard may set one and
+        // that is a decision about which doors exist, not about ticks.
+        Tick::PgSupervisor => matches!(mark, Some((r, ..)) if r == ROLE_SUPERVISOR),
+        Tick::PgWatched => matches!(mark, Some((r, ..)) if r == ROLE_WATCHED),
+        Tick::PgShielded => matches!(mark, Some((_, s, _)) if s),
     }
 }
 
@@ -744,26 +749,26 @@ mod tests {
     /// dropped -- e.g. by testing `!= none` for both.
     #[test]
     fn supervisor_and_watched_are_mutually_exclusive() {
-        assert!(tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false)), Tick::PgSupervisor));
-        assert!(!tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false)), Tick::PgWatched));
+        assert!(tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false, false)), Tick::PgSupervisor));
+        assert!(!tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false, false)), Tick::PgWatched));
 
-        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false)), Tick::PgSupervisor));
-        assert!(tick_state(NO_SURFACE, Some((ROLE_WATCHED, false)), Tick::PgWatched));
+        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false)), Tick::PgSupervisor));
+        assert!(tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false)), Tick::PgWatched));
     }
 
     /// The shield is independent of the role: a shielded terminal that is
     /// neither supervisor nor watched must tick exactly one row.
     #[test]
     fn the_shield_is_its_own_bit() {
-        assert!(tick_state(NO_SURFACE, Some((0, true)), Tick::PgShielded));
-        assert!(!tick_state(NO_SURFACE, Some((0, true)), Tick::PgSupervisor));
-        assert!(!tick_state(NO_SURFACE, Some((0, true)), Tick::PgWatched));
-        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false)), Tick::PgShielded));
+        assert!(tick_state(NO_SURFACE, Some((0, true, false)), Tick::PgShielded));
+        assert!(!tick_state(NO_SURFACE, Some((0, true, false)), Tick::PgSupervisor));
+        assert!(!tick_state(NO_SURFACE, Some((0, true, false)), Tick::PgWatched));
+        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false)), Tick::PgShielded));
     }
 
     /// **Never told is not "all off".** Both draw unticked; only the log line
     /// in `show` separates them, which is why `None` has to reach the tick
-    /// function rather than being flattened to `(0, false)` on the way in.
+    /// function rather than being flattened to `(0, false, false)` on the way in.
     #[test]
     fn an_unknown_mark_ticks_nothing_and_is_not_role_none() {
         for t in [Tick::PgSupervisor, Tick::PgWatched, Tick::PgShielded] {
@@ -771,8 +776,8 @@ mod tests {
         }
         // The distinction this test exists to protect: the two cases are
         // different values, so a caller can tell them apart.
-        let none_mark: Option<(u8, bool)> = None;
-        let role_none: Option<(u8, bool)> = Some((0, false));
+        let none_mark: Option<(u8, bool, bool)> = None;
+        let role_none: Option<(u8, bool, bool)> = Some((0, false, false));
         assert_ne!(none_mark, role_none);
     }
 }

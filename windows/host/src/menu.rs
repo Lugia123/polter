@@ -132,6 +132,7 @@ pub enum Flag {
     Supervisor,
     Watched,
     Shielded,
+    Held,
 }
 
 /// Shorthand for the common case: a labelled row that runs a core action.
@@ -306,12 +307,18 @@ const AGENTS_ROWS: &[Row] = &[
     // `1ca47f03b` closed the palette door it left open; what was left was a
     // gate with no switch, and on Windows there was not even a name for it.
     //
-    // **No tick, and not by oversight.** The other three rows here read their
-    // state out of `poltergeist_mark`, and that action carries only
-    // `(prefix, role, shielded)` -- the hold lives in the prefix's glyphs,
-    // which `tabs::set_mark_for_surface` does not keep. A tick would need the
-    // core's mark to carry `held`; that is task 276 and not this row.
-    act("保持在岗", "poltergeist_toggle_held"),
+    // **It ticks now, and what it took is worth reading before touching it.**
+    // The note that stood here said the row could not tick because
+    // `poltergeist_mark` carried only `(prefix, role, shielded)` and the hold
+    // lived in the prefix's glyphs. Task 276 found the half nobody had
+    // measured: the action was not merely missing a field, **it was not being
+    // sent at all.** `Surface.updatePoltergeistTabMark` compared three fields
+    // to decide whether anything had changed, `held` was not one of them, and
+    // a terminal with no role has the same empty mark held or not -- so
+    // holding an ordinary terminal changed nothing it compared, and it
+    // returned before performing the action. The hold was toggled, the core
+    // logged it, and no apprt was ever told.
+    toggle("保持在岗", "poltergeist_toggle_held", Flag::Held, Ready::Always),
     sep(),
     // Host rows: the core knows nothing about either page.
     act("插件…", "__polter_plugin_page"),
@@ -603,13 +610,14 @@ fn default_state(flag: Flag) -> Option<bool> {
         // -- nothing in the host knew -- and that showed up in the log as
         // `4 evaluable` out of five.
         Flag::FloatOnTop => Some(crate::prompt::is_float_on_top()),
-        Flag::Supervisor | Flag::Watched | Flag::Shielded => {
+        Flag::Supervisor | Flag::Watched | Flag::Shielded | Flag::Held => {
             let active = crate::tabs::active_surface(crate::tabs::overlay_frame());
-            let (role, shielded) = crate::tabs::mark_for_surface(active)?;
+            let (role, shielded, held) = crate::tabs::mark_for_surface(active)?;
             Some(match flag {
                 Flag::Supervisor => role == ROLE_SUPERVISOR,
                 Flag::Watched => role == ROLE_WATCHED,
-                _ => shielded,
+                Flag::Shielded => shielded,
+                _ => held,
             })
         }
     }
@@ -711,6 +719,7 @@ const ALL_FLAGS: &[Flag] = &[
     Flag::Supervisor,
     Flag::Watched,
     Flag::Shielded,
+    Flag::Held,
 ];
 
 /// Flags something can currently answer, and flags ticked right now.
@@ -738,6 +747,7 @@ fn check_state_counts() -> (usize, usize, Vec<&'static str>) {
                 Flag::Supervisor => "Supervisor",
                 Flag::Watched => "Watched",
                 Flag::Shielded => "Shielded",
+                Flag::Held => "Held",
             }),
         }
     }
@@ -1429,8 +1439,13 @@ mod tests {
     /// nothing.
     #[test]
     fn every_flag_is_used_by_exactly_one_row() {
-        for flag in [Flag::ReadOnly, Flag::FloatOnTop, Flag::Supervisor, Flag::Watched, Flag::Shielded] {
-            let n = all_rows().iter().filter(|r| r.check == Some(flag)).count();
+        // **Iterated from `ALL_FLAGS` rather than spelled out**, since task
+        // 276 added the sixth. A hand-written list here is a second place a
+        // new flag has to be remembered, and the flag that was missed last
+        // time was missed in exactly such a list -- the three-field guard in
+        // `Surface.updatePoltergeistTabMark`.
+        for flag in ALL_FLAGS {
+            let n = all_rows().iter().filter(|r| r.check == Some(*flag)).count();
             assert_eq!(n, 1, "{flag:?} is on {n} rows");
         }
     }

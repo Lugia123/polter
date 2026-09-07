@@ -238,9 +238,9 @@ pub const SECURE_INPUT_OFF: i32 = 1;
 pub const SECURE_INPUT_TOGGLE: i32 = 2;
 
 /// `ghostty_action_poltergeist_mark_s`. The prefix is the core's rendered
-/// glyphs; `role` and `shielded` are the meaning, which is what a menu item
-/// needs -- **a tick cannot be derived from a string**, which is the reason
-/// the core sends both.
+/// glyphs; `role`, `shielded` and `held` are the meaning, which is what a menu
+/// item needs -- **a tick cannot be derived from a string**, which is the
+/// reason the core sends both.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PoltergeistMark {
@@ -248,6 +248,12 @@ pub struct PoltergeistMark {
     /// `ghostty_action_poltergeist_role_e`: 0 none, 1 supervisor, 2 watched.
     pub role: i32,
     pub shielded: bool,
+    /// The user is holding this terminal to its work.
+    ///
+    /// **Its own field and not a glyph inside `prefix`**, since task 276. A
+    /// terminal with no role carries no prefix at all, held or not, so the
+    /// hold was invisible out here in exactly the case that is normal.
+    pub held: bool,
 }
 
 /// `ghostty_action_poltergeist_close_scope_e`.
@@ -349,14 +355,18 @@ impl Action {
     }
 
     /// `ghostty_action_poltergeist_mark_s { const char* prefix; int role;
-    /// bool shielded; }`. The pointer is 8-aligned, so `role` is at offset 8
-    /// and `shielded` at 12 -- **not** packed after the pointer at 8 and 12
-    /// by luck: the same 4-alignment rule that put `resize_split`'s enum at 4
-    /// rather than 2 applies here, and getting it wrong reads a byte of
-    /// padding as the tick.
-    pub fn as_poltergeist_mark(&self) -> (i32, bool) {
+    /// bool shielded; bool held; }`. The pointer is 8-aligned, so `role` is at
+    /// offset 8 and `shielded` at 12 -- **not** packed after the pointer at 8
+    /// and 12 by luck: the same 4-alignment rule that put `resize_split`'s
+    /// enum at 4 rather than 2 applies here, and getting it wrong reads a byte
+    /// of padding as the tick.
+    ///
+    /// `held` is a second `bool` immediately after `shielded`, at 13. **Added
+    /// at the end on purpose**: every offset above it is unchanged, so the
+    /// struct grew without moving anything an older reading depended on.
+    pub fn as_poltergeist_mark(&self) -> (i32, bool, bool) {
         let role = i32::from_ne_bytes(self.payload[8..12].try_into().unwrap());
-        (role, self.payload[12] != 0)
+        (role, self.payload[12] != 0, self.payload[13] != 0)
     }
 
     /// `ghostty_action_poltergeist_close_s { scope; bool confirm; result*; }`.

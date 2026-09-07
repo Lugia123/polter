@@ -192,6 +192,7 @@ poltergeist_tab_mark: poltergeistpkg.Bus.TabMark = .none,
 /// compared to know the tab is already saying the right thing.
 poltergeist_tab_shielded: bool = false,
 poltergeist_tab_role: poltergeistpkg.Bus.Role = .none,
+poltergeist_tab_held: bool = false,
 
 /// When a real key event last arrived from the user.
 ///
@@ -3528,15 +3529,35 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     );
     const shielded = self.app.poltergeist.isShielded(self.id);
     const role = self.app.poltergeist.roleOf(self.id);
+    const held = if (self.app.poltergeist.get(self.id)) |e| e.held else false;
 
     // Nothing has changed for this tab: leave it alone rather than
     // resending the same mark every time anything happens.
-    if (mark == self.poltergeist_tab_mark and
-        shielded == self.poltergeist_tab_shielded and
-        role == self.poltergeist_tab_role) return;
+    //
+    // ⚠️ **Compared as a whole rather than field by field, and that is the
+    // fix as much as `held` itself is.** This was three `and`ed comparisons
+    // and `held` was not one of them, so holding a terminal that nobody
+    // watches changed nothing here and the action was never sent: the hold
+    // was toggled, the log said so, and no apprt was ever told. A field added
+    // to `PoltergeistTabState` from now on is compared because it is there,
+    // which is the only version of this that cannot be forgotten again.
+    const now: PoltergeistTabState = .{
+        .mark = mark,
+        .shielded = shielded,
+        .role = role,
+        .held = held,
+    };
+    const was: PoltergeistTabState = .{
+        .mark = self.poltergeist_tab_mark,
+        .shielded = self.poltergeist_tab_shielded,
+        .role = self.poltergeist_tab_role,
+        .held = self.poltergeist_tab_held,
+    };
+    if (!poltergeistTabMarkChanged(was, now)) return;
     self.poltergeist_tab_mark = mark;
     self.poltergeist_tab_shielded = shielded;
     self.poltergeist_tab_role = role;
+    self.poltergeist_tab_held = held;
 
     // Unmarked is an empty prefix, not an empty title. This no longer
     // touches the title at all, so a tab the user renamed keeps its name
@@ -3555,10 +3576,70 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
                 .watched => .watched,
             },
             .shielded = shielded,
+            .held = held,
         },
     ) catch |err| {
         log.warn("poltergeist: could not mark the tab err={}", .{err});
     };
+}
+
+/// Everything an apprt is told about a tab's mark, as one value.
+///
+/// It exists so the "has anything changed" question is asked of the whole of
+/// it rather than of a list somebody has to remember to extend.
+const PoltergeistTabState = struct {
+    mark: poltergeistpkg.Bus.TabMark,
+    shielded: bool,
+    role: poltergeistpkg.Bus.Role,
+    held: bool,
+};
+
+/// Is the new state different from the last one the apprt was sent?
+///
+/// **`std.meta.eql`, not a hand-written comparison**, and the difference is
+/// the whole reason this is a named function with a test under it. The
+/// hand-written version compared three of the four fields; the fourth was
+/// `held`, and the symptom was that the hold row in every apprt's menu could
+/// never tick, because the action carrying the answer was never sent at all.
+fn poltergeistTabMarkChanged(was: PoltergeistTabState, now: PoltergeistTabState) bool {
+    return !std.meta.eql(was, now);
+}
+
+test "a hold is a change even when nothing else moved" {
+    const testing = std.testing;
+    const base: PoltergeistTabState = .{
+        .mark = .none,
+        .shielded = false,
+        .role = .none,
+        .held = false,
+    };
+
+    // **The defect, as one assertion.** A terminal nobody watches has no mark
+    // whether it is held or not -- `Bus.tabMark` returns `.none` for
+    // `role == .none` -- so this is the whole of what tells the apprt the
+    // hold happened. Before this was a struct comparison the answer was
+    // `false`, `updatePoltergeistTabMark` returned early, and no
+    // `poltergeist_mark` action was ever performed.
+    var held = base;
+    held.held = true;
+    try testing.expect(poltergeistTabMarkChanged(base, held));
+    try testing.expect(poltergeistTabMarkChanged(held, base));
+
+    // The three that always worked, so a fix here cannot quietly cost one.
+    var m = base;
+    m.mark = .on_duty;
+    try testing.expect(poltergeistTabMarkChanged(base, m));
+    var sh = base;
+    sh.shielded = true;
+    try testing.expect(poltergeistTabMarkChanged(base, sh));
+    var r = base;
+    r.role = .watched;
+    try testing.expect(poltergeistTabMarkChanged(base, r));
+
+    // And the reason the guard exists at all: identical state is not a
+    // change, or every sampler tick would resend the same mark.
+    try testing.expect(!poltergeistTabMarkChanged(base, base));
+    try testing.expect(!poltergeistTabMarkChanged(held, held));
 }
 
 /// Enough room for the widest mark: the shield in front of the widest

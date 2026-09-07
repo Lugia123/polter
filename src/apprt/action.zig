@@ -1916,6 +1916,22 @@ pub const PoltergeistMark = struct {
     role: Role,
     shielded: bool,
 
+    /// The user is holding this terminal to its work.
+    ///
+    /// **Sent for the same reason `role` and `shielded` are, and it is the
+    /// same cost coming due a second time.** The note below says the first
+    /// version sent the prefix alone and that an apprt could not see the
+    /// meaning; `role` and `shielded` were added when a menu item needed to
+    /// tick itself. The hold stayed behind in the glyphs -- `\u{25C9}` and
+    /// `\u{25CE}` are the ring -- so the hold row was the one toggle in the
+    /// menu that could not show its own state, on every apprt at once.
+    ///
+    /// ⚠️ **It is not derivable from `role` and the prefix out here.** A
+    /// terminal with no role has no mark at all, held or not, so the prefix
+    /// is empty in both states and there is nothing for an apprt to read. The
+    /// only way the hold reaches a menu is as its own field.
+    held: bool,
+
     /// What this terminal is in the arrangement.
     ///
     /// Sent alongside the rendered prefix rather than instead of it. The
@@ -1939,6 +1955,7 @@ pub const PoltergeistMark = struct {
         prefix: [*:0]const u8,
         role: Role,
         shielded: bool,
+        held: bool,
     };
 
     pub fn cval(self: PoltergeistMark) C {
@@ -1946,6 +1963,7 @@ pub const PoltergeistMark = struct {
             .prefix = self.prefix.ptr,
             .role = self.role,
             .shielded = self.shielded,
+            .held = self.held,
         };
     }
 
