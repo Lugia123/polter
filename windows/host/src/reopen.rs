@@ -244,6 +244,134 @@ pub fn stack_depth() -> (usize, usize) {
     (depth(), LIMIT)
 }
 
+// ---------------------------------------------------------------- redo
+//
+// **`redo` is the other half of `undo`, and it is a different stack rather
+// than a cursor into this one.** A cursor would have to survive the person
+// closing another tab in between -- at which point "one step forward" has two
+// defensible meanings and the wrong one silently closes a tab they are working
+// in. Two stacks have one meaning each: `STACK` is tabs that were closed and
+// could come back, `REDO` is tabs that came back and could go again.
+//
+// **`REDO` is not cleared when something else is closed**, which is where this
+// departs from `NSUndoManager` (whose redo stack is discarded by any new
+// undoable action). The reason macOS discards it does not apply: its undo
+// entries are arbitrary closures whose preconditions cannot be re-checked, so
+// a stale one has to be thrown away in advance. An entry here is a `TabId`,
+// and whether it is still valid is a question that can simply be asked at the
+// moment of the redo -- so an entry is checked rather than pre-emptively
+// discarded, and interleaving undo with unrelated closes keeps working.
+//
+// **What is not here.** `undo` on this host means one thing -- put back the
+// tab you closed -- because that is the one undoable thing it records. macOS
+// registers window closes and split closes with its undo manager as well;
+// those are not recorded anywhere in this host, so they are missing from
+// *both* halves rather than being half-implemented in this one.
+
+// **There is no `can_redo`, and its absence is deliberate.** `can_reopen`
+// exists because a menu row greys on it. Nothing greys on redo -- there is
+// no redo row in `menu.rs` -- so a predicate here would be a guarantee with
+// no reader, which is the shape `action.zig`'s tag test removed from itself
+// for the same reason: a branch whose floor cannot be built looks like
+// coverage and is not. Add it with the row, not before it.
+
+/// A tab that `undo` put back, and which `redo` would close again.
+struct Redo {
+    /// The window it landed in. Stored rather than looked up later: the tab
+    /// can be dragged to another strip, and closing "wherever it is now" is a
+    /// different promise from the one this entry made.
+    frame: isize,
+    tab: TabId,
+}
+
+static REDO: Mutex<Vec<Redo>> = Mutex::new(Vec::new());
+
+/// A reopened tab exists now. Called from `tabs.rs` once `ReopenTab` has
+/// actually built it.
+///
+/// **Not called from `reopen_last`**, and that is the whole reason this is a
+/// separate entry point: `reopen_last` only *queues* the work, so the tab it
+/// is about does not exist yet and has no identity to record. Arming the redo
+/// there would arm it for a tab that may never be built -- and `ReopenTab`
+/// has a refusal path that puts the entry back on `STACK`.
+pub fn note_reopened(frame: HWND, id: TabId) {
+    let depth = match REDO.lock() {
+        Ok(mut r) => {
+            r.push(Redo { frame: frame.0 as isize, tab: id });
+            // The same bound as the undo side, for the same reason, and
+            // dropped from the bottom so the newest is always redoable.
+            while r.len() > LIMIT {
+                r.remove(0);
+            }
+            r.len()
+        }
+        Err(_) => {
+            // process-wide: one redo stack, one mutex; a poisoned lock is a
+            // fact about the process
+            plogf!("[redo] the stack is poisoned; {:?} will not be redoable", id);
+            return;
+        }
+    };
+    wlogf!(frame, "[redo] {:?} is redoable; stack {}/{}", id, depth, LIMIT);
+}
+
+/// Close again the most recently reopened tab.
+///
+/// Entries whose tab has since gone -- the person closed it by hand, or its
+/// window did -- are dropped as they are found rather than refused, so a
+/// redo reaches the newest tab that is *actually* still there. Each skip
+/// leaves a line: silently walking past three entries and closing a fourth is
+/// otherwise indistinguishable from closing the one that was expected.
+pub fn redo_last() -> bool {
+    loop {
+        let entry = match REDO.lock() {
+            Ok(mut r) => r.pop(),
+            Err(_) => {
+                // process-wide: one redo stack, one mutex; a poisoned lock is
+                // a fact about the process
+                plogf!("[redo] the stack is poisoned; nothing closed");
+                return false;
+            }
+        };
+        let Some(entry) = entry else {
+            // process-wide: the redo stack is shared, so "empty" is not a fact
+            // about one window -- and the caller's line already carries the
+            // window that asked, the way `reopen_last` says of its own
+            plogf!("[redo] nothing to redo");
+            return false;
+        };
+        let frame = HWND(entry.frame as *mut std::ffi::c_void);
+        match crate::tabs::index_of(frame, entry.tab) {
+            Some((at, of)) => {
+                wlogf!(
+                    frame,
+                    "[redo] closing {:?} again (tab {} of {})",
+                    entry.tab,
+                    at + 1,
+                    of
+                );
+                // The ordinary close path, so this lands on `STACK` again and
+                // the pair stays symmetric: what redo closes, undo can reopen.
+                crate::tabs::close_tab(frame, entry.tab);
+                return true;
+            }
+            None => {
+                wlogf!(
+                    frame,
+                    "[redo] {:?} is gone already; skipping it and looking further back",
+                    entry.tab
+                );
+            }
+        }
+    }
+}
+
+/// How deep the redo stack is, and how deep it may get. The counterpart of
+/// [`stack_depth`], for the same two readers.
+pub fn redo_depth() -> (usize, usize) {
+    (REDO.lock().map(|r| r.len()).unwrap_or(0), LIMIT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

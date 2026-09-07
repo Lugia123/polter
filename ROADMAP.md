@@ -48,10 +48,11 @@ daily, and that is the honest blocker.
 
 These are specific and each one has a place in the code.
 
-- **Action parity.** The host handles **46 of the core's 72** keybinding
-  actions. The remaining 26 are a difference, not a to-do list: some are GTK-
-  or macOS-specific and should never exist here, and which of the rest matter
-  on Windows has not been worked out. Both numbers are measured rather than
+- **Action parity.** The host handles **58 of the core's 72** keybinding
+  actions (2026-09-08). The remaining 14 are a difference, not a to-do list:
+  seven are GTK- or macOS-specific and should never exist here, two are the
+  inspector, which libghostty publishes no renderer for outside Apple, and the
+  rest are the ones still being worked through. Both numbers are measured rather than
   remembered, and the commands are in
   [`docs/windows/status.md`](docs/windows/status.md) — **an earlier version of
   this line said 24, from a command anchored to line numbers that had moved.**

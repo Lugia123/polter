@@ -121,6 +121,8 @@ mod reload;
 mod reopen;
 mod session;
 mod winid;
+mod winnav;
+mod wintitle;
 mod search;
 mod shell;
 mod strip;
@@ -2485,13 +2487,22 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             if let Some(t) = action.as_cstr() {
                 let t = t.to_string_lossy().to_string();
                 alogf!(origin, "[action] set_title {:?}", t);
-                let mut wide: Vec<u16> = t.encode_utf16().collect();
-                wide.push(0);
-                let h = HWND_G.load(Ordering::Acquire);
-                if !h.is_null() {
-                    unsafe {
-                        let _ = SetWindowTextW(HWND(h), PCWSTR(wide.as_ptr()));
-                    }
+                // **Through `wintitle`, and not to `HWND_G`.** Two things
+                // were wrong with writing the caption here. The window was
+                // the *first* one (`HWND_G`), so a title announced in the
+                // second window renamed the first; and it went straight to
+                // the caption, so it overwrote whatever `set_window_title`
+                // had been asked to put there -- at the next prompt, which
+                // is far enough from the rename to look unrelated.
+                match origin {
+                    Some(frame) => wintitle::set_program(frame, &t),
+                    // process-wide: an app-targeted title names no window, so
+                    // there is no caption this could belong to
+                    None => plogf!(
+                        "[title] set_title {:?} names no window (target tag={});                          no caption changed",
+                        t,
+                        target.tag
+                    ),
                 }
                 // The window title and the tab label track the same string
                 // until something calls set_tab_title with its own.
@@ -2896,6 +2907,126 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         ffi::ACTION_COLOR_CHANGE => {
             let (kind, r, g, b) = action.as_color_change();
             termcolor::on_color_change(origin, target_surface(&target), kind, r, g, b)
+        }
+
+        // ---- task 272: the window/tab/edit batch ----
+
+        // **Undo means one thing on this host: put back the tab you closed.**
+        // macOS routes this into an `NSUndoManager` that several features
+        // register with; this host records exactly one kind of undoable event
+        // (`reopen.rs`), so this arm is the whole of it rather than a
+        // dispatcher. `reopen_last` answers false on an empty stack, and that
+        // false is the honest one -- the core asked for an undo and none
+        // happened.
+        ffi::ACTION_UNDO => match origin {
+            Some(frame) => {
+                let ok = reopen::reopen_last(frame);
+                wlogf!(frame, "[action] undo -> reopen {}", ok as u8);
+                ok
+            }
+            None => {
+                // process-wide: the action named no window, and a reopened
+                // tab has to land in one -- see `reopen_last`'s own note on
+                // why the opener is handed the window that asked
+                plogf!("[action] undo names no window (target tag={}); nothing reopened", target.tag);
+                false
+            }
+        },
+
+        // The other half of the pair. See the `REDO` note in `reopen.rs` for
+        // why it is a second stack rather than a cursor into the first, and
+        // for what neither half covers.
+        ffi::ACTION_REDO => {
+            let ok = reopen::redo_last();
+            let (deep, limit) = reopen::redo_depth();
+            alogf!(origin, "[action] redo -> {}; stack {}/{}", ok as u8, deep, limit);
+            ok
+        }
+
+        // **App-targeted by nature**, so it does not go through `origin`:
+        // there is no one window this is about. `winnav::close_all` takes the
+        // list once and sends every window through the same terminus
+        // `close_window` uses.
+        ffi::ACTION_CLOSE_ALL_WINDOWS => {
+            // process-wide: the action is about every window, so naming one
+            // would be picking a subject it does not have
+            plogf!("[action] close_all_windows (target tag={})", target.tag);
+            winnav::close_all()
+        }
+
+        // `ghostty_action_goto_window_e`: 0 previous, 1 next.
+        ffi::ACTION_GOTO_WINDOW => {
+            let dir = action.as_i32();
+            let ok = winnav::goto(origin, dir);
+            alogf!(origin, "[action] goto_window dir={} -> {}", dir, ok as u8);
+            ok
+        }
+
+        // **The window's caption, not the tab's label** -- `set_tab_title` is
+        // the other one and they are deliberately separate arms.
+        //
+        // The core's own documentation of this binding is inconsistent and
+        // was not followed blindly: `Binding.zig` says "If the title is
+        // empty, the *tab* title override is cleared" and marks it "Only
+        // implement on Linux", while `action.zig` calls it "the window title
+        // override for the target's tab". GTK -- the only apprt that
+        // implements it -- sets the *window*'s override and treats an empty
+        // string as a clear (`application.zig`'s `setWindowTitle`). That is
+        // what this follows, because it is the behaviour that exists rather
+        // than the sentence that describes it.
+        ffi::ACTION_SET_WINDOW_TITLE => {
+            let Some(t) = action.as_cstr().map(|c| c.to_string_lossy().to_string()) else {
+                alogf!(origin, "[action] set_window_title with no string; nothing changed");
+                return false;
+            };
+            match origin {
+                Some(frame) => {
+                    let ok = wintitle::set_override(frame, &t);
+                    let (tracked, overridden) = wintitle::depth();
+                    wlogf!(
+                        frame,
+                        "[action] set_window_title {:?} -> {}; {} of {} window(s) overridden",
+                        t,
+                        ok as u8,
+                        overridden,
+                        tracked
+                    );
+                    ok
+                }
+                None => {
+                    // process-wide: a window title with no window is not a
+                    // thing that can be applied anywhere
+                    plogf!(
+                        "[action] set_window_title {:?} names no window (target tag={}); dropped",
+                        t,
+                        target.tag
+                    );
+                    false
+                }
+            }
+        }
+
+        // **Resolved to a tab identity here and queued.** The action names a
+        // surface; which tab that surface is in is a question only this side
+        // can answer, and answering it later -- in the queue, after other ops
+        // have run -- would answer it about a different tab set.
+        ffi::ACTION_MOVE_TAB_TO_NEW_WINDOW => {
+            let tab = target_surface(&target).and_then(tabs::tab_of_surface).map(|(_, id)| id);
+            match (origin, tab) {
+                (Some(frame), Some(id)) => {
+                    wlogf!(frame, "[action] move_tab_to_new_window {:?}", id);
+                    queue_from(origin, Op::MoveTabToNewWindow { tab: id }, "move_tab_to_new_window action")
+                }
+                _ => {
+                    alogf!(
+                        origin,
+                        "[action] move_tab_to_new_window: no tab for this target (tag={}); \
+                         nothing moved",
+                        target.tag
+                    );
+                    false
+                }
+            }
         }
 
         ACTION_RENDER => true,

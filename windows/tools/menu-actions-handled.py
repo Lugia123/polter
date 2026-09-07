@@ -67,15 +67,18 @@ import sys
 
 # **Measured, not chosen.** Two classes, counted together because the remedy is
 # the same line of text: rows with no `cb_action` branch and no `// greyed:`
-# reason, and rows greyed by a decision with no reason. Five today --
-# `move_tab_to_new_window`, whose row is greyed
-# in `strip.rs` with a paragraph explaining exactly why -- in a doc comment on
-# `enabled()`, not in the form this tool can read; and the three rows `menu.rs`
-# greys on purpose (`语言…`, `Polter 帮助`, `检查更新…`), each of which has a
-# comment saying why in prose and none in this shape. Going *up* means somebody
-# added a row that does nothing when clicked, or greyed one without saying why.
-# Going *down* means a reason got written down, and this number should follow.
-BASELINE_UNREASONED = 2
+# reason, and rows greyed by a decision with no reason. **Zero today**, and it
+# got there rather than starting there: the two that were left were both
+# `move_tab_to_new_window` -- the strip row greyed by `enabled()`, and the same
+# row's action falling through `cb_action` -- and task 272 wired the action and
+# ungreyed the row, so both went at once. (The three rows `menu.rs` greys on
+# purpose -- `语言…`, `Polter 帮助`, `检查更新…` -- were never
+# counted here; they carry `// greyed:` reasons this tool can read.)
+#
+# Going *up* means somebody added a row that does nothing when clicked, or
+# greyed one without saying why. Going *down* is not possible from zero, which
+# is the point of getting here: the ratchet stops being a place to park work.
+BASELINE_UNREASONED = 0
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host", "src")
 

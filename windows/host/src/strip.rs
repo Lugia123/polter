@@ -1311,12 +1311,15 @@ impl TabCmd {
     /// Rows the host cannot do yet. **Greyed, never hidden** (`s4.md` §3.4.3):
     /// a row that is missing and a row that never existed look the same.
     ///
-    /// `move_tab_to_new_window` is a real core action and a real gap *here*:
-    /// the Windows host has one frame, and `ACTION_MOVE_TAB_TO_NEW_WINDOW`
-    /// (tag 69) is not dispatched. It is a piece of S4 nobody has written,
-    /// not something the core lacks.
+    /// **Empty today, and left in place rather than deleted.** Its last
+    /// occupant was `move_tab_to_new_window`, greyed while the host had one
+    /// frame and `ACTION_MOVE_TAB_TO_NEW_WINDOW` (tag 69) fell through
+    /// `cb_action`; both of those stopped being true (task 272), so the row
+    /// is live. The function stays because the next unbuilt row should be
+    /// greyed here rather than hidden, and a deleted helper is how "hidden"
+    /// becomes the path of least resistance.
     fn enabled(self) -> bool {
-        !matches!(self, TabCmd::MoveToNewWindow)
+        true
     }
 }
 
@@ -1529,10 +1532,14 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
             report_remaining(frame, &before, &format!("closed right of tab {}", at));
             true
         }
-        // Greyed, so this is unreachable from the menu. Kept as a real arm
-        // rather than `unreachable!()`: the row becoming live is a one-line
-        // change in `enabled`, and a panic is a poor way to find that out.
-        TabCmd::MoveToNewWindow => false,
+        // **Through the core, not straight into `tabs.rs`.** The row names a
+        // core action (`TabCmd::action` returns `move_tab_to_new_window`),
+        // and the core is what decides whether the binding can be performed
+        // and what tells every other apprt-visible thing that it was. Calling
+        // the host primitive here would work and would be a second route to
+        // the same effect, which is the asymmetry that left three of the four
+        // close paths looking complete.
+        TabCmd::MoveToNewWindow => tabs::binding_on_tab(frame, id, "move_tab_to_new_window"),
         TabCmd::Rename => {
             let g = slots(frame);
             match g.slots.iter().find(|s| s.id == id) {

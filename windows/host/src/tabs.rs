@@ -192,6 +192,20 @@ pub enum Op {
         /// `ghostty_action_poltergeist_close_scope_e`.
         scope: i32,
     },
+
+    /// Take one tab out of this window and give it a window of its own.
+    ///
+    /// **Carries the tab's identity, not its index.** The queue can hold this
+    /// behind other ops that reorder or close tabs, and "the third one" would
+    /// by then name a different tab -- the trap `MoveTabBy` documents on its
+    /// own payload and `move_tab_to` re-states.
+    ///
+    /// **Queued rather than done at the call site** for the strongest form of
+    /// the reason `NewWindow` gives: it creates a frame *and* reparents live
+    /// surface windows, both of which are the owning thread's work.
+    MoveTabToNewWindow {
+        tab: TabId,
+    },
 }
 
 impl Op {
@@ -225,6 +239,8 @@ impl Op {
             Op::NewTabWith(_) => "NewTabWith",
             Op::ReopenTab { .. } => "ReopenTab",
             Op::PoltergeistClose { .. } => "PoltergeistClose",
+
+            Op::MoveTabToNewWindow { .. } => "MoveTabToNewWindow",
         }
     }
 }
@@ -1340,6 +1356,12 @@ pub(crate) fn add_window(frame: HWND) {
 /// one route can reach it, and the second one must not be able to change an
 /// answer the first one already gave correctly.
 pub fn remove_window(frame: HWND) {
+    // **Here rather than in `WM_DESTROY`**, so the caption store empties on
+    // the same event the window model does. A stale entry does nothing
+    // visible until Windows hands the same `HWND` value to a new frame, at
+    // which point a window inherits a dead one's name -- the shape
+    // `free_pane` states for `mouse::forget` and surface pointers.
+    crate::wintitle::forget(frame);
     let key = frame.0 as isize;
     let (dropped, pending, after) = with_windows_mut(|ws| {
         let before = ws.len();
@@ -2714,6 +2736,139 @@ pub fn move_tab_to(frame: HWND, id: TabId, to: usize) {
     crate::uia::tabs_changed(frame);
 }
 
+/// Take one tab out of `frame` and give it a window of its own.
+///
+/// **The panes keep their HWNDs.** A libghostty surface is bound to one window
+/// for its whole life (`Pane`'s own note says why), so a "move" that destroyed
+/// and rebuilt them would be a close and a new tab wearing the moved tab's
+/// name -- the shell would be a different shell, the scrollback would be gone,
+/// and the only evidence would be the person's memory of what had been on
+/// screen. `SetParent` moves the window Windows knows about and leaves the
+/// surface bound to exactly what it was bound to.
+///
+/// **Refused when it is the only tab**, which is not a special case but the
+/// whole of what this action means: a lone tab is already in a window of its
+/// own, and the "move" would be destroying a frame and building an identical
+/// one around the same panes. GTK's `moveTabToNewWindow` has the same shape;
+/// what is not copied from macOS is the `NSWindow` tab-group machinery, which
+/// this host has none of -- its tabs are its own strip.
+///
+/// Answers whether the tab ended up somewhere else.
+fn move_tab_to_new_window(
+    frame: HWND,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    id: TabId,
+) -> bool {
+    // **Asked before the window is built and asked again after.** Building a
+    // frame pumps messages, so the tab set can change underneath -- and the
+    // second answer is the one that acts. The first exists so the ordinary
+    // refusal does not leave an empty window on screen for the time it takes
+    // to notice.
+    match index_of(frame, id) {
+        None => {
+            wlogf!(frame, "[tab] move to new window: {:?} is not in this window", id);
+            return false;
+        }
+        Some((_, 1)) => {
+            wlogf!(
+                frame,
+                "[tab] move to new window: {:?} is the only tab, so it already has one",
+                id
+            );
+            return false;
+        }
+        Some(_) => {}
+    }
+
+    let Some(dest) = crate::create_frame_secondary(hinst) else {
+        wlogf!(frame, "[tab] move to new window: no frame created; {:?} stays put", id);
+        return false;
+    };
+
+    // Everything that has to happen while nothing else can look: the tab
+    // leaves one window's list and joins the other's, in one critical section,
+    // so there is no instant in which it is in both or in neither.
+    let moved: Option<(Vec<isize>, usize)> = with_windows_mut(|ws| {
+        let src = ws.iter().position(|w| w.frame == frame.0 as isize)?;
+        let at = ws[src].tabs.iter().position(|t| t.id == id)?;
+        if ws[src].tabs.len() < 2 {
+            return None;
+        }
+        let tab = ws[src].tabs.remove(at);
+        if ws[src].active >= ws[src].tabs.len() && !ws[src].tabs.is_empty() {
+            ws[src].active = ws[src].tabs.len() - 1;
+        }
+        let hwnds: Vec<isize> = tab.panes.iter().map(|p| p.hwnd).collect();
+        let n = ws[src].tabs.len();
+        let Some(dst) = ws.iter().position(|w| w.frame == dest.0 as isize) else {
+            // The frame was made but never registered. Put the tab back
+            // rather than leave it referenced by nothing -- its panes are
+            // still alive and still children of `frame`.
+            ws[src].tabs.insert(at, tab);
+            return None;
+        };
+        ws[dst].tabs.push(tab);
+        ws[dst].active = 0;
+        Some((hwnds, n))
+    });
+
+    let Some((hwnds, left)) = moved else {
+        wlogf!(
+            frame,
+            "[tab] move to new window: {:?} could not be handed over; closing the empty frame",
+            id
+        );
+        crate::winid::close_window_now(dest);
+        return false;
+    };
+
+    // **Outside the guard**, because `SetParent` sends `WM_*` to both windows'
+    // procedures on this thread and every one of them wants the same lock.
+    for h in &hwnds {
+        let pane = HWND(*h as *mut c_void);
+        if let Err(e) = unsafe { SetParent(pane, Some(dest)) } {
+            // Not fatal and not hidden: the pane is now a child of one window
+            // while the model says the other, which is a state worth a line
+            // even though the layout below will put it right or leave it
+            // invisible.
+            wlogf!(dest, "[tab] move to new window: SetParent failed for pane {:?}: {e:?}", h);
+        }
+    }
+
+    // The two windows can be on displays with different DPI, and the core
+    // learns about scale only when it is told (`WM_DPICHANGED` is the other
+    // teller). Without this the moved terminal renders at the old window's
+    // scale in the new one: legible, wrongly sized, and with nothing in any
+    // log to say why.
+    let (from_scale, to_scale) = (scale_of(frame), scale_of(dest));
+    if from_scale != to_scale {
+        let surfaces: Vec<usize> = window(dest)
+            .and_then(|w| w.tabs.first().map(|t| t.panes.iter().map(|p| p.surface).collect()))
+            .unwrap_or_default();
+        for s in surfaces {
+            unsafe {
+                (api().surface_set_content_scale)(s as Surface, to_scale, to_scale);
+            }
+        }
+        wlogf!(dest, "[tab] move to new window: content scale {} -> {}", from_scale, to_scale);
+    }
+
+    layout(frame);
+    set_active(frame, active_index(frame));
+    layout(dest);
+    set_active(dest, 0);
+    crate::uia::tabs_changed(frame);
+    crate::uia::tabs_changed(dest);
+    wlogf!(
+        frame,
+        "[tab] moved {:?} out to {}; {} tab(s) left here",
+        id,
+        crate::winid::tag(dest),
+        left
+    );
+    true
+}
+
 /// Panes in the active tab.
 pub fn pane_count(frame: HWND) -> usize {
     window(frame)
@@ -3419,6 +3574,13 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                         count(frame)
                     );
                 }
+                // **Armed here, not in `reopen_last`.** The tab exists only
+                // now; up there it was a queued intention that this arm has a
+                // refusal path for.
+                crate::reopen::note_reopened(frame, id);
+            }
+            Op::MoveTabToNewWindow { tab } => {
+                move_tab_to_new_window(frame, hinst, tab);
             }
             Op::CloseTab(mode) => {
                 let (active, n) = (active_index(frame), count(frame));

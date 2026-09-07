@@ -142,6 +142,22 @@ pub const COLOR_KIND_CURSOR: i32 = -3;
 pub const QUIT_TIMER_START: i32 = 0;
 pub const QUIT_TIMER_STOP: i32 = 1;
 
+/// The window/tab/edit batch (task 272). Counted off `ghostty_action_tag_e`
+/// in `include/ghostty.h` the same way every number above it was.
+///
+/// **These five are checked rather than trusted, and by something that runs.**
+/// `src/apprt/action.zig`'s test `the Windows host's action tags` reads this
+/// file and compares every `ACTION_*` here against `Action.Key`, naming the
+/// action a wrong number would dispatch instead. It is not a comment about a
+/// check that ought to exist: `zig build test -Dtest-filter="the Windows host's
+/// action tags"` runs 86 tests where an unmatched filter runs 85, so the
+/// difference is this one executing.
+pub const ACTION_CLOSE_ALL_WINDOWS: u32 = 5;
+pub const ACTION_GOTO_WINDOW: u32 = 18;
+pub const ACTION_SET_WINDOW_TITLE: u32 = 36;
+pub const ACTION_UNDO: u32 = 55;
+pub const ACTION_REDO: u32 = 56;
+
 /// `ghostty_action_poltergeist_mark_s`. The prefix is the core's rendered
 /// glyphs; `role` and `shielded` are the meaning, which is what a menu item
 /// needs -- **a tick cannot be derived from a string**, which is the reason
