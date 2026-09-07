@@ -3316,6 +3316,114 @@ fn waitFor(
     return want(ctx);
 }
 
+/// What the test below runs a resident under.
+///
+/// Named rather than written inline because the test's assertion is only
+/// true for timings that satisfy `ladderFitsInOneWindow`, and a constant
+/// that one test writes inline is a constant nobody checks. The invariant
+/// test underneath reads this same value.
+const never_starts_timing: Timing = .{
+    .poll_idle_ms = 10,
+    .heartbeat_ms = 30,
+
+    // **One millisecond, and the reason is not speed.** The retry ladder
+    // doubles, so this number decides how long the whole ladder takes:
+    // 1ms gives 1023ms of waiting before the resident goes dormant, which
+    // is a fifth of the window below. At 5ms it was 5115ms -- *longer*
+    // than the window -- and the test passed only because the last
+    // `stopped` line falls at 2555ms rather than at the end. That is a
+    // margin of 1.96x on a machine's speed, and it is not enough.
+    //
+    // The evidence is reproducible on any machine, which is why it is the
+    // evidence quoted: running the test binary under `taskpolicy -b`, which
+    // confines it to the efficiency cores and stretches the whole timeline
+    // by 2.0x, produced the third line 14 times out of 14 at 5ms and 0
+    // times out of 20 at 1ms.
+    //
+    // What sent anybody looking was CI going red on this test often but not
+    // always, which is what sitting just past a threshold looks like from
+    // the outside. No count from CI is quoted here on purpose: the run
+    // history it would be read off scrolls away, so a reader a year from
+    // now could check the two numbers above and not that one.
+    .backoff_start_ms = 1,
+
+    .settle_ms = 60 * std.time.ms_per_s,
+
+    // Short, so the dormant line arrives inside a test rather than a
+    // quarter of an hour later. It doubles as the floor under repeated
+    // `stopped` lines, which is what the count below is measuring.
+    .dormant_retry_ms = 5 * std.time.ms_per_s,
+};
+
+/// How long a resident spends failing, for one `Timing`.
+///
+/// Two instants, because the difference between them is where a whole
+/// class of flake lives. `to_last_retry` is when the last failure that is
+/// still a retry happens -- the last one that offers `tell` a `stopped`
+/// line. `to_dormant` is the failure after it, the one that gives up.
+fn ladder(timing: Timing) struct { to_last_retry: u64, to_dormant: u64 } {
+    var b: Backoff = .{ .start_ms = timing.backoff_start_ms, .ms = timing.backoff_start_ms };
+    var to_last_retry: u64 = 0;
+    var to_dormant: u64 = 0;
+    var k: u32 = 0;
+    while (b.failed()) |wait| {
+        k += 1;
+        to_dormant += wait;
+        if (k < max_failures) to_last_retry += wait;
+    }
+    return .{ .to_last_retry = to_last_retry, .to_dormant = to_dormant };
+}
+
+/// The whole retry ladder has to finish inside one window of `allowedToSay`.
+///
+/// **This is the precondition of "once", and nothing else was holding it.**
+/// `allowedToSay` promises one `stopped` line per `dormant_retry_ms`, and
+/// keeps that promise exactly. So "the user is told twice: once when it
+/// fails and once when it gives up" is not a property of the rate limit --
+/// it is a property of the rate limit *and* of the retry ladder being over
+/// before a second window opens. `backoff_start_ms`, `max_failures` and
+/// `dormant_retry_ms` are three numbers nothing relates to each other; move
+/// any one of them and the second line appears, in the middle, saying what
+/// the first line said.
+///
+/// The strict form is `to_last_retry`: that is the last failure that can
+/// produce a line. `to_dormant` is asserted too, one failure further on,
+/// because the difference between them is the whole margin -- a
+/// configuration that clears the first by a hair and misses the second is
+/// one slow machine away from clearing neither, which is precisely what
+/// happened here.
+fn ladderFitsInOneWindow(timing: Timing, what: []const u8) !void {
+    const l = ladder(timing);
+    if (l.to_last_retry >= timing.dormant_retry_ms or l.to_dormant >= timing.dormant_retry_ms) {
+        std.debug.print(
+            "\n{s}: backoff_start_ms={d}, max_failures={d} => the last retry is at " ++
+                "{d}ms and dormancy at {d}ms, but a line may only be said every " ++
+                "{d}ms. The user will be told the same thing a second time, in the " ++
+                "middle. Lower backoff_start_ms or raise dormant_retry_ms.\n",
+            .{
+                what,
+                timing.backoff_start_ms,
+                max_failures,
+                l.to_last_retry,
+                l.to_dormant,
+                timing.dormant_retry_ms,
+            },
+        );
+        return error.LadderOutgrowsTheWindow;
+    }
+}
+
+test "the retry ladder is over before a second window opens" {
+    // The shipped numbers, which are the ones a user meets: 1s doubling to
+    // a 60s cap, ten tries, a quarter of an hour of silence after.
+    try ladderFitsInOneWindow(.{}, "the shipped timing");
+
+    // And the one the test below counts lines under. Checked here rather
+    // than trusted, because that test can only go red on a machine slow
+    // enough to cross the line, and this one goes red on every machine.
+    try ladderFitsInOneWindow(never_starts_timing, "never_starts_timing");
+}
+
 test "a plugin that will not start is put on the user's screen, once" {
     // The requirement in the user's own words: if a plugin fails at
     // startup, **tell them**. A log line is not telling them, and
@@ -3342,18 +3450,7 @@ test "a plugin that will not start is put on the user's screen, once" {
         .feed = &feed,
         .environ = env,
         .alert = heard.hook(),
-        .timing = .{
-            .poll_idle_ms = 10,
-            .heartbeat_ms = 30,
-            .backoff_start_ms = 5,
-            .settle_ms = 60 * std.time.ms_per_s,
-
-            // Short, so the dormant line arrives inside a test rather than
-            // a quarter of an hour later. It doubles as the floor under
-            // repeated `stopped` lines, which is what the count below is
-            // measuring.
-            .dormant_retry_ms = 5 * std.time.ms_per_s,
-        },
+        .timing = never_starts_timing,
     });
     defer a.destroy();
 
