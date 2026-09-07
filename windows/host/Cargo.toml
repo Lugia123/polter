@@ -1,5 +1,19 @@
 [package]
 name = "polter-host"
+# **Nothing reads this number, and that was measured rather than assumed.**
+# `CARGO_PKG_VERSION` appears zero times in the tree; `polter.rc` embeds only
+# the manifest, with no `FILEVERSION`/`PRODUCTVERSION` block, so it never
+# reaches the exe's version resource; and the pairing self-check identifies a
+# build by `POLTER_HOST_COMMIT` (the git commit, from `build.rs`), while the
+# version in the log comes from the core's own `ghostty_info()`.
+#
+# So it disagrees with ROADMAP's v0.6 and the disagreement costs nothing --
+# **and bumping it would cost nothing either**, which is why it is left alone
+# and labelled instead: a number nobody reads, quietly corrected, is a number
+# that will drift again with nothing to notice. ⚠️ **If you give it a reader**
+# -- a `FILEVERSION` in `polter.rc`, an `env!("CARGO_PKG_VERSION")` anywhere --
+# then it starts being a claim about the shipped build, and this line is where
+# to come back and decide what it should say.
 version = "0.1.0"
 edition = "2021"
 publish = false

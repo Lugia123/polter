@@ -291,9 +291,74 @@ pub fn on_readonly_for(surface: usize, on: bool) {
             None => v.push((surface, on)),
         }
     }
-    let h = HWND_RO.load(Ordering::Acquire);
-    if !h.is_null() {
-        let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(surface), LPARAM(0)) };
+    // **The whole stack, not just this badge.** See `sync_corner`.
+    sync_corner(surface);
+}
+
+/// A badge that shares the pane's top-left corner with another.
+///
+/// # The rule, and why it is written as a set rather than as an event
+///
+/// > **Badges over the pane's top-left corner stack downward in one fixed
+/// > order, and each one's slot is its position among those *currently lit*,
+/// > recomputed from the live state whenever any of them changes.**
+///
+/// What stood here before was the same idea expressed as an event: the
+/// PASSWORD badge asked `is_readonly_for` **at the moment it turned on** and
+/// offset itself if the answer was yes. That is right exactly when it was the
+/// last of the two to change. Measured on the machine, the same two states in
+/// the two possible orders:
+///
+///   * read-only first, then secure -> secure at `196,162`, stacked. Correct.
+///   * secure first, then read-only -> **both at `196,126`**. The badge that
+///     was already up was never told the world had changed under it, so two
+///     badges drew on one point -- which is one badge as far as the person can
+///     tell, and they act on whichever lost the z-order.
+///
+/// **Stated as a set, the order cannot matter**, because no part of the answer
+/// remembers when anything happened. That is also what makes a third badge on
+/// this corner one line here rather than a third order to get wrong.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Corner {
+    ReadOnly,
+    Secure,
+}
+
+/// The corner's occupants, **in stacking order**.
+const CORNER_ORDER: [Corner; 2] = [Corner::ReadOnly, Corner::Secure];
+
+fn corner_lit(surface: usize, which: Corner) -> bool {
+    match which {
+        Corner::ReadOnly => is_readonly_for(surface),
+        Corner::Secure => is_secure_for(surface),
+    }
+}
+
+/// Which row `which` occupies, counting only the badges that are lit.
+///
+/// Pure over the live state: same states, same answer, whatever happened
+/// first.
+pub fn corner_slot(surface: usize, which: Corner) -> i32 {
+    CORNER_ORDER
+        .iter()
+        .take_while(|c| **c != which)
+        .filter(|c| corner_lit(surface, **c))
+        .count() as i32
+}
+
+/// Wake **every** badge over the corner, not just the one whose state moved.
+///
+/// The other half of the rule, and the half that was missing: a slot computed
+/// from live state is still stale on screen if nobody asks the badge to
+/// recompute it. `on_readonly_for` posted to `HWND_RO` and stopped, so the
+/// PASSWORD badge -- already up, and now in the wrong row -- was never told.
+fn sync_corner(surface: usize) {
+    for slot in [&HWND_RO, &HWND_SEC] {
+        let h = slot.load(Ordering::Acquire);
+        if !h.is_null() {
+            let _ =
+                unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(surface), LPARAM(0)) };
+        }
     }
 }
 
@@ -385,10 +450,8 @@ pub fn on_secure_input(surface: usize, mode: i32) -> bool {
             return false;
         }
     };
-    let h = HWND_SEC.load(Ordering::Acquire);
-    if !h.is_null() {
-        let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(surface), LPARAM(0)) };
-    }
+    // **The whole stack, not just this badge.** See `sync_corner`.
+    sync_corner(surface);
     on
 }
 
@@ -848,7 +911,8 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 // Top-left of that pane, inset. The search bar (top-right) and
                 // the key indicator (bottom-right) still do not use it.
                 let x = fr.left + sc(16);
-                let y = fr.top + sc(16);
+                let y = fr.top + sc(16)
+                    + sc(corner_slot(surface, Corner::ReadOnly) * (HEIGHT + 6));
                 let _ = SetWindowPos(
                     hwnd,
                     Some(HWND_TOPMOST),
@@ -944,9 +1008,9 @@ unsafe extern "system" fn sec_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 // The offset is conditional rather than permanent so that the
                 // common case, secure input alone, still lands where every
                 // other badge in this file lands.
-                let stacked = is_readonly_for(surface);
+                let slot = corner_slot(surface, Corner::Secure);
                 let x = fr.left + sc(16);
-                let y = fr.top + sc(16) + if stacked { sc(HEIGHT + 6) } else { 0 };
+                let y = fr.top + sc(16) + sc(slot * (HEIGHT + 6));
                 let _ = SetWindowPos(
                     hwnd,
                     Some(HWND_TOPMOST),
@@ -961,7 +1025,7 @@ unsafe extern "system" fn sec_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 hlogf!(
                     frame_hwnd_of(surface),
                     "[hud] secure input on for surface {:#x}; badge at {},{} over pane \
-                     {},{}..{},{} (stacked under read-only: {})",
+                     {},{}..{},{} (corner slot {})",
                     surface,
                     x,
                     y,
@@ -969,7 +1033,7 @@ unsafe extern "system" fn sec_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     fr.top,
                     fr.right,
                     fr.bottom,
-                    stacked as u8
+                    slot
                 );
                 LRESULT(0)
             }
