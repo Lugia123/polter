@@ -11,7 +11,7 @@
 - 日志（`GHOSTTY_LOG`）、inspector、单元测试、Valgrind、benchmark 等观察与验证手段。
 - 提交前的格式化与 lint 清单，以及构建/运行环节最容易踩的坑。
 
-本仓库的构建与运行命令以本篇为唯一权威，根 `AGENTS.md:96` 也是这么写的。
+本仓库的构建与运行命令以本篇为唯一权威，`docs/README.md:20` 也是这么写的。
 
 ## 本文不覆盖什么
 
@@ -46,11 +46,13 @@ Ghostty 的核心是 Zig，`zig build` 是唯一构建入口（`build.zig:19`）
 | `src/build/GhosttyXcodebuild.zig` | 203  | macOS app 的 xcodebuild / open / xctest step       |
 | `macos/build.nu`                  | 32   | 推荐的 macOS app 构建脚本                          |
 | `HACKING.md`                      | 487  | 依赖、日志、lint、Valgrind、Nix VM                 |
-| `AGENTS.md`                       | 121  | agent 用的最短命令表（`CLAUDE.md` 是它的符号链接） |
+| `AGENTS.md`                       | 39   | agent 用的最短命令表（`CLAUDE.md` 是它的符号链接） |
 | `Makefile`                        | 28   | 只有 `clean` 对日常开发有用                        |
 | `nix/devShell.nix`                | 247  | 工具版本的对齐基准                                 |
 
-行数由 `grep -c "" <file>` 实际统计得到。
+行数是 `grep -c "" <file>` 在本文头部那个 commit（`f81dcadc8`）上的读数，不是今天的值。
+此后这棵树走了很远——`build.zig` 今天是 459 行、`src/build/Config.zig` 是 989 行——所以
+这一列只用来看量级；要准确值就照上面那条命令自己跑一遍。
 
 ## 环境准备
 
@@ -409,7 +411,7 @@ shellcheck --check-sourced --severity=warning $(find . \( -name "*.sh" -o -name 
 - **`zig build run-valgrind` 在 macOS 上是空操作** — 整个分支被 `app_runtime != .none` 包住（`build.zig:300`）。
 - **改完 `build.zig.zon` 后 CI 挂** — Zig 缓存哈希漂移，跑 `./nix/build-support/check-zig-cache.sh --update`（`HACKING.md:221-232`）。
 - **`HACKING.md:83` 提到的 `/gh-issue` 命令并不存在** — `.agents/` 下当前只有 `.agents/commands/review-branch` 与 `.agents/skills/writing-commit-messages/SKILL.md` 两个文件，该段文档已过时。
-- **铁律** — 本仓库 `AGENTS.md:34-39` 明令：永远不要创建 issue，永远不要创建 PR。
+- **「永远不要创建 issue / PR」那条铁律已经退役** — 在本文头部那个 commit 上它确实是 `AGENTS.md:34-39` 的 `## Issue and PR Guidelines` 一节，但该节已由 `438a2e352` 按仓主指示删除。提交信息给了理由：这条规则来自上游（`00c33eaf7`），而在本仓它两个方向都不再匹配——上游已经完全关闭 issue 创建，它要守的东西由对面守着了；同时它的写法是无条件的，把本仓自己的 tracker 也一并盖住，而仓主想给自己的项目立一条记录是一件普通的请求。那条无条件的禁令没有回来。至于今天该往哪儿提、能不能提，以 `AGENTS.md` 自己写的为准——本文不复述，因为一条规则被转述进第二个文件之后，改的人只会改一处。这里写出来而不是直接删掉，是因为在别处见过这条规则的人需要知道它是被有意退役的，不是丢了。
 
 ## 在没有完整 Xcode 的 macOS 上开发
 
