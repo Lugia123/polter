@@ -40,6 +40,7 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::i18n::{n_, tr};
 use crate::plogf;
 use crate::plugins::{self, Control, Plugin};
 
@@ -152,15 +153,16 @@ fn head_layout(win: HWND, p: &Plugin) -> (RECT, RECT, i32) {
 /// an event added after this build still leaves the subscription visible --
 /// a plugin that says nothing about itself is the shape this replaced.
 ///
-/// **English only, and that is a known gap, not an oversight.** This host has
-/// no gettext; macOS runs these three through `String(localized:)`. A Chinese
-/// reader therefore gets a translated summary from the plugin's own sidecar
-/// and this line in English, which reads worse than all-English -- written
-/// down in the report rather than left to be discovered.
+/// **Translated at the point of use, not here.** The table is a `const` and a
+/// `const` cannot call a function, so the English below is the msgid and
+/// `phrase_for` runs it through `tr`. The note that stood here said this host
+/// "has no gettext" and that these three were an accepted gap -- that stopped
+/// being true when `i18n.rs` resolved `ghostty_translate`, and a gap recorded
+/// as permanent is the kind nobody revisits.
 const EVENT_PHRASES: &[(&str, &str)] = &[
-    ("chat", "Keeps the conversations"),
-    ("terminal.quiet", "Notifies you"),
-    ("provision", "Sets your agent up to reach Polter"),
+    ("chat", n_("Keeps the conversations")),
+    ("terminal.quiet", n_("Notifies you")),
+    ("provision", n_("Sets your agent up to reach Polter")),
 ];
 
 /// One line saying what a plugin is handed.
@@ -171,21 +173,27 @@ const EVENT_PHRASES: &[(&str, &str)] = &[
 /// nothing is not started, and saying so is more use than an empty list.
 fn subscription_line(events: &[String]) -> String {
     if events.is_empty() {
-        return "Subscribes to nothing, so Polter has nothing to hand it and will not start it."
-            .to_string();
+        return tr("Subscribes to nothing, so Polter has nothing to hand it and will not start it.");
     }
     let mut said: Vec<String> = Vec::new();
     for (wire, phrase) in EVENT_PHRASES {
         if events.iter().any(|e| e == wire) {
-            said.push((*phrase).to_string());
+            said.push(tr(phrase));
         }
     }
     for e in events {
         if !EVENT_PHRASES.iter().any(|(wire, _)| wire == e) {
+            // **The wire name is not translated**, and that is the point of
+            // the two branches: a phrase is ours to say differently, an event
+            // name the plugin published is not.
             said.push(e.clone());
         }
     }
-    format!("What it is handed: {}", said.join(", "))
+    // **The sentence is one msgid with a placeholder**, not "What it is
+    // handed: " glued to a list. A translator needs the whole clause to put
+    // the colon, the spacing and the word order where their language wants
+    // them.
+    tr("What it is handed: {}").replace("{}", &said.join(", "))
 }
 
 // ------------------------------------------------------------------ colour
@@ -958,13 +966,13 @@ fn rebuild_fields(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
                 Some(LPARAM(0)),
             );
         }
-        set_text(e, "Enabled");
+        set_text(e, &tr("Enabled"));
     }
     if let Ok(b) = save {
         unsafe {
             SendMessageW(b, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
         }
-        set_text(b, "Save");
+        set_text(b, &tr("Save"));
     }
 
     ST.with(|c| {
@@ -1016,8 +1024,8 @@ fn ensure_buttons(win: HWND, hinst: windows::Win32::Foundation::HINSTANCE) {
         HWND(std::ptr::null_mut())
     };
 
-    let cfg = mk("Open config file…", s(H - PAD - 68), ID_OPEN_CONFIG);
-    let about = mk("About Polter", s(H - PAD - 34), ID_ABOUT);
+    let cfg = mk(&tr("Open config file…"), s(H - PAD - 68), ID_OPEN_CONFIG);
+    let about = mk(&tr("About Polter"), s(H - PAD - 34), ID_ABOUT);
     ST.with(|c| {
         let mut st = c.borrow_mut();
         st.open_cfg_btn = cfg;
@@ -1085,7 +1093,7 @@ fn about_lines() -> Vec<String> {
         format!("{mode} build"),
         build,
         String::new(),
-        "MIT licensed. A fork of Ghostty.".to_string(),
+        tr("MIT licensed. A fork of Ghostty."),
     ]
 }
 
@@ -1179,7 +1187,7 @@ unsafe extern "system" fn about_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                         };
                         draw_text(
                             hdc,
-                            "Esc or click to dismiss",
+                            &tr("Esc or click to dismiss"),
                             &mut fr,
                             DT_LEFT | DT_SINGLELINE,
                             theme::dim(),
@@ -1883,7 +1891,7 @@ unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARA
                         };
                         draw_text(
                             hdc,
-                            "Esc or click to dismiss",
+                            &tr("Esc or click to dismiss"),
                             &mut fr,
                             DT_LEFT | DT_SINGLELINE,
                             theme::dim(),

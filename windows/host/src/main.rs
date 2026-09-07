@@ -105,6 +105,7 @@ mod dnd;
 mod ffi;
 mod keys;
 mod hud;
+mod i18n;
 mod keyseq;
 mod links;
 mod menu;
@@ -1453,6 +1454,21 @@ pub fn create_frame_secondary(hinst: HINSTANCE) -> Option<HWND> {
 
 pub fn api() -> &'static Api {
     unsafe { &*(API.load(Ordering::Acquire) as *const Api) }
+}
+
+/// The same, for callers that can run before the library is loaded.
+///
+/// **`api()` dereferences without checking**, which is correct for everything
+/// that only runs once a surface exists and wrong for anything that might
+/// not. `i18n::tr` is the first of the second kind: a string can be wanted by
+/// a log line or a panic path, and a null dereference for the sake of a
+/// translation is a poor trade.
+pub fn api_opt() -> Option<&'static Api> {
+    let p = API.load(Ordering::Acquire) as *const Api;
+    if p.is_null() {
+        return None;
+    }
+    Some(unsafe { &*p })
 }
 
 /// Whether the main thread should draw in WM_PAINT (the `--draw-on-paint`
@@ -4265,6 +4281,7 @@ fn load_api() -> Option<Api> {
             surface_read_text: sym!(internal, "ghostty_surface_read_text"),
             surface_free_text: sym!(internal, "ghostty_surface_free_text"),
             cli_try_action: sym!(internal, "ghostty_cli_try_action"),
+            translate: sym!(internal, "ghostty_translate"),
             codepoint_width: sym!(vt, "ghostty_unicode_codepoint_width"),
             grapheme_width: sym!(vt, "ghostty_unicode_grapheme_width"),
         })

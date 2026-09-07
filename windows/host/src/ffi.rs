@@ -913,6 +913,11 @@ pub struct Api {
     /// `GetCommandLineW()`: the C API handed that target an empty command
     /// line, so `global.action()` was always null and this returned at once.
     pub cli_try_action: unsafe extern "C" fn(),
+    /// `ghostty_translate(msgid) -> translated`, or the same pointer when the
+    /// catalogue has no entry. The core's own catalogues (`po/`) are already
+    /// loaded by `i18n.init` during `ghostty_init`; this is the only thing
+    /// the host needed in order to use them. See `i18n.rs`.
+    pub translate: unsafe extern "C" fn(*const c_char) -> *const c_char,
 
     // from ghostty-vt.dll -- proves both DLLs are loaded and callable
     pub codepoint_width: unsafe extern "C" fn(u32) -> u8,

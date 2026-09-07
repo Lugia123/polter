@@ -80,6 +80,13 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
         // still work until somebody updated the translations, and then
         // quietly stop.
         "--keyword=tr",
+
+        // The Windows host's marker for a string that has to sit in a
+        // `const` -- a table cannot call a function, so the string is marked
+        // where it is written and looked up where it is used. Spelled `n_`
+        // rather than `N_` because Rust warns on a capitalised function
+        // name; the keyword is added here for the same reason `tr` is.
+        "--keyword=n_",
     });
 
     // Collect to intermediate .pot file
@@ -157,6 +164,84 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
             // checked out in exactly the same location.
             xgettext.addArg(path);
             // Mark the file as an input so that the Zig build system caching will work.
+            xgettext.addFileInput(b.path(path));
+        }
+    }
+
+    {
+        // **The Windows host, walked the way `src/apprt/gtk` is.**
+        //
+        // It was in neither list, and the consequence is the one this file
+        // already records for `src/cli/chat.zig` two blocks down: a string
+        // with nowhere to go is a string nobody translates. The symptom on
+        // Windows was the pair rather than the absence -- the settings page
+        // was hardcoded in English and the menu two windows away hardcoded in
+        // Chinese, so whichever language a reader had, half the host was in
+        // the other one.
+        //
+        // **Walked rather than named file by file.** Naming files is what put
+        // `chat.zig` in here as a special case, and the next file added is
+        // the next one nobody remembers. The host's strings go through
+        // `windows/host/src/i18n.rs`'s `tr`, which the `--keyword=tr` above
+        // already covers.
+        var host_files: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer {
+            for (host_files.items) |item| b.allocator.free(item);
+            host_files.deinit(b.allocator);
+        }
+
+        var host_dir = try b.build_root.handle.openDir(
+            b.graph.io,
+            "windows/host/src",
+            .{ .iterate = true },
+        );
+        defer host_dir.close(b.graph.io);
+
+        var walk = try host_dir.walk(b.allocator);
+        defer walk.deinit();
+        while (try walk.next(b.graph.io)) |src| {
+            switch (src.kind) {
+                .file => if (!std.mem.endsWith(u8, src.basename, ".rs")) continue,
+                else => continue,
+            }
+
+            // **Only the files that carry a marker.** `xgettext` has no Rust
+            // mode, so these are read as C -- and a Rust lifetime (`'a`) is
+            // an unterminated character constant to a C lexer. Handing it
+            // every file in the host produced **59 warnings** on a step
+            // nobody would then read, which is how a real one gets missed.
+            // Filtering here keeps the walk automatic: a file that starts
+            // using `tr` starts being scanned, with no list to update.
+            const text = host_dir.readFileAlloc(
+                b.graph.io,
+                src.path,
+                b.allocator,
+                .limited(4 * 1024 * 1024),
+            ) catch continue;
+            defer b.allocator.free(text);
+            // **The import, not the call.** `tr(` matches inside `ptr(`,
+            // `substr(` and `enter(`, which put six files with no strings in
+            // them back under a C lexer and the warnings back on the screen.
+            // A file that calls either marker names the module to get it.
+            if (std.mem.indexOf(u8, text, "crate::i18n") == null) continue;
+
+            try host_files.append(b.allocator, try b.allocator.dupe(u8, src.path));
+        }
+
+        std.mem.sort(
+            []const u8,
+            host_files.items,
+            {},
+            struct {
+                fn lt(_: void, lhs: []const u8, rhs: []const u8) bool {
+                    return std.mem.order(u8, lhs, rhs) == .lt;
+                }
+            }.lt,
+        );
+
+        for (host_files.items) |item| {
+            const path = b.pathJoin(&.{ "windows/host/src", item });
+            xgettext.addArg(path);
             xgettext.addFileInput(b.path(path));
         }
     }
