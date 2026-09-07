@@ -198,6 +198,25 @@ KNOWN = {
     # there is none here.
     "tools/no-local-identifiers.py":
         "names the identifier it searches for, in its samples and its reasons",
+    # **These two were red for as long as anyone can remember, and that is the
+    # damage.** Four people working in this tree on 2026-09-08 each reported
+    # the same five hits as "already red, not mine" -- which is what a gate
+    # that is permanently red teaches everybody to say, including on the day
+    # it finally catches something. Both are the fork's public identity in the
+    # place that identity belongs, so the answer was always a written reason
+    # rather than a change.
+    #
+    # SECURITY.md names the repository three times because that is where a
+    # vulnerability goes: two links to the issue that records the known
+    # limitations, and the "Report a vulnerability" advisory URL. A security
+    # policy that will not say where to report is not one.
+    "SECURITY.md":
+        "links to this fork's issue tracker and its security advisory page",
+    # The .pot is generated: the id is its Project-Id-Version and the package
+    # name in the header comment, both written by the extractor from the
+    # bundle id. Editing it by hand would be undone by the next extraction.
+    "po/com.lugia.polter.pot":
+        "generated header carries the bundle id as the package name",
 }
 
 
