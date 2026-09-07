@@ -650,3 +650,7 @@ with its `README.md`, which is the constitution the other chapters answer to.
 and which half is upstream Ghostty's — worth two minutes before writing a
 patch, because guessing wrong costs you a rebase. [`ROADMAP.md`](ROADMAP.md)
 is where the work actually is, including what is missing on Windows.
+
+## Community
+
+[LINUX DO](https://linux.do) — where this project is shared and discussed.
