@@ -1,11 +1,13 @@
-//! Two non-interactive signs over the terminal: the grid size while you resize
-//! it, and a badge when the surface is read-only.
+//! Four non-interactive signs over the terminal: the grid size while you
+//! resize it, a badge when the surface is read-only, the URL under the
+//! pointer, and where you are in the scrollback.
 //!
-//! **Why they share one file and one window class.** Both are the same shape —
-//! a small always-on-top label that never takes focus, driven entirely by
-//! something the host already knows. Neither has an input field, so neither
-//! touches `overlay.rs`'s focus contract. Splitting them would duplicate the
-//! window, the font, and the paint path three ways (`keyseq.rs` is the third).
+//! **Why they share one file and one window class.** All four are the same
+//! shape — a small always-on-top window that never takes focus, driven
+//! entirely by something the host already knows. None has an input field, so
+//! none touches `overlay.rs`'s focus contract. Splitting them would duplicate
+//! the window, the font, and the paint path five ways (`keyseq.rs` is the
+//! fifth).
 //!
 //! **Where each gets its truth:**
 //!
@@ -17,6 +19,25 @@
 //! - **Read-only** — the core's, through `GHOSTTY_ACTION_READONLY`. The host
 //!   never decides this and never remembers it across a config reload; it
 //!   paints the last thing the core said.
+//! - **The hovered URL** — the core's, through `mouse_over_link`. The core
+//!   sends the text when the pointer goes over a link and a zero length when
+//!   it leaves; the host paints the last thing it was told and nothing else.
+//!   **It does not detect links**, and must not start to: the core owns what
+//!   counts as one, and a second opinion would differ on exactly the URLs
+//!   that are hard.
+//! - **The scrollbar** — the core's, through `scrollbar`, as three row counts:
+//!   how many rows exist, which one is at the top, and how many are visible.
+//!
+//! ⚠️ **The scrollbar cannot be dragged, and that is a limit, not an
+//! oversight.** A real one would have to turn a pixel back into a scrollback
+//! row and ask the core to go there, and libghostty publishes no "scroll to
+//! row" entry point on this platform — `ghostty_surface_mouse_scroll` moves by
+//! a delta from wherever the view happens to be. So this is an indicator: it
+//! says where you are, and the wheel is still how you move. It is drawn in a
+//! window of its own **over** the pane rather than by giving the pane
+//! `WS_VSCROLL`, because a surface window must be created at its final size
+//! (`windows/AGENTS.md`) and a scroll bar would take pixels out of a client
+//! area libghostty has already been told the size of.
 //!
 //! **Why the size sign hides on a timer rather than on `WM_EXITSIZEMOVE`.**
 //! `WM_EXITSIZEMOVE` only arrives for a drag of the window frame. A resize
@@ -47,9 +68,24 @@ const HEIGHT: i32 = 30;
 const COL_BG: u32 = 0x00403f3d;
 const COL_TEXT: u32 = 0x00ffffff;
 const COL_RO_BG: u32 = 0x00306090; // BGR: amber, for the read-only badge
+/// The link bar's background. Darker than the size sign so a URL sitting over
+/// terminal text still reads as a separate thing.
+const COL_LINK_BG: u32 = 0x00302f2d;
+/// The scrollbar's track and thumb. The track is nearly the terminal's own
+/// grey on purpose -- a bar you can see at rest is a bar in the way.
+const COL_TRACK: u32 = 0x00303030;
+const COL_THUMB: u32 = 0x00808080;
+/// Width of the scrollbar, unscaled, and the shortest thumb worth drawing.
+/// **A thumb below this is not a small thumb, it is an invisible one**, and a
+/// scrollbar whose thumb vanishes in a large scrollback reads as "there is
+/// nothing to scroll".
+const SCROLL_W: i32 = 10;
+const THUMB_MIN: i32 = 18;
 
 static HWND_SIZE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_RO: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static HWND_LINK: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static HWND_SCROLL: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Which surfaces are read-only, by surface pointer.
 ///
@@ -158,6 +194,21 @@ mod readonly_arena {
     }
 }
 
+/// The URL under the pointer, and which surface it is over.
+///
+/// **One entry, not a list per surface.** There is one pointer, so there is
+/// one hovered link; the surface is stored with it so the bar can be placed
+/// over the right pane and hidden when that pane's core says the pointer left.
+static HOVER: std::sync::Mutex<Option<(usize, String)>> = std::sync::Mutex::new(None);
+
+/// What each surface last said about its scrollback, as
+/// `(surface, total, offset, len)` in rows.
+///
+/// **Per surface and keyed by the surface pointer**, for the reason written
+/// on `READONLY`: with a split, each pane scrolls on its own, and one shared
+/// answer would draw the focused pane's position over the other one.
+static SCROLL: std::sync::Mutex<Vec<(usize, u64, u64, u64)>> = std::sync::Mutex::new(Vec::new());
+
 /// The surface the badge is currently showing for, or 0.
 static RO_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -227,6 +278,57 @@ pub fn on_readonly_for(surface: usize, on: bool) {
     if !h.is_null() {
         let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(surface), LPARAM(0)) };
     }
+}
+
+/// `mouse_over_link` for one surface. **Safe from any thread.**
+///
+/// `url` is `None` when the pointer has left the link -- the core sends a
+/// zero length for that, and `ffi::Action::as_mouse_over_link` turns it into
+/// `None` so the two spellings of "no link" cannot be handled differently
+/// here by accident.
+pub fn on_hover_link(surface: usize, url: Option<String>) -> bool {
+    if surface == 0 {
+        // process-wide: the action named surface 0, so there is no terminal
+        // and therefore no window this line could belong to
+        plogf!("[hud] mouse_over_link for surface 0 -- ignored, that names no terminal");
+        return false;
+    }
+    match HOVER.lock() {
+        Ok(mut h) => {
+            *h = url.map(|u| (surface, u));
+        }
+        Err(_) => return false,
+    }
+    let w = HWND_LINK.load(Ordering::Acquire);
+    if w.is_null() {
+        return false;
+    }
+    unsafe { PostMessageW(Some(HWND(w)), WM_HUD_SYNC, WPARAM(surface), LPARAM(0)) }.is_ok()
+}
+
+/// `scrollbar` for one surface. **Safe from any thread.**
+///
+/// The three numbers are rows: how many the scrollback holds, which row is at
+/// the top of the view, and how many rows the view shows.
+pub fn on_scrollbar(surface: usize, total: u64, offset: u64, len: u64) -> bool {
+    if surface == 0 {
+        // process-wide: the action named surface 0, so there is no terminal
+        // and therefore no window this line could belong to
+        plogf!("[hud] scrollbar for surface 0 -- ignored, that names no terminal");
+        return false;
+    }
+    match SCROLL.lock() {
+        Ok(mut v) => match v.iter_mut().find(|(s, ..)| *s == surface) {
+            Some(e) => *e = (surface, total, offset, len),
+            None => v.push((surface, total, offset, len)),
+        },
+        Err(_) => return false,
+    }
+    let w = HWND_SCROLL.load(Ordering::Acquire);
+    if w.is_null() {
+        return false;
+    }
+    unsafe { PostMessageW(Some(HWND(w)), WM_HUD_SYNC, WPARAM(surface), LPARAM(0)) }.is_ok()
 }
 
 /// The pane window that hosts a surface, and its rectangle on screen.

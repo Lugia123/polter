@@ -121,6 +121,13 @@ path = "../split-tree"
 [dependencies.polter-cliargs]
 path = "../cliargs"
 
+# Whether an `open_url` may be handed to `ShellExecuteW`. See the crate note:
+# an OSC 8 target is chosen by whatever is running in the terminal, which
+# makes this a security rule, and a security rule has to be testable where it
+# is written.
+[dependencies.polter-urlpolicy]
+path = "../urlpolicy"
+
 # The quoting rules for dropped paths. Out here rather than in `dnd.rs`
 # because a rule about spaces and quotes is exactly the kind that is wrong
 # quietly, and a test for it is only useful if it runs where the code is

@@ -94,6 +94,54 @@ pub const ACTION_MOVE_TAB_TO_NEW_WINDOW: u32 = 69;
 pub const ACTION_POLTERGEIST_MARK: u32 = 70;
 pub const ACTION_POLTERGEIST_CLOSE: u32 = 71;
 
+// --- The terminal-semantics and appearance batch (task 273, second group).
+//
+// **Every ordinal below was counted twice, from two files that are generated
+// from each other, and both counts were anchored on a constant that was
+// already in this table.** The two readings are `Action.Key`'s declaration
+// order in `src/apprt/action.zig` (72 members) and `ghostty_action_tag_e`'s
+// member order in `include/ghostty.h`; the anchors are
+// `copy_title_to_clipboard` = 68 and `move_tab_to_new_window` = 69, which
+// come out right in both. That is the whole of what says these numbers are
+// right -- **a wrong ordinal here compiles, links, and silently dispatches
+// one action into another action's arm.**
+pub const ACTION_TOGGLE_BACKGROUND_OPACITY: u32 = 14;
+pub const ACTION_SCROLLBAR: u32 = 27;
+pub const ACTION_DESKTOP_NOTIFICATION: u32 = 33;
+pub const ACTION_MOUSE_OVER_LINK: u32 = 41;
+pub const ACTION_QUIT_TIMER: u32 = 44;
+pub const ACTION_COLOR_CHANGE: u32 = 49;
+pub const ACTION_SELECTION_CHANGED: u32 = 54;
+pub const ACTION_OPEN_URL: u32 = 58;
+pub const ACTION_PROGRESS_REPORT: u32 = 60;
+pub const ACTION_COMMAND_FINISHED: u32 = 62;
+
+// `ghostty_action_open_url_kind_e`. **`OSC8` is the one that matters**: it is
+// the only kind whose URL was chosen by whatever is running in the terminal
+// rather than by the person at the keyboard, so it is the only one this host
+// refuses to hand to the shell unconditionally. See `links.rs`.
+pub const OPEN_URL_KIND_UNKNOWN: i32 = 0;
+pub const OPEN_URL_KIND_TEXT: i32 = 1;
+pub const OPEN_URL_KIND_HTML: i32 = 2;
+pub const OPEN_URL_KIND_OSC8: i32 = 3;
+
+// `ghostty_action_progress_report_state_e`.
+pub const PROGRESS_STATE_REMOVE: i32 = 0;
+pub const PROGRESS_STATE_SET: i32 = 1;
+pub const PROGRESS_STATE_ERROR: i32 = 2;
+pub const PROGRESS_STATE_INDETERMINATE: i32 = 3;
+pub const PROGRESS_STATE_PAUSE: i32 = 4;
+
+// `ghostty_action_color_kind_e`. Anything >= 0 is a palette index; the three
+// named colours are negative.
+pub const COLOR_KIND_FOREGROUND: i32 = -1;
+pub const COLOR_KIND_BACKGROUND: i32 = -2;
+pub const COLOR_KIND_CURSOR: i32 = -3;
+
+// `ghostty_action_quit_timer_e`.
+pub const QUIT_TIMER_START: i32 = 0;
+pub const QUIT_TIMER_STOP: i32 = 1;
+
 /// `ghostty_action_poltergeist_mark_s`. The prefix is the core's rendered
 /// glyphs; `role` and `shielded` are the meaning, which is what a menu item
 /// needs -- **a tick cannot be derived from a string**, which is the reason
@@ -285,6 +333,97 @@ impl Action {
         }
         let bytes = unsafe { std::slice::from_raw_parts(p, len) };
         (tag, Some(String::from_utf8_lossy(bytes).into_owned()))
+    }
+
+    /// A NUL-terminated `const char*` at `off`, as an owned `String`.
+    ///
+    /// **Owned, not borrowed, and that is the point.** `as_cstr` hands back a
+    /// `&'static CStr` over memory the core owns for the duration of the
+    /// callback only; every arm below hands its text to another thread or to
+    /// a window procedure that runs later. A borrow that outlives the call is
+    /// the shape `borrow-across-dispatch.py` exists to catch.
+    fn string_at(&self, off: usize) -> Option<String> {
+        let p = usize::from_ne_bytes(self.payload[off..off + 8].try_into().unwrap())
+            as *const c_char;
+        if p.is_null() {
+            return None;
+        }
+        Some(unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned())
+    }
+
+    /// A `(ptr, len)` pair at `off`, as an owned `String`. Not NUL-terminated
+    /// on the core's side, so the length is the only thing that ends it.
+    ///
+    /// `None` for a null pointer **and for a zero length**: the core sends
+    /// `len == 0` to mean "the mouse left the link", and a zero-length string
+    /// and no string at all are the same fact with two spellings.
+    fn sized_string_at(&self, off: usize) -> Option<String> {
+        let p = usize::from_ne_bytes(self.payload[off..off + 8].try_into().unwrap()) as *const u8;
+        let len = usize::from_ne_bytes(self.payload[off + 8..off + 16].try_into().unwrap());
+        if p.is_null() || len == 0 {
+            return None;
+        }
+        // A URL longer than this is not a URL anybody typed or clicked; the
+        // ceiling is here so a corrupt length cannot make us read a gigabyte.
+        if len > 64 * 1024 {
+            return None;
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(p, len) };
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    }
+
+    /// `ghostty_action_open_url_s { kind; const char* url; uintptr_t len; }`.
+    /// The enum is int-sized and the pointer is 8-aligned, so `url` is at 8
+    /// and `len` at 16 -- **not** packed at 4 and 12.
+    pub fn as_open_url(&self) -> (i32, Option<String>) {
+        (self.as_i32(), self.sized_string_at(8))
+    }
+
+    /// `ghostty_action_mouse_over_link_s { const char* url; size_t len; }`.
+    /// `None` means the pointer has left the link.
+    pub fn as_mouse_over_link(&self) -> Option<String> {
+        self.sized_string_at(0)
+    }
+
+    /// `ghostty_action_desktop_notification_s { const char* title, *body; }`.
+    /// Both are NUL-terminated.
+    pub fn as_desktop_notification(&self) -> (Option<String>, Option<String>) {
+        (self.string_at(0), self.string_at(8))
+    }
+
+    /// `ghostty_action_progress_report_s { state; int8_t progress; }`, where
+    /// `progress` is **-1 for "no percentage was reported"** and 0..=100
+    /// otherwise. Returned as `Option<u8>` so the sentinel cannot be painted
+    /// as a bar length by accident.
+    pub fn as_progress_report(&self) -> (i32, Option<u8>) {
+        let raw = self.payload[4] as i8;
+        (self.as_i32(), if (0..=100).contains(&raw) { Some(raw as u8) } else { None })
+    }
+
+    /// `ghostty_action_color_change_s { kind; uint8_t r, g, b; }`. The enum is
+    /// int-sized, so the three bytes start at offset 4.
+    pub fn as_color_change(&self) -> (i32, u8, u8, u8) {
+        (self.as_i32(), self.payload[4], self.payload[5], self.payload[6])
+    }
+
+    /// `ghostty_action_command_finished_s { int16_t exit_code; uint64_t
+    /// duration; }`. The `u64` is 8-aligned, so it is at offset 8 and not 2.
+    ///
+    /// `exit_code` is **-1 for "no exit code was reported"**, which is why it
+    /// comes back as an `Option` rather than as a number a caller could
+    /// compare against zero and call a success.
+    pub fn as_command_finished(&self) -> (Option<i16>, u64) {
+        let code = i16::from_ne_bytes(self.payload[0..2].try_into().unwrap());
+        let duration = u64::from_ne_bytes(self.payload[8..16].try_into().unwrap());
+        (if code < 0 { None } else { Some(code) }, duration)
+    }
+
+    /// `ghostty_action_scrollbar_s { uint64_t total, offset, len; }` --
+    /// rows of scrollback in total, the top row on screen, and how many rows
+    /// are visible.
+    pub fn as_scrollbar(&self) -> (u64, u64, u64) {
+        let g = |i: usize| u64::from_ne_bytes(self.payload[i..i + 8].try_into().unwrap());
+        (g(0), g(8), g(16))
     }
 
     /// `ghostty_action_size_limit_s { u32 min_w, min_h, max_w, max_h; }`.

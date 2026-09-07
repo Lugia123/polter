@@ -106,8 +106,10 @@ mod ffi;
 mod keys;
 mod hud;
 mod keyseq;
+mod links;
 mod menu;
 mod mouse;
+mod notify;
 mod overlay;
 mod palette;
 mod plugins;
@@ -123,6 +125,8 @@ mod search;
 mod shell;
 mod strip;
 mod tabs;
+mod taskbar;
+mod termcolor;
 mod theme;
 mod tsf;
 mod uia;
@@ -2848,6 +2852,52 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 }
             }
         }
+        // ---- The terminal-semantics and appearance batch (task 273).
+        //
+        // **Each of these is a fact the terminal produced, and every one of
+        // them was falling through to `_ => false` before this.** That arm
+        // logs the tag and nothing else, so the whole of what a person saw
+        // when a program set its background, reported progress, or asked for
+        // a notification was: nothing, and a number in a log.
+        //
+        // The work is in a module per subject rather than inline here.
+        // `cb_action` is edited by everyone and merged constantly; a body in
+        // this file is a conflict, and a call is a line.
+
+        // A link. **The kind decides whether it may be opened at all** --
+        // `osc8` means whatever is running in the terminal chose the target.
+        ffi::ACTION_OPEN_URL => {
+            let (kind, url) = action.as_open_url();
+            links::on_open_url(origin, kind, url)
+        }
+
+        // OSC 9 / OSC 777: something wants to be noticed while the person is
+        // looking elsewhere.
+        ffi::ACTION_DESKTOP_NOTIFICATION => {
+            let (title, body) = action.as_desktop_notification();
+            notify::on_notification(origin, title, body)
+        }
+
+        // OSC 9;4: a bar on this window's taskbar button.
+        ffi::ACTION_PROGRESS_REPORT => {
+            let (state, pct) = action.as_progress_report();
+            taskbar::on_progress(origin, state, pct)
+        }
+
+        // A command ended. Long, and the window is not in front: flash it.
+        ffi::ACTION_COMMAND_FINISHED => {
+            let (code, duration) = action.as_command_finished();
+            taskbar::on_command_finished(origin, code, duration)
+        }
+
+        // OSC 10/11/12. **The surface travels with it**, not just the window:
+        // with a split, one pane changing its background says nothing about
+        // the other, and the frame is around both.
+        ffi::ACTION_COLOR_CHANGE => {
+            let (kind, r, g, b) = action.as_color_change();
+            termcolor::on_color_change(origin, target_surface(&target), kind, r, g, b)
+        }
+
         ACTION_RENDER => true,
 
         // **An action this host does not answer leaves a line.**
@@ -4741,6 +4791,8 @@ fn main() {
     search::init(hinst);
     keyseq::init(hinst);
     hud::init(hinst);
+    taskbar::init(hinst);
+    notify::init(hinst);
     divider::init(hinst);
     settings_ui::init(hinst);
     reload::init(hinst);

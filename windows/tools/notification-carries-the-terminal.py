@@ -71,15 +71,21 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 keying `mouse.rs` on the surface the action names. A pointer
 #                 shape stored once for the process is the same defect this
 #                 gate was written for, one pane over.
-#
-#  10 (tasks 254 and 271): ACTION_RELOAD_CONFIG and ACTION_POLTERGEIST_CLOSE
+#   9 (task 273): ACTION_COLOR_CHANGE joined. OSC 10/11 is per surface -- with
+#                 a split, one pane's background says nothing about the
+#                 other's, and the frame is around both -- so the arm resolves
+#                 the surface and `termcolor.rs` keys on it. The other four
+#                 arms in that batch (open_url, desktop_notification,
+#                 progress_report, command_finished) are about the *window*
+#                 and do not carry one; they take `origin` and nothing else.
+#  10, 11 (tasks 254 and 271): ACTION_RELOAD_CONFIG and ACTION_POLTERGEIST_CLOSE
 #                 joined. Both are surface-targeted in the case that matters:
 #                 a *soft* reload is aimed at one surface whose conditional
 #                 state moved, and every scope `poltergeist_close` can ask for
 #                 is expressed relative to the target's tab -- resolving
 #                 either against the tab in front would take the wrong
 #                 terminal and look entirely normal doing it.
-MIN_CARRYING_ARMS = 10
+MIN_CARRYING_ARMS = 11
 
 # The call is deliberately identity-free, with the reason written next to it.
 # **Default is "must carry"**, and the exception is the thing that has to be

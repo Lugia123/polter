@@ -1,0 +1,13 @@
+[package]
+name = "polter-urlpolicy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# **Zero dependencies, and out here for the same reason as `split-tree`,
+# `droppath` and `cliargs`**: `polter-host` cannot be built for the machine
+# this port is written on, so a rule that lives inside it is a rule no test
+# here can run. This one decides whether bytes chosen by whatever is running
+# inside the terminal reach `ShellExecuteW`, which is not a rule to leave
+# untested.
+[dependencies]

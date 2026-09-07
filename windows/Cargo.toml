@@ -12,6 +12,11 @@
 #                `polter-cli.exe --help` opened a terminal instead of printing
 #                help, and nothing said so. Out here so the agreement can be
 #                asserted by a test that runs off Windows.
+#   urlpolicy/   whether an `open_url` may reach `ShellExecuteW`. An OSC 8
+#                hyperlink's target is chosen by whatever is running in the
+#                terminal, so this is a security rule, and a security rule
+#                that cannot be tested where it is written is a security rule
+#                nobody has run.
 #   droppath/    the shell-quoting rules for a dropped file path. Here for
 #                the same reason split-tree is: `polter-host` cannot be
 #                tested off Windows at all -- `windows`'s own dependencies
@@ -23,7 +28,7 @@
 # knowing where the crate lives.
 [workspace]
 resolver = "2"
-members = ["host", "split-tree", "droppath", "cliargs"]
+members = ["host", "split-tree", "droppath", "cliargs", "urlpolicy"]
 
 # **Profiles must live here, not in a member.** Cargo ignores a member's
 # `[profile]` inside a workspace and only says so as a warning -- the symptom

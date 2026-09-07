@@ -29,6 +29,7 @@ dependencies = [
  "polter-cliargs",
  "polter-droppath",
  "polter-split-tree",
+ "polter-urlpolicy",
  "serde_json",
  "windows",
  "windows-core",
@@ -36,6 +37,10 @@ dependencies = [
 
 [[package]]
 name = "polter-split-tree"
+version = "0.1.0"
+
+[[package]]
+name = "polter-urlpolicy"
 version = "0.1.0"
 
 [[package]]
