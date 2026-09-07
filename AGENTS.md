@@ -67,3 +67,22 @@ core handles it, the known cases where a menu's label and the key's behaviour
 disagree, and why most work on the test machine should never touch the GUI:
 `docs/windows/keys.md`. Read it before changing the accelerator table in
 `keys.rs` or `Keybinds.init` in `Config.zig`.
+
+## Issues and PRs
+
+**File them here, never upstream.** `upstream` is a configured remote
+(`ghostty-org/ghostty`) with a push URL, so nothing mechanical stops a mistake
+that would arrive on somebody else's project under this repository owner's
+name. Upstream has closed issue creation anyway, so there is nothing to file
+into and no judgement call to make: the answer is always this repository.
+
+Filing into **this** repository is ordinary and needs no permission. An
+unreproduced bug, a limitation worth stating, a fix believed rather than
+proven -- all of those are better in the tracker than in a commit message
+nobody will search.
+
+> This replaces an unconditional "never create an issue" that came from
+> upstream and was retired in `438a2e352`. That commit named the guard going
+> missing with it, and left the narrow version available "if the first agent
+> to try makes the case for it". Opening the repository to outside
+> contributors is that case.
