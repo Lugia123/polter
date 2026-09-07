@@ -41,13 +41,47 @@ fn expand_home(url: &str) -> String {
     }
 }
 
-/// Hand `url` to the shell. Returns whether it started.
+/// Hand `url` to the shell. Returns whether it started, and how long the call
+/// took.
 ///
 /// `ShellExecuteW` returns a value typed as an `HINSTANCE` that is not one:
 /// anything **at or below 32** is an error code. The same reading is in
 /// `main.rs`'s `open_config` arm, which is the other caller in this port.
-fn shell_open(url: &str) -> bool {
+///
+/// # Why there is a line before the call and not only after it
+///
+/// This runs **on the thread that owns every window in this process**, and it
+/// is unbounded: `ShellExecuteW` goes into the shell, which may start a
+/// process, load a handler, or put up UI of its own. Nothing here times it
+/// out.
+///
+/// When it did not come back -- Ctrl+click on an OSC 8 link, and the main
+/// thread never ran again -- **the log said nothing whatsoever**. Every line
+/// this file wrote was on a way *out*: no URL, refused, or the result. So the
+/// evidence for "it went in and never came out" was the *absence* of three
+/// different lines, and an absence has three readings that look identical:
+/// the click never arrived, a branch refused without logging, or the call is
+/// still running. Telling them apart took half an hour and two process dumps.
+///
+/// One line before the call collapses that to a read, which is why it names
+/// the call and says what its being last means.
+fn shell_open(frame: Option<HWND>, url: &str) -> (bool, u128) {
     let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    match frame {
+        Some(f) => wlogf!(
+            f,
+            "[link] handing {url:?} to ShellExecuteW on the thread that owns the windows; \
+             IF THIS IS THE LAST LINE IN THE LOG, the call did not return"
+        ),
+        // process-wide: the action named no surface, so there is no window
+        // this line could belong to -- and the line still has to exist,
+        // because it is the one that says where the process went
+        None => plogf!(
+            "[link] handing {url:?} to ShellExecuteW on the thread that owns the windows; \
+             IF THIS IS THE LAST LINE IN THE LOG, the call did not return"
+        ),
+    }
+    let started = std::time::Instant::now();
     let r = unsafe {
         ShellExecuteW(
             None,
@@ -58,7 +92,11 @@ fn shell_open(url: &str) -> bool {
             SW_SHOWNORMAL,
         )
     };
-    r.0 as usize > 32
+    // **Reported even when it returns**, because "it came back after 9
+    // seconds" and "it came back at once" are the same line without it -- and
+    // the first is the reading that says this call is the thing to move off
+    // this thread.
+    (r.0 as usize > 32, started.elapsed().as_millis())
 }
 
 /// The `open_url` action.
@@ -102,12 +140,12 @@ pub fn on_open_url(frame: Option<HWND>, kind: i32, url: Option<String>) -> bool 
     }
 
     let target = expand_home(url.trim());
-    let ok = shell_open(&target);
+    let (ok, ms) = shell_open(frame, &target);
     match frame {
-        Some(f) => wlogf!(f, "[link] open_url kind={kind} {target:?} -> {ok}"),
+        Some(f) => wlogf!(f, "[link] open_url kind={kind} {target:?} -> {ok} in {ms}ms"),
         // process-wide: the action named no surface, so this line is about the
         // process opening something rather than about a window
-        None => plogf!("[link] open_url kind={kind} {target:?} -> {ok}"),
+        None => plogf!("[link] open_url kind={kind} {target:?} -> {ok} in {ms}ms"),
     }
     ok
 }

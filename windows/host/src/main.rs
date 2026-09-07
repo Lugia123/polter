@@ -2324,6 +2324,18 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 alogf!(origin, "[action] open_config mode {} not supported; opening with the OS", mode);
             }
             let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+            // **Before the call, for the reason written on `links::shell_open`**:
+            // this is the same unbounded call on the same thread, and the same
+            // silence when it does not come back. Two call sites, one rule --
+            // `windows/tools/blocking-call-says-so-first.py` is what stops the
+            // second one being forgotten again.
+            alogf!(
+                origin,
+                "[action] open_config handing {:?} to ShellExecuteW on the thread that owns \
+                 the windows; IF THIS IS THE LAST LINE IN THE LOG, the call did not return",
+                path
+            );
+            let started = std::time::Instant::now();
             let r = unsafe {
                 windows::Win32::UI::Shell::ShellExecuteW(
                     None,
@@ -2336,7 +2348,13 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             };
             // ShellExecuteW returns a fake HINSTANCE; <= 32 means it failed.
             let ok = r.0 as usize > 32;
-            alogf!(origin, "[action] open_config {:?} -> {}", path, ok);
+            alogf!(
+                origin,
+                "[action] open_config {:?} -> {} in {}ms",
+                path,
+                ok,
+                started.elapsed().as_millis()
+            );
             ok
         }
 
