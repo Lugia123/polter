@@ -4752,6 +4752,70 @@ fn file_identity(h: windows::Win32::Foundation::HANDLE) -> Option<(u32, u64)> {
     ))
 }
 
+/// Write the stdio verdict where the defect it is about cannot reach it.
+///
+/// # The diagnosis was written in the place it destroys
+///
+/// `adopt_std_handles` decides whether a standard handle it was given is the
+/// very file this host logs to, and re-points it if so. **Its whole verdict
+/// was one `[stdio]` line in the log** -- and in the configuration that
+/// verdict is about, the log is the file being overwritten. Measured on the
+/// machine with `POLTER_HOST_LOG` pinned and the process started with
+/// `> that-same-file 2>&1`: the file held 207 lines, **every one of them the
+/// core's**, and not a single host record survived. Nor was there a per-pid
+/// log anywhere on the disk, so the host's lines were not written elsewhere;
+/// they were written there and destroyed.
+///
+/// So "the rescue did not happen" had two possible causes with opposite
+/// repairs -- `file_identity` never recognised the handle, or it recognised
+/// it and nothing acted -- and **nothing in the process could tell them
+/// apart**, because the only place the answer was written was the place that
+/// went.
+///
+/// # Why a per-pid file beside the exe, and not the two obvious alternatives
+///
+/// **Not the log**: that is the file under discussion.
+///
+/// **Not `OutputDebugStringW`, and not even as an extra.** With no listener
+/// attached the string is discarded, so a run with nothing watching records
+/// nothing -- and whether anything listens on the test machine is not a fact
+/// this port can establish from the machine it is written on. It was written
+/// and then taken out again for a second reason worth recording: it needs the
+/// `Win32_System_Diagnostics_Debug` feature, which this crate does not enable,
+/// and **adding build surface for a channel whose value cannot be verified
+/// from here is the wrong trade**. If somebody confirms a listener on the test
+/// machine it is four lines and one feature; until then the file is the whole
+/// of it.
+///
+/// **Per-pid rather than a fixed name**, and this is the part the three-way
+/// classification above answers: a fixed name could itself be a redirect
+/// target, which would put this file inside the very family it exists to
+/// escape. **Nobody can name a pid before the process exists.** That is the
+/// same argument that put a pid in the main log's name, applied to the one
+/// file that has to survive when the main log does not.
+///
+/// **What this cannot do**, said rather than papered over: if the directory
+/// beside the exe is not writable, this fails, and the only place that
+/// failure could be reported is the log. That circle does not close.
+fn write_stdio_verdict(verdict: &str) -> Option<std::path::PathBuf> {
+    use std::io::Write as _;
+    let name = format!("polter-host-stdio-{}.log", std::process::id());
+    let path = std::env::current_exe().ok()?.with_file_name(name);
+    let mut line = String::from(verdict);
+    line.push('\n');
+    // One `write_all` of a record that already ends in its newline, for the
+    // reason `log_line` sets out: a record written in two writes is one
+    // another writer can be spliced into.
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    f.write_all(line.as_bytes()).ok()?;
+    let _ = f.flush();
+    Some(path)
+}
+
 fn adopt_std_handles() -> String {
     use std::os::windows::ffi::OsStrExt as _;
     use windows::Win32::Storage::FileSystem::{
@@ -4825,7 +4889,31 @@ fn adopt_std_handles() -> String {
     let mut missing: Vec<(STD_HANDLE, &str)> = Vec::new();
     let mut colliding: Vec<(STD_HANDLE, &str)> = Vec::new();
     let mut untouched: Vec<&str> = Vec::new();
+    // **The evidence, per stream, before any of it is acted on.** This is the
+    // half that settles which of the two causes a missing rescue had: an
+    // identity that never matched is a `file_identity` problem, and identities
+    // that matched with the stream still `left alone` is an action problem.
+    // They need opposite repairs and the old verdict could not tell them
+    // apart. Written to a sink the collision cannot reach; see
+    // `write_stdio_verdict`.
+    let mut evidence: Vec<String> = vec![format!(
+        "log={} log_identity={:?}",
+        log_path().display(),
+        log_id
+    )];
     for (id, name) in [(STD_OUTPUT_HANDLE, "stdout"), (STD_ERROR_HANDLE, "stderr")] {
+        evidence.push(match given(id) {
+            None => format!("{name}: not given by Windows"),
+            Some(h) => format!(
+                "{name}: given handle {:?} identity={:?} matches_log={}",
+                h,
+                file_identity(h),
+                match (file_identity(h), log_id) {
+                    (Some(a), Some(b)) => if a == b { "yes" } else { "no" },
+                    _ => "unknown -- not a file on disk, or the log could not be opened",
+                }
+            ),
+        });
         match given(id) {
             None => missing.push((id, name)),
             Some(h) => match (file_identity(h), log_id) {
@@ -4836,8 +4924,9 @@ fn adopt_std_handles() -> String {
     }
 
     if missing.is_empty() && colliding.is_empty() {
-        return "[stdio] stdout and stderr both came from whoever started us, and neither is this log file; leaving them alone"
-            .to_string();
+        let line = "[stdio] stdout and stderr both came from whoever started us, \
+                    and neither is this log file; leaving them alone";
+        return with_verdict(line.to_string(), &evidence, "left alone");
     }
 
     let file = unsafe {
@@ -4897,7 +4986,28 @@ fn adopt_std_handles() -> String {
         line.push_str(&format!(" SetStdHandle refused {};", refused.join(" and ")));
     }
     line.pop();
-    line
+    with_verdict(line, &evidence, "acted")
+}
+
+/// Put the verdict where the collision cannot reach it, and say in the log
+/// line where that copy went.
+///
+/// **The pointer matters as much as the copy.** A second file nobody knows
+/// about is a second file nobody reads; the person looking at a log that has
+/// been overwritten needs the sentence that tells them where the surviving
+/// copy is -- and that sentence, in the case that matters, is exactly the one
+/// that did not survive. So it is written in both, and the one that survives
+/// is self-contained.
+fn with_verdict(line: String, evidence: &[String], outcome: &str) -> String {
+    let full = format!("[stdio] verdict={outcome}; {} ;; {line}", evidence.join("; "));
+    match write_stdio_verdict(&full) {
+        Some(p) => format!("{line} [verdict also written to {}]", p.display()),
+        // Said out loud: from here the only copy of this reading is in the
+        // file the reading is about, which is the state this whole change
+        // exists to leave behind.
+        None => format!("{line} [could NOT write the surviving copy of this verdict; \
+                         if this log is the file in question, this line is all there is]"),
+    }
 }
 
 /// Start the log file with a UTF-8 byte order mark.
