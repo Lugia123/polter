@@ -113,6 +113,14 @@ windows-core = "0.62"
 [dependencies.polter-split-tree]
 path = "../split-tree"
 
+# Whether a command line asks for a CLI action or for a window. Out here for
+# the same reason as the two below: the rule has to agree with the core's
+# `detectIter`, disagreeing with it is silent -- the symptom of the last
+# disagreement was `polter-cli.exe --help` starting a resident instance -- and
+# a test for it is only worth having if it runs where the port is written.
+[dependencies.polter-cliargs]
+path = "../cliargs"
+
 # The quoting rules for dropped paths. Out here rather than in `dnd.rs`
 # because a rule about spaces and quotes is exactly the kind that is wrong
 # quietly, and a test for it is only useful if it runs where the code is

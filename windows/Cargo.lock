@@ -15,6 +15,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "polter-cliargs"
+version = "0.1.0"
+
+[[package]]
 name = "polter-droppath"
 version = "0.1.0"
 
@@ -22,6 +26,7 @@ version = "0.1.0"
 name = "polter-host"
 version = "0.1.0"
 dependencies = [
+ "polter-cliargs",
  "polter-droppath",
  "polter-split-tree",
  "serde_json",

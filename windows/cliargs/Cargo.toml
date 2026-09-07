@@ -1,0 +1,13 @@
+[package]
+name = "polter-cliargs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# **Zero dependencies, for the same reason `split-tree` and `droppath` have
+# none**: `polter-host` cannot be built for a macOS target at all, so a rule
+# that only lives inside it is a rule no test on the machine the port is
+# written on can run. The rule in here decides whether a command line opens a
+# window or runs a CLI action, and it disagreed with the core about `--help`
+# without anything going red.
+[dependencies]

@@ -3891,13 +3891,22 @@ fn own_exe_path() -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..n]))
 }
 
-/// Did the command line ask for a `+action`?
+/// Did the command line ask for a CLI action?
 ///
 /// Answered here as well as by the core because two things depend on it
 /// before the core is initialised, and one of them is not obvious: a CLI
 /// action is a **terminal program**, and this host otherwise turns on
 /// `GHOSTTY_LOG=stderr`. Logging to stderr underneath a full-screen TUI
 /// scribbles over it. The other is that there is no reason to open a window.
+///
+/// ⚠️ **It is not "does an argument begin with `+`", and reading it that way
+/// is the defect this delegation fixed.** `--help`, `-h` and `--version` name
+/// actions to the core without a `+`, and `-e` stops the search; a run that
+/// asked one of the first three fell through into loading libghostty, opening
+/// a frame, opening a tab and starting a shell. The rule now lives in
+/// `polter-cliargs`, beside the tests for it -- `polter-host` cannot be built
+/// for this machine, so a rule kept in this file is a rule nothing here can
+/// run.
 fn cli_action_requested() -> bool {
     cli_action_in(std::env::args())
 }
@@ -3907,7 +3916,7 @@ fn cli_action_requested() -> bool {
 /// Split out so `owns_the_log`'s rule has a floor: the real one reads `argv`
 /// and is answered once per process, which leaves nothing a test can vary.
 fn cli_action_in(args: impl Iterator<Item = String>) -> bool {
-    args.skip(1).any(|a| a.starts_with('+'))
+    polter_cliargs::asks_for_a_cli_action(args)
 }
 
 /// Where the log goes, given the two facts that decide it.
@@ -4389,12 +4398,12 @@ fn main() {
         }
         // process-wide: a CLI action runs before any window exists, and this
         // path never makes one
-        plogf!("[cli] a +action was asked for; handing over to the core");
+        plogf!("[cli] a CLI action was asked for; handing over to the core");
         unsafe { (api_box.cli_try_action)() };
-        // Reached only if the core found nothing to run -- a `+` argument
-        // that is not an action name. **Said out loud rather than falling
-        // through into a window**, because a typo that silently opens a
-        // terminal looks like the action ran.
+        // Reached only if the core found nothing to run -- an argument this
+        // side read as naming an action and the core did not. **Said out loud
+        // rather than falling through into a window**, because a typo that
+        // silently opens a terminal looks like the action ran.
         // process-wide: same path, still no window -- that is what the line says
         plogf!("[cli] the core did not recognise it; not opening a window");
         die();

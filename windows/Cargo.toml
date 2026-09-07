@@ -7,6 +7,11 @@
 #   split-tree/  the split layout algorithm, ported from SplitTree.swift.
 #                Zero dependencies, so `cargo test` runs it on whatever
 #                machine the port is being written on.
+#   cliargs/     whether a command line asks for a CLI action or for a window.
+#                Must agree with the core's `cli/action.zig`; when it did not,
+#                `polter-cli.exe --help` opened a terminal instead of printing
+#                help, and nothing said so. Out here so the agreement can be
+#                asserted by a test that runs off Windows.
 #   droppath/    the shell-quoting rules for a dropped file path. Here for
 #                the same reason split-tree is: `polter-host` cannot be
 #                tested off Windows at all -- `windows`'s own dependencies
@@ -18,7 +23,7 @@
 # knowing where the crate lives.
 [workspace]
 resolver = "2"
-members = ["host", "split-tree", "droppath"]
+members = ["host", "split-tree", "droppath", "cliargs"]
 
 # **Profiles must live here, not in a member.** Cargo ignores a member's
 # `[profile]` inside a workspace and only says so as a warning -- the symptom
