@@ -3708,11 +3708,16 @@ fn chatHistory(
     // into.
     const l = if (self.chat_log) |*v| v else return .{ .lines = &.{}, .more = false };
 
-    // This member's view has a floor, but nothing says which line on disk
-    // that floor sits at -- the messages it was barred from predate the
-    // log, or were never written down. Since the bound cannot be proved,
-    // give less rather than risk giving more.
-    if (floor.seq > 0 and floor.log_seq == 0) return .{ .lines = &.{}, .more = false };
+    // This member was kept out of something, but nothing says which line
+    // on disk that bar sits at -- the messages predate the log, or were
+    // never written down. Since the bound cannot be proved, give less
+    // rather than risk giving more.
+    //
+    // `barred` and not `floor.seq > 0`: a compaction raises the floor of a
+    // member that was kept out of nothing, so the seq alone would read a
+    // whole group as barred the first time its supervisor compacted -- and
+    // shut off the one tool that reaches what the compaction took away.
+    if (floor.barred and floor.log_seq == 0) return .{ .lines = &.{}, .more = false };
 
     const page = try l.history(alloc, group, before_seq, limit, filter);
 

@@ -93,6 +93,20 @@ const Member = struct {
     /// Highest seq this member has been shown.
     cursor: u64 = 0,
 
+    /// Whether this member was ever kept out of anything.
+    ///
+    /// `floor` cannot answer this. A compaction raises the floor of a
+    /// member that was barred from nothing -- the summary takes the seq of
+    /// the last message it replaces, so the floor has to move past it for
+    /// that member to be shown the summary at all. Reading `floor > 0` as
+    /// "kept out of something" therefore says yes to a member who was
+    /// given the whole history, and `App.chatHistory` acts on exactly that
+    /// pair: barred, with no log seq to bound the walk, means hand back
+    /// nothing. One compaction would otherwise close `group_history` for
+    /// the whole group -- and reaching what a compaction took away is the
+    /// only reason that tool exists.
+    barred: bool = false,
+
     /// The log seq of the newest message this member is barred from, or 0
     /// when nothing is barred.
     ///
@@ -399,6 +413,7 @@ pub fn add(
         .none => .{
             .floor = group.head(),
             .cursor = group.head(),
+            .barred = true,
 
             // Only as far as what the group still holds. The file very
             // often holds more -- after a restart the group is empty while
@@ -453,7 +468,7 @@ pub fn isMember(self: *const Chat, name: []const u8, id: Id) bool {
 }
 
 /// Where a member's view of a group begins, in both numberings.
-pub const Floor = struct { seq: u64 = 0, log_seq: u64 = 0 };
+pub const Floor = struct { seq: u64 = 0, log_seq: u64 = 0, barred: bool = false };
 
 /// Where this member's view of the group begins, in both numberings.
 ///
@@ -464,7 +479,7 @@ pub const Floor = struct { seq: u64 = 0, log_seq: u64 = 0 };
 pub fn floorOf(self: *const Chat, name: []const u8, id: Id) Error!Floor {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     const m = group.members.get(id) orelse return error.NotAMember;
-    return .{ .seq = m.floor, .log_seq = m.log_floor };
+    return .{ .seq = m.floor, .log_seq = m.log_floor, .barred = m.barred };
 }
 
 pub fn exists(self: *const Chat, name: []const u8) bool {
@@ -1916,6 +1931,61 @@ test "a member given the history has no log floor to raise" {
     try chat.create("build", boss);
     try chat.add("build", a, .all, .{});
     try testing.expectEqual(@as(u64, 0), (try chat.floorOf("build", a)).log_seq);
+}
+
+test "compacting does not make a full-history member look barred" {
+    // The floor of a member that was kept out of nothing still moves when
+    // the group is compacted -- the summary carries the seq of the last
+    // message it replaces, so the floor has to pass it for the summary to
+    // be readable at all. What must not move is `barred`.
+    //
+    // `App.chatHistory` used to ask `floor.seq > 0` instead, which this
+    // arrangement answers yes to. The effect was that one `group_compact`
+    // shut `group_history` off for every member of the group, and it was
+    // found the way it would be found in use: a supervisor read an empty
+    // page as "the log is gone" while the day files sat on disk with a
+    // night in them.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    const s1 = try chat.post("build", boss, "one", 100);
+    chat.setLogSeq("build", s1, 1866);
+    const s2 = try chat.post("build", boss, "two", 101);
+    chat.setLogSeq("build", s2, 1867);
+
+    try chat.add("build", a, .all, .{});
+    try testing.expectEqual(Floor{ .seq = 0, .log_seq = 0 }, try chat.floorOf("build", a));
+
+    _ = try chat.compact("build", s2, "what those two amounted to", boss, 200);
+
+    const floor = try chat.floorOf("build", a);
+    try testing.expect(floor.seq > 0);
+    try testing.expect(!floor.barred);
+}
+
+test "compacting does not unbar a member that joined without history" {
+    // The other direction of the same fix, because loosening the test
+    // `App.chatHistory` makes is exactly how it would be got wrong: a
+    // member added with `.none` must still be barred afterwards, and still
+    // bounded at the log seq it was barred at.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    const s1 = try chat.post("build", boss, "before you arrived", 100);
+    chat.setLogSeq("build", s1, 1866);
+
+    try chat.add("build", a, .none, .{});
+    try testing.expect((try chat.floorOf("build", a)).barred);
+
+    const s2 = try chat.post("build", boss, "after", 101);
+    chat.setLogSeq("build", s2, 1867);
+    _ = try chat.compact("build", s2, "what those amounted to", boss, 200);
+
+    const floor = try chat.floorOf("build", a);
+    try testing.expect(floor.barred);
+    try testing.expectEqual(@as(u64, 1867), floor.log_seq);
 }
 
 test "a watched terminal is not woken, whoever spoke" {
