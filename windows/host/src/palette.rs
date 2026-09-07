@@ -660,29 +660,52 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config) {
     }
 }
 
-/// Ask the palette to open or close. **Safe from any thread** — it only posts.
-pub fn request_toggle() {
+/// Ask the palette to open or close, **over the window that asked**.
+/// **Safe from any thread** — it only posts.
+///
+/// The window rides in the message's own `WPARAM` rather than in a queue
+/// beside it. There is one palette, so there is at most one open request in
+/// flight worth honouring, and a value carried *by* the message cannot be
+/// taken by a different one -- which is the failure a side queue has and the
+/// reason `prompt.rs` needs one for its two request kinds.
+pub fn request_toggle(frame: Option<HWND>) {
     let h = HWND_PALETTE.load(Ordering::Acquire);
     if h.is_null() {
         // process-wide: the palette does not exist yet, so no window can be meant
         plogf!("[palette] toggle before init, ignored");
         return;
     }
-    let _ = unsafe { PostMessageW(Some(HWND(h)), WM_PALETTE_TOGGLE, WPARAM(0), LPARAM(0)) };
+    let who = frame.map(|f| f.0 as usize).unwrap_or(0);
+    let _ = unsafe { PostMessageW(Some(HWND(h)), WM_PALETTE_TOGGLE, WPARAM(who), LPARAM(0)) };
 }
 
 fn hwnd() -> HWND {
     HWND(HWND_PALETTE.load(Ordering::Acquire))
 }
 
-fn show() {
+/// Open the palette over `asked`, or over window 1 when nothing named one.
+///
+/// **`asked` used to be absent and the answer was always window 1.** The
+/// comment that stood here said so -- "opens over window 1 wherever it was
+/// invoked" -- and named `tabs::overlay_frame` as the reason. That was a
+/// truthful note about a wrong behaviour: with two windows open, the palette
+/// appeared over the one that had not asked for it, and everything about it
+/// looked like the feature working.
+fn show(asked: Option<HWND>) {
     let me = hwnd();
     if me.0.is_null() {
         return;
     }
     unsafe {
-        // Opens over window 1 wherever it was invoked; see `tabs::overlay_frame`.
-        let frame = crate::tabs::overlay_frame();
+        let frame = match asked {
+            Some(f) if !f.0.is_null() => f,
+            _ => {
+                // process-wide: the request named no window, so this line is
+                // about the fallback rule rather than about either window
+                plogf!("[palette] the request named no window; opening over window 1");
+                crate::tabs::overlay_frame()
+            }
+        };
         let mut fr = RECT::default();
         if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
             return;
@@ -810,7 +833,9 @@ extern "system" fn palette_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
                 if vis {
                     hide();
                 } else {
-                    show();
+                    // The window travelled in `WPARAM`; 0 means the request
+                    // named none.
+                    show((wp.0 != 0).then(|| HWND(wp.0 as *mut c_void)));
                 }
                 LRESULT(0)
             }

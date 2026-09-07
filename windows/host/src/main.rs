@@ -2248,7 +2248,10 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // can arrive on the core's thread, and showing a window off the
         // owning thread is undefined.
         ffi::ACTION_TOGGLE_COMMAND_PALETTE => {
-            palette::request_toggle();
+            // **Over the window that asked.** It used to open over window 1
+            // wherever it was invoked, which with two windows is the one that
+            // did not ask -- and it looks exactly like the feature working.
+            palette::request_toggle(origin);
             true
         }
 
@@ -2285,14 +2288,17 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         }
 
         // The pending-key indicator.
+        // **Both carry the window now.** A pending-key sign in window 1's
+        // corner while the chord is being typed in window 2 is worse than no
+        // sign: it says a key is pending in a window where none is.
         ffi::ACTION_KEY_SEQUENCE => {
             let (active, tag, key, mods) = action.as_key_sequence();
-            keyseq::on_key_sequence(active, tag, key, mods);
+            keyseq::on_key_sequence(origin, active, tag, key, mods);
             true
         }
         ffi::ACTION_KEY_TABLE => {
             let (tag, name) = action.as_key_table();
-            keyseq::on_key_table(tag, name.as_deref());
+            keyseq::on_key_table(origin, tag, name.as_deref());
             true
         }
 
@@ -2341,8 +2347,11 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // Float the window. The mode is `ghostty_action_float_window_e`
         // (on / off / toggle), and it is a *window* property, so the target
         // does not have to be a surface.
+        // **Floating is a property of a window, and the arm has one.** It
+        // used to pin window 1 wherever the toggle was used, which with two
+        // windows open is the wrong window and looks like the feature working.
         ffi::ACTION_FLOAT_WINDOW => {
-            prompt::request_float(action.as_i32());
+            prompt::request_float(origin, action.as_i32());
             true
         }
 
@@ -4518,35 +4527,116 @@ fn log_testing_notes() {
 /// Returns the line to log about what it did. **It is returned rather than
 /// logged here because the log banner has not been written yet**, and a line
 /// above the banner is a line a reader cannot attribute to this run.
+/// Which file on disk a handle refers to, or `None` for anything that is not
+/// one.
+///
+/// **The `None` is the guard, not a shortfall.** `GetFileInformationByHandle`
+/// fails for a pipe and for a console, which is exactly the set this must
+/// never touch: the `+mcp` pipe an agent CLI speaks JSON-RPC over is a handle
+/// that cannot answer this question, so it can never be mistaken for the log.
+/// Two files are the same file when the volume and the file index agree --
+/// path comparison would not do, because the same file reaches us as
+/// `out.log`, `.\out.log` and a short 8.3 name, and would read as three.
+fn file_identity(h: windows::Win32::Foundation::HANDLE) -> Option<(u32, u64)> {
+    use windows::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe { GetFileInformationByHandle(h, &mut info).ok()? };
+    Some((
+        info.dwVolumeSerialNumber,
+        ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+    ))
+}
+
 fn adopt_std_handles() -> String {
     use std::os::windows::ffi::OsStrExt as _;
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_ALWAYS,
+        CreateFileW, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS, OPEN_EXISTING,
     };
     use windows::Win32::System::Console::{
         GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_OUTPUT_HANDLE,
     };
 
-    let have = |id: STD_HANDLE| -> bool {
+    let given = |id: STD_HANDLE| -> Option<windows::Win32::Foundation::HANDLE> {
         match unsafe { GetStdHandle(id) } {
-            Ok(h) => !h.is_invalid(),
-            Err(_) => false,
+            Ok(h) if !h.is_invalid() => Some(h),
+            _ => None,
         }
     };
 
-    let missing: Vec<(STD_HANDLE, &str)> = [(STD_OUTPUT_HANDLE, "stdout"), (STD_ERROR_HANDLE, "stderr")]
-        .into_iter()
-        .filter(|(id, _)| !have(*id))
-        .collect();
+    let mut wide: Vec<u16> = log_path().as_os_str().encode_wide().collect();
+    wide.push(0);
 
-    if missing.is_empty() {
-        return "[stdio] stdout and stderr both came from whoever started us;                 leaving them alone"
+    // **The log's identity, taken through a handle that is closed again.**
+    // `FILE_SHARE_DELETE` and read-only access, so asking the question changes
+    // nothing about the file -- in particular it does not make the log
+    // undeletable for the moment it is open, which a write handle would.
+    let log_id = unsafe {
+        CreateFileW(
+            PCWSTR::from_raw(wide.as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }
+    .ok()
+    .and_then(|h| {
+        let id = file_identity(h);
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(h) };
+        id
+    });
+
+    // Three classes, and the middle one is the whole of this change.
+    //
+    //  * **missing** -- Windows gave us nothing. Point it at the log, which is
+    //    what this function has always done and what keeps libghostty's log
+    //    and any panic backtrace from having no sink at all.
+    //
+    //  * **given, and it is the log file** -- somebody started us as
+    //    `polter-host.exe > out.log 2>&1` with `POLTER_HOST_LOG` pinned to
+    //    that same file, wanting one file with everything in it. Leaving that
+    //    handle alone is what **destroys** the log: it carries its own file
+    //    pointer, starting at 0 and advancing only by what the core writes,
+    //    while `log_line` appends at the end. The core's writes then land on
+    //    top of records the host already wrote. Measured on an equivalent pair
+    //    of handles: of 500 host records, **~100 were gone**, and ~6 KB of the
+    //    59 KB handed over never reached the file. That is not the glued-line
+    //    family from task 283 -- nothing is glued, records simply cease to
+    //    exist -- and the two are told apart by exactly this: overwriting
+    //    loses bytes, interleaving loses none.
+    //
+    //    Re-pointing it at an append handle **on the same file** is not the
+    //    rule below being broken; it is the rule being kept. The two reasons
+    //    a given handle is left alone are that a tester asked for that file
+    //    -- honoured, it is the same file -- and that an agent CLI handed us
+    //    a pipe it speaks a protocol over -- excluded by construction, since
+    //    a pipe has no file identity to match with.
+    //
+    //  * **given, and it is something else** -- a pipe, a console, another
+    //    file. Left exactly alone, as before.
+    let mut missing: Vec<(STD_HANDLE, &str)> = Vec::new();
+    let mut colliding: Vec<(STD_HANDLE, &str)> = Vec::new();
+    let mut untouched: Vec<&str> = Vec::new();
+    for (id, name) in [(STD_OUTPUT_HANDLE, "stdout"), (STD_ERROR_HANDLE, "stderr")] {
+        match given(id) {
+            None => missing.push((id, name)),
+            Some(h) => match (file_identity(h), log_id) {
+                (Some(a), Some(b)) if a == b => colliding.push((id, name)),
+                _ => untouched.push(name),
+            },
+        }
+    }
+
+    if missing.is_empty() && colliding.is_empty() {
+        return "[stdio] stdout and stderr both came from whoever started us, and neither is this log file; leaving them alone"
             .to_string();
     }
 
-    let mut wide: Vec<u16> = log_path().as_os_str().encode_wide().collect();
-    wide.push(0);
     let file = unsafe {
         CreateFileW(
             PCWSTR::from_raw(wide.as_ptr()),
@@ -4568,18 +4658,42 @@ fn adopt_std_handles() -> String {
     };
 
     let mut adopted: Vec<&str> = Vec::new();
+    let mut rescued: Vec<&str> = Vec::new();
     let mut refused: Vec<&str> = Vec::new();
-    for (id, name) in missing {
+    for (id, name) in missing.iter().copied() {
         match unsafe { SetStdHandle(id, file) } {
             Ok(()) => adopted.push(name),
             Err(_) => refused.push(name),
         }
     }
-
-    let mut line = format!("[stdio] no console: {} now point at this log file", adopted.join(" and "));
-    if !refused.is_empty() {
-        line.push_str(&format!("; SetStdHandle refused {}", refused.join(" and ")));
+    for (id, name) in colliding.iter().copied() {
+        match unsafe { SetStdHandle(id, file) } {
+            Ok(()) => rescued.push(name),
+            Err(_) => refused.push(name),
+        }
     }
+
+    let mut line = String::from("[stdio]");
+    if !adopted.is_empty() {
+        line.push_str(&format!(" no console: {} now point at this log file;", adopted.join(" and ")));
+    }
+    if !rescued.is_empty() {
+        // **The loudest line this function can write**, because the person it
+        // is for is the person who pinned the log and redirected onto it, and
+        // the thing they were about to read would have been missing a fifth of
+        // itself with nothing to say so.
+        line.push_str(&format!(
+            " {} was handed to us already pointing at THIS log file with its own file pointer,              which would have overwritten records this host appended; re-opened for append so              both writers land at the end;",
+            rescued.join(" and ")
+        ));
+    }
+    if !untouched.is_empty() {
+        line.push_str(&format!(" {} came from whoever started us and names something else; left alone;", untouched.join(" and ")));
+    }
+    if !refused.is_empty() {
+        line.push_str(&format!(" SetStdHandle refused {};", refused.join(" and ")));
+    }
+    line.pop();
     line
 }
 

@@ -101,9 +101,16 @@ use crate::theme;
 /// confidently wrong -- which is the shape of the bug that made read-only
 /// per-surface.
 pub fn is_float_on_top() -> bool {
-    // The menu tick reports the window the panel logic acts on, which is the
-    // same gap `float_window` has; see `tabs::overlay_frame`.
-    let frame = crate::tabs::overlay_frame();
+    // The menu tick still asks about window 1. **That is a second gap and it
+    // is not this one**: the tick is drawn from `menu.rs`, which has its own
+    // window in hand and does not pass it. Left as it was rather than changed
+    // alongside the action, so the two can be judged apart.
+    is_float_on_top_for(crate::tabs::overlay_frame())
+}
+
+/// The same question, of a named window. **The extended style *is* the
+/// state**; nothing is remembered beside it, for the reason on the caller.
+fn is_float_on_top_for(frame: HWND) -> bool {
     if frame.0.is_null() {
         return false;
     }
@@ -111,17 +118,31 @@ pub fn is_float_on_top() -> bool {
     ex & WS_EX_TOPMOST.0 != 0
 }
 
-/// Put the window above the others, or stop. **Main thread only.**
-fn float_window(mode: i32) {
-    // **Floats window 1, wherever the toggle was used.** `float_window` is a
-    // per-window operation with no window in the action; see
-    // `tabs::overlay_frame` for why that is a named gap rather than a choice.
-    let frame = crate::tabs::overlay_frame();
+/// Put a window above the others, or stop. **Main thread only.**
+///
+/// `asked` is the window the action named. **It used to be
+/// `tabs::overlay_frame()` unconditionally**, which is window 1 wherever the
+/// toggle was used: with two windows open, floating the second one pinned the
+/// first, and the only reading of that was the screen. `None` still falls
+/// back to window 1 -- an action that names no window has to land somewhere
+/// -- but it says so on its own line rather than being the silent default for
+/// every case.
+fn float_window(asked: Option<HWND>, mode: i32) {
+    let frame = match asked {
+        Some(f) if !f.0.is_null() => f,
+        _ => {
+            let f = crate::tabs::overlay_frame();
+            // process-wide: the action named no window, so this line is about
+            // the fallback rule and not about either window
+            plogf!("[action] float_window {mode}: the action named no window; using window 1");
+            f
+        }
+    };
     if frame.0.is_null() {
         logf!("[action] float_window {mode}: no frame window");
         return;
     }
-    let was = is_float_on_top();
+    let was = is_float_on_top_for(frame);
     let want = match mode {
         FLOAT_ON => true,
         FLOAT_OFF => false,
@@ -170,8 +191,21 @@ pub fn request_title(scope: i32, surface: Option<crate::ffi::Surface>) {
     post(REQ_TITLE, scope, "title prompt");
 }
 
-/// Ask for the window to float, or stop. **Safe from any thread.**
-pub fn request_float(mode: i32) {
+/// Pending float requests: the mode, and **which window asked**.
+///
+/// A queue for the same reason `PENDING` is one: the message and its argument
+/// travel separately through `PostMessageW`, so two requests in flight would
+/// otherwise take each other's window.
+static PENDING_FLOAT: std::sync::Mutex<Vec<(i32, isize)>> = std::sync::Mutex::new(Vec::new());
+
+/// Ask for a window to float, or stop. **Safe from any thread.**
+///
+/// `frame` is the window the action named. `None` means it named none, and
+/// the main thread then falls back to window 1 and says so.
+pub fn request_float(frame: Option<HWND>, mode: i32) {
+    if let Ok(mut q) = PENDING_FLOAT.lock() {
+        q.push((mode, frame.map(|f| f.0 as isize).unwrap_or(0)));
+    }
     post(REQ_FLOAT, mode, "float window");
 }
 
@@ -432,7 +466,15 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         let (scope, surface) = pending.unwrap_or((lp.0 as i32, 0));
                         prompt_title(scope, surface);
                     }
-                    REQ_FLOAT => float_window(lp.0 as i32),
+                    REQ_FLOAT => {
+                        let pending = PENDING_FLOAT.lock().ok().and_then(|mut q| {
+                            if q.is_empty() { None } else { Some(q.remove(0)) }
+                        });
+                        let (mode, frame) = pending.unwrap_or((lp.0 as i32, 0));
+                        let asked = (frame != 0)
+                            .then(|| HWND(frame as *mut std::ffi::c_void));
+                        float_window(asked, mode);
+                    }
                     // process-wide: this is the mailbox's own window, one per
                     // process, and an unrecognised kind carries no window.
                     other => plogf!("[prompt] unknown host request {other}"),

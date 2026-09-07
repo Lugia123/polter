@@ -219,6 +219,14 @@ struct Inbox {
     /// Key table pushes; `None` entries mean "pop one".
     tables: Vec<Option<String>>,
     tables_clear: bool,
+    /// The window whose core reported most recently, or 0.
+    ///
+    /// **One sign for the process, so the newest report wins**, and that is
+    /// the honest answer for a shared indicator rather than a compromise:
+    /// whoever is typing a chord now is the one who needs to see it. What it
+    /// replaces is not a better answer, it is `overlay_frame()` -- window 1,
+    /// whichever window was actually typing.
+    owner: isize,
 }
 
 static INBOX: Mutex<Inbox> = Mutex::new(Inbox {
@@ -226,6 +234,7 @@ static INBOX: Mutex<Inbox> = Mutex::new(Inbox {
     clear: false,
     tables: Vec::new(),
     tables_clear: false,
+    owner: 0,
 });
 
 #[derive(Default)]
@@ -256,8 +265,16 @@ fn post() {
 // ------------------------------------------------------- from `action_cb`
 
 /// `GHOSTTY_ACTION_KEY_SEQUENCE`. **Safe from any thread.**
-pub fn on_key_sequence(active: bool, tag: i32, key: u32, mods: i32) {
+///
+/// `frame` is the window the core said this is happening in. Without it the
+/// sign appeared in window 1's corner while the chord was being typed in
+/// window 2 -- and a pending-key indicator over the wrong window is worse than
+/// none, because it says a key is pending in a window where none is.
+pub fn on_key_sequence(frame: Option<HWND>, active: bool, tag: i32, key: u32, mods: i32) {
     if let Ok(mut inbox) = INBOX.lock() {
+        if let Some(f) = frame {
+            inbox.owner = f.0 as isize;
+        }
         if active {
             inbox.push.push(format!("{}{}", mods_label(mods), key_label(tag, key)));
         } else {
@@ -270,8 +287,11 @@ pub fn on_key_sequence(active: bool, tag: i32, key: u32, mods: i32) {
 
 /// `GHOSTTY_ACTION_KEY_TABLE`. **Safe from any thread.**
 /// `tag`: 0 activate, 1 deactivate, 2 deactivate all.
-pub fn on_key_table(tag: i32, name: Option<&str>) {
+pub fn on_key_table(frame: Option<HWND>, tag: i32, name: Option<&str>) {
     if let Ok(mut inbox) = INBOX.lock() {
+        if let Some(f) = frame {
+            inbox.owner = f.0 as isize;
+        }
         match tag {
             0 => inbox.tables.push(Some(name.unwrap_or("?").to_string())),
             1 => inbox.tables.push(None),
@@ -371,13 +391,17 @@ fn label() -> String {
 
 fn sync() {
     // Drain the inbox, then drop the lock before touching any window.
-    let (push, clear, tables, tables_clear) = {
+    let (push, clear, tables, tables_clear, owner) = {
         let Ok(mut inbox) = INBOX.lock() else { return };
         (
             std::mem::take(&mut inbox.push),
             std::mem::replace(&mut inbox.clear, false),
             std::mem::take(&mut inbox.tables),
             std::mem::replace(&mut inbox.tables_clear, false),
+            // **Not taken.** The owner is not a queued item, it is the last
+            // thing known; clearing it here would leave the next sync with
+            // nothing and send the sign back to window 1 mid-chord.
+            inbox.owner,
         )
     };
 
@@ -420,8 +444,17 @@ fn sync() {
             return;
         }
 
-        // Opens over window 1 wherever it was invoked; see `tabs::overlay_frame`.
-        let frame = crate::tabs::overlay_frame();
+        // **The window whose core reported the chord**, not window 1. The
+        // comment that stood here said "opens over window 1 wherever it was
+        // invoked" -- a truthful note about the wrong window.
+        let frame = if owner != 0 {
+            HWND(owner as *mut c_void)
+        } else {
+            // process-wide: nothing has named a window yet, so this line is
+            // about the fallback rule rather than about either window
+            plogf!("[keyseq] no window reported yet; showing over window 1");
+            crate::tabs::overlay_frame()
+        };
         let mut fr = RECT::default();
         if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
             return;

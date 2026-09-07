@@ -182,12 +182,7 @@ MIN_CARRYING_ARMS = 17
 #       arm has `origin` in its hand when it calls this.
 #   `reopen::redo_last` -- its twin `reopen::reopen_last(frame)` takes the
 #       window. One pair, two answers; at most one of them is right.
-OWED_ADDRESSLESS = {
-    "ACTION_TOGGLE_COMMAND_PALETTE -> palette::request_toggle",
-    "ACTION_KEY_SEQUENCE -> keyseq::on_key_sequence",
-    "ACTION_KEY_TABLE -> keyseq::on_key_table",
-    "ACTION_FLOAT_WINDOW -> prompt::request_float",
-}
+OWED_ADDRESSLESS: set[str] = set()
 
 # **Paid off, kept as a record rather than as entries** -- for the reason
 # `action-arms-act.py` gives about its own list: a name left in the set is an
@@ -204,6 +199,19 @@ OWED_ADDRESSLESS = {
 #       with a log line saying which of the two happened. Its twin
 #       `reopen_last(frame)` always took the window; the pair now gives one
 #       answer.
+#   `palette::request_toggle`, `keyseq::on_key_sequence`,
+#       `keyseq::on_key_table`, `prompt::request_float` (task 299). All four
+#       were the same shape and all four are fixed the same way: each is one
+#       overlay for the process that placed itself with
+#       `tabs::overlay_frame()` -- window 1, whichever window had actually
+#       asked. Each now takes the window and puts itself there, falling back
+#       to window 1 only when the action named none, and saying so on its own
+#       line when it does.
+#
+# **The bill is empty, and it stays here rather than being deleted.** An empty
+# set is a reading -- "nothing is owed today" -- and the loop at the end of
+# `analyse` is what keeps it honest: put a name back and it has to be a name
+# that is really owed, or the gate says so.
 
 # The call is deliberately identity-free, with the reason written next to it.
 # **Default is "must carry"**, and the exception is the thing that has to be
