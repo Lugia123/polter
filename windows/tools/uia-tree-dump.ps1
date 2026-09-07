@@ -77,7 +77,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('floor', 'tree', 'windows', 'concurrent', 'events')]
+    [ValidateSet('floor', 'tree', 'windows', 'concurrent', 'events', 'captionbuttons')]
     [string]$Mode = 'tree',
     [string]$ProcessName = 'polter-host',
     [string]$LogPath = '',
@@ -477,5 +477,111 @@ switch ($Mode) {
             Write-Host ''
             Write-Host "CONCURRENT OK: $real real reads, none empty, process still alive."
         }
+    }
+
+    'captionbuttons' {
+        # Are the three caption buttons -- minimise, maximise, close -- in the
+        # tree at all, and if so can a client press them?
+        #
+        # **This mode exists because the question could not be answered from
+        # the source, and the guess went both ways.** `shell.rs` draws the
+        # three buttons itself and takes the caption away with
+        # `WM_NCCALCSIZE`, which argues they are invisible. But it also
+        # answers `WM_NCHITTEST` with the standard `HTMINBUTTON`,
+        # `HTMAXBUTTON` and `HTCLOSE`, and the frame is still created with
+        # `WS_OVERLAPPEDWINDOW` -- so the styles say the buttons exist and the
+        # hit codes are exactly the ones the system's own title-bar proxy
+        # looks for. Whether that proxy publishes anything for a window whose
+        # caption has been collapsed to nothing is a fact about Windows, not
+        # about this repository, and it is settled here.
+        #
+        # **Both tree views are walked, and the difference between them is a
+        # result, not a detail.** An element present in the raw view and
+        # absent from the control view is unreachable to an ordinary client
+        # while looking perfectly healthy to a tool that asks for everything
+        # -- and the two call for different fixes.
+        $control = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+        $raw     = [System.Windows.Automation.TreeWalker]::RawViewWalker
+
+        function Collect {
+            param($Element, $Walker, [System.Collections.ArrayList]$Sink, [int]$Depth = 0)
+            $type = $Element.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+            $r = $Element.Current.BoundingRectangle
+            # ⚠️ **Every value here is parenthesised, and it is not style.**
+            # Inside a `@{}` literal a bare `-f` or a bare pipeline ends at the
+            # first comma, which the parser reads as the next hashtable entry;
+            # the error it produces names a line several lines later and the
+            # whole file stops parsing. `windows/tools/ps1-parses.py` catches
+            # it, and it caught this one.
+            $rect = ('{0},{1} {2}x{3}' -f [int]$r.X, [int]$r.Y, [int]$r.Width, [int]$r.Height)
+            $canInvoke = @($Element.GetSupportedPatterns() |
+                ForEach-Object { $_.ProgrammaticName } |
+                Where-Object { $_ -match 'Invoke' }).Count -gt 0
+            [void]$Sink.Add([pscustomobject]@{
+                Depth  = $Depth
+                Type   = $type
+                Name   = $Element.Current.Name
+                Rect   = $rect
+                Area   = ([int]$r.Width * [int]$r.Height)
+                Off    = $Element.Current.IsOffscreen
+                # Whether it can be pressed at all, which is the question the
+                # element's presence does not answer.
+                Invoke = $canInvoke
+            })
+            if ($Depth -ge 4) { return }
+            $child = $Walker.GetFirstChild($Element)
+            while ($null -ne $child) {
+                Collect -Element $child -Walker $Walker -Sink $Sink -Depth ($Depth + 1)
+                $child = $Walker.GetNextSibling($child)
+            }
+        }
+
+        foreach ($w in $windows) {
+            Write-Host ("window: `"{0}`"" -f $w.Current.Name)
+            foreach ($pair in @(@('control', $control), @('raw', $raw))) {
+                $view = $pair[0]
+                $rows = New-Object System.Collections.ArrayList
+                Collect -Element $w -Walker $pair[1] -Sink $rows
+
+                # **Not matched by name.** The names are localised -- on a
+                # Chinese system they are 最小化 / 最大化 / 关闭 -- and a probe
+                # that looked for English words would report "absent" on the
+                # machine this port is actually tested on. Control type is the
+                # thing that does not move.
+                $buttons  = @($rows | Where-Object { $_.Type -eq 'Button' })
+                $titlebar = @($rows | Where-Object { $_.Type -eq 'TitleBar' })
+
+                Write-Host ("  [{0} view] TitleBar={1} Button={2}" -f `
+                    $view, $titlebar.Count, $buttons.Count)
+                foreach ($b in $buttons) {
+                    Write-Host ("    Button `"{0}`" rect={1} offscreen={2} invoke={3}" -f `
+                        $b.Name, $b.Rect, $b.Off, $b.Invoke)
+                }
+
+                # A button with no area is present and unusable, and it is the
+                # outcome a bare count would hide: "found 3" reads as success.
+                $zero = @($buttons | Where-Object { $_.Area -le 0 }).Count
+                $noinvoke = @($buttons | Where-Object { -not $_.Invoke }).Count
+                if ($buttons.Count -eq 0) {
+                    Write-Host ("    VERDICT [{0}]: ABSENT. Nothing publishes the caption buttons; " -f $view)
+                    Write-Host      '      a client can only reach minimise/maximise/close by coordinate.'
+                } elseif ($zero -gt 0) {
+                    Write-Host ("    VERDICT [{0}]: PRESENT BUT {1} HAVE NO AREA. The system proxy is" -f $view, $zero)
+                    Write-Host      '      publishing them from a caption this window no longer has. Present'
+                    Write-Host      '      and unpressable is not the same answer as absent, and it is the'
+                    Write-Host      '      one a count alone would have called success.'
+                } elseif ($noinvoke -gt 0) {
+                    Write-Host ("    VERDICT [{0}]: PRESENT, {1} WITHOUT InvokePattern. Readable, not" -f $view, $noinvoke)
+                    Write-Host      '      pressable.'
+                } else {
+                    Write-Host ("    VERDICT [{0}]: PRESENT AND INVOKABLE. Nothing is owed here -- and" -f $view)
+                    Write-Host      '      writing a provider for them would be a second, competing'
+                    Write-Host      '      description of what the system already publishes.'
+                }
+            }
+            Write-Host ''
+        }
+        Write-Host 'NOT CHECKED: whether pressing one actually minimises, maximises or closes'
+        Write-Host '             the window. This mode reads the tree; it does not press.'
     }
 }

@@ -192,6 +192,27 @@ pub const ACTION_CHECK_FOR_UPDATES: u32 = 57;
 /// `the Windows host's action tags` in `src/apprt/action.zig`.
 pub const ACTION_SECURE_INPUT: u32 = 46;
 
+// --- Actions this host **owes**: it does not perform them, and the arm says
+// so by name with the task that carries the work.
+//
+// **A third state, not a spelling of refusal.** The ledger above is "this
+// platform has no such thing"; these four are "not built here yet", and
+// writing them with the same marker would register work-not-done as
+// work-not-wanted. Two of them were looked at and deferred with a reason
+// (285, 286) and two are simply owed (302, 303) -- the arm's sentence says
+// which, because in six months a deferred decision that reads like an
+// oversight gets picked up again and its reasoning thrown away.
+//
+// Ordinals counted off `ghostty_action_tag_e` and checked by
+// `the Windows host's action tags` in `src/apprt/action.zig`.
+// `ACTION_TOGGLE_BACKGROUND_OPACITY` (14) and `ACTION_QUIT_TIMER` (44) are
+// **not repeated here**: they are already declared in the block above, which
+// W3 added when it counted that batch. Two constants for one tag is a Rust
+// compile error (`E0428`), which is the one duplication in this file that
+// cannot be made silently -- so the arms below simply use those.
+pub const ACTION_TOGGLE_VISIBILITY: u32 = 13;
+pub const ACTION_SHOW_ON_SCREEN_KEYBOARD: u32 = 61;
+
 /// `ghostty_action_secure_input_e`, whose members are `on, off, toggle` in
 /// that order (`src/apprt/action.zig`'s `SecureInput`, pinned to the header by
 /// `checkGhosttyHEnum`).

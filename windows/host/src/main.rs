@@ -3317,6 +3317,93 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             }
         }
 
+        // ---- task 301: the four this host owes, answered by name ----
+        //
+        // **Owed, not refused, and the two markers are different on purpose.**
+        // The refusals above say "this platform has no such thing"; these say
+        // "not built here yet", and each names the task that carries it. Given
+        // one marker for both, a deferred decision reads as an oversight and
+        // gets picked up again with its reasoning thrown away -- and the
+        // published capability count loses the only honest way to state its
+        // third number.
+        //
+        // **They are here because a marker is not enough on its own.** Before
+        // this, all four fell through `_ =>` and produced `[action] tag=13 is
+        // not implemented by this host` -- a bare number. The palette hides
+        // two of them; a keybinding and `src/poltergeist/actions.zig`'s
+        // `selfSafeTag` still reach all four.
+
+        // **Should be done, and is not.** The semantics are platform-neutral
+        // ("the visibility of all Ghostty terminal windows") and the window set
+        // this needs already exists here: `winnav::close_all` walks exactly
+        // that list. Small.
+        // owed: 302 -- not built yet; the window set for it already exists.
+        ffi::ACTION_TOGGLE_VISIBILITY => {
+            // process-wide: the action is about every window, so naming one
+            // would be picking a subject it does not have
+            plogf!(
+                "[action] toggle_visibility: not built in this host yet (task 302). The window \
+                 set it needs already exists -- `winid::all()` -- so this is work not done, \
+                 not a platform that cannot do it."
+            );
+            false
+        }
+
+        // **Looked at and deferred this round, with a reason -- not an
+        // oversight.** This host makes no transparent windows: it asks Windows
+        // for none of the extended styles that would allow one (the style is
+        // deliberately not named here so that grepping this tree for it still
+        // answers `no` -- `status.md` §85), and `Binding.zig` says of the
+        // action itself "This does nothing when `background-opacity` is set to
+        // 1 or above". Wiring the switch with nothing underneath it would
+        // produce a row that is offered, pressed, and does nothing.
+        // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
+        ffi::ACTION_TOGGLE_BACKGROUND_OPACITY => {
+            alogf!(
+                origin,
+                "[action] toggle_background_opacity: deferred (task 286) -- this host makes no \
+                 transparent windows, so the toggle would have nothing to toggle. Reviewed and \
+                 not done, rather than missed."
+            );
+            false
+        }
+
+        // **Looked at and deferred this round, with a reason -- not an
+        // oversight.** The core offers a timer to hold the process open after
+        // the last window goes. This host does not have that question:
+        // `winid.rs`'s `window_finished` decides the quit, in one place, from
+        // `left == 0` after `WM_DESTROY` -- four close routes were made to
+        // agree on that, and the agreement is the thing worth keeping. A timer
+        // would be a second decider of the same fact.
+        // owed: 285 -- reviewed and deferred; one place already decides the quit.
+        ffi::ACTION_QUIT_TIMER => {
+            // process-wide: whether the process quits is a fact about the
+            // process, not about any one window
+            plogf!(
+                "[action] quit_timer mode={}: deferred (task 285) -- the quit is decided in one \
+                 place (`winid::window_finished`, on `left == 0`) and a timer would be a second \
+                 decider of it. Reviewed and not done, rather than missed.",
+                action.as_i32()
+            );
+            false
+        }
+
+        // **Should be done, and is not.** `Binding.zig` marks it "Only
+        // implemented on Linux (GTK) ... Other platforms are as of now
+        // untested", and **untested is not not-applicable**: Windows has an
+        // on-screen keyboard, and a touch device is where this row is the whole
+        // point.
+        // owed: 303 -- not built yet; Windows has one and nobody has wired it.
+        ffi::ACTION_SHOW_ON_SCREEN_KEYBOARD => {
+            alogf!(
+                origin,
+                "[action] show_on_screen_keyboard: not built in this host yet (task 303). \
+                 Windows has one; nobody has wired it. Work not done, not a platform that \
+                 cannot do it."
+            );
+            false
+        }
+
         ACTION_RENDER => true,
 
         // **An action this host does not answer leaves a line.**

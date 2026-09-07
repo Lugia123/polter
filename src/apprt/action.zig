@@ -754,19 +754,69 @@ pub const Action = union(Key) {
             // that distinction is the point and not pedantry.
             var raises: std.StringHashMapUnmanaged([]const []const u8) = .empty;
             {
-                const Src = struct { path: []const u8, anchor: []const u8 };
-                const dispatch = [_]Src{
-                    .{ .path = "src/Surface.zig", .anchor = "pub fn performBindingAction" },
-                    .{ .path = "src/App.zig", .anchor = "pub fn performAction(" },
+                // **One `switch` at a time, brace-walked, rather than the
+                // whole function scanned by indentation.** Two bugs came out
+                // of the looser version and they are the same bug twice: an
+                // "arm" whose body is bounded only by the next thing that
+                // looks like an arm runs on past the end of its own switch.
+                //
+                //   * an argument on its own line inside a call --
+                //     `performAction(\n  .app,\n  .open_config,\n ...)` --
+                //     read as an arm, swallowing the eight real arms after it;
+                //   * the *last* arm of the app-scoped switch nested inside
+                //     `performBindingAction`, whose body then ran to the end of
+                //     the enclosing function and collected every action the
+                //     outer switch raises. That one had `redo` asking the host
+                //     for `toggle_window_decorations`.
+                //
+                // Neither showed up as an error. The first was masked by
+                // `getOrPut` keeping whichever pass happened to run first;
+                // the second only appeared once the first was fixed. **A
+                // correct answer that depends on which of two loops runs
+                // first is a defect that has not gone off yet.**
+                const Sw = struct {
+                    path: []const u8,
+                    /// The enclosing function, so the right `switch` is found
+                    /// when the header appears more than once in the file.
+                    anchor: []const u8,
+                    header: []const u8,
+                    /// Arms of this switch sit at exactly this indentation.
+                    indent: usize,
                 };
-                for (dispatch) |d| {
-                    const src = try H.read(io, alloc, d.path);
-                    const at = std.mem.indexOf(u8, src, d.anchor) orelse {
-                        std.debug.print("{s} no longer contains `{s}`\n", .{ d.path, d.anchor });
+                const switches = [_]Sw{
+                    .{
+                        .path = "src/Surface.zig",
+                        .anchor = "pub fn performBindingAction",
+                        .header = "switch (app_action) {",
+                        .indent = 12,
+                    },
+                    .{
+                        .path = "src/Surface.zig",
+                        .anchor = "pub fn performBindingAction",
+                        .header = "switch (action.scoped(.surface).?) {",
+                        .indent = 8,
+                    },
+                    .{
+                        .path = "src/App.zig",
+                        .anchor = "pub fn performAction(\n    self: *App,",
+                        .header = "switch (action) {",
+                        .indent = 8,
+                    },
+                };
+                for (switches) |sw| {
+                    const src = try H.read(io, alloc, sw.path);
+                    const at = std.mem.indexOf(u8, src, sw.anchor) orelse {
+                        std.debug.print("{s} no longer contains `{s}`\n", .{ sw.path, sw.anchor });
                         return error.DispatchAnchorGone;
                     };
-                    // The function body, by brace walk from the anchor.
-                    const open = std.mem.indexOfScalarPos(u8, src, at, '{') orelse return error.DispatchAnchorGone;
+                    const hdr = std.mem.indexOfPos(u8, src, at, sw.header) orelse {
+                        std.debug.print(
+                            "{s}: `{s}` no longer contains `{s}`\n",
+                            .{ sw.path, sw.anchor, sw.header },
+                        );
+                        return error.DispatchSwitchGone;
+                    };
+                    const open = std.mem.indexOfScalarPos(u8, src, hdr, '{') orelse return error.DispatchSwitchGone;
                     var depth: usize = 0;
                     var k = open;
                     const close = while (k < src.len) : (k += 1) {
@@ -776,27 +826,46 @@ pub const Action = union(Key) {
                             if (depth == 0) break k;
                         }
                     } else src.len;
-                    const fn_body = src[open..close];
+                    const body = src[open..close];
 
-                    // Arms at either indent: the app-scoped switch inside
-                    // `performBindingAction` sits one level deeper than the
-                    // main one, and both carry arms this map needs.
-                    for ([_][]const u8{ "\n        .", "\n            ." }) |marker| {
-                        var i: usize = 0;
-                        while (std.mem.indexOfPos(u8, fn_body, i, marker)) |p| {
-                            const name_at = p + marker.len;
-                            const name = H.ident(fn_body, name_at) orelse {
-                                i = name_at;
-                                continue;
-                            };
-                            i = name_at + name.len;
-                            const next = std.mem.indexOfPos(u8, fn_body, i, marker) orelse fn_body.len;
-                            var found: std.ArrayList([]const u8) = .empty;
-                            try H.actionsIn(fn_body[p..next], &found, alloc);
-                            if (found.items.len == 0) continue;
-                            const gop = try raises.getOrPut(alloc, name);
-                            if (!gop.found_existing) gop.value_ptr.* = try found.toOwnedSlice(alloc);
+                    // Arm starts: a `.name` at exactly this indent and at
+                    // paren depth zero, so an argument on its own line inside
+                    // a call is not one.
+                    var marker_buf: [24]u8 = undefined;
+                    marker_buf[0] = '\n';
+                    for (marker_buf[1 .. sw.indent + 1]) |*c| c.* = ' ';
+                    marker_buf[sw.indent + 1] = '.';
+                    const marker = marker_buf[0 .. sw.indent + 2];
+
+                    var starts: std.ArrayList(usize) = .empty;
+                    var names: std.ArrayList([]const u8) = .empty;
+                    var paren: isize = 0;
+                    var c: usize = 0;
+                    while (c < body.len) : (c += 1) {
+                        switch (body[c]) {
+                            '(' => paren += 1,
+                            ')' => paren -= 1,
+                            '.' => {
+                                if (paren != 0) continue;
+                                if (c + 1 < marker.len) continue;
+                                if (!std.mem.eql(u8, body[c + 1 - marker.len .. c + 1], marker)) continue;
+                                const name = H.ident(body, c + 1) orelse continue;
+                                try starts.append(alloc, c + 1 - marker.len);
+                                try names.append(alloc, name);
+                            },
+                            else => {},
                         }
+                    }
+                    for (starts.items, names.items, 0..) |p, name, n| {
+                        // **Bounded by this switch**, because `body` is this
+                        // switch and nothing else. The last arm ends at its
+                        // closing brace, not at the end of the file.
+                        const next = if (n + 1 < starts.items.len) starts.items[n + 1] else body.len;
+                        var found: std.ArrayList([]const u8) = .empty;
+                        try H.actionsIn(body[p..next], &found, alloc);
+                        if (found.items.len == 0) continue;
+                        const gop = try raises.getOrPut(alloc, name);
+                        if (!gop.found_existing) gop.value_ptr.* = try found.toOwnedSlice(alloc);
                     }
                 }
             }
@@ -805,63 +874,142 @@ pub const Action = union(Key) {
             // to complain about, and the run would read as clean.
             try std.testing.expect(raises.count() >= 40);
 
-            // Which `ACTION_*` the host actually **performs**.
+            // Which `ACTION_*` the host **performs**, which it **refuses by
+            // name**, and which it says it **owes**.
             //
             // **"Has an arm" is not the question, and getting that wrong was
-            // this test's own first bug.** Six arms exist precisely in order
-            // to refuse by name -- `[action] show_gtk_inspector: this host is
-            // not GTK` rather than `tag=30 is not implemented` -- and the
-            // first version of this check counted them as implemented, then
-            // told the palette to un-hide `Show the GTK Inspector` because
-            // "cb_action handles it now". A finding made of real symbols with
-            // the relation read backwards.
+            // this test's own first bug.** Arms exist precisely in order to
+            // refuse by name -- `[action] show_gtk_inspector: this host is not
+            // GTK` rather than `tag=30 is not implemented` -- and the first
+            // version of this check counted them as implemented, then told the
+            // palette to un-hide `Show the GTK Inspector` because "cb_action
+            // handles it now". A finding made of real symbols with the
+            // relation read backwards.
             //
-            // So an arm carrying `// refuses: <why>` on the line above it is
-            // *not* an implementation. That marker is the same shape
-            // `menu.rs`'s `// greyed:` uses and for the same reason: the
-            // sentence lives where the person changing it will be, and a
-            // checker can see it.
-            var handled: std.StringHashMapUnmanaged(void) = .empty;
+            // **Two markers, not one, and the difference is load-bearing.**
+            //
+            //   `// refuses:` this platform has no such thing. Permanent.
+            //   `// owed:`    not built yet, and the task number says by whom.
+            //
+            // Collapsing them would register work-not-done as
+            // work-not-wanted, which is the reading that makes a deferred
+            // decision look like an oversight and an oversight look decided.
+            // Both mean "not performed"; only the sentence differs, and the
+            // sentence is the whole point.
+            //
+            // **A comment mentioning `ACTION_X` is not an arm.** That is not a
+            // hypothetical: two lines of prose here saying "`ACTION_INSPECTOR`
+            // above has answered this way" put `inspector` into the performed
+            // set, and this test therefore stopped reporting that the
+            // palette's `Toggle Inspector` row reaches an action the host
+            // refuses. A gate that reads source as text has to know which of
+            // it is source.
+            var performed: std.StringHashMapUnmanaged(void) = .empty;
+            var marked: std.StringHashMapUnmanaged(void) = .empty;
             var refused: usize = 0;
+            var owed: usize = 0;
+            var commented_out: usize = 0;
             {
                 const at = std.mem.indexOf(u8, main_src, "extern \"C\" fn cb_action") orelse
                     return error.NoCbAction;
                 const stop = std.mem.indexOfPos(u8, main_src, at, "\n}\n") orelse main_src.len;
-                var i = at;
-                while (std.mem.indexOfPos(u8, main_src, i, "ACTION_")) |p| {
-                    if (p >= stop) break;
-                    var e = p + "ACTION_".len;
-                    while (e < main_src.len and (std.ascii.isUpper(main_src[e]) or
-                        std.ascii.isDigit(main_src[e]) or main_src[e] == '_')) e += 1;
-                    const upper = main_src[p + "ACTION_".len .. e];
-                    i = e;
+                var line_start = at;
+                var prev_marker: enum { none, refuses, owed } = .none;
+                while (line_start < stop) {
+                    const nl = std.mem.indexOfScalarPos(u8, main_src, line_start, '\n') orelse stop;
+                    const line = main_src[line_start..@min(nl, stop)];
+                    const t = std.mem.trim(u8, line, " \t\r");
 
-                    // The line before this one, trimmed.
-                    const line_start = if (std.mem.lastIndexOfScalar(u8, main_src[0..p], '\n')) |n| n else 0;
-                    const prev_start = if (line_start > 0)
-                        (std.mem.lastIndexOfScalar(u8, main_src[0..line_start], '\n') orelse 0)
-                    else
-                        0;
-                    const prev = std.mem.trim(u8, main_src[prev_start..line_start], " \t\r\n");
-                    if (std.mem.startsWith(u8, prev, "// refuses:")) {
-                        refused += 1;
+                    if (std.mem.startsWith(u8, t, "//")) {
+                        if (std.mem.startsWith(u8, t, "// refuses:")) {
+                            prev_marker = .refuses;
+                        } else if (std.mem.startsWith(u8, t, "// owed:")) {
+                            // **A task number, not the word alone.** "owed"
+                            // with nobody named is an adjective: in six months
+                            // nothing says who it is owed to, and the entry
+                            // becomes permanent by default.
+                            var has_number = false;
+                            for (t) |c| {
+                                if (std.ascii.isDigit(c)) {
+                                    has_number = true;
+                                    break;
+                                }
+                            }
+                            if (!has_number) {
+                                std.debug.print(
+                                    "an `// owed:` marker names no task: {s}\n",
+                                    .{t},
+                                );
+                                return error.OwedMarkerHasNoTask;
+                            }
+                            prev_marker = .owed;
+                        } else {
+                            // Prose. It may well name `ACTION_*`; that is what
+                            // this branch exists to stop counting.
+                            if (std.mem.indexOf(u8, t, "ACTION_") != null) commented_out += 1;
+                            prev_marker = .none;
+                        }
+                        line_start = nl + 1;
                         continue;
                     }
 
-                    const lower = try alloc.alloc(u8, upper.len);
-                    for (lower, upper) |*d, c| d.* = std.ascii.toLower(c);
-                    try handled.put(alloc, lower, {});
+                    var found = false;
+                    var i = line_start;
+                    while (std.mem.indexOfPos(u8, main_src, i, "ACTION_")) |p| {
+                        if (p >= @min(nl, stop)) break;
+                        var e = p + "ACTION_".len;
+                        while (e < main_src.len and (std.ascii.isUpper(main_src[e]) or
+                            std.ascii.isDigit(main_src[e]) or main_src[e] == '_')) e += 1;
+                        const upper = main_src[p + "ACTION_".len .. e];
+                        i = e;
+                        found = true;
+                        const lower = try alloc.alloc(u8, upper.len);
+                        for (lower, upper) |*d, c| d.* = std.ascii.toLower(c);
+                        switch (prev_marker) {
+                            .none => try performed.put(alloc, lower, {}),
+                            .refuses => {
+                                refused += 1;
+                                try marked.put(alloc, lower, {});
+                            },
+                            .owed => {
+                                owed += 1;
+                                try marked.put(alloc, lower, {});
+                            },
+                        }
+                    }
+                    if (found or t.len > 0) prev_marker = .none;
+                    line_start = nl + 1;
                 }
             }
-            // **The floor for the marker half.** If `// refuses:` stopped
-            // matching, every refusing arm would silently become an
-            // "implementation" again and this test would start demanding that
-            // the palette un-hide things it must not.
-            try std.testing.expect(refused >= 6);
-            // **The floor for that read.** A pattern that stopped matching
-            // would make every assertion below pass while reading like a clean
-            // run -- the failure this file's neighbours exist to avoid.
-            try std.testing.expect(handled.count() >= 50);
+            // **Three floors, and each one guards a different way to go
+            // quiet.** If `// refuses:` stopped matching, every refusing arm
+            // would become an "implementation" and this test would start
+            // demanding the palette un-hide things it must not. If `// owed:`
+            // stopped matching, the same in the other column. And if the
+            // comment skip stopped matching, the prose below would go back to
+            // counting as arms -- so the count of prose lines that name an
+            // `ACTION_` is asserted too, because it is the only observable
+            // that distinguishes "the skip works" from "there is no prose".
+            try std.testing.expect(refused >= 7);
+            try std.testing.expect(owed >= 4);
+            try std.testing.expect(commented_out >= 2);
+            try std.testing.expect(performed.count() >= 55);
+
+            // **The positive control for the comment skip, and it is a real
+            // one.** `inspector` is refused by name *and* named in two lines of
+            // prose in the same function. If the skip regresses, the prose
+            // wins and this fails -- which is what happened before the skip
+            // existed, silently.
+            if (performed.contains("inspector")) {
+                std.debug.print(
+                    "`inspector` is refused by name, but this test read it as performed. " ++
+                        "It is mentioned in prose inside `cb_action`; the comment skip above " ++
+                        "has stopped working, and every refusal named in a comment is now " ++
+                        "being counted as an implementation.\n",
+                    .{},
+                );
+                return error.CommentCountedAsArm;
+            }
 
             // The `UNAVAILABLE` table, as written.
             const table_at = std.mem.indexOf(u8, palette_src, "const UNAVAILABLE: &[Unavailable] = &[") orelse
@@ -976,7 +1124,7 @@ pub const Action = union(Key) {
                 // keep.** The day `cb_action` grows the arm, this row starts
                 // hiding a command that works -- silently, forever, unless
                 // something says so here.
-                if (handled.contains(blocked)) {
+                if (performed.contains(blocked)) {
                     std.debug.print(
                         "palette.rs hides `{s}` because `{s}` was not implemented, but " ++
                             "`cb_action` handles `{s}` now. Delete that `Unavailable` row: it " ++
@@ -993,6 +1141,45 @@ pub const Action = union(Key) {
             try std.testing.expect(rows >= 5);
             try std.testing.expectEqual(rows, listed.count());
 
+            // **Every action is answered, one way or another.**
+            //
+            // This is the relation the two tables hang off, and it is stated
+            // once here rather than implied by four separate checks: *an
+            // action this host does not perform must say so by name.* Before
+            // it, eleven actions were answered by `_ =>` with `tag=NN` -- and
+            // from that line nobody can tell "this platform has no such thing"
+            // from "nobody has built it yet", which are the two answers a
+            // person filing a bug needs told apart.
+            //
+            // **It also makes the published capability count machine-read
+            // rather than subtracted.** Three numbers -- performed, refused,
+            // owed -- and the third was, until this, whatever was left over.
+            // The number that came out of that subtraction was wrong for a
+            // round without anything noticing.
+            //
+            // `_ =>` keeps its job: an action the *core* has grown that this
+            // tree has never seen. That is the only thing it should ever
+            // catch.
+            {
+                var missing: usize = 0;
+                const fields = @typeInfo(Key).@"enum".fields;
+                comptime var fi: usize = 0;
+                inline while (fi < fields.len) : (fi += 1) {
+                    const f = fields[fi];
+                    if (!performed.contains(f.name) and !marked.contains(f.name)) {
+                        std.debug.print(
+                            "`cb_action` neither performs `{s}` nor answers it by name: it " ++
+                                "falls through to `_ =>` and logs `tag={d}`. Give it an arm " ++
+                                "with `// refuses: <why>` (this platform has no such thing) " ++
+                                "or `// owed: <task> <why>` (not built yet).\n",
+                            .{ f.name, f.value },
+                        );
+                        missing += 1;
+                    }
+                }
+                if (missing > 0) return error.ActionAnsweredByNothing;
+            }
+
             // **The open-door direction, down the same chain the action
             // itself travels.** Not "the command's name is an unhandled
             // `Action.Key`" -- that is the reading that would walk straight
@@ -1002,16 +1189,34 @@ pub const Action = union(Key) {
                 const asks = raises.get(name) orelse continue;
                 for (asks) |a3| {
                     if (std.meta.stringToEnum(Key, a3) == null) continue;
-                    if (handled.contains(a3)) continue;
+                    if (performed.contains(a3)) continue;
                     if (listed.contains(name)) continue;
-                    std.debug.print(
-                        "the palette publishes `{s}`, which asks the host for `{s}`; " ++
-                            "`cb_action` has no branch for that, and `palette.rs`'s " ++
-                            "UNAVAILABLE does not list `{s}`. Pressing Enter on that row does " ++
-                            "nothing and logs a bare tag number. Either implement it or add it " ++
-                            "to that table with a reason.\n",
-                        .{ name, a3, name },
-                    );
+                    // **Two different sentences, because they are two
+                    // different bugs.** An action with no arm at all leaves a
+                    // bare tag number; one that is refused or owed by name
+                    // answers properly and the palette row is still a promise
+                    // it cannot keep. The second is the one that hid here for
+                    // a whole round: `inspector` had a named refusal, so
+                    // everything looked handled from the log's side.
+                    if (marked.contains(a3)) {
+                        std.debug.print(
+                            "the palette publishes `{s}`, which asks the host for `{s}`. " ++
+                                "`cb_action` answers that by name -- it refuses or owes it -- " ++
+                                "so the log looks healthy, and the palette row is still a row " ++
+                                "that cannot do anything. Add `{s}` to `palette.rs`'s " ++
+                                "UNAVAILABLE.\n",
+                            .{ name, a3, name },
+                        );
+                    } else {
+                        std.debug.print(
+                            "the palette publishes `{s}`, which asks the host for `{s}`; " ++
+                                "`cb_action` has no branch for that at all, so pressing Enter " ++
+                                "on that row logs a bare tag number. Give it an arm (`// refuses:` " ++
+                                "or `// owed: <task>`) and add `{s}` to `palette.rs`'s " ++
+                                "UNAVAILABLE.\n",
+                            .{ name, a3, name },
+                        );
+                    }
                     return error.PaletteOffersWhatTheHostCannotDo;
                 }
             }
