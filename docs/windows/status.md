@@ -488,16 +488,23 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
 改一处而漏另一处，等于把「哪个才作数」留给读者去猜。「必须实现 54 个」两处都没有推导，
 所以这里也不再重复它。
 
-**M5 插件**：⚠️ **口径订正（2026-09-02）——「已写完」的真值是
-「插件的 `.ps1` 已写完，且从未被加载过一次」。**
-`App.zig:717/:804` 的插件搜索路径是 `{resources_dir}/polter/plugins`，
-而 **Windows 上 `resources_dir` 恒为空**（`build.zig:180` 的
-`resources.install()` 在 `app_runtime == .none` 且非 xcframework 的
-Windows 目标下两支都进不去），**且 `resourcesdir.zig:79` 明写
-「an empty resources directory is not an error」——它是设计成静默的。**
-同一个空目录还哑掉另外三样：**技能**（`App.zig:1334/:3494`）、
-**主题**（`theme.zig:62`）、**shell 集成**（`Surface.zig:728` →
-`shell_integration.zig:1040`）。见任务 110。
+**M5 插件**：⚠️ **上面那条口径订正（2026-09-02）今天已经不成立，2026-09-08 更正。**
+
+原文说「Windows 上 `resources_dir` 恒为空」，因此插件、技能、主题、shell 集成四样
+静默全无。**那是 2026-09-02 的实况，任务 110 之后不再是。** 今天宿主自己在
+`windows/host/src/main.rs` 的 `announce_resources_dir` 里把 `POLTER_RESOURCES_DIR`
+设成 exe 旁边那个 `share\ghostty`，核心从环境变量拿它。真机读数（2026-09-08，`C:\app\v06` 包）：
+
+    [res] POLTER_RESOURCES_DIR = "C:\app\v06\share\ghostty" (beside the executable)
+    [res] exists=true has_poltergeist=true has_shell-integration=true has_polter/plugins=true has_themes=true
+    info(poltergeist): plugin archive: started C:\app\v06\share\ghostty/polter/plugins/a…
+
+最后一行是行为判据而不是「目录在不在」：插件确实是从**包内**那个路径起来的。
+
+**仍然成立的那半句**：`resourcesdir.zig` 里那句「an empty resources directory is
+not an error」没有变——所以万一目录真的不在（包打错了、exe 被单独拷走），四样功能
+依旧是静默消失，症状仍然是「十几个功能没做」。宿主那三行 `[res]` 日志是今天唯一
+会说话的地方。见任务 110、256。
 
 原文：**已写完**——出厂 8 个里 7 个是 `.sh`，各补一份 `.ps1`（第 8 个是
 `archive.py`，Python 跨平台）。`plugins/` 下还有 `_sdk`，那是库不是插件，不声明 `exec`。

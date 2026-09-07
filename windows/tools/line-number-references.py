@@ -116,7 +116,7 @@ PATTERNS = (("path", PATH_LINE),)
 #
 # **Measured, not chosen.** Lower it as they are replaced with symbol names;
 # the check tells you the number to write.
-BASELINE = 77
+BASELINE = 70
 
 # Print at most this many, with their line numbers. A reader needs somewhere
 # to start, not the whole list.
