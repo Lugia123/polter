@@ -111,9 +111,11 @@ mod mouse;
 mod overlay;
 mod palette;
 mod plugins;
+mod polterclose;
 mod prompt;
 mod settings_ui;
 mod quick;
+mod reload;
 mod reopen;
 mod session;
 mod winid;
@@ -2581,6 +2583,16 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             true
         }
 
+        // An agent asking, through the tool surface, for a tab or a window to
+        // go. **The arm's whole substance is in the out parameter**: the core
+        // reads `result` back the moment this returns and turns it into what
+        // the agent is told, so a close that does not write is a terminal that
+        // vanished while its asker was told nothing happened. See
+        // `polterclose.rs`.
+        ffi::ACTION_POLTERGEIST_CLOSE => {
+            polterclose::perform(&action, target_surface(&target))
+        }
+
         ACTION_COPY_TITLE_TO_CLIPBOARD => {
             alogf!(origin, "[action] copy_title_to_clipboard");
             queue_from(origin, Op::CopyTitleToClipboard, "copy_title_to_clipboard action")
@@ -2735,10 +2747,30 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             alogf!(origin, "[action] ring_bell");
             true
         }
-        ACTION_CONFIG_CHANGE | ACTION_RELOAD_CONFIG => {
-            settings_ui::request_errors();
-            alogf!(origin, "[action] config_change/reload_config");
+        // **The core telling us what it just applied.** Never a file read:
+        // this is performed from inside `ghostty_app_update_config`, so a
+        // reload here would call that again and the recursion has nothing to
+        // stop it. It shared an arm with `reload_config` until the reload was
+        // real, at which point one arm could no longer mean both.
+        ACTION_CONFIG_CHANGE => {
+            reload::on_config_change();
+            alogf!(origin, "[action] config_change");
             true
+        }
+        // **The core asking us to go and read.** «重载配置» and ctrl+shift+,
+        // both arrive here. The work is posted to the thread that owns
+        // windows -- `cb_action` is on whichever thread the core is on, and
+        // both `App.updateConfig` and the handle swap are that thread's.
+        ACTION_RELOAD_CONFIG => {
+            let soft = action.as_reload_soft();
+            let surface = target_surface(&target);
+            let posted = reload::request(soft, surface.unwrap_or(std::ptr::null_mut()));
+            alogf!(
+                origin,
+                "[action] reload_config soft={} surface={:?} posted={}",
+                soft as u8, surface, posted as u8
+            );
+            posted
         }
         ACTION_SHOW_CHILD_EXITED => {
             alogf!(origin, "[action] show_child_exited");
@@ -3343,6 +3375,23 @@ pub fn config_handle() -> ffi::Config {
     CONFIG.load(Ordering::Acquire)
 }
 
+/// The app handle, for anything that has to talk to the core about the whole
+/// process rather than about one surface.
+pub fn app_handle() -> ffi::App {
+    APP.load(Ordering::Acquire)
+}
+
+/// Put a freshly read config in place and hand back the one it replaced.
+///
+/// **The swap and the free are two steps on purpose.** Whoever calls this
+/// owns the old handle afterwards and is the one who knows whether anything
+/// else is still reading it; doing both here would put that judgement in the
+/// wrong file. See `reload::perform`, which is the only caller and does the
+/// free on the thread that owns every reader.
+pub fn adopt_config(fresh: ffi::Config) -> ffi::Config {
+    CONFIG.swap(fresh, Ordering::AcqRel)
+}
+
 /// Drive a binding on **a named surface**, rather than on whichever one has
 /// focus.
 ///
@@ -3609,6 +3658,9 @@ fn load_api() -> Option<Api> {
             config_get: sym!(internal, "ghostty_config_get"),
             config_load_default_files: sym!(internal, "ghostty_config_load_default_files"),
             config_finalize: sym!(internal, "ghostty_config_finalize"),
+            app_update_config: sym!(internal, "ghostty_app_update_config"),
+            surface_update_config: sym!(internal, "ghostty_surface_update_config"),
+            config_free: sym!(internal, "ghostty_config_free"),
             app_new: sym!(internal, "ghostty_app_new"),
             app_tick: sym!(internal, "ghostty_app_tick"),
             surface_config_new: sym!(internal, "ghostty_surface_config_new"),
@@ -4691,6 +4743,7 @@ fn main() {
     hud::init(hinst);
     divider::init(hinst);
     settings_ui::init(hinst);
+    reload::init(hinst);
     // A config that failed to parse is the one thing worth interrupting a
     // start-up for: the terminal comes up looking normal and behaving like a
     // default install, with the reason only in a log nobody opened.

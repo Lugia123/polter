@@ -107,6 +107,24 @@ pub struct PoltergeistMark {
     pub shielded: bool,
 }
 
+/// `ghostty_action_poltergeist_close_scope_e`.
+pub const POLTERGEIST_CLOSE_THIS_TAB: i32 = 0;
+pub const POLTERGEIST_CLOSE_OTHER_TABS: i32 = 1;
+pub const POLTERGEIST_CLOSE_TABS_TO_THE_RIGHT: i32 = 2;
+pub const POLTERGEIST_CLOSE_WINDOW: i32 = 3;
+
+/// `ghostty_action_poltergeist_close_result_e`.
+///
+/// **Zero is `UNSUPPORTED` on purpose**, and the header says why: the core
+/// initialises the cell to it, so an apprt that quietly does nothing -- or
+/// writes nothing -- is reported as having done nothing rather than
+/// inheriting `CLOSED` by accident. A host that closes the tab and forgets
+/// to write here leaves the agent believing the action was ignored, which is
+/// the *worse* of the two failures because the screen looks right.
+pub const POLTERGEIST_CLOSE_RESULT_UNSUPPORTED: i32 = 0;
+pub const POLTERGEIST_CLOSE_RESULT_CLOSED: i32 = 1;
+pub const POLTERGEIST_CLOSE_RESULT_AWAITING_CONFIRMATION: i32 = 2;
+
 // `ghostty_action_goto_tab_e`. Anything >= 0 is a 1-based tab index.
 pub const GOTO_TAB_PREVIOUS: i32 = -1;
 pub const GOTO_TAB_NEXT: i32 = -2;
@@ -196,6 +214,34 @@ impl Action {
     pub fn as_poltergeist_mark(&self) -> (i32, bool) {
         let role = i32::from_ne_bytes(self.payload[8..12].try_into().unwrap());
         (role, self.payload[12] != 0)
+    }
+
+    /// `ghostty_action_poltergeist_close_s { scope; bool confirm; result*; }`.
+    ///
+    /// The enum is int-sized at 0 and `confirm` is one byte at 4, but the
+    /// **out pointer is 8-aligned**, so it lands at 8 and not at 5. Reading
+    /// it at 5 would hand the core three bytes of padding and five bytes of
+    /// pointer to write an enum through, which is a wild write rather than a
+    /// wrong answer.
+    pub fn as_poltergeist_close(&self) -> (i32, bool, *mut i32) {
+        let scope = i32::from_ne_bytes(self.payload[0..4].try_into().unwrap());
+        let confirm = self.payload[4] != 0;
+        let result = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *mut i32;
+        (scope, confirm, result)
+    }
+
+    /// `ghostty_action_reload_config_s { bool soft; }`.
+    ///
+    /// **`soft` is the difference between two different jobs.** True means
+    /// "hand the core back the config you already have" -- the core's own
+    /// conditional state (light/dark, say) changed and it wants the values
+    /// recomputed against it. False means "go and read the file again",
+    /// which is what «重载配置» and ctrl+shift+, mean. Treating soft as hard
+    /// throws away whatever the user typed into the settings window; treating
+    /// hard as soft is the bug this port had, and it looks like nothing
+    /// happening.
+    pub fn as_reload_soft(&self) -> bool {
+        self.payload[0] != 0
     }
 
     /// A bare `c_int` payload: goto_tab, close_tab mode, fullscreen mode.
@@ -474,6 +520,33 @@ pub struct Api {
     pub config_get: unsafe extern "C" fn(Config, *mut c_void, *const u8, usize) -> bool,
     pub config_load_default_files: unsafe extern "C" fn(Config),
     pub config_finalize: unsafe extern "C" fn(Config),
+    /// Hand the core a config and let it propagate to every surface.
+    ///
+    /// **The seven things `App.updateConfig` sets have no other way in**, and
+    /// `App.zig` says in so many words that neither apprt calls it at launch:
+    /// the agent socket, the notice interval, the stand-down rule, three
+    /// Poltergeist timers and the compaction threshold sit at their struct
+    /// defaults until something calls this. Four of those defaults are `0`,
+    /// which means *off*, so "the feature does nothing" is what a Windows
+    /// user saw and there was nothing in any log to say why.
+    ///
+    /// **The caller keeps the config.** `embedded.zig` clones what it needs
+    /// before returning, so the handle may be freed the moment this returns
+    /// -- and must not be freed while anything else still holds it, which on
+    /// this host means `CONFIG`.
+    ///
+    /// It performs `.config_change` back at the apprt before it returns, on
+    /// this same thread. An arm that re-reads the config on *that* tag calls
+    /// this again, and the recursion has nothing to stop it.
+    pub app_update_config: unsafe extern "C" fn(App, Config),
+    /// The same, for one surface only. This is what a *soft* reload of a
+    /// surface target is: the core's conditional state moved and the values
+    /// want recomputing, with no file read anywhere.
+    pub surface_update_config: unsafe extern "C" fn(Surface, Config),
+    /// Release a config handle. The twin of `config_new`; without it every
+    /// reload leaks a whole `Config`, and a reload is a key people hold down
+    /// while they edit a theme.
+    pub config_free: unsafe extern "C" fn(Config),
     pub app_new: unsafe extern "C" fn(*const RuntimeConfig, Config) -> App,
     pub app_tick: unsafe extern "C" fn(App),
     pub surface_config_new: unsafe extern "C" fn() -> SurfaceConfig,

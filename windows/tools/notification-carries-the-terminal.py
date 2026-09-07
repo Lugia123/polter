@@ -71,7 +71,15 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 keying `mouse.rs` on the surface the action names. A pointer
 #                 shape stored once for the process is the same defect this
 #                 gate was written for, one pane over.
-MIN_CARRYING_ARMS = 8
+#
+#  10 (tasks 254 and 271): ACTION_RELOAD_CONFIG and ACTION_POLTERGEIST_CLOSE
+#                 joined. Both are surface-targeted in the case that matters:
+#                 a *soft* reload is aimed at one surface whose conditional
+#                 state moved, and every scope `poltergeist_close` can ask for
+#                 is expressed relative to the target's tab -- resolving
+#                 either against the tab in front would take the wrong
+#                 terminal and look entirely normal doing it.
+MIN_CARRYING_ARMS = 10
 
 # The call is deliberately identity-free, with the reason written next to it.
 # **Default is "must carry"**, and the exception is the thing that has to be

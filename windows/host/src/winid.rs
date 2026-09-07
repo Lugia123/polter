@@ -250,6 +250,11 @@ pub enum CloseVia {
     StripCross,
     WindowXOrAltF4,
     CoreCloseWindow,
+    /// The `poltergeist_close` action, which is an agent asking through the
+    /// tool surface. Named apart from `CoreCloseWindow` because "who asked"
+    /// is the whole reason this enum exists, and a window that vanished
+    /// under somebody's hands is the case where that line gets read.
+    AgentTool,
 }
 
 /// This window is finished: record it, and quit if it was the last one.
@@ -325,6 +330,7 @@ pub fn close_requested(frame: HWND, via: CloseVia) {
         CloseVia::StripCross => "strip-x",
         CloseVia::WindowXOrAltF4 => "alt-f4",
         CloseVia::CoreCloseWindow => "core close_window",
+        CloseVia::AgentTool => "agent tool",
     };
     crate::wlogf!(frame, "[win] close requested via {}", what);
 }

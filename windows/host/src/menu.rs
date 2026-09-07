@@ -294,6 +294,24 @@ const AGENTS_ROWS: &[Row] = &[
     toggle("设为总管", "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
     toggle("监督此终端", "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
     toggle("禁止 agent 进入", "poltergeist_toggle_shielded", Flag::Shielded, Ready::Always),
+    // **The hold, and the only door into it on this platform.**
+    //
+    // A held terminal cannot be clocked off by anything, supervisor included,
+    // which is precisely why only the person at the keyboard may set one:
+    // `Bus.setHeld` refuses anything but `.user`, and `Surface.zig` passes
+    // `.user` because a keypress is a person. **So every route the host opens
+    // here is the host asserting that a person did this**, and that is why
+    // this is a menu row and why `run_selftest` will not drive it -- see
+    // `ONLY_A_PERSON`. `76fa175ba` took this row off all three menus and
+    // `1ca47f03b` closed the palette door it left open; what was left was a
+    // gate with no switch, and on Windows there was not even a name for it.
+    //
+    // **No tick, and not by oversight.** The other three rows here read their
+    // state out of `poltergeist_mark`, and that action carries only
+    // `(prefix, role, shielded)` -- the hold lives in the prefix's glyphs,
+    // which `tabs::set_mark_for_surface` does not keep. A tick would need the
+    // core's mark to carry `held`; that is task 276 and not this row.
+    act("保持在岗", "poltergeist_toggle_held"),
     sep(),
     // Host rows: the core knows nothing about either page.
     act("插件…", "__polter_plugin_page"),
@@ -1044,6 +1062,20 @@ pub fn show_root_menu(frame: HWND, button: RECT) {
 /// go last so that everything else is already on record.
 const ENDS_THE_SESSION: &[&str] = &["close_surface", "close_tab:this", "close_window"];
 
+/// Rows the self-test must not drive, because performing them is a claim
+/// about **who** did it.
+///
+/// `poltergeist_toggle_held` is refused by the bus from anything but a
+/// keypress, and the host is what tells the core a keypress is what this was.
+/// A mouse pick on this row is that claim and it is true; `--menu-selftest`
+/// dispatching the same row is the same claim and it is not. The difference
+/// is invisible from inside `perform`, which is why the list is here rather
+/// than a rule somebody has to remember.
+///
+/// **Skipped, not moved to the end.** `ENDS_THE_SESSION` is an ordering; this
+/// is an exclusion, and the two solve different problems.
+const ONLY_A_PERSON: &[&str] = &["poltergeist_toggle_held"];
+
 /// Was `--menu-selftest` on the command line?
 fn selftest_requested() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
@@ -1076,6 +1108,15 @@ fn run_selftest(frame: HWND) {
     let mut failed = 0usize;
     let mut skipped = 0usize;
     for row in first.into_iter().chain(last) {
+        if row.action.is_some_and(|a| ONLY_A_PERSON.contains(&a)) {
+            // process-wide: the whole-process self test, reporting on a row rather than on a window
+            plogf!(
+                "[menu] selftest skip {:?}: performing it would tell the core a person did it",
+                row.label
+            );
+            skipped += 1;
+            continue;
+        }
         if !row_enabled(row) {
             // A greyed row cannot be picked with a mouse either, so dispatching
             // it here would test a path that does not exist.

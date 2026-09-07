@@ -178,6 +178,20 @@ pub enum Op {
         title: String,
         index: usize,
     },
+    /// `poltergeist_close`: an agent asking, through the tool surface, for a
+    /// tab or a window to go.
+    ///
+    /// **Carries the tab, not a mode.** `Op::CloseTab` resolves against
+    /// `active_index()`, which is right for the keyboard binding and wrong
+    /// here: the action names the surface it was sent for, and that surface's
+    /// tab need not be the one in front -- an agent works in a background
+    /// tab, which is the whole point of the tool. Closing "the active tab"
+    /// would look completely normal and take the wrong terminal.
+    PoltergeistClose {
+        tab: TabId,
+        /// `ghostty_action_poltergeist_close_scope_e`.
+        scope: i32,
+    },
 }
 
 impl Op {
@@ -210,6 +224,7 @@ impl Op {
             Op::ToggleQuickTerminal => "ToggleQuickTerminal",
             Op::NewTabWith(_) => "NewTabWith",
             Op::ReopenTab { .. } => "ReopenTab",
+            Op::PoltergeistClose { .. } => "PoltergeistClose",
         }
     }
 }
@@ -2817,6 +2832,28 @@ pub fn frame_of_surface(surface: Surface) -> Option<HWND> {
     })
 }
 
+/// Which window **and which tab** a surface is in.
+///
+/// The lookup `poltergeist_close` needs: the action names a surface, every
+/// scope it can ask for is expressed relative to that surface's *tab*, and
+/// `frame_of_surface` alone answers only half of it. `None` is a real answer
+/// -- the quick terminal's surface is not in a tab at all -- and callers
+/// refuse rather than fall back to the active tab, which is the substitution
+/// this port has now paid for five times.
+// window-free: keyed by surface, which is unique in the process -- this is the
+// function that turns such a key *into* a window
+pub fn tab_of_surface(surface: Surface) -> Option<(HWND, TabId)> {
+    let key = surface as usize;
+    with_windows(|ws| {
+        ws.iter().find_map(|w| {
+            w.tabs
+                .iter()
+                .find(|t| t.panes.iter().any(|p| p.surface == key))
+                .map(|t| (HWND(w.frame as *mut c_void), t.id))
+        })
+    })
+}
+
 /// The **pane window** a surface is bound to, for anything that has to post a
 /// message to it.
 ///
@@ -3415,6 +3452,22 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     }
                 }
             }
+            // The scoped close an agent asked for. Every branch names the
+            // tab by identity; see the variant's own note for why.
+            Op::PoltergeistClose { tab, scope } => match scope {
+                crate::ffi::POLTERGEIST_CLOSE_OTHER_TABS => close_other_tabs(frame, tab),
+                crate::ffi::POLTERGEIST_CLOSE_TABS_TO_THE_RIGHT => close_tabs_right_of(frame, tab),
+                crate::ffi::POLTERGEIST_CLOSE_WINDOW => {
+                    // Through the one terminus, so this leaves the same record
+                    // the window's own X does -- and so the log says who asked.
+                    crate::winid::close_requested(frame, crate::winid::CloseVia::AgentTool);
+                    crate::winid::close_window_now(frame);
+                }
+                // `this_tab`, and anything the core grows later: closing the
+                // named tab is the conservative answer, and it is the one the
+                // scope enum's first member asks for.
+                _ => close_tab(frame, tab),
+            },
             Op::GotoTab(v) => {
                 let n = count(frame);
                 if n == 0 {
