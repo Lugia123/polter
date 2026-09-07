@@ -48,11 +48,13 @@ daily, and that is the honest blocker.
 
 These are specific and each one has a place in the code.
 
-- **Action parity.** The host handles **61 of the core's 72** keybinding
-  actions (2026-09-08). The remaining 11 are a difference, not a to-do list:
-  seven are GTK- or macOS-specific and should never exist here, two are the
-  inspector, which libghostty publishes no renderer for outside Apple, and the
-  rest are the ones still being worked through. Both numbers are measured rather than
+- **Action parity, in three numbers rather than one.** Of the core's 72
+  keybinding actions the host **implements 60**, **refuses 7 by name**, and
+  **still owes 5** (2026-09-08). The refusals are arms like any other: they
+  exist so that a GTK inspector or a tab overview answers with a sentence
+  saying this platform has no such thing, rather than falling through to a
+  bare tag number in a log nobody sees. Counting arms would call that 67
+  implemented, which is why the number is published as three. Both numbers are measured rather than
   remembered, and the commands are in
   [`docs/windows/status.md`](docs/windows/status.md) — **an earlier version of
   this line said 24, from a command anchored to line numbers that had moved.**

@@ -156,8 +156,30 @@ fn logFn(
         // skip if we are not logging to stderr
         if (!global.logging().stderr) break :stderr;
 
-        // Lock so we are thread-safe
-        var buf: [64]u8 = undefined;
+        // Lock so we are thread-safe.
+        //
+        // **The buffer size is not a performance knob; it decides how many
+        // writes one log line becomes.** `print` drains whenever the buffer
+        // fills, so with the 64 bytes this used to pass, any line longer than
+        // that reached the file in pieces -- a 73-byte resize line measured as
+        // three separate writes. That matters wherever something else writes
+        // to the same stderr: on Windows the host points stderr at its own log
+        // file (there is no other sink for this log on that platform) and
+        // appends its own records to it, so its next record landed *between*
+        // two pieces of ours and the two came out on one line:
+        //
+        //     w1 [action] config_changeinfo(generic_renderer): [rsz] ...
+        //
+        // Both writers append, so nothing was ever overwritten and nothing was
+        // lost -- but a reader of that file cannot tell a glued line from a
+        // defect, which is worse, because every reading this project takes is
+        // taken from these files.
+        //
+        // A line that fits is one `print` into the buffer and one drain at the
+        // `flush` below. **A line longer than the buffer is still torn**, and
+        // there is no size that abolishes that; this moves it from "most
+        // lines" to "a line over 4 KiB".
+        var buf: [4096]u8 = undefined;
         const stderr = std.debug.lockStderr(&buf);
         defer std.debug.unlockStderr();
 

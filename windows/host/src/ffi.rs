@@ -158,6 +158,34 @@ pub const ACTION_SET_WINDOW_TITLE: u32 = 36;
 pub const ACTION_UNDO: u32 = 55;
 pub const ACTION_REDO: u32 = 56;
 
+// --- Actions this host answers with a **refusal**, not an implementation.
+//
+// **These six are a ledger, not a capability list, and the difference has to
+// be kept in the arithmetic.** Counting the `ACTION_*` that appear in
+// `cb_action` used to answer "how many of the core's actions does this host
+// do"; with these six declared it answers something else, because each of
+// them exists so that pressing the thing produces a *named refusal* instead
+// of `[action] tag=30 is not implemented by this host` -- a bare number, in a
+// log the person cannot see, from a row that looked like every row that
+// works. So the number to publish is three numbers: implemented, refused by
+// name, and still owed.
+//
+// **Why a refusal is worth an arm at all.** `_ => false` already returns
+// false; what it cannot do is say *why*, and "this platform has no such
+// thing" and "nobody has built it yet" are different sentences that a person
+// filing a bug needs told apart. `ACTION_INSPECTOR` (29) has answered that
+// way since the port had an inspector question at all, and these follow it.
+//
+// Ordinals counted off `ghostty_action_tag_e` like every constant above, and
+// checked by `the Windows host's action tags` in `src/apprt/action.zig` --
+// which names the action a wrong number would dispatch instead.
+pub const ACTION_TOGGLE_TAB_OVERVIEW: u32 = 8;
+pub const ACTION_TOGGLE_WINDOW_DECORATIONS: u32 = 9;
+pub const ACTION_SHOW_GTK_INSPECTOR: u32 = 30;
+pub const ACTION_RENDER_INSPECTOR: u32 = 31;
+pub const ACTION_EXPORT_TERMINAL_IO: u32 = 32;
+pub const ACTION_CHECK_FOR_UPDATES: u32 = 57;
+
 /// `ghostty_action_poltergeist_mark_s`. The prefix is the core's rendered
 /// glyphs; `role` and `shielded` are the meaning, which is what a menu item
 /// needs -- **a tick cannot be derived from a string**, which is the reason

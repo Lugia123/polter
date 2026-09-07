@@ -564,16 +564,36 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Report this terminal to the supervisor when its screen goes quiet."),
         }},
 
-        // No command, because the hold has no way in at all right now.
-        // `76fa175ba` took the menu item off all three menus and said in so
-        // many words that nothing can set it today -- and a palette entry is
-        // the same door in a different wall, so that sentence was not true
-        // while this one stood. What is left is a gate with no switch: the
-        // action, the bus rule that only a keypress may work it, and
-        // `clock_out` still refusing a held terminal. Putting the hold back
-        // is meant to be one line, and this is the line.
-        .poltergeist_toggle_held,
-        => comptime &.{},
+        // **The hold has a way in again, so this is a command again.**
+        //
+        // What stood here was a refusal, and its reasoning was sound while it
+        // was true: `76fa175ba` had taken the menu item off all three menus
+        // and said in so many words that nothing could set the hold today, so
+        // a palette entry would have been *the same door in a different wall*
+        // and would have made that sentence false.
+        //
+        // It then came true the other way round. Task 271 gave the Windows
+        // host a menu row for the hold, and for a while the menu had a door
+        // the palette did not -- the mirror image of what this comment was
+        // written to prevent, and `test "menu labels reach the palette"`
+        // is what said so. **A rule that names one of two surfaces holds
+        // until somebody edits the other one.**
+        //
+        // So the sentence to keep is not "the hold has no way in"; it is the
+        // one underneath it: **every door into the hold must be a person's.**
+        // `Bus.setHeld` refuses anything but `.user`, because a supervisor
+        // able to lift a hold could clock the terminal off a moment later. A
+        // palette entry does not weaken that. The palette is opened by a
+        // keypress and run by a person pressing Enter on a row, and the tool
+        // surface has its own refusal that does not go through here at all:
+        // `terminal_action` answers `NotPermitted` for this action, with
+        // `test "Polter's own switches are refused, and never reach the
+        // terminal"` standing over it.
+        .poltergeist_toggle_held => comptime &.{.{
+            .action = .poltergeist_toggle_held,
+            .title = i18n.N_("Hold This Terminal to Its Work"),
+            .description = i18n.N_("Stop this terminal being clocked off, by a supervisor or by anything else. Its tab wears a ring while the hold lasts. Only you can set this."),
+        }},
 
         .poltergeist_toggle_shielded => comptime &.{.{
             .action = .poltergeist_toggle_shielded,

@@ -97,6 +97,122 @@ struct Command {
 /// command, so a stale one is a number in the log rather than silence, and
 /// `test "palette synonyms name real commands"` in `src/input/command.zig`
 /// fails the build if a line names a command the core does not publish.
+/// A command the core publishes that **this host cannot perform**, and why.
+///
+/// # The door this closes
+///
+/// The core's palette list is `input.command.defaults`, built at comptime over
+/// every member of `Binding.Action` with **no platform branch anywhere** --
+/// `command.zig` has no `builtin.target`, `RepeatableCommand.init` copies the
+/// whole of `defaults` into `command-palette-entry`, and `load_commands` below
+/// took everything it was handed. So the Windows palette listed
+/// `Show the GTK Inspector`, and pressing Enter on it produced
+/// `[action] tag=30 is not implemented by this host` -- a bare number, in a log
+/// the person cannot see, from a row that looked exactly like the forty-two
+/// rows that work.
+///
+/// **This is the same defect the menus already fixed, in a third door.**
+/// `menu.rs` greys a row it cannot do and writes `// greyed: <why>` next to
+/// whatever decides it; `menu-actions-handled.py` fails if a row reaches an
+/// action `cb_action` has no branch for. Neither can see this list, because
+/// this list is not in the Rust source -- it arrives at runtime from the core.
+///
+/// # Hidden here, greyed in the menus, and the difference is deliberate
+///
+/// `s4.md` §3.4.3 says greyed and never hidden, because a row that is missing
+/// and a row that never existed look the same. **A palette is the case that
+/// rule was not written for**: its rows are not a map of the application, they
+/// are search results, and a search result you cannot act on is worse than one
+/// that is not offered -- you type, you press Enter, and nothing happens. The
+/// menu keeps the row *and* the explanation; here the explanation goes to the
+/// log at load, so nothing is thrown away, it just is not made clickable.
+///
+/// # Default-include, and the reason is a scar
+///
+/// A command not named here is shown. A hide-list is the one direction that
+/// rots invisibly: three of the rows below are deferred or owed rather than
+/// impossible, and the day any of them is built, a hard-coded list would go on
+/// hiding a command that works, with nothing anywhere to say so. So the table
+/// names **what it is blocked on** as well as the row, and `test "the Windows
+/// palette hides only what it must"` in `src/apprt/action.zig` fails **in both
+/// directions**: a
+/// row here whose action `cb_action` now handles is stale and must go, and a
+/// palette command whose action `cb_action` does not handle and which is not
+/// here is a door standing open.
+struct Unavailable {
+    /// `Command.C.action_key` -- `@tagName` of the core's `Binding.Action`, so
+    /// without the parameters. **Not the `action` string**: that one carries
+    /// arguments (`goto_split:right`), and matching on it would mean writing
+    /// out every variant and missing the one that gets added.
+    key: &'static str,
+    /// The `apprt.Action` this ends up asking the host for -- the name in
+    /// `Action.Key`, which is what `cb_action` matches on. Usually the same
+    /// word as `key`; `toggle_secure_input` raises `secure_input`, and that
+    /// pair is exactly why this is written down instead of assumed.
+    blocked_on: &'static str,
+    /// Why it cannot be done here. Goes in the log, and is the sentence the
+    /// next person reads before deciding whether to build it.
+    why: &'static str,
+}
+
+const UNAVAILABLE: &[Unavailable] = &[
+    Unavailable {
+        key: "show_gtk_inspector",
+        blocked_on: "show_gtk_inspector",
+        why: "GTK's own debugger. `Binding.zig` says of it: \"Has no effect on macOS.\" \
+              There is nothing here for it to open.",
+    },
+    Unavailable {
+        key: "toggle_tab_overview",
+        blocked_on: "toggle_tab_overview",
+        why: "`AdwTabOverview`, a GTK widget -- `Binding.zig`: \"only supported on Linux and \
+              when the system's libadwaita version is 1.4 or newer\". A tab overview for this \
+              host would be a new feature, not this action.",
+    },
+    Unavailable {
+        key: "toggle_window_decorations",
+        blocked_on: "toggle_window_decorations",
+        why: "GTK client-side decorations -- `Binding.zig`: \"Only implemented on Linux.\" A \
+              borderless window here would be a new feature, not this action.",
+    },
+    Unavailable {
+        key: "check_for_updates",
+        blocked_on: "check_for_updates",
+        why: "There is no updater in this host to ask. The main menu's `检查更新…` row is greyed \
+              for the same reason and says so; this is that row's other door.",
+    },
+    Unavailable {
+        key: "toggle_background_opacity",
+        blocked_on: "toggle_background_opacity",
+        why: "Deferred, and for a reason worth keeping: this host makes no transparent \
+              windows -- it asks Windows for none of the extended styles that would allow one, \
+              and **that claim is deliberately written without naming the style, so grepping \
+              this tree for it still answers `no`** (`status.md` §85: a comment saying \"there \
+              is no X here\" makes every search for X say yes). The core's own words are \
+              `Binding.zig`: \"This does nothing when `background-opacity` is set to 1 or \
+              above\", and \"Only implemented on macOS\". Wiring the switch with nothing \
+              underneath it would produce precisely the symptom this table exists to remove -- \
+              a row that is offered, pressed, and does nothing.",
+    },
+    Unavailable {
+        key: "show_on_screen_keyboard",
+        blocked_on: "show_on_screen_keyboard",
+        why: "Not built here yet, and **owed rather than inapplicable**: `Binding.zig` says \
+              \"Only implemented on Linux (GTK) ... Other platforms are as of now untested\", \
+              and untested is not not-applicable -- Windows has an on-screen keyboard, and a \
+              touch device is where this row is the whole point. Task 281's table puts it in \
+              the same column as `secure_input`.",
+    },
+    Unavailable {
+        key: "toggle_secure_input",
+        blocked_on: "secure_input",
+        why: "Not built here yet. **Unlike the four above this one is owed**: the core raises \
+              `secure_input` by itself whenever the terminal enters a password prompt \
+              (`Surface.zig`'s `setPasswordInput`), so it is not only this palette row that \
+              goes unanswered. Task 284.",
+    },
+];
+
 const SYNONYMS: &str = include_str!("synonyms.txt");
 
 /// The window handles, written once when the palette is built and never again.
@@ -230,11 +346,36 @@ fn load_commands(config: Config) -> Vec<Command> {
     }
 
     let mut out = Vec::with_capacity(list.len);
+    let mut hidden = 0usize;
     for i in 0..list.len {
         let c = unsafe { &*list.commands.add(i) };
         let title = unsafe { cstr(c.title) };
         let action = unsafe { cstr(c.action) };
         if title.is_empty() || action.is_empty() {
+            continue;
+        }
+        // **Read, at last.** `action_key` has been in this struct since it was
+        // written and nothing looked at it; it is the parameterless name of
+        // the core's binding action, which is the only stable thing to key
+        // `UNAVAILABLE` on. See that table for why the row goes rather than
+        // being shown and refused.
+        let key = unsafe { cstr(c.action_key) };
+        if let Some(u) = UNAVAILABLE.iter().find(|u| u.key == key) {
+            hidden += 1;
+            // **One line per hidden row, not just a count.** The row is gone
+            // from the palette, so the log is the only place the person's
+            // question -- "where did Toggle Secure Input go?" -- can be
+            // answered afterwards. A count alone would make the palette quiet
+            // in exactly the way the unfiltered palette was loud.
+            //
+            // process-wide: the command list is read once for the process,
+            // before any palette window exists
+            plogf!(
+                "[palette] hiding {:?} ({}): {}",
+                title,
+                key,
+                u.why
+            );
             continue;
         }
         let haystack = title.to_lowercase();
@@ -247,8 +388,17 @@ fn load_commands(config: Config) -> Vec<Command> {
             aliases,
         });
     }
+    // **Both numbers, because one of them is the claim.** "loaded 75" on its
+    // own cannot be told from a build where the filter did nothing; the pair
+    // says how many the core offered and how many this host will show.
     // process-wide: the command list, read once and shared by every palette
-    plogf!("[palette] loaded {} commands from the core", out.len());
+    plogf!(
+        "[palette] loaded {} commands from the core; {} hidden as unavailable on this host \
+         (of {} the core published)",
+        out.len(),
+        hidden,
+        list.len
+    );
     audit_synonyms(&out);
     out
 }

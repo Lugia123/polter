@@ -584,12 +584,17 @@ impl Line {
 /// and unusable for the alarm. The alarm uses `alarm` below.
 fn wd_log(msg: &str) {
     use std::io::Write as _;
+    // One buffer, newline included, for the reason `log_line` sets out: a
+    // record written in two writes is a record the core's log can be spliced
+    // into. The watchdog's lines are the ones read when everything else has
+    // stopped saying anything, so a torn `[wd]` line is the worst one to have.
+    let line = format!("[{}] {msg}\n", now_str());
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path())
     {
-        let _ = writeln!(f, "[{}] {msg}", now_str());
+        let _ = f.write_all(line.as_bytes());
         let _ = f.flush();
     }
 }
@@ -1115,7 +1120,25 @@ fn log_build_identity() {
 }
 
 pub fn log_line(msg: &str) {
-    let s = &format!("[{}] {}", now_str(), msg);
+    // **The newline is part of the record, not a second write.**
+    //
+    // `writeln!(f, "{s}")` reads as one line and is not one write: `fmt::write`
+    // walks the format pieces and hands each to its own `write_all`, so an
+    // unbuffered `File` receives the text and then a lone `"\n"`. Measured, on
+    // a `Write` that counts its calls: two.
+    //
+    // That gap is where libghostty's log lands. Both writers append -- every
+    // write goes to the end of the file as one operation, so nothing is ever
+    // overwritten -- and the core's line arriving between the text and the
+    // newline is exactly this, off the test machine:
+    //
+    //     w1 [action] config_changeinfo(generic_renderer): [rsz] ...
+    //
+    // A record built with its own newline and handed over in one `write_all`
+    // cannot be interrupted, because there is nothing to interrupt.
+    // `alarm` below has been this shape all along, for the unrelated reason
+    // that it may not allocate.
+    let s = format!("[{}] {}\n", now_str(), msg);
     use std::io::Write as _;
     // **The file is the only copy, and it always was the one we trust**: it is
     // flushed on every line and it is the artifact that leaves the machine.
@@ -1129,7 +1152,7 @@ pub fn log_line(msg: &str) {
         .append(true)
         .open(log_path())
     {
-        let _ = writeln!(f, "{s}");
+        let _ = f.write_all(s.as_bytes());
         let _ = f.flush();
     }
 }
@@ -2337,6 +2360,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // that reaches `_ => false` is indistinguishable from one that was
         // never sent; these two lines are the difference between "this host
         // does not do that yet" and "the menu is broken".
+        // refuses: libghostty publishes no inspector renderer outside Apple.
         ffi::ACTION_INSPECTOR => {
             // process-wide: a fact about what libghostty publishes on this
             // platform, the same for every window there will ever be
@@ -2768,6 +2792,11 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // stop it. It shared an arm with `reload_config` until the reload was
         // real, at which point one arm could no longer mean both.
         ACTION_CONFIG_CHANGE => {
+            // The config is one document for the process, and a per-window
+            // notification here would invite a second, per-window copy of a fact
+            // there is only one of.
+            // carries no terminal: a reload is not about a surface, even when a
+            // surface's keybinding is what asked for it
             reload::on_config_change();
             alogf!(origin, "[action] config_change");
             true
@@ -2988,6 +3017,10 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // for what neither half covers.
         ffi::ACTION_REDO => {
             let ok = reopen::redo_last();
+            // The notification in this arm is the call above; this one is a
+            // statistic for the log line, and it is on no bill for that reason.
+            // carries no terminal: a stack depth and its limit, one pair for the
+            // whole process
             let (deep, limit) = reopen::redo_depth();
             alogf!(origin, "[action] redo -> {}; stack {}/{}", ok as u8, deep, limit);
             ok
@@ -3001,6 +3034,10 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // process-wide: the action is about every window, so naming one
             // would be picking a subject it does not have
             plogf!("[action] close_all_windows (target tag={})", target.tag);
+            // Naming one window here would name the one that happened to ask,
+            // which is not what is being closed.
+            // carries no terminal: its subject is every window there is, and it
+            // goes and asks the window registry for them itself
             winnav::close_all()
         }
 
@@ -3032,6 +3069,10 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             match origin {
                 Some(frame) => {
                     let ok = wintitle::set_override(frame, &t);
+                    // The notification in this arm is the call above, and that one
+                    // does take the frame.
+                    // carries no terminal: two counts across every window, read for
+                    // the log line
                     let (tracked, overridden) = wintitle::depth();
                     wlogf!(
                         frame,
@@ -3077,6 +3118,121 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                     false
                 }
             }
+        }
+
+        // ---- task 281: the six that are answered by name, and refused ----
+        //
+        // **A refusal with a sentence, because the alternative is a number.**
+        // Falling through to `_ =>` gets `[action] tag=30 is not implemented
+        // by this host`, and from that line nobody can tell "this platform
+        // has no such thing" from "nobody has built it yet" -- which are the
+        // two answers a person filing a bug needs told apart. `ACTION_INSPECTOR`
+        // above has answered this way for as long as there has been an
+        // inspector question; these six join it.
+        //
+        // **`false`, and that is the honest answer**: the core asked for
+        // something and it did not happen. `action-arms-act.py` polices the
+        // other direction -- an arm that answers `true` and does nothing --
+        // and none of these does that.
+        //
+        // **They are still reachable, which is why they are worth writing.**
+        // Four of the six are hidden from the command palette now
+        // (`palette.rs`'s `UNAVAILABLE`), but a palette row is not the only
+        // door: a keybinding reaches them, and so does
+        // `src/poltergeist/actions.zig`'s `selfSafeTag`, which lets an agent
+        // aim them at a terminal with no row of any kind involved.
+
+        // GTK's own debugger. `Binding.zig`: "Has no effect on macOS." There
+        // is nothing here for it to open, and there never will be.
+        // refuses: GTK's own debugger; this host is not GTK.
+        ffi::ACTION_SHOW_GTK_INSPECTOR => {
+            // process-wide: a fact about what this platform is, the same for
+            // every window there will ever be
+            plogf!(
+                "[action] show_gtk_inspector: this host is not GTK. Not a missing feature -- \
+                 the action names another toolkit's debugger."
+            );
+            false
+        }
+
+        // `AdwTabOverview`. `Binding.zig`: "only supported on Linux and when
+        // the system's libadwaita version is 1.4 or newer".
+        // refuses: `AdwTabOverview` is a GTK widget; this strip has no overview.
+        ffi::ACTION_TOGGLE_TAB_OVERVIEW => {
+            alogf!(
+                origin,
+                "[action] toggle_tab_overview: this host has no tab overview. The action is \
+                 GTK's `AdwTabOverview`; an overview for this strip would be a new feature, \
+                 not this action."
+            );
+            false
+        }
+
+        // GTK client-side decorations. `Binding.zig`: "Only implemented on
+        // Linux." A borderless window here is possible and is a different
+        // piece of work; saying so is the point of this arm.
+        // refuses: GTK client-side decorations; this host does not draw its frame.
+        ffi::ACTION_TOGGLE_WINDOW_DECORATIONS => {
+            alogf!(
+                origin,
+                "[action] toggle_window_decorations: this host does not draw its own window \
+                 frame. The action is GTK's client-side decorations; a borderless window here \
+                 would be a new feature, not this action."
+            );
+            false
+        }
+
+        // **The inspector's two dependents, and the distinction in this
+        // comment is the one a reader will act on.** `ACTION_INSPECTOR` (29)
+        // above refuses because libghostty publishes no inspector *renderer*
+        // outside Apple. That is narrower than "the inspector is Apple-only",
+        // which is false: `ghostty_surface_inspector`, `_set_size`, `_key`,
+        // `_text` and the mouse entry points are all outside the
+        // `#ifdef __APPLE__` in `include/ghostty.h` -- only the three
+        // `ghostty_inspector_metal_*` are inside it. So an inspector here is
+        // "write a renderer backend", not "the C API will not let you".
+        //
+        // Both of these can only arrive *after* an inspector exists -- the
+        // core raises `render_inspector` from `queueInspectorRender` in
+        // `src/apprt/embedded.zig`, and `export_terminal_io` from the
+        // inspector's own panel in `src/inspector/widgets/termio.zig`. With
+        // 29 refusing, neither can fire today. **They are arms anyway**: an
+        // action that cannot arrive and an action that arrives and is ignored
+        // are indistinguishable from the log, and the first one to be wrong
+        // about that would be whoever builds the renderer.
+        // refuses: there is no inspector here to render -- see the `inspector` arm.
+        ffi::ACTION_RENDER_INSPECTOR => {
+            alogf!(
+                origin,
+                "[action] render_inspector: no inspector exists here to render -- see the \
+                 `inspector` arm above. If this line ever appears, something built one."
+            );
+            false
+        }
+        // refuses: the IO log lives in the inspector, which this host does not render.
+        ffi::ACTION_EXPORT_TERMINAL_IO => {
+            alogf!(
+                origin,
+                "[action] export_terminal_io: the terminal IO log lives in the inspector, \
+                 which this host does not render -- see the `inspector` arm above. \
+                 If this line ever appears, something built one."
+            );
+            false
+        }
+
+        // No updater in this host to ask. The main menu's `检查更新…` row is
+        // greyed with the same reason written beside it (`menu.rs`, `// greyed:`);
+        // this is that row's other door, and until now the two doors gave
+        // different answers.
+        // refuses: this host ships no updater, so there is nothing to ask.
+        ffi::ACTION_CHECK_FOR_UPDATES => {
+            // process-wide: whether an updater exists is a fact about the
+            // process, not about any one window
+            plogf!(
+                "[action] check_for_updates: this host ships no updater, so there is nothing \
+                 to ask. Owed, not inapplicable -- the greyed menu row says the same."
+            );
+            false
         }
 
         ACTION_RENDER => true,
@@ -4423,7 +4579,7 @@ fn adopt_std_handles() -> String {
 ///
 /// # The log was never written wrong; it was read wrong
 ///
-/// `log_line` hands a Rust `String` to `writeln!`, which writes its UTF-8
+/// `log_line` hands a Rust `String` to `write_all`, which writes its UTF-8
 /// bytes and nothing else -- there is no re-encoding anywhere in this host.
 /// So a line reading `commit="浣犲搱濂?"` is not a mangled write. It is a
 /// correct file **decoded as GBK**, which is what several standard Windows
@@ -4672,12 +4828,16 @@ fn main() {
         // over it.
         if std::env::var("POLTER_HOST_LOG").is_ok() {
             use std::io::Write as _;
-            let _ = writeln!(
-                std::io::stderr(),
+            // One write, same as every other record: on this platform stderr
+            // may *be* the log file (`adopt_std_handles`), and `std::io::Stderr`
+            // does no buffering of its own, so `writeln!` here would put the
+            // newline in a write of its own like everywhere else.
+            let note = format!(
                 "Polter: this is a +action, so POLTER_HOST_LOG was left alone \
-                 and this process logs to {}",
+                 and this process logs to {}\n",
                 log_path().display()
             );
+            let _ = std::io::stderr().write_all(note.as_bytes());
         }
         // process-wide: a CLI action runs before any window exists, and this
         // path never makes one

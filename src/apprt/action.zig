@@ -598,6 +598,425 @@ pub const Action = union(Key) {
             // whole file's neighbours keep being written to avoid.
             try std.testing.expect(checked >= 40);
         }
+        test "the Windows palette hides only what it must" {
+            // **The third door.** The two tests above and
+            // `windows/tools/menu-actions-handled.py` between them cover the
+            // menus: every row reaches an action `cb_action` has a branch for,
+            // or is greyed with a written reason. **The command palette is a
+            // fourth list of the same actions and none of them can see it**,
+            // because its rows are not in the Rust source at all -- they come
+            // from `input.command.defaults` at runtime, through
+            // `command-palette-entry`, and `palette.rs` only copies them.
+            //
+            // The gap that left: `defaults` is built at comptime over every
+            // member of `Binding.Action` with no platform branch anywhere, so
+            // the Windows palette listed `Show the GTK Inspector`. Pressing
+            // Enter on it produced `[action] tag=30 is not implemented by this
+            // host` and nothing else. `palette.rs`'s `UNAVAILABLE` now hides
+            // those rows; this test is what stops that table from being the
+            // next thing that rots.
+            //
+            // **It is here rather than in `windows/tools/`.** A Python gate
+            // over `windows/host/src/**` can see `palette.rs` copying the
+            // list; it cannot see what is in the list. This side can: the
+            // commands are a comptime constant in this binary, and the host's
+            // source is a file it can read -- which is exactly the standing
+            // this file's other two Windows floors have.
+            //
+            // # NOT CHECKED, and both halves matter
+            //
+            //  1. **This sees the comptime `defaults`, not the list the
+            //     palette actually receives.** They are equal only while the
+            //     user has not set `command-palette-entry` in their config;
+            //     `RepeatableCommand.init` copies the whole of `defaults`, and
+            //     a config that overrides it diverges from what is checked
+            //     here. Nothing on either side reports that divergence.
+            //  2. **The binding-to-action map is read out of the dispatch
+            //     source as text, not executed.** Going from a palette command
+            //     to the `apprt` action it raises is what
+            //     `Surface.performBindingAction` and `App.performAction` do,
+            //     and those need a live surface. So this parses those two
+            //     switches instead. **It is deliberately not a name match**:
+            //     `toggle_secure_input` raises `secure_input`, one concept
+            //     with two spellings, and a name match would miss exactly that
+            //     pair while looking like it covered everything. What text
+            //     parsing can still miss is an arm whose shape it does not
+            //     recognise -- so the map has a floor, and every row of
+            //     `UNAVAILABLE` must be *derivable* from it, which means a
+            //     parse that quietly stopped working takes the whole test
+            //     down rather than passing.
+            //
+            // There is a third route these lists do not cover at all, and it
+            // is not a palette question: `src/poltergeist/actions.zig`'s
+            // `selfSafeTag` lets an agent aim these actions at a terminal
+            // directly, with no row of any kind involved.
+            var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
+            var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+
+            const H = struct {
+                /// A missing file fails rather than skips, for the reason the
+                /// action-tag floor above states.
+                fn read(i: std.Io, a: std.mem.Allocator, path: []const u8) ![]const u8 {
+                    return std.Io.Dir.cwd().readFileAlloc(i, path, a, .limited(512 * 1024)) catch |err| {
+                        std.debug.print(
+                            "cannot read {s} ({t}). Run `zig build test` from the repository root.\n",
+                            .{ path, err },
+                        );
+                        return error.HostSourceUnreadable;
+                    };
+                }
+
+                /// The contents of the next `"..."` at or after `from`, and
+                /// where it ended. Rust string literals in this table have no
+                /// escapes other than `\"` and line continuations, both of
+                /// which only matter inside `why` -- which is not compared.
+                fn str(src: []const u8, from: usize) ?struct { v: []const u8, end: usize } {
+                    const open = std.mem.indexOfScalarPos(u8, src, from, '"') orelse return null;
+                    var k = open + 1;
+                    while (k < src.len) : (k += 1) {
+                        if (src[k] == '\\') {
+                            k += 1;
+                            continue;
+                        }
+                        if (src[k] == '"') return .{ .v = src[open + 1 .. k], .end = k + 1 };
+                    }
+                    return null;
+                }
+
+                /// The identifier starting at `at`, if there is one.
+                fn ident(src: []const u8, at: usize) ?[]const u8 {
+                    var e = at;
+                    while (e < src.len and (std.ascii.isAlphanumeric(src[e]) or src[e] == '_')) e += 1;
+                    return if (e > at) src[at..e] else null;
+                }
+
+                /// The `apprt` action tags a slice of dispatch source asks for.
+                ///
+                /// `performAction(target, .tag, value)` in either of its two
+                /// spellings -- `.app` or `.{ .surface = self }` -- so the
+                /// target is skipped by walking to the first comma at the
+                /// call's own paren depth rather than by matching its shape.
+                fn actionsIn(
+                    body: []const u8,
+                    out: *std.ArrayList([]const u8),
+                    a: std.mem.Allocator,
+                ) !void {
+                    var i: usize = 0;
+                    while (std.mem.indexOfPos(u8, body, i, "performAction(")) |p| {
+                        var k = p + "performAction(".len;
+                        i = k;
+                        var depth: usize = 0;
+                        const comma = while (k < body.len) : (k += 1) {
+                            switch (body[k]) {
+                                '(', '{', '[' => depth += 1,
+                                ')', ']' => {
+                                    if (depth == 0) break null;
+                                    depth -= 1;
+                                },
+                                '}' => {
+                                    if (depth == 0) break null;
+                                    depth -= 1;
+                                },
+                                ',' => if (depth == 0) break k,
+                                else => {},
+                            }
+                        } else null;
+                        const c = comma orelse continue;
+                        var j = c + 1;
+                        while (j < body.len and (body[j] == ' ' or body[j] == '\n' or
+                            body[j] == '\t' or body[j] == '\r')) j += 1;
+                        if (j >= body.len or body[j] != '.') continue;
+                        const name = ident(body, j + 1) orelse continue;
+                        try out.append(a, name);
+                    }
+                }
+
+                /// `field: "value"` inside one `Unavailable { ... }` block.
+                fn field(block: []const u8, name: []const u8) ?[]const u8 {
+                    var buf: [64]u8 = undefined;
+                    const needle = std.fmt.bufPrint(&buf, "{s}: ", .{name}) catch return null;
+                    const at = std.mem.indexOf(u8, block, needle) orelse return null;
+                    const s2 = str(block, at + needle.len) orelse return null;
+                    return s2.v;
+                }
+            };
+
+            const palette_src = try H.read(io, alloc, "windows/host/src/palette.rs");
+            const main_src = try H.read(io, alloc, "windows/host/src/main.rs");
+
+            // **What each palette command actually asks the host for.** Read
+            // out of the two functions that decide it, rather than guessed
+            // from the command's own name -- see NOT CHECKED 2 above for why
+            // that distinction is the point and not pedantry.
+            var raises: std.StringHashMapUnmanaged([]const []const u8) = .empty;
+            {
+                const Src = struct { path: []const u8, anchor: []const u8 };
+                const dispatch = [_]Src{
+                    .{ .path = "src/Surface.zig", .anchor = "pub fn performBindingAction" },
+                    .{ .path = "src/App.zig", .anchor = "pub fn performAction(" },
+                };
+                for (dispatch) |d| {
+                    const src = try H.read(io, alloc, d.path);
+                    const at = std.mem.indexOf(u8, src, d.anchor) orelse {
+                        std.debug.print("{s} no longer contains `{s}`\n", .{ d.path, d.anchor });
+                        return error.DispatchAnchorGone;
+                    };
+                    // The function body, by brace walk from the anchor.
+                    const open = std.mem.indexOfScalarPos(u8, src, at, '{') orelse return error.DispatchAnchorGone;
+                    var depth: usize = 0;
+                    var k = open;
+                    const close = while (k < src.len) : (k += 1) {
+                        if (src[k] == '{') depth += 1;
+                        if (src[k] == '}') {
+                            depth -= 1;
+                            if (depth == 0) break k;
+                        }
+                    } else src.len;
+                    const fn_body = src[open..close];
+
+                    // Arms at either indent: the app-scoped switch inside
+                    // `performBindingAction` sits one level deeper than the
+                    // main one, and both carry arms this map needs.
+                    for ([_][]const u8{ "\n        .", "\n            ." }) |marker| {
+                        var i: usize = 0;
+                        while (std.mem.indexOfPos(u8, fn_body, i, marker)) |p| {
+                            const name_at = p + marker.len;
+                            const name = H.ident(fn_body, name_at) orelse {
+                                i = name_at;
+                                continue;
+                            };
+                            i = name_at + name.len;
+                            const next = std.mem.indexOfPos(u8, fn_body, i, marker) orelse fn_body.len;
+                            var found: std.ArrayList([]const u8) = .empty;
+                            try H.actionsIn(fn_body[p..next], &found, alloc);
+                            if (found.items.len == 0) continue;
+                            const gop = try raises.getOrPut(alloc, name);
+                            if (!gop.found_existing) gop.value_ptr.* = try found.toOwnedSlice(alloc);
+                        }
+                    }
+                }
+            }
+            // **The floor for that parse.** A marker that stopped matching
+            // would leave this map empty, every check below would find nothing
+            // to complain about, and the run would read as clean.
+            try std.testing.expect(raises.count() >= 40);
+
+            // Which `ACTION_*` the host actually **performs**.
+            //
+            // **"Has an arm" is not the question, and getting that wrong was
+            // this test's own first bug.** Six arms exist precisely in order
+            // to refuse by name -- `[action] show_gtk_inspector: this host is
+            // not GTK` rather than `tag=30 is not implemented` -- and the
+            // first version of this check counted them as implemented, then
+            // told the palette to un-hide `Show the GTK Inspector` because
+            // "cb_action handles it now". A finding made of real symbols with
+            // the relation read backwards.
+            //
+            // So an arm carrying `// refuses: <why>` on the line above it is
+            // *not* an implementation. That marker is the same shape
+            // `menu.rs`'s `// greyed:` uses and for the same reason: the
+            // sentence lives where the person changing it will be, and a
+            // checker can see it.
+            var handled: std.StringHashMapUnmanaged(void) = .empty;
+            var refused: usize = 0;
+            {
+                const at = std.mem.indexOf(u8, main_src, "extern \"C\" fn cb_action") orelse
+                    return error.NoCbAction;
+                const stop = std.mem.indexOfPos(u8, main_src, at, "\n}\n") orelse main_src.len;
+                var i = at;
+                while (std.mem.indexOfPos(u8, main_src, i, "ACTION_")) |p| {
+                    if (p >= stop) break;
+                    var e = p + "ACTION_".len;
+                    while (e < main_src.len and (std.ascii.isUpper(main_src[e]) or
+                        std.ascii.isDigit(main_src[e]) or main_src[e] == '_')) e += 1;
+                    const upper = main_src[p + "ACTION_".len .. e];
+                    i = e;
+
+                    // The line before this one, trimmed.
+                    const line_start = if (std.mem.lastIndexOfScalar(u8, main_src[0..p], '\n')) |n| n else 0;
+                    const prev_start = if (line_start > 0)
+                        (std.mem.lastIndexOfScalar(u8, main_src[0..line_start], '\n') orelse 0)
+                    else
+                        0;
+                    const prev = std.mem.trim(u8, main_src[prev_start..line_start], " \t\r\n");
+                    if (std.mem.startsWith(u8, prev, "// refuses:")) {
+                        refused += 1;
+                        continue;
+                    }
+
+                    const lower = try alloc.alloc(u8, upper.len);
+                    for (lower, upper) |*d, c| d.* = std.ascii.toLower(c);
+                    try handled.put(alloc, lower, {});
+                }
+            }
+            // **The floor for the marker half.** If `// refuses:` stopped
+            // matching, every refusing arm would silently become an
+            // "implementation" again and this test would start demanding that
+            // the palette un-hide things it must not.
+            try std.testing.expect(refused >= 6);
+            // **The floor for that read.** A pattern that stopped matching
+            // would make every assertion below pass while reading like a clean
+            // run -- the failure this file's neighbours exist to avoid.
+            try std.testing.expect(handled.count() >= 50);
+
+            // The `UNAVAILABLE` table, as written.
+            const table_at = std.mem.indexOf(u8, palette_src, "const UNAVAILABLE: &[Unavailable] = &[") orelse
+                return error.NoUnavailableTable;
+            const table_end = std.mem.indexOfPos(u8, palette_src, table_at, "\n];") orelse palette_src.len;
+            const table = palette_src[table_at..table_end];
+
+            var listed: std.StringHashMapUnmanaged(void) = .empty;
+            var rows: usize = 0;
+            var i: usize = 0;
+            while (std.mem.indexOfPos(u8, table, i, "Unavailable {")) |p| {
+                const e = std.mem.indexOfPos(u8, table, p, "\n    },") orelse table.len;
+                const block = table[p..e];
+                i = e + 1;
+                rows += 1;
+
+                const key = H.field(block, "key") orelse {
+                    std.debug.print("an `Unavailable` row has no `key`\n", .{});
+                    return error.UnavailableRowMalformed;
+                };
+                const blocked = H.field(block, "blocked_on") orelse {
+                    std.debug.print("`Unavailable` row {s} has no `blocked_on`\n", .{key});
+                    return error.UnavailableRowMalformed;
+                };
+                // **A reason is required and not merely conventional.** The
+                // row is hidden from the palette, so this sentence is the only
+                // thing left that answers "where did it go".
+                const why = H.field(block, "why") orelse {
+                    std.debug.print("`Unavailable` row {s} has no `why`\n", .{key});
+                    return error.UnavailableRowMalformed;
+                };
+                if (why.len < 20) {
+                    std.debug.print("`Unavailable` row {s} has a `why` of {d} characters\n", .{ key, why.len });
+                    return error.UnavailableReasonTooShort;
+                }
+
+                // The key names a real binding action, or it hides nothing and
+                // will go on hiding nothing silently.
+                if (std.meta.stringToEnum(std.meta.Tag(input.Binding.Action), key) == null) {
+                    std.debug.print(
+                        "palette.rs hides `{s}`, which is not a member of Binding.Action\n",
+                        .{key},
+                    );
+                    return error.UnavailableKeyUnknown;
+                }
+
+                // ...and the core actually publishes a palette command for it.
+                var published = false;
+                for (input.command.defaults) |cmd| {
+                    if (std.mem.eql(u8, @tagName(cmd.action), key)) {
+                        published = true;
+                        break;
+                    }
+                }
+                if (!published) {
+                    std.debug.print(
+                        "palette.rs hides `{s}`, but the core publishes no palette command for " ++
+                            "it -- the row hides nothing and can go\n",
+                        .{key},
+                    );
+                    return error.UnavailableKeyNotInPalette;
+                }
+
+                if (std.meta.stringToEnum(Key, blocked) == null) {
+                    std.debug.print(
+                        "palette.rs says `{s}` is blocked on `{s}`, which is not a member of " ++
+                            "Action.Key\n",
+                        .{ key, blocked },
+                    );
+                    return error.UnavailableBlockerUnknown;
+                }
+
+                // **The hand-written `blocked_on`, checked against the
+                // source that decides it.** This is the field the stale
+                // alarm below rests on; if it is wrong, that alarm watches
+                // the wrong action and nothing ever says so. It is also what
+                // makes a broken parse fatal rather than quiet: a map that
+                // stopped resolving this row fails here.
+                const asks = raises.get(key) orelse {
+                    std.debug.print(
+                        "palette.rs hides `{s}`, but neither `performBindingAction` nor " ++
+                            "`App.performAction` was read as asking the host for anything -- " ++
+                            "either the row names a binding that dispatches nowhere, or this " ++
+                            "test's reading of those two switches has stopped working.\n",
+                        .{key},
+                    );
+                    return error.BindingRaisesNothing;
+                };
+                var agrees = false;
+                for (asks) |a2| {
+                    if (std.mem.eql(u8, a2, blocked)) agrees = true;
+                }
+                if (!agrees) {
+                    std.debug.print(
+                        "palette.rs says `{s}` is blocked on `{s}`, but the core dispatches " ++
+                            "that binding to: ",
+                        .{ key, blocked },
+                    );
+                    for (asks) |a2| std.debug.print("`{s}` ", .{a2});
+                    std.debug.print(
+                        "\n  The `blocked_on` field is what the staleness check watches, so a " ++
+                            "wrong one means that check is watching the wrong action.\n",
+                        .{},
+                    );
+                    return error.UnavailableBlockerWrong;
+                }
+
+                // **The stale direction -- and it runs after the check above
+                // on purpose**: it watches `blocked_on`, so it is only worth
+                // anything once that field has been agreed with the source that
+                // decides it. The reason this table is safe to
+                // keep.** The day `cb_action` grows the arm, this row starts
+                // hiding a command that works -- silently, forever, unless
+                // something says so here.
+                if (handled.contains(blocked)) {
+                    std.debug.print(
+                        "palette.rs hides `{s}` because `{s}` was not implemented, but " ++
+                            "`cb_action` handles `{s}` now. Delete that `Unavailable` row: it " ++
+                            "is hiding a command this host can perform.\n",
+                        .{ key, blocked, blocked },
+                    );
+                    return error.UnavailableRowStale;
+                }
+
+                try listed.put(alloc, key, {});
+            }
+            // The table has content and it was parsed. Zero rows and a table
+            // this test could not read are the same reading otherwise.
+            try std.testing.expect(rows >= 5);
+            try std.testing.expectEqual(rows, listed.count());
+
+            // **The open-door direction, down the same chain the action
+            // itself travels.** Not "the command's name is an unhandled
+            // `Action.Key`" -- that is the reading that would walk straight
+            // past `toggle_secure_input`.
+            for (input.command.defaults) |cmd| {
+                const name = @tagName(cmd.action);
+                const asks = raises.get(name) orelse continue;
+                for (asks) |a3| {
+                    if (std.meta.stringToEnum(Key, a3) == null) continue;
+                    if (handled.contains(a3)) continue;
+                    if (listed.contains(name)) continue;
+                    std.debug.print(
+                        "the palette publishes `{s}`, which asks the host for `{s}`; " ++
+                            "`cb_action` has no branch for that, and `palette.rs`'s " ++
+                            "UNAVAILABLE does not list `{s}`. Pressing Enter on that row does " ++
+                            "nothing and logs a bare tag number. Either implement it or add it " ++
+                            "to that table with a reason.\n",
+                        .{ name, a3, name },
+                    );
+                    return error.PaletteOffersWhatTheHostCannotDo;
+                }
+            }
+        }
+
         test "the Windows host's accelerator table" {
             // **The floor for `windows/host/src/keys.rs`'s `accelerator`.**
             // That table fires only for keys the core declined, so a row whose
@@ -918,7 +1337,6 @@ pub const Action = union(Key) {
             // And every arm in it was one of the rows checked above.
             try std.testing.expectEqual(arms, rows);
         }
-
     };
 
     /// Sync with: ghostty_action_u

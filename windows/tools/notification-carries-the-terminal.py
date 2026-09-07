@@ -16,8 +16,9 @@ Restoring that defect leaves `window-tagged-logs.py` at the same number, exit
 fixed, but only as a consequence; the thing being fixed was invisible to it.
 That is what this file is for.
 
-**What it checks, exactly.** For every arm of `cb_action` that resolves the
-target's surface *and* calls into another host module:
+**What it checks, exactly.** For every arm of `cb_action` that calls into
+another host module -- **every one, whether or not the arm looks up a
+surface**:
 
   A. the function it calls must have a parameter that carries a surface --
      named `surface`, or typed `Surface`. This is the shape the original defect
@@ -42,10 +43,37 @@ target's surface *and* calls into another host module:
     is tagged with the surface's window or with whichever window happens to be
     in front is not a question about signatures. Replacing the lookup with
     "the window in front" leaves this gate and every other one green.
-  - **An arm that stops resolving a surface altogether** drops out of scope
-    rather than failing -- a checker whose reach shrinks as the code gets
-    worse. `MIN_CARRYING_ARMS` below is the ratchet against that: it is one
-    number, not a second hand-written list of arms.
+  - **An arm that hands over the wrong module's business.** Scope is "calls
+    into another module", so a call this file has no opinion about still has
+    to satisfy the rule or carry a reason.
+
+**The hole this used to have, because it is the reason for the shape above.**
+Until task 288 the first line of the loop was
+
+    if "target_surface(" not in text and "target.surface" not in text: continue
+
+-- a **whitelist by spelling**. An arm that got the surface any other way was
+not failed by it, it was never read, and the output was identical to the
+output for an arm that passed. It cost exactly what that costs: two arms were
+refactored to take the surface from a one-line helper, both left the check
+without a sound, and the run afterwards looked like a correct reading of a
+tree with three new arms in it.
+
+**`MIN_CARRYING_ARMS` did not catch it and could not.** It is a count, and the
+count went *up* -- 11 to 12 -- because a third arm joined in the same change.
+A ratchet on a total cannot tell "one left and two joined" from "one joined";
+`action-arms-act.py` in this directory learned the same thing and keys its
+list by name for the same reason. The count is still here, and it is still
+worth having, but the reach it was guarding is now guarded by the scope rule
+instead: an arm can only leave this check by no longer calling another module
+at all.
+
+**And the file already said so.** The paragraph by `EXEMPT` has read "Default
+is *must carry*, and the exception is the thing that has to be argued: a
+checker whose default is *out of scope unless listed* says nothing about the
+case nobody thought of" since the first version. That was true of the
+exemption mechanism and false of the scope filter twelve lines further down,
+and nothing compares a file's prose against its own behaviour.
 
 So this gate says "the fact was carried", never "the right fact was carried,
 and used". The second one is answered on the machine, by marking a background
@@ -103,6 +131,59 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 `target_surface(` out of an arm takes that arm out of this
 #                 check with no sign at either end.
 MIN_CARRYING_ARMS = 14
+
+# The notifications that carry no address **today**, by `TAG -> module::fn`.
+#
+# # A bill, not an approval
+#
+# **Nothing on this list is correct.** Each one is a call that tells another
+# module something happened without saying which terminal or which window it
+# happened in, and with two windows open none of them can be read. They are
+# recorded so this gate can be green on a tree that already contains them:
+# **a gate that is red from its first day is a gate people learn to scroll
+# past, and the line they learn to scroll past is where the next real one
+# dies.**
+#
+# **Keyed by name, never by count.** `action-arms-act.py` in this directory
+# has the same rule and says why: a count would let somebody fix one, add a
+# new addressless call, and stay at the same number -- the total agrees while
+# the membership changed. That is the same shape as using a position for an
+# identity, which this port has already paid for once.
+#
+# **Removing a name is required, not optional.** When one is fixed the gate
+# goes red for the opposite reason; see the loop at the end of `analyse`.
+#
+# # Where each of these came from
+#
+# All eight appeared the moment the scope filter came out, which is the whole
+# argument for taking it out: every one of them had been in the tree, unread
+# by this gate, since the arm was written.
+#
+#   `palette::request_toggle` -- one palette window for the process, posted to
+#       `HWND_PALETTE`; which frame it opens over is decided elsewhere. With
+#       two windows it can open over the one that did not ask.
+#   `search::on_end`, `search::on_count` -- **the sharpest of the eight,
+#       because the same feature already knows better.** `search::on_start` in
+#       the arm above takes `target_surface(&target)`, with a comment saying
+#       that without it "the host knows a search is open and not whose". End
+#       and the two counts do not carry it, so a count can land on a search
+#       belonging to another surface.
+#   `keyseq::on_key_sequence`, `keyseq::on_key_table` -- one pending-key
+#       indicator for the process, same shape as the palette.
+#   `prompt::request_float` -- floating is a property of a *window*, and the
+#       arm has `origin` in its hand when it calls this.
+#   `reopen::redo_last` -- its twin `reopen::reopen_last(frame)` takes the
+#       window. One pair, two answers; at most one of them is right.
+OWED_ADDRESSLESS = {
+    "ACTION_TOGGLE_COMMAND_PALETTE -> palette::request_toggle",
+    "ACTION_END_SEARCH -> search::on_end",
+    "ACTION_SEARCH_TOTAL -> search::on_count",
+    "ACTION_SEARCH_SELECTED -> search::on_count",
+    "ACTION_KEY_SEQUENCE -> keyseq::on_key_sequence",
+    "ACTION_KEY_TABLE -> keyseq::on_key_table",
+    "ACTION_FLOAT_WINDOW -> prompt::request_float",
+    "ACTION_REDO -> reopen::redo_last",
+}
 
 # The call is deliberately identity-free, with the reason written next to it.
 # **Default is "must carry"**, and the exception is the thing that has to be
@@ -240,8 +321,17 @@ def arms_of(body: str):
     return [(tag, n, "\n".join(ls)) for tag, n, ls in arms]
 
 
-def analyse(main_src: str, modules: dict[str, str]):
-    """(problems, arms_seen, carrying_arms, exemptions)."""
+def analyse(main_src: str, modules: dict[str, str], reconcile_bill: bool = False):
+    """(problems, arms_seen, carrying_arms, exemptions).
+
+    `reconcile_bill` turns on the "a name on the bill that is no longer owed
+    is itself a failure" half. **Off for the canaries and on for the real
+    tree**, because the bill names arms in `main.rs` and a fixture that
+    contains none of them would report all eight as paid off -- which would
+    make every self-test fail for a reason that has nothing to do with what it
+    is testing. That is not hypothetical: it is what happened the first time
+    this was wired up, and the message it produced named the wrong canary.
+    """
     m = re.search(r'extern\s+"C"\s+fn\s+cb_action', main_src)
     if not m:
         # **Not a pass.** A rename or a reformat that this parser cannot follow
@@ -255,12 +345,28 @@ def analyse(main_src: str, modules: dict[str, str]):
 
     known = set(modules)
     problems, carrying, exemptions = [], 0, []
+    owed_seen: set[str] = set()
     for tag, _, text in arms:
-        if "target_surface(" not in text and "target.surface" not in text:
-            continue
+        # **Every arm that notifies another module is in scope.** There used to
+        # be a filter here -- `if "target_surface(" not in text: continue` --
+        # and it is the reason this gate exists in the shape it now has. See
+        # the module note; the short version is that an arm which resolved the
+        # surface through a helper was not *failed* by that line, it was never
+        # read, and nothing at either end said so.
+        # **Calls are found in the blanked copy, arguments and reasons read
+        # from the real one.** `strip_text` preserves length and offsets
+        # character for character, so the two line up.
+        #
+        # ⚠️ This is not tidiness. Without it a *comment* that names a call --
+        # `// ... it reads `winid::all()` itself` -- is parsed as a call, and
+        # the exemption written above the real call gets attributed to the
+        # imaginary one. That happened while task 288 was being written, in a
+        # comment added by the same change, and the gate reported an exemption
+        # for a function the arm never calls.
+        blanked = strip_text(text)
         calls = [
             (c.group(1), c.group(2), split_args(text[c.end() :]), c.start())
-            for c in re.finditer(r"\b(?:crate::)?(\w+)::(\w+)\s*\(", text)
+            for c in re.finditer(r"\b(?:crate::)?(\w+)::(\w+)\s*\(", blanked)
             if c.group(1) in known
         ]
         if not calls:
@@ -287,11 +393,20 @@ def analyse(main_src: str, modules: dict[str, str]):
             idx = [i for i, p in enumerate(params) if carries_identity(p)[1]]
             any_id = [i for i, p in enumerate(params) if carries_identity(p)[0]]
             if not any_id:
+                # **The wording no longer claims the arm resolved a
+                # surface**, because under the rule above most of these have
+                # not: the finding is that the notification has no address at
+                # all, which is true whether or not this particular arm went
+                # and looked one up.
+                key = f"{tag} -> {mod}::{fn}"
+                if key in OWED_ADDRESSLESS:
+                    owed_seen.add(key)
+                    continue
                 problems.append(
-                    f"{tag} resolves the target's surface and then calls "
-                    f"{mod}::{fn}({', '.join(params) or ''}), which has nowhere to "
-                    f"put it. The arm knows which terminal; the notification does "
-                    f"not. Add the surface, or write "
+                    f"{tag} notifies {mod}::{fn}({', '.join(params) or ''}), which "
+                    f"has nowhere to put a terminal or a window. With two windows "
+                    f"open, nothing in that call says which one it is about. Pass "
+                    f"the surface or the frame, or write "
                     f"`// carries no terminal: <reason>` above the call."
                 )
                 continue
@@ -306,6 +421,17 @@ def analyse(main_src: str, modules: dict[str, str]):
                     )
         if counted:
             carrying += 1
+
+    # **A name on the bill that is no longer owed fails too.** Same reason
+    # `action-arms-act.py` gives for its own list: a list that only ever
+    # shrinks keeps a slot open for whatever takes that name next, and a slot
+    # that outlives its reason is an exemption nobody granted.
+    for key in sorted(set(OWED_ADDRESSLESS) - owed_seen) if reconcile_bill else []:
+        problems.append(
+            f"{key} is on the addressless bill and no longer needs to be -- "
+            f"either it now carries an address, or the arm or call is gone. "
+            f"Delete the line from OWED_ADDRESSLESS."
+        )
     return (problems, len(arms), carrying, exemptions)
 
 
@@ -340,6 +466,25 @@ CANARY_MAIN_EXEMPT = CANARY_MAIN_BAD.replace(
 )
 CANARY_MAIN_NO_SURFACE = CANARY_MAIN_BAD.replace(
     "let found = target_surface(&target).is_some_and(|s| tabs::mark(s));", ""
+)
+# **The arm that started task 288.** It has the surface and hands it over, but
+# it never writes `target_surface(` -- a helper does that. Under the filter
+# this gate used to open with, this arm was not read at all, and the output
+# was indistinguishable from the output for an arm that passed.
+CANARY_MAIN_HELPER = CANARY_MAIN_BAD.replace(
+    "let found = target_surface(&target).is_some_and(|s| tabs::mark(s));",
+    "let surface = surface_key(&target);",
+).replace("ctxmenu::on_mark(role, shielded)", "ctxmenu::on_mark(surface, role, shielded)")
+# The same helper-shaped arm, but dropping the fact on the floor. This is the
+# original defect wearing the clothes that used to make it invisible.
+CANARY_MAIN_HELPER_BAD = CANARY_MAIN_BAD.replace(
+    "let found = target_surface(&target).is_some_and(|s| tabs::mark(s));",
+    "let surface = surface_key(&target);",
+)
+CANARY_MAIN_NO_SURFACE_EXEMPT = CANARY_MAIN_NO_SURFACE.replace(
+    "            ctxmenu::on_mark(role, shielded);",
+    "            // carries no terminal: it is one overlay for the process\n"
+    "            ctxmenu::on_mark(role, shielded);",
 )
 # `tabs::mark` is in the canary because a real arm calls into the state module
 # as well as the notification, and both go through the same rule. It takes the
@@ -415,11 +560,47 @@ def self_test() -> None:
     if probs(CANARY_MAIN_EXEMPT, CANARY_MODS_BAD):
         print("FAIL: `// carries no terminal:` did not exempt the call.")
         sys.exit(2)
-    # An arm with nothing to carry is out of scope -- and *that* is the hole
-    # `MIN_CARRYING_ARMS` exists for, so it is asserted here rather than left
-    # as an assumption.
-    if probs(CANARY_MAIN_NO_SURFACE, CANARY_MODS_BAD):
-        print("FAIL: an arm that resolves no surface was reported.")
+    # ⚠️ **These four replaced an assertion that pinned the opposite rule**, and
+    # the polarity is spelled out at each one because a reversed reading of a
+    # green/red table is not visible in the table. What used to be here was
+    #
+    #     if probs(CANARY_MAIN_NO_SURFACE, CANARY_MODS_BAD): FAIL
+    #
+    # -- "an arm that resolves no surface must NOT be reported", which is the
+    # whitelist default task 288 removed.
+    #
+    # (1) An arm that notifies without an address IS reported, whether or not
+    #     it went and looked a surface up. This is the new rule, stated as the
+    #     assertion that would fail if the filter came back.
+    if not probs(CANARY_MAIN_NO_SURFACE, CANARY_MODS_BAD):
+        print("FAIL: an arm that notifies a module with nowhere to put a terminal "
+              "was not reported. If the scope filter came back, this is where.")
+        sys.exit(2)
+    # (2) ...and a written reason still excuses it. Without this the new
+    #     default would have no way out and the gate would be red forever,
+    #     which is the failure mode the bill exists to avoid.
+    if probs(CANARY_MAIN_NO_SURFACE_EXEMPT, CANARY_MODS_BAD):
+        print("FAIL: `// carries no terminal:` did not excuse an arm that has no "
+              "surface to give.")
+        sys.exit(2)
+    # (3) An arm that resolves the surface through a helper and passes it is
+    #     read and accepted. **This is the case the old filter could not see
+    #     at all**, and seeing it is the whole of task 288.
+    if probs(CANARY_MAIN_HELPER, CANARY_MODS_OK):
+        print("FAIL: an arm that gets the surface from a helper and passes it on "
+              "was reported.")
+        sys.exit(2)
+    if analyse(CANARY_MAIN_HELPER, CANARY_MODS_OK)[2] != 1:
+        print("FAIL: an arm that gets the surface from a helper was not counted as "
+              "carrying one. That is the exact reading that went 11 -> 12 instead "
+              "of 11 -> 14 and looked correct.")
+        sys.exit(2)
+    # (4) ...and the same shape with the fact dropped IS reported. Without
+    #     this one, (3) alone could be satisfied by a checker that reads
+    #     nothing at all.
+    if not probs(CANARY_MAIN_HELPER_BAD, CANARY_MODS_BAD):
+        print("FAIL: an arm that gets the surface from a helper and then notifies "
+              "without it was not reported.")
         sys.exit(2)
     if analyse(CANARY_MAIN_NO_SURFACE, CANARY_MODS_BAD)[2] != 0:
         print("FAIL: an arm that resolves no surface was counted as carrying one.")
@@ -442,11 +623,19 @@ def main() -> int:
         if os.path.exists(path):
             mods[name] = open(path, encoding="utf-8").read()
 
-    problems, arms, carrying, exemptions = analyse(main_src, mods)
-    print(f"scanned {arms} arms of `cb_action` against {len(mods)} modules: "
-          f"{carrying} resolve the target's surface and notify another module")
+    problems, arms, carrying, exemptions = analyse(main_src, mods, reconcile_bill=True)
+    print(f"scanned {arms} arms of `cb_action` against {len(mods)} modules "
+          f"-- every arm that notifies one, not only those naming "
+          f"`target_surface(`: {carrying} carry a surface into the notification")
     for e in exemptions:
         print(f"  exempt: {e}")
+    # **Printed, not merely tolerated.** A bill nobody sees is an exemption
+    # nobody granted, and the whole argument for keeping these out of the
+    # failure list is that they stay visible instead.
+    print(f"  {len(OWED_ADDRESSLESS)} call(s) still carry no address at all, "
+          f"listed by name in OWED_ADDRESSLESS:")
+    for key in sorted(OWED_ADDRESSLESS):
+        print(f"    owed: {key}")
     print("  it cannot see: a wrong surface, a surface taken and ignored, or a "
           "log line tagged with the window in front instead of the surface's.")
 
