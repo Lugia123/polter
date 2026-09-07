@@ -23,7 +23,7 @@ never write: a synced folder, an external disk, a NAS. See
 docs/poltergeist/boundary.md section 1.
 
 **Why a day and not a group.** The core's record is `<group>/<date>.jsonl`,
-which is the shape for "what did that Kairos job say". This one is the other
+which is the shape for "what did that job say". This one is the other
 cut: everything that happened on one evening, in the order it happened, in one
 file you can `tail -f`. A second copy of the first shape at a second path would
 add nothing, and that objection is on the record (docs/poltergeist/gaps.md).

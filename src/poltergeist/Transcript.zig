@@ -546,7 +546,7 @@ test "a line lands in the terminal's own directory for the day" {
     defer alloc.free(dir);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    var t = try Transcript.open(alloc, io, dir, 0x7f3a, "kairos");
+    var t = try Transcript.open(alloc, io, dir, 0x7f3a, "demo");
     defer t.deinit(null);
 
     const at: i64 = 1_724_800_000_000;
@@ -567,9 +567,9 @@ test "a line lands in the terminal's own directory for the day" {
 test "a terminal is one directory, named for the id first and the title after" {
     const alloc = testing.allocator;
 
-    const named = try nameOf(alloc, 0x7f3a, "kairos");
+    const named = try nameOf(alloc, 0x7f3a, "demo");
     defer alloc.free(named);
-    try testing.expectEqualStrings("0000000000007f3a-kairos", named);
+    try testing.expectEqualStrings("0000000000007f3a-demo", named);
 
     // A terminal with nothing in its tab still gets a directory, because
     // the id is the part that identifies it.
@@ -578,7 +578,7 @@ test "a terminal is one directory, named for the id first and the title after" {
     try testing.expectEqualStrings("0000000000007f3a", bare);
 
     // Two terminals never share one, whatever their tabs say.
-    const other = try nameOf(alloc, 0x7f3b, "kairos");
+    const other = try nameOf(alloc, 0x7f3b, "demo");
     defer alloc.free(other);
     try testing.expect(!std.mem.eql(u8, named, other));
 }
@@ -1037,8 +1037,8 @@ test "the readable half of the name is taken once and then left alone" {
     try testing.expectEqualStrings("0000000000007f3a", t.name);
 
     // The shell sets one a moment later, before anything is written.
-    t.rename("kairos");
-    try testing.expectEqualStrings("0000000000007f3a-kairos", t.name);
+    t.rename("demo");
+    try testing.expectEqualStrings("0000000000007f3a-demo", t.name);
 
     const at: i64 = 1_724_800_000_000;
     t.line(at, "hello");
@@ -1046,7 +1046,7 @@ test "the readable half of the name is taken once and then left alone" {
     // And every retitle after that is ignored: a directory that moved
     // would leave the night's work in two places with nothing joining them.
     t.rename("~/some/other/dir");
-    try testing.expectEqualStrings("0000000000007f3a-kairos", t.name);
+    try testing.expectEqualStrings("0000000000007f3a-demo", t.name);
 
     const got = try readDay(alloc, io, &t, at);
     defer alloc.free(got);

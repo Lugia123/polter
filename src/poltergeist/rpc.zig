@@ -8380,13 +8380,13 @@ test "a supervisor can put itself back into a group it cannot otherwise speak in
     defer b.deinit();
 
     try authorize(&b, term(boss), .{ .group_add = .{
-        .group = "kairos",
+        .group = "demo",
         .id = boss,
         .history = .all,
     } });
 
     // Leaving is the same shape and the same argument.
-    try authorize(&b, term(boss), .{ .group_remove = .{ .group = "kairos", .id = boss } });
+    try authorize(&b, term(boss), .{ .group_remove = .{ .group = "demo", .id = boss } });
 
     // A supervisor doing a piece of the work itself is ordinary, and the
     // panel is what is supposed to record that.

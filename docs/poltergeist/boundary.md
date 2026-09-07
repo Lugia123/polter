@@ -243,7 +243,7 @@ Resident 线程失败  →  Resident.tell  →  App.submitPoltergeistAlert
 
 ### 只装不删，等于没有同步
 
-供给曾经只往 `~/.claude/skills/` 里装，从不拿走。后果在真机上被抓到：工作模式功能
+注册插件曾经只往 `~/.claude/skills/` 里装，从不拿走。后果在真机上被抓到：工作模式功能
 删除时，三份 `mode-*` skill 跟着从 `src/poltergeist/skills/` 删了（见
 [README.md](README.md) 的 P6），却仍然躺在装过它们的每一台机器上，仍然参与
 Claude Code 的匹配，仍然指挥 agent 去调一个**已经不存在的工具**。没有任何东西会

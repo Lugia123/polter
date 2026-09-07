@@ -61,9 +61,9 @@ Polter 是终端：每一个字节都从它手里过。它是这台机器上唯�
 ```
 ~/.local/state/polter/
   chat/
-    kairos-15r/2026-08-28.jsonl        群聊
+    demo-15r/2026-08-28.jsonl          群聊
   terminals/
-    0000000000007f3a-kairos/           一个终端一个目录
+    0000000000007f3a-demo/             一个终端一个目录
       2026-08-28.jsonl
 ```
 

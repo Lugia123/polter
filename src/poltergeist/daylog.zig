@@ -82,7 +82,7 @@ pub fn openAppend(io: std.Io, path: []const u8) !std.Io.File {
 // promise made nowhere here -- it would only ever be true of the last 16MB.
 //
 // Why group and day, rather than size. A group is the unit a person already
-// thinks in ("that Kairos business last night"), and a day is the only
+// thinks in ("that business last night"), and a day is the only
 // boundary that is naturally bounded -- a group can live for months, a day
 // cannot. The boundaries size-based rotation produces mean nothing to
 // anybody: no one has ever wanted to read the second generation.
@@ -485,7 +485,7 @@ pub const Tree = struct {
 /// with `_` would be shorter and would put `a/b` and `a_b` in the same
 /// directory, silently interleaving two groups' records. Percent-encoding
 /// keeps every distinct name distinct while leaving the ordinary ones
-/// exactly as they were: `kairos-15r` stays `kairos-15r`.
+/// exactly as they were: `demo-15r` stays `demo-15r`.
 ///
 /// `Chat.isValidName` already holds group names to 48 bytes of
 /// `[a-z0-9-]`, so nothing arriving through the model needs any of this.
@@ -876,9 +876,9 @@ test "a stamp is a fixed nineteen characters, whatever the moment" {
 test "an ordinary name comes through a directory name unchanged" {
     const alloc = testing.allocator;
 
-    const plain = try encodeSegment(alloc, "kairos-15r");
+    const plain = try encodeSegment(alloc, "demo-15r");
     defer alloc.free(plain);
-    try testing.expectEqualStrings("kairos-15r", plain);
+    try testing.expectEqualStrings("demo-15r", plain);
 }
 
 test "the bytes Windows would eat are spotted, on whatever platform runs this" {
@@ -907,7 +907,7 @@ test "the bytes Windows would eat are spotted, on whatever platform runs this" {
     // and a longer word that merely starts with one is a plain name.
     for ([_][]const u8{
         "COM0",    "LPT0",  "CONS",  "CONSOLE",
-        "NULL",    "AUXIN", "COM10", "kairos-15r",
+        "NULL",    "AUXIN", "COM10", "demo-15r",
         "report",  "a",     "",      "%2E%2E",
         "CON%2Ex",
     }) |name| {
@@ -1037,7 +1037,7 @@ test "a directory name goes back to the group name it was made from" {
     // encoder is there for. Round-tripping is the property the group list
     // depends on: it is read back off the directories themselves.
     for ([_][]const u8{
-        "kairos-15r",
+        "demo-15r",
         "build",
         "a-b-c-9",
         "a/b",

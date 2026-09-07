@@ -1383,9 +1383,9 @@ zig build test -Demit-xcframework=false --summary all > full.log 2>&1; echo "EXI
 
 #### 坑一：`type_text` 这类工具绕过输入法
 
-远程控制工具（argus 的 `type_text`、以及大多数 `SendKeys` 类封装）**打出来的字
-不经过输入法**。它们用 `SendInput` + `KEYEVENTF_UNICODE` 合成 `VK_PACKET`，
-**直接产生 `WM_CHAR`**——这条路径**在设计上就跳过 IME**。
+远程控制工具（`type_text` 一类的「输入文本」接口、以及大多数 `SendKeys` 类封装）
+**打出来的字不经过输入法**。它们用 `SendInput` + `KEYEVENTF_UNICODE` 合成
+`VK_PACKET`，**直接产生 `WM_CHAR`**——这条路径**在设计上就跳过 IME**。
 
 步3 实测：托盘明明显示「中」，`type_text "nihao"` 的结果是
 `WM_CHAR U+006E/0069/0068/0061/006F` 五个字母直落缓冲，
@@ -1393,7 +1393,8 @@ zig build test -Demit-xcframework=false --summary all > full.log 2>&1; echo "EXI
 
 **如果只用这类工具测，你会得出「TSF 没接通」的错误结论。**
 
-正确做法：用**发真实虚拟键/扫描码**的接口（argus 的 `key`），**逐个字母**敲。
+正确做法：用**发真实虚拟键/扫描码**的接口（远程注入工具里的「按键」接口，
+不是「输入文本」那个），**逐个字母**敲。
 换成 `key n` 之后，`OnStartComposition` / `SetText` / 候选窗立刻全都出来了。
 
 #### 坑二：`println!` 重定向到文件是块缓冲，不是行缓冲

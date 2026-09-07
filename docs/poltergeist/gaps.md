@@ -103,7 +103,7 @@ R1，反而让 R1 更成立：总管拿到的是事实，判断仍归它。
 字段: at_ms / group / from / author / text
 ```
 
-七个群（`alpha`、`kairos-15r`、`argus-trial-deploy`……）靠一个 `group` 字段区分。
+七个群（`alpha`、`demo-15r`、`build-2-deploy`……）靠一个 `group` 字段区分。
 要看某一个群昨晚说了什么，得自己 `jq select`。
 
 **而 `chat-archive` 插件的 `file` 后端当时写的是同样形状的另一个平文件**
@@ -130,14 +130,14 @@ R1，反而让 R1 更成立：总管拿到的是事实，判断仍归它。
 
    ```
    ~/.local/state/polter/chat/
-     kairos-15r/           一个群一个目录
+     demo-15r/             一个群一个目录
        2026-08-27.jsonl    一天一个文件
        2026-08-28.jsonl
-     argus-trial-deploy/
+     build-2-deploy/
        2026-08-26.jsonl
    ```
 
-   为什么是「群 + 日期」两层：群是**人脑子里的单位**（「昨晚那摊 Kairos 的活」），
+   为什么是「群 + 日期」两层：群是**人脑子里的单位**（「昨晚那摊活」），
    日期是**唯一天然有界的东西**（一个群可以活几个月，一天不会）。按大小轮转
    （现在的做法）产生的边界对人毫无意义——没人会说「我要看第二代日志」。
 
@@ -292,9 +292,9 @@ screen 的）几乎不往 scrollback 写东西**，所以它们在转录里近�
 ```
 ~/.local/state/polter/
   chat/
-    kairos-15r/2026-08-28.jsonl
+    demo-15r/2026-08-28.jsonl
   terminals/
-    0x7f3a…-kairos/            一个终端一个目录，带上它的名字
+    0x7f3a…-demo/              一个终端一个目录，带上它的名字
       2026-08-28.jsonl
 ```
 

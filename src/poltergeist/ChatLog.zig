@@ -2491,8 +2491,8 @@ test "a group name is one path segment and cannot be anything else" {
 
     // An ordinary name comes through untouched, which is the other half of
     // the requirement: the record is meant to be read by a person.
-    const plain = try encodeGroup(alloc, "kairos-15r");
-    try testing.expectEqualStrings("kairos-15r", plain);
+    const plain = try encodeGroup(alloc, "demo-15r");
+    try testing.expectEqualStrings("demo-15r", plain);
 }
 
 test "two group names that differ end up in two directories" {

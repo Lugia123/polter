@@ -1384,7 +1384,8 @@ mod control_tests {
 
     /// **A closed set beats the declared type.** A `string` with an `enum` is
     /// a dropdown; if this ever flipped, the page would offer a text box for
-    /// a field that takes three values -- the defect the docs cite Tinia for.
+    /// a field that takes three values -- the defect the docs cite the other
+    /// system we built for.
     #[test]
     fn an_enum_wins_over_the_type() {
         let spec: serde_json::Value =

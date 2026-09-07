@@ -79,9 +79,9 @@ struct PluginPage: NSViewRepresentable {
 /// somebody else's code inside this page, and the framework decides what
 /// runs here far more than the author does. The plugin process having every
 /// capability is one thing; the same set sitting inside a dependency tree is
-/// another. Tinia holds this line with an import allowlist -- no axios, no
-/// lodash, no component library -- because its plugins share a runtime with
-/// the host. Polter's pages do not share a runtime, so there is no allowlist
+/// another. Another plugin system we built holds this line with an import
+/// allowlist -- no axios, no lodash, no component library -- because its
+/// plugins share a runtime with the host. Polter's pages do not share a runtime, so there is no allowlist
 /// and a page may bring whatever it likes; the line has to be held here
 /// instead, at what the page can reach.
 ///

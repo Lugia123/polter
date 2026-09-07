@@ -1,4 +1,4 @@
-# 供给插件（七个，一份实现）
+# 注册插件（七个，一份实现）
 
 `claude-code` `codex` `gemini` `qwen-code` `kimi` `opencode` `deepseek`
 
