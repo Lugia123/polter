@@ -99,6 +99,19 @@ not the same thing, and everything below depends on that:
   question Polter answers — the answer is in what the screen says, and reading
   that is the supervisor's job.
 
+
+<p align="center">
+  <img src="images/screenshots/group-chat.png" alt="A group chat with several worker terminals, showing a supervisor handing out numbered tasks" width="49%">
+  <img src="images/screenshots/group-total.png" alt="The statistics view: which tasks are waiting, how long each terminal has been still, who has been talking and who has been working" width="49%">
+</p>
+
+<p align="center">
+  <sub>Left: the group chat, where the supervisor writes the plan and the
+  workers report back. Right: the statistics view — what is waiting on you,
+  how long each terminal has been still, and where the night actually
+  went.</sub>
+</p>
+
 ## Before you decide
 
 Three things worth knowing before you spend ten minutes on this:
