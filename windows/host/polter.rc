@@ -3,3 +3,80 @@
    see polter.manifest for what that looked like. */
 #include <windows.h>
 1 RT_MANIFEST "polter.manifest"
+
+/* The application's own name, and it was missing entirely.
+
+   **Measured, not inferred**: the shipped `polter-host.exe` contained no
+   `VS_VERSION_INFO` resource at all -- searching the binary for that
+   signature, for `FileDescription` and for `ProductName` as UTF-16 gave zero
+   hits each, while `Polter` (the window class names and friends) gave thirty.
+
+   **So this exe had no friendly name to give, and every place Windows asks
+   for one fell back to the file name.** That is one gap with several exits:
+   the notification's attribution line (which is where somebody noticed it,
+   task 294), Task Manager's "Name" column, the taskbar's hover tooltip, the
+   file properties dialog, and the UAC prompt. Fixing it in the notification
+   code would have fixed one exit out of five, and `windows/AGENTS.md`'s
+   "Names" section already says which way this must go: **user-visible strings
+   are Polter; internal artefacts keep their own names.**
+
+   ⚠️ **The mechanism is reasoned, not measured, and the difference matters
+   for whoever checks this.** The claim is that Windows takes the friendly
+   application name from `FileDescription`. It cannot be established from the
+   machine this was written on. If the notification still says
+   `polter-host.exe` after this, look at Task Manager and the file properties
+   before concluding this change was wrong: those two changing while the
+   notification does not means the attribution line goes through the
+   AppUserModelID instead, which is a different piece of work and deliberately
+   not attempted here -- an AUMID that no shortcut or registry entry resolves
+   fails by doing nothing, which is the outcome `notify.rs`'s header already
+   names as the worst of the three.
+
+   **`FILEVERSION` is 0,0,0,0 on purpose, and that is the whole reason it is
+   written out rather than omitted.** Omitting it produces the same zeros --
+   the field defaults -- but as an accident, and the file properties dialog
+   then shows a number nobody decided on. There is no trustworthy build-time
+   version to put here: `Cargo.toml` says 0.1.0 while the product is v0.6 and
+   nothing keeps those two in step, and the version that is *real* is the
+   core's (`main.rs`'s `core_commit` parses `1.3.2-dev+<commit>` out of
+   libghostty at run time), which a static resource cannot hold. Inventing a
+   third number would be a third reader of a fact that already has two
+   disagreeing ones.
+
+   **`CompanyName` and `LegalCopyright` are absent for the same reason.** An
+   empty field shows nothing; a made-up one is exactly the defect this file is
+   fixing, one line further down the same dialog.
+
+   **One `.rc` serves two binaries** -- `polter-host.exe` (GUI) and
+   `polter-cli.exe` (console), one crate, see `Cargo.toml`. `FileDescription`
+   is true of both. `OriginalFilename` can only name one, and it names the GUI
+   binary because that is the one a person sees in Task Manager; on
+   `polter-cli.exe` that field is therefore wrong, which is why it is said here
+   rather than left for somebody to find. */
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,0,0,0
+PRODUCTVERSION 0,0,0,0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        /* 0409 = en-US, 04B0 = Unicode. The pair is repeated in the
+           `Translation` value below; the two must agree or the shell reads
+           the block for a language the file does not claim. */
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "Polter"
+            VALUE "ProductName",     "Polter"
+            VALUE "InternalName",    "polter-host"
+            VALUE "OriginalFilename","polter-host.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END
