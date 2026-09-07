@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-08 06:05+0800\n"
+"POT-Creation-Date: 2026-09-08 06:53+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -74,6 +74,7 @@ msgstr ""
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:439 src/apprt/gtk/ui/1.5/window.blp:318
+#: windows/host/src/menu.rs:402
 msgid "Reload Configuration"
 msgstr ""
 
@@ -87,7 +88,7 @@ msgstr ""
 msgid "Ghostty: Terminal Inspector"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:29
+#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/menu.rs:231
 msgid "Find…"
 msgstr ""
 
@@ -114,15 +115,17 @@ msgid ""
 "application."
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:112
+#: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/menu.rs:271
 msgid "Read-only"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:203
+#: windows/host/src/menu.rs:241
 msgid "Copy"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:321 src/apprt/gtk/ui/1.5/window.blp:208
+#: windows/host/src/menu.rs:242
 msgid "Paste"
 msgstr ""
 
@@ -147,26 +150,30 @@ msgid "Change Title…"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:353 src/apprt/gtk/ui/1.5/window.blp:180
-#: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
+#: src/apprt/gtk/ui/1.5/window.blp:258 windows/host/src/menu.rs:223
+#: src/input/command.zig:487
 msgid "Split Up"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:359 src/apprt/gtk/ui/1.5/window.blp:185
-#: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
+#: src/apprt/gtk/ui/1.5/window.blp:263 windows/host/src/menu.rs:222
+#: src/input/command.zig:492
 msgid "Split Down"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:365 src/apprt/gtk/ui/1.5/window.blp:190
-#: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
+#: src/apprt/gtk/ui/1.5/window.blp:268 windows/host/src/menu.rs:221
+#: src/input/command.zig:477
 msgid "Split Left"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:371 src/apprt/gtk/ui/1.5/window.blp:195
-#: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
+#: src/apprt/gtk/ui/1.5/window.blp:273 windows/host/src/menu.rs:220
+#: src/input/command.zig:482
 msgid "Split Right"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:377
+#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:225
 msgid "Close Split"
 msgstr ""
 
@@ -181,16 +188,16 @@ msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
-#: src/input/command.zig:427
+#: windows/host/src/menu.rs:201 src/input/command.zig:427
 msgid "New Tab"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:396 src/apprt/gtk/ui/1.5/window.blp:242
-#: src/input/command.zig:668
+#: windows/host/src/menu.rs:226 src/input/command.zig:668
 msgid "Close Tab"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:403
+#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:411
 msgid "Window"
 msgstr ""
 
@@ -199,12 +206,12 @@ msgid "Change Window Title…"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421
+#: windows/host/src/menu.rs:200 src/input/command.zig:421
 msgid "New Window"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:416 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:685
+#: windows/host/src/menu.rs:227 src/input/command.zig:685
 msgid "Close Window"
 msgstr ""
 
@@ -240,11 +247,11 @@ msgstr ""
 msgid "Main Menu"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.5/window.blp:293
+#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/menu.rs:260
 msgid "Command Palette"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.5/window.blp:298
+#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/menu.rs:281
 msgid "Terminal Inspector"
 msgstr ""
 
@@ -380,6 +387,190 @@ msgstr ""
 msgid "Ghostty Developers"
 msgstr ""
 
+#: windows/host/src/menu.rs:212
+msgid "Reopen Closed Tab"
+msgstr ""
+
+#: windows/host/src/menu.rs:234
+msgid "Next"
+msgstr ""
+
+#: windows/host/src/menu.rs:235
+msgid "Previous"
+msgstr ""
+
+#: windows/host/src/menu.rs:237
+msgid "Hide the Find Bar"
+msgstr ""
+
+#: windows/host/src/menu.rs:250 src/input/command.zig:249
+msgid "Select All"
+msgstr ""
+
+#: windows/host/src/menu.rs:252
+msgid "Find"
+msgstr ""
+
+#: windows/host/src/menu.rs:256 src/input/command.zig:237
+msgid "Reset Font Size"
+msgstr ""
+
+#: windows/host/src/menu.rs:257
+msgid "Zoom In"
+msgstr ""
+
+#: windows/host/src/menu.rs:258
+msgid "Zoom Out"
+msgstr ""
+
+#: windows/host/src/menu.rs:268
+msgid "Rename Tab…"
+msgstr ""
+
+#: windows/host/src/menu.rs:269
+msgid "Rename Terminal…"
+msgstr ""
+
+#: windows/host/src/menu.rs:273
+msgid "Quick Terminal"
+msgstr ""
+
+#: windows/host/src/menu.rs:294 src/input/command.zig:606
+msgid "Terminal Conversations"
+msgstr ""
+
+#: windows/host/src/menu.rs:296 src/input/command.zig:557
+msgid "Make This Terminal a Supervisor"
+msgstr ""
+
+#: windows/host/src/menu.rs:297 src/input/command.zig:563
+msgid "Toggle Supervision of This Terminal"
+msgstr ""
+
+#: windows/host/src/menu.rs:298 src/input/command.zig:600
+msgid "Keep Agents Out of This Terminal"
+msgstr ""
+
+#: windows/host/src/menu.rs:322 src/input/command.zig:594
+msgid "Hold This Terminal to Its Work"
+msgstr ""
+
+#: windows/host/src/menu.rs:325
+msgid "Plugins…"
+msgstr ""
+
+#: windows/host/src/menu.rs:332
+msgid "Language…"
+msgstr ""
+
+#: windows/host/src/menu.rs:342
+msgid "Up"
+msgstr ""
+
+#: windows/host/src/menu.rs:343
+msgid "Down"
+msgstr ""
+
+#: windows/host/src/menu.rs:344
+msgid "Left"
+msgstr ""
+
+#: windows/host/src/menu.rs:345
+msgid "Right"
+msgstr ""
+
+#: windows/host/src/menu.rs:349 src/input/command.zig:612
+msgid "Equalize Splits"
+msgstr ""
+
+#: windows/host/src/menu.rs:351
+msgid "Grow Up"
+msgstr ""
+
+#: windows/host/src/menu.rs:352
+msgid "Grow Down"
+msgstr ""
+
+#: windows/host/src/menu.rs:353
+msgid "Grow Left"
+msgstr ""
+
+#: windows/host/src/menu.rs:354
+msgid "Grow Right"
+msgstr ""
+
+#: windows/host/src/menu.rs:360
+msgid "Minimize"
+msgstr ""
+
+#: windows/host/src/menu.rs:361
+msgid "Maximize"
+msgstr ""
+
+#: windows/host/src/menu.rs:363
+msgid "Full Screen"
+msgstr ""
+
+#: windows/host/src/menu.rs:365
+msgid "Split Zoom"
+msgstr ""
+
+#: windows/host/src/menu.rs:366
+msgid "Previous Split"
+msgstr ""
+
+#: windows/host/src/menu.rs:367
+msgid "Next Split"
+msgstr ""
+
+#: windows/host/src/menu.rs:368
+msgid "Select Split"
+msgstr ""
+
+#: windows/host/src/menu.rs:369
+msgid "Resize Split"
+msgstr ""
+
+#: windows/host/src/menu.rs:371 src/input/command.zig:618
+msgid "Reset Window Size"
+msgstr ""
+
+#: windows/host/src/menu.rs:373
+msgid "Float on Top"
+msgstr ""
+
+#: windows/host/src/menu.rs:380
+msgid "Polter Help"
+msgstr ""
+
+#: windows/host/src/menu.rs:395
+msgid "Check for Updates…"
+msgstr ""
+
+#: windows/host/src/menu.rs:407
+msgid "File"
+msgstr ""
+
+#: windows/host/src/menu.rs:408
+msgid "Edit"
+msgstr ""
+
+#: windows/host/src/menu.rs:409
+msgid "View"
+msgstr ""
+
+#: windows/host/src/menu.rs:412
+msgid "Help"
+msgstr ""
+
+#: windows/host/src/menu.rs:414
+msgid "Settings…"
+msgstr ""
+
+#: windows/host/src/menu.rs:415 windows/host/src/settings_ui.rs:1028
+msgid "About Polter"
+msgstr ""
+
 #: windows/host/src/settings_ui.rs:163
 msgid "Keeps the conversations"
 msgstr ""
@@ -412,10 +603,6 @@ msgstr ""
 
 #: windows/host/src/settings_ui.rs:1027
 msgid "Open config file…"
-msgstr ""
-
-#: windows/host/src/settings_ui.rs:1028
-msgid "About Polter"
 msgstr ""
 
 #: windows/host/src/settings_ui.rs:1096
@@ -557,10 +744,6 @@ msgstr ""
 msgid "Decrease the font size by 1 point."
 msgstr ""
 
-#: src/input/command.zig:237
-msgid "Reset Font Size"
-msgstr ""
-
 #: src/input/command.zig:238
 msgid "Reset the font size to the default."
 msgstr ""
@@ -571,10 +754,6 @@ msgstr ""
 
 #: src/input/command.zig:244
 msgid "Clear the screen and scrollback."
-msgstr ""
-
-#: src/input/command.zig:249
-msgid "Select All"
 msgstr ""
 
 #: src/input/command.zig:250
@@ -940,26 +1119,14 @@ msgstr ""
 msgid "Toggle read-only mode for the current surface."
 msgstr ""
 
-#: src/input/command.zig:557
-msgid "Make This Terminal a Supervisor"
-msgstr ""
-
 #: src/input/command.zig:558
 msgid ""
 "Let this terminal's agent mind terminals it claims. There may be several "
 "supervisors; each reaches only its own."
 msgstr ""
 
-#: src/input/command.zig:563
-msgid "Toggle Supervision of This Terminal"
-msgstr ""
-
 #: src/input/command.zig:564
 msgid "Report this terminal to the supervisor when its screen goes quiet."
-msgstr ""
-
-#: src/input/command.zig:594
-msgid "Hold This Terminal to Its Work"
 msgstr ""
 
 #: src/input/command.zig:595
@@ -968,34 +1135,18 @@ msgid ""
 "Its tab wears a ring while the hold lasts. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:600
-msgid "Keep Agents Out of This Terminal"
-msgstr ""
-
 #: src/input/command.zig:601
 msgid ""
 "Stop every agent, supervisors included, from reading this terminal or typing "
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:606
-msgid "Terminal Conversations"
-msgstr ""
-
 #: src/input/command.zig:607
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
-#: src/input/command.zig:612
-msgid "Equalize Splits"
-msgstr ""
-
 #: src/input/command.zig:613
 msgid "Equalize the size of all splits."
-msgstr ""
-
-#: src/input/command.zig:618
-msgid "Reset Window Size"
 msgstr ""
 
 #: src/input/command.zig:619

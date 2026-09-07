@@ -60,12 +60,18 @@ full screen = Toggle Fullscreen
 # for a search to find. That is a fact about the core's list, not an
 # exemption written here, and the test computes it rather than being told.
 新建窗口 = New Window
+# Task 310 took the catalogue's wording for four labels, and the right-click
+# menu and the strip menu were synced with it. The word each of them said
+# before stays on the line under it: this file is an index, not a naming, so
+# an old word costs one line and buys everyone who learned it.
+新建标签页 = New Tab
 新建标签 = New Tab
 向右分屏 = Split Right
 向左分屏 = Split Left
 向下分屏 = Split Down
 向上分屏 = Split Up
 关闭分屏 = Close Terminal
+关闭标签页 = Close Tab
 关闭标签 = Close Tab
 关闭窗口 = Close Window
 查找… = Start Search
@@ -84,8 +90,10 @@ full screen = Toggle Fullscreen
 终端检查器 = Toggle Inspector
 终端群聊 = Terminal Conversations
 终端对话 = Terminal Conversations
+将此终端设为总管 = Make This Terminal a Supervisor
 设为总管 = Make This Terminal a Supervisor
 监督此终端 = Toggle Supervision of This Terminal
+不让 agent 碰此终端 = Keep Agents Out of This Terminal
 禁止 agent 进入 = Keep Agents Out of This Terminal
 保持在岗 = Hold This Terminal to Its Work
 保持 = Hold This Terminal to Its Work
@@ -102,6 +110,11 @@ full screen = Toggle Fullscreen
 下一个分屏 = Focus Split: Next
 恢复默认大小 = Reset Window Size
 置顶 = Toggle Float on Top
+# The menu says «重新加载配置» since task 310 -- it took the catalogue's
+# wording, which the palette was already using. «重载配置» is what it said
+# before, and it stays: this file is an index, so an old word costs a line
+# and buys everyone who learned it.
+重新加载配置 = Reload Config
 重载配置 = Reload Config
 设置… = Open Config Using OS editor
 检查更新… = Check for Updates

@@ -1262,14 +1262,14 @@ enum TabCmd {
 impl TabCmd {
     fn label(self) -> &'static str {
         match self {
-            TabCmd::Close => "关闭标签",
+            TabCmd::Close => "关闭标签页",
             TabCmd::CloseOthers => "关闭其他标签",
             TabCmd::CloseRight => "关闭右侧的标签",
             TabCmd::MoveToNewWindow => "移到新窗口",
             TabCmd::Rename => "重命名标签…",
-            TabCmd::Supervisor => "设为总管",
+            TabCmd::Supervisor => "将此终端设为总管",
             TabCmd::Watch => "监督此终端",
-            TabCmd::Shield => "禁止 agent 进入",
+            TabCmd::Shield => "不让 agent 碰此终端",
         }
     }
 
@@ -1595,7 +1595,7 @@ fn report_remaining(frame: HWND, before: &[TabId], what: &str) {
 /// the core knows about; `reopen_closed_tab` is the host's own, so it is
 /// dispatched here rather than handed to `binding`.
 const STRIP_MENU: &[(&str, &str, bool)] = &[
-    ("新建标签", "new_tab", true),
+    ("新建标签页", "new_tab", true),
     // **The host's, not the core's.** There is no `reopen_closed_tab` in
     // `Binding.zig`; macOS's row calls `reopenClosedTab:`, an application
     // selector backed by `ClosedTabs.swift`. The equivalent stack lives in

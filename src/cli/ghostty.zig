@@ -454,3 +454,337 @@ test "parse action plus ignores -e" {
         );
     }
 }
+
+test "the Windows host's mirror of these special cases" {
+    // **The half `windows/tools/one-rule-for-a-cli-action.py` says it cannot
+    // reach.** That gate pins that the host has *one* rule for "does this
+    // command line ask for a CLI action" and uses it in the right places. It
+    // says nothing about whether that one rule is the same rule as this file's
+    // -- and "one rule" and "the right rule" are different properties.
+    //
+    // Until now the second was carried by six tests in `windows/cliargs` that
+    // were **written by hand from this function**. A mirror nobody checks is a
+    // mirror that stops matching silently: add a special case here and
+    // `--newthing` goes back to opening a resident window on Windows, which is
+    // exactly what `--help` did before that crate existed.
+    //
+    // # One side is executed, the other is read, and that asymmetry is the point
+    //
+    // A test that read both sources and compared them would be two pieces of
+    // text agreeing with each other, and text can go stale together. So the
+    // core's answers below are **produced by calling `detectIter`**, not
+    // transcribed: the spellings are enumerated out of `detectSpecialCase`,
+    // each one is run through the real thing twice, and what comes back is
+    // compared against what the Rust table *declares*.
+    //
+    // # What is deliberately not compared, and why not comparing is not enough
+    //
+    // `windows/cliargs`'s header records two divergences from this file, both
+    // decided on purpose:
+    //
+    //   * **`argv[0]`.** This walks it; the host skips it, so that the host can
+    //     never *invent* an action from a directory named `+something`. The
+    //     probes below therefore hand this function the argument tail only --
+    //     the part both sides look at. That is not stepping around the
+    //     divergence, it is confining the comparison to where agreement is
+    //     owed, and this comment is where that limit is written down.
+    //   * **`+a +b` and `+nonsense`.** Here they are a `DetectError`; there
+    //     they are reported as "an action was asked for", so that the failure
+    //     lands as a fatal from `ghostty_init` rather than in the log file the
+    //     GUI instance pinned.
+    //
+    // **The second is asserted to still be true rather than skipped.** A
+    // divergence nobody checks can be "tidied up" by somebody who reads only
+    // one side, and then the log of a GUI instance starts being deleted by a
+    // failing `+nonsense`. Leaving it out of the comparison would let that
+    // happen quietly; asserting it means the tidy-up turns red and points at
+    // the paragraph explaining itself.
+    const testing = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const Kind = enum { action, fallback, abort_if_no_action };
+
+    const H = struct {
+        /// A missing file fails rather than skips, for the reason the Windows
+        /// action-tag floor in `apprt/action.zig` states: a skip lets a floor
+        /// stop existing the first time somebody runs the suite from
+        /// elsewhere, and nothing says so.
+        fn read(i: std.Io, a: Allocator, path: []const u8) ![]const u8 {
+            return std.Io.Dir.cwd().readFileAlloc(i, path, a, .limited(512 * 1024)) catch |err| {
+                std.debug.print(
+                    "cannot read {s} ({t}). Run `zig build test` from the repository root.\n",
+                    .{ path, err },
+                );
+                return error.CliSourceUnreadable;
+            };
+        }
+
+        /// The source with every `//` comment removed.
+        ///
+        /// **Not cosmetic.** Both files talk about these spellings in prose --
+        /// the paragraph above `-e` in `detectSpecialCase` contains `"-e"` in
+        /// quotes -- and a scan that reads comments collects whatever an
+        /// author mentioned. This repository has had that defect three times in
+        /// one round, in three different files, so the probe below plants a
+        /// decoy spelling inside a comment and requires it not to be found.
+        fn uncomment(src: []const u8, a: Allocator) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            var lines = std.mem.splitScalar(u8, src, '\n');
+            while (lines.next()) |line| {
+                const cut = std.mem.indexOf(u8, line, "//") orelse line.len;
+                try out.appendSlice(a, line[0..cut]);
+                try out.append(a, '\n');
+            }
+            return out.toOwnedSlice(a);
+        }
+
+        /// The body of the function whose signature contains `sig`.
+        fn body(src: []const u8, sig: []const u8) ?[]const u8 {
+            const at = std.mem.indexOf(u8, src, sig) orelse return null;
+            const open = std.mem.indexOfScalarPos(u8, src, at, '{') orelse return null;
+            var depth: usize = 0;
+            var k = open;
+            while (k < src.len) : (k += 1) {
+                if (src[k] == '{') depth += 1;
+                if (src[k] == '}') {
+                    depth -= 1;
+                    if (depth == 0) return src[open + 1 .. k];
+                }
+            }
+            return null;
+        }
+
+        /// Every `"..."` in `hay` that follows `needle`.
+        fn quotedAfter(
+            hay: []const u8,
+            needle: []const u8,
+            out: *std.ArrayList([]const u8),
+            a: Allocator,
+        ) !void {
+            var i: usize = 0;
+            while (std.mem.indexOfPos(u8, hay, i, needle)) |p| {
+                const q1 = std.mem.indexOfScalarPos(u8, hay, p + needle.len, '"') orelse return;
+                const q2 = std.mem.indexOfScalarPos(u8, hay, q1 + 1, '"') orelse return;
+                try out.append(a, hay[q1 + 1 .. q2]);
+                i = q2 + 1;
+            }
+        }
+    };
+
+    // ---- the spellings this file itself treats specially -------------------
+    //
+    // Taken from the source rather than written out here: a list in this test
+    // would be a third copy, and the copy that goes stale is always the one
+    // nobody is looking at.
+    const self_src = try H.uncomment(try H.read(io, alloc, "src/cli/ghostty.zig"), alloc);
+    const self_body = H.body(self_src, "pub fn detectSpecialCase") orelse {
+        std.debug.print("`detectSpecialCase` was not found in src/cli/ghostty.zig\n", .{});
+        return error.SpecialCaseGone;
+    };
+    var spellings: std.ArrayList([]const u8) = .empty;
+    try H.quotedAfter(self_body, "std.mem.eql(u8, arg,", &spellings, alloc);
+    if (spellings.items.len < 3) {
+        std.debug.print(
+            "only {d} special spelling(s) read out of `detectSpecialCase`; a scan that has " ++
+                "stopped matching finds none and reads exactly like a file with none.\n",
+            .{spellings.items.len},
+        );
+        return error.SpecialCaseScanFailed;
+    }
+
+    // ---- probes for both scans, on planted text ----------------------------
+    //
+    // ⚠️ **The first version of this probe could not fail.** Its decoy comment
+    // read `Mentioning a "--decoy" in prose`, and neither scan looks for a
+    // quoted word on its own -- they look for a *code pattern* and take the
+    // string after it. So the decoy was never a candidate, with or without the
+    // stripping, and turning the stripping off left this green. **A probe that
+    // passes when the thing it guards is removed is not a probe.** It was
+    // caught by doing exactly that: disabling `uncomment` and expecting red.
+    //
+    // The decoys below therefore carry the **whole pattern** the scan matches,
+    // which is the only shape a comment can be dangerous in.
+    //
+    // The stripping is defensive rather than load-bearing on today's files --
+    // and the one comment in this tree that does carry a scanned pattern is
+    // the one a few lines below, written by this very test. That is the reason
+    // to keep it, not a reason to relax it.
+    {
+        const decoy =
+            \\fn detectSpecialCase(arg: []const u8) void {
+            \\    // like std.mem.eql(u8, arg, "--decoy") but only in prose
+            \\    if (std.mem.eql(u8, arg, "--real")) return;
+            \\}
+        ;
+        const stripped = try H.uncomment(decoy, alloc);
+        const b = H.body(stripped, "fn detectSpecialCase") orelse return error.SpecialCaseGone;
+        var got: std.ArrayList([]const u8) = .empty;
+        try H.quotedAfter(b, "std.mem.eql(u8, arg,", &got, alloc);
+        try testing.expectEqual(@as(usize, 1), got.items.len);
+        try testing.expectEqualStrings("--real", got.items[0]);
+    }
+    {
+        // The Rust side reads whole lines, so its decoy is a whole arm.
+        const decoy =
+            \\fn special_case(arg: &str) -> Option<Special> {
+            \\    match arg {
+            \\        // "--decoy" => Some(Special::Action), was considered
+            \\        "--real" => Some(Special::Fallback),
+            \\        _ => None,
+            \\    }
+            \\}
+        ;
+        const stripped = try H.uncomment(decoy, alloc);
+        var n: usize = 0;
+        var it = std.mem.splitScalar(u8, stripped, '\n');
+        while (it.next()) |line| {
+            if (std.mem.indexOf(u8, line, "Some(Special::") != null) n += 1;
+        }
+        try testing.expectEqual(@as(usize, 1), n);
+    }
+
+    // ---- what the core actually does with each of them ---------------------
+    //
+    // Two runs, because one cannot tell `action` from `fallback`: both answer
+    // "yes, an action" when they are the only argument. With a `+list-fonts`
+    // on the line the three kinds separate --
+    //
+    //   spelling first: action -> its own action; fallback -> list_fonts;
+    //                   abort_if_no_action -> null (nothing pending yet)
+    //   spelling last:  action -> its own action; the other two -> list_fonts
+    //
+    // -- so the kind is *derived from this file's behaviour*, not asserted
+    // from its text.
+    const Probe = struct {
+        fn run(a: Allocator, line: []const u8) !?Action {
+            var iter = try std.process.Args.IteratorGeneral(.{}).init(a, line);
+            defer iter.deinit();
+            return actionpkg.detectIter(Action, &iter);
+        }
+    };
+
+    var kinds: std.StringHashMapUnmanaged(Kind) = .empty;
+    for (spellings.items) |s| {
+        const first = try std.fmt.allocPrint(alloc, "{s} +list-fonts", .{s});
+        const last = try std.fmt.allocPrint(alloc, "+list-fonts {s}", .{s});
+        const p1 = try Probe.run(alloc, first);
+        const p2 = try Probe.run(alloc, last);
+        const kind: Kind = if (p1 == null)
+            .abort_if_no_action
+        else if (p1.? == .@"list-fonts" and p2.? == .@"list-fonts")
+            .fallback
+        else if (p2 != null and p1.? == p2.?)
+            .action
+        else {
+            std.debug.print(
+                "`{s}` behaves in a way this test cannot classify: with it first the core " ++
+                    "answers {?}, with it last {?}. The probe pair below has stopped " ++
+                    "separating the three kinds.\n",
+                .{ s, p1, p2 },
+            );
+            return error.SpecialCaseUnclassifiable;
+        };
+        try kinds.put(alloc, s, kind);
+    }
+
+    // ---- what the Windows host declares ------------------------------------
+    const rust_src = try H.uncomment(
+        try H.read(io, alloc, "windows/cliargs/src/lib.rs"),
+        alloc,
+    );
+    const rust_body = H.body(rust_src, "fn special_case(") orelse {
+        std.debug.print(
+            "`fn special_case(` was not found in windows/cliargs/src/lib.rs -- either it " ++
+                "was renamed, in which case this test is looking at nothing and says so, or " ++
+                "the host no longer keeps its special cases in one table.\n",
+            .{},
+        );
+        return error.HostTableGone;
+    };
+
+    // Each arm: one or more `"..."` patterns, then `Some(Special::Kind)`.
+    var declared: std.StringHashMapUnmanaged(Kind) = .empty;
+    var arms = std.mem.splitScalar(u8, rust_body, '\n');
+    while (arms.next()) |line| {
+        const at = std.mem.indexOf(u8, line, "Some(Special::") orelse continue;
+        const kind_start = at + "Some(Special::".len;
+        const kind_end = std.mem.indexOfScalarPos(u8, line, kind_start, ')') orelse continue;
+        const kind_name = line[kind_start..kind_end];
+        const kind: Kind = if (std.mem.eql(u8, kind_name, "Action"))
+            .action
+        else if (std.mem.eql(u8, kind_name, "Fallback"))
+            .fallback
+        else if (std.mem.eql(u8, kind_name, "AbortIfNoAction"))
+            .abort_if_no_action
+        else {
+            std.debug.print("windows/cliargs names a kind this test does not know: {s}\n", .{kind_name});
+            return error.HostKindUnknown;
+        };
+        var pats: std.ArrayList([]const u8) = .empty;
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, line[0..at], i, '"')) |q1| {
+            const q2 = std.mem.indexOfScalarPos(u8, line, q1 + 1, '"') orelse break;
+            try pats.append(alloc, line[q1 + 1 .. q2]);
+            i = q2 + 1;
+        }
+        for (pats.items) |p| try declared.put(alloc, p, kind);
+    }
+
+    // ---- the two directions ------------------------------------------------
+    var missing: usize = 0;
+    for (spellings.items) |s| {
+        const want = kinds.get(s).?;
+        const got = declared.get(s) orelse {
+            std.debug.print(
+                "this file treats `{s}` specially and `windows/cliargs` does not know it. " ++
+                    "On Windows that argument goes back to opening a resident window instead " ++
+                    "of running the action -- the `--help` defect, in a new spelling.\n",
+                .{s},
+            );
+            missing += 1;
+            continue;
+        };
+        if (got != want) {
+            std.debug.print(
+                "`{s}`: the core behaves as `{t}`, `windows/cliargs` declares `{t}`.\n",
+                .{ s, want, got },
+            );
+            missing += 1;
+        }
+    }
+    {
+        var it = declared.iterator();
+        while (it.next()) |e| {
+            if (kinds.get(e.key_ptr.*) == null) {
+                std.debug.print(
+                    "`windows/cliargs` treats `{s}` specially and this file does not. The " ++
+                        "host would decline to open a window for a line the core opens one " ++
+                        "for.\n",
+                    .{e.key_ptr.*},
+                );
+                missing += 1;
+            }
+        }
+    }
+    if (missing > 0) return error.HostMirrorDisagrees;
+
+    // ---- the divergence that must stay a divergence -------------------------
+    //
+    // `+nonsense` is a `DetectError` here and "yes, an action" there. If this
+    // ever stops being true, somebody has aligned the two sides by reading only
+    // one of them, and the paragraph at the top of this test says what that
+    // costs.
+    try testing.expectError(
+        actionpkg.DetectError.InvalidAction,
+        Probe.run(alloc, "+nonsense"),
+    );
+    try testing.expectError(
+        actionpkg.DetectError.MultipleActions,
+        Probe.run(alloc, "+version +list-fonts"),
+    );
+}

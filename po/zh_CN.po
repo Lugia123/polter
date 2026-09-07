@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-08 06:05+0800\n"
+"POT-Creation-Date: 2026-09-08 06:53+0800\n"
 "PO-Revision-Date: 2026-02-12 01:56+0800\n"
 "Last-Translator: Leah <hi@pluie.me>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -76,6 +76,7 @@ msgstr "忽略"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:439 src/apprt/gtk/ui/1.5/window.blp:318
+#: windows/host/src/menu.rs:402
 msgid "Reload Configuration"
 msgstr "重新加载配置"
 
@@ -87,9 +88,9 @@ msgstr "⚠️ Ghostty 正在以调试模式运行！性能将大打折扣。"
 
 #: src/apprt/gtk/ui/1.5/inspector-window.blp:5
 msgid "Ghostty: Terminal Inspector"
-msgstr "Ghostty 终端调试器"
+msgstr "Ghostty 终端检查器"
 
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:29
+#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/menu.rs:231
 msgid "Find…"
 msgstr "查找…"
 
@@ -118,15 +119,17 @@ msgstr ""
 "本终端当前处于只读模式。你仍可浏览、选择、并滚动其中内容，但任何用户输入都不"
 "会传给运行中的程序。"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:112
+#: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/menu.rs:271
 msgid "Read-only"
 msgstr "只读"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:203
+#: windows/host/src/menu.rs:241
 msgid "Copy"
 msgstr "复制"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:321 src/apprt/gtk/ui/1.5/window.blp:208
+#: windows/host/src/menu.rs:242
 msgid "Paste"
 msgstr "粘贴"
 
@@ -151,26 +154,30 @@ msgid "Change Title…"
 msgstr "更改标题…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:353 src/apprt/gtk/ui/1.5/window.blp:180
-#: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
+#: src/apprt/gtk/ui/1.5/window.blp:258 windows/host/src/menu.rs:223
+#: src/input/command.zig:487
 msgid "Split Up"
 msgstr "向上分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:359 src/apprt/gtk/ui/1.5/window.blp:185
-#: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
+#: src/apprt/gtk/ui/1.5/window.blp:263 windows/host/src/menu.rs:222
+#: src/input/command.zig:492
 msgid "Split Down"
 msgstr "向下分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:365 src/apprt/gtk/ui/1.5/window.blp:190
-#: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
+#: src/apprt/gtk/ui/1.5/window.blp:268 windows/host/src/menu.rs:221
+#: src/input/command.zig:477
 msgid "Split Left"
 msgstr "向左分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:371 src/apprt/gtk/ui/1.5/window.blp:195
-#: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
+#: src/apprt/gtk/ui/1.5/window.blp:273 windows/host/src/menu.rs:220
+#: src/input/command.zig:482
 msgid "Split Right"
 msgstr "向右分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:377
+#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:225
 msgid "Close Split"
 msgstr "关闭分屏"
 
@@ -185,16 +192,16 @@ msgstr "更改标签页标题…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
-#: src/input/command.zig:427
+#: windows/host/src/menu.rs:201 src/input/command.zig:427
 msgid "New Tab"
 msgstr "新建标签页"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:396 src/apprt/gtk/ui/1.5/window.blp:242
-#: src/input/command.zig:668
+#: windows/host/src/menu.rs:226 src/input/command.zig:668
 msgid "Close Tab"
 msgstr "关闭标签页"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:403
+#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:411
 msgid "Window"
 msgstr "窗口"
 
@@ -203,12 +210,12 @@ msgid "Change Window Title…"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421
+#: windows/host/src/menu.rs:200 src/input/command.zig:421
 msgid "New Window"
 msgstr "新建窗口"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:416 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:685
+#: windows/host/src/menu.rs:227 src/input/command.zig:685
 msgid "Close Window"
 msgstr "关闭窗口"
 
@@ -244,13 +251,13 @@ msgstr "浏览标签页"
 msgid "Main Menu"
 msgstr "主菜单"
 
-#: src/apprt/gtk/ui/1.5/window.blp:293
+#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/menu.rs:260
 msgid "Command Palette"
 msgstr "命令面板"
 
-#: src/apprt/gtk/ui/1.5/window.blp:298
+#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/menu.rs:281
 msgid "Terminal Inspector"
-msgstr "终端调试器"
+msgstr "终端检查器"
 
 #: src/apprt/gtk/ui/1.5/window.blp:326 src/apprt/gtk/class/window.zig:1997
 msgid "About Ghostty"
@@ -384,6 +391,190 @@ msgstr "已清空剪贴板"
 msgid "Ghostty Developers"
 msgstr "Ghostty 开发团队"
 
+#: windows/host/src/menu.rs:212
+msgid "Reopen Closed Tab"
+msgstr "重开关闭的标签"
+
+#: windows/host/src/menu.rs:234
+msgid "Next"
+msgstr "下一个"
+
+#: windows/host/src/menu.rs:235
+msgid "Previous"
+msgstr "上一个"
+
+#: windows/host/src/menu.rs:237
+msgid "Hide the Find Bar"
+msgstr "隐藏查找条"
+
+#: windows/host/src/menu.rs:250 src/input/command.zig:249
+msgid "Select All"
+msgstr "全选"
+
+#: windows/host/src/menu.rs:252
+msgid "Find"
+msgstr "查找"
+
+#: windows/host/src/menu.rs:256 src/input/command.zig:237
+msgid "Reset Font Size"
+msgstr "重置字号"
+
+#: windows/host/src/menu.rs:257
+msgid "Zoom In"
+msgstr "放大"
+
+#: windows/host/src/menu.rs:258
+msgid "Zoom Out"
+msgstr "缩小"
+
+#: windows/host/src/menu.rs:268
+msgid "Rename Tab…"
+msgstr "改标签标题…"
+
+#: windows/host/src/menu.rs:269
+msgid "Rename Terminal…"
+msgstr "改终端标题…"
+
+#: windows/host/src/menu.rs:273
+msgid "Quick Terminal"
+msgstr "快速终端"
+
+#: windows/host/src/menu.rs:294 src/input/command.zig:606
+msgid "Terminal Conversations"
+msgstr "终端群聊"
+
+#: windows/host/src/menu.rs:296 src/input/command.zig:557
+msgid "Make This Terminal a Supervisor"
+msgstr "将此终端设为总管"
+
+#: windows/host/src/menu.rs:297 src/input/command.zig:563
+msgid "Toggle Supervision of This Terminal"
+msgstr "监督此终端"
+
+#: windows/host/src/menu.rs:298 src/input/command.zig:600
+msgid "Keep Agents Out of This Terminal"
+msgstr "不让 agent 碰此终端"
+
+#: windows/host/src/menu.rs:322 src/input/command.zig:594
+msgid "Hold This Terminal to Its Work"
+msgstr "保持这个终端在岗"
+
+#: windows/host/src/menu.rs:325
+msgid "Plugins…"
+msgstr "插件…"
+
+#: windows/host/src/menu.rs:332
+msgid "Language…"
+msgstr "语言…"
+
+#: windows/host/src/menu.rs:342
+msgid "Up"
+msgstr "上"
+
+#: windows/host/src/menu.rs:343
+msgid "Down"
+msgstr "下"
+
+#: windows/host/src/menu.rs:344
+msgid "Left"
+msgstr "左"
+
+#: windows/host/src/menu.rs:345
+msgid "Right"
+msgstr "右"
+
+#: windows/host/src/menu.rs:349 src/input/command.zig:612
+msgid "Equalize Splits"
+msgstr "均分分屏大小"
+
+#: windows/host/src/menu.rs:351
+msgid "Grow Up"
+msgstr "向上"
+
+#: windows/host/src/menu.rs:352
+msgid "Grow Down"
+msgstr "向下"
+
+#: windows/host/src/menu.rs:353
+msgid "Grow Left"
+msgstr "向左"
+
+#: windows/host/src/menu.rs:354
+msgid "Grow Right"
+msgstr "向右"
+
+#: windows/host/src/menu.rs:360
+msgid "Minimize"
+msgstr "最小化"
+
+#: windows/host/src/menu.rs:361
+msgid "Maximize"
+msgstr "最大化"
+
+#: windows/host/src/menu.rs:363
+msgid "Full Screen"
+msgstr "全屏"
+
+#: windows/host/src/menu.rs:365
+msgid "Split Zoom"
+msgstr "分屏缩放"
+
+#: windows/host/src/menu.rs:366
+msgid "Previous Split"
+msgstr "上一个分屏"
+
+#: windows/host/src/menu.rs:367
+msgid "Next Split"
+msgstr "下一个分屏"
+
+#: windows/host/src/menu.rs:368
+msgid "Select Split"
+msgstr "选择分屏"
+
+#: windows/host/src/menu.rs:369
+msgid "Resize Split"
+msgstr "调整分屏"
+
+#: windows/host/src/menu.rs:371 src/input/command.zig:618
+msgid "Reset Window Size"
+msgstr "重置窗口大小"
+
+#: windows/host/src/menu.rs:373
+msgid "Float on Top"
+msgstr "置顶"
+
+#: windows/host/src/menu.rs:380
+msgid "Polter Help"
+msgstr "Polter 帮助"
+
+#: windows/host/src/menu.rs:395
+msgid "Check for Updates…"
+msgstr "检查更新…"
+
+#: windows/host/src/menu.rs:407
+msgid "File"
+msgstr "文件"
+
+#: windows/host/src/menu.rs:408
+msgid "Edit"
+msgstr "编辑"
+
+#: windows/host/src/menu.rs:409
+msgid "View"
+msgstr "查看"
+
+#: windows/host/src/menu.rs:412
+msgid "Help"
+msgstr "帮助"
+
+#: windows/host/src/menu.rs:414
+msgid "Settings…"
+msgstr "设置…"
+
+#: windows/host/src/menu.rs:415 windows/host/src/settings_ui.rs:1028
+msgid "About Polter"
+msgstr "关于 Polter"
+
 #: windows/host/src/settings_ui.rs:163
 msgid "Keeps the conversations"
 msgstr "保管终端之间的对话"
@@ -417,10 +608,6 @@ msgstr "保存"
 #: windows/host/src/settings_ui.rs:1027
 msgid "Open config file…"
 msgstr "打开配置文件…"
-
-#: windows/host/src/settings_ui.rs:1028
-msgid "About Polter"
-msgstr "关于 Polter"
 
 #: windows/host/src/settings_ui.rs:1096
 msgid "MIT licensed. A fork of Ghostty."
@@ -561,10 +748,6 @@ msgstr "缩小字号"
 msgid "Decrease the font size by 1 point."
 msgstr "将字体大小缩小 1pt。"
 
-#: src/input/command.zig:237
-msgid "Reset Font Size"
-msgstr "重置字号"
-
 #: src/input/command.zig:238
 msgid "Reset the font size to the default."
 msgstr "将字体大小重置到默认值。"
@@ -576,10 +759,6 @@ msgstr "清除屏幕"
 #: src/input/command.zig:244
 msgid "Clear the screen and scrollback."
 msgstr "清除屏幕和回滚内容。"
-
-#: src/input/command.zig:249
-msgid "Select All"
-msgstr "全选"
 
 #: src/input/command.zig:250
 msgid "Select all text on the screen."
@@ -946,10 +1125,6 @@ msgstr "切换只读模式"
 msgid "Toggle read-only mode for the current surface."
 msgstr "切换当前分屏的只读状态。"
 
-#: src/input/command.zig:557
-msgid "Make This Terminal a Supervisor"
-msgstr "将此终端设为总管"
-
 #: src/input/command.zig:558
 msgid ""
 "Let this terminal's agent mind terminals it claims. There may be several "
@@ -958,27 +1133,16 @@ msgstr ""
 "让这个终端的 agent 去看着它认领的终端。总管可以有好几个，每个只碰自己认领的那"
 "些。"
 
-#: src/input/command.zig:563
-msgid "Toggle Supervision of This Terminal"
-msgstr "监督此终端"
-
 #: src/input/command.zig:564
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr "这个终端的屏幕静止下来时，报给总管。"
-
-#: src/input/command.zig:594
-msgid "Hold This Terminal to Its Work"
-msgstr "保持这个终端在岗"
 
 #: src/input/command.zig:595
 msgid ""
 "Stop this terminal being clocked off, by a supervisor or by anything else. "
 "Its tab wears a ring while the hold lasts. Only you can set this."
-msgstr "阻止这个终端被下班——无论是总管还是别的什么。只有键盘前的人能设置或解除它。"
-
-#: src/input/command.zig:600
-msgid "Keep Agents Out of This Terminal"
-msgstr "不让 agent 碰此终端"
+msgstr ""
+"阻止这个终端被下班——无论是总管还是别的什么。只有键盘前的人能设置或解除它。"
 
 #: src/input/command.zig:601
 msgid ""
@@ -988,25 +1152,13 @@ msgstr ""
 "不让任何 agent（总管也在内）读这个终端、或者往里打字。屏蔽期间，它的 tab 上会"
 "带一把锁。只有你能设这一项。"
 
-#: src/input/command.zig:606
-msgid "Terminal Conversations"
-msgstr "终端群聊"
-
 #: src/input/command.zig:607
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr "开一个终端，显示各个终端之间说过的话。"
 
-#: src/input/command.zig:612
-msgid "Equalize Splits"
-msgstr "均分分屏大小"
-
 #: src/input/command.zig:613
 msgid "Equalize the size of all splits."
 msgstr "使所有分屏大小相等。"
-
-#: src/input/command.zig:618
-msgid "Reset Window Size"
-msgstr "重置窗口大小"
 
 #: src/input/command.zig:619
 msgid "Reset the window size to the default."
@@ -1014,19 +1166,19 @@ msgstr "将窗口重置到默认大小。"
 
 #: src/input/command.zig:624
 msgid "Toggle Inspector"
-msgstr "切换调试器"
+msgstr "切换检查器"
 
 #: src/input/command.zig:625
 msgid "Toggle the inspector."
-msgstr "切换终端调试器。"
+msgstr "切换终端检查器。"
 
 #: src/input/command.zig:630
 msgid "Show the GTK Inspector"
-msgstr "显示 GTK 调试器"
+msgstr "显示 GTK 检查器"
 
 #: src/input/command.zig:631
 msgid "Show the GTK inspector."
-msgstr "显示 GTK 调试器。"
+msgstr "显示 GTK 检查器。"
 
 #: src/input/command.zig:636
 msgid "Show On-Screen Keyboard"

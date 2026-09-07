@@ -90,13 +90,13 @@ const ROWS: &[Row] = &[
     SEP,
     item("查找…", "start_search"),
     SEP,
-    item("新建标签", "new_tab"),
+    item("新建标签页", "new_tab"),
     // **Not here because the strip's close cross is missing** -- it is not; a
     // test in `strip.rs` now pins that it never can be. It is here because
     // this is a second place to look, and the one place a person who has not
     // noticed the cross would think to look next. The alternative they reach
     // for otherwise is the window's ×, which takes every other tab with it.
-    item("关闭标签", "close_tab:this"),
+    item("关闭标签页", "close_tab:this"),
     SEP,
     // All four directions, because macOS has all four. Two of them were
     // missing here, and a split menu that offers right and down but not left
@@ -118,7 +118,7 @@ const ROWS: &[Row] = &[
     item("改终端标题…", "prompt_surface_title"),
     SEP,
     checkable(
-        "设为总管",
+        "将此终端设为总管",
         "poltergeist_supervisor",
         Tick::PgSupervisor,
     ),
@@ -128,7 +128,7 @@ const ROWS: &[Row] = &[
         Tick::PgWatched,
     ),
     checkable(
-        "禁止 agent 进入",
+        "不让 agent 碰此终端",
         "poltergeist_toggle_shielded",
         Tick::PgShielded,
     ),

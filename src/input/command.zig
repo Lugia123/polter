@@ -940,22 +940,70 @@ test "menu labels reach the palette" {
         }
 
         /// Everything a row is allowed to have between its label and its
-        /// action: the constructor's comma, whitespace, and the spelled-out
-        /// form's `action: Some(`.
+        /// action: the constructor's comma, whitespace, the spelled-out
+        /// form's `action: Some(`, and the closing paren of a label that is
+        /// wrapped in an extraction marker.
+        ///
+        /// **`)` is allowed because a label may be `n_("New Window")`.** The
+        /// Windows menu's labels are English msgids now, marked for
+        /// `xgettext` and translated at the moment they are drawn; the marker
+        /// puts a `)` between the label and the action where there used to be
+        /// only a comma. Without this the parser reads **zero** rows from
+        /// `menu.rs`, which the per-table floor below catches -- and it did.
+        ///
+        /// ⚠️ It is a real widening: `foo("prose"), bar("action_shaped")`
+        /// now parses as a row where before it did not. The floor is that
+        /// `actionShaped` still has to accept the second literal and reject
+        /// the first, which is what kept prose out before the comma was the
+        /// only separator.
         fn gapIsRowPunctuation(gap: []const u8) bool {
             var rest = gap;
             if (std.mem.indexOf(u8, rest, "action: Some(")) |at| {
                 for (rest[0..at]) |c| switch (c) {
-                    ' ', '\t', '\r', '\n', ',' => {},
+                    ' ', '\t', '\r', '\n', ',', ')' => {},
                     else => return false,
                 };
                 rest = rest[at + "action: Some(".len ..];
             }
             for (rest) |c| switch (c) {
-                ' ', '\t', '\r', '\n', ',' => {},
+                ' ', '\t', '\r', '\n', ',', ')' => {},
                 else => return false,
             };
             return true;
+        }
+
+        /// What a person actually reads for this label, in Chinese.
+        ///
+        /// # Why the rendered word and not the msgid
+        ///
+        /// This test's whole subject is "the word on the menu finds the
+        /// command", and **nobody types a msgid**. `menu.rs`'s labels became
+        /// English msgids when the host joined the gettext catalogues; the
+        /// word on screen is what `zh_CN.po` says they mean. Comparing the
+        /// msgid instead would check a correspondence no user is in.
+        ///
+        /// **It buys a second guarantee for free**, and one this file is the
+        /// right place for: a label wrapped for translation and never
+        /// translated renders in English on a Chinese machine, and an
+        /// msgid-based check would call that fine.
+        ///
+        /// `null` for a label that is not in the catalogue at all, which is
+        /// the ordinary case for the two menus that still hold Chinese
+        /// literals -- there the label already *is* the rendered word.
+        fn zhFor(po: []const u8, msgid: []const u8) ?[]const u8 {
+            var i: usize = 0;
+            while (std.mem.indexOfPos(u8, po, i, "\nmsgid \"")) |at| {
+                const from = at + "\nmsgid \"".len;
+                const end = std.mem.indexOfScalarPos(u8, po, from, '"') orelse return null;
+                i = end + 1;
+                if (!std.mem.eql(u8, po[from..end], msgid)) continue;
+                const sat = std.mem.indexOfPos(u8, po, end, "\nmsgstr \"") orelse continue;
+                const sfrom = sat + "\nmsgstr \"".len;
+                const send = std.mem.indexOfScalarPos(u8, po, sfrom, '"') orelse continue;
+                if (send == sfrom) return null;
+                return po[sfrom..send];
+            }
+            return null;
         }
 
         /// Does this look like a binding string rather than prose?
@@ -1090,6 +1138,10 @@ test "menu labels reach the palette" {
     };
 
     const table = try H.read(io, alloc, "windows/host/src/synonyms.txt");
+    // **The catalogue, because the menu now speaks msgids.** See `zhFor`: the
+    // word this test is about is the one a person reads, and for `menu.rs`
+    // that word lives here rather than in the source.
+    const po = try H.read(io, alloc, "po/zh_CN.po");
 
     // **Each menu is counted on its own**, because a table this test cannot
     // read would otherwise contribute nothing while the total still passed --
@@ -1138,13 +1190,24 @@ test "menu labels reach the palette" {
                 continue;
             };
             required += 1;
-            if (H.synonymNames(table, row.label, title)) {
+
+            // What the person reads. For the two menus that still hold
+            // Chinese literals that is the label itself; for `menu.rs` it is
+            // what the catalogue says the msgid means.
+            const typed = H.zhFor(po, row.label) orelse row.label;
+
+            // **Two ways to be findable, and the first is the stronger one.**
+            // When the row's msgid *is* the command's title, the two render to
+            // the same characters in every language there will ever be -- no
+            // synonym can promise that, and none is needed. Anything else has
+            // to be in the table.
+            if (std.mem.eql(u8, row.label, title) or H.synonymNames(table, typed, title)) {
                 covered += 1;
             } else {
                 std.debug.print(
                     "{s} says \"{s}\", and typing it into the palette finds nothing: " ++
                         "synonyms.txt has no `{s} = {s}` line for action `{s}`\n",
-                    .{ source.what, row.label, row.label, title, row.action },
+                    .{ source.what, typed, typed, title, row.action },
                 );
                 return error.MenuLabelUnsearchable;
             }
