@@ -564,11 +564,16 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Report this terminal to the supervisor when its screen goes quiet."),
         }},
 
-        .poltergeist_toggle_held => comptime &.{.{
-            .action = .poltergeist_toggle_held,
-            .title = i18n.N_("Keep This Terminal Working"),
-            .description = i18n.N_("Do not let a supervisor clock this terminal off. Its tab wears a ring while the hold lasts. Only you can set this; a supervisor cannot."),
-        }},
+        // No command, because the hold has no way in at all right now.
+        // `76fa175ba` took the menu item off all three menus and said in so
+        // many words that nothing can set it today -- and a palette entry is
+        // the same door in a different wall, so that sentence was not true
+        // while this one stood. What is left is a gate with no switch: the
+        // action, the bus rule that only a keypress may work it, and
+        // `clock_out` still refusing a held terminal. Putting the hold back
+        // is meant to be one line, and this is the line.
+        .poltergeist_toggle_held,
+        => comptime &.{},
 
         .poltergeist_toggle_shielded => comptime &.{.{
             .action = .poltergeist_toggle_shielded,

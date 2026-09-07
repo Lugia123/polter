@@ -322,9 +322,9 @@ Both are visible on the tab itself, not just in a menu:
 
 - **Hold it to its work** — this one must not be clocked off.
   A supervisor asking to is refused. The tab's mark grows a ring (`◉` moving,
-  `◎` still). **This one is not in the Agents menu right now** — find it in the
-  command palette as `Keep This Terminal Working`, or bind
-  `poltergeist_toggle_held`.
+  `◎` still). **This one has no menu item and no command-palette entry right
+  now.** The gate is still wired — `clock_out` refuses a held terminal — but
+  the only way to reach it is to bind `poltergeist_toggle_held` yourself.
 - **Agents → Keep Agents Out of This Terminal** — out of reach of the tool
   surface entirely. Absolute: refuses supervisors and plugins too. The tab gets
   a padlock. Use it for the tab you read your mail in.

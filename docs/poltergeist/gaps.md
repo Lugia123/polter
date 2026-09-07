@@ -600,6 +600,12 @@ worker**，每个 worker 收到通知后调一次 `group_read` 把整条读进�
 用户怎么设：菜单里那条 `Cycle This Terminal's Work Mode` 换成一个开关
 （`Keep This Terminal Working`），位置不变，仪式没了。
 
+**那个开关后来也撤了。** `76fa175ba` 把 `Keep This Terminal Working` 从三处菜单
+一并拿掉（连同 xib outlet 和它背后的属性），命令面板那条随后也去了。闸留着——
+`clock_out` 仍然拒绝被按住的终端——所以今天这是一道没有开关的闸，唯一的入口是
+自己给 `poltergeist_toggle_held` 绑一个键。这一节记的是当时怎么设计的，不是今天
+按哪里。
+
 **实现时否掉了「勾上」这半句。** 菜单项没有做成勾选态：要显示 ✓，Swift 侧得能
 读回某个 surface 的 `held`，而现在没有任何从 Zig 读回 poltergeist 状态的 C API，
 加它要穿 `include/ghostty.h` + `src/apprt/embedded.zig` + `validateMenuItem` 三层。

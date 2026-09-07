@@ -165,7 +165,7 @@ with no rules on it at all:
 | --- | --- | --- |
 | put a terminal under supervision | `poltergeist_toggle_watch` | `set_watch` — the supervisor's, not yours |
 | become a supervisor | `poltergeist_supervisor` | `become_supervisor`, which refuses a terminal that is already watched |
-| hold a terminal to its work, or let it go | `poltergeist_toggle_held` | nothing. The user's alone, from their menu |
+| hold a terminal to its work, or let it go | `poltergeist_toggle_held` | nothing, and today nobody — see below |
 | shield a terminal, or unshield one | `poltergeist_toggle_shielded` | nothing. The user's alone |
 
 The hold shows why. With the family open, an agent could run
@@ -173,6 +173,13 @@ The hold shows why. With the family open, an agent could run
 off a moment later — word for word the thing the hold exists to prevent.
 Not a worry about what might happen: it was confirmed working on a real
 machine before the check existed.
+
+**Nothing sets the hold today.** It has no menu item and no command-palette
+entry, so `held` is a field you will see as `false` and never otherwise. The
+gate behind it still stands — `clock_out` refuses a held terminal — but
+there is no longer a switch in front of it, so this is the one row above
+where telling the person to press it themselves sends them looking for
+something that is not there.
 
 So when one of these is what you want: say what you want and let the person
 press it. That is the same answer as for a shielded terminal, and for the

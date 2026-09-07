@@ -448,6 +448,12 @@ the user saying **this one does not stop**. `clock_out` answers
 `TerminalHeld`, correctly. You cannot set or lift a hold in either direction —
 a supervisor who could lift one could clock the terminal off a moment later.
 
+**At the moment nobody can, the user included.** The hold has no menu item
+and no command-palette entry, so `held: true` is a state you will not
+actually meet; the refusal is still wired and still correct, and this
+section stays because the gate does. Do not ask the user to lift a hold:
+there is nothing for them to press either.
+
 Nothing is lost by that. There used to be three "work modes"; switching one
 said a sentence to the terminal that had scrolled out of its context an hour
 later. **You decide on every wake-up whether there is more worth doing** — the

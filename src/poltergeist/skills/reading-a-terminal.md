@@ -50,7 +50,10 @@ again.
 One case is decided already: a terminal the user is holding to its work
 (`held: true`, a ring in its tab) cannot be clocked off, and `clock_out`
 comes back as `TerminalHeld`. That terminal being finished means it needs
-the next thing, not the end of the day.
+the next thing, not the end of the day. Expect to read about this refusal
+rather than meet it: the hold has no way in at all at the moment — no menu
+item, no command-palette entry — so nothing can set `held` and the gate
+stands with nothing behind it.
 
 ## Stuck or failed
 
