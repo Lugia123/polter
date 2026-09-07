@@ -289,7 +289,7 @@ const AGENTS_ROWS: &[Row] = &[
     // The chat is a TUI (`polter +chat`), so opening it is opening a terminal
     // with a command and one flag set -- and both of those are `create_pane`'s
     // to set, in `tabs.rs`. The tag is handled and says so.
-    act("终端对话", "poltergeist_toggle_chat"),
+    act("终端群聊", "poltergeist_toggle_chat"),
     sep(),
     toggle("设为总管", "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
     toggle("监督此终端", "poltergeist_toggle_watch", Flag::Watched, Ready::Always),

@@ -82,6 +82,7 @@ full screen = Toggle Fullscreen
 改终端标题… = Change Terminal Title…
 只读 = Toggle Read-Only Mode
 终端检查器 = Toggle Inspector
+终端群聊 = Terminal Conversations
 终端对话 = Terminal Conversations
 设为总管 = Make This Terminal a Supervisor
 监督此终端 = Toggle Supervision of This Terminal
