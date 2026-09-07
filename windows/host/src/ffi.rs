@@ -186,6 +186,24 @@ pub const ACTION_RENDER_INSPECTOR: u32 = 31;
 pub const ACTION_EXPORT_TERMINAL_IO: u32 = 32;
 pub const ACTION_CHECK_FOR_UPDATES: u32 = 57;
 
+/// `secure_input`. **Not in the ledger above**: this one is implemented.
+///
+/// Ordinal counted off `ghostty_action_tag_e` and checked by
+/// `the Windows host's action tags` in `src/apprt/action.zig`.
+pub const ACTION_SECURE_INPUT: u32 = 46;
+
+/// `ghostty_action_secure_input_e`, whose members are `on, off, toggle` in
+/// that order (`src/apprt/action.zig`'s `SecureInput`, pinned to the header by
+/// `checkGhosttyHEnum`).
+///
+/// **`toggle` is a real third value and not a spelling of the other two.** The
+/// core sends `on`/`off` from `setPasswordInput`; `toggle` arrives from the
+/// keybinding, and a host that folded it into "on" would leave the person
+/// unable to switch the thing off from the keyboard.
+pub const SECURE_INPUT_ON: i32 = 0;
+pub const SECURE_INPUT_OFF: i32 = 1;
+pub const SECURE_INPUT_TOGGLE: i32 = 2;
+
 /// `ghostty_action_poltergeist_mark_s`. The prefix is the core's rendered
 /// glyphs; `role` and `shielded` are the meaning, which is what a menu item
 /// needs -- **a tick cannot be derived from a string**, which is the reason

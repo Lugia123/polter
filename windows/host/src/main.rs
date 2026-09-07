@@ -3252,6 +3252,53 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             false
         }
 
+        // **`secure_input`, and it arrives without anybody pressing
+        // anything.** `Surface.zig`'s `setPasswordInput` raises it whenever
+        // the terminal enters or leaves a password prompt, so this is not a
+        // menu row nobody clicks -- it happens to everybody who types `sudo`.
+        // Until now it fell through to `_ =>` and produced `tag=46`.
+        //
+        // **An indication, not a protection.** macOS answers this by calling
+        // `EnableSecureEventInput`; this host makes no equivalent call, and
+        // `hud::on_secure_input` says at length what that means and why the
+        // nearest Windows API (`SetWindowDisplayAffinity` with
+        // `WDA_EXCLUDEFROMCAPTURE`) is task 296 rather than this one.
+        ffi::ACTION_SECURE_INPUT => {
+            let mode = action.as_i32();
+            match target_surface(&target) {
+                Some(s) => {
+                    let on = hud::on_secure_input(s as usize, mode);
+                    alogf!(
+                        origin,
+                        "[action] secure_input mode={} surface={:?} -> {}",
+                        mode,
+                        s,
+                        if on { "on" } else { "off" }
+                    );
+                    // **Repaint the pane's pointer.** The shape is decided in
+                    // `mouse.rs` and only consulted on `WM_SETCURSOR`, which
+                    // does not arrive until the pointer moves -- so without
+                    // this the pointer keeps the old shape while sitting still
+                    // over a terminal that has just entered a password prompt.
+                    mouse::resync(s as usize);
+                    true
+                }
+                // Refused rather than applied to the focused surface. A
+                // security-flavoured state put on the wrong terminal is worse
+                // than one not put anywhere: the person would be looking at a
+                // badge that is about somebody else's pane.
+                None => {
+                    alogf!(
+                        origin,
+                        "[action] secure_input mode={} with no surface (tag={}); dropped",
+                        mode,
+                        target.tag
+                    );
+                    false
+                }
+            }
+        }
+
         ACTION_RENDER => true,
 
         // **An action this host does not answer leaves a line.**

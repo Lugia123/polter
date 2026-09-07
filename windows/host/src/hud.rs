@@ -68,6 +68,11 @@ const HEIGHT: i32 = 30;
 const COL_BG: u32 = 0x00403f3d;
 const COL_TEXT: u32 = 0x00ffffff;
 const COL_RO_BG: u32 = 0x00306090; // BGR: amber, for the read-only badge
+/// BGR: a deep red, for the secure-input badge. **Deliberately not
+/// `COL_RO_BG`**: the two badges can be up at once on the same pane, and two
+/// identically coloured rectangles a badge-height apart is how a person reads
+/// one state and acts on the other.
+const COL_SEC_BG: u32 = 0x00202090;
 /// The link bar's background. Darker than the size sign so a URL sitting over
 /// terminal text still reads as a separate thing.
 const COL_LINK_BG: u32 = 0x00302f2d;
@@ -84,6 +89,7 @@ const THUMB_MIN: i32 = 18;
 
 static HWND_SIZE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_RO: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static HWND_SEC: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_LINK: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_SCROLL: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -103,6 +109,15 @@ static HWND_SCROLL: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 /// A `Vec` rather than a map: a window has a handful of panes, and the whole
 /// list is walked on every sync anyway to drop surfaces that no longer exist.
 static READONLY: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
+
+/// Which surfaces the core says are at a password prompt.
+///
+/// **A separate table from `READONLY` rather than a second field on it.** The
+/// two states are set by different actions, at different times, and a pane can
+/// be either, both or neither; one table of `(surface, ro, secure)` would make
+/// every write to one of them a read-modify-write of the other, which is how
+/// the reading that arrives second silently loses the one that arrived first.
+static SECURE: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
 
 /// **The turn every test that writes `READONLY` waits for.**
 ///
@@ -211,6 +226,7 @@ static SCROLL: std::sync::Mutex<Vec<(usize, u64, u64, u64)>> = std::sync::Mutex:
 
 /// The surface the badge is currently showing for, or 0.
 static RO_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SEC_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// The window a surface is in, as a handle a log line can be tagged with.
 ///
@@ -235,6 +251,7 @@ struct State {
     /// and a wrong window is worse than none.
     size_frame: isize,
     ro_visible: bool,
+    sec_visible: bool,
 }
 
 thread_local! {
@@ -278,6 +295,101 @@ pub fn on_readonly_for(surface: usize, on: bool) {
     if !h.is_null() {
         let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(surface), LPARAM(0)) };
     }
+}
+
+/// Is **this** surface at a password prompt?
+///
+/// Read by the badge and by `mouse.rs`, both with the surface they are about.
+/// The same rule `is_readonly_for` states: two copies of this drift the first
+/// time the core changes it from somewhere else, and the symptom is one
+/// indicator reporting a mode the other is simultaneously denying.
+pub fn is_secure_for(surface: usize) -> bool {
+    if surface == 0 {
+        return false;
+    }
+    SECURE
+        .lock()
+        .map(|v| v.iter().any(|(s, on)| *s == surface && *on))
+        .unwrap_or(false)
+}
+
+/// `GHOSTTY_ACTION_SECURE_INPUT` for one surface. **Safe from any thread.**
+///
+/// Answers what the surface's state is *afterwards*, which is what `toggle`
+/// needs and what the caller logs -- `cb_action` cannot work it out from the
+/// mode alone.
+///
+/// # Why this arrives without anybody pressing anything
+///
+/// The core raises `secure_input` from `Surface.zig`'s `setPasswordInput`
+/// whenever the terminal enters or leaves a password prompt, so this runs
+/// during ordinary use and not only from the `toggle_secure_input` binding.
+/// That is the whole reason this was worth building before the other actions
+/// on the same list: an unanswered `secure_input` is not a menu row nobody
+/// clicks, it is a thing that happens to everybody who types `sudo`.
+///
+/// # What this does **not** do, and it is the important half
+///
+/// macOS answers this action by calling `EnableSecureEventInput`, a system
+/// API that stops *any* application reading keyboard events. **This host makes
+/// no equivalent call**, so what is here is an indication and not a
+/// protection: it tells the person the terminal believes they are typing a
+/// password. It does not stop anything reading it.
+///
+/// The Windows API that comes closest is `SetWindowDisplayAffinity` with
+/// `WDA_EXCLUDEFROMCAPTURE`, and it is deliberately not here -- it is task
+/// 296, on its own, because it excludes the window from *all* screen capture
+/// and this machine's supervision reads terminals by capturing the screen.
+/// The core's own configuration documentation names the same shape as the
+/// reason to have an off switch on macOS: `macos-auto-secure-input`'s comment
+/// says a reason to disable it is that "it is interfering with legitimate
+/// accessibility software ... since secure input prevents any application from
+/// reading keyboard events". **Whether that description fits our own
+/// supervisor is the question 296 exists to answer, and it is not one to
+/// settle as a side effect of wiring an action.**
+pub fn on_secure_input(surface: usize, mode: i32) -> bool {
+    if surface == 0 {
+        // process-wide: the action named surface 0, so there is no terminal
+        // and therefore no window this line could belong to
+        plogf!("[hud] secure_input mode {} for surface 0 -- ignored, that names no terminal", mode);
+        return false;
+    }
+    let on = match SECURE.lock() {
+        Ok(mut v) => {
+            let want = match mode {
+                crate::ffi::SECURE_INPUT_ON => true,
+                crate::ffi::SECURE_INPUT_OFF => false,
+                crate::ffi::SECURE_INPUT_TOGGLE => !v
+                    .iter()
+                    .any(|(s, cur)| *s == surface && *cur),
+                // **Not folded into `on`.** A mode this host does not know is
+                // a core that has grown a fourth one, and guessing would set a
+                // security-flavoured state from a value nobody read.
+                other => {
+                    // process-wide: a fact about what the core sent, not about
+                    // any one window
+                    plogf!("[hud] secure_input: unknown mode {}; state unchanged", other);
+                    return false;
+                }
+            };
+            match v.iter_mut().find(|(s, _)| *s == surface) {
+                Some(e) => e.1 = want,
+                None => v.push((surface, want)),
+            }
+            want
+        }
+        Err(_) => {
+            // process-wide: one table, one mutex; a poisoned lock is a fact
+            // about the process
+            plogf!("[hud] secure_input: the table is poisoned; state unchanged");
+            return false;
+        }
+    };
+    let h = HWND_SEC.load(Ordering::Acquire);
+    if !h.is_null() {
+        let _ = unsafe { PostMessageW(Some(HWND(h)), WM_HUD_SYNC, WPARAM(surface), LPARAM(0)) };
+    }
+    on
 }
 
 /// `mouse_over_link` for one surface. **Safe from any thread.**
@@ -478,6 +590,7 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         for (proc_fn, class) in [
             (size_proc as WndprocFn, w!("PolterHudSize")),
             (ro_proc as WndprocFn, w!("PolterHudReadonly")),
+            (sec_proc as WndprocFn, w!("PolterHudSecure")),
             (link_proc as WndprocFn, w!("PolterHudLink")),
             (scroll_proc as WndprocFn, w!("PolterHudScroll")),
         ] {
@@ -499,9 +612,15 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
 
         let hsize = make_window(hinst, w!("PolterHudSize"));
         let hro = make_window(hinst, w!("PolterHudReadonly"));
+        let hsec = make_window(hinst, w!("PolterHudSecure"));
         let hlink = make_window(hinst, w!("PolterHudLink"));
         let hscroll = make_window(hinst, w!("PolterHudScroll"));
-        if hsize.0.is_null() || hro.0.is_null() || hlink.0.is_null() || hscroll.0.is_null() {
+        if hsize.0.is_null()
+            || hro.0.is_null()
+            || hsec.0.is_null()
+            || hlink.0.is_null()
+            || hscroll.0.is_null()
+        {
             return;
         }
 
@@ -530,10 +649,12 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
                 size_visible: false,
                 size_frame: 0,
                 ro_visible: false,
+                sec_visible: false,
             });
         });
         HWND_SIZE.store(hsize.0, Ordering::Release);
         HWND_RO.store(hro.0, Ordering::Release);
+        HWND_SEC.store(hsec.0, Ordering::Release);
         HWND_LINK.store(hlink.0, Ordering::Release);
         HWND_SCROLL.store(hscroll.0, Ordering::Release);
         // process-wide: the badge windows exist; neither belongs to a terminal window yet
@@ -765,6 +886,104 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 paint(hwnd, "READ ONLY", COL_RO_BG, COL_TEXT);
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+// ---------------------------------------------------- secure-input badge
+
+unsafe extern "system" fn sec_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_HUD_SYNC => {
+                let surface = if wp.0 != 0 {
+                    wp.0
+                } else {
+                    SEC_SHOWN_FOR.load(Ordering::Acquire)
+                };
+                let on = is_secure_for(surface);
+                let was = STATE.with(|c| {
+                    c.borrow_mut()
+                        .as_mut()
+                        .map(|st| std::mem::replace(&mut st.sec_visible, on))
+                        .unwrap_or(false)
+                });
+                if !on {
+                    if was {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    }
+                    SEC_SHOWN_FOR.store(0, Ordering::Release);
+                    hlogf!(
+                        frame_hwnd_of(surface),
+                        "[hud] secure input off for surface {:#x}",
+                        surface
+                    );
+                    return LRESULT(0);
+                }
+                let Some(fr) = pane_rect_for(surface) else {
+                    hlogf!(
+                        frame_hwnd_of(surface),
+                        "[hud] secure input on for surface {:#x}, but no pane owns it; \
+                         badge hidden rather than drawn somewhere arbitrary",
+                        surface
+                    );
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    SEC_SHOWN_FOR.store(0, Ordering::Release);
+                    return LRESULT(0);
+                };
+                let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+                let sc = |v: i32| v * dpi / 96;
+                let (w, h) = (sc(150), sc(HEIGHT));
+                // **Under the read-only badge when both are up.** They share
+                // the pane's top-left corner, and two badges drawn at the same
+                // point is one badge as far as the person can tell -- they
+                // would read whichever won the z-order and act on the other.
+                // The offset is conditional rather than permanent so that the
+                // common case, secure input alone, still lands where every
+                // other badge in this file lands.
+                let stacked = is_readonly_for(surface);
+                let x = fr.left + sc(16);
+                let y = fr.top + sc(16) + if stacked { sc(HEIGHT + 6) } else { 0 };
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    x,
+                    y,
+                    w,
+                    h,
+                    SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                );
+                let _ = InvalidateRect(Some(hwnd), None, true);
+                SEC_SHOWN_FOR.store(surface, Ordering::Release);
+                hlogf!(
+                    frame_hwnd_of(surface),
+                    "[hud] secure input on for surface {:#x}; badge at {},{} over pane \
+                     {},{}..{},{} (stacked under read-only: {})",
+                    surface,
+                    x,
+                    y,
+                    fr.left,
+                    fr.top,
+                    fr.right,
+                    fr.bottom,
+                    stacked as u8
+                );
+                LRESULT(0)
+            }
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            WM_ERASEBKGND => LRESULT(1),
+            WM_PAINT => {
+                // **"PASSWORD", not "SECURE INPUT".** The badge has to answer
+                // the question a person actually has when it appears, which is
+                // "why has this shown up", and the honest answer here is that
+                // the terminal thinks they are typing a password -- not that
+                // some system-level protection was engaged, because none was.
+                // See `on_secure_input` for what this host does and does not
+                // do.
+                paint(hwnd, "PASSWORD", COL_SEC_BG, COL_TEXT);
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),

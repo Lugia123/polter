@@ -101,6 +101,21 @@ pub struct Pick {
     pub fidelity: Fidelity,
 }
 
+/// What the pointer becomes while the terminal is at a password prompt.
+///
+/// `IDC_NO` -- the "not allowed" circle -- is deliberate and is the least bad
+/// of a poor set. Win32 publishes no lock pointer, and the alternatives are
+/// worse in ways that matter here: `IDC_ARROW` is the default, so it says
+/// nothing; `IDC_WAIT` claims the terminal is busy, which it is not; and
+/// `IDC_HELP` invites a click. This one is unmistakably *not the usual
+/// pointer*, which is the whole of the job -- the badge carries the meaning,
+/// and the pointer's task is only to be visibly different in the place the
+/// person is already looking.
+///
+/// **A `pick` ordinal, not a raw cursor**, so it travels the same path every
+/// other shape does and appears in the same log line with a name.
+const SECURE_SHAPE: i32 = 14;
+
 /// The shape the core sent, as a Win32 cursor.
 ///
 /// The ordinals are `ghostty_action_mouse_shape_e` in `include/ghostty.h`, in
@@ -172,6 +187,12 @@ pub fn pick(shape: i32) -> Pick {
 enum Applied {
     Hidden,
     Shape(i32),
+    /// The pointer is showing the secure-input shape rather than the one the
+    /// core asked for. **Its own variant, not `Shape(SECURE_SHAPE)`**: the two
+    /// would compare equal the moment the core itself asked for that shape,
+    /// and then leaving a password prompt would not count as a change and the
+    /// pointer would keep the override with nothing saying so.
+    Secure,
 }
 
 struct Rec {
@@ -215,6 +236,27 @@ pub fn record_visibility(surface: usize, hidden: bool) {
     with_rec(surface, |r| r.hidden = hidden);
 }
 
+/// Re-answer the pointer for a surface **now**, without waiting for it to
+/// move.
+///
+/// `WM_SETCURSOR` is what normally drives `apply`, and it arrives on pointer
+/// movement -- so a state change that alters the shape while the pointer sits
+/// still leaves the old shape on screen. That is the whole gap between "the
+/// host knows" and "the person can see it", and for `secure_input` the person
+/// is by definition not moving the mouse: they are typing a password.
+///
+/// **A no-op when the pointer is not over that pane**, which is the common
+/// case and is why this is cheap enough to call from an action.
+pub fn resync(surface: usize) {
+    let Some(hwnd) = crate::tabs::pane_hwnd_of_surface(surface as *mut std::ffi::c_void) else {
+        return;
+    };
+    if !pointer_over(hwnd) {
+        return;
+    }
+    let _ = apply(hwnd, surface);
+}
+
 /// Forget a surface. Called when its pane is freed.
 ///
 /// **Not an optimisation.** A surface is a heap pointer and the allocator
@@ -234,7 +276,28 @@ pub fn apply(hwnd: HWND, surface: usize) -> bool {
         return false;
     };
 
-    let want = if hidden { Applied::Hidden } else { Applied::Shape(shape) };
+    // **Secure input overrides the shape the core asked for, and only the
+    // shape.** `action.zig` names this as one of the two things an apprt may
+    // do with `secure_input`: "change the appearance of the cursor". It is
+    // done here rather than by writing into `SHAPES` so that the core's own
+    // shape is not lost -- the terminal goes on asking for `text` over its
+    // grid and `pointer` over a link, and the moment the password prompt ends
+    // the pointer goes back to whichever of those it was, with nothing to
+    // restore and nothing to have got wrong.
+    //
+    // **Not applied when the pointer is meant to be hidden.** A program that
+    // hid the pointer asked for that; putting one back to signal a mode would
+    // be answering a question nobody asked with a change they can see.
+    let secure = !hidden && crate::hud::is_secure_for(surface);
+    let shape = if secure { SECURE_SHAPE } else { shape };
+
+    let want = if hidden {
+        Applied::Hidden
+    } else if secure {
+        Applied::Secure
+    } else {
+        Applied::Shape(shape)
+    };
     let changed = with_rec(surface, |r| {
         let changed = r.applied != Some(want);
         r.applied = Some(want);

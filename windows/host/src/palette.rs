@@ -146,9 +146,18 @@ struct Unavailable {
     /// out every variant and missing the one that gets added.
     key: &'static str,
     /// The `apprt.Action` this ends up asking the host for -- the name in
-    /// `Action.Key`, which is what `cb_action` matches on. Usually the same
-    /// word as `key`; `toggle_secure_input` raises `secure_input`, and that
-    /// pair is exactly why this is written down instead of assumed.
+    /// `Action.Key`, which is what `cb_action` matches on.
+    ///
+    /// Usually the same word as `key`; `toggle_secure_input` raises
+    /// `secure_input`, and that pair is exactly why this is written down
+    /// instead of assumed.
+    ///
+    /// **Read by a test, not by this program**, which is why it carries an
+    /// `allow`: `the Windows palette hides only what it must` in
+    /// `src/apprt/action.zig` checks it against the dispatch source and uses
+    /// it to decide whether a row here has gone stale. Deleting it to silence
+    /// the warning would delete that check with it.
+    #[allow(dead_code)]
     blocked_on: &'static str,
     /// Why it cannot be done here. Goes in the log, and is the sentence the
     /// next person reads before deciding whether to build it.
@@ -202,14 +211,6 @@ const UNAVAILABLE: &[Unavailable] = &[
               and untested is not not-applicable -- Windows has an on-screen keyboard, and a \
               touch device is where this row is the whole point. Task 281's table puts it in \
               the same column as `secure_input`.",
-    },
-    Unavailable {
-        key: "toggle_secure_input",
-        blocked_on: "secure_input",
-        why: "Not built here yet. **Unlike the four above this one is owed**: the core raises \
-              `secure_input` by itself whenever the terminal enters a password prompt \
-              (`Surface.zig`'s `setPasswordInput`), so it is not only this palette row that \
-              goes unanswered. Task 284.",
     },
 ];
 

@@ -138,7 +138,11 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 `reopen::redo_last` came off the same bill in the same
 #                 change and is **not** in this number: it takes the *window*
 #                 that asked, and this count is arms that carry a *surface*.
-MIN_CARRYING_ARMS = 17
+#  18 (task 284): ACTION_SECURE_INPUT joined. The core sends it per surface --
+#                 `setPasswordInput` is about one terminal's prompt -- and a
+#                 badge saying PASSWORD over the wrong pane is worse than none,
+#                 because a person reads it and acts on another pane's state.
+MIN_CARRYING_ARMS = 18
 
 # The notifications that carry no address **today**, by `TAG -> module::fn`.
 #
