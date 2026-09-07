@@ -42,6 +42,45 @@ That cost more than a gate nobody runs: `status.md` 47 cites this file as the
 reason not to write another check for the shape, and that citation was made
 *after* G1 -- **the reasoning rested on a sentence that had stopped being true.**
 
+# What this does NOT look at, and why that one is a gap
+
+**`src/` -- the Zig core -- is not scanned, and this gate's green says nothing
+about it.** Measured on 2026-09-08, so that the size of the gap is a number
+rather than a worry:
+
+  * `src/Surface.zig` alone contains **97** mutex uses; `renderer_state.mutex`
+    is a `std.Io.Mutex`, which is **not reentrant**, exactly like the host's.
+  * the shape this gate hunts -- a guard alive across a call that can come
+    back round -- therefore **does exist** on that side. The obvious way round
+    is the apprt boundary: the core holds a lock, performs an action, the host
+    answers it and calls back into the core. `Surface.zig`'s
+    `mouseButtonCallback` shows the core is *aware* of it: the paste arm drops
+    `renderer_state.mutex` before `startClipboardRequest` with the comment
+    *"Pasting can trigger a lock grab in complete clipboard request so we need
+    to unlock."*
+  * **how many such sites there are is not measured, and the first attempt at
+    measuring it was wrong.** A probe looking for `renderer_state.mutex.lock`
+    followed by an apprt call matched the `lockUncancelable` inside that very
+    `defer` -- the *re*-lock of a deliberate unlock -- and then scanned forward
+    across a function boundary into the next function's body, and reported one
+    benign site. Both halves were artefacts. The number is **unknown**, and
+    that is written here rather than a figure nobody can stand behind.
+
+So: the subject exists, the core has at least one place where it took care,
+and **nobody knows how many places did not**. That is the gap. Closing it is
+not "add `src/**/*.zig` to the glob": every
+derivation in this file is rooted in Rust spelling -- a module-level
+`static NAME: Mutex<...>`, guard lifetimes that end with a block, `let g = ...`
+sites. Zig spells the same idea as `mutex.lock()` with `defer mutex.unlock()`
+-- which means **the guard runs to the end of the enclosing block, so
+"everything after the lock" is held**, a different analysis from following a
+binding's lifetime. Its comment density is also far higher, and this
+repository has already had three checkers read a comment as code. A widened
+regex would produce a field of false positives and the next person would
+narrow it back. **It needs its own checker, with its own floor** -- and the
+one attempt above, which produced a wrong number in ten lines, is the
+argument for that rather than against it.
+
 ## So the seed is derived, and there is a floor under it
 
 The docstring above has always claimed the locker set is derived rather than
@@ -749,7 +788,15 @@ def main() -> int:
     sites = sum(len(list(guard_scopes(src, acq))) for src in sources.values())
     print(f"scanned {len(paths)} files; roots {sorted(roots) or '(none)'}; "
           f"{len(acq)} ways in; {len(lockers)} functions reach the lock; "
-          f"{sites} guard sites\n")
+          f"{sites} guard sites")
+    # **Printed with the result, every run.** This gate's green is about the
+    # Rust host and nothing else, and unlike its sibling that is a **gap**
+    # rather than a correct narrowing: the subject exists on the other side.
+    print("  reach: windows/host/src/*.rs only. `src/` (the Zig core) is NOT "
+          "scanned. Unlike `borrow-across-dispatch.py`, whose rule has no "
+          "subject there, THIS one does: `std.Io.Mutex` is non-reentrant and "
+          "`src/Surface.zig` alone has 97 mutex uses. Nothing checks them. "
+          "See the header.\n")
 
     # **The same sentence as the file guard, one level in.** An empty root set
     # or an empty locker set is what this gate looked like for the whole of its

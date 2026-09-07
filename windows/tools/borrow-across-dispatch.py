@@ -55,6 +55,16 @@ DISPATCH = [
 # Sites checked by hand and found safe, with the reason. The reason is the
 # point: it is what a new reader would otherwise have to re-derive.
 KNOWN = {
+    "quick.rs": "with_quick holds `borrow_mut` across the slide's SetWindowPos "
+                "(quick_proc borrows on WM_TIMER, WM_ACTIVATE and WM_SETFOCUS). "
+                "Safe today, and **the safety is one flag**: SWP_NOSIZE means "
+                "DefWindowProc raises no WM_SIZE from the WM_WINDOWPOSCHANGED "
+                "it does send, SWP_NOACTIVATE means no WM_ACTIVATE, and "
+                "everything actually delivered falls to DefWindowProc. Drop "
+                "SWP_NOSIZE, or give quick_proc a WM_WINDOWPOSCHANGED arm that "
+                "borrows, and it panics. **Nobody had ever checked this site** "
+                "-- it went through `with_quick`, and the old rule matched "
+                "neither `.with(` nor the word `borrow` at the call.",
     "divider.rs": "div_proc handles only WM_SETCURSOR/WM_LBUTTONDOWN/"
                   "WM_MOUSEMOVE; nothing sent during create or move reaches "
                   "it, so it all falls to DefWindowProc. Adding a WM_SIZE or "
@@ -138,6 +148,58 @@ _ACCESSOR = r"(?:tabs::)?(?:window\([^)]*\)|shared\(\))(?![.?])"
 # resolution reads every method call sharing a wrapper's name as a call to the
 # wrapper -- which is how `fn layout` came to be reported as dispatching to
 # itself.
+# What opens a scope in which something is borrowed. Three spellings, and the
+# reason each is here was measured on 2026-09-08 rather than imagined:
+#
+#   `x.with(|`        -- 109 sites. What the first version matched, and only
+#                        when the `(|` was on the same line as the `.with`.
+#   `x.with(` alone   -- the same thing written across two lines. **0 sites
+#                        today**: a hole in the rule with no instances, which
+#                        is worth closing precisely because nothing goes red
+#                        when somebody opens the first one.
+#   `with_xxx(|…|)`   -- 33 sites, and **entirely invisible to the old rule**:
+#                        a helper that takes the borrow itself, so neither
+#                        `.with(` nor the word `borrow` appears at the call
+#                        site. One of the 33 dispatches while borrowed
+#                        (`quick.rs`), and nobody had ever looked at it,
+#                        because nothing could show it to them.
+#
+# The old rule also skipped any block not containing the literal word
+# `borrow`. Measured: 19 blocks skipped, 0 of them dispatching -- so it cost
+# nothing *today*, and it is gone anyway, because "costs nothing today" is the
+# state every one of these holes was in the day before it cost something.
+def borrowing_wrappers(src: str) -> set:
+    """`with_xxx` helpers **in this file** whose own body borrows a `RefCell`.
+
+    Derived rather than listed, for the reason the sibling gate states about
+    its lockers: a hand-written list is what let the original defect through.
+    A helper added next week that borrows is in scope the day it is written.
+
+    **Same file only**, and that is a stated limit rather than an oversight:
+    every one of these helpers today sits beside the `thread_local!` it
+    borrows, because that is the only place it can see it.
+    """
+    found = set()
+    for m in re.finditer(r"\bfn\s+(with_\w+)\s*[(<]", src):
+        brace = src.find("{", m.end() - 1)
+        if brace < 0:
+            continue
+        depth, k = 0, brace
+        while k < len(src):
+            if src[k] == "{":
+                depth += 1
+            elif src[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        if "borrow" in src[brace : k + 1]:
+            found.add(m.group(1))
+    return found
+
+
+OPENS_A_BORROW = re.compile(r"\b\w+\.with\(|\bwith_\w+\s*\(\s*\|\w")
+
 NOT_A_METHOD = r"(?<![.\w])"
 
 LET_ELSE = re.compile(r"let\s+Some\(\s*(?:mut\s+)?(\w+)\s*\)\s*=\s*" + _ACCESSOR + r"\s*else")
@@ -305,10 +367,11 @@ def scan(src, path):
     # file on purpose: a wrapper is a fact about one module, and a global
     # list would need editing every time somebody writes another one.
     dispatch = sorted(set(DISPATCH) | set(local_dispatchers(src)))
+    borrowing = borrowing_wrappers(src)
     yield from scan_mutex_guard(src, path, dispatch)
     lines = src.split("\n")
     for i, line in enumerate(lines):
-        if not re.search(r"\b\w+\.with\(\|", line):
+        if not OPENS_A_BORROW.search(line):
             continue
         depth, body = 0, []
         for j in range(i, min(i + 120, len(lines))):
@@ -317,10 +380,30 @@ def scan(src, path):
             if j > i and depth <= 0:
                 break
         text = "\n".join(body)
-        if "borrow" not in text:
+        opener = OPENS_A_BORROW.search(line)
+        wrapper = re.match(r"with_\w+", opener.group(0)) if opener else None
+        if "borrow" not in text and not (wrapper and wrapper.group(0) in borrowing):
+            # Neither this block nor the helper it goes through touches a
+            # `RefCell`. `WINDOWS.with(|w| w.set(...))` is a `Cell`: there is
+            # no guard, so there is nothing to be holding when a message goes
+            # out. **Derived, not listed** -- `borrowing` is computed from the
+            # tree, so a helper written next week is in scope the day it is
+            # written, which is the property the literal-word filter this
+            # replaces did not have.
             continue
-        tail = text[text.find("borrow"):]
-        hits = sorted({d for d in dispatch if re.search(NOT_A_METHOD + d + r"\b", tail)})
+        # **The borrow may be inside the wrapper rather than in this block.**
+        # `with_quick(|q| …)` borrows in `with_quick`; the block that dispatches
+        # contains no such word. So the whole block is the subject when the
+        # opener is one of those, and only a `.with(|` block is trimmed to the
+        # part after its own `borrow`.
+        tail = text[text.find("borrow"):] if "borrow" in text else text
+        # **A call, not a mention.** `edit_proc` is a local dispatcher *and* a
+        # struct field; without the `(` this matched
+        # `Windows { edit_proc: edit_proc_old }` in `palette.rs` and
+        # `search.rs` and reported two windows being *stored* as two windows
+        # being *messaged*. Measured: both went away with this one character.
+        hits = sorted({d for d in dispatch
+                       if re.search(NOT_A_METHOD + d + r"\s*\(", tail)})
         if hits:
             yield (path, i + 1, hits)
 
@@ -508,7 +591,12 @@ for path in sources:
 print("probe self-test: OK (RefCell borrow; guards spelled `state()`, "
       "`let ... else` and `if let`; temporaries ignored; UIA raises seen; "
       "local wrappers; comments ignored)")
-print(f"scanned {len(sources)} files\n")  # the list above, not a second glob
+print(f"scanned {len(sources)} files")  # the list above, not a second glob
+# **Printed with the result, every run.** The narrowness of this gate was never
+# the defect; the unqualified all-clear was. See the reach note in the header.
+print("  reach: windows/host/src/*.rs only. `src/` (the Zig core) is NOT scanned "
+      "and this result says nothing about it -- measured: 0 `RefCell` there, and "
+      "DISPATCH is all Win32, so this rule has no subject on that side.\n")
 for name, sites in sorted(found.items()):
     note = KNOWN.get(name)
     for ln, hits in sites:
