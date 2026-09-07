@@ -388,7 +388,3 @@ MIT 协议，和上游一样；见 [LICENSE](LICENSE)，原始版权声明保留
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) 讲清楚这棵树哪一半是 Polter 的、哪一半是上游 Ghostty 的——动手写补丁前值得花两分钟看，猜错了要重做。
 [`ROADMAP.md`](ROADMAP.md) 是活到哪了，包括 Windows 上还缺什么。
-
-## 社区
-
-[LINUX DO](https://linux.do) —— 本项目在这里分享和讨论。
