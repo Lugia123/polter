@@ -187,7 +187,7 @@ It is younger than the macOS side and not at parity:
 | | |
 | --- | --- |
 | Verified on a Windows 11 machine | The window opens, tabs work, a shell starts, text including CJK renders, IME composition types Chinese, the menu and its accelerators work, the resources directory is found, and the provisioning plugins start. Since the first release, three more have a reading on the machine behind them: **splits** (two live panes in one tab, with the divider), **shell integration** (PowerShell detected and injected, working directory following it), and **the group chat view**. |
-| Known missing | **Some keybinding actions**: of the core's 72 the host implements 60, refuses 7 by name, and owes 5 (2026-09-08; implemented was 46). A refusal is an arm that says this platform has no such thing -- the GTK inspector, a tab overview -- rather than a tag number in a log. The 5 owed are secure input, the on-screen keyboard, toggle-visibility, background opacity and the quit timer. |
+| Known missing | **Some keybinding actions**: of the core's 72 the host implements 61, refuses 7 by name, and owes 4 (2026-09-08; implemented was 46). A refusal is an arm that says this platform has no such thing -- the GTK inspector, a tab overview -- rather than a tag number in a log. The 4 owed are the on-screen keyboard, toggle-visibility, background opacity and the quit timer. |
 
 Two rows above used to say the opposite of what they say now — splits and the
 chat view were both described as missing after they worked. The `archive` row went the
