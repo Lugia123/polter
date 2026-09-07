@@ -285,7 +285,33 @@ pub fn window_finished(frame: HWND) {
     if left == 0 {
         unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
     } else {
-        crate::wlogf!(frame, "[win] {} window(s) remain; the process stays", left);
+        // **This used to be `wlogf!(frame, ...)` and printed `w?`.**
+        // `destroyed` above has just taken `frame` out of `FRAMES`, `of`
+        // answers from `FRAMES`, and `tag` turns a 0 into `w?` -- so the line
+        // about the second-to-last window closing went into the log with no
+        // window on it. Read off the machine: `1 window(s) remain` tagged
+        // `w?`, and it was about `w1`.
+        //
+        // **The ordering rule was already written down one function below**,
+        // on `destroyed`'s own `of` call: *"Read before the removal, and that
+        // ordering is now load-bearing."* It was learned, recorded, and
+        // re-broken one call up -- which is why there is now a checker for it
+        // (`windows/tools/no-tag-after-deregister.py`) rather than a second
+        // comment.
+        //
+        // **The fix is not to fetch the number earlier, because this sentence
+        // is not about that window.** How many windows are left, and whether
+        // the process stays, are facts about the process. The window that
+        // just went is named by `destroyed`'s own line one moment earlier
+        // (`[win] w3 destroyed; 1 window(s) left`), which carries the
+        // identity and the count together -- so nothing is lost by this line
+        // declining to claim a window it no longer has. On the one path where
+        // that preceding line does not appear, `destroyed` found the frame
+        // already gone: there was no identity to print in the first place.
+        // process-wide: how many windows are left and whether the process
+        // stays are facts about the process, not about the window that just
+        // closed -- and that window is named on the line above this one
+        crate::plogf!("[win] {} window(s) remain; the process stays", left);
     }
 }
 
