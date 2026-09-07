@@ -2662,6 +2662,27 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             polterclose::perform(&action, target_surface(&target))
         }
 
+        // **Hide every terminal window, or bring back the ones we hid.** An
+        // action about the *set* of windows, so it lives with the other two in
+        // `winnav.rs` rather than resolving a target here -- and it is
+        // deliberately not queued through a frame: `queue_from` needs a window
+        // to post to, and this action's whole subject is that there may be
+        // several or that none of them should be in front.
+        //
+        // Answers what it did rather than a bare `true`: "there were no
+        // windows" and "nothing was hidden" are real outcomes, and an action
+        // that did nothing was not performed.
+        ffi::ACTION_TOGGLE_VISIBILITY => {
+            // The same shape as `close_all` one arm below: naming one window
+            // would be picking a subject this action does not have, and the
+            // per-window lines come from inside it, one for each window that
+            // actually moved.
+            // carries no terminal: its subject is every window there is
+            let did = winnav::toggle_visibility();
+            alogf!(origin, "[action] toggle_visibility -> {}", did);
+            did
+        }
+
         ACTION_COPY_TITLE_TO_CLIPBOARD => {
             alogf!(origin, "[action] copy_title_to_clipboard");
             queue_from(origin, Op::CopyTitleToClipboard, "copy_title_to_clipboard action")
@@ -3317,7 +3338,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             }
         }
 
-        // ---- task 301: the four this host owes, answered by name ----
+        // ---- task 301: the ones this host owes, answered by name ----
         //
         // **Owed, not refused, and the two markers are different on purpose.**
         // The refusals above say "this platform has no such thing"; these say
@@ -3328,26 +3349,15 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // third number.
         //
         // **They are here because a marker is not enough on its own.** Before
-        // this, all four fell through `_ =>` and produced `[action] tag=13 is
-        // not implemented by this host` -- a bare number. The palette hides
-        // two of them; a keybinding and `src/poltergeist/actions.zig`'s
-        // `selfSafeTag` still reach all four.
-
-        // **Should be done, and is not.** The semantics are platform-neutral
-        // ("the visibility of all Ghostty terminal windows") and the window set
-        // this needs already exists here: `winnav::close_all` walks exactly
-        // that list. Small.
-        // owed: 302 -- not built yet; the window set for it already exists.
-        ffi::ACTION_TOGGLE_VISIBILITY => {
-            // process-wide: the action is about every window, so naming one
-            // would be picking a subject it does not have
-            plogf!(
-                "[action] toggle_visibility: not built in this host yet (task 302). The window \
-                 set it needs already exists -- `winid::all()` -- so this is work not done, \
-                 not a platform that cannot do it."
-            );
-            false
-        }
+        // this, all of them fell through `_ =>` and produced `[action] tag=NN
+        // is not implemented by this host` -- a bare number. The palette hides
+        // some; a keybinding and `src/poltergeist/actions.zig`'s `selfSafeTag`
+        // reach all of them.
+        //
+        // **There were four. `toggle_visibility` left this list in the same
+        // merge that brought it here**, because task 302 built it -- which is
+        // the list working as intended, and the reason the marker names a task
+        // rather than merely saying "owed".
 
         // **Looked at and deferred this round, with a reason -- not an
         // oversight.** This host makes no transparent windows: it asks Windows

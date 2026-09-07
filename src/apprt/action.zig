@@ -991,7 +991,16 @@ pub const Action = union(Key) {
             // `ACTION_` is asserted too, because it is the only observable
             // that distinguishes "the skip works" from "there is no prose".
             try std.testing.expect(refused >= 7);
-            try std.testing.expect(owed >= 4);
+            // **Lowered from 4 to 3 the day task 302 built `toggle_visibility`,
+            // which is the floor doing exactly what it should and also showing
+            // what it costs.** A floor counting a *shrinking* set fires on good
+            // news, and the person who lands the good news has to tell that
+            // apart from the marker having stopped matching -- which is what
+            // the floor exists for. The two are told apart by looking: three
+            // `// owed:` arms are in `cb_action` and each names its task. If
+            // this number is ever raised again it should be because work was
+            // deferred, not because a number was made to fit.
+            try std.testing.expect(owed >= 3);
             try std.testing.expect(commented_out >= 2);
             try std.testing.expect(performed.count() >= 55);
 

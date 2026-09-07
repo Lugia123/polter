@@ -83,6 +83,16 @@ pub const ACTION_COPY_TITLE_TO_CLIPBOARD: u32 = 68;
 /// parsed and checked against the six constants already here before these were
 /// taken from it.
 pub const ACTION_TOGGLE_POLTERGEIST_CHAT: u32 = 12;
+/// `toggle_visibility`, the member straight after `toggle_poltergeist_chat`.
+///
+/// **This number is machine-checked**, along with every other one in this
+/// file, by `test "the Windows host's action tags"` in `src/apprt/action.zig`,
+/// which names the action a wrong number would dispatch instead. A second
+/// checker reading `ghostty_action_tag_e` was written for this task and then
+/// deleted: that test's own comment argues against it by name, because the
+/// header is already pinned to the enum, and one fact with two readers is the
+/// shape this repository has opened tasks about.
+pub const ACTION_TOGGLE_VISIBILITY: u32 = 13;
 pub const ACTION_INSPECTOR: u32 = 29;
 pub const ACTION_PROMPT_TITLE: u32 = 37;
 pub const ACTION_FLOAT_WINDOW: u32 = 45;
@@ -210,7 +220,9 @@ pub const ACTION_SECURE_INPUT: u32 = 46;
 // W3 added when it counted that batch. Two constants for one tag is a Rust
 // compile error (`E0428`), which is the one duplication in this file that
 // cannot be made silently -- so the arms below simply use those.
-pub const ACTION_TOGGLE_VISIBILITY: u32 = 13;
+// `ACTION_TOGGLE_VISIBILITY` (13) is **not repeated here** either: task 302
+// implemented it and declared it in the block above, and the two changes met
+// in the merge.
 pub const ACTION_SHOW_ON_SCREEN_KEYBOARD: u32 = 61;
 
 /// `ghostty_action_secure_input_e`, whose members are `on, off, toggle` in

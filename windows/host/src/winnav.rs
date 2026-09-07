@@ -1,5 +1,5 @@
-//! Two actions about the set of windows rather than about one of them:
-//! `close_all_windows` and `goto_window`.
+//! Three actions about the set of windows rather than about one of them:
+//! `close_all_windows`, `goto_window` and `toggle_visibility`.
 //!
 //! **They live together because they share the one hard question**: what *is*
 //! the list of windows, and in what order? Both used to be unanswerable here
@@ -21,7 +21,8 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    GetForegroundWindow, IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow,
+    SW_HIDE, SW_RESTORE, SW_SHOWNA,
 };
 
 use crate::{plogf, tabs, winid, wlogf};
@@ -61,6 +62,198 @@ pub fn close_all() -> bool {
         winid::close_window_now(*f);
     }
     true
+}
+
+/// The windows this host hid, and which of them had the keyboard.
+///
+/// **Recorded rather than recomputed**, and macOS is why: its
+/// `toggleVisibility` keeps a `hiddenState` for exactly this and its comment
+/// says what it buys -- *"we don't use NSApp.unhide because that will unhide
+/// ALL hidden windows. We want to only bring forward the ones that we hid."*
+/// The same rule here: a window the person had already minimised, or one made
+/// while everything was away, is not ours to show.
+static HIDDEN: std::sync::Mutex<Option<Hidden>> = std::sync::Mutex::new(None);
+
+struct Hidden {
+    /// `HWND` as `isize`, because a raw pointer is not `Send` and this sits
+    /// behind a mutex. Every one is re-checked with `IsWindow` before it is
+    /// touched again -- a window can be destroyed while the set is away.
+    frames: Vec<isize>,
+    /// The window that had the foreground when they went away, so the toggle
+    /// back does not have to guess. Zero when the foreground was not ours.
+    was_foreground: isize,
+}
+
+/// Hide every terminal window, or bring back the ones we hid.
+///
+/// # Which way it goes is read, not remembered
+///
+/// macOS decides this with `NSApp.isActive`: if the app has focus, hide;
+/// otherwise activate and restore. The equivalent reading here is whether the
+/// foreground window is one of ours, and it is a better question than a
+/// stored flag for the reason every stored flag in this port has eventually
+/// been wrong: the world can change underneath it. Somebody who hides the
+/// windows, then closes the last of them from the taskbar, leaves a flag
+/// saying "hidden" and nothing to show.
+///
+/// # The macOS fullscreen note is deliberately not ported
+///
+/// `Binding.zig` says *"When the focused surface is fullscreen, this method
+/// does nothing"*, and `AppDelegate.swift` implements it with an explicit
+/// guard on `keyWindow.styleMask.contains(.fullScreen)`. **That guard is
+/// about macOS native fullscreen**, which puts the window in a Space of its
+/// own; hiding an app out from under its own Space is what misbehaves.
+///
+/// This host has no Spaces. `tabs::go_fullscreen` is a `GWL_STYLE` change and
+/// a `SetWindowPlacement` -- a borderless maximised ordinary window, which
+/// hides and shows like any other. Copying the guard would import a
+/// restriction whose reason does not exist here, and it would do it silently:
+/// the person would press the key in fullscreen and nothing would happen,
+/// with no line to say why.
+///
+/// # Yielding the foreground, and the one way this can go badly
+///
+/// When hiding, macOS "yields to the next application as determined by the
+/// OS", and this does the same by **not choosing**: hiding the foreground
+/// window is what makes Windows pick the next one, and picking somebody
+/// else's window on their behalf is not this host's business.
+///
+/// **The read-back afterwards is not decoration.** If the foreground is still
+/// one of our now-hidden windows, this has just built the defect task 300 was
+/// about, at whole-application scale: every key goes into something invisible
+/// and there is nothing on screen to say so. That state cannot be produced or
+/// ruled out from the machine this is written on, so it is not claimed either
+/// way -- it is *read*, on every run, and the line says which it was.
+pub fn toggle_visibility() -> bool {
+    let frames = winid::all();
+    if frames.is_empty() {
+        // process-wide: about the window set, not about any one window
+        plogf!("[win] toggle_visibility: no windows are open; nothing to hide or show");
+        return false;
+    }
+
+    let fg = unsafe { GetForegroundWindow() };
+    let ours = winid::frame_of_window(fg).is_some();
+
+    if ours {
+        hide_all(&frames, fg)
+    } else {
+        show_again(fg)
+    }
+}
+
+fn hide_all(frames: &[HWND], fg: HWND) -> bool {
+    // **Only the ones that are actually up.** A window the person minimised
+    // is already out of the way and is not ours to remember; restoring it
+    // later would be this host undoing something they did.
+    let mut hidden: Vec<isize> = Vec::new();
+    for f in frames {
+        if !unsafe { IsWindowVisible(*f) }.as_bool() {
+            continue;
+        }
+        unsafe {
+            let _ = ShowWindow(*f, SW_HIDE);
+        }
+        hidden.push(f.0 as isize);
+        wlogf!(*f, "[win] toggle_visibility: hidden");
+    }
+
+    let n = hidden.len();
+    if let Ok(mut slot) = HIDDEN.lock() {
+        *slot = Some(Hidden { frames: hidden, was_foreground: fg.0 as isize });
+    }
+
+    // **Read back, do not assume.** See the note on `toggle_visibility`: if
+    // this says one of ours, the keyboard is going into a window nobody can
+    // see, and this line is the only thing that would ever say so.
+    let now = unsafe { GetForegroundWindow() };
+    let still_ours = winid::frame_of_window(now).is_some();
+    // process-wide: about the window set as a whole
+    plogf!(
+        "[win] toggle_visibility: hid {} window(s); GetForegroundWindow now {:?} -- {}",
+        n,
+        now,
+        if still_ours {
+            "STILL ONE OF OURS, and every one of ours is hidden: the keyboard has nowhere visible to go"
+        } else {
+            "another application has it, which is what yielding means"
+        }
+    );
+    n > 0
+}
+
+fn show_again(fg: HWND) -> bool {
+    let Some(state) = HIDDEN.lock().ok().and_then(|mut s| s.take()) else {
+        // Nothing of ours is in front and we hid nothing, so this is the
+        // second half of a toggle whose first half never happened -- somebody
+        // pressed it while another application was in front. Said out loud:
+        // "nothing happened" and "nothing was there to happen to" are the
+        // same silence otherwise.
+        // process-wide: about the window set, not about any one window
+        plogf!(
+            "[win] toggle_visibility: the foreground is not ours and this host hid nothing;              nothing to bring back"
+        );
+        return false;
+    };
+
+    let mut shown = 0usize;
+    let mut gone = 0usize;
+    for raw in &state.frames {
+        let f = HWND(*raw as *mut std::ffi::c_void);
+        // **A window can be destroyed while the set is away.** Showing a dead
+        // handle is not an error Windows reports in any way a reader would
+        // see, so the two outcomes are counted apart.
+        if !unsafe { IsWindow(Some(f)) }.as_bool() {
+            gone += 1;
+            continue;
+        }
+        unsafe {
+            // `SW_SHOWNA` rather than `SW_SHOW`: showing them one at a time
+            // with activation would leave whichever happened to be last in
+            // front, which is not the window the person was using. The one
+            // that was in front is chosen deliberately, below.
+            let _ = ShowWindow(f, SW_SHOWNA);
+        }
+        shown += 1;
+        wlogf!(f, "[win] toggle_visibility: shown again");
+    }
+
+    // The window that had the keyboard gets it back. Falling back to the
+    // first one we showed rather than to "window 1", which is the answer
+    // `5351b0147` spent a commit removing from the overlays.
+    let want = HWND(state.was_foreground as *mut std::ffi::c_void);
+    let target = if state.was_foreground != 0 && unsafe { IsWindow(Some(want)) }.as_bool() {
+        Some(want)
+    } else {
+        state
+            .frames
+            .iter()
+            .map(|r| HWND(*r as *mut std::ffi::c_void))
+            .find(|f| unsafe { IsWindow(Some(*f)) }.as_bool())
+    };
+
+    let (asked, now) = match target {
+        Some(t) => {
+            let ok = unsafe { SetForegroundWindow(t) }.as_bool();
+            (ok, unsafe { GetForegroundWindow() })
+        }
+        None => (false, fg),
+    };
+    // process-wide: about the window set as a whole
+    plogf!(
+        "[win] toggle_visibility: brought back {} window(s) ({} had been destroyed);          asked for {:?} ok={} -- GetForegroundWindow now {:?}: {}",
+        shown,
+        gone,
+        target,
+        asked as u8,
+        now,
+        match target {
+            Some(t) if now == t => "the window that had it",
+            _ if winid::frame_of_window(now).is_some() => "one of ours, but not that one",
+            _ => "NOT ONE OF OURS -- they are visible and something else has the keyboard",
+        }
+    );
+    shown > 0
 }
 
 /// Move focus to the next or previous window, wrapping.
