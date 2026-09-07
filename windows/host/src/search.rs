@@ -69,6 +69,47 @@ fn col_none() -> u32 {
 
 static HWND_SEARCH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
+/// The surface whose search is open, or 0 for none.
+///
+/// **A second copy of `Model::surface`, and the duplication is the point.**
+/// `Model` is a thread local on the main thread; `end_search`, `search_total`
+/// and `search_selected` arrive on whichever thread the core is on and have to
+/// decide *there* whether a notification is theirs. Reading the model from
+/// that thread is not available and posting first and filtering later is
+/// worse: two surfaces' numbers would already be in one inbox by then, and
+/// whichever arrived last would be the one painted.
+///
+/// Written only by `show` and `hide`, which both run on the main thread, so
+/// the two copies cannot disagree about anything except for the instant
+/// between a post and its drain -- and in that instant this one is the newer.
+static OPEN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Is a notification aimed at `surface` about the search that is open?
+///
+/// **`true` when nothing is known**, in both directions: no search open, or a
+/// search whose `start_search` named no surface, or a notification that names
+/// none. Refusing on an unknown would silently drop counts that are almost
+/// certainly ours, and this file's job is to paint what the core says -- the
+/// guard exists to stop *another* surface's numbers, not to invent a
+/// certainty nobody has.
+fn is_for_the_open_search(surface: Option<usize>, what: &str) -> bool {
+    let open = OPEN_FOR.load(Ordering::Acquire);
+    let (Some(s), true) = (surface, open != 0) else {
+        return true;
+    };
+    if s == open {
+        return true;
+    }
+    // process-wide: the notification named a surface that is not the one the
+    // open search belongs to, so this line is about two terminals and belongs
+    // to neither
+    plogf!(
+        "[search] {} for surface {:#x} dropped: the open search belongs to {:#x}",
+        what, s, open
+    );
+    false
+}
+
 /// What the core told us, waiting to be picked up on the main thread.
 #[derive(Default)]
 struct Inbox {
@@ -172,12 +213,30 @@ pub fn on_start(needle: Option<&str>, surface: Option<crate::ffi::Surface>) {
 }
 
 /// `GHOSTTY_ACTION_END_SEARCH`. **Safe from any thread.**
-pub fn on_end() {
+///
+/// `surface` is the terminal the core ended the search in. It is not
+/// decoration: with a split or a second window there can be a search open on
+/// one surface while the core ends one on another, and a bar that closed on
+/// the wrong `end_search` looks exactly like a bar that closed by itself.
+pub fn on_end(surface: Option<crate::ffi::Surface>) -> bool {
+    if !is_for_the_open_search(surface.map(|s| s as usize), "end_search") {
+        return false;
+    }
     post(WM_SEARCH_HIDE);
+    true
 }
 
 /// `GHOSTTY_ACTION_SEARCH_TOTAL` / `SEARCH_SELECTED`. **Safe from any thread.**
-pub fn on_count(total: Option<i64>, selected: Option<i64>) {
+///
+/// **Filtered here rather than at the drain**, and that is the whole reason
+/// the surface is carried this far. The inbox holds one pair of numbers; two
+/// surfaces' counts arriving before the main thread wakes would leave the
+/// second one's numbers under the first one's bar, and nothing downstream
+/// could tell them apart -- they are just integers by then.
+pub fn on_count(surface: Option<crate::ffi::Surface>, total: Option<i64>, selected: Option<i64>) -> bool {
+    if !is_for_the_open_search(surface.map(|s| s as usize), "a count") {
+        return false;
+    }
     if let Ok(mut inbox) = INBOX.lock() {
         if total.is_some() {
             inbox.total = total;
@@ -187,6 +246,7 @@ pub fn on_count(total: Option<i64>, selected: Option<i64>) {
         }
     }
     post(WM_SEARCH_COUNT);
+    true
 }
 
 // ------------------------------------------------------------------ setup
@@ -312,6 +372,9 @@ fn show(needle: &str, owner: Option<usize>) {
             st.surface = owner;
         }
     });
+    // **Before the bar is on screen**, so a count that arrives while it is
+    // being placed is already being judged against the right owner.
+    OPEN_FOR.store(owner.unwrap_or(0), Ordering::Release);
     unsafe {
         // Opens over window 1 wherever it was invoked; see `tabs::overlay_frame`.
         let frame = crate::tabs::overlay_frame();
@@ -379,6 +442,9 @@ fn hide() {
             })
             .unwrap_or(false)
     });
+    // Cleared with `Model::surface`, and for the same reason: an address for
+    // a search that has ended would start accepting counts for it again.
+    OPEN_FOR.store(0, Ordering::Release);
     unsafe {
         let _ = ShowWindow(me, SW_HIDE);
     }

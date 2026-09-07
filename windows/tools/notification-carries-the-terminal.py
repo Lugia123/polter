@@ -130,7 +130,15 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 a tree with three new arms in it. Anything that moves
 #                 `target_surface(` out of an arm takes that arm out of this
 #                 check with no sign at either end.
-MIN_CARRYING_ARMS = 14
+#  15, 16, 17 (task 299): ACTION_END_SEARCH, ACTION_SEARCH_TOTAL and
+#                 ACTION_SEARCH_SELECTED joined, off the addressless bill.
+#                 They now take the surface the way `start_search` beside them
+#                 always did, and `search.rs` filters on it rather than merely
+#                 accepting it.
+#                 `reopen::redo_last` came off the same bill in the same
+#                 change and is **not** in this number: it takes the *window*
+#                 that asked, and this count is arms that carry a *surface*.
+MIN_CARRYING_ARMS = 17
 
 # The notifications that carry no address **today**, by `TAG -> module::fn`.
 #
@@ -176,14 +184,26 @@ MIN_CARRYING_ARMS = 14
 #       window. One pair, two answers; at most one of them is right.
 OWED_ADDRESSLESS = {
     "ACTION_TOGGLE_COMMAND_PALETTE -> palette::request_toggle",
-    "ACTION_END_SEARCH -> search::on_end",
-    "ACTION_SEARCH_TOTAL -> search::on_count",
-    "ACTION_SEARCH_SELECTED -> search::on_count",
     "ACTION_KEY_SEQUENCE -> keyseq::on_key_sequence",
     "ACTION_KEY_TABLE -> keyseq::on_key_table",
     "ACTION_FLOAT_WINDOW -> prompt::request_float",
-    "ACTION_REDO -> reopen::redo_last",
 }
+
+# **Paid off, kept as a record rather than as entries** -- for the reason
+# `action-arms-act.py` gives about its own list: a name left in the set is an
+# exemption, and a name in a comment is a record.
+#
+#   `search::on_end`, `search::on_count` (task 299). Both take the surface
+#       now, and both *use* it: they are filtered against `OPEN_FOR`, the
+#       owner of the search that is actually open, on the thread the core
+#       calls them from. Filtering at the drain instead would have been too
+#       late -- one inbox holds one pair of numbers, and by then they are
+#       integers with no owner attached.
+#   `reopen::redo_last` (task 299). Takes the window that asked and prefers
+#       the newest entry belonging to it, falling back to the newest anywhere
+#       with a log line saying which of the two happened. Its twin
+#       `reopen_last(frame)` always took the window; the pair now gives one
+#       answer.
 
 # The call is deliberately identity-free, with the reason written next to it.
 # **Default is "must carry"**, and the exception is the thing that has to be

@@ -2268,17 +2268,20 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             );
             true
         }
-        ffi::ACTION_END_SEARCH => {
-            search::on_end();
-            true
-        }
+        // **All three carry the surface, the same way `start_search` above
+        // does.** They did not, and the asymmetry was the whole finding: the
+        // arm that opens the bar was written with a comment explaining that
+        // without the surface "the host knows a search is open and not
+        // whose", and the three arms that end it and count it then went and
+        // did exactly that. With two surfaces searching, a count could land
+        // under the other one's bar and nothing downstream could tell -- by
+        // then they are integers.
+        ffi::ACTION_END_SEARCH => search::on_end(target_surface(&target)),
         ffi::ACTION_SEARCH_TOTAL => {
-            search::on_count(Some(action.as_isize()), None);
-            true
+            search::on_count(target_surface(&target), Some(action.as_isize()), None)
         }
         ffi::ACTION_SEARCH_SELECTED => {
-            search::on_count(None, Some(action.as_isize()));
-            true
+            search::on_count(target_surface(&target), None, Some(action.as_isize()))
         }
 
         // The pending-key indicator.
@@ -3016,7 +3019,12 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // why it is a second stack rather than a cursor into the first, and
         // for what neither half covers.
         ffi::ACTION_REDO => {
-            let ok = reopen::redo_last();
+            // **The window that asked**, the same argument its twin `undo`
+            // above has always taken. `None` is handled inside: with no
+            // window the preference has nothing to prefer and the newest
+            // entry anywhere is the only answer left, which is what this used
+            // to do unconditionally.
+            let ok = reopen::redo_last(origin.unwrap_or_default());
             // The notification in this arm is the call above; this one is a
             // statistic for the log line, and it is on no bill for that reason.
             // carries no terminal: a stack depth and its limit, one pair for the

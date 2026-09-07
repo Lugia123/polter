@@ -315,17 +315,46 @@ pub fn note_reopened(frame: HWND, id: TabId) {
     wlogf!(frame, "[redo] {:?} is redoable; stack {}/{}", id, depth, LIMIT);
 }
 
-/// Close again the most recently reopened tab.
+/// Close again the most recently reopened tab, **preferring one in the window
+/// that asked**.
+///
+/// # Why the window is an argument at all
+///
+/// It was not, and its twin `reopen_last(frame)` always took one -- one pair,
+/// two answers, and at most one of them right. The stack is process-wide, so
+/// without the window a redo pressed in the second window closes a tab in the
+/// first: a tab disappears somewhere the person is not looking, with a log
+/// line that reads entirely normal. That is the same family as every other
+/// "right about the process, wrong about the window" defect this port has
+/// paid for.
+///
+/// **A preference and not a restriction**, deliberately. Refusing when the
+/// asking window has nothing redoable would make the key do nothing on the
+/// press after a window swap, which is a worse surprise than the one being
+/// fixed, and the fallback says on its own log line that it was taken.
 ///
 /// Entries whose tab has since gone -- the person closed it by hand, or its
 /// window did -- are dropped as they are found rather than refused, so a
 /// redo reaches the newest tab that is *actually* still there. Each skip
 /// leaves a line: silently walking past three entries and closing a fourth is
 /// otherwise indistinguishable from closing the one that was expected.
-pub fn redo_last() -> bool {
+/// Which entry a redo in `frame` should take: **the newest one belonging to
+/// that window**, and the newest anywhere only if that window has none.
+///
+/// Split out so the rule can be asserted without a window, a tab or a stack
+/// of real ones. It is the whole of what the `frame` argument buys.
+fn pick_for(entries: &[Redo], frame: isize) -> Option<usize> {
+    entries
+        .iter()
+        .rposition(|e| e.frame == frame)
+        .or_else(|| entries.len().checked_sub(1))
+}
+
+pub fn redo_last(frame: HWND) -> bool {
+    let asked = frame.0 as isize;
     loop {
         let entry = match REDO.lock() {
-            Ok(mut r) => r.pop(),
+            Ok(mut r) => pick_for(&r, asked).map(|i| r.remove(i)),
             Err(_) => {
                 // process-wide: one redo stack, one mutex; a poisoned lock is
                 // a fact about the process
@@ -343,12 +372,21 @@ pub fn redo_last() -> bool {
         let frame = HWND(entry.frame as *mut std::ffi::c_void);
         match crate::tabs::index_of(frame, entry.tab) {
             Some((at, of)) => {
+                // **Which of the two rules produced this entry is on the
+                // line.** "Redo closed a tab" and "redo closed a tab in a
+                // window you are not looking at" are different events, and
+                // without the distinction the second reads as the first.
                 wlogf!(
                     frame,
-                    "[redo] closing {:?} again (tab {} of {})",
+                    "[redo] closing {:?} again (tab {} of {}); {}",
                     entry.tab,
                     at + 1,
-                    of
+                    of,
+                    if entry.frame == asked {
+                        "in the window that asked"
+                    } else {
+                        "that window had nothing redoable, so this is the newest anywhere"
+                    }
                 );
                 // The ordinary close path, so this lands on `STACK` again and
                 // the pair stays symmetric: what redo closes, undo can reopen.
@@ -375,6 +413,39 @@ pub fn redo_depth() -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Which entry a redo takes, and it is the whole of what `frame` buys.**
+    ///
+    /// ⚠️ Like every test in `polter-host`, this runs on Windows and nowhere
+    /// else -- the crate does not build for the machine the port is written
+    /// on. It is written to be run there, not to stand in for having run.
+    ///
+    /// The case worth pinning is the middle one: the stack's newest entry
+    /// belongs to another window, this window has an older one, and the
+    /// older one is the right answer. Taking the newest would close a tab in
+    /// a window the person is not looking at, which is the defect the
+    /// argument was added for.
+    #[test]
+    fn a_redo_prefers_its_own_window_and_falls_back_rather_than_refusing() {
+        let e = |frame: isize, tab: u64| Redo { frame, tab: TabId(tab) };
+        let stack = vec![e(1, 10), e(2, 20), e(1, 11), e(2, 21)];
+
+        // Newest belonging to window 1 is at index 2, not the top of the
+        // stack (index 3, which is window 2's).
+        assert_eq!(pick_for(&stack, 1), Some(2));
+        assert_eq!(pick_for(&stack, 2), Some(3));
+
+        // A window with nothing redoable falls back to the newest anywhere
+        // rather than doing nothing: a key that stops working after a window
+        // swap is a worse surprise than the one being fixed.
+        assert_eq!(pick_for(&stack, 99), Some(3));
+
+        // Nothing at all is still nothing.
+        assert_eq!(pick_for(&[], 1), None);
+
+        // One entry, and it is somebody else's: still taken, by the fallback.
+        assert_eq!(pick_for(&[e(2, 20)], 1), Some(0));
+    }
 
     /// One test at a time, because there is one stack.
     ///
