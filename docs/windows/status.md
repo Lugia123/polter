@@ -1858,7 +1858,7 @@ docs 那条链本机跑不了（缺 `pandoc`），**但那只影响「另外再�
 | **211** | `VERSION` 那条合法路径今天不可区分，所以 205 的警告会对合法 tarball 也喊 |
 | **206** | 分支名尾部那个横杠（`short_hash` 有 `trimEnd`，`branch` 没有） |
 | **202** | `wToPrefixedFileW` = 2 MB 的 50.06%。**不超，但一个函数吃掉一半**，调用链未量 |
-| **178 / 180 / 192** | 闸只看 Rust 不看 Zig；`SendMessageTimeout` 类判据作废重写；`reg()` 哨兵 |
+| **178 / 180 / 192** | 闸只看 Rust 不看 Zig；`SendMessageTimeout` 类判据作废重写（模态循环下失明，边界与标定步骤见 `docs/windows/hang-readings.md`）；`reg()` 哨兵 |
 | **`Config.clone`** | 修法未落地。R2 是**测量变体不是补丁**——出参 + `var result: Config = undefined`，**错误路径上 `result` 未初始化**，而原版有 `errdefer result.deinit()` |
 | **213 / 212** | 各自那条要 Windows 的单元测试 |
 
