@@ -1295,6 +1295,88 @@ pub fn active_tab_changed(frame: HWND, tab: TabId, pane: PaneId) {
     wlogf!(frame, "[uia] focus change raised for tab {}", tab.0);
 }
 
+/// The selection changed in a surface.
+///
+/// **`UIA_Text_TextSelectionChangedEventId`, raised on that tab's
+/// `Document`.** The document is the element a screen reader has as the
+/// terminal, and a selection is a property of it -- the same choice
+/// `Ghostty.App.swift` makes when it posts `ghosttySelectionDidChange` against
+/// the surface view rather than against the window.
+///
+/// # The surface's own tab, not the active one
+///
+/// The core says which surface's selection changed, and it is not always the
+/// one in front: a program running in a background tab can set a selection.
+/// Announcing against the active tab would name the right window and the wrong
+/// terminal, and **the announcement would look completely normal** -- which is
+/// the substitution this port has already paid for repeatedly.
+///
+/// # What is announced, and what a reader will not get
+///
+/// **The event, not the text.** UIA's model is that an event says something
+/// changed and the client then asks for the new state; announcing the
+/// selection itself would need a `TextPattern` on the document, and this
+/// provider does not implement one. So a listening client is told to look
+/// again, and what it finds is the tree this file already publishes.
+/// Recorded rather than glossed: somebody expecting the selected text to be
+/// spoken will not get it from here, and the reason is a missing pattern, not
+/// a missing event.
+pub fn selection_changed(frame: HWND, surface: crate::ffi::Surface) {
+    if !announce_gate(frame, "selection change") {
+        return;
+    }
+    // **Two lookups, and they are made to agree rather than trusted to.**
+    // `tab_of_surface` is this project's answer to "which window and tab", and
+    // the pane comes the only other way there is. If the two ever named
+    // different windows the announcement would carry a runtime id assembled
+    // from two different terminals -- so the disagreement is a refusal with a
+    // line, not something to average out.
+    let Some((owner, tab)) = crate::tabs::tab_of_surface(surface) else {
+        wlogf!(
+            frame,
+            "[uia] selection change for a surface that is in no tab; not announced"
+        );
+        return;
+    };
+    let pane = crate::tabs::pane_hwnd_of_surface(surface).and_then(crate::tabs::pane_of);
+    let Some((pane_frame, _, pane_id)) = pane else {
+        wlogf!(
+            frame,
+            "[uia] selection change for a surface with no pane window; not announced"
+        );
+        return;
+    };
+    if pane_frame != owner {
+        wlogf!(
+            frame,
+            "[uia] selection change: tab_of_surface says window {:?} and the pane says {:?}; \
+             not announced",
+            owner,
+            pane_frame
+        );
+        return;
+    }
+
+    let doc: IRawElementProviderSimple = Document {
+        frame: owner.0 as isize,
+        tab,
+        pane: pane_id,
+    }
+    .into();
+
+    // **A line on each side of the call**, for the reason written on
+    // `tabs_changed`: raising an event hands control to UIAutomationCore,
+    // which can call straight back into this file on this thread and take the
+    // `tabs` lock a second time -- which hangs rather than panicking, and a
+    // hang leaves a log that stops rather than a stack. A pair of lines names
+    // the call that stopped it.
+    wlogf!(owner, "[uia] raising selection change for tab {}", tab.0);
+    unsafe {
+        let _ = UiaRaiseAutomationEvent(&doc, UIA_Text_TextSelectionChangedEventId);
+    }
+    wlogf!(owner, "[uia] selection change raised for tab {}", tab.0);
+}
+
 /// A tab's name changed -- the user renamed it, or the program in it did.
 ///
 /// **Outside the task that asked for the other two, and here for a reason

@@ -48,8 +48,8 @@ daily, and that is the honest blocker.
 
 These are specific and each one has a place in the code.
 
-- **Action parity.** The host handles **58 of the core's 72** keybinding
-  actions (2026-09-08). The remaining 14 are a difference, not a to-do list:
+- **Action parity.** The host handles **61 of the core's 72** keybinding
+  actions (2026-09-08). The remaining 11 are a difference, not a to-do list:
   seven are GTK- or macOS-specific and should never exist here, two are the
   inspector, which libghostty publishes no renderer for outside Apple, and the
   rest are the ones still being worked through. Both numbers are measured rather than

@@ -85,7 +85,24 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 is expressed relative to the target's tab -- resolving
 #                 either against the tab in front would take the wrong
 #                 terminal and look entirely normal doing it.
-MIN_CARRYING_ARMS = 11
+#  12, 13, 14 (task 273, second batch): ACTION_SELECTION_CHANGED,
+#                 ACTION_MOUSE_OVER_LINK and ACTION_SCROLLBAR joined. All
+#                 three are facts about one pane: a program in a background
+#                 tab can change a selection, the pointer is over one pane,
+#                 and each pane scrolls on its own. Resolving any of them
+#                 against the tab in front would be right about the window and
+#                 wrong about the terminal.
+#
+#                 ⚠️ **Two of the three were briefly invisible to this gate**,
+#                 and the way they were is worth keeping. They resolved the
+#                 surface through a helper -- `surface_key(&target)` -- and
+#                 this gate decides scope by looking for `target_surface(` as
+#                 text, so the arms were skipped entirely rather than failed.
+#                 The count stayed at 12 and looked like a correct reading of
+#                 a tree with three new arms in it. Anything that moves
+#                 `target_surface(` out of an arm takes that arm out of this
+#                 check with no sign at either end.
+MIN_CARRYING_ARMS = 14
 
 # The call is deliberately identity-free, with the reason written next to it.
 # **Default is "must carry"**, and the exception is the thing that has to be

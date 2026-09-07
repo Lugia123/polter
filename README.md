@@ -187,7 +187,7 @@ It is younger than the macOS side and not at parity:
 | | |
 | --- | --- |
 | Verified on a Windows 11 machine | The window opens, tabs work, a shell starts, text including CJK renders, IME composition types Chinese, the menu and its accelerators work, the resources directory is found, and the provisioning plugins start. Since the first release, three more have a reading on the machine behind them: **splits** (two live panes in one tab, with the divider), **shell integration** (PowerShell detected and injected, working directory following it), and **the group chat view**. |
-| Known missing | **Some keybinding actions**: the host handles 58 of the core's 72 (2026-09-08; it was 46). Of the remaining 14, seven are GTK- or macOS-specific and are not wanted on Windows at all and two are the inspector, which libghostty publishes no renderer for outside Apple -- so 14 is a difference, not a to-do list. |
+| Known missing | **Some keybinding actions**: the host handles 61 of the core's 72 (2026-09-08; it was 46). Of the remaining 11, seven are GTK- or macOS-specific and are not wanted on Windows at all, and two depend on the inspector, for which libghostty publishes no renderer outside Apple -- so 11 is a difference, not a to-do list. |
 
 Two rows above used to say the opposite of what they say now — splits and the
 chat view were both described as missing after they worked. The `archive` row went the

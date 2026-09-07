@@ -2909,6 +2909,56 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             termcolor::on_color_change(origin, target_surface(&target), kind, r, g, b)
         }
 
+        // The pointer is over a link, or has just left one. **The core owns
+        // what counts as a link**; the host paints the last thing it was told
+        // and must never start detecting them itself -- a second opinion would
+        // differ on exactly the URLs that are hard.
+        //
+        // **`target_surface(&target)` is spelled out here rather than hidden
+        // behind a helper, and that is not style.**
+        // `windows/tools/notification-carries-the-terminal.py` decides whether
+        // an arm is even in scope by looking for that call as *text*; an arm
+        // that resolves the surface through a helper is invisible to it, and
+        // an arm the gate cannot see reads exactly like an arm that passed.
+        // The first version of this arm did that, and it cost the gate two of
+        // the three arms in this batch.
+        ffi::ACTION_MOUSE_OVER_LINK => {
+            let url = action.as_mouse_over_link();
+            let surface = target_surface(&target).map(|s| s as usize).unwrap_or(0);
+            hud::on_hover_link(surface, url)
+        }
+
+        // Where this surface is in its scrollback. Painted as an indicator
+        // over the pane's right edge -- the note at the top of `hud.rs` says
+        // why it cannot be dragged, and why the pane does not get a
+        // `WS_VSCROLL` of its own.
+        ffi::ACTION_SCROLLBAR => {
+            let (total, offset, len) = action.as_scrollbar();
+            let surface = target_surface(&target).map(|s| s as usize).unwrap_or(0);
+            hud::on_scrollbar(surface, total, offset, len)
+        }
+
+        // The selection changed. **Announced against the surface's own tab**,
+        // not the active one: a program in a background tab can change a
+        // selection, and naming the focused tab would be wrong in a way that
+        // reads as entirely normal.
+        //
+        // Written with `if let` rather than a nested `match`: the arms of this
+        // function are read by a parser (`windows/tools/_cb_action.py`), and a
+        // `match` inside an arm puts arms in front of it that are not
+        // `cb_action`'s.
+        ffi::ACTION_SELECTION_CHANGED => {
+            if let (Some(f), Some(s)) = (origin, target_surface(&target)) {
+                uia::selection_changed(f, s);
+                true
+            } else {
+                // process-wide: the action named no surface, so there is no
+                // terminal whose selection this could be about
+                plogf!("[action] selection_changed names no surface; nothing announced");
+                false
+            }
+        }
+
         // ---- task 272: the window/tab/edit batch ----
 
         // **Undo means one thing on this host: put back the tab you closed.**

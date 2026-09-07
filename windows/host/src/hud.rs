@@ -399,6 +399,20 @@ pub fn on_frame_resized() {
     if !ro.is_null() {
         let _ = unsafe { PostMessageW(Some(HWND(ro)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
     }
+    // **The same reason again, for the two signs that also sit over a pane.**
+    // The link bar is pinned to a pane's bottom-left and the scrollbar to its
+    // right edge; a resize moves the pane out from under both, and a sign left
+    // where it was marks whatever is now beneath it. Both take `WPARAM(0)`,
+    // which each of their syncs reads as "the surface you are already
+    // showing".
+    let link = HWND_LINK.load(Ordering::Acquire);
+    if !link.is_null() {
+        let _ = unsafe { PostMessageW(Some(HWND(link)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
+    }
+    let scroll = HWND_SCROLL.load(Ordering::Acquire);
+    if !scroll.is_null() {
+        let _ = unsafe { PostMessageW(Some(HWND(scroll)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
+    }
 }
 
 /// Columns and rows of the active surface, or `None` if either input is not
@@ -464,6 +478,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         for (proc_fn, class) in [
             (size_proc as WndprocFn, w!("PolterHudSize")),
             (ro_proc as WndprocFn, w!("PolterHudReadonly")),
+            (link_proc as WndprocFn, w!("PolterHudLink")),
+            (scroll_proc as WndprocFn, w!("PolterHudScroll")),
         ] {
             let wc = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -483,7 +499,9 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
 
         let hsize = make_window(hinst, w!("PolterHudSize"));
         let hro = make_window(hinst, w!("PolterHudReadonly"));
-        if hsize.0.is_null() || hro.0.is_null() {
+        let hlink = make_window(hinst, w!("PolterHudLink"));
+        let hscroll = make_window(hinst, w!("PolterHudScroll"));
+        if hsize.0.is_null() || hro.0.is_null() || hlink.0.is_null() || hscroll.0.is_null() {
             return;
         }
 
@@ -516,6 +534,8 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
         });
         HWND_SIZE.store(hsize.0, Ordering::Release);
         HWND_RO.store(hro.0, Ordering::Release);
+        HWND_LINK.store(hlink.0, Ordering::Release);
+        HWND_SCROLL.store(hscroll.0, Ordering::Release);
         // process-wide: the badge windows exist; neither belongs to a terminal window yet
         plogf!("[hud] ready");
     }
@@ -752,9 +772,242 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
 }
 
+// ---------------------------------------------------------------- link bar
+
+/// Where the thumb goes, given the three row counts and the height available,
+/// as `(top, height)` in pixels. `None` means there is nothing to scroll and
+/// the bar should not be drawn at all.
+///
+/// **Split out of the window procedure so it can be asserted.** Every input
+/// is a number and every output is a number; the version of this that lived
+/// inline could only be checked by looking at a screen, and its two failures
+/// -- a thumb that vanishes in a long scrollback, and one that stops short of
+/// the bottom -- both read as "the scrollbar is a bit off" rather than as a
+/// wrong answer.
+fn thumb(total: u64, offset: u64, len: u64, height: i32, min: i32) -> Option<(i32, i32)> {
+    if height <= 0 || len == 0 || total <= len {
+        return None;
+    }
+    // How much of the buffer is on screen, as a fraction of the track.
+    let h = ((len as f64 / total as f64) * height as f64).round() as i32;
+    // **Clamped by the track as well as by the floor.** A two-pixel pane must
+    // get a two-pixel thumb, not an eighteen-pixel one hanging off the end.
+    let h = h.clamp(min.min(height), height);
+    // **`total - len`, not `total`.** The last row the view can *start* at is
+    // one screenful above the end; dividing by `total` leaves the thumb short
+    // of the bottom by exactly that, which reads as "there is more below" when
+    // you are already at the end of the scrollback.
+    let span = total - len;
+    let pos = (offset.min(span) as f64 / span as f64) * (height - h) as f64;
+    Some((pos.round() as i32, h))
+}
+
+unsafe extern "system" fn link_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_HUD_SYNC => {
+                let shown = HOVER.lock().ok().and_then(|h| h.clone());
+                let Some((surface, url)) = shown else {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    hlogf!(frame_hwnd_of(wp.0), "[hud] link bar hidden");
+                    return LRESULT(0);
+                };
+                let Some(fr) = pane_rect_for(surface) else {
+                    // The pane went away between the core sending this and us
+                    // reading it. Hidden rather than left over whatever is
+                    // under it now.
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    hlogf!(
+                        frame_hwnd_of(surface),
+                        "[hud] link bar: no pane owns surface {:#x}; hidden",
+                        surface
+                    );
+                    return LRESULT(0);
+                };
+                let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+                let sc = |v: i32| v * dpi / 96;
+                // Bottom-left of the pane, where every browser and every other
+                // terminal puts this. **Width is capped at the pane**, so a
+                // long URL is elided rather than drawn off the side of the
+                // window.
+                let want = sc(16) + sc(7) * url.chars().count() as i32;
+                let w = want.min(fr.right - fr.left - sc(16)).max(sc(60));
+                let h = sc(HEIGHT);
+                let x = fr.left + sc(8);
+                let y = fr.bottom - h - sc(8);
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    x,
+                    y,
+                    w,
+                    h,
+                    SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                );
+                let _ = InvalidateRect(Some(hwnd), None, true);
+                hlogf!(
+                    frame_hwnd_of(surface),
+                    "[hud] link bar over surface {:#x}: {:?}",
+                    surface,
+                    url
+                );
+                LRESULT(0)
+            }
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            WM_ERASEBKGND => LRESULT(1),
+            WM_PAINT => {
+                let url = HOVER
+                    .lock()
+                    .ok()
+                    .and_then(|h| h.as_ref().map(|(_, u)| u.clone()))
+                    .unwrap_or_default();
+                // **`DT_PATH_ELLIPSIS`, not `DT_END_ELLIPSIS`.** What a person
+                // needs from a long URL is the host and the end of the path;
+                // cutting the tail off leaves the half that is identical for
+                // every link on the page.
+                paint_with(
+                    hwnd,
+                    &url,
+                    COL_LINK_BG,
+                    COL_TEXT,
+                    DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS,
+                );
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+// --------------------------------------------------------------- scrollbar
+
+/// Which surface the scrollbar is currently drawn for.
+///
+/// **`WM_PAINT` arrives with no arguments**, so without this it would have to
+/// guess which surface's numbers to draw -- and the guess that suggests itself
+/// (the focused pane) is wrong exactly when there is a split, which is the
+/// only time it matters.
+static SCROLL_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn scroll_counts(surface: usize) -> Option<(u64, u64, u64)> {
+    SCROLL
+        .lock()
+        .ok()
+        .and_then(|v| v.iter().find(|(s, ..)| *s == surface).map(|(_, t, o, l)| (*t, *o, *l)))
+}
+
+unsafe extern "system" fn scroll_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_HUD_SYNC => {
+                // `WPARAM(0)` means "re-evaluate the surface you are already
+                // showing" -- that is what a frame resize sends.
+                let surface = if wp.0 != 0 { wp.0 } else { SCROLL_SHOWN_FOR.load(Ordering::Acquire) };
+                let Some((total, offset, len)) = scroll_counts(surface) else {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    SCROLL_SHOWN_FOR.store(0, Ordering::Release);
+                    return LRESULT(0);
+                };
+                let Some(fr) = pane_rect_for(surface) else {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    SCROLL_SHOWN_FOR.store(0, Ordering::Release);
+                    hlogf!(
+                        frame_hwnd_of(surface),
+                        "[hud] scrollbar: no pane owns surface {:#x}; hidden",
+                        surface
+                    );
+                    return LRESULT(0);
+                };
+                let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+                let sc = |v: i32| v * dpi / 96;
+                let h = fr.bottom - fr.top;
+                if thumb(total, offset, len, h, sc(THUMB_MIN)).is_none() {
+                    // Nothing to scroll. **Hidden rather than drawn
+                    // full-height**: a full-height thumb and a scrollbar that
+                    // has stopped being updated look exactly the same.
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    SCROLL_SHOWN_FOR.store(0, Ordering::Release);
+                    hlogf!(
+                        frame_hwnd_of(surface),
+                        "[hud] scrollbar hidden for surface {:#x} ({} rows, {} visible)",
+                        surface,
+                        total,
+                        len
+                    );
+                    return LRESULT(0);
+                }
+                let w = sc(SCROLL_W);
+                // **Stored before the placement, not after.** `SetWindowPos`
+                // with `SWP_SHOWWINDOW` can deliver `WM_PAINT` before it
+                // returns, and a paint that ran while this still named the
+                // previous surface would draw the other pane's position.
+                SCROLL_SHOWN_FOR.store(surface, Ordering::Release);
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    fr.right - w,
+                    fr.top,
+                    w,
+                    h,
+                    SWP_SHOWWINDOW | SWP_NOACTIVATE,
+                );
+                let _ = InvalidateRect(Some(hwnd), None, true);
+                hlogf!(
+                    frame_hwnd_of(surface),
+                    "[hud] scrollbar surface {:#x}: row {} of {}, {} visible",
+                    surface,
+                    offset,
+                    total,
+                    len
+                );
+                LRESULT(0)
+            }
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            WM_ERASEBKGND => LRESULT(1),
+            WM_PAINT => {
+                let counts = scroll_counts(SCROLL_SHOWN_FOR.load(Ordering::Acquire));
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                if !hdc.is_invalid() {
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    let track = CreateSolidBrush(COLORREF(COL_TRACK));
+                    FillRect(hdc, &rc, track);
+                    let _ = DeleteObject(track.into());
+                    if let Some((total, offset, len)) = counts {
+                        let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+                        if let Some((y, th)) =
+                            thumb(total, offset, len, rc.bottom, THUMB_MIN * dpi / 96)
+                        {
+                            let tr = RECT {
+                                left: rc.left,
+                                top: y,
+                                right: rc.right,
+                                bottom: y + th,
+                            };
+                            let brush = CreateSolidBrush(COLORREF(COL_THUMB));
+                            FillRect(hdc, &tr, brush);
+                            let _ = DeleteObject(brush.into());
+                        }
+                    }
+                    let _ = EndPaint(hwnd, &ps);
+                }
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
 // ------------------------------------------------------------------- paint
 
 fn paint(hwnd: HWND, label: &str, bg: u32, fg: u32) {
+    paint_with(hwnd, label, bg, fg, DT_CENTER | DT_SINGLELINE | DT_VCENTER)
+}
+
+/// The same, with the caller saying how the text is laid out. The two signs
+/// that are labels centre theirs; the link bar left-aligns and elides.
+fn paint_with(hwnd: HWND, label: &str, bg: u32, fg: u32, flags: DRAW_TEXT_FORMAT) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(hwnd, &mut ps);
@@ -773,12 +1026,11 @@ fn paint(hwnd: HWND, label: &str, bg: u32, fg: u32) {
             let old = SelectObject(hdc, st.font.into());
             SetTextColor(hdc, COLORREF(fg));
             let mut wide: Vec<u16> = label.encode_utf16().collect();
-            DrawTextW(
-                hdc,
-                &mut wide,
-                &mut rc,
-                DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-            );
+            // A little breathing room at both ends for the left-aligned
+            // case. The centred signs are unaffected: the inset is symmetric.
+            rc.left += 8;
+            rc.right -= 8;
+            DrawTextW(hdc, &mut wide, &mut rc, flags);
             SelectObject(hdc, old);
         });
         let _ = EndPaint(hwnd, &ps);
@@ -788,6 +1040,51 @@ fn paint(hwnd: HWND, label: &str, bg: u32, fg: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **These run on Windows and nowhere else.** `polter-host` does not build
+    /// for the machine this port is written on, so unlike the rules in
+    /// `polter-split-tree`, `polter-droppath`, `polter-cliargs` and
+    /// `polter-urlpolicy`, nothing here is checked by `cargo test` while it is
+    /// being written. Said out loud because **a `#[test]` that never runs looks
+    /// exactly like one that passes.**
+    ///
+    /// What is pinned is the two failures that read as "the scrollbar is a bit
+    /// off" rather than as a wrong answer:
+    ///
+    ///  * a thumb that goes to zero pixels in a long scrollback, which reads
+    ///    as "there is nothing to scroll";
+    ///  * a thumb that stops short of the bottom, which reads as "there is
+    ///    more below" when you are already at the end.
+    #[test]
+    fn the_thumb_reaches_the_bottom_and_never_disappears() {
+        // Nothing to scroll: no bar at all, rather than a full-height thumb.
+        assert_eq!(thumb(24, 0, 24, 480, 18), None);
+        assert_eq!(thumb(10, 0, 24, 480, 18), None);
+        // No pane to draw in.
+        assert_eq!(thumb(1000, 0, 24, 0, 18), None);
+
+        // At the top.
+        let (y, _) = thumb(1000, 0, 100, 500, 18).unwrap();
+        assert_eq!(y, 0);
+
+        // At the very bottom. The last row the view can start at is
+        // `total - len`, and the thumb has to sit flush against the end there.
+        let (y, h) = thumb(1000, 900, 100, 500, 18).unwrap();
+        assert_eq!(y + h, 500, "the thumb stops short of the bottom of the track");
+
+        // A stale offset past the end is clamped, not overrun.
+        let (y, h) = thumb(1000, 5000, 100, 500, 18).unwrap();
+        assert_eq!(y + h, 500);
+
+        // A million rows with a 24-row view: the honest height is a fraction
+        // of a pixel, and the floor is the whole of what keeps it visible.
+        let (_, h) = thumb(1_000_000, 500_000, 24, 500, 18).unwrap();
+        assert_eq!(h, 18);
+
+        // The floor never exceeds the track.
+        let (y, h) = thumb(1000, 900, 100, 2, 18).unwrap();
+        assert!(h <= 2 && y + h <= 2, "thumb {y}+{h} does not fit in a 2px track");
+    }
 
     /// Empty the table -- **and refuse to do it without the turn.**
     ///
