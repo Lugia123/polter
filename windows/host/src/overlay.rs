@@ -32,8 +32,8 @@
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, GetParent, GetWindowLongPtrW, SendMessageW, SetWindowLongPtrW,
-    GWLP_USERDATA, GWLP_WNDPROC, WM_KEYDOWN,
+    CallWindowProcW, GetAncestor, GetForegroundWindow, GetParent, GetWindowLongPtrW, SendMessageW,
+    SetForegroundWindow, SetWindowLongPtrW, GA_ROOT, GWLP_USERDATA, GWLP_WNDPROC, WM_KEYDOWN,
 };
 
 use crate::hlogf;
@@ -81,6 +81,91 @@ pub fn focus_back(prev: HWND, who: &str) {
     }
     let _ = unsafe { SetFocus(Some(prev)) };
     hlogf!(frame(), "[overlay] {} closed, focus returned to the surface", who);
+}
+
+/// Give the **foreground** back when an overlay hides itself.
+///
+/// # Focus and foreground are two different things, and only one was being set
+///
+/// [`focus_back`] calls `SetFocus`, which moves the focus **within the calling
+/// thread**. It does not move the foreground window, and nothing in this host
+/// was moving that. So an overlay could hide itself and stay foreground, which
+/// is what the command palette did after running a command:
+///
+///     GetForegroundWindow() = 0x50022A
+///     GetClassNameW         = PolterCommandPalette
+///     IsWindowVisible       = False
+///     GetWindowRect         = 440,150..1000,500
+///
+/// on-screen and normally sized, so not drawn away or collapsed -- hidden, and
+/// still holding the keyboard. **From the chair there is nothing to see**: no
+/// window appeared, nothing closed, and every key from then on goes into
+/// something invisible. That is the whole reason this is worth a shared
+/// function rather than a line in one file.
+///
+/// # What this does not claim
+///
+/// These overlays are `WS_POPUP` created with `hWndParent = None`, so they
+/// have no owner for Windows to hand activation to. That is the likely reason
+/// nothing happened by itself -- **and it stays an explanation, not a
+/// finding**, because it cannot be measured anywhere but on the machine. The
+/// remedy does not rest on it: hand the foreground back, then *read it back*,
+/// and the log says what actually happened either way.
+///
+/// # Two guards, and both of them matter
+///
+///  * **only when we are still the foreground.** If the person has already
+///    clicked another application, taking the foreground back would be this
+///    host yanking the keyboard out of somebody else's window.
+///  * **back to the window `prev` lives in**, not to "window 1". The window
+///    that had the keyboard before the overlay took it is the one that should
+///    have it after -- and `5351b0147` had just finished removing exactly that
+///    "always window 1" answer from these same overlays. `GA_ROOT` because
+///    `prev` is a surface *child*, and the foreground window is a top-level
+///    one.
+pub fn foreground_back(me: HWND, prev: HWND, who: &str) {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg != me {
+            hlogf!(
+                frame(),
+                "[overlay] {} hid; the foreground is {:?}, not ours -- left alone",
+                who, fg
+            );
+            return;
+        }
+        if prev.0.is_null() {
+            // Nothing to hand it to. Said rather than passed over: this is the
+            // state in which the keyboard is about to go nowhere, and it is
+            // the one reading that distinguishes it from a working close.
+            hlogf!(
+                frame(),
+                "[overlay] {} hid while foreground and there is no previous focus;                  THE FOREGROUND IS STILL THE HIDDEN OVERLAY",
+                who
+            );
+            return;
+        }
+        let want = GetAncestor(prev, GA_ROOT);
+        let ok = SetForegroundWindow(want).as_bool();
+        // **The read-back is the point.** `SetForegroundWindow` can be refused
+        // and says so only in its return value, and the return value is a
+        // claim about the request rather than about the state. This line is
+        // what makes "the keyboard came back" a reading instead of an
+        // assumption -- and it is what somebody on the machine greps for.
+        let now = GetForegroundWindow();
+        let verdict = if now == want {
+            "the window that had it"
+        } else if now == me {
+            "STILL THE HIDDEN OVERLAY"
+        } else {
+            "somewhere else"
+        };
+        hlogf!(
+            frame(),
+            "[overlay] {} hid while foreground; handed back to {:?} ok={} --              GetForegroundWindow now {:?}: {}",
+            who, want, ok as u8, now, verdict
+        );
+    }
 }
 
 // --------------------------------------------------- letting Escape through

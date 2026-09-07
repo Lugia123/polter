@@ -114,6 +114,16 @@ thread_local! {
     static QUICK: RefCell<Option<Quick>> = const { RefCell::new(None) };
 }
 
+/// The window that had the foreground when this panel took it.
+///
+/// **Not a `thread_local` like `QUICK` above**, and not because of threads:
+/// it is a plain handle with no ownership, and keeping it beside the panel's
+/// own state would tie "what was in front of us" to the panel's lifetime. It
+/// is cleared as it is read, so a second hide with nothing in between cannot
+/// hand the foreground to a window that has already been given it once.
+static PREV_FOREGROUND: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
 fn with_quick<R>(f: impl FnOnce(&mut Quick) -> R) -> Option<R> {
     QUICK.with(|c| c.borrow_mut().as_mut().map(f))
 }
@@ -759,6 +769,15 @@ fn show(app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
     });
 
     unsafe {
+        // **Remembered before it is taken, not after.** This panel takes the
+        // foreground on the next line and hid itself again without ever giving
+        // it back -- the same trap the command palette was found in, and worse
+        // here because the window that had it is usually **another
+        // application**: this opens on a global hotkey from wherever the
+        // person was. `GetForegroundWindow` rather than `GetFocus`, because
+        // focus is a per-thread notion and the window being remembered is not
+        // in this thread at all.
+        PREV_FOREGROUND.store(GetForegroundWindow().0, std::sync::atomic::Ordering::Release);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         let _ = SetForegroundWindow(hwnd);
         SetTimer(Some(hwnd), TIMER_SLIDE, 16, None);
@@ -790,6 +809,7 @@ fn hide() {
         return;
     };
     with_quick(|q| q.visible = false);
+    let prev = HWND(PREV_FOREGROUND.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel));
     unsafe {
         let _ = KillTimer(Some(hwnd), TIMER_SLIDE);
         let _ = ShowWindow(hwnd, SW_HIDE);
@@ -798,6 +818,13 @@ fn hide() {
         // would let the panel open exactly once, and the second press would
         // do nothing with no line in the log to say why.
     }
+    // **Given back before the line that says it is hidden.** Same shared
+    // helper the palette and the find bar use, and it reads the foreground
+    // back afterwards so the log says what happened rather than what was
+    // asked for -- which matters more here than anywhere, because the window
+    // being handed to belongs to somebody else's process and Windows is
+    // entitled to refuse.
+    crate::overlay::foreground_back(hwnd, prev, "quick terminal");
     // process-wide: the quick terminal is one window for the whole process, not one per frame
     plogf!("[quick] hidden | {}", state_line());
 }

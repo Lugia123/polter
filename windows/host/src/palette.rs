@@ -55,6 +55,82 @@ use crate::{logf, plogf, wlogf};
 /// Posted to the palette window to open or close it. `WM_APP + 1` is taken by
 /// the tab op queue (`tabs::WM_POLTER_OP`), so this is `+ 2`.
 const WM_PALETTE_TOGGLE: u32 = WM_APP + 2;
+/// A UI Automation client asked for a row to be run. `WPARAM` is the row.
+const WM_PALETTE_INVOKE: u32 = WM_APP + 21;
+
+/// What is on screen, readable from **any** thread: `(title, action)` per
+/// visible row, best match first, and which of them is highlighted.
+///
+/// # Why a second copy of `Model::filtered` exists
+///
+/// `Model` is a `thread_local` on the main thread and the rows are indices
+/// into another field of it. A UI Automation provider is called on whichever
+/// thread the automation core chooses, and from there the model is not merely
+/// locked -- it is **not there**: a thread local on another thread reads as
+/// absent, not as busy. So a client enumerating the palette would be told it
+/// has no rows, which is indistinguishable from a palette that is empty.
+///
+/// Written only from the main thread, everywhere `filtered` is, so the two
+/// cannot describe different keystrokes.
+static SNAPSHOT: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+/// The highlighted row, or `usize::MAX` when the palette is closed.
+static SNAPSHOT_SEL: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// Replace the snapshot from `Model`. **Main thread only** -- it borrows.
+fn publish(st: &Model) {
+    if let Ok(mut rows) = SNAPSHOT.lock() {
+        rows.clear();
+        rows.extend(
+            st.filtered
+                .iter()
+                .filter_map(|&i| st.commands.get(i))
+                .map(|c| (c.title.clone(), c.action.clone())),
+        );
+    }
+    SNAPSHOT_SEL.store(if st.visible { st.selected } else { usize::MAX }, Ordering::Release);
+}
+
+/// One visible row's `(title, action)`, or `None` if it is not there.
+///
+/// **Separate from [`snapshot`] because a property read asks for one row.**
+/// Every `GetPropertyValue` on a list item would otherwise clone the whole
+/// list to look at one of it, once per property, per row, per client.
+pub fn row(i: usize) -> Option<(String, String)> {
+    if SNAPSHOT_SEL.load(Ordering::Acquire) == usize::MAX {
+        return None;
+    }
+    SNAPSHOT.lock().ok().and_then(|r| r.get(i).cloned())
+}
+
+/// How many rows are visible. Zero when the palette is closed.
+pub fn row_count() -> usize {
+    if SNAPSHOT_SEL.load(Ordering::Acquire) == usize::MAX {
+        return 0;
+    }
+    SNAPSHOT.lock().map(|r| r.len()).unwrap_or(0)
+}
+
+/// Which row is highlighted, or `None` when the palette is closed.
+pub fn selected_row() -> Option<usize> {
+    match SNAPSHOT_SEL.load(Ordering::Acquire) {
+        usize::MAX => None,
+        n => Some(n),
+    }
+}
+
+/// Run row `i`. **Safe from any thread** -- it only posts.
+///
+/// The row travels in the message's own `WPARAM`, for the reason
+/// `request_toggle` carries its window there: a value carried by the message
+/// cannot be taken by a different one.
+pub fn invoke_row(i: usize) -> bool {
+    let h = HWND_PALETTE.load(Ordering::Acquire);
+    if h.is_null() {
+        return false;
+    }
+    unsafe { PostMessageW(Some(HWND(h)), WM_PALETTE_INVOKE, WPARAM(i), LPARAM(0)) }.is_ok()
+}
 
 /// Unscaled metrics. Everything is multiplied by the window's DPI at paint.
 const ROW_H: i32 = 26;
@@ -530,6 +606,7 @@ fn refilter(st: &mut Model, needle: &str) {
     st.filtered = scored.into_iter().map(|(_, i)| i).collect();
     st.selected = 0;
     st.top = 0;
+    publish(st);
     logf!(
         "[palette] filter {:?} -> {} of {}",
         needle,
@@ -772,7 +849,14 @@ fn hide() {
     let was_up = STATE.with(|c| {
         c.borrow_mut()
             .as_mut()
-            .map(|st| std::mem::replace(&mut st.visible, false))
+            .map(|st| {
+                let was = std::mem::replace(&mut st.visible, false);
+                // **Cleared with the window.** A snapshot that outlived the
+                // palette would offer a client rows it cannot see and an
+                // `Invoke` that runs a command nobody asked for.
+                publish(st);
+                was
+            })
             .unwrap_or(false)
     });
     unsafe {
@@ -784,7 +868,48 @@ fn hide() {
         );
     }
     if was_up {
+        // **Foreground first, then focus.** They are different pieces of
+        // Windows state and this only ever set the second one, which is how a
+        // hidden palette went on holding the keyboard. `focus_back` moves the
+        // focus inside this thread; it cannot move the foreground window.
+        crate::overlay::foreground_back(me, PREV_FOCUS.get(), "palette");
         crate::overlay::focus_back(PREV_FOCUS.get(), "palette");
+    }
+}
+
+/// Run the row a client named, by its position in the visible list.
+///
+/// **Runs the row that is there now, and says so when it is not.** The index
+/// came from a snapshot taken on another thread; between then and now a
+/// keystroke can have refiltered the list. Refusing is the right answer --
+/// running "whatever is at that position instead" is how an automation client
+/// silently does the wrong thing.
+fn run_index(i: usize) {
+    let action = STATE.with(|c| {
+        let b = c.borrow();
+        let st = b.as_ref()?;
+        if !st.visible {
+            return None;
+        }
+        let idx = *st.filtered.get(i)?;
+        Some(st.commands[idx].action.clone())
+    });
+    match action {
+        Some(a) => {
+            hide();
+            let ok = crate::binding(&a);
+            // process-wide: the palette is one window for the process, and
+            // `crate::binding` sends to the first window's focused surface --
+            // so this line is about the process. **The gap that names is
+            // `binding`'s and not this arm's**: a palette command run from
+            // the second window reaches the first one's terminal, and saying
+            // "which window" here would report an intent the send does not
+            // honour.
+            plogf!("[palette] uia invoke row {i} -> {a:?} binding_action = {ok}");
+        }
+        // process-wide: the palette is one window for the process, and the
+        // row a client named is gone rather than belonging to some other one
+        None => plogf!("[palette] uia invoke row {i}: no such row now; nothing run"),
     }
 }
 
@@ -819,6 +944,7 @@ fn move_selection(delta: i32) {
             } else if next >= st.top + rows {
                 st.top = next + 1 - rows;
             }
+            publish(st);
         }
     });
     let _ = unsafe { InvalidateRect(Some(hwnd()), None, true) };
@@ -829,6 +955,19 @@ fn move_selection(delta: i32) {
 extern "system" fn palette_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
+            // **This window answers for itself.** Only the frame used to, so
+            // everything drawn here -- which is every row -- was invisible to
+            // an automation client; all it could find was the one real `EDIT`
+            // child, unnamed, which is why the palette reads as "you can type
+            // into it but cannot see what is in it".
+            WM_GETOBJECT => match crate::uia::on_get_object_palette(hwnd, wp, lp) {
+                Some(r) => r,
+                None => DefWindowProcW(hwnd, msg, wp, lp),
+            },
+            WM_PALETTE_INVOKE => {
+                run_index(wp.0);
+                LRESULT(0)
+            }
             WM_PALETTE_TOGGLE => {
                 let vis = STATE.with(|c| c.borrow().as_ref().map(|s| s.visible).unwrap_or(false));
                 if vis {

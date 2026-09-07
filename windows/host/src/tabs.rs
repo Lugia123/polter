@@ -132,6 +132,15 @@ pub enum Op {
     NewWindow,
     CloseTab(i32),
     GotoTab(i32),
+    /// Make one **named** tab active.
+    ///
+    /// **Carries a `TabId` and not an index, unlike `GotoTab`**, and the
+    /// difference matters at exactly the moment this op exists for: it is
+    /// queued by a UI Automation client on some other thread, and between the
+    /// queueing and the running a tab can be closed, moved or dragged to
+    /// another strip. An index resolved later would then name a different tab
+    /// -- silently, and looking entirely correct.
+    ActivateTab(TabId),
     /// What the core's `move_tab` action carries: a relative shift of the
     /// active tab. Kept faithful to the action rather than resolved at the
     /// call site, because the tab set can change between queueing and running.
@@ -222,6 +231,7 @@ impl Op {
             Op::NewWindow => "NewWindow",
             Op::CloseTab(_) => "CloseTab",
             Op::GotoTab(_) => "GotoTab",
+            Op::ActivateTab(_) => "ActivateTab",
             Op::MoveTabBy(_) => "MoveTabBy",
             Op::ToggleFullscreen => "ToggleFullscreen",
             Op::ToggleMaximize => "ToggleMaximize",
@@ -3645,6 +3655,13 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     _ => cur,
                 };
                 set_active(frame, idx);
+            }
+            Op::ActivateTab(id) => {
+                // `activate_tab` is a no-op for a tab that has gone, which is
+                // the right answer here: the client asked for a tab that no
+                // longer exists, and inventing a neighbour would be worse
+                // than doing nothing.
+                activate_tab(frame, id);
             }
             Op::MoveTabBy(delta) => {
                 // Resolve to an identity here, on the main thread, and hand

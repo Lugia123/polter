@@ -449,6 +449,12 @@ fn hide() {
         let _ = ShowWindow(me, SW_HIDE);
     }
     if was_up {
+        // **The find bar has the palette's defect, not a similar one.** Same
+        // three creation flags, same `focus_to_edit`, same hide -- it was
+        // found by asking the question of every self-hiding top-level overlay
+        // instead of only the one that was reported, and it is the one people
+        // open more often.
+        crate::overlay::foreground_back(me, PREV_FOCUS.get(), "search");
         crate::overlay::focus_back(PREV_FOCUS.get(), "search");
     }
 }

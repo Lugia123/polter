@@ -125,6 +125,8 @@ const KIND_ROOT: i32 = 1;
 const KIND_TABLIST: i32 = 2;
 const KIND_TABITEM: i32 = 3;
 const KIND_DOCUMENT: i32 = 4;
+const KIND_PALETTE: i32 = 5;
+const KIND_PALETTE_ITEM: i32 = 6;
 
 // ------------------------------------------------------------- text reading
 
@@ -446,7 +448,12 @@ struct TabList {
     frame: isize,
 }
 
-#[implement(IRawElementProviderSimple, IRawElementProviderFragment)]
+#[implement(
+    IRawElementProviderSimple,
+    IRawElementProviderFragment,
+    ISelectionItemProvider,
+    IInvokeProvider
+)]
 struct TabItem {
     frame: isize,
     tab: TabId,
@@ -551,6 +558,10 @@ impl IRawElementProviderSimple_Impl for WindowRoot_Impl {
     }
 
     fn GetPatternProvider(&self, _id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        // no pattern: it is the window itself. Moving, resizing and closing a
+        // window are the system's to offer through the host provider below,
+        // not this tree's -- a second answer here would be a second thing to
+        // keep in step with the window manager.
         // No patterns on the frame itself. The window pattern a client will
         // want (minimise, maximise) comes from the host provider below, which
         // is the operating system's own and better than anything written
@@ -725,6 +736,12 @@ impl IRawElementProviderSimple_Impl for TabList_Impl {
         Ok(ProviderOptions_ServerSideProvider)
     }
     fn GetPatternProvider(&self, _id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        // no pattern: SelectionPattern is what belongs here, and its
+        // GetSelection hands back a raw SAFEARRAY that nothing in this port
+        // can exercise where it is written -- an untested hand-built one is a
+        // memory bug waiting for a client. Each tab answers
+        // SelectionItemPattern instead, which is what a client asks when it
+        // wants to know, or change, which tab is active.
         Err(gone())
     }
     fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
@@ -828,10 +845,26 @@ impl IRawElementProviderSimple_Impl for TabItem_Impl {
     fn ProviderOptions(&self) -> WResult<ProviderOptions> {
         Ok(ProviderOptions_ServerSideProvider)
     }
-    fn GetPatternProvider(&self, _id: UIA_PATTERN_ID) -> WResult<IUnknown> {
-        // `SelectionItemPattern` belongs here and is not implemented; see the
-        // scope note in `docs/windows/uia.md`. A client can read which tab is
-        // active from `HasKeyboardFocus` below, but cannot *activate* one.
+    fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        // **Both, and offering both is the deliberate part.** A tab strip is
+        // a selection container, so `SelectionItemPattern` is the correct
+        // answer and the one a screen reader looks for. `InvokePattern` is
+        // what a generic automation client reaches for first, and a client
+        // that finds neither falls back to synthesising a click at a
+        // coordinate -- which is the thing this exists to stop.
+        //
+        // ⚠️ Offering both is normally discouraged, because on most controls
+        // "select" and "invoke" are different events. On a tab they are not:
+        // there is nothing to do with a tab but make it the active one, and
+        // refusing `Invoke` would leave the commonest client with nothing.
+        if id == UIA_SelectionItemPatternId {
+            let p: ISelectionItemProvider = TabItem { frame: self.frame, tab: self.tab }.into();
+            return Ok(p.into());
+        }
+        if id == UIA_InvokePatternId {
+            let p: IInvokeProvider = TabItem { frame: self.frame, tab: self.tab }.into();
+            return Ok(p.into());
+        }
         Err(gone())
     }
     fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
@@ -936,6 +969,69 @@ impl IRawElementProviderFragment_Impl for TabItem_Impl {
     }
     fn FragmentRoot(&self) -> WResult<IRawElementProviderFragmentRoot> {
         Ok(root_of(self.frame))
+    }
+}
+
+/// Making a tab active, from a client that is not on this window's thread.
+///
+/// **Queued, never done here.** `set_active` moves child windows around, and
+/// a UI Automation call arrives on whichever thread the automation core felt
+/// like using; showing and hiding windows off the owning thread is undefined.
+/// `post_op` is the road every other cross-thread request in this port takes.
+///
+/// **The op carries the `TabId`.** `Op::GotoTab` would have been one line
+/// less and takes an index, and an index resolved after the queue drains can
+/// name a different tab than the one the client pointed at.
+fn activate_from_uia(frame_raw: isize, tab: TabId, how: &str) -> WResult<()> {
+    let frame = HWND(frame_raw as *mut core::ffi::c_void);
+    if !live(frame) {
+        return Err(gone());
+    }
+    wlogf!(frame, "[uia] {} tab {} -> queued", how, tab.0);
+    tabs::post_op(frame, tabs::Op::ActivateTab(tab), "uia");
+    Ok(())
+}
+
+impl ISelectionItemProvider_Impl for TabItem_Impl {
+    fn Select(&self) -> WResult<()> {
+        activate_from_uia(self.frame, self.tab, "Select")
+    }
+
+    /// **The same as `Select`.** A tab strip holds exactly one selection, so
+    /// "add to the selection" can only mean "become the selection"; refusing
+    /// would make a client that reaches for this first conclude the tab
+    /// cannot be selected at all.
+    fn AddToSelection(&self) -> WResult<()> {
+        activate_from_uia(self.frame, self.tab, "AddToSelection")
+    }
+
+    /// **Refused, and that is the honest answer.** There is no state in which
+    /// no tab is active; deselecting one would have to activate another, and
+    /// the client did not say which.
+    fn RemoveFromSelection(&self) -> WResult<()> {
+        Err(gone())
+    }
+
+    fn IsSelected(&self) -> WResult<windows_core::BOOL> {
+        let frame = self.hwnd();
+        if !live(frame) {
+            return Err(gone());
+        }
+        let (tabs_now, active) = tabs::tab_infos(frame);
+        let Some(idx) = tabs_now.iter().position(|t| t.id == self.tab) else {
+            return Err(gone());
+        };
+        Ok((idx == active).into())
+    }
+
+    fn SelectionContainer(&self) -> WResult<IRawElementProviderSimple> {
+        Ok(TabList { frame: self.frame }.into())
+    }
+}
+
+impl IInvokeProvider_Impl for TabItem_Impl {
+    fn Invoke(&self) -> WResult<()> {
+        activate_from_uia(self.frame, self.tab, "Invoke")
     }
 }
 
@@ -1076,6 +1172,276 @@ impl IValueProvider_Impl for Document_Impl {
     fn IsReadOnly(&self) -> WResult<windows::core::BOOL> {
         Ok(true.into())
     }
+}
+
+// -------------------------------------------------------- the command palette
+//
+// **A second fragment root, on a second window, and that is the shape the
+// palette needs rather than a subtree under the frame.** The palette is its
+// own top-level window; UI Automation reaches a window through that window's
+// own `WM_GETOBJECT`, and hanging its rows off the frame's tree would put
+// them somewhere no client looks.
+//
+// **What was there before: one anonymous `EDIT` and nothing else.** The
+// palette answers `WM_GETOBJECT` nowhere, so it fell to `DefWindowProcW` and
+// the default provider described the window and its one real child control.
+// Every row is drawn by us, so every row was invisible -- a list a client can
+// type into and cannot read.
+
+#[implement(
+    IRawElementProviderSimple,
+    IRawElementProviderFragment,
+    IRawElementProviderFragmentRoot
+)]
+struct PaletteRoot {
+    hwnd: isize,
+}
+
+#[implement(
+    IRawElementProviderSimple,
+    IRawElementProviderFragment,
+    IInvokeProvider,
+    ISelectionItemProvider
+)]
+struct PaletteItem {
+    hwnd: isize,
+    /// Position in the visible list. **Not a command id**, because the list is
+    /// rebuilt on every keystroke and there is no id to be had; `run_index`
+    /// re-reads the row at this position and refuses if the list moved.
+    index: usize,
+}
+
+impl PaletteRoot {
+    fn hwnd(&self) -> HWND {
+        HWND(self.hwnd as *mut core::ffi::c_void)
+    }
+}
+impl PaletteItem {
+    fn hwnd(&self) -> HWND {
+        HWND(self.hwnd as *mut core::ffi::c_void)
+    }
+    /// This row's `(title, action)` right now, or `None` if it has gone.
+    fn row(&self) -> Option<(String, String)> {
+        crate::palette::row(self.index)
+    }
+}
+
+impl IRawElementProviderSimple_Impl for PaletteRoot_Impl {
+    fn ProviderOptions(&self) -> WResult<ProviderOptions> {
+        Ok(ProviderOptions_ServerSideProvider)
+    }
+    fn GetPatternProvider(&self, _id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        // no pattern: the same reason `TabList` gives -- SelectionPattern
+        // would be correct and its SAFEARRAY cannot be exercised here. Each
+        // row answers SelectionItemPattern and InvokePattern, which is what
+        // a client needs to read the list and run a row.
+        Err(gone())
+    }
+    fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
+        Ok(match id {
+            UIA_ControlTypePropertyId => variant_i4(UIA_ListControlTypeId.0),
+            UIA_NamePropertyId => variant_bstr("Command palette"),
+            UIA_AutomationIdPropertyId => variant_bstr("command-palette"),
+            UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
+            _ => variant_empty(),
+        })
+    }
+    /// **The window's own default provider, kept.** The palette has a real
+    /// `EDIT` child; handing back the host provider is what lets the window's
+    /// own properties and that control keep working rather than being
+    /// replaced by this tree.
+    fn HostRawElementProvider(&self) -> WResult<IRawElementProviderSimple> {
+        unsafe { UiaHostProviderFromHwnd(self.hwnd()) }
+    }
+}
+
+impl IRawElementProviderFragment_Impl for PaletteRoot_Impl {
+    fn Navigate(&self, direction: NavigateDirection) -> WResult<IRawElementProviderFragment> {
+        let n = crate::palette::row_count();
+        match direction {
+            NavigateDirection_FirstChild if n > 0 => {
+                let r: IRawElementProviderFragment =
+                    PaletteItem { hwnd: self.hwnd, index: 0 }.into();
+                Ok(r)
+            }
+            NavigateDirection_LastChild if n > 0 => {
+                let r: IRawElementProviderFragment =
+                    PaletteItem { hwnd: self.hwnd, index: n - 1 }.into();
+                Ok(r)
+            }
+            _ => Err(gone()),
+        }
+    }
+    fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        // **Keyed by the palette's own window handle**, low 32 bits, the way
+        // the frame providers are keyed by `winid::of`. There is one palette
+        // for the process, so any stable number does; using the handle keeps
+        // it derivable from what a client already has.
+        runtime_id(self.hwnd as u32, KIND_PALETTE, 0)
+    }
+    fn BoundingRectangle(&self) -> WResult<UiaRect> {
+        Ok(window_rect(self.hwnd()))
+    }
+    fn GetEmbeddedFragmentRoots(&self) -> WResult<*mut SAFEARRAY> {
+        empty_i4_array()
+    }
+    fn SetFocus(&self) -> WResult<()> {
+        Ok(())
+    }
+    fn FragmentRoot(&self) -> WResult<IRawElementProviderFragmentRoot> {
+        Ok(PaletteRoot { hwnd: self.hwnd }.into())
+    }
+}
+
+impl IRawElementProviderFragmentRoot_Impl for PaletteRoot_Impl {
+    fn ElementProviderFromPoint(&self, _x: f64, _y: f64) -> WResult<IRawElementProviderFragment> {
+        // **Not implemented, and it is the one a coordinate-driven client
+        // uses.** Hit-testing a row would mean a second copy of the row
+        // geometry `palette.rs` paints with, and the two would disagree the
+        // first time either changed. A client that can enumerate and invoke
+        // does not need to point at anything, which is the whole aim here.
+        Err(gone())
+    }
+    fn GetFocus(&self) -> WResult<IRawElementProviderFragment> {
+        match crate::palette::selected_row() {
+            Some(i) => {
+                let r: IRawElementProviderFragment =
+                    PaletteItem { hwnd: self.hwnd, index: i }.into();
+                Ok(r)
+            }
+            None => Err(gone()),
+        }
+    }
+}
+
+impl IRawElementProviderSimple_Impl for PaletteItem_Impl {
+    fn ProviderOptions(&self) -> WResult<ProviderOptions> {
+        Ok(ProviderOptions_ServerSideProvider)
+    }
+    fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        if id == UIA_InvokePatternId {
+            let p: IInvokeProvider = PaletteItem { hwnd: self.hwnd, index: self.index }.into();
+            return Ok(p.into());
+        }
+        if id == UIA_SelectionItemPatternId {
+            let p: ISelectionItemProvider =
+                PaletteItem { hwnd: self.hwnd, index: self.index }.into();
+            return Ok(p.into());
+        }
+        Err(gone())
+    }
+    fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
+        let Some((title, action)) = self.row() else {
+            return Err(gone());
+        };
+        Ok(match id {
+            UIA_ControlTypePropertyId => variant_i4(UIA_ListItemControlTypeId.0),
+            UIA_NamePropertyId => variant_bstr(&title),
+            // **The core's action string, not the position.** It is the only
+            // stable name a row has: the list is rebuilt on every keystroke,
+            // so `palette-row-3` would name a different command a moment
+            // later -- the same rule the tab items follow.
+            UIA_AutomationIdPropertyId => variant_bstr(&action),
+            UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
+            _ => variant_empty(),
+        })
+    }
+    fn HostRawElementProvider(&self) -> WResult<IRawElementProviderSimple> {
+        Err(gone())
+    }
+}
+
+impl IRawElementProviderFragment_Impl for PaletteItem_Impl {
+    fn Navigate(&self, direction: NavigateDirection) -> WResult<IRawElementProviderFragment> {
+        let n = crate::palette::row_count();
+        if self.index >= n {
+            return Err(gone());
+        }
+        let sibling = |i: usize| -> WResult<IRawElementProviderFragment> {
+            let r: IRawElementProviderFragment = PaletteItem { hwnd: self.hwnd, index: i }.into();
+            Ok(r)
+        };
+        match direction {
+            NavigateDirection_Parent => {
+                let r: IRawElementProviderFragment = PaletteRoot { hwnd: self.hwnd }.into();
+                Ok(r)
+            }
+            NavigateDirection_NextSibling if self.index + 1 < n => {
+                sibling(self.index + 1)
+            }
+            NavigateDirection_PreviousSibling if self.index > 0 => sibling(self.index - 1),
+            _ => Err(gone()),
+        }
+    }
+    fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        runtime_id(self.hwnd as u32, KIND_PALETTE_ITEM, self.index as u64)
+    }
+    /// **The window's rectangle, not the row's.** A row's own rectangle would
+    /// be a second copy of the geometry `palette.rs` paints with, and the two
+    /// would disagree the first time either changed. Reporting the window is
+    /// wrong in a way a client can see; reporting a stale row rectangle is
+    /// wrong in a way it cannot.
+    fn BoundingRectangle(&self) -> WResult<UiaRect> {
+        Ok(window_rect(self.hwnd()))
+    }
+    fn GetEmbeddedFragmentRoots(&self) -> WResult<*mut SAFEARRAY> {
+        empty_i4_array()
+    }
+    fn SetFocus(&self) -> WResult<()> {
+        Ok(())
+    }
+    fn FragmentRoot(&self) -> WResult<IRawElementProviderFragmentRoot> {
+        Ok(PaletteRoot { hwnd: self.hwnd }.into())
+    }
+}
+
+impl IInvokeProvider_Impl for PaletteItem_Impl {
+    fn Invoke(&self) -> WResult<()> {
+        if self.row().is_none() {
+            return Err(gone());
+        }
+        // Posted, for the reason `activate_from_uia` is: this call arrives on
+        // the automation core's thread and running a command closes a window.
+        if crate::palette::invoke_row(self.index) {
+            Ok(())
+        } else {
+            Err(gone())
+        }
+    }
+}
+
+impl ISelectionItemProvider_Impl for PaletteItem_Impl {
+    /// **Selecting a palette row runs it**, which is what selecting one with
+    /// the keyboard does: there is no state in which a row is chosen and not
+    /// yet run.
+    fn Select(&self) -> WResult<()> {
+        IInvokeProvider_Impl::Invoke(self)
+    }
+    fn AddToSelection(&self) -> WResult<()> {
+        IInvokeProvider_Impl::Invoke(self)
+    }
+    fn RemoveFromSelection(&self) -> WResult<()> {
+        Err(gone())
+    }
+    fn IsSelected(&self) -> WResult<windows_core::BOOL> {
+        Ok((crate::palette::selected_row() == Some(self.index)).into())
+    }
+    fn SelectionContainer(&self) -> WResult<IRawElementProviderSimple> {
+        Ok(PaletteRoot { hwnd: self.hwnd }.into())
+    }
+}
+
+/// `WM_GETOBJECT` for the palette window. Called from `palette.rs`'s own
+/// window procedure, the way `on_get_object` is called from the frame's.
+pub fn on_get_object_palette(hwnd: HWND, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    if lp.0 as i32 != UiaRootObjectId {
+        return None;
+    }
+    let provider: IRawElementProviderSimple = PaletteRoot { hwnd: hwnd.0 as isize }.into();
+    // process-wide: there is one command palette for the process, and this
+    // line is about that window rather than about any terminal window
+    plogf!("[uia] palette WM_GETOBJECT -> root provider");
+    Some(unsafe { UiaReturnRawElementProvider(hwnd, wp, lp, &provider) })
 }
 
 // ------------------------------------------------------------- the entry
