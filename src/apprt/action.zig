@@ -981,27 +981,49 @@ pub const Action = union(Key) {
                     line_start = nl + 1;
                 }
             }
-            // **Three floors, and each one guards a different way to go
-            // quiet.** If `// refuses:` stopped matching, every refusing arm
-            // would become an "implementation" and this test would start
-            // demanding the palette un-hide things it must not. If `// owed:`
-            // stopped matching, the same in the other column. And if the
-            // comment skip stopped matching, the prose below would go back to
-            // counting as arms -- so the count of prose lines that name an
-            // `ACTION_` is asserted too, because it is the only observable
-            // that distinguishes "the skip works" from "there is no prose".
-            try std.testing.expect(refused >= 7);
-            // **Lowered from 4 to 3 the day task 302 built `toggle_visibility`,
-            // which is the floor doing exactly what it should and also showing
-            // what it costs.** A floor counting a *shrinking* set fires on good
-            // news, and the person who lands the good news has to tell that
-            // apart from the marker having stopped matching -- which is what
-            // the floor exists for. The two are told apart by looking: three
-            // `// owed:` arms are in `cb_action` and each names its task. If
-            // this number is ever raised again it should be because work was
-            // deferred, not because a number was made to fit.
-            try std.testing.expect(owed >= 3);
-            try std.testing.expect(commented_out >= 2);
+            // **The floors, and one of them used to be a number somebody had
+            // to maintain.**
+            //
+            // `refused >= 7` and `owed >= 4` were exactly that, and the count
+            // collided four times in one round: two people each raised the
+            // same floor from the value they had, and the merged answer was
+            // neither. **A floor whose number moves every time the work moves
+            // is a merge conflict wearing a check's clothes**, and worse, the
+            // value it lands on after a bad merge is still green.
+            //
+            // So the floor asks the question it was always for -- *is the
+            // marker still being recognised?* -- against a reading that does
+            // not depend on the walk above: the raw text is searched for the
+            // marker, and the two counts must agree. Nobody maintains a
+            // number, and a walk that stopped matching fails immediately
+            // because the raw count did not.
+            {
+                const cb_at = std.mem.indexOf(u8, main_src, "extern \"C\" fn cb_action").?;
+                const cb_stop = std.mem.indexOfPos(u8, main_src, cb_at, "\n}\n") orelse main_src.len;
+                const arms_src = main_src[cb_at..cb_stop];
+                const raw_refuses = std.mem.count(u8, arms_src, "// refuses:");
+                const raw_owed = std.mem.count(u8, arms_src, "// owed:");
+                if (refused != raw_refuses or owed != raw_owed) {
+                    std.debug.print(
+                        "the marker walk and the raw text disagree: walk found {d} " ++
+                            "`// refuses:` and {d} `// owed:`, the text has {d} and {d}. " ++
+                            "A marker that is written but not recognised turns a refusal " ++
+                            "into an implementation, and this test then asks the palette to " ++
+                            "un-hide something it must not.\n",
+                        .{ refused, owed, raw_refuses, raw_owed },
+                    );
+                    return error.MarkerWalkDisagreesWithSource;
+                }
+                // Both kinds must actually exist, or the agreement above is
+                // 0 == 0 and proves nothing about either.
+                try std.testing.expect(raw_refuses >= 1);
+                try std.testing.expect(raw_owed >= 1);
+            }
+            // **The comment skip's floor is one line, not a tally.** The real
+            // check on it is the `inspector` control below; this only makes
+            // sure that control is not vacuous -- with no prose naming an
+            // `ACTION_` anywhere, a broken skip would have nothing to trip on.
+            try std.testing.expect(commented_out >= 1);
             try std.testing.expect(performed.count() >= 55);
 
             // **The positive control for the comment skip, and it is a real

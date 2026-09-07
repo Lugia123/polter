@@ -49,12 +49,13 @@ daily, and that is the honest blocker.
 These are specific and each one has a place in the code.
 
 - **Action parity, in three numbers rather than one.** Of the core's 72
-  keybinding actions the host **implements 61**, **refuses 7 by name**, and
-  **still owes 4** (2026-09-08). The refusals are arms like any other: they
+  keybinding actions the host **implements 63**, **refuses 7 by name**, and
+  **still owes 2** (2026-09-08). The refusals are arms like any other: they
   exist so that a GTK inspector or a tab overview answers with a sentence
   saying this platform has no such thing, rather than falling through to a
-  bare tag number in a log nobody sees. Counting arms would call that 68
-  implemented, which is why the number is published as three. Both numbers are measured rather than
+  bare tag number in a log nobody sees. Counting arms would call that 72
+  implemented, which is why the number is published as three; every one of the
+  72 now gets a named answer and none falls through to a bare tag number. Both numbers are measured rather than
   remembered, and the commands are in
   [`docs/windows/status.md`](docs/windows/status.md) — **an earlier version of
   this line said 24, from a command anchored to line numbers that had moved.**

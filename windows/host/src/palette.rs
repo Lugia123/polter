@@ -290,15 +290,6 @@ const UNAVAILABLE: &[Unavailable] = &[
               underneath it would produce precisely the symptom this table exists to remove -- \
               a row that is offered, pressed, and does nothing.",
     },
-    Unavailable {
-        key: "show_on_screen_keyboard",
-        blocked_on: "show_on_screen_keyboard",
-        why: "Not built here yet, and **owed rather than inapplicable**: `Binding.zig` says \
-              \"Only implemented on Linux (GTK) ... Other platforms are as of now untested\", \
-              and untested is not not-applicable -- Windows has an on-screen keyboard, and a \
-              touch device is where this row is the whole point. Task 281's table puts it in \
-              the same column as `secure_input`.",
-    },
 ];
 
 const SYNONYMS: &str = include_str!("synonyms.txt");

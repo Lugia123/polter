@@ -111,6 +111,7 @@ mod menu;
 mod mouse;
 mod notify;
 mod overlay;
+mod osk;
 mod palette;
 mod plugins;
 mod polterclose;
@@ -3398,22 +3399,34 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             false
         }
 
-        // **Should be done, and is not.** `Binding.zig` marks it "Only
-        // implemented on Linux (GTK) ... Other platforms are as of now
-        // untested", and **untested is not not-applicable**: Windows has an
-        // on-screen keyboard, and a touch device is where this row is the whole
-        // point.
-        // owed: 303 -- not built yet; Windows has one and nobody has wired it.
-        ffi::ACTION_SHOW_ON_SCREEN_KEYBOARD => {
-            alogf!(
-                origin,
-                "[action] show_on_screen_keyboard: not built in this host yet (task 303). \
-                 Windows has one; nobody has wired it. Work not done, not a platform that \
-                 cannot do it."
-            );
-            false
-        }
-
+        // **The one that was owed and now is not.** `Binding.zig` marks this
+        // "Only implemented on Linux (GTK) ... Other platforms are as of now
+        // untested", and untested is not not-applicable: Windows has an
+        // on-screen keyboard, and a tablet with no physical keyboard is the
+        // machine this row is for.
+        //
+        // **Per surface, because the log line is**: the keyboard belongs to no
+        // window of ours, but which terminal asked is the one fact that pairs
+        // this line with what somebody pressed. App-targeted is refused rather
+        // than applied to whichever window is in front -- an action that names
+        // no terminal has not said which one wanted a keyboard.
+        //
+        // `osk.rs`'s header says which of Windows' two on-screen keyboards
+        // this starts, why the other one is not attempted, and which layers of
+        // "it worked" a machine with no touch screen can and cannot show.
+        ffi::ACTION_SHOW_ON_SCREEN_KEYBOARD => match origin {
+            Some(frame) => osk::show(frame),
+            None => {
+                // process-wide: the action named no window, so there is no
+                // terminal this could be about
+                plogf!(
+                    "[action] show_on_screen_keyboard names no window (target tag={}); \
+                     not started",
+                    target.tag
+                );
+                false
+            }
+        },
         ACTION_RENDER => true,
 
         // **An action this host does not answer leaves a line.**
