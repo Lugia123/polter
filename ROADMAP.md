@@ -19,12 +19,21 @@ Claude Code. Every part of the supervising side is exercised there: groups,
 the task panel, the transcript, the statistics view, the MCP surface, the
 provisioning plugins.
 
-**Windows — new in 0.5.447, and this is its first release.** `windows/host/` is
-a Rust shell that drives the same Zig core through libghostty's C API. What has
-a reading behind it: the window opens, tabs work, a shell starts, CJK text
-renders, IME composition produces Chinese characters in a real terminal, the
-menu and its accelerators work, the resources directory is found and the
-provisioning plugins start. What is known to be missing is below.
+**Windows — first shipped in 0.5.447; 0.5.497 is the current release.**
+`windows/host/` is a Rust shell that drives the same Zig core through
+libghostty's C API. What has a reading behind it: the window opens, tabs work,
+a shell starts, CJK text renders, IME composition produces Chinese characters
+in a real terminal, the menu and its accelerators work, the resources directory
+is found and the provisioning plugins start. Splits, shell integration and the
+group chat view each got a reading on a real machine after that first release.
+
+**0.5.447's Windows zip was missing `polter-cli.exe`**, so the group chat tab
+could not open on that release at all. The fault was in the packing list rather
+than in the program, which is worth saying because it presented as a broken
+feature and nothing in the code was wrong. 0.5.497 ships the binary, and the
+chat view was opened on the Windows machine to confirm it.
+
+What is known to be missing is below.
 
 **Linux — builds, unverified.** The GTK app compiles. Nobody has run a
 supervised session on it, so there is no release binary; build from source if
@@ -46,13 +55,36 @@ These are specific and each one has a place in the code.
   remembered, and the commands are in
   [`docs/windows/status.md`](docs/windows/status.md) — **an earlier version of
   this line said 24, from a command anchored to line numbers that had moved.**
-- **A Windows script for the `archive` plugin.** It ships only `archive.py`,
-  and nothing on Windows runs a `.py` directly, so it is refused at load with
-  a line saying so. Note what this is *not*: plugins can already say what to
-  run per system (`exec_windows`), and the seven agent-CLI plugins do. An `os`
-  field — "do not load me here at all" — was considered and **decided against**
+- **The `archive` plugin's Windows script — done, and left here for the way
+  this line was wrong.** It said the plugin shipped only `archive.py` and was
+  refused at load because nothing on Windows runs a `.py` directly. It ships an
+  `archive.ps1` beside it now (`50e0b1fd5`) and names it with `exec_windows`
+  (`plugins/archive/plugin.json:8`), so the refusal it described does not
+  happen any more.
+
+  The reading behind *Done* is the host's log on the Windows machine, seen
+  while cutting 0.5.497:
+
+      plugin archive: started …archive.ps1 as pid 13400
+
+  **That is a reading that it starts, and not that its whole job was watched.**
+  Nothing has checked that what it writes there is complete, or that the files
+  can be read back.
+
+  **The argument outlives the item, so it stays.** Plugins can already say what
+  to run per system, and the seven agent-CLI plugins do. An `os` field — "do
+  not load me here at all" — was considered and **decided against**
   (`docs/poltergeist/provisioning.md` §9.5), because `exec_<os>` expresses
-  today's only real case. What is missing is the script.
+  today's only real case. What was ever missing was the script, never a way to
+  say it — which is why the fix was one file and no schema change.
+
+  **Why it is written out rather than deleted.** This line was true when it was
+  written and went on being read for a while after it stopped being true. The
+  same fact changed in two documents at once and only one of them kept up;
+  `README.md` has its own account of the row that went this way. A roadmap that
+  distinguishes *Done* from *Built* is the wrong file to quietly drop the
+  evidence of a claim that expired — deleting it would leave the file looking
+  like it had never been wrong.
 
 ### Make the supervising side easier to get right
 
@@ -80,10 +112,15 @@ These are specific and each one has a place in the code.
 
 ### Agent coverage
 
-Eight CLIs have provisioning plugins (Claude Code, Codex, Gemini, Qwen,
-opencode, Kimi, DeepSeek, plus the archive one). Only Claude Code on macOS is
-used daily by the author; the others are built and lightly tested. Reports from
-people using the other seven are the fastest way to move this.
+Seven CLIs have provisioning plugins (Claude Code, Codex, Gemini, Qwen,
+opencode, Kimi, DeepSeek). Only Claude Code on macOS is used daily by the
+author; the others are built and lightly tested. Reports from people using the
+other six are the fastest way to move this.
+
+`archive` makes eight plugins in the directory and is not one of these. It is
+not a CLI and provisions nothing: it is handed chat events and keeps a copy of
+them, which is why its `wants.events` is `["chat"]` where every provisioning
+plugin's is `["provision"]`.
 
 ---
 

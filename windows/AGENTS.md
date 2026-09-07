@@ -7,11 +7,13 @@ Two crates live here, deliberately separate:
 | `host/` | the application shell -- windows, tabs, keyboard, IME, libghostty |
 | `split-tree/` | the split layout algorithm, ported from `SplitTree.swift`. **Zero dependencies on purpose**, so it is testable with `cargo test` on the machine the port is written on rather than only on the Windows box. |
 
-`host/` declares `polter-split-tree` as a **path dependency** and does not yet
-call it; making the tab model use it is separate work. It is a dependency
-rather than a copy because copying would throw away the reason the algorithm
-is testable on macOS, and would create a second copy to keep in agreement --
-this directory already paid once for a fork that had to be merged back by hand.
+`host/` declares `polter-split-tree` as a **path dependency** and calls it: the
+tab model holds a `Tree` per tab and splits go through `tree.insert`
+(`host/src/tabs.rs:2087`, `Tree` imported at `host/src/tabs.rs:37`). It is a
+dependency rather than a copy because copying would throw away the reason the
+algorithm is testable on macOS, and would create a second copy to keep in
+agreement -- this directory already paid once for a fork that had to be merged
+back by hand.
 
 ## One surface, one HWND -- and what that forces
 
