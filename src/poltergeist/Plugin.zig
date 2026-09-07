@@ -1,26 +1,41 @@
 //! Running somebody else's script on our behalf.
 //!
-//! A plugin is a directory with a `plugin.json` and an executable. Polter
-//! writes one line of JSON to the executable's stdin and reads its exit
-//! code. That is the whole contract.
+//! A plugin is a directory with a `plugin.json` and an executable. **This
+//! file is the declaration side of one**: it reads that manifest, works out
+//! which file this system would run and what to start it with, and holds
+//! what the user has said about the plugin. It never starts a process and
+//! never talks to one -- `Resident.zig` owns the running plugin and the
+//! protocol it speaks.
+//!
+//! What is here:
+//!
+//!   * **The manifest.** `load` parses `plugin.json` into a `Manifest`,
+//!     taking `exec_<os>` ahead of `exec` and making the path absolute, so
+//!     that running it never depends on where Polter happens to be.
+//!   * **What starts a file of that kind.** `LaunchKind` and `launchArgv`
+//!     answer "what does this system run a `.ps1` with". A plugin that
+//!     declares only a file nothing here can start is `runnable = false`,
+//!     which is settled at load rather than discovered at spawn.
+//!   * **The vocabulary a manifest declares in**: `Event`, `Wants`,
+//!     `ParamSpec`.
+//!   * **The user's side.** `Settings` is the one file that says whether a
+//!     plugin is on and what its parameters are; a `Param`'s value may be a
+//!     reference for `secret.zig` to resolve rather than the secret itself.
 //!
 //! **Why a process and not a library.** These are scripts people copy off
 //! the internet. They will hang, segfault, and flood stdout, and none of
 //! that may take the terminal down with it -- a process boundary is the
-//! only place that guarantee comes free. The rate makes it affordable: the
-//! box already caps interruptions at one a minute, so a fork per
-//! notification costs nothing that matters. And it means any language: a
+//! only place that guarantee comes free. And it means any language: a
 //! twenty-line `curl` script is a complete plugin, where requiring Zig
 //! would mean the extension point does not exist. See
 //! `docs/poltergeist/plugins.md` for the routes that were rejected.
 //!
-//! This file is the **host**: it knows about manifests, processes, timeouts
-//! and exit codes, and nothing about what any particular kind of plugin is
-//! for. What goes in the JSON is decided a layer up. That split is what
-//! lets `sensor` and `action` plugins arrive later without this file
-//! learning about them -- and why there is no code for those two here now,
-//! since an interface guessed before its first use is harder to change than
-//! no interface at all.
+//! **Nothing here knows what a plugin is for.** Which events one asked for
+//! is a name this file parses and stores; what those events mean, and what
+//! travels on the wire, is decided a layer up. That split is what lets a
+//! new kind of event be added without this file learning what it is for --
+//! and it is why `timeout_ms` is a number declared here and enforced by
+//! whoever does the running.
 
 const Plugin = @This();
 
@@ -1206,10 +1221,10 @@ pub const Settings = struct {
 
 /// What came of running one.
 pub const Outcome = enum {
-    /// Exit code zero. The plugin says it did the job.
+    /// The plugin says it did the job.
     done,
 
-    /// Exit code non-zero: the plugin says it failed.
+    /// The plugin says it failed.
     refused,
 
     /// Killed for taking too long.
