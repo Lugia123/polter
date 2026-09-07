@@ -719,6 +719,52 @@ fn monitor_count() -> u32 {
 
 /// Show or hide. Called from the hotkey, from the core's action, and from
 /// `--qttest`.
+/// The `toggle_quick_terminal` action, from `cb_action`.
+///
+/// # Why this does not go through `queue_from`
+///
+/// The core performs this action as `performAction(.app, ...)` and never any
+/// other way (`src/App.zig`), so the target carries no surface and
+/// `origin_window` answers `None`. `queue_from` then refuses -- **correctly**:
+/// its job is to stop an action that names no window from running on a window
+/// somebody picked. Asking it was the defect: on a real machine the action
+/// arrived and the log said `the action names no window; not queued`, every
+/// time, through all three doors (the keybinding, the menu row and the palette
+/// entry all reach the same core action).
+///
+/// **There is nothing to pick, and that is why this is safe.** The quick
+/// terminal is one window for the whole process, and `run_ops` never looks at
+/// the frame this is queued against -- `Op::ToggleQuickTerminal` is
+/// `quick::toggle(app, hinst)` and takes no frame at all. So the window below
+/// is a **message pump**, not a subject: the op has to run on the thread that
+/// owns windows, and any live frame is that thread.
+///
+/// ⚠️ **Do not "improve" this into `overlay_frame()`.** That would read as
+/// "window 1 owns the quick terminal", which is exactly the wrong-window class
+/// this port keeps paying for; the honest statement is that the request needs
+/// a thread and any window will do.
+pub fn request_toggle() -> bool {
+    let frames = crate::winid::all();
+    let Some(&frame) = frames.first() else {
+        // process-wide: there is no window, so there is no thread to carry the
+        // request and no quick terminal to carry it to
+        plogf!("[quick] toggle requested with no window open; nothing to run it on");
+        return false;
+    };
+    // process-wide: the quick terminal is one window for the whole process --
+    // the frame named here is the message pump, not the subject
+    plogf!(
+        "[quick] toggle requested (app-targeted); queued on 1 of {} window(s)",
+        frames.len()
+    );
+    crate::tabs::post_op(
+        frame,
+        crate::tabs::Op::ToggleQuickTerminal,
+        "toggle_quick_terminal action",
+    );
+    true
+}
+
 pub fn toggle(app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
     let visible = is_visible();
     if visible {

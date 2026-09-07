@@ -2730,9 +2730,19 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             queue_from(origin, Op::ToggleSplitZoom, "toggle_split_zoom action")
         }
 
+        // **App-targeted by nature**, the same as `close_all_windows` below.
+        // The core sends it with `.app` and nothing else, so `origin` is
+        // always `None` and `queue_from` refuses every time -- which is what
+        // it is for. `quick::request_toggle` finds a thread to run on instead
+        // of a window to belong to; the note on it says why that is not the
+        // same as picking a window.
         ACTION_TOGGLE_QUICK_TERMINAL => {
-            alogf!(origin, "[action] toggle_quick_terminal");
-            queue_from(origin, Op::ToggleQuickTerminal, "toggle_quick_terminal action")
+            // The quick terminal is one window for the whole process, and
+            // this is the same fact that made `queue_from` the wrong question
+            // here: there is no window to belong to, only a thread to run on.
+            // carries no terminal: the action names no surface and the thing
+            // it toggles is not per-terminal
+            quick::request_toggle()
         }
         ACTION_NEW_TAB => {
             alogf!(origin, "[action] new_tab");
