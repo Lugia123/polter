@@ -31,9 +31,11 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_ESCAPE};
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, GetAncestor, GetForegroundWindow, GetParent, GetWindowLongPtrW, SendMessageW,
-    SetForegroundWindow, SetWindowLongPtrW, GA_ROOT, GWLP_USERDATA, GWLP_WNDPROC, WM_KEYDOWN,
+    CallWindowProcW, GetAncestor, GetClassNameW, GetForegroundWindow, GetParent,
+    GetWindowLongPtrW, GetWindowThreadProcessId, SendMessageW, SetForegroundWindow,
+    SetWindowLongPtrW, GA_ROOT, GWLP_USERDATA, GWLP_WNDPROC, WM_KEYDOWN,
 };
 
 use crate::hlogf;
@@ -112,11 +114,37 @@ pub fn focus_back(prev: HWND, who: &str) {
 /// remedy does not rest on it: hand the foreground back, then *read it back*,
 /// and the log says what actually happened either way.
 ///
-/// # Two guards, and both of them matter
+/// # The guard asks about the process; the first version asked about this window
 ///
-///  * **only when we are still the foreground.** If the person has already
-///    clicked another application, taking the foreground back would be this
-///    host yanking the keyboard out of somebody else's window.
+/// The courtesy is right: if the person has already clicked another
+/// application, taking the foreground back would be this host yanking the
+/// keyboard out of somebody else's window. **The first version implemented
+/// that courtesy as `if fg != me { return }`, and that is the wrong
+/// question.** At the instant an overlay hides, which of *this process's*
+/// windows holds the foreground is exactly what is in flux. On the machine
+/// the read came back as the frame, so the branch concluded "not mine, leave
+/// it", returned, and the log showed one line -- `left alone` -- which reads
+/// entirely normal. Three seconds later the foreground was the hidden overlay
+/// and every keystroke was going into it.
+///
+/// So the question is asked about the **process**: is anything of ours in
+/// front. That answer does not change while Windows is moving activation
+/// between two of our own windows, and it keeps the courtesy exactly. A null
+/// foreground is handed back to rather than left alone -- nobody holding it
+/// is not somebody else holding it.
+///
+/// # The other mechanism, and why it is not in this change
+///
+/// These popups have no owner (`hWndParent = None`), and an owned popup is
+/// one Windows hands activation back for by itself -- which is why
+/// `settings_ui.rs` never had this. Setting an owner would be a second,
+/// independent fix. **It is deliberately not done in the same step**: neither
+/// can be tested anywhere but on the machine, and two untestable changes at
+/// once means a run that still fails cannot say which half was wrong. If the
+/// read-back below still comes out wrong, the owner is the next lever.
+///
+/// # And back to the window `prev` lives in, not to "window 1"
+///
 ///  * **back to the window `prev` lives in**, not to "window 1". The window
 ///    that had the keyboard before the overlay took it is the one that should
 ///    have it after -- and `5351b0147` had just finished removing exactly that
@@ -126,22 +154,50 @@ pub fn focus_back(prev: HWND, who: &str) {
 pub fn foreground_back(me: HWND, prev: HWND, who: &str) {
     unsafe {
         let fg = GetForegroundWindow();
-        if fg != me {
+        let mut pid = 0u32;
+        if !fg.0.is_null() {
+            let _ = GetWindowThreadProcessId(fg, Some(&mut pid));
+        }
+        if !fg.0.is_null() && pid != GetCurrentProcessId() {
+            // **This line has to carry its own evidence.** `left alone` is the
+            // sentence the broken version printed too, and there it meant "I
+            // asked too early", not "somebody else has it". The two are
+            // indistinguishable in a log unless the line says *whose* window
+            // it is -- so the pid and the class go in it, and a reader can
+            // decide rather than believe. Anything that prints `left alone`
+            // without them is the old shape wearing the new words.
+            let mut cls = [0u16; 64];
+            let n = GetClassNameW(fg, &mut cls) as usize;
             hlogf!(
                 frame(),
-                "[overlay] {} hid; the foreground is {:?}, not ours -- left alone",
-                who, fg
+                "[overlay] {} hid; the foreground {:?} is pid {} class {:?}, another process -- left alone",
+                who,
+                fg,
+                pid,
+                String::from_utf16_lossy(&cls[..n])
             );
             return;
         }
+        // **Which of ours it was, recorded.** `another of ours` is what came
+        // back on the machine at the moment the old guard turned round and
+        // left, and without this line in the log there is nothing to tell that
+        // state from `this overlay` -- which is the whole of why the first fix
+        // looked correct.
+        let was = if fg.0.is_null() {
+            "nothing"
+        } else if fg == me {
+            "this overlay"
+        } else {
+            "another of ours"
+        };
         if prev.0.is_null() {
             // Nothing to hand it to. Said rather than passed over: this is the
             // state in which the keyboard is about to go nowhere, and it is
             // the one reading that distinguishes it from a working close.
             hlogf!(
                 frame(),
-                "[overlay] {} hid while foreground and there is no previous focus;                  THE FOREGROUND IS STILL THE HIDDEN OVERLAY",
-                who
+                "[overlay] {} hid (foreground was {}) and there is no previous focus; NOTHING WAS HANDED BACK",
+                who, was
             );
             return;
         }
@@ -162,8 +218,8 @@ pub fn foreground_back(me: HWND, prev: HWND, who: &str) {
         };
         hlogf!(
             frame(),
-            "[overlay] {} hid while foreground; handed back to {:?} ok={} --              GetForegroundWindow now {:?}: {}",
-            who, want, ok as u8, now, verdict
+            "[overlay] {} hid (foreground was {}); handed back to {:?} ok={} -- GetForegroundWindow now {:?}: {}",
+            who, was, want, ok as u8, now, verdict
         );
     }
 }
