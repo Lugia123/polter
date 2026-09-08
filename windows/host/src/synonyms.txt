@@ -95,6 +95,11 @@ full screen = Toggle Fullscreen
 监督此终端 = Toggle Supervision of This Terminal
 不让 agent 碰此终端 = Keep Agents Out of This Terminal
 禁止 agent 进入 = Keep Agents Out of This Terminal
+# Task 322 reverted the menu to Chinese literals, so the label is the word
+# again rather than a msgid the catalogue turns into it. Three rows had been
+# findable only because their msgid *was* the palette's title -- identical in
+# every language by construction. With the literal back, they need a line.
+保持这个终端在岗 = Hold This Terminal to Its Work
 保持在岗 = Hold This Terminal to Its Work
 保持 = Hold This Terminal to Its Work
 不许下班 = Hold This Terminal to Its Work
@@ -102,12 +107,14 @@ full screen = Toggle Fullscreen
 下 = Focus Split: Down
 左 = Focus Split: Left
 右 = Focus Split: Right
+均分分屏大小 = Equalize Splits
 等分 = Equalize Splits
 最大化 = Toggle Maximize
 全屏 = Toggle Fullscreen
 分屏缩放 = Toggle Split Zoom
 上一个分屏 = Focus Split: Previous
 下一个分屏 = Focus Split: Next
+重置窗口大小 = Reset Window Size
 恢复默认大小 = Reset Window Size
 置顶 = Toggle Float on Top
 # The menu says «重新加载配置» since task 310 -- it took the catalogue's
