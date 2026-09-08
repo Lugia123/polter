@@ -107,12 +107,17 @@ still owed. Claims there are marked 实测 or not; unmarked means untested.
 
 ```sh
 for t in windows/tools/*.py; do python3 "$t" || echo "FAILED: $t"; done
-python3 tools/no-local-identifiers.py     # 仓库根,不在这个目录里
+for t in tools/*.py;         do python3 "$t" || echo "FAILED: $t"; done   # 仓库根那几道
 ```
 
 **这里不列它们的名字,也不列个数。** 上一版文档写了「三个 lint」并把名字抄了一遍,
 **当天就多了第四个,而那句话没人改**——一份会过期的清单比没有清单更糟,
 因为读的人以为它是全的。glob 不会过期。
+
+⚠️ **第二行原本写的是 `python3 tools/no-local-identifiers.py`——点了名。**
+于是仓库根新增第二道闸(`translations-still-attach.py`,任务 309)时,它不在任何人
+的清单上,**而这一节自己刚说过点名会过期**。换成 glob,理由和上一句一模一样。
+仓库根的 `tools/` 里还有 `.sh`,glob 只取 `.py`,那是有意的:那些不是闸。
 
 每一道闸都带自我检查(`probe self-test: OK`),**那一行不出现就说明检查器本身没工作**;
 `no-local-identifiers.py` 还带一个正控制。**读输出,不要只读退出码**:
