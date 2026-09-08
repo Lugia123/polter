@@ -2931,23 +2931,32 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             }
             queued
         }
+        // **These three name a pane for the same reason `new_split` does.**
+        // They all acted on whichever pane had focus, so a tool call naming a
+        // pane moved, resized or zoomed a different one and said it had
+        // worked. `tabs::acting_pane` is the single rule they now share; a
+        // keybinding lands on the same pane as before, because it names the
+        // surface it came from and that surface is the focused one.
         ACTION_GOTO_SPLIT => {
             let v = action.as_i32();
-            alogf!(origin, "[action] goto_split {}", v);
-            queue_from(origin, Op::GotoSplit(v), "goto_split action")
+            let at = target_surface(&target).and_then(tabs::pane_id_of_surface);
+            alogf!(origin, "[action] goto_split {} from={:?}", v, at);
+            queue_from(origin, Op::GotoSplit(v, at), "goto_split action")
         }
         ACTION_RESIZE_SPLIT => {
             let (amount, dir) = action.as_resize_split();
-            alogf!(origin, "[action] resize_split {} dir={}", amount, dir);
-            queue_from(origin, Op::ResizeSplit(amount, dir), "resize_split action")
+            let at = target_surface(&target).and_then(tabs::pane_id_of_surface);
+            alogf!(origin, "[action] resize_split {} dir={} pane={:?}", amount, dir, at);
+            queue_from(origin, Op::ResizeSplit(amount, dir, at), "resize_split action")
         }
         ACTION_EQUALIZE_SPLITS => {
             alogf!(origin, "[action] equalize_splits");
             queue_from(origin, Op::EqualizeSplits, "equalize_splits action")
         }
         ACTION_TOGGLE_SPLIT_ZOOM => {
-            alogf!(origin, "[action] toggle_split_zoom");
-            queue_from(origin, Op::ToggleSplitZoom, "toggle_split_zoom action")
+            let at = target_surface(&target).and_then(tabs::pane_id_of_surface);
+            alogf!(origin, "[action] toggle_split_zoom pane={:?}", at);
+            queue_from(origin, Op::ToggleSplitZoom(at), "toggle_split_zoom action")
         }
 
         // **App-targeted by nature**, the same as `close_all_windows` below.

@@ -186,11 +186,16 @@ pub enum Op {
     /// (`None` means the focused one, which is what a keybinding means).
     NewSplit(i32, Option<String>, Option<PaneId>),
     /// `ghostty_action_goto_split_e`.
-    GotoSplit(i32),
+    /// The direction, and **which pane to move from** (`None` means the
+    /// focused one, which is what a keybinding means).
+    GotoSplit(i32, Option<PaneId>),
     /// amount in pixels, `ghostty_action_resize_split_direction_e`.
-    ResizeSplit(u16, i32),
+    /// The amount, the side, and **which pane to resize** (`None` means the
+    /// focused one).
+    ResizeSplit(u16, i32, Option<PaneId>),
     EqualizeSplits,
-    ToggleSplitZoom,
+    /// **Which pane to zoom** (`None` means the focused one).
+    ToggleSplitZoom(Option<PaneId>),
     /// A surface asked to be closed: its pane goes, and the tab with it if it
     /// was the last one. Carries the pane id, which is the surface userdata.
     ClosePane(PaneId),
@@ -266,10 +271,10 @@ impl Op {
             Op::CopyTitleToClipboard => "CopyTitleToClipboard",
             Op::PresentTerminal => "PresentTerminal",
             Op::NewSplit(..) => "NewSplit",
-            Op::GotoSplit(_) => "GotoSplit",
+            Op::GotoSplit(..) => "GotoSplit",
             Op::ResizeSplit(..) => "ResizeSplit",
             Op::EqualizeSplits => "EqualizeSplits",
-            Op::ToggleSplitZoom => "ToggleSplitZoom",
+            Op::ToggleSplitZoom(_) => "ToggleSplitZoom",
             Op::ClosePane(_) => "ClosePane",
             Op::ToggleQuickTerminal => "ToggleQuickTerminal",
             Op::NewTabWith(_) => "NewTabWith",
@@ -2211,19 +2216,7 @@ fn split_pane(
         let Some(tab) = win.tabs.get(win.active) else {
             return;
         };
-        // **One path, not two.** A keybinding names the surface it came from,
-        // and that surface is the focused one -- so `at` is `Some` there too
-        // and the fallback below is not the ordinary case. It is for an
-        // action that named no surface at all, or named one this window has
-        // since lost: falling back to the focused pane is what this did for
-        // every caller before, so nothing that worked stops working.
-        //
-        // ⚠️ **The bug this replaces was silent.** A tool call naming pane X
-        // split whichever pane had focus, and the log said it had split --
-        // so a supervisor placing worker terminals put them next to whatever
-        // the person was looking at, and every reading said it worked.
-        let target = at.filter(|p| tab.tree.contains(*p)).unwrap_or(tab.focused);
-        (bounds, target, tab.tree.clone())
+        (bounds, acting_pane(tab, at), tab.tree.clone())
     };
 
     let id = take_id();
@@ -3177,6 +3170,23 @@ pub fn pane_id_of_surface(surface: Surface) -> Option<PaneId> {
     })
 }
 
+/// The pane an op should act on: the one it named, or the focused one.
+///
+/// **One rule, in one place, for every action that acts on a pane.** They all
+/// used `tab.focused` and so all had the same defect -- a tool call naming a
+/// pane took effect on whichever pane had focus, and every log line said it
+/// had worked. Fixing them one at a time would have left the fixed one making
+/// the family look handled.
+///
+/// `None` means the action named no surface, and a named pane that is not in
+/// this tree means it has gone since the op was queued. Both fall back to the
+/// focused pane, which is what every caller did before -- and what a
+/// keybinding means, since a keybinding names the surface it came from and
+/// that surface is the focused one.
+fn acting_pane(tab: &Tab, at: Option<PaneId>) -> PaneId {
+    at.filter(|p| tab.tree.contains(*p)).unwrap_or(tab.focused)
+}
+
 /// How many panes share a tab with `surface`.
 ///
 /// **A fact, not a judgement.** The core asks this because it cannot see the
@@ -3963,7 +3973,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 };
                 split_pane(frame, app, hinst, d, cwd, at);
             }
-            Op::GotoSplit(v) => {
+            Op::GotoSplit(v, at) => {
                 // `ghostty_action_goto_split_e`
                 let f = match v {
                     0 => Focus::Previous,
@@ -3977,7 +3987,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     window(frame).and_then(|w| {
                         w.tabs
                             .get(w.active)
-                            .and_then(|t| t.tree.focus_target(f, t.focused))
+                            .and_then(|t| t.tree.focus_target(f, acting_pane(t, at)))
                     })
                 };
                 match target {
@@ -3998,7 +4008,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     None => wlogf!(frame, "[split] no pane {:?} of the focused one", f),
                 }
             }
-            Op::ResizeSplit(amount, dir) => {
+            Op::ResizeSplit(amount, dir, at) => {
                 // `ghostty_action_resize_split_direction_e`
                 let side = match dir {
                     0 => Side::Up,
@@ -4012,7 +4022,8 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     let cur = win.tabs.get(win.active);
                     match (content_bounds(frame, sh), cur) {
                         (Some(b), Some(tab)) => {
-                            Some((tab.tree.resize(tab.focused, amount, side, b), tab.focused))
+                            let p = acting_pane(tab, at);
+                            Some((tab.tree.resize(p, amount, side, b), p))
                         }
                         _ => None,
                     }
@@ -4047,7 +4058,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 layout(frame);
                 wlogf!(frame, "[split] equalized");
             }
-            Op::ToggleSplitZoom => {
+            Op::ToggleSplitZoom(at) => {
                 let zoomed = {
                     // **The toggle happens inside the closure**, because the
                     // guard owns the lock and a `&mut Tab` cannot leave it.
@@ -4055,7 +4066,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                         .and_then(|mut w| {
                             let a = w.active;
                             w.tabs.get_mut(a).map(|tab| {
-                                tab.tree = tab.tree.toggle_zoom(tab.focused);
+                                tab.tree = tab.tree.toggle_zoom(acting_pane(tab, at));
                                 tab.tree.zoomed()
                             })
                         })
