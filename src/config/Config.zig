@@ -7003,6 +7003,85 @@ pub const Keybinds = struct {
                     .paste_from_clipboard,
                     .{ .performable = true },
                 );
+
+                // **Polter's own five, and binding them widens a permission
+                // on purpose. Read this before changing any of it.**
+                //
+                // `terminal_action` answers `NotPermitted` for this whole
+                // family, and `Bus.setHeld` takes nothing but `.user`. That
+                // was the arrangement: an agent may not set these, a person
+                // at the keyboard may. `Surface.zig` passes `.user` for a
+                // keypress because a keypress is a person.
+                //
+                // ⚠️ **A supervisor has `terminal_key`.** Once a chord
+                // exists, a supervisor can synthesise it, and the effect is
+                // the one `terminal_action` refuses to produce. **So these
+                // bindings are a side door, they are known to be one, and
+                // they are here because the product owner decided to grant
+                // it and watch what comes of it.** Not an oversight.
+                //
+                // ⚠️ **Do not "tidy" the `NotPermitted` in `terminal_action`
+                // to match.** What was granted is the keyboard route, not the
+                // tool route, and the difference between the two is the only
+                // thing anyone can observe later when judging whether the
+                // grant was a good idea. Collapsing them destroys the
+                // measurement, not just the restriction.
+                //
+                // **Not `performable`, deliberately.** `performable` keeps a
+                // binding out of the reverse map (`track_reverse =
+                // !flags.performable`), and a binding outside it draws no
+                // shortcut in any menu -- the class documented in
+                // `docs/windows/keys.md` §3.7, thirty rows of "the key works
+                // and the menu cannot say so". `performable` buys something
+                // only where an action can decline and let the key through;
+                // these five are toggles with no such state, so it would cost
+                // the menu hint and buy nothing.
+                //
+                // **The letters were chosen by construction, not by
+                // survey -- and the construction has to cover two tables.**
+                //
+                // `b h l r s u y` appear nowhere in this function, so no
+                // block on any platform binds them and no later `put` can
+                // take one back; a chord silently lost to a later binding is
+                // exactly the defect task 336 fixed.
+                //
+                // ⚠️ **That argument was not enough on its own.** This host
+                // keeps a second table, `keys.rs::accelerator()`, and the
+                // first draft of this block took `ctrl+shift+m` -- which that
+                // table already spends on `toggle_maximize`. The test
+                // `the Windows host's accelerator table` caught it. **Both
+                // tables have to be checked, and `CLAUDE.md` says so in one
+                // sentence naming both.** That table's `ctrl+shift` letters
+                // are `M`, `D`, `Z` and `OEM_PLUS`.
+                //
+                // English initial where it was free (`s`upervisor, `h`eld), a
+                // word from the row's own meaning where it was not
+                // (`l` for 聊天, e`y`e, `b`lock).
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = 's' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .poltergeist_supervisor = {} },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = 'h' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .poltergeist_toggle_held = {} },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = 'l' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .poltergeist_toggle_chat = {} },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = 'y' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .poltergeist_toggle_watch = {} },
+                );
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .unicode = 'b' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .poltergeist_toggle_shielded = {} },
+                );
             }
         }
 
@@ -8306,6 +8385,32 @@ pub const Keybinds = struct {
         // no selection clipboard, so a default binding for reading it would
         // be a key that does nothing.
         try testing.expect(keybinds.set.getTrigger(.{ .paste_from_selection = {} }) == null);
+
+        // **Polter's five, and the assertion is `getTrigger`, not `get`.**
+        //
+        // `get` would only say the chord is bound. `getTrigger` reads the
+        // *reverse* map, which is what a menu asks -- so this is the one
+        // assertion that fails if any of these is ever made `performable`,
+        // and being outside that map is precisely how thirty other rows came
+        // to have working keys and blank menus (`docs/windows/keys.md` §3.7).
+        for ([_]struct { a: inputpkg.Binding.Action, c: u21 }{
+            .{ .a = .{ .poltergeist_supervisor = {} }, .c = 's' },
+            .{ .a = .{ .poltergeist_toggle_held = {} }, .c = 'h' },
+            .{ .a = .{ .poltergeist_toggle_chat = {} }, .c = 'l' },
+            .{ .a = .{ .poltergeist_toggle_watch = {} }, .c = 'y' },
+            .{ .a = .{ .poltergeist_toggle_shielded = {} }, .c = 'b' },
+        }) |want| {
+            const t = keybinds.set.getTrigger(want.a) orelse {
+                std.debug.print(
+                    "no menu-visible trigger for {s}\n",
+                    .{@tagName(std.meta.activeTag(want.a))},
+                );
+                return error.PoltergeistActionHasNoShortcut;
+            };
+            try testing.expect(std.meta.activeTag(t.key) == .unicode);
+            try testing.expectEqual(want.c, t.key.unicode);
+            try testing.expect(t.mods.ctrl and t.mods.shift and !t.mods.alt);
+        }
     }
 
     test "parseCLI table definition" {

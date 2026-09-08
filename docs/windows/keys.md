@@ -854,11 +854,24 @@ mac 侧是在同一个提交上、走宿主走的同一条路（`Binding.Action.
     equalize_splits      paste_from_clipboard
 
 **两个平台都显示不出的 18 条**：`check_for_updates`、`end_search`、`start_search`、
-`navigate_search:next|previous`、`new_split:left|up`、五条 `poltergeist_*`
-（`supervisor` / `toggle_chat` / `toggle_shielded` / `toggle_watch`，以及
-`toggle_held` —— 它绑着，但同样因 `performable` 而显示不出）、`prompt_tab_title`、
+`navigate_search:next|previous`、`new_split:left|up`、**四条** `poltergeist_*`
+（`supervisor` / `toggle_chat` / `toggle_shielded` / `toggle_watch`）、`prompt_tab_title`、
 `prompt_surface_title`、`reset_window_size`、`toggle_maximize`、`toggle_readonly`、
 `toggle_quick_terminal`、`toggle_window_float_on_top`。
+
+> ⚠️ **勘误（任务 333）。** 这里原本写的是「**五条** `poltergeist_*`……以及
+> `toggle_held` —— 它绑着，但同样因 `performable` 而显示不出」。**那半句两处都错**：
+> 当时那五条**一条都没有默认绑定**；而 `toggle_held` 之所以不在这 18 条里，是因为
+> **在被量的那个提交 `1ca47f03b` 上它根本不在菜单表里**（`76fa175ba` 把它从三个菜单
+> 都摘掉了，后来才加回来），**不是「绑着但显示不出」**。
+>
+> 留着这条勘误而不是直接删，是因为**原文已经流传过**：上一版文档、以及 257 那张表都
+> 用过「五条」这个数。**错在我给一个没进入测量集合的名字补了一个听起来合理的解释**——
+> 而那个解释和真实的机制（`performable` 挡住反向表）逐字同构，所以它读起来像其余部分
+> 一样可信。
+>
+> **今天这五条都绑上了**（任务 333，`Ctrl+Shift+S/H/L/Y/B`，**非 `performable`，所以
+> 菜单显示得出来**），所以它们已经不在「显示不出」这一类里了。
 
 ⚠️ **这 30 条的逐条名单是从成因推出来的，不是从真机日志抄的**：数目与真机那行的
 30 相符、包含关系与差值 12 由真机名单核对过，但**如果要拿单独某一条去做判断，
