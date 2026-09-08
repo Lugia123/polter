@@ -133,6 +133,9 @@ const KIND_PALETTE_ITEM: i32 = 6;
 /// are baked into runtime ids a client may have written down, so renumbering
 /// the existing ones would tell it that every element had been replaced.
 const KIND_MENU_BUTTON: i32 = 7;
+/// The keybind page and its rows. Appended, never inserted; see above.
+const KIND_KEYBINDS: i32 = 8;
+const KIND_KEYBINDS_ITEM: i32 = 9;
 
 // ------------------------------------------------------------- text reading
 
@@ -1970,6 +1973,256 @@ impl ISelectionItemProvider_Impl for PaletteItem_Impl {
     fn SelectionContainer(&self) -> WResult<IRawElementProviderSimple> {
         Ok(PaletteRoot { hwnd: self.hwnd }.into())
     }
+}
+
+// ------------------------------------------------------- the keybind page
+//
+// **The page draws itself and creates no child windows**, so the default
+// provider had nothing to enumerate: a client asking for its tree got the
+// window and *zero descendants*, and the only way to read the list was to
+// photograph it. That is the fourth of a family this port has now met four
+// times -- 327 answered nothing and every element read as disabled, 328 gave
+// ninety rows one rectangle so a click ran a different command, 331 left a
+// split's other half out of the tree -- and the shape is always the same:
+// **the window is on screen and absent from the tree.**
+//
+// What is exposed is what a reader needs and no more: the page is a read-only
+// list, so there is no Invoke and no Selection. ⚠️ Said here rather than left
+// to be noticed, because `uia-patterns-declared.py` takes silence as an
+// omission and it is right to.
+
+#[implement(IRawElementProviderSimple, IRawElementProviderFragment, IRawElementProviderFragmentRoot)]
+struct KeybindsRoot {
+    hwnd: isize,
+}
+
+#[implement(IRawElementProviderSimple, IRawElementProviderFragment)]
+struct KeybindsItem {
+    hwnd: isize,
+    index: usize,
+}
+
+impl KeybindsRoot {
+    fn hwnd(&self) -> HWND {
+        HWND(self.hwnd as *mut core::ffi::c_void)
+    }
+}
+
+impl KeybindsItem {
+    fn hwnd(&self) -> HWND {
+        HWND(self.hwnd as *mut core::ffi::c_void)
+    }
+}
+
+impl IRawElementProviderSimple_Impl for KeybindsRoot_Impl {
+    fn ProviderOptions(&self) -> WResult<ProviderOptions> {
+        Ok(ProviderOptions_ServerSideProvider)
+    }
+    fn GetPatternProvider(&self, _id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        // no pattern: Selection would promise a selected row and this page
+        // has none; a pattern that answers one of its questions is worse
+        // than one that is not offered.
+        Err(gone())
+    }
+    fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
+        Ok(match id {
+            UIA_ControlTypePropertyId => variant_i4(UIA_ListControlTypeId.0),
+            UIA_NamePropertyId => variant_bstr(&crate::i18n::tr("Keyboard Shortcuts")),
+            UIA_AutomationIdPropertyId => variant_bstr("keybinds-list"),
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
+            UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
+            _ => variant_empty(),
+        })
+    }
+    fn HostRawElementProvider(&self) -> WResult<IRawElementProviderSimple> {
+        // The fragment root is the one element that names an HWND, and this
+        // is it: the page is its own window.
+        unsafe { UiaHostProviderFromHwnd(self.hwnd()) }
+    }
+}
+
+impl IRawElementProviderFragment_Impl for KeybindsRoot_Impl {
+    fn Navigate(&self, direction: NavigateDirection) -> WResult<IRawElementProviderFragment> {
+        let n = crate::settings_ui::kb_row_count();
+        match direction {
+            NavigateDirection_FirstChild if n > 0 => {
+                Ok(KeybindsItem { hwnd: self.hwnd, index: 0 }.into())
+            }
+            NavigateDirection_LastChild if n > 0 => {
+                Ok(KeybindsItem { hwnd: self.hwnd, index: n - 1 }.into())
+            }
+            _ => Err(gone()),
+        }
+    }
+    fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        runtime_id(self.hwnd as u32, KIND_KEYBINDS, 0)
+    }
+    fn BoundingRectangle(&self) -> WResult<UiaRect> {
+        Ok(window_rect(self.hwnd()))
+    }
+    fn GetEmbeddedFragmentRoots(&self) -> WResult<*mut SAFEARRAY> {
+        empty_i4_array()
+    }
+    fn SetFocus(&self) -> WResult<()> {
+        Ok(())
+    }
+    fn FragmentRoot(&self) -> WResult<IRawElementProviderFragmentRoot> {
+        Ok(KeybindsRoot { hwnd: self.hwnd }.into())
+    }
+}
+
+impl IRawElementProviderFragmentRoot_Impl for KeybindsRoot_Impl {
+    fn ElementProviderFromPoint(&self, x: f64, y: f64) -> WResult<IRawElementProviderFragment> {
+        let n = crate::settings_ui::kb_row_count();
+        let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
+        if !unsafe {
+            windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd(), &mut origin)
+        }
+        .as_bool()
+        {
+            return Err(gone());
+        }
+        for i in 0..n {
+            let Some(r) = crate::settings_ui::kb_row_rect(i) else { continue };
+            let (l, t) = (origin.x + r.left, origin.y + r.top);
+            let (rr, b) = (origin.x + r.right, origin.y + r.bottom);
+            if x >= l as f64 && x < rr as f64 && y >= t as f64 && y < b as f64 {
+                return Ok(KeybindsItem { hwnd: self.hwnd, index: i }.into());
+            }
+        }
+        Err(gone())
+    }
+    fn GetFocus(&self) -> WResult<IRawElementProviderFragment> {
+        // Nothing on this page takes the keyboard: the whole window does,
+        // and the arrows scroll it.
+        Err(gone())
+    }
+}
+
+impl IRawElementProviderSimple_Impl for KeybindsItem_Impl {
+    fn ProviderOptions(&self) -> WResult<ProviderOptions> {
+        Ok(ProviderOptions_ServerSideProvider)
+    }
+    fn GetPatternProvider(&self, _id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        // no pattern: read-only by design. A row does nothing when it is
+        // chosen -- this version of the page cannot rebind anything -- so
+        // Invoke would be a promise with nothing behind it.
+        Err(gone())
+    }
+    fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
+        let Some(row) = crate::settings_ui::kb_row(self.index) else {
+            return Err(gone());
+        };
+        Ok(match id {
+            UIA_ControlTypePropertyId => variant_i4(UIA_ListItemControlTypeId.0),
+
+            // **All three columns in the Name.** A client reads a row by its
+            // name, and a row that said only its action would send the reader
+            // back to the screenshot for the key -- which is the thing this
+            // element exists to stop.
+            // An action with no key reads as an em dash rather than as a
+            // gap, decided once in `keys_label` and not again here: a blank
+            // column would make "not bound" and "the provider had nothing to
+            // say" the same reading.
+            UIA_NamePropertyId => {
+                let text = if row.note.is_empty() {
+                    format!("{}  {}", row.name, row.keys)
+                } else {
+                    format!("{}  {}  {}", row.name, row.keys, row.note)
+                };
+                variant_bstr(&text)
+            }
+
+            // The action's tag: the one handle that does not change with the
+            // display language, unlike the name.
+            UIA_AutomationIdPropertyId => variant_bstr(&row.action),
+
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
+            UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
+
+            // Eighteen rows are drawn; the rest have no place. Derived from
+            // the rectangle and nothing else, so the pair stays readable:
+            // zero rectangle with this true means "scroll to it", and with
+            // this false means "the provider could not answer" -- the same
+            // ambiguity task 328 removed from the palette.
+            UIA_IsOffscreenPropertyId => {
+                variant_bool(crate::settings_ui::kb_row_rect(self.index).is_none())
+            }
+            _ => variant_empty(),
+        })
+    }
+    fn HostRawElementProvider(&self) -> WResult<IRawElementProviderSimple> {
+        Err(gone())
+    }
+}
+
+impl IRawElementProviderFragment_Impl for KeybindsItem_Impl {
+    fn Navigate(&self, direction: NavigateDirection) -> WResult<IRawElementProviderFragment> {
+        let n = crate::settings_ui::kb_row_count();
+        if self.index >= n {
+            return Err(gone());
+        }
+        match direction {
+            NavigateDirection_Parent => {
+                Ok(KeybindsRoot { hwnd: self.hwnd }.into())
+            }
+            NavigateDirection_NextSibling if self.index + 1 < n => {
+                Ok(KeybindsItem { hwnd: self.hwnd, index: self.index + 1 }.into())
+            }
+            NavigateDirection_PreviousSibling if self.index > 0 => {
+                Ok(KeybindsItem { hwnd: self.hwnd, index: self.index - 1 }.into())
+            }
+            _ => Err(gone()),
+        }
+    }
+    fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        runtime_id(self.hwnd as u32, KIND_KEYBINDS_ITEM, self.index as u64)
+    }
+    /// This row's rectangle, on screen.
+    ///
+    /// **A zero rectangle means "not in view", and `IsOffscreen` says so.**
+    /// An invented coordinate would invite a client to click it, which lands
+    /// on whatever is really there.
+    fn BoundingRectangle(&self) -> WResult<UiaRect> {
+        let zero = UiaRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 };
+        let Some(r) = crate::settings_ui::kb_row_rect(self.index) else {
+            return Ok(zero);
+        };
+        let mut origin = windows::Win32::Foundation::POINT { x: r.left, y: r.top };
+        if unsafe { windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd(), &mut origin) }
+            .as_bool()
+        {
+            return Ok(UiaRect {
+                left: origin.x as f64,
+                top: origin.y as f64,
+                width: (r.right - r.left) as f64,
+                height: (r.bottom - r.top) as f64,
+            });
+        }
+        Ok(zero)
+    }
+    fn GetEmbeddedFragmentRoots(&self) -> WResult<*mut SAFEARRAY> {
+        empty_i4_array()
+    }
+    fn SetFocus(&self) -> WResult<()> {
+        Ok(())
+    }
+    fn FragmentRoot(&self) -> WResult<IRawElementProviderFragmentRoot> {
+        Ok(KeybindsRoot { hwnd: self.hwnd }.into())
+    }
+}
+
+/// `WM_GETOBJECT` for the keybind page. Called from `settings_ui.rs`'s own
+/// window procedure, the same way the palette calls the function below.
+pub fn on_get_object_keybinds(hwnd: HWND, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    if lp.0 as i32 != UiaRootObjectId {
+        return None;
+    }
+    let provider: IRawElementProviderSimple = KeybindsRoot { hwnd: hwnd.0 as isize }.into();
+    // process-wide: one keybind page per process, and this line is about that
+    // window rather than about any terminal window
+    plogf!("[uia] keybinds WM_GETOBJECT -> root provider");
+    Some(unsafe { UiaReturnRawElementProvider(hwnd, wp, lp, &provider) })
 }
 
 /// `WM_GETOBJECT` for the palette window. Called from `palette.rs`'s own

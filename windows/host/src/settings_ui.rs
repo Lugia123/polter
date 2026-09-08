@@ -30,7 +30,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -1843,6 +1843,111 @@ fn read_diagnostics() -> Vec<String> {
 /// rest.
 const KB_VISIBLE: usize = 18;
 
+/// What a UI Automation client is shown for one row.
+#[derive(Clone, Default)]
+pub struct KbSnapshotRow {
+    pub action: String,
+    pub name: String,
+    pub keys: String,
+    pub note: String,
+}
+
+/// The keybind page, as something another thread may read.
+///
+/// **The provider does not run on the window's thread.** `ST` is a
+/// `thread_local`, so a UIA client asking about this page from the automation
+/// core's thread cannot see a single row of it. The palette solved the same
+/// problem the same way one window over; this follows it rather than
+/// inventing a second answer.
+static KB_SNAPSHOT: std::sync::Mutex<Vec<KbSnapshotRow>> = std::sync::Mutex::new(Vec::new());
+/// First visible row, the page's DPI, its width, and whether it is on screen
+/// at all. `usize::MAX` in `KB_TOP` means the page is not showing, which is a
+/// different fact from "showing, scrolled to the top".
+static KB_TOP: AtomicUsize = AtomicUsize::new(usize::MAX);
+static KB_DPI: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(96);
+static KB_WIDTH: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Where row `index` is drawn, in the page's client coordinates, or `None`
+/// when it is not in view.
+///
+/// ⚠️ **The one place that decides where a row is.** `kb_paint` walks this
+/// same function rather than repeating the arithmetic, which is the rule task
+/// 328 established for the palette: ninety rows once answered with the
+/// window's rectangle, and a client took the centre of what it was given,
+/// clicked, and ran a different command. A second copy of a layout is wrong
+/// only after a scroll, which is the kind of thing nobody reproduces.
+pub fn kb_row_rect_at(top: usize, dpi: i32, width: i32, index: usize) -> Option<RECT> {
+    if top == usize::MAX {
+        return None;
+    }
+    let n = index.checked_sub(top)?;
+    if n >= KB_VISIBLE {
+        return None;
+    }
+    let sc = |v: i32| v * dpi / 96;
+    let y = sc(PAD + 56) + n as i32 * sc(24);
+    Some(RECT { left: sc(PAD), top: y, right: width - sc(PAD), bottom: y + sc(24) })
+}
+
+/// `kb_row_rect_at` against the page as it is right now.
+pub fn kb_row_rect(index: usize) -> Option<RECT> {
+    kb_row_rect_at(
+        KB_TOP.load(Ordering::Acquire),
+        KB_DPI.load(Ordering::Acquire),
+        KB_WIDTH.load(Ordering::Acquire),
+        index,
+    )
+}
+
+/// How many rows the page is showing. Zero when it has never been opened.
+pub fn kb_row_count() -> usize {
+    KB_SNAPSHOT.lock().map(|r| r.len()).unwrap_or(0)
+}
+
+/// Row `index`, or `None` past the end.
+pub fn kb_row(index: usize) -> Option<KbSnapshotRow> {
+    KB_SNAPSHOT.lock().ok()?.get(index).cloned()
+}
+
+
+/// Publish what a client may read. Called from the page's own thread, on
+/// every change that moves a row: opening it, and scrolling it.
+fn kb_publish(win: HWND, showing: bool) {
+    ST.with(|c| {
+        let st = c.borrow();
+        if let Ok(mut rows) = KB_SNAPSHOT.lock() {
+            rows.clear();
+            for r in &st.keybinds {
+                rows.push(KbSnapshotRow {
+                    action: r.action.to_string(),
+                    name: r.title.clone().unwrap_or_else(|| r.action.to_string()),
+                    keys: crate::keybinds::keys_label(r),
+                    note: crate::keybinds::note(r).to_string(),
+                });
+            }
+        }
+        KB_TOP.store(
+            if showing { st.keybind_top } else { usize::MAX },
+            Ordering::Release,
+        );
+    });
+    kb_publish_geometry(win);
+}
+
+/// The page's width and DPI, without touching `ST`.
+///
+/// **Called from the paint path**, because that is the one place guaranteed
+/// to run after the page is moved to a monitor with a different scale: there
+/// is no `WM_DPICHANGED` arm on this window, and a stale scale would put
+/// every row's rectangle somewhere the row is not.
+fn kb_publish_geometry(win: HWND) {
+    let mut rc = RECT::default();
+    if unsafe { GetClientRect(win, &mut rc) }.is_ok() {
+        KB_WIDTH.store(rc.right, Ordering::Release);
+    }
+    KB_DPI.store(dpi_scale(win), Ordering::Release);
+}
+
 unsafe extern "system" fn keybinds_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -1875,6 +1980,7 @@ unsafe extern "system" fn keybinds_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPA
                 let x = fr.left + ((fr.right - fr.left) - w) / 2;
                 let y = fr.top + ((fr.bottom - fr.top) - h) / 2;
                 own_and_place(win, x, y, w, h);
+                kb_publish(win, true);
                 let _ = InvalidateRect(Some(win), None, true);
                 LRESULT(0)
             }
@@ -1887,6 +1993,10 @@ unsafe extern "system" fn keybinds_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPA
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 if vk == VK_ESCAPE {
                     let _ = ShowWindow(win, SW_HIDE);
+                    // A hidden page has no rows on screen. Said out loud
+                    // rather than left at the last scroll position, which a
+                    // client would read as rectangles it could click.
+                    kb_publish(win, false);
                     return LRESULT(0);
                 }
                 let step: i32 = match vk {
@@ -1906,6 +2016,16 @@ unsafe extern "system" fn keybinds_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPA
                 LRESULT(0)
             }
 
+            // **Without this the page is not there at all.** It draws
+            // everything itself and creates no child windows, so the default
+            // provider has nothing to enumerate: a client asking for the
+            // tree got the window and zero descendants, and reading the page
+            // meant taking a screenshot of it.
+            WM_GETOBJECT => match crate::uia::on_get_object_keybinds(win, wp, lp) {
+                Some(r) => r,
+                None => DefWindowProcW(win, msg, wp, lp),
+            },
+
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
                 theme::repaint_all(win);
                 LRESULT(0)
@@ -1917,6 +2037,7 @@ unsafe extern "system" fn keybinds_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPA
                 if !hdc.is_invalid() {
                     kb_paint(win, hdc);
                     let _ = EndPaint(win, &ps);
+                    kb_publish_geometry(win);
                 }
                 LRESULT(0)
             }
@@ -1938,6 +2059,7 @@ fn kb_scroll(win: HWND, by: i32) {
         }
         st.keybind_top = next;
     });
+    kb_publish(win, true);
     let _ = unsafe { InvalidateRect(Some(win), None, true) };
 }
 
@@ -1978,11 +2100,22 @@ unsafe fn kb_paint(win: HWND, hdc: HDC) {
 
             let name_w = s(230);
             let key_w = s(180);
-            let mut y = s(PAD + 56);
             let row_h = s(24);
 
             let end = (st.keybind_top + KB_VISIBLE).min(st.keybinds.len());
-            for row in &st.keybinds[st.keybind_top..end] {
+            for (offset, row) in st.keybinds[st.keybind_top..end].iter().enumerate() {
+                // **The same function the provider reads**, so what a client
+                // is told to click and what is drawn cannot drift. See
+                // `kb_row_rect_at`.
+                let Some(rr) = kb_row_rect_at(
+                    st.keybind_top,
+                    sc,
+                    rc.right,
+                    st.keybind_top + offset,
+                ) else {
+                    continue;
+                };
+                let y = rr.top;
                 // The tag is always shown; the human title only exists for
                 // some actions, so it cannot be the column you navigate by.
                 let name = row.title.as_deref().unwrap_or(row.action);
@@ -2010,7 +2143,6 @@ unsafe fn kb_paint(win: HWND, hdc: HDC) {
                     let colour = if row.hidden_from_menu { theme::warn() } else { theme::dim() };
                     draw_text(hdc, note, &mut rr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, colour);
                 }
-                y += row_h;
             }
 
             let mut fr = RECT {
@@ -2164,5 +2296,64 @@ mod subscription_tests {
     fn nothing_subscribed_says_so() {
         let line = subscription_line(&[]);
         assert!(line.contains("will not start it"), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod keybind_geometry_tests {
+    use super::*;
+
+    /// Task 328 was ninety rows sharing one rectangle: every click landed on
+    /// the first command. **Adjacent rows must not overlap**, and the check
+    /// has to be on the rectangles rather than on the arithmetic that made
+    /// them, or it only re-derives the bug.
+    #[test]
+    fn rows_do_not_share_a_rectangle() {
+        let mut prev: Option<RECT> = None;
+        for i in 0..KB_VISIBLE {
+            let r = kb_row_rect_at(0, 96, 800, i).expect("visible row");
+            assert!(r.bottom > r.top, "row {i} has no height");
+            if let Some(p) = prev {
+                assert!(r.top >= p.bottom, "row {i} overlaps the one above it");
+            }
+            prev = Some(r);
+        }
+    }
+
+    /// Scrolling moves which rows are drawn, not where the page draws them:
+    /// row 40 at the top of the view occupies the same place row 0 did.
+    #[test]
+    fn scrolling_reuses_the_same_slots() {
+        let first = kb_row_rect_at(0, 96, 800, 0).unwrap();
+        let after = kb_row_rect_at(40, 96, 800, 40).unwrap();
+        assert_eq!(first.top, after.top);
+        assert_eq!(first.bottom, after.bottom);
+    }
+
+    /// Off the view in either direction has **no rectangle at all**. An
+    /// invented one would be a coordinate a client can click, landing on
+    /// whatever is really there.
+    #[test]
+    fn rows_outside_the_view_have_no_rectangle() {
+        assert!(kb_row_rect_at(40, 96, 800, 39).is_none(), "above the view");
+        assert!(kb_row_rect_at(40, 96, 800, 40 + KB_VISIBLE).is_none(), "below it");
+    }
+
+    /// The page not being shown is not the same as a row being scrolled
+    /// away, but it answers the same: nothing.
+    #[test]
+    fn a_page_that_is_not_showing_answers_nothing() {
+        assert!(kb_row_rect_at(usize::MAX, 96, 800, 0).is_none());
+    }
+
+    /// Everything scales, so a rectangle taken at one DPI cannot be reported
+    /// at another -- which is what a provider reading a stale `KB_DPI` would
+    /// do.
+    #[test]
+    fn dpi_scales_the_rows() {
+        let at96 = kb_row_rect_at(0, 96, 800, 3).unwrap();
+        let at192 = kb_row_rect_at(0, 192, 1600, 3).unwrap();
+        assert_eq!(at192.top, at96.top * 2);
+        assert_eq!(at192.bottom - at192.top, (at96.bottom - at96.top) * 2);
     }
 }
