@@ -373,9 +373,62 @@ that restarts it — not before you have seen the first take. The
 stands — four jobs in four directories cannot be set up that way. `cwd` must
 be an absolute path that exists. `watch: true` claims it as it appears.
 
+**Start workers with `claude --permission-mode auto`.** Not because it is
+tidier: it is the only route. A supervisor cannot press `shift+tab` to reach
+that mode afterwards — `terminal_key` will not take it, because the key
+parser reads `tab` as a printable character and does not count `shift` as
+part of a chord. So a worker started without it stops at the first permission
+prompt, and stays stopped until a person is fetched at whatever hour it
+happens.
+
+### Where a worker lands is not yours to decide any more
+
+**You no longer say where a terminal goes, and you no longer need to.**
+`terminal_open` places workers itself: the first three go beside you, as a
+column to your right, and once that column is full the rest go into tabs.
+Asking for a position was never possible and is now not needed — the budget
+lives in one place instead of being recomputed by every supervisor, which is
+how six supervisors used to arrive at six different layouts.
+
+⚠️ **That is not the same as "layout is none of your business".** You still
+have to read what came out, because a placement that went wrong looks exactly
+like one that went right from inside a tool reply. What to expect today:
+
+- Workers 1–3: beside you, top to bottom, with you on the left.
+- Worker 4 onward: **a new tab**. The host log says so and says why — it
+  needs to split a whole column rather than one pane, which no action can
+  ask for yet.
+
+⚠️ **The old rule of thumb "twelve workers should be two tabs" is wrong now**
+and would have you report a defect that is not one. With three workers to a
+tab, twelve is one tab plus four. The shape to check instead is the one
+above: **you on the left, three beside you, then tabs**.
+
 `new_split:right` **works at your own id**, giving you a pane to run a server
 in without claiming anybody's terminal. It appears in `terminal_list` as a
 new unmarked id, and it is not you.
+
+### Building a shape by hand, and the one thing that makes it hard
+
+⚠️ **`terminal_action` never tells you what it made.** A `new_split` answers
+`ok` and nothing else — no id. So after a split you do not know which pane is
+the new one, and the only way to find out is to look:
+
+1. `terminal_list` → note the ids you have now.
+2. `terminal_action(id: X, action: "new_split:right")` → `ok`.
+3. `terminal_list` again → the id that was not there before is the new pane.
+
+**That is why a hand-built layout tends to come out as one row or one
+column.** Without step 3 you can only ever address the pane you started
+from, so every split hangs off the same pane. A two-by-two needs all three
+steps:
+
+    split X right  → Y      (X | Y)
+    split X down   → Z      (X over Z, beside Y)
+    split Y down   → W      (X | Y over Z | W)
+
+Each arrow is a `terminal_action` **plus** a `terminal_list` to learn the id
+the arrow produced.
 
 Two failures that look like breakage and are not:
 
