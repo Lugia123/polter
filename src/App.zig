@@ -187,12 +187,15 @@ chat_log: ?poltergeistpkg.ChatLog = null,
 /// `poltergeist/Feed.zig`.
 poltergeist_feed: poltergeistpkg.Feed,
 
-/// The resident archive plugins, one thread each. Empty unless one is
-/// installed and switched on, which is the ordinary case.
+/// The resident plugins, one thread each. Empty unless one is installed and
+/// switched on, which is the ordinary case.
+///
+/// **Every plugin that subscribes to something lands here**, not only the
+/// ones somebody calls an archive; see `startResident`.
 poltergeist_residents: std.ArrayListUnmanaged(*poltergeistpkg.Resident) = .empty,
 
-/// Whether the archives have been looked for. Testing the list instead
-/// would not do: with no archive plugin installed it stays empty for ever,
+/// Whether the resident plugins have been looked for. Testing the list
+/// instead would not do: with none installed it stays empty for ever,
 /// and every config reload would re-read every plugin's settings file to
 /// find that out again.
 poltergeist_residents_started: bool = false,
@@ -1354,9 +1357,24 @@ pub fn ensureResidents(self: *App) void {
     }
 
     // Only when there is something to say, so the ordinary install -- which
-    // has no archive plugin at all -- stays quiet.
+    // has no resident plugin at all -- stays quiet.
+    //
+    // **"resident", not "archive", and that is a correction rather than a
+    // rewording.** This counts `poltergeist_residents`, which is every plugin
+    // that subscribes to anything; the loop above offers all of
+    // `poltergeist_plugins` and `startResident` turns away exactly two --
+    // one that subscribes to nothing, and a duplicate. **There is no archive
+    // test, and there could not be one**: `archive` is not a field, a kind or
+    // a flag anywhere in a manifest. It is a name people give a plugin
+    // (`chat-archive` in the fixtures), so nothing here can tell an archive
+    // from any other resident.
+    //
+    // The number itself is worth printing -- each of these is a thread -- so
+    // the repair is to call it what it counts. **A reader who saw "3 archive
+    // plugins" next to a line about one subscriber concluded there were three
+    // archives**, which is the reading this line was producing.
     if (self.poltergeist_residents.items.len > 0) log.info(
-        "poltergeist: {d} archive plugin(s) running",
+        "poltergeist: {d} resident plugin(s) running",
         .{self.poltergeist_residents.items.len},
     );
 }
@@ -1403,11 +1421,18 @@ fn pluginLogDir(self: *App) []const u8 {
     return self.poltergeist_log_dir.?;
 }
 
-/// Start one resident archive plugin, unless there is a reason not to.
+/// Start one resident plugin, unless there is a reason not to.
 ///
 /// Returns whether this call started one. Everything that says no says so in
 /// the log first, except the two that are ordinary and quiet: a plugin that
-/// is not an archive, and a copy that is already running.
+/// subscribes to nothing, and a copy that is already running.
+///
+/// ⚠️ **This used to say the quiet pair was "a plugin that is not an archive"
+/// and a duplicate.** There is no such test here and there never was one to
+/// write: nothing in a manifest says a plugin is an archive -- it is a name
+/// (`chat-archive`), not a field. So the sentence described a filter that
+/// does not exist, and the log line at the caller counted every resident
+/// while calling them archives. Both are the same mistake in two places.
 ///
 /// The duplicate check is not tidiness. Two copies of one plugin confirm
 /// into the same cursor file, and the cursor can then go backwards or skip

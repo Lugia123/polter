@@ -2520,6 +2520,16 @@ RDP 通常会合成，**但 `SendInput` 只填 `wVk`、不带 `KEYEVENTF_SCANCOD
   构建，会改变该期待什么现象。
 - **子系统是 `WINDOWS_CUI`**（`Subsystem = 3`，读 PE 可选头 offset 68 量的），不是
   `WINDOWS_GUI`。全仓也搜不到 `windows_subsystem` 属性。
+  > ⚠️ **这一条是任务 93 当时的读数，今天已经不成立，留着是因为它流传过。**
+  > 任务 171 之后 `windows/host/build.rs::subsystems` 给两个二进制分别链了不同的
+  > 子系统——`polter-host` 是 `-Wl,--subsystem,windows`（GUI），`polter-cli` 是
+  > `console`。所以「这个宿主是 console 子系统」**今天是假的**，而它恰恰是任务 224
+  > 记下的那句过期注释的同一句话，只是活在另一个文件里。
+  > **没有重新量过 PE 字节**：上面写的是 `build.rs` 传了什么链接参数，不是二进制
+  > 里那个字节读出来是多少——本文件顶上那句「判据是 PE 头里的 Subsystem 字节，不是
+  > 构建成功」仍然没有人执行过。
+  > 第二句（搜不到 `windows_subsystem` 属性）今天仍为真，但**理由变了**：属性被
+  > 删掉了，改由 `build.rs` 传链接参数，见 `main.rs` 顶部那段。
 - **85 秒不对应任何常量**：看守狗是 2 / 4 / 60 秒，`tabs.rs` 有个 5 秒 deadline，
   UIA 是 500 毫秒。没有定时器在那个时刻。
 
