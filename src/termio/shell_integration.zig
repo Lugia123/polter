@@ -21,6 +21,22 @@ const log = std.log.scoped(.shell_integration);
 /// `messages stay distinguishable` below is that floor.
 const msg_undetected =
     "shell could not be detected, no automatic shell integration will be injected";
+/// cmd.exe: recognised, and there is nothing to inject.
+///
+/// **This is a fourth situation that was wearing the first one's sentence.**
+/// On Windows, when no PowerShell is on the machine, `Config.finalize` falls
+/// back to `cmd.exe` and says so with its cause. A moment later this file said
+/// "shell could not be detected" -- and both sentences are true, which is what
+/// makes the pair worse than either alone: the reader is told a cause and then
+/// told about a detection failure, and goes looking for a second fault that is
+/// not there.
+///
+/// cmd.exe is not undetected. It is recognised on sight and has no integration
+/// to inject, which is a fact about cmd.exe rather than a fault in anything.
+const msg_cmd =
+    "cmd.exe has no shell integration to inject; nothing here failed. " ++
+    "If this run did not ask for cmd.exe, an earlier line says why it is " ++
+    "being used.";
 const msg_declined =
     "shell integration for {s} was not injected; the shell was detected " ++
     "but its integration declined to run";
@@ -83,10 +99,15 @@ pub fn setup(
         // not be detected" for all of them sent a user whose shell had
         // been detected perfectly well off to check their shell
         // configuration.
-        log.warn(
-            "shell could not be detected, no automatic shell integration will be injected",
-            .{},
-        );
+        // **The constant, not a second copy of it.** This site used to spell
+        // the sentence out while `msg_undetected` sat next to the test that
+        // asserts on it -- so the floor was guarding a string nothing emitted,
+        // and an edit here would have kept it green.
+        if (try isCmd(alloc_arena, command)) {
+            log.warn(msg_cmd, .{});
+        } else {
+            log.warn(msg_undetected, .{});
+        }
         return null;
     };
 
@@ -186,6 +207,26 @@ test "shell integration failure" {
 
     try testing.expect(result == null);
     try testing.expectEqual(0, env.count());
+}
+
+/// Is this command `cmd.exe`?
+///
+/// **Not part of `detectShell`, deliberately.** That function answers "which
+/// shell do we have integration for", and `cmd.exe` must keep answering `null`
+/// there: `the Windows default shell is one this can detect` asserts exactly
+/// that, so that a change of the default back to cmd.exe fails in a test
+/// rather than in a log nobody reads. This is a different question -- "is the
+/// `null` the boring one?" -- and it is asked where the sentence is chosen.
+///
+/// Both spellings, and case-insensitively, for the reason the PowerShell arm
+/// of `detectShell` gives: Windows paths are, and a person writes whichever
+/// they have.
+fn isCmd(alloc: Allocator, command: config.Command) !bool {
+    var arg_iter = try command.argIterator(alloc);
+    defer arg_iter.deinit();
+    const arg0 = arg_iter.next() orelse return false;
+    const exe = std.fs.path.basename(arg0);
+    return std.ascii.eqlIgnoreCase("cmd", exe) or std.ascii.eqlIgnoreCase("cmd.exe", exe);
 }
 
 fn detectShell(alloc: Allocator, command: config.Command) !?Shell {
@@ -1123,7 +1164,7 @@ fn isPowershellTerminalArg(arg: []const u8) bool {
     return false;
 }
 
-test "the three not-injected messages stay distinguishable" {
+test "the not-injected messages stay distinguishable" {
     const testing = std.testing;
 
     // **The floor for task 117, as a test rather than as an eyeball.**
@@ -1133,16 +1174,71 @@ test "the three not-injected messages stay distinguishable" {
     // recognised" means go and look at the shell configuration, "your own
     // `-Command` suppressed this" means the configuration is fine and the
     // choice was yours. Only the first may carry the old wording.
+    //
+    // **A fourth joined them (task 227), and it is the one that used to wear
+    // this sentence.** After a fallback to cmd.exe the log carried two true
+    // lines in a row: `Config.finalize`'s, which names the cause, and this
+    // file's "could not be detected", which names a failure that did not
+    // happen. Neither was false; **their being next to each other was the
+    // misleading part**, and a reader takes the second as a further fault.
     const detect_phrase = "could not be detected";
     try testing.expect(std.mem.indexOf(u8, msg_undetected, detect_phrase) != null);
     try testing.expect(std.mem.indexOf(u8, msg_declined, detect_phrase) == null);
     try testing.expect(std.mem.indexOf(u8, msg_powershell_terminal_arg, detect_phrase) == null);
+    try testing.expect(std.mem.indexOf(u8, msg_cmd, detect_phrase) == null);
 
     // Pairwise distinct, which is what "distinguishable" has to mean when the
     // reader is grepping a log.
     try testing.expect(!std.mem.eql(u8, msg_undetected, msg_declined));
     try testing.expect(!std.mem.eql(u8, msg_declined, msg_powershell_terminal_arg));
     try testing.expect(!std.mem.eql(u8, msg_undetected, msg_powershell_terminal_arg));
+    try testing.expect(!std.mem.eql(u8, msg_cmd, msg_undetected));
+    try testing.expect(!std.mem.eql(u8, msg_cmd, msg_declined));
+    try testing.expect(!std.mem.eql(u8, msg_cmd, msg_powershell_terminal_arg));
+
+    // **And each constant is the one that is actually logged.**
+    //
+    // `msg_undetected` sat here for a while asserting on a string the emitting
+    // site did not use: that site spelled the sentence out a second time. **A
+    // floor over a constant nothing emits is a floor over nothing** -- an edit
+    // to the logged copy would have left this green.
+    //
+    // ⚠️ The first version of this check counted how many times the sentence
+    // appeared in the file and demanded exactly one. It found three: the
+    // constant, a paragraph above that quotes it, and **the search literal in
+    // this check**. Counting prose is the trap this repository has now met
+    // four times; what is wanted is not "the words appear once" but "the
+    // constant reaches a `log.warn`", which is a question about code.
+    //
+    // ⚠️ **And the needles are built from halves, because the first version of
+    // this check proved itself.** It searched for a literal spelling the call
+    // and the constant's name together -- and the search list itself contained
+    // that spelling, so the file always held a match whether or not anything
+    // emitted it. Deleting the emitting branch left this green.
+    //
+    // **A check whose own text satisfies it is not a check.** The repair is
+    // the one `polter.manifest` uses for the element it must not spell: never
+    // write the whole thing, in code or in prose. The second attempt at this
+    // paragraph still failed, because it quoted the spelling while explaining
+    // why not to -- which is the sharpest form of the trap this repository
+    // keeps meeting, and the reason this sentence names no example.
+    const call = "log.warn(";
+    const self_src = @embedFile("shell_integration.zig");
+    for ([_][]const u8{
+        call ++ "msg_undetected",
+        call ++ "msg_cmd",
+        call ++ "msg_declined",
+        call ++ "msg_powershell_terminal_arg",
+    }) |site| {
+        if (std.mem.indexOf(u8, self_src, site) == null) {
+            std.debug.print(
+                "no `{s}` in this file: a message constant that nothing emits is a " ++
+                    "floor over nothing.\n",
+                .{site},
+            );
+            return error.MessageConstantNotEmitted;
+        }
+    }
 
     // The two that can name something must actually take a parameter -- a
     // message that says "one of your arguments" is not an instruction.

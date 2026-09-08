@@ -78,7 +78,8 @@ say() {
 # So the state is named, every time, in a form somebody can grep:
 #
 #   absent       the binary is not on PATH. Not a problem, say so once.
-#   provisioned  something was actually written. Silent when nothing changed.
+#   provisioned  something was actually written.
+#   unchanged    the binary is here, everything was already in place.
 #   failed       the binary is here and a step did not work. The user is told.
 #
 # `failed` is the only one that reaches a person unprompted, and it goes
@@ -459,11 +460,28 @@ polter_provision() {
   return 0
 }
 
-# Said only when something was actually written. This runs at every launch,
-# and a line per launch per host is eight lines of nothing in every log.
+# One line per launch, always, and it used to be one line only when something
+# was written.
+#
+# **The silence was the defect.** A host that had nothing to do said nothing,
+# and so did a host that started and fell over before it could do anything --
+# `started` and then no more lines, in both cases. Measured: one plugin
+# reported `status=provisioned` on the launch that wrote its config and was
+# **silent on the five launches after it**, and from the log there was no way
+# to tell that from a plugin that had stopped working.
+#
+# The reason it was silent is written above the old version and was a real
+# one: a line per launch per host is eight lines in every log. But those eight
+# lines are not nothing -- they are the difference between "checked, all
+# present" and "never got that far", which is the question somebody reading
+# the log actually has. Eight cheap lines that answer it beat eight absences
+# that do not.
 polter_provision_done() {
-  [ "$wrote" = yes ] || return 0
-  say "status=provisioned${note:-}"
+  if [ "$wrote" = yes ]; then
+    say "status=provisioned${note:-}"
+  else
+    say "status=unchanged${note:-}"
+  fi
 }
 
 # --- the protocol -----------------------------------------------------------

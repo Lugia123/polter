@@ -177,7 +177,13 @@ if (Test-Path $cfg) {
     $r2 = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
     $after = [System.IO.File]::ReadAllBytes($cfg)
     Check '2b opencode -- second run is byte for byte identical' (@(Compare-Object $before $after -SyncWindow 0).Count -eq 0) ''
-    Check '2b opencode -- and says nothing about it' (-not ($r2.Stderr -match 'status=provisioned')) $r2.Stderr
+    # **It used to assert silence here, and silence was the defect (task 218).**
+    # A run with nothing to do said nothing, and so did a run that fell over
+    # before it could do anything -- the same absence for two situations a
+    # reader has to tell apart. So the assertion is now the positive one: it
+    # says which of the two happened, and it still must not claim it wrote.
+    Check '2b opencode -- says it had nothing to do' ($r2.Stderr -match 'status=unchanged') $r2.Stderr
+    Check '2b opencode -- and does not claim it wrote' (-not ($r2.Stderr -match 'status=provisioned')) $r2.Stderr
 
     # **The write that replaces an existing file, which nothing above does.**
     # Everything before this point either creates the config or declines to

@@ -129,7 +129,8 @@ function Get-PolterProp {
 # **Three states, and they used to be two.**
 #
 #   absent       the binary is not on PATH. Not a problem, say so once.
-#   provisioned  something was actually written. Silent when nothing changed.
+#   provisioned  something was actually written.
+#   unchanged    the binary is here, everything was already in place.
 #   failed       the binary is here and a step did not work. The user is told.
 #
 # `failed` is the only one that reaches a person unprompted, and it goes out
@@ -620,11 +621,26 @@ function Get-PolterSkillName {
     return ''
 }
 
-# Said only when something was actually written. This runs at every launch,
-# and a line per launch per host is eight lines of nothing in every log.
+# One line per launch, always, and it used to be one line only when something
+# was written.
+#
+# **The silence was the defect**, and it is the same one the `absent` state was
+# introduced to fix, one step further in: a host that had nothing to do said
+# nothing, and so did a host that started and fell over before it could do
+# anything. Measured: one plugin reported `status=provisioned` on the launch
+# that wrote its config and was **silent on the five launches after it**, and
+# the log could not tell that apart from a plugin that had stopped working.
+#
+# The old reason for the silence was real -- a line per launch per host is
+# eight lines in every log -- but those eight lines are the difference between
+# "checked, all present" and "never got that far", which is the question the
+# reader has. Keep them.
 function Write-PolterProvisionDone {
-    if (-not $script:PolterWrote) { return }
-    Write-PolterLog "status=provisioned$script:PolterNote"
+    if ($script:PolterWrote) {
+        Write-PolterLog "status=provisioned$script:PolterNote"
+    } else {
+        Write-PolterLog "status=unchanged$script:PolterNote"
+    }
 }
 
 # --- the protocol -----------------------------------------------------------
