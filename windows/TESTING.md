@@ -144,10 +144,22 @@ info(i18n): loaded catalog locale=zh_CN entries=… path=…\share\locale\zh_CN\
   **选一次记事本（勾上「始终」）就不会再问。** ⚠️ **不必为了测试去建立这个关联**——
   如果你已经建立了，请在报告里说一句，否则我们分不清你测的是哪种机器。
   **设置页在别处：智能体 → 插件…**
-- ⚠️ **`Shift+Insert` 粘贴不了 —— 这一条要报，但请只报一次。** 我们已经知道：那个和弦
-  被绑给了「粘贴选区」，而 Windows 没有选区剪贴板，宿主会拒绝（日志里是
-  `[clip] read … refused: no selection clipboard on Windows`）。**`Ctrl+V` 是好的。**
-  列在这里是因为它长得像「粘贴坏了」，而其实坏的只有这一个和弦。
+- **`Shift+Insert` 现在是能粘贴的 —— 这一条不用再报。**
+  ⚠️ **这段原来写着「粘贴不了，请只报一次」，那句话已经过期了。** 从前 Windows 上这个
+  和弦被绑给「粘贴选区」，而 Windows 根本没有选区剪贴板，于是它按下去什么都不发生
+  （日志里是 `[clip] read … refused: no selection clipboard on Windows`）。现在
+  `Config.zig` 在 Windows 上跳过那次覆盖，`shift+insert` 保持绑在 `paste_from_clipboard`
+  上。**顺带说清代价**：Windows 因此没有任何默认和弦对应「粘贴选区」——那是诚实的状态,
+  把「按了没反应」换成「没有绑定」是拿一个谎换一段沉默，而这里的沉默是准确的。
+- ⚠️ **同一台机器上开着第二个 Polter 时，后起的那个拿不到快速终端的全局热键。**
+  先起的那个进程占着它，后起的会在日志里说清楚：
+  `[quick] hotkey Ctrl+` FAILED err=1409` 以及
+  `ERROR_HOTKEY_ALREADY_REGISTERED: another process owns Ctrl+`. The quick terminal
+  cannot be opened by keyboard in this session.`
+  **这不是缺陷，是 Windows 的全局热键本来就只能有一个主人。** 列在这里是因为它长得像
+  「快速终端坏了」——⚠️ **而你在测试机上很容易同时开着两个**（一个正式版、一个测试包）。
+  要测这一格，先确认机器上只有一个实例，或者给测试实例一份私有的
+  `LOCALAPPDATA`、在它自己的 `config.polter` 里换一个没人占的和弦。
 
 ### ⚠️ 密码提示符处**截不到图**，这是本包新加的，而且默认是开着的
 
