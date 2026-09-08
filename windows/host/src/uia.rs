@@ -1376,13 +1376,64 @@ impl IRawElementProviderFragment_Impl for PaletteItem_Impl {
     fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
         runtime_id(self.hwnd as u32, KIND_PALETTE_ITEM, self.index as u64)
     }
-    /// **The window's rectangle, not the row's.** A row's own rectangle would
-    /// be a second copy of the geometry `palette.rs` paints with, and the two
-    /// would disagree the first time either changed. Reporting the window is
-    /// wrong in a way a client can see; reporting a stale row rectangle is
-    /// wrong in a way it cannot.
+    /// This row's rectangle, on screen.
+    ///
+    /// # What was here, and why it was wrong in the way it warned about
+    ///
+    /// This answered with the **window's** rectangle for every row, and said
+    /// why: a row rectangle would be "a second copy of the geometry
+    /// `palette.rs` paints with", and reporting the window was "wrong in a way
+    /// a client can see" while a stale row rectangle would be "wrong in a way
+    /// it cannot".
+    ///
+    /// **Both halves were untrue, and the second one mattered.** Measured on
+    /// the machine: ninety rows all answered `x=440 y=52 w=560 h=350`. A
+    /// client cannot see that -- it takes the centre of the rectangle it was
+    /// given, clicks, and **the click succeeds and runs a different command**.
+    /// That is precisely the "wrong in a way it cannot see" the old comment
+    /// judged to be the worse of the two, and it is what the old answer
+    /// produced.
+    ///
+    /// And the copy it was avoiding already existed: `palette.rs`'s
+    /// `WM_LBUTTONDOWN` carried the inverse of the same formula. The choice
+    /// was never one copy against two; it was two against three. There is now
+    /// **one** -- `palette::row_rect`, which the painter and the hit test also
+    /// call, so this cannot drift from what is drawn without all three moving.
+    ///
+    /// # An empty rectangle means "not on screen"
+    ///
+    /// Only twelve of the rows are drawn; the rest have no place. They answer
+    /// with a zero rectangle rather than an invented coordinate somewhere off
+    /// the edge, because an invented one invites a client to scroll to it and
+    /// click, which lands on whatever is really there.
+    ///
+    /// ⚠️ **`IsOffscreen` is not yet answered, and it should be** -- a zero
+    /// rectangle is the only signal a client gets today. It is one line in
+    /// `GetPropertyValue`, deliberately not added in this change: that match
+    /// is where task 327 is working, and two people adding arms to it is how a
+    /// merge comes out clean and short by one branch. Owed with task 328's
+    /// second half.
     fn BoundingRectangle(&self) -> WResult<UiaRect> {
-        Ok(window_rect(self.hwnd()))
+        let Some(r) = crate::palette::row_rect(self.index) else {
+            return Ok(UiaRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 });
+        };
+        // Client to screen, through the palette's own window: the rectangle
+        // `palette.rs` works in is its client area, and a client wants pixels
+        // on a desktop.
+        let mut origin = windows::Win32::Foundation::POINT { x: r.left, y: r.top };
+        if unsafe { windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd(), &mut origin) }
+            .as_bool()
+        {
+            return Ok(UiaRect {
+                left: origin.x as f64,
+                top: origin.y as f64,
+                width: (r.right - r.left) as f64,
+                height: (r.bottom - r.top) as f64,
+            });
+        }
+        // The window went between the snapshot and this call. A zero
+        // rectangle is the honest answer; the window's would be a place.
+        Ok(UiaRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 })
     }
     fn GetEmbeddedFragmentRoots(&self) -> WResult<*mut SAFEARRAY> {
         empty_i4_array()

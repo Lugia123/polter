@@ -76,6 +76,16 @@ static SNAPSHOT: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new
 /// The highlighted row, or `usize::MAX` when the palette is closed.
 static SNAPSHOT_SEL: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(usize::MAX);
+/// The three numbers a row's rectangle needs, published with the rows for the
+/// same reason they are: a thread local on another thread reads as absent.
+///
+/// `top` is the first row on screen, `dpi` and `width` are what the painter
+/// was last given. **Written only from the main thread**, in `publish`,
+/// alongside the rows -- so a rectangle and the row it belongs to can never
+/// come from different keystrokes.
+static SNAPSHOT_TOP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SNAPSHOT_DPI: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(96);
+static SNAPSHOT_WIDTH: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// Replace the snapshot from `Model`. **Main thread only** -- it borrows.
 fn publish(st: &Model) {
@@ -89,6 +99,81 @@ fn publish(st: &Model) {
         );
     }
     SNAPSHOT_SEL.store(if st.visible { st.selected } else { usize::MAX }, Ordering::Release);
+
+    // The geometry, taken from the window itself rather than remembered: the
+    // DPI and the client width are the two things that change without the row
+    // list changing at all.
+    let h = hwnd();
+    if !h.0.is_null() {
+        let mut rc = RECT::default();
+        if unsafe { GetClientRect(h, &mut rc) }.is_ok() {
+            SNAPSHOT_WIDTH.store(rc.right, Ordering::Release);
+        }
+        SNAPSHOT_DPI.store(unsafe { GetDpiForWindow(h) }.max(96) as i32, Ordering::Release);
+    }
+    SNAPSHOT_TOP.store(st.top, Ordering::Release);
+}
+
+/// **The one place a row's rectangle is worked out.** Painting, hit testing
+/// and the accessibility provider all come here.
+///
+/// # Why this function exists at all
+///
+/// `uia.rs` used to answer `BoundingRectangle` with the *window's* rectangle
+/// for every row, and the comment there said why: a row rectangle would be "a
+/// second copy of the geometry `palette.rs` paints with", and the two would
+/// drift. **The second copy already existed** -- `WM_LBUTTONDOWN` had the
+/// inverse of this formula written out -- so the choice was never between one
+/// copy and two; it was between two copies and three. Now it is one, and both
+/// of the other sites call it.
+///
+/// # It is not a calculation standing in for a measurement
+///
+/// A custom-drawn list has no `LB_GETITEMRECT` to ask; **the painter's own
+/// arithmetic is the measurement**, and this is that arithmetic, moved so that
+/// asking it is possible. Anything that changes where a row is drawn changes
+/// it here, and all three readers move together.
+///
+/// `None` means the row is not on screen. **Not a rectangle somewhere off the
+/// edge**: an invented off-screen coordinate invites a client to scroll to it
+/// and click, which lands on whatever is really there -- the same "it worked
+/// and it was wrong" this whole change is about.
+fn row_rect_at(top: usize, dpi: i32, width: i32, index: usize) -> Option<RECT> {
+    let n = index.checked_sub(top)?;
+    if n >= MAX_ROWS as usize {
+        return None;
+    }
+    let sc = |v: i32| v * dpi / 96;
+    let y = sc(EDIT_H) + n as i32 * sc(ROW_H);
+    Some(RECT { left: 0, top: y, right: width, bottom: y + sc(ROW_H) })
+}
+
+/// Which row is at client-area `y`, if any.
+///
+/// **A search over the rows on screen rather than the inverse formula.** The
+/// inverse is what `WM_LBUTTONDOWN` used to carry, and an inverse is a second
+/// chance to be wrong: it can disagree with the forward one about the row at a
+/// boundary, and a click a pixel from the edge then selects one row and runs
+/// another. Twelve comparisons cost nothing and cannot disagree with the thing
+/// they are made of.
+fn row_at_y(top: usize, dpi: i32, width: i32, y: i32) -> Option<usize> {
+    (top..top + MAX_ROWS as usize)
+        .find(|&i| row_rect_at(top, dpi, width, i).is_some_and(|r| y >= r.top && y < r.bottom))
+}
+
+/// Row `index`'s rectangle in the palette's client area, or `None` when it is
+/// not on screen. **Safe from any thread**: every input comes from the
+/// snapshot the main thread publishes.
+pub fn row_rect(index: usize) -> Option<RECT> {
+    if SNAPSHOT_SEL.load(Ordering::Acquire) == usize::MAX {
+        return None;
+    }
+    row_rect_at(
+        SNAPSHOT_TOP.load(Ordering::Acquire),
+        SNAPSHOT_DPI.load(Ordering::Acquire),
+        SNAPSHOT_WIDTH.load(Ordering::Acquire),
+        index,
+    )
 }
 
 /// One visible row's `(title, action)`, or `None` if it is not there.
@@ -1023,10 +1108,17 @@ extern "system" fn palette_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
                 let dpi = GetDpiForWindow(hwnd).max(96) as i32;
                 let sc = |v: i32| v * dpi / 96;
                 if y > sc(EDIT_H) {
-                    let row = (y - sc(EDIT_H)) / sc(ROW_H);
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
                     let hit = STATE.with(|c| {
                         c.borrow_mut().as_mut().map(|st| {
-                            let i = st.top + row.max(0) as usize;
+                            // The same function the painter uses, asked the
+                            // other way round. The inverse formula that used
+                            // to be here was a second chance to disagree with
+                            // the thing it was the inverse of.
+                            let Some(i) = row_at_y(st.top, dpi, rc.right, y) else {
+                                return false;
+                            };
                             if i < st.filtered.len() {
                                 st.selected = i;
                                 true
@@ -1156,13 +1248,15 @@ fn paint(hwnd: HWND) {
             for (n, &ci) in st.filtered.iter().skip(st.top).take(rows).enumerate() {
                 let cmd = &st.commands[ci];
                 let idx = st.top + n;
-                let y = sc(EDIT_H) + n as i32 * sc(ROW_H);
-                let row = RECT {
-                    left: 0,
-                    top: y,
-                    right: rc.right,
-                    bottom: y + sc(ROW_H),
+                // **Through `row_rect_at`, not worked out here.** This used to
+                // be the only place the arithmetic lived, which is why the
+                // accessibility provider felt it had to answer with the
+                // window's rectangle instead of a row's. One function, three
+                // callers, no drift.
+                let Some(row) = row_rect_at(st.top, dpi, rc.right, idx) else {
+                    continue;
                 };
+                let y = row.top;
                 if idx == st.selected {
                     let sel = CreateSolidBrush(COLORREF(theme::sel()));
                     FillRect(hdc, &row, sel);
@@ -1205,6 +1299,93 @@ fn paint(hwnd: HWND) {
         });
 
         let _ = EndPaint(hwnd, &ps);
+    }
+}
+
+#[cfg(test)]
+mod row_geometry_tests {
+    use super::*;
+
+    // **These do not run on the machine this port is written on.** The host
+    // crate only builds for Windows, so `cargo check --tests` is the whole of
+    // what a Mac gets. They are here anyway because the arithmetic below is
+    // where an off-by-one turns into "the click succeeded and ran a different
+    // command", and that is the one failure this whole change is about.
+
+    const DPI: i32 = 96;
+    const W: i32 = 560;
+
+    #[test]
+    fn the_first_visible_row_starts_below_the_edit_box() {
+        let r = row_rect_at(0, DPI, W, 0).expect("row 0 is on screen when nothing is scrolled");
+        assert_eq!(r.top, EDIT_H);
+        assert_eq!(r.bottom, EDIT_H + ROW_H);
+        assert_eq!((r.left, r.right), (0, W));
+    }
+
+    #[test]
+    fn rows_are_stacked_without_gaps_or_overlap() {
+        for i in 0..(MAX_ROWS as usize - 1) {
+            let a = row_rect_at(0, DPI, W, i).unwrap();
+            let b = row_rect_at(0, DPI, W, i + 1).unwrap();
+            assert_eq!(a.bottom, b.top, "row {i} and {} must meet exactly", i + 1);
+        }
+    }
+
+    #[test]
+    fn a_row_above_or_below_the_view_has_no_rectangle() {
+        // Scrolled down by five: rows 0..4 are gone, and the view still holds
+        // only `MAX_ROWS`.
+        assert!(row_rect_at(5, DPI, W, 4).is_none(), "a row scrolled off the top");
+        assert!(row_rect_at(5, DPI, W, 5).is_some(), "the first visible row");
+        assert!(
+            row_rect_at(5, DPI, W, 5 + MAX_ROWS as usize).is_none(),
+            "one past the last visible row"
+        );
+    }
+
+    /// **The property the old code broke.** Ninety rows answered with one
+    /// rectangle; a client clicked its centre and ran whichever command was
+    /// there. Two different rows must never claim the same place.
+    #[test]
+    fn no_two_visible_rows_share_a_rectangle() {
+        let rects: Vec<_> = (0..MAX_ROWS as usize)
+            .map(|i| row_rect_at(0, DPI, W, i).unwrap())
+            .collect();
+        for (i, a) in rects.iter().enumerate() {
+            for (j, b) in rects.iter().enumerate().skip(i + 1) {
+                assert!(
+                    a.top != b.top || a.bottom != b.bottom,
+                    "rows {i} and {j} report the same rectangle"
+                );
+            }
+        }
+    }
+
+    /// The hit test and the painter must agree for **every** pixel of every
+    /// visible row, which is the whole reason one is written in terms of the
+    /// other.
+    #[test]
+    fn every_pixel_of_a_row_hit_tests_to_that_row() {
+        for i in 0..MAX_ROWS as usize {
+            let r = row_rect_at(0, DPI, W, i).unwrap();
+            for y in r.top..r.bottom {
+                assert_eq!(row_at_y(0, DPI, W, y), Some(i), "y={y} belongs to row {i}");
+            }
+        }
+    }
+
+    /// A different DPI must not change which row a point lands in -- it is
+    /// the case the old inverse formula was most likely to round differently.
+    #[test]
+    fn the_agreement_holds_at_another_dpi() {
+        for dpi in [96, 120, 144, 192] {
+            for i in 0..MAX_ROWS as usize {
+                let r = row_rect_at(0, dpi, W, i).unwrap();
+                assert_eq!(row_at_y(0, dpi, W, r.top), Some(i), "dpi={dpi} row={i} top");
+                assert_eq!(row_at_y(0, dpi, W, r.bottom - 1), Some(i), "dpi={dpi} row={i} bottom");
+            }
+        }
     }
 }
 
