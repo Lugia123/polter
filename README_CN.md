@@ -5,105 +5,48 @@
 
 <p align="center">
   <b>让一个 Claude Code 会话去管另外几个。</b><br>
-  <sub>它替你读它们的屏幕、往里打字、开新 tab，你睡觉的时候替你盯着。<br>
-  <b>Polter 自己不要账号、不要 API key、一个网络请求都不发</b>。被它盯着的那些
-  agent 是你自己的 CLI，它们照旧跟各自的模型说话，花的还是你本来就在付的那份钱。<br>
-  <i>（想让它半夜叫醒你，得自己接一个二十行的通知脚本。发行包里不带。）</i></sub>
+  <sub>它替你读它们屏幕上的字、往里打字、开新 tab，你睡觉的时候替你盯着。<br>
+  Polter 自己不要账号、不要 API key，一个网络请求都不发。</sub>
 </p>
 
 <p align="center">
   <a href="#下载">下载</a> ·
-  <a href="#五分钟上手">五分钟上手</a> ·
-  <a href="#完整例子">完整例子</a> ·
-  <a href="#它永远不会做的事">它不做什么</a> ·
+  <a href="#上手四步">上手四步</a> ·
+  <a href="#配置">配置</a> ·
+  <a href="#常见问题">常见问题</a> ·
   <a href="README.md">English</a>
+</p>
+
+<p align="center">
+  <img src="images/screenshots/group-chat.png" alt="群聊：总管派任务，worker 汇报" width="46%">
+  <img src="images/screenshots/group-total.png" alt="统计视图：谁在等你，哪个终端静止了多久" width="52%">
 </p>
 
 ---
 
-## 问题
+### 功能
 
-三件我自己天天碰到的事，你大概也碰到过。
+同时开多个 Claude Code、Codex 窗口难以协调，子 Agent 长时间运行容易中断，通宵任务常在两小时左右停工。Polter 让你挑一个 tab 当**总管**，它是个普通的 Claude Code 会话，多了这些能力：
 
-**终端开一堆。** claude code、codex cli 各开几个，几个项目并行，前端一个、后端一个、测试一个，光是在这些窗口之间协调就是件事。
+- 读任何 tab 屏幕上的文字（文本，不是截图）
+- 往任何 tab 里打字
+- 开新 tab 并在里面起 agent
+- 建群聊、发任务，worker 在群里汇报，面板扛得住重启
+- 哪个 tab 静止了多久，会报给它
 
-**子 agent 的活我看不见。** 一开子 agent 就跑很久，里面还可能又分了好几个任务。中间某一步出错中断是常事。更麻烦的是它交差那一下：**它给我的是一段读起来像结论的话，而它验没验证过，这段话里看不出来。** 我拿到的只有这段话——中间它试了什么、哪一步绕过去了，随着那个会话一起没了。
+worker 不是 sub-agent，是各自终端里独立的会话，做过什么逐行落到磁盘，第二天可以直接 `grep`。
 
-**叮嘱它通宵干活，经常两小时就停了。** 大部分时候是报错终止（各种 API 错误），或者干到一半自己草草收尾。
+### 下载
 
-后两条最难受，因为**它们在屏幕上看不出来**。一个半路停下的、或者活没干完就说做完了的 agent，跟一个正在认真想事情的，长得一模一样。你不一个个点开看，分不清谁是谁。而等你想起来去看，通常已经是第二天早上了。
-
-## Polter 怎么解决
-
-**你挑一个终端里的 AI 来当总管，就把它所在的那个 tab 标记成总管。**
-
-标记的是 tab，当总管的是里面那个 agent——一个普通的 Claude Code 会话，不是看板，也不是什么守护进程。标记之后 Polter 做两件事：把自己的 MCP 能力开放给它，让它能管这个窗口里别的 Polter 终端；以及把它还没看过的事攒起来，隔一阵递过去一次——**只报哪块屏幕静了多久，不附任何结论**。它手上多出来的是这些：
-
-| 它能 | 也就是说 |
-| --- | --- |
-| **读任何一个 tab 的屏幕** | worker 卡在哪个确认框上，它看得见。 |
-| **往任何一个 tab 里打字** | 它能把卡住的 worker 推一把，或者叫它换个法子。**但它按不了那个「允许」**——权限确认只会来叫醒*你*，几点都一样。所以要挂通宵，先把干活的那几个 AI 都起成自动模式（Claude Code 的 Auto Mode、`--permission-mode acceptEdits` 之类），让确认框压根不出现。 |
-| **开新 tab 并在里面起 agent** | 干活的终端不用你铺。 |
-| **知道每块屏幕静止了多久** | 它就靠这一个数决定先去看谁。 |
-| **拉群聊、开任务面板** | worker 向它汇报；面板扛得过重启和上下文压缩。 |
-
-你用人话交代目标——「把导出功能做出来，拆三块，除非要我拍板别叫我」——它自己写计划、按每块活开一个 tab、在每个里面起 agent，然后盯着。
-
-对着上面三条：
+[**最新版本**](https://github.com/Lugia123/polter/releases/latest)
 
 | | |
 | --- | --- |
-| 终端开一堆 | 总管替你看着全部，你不用挨个点开 |
-| 子 agent 的活看不见 | **这里的 worker 不是子 agent，是独立终端里的独立会话。**它做过什么就留在那块屏幕上，也一行行落进磁盘。总管能读，**而更要紧的是你第二天早上能自己 grep**——子 agent 的中间过程随会话消失了，worker 的没有 |
-| 通宵干两小时就停 | 屏幕静止多久会报给总管。它去看那块屏幕——看完怎么办是它的判断，不是 Polter 的 |
+| **macOS 13+** | `Polter-*-macos-universal.zip`，Apple Silicon 和 Intel 一个包 |
+| **Windows 10+** | `Polter-*-windows-x64.zip`，核心 72 个 action 实现了 63 个（2026-09） |
+| **Linux** | 无安装包，可自行编译 |
 
-**第二条得说清它没做到什么**：总管也是一个 LLM 在读另一个 LLM 写的字，它同样可能把一屏漂亮输出看成「做完了」。**它没有替你验收。** 变的是证据还在不在——子 agent
-交完差，中间过程就没了；worker 干过的事留在屏幕和磁盘上，等着被人查。
-
-上面那张表里的「它」，说的都是**总管**。总管和 Polter 是两码事，后面整篇都靠这个区别撑着：
-
-- **总管**是你派去管事的那个 agent，一个普通的 Claude Code 会话。读屏幕、看懂上面写的是什么、决定要不要去捞一把，都是它干的。你随时能看它在干什么，也随时能把键盘抢回来。
-- **Polter** 是那个终端，就是这个程序。它不看内容，只递东西：把屏幕上的字原样交给总管，把总管打的字原样送进另一个 tab，另外只测一个量——**这块屏幕多久没动了**。屏幕不动是卡住了还是在想？Polter 不回答。答案写在屏幕上，读它是总管的活。
-
-
-<p align="center">
-  <img src="images/screenshots/group-chat.png" alt="群聊界面：几个 worker 终端，总管在里面分派编号任务" width="49%">
-  <img src="images/screenshots/group-total.png" alt="统计页：哪些任务在等你、每个终端静了多久、谁在说谁在做" width="49%">
-</p>
-
-<p align="center">
-  <sub>左：群聊，总管在这里写计划、worker 在这里回报。右：统计页——哪些事在等你、
-  每个终端静了多久、这一夜实际去了哪里。</sub>
-</p>
-
-## 决定之前
-
-三件事，先知道了再决定要不要花这十分钟。
-
-**一、这要你换掉现在用的终端。** Polter 是
-[Ghostty](https://github.com/ghostty-org/ghostty) 的分支，它必须是你那些 agent
-正在跑的那个终端。这代价听着吓人，其实还好：它本身就是个完整、够快的终端，你大可以装上先当普通终端用一周，哪天想起来再指一个 agent 当总管。要是你本来就拿 tmux 或者脚本在驱动 agent，[为什么非得是终端](#为什么非得是终端而不是一个库)值得看两分钟。
-
-**二、想让它半夜叫醒你，得自己写二十行 shell。** 通知做成了[插件](#插件)，这是故意的：你用 Telegram、ntfy 还是 `osascript`，不该由 Polter 替你定。**发行包里一个通知插件都不带**，所以开箱状态下，总管能盯一整夜，但够不到你的手机。脚本很短，但这份文档里目前还没有现成的例子，确实得你自己写。
-
-**三、它是个实验，端到端只在 Claude Code 上跑通过。** 底层就是普通的 MCP（你的
-agent CLI 本来就靠它拿工具）加普通终端，所以别的 CLI *应该*也能用——但除了它，一个都没测过。macOS 是天天在用的平台；[Windows 是新的，还不全](#下载)；Linux 只能自己编。
-
-**至于花多少钱，老实说，还没有实测数字。** 总管就是个普通的 Claude Code 会话，整夜读屏幕、写消息，那就按一个会话的量烧。烧多少取决于几样：同时盯着几个 worker、多久提醒它一次（`poltergeist-notice-interval`，默认一分钟，调大账单就降）、每次去看读进多少屏幕。**先拿一个 worker 跑一小时，再决定要不要让它盯着四个过夜。**
-
-## 下载
-
-[**最新版本**](https://github.com/Lugia123/polter/releases/latest)——版本号是`0.5.<n>`，`n` 是这个 fork 自己的提交数。
-
-| | |
-| --- | --- |
-| **macOS 13+** | `Polter-*-macos-universal.zip`——Apple Silicon 和 Intel 打在一个包里。这是日常开发和使用的平台。 |
-| **Windows 10+** | `Polter-*-windows-x64.zip`——新加的，边界在下面老实写了。 |
-| **Linux** | 没有二进制包。GTK 版编得过，但没有人在上面真用它盯过一次——一个没人启动过的包，不该默不作声地发出去。要用请从源码构建。 |
-
-### macOS：这些包没有签名
-
-背后没有 Apple 开发者证书，所以是 ad-hoc 签名、未公证。Gatekeeper 会拦，先解掉：
+**macOS** 的包没有签名，Gatekeeper 会拦：
 
 ```sh
 unzip Polter-*-macos-universal.zip
@@ -111,291 +54,69 @@ xattr -dr com.apple.quarantine Polter.app
 mv Polter.app /Applications/
 ```
 
-然后**从访达或 Dock 打开，不要从终端启动**。两者的 `PATH` 不一样，而负责把总管
-skill 装出去的注册插件要在 `PATH` 上找你的 agent CLI——从终端起它找不到，然后
-**安静地退出**，什么都不说。
+装完**从访达或 Dock 打开，不要从终端启动**，两者 `PATH` 不同，注册插件会找不到你的 agent CLI。
 
-### Windows：能用什么，不能用什么
+**Windows** 解压后运行 `polter-host.exe`，两个 DLL 和 `share/` 留在它旁边。SmartScreen 会要你点「仍要运行」。
 
-解压到任意目录，运行 `polter-host.exe`。**两个 DLL 和 `share/` 必须留在它旁边**
-—— DLL 是启动时按名字加载的，`share/` 里放着总管要读的 skill 和注册插件。没有签名，SmartScreen 会要你点「仍要运行」。
+### 前置条件
 
-Windows 这一侧的外壳是一个独立的 Rust 程序（`windows/host/`），通过 libghostty
-的 C API 驱动同一份核心——因为 Ghostty 本身没有 Windows GUI。它比 macOS 那侧起步晚，功能还没追平：
+一个装好的 agent CLI，在 `PATH` 上，且在 Polter 启动时就在。只在 Claude Code 上实测过。
 
-| | |
-| --- | --- |
-| 在一台 Windows 11 上验过 | 窗口能开、标签页能用、shell 能起、含中日韩文字渲染正常、输入法能打出汉字、菜单和快捷键可用、资源目录找得到、注册插件能启动。首次发布之后又有三样在真机上有读数了:**分屏**(一个标签里两个活的 pane,带分隔条)、**shell 集成**(检测到 PowerShell 并注入,工作目录跟着走)、**群聊界面**。 |
-| 已知缺的 | **`archive` 插件**装上了也启用了,但从不启动——而它在日志里说了一次,不是每次 spawn 失败一次。它只带了 `archive.py`,而 Windows 上没有任何东西能直接跑 `.py`。插件**是**有办法按系统声明跑哪个文件的(`exec_windows`,七个 agent CLI 插件都在用)——`archive` 缺的是一个 Windows 脚本,不是一个声明的办法。**部分键位动作**:宿主实现了核心 72 个 action 里的 46 个。**剩下 26 个里哪些在 Windows 上要紧,没有人推导过**,而其中有一部分是 GTK / macOS 专有的、在 Windows 上本来就不该有——**所以 26 是一个差值,不是一张待办清单。** |
+### 上手四步
 
-上面两行原来说的和现在正相反——分屏和群聊界面都是在能用之后还被写成缺失的。
-群聊那句的措辞值得单说一句,因为它把人带偏了:它写的是标签「一直是空白」,
-那描述的是一个还在加载的东西。**它没有在加载。** 进程在标签出现后 146 毫秒就死了,
-肉眼分不出先后——**而「加载不出来」和「立刻失败」会把人送到程序的两个不同部分去查。**
+**1. 开一个 tab，起 Claude Code。** 先 `cd` 到你要它干活的目录。
 
-这些缺口的进度在 [`ROADMAP.md`](ROADMAP.md)。
+**2. 标记成总管。** `Agents → Make This Terminal a Supervisor`。标记完 Polter 会往这个 tab 里敲一行字，让里面的 agent 去读 `supervising` skill。
 
-## 五分钟上手
-
-指一个 agent 当总管，标记它所在的 tab。配置就这一步——但记得确认标记生效了，唯一会悄悄不生效的地方就在第 2 步。
-
-### 1. 开一个 tab，在里面起 Claude Code
-
-跟你平时一样。先 `cd` 到合适的目录——总管以后可以自己开 tab，但它自己是从你把它留在哪儿开始的。
-
-### 2. 把这个 tab 标记成总管
-
-**Agents → Make This Terminal a Supervisor**（命令面板里也有，也可以绑给`poltergeist_supervisor` 这个 action）。同一个菜单项再点一次就取消标记；一个窗口里可以标好几个，各管各的一摊。
-
-标记落在 tab 上，拿到能力的是**里面那个 agent**。所以标记完的那一刻，Polter 就往这个 tab 里敲一行字，告诉里面的 agent 刚发生了什么、让它先去读自己的`supervising` skill。你还没开口，它已经知道该怎么操作了。
-
-**先确认工具真的在，再往下走。** `me` 是 Polter 四十个工具里最简单的一个，作用就是让 agent 报一下「我是谁、我能够到什么」——拿它当探针最合适。问它一句：
+往下走之前先确认工具在，问它一句：
 
 > 调一下 `me` 这个工具，把结果告诉我。
 
-答得出一个终端 id、外加一串它能够到的东西，就成了。**它要是说没有这个工具，先停在这里**——下面每一步都不会成。
+答得出一个终端 id 就成了。说没有这个工具就先停在这里，见[常见问题](#常见问题)。
 
-原因几乎总是同一类：agent 要能看见这些工具，得有个插件先去告诉它「Polter 在这儿」。带 Claude Code 的那个插件跑的是 `claude mcp add`，而它只有在 **Polter 启动的那一刻** `claude` 就在 `PATH` 上才做得成——这正是安装说明里让你从访达打开、别从终端打开的原因。三种具体原因和各自的判断方法在[如果 agent 说它没有 polter 工具](#如果-agent-说它没有-polter-工具)。
+**3. 交代任务目标。** 建群、开 tab、认领、计时都是它自己来，你不用报终端 id，也不用点工具名。
 
-**换一个 CLI 也是同样的检查。** 想拿 codex、gemini、qwen 之类当总管或者当 worker，起它之后同样问一句 `me`：
+**4. 去睡觉。** 回来用 `Agents → Terminal Conversations`（或 `polter +chat`）看它们说了什么。`tab` 和 `shift+tab` 切三个视图：对话、任务面板、当夜的账。
 
-- **答得出** —— 那个 CLI 的注册插件跑通了，照常往下走。
-- **答不出** —— 先去 **Agents → Plugins** 看它对应的插件在不在、开没开（发行包带了 7 个注册插件，一种 CLI 一个），确认那个 CLI 本身在 `PATH` 上，然后重启一次 Polter。
-- **注册插件里没有它** —— 那这个 CLI 目前只能当普通终端用，见[它支持哪些 agent](#它支持哪些-agent)。
+### 配置
 
-### 3. 交代任务目标
+所有配置项都有能用的默认值，不改也跑得起来。常用的几个：
 
-你的部分到此为止。建群、开 tab、认领 tab、开始计时，都是它自己来。你不需要报终端
-id，也不需要点工具名。
-
-### 4. 去睡觉
-
-回来用 **Agents → Terminal Conversations**（或者 `polter +chat`）看它们之间都说了什么。`tab` 和 `shift+tab` 在同一个群的三个视图之间切换：对话、任务面板，以及一页当夜的账——任务活了多久、谁在说话、哪些终端静止了多久。
-
-## 完整例子
-
-比如你想让它通宵把一个 REST API 做出来，而且不想中途一直看着。
-
-开一个 tab，`cd` 到项目里，起 `claude`，设成总管。然后这么说——**这段是故意把工具名和参数都写出来的，好让你看清它接下来会去做什么**。你不必这么写：「把这个做出来，拆三块，只有要我拍板的时候才叫我」就够了，剩下的它照自己的
-skill 补齐。
-
-> 你现在是总管。目标：把 `~/src/notes` 里 notes 服务的 REST API 做出来，测试全
-> 过，OpenAPI 文档同步更新。
->
-> 先给我一份开发计划，把活拆成三块互不打架的。然后每块开一个终端——用
-> `terminal_open`，指定对的目录，`watch: true`——在每个里面起
-> `claude --permission-mode acceptEdits`，把任务连同「做到什么算完」一起交代下去。
->
-> 把它们都拉进一个群。我睡觉的时候你盯着，谁卡了你去捞，谁想提前收工不许。只有
-> 谁停在权限确认上的时候才叫醒我。早上给我一份汇报。
-
-接下来它会自己做这些事：`group_create` + `group_set_brief` 建个说话的地方，`terminal_open` 开三个 tab，`terminal_send` 在每个里面起 agent，`group_add` 把人拉进群，再 `set_watch` 挨个认领、开始计时。然后它就转圈：哪个 tab 静止久了，它去读屏幕，判断这是真卡住还是编译时间长，决定催一下还是让它继续。
-
-这段话里有三个点值得说：
-
-- **先要计划。** 一个先拆活再开 tab 的总管，第二天早上能给你一份读得懂的东西，而不是一堆流水账。
-- **一定要说清「做到什么算完」。** `supervising` skill 里反复强调这条：只派任务不给验收标准，干活的那个就会自己定义什么叫完成，然后你凌晨两点才发现它定义的跟你想的不一样。
-- **干活的终端用自动模式起。** Polter 永远不会替 agent 回答权限确认——这是硬规矩不是配置项——所以谁停在确认上，最后被叫醒的是**你**。要用就用 Claude Code
-  自己的自动模式（会话里 shift+tab 切，或者启动时加`--permission-mode acceptEdits`）。`--dangerously-skip-permissions` 也在，名字警告你什么，它就干什么。
-
-### 跑起来之后
-
-- **汇报是攒着一起给的**，每个终端一行，每 `poltergeist-notice-interval`（默认一分钟）给一次。总管想主动看的话随时可以调 `notices`。
-- **屏幕不动超过 `poltergeist-quiescence-after`（默认三分钟）** 才算「静止」；一直静止的每 `poltergeist-quiescence-repeat`（默认十五分钟）再提一次。
-- **如果有人停在权限确认上**，总管调 `notify_user`，你就会被通知——什么点都通知，无视 `poltergeist-notify-window`，因为这事没别人能替你办。这需要配一个通知
-  [插件](#插件)。
-
-### 两个只有你能按的开关
-
-两个都直接显示在 tab 上，不只是藏在菜单里：
-
-- **不许它下班**——总管来要求下班会被拒。tab 的标记上会多一个环（`◉` 在动 / `◎` 静止）。**这一项目前既不在 Agents 菜单里，也不在命令面板里。** 闸本身还接着——`clock_out` 遇到被按住的终端仍然会拒——但唯一的入口是自己把 `poltergeist_toggle_held` 绑一个快捷键。
-- **Agents → Keep Agents Out of This Terminal**——整个从工具面里拿掉。这个是绝对的：总管和插件一并拒绝。tab 上会带一把锁。你自己看邮件的那个 tab 用这个。
-
-这两个都不能从工具面解除。故意没有这个工具——一个能解锁的总管，会先解锁再把它打卡下班。
-
-## 为什么非得是终端，而不是一个库
-
-理由**不是**「外部进程读不到屏幕」。读得到——你要是在用 tmux 的 `capture-pane`
-驱动 agent，你已经在读了。真正的理由要具体得多，也正是它跟那些基于 API 的编排框架分道扬镳的地方：
-
-**Polter 从不碰认证，所以它也从不限制你的 agent 是什么。**
-
-替你调模型的框架得拿到你的 API key，于是「用哪个模型、哪个账号、怎么计费」这些事就都归它管了。Polter 什么都不调。它只是在一个 tab 里把你指定的那个 CLI 拉起来，然后读屏幕。那个 CLI 怎么登录，是它跟它厂商之间的事。于是：
-
-- **你的订阅算数。** Claude Code 已经用你的套餐登录着，那让它当总管就不会多出一分钱
-  API 账单，花的是你本来就有的那份。**但这不等于免费**：一个整夜读屏幕的总管在消耗你套餐的额度，而那份额度正是你第二天早上坐下来干活要用的。用订阅而不是
-  key 的话，该盯的是这个上限，不是账单数字。
-- **不同的 tab，可以是不同的厂商、不同的计费口径。** 一个 worker 跑 `codex` 用
-  Codex 的套餐，另一个跑 `claude` 用订阅，第三个用 API key，三个待在同一个群里。
-  Polter 不掺和，因为它压根看不见。**架构上是这么回事，但没有人真跑过**——端到端只在 Claude Code 上验过，换一个 CLI 要另写一个注册插件，见
-  [它支持哪些 agent](#它支持哪些-agent)：真要混着用，先照那一节把对应的注册插件配好，不是开箱就有。
-- **让贵的模型待在做判断的地方，让便宜的去敲键盘。** 总管读屏幕、下判断，worker 埋头干活。两边是彼此独立的会话，各自用什么模型，取决于你起它的时候怎么起——总管不插手，也插不了手。
-- **你可以自己先把 worker 起好，再让总管接管。** 不一定要总管去开 tab。你自己开一个 tab，用你想用的那个 CLI、那个模型、那个账号，把上下文喂到你满意，然后再叫总管把它收编进群里。这条路对两种情况特别顺手：一是你想精确控制某个 worker 用什么；二是你手动带了它二十分钟、正想去睡觉。
-
-**代价就是刚说的那条**：它必须是你的终端。你的 agent 要是跑在远端机器、你 SSH
-过去的 tmux 里，那今天没辙。就这一条，没有别的补救。
-
-**还有一条边界：它是单机工具。** 群聊、任务面板、转录，全落在你自己的状态目录里。它们是**这台机器上**那几个 agent 之间的东西，不是你和同事之间的。五个人用
-Polter，就是五套互不相干的安装。
-
-
-## 除此之外你还得到什么
-
-- **随时可以把键盘抢回来。** 每个 worker 都是一个普通 tab 跑着一个普通 CLI。你想打字就打字——总管操纵的不是什么模拟环境；一个 tab 崩了不影响其它的。而且它们不必是同一个 CLI。
-- **两把只有你能上、只有你能解的锁。** 把一个 tab 按住不许它下班（总管就不能放它走），或者干脆让某个 tab 从 MCP 工具面里消失（谁都读不到、打不进去）。两种状态都直接显示在 tab 上，而且**都不能从工具面解开**——agent 解不开你上的锁。
-- **整夜的动静都落在磁盘上，一行一条 JSON。** 每条群消息、每个 tab 里滚过去的每一行。第二天早上 `grep` 和 `jq` 直接能用。不做任何脱敏，请当成你的 shell 历史来对待。
-- **规矩是一个你能改的文件。** 怎么当总管，是一份你能改、能版本化的 Markdown
-  skill。而**不许做**的事写死在二进制里——凌晨四点它不会悄悄从总管的上下文里掉出去；你嘴上嘱咐过一次的话，倒是会掉。
-- **一个统计页。** 任务活了多久、谁在说话说了多少、哪些终端静止了多久，按小时排开。它只算不判断：一个超过**你自己设的**那条阈值线的任务会被标成 `over`，那只表示它过了你的线，不表示出了任何问题。
-
-
-## 总管能做什么
-
-所有事情都走同一个 MCP 工具面（`src/cli/mcp.zig` 前端，后面是`src/poltergeist/rpc.zig`），清单是刻意短的：一共四十个工具，其中二十三个只有总管能调。
-
-**「安排」是总管的。** 认领终端、上下班、建群拉人、任务面板、通知你、开 tab、插件那几个——因为一个终端只要能认领别的终端，就等于绕开 `become_supervisor` 另开了一条当头儿的路。而在一个你本来就在的群里说话不算安排，所以聊天那几个工具对每个成员都开放。
-
-**「操作一个终端」也不算安排。** 读屏幕、打字、按键、执行菜单动作——任何 agent
-都可以，能不能过取决于**目标**身上的标记，而不是谁在问。一个 tab 里的 agent 可以去重启另一个没人看着的 tab 里的服务；但标着「被监视」「被屏蔽」「总管」的那些 tab，它碰不了。
-
-还有两条贯穿整个工具面。**群聊只留痕，不推人**：被人盯着的终端不会被群消息唤醒，所以发群消息永远推不动任何人，真要驱动只能 `terminal_send`。以及**凡是会替你做出不可撤销决定的，一律拒绝**，并交回给总管去说给你听：`cmd:` 凭据、关掉插件、替
-agent 回答权限确认。
-
-每个工具做什么、拒绝什么，全在
-**[`docs/tools_CN.md`](docs/tools_CN.md)** 里。那是查阅材料，想知道某个调用具体干什么的时候去翻。**你不需要它就能用 Polter**：总管会自己读它的 skill 然后自己调这些工具，上面那个[完整例子](#完整例子)才是你实际操作的样子。
-
-五个家族，这样下文出现的名字你能对上号：
-
-| | |
+| 配置项 | 作用 |
 | --- | --- |
-| `terminal_*` | 看和驱动一个 tab：读屏幕、打字、按键、开一个、执行菜单动作。 |
-| `group_*` | 群聊。它是**记录**，**发消息不会唤醒任何人**——所以派活从来不靠它。 |
-| `task_*` | 任务面板。这是唯一能扛过重启、上下文压缩和一整夜的东西。 |
-| `plugin_*` | 列出、配置、测试插件。总管专属。 |
-| 身份类 | `me`、`become_supervisor`、`stand_down`、`clock_in`/`clock_out`、`notices`、`notify_user`、`skill_read`、`session_recall`。 |
+| `poltergeist-watch` | 是否采样终端屏幕，默认开 |
+| `poltergeist-quiescence-after` | 静止多久报给总管 |
+| `poltergeist-register-mcp` | 启动时是否注册 MCP，默认开 |
 
-## 它永远不会做的事
+数据都在 `$XDG_STATE_HOME/polter/` 下：`chat/` 是 agent 之间说了什么，`terminals/` 是每个终端里发生了什么，`tasks/` 是面板变动，`stats/` 是每群每小时一行。不做脱敏，当成 shell 历史对待。
 
-四条，这几条是前面一切值得信的原因：
+### 它目前不做的事
 
-- **永远不替 agent 回答权限确认。** 没有白名单，没有开关。替别人按下「yes」等于废掉别人的安全模型。它会改成通知你，什么点都通知。
-- **永远不让 agent 解开你上的锁。** 按住和屏蔽这两把锁，只有你能上、只有你能解。工具面能看到"有一把锁"，但改不了它。
-- **永远不长成一个任务系统。** 面板存的是「谁在做哪件事、做完没有」—— 一行标题、一个负责的终端、开 / 关 / 取消。不存需求描述和验收细节，不存依赖、优先级、截止日期，不存子任务、附件、评论。它存在的唯一理由是：晚上九点打进终端的一条指令，凌晨三点还得在。这条线为什么画在这儿，见
-  [`docs/poltergeist/tasks.md`](docs/poltergeist/tasks.md)。
-- **永远不当绕过 agent 自身权限的近路。** 一个 CLI 把 `Bash` 关在授权确认后面的
-  agent，不会因为多装了个 Polter 就拿到执行权。`terminal_send` 只发文本、永远只发文本：它走粘贴通道，每个控制字节都会被换成空格，跟 xterm 一样。所以"按一个键"走的是另一条路，有它自己那道授权（`src/poltergeist/keys.zig`）。
+- **不替 agent 回答权限确认**，只会通知你。
+- **不让 agent 解开你上的锁。** 按住和屏蔽只有你能上、只有你能解。
+- **不长成一个任务系统。** 面板只存谁在做哪件事、做完没有。
+- **不当绕过 agent 自身权限的近路。** `terminal_send` 只发文本，走粘贴通道，控制字节换成空格。
 
-还有两条同样路子的小规矩：agent 可以把插件**打开**、但永远不能**关掉**（能关掉你通知渠道的 agent，等于能关掉自己头顶的灯）；正被监视的终端不能用`become_supervisor` 自荐（它是最可能在读网络内容的那个，一行注入的文字不能把谁扶上位）。
+### 常见问题
 
-## 东西都写在哪
+**agent 说它没有 polter 工具。** 三个原因：插件被关了、Polter 启动时 `claude` 不在 `PATH` 上、`poltergeist-register-mcp` 被关了。注册记的是最后启动的那个构建。
 
-两个默认都开，第二天早上 `less`、`grep`、`jq` 直接能用：
+**能用别的 CLI 吗。** server 是标准 MCP，任何 MCP 客户端都能跑，发行包带了七个注册插件。只在 Claude Code 上测过，别的请按「没测过」看待。
 
-- `$XDG_STATE_HOME/polter/chat/`——agent 之间说了什么。
-- `$XDG_STATE_HOME/polter/terminals/`——每个终端里实际发生了什么。一个终端一个目录，一天一个文件，一行一条 JSON。**不做任何脱敏，请当成你的 shell 历史来对待。**
-- `$XDG_STATE_HOME/polter/tasks/`——任务面板的每一次变动，各自带时间。`task_history` 读的就是它。
-- `$XDG_STATE_HOME/polter/stats/`——每个群每小时一行：开着几个、关了几个、取消几个、过线几个，最安静的和最久没被碰的各自静了多久。**当时生效的那条线一起写在同一行**，因为「过线几个」这个数在阈值改过之后就没有对照物了。
+**这不就是 tmux 吗。** 不是，tmux 不会告诉你哪个 agent 卡住了。
 
-## 值得知道的几个配置
+**它怎么知道 agent 卡住了。** 它不知道。它只测一块屏幕多久没动，不解析任何 CLI 的输出格式。是卡住还是在想，判断交给总管。
 
-一个都不是必须的。`polter +show-config --default --docs` 会打印全部。
+**插件怎么写。** 一个目录，一个 `plugin.json` 加一个可执行文件，二十行 shell 脚本就够。
 
-| 配置项                              | 默认    | 干嘛用的                                                                 |
-| ----------------------------------- | ------- | ------------------------------------------------------------------------ |
-| `poltergeist-mcp`                   | `true`  | 开不开 agent socket。`false` 就是一个普通终端。                          |
-| `poltergeist-register-mcp`          | `true`  | 允许插件去告诉你的 agent 运行时「Polter 的工具存在」。                     |
-| `poltergeist-watch`                 | `false` | 每个终端一打开就采样。不需要为了上手打开它——被认领的时候采样自然会开。 |
-| `poltergeist-quiescence-after`      | `3m`    | 屏幕不动多久才上报。                                                     |
-| `poltergeist-quiescence-repeat`     | `15m`   | 一直不动的，隔多久再提一次。                                             |
-| `poltergeist-notice-interval`       | `1m`    | 多久才允许打断总管一次。                                                 |
-| `poltergeist-supervisor-stand-down` | `true`  | 活干完之后总管能不能自己卸任。                                           |
-| `poltergeist-notify-window`         | 空      | 允许打扰你的时段，写成 `HH:MM-HH:MM`。权限确认无视这个。                 |
-| `poltergeist-chat-log`              | `true`  | 群聊落盘。                                                               |
-| `poltergeist-terminal-log`          | `true`  | 终端转录落盘。                                                           |
-| `poltergeist-task-idle-after`       | `12h`   | 一个任务多久没被碰过，就值得跟总管提一句。是「没被碰」，不是「卡住了」。 |
-| `poltergeist-group-quiet-after`     | `1h`    | 一个群多久没人说话，就值得提一句。                                       |
-| `poltergeist-worker-nudge-after`    | `10m`   | 一个手上有活的 worker 静止多久之后，会被问一句是不是有什么该汇报。           |
-| `poltergeist-compact-after`         | `64KB`  | 一个群还没被压缩的正文攒到多少，就随总管下一次交接把这个数字带出来。     |
+### 和 Ghostty 的关系
 
-## 如果 agent 说它没有 polter 工具
+让它成为一个好终端的一切都是 [Ghostty](https://github.com/ghostty-org/ghostty) 的功劳。Polter 是 fork 不是重写，渲染器、VT 实现、字体栈、原生界面全是他们的，上游有更新就合过来。
 
-Polter 已经把 socket 路径和 token 放进了每个终端的环境变量，agent **够得着**它需要的全在那儿了——但 MCP 客户端只会加载它被配置过的 server。
+关于终端本身的一切都问上游：转义序列、性能、配置、快捷键、`libghostty`。看 [ghostty.org/docs](https://ghostty.org/docs)，把里面的 `ghostty` 换成 `polter` 就行。
 
-做这件配置是插件的活，不是核心的活（原因写在`src/poltergeist/provision.zig`）。**`claude-code`** 插件默认就是开的，它做的就是这件事：`claude mcp add --scope user`，外加把 Polter 的 skill 复制进`~/.claude/skills/polter-*`。所以常见原因就三个：插件被关了、Polter 启动时`claude` 不在 `PATH` 上、`poltergeist-register-mcp` 被关了。要注册但没有任何一个注册插件开着的时候，Polter 会把这件事打在终端屏幕上，而不是只写进日志。
+Polter 加的是 `src/poltergeist/`、MCP 工具面、聊天 TUI、终端转录和插件宿主。本项目与 Ghostty 项目无关联，这里的 bug 除非上游也能复现，否则不要报到那边。
 
-**注册记的是某一个构建，最后启动的那个说了算。** 起一个开发构建，会悄悄把你用户级的 `polter` 条目指向它。开发的时候你要的就是这个，开发完就不是了。要么把你想留的那个构建再起一次，要么设 `poltergeist-register-mcp = false`，自己用`claude mcp` 管这条记录。
+构建看 [`docs/preview-manual.md`](docs/preview-manual.md)，设计推演在 [`docs/poltergeist/`](docs/poltergeist/README.md)。
 
-## 它支持哪些 agent
-
-**只在 Claude Code 上测过**，也只有它开箱即用。但这件事得说清楚，因为它并不是「只能 Claude Code」：
-
-- **server 本身是标准 MCP。** `polter +mcp` 在 stdio 上说标准 MCP，再通过 unix
-  socket 转给 Polter。任何 MCP 客户端都能跑它。每个终端都有`GHOSTTY_POLTER_SOCKET` 和各自的 `GHOSTTY_POLTER_TOKEN`；token 决定了"你是哪个终端"，agent 冒充不了别人。
-- **跟 Claude Code 绑定的只有配置那一步，而那是插件。** 核心发布的是**数据** ——
-  哪个二进制提供端点、有哪些 skill、文件在哪——`claude-code` 插件把它翻译成
-  Claude Code 认的形状。换一个 agent CLI，是再写一个插件，不是改核心。
-- **`PATH` 上没有 `claude` 不算错误。** 插件说清它没能做成什么，Polter 把那句话打在屏幕上，其它照常。
-
-所以别的 agent 原则上也能用这一整套：把 `polter +mcp` 注册进它自己的运行时，再想办法把 `supervising` skill 送到模型面前（`skill_read` 会把正文交出来，但得有人想到去调它）。**没测过。请按「没测过」看待，别当成已支持。**
-
-## 插件
-
-一个插件就是 `$XDG_CONFIG_HOME/polter/plugins/` 下的一个目录，里面一个`plugin.json` 加一个可执行文件。它被启动一次然后常驻，Polter 往它 stdin 写 JSON
-行，它在 stdout 回答。二十行的 shell 脚本就是一个完整的插件。
-
-插件「是什么」，取决于它订阅了什么：
-
-```json
-{ "wants": { "events": ["chat"], "calls": [], "groups": ["*"] } }
-```
-
-- **`chat`**——群里有人说话了。
-- **`terminal.quiet`**——某个终端静下来了，该告诉谁。
-- **`provision`**——这是 Polter 的自我介绍，去让某个 agent 运行时能看见它。
-
-**插件说的是跟 agent 一样的线协议**，过的是一模一样的检查：没声明的方法被拒，总管的方法被拒（插件永远不是总管），被屏蔽的终端对它不可达——跟对总管一样。
-
-### 随构建装的那些
-
-发行包里带 **8 个插件**：一个 `archive`，外加 7 个注册插件，每个对应一种 agent CLI（Claude Code、Codex、Gemini、Qwen、opencode、Kimi、DeepSeek）。**哪些真正跑起来，取决于你机器上装了哪个 CLI**——在 **Agents → Plugins** 里能看到当前的实际状态，那也是排查「工具没出来」时第一个该看的地方。没有一个插件需要网络。
-
-下面这两个是最常打交道的：
-
-- **`archive`**——把每条群消息再存一份，一天一个文件，所有群写在同一条时间线上，按 JSON 行追加。把 `dir` 指向一个同步目录或者一块外置盘，这份拷贝就比这台机器活得久。填了 `sign_key`，每一行就带一个 HMAC-SHA256，事后被改过的拷贝自己会说出来——这个 key 是凭据，所以要用引用的形式给（`env:`、`file:`、`keychain:`），别明文写。这是一道双保险：不管这个插件开不开，Polter
-  [自己那份记录](#东西都写在哪)都照写，而且插件读的也不是那份——事件是实时递给它的。
-- **`claude-code`**——告诉 Claude Code 说 Polter 在这儿。它以 `user` scope 跑`claude mcp add`（所以在哪个目录下工具都在，而不是只在某一个项目里），再把
-  Polter 的 skills 镜像到 `~/.claude/skills/polter-*`。没有它，agent 环境里躺着
-  socket 和 token，却没有任何办法用上——这也正是
-  [下面那个问题](#如果-agent-说它没有-polter-工具)最常见的答案。只想注册 MCP
-  server、不要 skills，就把 `skills` 设成 `no`。
-
-想关掉哪个，去 **Agents → Plugins**。agent 只能把插件打开，永远不能关掉，所以关不关只有你能决定。
-
-通知渠道留给你自己接：这类东西有几十种，随便预装一个都会立刻过时。
-
-**`"network": false` 是一句声明，不是一个沙箱。** Polter 只是把插件自称需要什么记下来、摆给你看，它并不去限制它（`src/poltergeist/Plugin.zig` 里就是这么写的）。插件是你自己放进那个目录的一个可执行文件，以你的身份运行，你能干的它都能干。装之前先读一遍，跟对待任何一个 shell 脚本一样。
-
-**凭据只存引用，绝不明文**——`env:NAME`、`file:` 路径、`keychain:service/account`，或者 `cmd:` 一条命令、它的 stdout 就是值；在调用的那一刻才解析，从不缓存。所以配置文件可以放进 dotfiles 仓库。`cmd:` 一条就覆盖了所有密码管理器，而它恰恰是 agent **不许写**的那一种：agent 写下的 `cmd:` 会变成
-Polter 以后自己去跑的一条命令，跑的时候早已不在当初授权它的那个场景里。**你自己手改这个文件，这些限制一条都不管你**——差别不在写了什么，而在于是谁写的。
-
-配置入口在 **Agents → Plugins**。完整契约见
-[`docs/poltergeist/plugins.md`](docs/poltergeist/plugins.md)。
-
-## 和 Ghostty 的关系
-
-让它成为一个好终端的一切，都是 [Ghostty](https://github.com/ghostty-org/ghostty)
-的功劳——Mitchell Hashimoto 和 Ghostty 的贡献者们。Polter 是分支不是重写：渲染器、VT 实现、字体栈、原生界面全是他们的，上游有更新就合过来。
-
-**所以关于终端本身的一切都该问上游**：支持哪些转义序列、性能、配置、快捷键、`libghostty`、崩溃报告。看 [ghostty.org/docs](https://ghostty.org/docs)，那些内容在这里全都成立，把里面的 `ghostty` 换成 `polter` 就行。
-
-Polter 加的是 `src/poltergeist/`、agent 说话的那个 MCP 工具面、聊天 TUI、终端转录和插件宿主。本项目与 Ghostty 项目无关联，在这里发现的 bug，除非在上游 Ghostty 上也能复现，否则不要报到那边去。
-
-MIT 协议，和上游一样；见 [LICENSE](LICENSE)，原始版权声明保留在里面。
-
-## 构建与文档
-
-`zig build` 就能构建。[`docs/preview-manual.md`](docs/preview-manual.md) 是构建、运行、调试的唯一权威，[`docs/README.md`](docs/README.md) 是其余文档的索引。上面这些东西的设计推演在 [`docs/poltergeist/`](docs/poltergeist/README.md)——从它的`README.md` 开始读，那是其余各章都要回答的那部宪法。
-
-[`CONTRIBUTING.md`](CONTRIBUTING.md) 讲清楚这棵树哪一半是 Polter 的、哪一半是上游 Ghostty 的——动手写补丁前值得花两分钟看，猜错了要重做。
-[`ROADMAP.md`](ROADMAP.md) 是活到哪了，包括 Windows 上还缺什么。
+MIT 协议，和上游一样。
