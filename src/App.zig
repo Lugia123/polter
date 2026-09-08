@@ -194,6 +194,20 @@ poltergeist_feed: poltergeistpkg.Feed,
 /// ones somebody calls an archive; see `startResident`.
 poltergeist_residents: std.ArrayListUnmanaged(*poltergeistpkg.Resident) = .empty,
 
+/// The last worker terminal each supervisor opened, by `Surface.id`.
+///
+/// **An identity, not a count and not a position.** The second and third
+/// workers are placed by splitting the previous one downwards, so this has to
+/// name a surface. It names it by id because that can be looked up: when the
+/// person has closed that pane, `findSurfaceByID` fails and the placement
+/// says so. An ordinal would still be a number after the pane it counted was
+/// gone, and the wrong placement it produced would look exactly like the
+/// right one.
+poltergeist_last_worker: std.AutoHashMapUnmanaged(
+    poltergeistpkg.Bus.Id,
+    poltergeistpkg.Bus.Id,
+) = .empty,
+
 /// Whether the resident plugins have been looked for. Testing the list
 /// instead would not do: with none installed it stays empty for ever,
 /// and every config reload would re-read every plugin's settings file to
@@ -348,6 +362,7 @@ pub fn deinit(self: *App) void {
     // has to have stopped before the rest of this runs.
     for (self.poltergeist_residents.items) |archive| archive.destroy();
     self.poltergeist_residents.deinit(self.alloc);
+    self.poltergeist_last_worker.deinit(self.alloc);
 
     // After them, and that order is the whole of it: each archive gives
     // its subscription back as it is destroyed.
@@ -2909,6 +2924,152 @@ fn poltergeistConfigText(
     return out.items;
 }
 
+/// What the budget says to do, given only numbers.
+///
+/// **Split out so the budget can be tested without an apprt.** Every other
+/// part of the placement needs a window system to say anything; this part is
+/// arithmetic, and arithmetic that nothing pins is arithmetic that drifts.
+const WorkerPlacement = enum {
+    /// Split the supervisor to the right: the first worker, and what puts the
+    /// supervisor on the left without moving it.
+    beside_supervisor,
+    /// Split the last worker downwards, growing the column.
+    below_last_worker,
+    /// Open a tab instead. The caller says why.
+    new_tab,
+
+    /// `panes` is how many terminals share the supervisor's tab, as the apprt
+    /// counted them; zero means it did not answer. `have_last_worker` is
+    /// whether this supervisor has a worker in that tab that is still open.
+    fn decide(panes: u32, have_last_worker: bool) WorkerPlacement {
+        if (panes == 0) return .new_tab;
+        const workers = panes - 1;
+        if (workers == 0) return .beside_supervisor;
+        // The fourth worker wants a second column, which means splitting a
+        // subtree, and no action can express that today.
+        if (workers >= 3) return .new_tab;
+        // Panes are here that this did not put here: the person split the tab
+        // themselves, and their layout is not ours to rearrange.
+        if (!have_last_worker) return .new_tab;
+        return .below_last_worker;
+    }
+};
+
+test "the worker budget" {
+    const testing = std.testing;
+    // Nobody answered: a tab, whatever else is true.
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, false));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, true));
+
+    // The supervisor alone: the first worker goes beside it.
+    try testing.expectEqual(WorkerPlacement.beside_supervisor, WorkerPlacement.decide(1, false));
+    // ...and a remembered worker cannot exist yet, but must not change this.
+    try testing.expectEqual(WorkerPlacement.beside_supervisor, WorkerPlacement.decide(1, true));
+
+    // Second and third grow the column.
+    try testing.expectEqual(WorkerPlacement.below_last_worker, WorkerPlacement.decide(2, true));
+    try testing.expectEqual(WorkerPlacement.below_last_worker, WorkerPlacement.decide(3, true));
+
+    // **The same counts, with nothing of ours in the tab, are somebody
+    // else's layout.** This is the pair that would go unnoticed if the
+    // budget only looked at the count.
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(2, false));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(3, false));
+
+    // The fourth worker onwards: a tab, until a subtree can be split.
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(4, true));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(9, true));
+}
+
+/// Where a supervisor's next worker terminal goes, or `null` for "a new tab".
+///
+/// **The budget lives here, in one place, and nowhere else.** Neither apprt
+/// holds any of these numbers: they answer one factual question -- how many
+/// terminals share this tab -- and this decides what that means. A second
+/// copy on either side would let the two platforms lay panes out differently
+/// while every log line and every reply read the same.
+///
+/// The shape being built is the supervisor on the left with its workers in a
+/// column beside it. **Only the first three workers are reachable today**:
+/// the fourth needs a new column beside the whole existing one, which is
+/// splitting a subtree, and `new_split` can only split a leaf. Everything
+/// past that falls back to a tab and says so.
+fn poltergeistPlaceWorker(
+    self: *App,
+    rt_app: *apprt.App,
+    surface: *Surface,
+    by: poltergeistpkg.Bus.Id,
+) ?struct { target: *Surface, direction: apprt.action.SplitDirection } {
+    // **The question only the apprt can answer.** Zero comes back when it did
+    // not answer at all -- no apprt writes zero, because a tab holding this
+    // surface holds at least it.
+    var panes: u32 = 0;
+    _ = rt_app.performAction(
+        .{ .surface = surface },
+        .poltergeist_tab_panes,
+        .{ .count = &panes },
+    ) catch {};
+
+    // **The pane to grow downwards is the last worker, by identity.**
+    //
+    // Not "the second pane" or "the one after the supervisor": an ordinal
+    // still names something after the pane it counted has gone, and the wrong
+    // placement it produces looks exactly like the right one. A `Surface.id`
+    // can be looked up, and a lookup that fails is an answer.
+    const last = self.poltergeist_last_worker.get(by);
+    const target_alive: ?*Surface = if (last) |l| self.findSurfaceByID(l) else null;
+
+    switch (WorkerPlacement.decide(panes, target_alive != null)) {
+        .beside_supervisor => {
+            // Nothing is rearranged, so no surface is rebuilt.
+            return .{ .target = surface, .direction = .right };
+        },
+
+        .below_last_worker => return .{ .target = target_alive.?, .direction = .down },
+
+        .new_tab => {
+            // ⚠️ **Each of these is a fallback, and the log says which.**
+            // Read as the design rather than as unfinished work, they would
+            // stop anybody looking for the missing half.
+            if (panes == 0) {
+                log.info(
+                    "poltergeist: falling back to a tab -- this apprt does not say how " ++
+                        "full a tab is",
+                    .{},
+                );
+            } else if (panes - 1 >= 3) {
+                log.info(
+                    "poltergeist: falling back to a tab -- {d} workers already here, and a " ++
+                        "fourth would need a second column, which means splitting a subtree " ++
+                        "(not possible today)",
+                    .{panes - 1},
+                );
+            } else if (last == null) {
+                log.info(
+                    "poltergeist: falling back to a tab -- this tab has {d} terminals that " ++
+                        "were not opened as workers, and rearranging somebody's own layout " ++
+                        "is not what they asked for",
+                    .{panes - 1},
+                );
+            } else {
+                // The last worker has been closed. **Appending, not filling
+                // the hole**: which pane is a "hole" depends on what the
+                // person did after it closed, so the same sequence would stop
+                // producing the same layout -- and a criterion that reads the
+                // shape could no longer be stated. The gap stays until
+                // something rearranges the tree.
+                log.info(
+                    "poltergeist: the last worker is gone; falling back to a tab rather " ++
+                        "than guessing which pane replaced it",
+                    .{},
+                );
+                _ = self.poltergeist_last_worker.remove(by);
+            }
+            return null;
+        },
+    }
+}
+
 fn poltergeistOpenTerminal(
     ctx: *anyopaque,
     alloc: Allocator,
@@ -2941,7 +3102,44 @@ fn poltergeistOpenTerminal(
     for (self.surfaces.items) |v| try before.put(alloc, v.core().id, {});
 
     const rt_app = self.poltergeist_rt_app orelse return error.NoRuntime;
-    _ = rt_app.performAction(
+
+    // **Where it goes, decided here and nowhere else.**
+    //
+    // The caller says it wants a terminal; it never says where. A position in
+    // the request would be a budget every agent recomputes, and six agents
+    // recomputing one budget get six answers whose wrong ones read exactly
+    // like the right ones. The two apprts answer one factual question -- how
+    // full is this tab -- and hold none of the numbers below.
+    const placed: bool = placed: {
+        const where = self.poltergeistPlaceWorker(rt_app, surface, by) orelse
+            break :placed false;
+
+        var result: apprt.action.NewSplit.Result = .unsupported;
+        _ = rt_app.performAction(
+            .{ .surface = where.target },
+            .new_split,
+            .{
+                .direction = where.direction,
+                .working_directory = dir_z,
+                .result = &result,
+            },
+        ) catch break :placed false;
+
+        if (result != .split) {
+            // ⚠️ **A live path, not a defensive one.** GTK cannot start a
+            // split in a named directory, so it refuses rather than opening
+            // one in the wrong place; every worker opened on Linux comes
+            // through here.
+            log.info(
+                "poltergeist: falling back to a tab -- this apprt would not split into {s}",
+                .{if (dir_z.len > 0) dir_z else "the inherited directory"},
+            );
+            break :placed false;
+        }
+        break :placed true;
+    };
+
+    if (!placed) _ = rt_app.performAction(
         .{ .surface = surface },
         .new_tab,
         .{ .working_directory = dir_z },
@@ -2951,6 +3149,10 @@ fn poltergeistOpenTerminal(
         const id = v.core().id;
         if (before.contains(id)) continue;
         if (self.isChatSurface(id)) continue;
+        // Remembered only when it was placed as a split: a worker that went
+        // into its own tab is not the pane the next one grows from, and
+        // recording it would send the next split into the wrong tab.
+        if (placed) self.poltergeist_last_worker.put(self.alloc, by, id) catch {};
         return id;
     }
     return null;
