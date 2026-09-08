@@ -99,6 +99,7 @@
 //! criterion is the `Subsystem` byte in each PE optional header (2 = GUI,
 //! 3 = console), not a successful build. See `subsystems()` in `build.rs`.
 
+mod capture;
 mod ctxmenu;
 mod divider;
 mod dnd;
@@ -3330,6 +3331,14 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                     // this the pointer keeps the old shape while sitting still
                     // over a terminal that has just entered a password prompt.
                     mouse::resync(s as usize);
+                    // **The other half of secure input on this platform.**
+                    // macOS takes the keyboard away from every other process;
+                    // Windows cannot, and what it can do is keep the window
+                    // out of screen captures. `capture::sync` decides from
+                    // *every* surface in this window, not just this one --
+                    // see the note on it for why the off-switch is the half
+                    // that can go wrong quietly.
+                    capture::sync(origin.unwrap_or_default());
                     true
                 }
                 // Refused rather than applied to the focused surface. A
@@ -3390,12 +3399,30 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
 
         // **Looked at and deferred this round, with a reason -- not an
         // oversight.** The core offers a timer to hold the process open after
-        // the last window goes. This host does not have that question:
-        // `winid.rs`'s `window_finished` decides the quit, in one place, from
-        // `left == 0` after `WM_DESTROY` -- four close routes were made to
-        // agree on that, and the agreement is the thing worth keeping. A timer
-        // would be a second decider of the same fact.
-        // owed: 285 -- reviewed and deferred; one place already decides the quit.
+        // the last window goes. This host has nothing for that timer to hold
+        // open, and the shape of the gap is checkable rather than a feeling:
+        //
+        //   * `winid::window_finished` decides the quit, in one place, from
+        //     `left == 0` after `WM_DESTROY`. Four close routes were made to
+        //     agree on that, and the agreement is the thing worth keeping.
+        //   * That decision never reads `quit-after-last-window-closed`. On
+        //     Windows the core's default for it is `false` (it is
+        //     `builtin.os.tag == .linux`), so this host behaves as if it were
+        //     `true` -- which is a separate owed item, and the one that has to
+        //     land first.
+        //   * A delay is only meaningful once a process with no windows is
+        //     still something a person can reach. On this platform that means
+        //     the always-resident tray icon, which does not exist yet.
+        //
+        // So a timer added today would be a second decider of `left == 0` with
+        // nothing on the other side of the wait. The two things it waits for --
+        // the config key being read, and a windowless process still being
+        // reachable -- have to land in that order.
+        //
+        // The marker below is one line on purpose: the walk in
+        // `src/apprt/action.zig` attributes it to the arm only while it is the
+        // last comment line before it, and a wrapped marker reads as prose.
+        // owed: 285 -- reviewed and deferred; needs the key read, then a tray.
         ffi::ACTION_QUIT_TIMER => {
             // process-wide: whether the process quits is a fact about the
             // process, not about any one window

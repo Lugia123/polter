@@ -117,6 +117,15 @@ full screen = Toggle Fullscreen
 重置窗口大小 = Reset Window Size
 恢复默认大小 = Reset Window Size
 置顶 = Toggle Float on Top
+# **The one command in this file whose Chinese absence had a consequence.**
+# Secure input is reachable on Windows *only* from the palette -- the core's
+# password-prompt detection polls termios and that timer is never started on
+# this platform -- so a person who cannot find the row cannot reach the
+# feature at all. English «secure keyboard entry» was here; nothing Chinese
+# was, and the title the palette shows is untranslated on Windows.
+安全输入 = Toggle Secure Input
+切换安全输入 = Toggle Secure Input
+密码输入 = Toggle Secure Input
 # The menu says «重新加载配置» since task 310 -- it took the catalogue's
 # wording, which the palette was already using. «重载配置» is what it said
 # before, and it stays: this file is an index, so an old word costs a line

@@ -3794,6 +3794,31 @@ keybind: Keybinds = .{},
 /// you may want to disable it.
 @"macos-secure-input-indication": bool = true,
 
+/// Keep the window out of screen captures while secure input is on.
+///
+/// When true, Windows is asked for `WDA_EXCLUDEFROMCAPTURE` on the terminal
+/// window for as long as any surface in it has secure input enabled, and the
+/// window is restored to `WDA_NONE` when the last one leaves. A capture --
+/// a screenshot, a screen share, a recording -- sees black where the window
+/// is; the window is unchanged on the physical screen.
+///
+/// This is the Windows counterpart to what `macos-auto-secure-input`
+/// protects: a password prompt that nobody can read the keys of is still
+/// readable if it is on somebody's shared screen.
+///
+/// **This only hides pixels.** It does not affect the accessibility tree:
+/// UI Automation still reports the window, its tabs and its terminals while
+/// the protection is on, which is measured and deliberate -- a screen reader
+/// must not go silent at a password prompt. Anything that drives this
+/// terminal by reading its accessibility tree keeps working; anything that
+/// drives it by looking at pixels does not.
+///
+/// A reason to turn this off is that it makes a terminal impossible to
+/// screenshot at exactly the moment somebody is trying to record a bug.
+///
+/// Only has an effect on Windows.
+@"windows-secure-input-exclude-from-capture": bool = true,
+
 /// If true, Ghostty exposes and handles the built-in AppleScript dictionary
 /// on macOS.
 ///

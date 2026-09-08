@@ -412,6 +412,20 @@ pub fn is_secure_for(surface: usize) -> bool {
 /// reading keyboard events". **Whether that description fits our own
 /// supervisor is the question 296 exists to answer, and it is not one to
 /// settle as a side effect of wiring an action.**
+/// Is **any** surface in this window at a password prompt?
+///
+/// **The question `capture.rs` has to ask before it restores anything.**
+/// Secure input is per surface and display affinity is per window, so with a
+/// split the last one out is the one that may lift the protection -- and a
+/// per-surface answer would lift it while another pane still needed it, with
+/// nothing on screen to say so.
+pub fn any_secure_in_frame(frame: HWND) -> bool {
+    let Ok(v) = SECURE.lock() else { return false };
+    v.iter().any(|(s, on)| {
+        *on && crate::tabs::frame_of_surface(*s as crate::ffi::Surface) == Some(frame)
+    })
+}
+
 pub fn on_secure_input(surface: usize, mode: i32) -> bool {
     if surface == 0 {
         // process-wide: the action named surface 0, so there is no terminal
