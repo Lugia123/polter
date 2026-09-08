@@ -149,6 +149,22 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
                 );
             }
 
+            // **Read-only: what, if anything, has claimed this extension.**
+            //
+            // ⚠️ **This exists because the return value cannot answer it.**
+            // With nothing associated, the shell puts its own "how do you
+            // want to open this file?" picker up and reports **success** --
+            // it did handle the request, by asking. So `ShellExecuteW`
+            // returning true covers both "a program opened the file" and "a
+            // dialog asked the person to choose one", and the two are
+            // indistinguishable from the log without this line.
+            //
+            // **It only asks.** `AssocQueryStringW` reads; nothing here
+            // creates an association. Building one would be writing to the
+            // person's registry to make our own log easier to read, which is
+            // not a trade this host gets to make.
+            log_association(&target);
+
             let wide: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
             let started = std::time::Instant::now();
             let r = unsafe {
@@ -164,6 +180,36 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
             // `ShellExecuteW` answers with a fake `HINSTANCE`; `<= 32` is an
             // error code. The same reading every call site took before.
             let ok = r.0 as usize > 32;
+            // **The code, not just the verdict.** This line used to print
+            // `ok` alone, and a bool cannot answer the question the failures
+            // actually raise: *which* failure. The one that prompted this is
+            // `SE_ERR_NOASSOC` -- the config file is `config.polter`, and an
+            // extension nothing has claimed is the ordinary state of a fresh
+            // machine, not a fault. It has to be distinguishable from "the
+            // file was not there" and from "the shell refused", because the
+            // three want three different answers and looked like one line.
+            //
+            // ⚠️ **A success here does not mean a window opened the file.**
+            // With no association the shell may put its own "how do you want
+            // to open this?" picker up and report success, because from its
+            // side it did handle the request. So this code says what the
+            // shell answered, and nothing about what the person saw.
+            let why = if ok {
+                String::new()
+            } else {
+                format!(
+                    " (code {}{})",
+                    r.0 as usize,
+                    match r.0 as usize {
+                        2 => ", ERROR_FILE_NOT_FOUND",
+                        3 => ", ERROR_PATH_NOT_FOUND",
+                        5 => ", ERROR_ACCESS_DENIED",
+                        // The one this comment is about.
+                        31 => ", SE_ERR_NOASSOC -- nothing on this machine has                                claimed that extension",
+                        _ => "",
+                    }
+                )
+            };
             let took = started.elapsed().as_millis();
             if co.is_ok() {
                 unsafe { windows::Win32::System::Com::CoUninitialize() };
@@ -176,15 +222,15 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
             if frame_raw != 0 {
                 wlogf!(
                     f,
-                    "{} req={} worker tid={}: ShellExecuteW returned {} in {}ms for {:?}",
-                    tag, req, me, ok, took, target
+                    "{} req={} worker tid={}: ShellExecuteW returned {}{} in {}ms for {:?}",
+                    tag, req, me, ok, why, took, target
                 );
             } else {
                 // process-wide: the request named no surface, so this line is
                 // about the process opening something rather than a window
                 plogf!(
-                    "{} req={} worker tid={}: ShellExecuteW returned {} in {}ms for {:?}",
-                    tag, req, me, ok, took, target
+                    "{} req={} worker tid={}: ShellExecuteW returned {}{} in {}ms for {:?}",
+                    tag, req, me, ok, why, took, target
                 );
             }
         });
@@ -243,4 +289,62 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
         }
     }
     spawned
+}
+
+/// One line saying which program, if any, the shell would use for `target`.
+///
+/// Diagnostic only -- nothing branches on it. See the call site for why the
+/// `ShellExecuteW` return value cannot answer this question.
+fn log_association(target: &str) {
+    use windows::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_NONE, ASSOCSTR_EXECUTABLE};
+
+    let Some(dot) = target.rfind('.') else {
+        // process-wide: a fact about the path, not about any window
+        plogf!("[shellopen] {:?} has no extension; the shell has nothing to look up", target);
+        return;
+    };
+    // A dot in a directory name is not this file's extension.
+    let ext = &target[dot..];
+    if ext.contains('\\') || ext.contains('/') {
+        // process-wide: a fact about the path handed in, not about any window
+        plogf!("[shellopen] {:?}: the last dot is in a directory name, not an extension", target);
+        return;
+    }
+
+    let wide_ext: Vec<u16> = ext.encode_utf16().chain(Some(0)).collect();
+    let mut buf = [0u16; 260];
+    let mut len: u32 = buf.len() as u32;
+    let r = unsafe {
+        AssocQueryStringW(
+            ASSOCF_NONE,
+            ASSOCSTR_EXECUTABLE,
+            windows::core::PCWSTR(wide_ext.as_ptr()),
+            windows::core::PCWSTR::null(),
+            Some(windows::core::PWSTR(buf.as_mut_ptr())),
+            &mut len,
+        )
+    };
+    match r.ok() {
+        Ok(()) => {
+            let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            // process-wide: which program the machine associates with an
+            // extension is a property of the machine, not of a window
+            plogf!(
+                "[shellopen] {} is claimed by {:?}",
+                ext,
+                String::from_utf16_lossy(&buf[..n])
+            );
+        }
+        // **The line this whole function is for.** Nothing has claimed the
+        // extension, so a person clicking the menu row sees Windows ask them
+        // to choose a program -- which is the platform behaving normally on a
+        // machine where nothing has claimed it, not a fault in this host.
+        // process-wide: the association is machine-wide; every window would
+        // report the same thing
+        Err(e) => plogf!(
+            "[shellopen] nothing on this machine claims {} ({e:?}); the shell will ask the \
+             person to pick a program, and it will report that as success",
+            ext
+        ),
+    }
 }

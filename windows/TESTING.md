@@ -2,17 +2,64 @@
 
 ## 一、怎么开始
 
-你拿到的是一个文件夹，里面四样东西。**双击 `polter-host.exe` 就行，不用设任何环境变量。**
+你拿到的是一个文件夹，里面**六样**东西。**双击 `polter-host.exe` 就行，不用设任何环境变量。**
 
 ```
 polter-<构建号>\
-    polter-host.exe        <- 双击这个
-    ghostty-internal.dll   ┐ 这两个必须和 exe 来自同一次构建
-    ghostty-vt.dll         ┘
-    share\ghostty\         <- 目录，必须一起带着
+    polter-host.exe                    <- 双击这个
+    ghostty-internal.dll               ┐ 这两个必须和 exe 来自同一次构建
+    ghostty-vt.dll                     ┘
+    share\
+        terminfo\ghostty.terminfo      <- 核心的兜底哨兵（本包里不走这条路，仍要带）
+        ghostty\                       <- 插件、主题、shell 集成
+        locale\                        <- 界面翻译，32 个 .mo；必须和 ghostty\ 并排
 ```
 
-**四样里只有最后一个不是文件，而它最容易被漏掉。** 只拷了三个 exe/dll 而没带 `share\ghostty` 的话，**程序照样起得来、终端照样能用** —— 但插件、主题、shell 集成会**全部安静地不存在**。那看起来像十几个功能没做，其实是一个目录没拷。
+**`share\` 底下那三样是一组，不能挑着拷**，而它们各自是被**不同的东西**找到的 —— 这一段值得读，因为漏掉任何一样都不会有人报错：
+
+| 这一样 | 谁在找它 | 怎么找 |
+| --- | --- | --- |
+| `share\ghostty\` | **主程序**，启动时 | 找 exe 同级的 `share\ghostty\poltergeist\`；找到才设 `POLTER_RESOURCES_DIR` |
+| `share\locale\` | **核心**，加载翻译时 | 从上面那个目录**往上一级**再进 `locale\`。⚠️ **所以 `locale\` 必须和 `ghostty\` 并排**，挪走任何一个另一个就失效 |
+| `share\terminfo\ghostty.terminfo` | 核心的**兜底**路径 | 只有在 `POLTER_RESOURCES_DIR` 没设或不被接受时才会用到。**双击本包里的主程序时它不参与**，但仍然要打进来：不打，兜底路径就没有了 |
+
+**漏掉之后长什么样 —— 和「这些功能没做」在屏幕上一模一样：**
+
+| 漏了哪一样 | 你会看到 |
+| --- | --- |
+| `share\ghostty\` | 插件、主题、shell 集成**和翻译一起**安静地不存在。程序照常起、终端照常能用；看起来像十几个功能没做，其实是一个目录没拷 |
+| `share\locale\` | ⚠️ **设置页、菜单、命令面板仍然是英文，其它一切正常。** 这一条最难认：**「翻译还没做」和「翻译没打包」在屏幕上逐字相同** |
+| `share\terminfo\ghostty.terminfo` | **本包里什么都看不出来**（见上表最后一行）。它的缺席不产生任何一行日志 |
+
+### 出包之后先跑一次，看这两行在不在
+
+**这一步是给打包的人的，也是给你的**：起一次主程序，在 `polter-host-<进程号>.log` 里找这两行。**它们比清单可靠 —— 清单是人对着打的，这两行是程序自己说的。**
+
+```
+[res] POLTER_RESOURCES_DIR = "…\share\ghostty" (beside the executable)
+info(i18n): loaded catalog locale=zh_CN entries=… path=…\share\locale\zh_CN\LC_MESSAGES\….mo
+```
+
+| 哪一行不在 | 说明什么 | 怎么办 |
+| --- | --- | --- |
+| 第一行不在（日志里改成 `[res] no resources directory found next to the executable`） | `share\ghostty\` 没打进来，或者不在 exe 同级 | **别测。** 插件、主题、shell 集成、翻译这一轮的读数**全部作废** |
+| 第二行不在（往下找 `info(i18n): no catalog path=… err=…`） | `share\locale\` 没打进来，或者没和 `share\ghostty\` 并排 | ⚠️ **别报「翻译坏了」。** 这一轮所有关于界面语言的读数**作废，不是缺陷** |
+
+⚠️ **这两行看不见的事**：`share\terminfo\` 在不在，它们**一行都答不了** —— 双击本包时没有任何代码读它。**要核它只能直接看文件在不在**（下面第一行）。
+
+### 屏幕之前，先核这三样
+
+在包的目录里跑（PowerShell）：
+
+| 核什么 | 命令 | 应当是 |
+| --- | --- | --- |
+| 兜底哨兵在不在 | `Test-Path share\terminfo\ghostty.terminfo` | `True` |
+| 翻译打了几份 | `(Get-ChildItem share\locale -Recurse -Filter *.mo).Count` | **32** |
+| 中文那份是不是这棵树的 | `(Get-ChildItem share\locale\zh_CN\LC_MESSAGES\*.mo).Length` | **30959** |
+
+**任何一行不对，就是包没打全，别往下测** —— 之后看到的每一个「没做」都可能只是这一件事。**三样都对、上面两行日志也都在，界面仍然是英文** —— 那才是产品的问题，请照第六节报回来。
+
+> 那 32 和 30959 是从源码树量的：`po\` 下 32 份翻译各出一个 `.mo`，中文那份由 GNU gettext 0.21 的 `msgfmt` 编出来是 30,959 字节。**换一个大版本的 `msgfmt` 可能给出别的字节数**，所以对不上先问打包的人用的是哪个版本，再当成缺陷。
 
 插件目录不用你准备：程序自己在 `%LOCALAPPDATA%\polter\plugins` 下建。
 
@@ -32,7 +79,7 @@ polter-<构建号>\
 | --- | --- | --- |
 | `MISMATCH` | 主程序和它的核心来自不同的构建 | **先别测。** 之后看到的任何异常都可能只是这件事，把那行发回来 |
 | `tester's notes: NOT here` | 这份构建没带上说明 | 找打包的人要一份，别照着一份不知道从哪来的旧的测 |
-| `no resources directory found next to the executable` | `share\ghostty` 没带上 | 去要完整的那份，否则上面说的那一堆「安静地不存在」正在发生 |
+| `no resources directory found next to the executable` | `share\ghostty\` 没带上，或者不在 exe 同级 | 去要完整的那份，否则上面说的那一堆「安静地不存在」正在发生。先按第一节那两行日志和三行命令核一遍 |
 
 第一行里那串字符就是**你手上这一版**。第六节报问题的时候还要用它一次。
 
@@ -90,6 +137,13 @@ polter-<构建号>\
   成因写在 `docs/windows/keys.md` §3.7。**不用报。**
 - **设置页里下拉框的那圈边框是系统画的**，深色主题下它仍然偏亮。这一处我们管不到。
 - **窗口全部关掉之后进程才退出**，中间可能有短暂的延迟。
+- ⚠️ **「设置…」（`Ctrl+,`）弹出「你要如何打开这个 .polter 文件？」—— 在没有关联的机器上这是预期行为。**
+  那一行打开的是**配置文件**（`config.polter`），不是设置页——**这是上游的安排**，
+  macOS 上 `Cmd+,` 的 `Preferences…` 做的是同一件事。而 `.polter` 这个扩展名在裸机上
+  没有任何程序认领，于是 Windows 按它一贯的做法问你用什么打开。
+  **选一次记事本（勾上「始终」）就不会再问。** ⚠️ **不必为了测试去建立这个关联**——
+  如果你已经建立了，请在报告里说一句，否则我们分不清你测的是哪种机器。
+  **设置页在别处：智能体 → 插件…**
 - ⚠️ **`Shift+Insert` 粘贴不了 —— 这一条要报，但请只报一次。** 我们已经知道：那个和弦
   被绑给了「粘贴选区」，而 Windows 没有选区剪贴板，宿主会拒绝（日志里是
   `[clip] read … refused: no selection clipboard on Windows`）。**`Ctrl+V` 是好的。**
