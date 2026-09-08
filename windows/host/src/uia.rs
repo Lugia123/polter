@@ -88,6 +88,7 @@ use windows::Win32::System::Variant::{
 use windows::core::BOOL;
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
 
 use polter_split_tree::PaneId;
 
@@ -618,29 +619,107 @@ fn root_of(frame: isize) -> IRawElementProviderFragmentRoot {
     r
 }
 
+/// What one child of the root **is**, as opposed to the interface it is
+/// reached through.
+///
+/// **This exists so that no `Navigate` arm has to compute its own position.**
+/// The arithmetic it replaces (`the documents follow the tab list, so a tab
+/// at index t is the root's child t + 1`) was correct for exactly as long as
+/// there was one document per tab; the moment a split produced two, it named
+/// the neighbour's element. Commit `081bc0546` fixed the same family once
+/// already -- a window *number* that was a position and had to become an
+/// identity -- so the repair here is not "a better index" but "not an index".
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RootChild {
+    TabList,
+    /// One terminal, named by **which pane of which tab** it is. Both halves
+    /// are needed: a pane id alone is unique in the process, but checking the
+    /// pair is what keeps a pane that has moved to another tab from matching
+    /// here, for the reason `tabs::surface_of_tab_pane` gives at length.
+    Document(TabId, PaneId),
+}
+
 /// The order of the root's children, which several `Navigate` arms need to
-/// agree on: the tab list first, then one document per tab in tab order.
+/// agree on: the tab list first, then **one document per pane**, tabs in tab
+/// order and panes in each tab's own order.
+///
+/// **One document per pane, not per tab.** It used to be per tab, built from
+/// `TabInfo::pane` -- the tab's *focused* pane -- and that single field is
+/// where all three symptoms of task 331 came from: a split tab offered one
+/// document instead of two, that document moved from one half to the other
+/// as focus did, and the two halves could not have different automation ids
+/// because there was only ever one element.
 ///
 /// **Computed from a fresh snapshot every time rather than stored.** A stored
 /// order is a second list of tabs, which is the thing `strip.rs` rule 1
 /// forbids one level up, and it goes stale in exactly the way that makes a
 /// tree look right and navigate wrong.
-fn root_children(frame: HWND) -> Vec<IRawElementProviderFragment> {
+fn root_children_ided(frame: HWND) -> Vec<(RootChild, IRawElementProviderFragment)> {
     let (tabs_now, _) = tabs::tab_infos(frame);
     let f = frame.0 as isize;
-    let mut out: Vec<IRawElementProviderFragment> = Vec::with_capacity(tabs_now.len() + 1);
-    out.push(TabList { frame: f }.into());
+    let mut out: Vec<(RootChild, IRawElementProviderFragment)> = Vec::with_capacity(
+        tabs_now.iter().map(|t| t.panes.len()).sum::<usize>() + 1,
+    );
+    out.push((RootChild::TabList, TabList { frame: f }.into()));
     for t in tabs_now.iter() {
-        out.push(
-            Document {
-                frame: f,
-                tab: t.id,
-                pane: t.pane,
-            }
-            .into(),
-        );
+        for p in t.panes.iter() {
+            out.push((
+                RootChild::Document(t.id, p.id),
+                Document {
+                    frame: f,
+                    tab: t.id,
+                    pane: p.id,
+                }
+                .into(),
+            ));
+        }
     }
     out
+}
+
+/// `root_children_ided` for the callers that only want the elements.
+///
+/// **Deliberately derived from the same function** rather than built beside
+/// it: two functions producing "the root's children" is the shape where the
+/// tree a client walks and the positions `Navigate` computes drift apart, and
+/// nothing about the tree looks wrong while they do.
+fn root_children(frame: HWND) -> Vec<IRawElementProviderFragment> {
+    root_children_ided(frame).into_iter().map(|(_, f)| f).collect()
+}
+
+/// The window of **one particular pane**, from one snapshot.
+///
+/// The twin of `tabs::surface_of_tab_pane`, and it checks the same triple for
+/// the same reason: a pane id alone is unique in the process, so looking one
+/// up without its tab happily answers for a pane that has since moved into
+/// another tab or another window. `None` is the caller's cue that this
+/// element is gone, which is a different fact from "it has no rectangle".
+fn pane_hwnd(frame: HWND, tab: TabId, pane: PaneId) -> Option<HWND> {
+    tabs::tab_infos(frame)
+        .0
+        .iter()
+        .find(|t| t.id == tab)
+        .and_then(|t| t.panes.iter().find(|p| p.id == pane))
+        .filter(|p| p.hwnd != 0)
+        .map(|p| HWND(p.hwnd as *mut core::ffi::c_void))
+}
+
+/// Where `who` sits among the root's children, and the children themselves,
+/// **from a single snapshot**.
+///
+/// Two calls would be two snapshots, and a pane closing between them turns a
+/// correct index into a neighbour's element -- which is the defect this
+/// helper exists to make unwriteable, not merely unlikely.
+fn step_among_root_children(
+    frame: HWND,
+    who: RootChild,
+    direction: NavigateDirection,
+) -> WResult<IRawElementProviderFragment> {
+    let kids = root_children_ided(frame);
+    let Some(idx) = kids.iter().position(|(k, _)| *k == who) else {
+        return Err(gone());
+    };
+    step(kids.into_iter().map(|(_, f)| f).collect(), idx, direction)
 }
 
 /// Where `idx` sits among `items`, in the direction asked for.
@@ -824,19 +903,63 @@ impl IRawElementProviderFragmentRoot_Impl for WindowRoot_Impl {
                 return Ok(TabItem { frame: self.frame, tab: id }.into());
             }
         }
-        // Below the strip: whichever tab is active owns the area.
+        // Below the strip the active tab owns the area -- and **which pane
+        // of it is decided by the point**, not by which pane has focus. A
+        // split tab used to answer with the focused half wherever you
+        // pointed, so a client asking "what is under the mouse" was told
+        // about the other half of the window and had no way to notice.
         let (tabs_now, active) = tabs::tab_infos(frame);
-        match tabs_now.get(active) {
-            Some(t) => Ok(Document {
-                frame: self.frame,
-                tab: t.id,
-                pane: t.pane,
+        let Some(t) = tabs_now.get(active) else {
+            return Err(gone());
+        };
+        // The point in *screen* coordinates: `p` above was converted to the
+        // frame's client space for the strip, and a pane's `GetWindowRect` is
+        // in screen space. Mixing the two lands in the wrong half by exactly
+        // the frame's top-left, which is a plausible-looking answer.
+        let screen = POINT { x: x as i32, y: y as i32 };
+        for pane in t.panes.iter() {
+            if pane.hwnd == 0 {
+                continue;
             }
-            .into()),
-            None => Err(gone()),
+            let h = HWND(pane.hwnd as *mut core::ffi::c_void);
+            // A zoomed split hides the panes it covers, and a hidden window
+            // keeps its last rectangle -- so without this, a hidden pane
+            // still claims the area the zoomed one is drawn over.
+            if !unsafe { IsWindowVisible(h) }.as_bool() {
+                continue;
+            }
+            let mut r = RECT::default();
+            if unsafe { GetWindowRect(h, &mut r) }.is_ok()
+                && screen.x >= r.left
+                && screen.x < r.right
+                && screen.y >= r.top
+                && screen.y < r.bottom
+            {
+                return Ok(Document {
+                    frame: self.frame,
+                    tab: t.id,
+                    pane: pane.id,
+                }
+                .into());
+            }
         }
+        // No pane covers the point: it is on a divider, or on the padding
+        // around them. **Answering with the focused pane rather than
+        // refusing** -- the area does belong to this tab, and a client that
+        // gets nothing here concludes the window has no content at all.
+        Ok(Document {
+            frame: self.frame,
+            tab: t.id,
+            pane: t.pane,
+        }
+        .into())
     }
 
+    /// **The focused pane, and here that is the whole answer** -- unlike
+    /// `ElementProviderFromPoint` above, which had to stop using it. This
+    /// method is asked which element has the keyboard, and `TabInfo::pane` is
+    /// exactly that; a split tab's other half is a different element and does
+    /// not have the caret.
     fn GetFocus(&self) -> WResult<IRawElementProviderFragment> {
         let frame = self.hwnd();
         let (tabs_now, active) = tabs::tab_infos(frame);
@@ -912,9 +1035,14 @@ impl IRawElementProviderFragment_Impl for TabList_Impl {
                     None => Err(gone()),
                 }
             }
-            // The tab list is the root's first child, so it has no previous
-            // sibling; its next is the first document.
-            NavigateDirection_NextSibling => step(root_children(frame), 0, direction),
+            // The tab list has no previous sibling; its next is the first
+            // document. **Found by identity even though the answer is always
+            // 0**: the constant was another copy of "where the tab list sits
+            // among the root's children", and a second copy of a position is
+            // how the two come to disagree.
+            NavigateDirection_NextSibling => {
+                step_among_root_children(frame, RootChild::TabList, direction)
+            }
             _ => Err(gone()),
         }
     }
@@ -1205,9 +1333,49 @@ impl IRawElementProviderSimple_Impl for Document_Impl {
         };
         Ok(match id {
             UIA_ControlTypePropertyId => variant_i4(UIA_DocumentControlTypeId.0),
+            // ⚠️ **Both halves of a split answer with the same name**, and
+            // this change does not fix that. The title belongs to the tab --
+            // there is no per-pane title anywhere in the model to use -- and
+            // the obvious substitute, "pane 1 of 2", is a position: it
+            // renumbers when a pane closes, which is the thing the automation
+            // id above went out of its way not to do. So the halves are told
+            // apart by their automation id and their rectangle, not by name,
+            // and a client that only reads names still cannot tell them
+            // apart. Left as a known gap rather than papered over.
             UIA_NamePropertyId => variant_bstr(&format!("Terminal: {}", tabs_now[idx].title)),
-            UIA_AutomationIdPropertyId => variant_bstr(&format!("terminal-{}", self.tab.0)),
-            UIA_HasKeyboardFocusPropertyId => variant_bool(idx == active),
+            // **The number here is the pane's, and it used to be the tab's.**
+            //
+            // It has to change, because the automation id has to be unique
+            // and two panes of one tab are two elements: keyed on the tab
+            // they would both answer `terminal-2`, and a client that picks an
+            // element by automation id would get whichever it found first.
+            //
+            // ⚠️ **A client that wrote down an old `terminal-N` will not find
+            // it after this change** -- the same tab now answers with a
+            // different number. That is not avoidable, and the reason is
+            // worth stating rather than regretting: the only way to keep the
+            // old ids meaningful would be to keep one document per tab that
+            // points at whichever pane has focus, **and that element is the
+            // defect this change exists to remove**.
+            //
+            // Stable in the sense that matters, which is not "unchanging
+            // across this release": a pane id is handed out once by
+            // `tabs::take_id` and never reused, so it names this half of this
+            // split for as long as it exists, and closing another pane does
+            // not renumber it. That is the same argument `tab-<id>` makes.
+            // **It is not a fourth counter**: panes and tabs come out of the
+            // one process-wide allocator, which is why the numbers a client
+            // sees skip (1, 3, ...) -- the gaps are the tabs.
+            UIA_AutomationIdPropertyId => variant_bstr(&format!("terminal-{}", self.pane)),
+            // **Both halves of a split are in the active tab; only one of
+            // them has the caret.** While there was one document per tab,
+            // "my tab is active" and "I have the keyboard" were the same
+            // sentence. They are not any more, and leaving this arm as it
+            // stood would have had two elements answering true -- which a
+            // screen reader resolves by believing the first one it finds.
+            UIA_HasKeyboardFocusPropertyId => {
+                variant_bool(idx == active && tabs_now[idx].pane == self.pane)
+            }
             // Asked of Windows, never assumed; see `window_enabled`.
             UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
@@ -1231,13 +1399,19 @@ impl IRawElementProviderFragment_Impl for Document_Impl {
                 Ok(r)
             }
             NavigateDirection_NextSibling | NavigateDirection_PreviousSibling => {
-                let (tabs_now, _) = tabs::tab_infos(frame);
-                let Some(t) = tabs_now.iter().position(|t| t.id == self.tab) else {
-                    return Err(gone());
-                };
-                // The documents follow the tab list, so a tab at index `t` is
-                // the root's child `t + 1`.
-                step(root_children(frame), t + 1, direction)
+                // **This element finds itself by identity.** What stood here
+                // was `step(root_children(frame), t + 1, direction)` -- the
+                // tab's index plus one -- which is a correct position only
+                // while every tab contributes exactly one document. A split
+                // makes it name the neighbour, and the fix is not a corrected
+                // sum: an arithmetic that has to be re-derived every time an
+                // element is added is one that will be wrong the next time
+                // one is.
+                step_among_root_children(
+                    frame,
+                    RootChild::Document(self.tab, self.pane),
+                    direction,
+                )
             }
             _ => Err(gone()),
         }
@@ -1271,16 +1445,20 @@ impl IRawElementProviderFragment_Impl for Document_Impl {
         if !live(self.hwnd()) {
             return Err(gone());
         }
-        runtime_id(winid::of(self.hwnd()), KIND_DOCUMENT, self.tab.0)
+        // Keyed on the pane for the reason the automation id is: two panes
+        // of one tab are two elements, and a runtime id they share tells the
+        // client they are one.
+        runtime_id(winid::of(self.hwnd()), KIND_DOCUMENT, self.pane)
     }
     fn BoundingRectangle(&self) -> WResult<UiaRect> {
-        let frame = self.hwnd();
-        let (tabs_now, _) = tabs::tab_infos(frame);
-        match tabs_now.iter().find(|t| t.id == self.tab) {
-            Some(t) if t.pane_hwnd != 0 => {
-                Ok(window_rect(HWND(t.pane_hwnd as *mut core::ffi::c_void)))
-            }
-            _ => Ok(UiaRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 }),
+        // **This pane's window, not the tab's focused one.** What stood
+        // here read the focused pane's window, which gave both halves of a
+        // split the same rectangle -- so a client hit-testing or drawing a
+        // highlight put it on the wrong half of the window and was told, by
+        // the tree, that it was right.
+        match pane_hwnd(self.hwnd(), self.tab, self.pane) {
+            Some(h) => Ok(window_rect(h)),
+            None => Ok(UiaRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 }),
         }
     }
     fn GetEmbeddedFragmentRoots(&self) -> WResult<*mut SAFEARRAY> {
@@ -2181,9 +2359,12 @@ impl ITextRangeProvider_Impl for TermRange_Impl {
         let rows = text.lines().count().max(1) as f64;
         let cols = text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f64;
         let mut origin = POINT { x: 0, y: 0 };
-        let pane = match tabs::tab_infos(self.hwnd()).0.iter().find(|t| t.id == self.tab) {
-            Some(t) if t.pane_hwnd != 0 => HWND(t.pane_hwnd as *mut core::ffi::c_void),
-            _ => return Err(gone()),
+        // This range's own pane. The coordinates below are the core's, in
+        // that pane's client space, so the window they are made absolute
+        // against has to be that same pane -- the focused one would offset
+        // every rectangle by the distance between the two halves.
+        let Some(pane) = pane_hwnd(self.hwnd(), self.tab, self.pane) else {
+            return Err(gone());
         };
         if unsafe { ClientToScreen(pane, &mut origin) }.as_bool() {
             f64_array(&[

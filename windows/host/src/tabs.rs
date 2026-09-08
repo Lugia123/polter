@@ -2395,12 +2395,42 @@ pub struct TabInfo {
     /// identity** rather than holding a `Surface` pointer across calls: a
     /// pane can be closed between one UIA call and the next, and a stale
     /// `Surface` is the one mistake here that is not recoverable.
+    ///
+    /// **This field answers "where is the caret", and only that.** It used to
+    /// be the *only* pane a caller could see, which is how a split tab came
+    /// to have one accessible document that moved from half to half as focus
+    /// did; `panes` below is what a caller enumerating the tab must use.
     pub pane: PaneId,
-    /// That pane's window. **Carried in the same snapshot as the id, not
-    /// looked up afterwards**: two lookups a moment apart can straddle a
-    /// pane being closed, and the pair would then describe two different
-    /// panes while looking like one.
-    pub pane_hwnd: isize,
+    /// **Every pane of this tab**, not just the focused one.
+    ///
+    /// In `Tab::panes` order, which is the order they were created in. Not
+    /// the order they are laid out in, deliberately: the tree and the pane
+    /// list can disagree (`layout` logs that as a BUG and hides the pane),
+    /// and a list built from the tree would then be missing a window that
+    /// exists. Every entry here has a real `HWND` because it came from the
+    /// list that owns them.
+    ///
+    /// **Nothing may read a position out of this.** It is a set with an
+    /// order, and the order is only here so that two calls a moment apart
+    /// list the same panes the same way; identity is `PaneInfo::id`.
+    pub panes: Vec<PaneInfo>,
+}
+
+/// One pane of a tab, as a caller that cannot hold the lock needs to see it.
+///
+/// **The id and the window in one snapshot**, and that pairing is the whole
+/// reason this is a struct: looked up separately, a moment apart, the two can
+/// straddle a pane being closed and then describe two different panes while
+/// looking like one.
+///
+/// **This replaces a `TabInfo::pane_hwnd` that held the focused pane's
+/// window.** It was removed rather than left beside this list: it is the
+/// field every rectangle in `uia.rs` used to be computed from, and leaving a
+/// convenient "the pane's window" on a per-tab struct is leaving the way back
+/// into the defect open.
+pub struct PaneInfo {
+    pub id: PaneId,
+    pub hwnd: isize,
 }
 
 /// Every tab of one window, and which of them is active.
@@ -2420,12 +2450,11 @@ pub fn tab_infos(frame: HWND) -> (Vec<TabInfo>, usize) {
                     // announced -- the same precedence the strip paints with.
                     title: t.title_override.clone().unwrap_or_else(|| t.title.clone()),
                     pane: t.focused,
-                    pane_hwnd: t
+                    panes: t
                         .panes
                         .iter()
-                        .find(|p| p.id == t.focused)
-                        .map(|p| p.hwnd)
-                        .unwrap_or(0),
+                        .map(|p| PaneInfo { id: p.id, hwnd: p.hwnd })
+                        .collect(),
                 })
                 .collect(),
             w.active,
