@@ -47,10 +47,22 @@ const REFUSED: i32 = 2;
 pub type Outcome = Arc<Mutex<Option<Result<String, String>>>>;
 
 /// One cell of the shape a caller asked for, before ids are handed out.
+/// A surface, as the core hands it over: the same handle every action target
+/// carries. **Not a `PaneId`** -- see the note on `Shape::Existing`.
+pub type SurfaceKey = usize;
+
 #[derive(Debug)]
 pub enum Shape {
-    /// A pane that is already in this tab.
-    Existing(PaneId),
+    /// A pane that is already in this tab, **named by its surface**.
+    ///
+    /// ⚠️ **A `PaneId` is this host's private numbering and no agent can
+    /// learn it** -- no tool hands one out, and the first version of this
+    /// took one anyway. A caller following the tool description gave the
+    /// terminal id it uses everywhere else and was told the layout left out
+    /// a pane that was in it (task 406). The core translates terminal ids to
+    /// surfaces on the way in and back on the way out, so the only
+    /// namespace that crosses this boundary is the one the caller has.
+    Existing(SurfaceKey),
     /// A pane to make. `cwd` is where its shell starts, or the default.
     New(Option<String>),
     Split {
@@ -71,9 +83,10 @@ pub fn parse(v: &serde_json::Value) -> Result<Shape, String> {
     let obj = v.as_object().ok_or_else(|| "each cell must be an object".to_string())?;
 
     if let Some(p) = obj.get("pane") {
-        let s = p.as_str().ok_or_else(|| "\"pane\" must be a terminal id as a string".to_string())?;
-        let id = parse_id(s)?;
-        return Ok(Shape::Existing(id));
+        let s = p
+            .as_str()
+            .ok_or_else(|| "\"pane\" must be a terminal id as a string".to_string())?;
+        return Ok(Shape::Existing(parse_key(s)?));
     }
 
     if let Some(n) = obj.get("new") {
@@ -117,8 +130,12 @@ pub fn parse(v: &serde_json::Value) -> Result<Shape, String> {
     Ok(Shape::Split { axis, ratio, left: Box::new(left), right: Box::new(right) })
 }
 
-/// A terminal id as the tool surface writes them: `0x…`, or plain digits.
-fn parse_id(s: &str) -> Result<PaneId, String> {
+/// The surface handle the core substituted for the caller's terminal id.
+///
+/// Written as `0x…` like every other handle in this ABI. ⚠️ **The caller
+/// never sees this**: it wrote a terminal id and the core replaced it, for
+/// the reason on `Shape::Existing`.
+fn parse_key(s: &str) -> Result<SurfaceKey, String> {
     let t = s.trim();
     let r = if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16)
@@ -126,10 +143,11 @@ fn parse_id(s: &str) -> Result<PaneId, String> {
         t.parse::<u64>()
     };
     r.map_err(|_| format!("{s:?} is not a terminal id"))
+        .map(|v| v as SurfaceKey)
 }
 
 /// Every existing pane the shape names, in the order it names them.
-pub fn existing(shape: &Shape, out: &mut Vec<PaneId>) {
+pub fn existing(shape: &Shape, out: &mut Vec<SurfaceKey>) {
     match shape {
         Shape::Existing(id) => out.push(*id),
         Shape::New(_) => {}
@@ -152,29 +170,48 @@ pub fn fresh<'a>(shape: &'a Shape, out: &mut Vec<&'a Option<String>>) {
     }
 }
 
-/// Turn the shape into a tree, taking one id from `made` per `new` cell.
-pub fn to_node(shape: &Shape, made: &mut std::vec::IntoIter<PaneId>) -> Node {
+/// Turn the shape into a tree, taking one id from `made` per `new` cell and
+/// resolving each named surface to the pane it is.
+pub fn to_node(
+    shape: &Shape,
+    made: &mut std::vec::IntoIter<PaneId>,
+    pane_of: &dyn Fn(SurfaceKey) -> Option<PaneId>,
+) -> Node {
     match shape {
-        Shape::Existing(id) => Node::Leaf(*id),
+        // Checked before this runs; a surface with no pane here would have
+        // been refused by name.
+        Shape::Existing(key) => Node::Leaf(pane_of(*key).unwrap_or(0)),
         Shape::New(_) => Node::Leaf(made.next().expect("one id per new cell")),
         Shape::Split { axis, ratio, left, right } => Node::Split(Box::new(Split {
             axis: *axis,
             ratio: *ratio,
-            left: to_node(left, made),
-            right: to_node(right, made),
+            left: to_node(left, made, pane_of),
+            right: to_node(right, made, pane_of),
         })),
     }
 }
 
-/// The shape as it ended up, with every cell's pane id, as JSON.
-pub fn describe(node: &Node) -> serde_json::Value {
+/// The shape as it ended up, as JSON, **named by surface**.
+///
+/// ⚠️ `surface_of` maps this host's private pane numbering back to the
+/// handles the core can turn into terminal ids. Emitting the pane numbers --
+/// which the first version did -- gives the caller ids it cannot feed back
+/// into `terminal_read` or `terminal_send`, **which is the whole reason this
+/// call exists** (task 406).
+pub fn describe(node: &Node, surface_of: &dyn Fn(PaneId) -> Option<SurfaceKey>) -> serde_json::Value {
     match node {
-        Node::Leaf(id) => serde_json::json!({ "pane": format!("0x{id:x}") }),
+        Node::Leaf(id) => match surface_of(*id) {
+            Some(k) => serde_json::json!({ "pane": format!("0x{k:x}") }),
+            // A pane in the tree with no surface is a bug this side, and
+            // saying so beats handing back a number from the wrong
+            // namespace.
+            None => serde_json::json!({ "pane": null }),
+        },
         Node::Split(s) => serde_json::json!({
             "split": match s.axis { Axis::Horizontal => "h", Axis::Vertical => "v" },
             "ratio": s.ratio,
-            "left": describe(&s.left),
-            "right": describe(&s.right),
+            "left": describe(&s.left, surface_of),
+            "right": describe(&s.right, surface_of),
         }),
     }
 }
@@ -223,7 +260,15 @@ pub fn perform(action: &Action, target: Option<Surface>) -> bool {
 
     let outcome: Outcome = Arc::new(Mutex::new(None));
     wlogf!(frame, "[layout] queued; draining this window's queue to answer");
-    tabs::post_op(frame, tabs::Op::ApplyLayout(shape, outcome.clone()), "layout action");
+    // **The pane the call named travels with the shape.** It is what says
+    // which tab; without it the op lands on whichever tab is in front by the
+    // time it runs (task 407).
+    let at = tabs::pane_id_of_surface(surface);
+    tabs::post_op(
+        frame,
+        tabs::Op::ApplyLayout(shape, at, outcome.clone()),
+        "layout action",
+    );
 
     // **The queue is drained here, and that is why this can answer at all.**
     // See the note at the top of this file: everything queued before this op

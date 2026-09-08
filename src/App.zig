@@ -2528,7 +2528,33 @@ fn poltergeistLayout(
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
 
-    const spec_z = try alloc.dupeZ(u8, spec);
+    // ⚠️ **The two namespaces, and the whole of task 406.** A caller writes
+    // the terminal ids it uses everywhere else; the apprt owns the tree and
+    // knows its panes by a private numbering **no tool hands out**. The first
+    // version let the caller's ids through untranslated, so a layout written
+    // exactly as the tool described it came back "the layout leaves out pane
+    // 1" -- about a pane that was in it.
+    //
+    // The translation is here because this is the only side that can do it:
+    // the apprt has never seen a terminal id, and `findSurfaceByID` is the
+    // map. Both directions, so the ids in the reply are ones the caller can
+    // hand to `terminal_read`.
+    const in_spec = self.layoutIdsToSurfaces(alloc, spec) catch |err| switch (err) {
+        error.UnknownPane => return .{
+            .applied = false,
+            .text = try alloc.dupe(u8, "the layout names a terminal that does not exist. " ++
+                "Use the ids terminal_list gives you -- the same ones terminal_read and " ++
+                "terminal_send take."),
+        },
+        error.BadLayout => return .{
+            .applied = false,
+            .text = try alloc.dupe(u8, "the layout is not an object tree of cells"),
+        },
+        else => return err,
+    };
+    defer alloc.free(in_spec);
+
+    const spec_z = try alloc.dupeZ(u8, in_spec);
     defer alloc.free(spec_z);
 
     // **The caller's buffer, sized once.** An apprt that needs more room says
@@ -2557,8 +2583,85 @@ fn poltergeistLayout(
         // a failure to be guessed at.
         .unsupported => error.LayoutUnsupported,
         .refused => .{ .applied = false, .text = try alloc.dupe(u8, said) },
-        .applied => .{ .applied = true, .text = try alloc.dupe(u8, said) },
+        .applied => .{
+            .applied = true,
+            .text = try self.layoutSurfacesToIds(alloc, said),
+        },
     };
+}
+
+/// Rewrite a layout's `pane` cells from terminal ids to surface handles.
+///
+/// The handle is what every action target already carries, so it is the one
+/// currency this side and the apprt both hold. See the note at the call.
+fn layoutIdsToSurfaces(self: *App, alloc: Allocator, text: []const u8) ![]const u8 {
+    return self.rewriteLayout(alloc, text, true);
+}
+
+/// And back, so the reply names terminals rather than handles.
+fn layoutSurfacesToIds(self: *App, alloc: Allocator, text: []const u8) ![]const u8 {
+    return self.rewriteLayout(alloc, text, false) catch |err| switch (err) {
+        // A handle this side cannot place is a bug over there, and the raw
+        // text is more use to whoever chases it than a swallowed error.
+        error.UnknownPane, error.BadLayout => try alloc.dupe(u8, text),
+        else => err,
+    };
+}
+
+fn rewriteLayout(
+    self: *App,
+    alloc: Allocator,
+    text: []const u8,
+    to_surface: bool,
+) ![]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, text, .{}) catch
+        return error.BadLayout;
+    defer parsed.deinit();
+
+    try self.rewriteLayoutValue(alloc, &parsed.value, to_surface);
+
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    errdefer buf.deinit();
+    std.json.Stringify.value(parsed.value, .{}, &buf.writer) catch return error.BadLayout;
+    return buf.written();
+}
+
+fn rewriteLayoutValue(
+    self: *App,
+    alloc: Allocator,
+    v: *std.json.Value,
+    to_surface: bool,
+) !void {
+    switch (v.*) {
+        .object => |*o| {
+            if (o.getPtr("pane")) |cell| {
+                if (cell.* == .string) {
+                    const n = std.fmt.parseUnsigned(u64, cell.string, 0) catch
+                        return error.BadLayout;
+                    const mapped: u64 = if (to_surface) m: {
+                        const s = self.findSurfaceByID(n) orelse return error.UnknownPane;
+                        break :m @intFromPtr(s.rt_surface);
+                    } else m: {
+                        break :m self.surfaceIdOfHandle(n) orelse return error.UnknownPane;
+                    };
+                    cell.* = .{ .string = try std.fmt.allocPrint(alloc, "0x{x}", .{mapped}) };
+                }
+            }
+            for (o.values()) |*child| try self.rewriteLayoutValue(alloc, child, to_surface);
+        },
+        .array => |*a| for (a.items) |*child| try self.rewriteLayoutValue(alloc, child, to_surface),
+        else => {},
+    }
+}
+
+/// The terminal id behind a surface handle, or null if this app has no such
+/// surface. **Compared rather than cast**: a handle from the apprt is a
+/// number until it matches one this side is holding.
+fn surfaceIdOfHandle(self: *const App, handle: u64) ?u64 {
+    for (self.surfaces.items) |v| {
+        if (@intFromPtr(v) == handle) return v.core().id;
+    }
+    return null;
 }
 
 fn poltergeistSend(

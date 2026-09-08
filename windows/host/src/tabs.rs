@@ -146,7 +146,12 @@ pub enum Op {
     /// so doing it anywhere the `STATE` lock might be held is a deadlock,
     /// not a race. Running it here means the lock is not held: `run_ops`
     /// takes it to dequeue and drops it before the arm runs.
-    ApplyLayout(crate::layout::Shape, crate::layout::Outcome),
+    /// The shape, **the pane the call named**, and the cell to answer in.
+    ///
+    /// ⚠️ The pane is carried for one reason: it says **which tab**. Without
+    /// it this landed on `win.active`, so opening a tab between the call and
+    /// the op moved the layout to the new one -- task 407.
+    ApplyLayout(crate::layout::Shape, Option<PaneId>, crate::layout::Outcome),
     /// A second top-level window, with a tab in it.
     ///
     /// **Queued for the same reason `NewTab` is**, and it is the stronger
@@ -2218,8 +2223,9 @@ fn apply_layout(
     app: App,
     hinst: windows::Win32::Foundation::HINSTANCE,
     shape: &crate::layout::Shape,
+    at: Option<PaneId>,
 ) -> Result<String, String> {
-    let (bounds, current) = {
+    let (bounds, tab_idx, current) = {
         let Some(win) = window(frame) else {
             return Err("that window is gone".into());
         };
@@ -2227,35 +2233,58 @@ fn apply_layout(
         let Some(bounds) = content_bounds(frame, sh) else {
             return Err("that window has no content area to lay out".into());
         };
-        let Some(tab) = win.tabs.get(win.active) else {
-            return Err("that window has no active tab".into());
+        // **The tab holding the pane the call named**, not whichever is in
+        // front -- see `acting_tab`. Task 407: a tab opened between the call
+        // and this op moved the layout onto it.
+        let idx = acting_tab(&win, at);
+        let Some(tab) = win.tabs.get(idx) else {
+            return Err("that window has no tab to lay out".into());
         };
-        (bounds, tab.panes.iter().map(|p| p.id).collect::<Vec<_>>())
+        // **Both numberings, taken together.** The shape names surfaces --
+        // the only handle the caller has -- and the tree is built from pane
+        // ids, so the pairing has to come from one snapshot: two lookups a
+        // moment apart can straddle a close and describe two different panes.
+        (
+            bounds,
+            idx,
+            tab.panes.iter().map(|p| (p.id, p.surface)).collect::<Vec<(PaneId, usize)>>(),
+        )
     };
+
+    // Surfaces to pane ids, and a caller naming something not in this tab is
+    // told which one rather than left to compare two lists.
+    let mut named = Vec::new();
+    crate::layout::existing(shape, &mut named);
+    let mut named_panes: Vec<PaneId> = Vec::with_capacity(named.len());
+    for key in &named {
+        match current.iter().find(|(_, s)| s == key) {
+            Some((id, _)) => named_panes.push(*id),
+            None => {
+                return Err(format!(
+                    "0x{key:x} is not a terminal in this tab. Every cell must name a \
+                     terminal that is already here, or ask for a new one with \
+                     {{\"new\": …}}."
+                ))
+            }
+        }
+    }
 
     // **Every pane that is here must be in the shape, and nothing else.**
     // ⚠️ Rearranging is not a way to close a terminal: a shape that leaves one
     // out would destroy it, turning a layout change into something
     // irreversible that the caller did not say out loud. Closing is its own
     // verb and has its own confirmation.
-    let mut named = Vec::new();
-    crate::layout::existing(shape, &mut named);
-    for id in &current {
-        if !named.contains(id) {
+    for (id, key) in &current {
+        if !named_panes.contains(id) {
             return Err(format!(
-                "the layout leaves out pane {id}, which is in this tab. Rearranging \
-                 never closes a terminal: close it first with close_surface, then \
-                 send the layout you want for what is left."
+                "the layout leaves out terminal 0x{key:x}, which is in this tab. \
+                 Rearranging never closes a terminal: close it first with \
+                 close_surface, then send the layout you want for what is left."
             ));
         }
     }
-    for id in &named {
-        if !current.contains(id) {
-            return Err(format!("pane {id} is not in this tab"));
-        }
-    }
-    if named.len() != current.len() {
-        return Err("the layout names a pane twice".into());
+    if named_panes.len() != current.len() {
+        return Err("the layout names a terminal twice".into());
     }
 
     // Ids first, then the tree, then the windows -- so the rectangles the
@@ -2265,11 +2294,15 @@ fn apply_layout(
     crate::layout::fresh(shape, &mut wanted);
     let ids: Vec<PaneId> = wanted.iter().map(|_| take_id()).collect();
     let mut it = ids.clone().into_iter();
-    let node = crate::layout::to_node(shape, &mut it);
+    let by_surface = |k: usize| current.iter().find(|(_, s)| *s == k).map(|(id, _)| *id);
+    let node = crate::layout::to_node(shape, &mut it, &by_surface);
     let tree = Tree::with_root(node);
 
     let placed = tree.layout(bounds);
     let mut made: Vec<Pane> = Vec::new();
+    // Kept so the reply can name the new panes by surface: after `made` is
+    // drained into the tab, the pairs are gone from here.
+    let mut fresh_pairs: Vec<(PaneId, usize)> = Vec::new();
     for (id, cwd) in ids.iter().zip(wanted.iter()) {
         let Some((_, Placement::Visible(r))) = placed.iter().find(|(p, _)| p == id).cloned() else {
             // Undo: a pane already made for this shape must not be left
@@ -2281,7 +2314,10 @@ fn apply_layout(
         };
         let spec = NewTab { cwd: (*cwd).clone(), ..NewTab::default() };
         match create_pane(frame, app, hinst, *id, r, spec) {
-            Some(p) => made.push(p),
+            Some(p) => {
+                fresh_pairs.push((p.id, p.surface));
+                made.push(p);
+            }
             None => {
                 for p in made.drain(..) {
                     free_pane(p.id, p.hwnd, p.surface);
@@ -2298,8 +2334,8 @@ fn apply_layout(
             }
             return Err("that window went while the layout was being built".into());
         };
-        let active = win.active;
-        let Some(tab) = win.tabs.get_mut(active) else {
+        // The same tab the shape was checked against, by index taken then.
+        let Some(tab) = win.tabs.get_mut(tab_idx) else {
             for p in made.drain(..) {
                 free_pane(p.id, p.hwnd, p.surface);
             }
@@ -2312,7 +2348,21 @@ fn apply_layout(
     }
 
     layout(frame);
-    let reply = serde_json::json!({ "layout": crate::layout::describe(tree.root().unwrap()) });
+    // **The reply is in the caller's namespace**, which is the whole point of
+    // the call: the ids it hands back have to be the ones that can be fed to
+    // `terminal_read` and `terminal_send`. The panes just made are looked up
+    // from what was built, not from the registry, so the answer describes the
+    // tree that was installed rather than whatever it has become since.
+    let surface_of = |p: PaneId| -> Option<usize> {
+        current
+            .iter()
+            .find(|(id, _)| *id == p)
+            .map(|(_, s)| *s)
+            .or_else(|| fresh_pairs.iter().find(|(id, _)| *id == p).map(|(_, s)| *s))
+    };
+    let reply = serde_json::json!({
+        "layout": crate::layout::describe(tree.root().unwrap(), &surface_of)
+    });
     wlogf!(frame, "[layout] applied; {} pane(s) made", ids.len());
     Ok(reply.to_string())
 }
@@ -2340,7 +2390,7 @@ fn split_pane(
     cwd: Option<String>,
     at: Option<PaneId>,
 ) {
-    let (bounds, focused, tree) = {
+    let (bounds, tab_idx, focused, tree) = {
         let Some(win) = window(frame) else {
             return;
         };
@@ -2348,10 +2398,11 @@ fn split_pane(
         let Some(bounds) = content_bounds(frame, sh) else {
             return;
         };
-        let Some(tab) = win.tabs.get(win.active) else {
+        let idx = acting_tab(&win, at);
+        let Some(tab) = win.tabs.get(idx) else {
             return;
         };
-        (bounds, acting_pane(tab, at), tab.tree.clone())
+        (bounds, idx, acting_pane(tab, at), tab.tree.clone())
     };
 
     let id = take_id();
@@ -2378,8 +2429,9 @@ fn split_pane(
     };
     {
         if let Some(mut win) = window(frame) {
-            let a = win.active;
-            if let Some(tab) = win.tabs.get_mut(a) {
+            // The tab chosen when the split was worked out, not whichever is
+            // active now -- the same rule the read above used.
+            if let Some(tab) = win.tabs.get_mut(tab_idx) {
                 tab.tree = new_tree;
                 tab.panes.push(pane);
                 tab.focused = id;
@@ -3322,6 +3374,29 @@ fn acting_pane(tab: &Tab, at: Option<PaneId>) -> PaneId {
     at.filter(|p| tab.tree.contains(*p)).unwrap_or(tab.focused)
 }
 
+/// Which tab an action lands on: **the one holding the pane it named**, and
+/// the active one only when it named nothing.
+///
+/// ⚠️ **The other half of the rule `acting_pane` is one half of.** Task 362
+/// fixed "the tool names a pane and the effect lands on whichever pane has
+/// focus" -- and fixed it *within a tab*, because every caller had already
+/// picked `win.active` before asking. So the same defect survived one level
+/// up: name a pane in one tab, open another, and the action lands on the new
+/// tab's focused pane with nothing saying so. Task 407, measured: `new_tab`
+/// then a layout naming a pane of the old tab was refused for leaving out a
+/// pane that was in the *new* one.
+///
+/// **Both halves are here now**, and callers ask this first. A caller that
+/// picks `win.active` itself is the shape this exists to stop.
+fn acting_tab(win: &WindowState, at: Option<PaneId>) -> usize {
+    if let Some(p) = at {
+        if let Some(i) = win.tabs.iter().position(|t| t.tree.contains(p)) {
+            return i;
+        }
+    }
+    win.active
+}
+
 /// How many panes share a tab with `surface`.
 ///
 /// **A fact, not a judgement.** The core asks this because it cannot see the
@@ -4098,8 +4173,8 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 let ok = copy_to_clipboard(&title).is_ok();
                 wlogf!(frame, "[win] copy_title_to_clipboard {:?} -> {}", title, ok);
             }
-            Op::ApplyLayout(shape, outcome) => {
-                let answer = apply_layout(frame, app, hinst, &shape);
+            Op::ApplyLayout(shape, at, outcome) => {
+                let answer = apply_layout(frame, app, hinst, &shape, at);
                 if let Ok(mut cell) = outcome.lock() {
                     *cell = Some(answer);
                 }

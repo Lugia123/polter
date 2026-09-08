@@ -690,8 +690,9 @@ const tools = [_]Tool{
             "for one to make, or {\"split\":\"h\"|\"v\",\"ratio\":0.5,\"left\":cell,\"right\":cell}. " ++
             "`ratio` is the fraction given to `left` and must be between 0 and 1; it is refused " ++
             "rather than rounded, because a layout you did not ask for reported as success is " ++
-            "worse than a refusal. **The reply gives the resulting shape with every cell's pane " ++
-            "id**, including the ones that were just made -- that is how you learn them. " ++
+            "worse than a refusal. **The reply gives the resulting shape with every cell's terminal " ++
+            "id**, including the ones that were just made -- the same ids you can hand " ++
+            "straight to terminal_read and terminal_send, which is how you learn them. " ++
             "⚠️ Every pane already in the tab must appear in the layout: rearranging never " ++
             "closes a terminal. Leave one out and the whole call is refused and nothing moves; " ++
             "close it first with terminal_action close_surface, then send the layout for what " ++
