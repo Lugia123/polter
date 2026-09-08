@@ -41,6 +41,7 @@
                 <outlet property="menuNewTab" destination="uTG-Vz-hJU" id="eMg-R3-SeS"/>
                 <outlet property="menuNewWindow" destination="Was-JA-tGl" id="lK7-3I-CPG"/>
                 <outlet property="menuNextSplit" destination="bD7-ei-wKU" id="LeT-xw-eh4"/>
+                <outlet property="menuKeybinds" destination="Kb1-Nd-Ls1" id="Kb2-Nd-Ls2"/>
                 <outlet property="menuOpenConfig" destination="BOF-NM-1cW" id="Nze-Go-glw"/>
                 <outlet property="menuPaste" destination="i27-pK-umN" id="ICc-X2-gV3"/>
                 <outlet property="menuPasteSelection" destination="akq-ov-Jjh" id="GS8-aQ-hVw"/>
@@ -105,6 +106,12 @@
                             <menuItem title="Preferences…" keyEquivalent="," id="BOF-NM-1cW">
                                 <connections>
                                     <action selector="openConfig:" target="bbz-4X-AYv" id="X65-fg-iWU"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Keyboard Shortcuts…" id="Kb1-Nd-Ls1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="showKeybinds:" target="bbz-4X-AYv" id="Kb3-Nd-Ls3"/>
                                 </connections>
                             </menuItem>
                             <menuItem title="Reload Configuration" id="KKH-XX-5py">

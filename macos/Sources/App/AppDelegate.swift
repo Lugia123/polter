@@ -22,6 +22,9 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuServices: NSMenu?
     @IBOutlet private var menuCheckForUpdates: NSMenuItem?
     @IBOutlet private var menuOpenConfig: NSMenuItem?
+    /// "Keyboard Shortcuts…", directly under the settings item. Same place as
+    /// the Windows host puts it, so the two describe one product.
+    @IBOutlet private var menuKeybinds: NSMenuItem?
     @IBOutlet private var menuReloadConfig: NSMenuItem?
     @IBOutlet private var menuSecureInput: NSMenuItem?
     @IBOutlet private var menuQuit: NSMenuItem?
@@ -1093,6 +1096,15 @@ class AppDelegate: NSObject,
 
     @IBAction func showAbout(_ sender: Any?) {
         AboutController.shared.show()
+    }
+
+    /// The keybind listing.
+    ///
+    /// **The page reads the core's forward binding table**, not the reverse map
+    /// the menu bar asks for its own accelerators -- which is why it can show
+    /// shortcuts the menus cannot name. See `KeybindsModel`.
+    @IBAction func showKeybinds(_ sender: Any?) {
+        KeybindsController.shared.show(config: ghostty.config.config)
     }
 
     @IBAction func showHelp(_ sender: Any) {
