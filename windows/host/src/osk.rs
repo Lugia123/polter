@@ -19,19 +19,36 @@
 //!     different program with different behaviour, and on a machine with no
 //!     digitiser it behaves differently again.
 //!
-//! **The touch keyboard is the better answer on the machine this action is
-//! for, and it is deliberately not attempted here.** Reaching it from a
-//! desktop process means an undocumented COM interface (`ITipInvocation`)
-//! whose class and interface GUIDs are not in any header this tree has and
-//! could only be written down from memory -- and a GUID written from memory is
-//! a constant nobody can check, in a call that fails silently by doing
-//! nothing. Starting `TabTip.exe` instead is the other folk remedy, and
-//! whether it still shows the keyboard on current Windows is exactly the kind
-//! of thing that cannot be established from here.
+//! **Both are now tried, in that order** (task 307): the touch keyboard first,
+//! `osk.exe` when it cannot be had. Which one ran is in the log, because
+//! "nothing happened" and "this machine has no touch keyboard" used to be the
+//! same line.
 //!
-//! So: the half that can be built and checked is built, and the half that
-//! cannot is written down rather than guessed at. **It is a separate task, not
-//! a hidden gap.**
+//! # The touch keyboard is reached through an undocumented interface
+//!
+//! There is no public API for it. What exists is a COM class the shell
+//! registers, `ITipInvocation`, with a single method `Toggle(HWND)`.
+//!
+//! ⚠️ **Its CLSID and IID are in no header in this tree, and they are not
+//! verified here.** They arrived with the task that asked for this. That is
+//! their whole provenance and it is written down rather than dressed up: an
+//! earlier note in this file refused to write a GUID *from memory* for exactly
+//! this reason, and the recollection it declined to use disagreed with the
+//! pair below in the last eight digits of the IID. **Two sources, one of them
+//! a memory, and no way to tell from this machine which is right.**
+//!
+//! So the constants are treated as unverified, and the design is arranged so
+//! that being wrong about them costs nothing but a fallback. See
+//! `touch_keyboard` for what makes that true and for the one case it does not
+//! cover.
+//!
+//! # Shelf life
+//!
+//! **Undocumented means Microsoft owes nobody notice.** The class can be
+//! renumbered, unregistered or removed in any Windows update, and the first
+//! sign here would be `CoCreateInstance` failing. That is survivable by
+//! construction rather than by hope: it is the same branch a machine with no
+//! touch keyboard takes, and it ends at `osk.exe`.
 //!
 //! # What this machine can and cannot show about it
 //!
@@ -43,13 +60,20 @@
 //!      reading; it needs a person in front of the screen.
 //!
 //! Layers 1 and 2 are real readings and they are what the log below is for.
-//! **Layer 3 is not claimed.** Whether the *touch* keyboard would have been
-//! the right thing on a touch device is a fourth question this machine cannot
-//! ask at all, which is why the digitiser is reported on the same line: a log
-//! that says `touch=no` is saying "the path not taken is the one that could
-//! not have been checked here anyway".
+//! **Layer 3 is not claimed.** And there is now a fourth question this machine
+//! cannot ask at all: whether `Toggle` actually raised the touch keyboard.
+//! `CoCreateInstance` succeeding proves the class is registered; the keyboard
+//! appearing is a fact about a screen. The digitiser is still reported on the
+//! same line, because a log that says `touch=no` is saying "the path that
+//! matters here could not have been exercised anyway".
 
+use std::ffi::c_void;
+
+use windows::core::{Interface, GUID, HRESULT};
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, NID_EXTERNAL_TOUCH, NID_INTEGRATED_TOUCH, NID_READY, SM_DIGITIZER,
@@ -99,6 +123,95 @@ fn osk_path() -> Option<String> {
     Some(format!("{dir}\\osk.exe"))
 }
 
+/// The shell class that owns the touch keyboard, and the interface on it.
+///
+/// **Unverified constants**, for the reason the header gives: they are in no
+/// header in this tree, they arrived with task 307, and a remembered spelling
+/// of the IID disagreed with this one. They are written once, here, so that
+/// there is exactly one place to correct if the machine says otherwise.
+///
+/// **How to give them a provenance, on a machine that has one.** The class is
+/// registered, so it can be read back rather than believed:
+///
+///     reg query "HKCR\CLSID\{4ce576fa-83dc-4f88-951c-9d0782b4e376}" /s
+///
+/// A hit that names the input panel host is the constant checking out. No hit
+/// at all is either a wrong CLSID or a Windows that no longer registers it,
+/// and this file cannot tell those apart -- but it does not have to, because
+/// both end in the same fallback.
+const CLSID_UI_HOSTED_INPUT_PANEL: GUID =
+    GUID::from_u128(0x4ce576fa_83dc_4f88_951c_9d0782b4e376);
+const IID_ITIP_INVOCATION: GUID = GUID::from_u128(0x37c994e7_432b_4834_a2f7_dca7f45563ee);
+
+/// `ITipInvocation`, by hand.
+///
+/// Three inherited `IUnknown` slots and one method. Hand-written because the
+/// interface is in no metadata the `windows` crate is generated from, which is
+/// the same reason `ffi.rs` is hand-written: **a binding that does not exist
+/// cannot be imported, and inventing one in a macro hides the fact that it was
+/// invented.** The layout is the only thing that has to be right, and it is
+/// the standard COM one.
+#[repr(C)]
+struct ITipInvocationVtbl {
+    query_interface:
+        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+    toggle: unsafe extern "system" fn(*mut c_void, HWND) -> HRESULT,
+}
+
+/// Ask the shell to raise the touch keyboard for `frame`.
+///
+/// # Why being wrong about the GUIDs costs only a fallback
+///
+/// Stated as the three ways it can fail rather than as a claim:
+///
+///   * a CLSID nothing registers makes `CoCreateInstance` return
+///     `REGDB_E_CLASSNOTREG`; the `?` takes the error path;
+///   * an IID the object does not implement makes `QueryInterface` return
+///     `E_NOINTERFACE`; same path;
+///   * a machine with no touch keyboard fails at one of those two.
+///
+/// Every one of them ends at the caller's fallback to `osk.exe`, so a wrong
+/// constant degrades to today's behaviour rather than to nothing.
+///
+/// ⚠️ **The case this does not cover, and it is the one to watch:** the call
+/// succeeds and no keyboard appears. Nothing in the process can see that --
+/// `Toggle` returning `S_OK` is the whole of what is knowable here. That is
+/// why the log says which route ran: the reading is on the screen, and the
+/// line is what tells a person which screen to be looking at.
+///
+/// **It is `Toggle`, not `Show`, and the shell offers nothing else.** Invoking
+/// the action twice in a row therefore hides the keyboard again. That is how
+/// the taskbar's own button behaves, so it is left as the shell's behaviour
+/// rather than papered over with a state this process would have to guess.
+fn touch_keyboard(frame: HWND) -> windows::core::Result<()> {
+    unsafe {
+        // Already done on the main thread by `ime_init`; asked again so this
+        // file does not depend on that order. `S_FALSE` (already initialised)
+        // is success and `.ok()` reads it that way -- the same line, for the
+        // same reason, as `taskbar.rs`.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
+
+        let unknown: windows::core::IUnknown =
+            CoCreateInstance(&CLSID_UI_HOSTED_INPUT_PANEL, None, CLSCTX_INPROC_SERVER)?;
+
+        let mut raw: *mut c_void = std::ptr::null_mut();
+        unknown.query(&IID_ITIP_INVOCATION, &mut raw).ok()?;
+        // `query` succeeding with a null pointer would be a broken object, not
+        // a possible one; checked anyway because the deref below is the kind
+        // that cannot be taken back.
+        if raw.is_null() {
+            return Err(windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER));
+        }
+
+        let vtbl = *(raw as *const *const ITipInvocationVtbl);
+        let hr = ((*vtbl).toggle)(raw, frame);
+        ((*vtbl).release)(raw);
+        hr.ok()
+    }
+}
+
 /// Start the on-screen keyboard. Answers whether it was started.
 ///
 /// `frame` is only for the log: the action names a surface, and which window
@@ -106,6 +219,39 @@ fn osk_path() -> Option<String> {
 /// pressed. The keyboard itself belongs to no window of ours.
 pub fn show(frame: HWND) -> bool {
     let (has_touch, max_touches) = touch();
+
+    // **The touch keyboard first, because it is the one this action is for.**
+    // A tablet with no physical keyboard is the machine the core had in mind,
+    // and `osk.exe` is the accessibility keyboard, not that one.
+    match touch_keyboard(frame) {
+        Ok(()) => {
+            wlogf!(
+                frame,
+                "[osk] raised the touch keyboard (ITipInvocation::Toggle on {:?}); \
+                 touch={} (max touches {}). It is a toggle: invoking this again hides it. \
+                 **The call returning success is not the keyboard appearing** -- that is a \
+                 fact about the screen and nothing here can see it.",
+                frame.0,
+                if has_touch { "yes" } else { "no" },
+                max_touches
+            );
+            return true;
+        }
+        Err(e) => {
+            // **Named, not swallowed.** This is the line that separates "this
+            // machine has no touch keyboard" from "the action did nothing",
+            // which read identically before task 307. The fallback below is
+            // then a second line, so the two together say what was tried and
+            // what ran.
+            wlogf!(
+                frame,
+                "[osk] no touch keyboard here ({e:?}); falling back to osk.exe. \
+                 The class is undocumented and this host cannot tell an unregistered \
+                 CLSID from a Windows that no longer has one; both land here."
+            );
+        }
+    }
+
     let Some(path) = osk_path() else {
         wlogf!(
             frame,
