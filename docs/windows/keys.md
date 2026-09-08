@@ -764,6 +764,108 @@ F11 编码成 `CSI 23~`，核心永远消费，那一行一次都没跑过，而
 | `toggle_quick_terminal` | 宿主·热键 | 核心默认**不绑**。宿主用 `RegisterHotKey`（全局热键，Polter 不在前台也能触发），但只有用户在配置里绑了它才注册。 |
 | `__polter_minimize` | `menu.rs` | 只在菜单里，核心没有这个 action。 |
 
+### 3.7 键是好用的，菜单上却没有快捷键提示 —— 12 条，两个成因 ⚠️
+
+**这是第三类，和 3.3 / 3.6 都不同。** 3.3 是「按下去做了别的事」，3.6 是「压根没有
+键盘入口」。这一类的键**完全正常**，缺的只是菜单右边那行提示——而缺提示的后果是
+**一个能用的功能看起来不存在**，没有人会去按一个自己不知道存在的键。
+
+#### 读数
+
+| | mac | Windows |
+|---|---|---|
+| 菜单里的核心动作 | 48 | 48 |
+| 菜单能显示快捷键的 | **30** | **18** ✅ **真机已验** |
+| 显示不出来的 | **18** | **30** ✅ **真机已验** |
+
+Windows 侧取自真机日志那两行（`menu.rs` 启动时打，`1ca47f03b` 的构建）：
+
+    [menu] shortcut provider installed, accel=18/54
+    [menu] no shortcut for 30 of 48 core actions: …
+
+⚠️ **这两行的分母不是同一个**：`accel=18/54` 的 54 是**全部菜单行**（含 6 条
+`__polter_*` 宿主行），`no shortcut for 30 of 48` 的 48 是**核心动作**。
+**18 是「有」，30 是「没有」——两行方向相反，谁单独读都会读反一次。**（已经读反过一次。）
+
+mac 侧是在同一个提交上、走宿主走的同一条路（`Binding.Action.parse` → `Set.getTrigger`）
+量的。⚠️ **提取菜单动作名的脚本必须先复现该提交日志里的 `54 / 48 / 6` 三个数再用**：
+它最初漏了**写成结构体字面量而非 `act(...)` 构造函数的 4 行**，给出 50/47/3，
+而那份错名单看起来完全正常。
+
+**两份名单是包含关系，差恰好 12**：mac 显示不出的 18 条，在 Windows 上一条不少地
+仍然显示不出；Windows 另外多 12 条。
+
+#### 成因（源码，`c55ae7ed2`；下面全部按名字指，不给行号——行号会烂而这一节要活得久）
+
+**成因一：`performable` 的绑定永远不进反向表 —— 11 条。**
+
+菜单右边那行字来自 `ghostty_config_trigger` → `Set.getTrigger`，而它读的是
+**reverse 表**；写入侧只有一行决定进不进：
+
+    const track_reverse: bool = !flags.performable;      // `Set.putFlags`
+
+理由是核心自己写死的（`Binding.zig` 里 `Set` 的 `reverse` 字段上那段文档注释）：GUI 工具包
+把菜单加速键处理得太早，`performable` 在那个时机上判定不了，所以**故意**不让它们
+被注册成菜单加速键。**这是产品决定，不是缺陷。**
+
+而两个平台**绑了同一批键、标志却不同**：
+
+| | `Keybinds.init` 的非 darwin 区块 | 同一函数的 darwin 区块 |
+|---|---|---|
+| `goto_split` ×6 | `performable = true` | 无标志 |
+| `resize_split` ×4 | `performable = true` | 无标志 |
+| `equalize_splits` | **该区块没有这一条** | 无标志 |
+
+⚠️ **「两个区块都绑了」不等于「两个平台一样」。** 查到「都绑了」就停下，会得出
+「平台只解释 1 条」——那个结论是错的，而它错得很像对的。（这一条是踩出来的。）
+
+**成因二：后写的绑定覆盖先写的，输的那个丢掉反向项 —— 第 12 条。**
+
+机制在 3.3(b) 已经写过，这里是它在菜单提示上的一次现身，而且**它和「复制」的对照
+正好在同一块屏幕上**：
+
+| 和弦 | 绑给谁 | 标志 | 后来发生了什么 |
+|---|---|---|---|
+| `Ctrl+Insert` | `copy_to_clipboard` | 无 | 没人覆盖 ⇒ **菜单显示 `Ctrl+Insert`** |
+| `Shift+Insert` | `paste_from_clipboard` | 无 | 同一区块后面那条 **「Selection clipboard paste」把同一和弦绑给 `paste_from_selection`** ⇒ 反向项被摘掉 |
+| `Ctrl+V` | `paste_from_clipboard` | `performable` | 从来不进反向表，**补不回来** |
+
+⇒ 「复制」有提示、「粘贴」没有，两者的 put 结构几乎相同 —— **差别不在标志里，
+在于其中一条被覆盖了，而它剩下的那条恰好是 performable。**
+
+#### ⚠️ 顺带量到的一条行为缺陷，不是提示问题
+
+`Shift+Insert` 在 Windows 上现在归 `paste_from_selection`。宿主对它的答复是拒绝：
+
+    [clip] read kind={} pane={} -> refused: no selection clipboard on Windows
+                                       — main.rs `cb_read_clipboard`
+
+⇒ **Windows 上最经典的粘贴和弦 `Shift+Insert` 按下去什么也不会发生**，而 `Ctrl+V`
+仍然能粘贴（它绑着 `paste_from_clipboard`，只是不显示）。**这一条是行为，不是提示**，
+和这一节其余部分性质不同。
+
+#### 名单
+
+**这 12 条**（Windows 比 mac 多显示不出来的）：
+
+    goto_split:up        goto_split:down      goto_split:left     goto_split:right
+    goto_split:next      goto_split:previous
+    resize_split:up,10   resize_split:down,10 resize_split:left,10 resize_split:right,10
+    equalize_splits      paste_from_clipboard
+
+**两个平台都显示不出的 18 条**：`check_for_updates`、`end_search`、`start_search`、
+`navigate_search:next|previous`、`new_split:left|up`、五条 `poltergeist_*`
+（`supervisor` / `toggle_chat` / `toggle_shielded` / `toggle_watch`，以及
+`toggle_held` —— 它绑着，但同样因 `performable` 而显示不出）、`prompt_tab_title`、
+`prompt_surface_title`、`reset_window_size`、`toggle_maximize`、`toggle_readonly`、
+`toggle_quick_terminal`、`toggle_window_float_on_top`。
+
+⚠️ **这 30 条的逐条名单是从成因推出来的，不是从真机日志抄的**：数目与真机那行的
+30 相符、包含关系与差值 12 由真机名单核对过，但**如果要拿单独某一条去做判断，
+先对一眼日志里 `no shortcut for … :` 后面的原文**。
+
+---
+
 ---
 
 ## 四、扫描码：一条待验的线索
