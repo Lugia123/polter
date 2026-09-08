@@ -2500,7 +2500,77 @@ fn poltergeistSend(
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+    self.noteAnswerSwitchNotConsulted(id, "terminal_send", text.len, submit, poltergeistpkg.prompts.couldAnswer(text));
     try surface.typePoltergeistText(text, submit);
+}
+
+/// Record a write into a terminal that the answer switch did **not** stop.
+///
+/// # Why there is a line here at all
+///
+/// The switch on `Bus.Entry.may_authorise` stops two things: the tool that
+/// answers a prompt, and the keys that take an option in one. It does not
+/// stop text plus a return, and it cannot -- **that is also how a task is
+/// assigned**, and at this interface the two are the same act. So the path
+/// stays open.
+///
+/// **A protection with a bypass everybody knows about is a different thing
+/// from one with a bypass nobody wrote down**, and that difference is the
+/// whole of what makes the switch honest rather than decorative. It was
+/// promised to the user in those words -- "not prevention, book-keeping" --
+/// and until this function existed only half of it was true: the bypass was
+/// published and **silent**.
+///
+/// # Why every send, and not only the suspicious ones
+///
+/// Because "suspicious" cannot be decided here, and a record with a judgement
+/// in it is a record with a hole the size of the judgement. Every write to a
+/// terminal whose switch is off goes in the log, without exception.
+///
+/// ⚠️ **Which means this line appears on ordinary work**, several times a
+/// night, on a terminal nobody has switched anything on for -- that is the
+/// default state. It is accepted rather than tuned away, and `could_answer`
+/// is what makes it bearable: the record is complete and *sorted*, so a
+/// reader greps the flag rather than reading everything. **The flag labels;
+/// it never decides.** Getting it wrong costs one line's filing and nobody's
+/// capability, which is exactly why a guess is allowed here and was turned
+/// down twice in the code this is attached to.
+///
+/// # What it must not be read as
+///
+/// **Not a refusal.** Nothing was stopped; the sentence says so in as many
+/// words, because a log line naming a permission switch reads as a denial
+/// unless it says otherwise, and a reader who takes it that way will believe
+/// the terminal is protected.
+fn noteAnswerSwitchNotConsulted(
+    self: *App,
+    id: poltergeistpkg.Bus.Id,
+    via: []const u8,
+    /// How much text is going in, when this side knows. **Null rather than
+    /// zero for the paths that do not**: a paste's payload is the
+    /// clipboard's, and the action string's own length is not it. A `0`
+    /// there would read as "nothing was written", which is the opposite of
+    /// what happened.
+    bytes: ?usize,
+    submit: bool,
+    could_answer: poltergeistpkg.prompts.CouldAnswer,
+) void {
+    // The switch being on is the user's grant: there is no bypass to record,
+    // because there is nothing being got around.
+    if (self.poltergeist.mayAuthorise(id)) return;
+
+    var size: [24]u8 = undefined;
+    const size_txt: []const u8 = if (bytes) |n|
+        std.fmt.bufPrint(&size, "{d}", .{n}) catch "?"
+    else
+        "?";
+
+    log.info(
+        "poltergeist: {s} id={x} bytes={s} submit={} could_answer={s} -- " ++
+            "the answer switch is off for this terminal and did NOT stop this; " ++
+            "this path is not covered by it",
+        .{ via, id, size_txt, submit, could_answer.tag() },
+    );
 }
 
 /// Press a key in a terminal.
@@ -2566,7 +2636,21 @@ fn poltergeistPerformAction(
         .write_screen_file, .write_scrollback_file, .write_selection_file => |v| v.action == .paste,
         else => false,
     };
-    if (writes_into_the_line) try surface.poltergeistMayType();
+    if (writes_into_the_line) {
+        // **The same record, from the other door.** A paste aimed at another
+        // terminal writes into its input line exactly as `terminal_send`
+        // does; one of them recorded and the other not would be a book with
+        // a hole in it, and the hole would be the quieter door.
+        //
+        // `unknown` rather than `no`: what a paste will write is the
+        // clipboard's and is not visible from here. Some of these actions do
+        // carry their text -- `text:hello` -- but they are handed over as a
+        // parsed action rather than as a string this function holds, and
+        // guessing at it from the action name would be a worse answer than
+        // saying plainly that this side did not see it.
+        self.noteAnswerSwitchNotConsulted(id, "terminal_action", null, true, .unknown);
+        try surface.poltergeistMayType();
+    }
 
     // The actions that do not go through `performBindingAction`, and they
     // are all one family: the closes. Both halves of the reason are things

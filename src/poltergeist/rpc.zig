@@ -1166,6 +1166,19 @@ pub fn promptReach(method: Method) enum {
     /// refusing the other. Named here rather than left implicit, because a
     /// bypass everybody knows about is a different thing from one nobody
     /// wrote down; the menu item that turns the switch on says the same.
+    ///
+    /// ⚠️ **Every one of these must also be recorded**, by
+    /// `App.noteAnswerSwitchNotConsulted`, or the bypass is published and
+    /// silent -- which is the half that was missing for a day and is what
+    /// "not prevention, book-keeping" was promised to mean. All four reach
+    /// it today: `terminal_send`, `task_assign` and `task_cancel` through
+    /// the `sendText` door, `terminal_action` through its own.
+    ///
+    /// **NOT CHECKED: that a method put here later is wired to the
+    /// recorder.** Nothing mechanical ties this classification to that
+    /// function; the tie is this sentence. A test could compare the two
+    /// only by matching text, which is the shape of guard this whole switch
+    /// had to stop using.
     published,
 } {
     return switch (method) {
