@@ -2543,6 +2543,31 @@ fn poltergeistPerformAction(
         return error.InvalidAction;
     };
 
+    // **The actions that write into somebody's input line answer to the
+    // same guard `terminal_send` does.**
+    //
+    // `paste_from_clipboard` aimed at another terminal does what
+    // `terminal_send` does -- it puts characters in that terminal's input
+    // line -- and until this was here it did so with no guard at all, while
+    // the identical act one call over was refused. The defect the user
+    // reported is "my half-written line was submitted with it"; a paste
+    // does that just as well as a notice.
+    //
+    // These were already refused at the *caller's own* terminal, with
+    // `SelfTarget`, because the text would come back to the caller. That is
+    // a different question from this one and neither covers the other.
+    //
+    // **`cursor_key` is deliberately not in this list.** It adds nothing to
+    // a line; it moves around inside one. It belongs to the family
+    // `sendPoltergeistKey` is in -- a named key at a named moment -- and
+    // that family is argued there.
+    const writes_into_the_line = switch (parsed) {
+        .text, .csi, .esc, .paste_from_clipboard, .paste_from_selection => true,
+        .write_screen_file, .write_scrollback_file, .write_selection_file => |v| v.action == .paste,
+        else => false,
+    };
+    if (writes_into_the_line) try surface.poltergeistMayType();
+
     // The actions that do not go through `performBindingAction`, and they
     // are all one family: the closes. Both halves of the reason are things
     // `performBindingAction` cannot do. It closes the way the user closes,

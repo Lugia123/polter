@@ -109,19 +109,33 @@ posting orders in the group. Multi-line sends now go through as a framed
 paste wherever the target has bracketed paste on, which every agent CLI does.
 If one is refused you get a named reason now: `UnbracketedMultiline` means a
 bare shell, `ChildExited` means there is nothing running to read it, and
-`UserPresent` means a key reached that terminal in the last ten seconds.
+`UserPresent` means one of two things: a key reached that terminal in the last
+ten seconds, **or** characters have been typed there that were never submitted
+with return nor abandoned with ctrl+c -- however long ago.
 
-Read that last one as narrowly as it is written. It does not say the user is
-there, and it does not say what is in the input line -- it never looks at the
-input line. A modifier pressed on its own counts, so does letting one go, and
+Read it as narrowly as it is written. It does not say the user is there, and
+it does not say what is in the input line -- it never looks at the input line;
+the second half counts what was typed into it, so backspacing a line empty
+leaves it set. A modifier pressed on its own counts, so does letting one go, and
 so does the burst of releases a window gets when somebody holds cmd to switch
 *away* from it. A supervisor that read it as "the user is at that terminal"
 spent a day on that reading: it reported the user's whereabouts to them twice,
 decided on that basis that two drafts left in input boxes were the user's, and
 held a task back. None of it was true. If you want to know who is at a
 terminal, `terminal_read` shows you what is on its screen; this refusal
-answers a different question, and the only thing to do about it is send
-again in a moment.
+answers a different question.
+
+**What to do about it depends on which half you hit, and you can tell them
+apart by whether it goes away.** The ten-second one clears on its own, so
+sending again in a moment works. The unsubmitted-text one clears when somebody
+presses return at that terminal, so if a terminal refuses every time, there is
+a half-written line sitting in it and waiting will not help -- that is a thing
+to say to the person, not to keep retrying at.
+
+**One door does not defer**, and it is worth knowing before you use it:
+`terminal_key` presses a named key at a named moment, which is the case it
+exists for, so it does not check any of this. `terminal_key(id, "enter")` at a
+terminal with a half-written line in it submits that line.
 
 Context is the only thing here that actually runs out. Measured on this
 program supervising its own development: six supervisor posts in twenty

@@ -15,6 +15,7 @@ pub const Bus = @import("Bus.zig");
 pub const Chat = @import("Chat.zig");
 pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
+pub const draft = @import("draft.zig");
 pub const login_path = @import("login_path.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const Feed = @import("Feed.zig");
@@ -56,6 +57,7 @@ test {
     _ = @import("server_test.zig");
     _ = actions;
     _ = keys;
+    _ = draft;
     _ = login_path;
     _ = Resident;
     _ = Bus;

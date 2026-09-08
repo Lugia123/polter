@@ -4339,6 +4339,22 @@ pub fn dispatch(
                     ),
                 ),
 
+                // **The write-into-a-line actions answer to the same guard
+                // `terminal_send` does**, in the same words. A paste aimed
+                // at another terminal puts characters in that terminal's
+                // input line, which is what `terminal_send` does; one of
+                // them refusing and the other not was the asymmetry, and
+                // two different sentences for the one fact would be the
+                // next one.
+                error.UserPresent => hostFailure("UserPresent", key_arrived),
+
+                error.ChildExited => hostFailure(
+                    "ChildExited",
+                    "that terminal's process has exited -- it is showing the user why, " ++
+                        "and typing into it would take that away. There is nothing " ++
+                        "running in there to read what you send.",
+                ),
+
                 else => hostFailure(
                     "ActionFailed",
                     "the terminal would not do that just now",
@@ -5119,27 +5135,51 @@ fn chatFailure(err: anyerror) wire.Response {
 /// not touched the machine. The refusal is a fact about a surface, and it
 /// was being handed over as a fact about a person.
 ///
-/// What the guard in `Surface.typePoltergeistText` looks at is one thing:
-/// how long ago a key event reached that surface. Not who sent it, not
-/// whether anything was typed, not the input line -- it never reads the
-/// input line, deliberately, because an agent CLI draws its own prompt and
-/// the cursor is never at column zero. A modifier on its own counts. So
-/// does letting one go. So does the burst of synthetic releases Ghostty
-/// sends when a window loses focus, which means holding cmd to switch
-/// *away* from a terminal marks it for the next ten seconds.
+/// `Surface.poltergeistMayType` looks at two things now, and they are
+/// different facts that happen to share an answer:
+///
+///   1. **How long ago a key event reached that surface.** Not who sent it,
+///      not whether anything was typed. A modifier on its own counts. So
+///      does letting one go. So does the burst of synthetic releases
+///      Ghostty sends when a window loses focus, which means holding cmd to
+///      switch *away* from a terminal marks it for the next ten seconds.
+///   2. **Whether characters have been typed there and neither submitted
+///      nor abandoned.** This was added because (1) alone let the reported
+///      defect through: eleven seconds of thinking mid-sentence is past the
+///      window, and the sentence is still on the screen.
+///
+/// **Neither reads the input line, and (2) is not a way of reading it.** It
+/// counts what went in -- the same key events (1) times -- so backspacing a
+/// line empty leaves it set. Reading the line is what cannot be done here:
+/// an agent CLI draws its own prompt, so the cursor is never at column zero,
+/// and this runs on a thread that does not hold the renderer lock.
+/// `poltergeist/draft.zig` argues all of it, including why OSC 133 does not
+/// rescue the case.
+///
+/// The two also clear differently, which is the part a supervisor acts on:
+/// (1) goes away on its own in a moment, (2) goes away when somebody presses
+/// return at that terminal. A refusal that keeps repeating is the second
+/// one, and it means there is a half-written line sitting in that terminal.
 ///
 /// So the sentence says what was measured and stops. Whether somebody is
 /// there is a judgement, and it belongs to whoever is reading -- the same
 /// division the rest of this program keeps: it measures how long a
 /// terminal has been still and never says it is stuck.
 const key_arrived =
-    "a key reached that terminal within the last ten seconds, so nothing " ++
-    "was typed into it: text arriving mid-keystroke lands inside whatever " ++
-    "is being written and submits it. This says a key arrived and nothing " ++
-    "more -- not who sent it, not that anyone is there, and nothing about " ++
-    "what is in the input line, which this never reads. A modifier by " ++
-    "itself counts, so does releasing one, and so does switching away " ++
-    "from the window. Try again shortly.";
+    "that terminal is being written in, so nothing was typed into it: text " ++
+    "arriving mid-sentence lands inside whatever is being written and " ++
+    "submits it. Two things produce this and they are different facts. " ++
+    "Either a key reached that terminal within the last ten seconds -- " ++
+    "which says a key arrived and nothing more, not who sent it and not " ++
+    "that anyone is there; a modifier by itself counts, so does releasing " ++
+    "one, and so does switching away from the window -- or characters have " ++
+    "been typed there and neither submitted with return nor abandoned with " ++
+    "ctrl+c, ctrl+u or ctrl+d, however long ago that was. The second one " ++
+    "still does not read the input line: it counts what went in, so " ++
+    "backspacing a line empty leaves it set. The first clears on its own in " ++
+    "a moment; the second clears when somebody presses return at that " ++
+    "terminal, which may be a while. Try again shortly, and if it keeps " ++
+    "saying this, that terminal has a half-written line sitting in it.";
 
 /// Said when the host has the tools but this build has not wired them up.
 ///

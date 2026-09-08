@@ -201,6 +201,25 @@ poltergeist_tab_held: bool = false,
 /// do not update it, or a notice would keep pushing its own deadline back.
 last_key_time: ?std.Io.Timestamp = null,
 
+/// Whether this terminal's input line is holding something unsubmitted.
+///
+/// **The other half of the guard above, and it is a different question.**
+/// `last_key_time` asks whether a person is *here*; this asks what is in
+/// front of them. They come apart in the case the user reported and meets
+/// daily: half a sentence typed, eleven seconds of thinking, and the clock
+/// has forgotten while the half-sentence is still on the screen.
+///
+/// **Unlike the clock, Poltergeist's own keys do count here**, and the
+/// asymmetry is the point rather than an oversight. A key Poltergeist sends
+/// is not evidence that somebody is at the keyboard, so it must not move
+/// the clock -- but text Poltergeist typed and did not submit is
+/// unsubmitted text like any other, and a second notice landing in it would
+/// corrupt and submit it exactly the same way. The clock is about a person;
+/// this is about the line.
+///
+/// See `poltergeist/draft.zig` for what it can and cannot see.
+poltergeist_draft: poltergeistpkg.draft.Draft = .{},
+
 /// The effect of an input event. This can be used by callers to take
 /// the appropriate action after an input event. For example, key
 /// input can be forwarded to the OS for further processing if it
@@ -2869,6 +2888,12 @@ pub fn keyCallback(
     // somebody who had gone to bed.
     self.last_key_time = .now(global.io(), .boot);
 
+    // The same event, answering the other question. Deliberately *not*
+    // restored by the injected-key paths below, for the reason on the field
+    // itself: they are not evidence of a person, and they are text in the
+    // line.
+    self.poltergeist_draft.note(event);
+
     // Setup our inspector event if we have an inspector.
     var insp_ev: ?inspectorpkg.KeyEvent = if (self.inspector != null) ev: {
         var copy = event;
@@ -3802,6 +3827,78 @@ pub const TypeError = error{
     UnbracketedMultiline,
 };
 
+/// Whether Poltergeist may put characters into this terminal's input line
+/// right now, as the one answer both callers get.
+///
+/// **Extracted so that the two doors cannot drift.** `typePoltergeistText`
+/// asks it about text; `App.poltergeistPerformAction` asks it about a paste,
+/// which is the same act arriving under a different verb. Two copies of this
+/// question would be two answers to it, and the second one would be the one
+/// nobody remembered to update.
+///
+/// The refusals are `error.UserPresent` in both cases, and what that
+/// actually measured is spelled out at `key_arrived` in `rpc.zig` -- the
+/// message is a fact about a surface, not a claim about a person.
+pub fn poltergeistMayType(self: *Surface) !void {
+    if (self.child_exited) {
+        log.info("poltergeist: text dropped, the child process has exited", .{});
+        return error.ChildExited;
+    }
+
+    // Never interrupt someone who is currently using this terminal. A
+    // notice landing mid-sentence would both corrupt what they were writing
+    // and submit it. Skipping costs nothing: the sampler says the same
+    // thing again on its repeat interval.
+    //
+    // This asks "has the user touched the keyboard recently", not "is the
+    // input line empty". An agent CLI draws its own prompt, so the cursor
+    // sits past column zero even when nothing has been typed -- testing the
+    // cursor would mean never delivering anything. It also avoids reading
+    // terminal state from this thread without the renderer lock.
+    //
+    // **What it measures is narrower than what it is named after**, and
+    // the gap has been read the wrong way round: a key event reached this
+    // surface recently, which is not the same as a person sitting at it.
+    // Modifiers on their own count, so do releases, and so does the burst
+    // of synthetic releases `focusCallback` sends when a window loses
+    // focus -- so a user holding cmd to switch away marks the terminal
+    // they just left. Nothing here knows who, and nothing here reads the
+    // input line. Whoever acts on the refusal has to be told the
+    // measurement, not a conclusion about a person; see the wording in
+    // `rpc.zig`.
+    //
+    // The clock must be the one `keyCallback` stamps with.
+    if (self.last_key_time) |last| {
+        const now: std.Io.Timestamp = .now(global.io(), .boot);
+        if (last.durationTo(now).toMilliseconds() < notice_quiet_keyboard_ms) {
+            log.info(
+                "poltergeist: notice deferred, a key reached this surface " ++
+                    "in the last {d}ms",
+                .{notice_quiet_keyboard_ms},
+            );
+            return error.UserPresent;
+        }
+    }
+
+    // **And the half the clock above cannot see**, which is the half the
+    // user reported: text typed and not yet submitted, however long ago.
+    // Eleven seconds of thinking mid-sentence is enough to get past the
+    // clock, and the sentence is still there.
+    //
+    // Refused with the same error on purpose. It is the same fact from the
+    // caller's side -- nothing was typed, nothing was said, try again -- and
+    // two errors for one outcome would have the two senders written twice.
+    // What it measured is spelled out where the message is, in `rpc.zig`.
+    if (self.poltergeist_draft.outstanding) {
+        log.info(
+            "poltergeist: notice deferred, this terminal has unsubmitted text " ++
+                "in its input line",
+            .{},
+        );
+        return error.UserPresent;
+    }
+}
+
 pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void {
     if (text.len == 0) return;
 
@@ -3853,50 +3950,15 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
         return error.UnbracketedMultiline;
     }
 
-    // A terminal whose child has exited is showing the user why. Typing
-    // into it would send the synthesized return down `keyCallback`'s
-    // "any key closes the window" path and take that away unconfirmed --
-    // and a supervisor with no process left is not supervising anything
-    // anyway.
-    if (self.child_exited) {
-        log.info("poltergeist: notice dropped, the child process has exited", .{});
-        return error.ChildExited;
-    }
-
-    // Never interrupt someone who is currently using this terminal. A
-    // notice landing mid-sentence would both corrupt what they were writing
-    // and submit it. Skipping costs nothing: the sampler says the same
-    // thing again on its repeat interval.
+    // **One question, asked in one place.** The child having gone, somebody
+    // being at the keyboard, and a half-written line in front of them are
+    // three refusals with one meaning for the caller -- and `terminal_action`
+    // has to give the same answer for a paste, which is the same act under
+    // another verb. `poltergeistMayType` is where all of it is argued.
     //
-    // This asks "has the user touched the keyboard recently", not "is the
-    // input line empty". An agent CLI draws its own prompt, so the cursor
-    // sits past column zero even when nothing has been typed -- testing the
-    // cursor would mean never delivering anything. It also avoids reading
-    // terminal state from this thread without the renderer lock.
-    //
-    // **What it measures is narrower than what it is named after**, and
-    // the gap has been read the wrong way round: a key event reached this
-    // surface recently, which is not the same as a person sitting at it.
-    // Modifiers on their own count, so do releases, and so does the burst
-    // of synthetic releases `focusCallback` sends when a window loses
-    // focus -- so a user holding cmd to switch away marks the terminal
-    // they just left. Nothing here knows who, and nothing here reads the
-    // input line. Whoever acts on the refusal has to be told the
-    // measurement, not a conclusion about a person; see the wording in
-    // `rpc.zig`.
-    //
-    // The clock must be the one `keyCallback` stamps with.
-    if (self.last_key_time) |last| {
-        const now: std.Io.Timestamp = .now(global.io(), .boot);
-        if (last.durationTo(now).toMilliseconds() < notice_quiet_keyboard_ms) {
-            log.info(
-                "poltergeist: notice deferred, a key reached this surface " ++
-                    "in the last {d}ms",
-                .{notice_quiet_keyboard_ms},
-            );
-            return error.UserPresent;
-        }
-    }
+    // Note where this sits: after the checks on the *text* above, which are
+    // about what was asked for, and before any of it is sent.
+    try self.poltergeistMayType();
 
     // Single-line text goes the way it always has. Only the multi-line case
     // is new, and it goes framed -- reading the mode is not what makes this
@@ -3920,10 +3982,22 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
         };
     }
 
+    // **Text left in the line is unsubmitted text, whoever typed it.**
+    // This path does not go through `keyCallback` -- it pastes -- so
+    // nothing above has noticed. Without this, a `terminal_send` with
+    // `submit = false` would leave a line sitting there and the next notice
+    // would land inside it, which is the reported defect with Poltergeist
+    // rather than the user holding the pen.
+    if (!submit) {
+        self.poltergeist_draft.outstanding = true;
+        return;
+    }
+
     // `keyCallback` stamps `last_key_time`, and this key is ours, not the
     // user's. Leaving the stamp would have Poltergeist mistake its own
-    // typing for somebody being at the keyboard.
-    if (!submit) return;
+    // typing for somebody being at the keyboard. **The draft is not
+    // restored with it**: this return submits the line, so the line really
+    // is empty afterwards -- see the field.
 
     const stamp = self.last_key_time;
     defer self.last_key_time = stamp;
@@ -3958,7 +4032,8 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
 ///     the caller never said to submit; a key press is one key, named
 ///     explicitly, and `enter` being nameable is the caller saying so.
 ///
-///   * **The user has just touched the keyboard: deliberately dropped.**
+///   * **The user has just touched the keyboard, and the input line has
+///     something half-written in it: both deliberately dropped.**
 ///     This is the one worth arguing. A notice is unsolicited -- it
 ///     arrives on a timer and would land in the middle of somebody's
 ///     half-typed sentence and submit it, and skipping costs nothing
@@ -3969,6 +4044,27 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
 ///     it" is a thing done in front of somebody, not behind them. Deferring
 ///     it would mean the tool silently does nothing exactly when it is
 ///     being used as intended.
+///
+///     ⚠️ **So this is the one door that will submit somebody's half-typed
+///     line**, and it is worth saying in as many words rather than leaving
+///     as a consequence to be worked out: `terminal_key(id, "enter")` at a
+///     terminal whose input line holds a draft submits that draft. Every
+///     other way in defers -- `typePoltergeistText` refuses with
+///     `UserPresent`, and so does `terminal_action` for the actions that
+///     write into a line. This one does not, because an agent naming a key
+///     at a moment is the case it exists for.
+///
+///     ⚠️ **And it now reaches further than it did.** The five
+///     `poltergeist_*` bindings were opened up to the keyboard, so a key
+///     pressed through here can switch a terminal's own supervision marks
+///     as well as talk to whatever is running in it. That widening was the
+///     user's decision, made knowing it -- "let me use it a while and see
+///     what the risks are" -- so it is not an oversight to be closed here.
+///     It is written down because the two facts only add up when they are
+///     read together, and they live in different files: **this door skips
+///     the draft guard, and this door can now reach those actions.**
+///     Whoever comes to weigh those risks should not have to notice that
+///     for themselves.
 pub fn sendPoltergeistKey(self: *Surface, spec: []const u8) !void {
     const trigger = try poltergeistpkg.keys.parse(spec);
 
