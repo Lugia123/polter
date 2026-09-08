@@ -233,6 +233,18 @@ pub fn build(b: *std.Build) !void {
                 // sentinel `resourcesdir.zig` looks for on Windows. Only this
                 // call was missing.
                 resources.install();
+
+                // **And the catalogues, for the same reason.** `i18n.install()`
+                // is called from exactly the two branches named above, and
+                // Windows takes neither. With `config.i18n` now true for this
+                // target the `.mo` files are built, and without this line they
+                // are built into the cache and installed nowhere -- so
+                // `os/i18n.zig` would look for a catalogue under
+                // `share/locale` that the package never contained, and every
+                // string would come back as its English msgid. That is
+                // indistinguishable from i18n being off, which is the state
+                // this whole change exists to leave.
+                if (i18n) |v| v.install();
             } else {
                 lib_shared.install("ghostty-internal.so");
                 lib_static.install("ghostty-internal.a");

@@ -361,8 +361,12 @@ once.
 - **`-Dgtk-wayland` / `-Dgtk-x11`** — defaults come from detection. **Note the
   `gtk-` prefix**: these are not `-Dwayland` / `-Dx11`
   (`src/build/Config.zig:227-237`).
-- **`-Di18n`** — true on macOS/iOS; on Linux/FreeBSD it depends on whether you
-  are on glibc; false elsewhere (`src/build/Config.zig:239-247`).
+- **`-Di18n`** — true on macOS/iOS; true on Windows; on Linux/FreeBSD it
+  depends on whether you are on glibc; false elsewhere
+  (`src/build/Config.zig:372-392`). The Windows arm does not link libintl:
+  `src/os/i18n.zig` reads the installed `.mo` itself, so after `zig build`
+  the catalogue has to be under `share/locale/<locale>/LC_MESSAGES/` or every
+  string falls back to its English msgid.
 - **`-Dflatpak` / `-Dsnap`** — both default to `false` and only apply to Linux
   targets (`src/build/Config.zig:189-199`).
 - **`-Dpie`** — defaults to whatever `system_package` is, not to a constant

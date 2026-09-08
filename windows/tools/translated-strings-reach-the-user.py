@@ -33,6 +33,9 @@ the msgid, `tr()` returns the msgid, and the msgid is English. **It is not
 "untranslated yet". It is untranslatable, by construction, until the build
 changes.**
 
+The build has since changed; see the note above `MARKED`. This file now reads
+that rule to catch it changing back.
+
 Run:  python3 windows/tools/translated-strings-reach-the-user.py
 Exit: 0 when nothing user-visible depends on a lookup this platform cannot do,
       or when every such string is on the bill below.
@@ -46,34 +49,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 SRC = os.path.join(ROOT, "windows", "host", "src")
 
-# **A bill, not an approval.** Every entry is a string a Windows user reads in
-# English. They are here rather than in the failure list for one reason: they
-# were English *before* they were wrapped, so they are a standing gap and not
-# a regression -- and a gate that is red from its first day is one people learn
-# to scroll past.
+# **The bill that used to be here is gone, and so is the gap it stood for.**
+# Eleven msgids were listed as strings a Windows user reads in English, with a
+# note saying the way off the list was not to translate them but to make
+# `build_config.i18n` true for Windows. That happened: `src/build/Config.zig`
+# now has a `.windows => true` arm and `src/os/i18n.zig` reads the installed
+# `.mo` itself, without libintl. The list went with it, in one go, exactly as
+# that note said it would.
 #
-# **Keyed by the msgid**, so fixing one means deleting its line: a count would
-# let somebody wrap a new Chinese label, remove one of these, and stay level.
-#
-# ⚠️ **The way off this list is not to translate them.** It is to make
-# `build_config.i18n` true for Windows -- which needs libintl bundled for the
-# mingw target, an `install()` on a path the Windows package actually takes,
-# a real `.windows` arm in `os/i18n.zig`, and `bind_textdomain_codeset` to
-# UTF-8 so the answer is not returned in the ANSI code page. That is one task,
-# not eleven, and the day it lands this whole list goes at once.
-OWED_UNTRANSLATABLE = {
-    "Save",
-    "Enabled",
-    "Open config file…",
-    "About Polter",
-    "Esc or click to dismiss",
-    "MIT licensed. A fork of Ghostty.",
-    "What it is handed: {}",
-    "Subscribes to nothing, so Polter has nothing to hand it and will not start it.",
-    "Keeps the conversations",
-    "Notifies you",
-    "Sets your agent up to reach Polter",
-}
+# **This gate did not go with it.** What it reads is the build rule, and the
+# rule can be changed back -- by a refactor of that switch, by an `else` arm
+# swallowing `.windows`, or by somebody passing `-Di18n=false`. On that day
+# every `tr()` in the host silently returns its argument again, and the only
+# symptom is that a Chinese machine shows English.
 
 MARKED = re.compile(r"\b(?:tr|n_)\(\s*\"((?:[^\"\\]|\\.)*)\"")
 
@@ -164,31 +152,28 @@ def main() -> int:
     print(f"build_config.i18n for a Windows target: {'on' if on else 'OFF'}")
     print(f"{len(strings)} user-visible string(s) in windows/host/src go through `tr`/`n_`.")
     if on:
-        print("Nothing to report: the lookup exists on this platform.")
+        if not strings:
+            print("FAIL: the scan found no `tr`/`n_` call anywhere in "
+                  f"{SRC}. That is not a clean tree -- the host had sixty-odd "
+                  "of them -- it is a scan that lost its subject, and it would "
+                  "report the same thing if the rule had been changed back.")
+            return 1
+        print("Nothing to report: the lookup exists on this platform, and "
+              "these strings reach it.")
+        print("NOT CHECKED: whether the catalogue for the user's language is "
+              "installed beside the executable, and whether "
+              "`src/os/i18n.zig` finds it at run time. This reads the build "
+              "rule; it does not run the program.")
         return 0
 
     print("NOT CHECKED: whether the English msgid is a *good* thing to show. It is "
           "a fact about the build, not a judgement about the word.")
-    unowed = []
-    for name, line, msgid in strings:
-        if msgid in OWED_UNTRANSLATABLE:
-            continue
-        unowed.append((name, line, msgid))
-    print(f"  {len(strings) - len(unowed)} of them are on the bill in OWED_UNTRANSLATABLE.")
-
-    seen = {m for _, _, m in strings}
-    stale = sorted(OWED_UNTRANSLATABLE - seen)
     problems = []
-    for name, line, msgid in unowed:
+    for name, line, msgid in strings:
         problems.append(
             f"{name}:{line} shows {msgid!r} to the user through `tr`, and on Windows "
             f"`tr` returns its argument -- `build_config.i18n` is false for this "
             f"target, so the lookup is compiled out. The user reads the English."
-        )
-    for msgid in stale:
-        problems.append(
-            f"{msgid!r} is on the bill and no longer goes through `tr`. Delete the "
-            f"line: a name that outlives its reason is an exemption nobody granted."
         )
 
     if problems:

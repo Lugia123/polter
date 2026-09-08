@@ -372,10 +372,20 @@ pub fn init(
     config.i18n = b.option(
         bool,
         "i18n",
-        "Enables gettext-based internationalization. Enabled by default only for macOS, and other Unix-like systems like Linux and FreeBSD when using glibc.",
+        "Enables gettext-based internationalization. Enabled by default for macOS, for Windows, and for other Unix-like systems like Linux and FreeBSD when using glibc.",
     ) orelse switch (target.result.os.tag) {
         .macos, .ios => true,
         .linux, .freebsd => target.result.isGnuLibC(),
+
+        // **Windows does not link gettext.** Every other target on this list
+        // reaches libintl -- Apple through `pkg/libintl`, which says in its
+        // own header that it is only for macOS and that its `config.h` was
+        // generated on a Mac and copied in; glibc systems through libc. The
+        // Windows build instead reads the installed `.mo` file itself, in
+        // `src/os/i18n.zig`. The flag means the same thing to every caller
+        // either way: `_` returns a translation rather than its argument.
+        .windows => true,
+
         else => false,
     };
 

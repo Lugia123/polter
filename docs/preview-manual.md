@@ -224,7 +224,10 @@ zig build -Demit-macos-app=false
 - **`-Dsentry`** — macOS/iOS 默认真，其他平台默认假；注释说明 Linux 上崩溃报告信息量不足（`src/build/Config.zig:201-213`）。
 - **`-Dsimd`** — 默认真，wasm 架构下为假（`src/build/Config.zig:215-225`）。
 - **`-Dgtk-wayland` / `-Dgtk-x11`** — 默认取自探测结果。**注意选项名带 `gtk-` 前缀**，不是 `-Dwayland`/`-Dx11`（`src/build/Config.zig:227-237`）。
-- **`-Di18n`** — macOS/iOS 真；Linux/FreeBSD 取决于是否 glibc；其余为假（`src/build/Config.zig:239-247`）。
+- **`-Di18n`** — macOS/iOS 真；Windows 真；Linux/FreeBSD 取决于是否 glibc；其余为假
+  （`src/build/Config.zig:372-392`）。Windows 那一支不链 libintl：`src/os/i18n.zig`
+  自己读装好的 `.mo`，因此 `zig build` 之后 `share/locale/<locale>/LC_MESSAGES/`
+  下必须有目录文件，否则每条字符串都回落成英文 msgid。
 - **`-Dflatpak` / `-Dsnap`** — 默认均为 `false`，只对 Linux 目标有效（`src/build/Config.zig:189-199`）。
 - **`-Dpie`** — 默认等于 `system_package`，不是恒 `false`（`src/build/Config.zig:384-388`）。
 - **`-Dstrip`** — Debug/ReleaseSafe 下假，ReleaseFast/ReleaseSmall 下真（`src/build/Config.zig:390-398`）。
