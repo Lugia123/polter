@@ -85,6 +85,7 @@ use windows::Win32::System::Variant::{
     VariantClear, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_BSTR, VT_EMPTY,
     VT_I4,
 };
+use windows::core::BOOL;
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
@@ -357,6 +358,57 @@ fn runtime_id(win: u32, kind: i32, id: u64) -> WResult<*mut SAFEARRAY> {
 
 /// An empty SAFEARRAY of i32 -- what `GetEmbeddedFragmentRoots` returns when
 /// there are none, which is every element here.
+/// A `SAFEARRAY` of doubles, which is what UIA wants for rectangles.
+///
+/// **Separate from the `i4` one on purpose**: a rectangle array handed back
+/// with the wrong element type is not a type error anywhere in this process
+/// -- it crosses the ABI as a pointer and is misread on the far side.
+fn f64_array(values: &[f64]) -> WResult<*mut SAFEARRAY> {
+    unsafe {
+        let arr = SafeArrayCreateVector(windows::Win32::System::Variant::VT_R8, 0, values.len() as u32);
+        if arr.is_null() {
+            return Err(hr(UIA_E_NOTSUPPORTED));
+        }
+        for (i, v) in values.iter().enumerate() {
+            let idx = i as i32;
+            SafeArrayPutElement(arr, &idx, v as *const f64 as *const core::ffi::c_void)?;
+        }
+        Ok(arr)
+    }
+}
+
+fn empty_f64_array() -> WResult<*mut SAFEARRAY> {
+    f64_array(&[])
+}
+
+/// A `SAFEARRAY` of text ranges, which is what `GetSelection` and
+/// `GetVisibleRanges` hand back.
+///
+/// `VT_UNKNOWN` elements: `SafeArrayPutElement` takes a *reference* to the
+/// interface pointer and adds a reference of its own, so the locals here stay
+/// alive until it has.
+fn range_array(ranges: &[ITextRangeProvider]) -> WResult<*mut SAFEARRAY> {
+    unsafe {
+        let arr = SafeArrayCreateVector(
+            windows::Win32::System::Variant::VT_UNKNOWN,
+            0,
+            ranges.len() as u32,
+        );
+        if arr.is_null() {
+            return Err(hr(UIA_E_NOTSUPPORTED));
+        }
+        for (i, r) in ranges.iter().enumerate() {
+            let idx = i as i32;
+            SafeArrayPutElement(
+                arr,
+                &idx,
+                r as *const ITextRangeProvider as *const core::ffi::c_void,
+            )?;
+        }
+        Ok(arr)
+    }
+}
+
 fn empty_i4_array() -> WResult<*mut SAFEARRAY> {
     unsafe {
         let sa = SafeArrayCreateVector(VT_I4, 0, 0);
@@ -530,7 +582,8 @@ struct TabItem {
 #[implement(
     IRawElementProviderSimple,
     IRawElementProviderFragment,
-    IValueProvider
+    IValueProvider,
+    ITextProvider
 )]
 struct Document {
     frame: isize,
@@ -1125,10 +1178,20 @@ impl IRawElementProviderSimple_Impl for Document_Impl {
             .into();
             return Ok(v.into());
         }
-        // **`TextPattern` is what a screen reader really wants here and it is
-        // not implemented.** See `docs/windows/uia.md`: the consequence is
-        // that a reader gets the visible screen as one value and cannot
-        // navigate it by line, word or caret.
+        // **`TextPattern`, which is what a screen reader really wants here.**
+        // `ValuePattern` above hands out the visible screen as one string and
+        // nothing else -- no selection, no ranges, no idea where on screen a
+        // piece of output is. What this one can and cannot answer, and where
+        // every coordinate it reports comes from, is argued at `TermRange`.
+        if id == UIA_TextPatternId {
+            let t: ITextProvider = Document {
+                frame: self.frame,
+                tab: self.tab,
+                pane: self.pane,
+            }
+            .into();
+            return Ok(t.into());
+        }
         Err(gone())
     }
     fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
@@ -1904,4 +1967,384 @@ pub fn tab_renamed(frame: HWND, tab: TabId, name: &str) {
         let _ = VariantClear(&mut new);
     }
     wlogf!(frame, "[uia] name change raised for tab {}", tab.0);
+}
+
+// ------------------------------------------------------- the text pattern
+//
+// **What a client could and could not ask before this.** `document` offered
+// `ValuePattern`, so the whole visible screen came out as one string -- and
+// nothing else. "Which line did that output land on", "what is selected
+// right now" and "where on screen is this text" had no answer, so a test
+// that wanted any of them fell back to comparing screenshots.
+//
+// # Where a range's geometry comes from, and the sentinel that is not a place
+//
+// **Nothing here computes a rectangle from a row height of its own.** Two
+// numbers, both the core's:
+//
+//   * `ghostty_text_s.tl_px_x` / `tl_px_y` -- the top-left of the range, in
+//     the surface's own pixels, filled in by `embedded.zig` from the core's
+//     viewport;
+//   * `ime_cell_size()` -- the cell size the core reported through
+//     `GHOSTTY_ACTION_CELL_SIZE`, which is the same metric the renderer draws
+//     with.
+//
+// ⚠️ **`tl_px_* == -1` is not a position.** `embedded.zig` substitutes
+// `-1, -1` when `text.viewport` is null, which is what happens when the range
+// is scrolled out of the viewport. It is a value-shaped absence, and anything
+// that adds a cell size to it produces a rectangle pointing confidently at a
+// place the text is not. That is the same defect task 328 found one element
+// over -- ninety palette rows all reporting the list box's rectangle, so a
+// client's click **succeeded** on the wrong command. A wrong rectangle is
+// worse than no rectangle, because it is actionable.
+//
+// # What is refused, and why refusing is the answer
+//
+// Most of `ITextRangeProvider` is navigation -- move by word, expand to a
+// line, select this range -- and libghostty publishes no entry point for any
+// of it: there is no point-to-cell mapping, and no way to *set* a selection.
+// Every one of those returns `UIA_E_NOTSUPPORTED` **by name**. An
+// implementation that quietly returned the unchanged range from `Move` would
+// report success while nothing moved, and a client would read that as "there
+// is nothing after this line".
+
+/// Which piece of the terminal a range stands for.
+///
+/// **Two cases, and no third that this host can honestly offer.** A range
+/// is either the visible screen or whatever is selected right now; an
+/// arbitrary sub-range would need a way to name cell coordinates that came
+/// from somewhere other than the core, and there is no such thing here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RangeOf {
+    Viewport,
+    CurrentSelection,
+}
+
+#[implement(ITextRangeProvider)]
+struct TermRange {
+    frame: isize,
+    tab: TabId,
+    pane: PaneId,
+    what: RangeOf,
+}
+
+impl TermRange {
+    fn hwnd(&self) -> HWND {
+        HWND(self.frame as *mut core::ffi::c_void)
+    }
+
+    /// The core's answer for this range: its text and its top-left pixel.
+    ///
+    /// **Rule 1 and rule 2 of this file, unchanged**: the surface is resolved
+    /// with no guard alive, the bytes are copied out before `free_text`, and
+    /// a refusal from the core is reported as a refusal rather than as empty
+    /// text.
+    fn read(&self) -> Option<(String, f64, f64)> {
+        let surface = tabs::surface_of_tab_pane(self.hwnd(), self.tab, self.pane);
+        if surface.is_null() {
+            return None;
+        }
+        let mut out = Text::default();
+        let ok = unsafe {
+            match self.what {
+                RangeOf::Viewport => {
+                    (crate::api().surface_read_text)(surface, Selection::viewport(), &mut out)
+                }
+                RangeOf::CurrentSelection => {
+                    (crate::api().surface_read_selection)(surface, &mut out)
+                }
+            }
+        };
+        if !ok {
+            wlogf!(
+                self.hwnd(),
+                "[uia] text range read refused for pane={} ({})",
+                self.pane,
+                match self.what {
+                    RangeOf::Viewport => "viewport",
+                    RangeOf::CurrentSelection => "selection",
+                }
+            );
+            return None;
+        }
+        let text = if out.text.is_null() {
+            String::new()
+        } else {
+            let bytes =
+                unsafe { std::slice::from_raw_parts(out.text as *const u8, out.text_len) };
+            String::from_utf8_lossy(bytes).into_owned()
+        };
+        let (x, y) = (out.tl_px_x, out.tl_px_y);
+        unsafe { (crate::api().surface_free_text)(surface, &mut out) };
+        Some((text, x, y))
+    }
+}
+
+impl ITextRangeProvider_Impl for TermRange_Impl {
+    fn Clone(&self) -> WResult<ITextRangeProvider> {
+        let r: ITextRangeProvider = TermRange {
+            frame: self.frame,
+            tab: self.tab,
+            pane: self.pane,
+            what: self.what,
+        }
+        .into();
+        Ok(r)
+    }
+
+    /// **Two ranges are the same when they stand for the same thing.**
+    /// There are two things a range can stand for here, so this is exact
+    /// rather than an approximation of one.
+    fn Compare(&self, range: windows_core::Ref<ITextRangeProvider>) -> WResult<BOOL> {
+        // The other side is somebody else's object as far as this process is
+        // concerned; the only thing that can be asked of it through the
+        // interface is its text. Comparing that is not identity, so this
+        // answers only for ranges it can recognise -- and says so rather than
+        // guessing for the rest.
+        let Some(other) = range.as_ref() else {
+            return Ok(BOOL(0));
+        };
+        let mine = self.GetText(-1)?;
+        let theirs = unsafe { other.GetText(-1) }?;
+        Ok(BOOL((mine == theirs) as i32))
+    }
+
+    /// **Refused, not approximated.** Endpoints are positions in a buffer,
+    /// and this host has no way to name a position: libghostty publishes
+    /// no cell coordinate for a range it did not itself produce. Answering
+    /// `0` -- "the endpoints are equal" -- would make every range look like
+    /// every other one.
+    fn CompareEndpoints(
+        &self,
+        _endpoint: TextPatternRangeEndpoint,
+        _targetrange: windows_core::Ref<ITextRangeProvider>,
+        _targetendpoint: TextPatternRangeEndpoint,
+    ) -> WResult<i32> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    /// **Refused.** Expanding to a word or a line needs the buffer walked,
+    /// and the only text this host can ask for is the whole viewport or the
+    /// current selection. Silently leaving the range as it is would report
+    /// success for a move that did not happen.
+    fn ExpandToEnclosingUnit(&self, _unit: TextUnit) -> WResult<()> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    fn FindAttribute(
+        &self,
+        _attributeid: UIA_TEXTATTRIBUTE_ID,
+        _val: &VARIANT,
+        _backward: BOOL,
+    ) -> WResult<ITextRangeProvider> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    /// **Refused rather than answered with a range that cannot be used.**
+    /// A search could be run over the text this host *can* read, but the
+    /// result would have to be handed back as a range -- and a range this
+    /// host cannot express is one whose `GetBoundingRectangles` would have to
+    /// invent a position. Task 328's ninety identical rectangles are what
+    /// that looks like from the client's side.
+    fn FindText(&self, _text: &BSTR, _backward: BOOL, _ignorecase: BOOL) -> WResult<ITextRangeProvider> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    fn GetAttributeValue(&self, _attributeid: UIA_TEXTATTRIBUTE_ID) -> WResult<VARIANT> {
+        // The documented way to say "this provider has no opinion on that
+        // attribute"; a client then falls back to its own default rather than
+        // to a value we made up.
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    /// The range's rectangle, **from the core's own two numbers**.
+    ///
+    /// ⚠️ `tl_px_* == -1` means the range is not in the viewport (see this
+    /// section's header). An empty array is the correct UIA answer for that
+    /// -- *and it is logged*, because "off screen" and "we could not tell"
+    /// would otherwise be the same empty array.
+    fn GetBoundingRectangles(&self) -> WResult<*mut SAFEARRAY> {
+        let Some((text, x, y)) = self.read() else {
+            return Err(gone());
+        };
+        if x < 0.0 || y < 0.0 {
+            wlogf!(
+                self.hwnd(),
+                "[uia] range has no rectangle: the core reports tl_px=({},{}), which is its \
+                 way of saying the range is not in the viewport -- not a position",
+                x,
+                y
+            );
+            return empty_f64_array();
+        }
+        let (cw, ch) = crate::ime_cell_size();
+        let rows = text.lines().count().max(1) as f64;
+        let cols = text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f64;
+        let mut origin = POINT { x: 0, y: 0 };
+        let pane = match tabs::tab_infos(self.hwnd()).0.iter().find(|t| t.id == self.tab) {
+            Some(t) if t.pane_hwnd != 0 => HWND(t.pane_hwnd as *mut core::ffi::c_void),
+            _ => return Err(gone()),
+        };
+        if unsafe { ClientToScreen(pane, &mut origin) }.as_bool() {
+            f64_array(&[
+                origin.x as f64 + x,
+                origin.y as f64 + y,
+                cols * cw as f64,
+                rows * ch as f64,
+            ])
+        } else {
+            empty_f64_array()
+        }
+    }
+
+    fn GetEnclosingElement(&self) -> WResult<IRawElementProviderSimple> {
+        let d: IRawElementProviderSimple = Document {
+            frame: self.frame,
+            tab: self.tab,
+            pane: self.pane,
+        }
+        .into();
+        Ok(d)
+    }
+
+    fn GetText(&self, maxlength: i32) -> WResult<BSTR> {
+        let Some((text, _, _)) = self.read() else {
+            return Err(gone());
+        };
+        if maxlength >= 0 && (maxlength as usize) < text.chars().count() {
+            let cut: String = text.chars().take(maxlength as usize).collect();
+            return Ok(BSTR::from(cut.as_str()));
+        }
+        Ok(BSTR::from(text.as_str()))
+    }
+
+    /// **Refused, and this is the one a client is most likely to try.**
+    /// Returning `0` -- "moved nothing" -- is the tempting answer and it is a
+    /// lie of the kind this port keeps finding: a client reads it as "there
+    /// is nothing after this", which is a fact about the terminal that was
+    /// never established.
+    fn Move(&self, _unit: TextUnit, _count: i32) -> WResult<i32> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    fn MoveEndpointByUnit(
+        &self,
+        _endpoint: TextPatternRangeEndpoint,
+        _unit: TextUnit,
+        _count: i32,
+    ) -> WResult<i32> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    fn MoveEndpointByRange(
+        &self,
+        _endpoint: TextPatternRangeEndpoint,
+        _targetrange: windows_core::Ref<ITextRangeProvider>,
+        _targetendpoint: TextPatternRangeEndpoint,
+    ) -> WResult<()> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    /// **Refused for the same reason `SetValue` is.** libghostty publishes no
+    /// entry point that sets a selection, and one written here would be a
+    /// second owner of a fact the core keeps.
+    fn Select(&self) -> WResult<()> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    fn AddToSelection(&self) -> WResult<()> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    fn RemoveFromSelection(&self) -> WResult<()> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    fn ScrollIntoView(&self, _aligntotop: BOOL) -> WResult<()> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    fn GetChildren(&self) -> WResult<*mut SAFEARRAY> {
+        empty_i4_array()
+    }
+}
+
+impl ITextProvider_Impl for Document_Impl {
+    /// What is selected right now.
+    ///
+    /// **An empty array here means "nothing is selected", and this asks the
+    /// core before saying it.** `ghostty_surface_has_selection` is the reason
+    /// the empty answer is honest: without it, "there is no selection" and
+    /// "the read failed" would both come back as an empty array, and a client
+    /// cannot tell those apart -- it would report a terminal with nothing
+    /// selected either way. A failure is an error here, not an empty array.
+    fn GetSelection(&self) -> WResult<*mut SAFEARRAY> {
+        let frame = self.hwnd();
+        if !live(frame) {
+            return Err(gone());
+        }
+        let surface = tabs::surface_of_tab_pane(frame, self.tab, self.pane);
+        if surface.is_null() {
+            return Err(gone());
+        }
+        if !unsafe { (crate::api().surface_has_selection)(surface) } {
+            return empty_i4_array();
+        }
+        let r: ITextRangeProvider = TermRange {
+            frame: self.frame,
+            tab: self.tab,
+            pane: self.pane,
+            what: RangeOf::CurrentSelection,
+        }
+        .into();
+        range_array(&[r])
+    }
+
+    /// The visible screen, which is the one range this host can name.
+    fn GetVisibleRanges(&self) -> WResult<*mut SAFEARRAY> {
+        let r = self.DocumentRange()?;
+        range_array(&[r])
+    }
+
+    /// **Refused.** A child element of the terminal document would have to be
+    /// a piece of its text, and this provider publishes none -- so there is
+    /// no child whose range could be answered.
+    fn RangeFromChild(
+        &self,
+        _childelement: windows_core::Ref<IRawElementProviderSimple>,
+    ) -> WResult<ITextRangeProvider> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    /// **Refused, and this is the refusal that matters most.**
+    ///
+    /// Turning a screen point into a text position needs a mapping from
+    /// pixels to cells, and libghostty publishes none: `ghostty_text_s`
+    /// carries a top-left *out* for a range the core chose, and there is no
+    /// entry point going the other way. The arithmetic looks available --
+    /// there is a cell size right there -- and that is the trap: dividing a
+    /// point by the cell size ignores scrollback position, wide characters
+    /// and the surface's own origin, and produces a range that is wrong
+    /// **without looking wrong**. Task 328 is what that costs: ninety palette
+    /// rows reporting one rectangle, and a client whose click *succeeded* on
+    /// the wrong command.
+    fn RangeFromPoint(&self, _point: &UiaPoint) -> WResult<ITextRangeProvider> {
+        Err(hr(UIA_E_NOTSUPPORTED))
+    }
+
+    fn DocumentRange(&self) -> WResult<ITextRangeProvider> {
+        let r: ITextRangeProvider = TermRange {
+            frame: self.frame,
+            tab: self.tab,
+            pane: self.pane,
+            what: RangeOf::Viewport,
+        }
+        .into();
+        Ok(r)
+    }
+
+    /// One selection at a time, which is what the core keeps.
+    fn SupportedTextSelection(&self) -> WResult<SupportedTextSelection> {
+        Ok(SupportedTextSelection_Single)
+    }
 }

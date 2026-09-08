@@ -4298,6 +4298,8 @@ fn load_api() -> Option<Api> {
             surface_mouse_pos: sym!(internal, "ghostty_surface_mouse_pos"),
             surface_mouse_scroll: sym!(internal, "ghostty_surface_mouse_scroll"),
             surface_read_text: sym!(internal, "ghostty_surface_read_text"),
+            surface_has_selection: sym!(internal, "ghostty_surface_has_selection"),
+            surface_read_selection: sym!(internal, "ghostty_surface_read_selection"),
             surface_free_text: sym!(internal, "ghostty_surface_free_text"),
             cli_try_action: sym!(internal, "ghostty_cli_try_action"),
             translate: sym!(internal, "ghostty_translate"),

@@ -897,6 +897,21 @@ pub struct Api {
     /// shouldn't be called too often. We recommend that callers cache the
     /// result and throttle calls to this function."* `uia.rs` does.
     pub surface_read_text: unsafe extern "C" fn(Surface, Selection, *mut Text) -> bool,
+    /// Whether this surface has a selection right now.
+    ///
+    /// **The half that keeps an empty answer honest.** `read_selection`
+    /// answers `false` both when there is no selection and when it could not
+    /// read one, and a UIA client reads an empty selection array as "nothing
+    /// is selected" -- so without this, "nothing selected" and "could not
+    /// tell" would be the same reply.
+    pub surface_has_selection: unsafe extern "C" fn(Surface) -> bool,
+    /// The current selection's text, with the same `Text` payload
+    /// `read_text` fills in -- including `tl_px_*`, whose **`-1` means the
+    /// range is not in the viewport** (`embedded.zig` substitutes it when
+    /// `text.viewport` is null). That is a value-shaped absence, and anything
+    /// that computes with it produces a rectangle pointing at a place the
+    /// text is not.
+    pub surface_read_selection: unsafe extern "C" fn(Surface, *mut Text) -> bool,
     /// The other half of `surface_read_text`. **Not optional**: the text is
     /// the core's allocation, and skipping this leaks it once per read --
     /// which, at a screen reader's polling rate, is a leak with a slope.
