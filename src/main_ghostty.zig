@@ -47,7 +47,7 @@ pub fn main(minimal: std.process.Init.Minimal) !MainReturn {
             error.InvalidAction => try stderr.print(
                 "Error: unknown CLI action specified. CLI actions are specified with\n" ++
                     "the '+' character.\n\n" ++
-                    "All valid CLI actions can be listed with `ghostty +help`\n",
+                    "All valid CLI actions can be listed with `" ++ build_config.exe_name ++ " +help`\n",
                 .{},
             ),
 
@@ -60,7 +60,7 @@ pub fn main(minimal: std.process.Init.Minimal) !MainReturn {
 
     if (comptime builtin.mode == .Debug) {
         std.log.warn("This is a debug build. Performance will be very poor.", .{});
-        std.log.warn("You should only use a debug build for developing Ghostty.", .{});
+        std.log.warn("You should only use a debug build for developing " ++ build_config.app_name ++ ".", .{});
         std.log.warn("Otherwise, please rebuild in a release mode.", .{});
     }
 
@@ -77,20 +77,18 @@ pub fn main(minimal: std.process.Init.Minimal) !MainReturn {
 
     if (comptime build_config.app_runtime == .none) {
         const stdout = std.io.getStdOut().writer();
-        try stdout.print("Usage: ghostty +<action> [flags]\n\n", .{});
+        try stdout.print("Usage: " ++ build_config.exe_name ++ " +<action> [flags]\n\n", .{});
         try stdout.print(
-            \\This is the Ghostty helper CLI that accompanies the graphical Ghostty app.
-            \\To launch the terminal directly, please launch the graphical app
-            \\(i.e. Ghostty.app on macOS). This CLI can be used to perform various
-            \\actions such as inspecting the version, listing fonts, etc.
-            \\
-            \\On macOS, the terminal can also be launched using `open -na Ghostty.app`,
-            \\or `open -na Ghostty.app --args --foo=bar --baz=qux` to pass arguments.
-            \\
-            \\We don't have proper help output yet, sorry! Please refer to the
-            \\source code or Discord community for help for now. We'll fix this in time.
-            \\
-        ,
+            "This is the " ++ build_config.app_name ++ " helper CLI that accompanies the graphical " ++ build_config.app_name ++ " app.\n" ++
+            "To launch the terminal directly, please launch the graphical app\n" ++
+            "(i.e. " ++ build_config.app_name ++ ".app on macOS). This CLI can be used to perform various\n" ++
+            "actions such as inspecting the version, listing fonts, etc.\n" ++
+            "\n" ++
+            "On macOS, the terminal can also be launched using `open -na " ++ build_config.app_name ++ ".app`,\n" ++
+            "or `open -na " ++ build_config.app_name ++ ".app --args --foo=bar --baz=qux` to pass arguments.\n"
+            ++ "\n" ++
+            "We don't have proper help output yet, sorry! Please refer to the\n" ++
+            "source code or Discord community for help for now. We'll fix this in time.\n",
             .{},
         );
 

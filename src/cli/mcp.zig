@@ -585,7 +585,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_action",
-        .description = "Do to a terminal what the menu bar does. `action` is a Ghostty " ++
+        .description = "Do to a terminal what the menu bar does. `action` is a Polter " ++
             "keybinding action, written exactly as a config file writes it: `new_tab`, " ++
             "`close_surface`, `toggle_fullscreen`, `copy_to_clipboard`, " ++
             "`increase_font_size:1`, `goto_split:left`, `new_split:right`, " ++
@@ -617,7 +617,7 @@ const tools = [_]Tool{
         .description = "**Use this to interrupt or stop something running in another " ++
             "terminal** -- ctrl+c the server you are about to restart. It presses a key " ++
             "there, as if the person at the " ++
-            "keyboard had. `key` is a Ghostty keybinding trigger, written exactly as a " ++
+            "keyboard had. `key` is a Polter keybinding trigger, written exactly as a " ++
             "config file writes one: `ctrl+c`, `escape`, `ctrl+z`, `ctrl+shift+k`, " ++
             "`f2`, `arrow_down`. This is how you interrupt something -- terminal_send " ++
             "cannot, because the text it types has its control characters stripped on " ++
@@ -869,8 +869,8 @@ fn handleOne(
 
         const reply = host.call(request) catch |err| {
             return writeToolError(out, id, aa, switch (err) {
-                error.EndOfStream => "ghostty closed the connection",
-                else => "could not reach ghostty",
+                error.EndOfStream => "polter closed the connection",
+                else => "could not reach polter",
             });
         };
 

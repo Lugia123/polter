@@ -57,6 +57,12 @@ pub const i18n: bool = config.i18n;
 /// avoid it in Zig coe as much as possible.
 pub const bundle_id = @import("build/bundle_id.zig").value;
 
+/// The shipped executable's name, and the product's name in prose. Read from
+/// the same file the build graph names the binary with, so a CLI message that
+/// tells a person what to type cannot name a command that was never built.
+pub const exe_name = @import("build/exe_name.zig").value;
+pub const app_name = @import("build/exe_name.zig").display;
+
 /// True if we should have "slow" runtime safety checks. The initial motivation
 /// for this was terminal page/pagelist integrity checks. These were VERY
 /// slow but very thorough. But they made it so slow that the terminal couldn't

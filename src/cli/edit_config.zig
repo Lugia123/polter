@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_config = @import("../build_config.zig");
 const builtin = @import("builtin");
 const assert = @import("../quirks.zig").inlineAssert;
 const args = @import("args.zig");
@@ -86,7 +87,7 @@ fn runInner(alloc: Allocator, stderr: *std.Io.Writer) !u8 {
     // We don't currently support Windows because we use the exec syscall.
     if (comptime builtin.os.tag == .windows) {
         try stderr.print(
-            \\The `ghostty +edit-config` command is not supported on Windows.
+            "The `" ++ build_config.exe_name ++ " +edit-config` command is not supported on Windows.\n" ++
             \\Please edit the configuration file manually at the following path:
             \\
             \\
@@ -101,7 +102,7 @@ fn runInner(alloc: Allocator, stderr: *std.Io.Writer) !u8 {
             error.NoEditorConfigured => {
                 try stderr.print(
                     \\The $EDITOR or $VISUAL environment variable is not set or is empty.
-                    \\This environment variable is required to edit the Ghostty configuration
+                    \\This environment variable is required to edit the Polter configuration
                     \\via this CLI command.
                     \\
                     \\Please set the environment variable to your preferred terminal

@@ -82,8 +82,8 @@ fn runArgs(alloc_gpa: Allocator, argsIter: anytype) !u8 {
         var stderr_writer = std.Io.File.stderr().writerStreaming(global.io(), &buffer);
         const stderr = &stderr_writer.interface;
         try stderr.print(
-            \\Ghostty was built without a font discovery mechanism. This is a compile-time
-            \\option. Please review how Ghostty was built from source, contact the
+            \\Polter was built without a font discovery mechanism. This is a compile-time
+            \\option. Please review how Polter was built from source, contact the
             \\maintainer to enable a font discovery mechanism, and try again.
         ,
             .{},

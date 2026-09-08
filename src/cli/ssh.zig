@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_config = @import("../build_config.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -13,11 +14,15 @@ const global = @import("../global.zig");
 const log = std.log.scoped(.ssh);
 
 const usage =
-    \\Usage: ghostty +ssh [flags] [--] <ssh args...>
+    // **The command a person types comes from the build**, not from this
+    // line; see `src/build/exe_name.zig`. The rest stays a `\\` block: only
+    // the parts that name a real artefact have to be read from one.
+    "Usage: " ++ build_config.exe_name ++ " +ssh [flags] [--] <ssh args...>\n" ++
     \\
     \\Flags:
     \\  --forward-env[=bool]  Enable TERM / SendEnv forwarding. Default: true.
-    \\  --terminfo[=bool]     Install Ghostty terminfo on first connect. Default: true.
+    \\
+    ++ "  --terminfo[=bool]     Install " ++ build_config.app_name ++ " terminfo on first connect. Default: true.\n" ++
     \\  --cache[=bool]        Use the terminfo install cache. Default: true.
     \\  --ssh=<path>          Path to the ssh binary. Default: first `ssh` on PATH.
     \\  --verbose             Print +ssh status lines to stderr.
@@ -245,7 +250,7 @@ fn runInner(
 
         const cache: ?DiskCache = if (opts.cache) cache: {
             const path = DiskCache.defaultPath(alloc, "polter") catch |err| {
-                warnPrint(stderr, "ghostty terminfo cache unavailable: {t}", .{err});
+                warnPrint(stderr, "polter terminfo cache unavailable: {t}", .{err});
                 break :session .{ .term = "xterm-256color" };
             };
             break :cache .{ .path = path };

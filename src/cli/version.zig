@@ -26,14 +26,18 @@ pub fn run(alloc: Allocator) !u8 {
     const stdout = &stdout_writer.interface;
     const tty = try stdout_file.isTty(global.io());
 
-    if (tty) if (build_config.version.build) |commit_hash| {
-        try stdout.print(
-            "\x1b]8;;https://github.com/ghostty-org/ghostty/commit/{s}\x1b\\",
-            .{commit_hash},
-        );
-    };
-    try stdout.print("Ghostty {s}\n\n", .{build_config.version_string});
-    if (tty) try stdout.print("\x1b]8;;\x1b\\", .{});
+    // **The version line is no longer a hyperlink.**
+    //
+    // It linked to `github.com/ghostty-org/ghostty/commit/<hash>` -- upstream
+    // -- while the hash is this fork's. Every such link went to a commit that
+    // repository does not have, so the one thing the link was for, seeing the
+    // build you are running, is the one thing it could not do. **A link that
+    // is always wrong is worse than no link**: it looks like a way to check.
+    //
+    // Not repointed, because the fork's own URL is not written down anywhere
+    // this file may read, and guessing one would ship a second wrong link.
+    _ = tty;
+    try stdout.print(build_config.app_name ++ " {s}\n\n", .{build_config.version_string});
 
     try stdout.print("Version\n", .{});
     try stdout.print("  - version: {s}\n", .{build_config.version_string});

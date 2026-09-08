@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_config = @import("../build_config.zig");
 const args = @import("args.zig");
 const Allocator = std.mem.Allocator;
 const Action = @import("ghostty.zig").Action;
@@ -79,9 +80,9 @@ pub fn run(alloc: Allocator) !u8 {
         var stderr: std.Io.File = .stderr();
         var buffer: [4096]u8 = undefined;
         var stderr_writer = stderr.writerStreaming(global.io(), &buffer);
-        try stderr_writer.interface.writeAll("Usage: ghostty +explain-config <option>\n");
-        try stderr_writer.interface.writeAll("       ghostty +explain-config --option=<option>\n");
-        try stderr_writer.interface.writeAll("       ghostty +explain-config --keybind=<action>\n");
+        try stderr_writer.interface.writeAll("Usage: " ++ build_config.exe_name ++ " +explain-config <option>\n");
+        try stderr_writer.interface.writeAll("       " ++ build_config.exe_name ++ " +explain-config --option=<option>\n");
+        try stderr_writer.interface.writeAll("       " ++ build_config.exe_name ++ " +explain-config --keybind=<action>\n");
         try stderr_writer.end();
         return 1;
     };
