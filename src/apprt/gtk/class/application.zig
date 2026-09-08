@@ -2701,7 +2701,7 @@ const Action = struct {
                     @tagName(v.direction).ptr,
                 ) != 0;
                 if (ok) if (v.result) |r| {
-                    r.* = .split;
+                    r.* = .will_split;
                 };
                 return ok;
             },

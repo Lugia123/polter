@@ -43,6 +43,8 @@ const instructions =
     "\\n" ++
     "terminal_* -- see and drive any Polter terminal you may reach. terminal_list,\\n" ++
     "terminal_read, terminal_send, terminal_key, terminal_action, terminal_open.\\n" ++
+    "terminal_layout puts a tab's panes into a shape you say once, and is the\\n" ++
+    "only one that tells you which panes it made -- splitting cannot.\\n" ++
     "terminal_keys and terminal_actions catalogue what can be sent.\\n" ++
     "\\n" ++
     "group_* -- the group chat. For talking and for the record, not for directing:\\n" ++
@@ -678,6 +680,30 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "terminal_layout",
+        .description = "Rearrange a tab's panes into a shape you give in one call. **Use this " ++
+            "instead of splitting four times.** Each terminal_action split is a round trip " ++
+            "against a layout that is still moving, and none of them tells you which pane it " ++
+            "just made -- so splitting repeatedly gives you a chain, not the shape you wanted. " ++
+            "`id` names any pane of the tab. `layout` is a tree: a cell is " ++
+            "{\"pane\":\"0x…\"} for a terminal already in that tab, {\"new\":{\"cwd\":\"…\"}} " ++
+            "for one to make, or {\"split\":\"h\"|\"v\",\"ratio\":0.5,\"left\":cell,\"right\":cell}. " ++
+            "`ratio` is the fraction given to `left` and must be between 0 and 1; it is refused " ++
+            "rather than rounded, because a layout you did not ask for reported as success is " ++
+            "worse than a refusal. **The reply gives the resulting shape with every cell's pane " ++
+            "id**, including the ones that were just made -- that is how you learn them. " ++
+            "⚠️ Every pane already in the tab must appear in the layout: rearranging never " ++
+            "closes a terminal. Leave one out and the whole call is refused and nothing moves; " ++
+            "close it first with terminal_action close_surface, then send the layout for what " ++
+            "is left. ⚠️ It is all-or-nothing: if any cell is wrong, no pane is touched. " ++
+            "⚠️ On macOS and Linux this answers `Unsupported` and changes nothing. " ++
+            "⚠️ It returns only after that window's queued work has run, so anything queued " ++
+            "before it has happened too. Supervisor only. Same reach rule as terminal_read.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"layout":{"type":"object"}},"required":["id","layout"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "terminal_keys",
         .description = "The vocabulary terminal_key accepts: every modifier name and " ++
             "every key name, joined with `+`. Read this rather than guessing at a name.",
@@ -1092,6 +1118,7 @@ test "the tools that decide reach say so in their own description" {
             // answered once, for the caller, with no target in the question
             // -- so the list can never carry it.
             "terminal_answer_prompt",
+            "terminal_layout",
         }) |name| {
             if (!std.mem.eql(u8, t.name, name)) continue;
             seen_reach = true;
@@ -1132,8 +1159,9 @@ test "the initialize result is valid JSON and puts the tool families in it" {
     // one this exists for: it is the family that went missing.
     for ([_][]const u8{
         "terminal_send", "terminal_read", "group_post",
-        "task_create",   "task_edit",     "task_assign",
-        "task_list",     "skill_read",
+        "task_create",   "task_edit",     "task_assign",   "task_list",
+        "terminal_layout",
+        "skill_read",
     }) |name| {
         std.testing.expect(std.mem.indexOf(u8, text, name) != null) catch |err| {
             std.debug.print("instructions never names {s}\n", .{name});

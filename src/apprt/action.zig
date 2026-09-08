@@ -418,6 +418,7 @@ pub const Action = union(Key) {
     /// drift is the worst kind: two platforms laying panes out differently
     /// while every log line and every reply reads the same.
     poltergeist_tab_panes: PoltergeistTabPanes,
+    poltergeist_layout: PoltergeistLayout,
 
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
@@ -499,6 +500,7 @@ pub const Action = union(Key) {
         // dispatches into a different action's arm, with no crash and no
         // wrong-looking log line. The test below is what catches it.
         poltergeist_tab_panes,
+        poltergeist_layout,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2206,11 +2208,25 @@ pub const NewSplit = struct {
     /// reasoning as `PoltergeistClose.Result`: a cell nobody wrote reads as
     /// "not done" rather than inheriting "done" by accident.
     pub const Result = enum(c_int) {
-        /// Nothing was split. Either this apprt does not do splits at all, or
-        /// it was asked for a directory it cannot honour.
+        /// Nothing was split, and nothing will be. Either this apprt does
+        /// not do splits at all, or it was asked for a directory it cannot
+        /// honour.
         unsupported,
-        /// A split was made, in the directory asked for if one was named.
-        split,
+
+        /// **This apprt has taken the split on. It has not happened yet.**
+        ///
+        /// ⚠️ **The name says the tense, and it used to say the wrong one.**
+        /// This was `split`, which reads as "a split was made" -- and on at
+        /// least one apprt that is not what it means: the Windows host queues
+        /// the work to the thread that owns windows and writes this cell
+        /// *before* the op runs, because the call has to answer now. Its own
+        /// comment says so ("Answered before the op runs"), so the comment
+        /// and the name disagreed, and **a reader meets the name first**.
+        ///
+        /// What it claims is exactly this much: the request was accepted and
+        /// the directory, if one was named, will be honoured. Whether a pane
+        /// appeared is a different question and this cell does not answer it.
+        will_split,
     };
 
     // Sync with: ghostty_action_new_split_s
@@ -2226,6 +2242,88 @@ pub const NewSplit = struct {
             .working_directory = self.working_directory.ptr,
             .result = self.result,
         };
+    }
+};
+
+/// Rearrange a tab's panes into a shape given from outside.
+///
+/// # Why a whole shape rather than one split at a time
+///
+/// A supervisor placing four workers used to have to say "split this pane"
+/// four times, and **each call is a round trip against a layout that is
+/// still moving**: the person can take focus, another agent can close a
+/// pane, and a call that fails half way leaves half a layout with nothing
+/// anywhere recording what was intended. Saying the shape once means it is
+/// resolved against one snapshot and either happens or does not.
+///
+/// It is also the only way to learn which panes were made. `NewSplit`
+/// answers before its work runs, so the pane it creates has no id to report
+/// at the time it returns -- which is why splitting four times produced a
+/// chain: nothing could name the panes it had just made.
+///
+/// # The spec, and why it is a string
+///
+/// JSON, parsed by the apprt. The tree is the apprt's -- the core does not
+/// know which surfaces share a tab, and says so wherever it has to ask -- so
+/// a structure marshalled across this boundary would be a second model of
+/// something this side does not own. A string is a conduit; a struct would
+/// be a claim.
+pub const PoltergeistLayout = struct {
+    /// The shape asked for. See `docs/poltergeist/` and the tool description.
+    spec: [:0]const u8,
+
+    /// Where the apprt writes its answer.
+    ///
+    /// ⚠️ **One pointer rather than four fields, because the action union is
+    /// pinned to three words** by a `comptime` assertion a few hundred lines
+    /// below -- and that assertion is a checkpoint, not an obstacle: it is
+    /// there so that widening the ABI is a decision somebody makes rather
+    /// than a side effect of adding a payload. This payload is two words and
+    /// leaves it where it was.
+    out: ?*Out = null,
+
+    /// Sync with: ghostty_action_poltergeist_layout_result_e
+    ///
+    /// `unsupported` is first so zero is the honest answer, the same
+    /// reasoning as `NewSplit.Result`.
+    pub const Result = enum(c_int) {
+        /// This apprt does not rearrange panes. **A first-class answer, not
+        /// a fallback**: the tool says so plainly rather than pretending a
+        /// layout was set.
+        unsupported,
+        /// The shape was accepted and applied.
+        applied,
+        /// The shape was understood and refused -- a pane it did not name, a
+        /// ratio this platform cannot honour, a cell that parsed wrong. The
+        /// reason is in `out`, and **nothing was changed**.
+        refused,
+    };
+
+    /// The cell the caller hands over and reads back.
+    ///
+    /// **The buffer is the caller's**, not an allocation handed across:
+    /// nothing else in this ABI passes memory back, and a rule with one
+    /// exception is a rule somebody has to remember. `len` is what the apprt
+    /// wrote; `cap` is how much room there was, and an apprt that needs more
+    /// writes what fits and says so in the reason rather than truncating
+    /// silently.
+    ///
+    /// Sync with: ghostty_action_poltergeist_layout_out_s
+    pub const Out = extern struct {
+        result: Result = .unsupported,
+        buf: ?[*]u8 = null,
+        cap: usize = 0,
+        len: usize = 0,
+    };
+
+    // Sync with: ghostty_action_poltergeist_layout_s
+    pub const C = extern struct {
+        spec: [*:0]const u8,
+        out: ?*Out,
+    };
+
+    pub fn cval(self: PoltergeistLayout) C {
+        return .{ .spec = self.spec.ptr, .out = self.out };
     }
 };
 

@@ -1023,11 +1023,49 @@ typedef struct {
 //
 // UNSUPPORTED is first so that zero is the honest answer: an apprt that
 // writes nothing is reported as not having split, rather than inheriting
-// SPLIT by accident.
+// WILL_SPLIT by accident.
+//
+// WILL_SPLIT was called SPLIT until 2026-09-09, and the rename is the whole
+// of the fix: an apprt may queue the work and answer before it runs, so
+// "a split was made" is a tense this cell cannot promise.
 typedef enum {
   GHOSTTY_ACTION_NEW_SPLIT_RESULT_UNSUPPORTED,
-  GHOSTTY_ACTION_NEW_SPLIT_RESULT_SPLIT,
+  GHOSTTY_ACTION_NEW_SPLIT_RESULT_WILL_SPLIT,
 } ghostty_action_new_split_result_e;
+
+// apprt.action.PoltergeistLayout.Result
+//
+// UNSUPPORTED is first for the reason it is first above: an apprt that writes
+// nothing is reported as not having done it. It is also a first-class answer
+// here rather than a fallback -- an apprt that does not rearrange panes says
+// so, and the tool passes that on instead of claiming a layout was set.
+typedef enum {
+  GHOSTTY_ACTION_POLTERGEIST_LAYOUT_UNSUPPORTED,
+  GHOSTTY_ACTION_POLTERGEIST_LAYOUT_APPLIED,
+  GHOSTTY_ACTION_POLTERGEIST_LAYOUT_REFUSED,
+} ghostty_action_poltergeist_layout_result_e;
+
+// apprt.action.PoltergeistLayout.Out
+//
+// The buffer belongs to the caller. `len` is what the apprt wrote; `cap` is
+// how much room there was.
+typedef struct {
+  ghostty_action_poltergeist_layout_result_e result;
+  char* buf;
+  size_t cap;
+  size_t len;
+} ghostty_action_poltergeist_layout_out_s;
+
+// apprt.action.PoltergeistLayout
+//
+// `spec` is the shape asked for, as JSON. It is a string because the tree
+// belongs to the apprt: the core does not know which surfaces share a tab, so
+// a structure marshalled here would be a second model of something this side
+// does not own.
+typedef struct {
+  const char* spec;
+  ghostty_action_poltergeist_layout_out_s* out;
+} ghostty_action_poltergeist_layout_s;
 
 // apprt.action.NewSplit
 //
@@ -1132,6 +1170,7 @@ typedef enum {
   GHOSTTY_ACTION_POLTERGEIST_MARK,
   GHOSTTY_ACTION_POLTERGEIST_CLOSE,
   GHOSTTY_ACTION_POLTERGEIST_TAB_PANES,
+  GHOSTTY_ACTION_POLTERGEIST_LAYOUT,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1179,6 +1218,7 @@ typedef union {
   ghostty_action_poltergeist_mark_s poltergeist_mark;
   ghostty_action_poltergeist_close_s poltergeist_close;
   ghostty_action_poltergeist_tab_panes_s poltergeist_tab_panes;
+  ghostty_action_poltergeist_layout_s poltergeist_layout;
 } ghostty_action_u;
 
 typedef struct {

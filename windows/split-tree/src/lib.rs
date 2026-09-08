@@ -253,6 +253,29 @@ impl Tree {
         Tree { root: Some(Node::Leaf(pane)), zoomed: None }
     }
 
+    /// A tree with a whole shape given at once.
+    ///
+    /// **Every other way of building a tree here grows it one pane at a
+    /// time** -- `insert` splits a leaf, which is how a person builds a
+    /// layout and how every existing caller does it. This one takes the
+    /// finished shape.
+    ///
+    /// It is here for one caller: an agent that says what the layout should
+    /// be rather than which pane to split next. ⚠️ **Not because a shape
+    /// needs it** -- any binary tree can be reached by splitting leaves in
+    /// the right order, and believing otherwise is what made a whole task
+    /// look impossible for a day. It is here because **stating the shape
+    /// once and building it once is checkable**, and a sequence of splits
+    /// computed to reach that shape is a second implementation of the shape
+    /// that can disagree with the first.
+    ///
+    /// Zoom is cleared: a shape given from outside says nothing about which
+    /// pane was filling the tab a moment ago, and carrying the old answer
+    /// over would zoom a pane the caller never mentioned.
+    pub fn with_root(root: Node) -> Self {
+        Tree { root: Some(root), zoomed: None }
+    }
+
     pub fn root(&self) -> Option<&Node> {
         self.root.as_ref()
     }

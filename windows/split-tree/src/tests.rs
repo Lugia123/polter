@@ -808,3 +808,54 @@ fn natural_size_sums_along_the_axis_and_maxes_across_it() {
     let column = Tree::with_pane(A).insert(B, A, NewSplit::Down).unwrap();
     assert_eq!(column.natural_size(&size), (80.0, 64.0));
 }
+
+// ---------------------------------------------------------------------------
+// A whole shape, given at once
+// ---------------------------------------------------------------------------
+
+fn leaf(id: PaneId) -> Node {
+    Node::Leaf(id)
+}
+
+fn split(axis: Axis, ratio: f64, left: Node, right: Node) -> Node {
+    Node::Split(Box::new(Split { axis, ratio, left, right }))
+}
+
+#[test]
+fn a_shape_given_at_once_is_the_shape_that_comes_back() {
+    // 1 + 1 + 2 + 2, with the last four as a square rather than four
+    // columns -- the layout that could not be asked for, and the reason
+    // `with_root` exists.
+    let square = split(Axis::Horizontal, 0.5,
+        split(Axis::Vertical, 0.5, leaf(3), leaf(4)),
+        split(Axis::Vertical, 0.5, leaf(5), leaf(6)));
+    let t = Tree::with_root(split(Axis::Horizontal, 0.25, leaf(1),
+        split(Axis::Horizontal, 0.33, leaf(2), square)));
+
+    assert_eq!(t.panes(), vec![1, 2, 3, 4, 5, 6]);
+
+    // **The square is a square, not four columns**, and this is the
+    // assertion that tells those apart: 3 and 4 share a vertical split, so
+    // one is above the other. Four columns would put every pane under
+    // horizontal splits only.
+    let p3 = t.path_of(3).expect("3 is in the tree");
+    let p4 = t.path_of(4).expect("4 is in the tree");
+    assert_eq!(p3.len(), p4.len(), "3 and 4 sit at the same depth");
+    assert_eq!(p3[..p3.len() - 1], p4[..p4.len() - 1], "and under the same split");
+    match t.node_at(&p3[..p3.len() - 1]).expect("their parent") {
+        Node::Split(s) => assert_eq!(s.axis, Axis::Vertical, "one above the other"),
+        Node::Leaf(_) => panic!("their parent is a split"),
+    }
+}
+
+#[test]
+fn a_shape_given_at_once_carries_no_zoom_over() {
+    // Zoom belongs to what was on screen a moment ago. A shape from outside
+    // says nothing about it, and keeping the old answer would zoom a pane
+    // the caller never mentioned.
+    let zoomed = Tree::with_pane(1).insert(2, 1, NewSplit::Right).unwrap().toggle_zoom(1);
+    assert_eq!(zoomed.zoomed(), Some(1));
+
+    let fresh = Tree::with_root(split(Axis::Horizontal, 0.5, leaf(1), leaf(2)));
+    assert_eq!(fresh.zoomed(), None);
+}

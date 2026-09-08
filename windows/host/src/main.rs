@@ -110,6 +110,7 @@ mod hud;
 mod i18n;
 mod keyseq;
 mod links;
+mod layout;
 mod menu;
 mod mouse;
 mod notify;
@@ -2821,6 +2822,8 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // the agent is told, so a close that does not write is a terminal that
         // vanished while its asker was told nothing happened. See
         // `polterclose.rs`.
+        ffi::ACTION_POLTERGEIST_LAYOUT => layout::perform(&action, target_surface(&target)),
+
         ffi::ACTION_POLTERGEIST_CLOSE => {
             polterclose::perform(&action, target_surface(&target))
         }

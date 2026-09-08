@@ -203,6 +203,14 @@ pub const Method = enum {
     /// not reach is written there too.
     terminal_answer_prompt,
 
+    /// Rearrange a tab's panes into a shape said once.
+    ///
+    /// **Not one split at a time.** Each split is a round trip against a
+    /// layout that is still moving, and none of them can say which pane it
+    /// just made -- `new_split` answers before its work runs. Four splits
+    /// therefore produced a chain rather than a shape.
+    terminal_layout,
+
     /// Stop being a supervisor.
     ///
     /// What a supervisor is left with once the work is done is an empty box
@@ -374,6 +382,9 @@ pub const Request = union(Method) {
     /// on the dispatch arm, because it is an assumption rather than a fact
     /// about anything in this repository.
     terminal_answer_prompt: struct { id: Bus.Id, choice: u8 = 1 },
+
+    /// `layout` is the shape, already re-serialised to JSON by `wire`.
+    terminal_layout: struct { id: Bus.Id, layout: []const u8 },
 
     stand_down,
     become_supervisor,
@@ -619,6 +630,12 @@ pub fn callableByPlugin(method: Method) bool {
         .skill_read,
         => true,
 
+        // **Closed to plugins.** Rearranging somebody's window is a change
+        // to what the person is looking at, and a plugin is a setting of this
+        // machine rather than a party minding the work. Widening is easy;
+        // narrowing after somebody has built on the wider rule is not.
+        .terminal_layout,
+
         // **Closed to plugins, and not because of the switch.** Even with
         // the user's switch on for a terminal, the party that may answer a
         // prompt there is a supervisor -- somebody minding that work and
@@ -741,6 +758,10 @@ pub fn requiresSupervisor(method: Method) bool {
         .group_set_brief,
         .session_recall,
         .notify_user,
+
+        // Rearranging a window is a supervisor's: it changes what the person
+        // is looking at, and the case it exists for is placing workers.
+        .terminal_layout,
 
         // **Answering somebody else's permission prompt is a supervisor's,
         // on top of the user's switch.** Two conditions rather than one:
@@ -940,6 +961,9 @@ pub fn targetsTerminal(method: Method) bool {
         .terminal_action,
         .terminal_key,
 
+        // Names any pane of the tab being rearranged.
+        .terminal_layout,
+
         // Names the terminal whose prompt is being answered, and is
         // checked for existence like the rest -- an answer typed at a
         // mistyped id is an answer nobody gave to a box still waiting.
@@ -1079,6 +1103,12 @@ pub fn selfPermitted(req: Request) bool {
         .terminal_read,
         .terminal_send,
         .terminal_key,
+
+        // **Allowed at your own terminal.** Nothing comes back at the
+        // caller and nothing takes it away: a supervisor tidying the tab it
+        // is sitting in is an ordinary thing to want, and the same reasoning
+        // `terminal_action` uses for `new_split`.
+        .terminal_layout,
 
         // **Refused, and this one is the asymmetry the user asked for.**
         // A supervisor may answer a *worker's* prompt, with the worker's
@@ -1221,6 +1251,9 @@ pub fn promptReach(method: Method) enum {
         // target is the task's owner, and what is typed is Polter's own
         // sentence rather than the caller's.
         .task_assign, .task_cancel => .published,
+
+        // Rearranges windows; it cannot put a keystroke into one.
+        .terminal_layout,
 
         .me,
         .terminal_list,
@@ -1747,6 +1780,9 @@ test "only what changes the arrangement needs the supervisor" {
             .task_close,
             .task_edit,
             .task_cancel,
+
+            // Rearranging a window is arranging, not operating.
+            .terminal_layout,
 
             // **Closed, and it is the one method here that is closed by two
             // things at once.** The user's switch says whether that
@@ -3596,6 +3632,19 @@ pub const TaskOwner = struct {
     open: bool,
 };
 
+/// What an apprt said about a layout it was asked for.
+///
+/// **Two outcomes and not an error union**, because "refused" carries a
+/// sentence the caller has to read: which pane it left out, which ratio it
+/// could not honour. An error would throw that away and leave the caller
+/// guessing at a shape it wrote itself.
+pub const LayoutAnswer = struct {
+    applied: bool,
+    /// The resulting layout as JSON when it applied; the reason when it did
+    /// not.
+    text: []const u8,
+};
+
 pub const TaskView = struct {
     id: u64,
     title: []const u8,
@@ -4043,6 +4092,18 @@ pub const Host = struct {
             kind: Tasks.Kind,
         ) anyerror!u64,
 
+        /// Rearrange a tab's panes into a shape given from outside.
+        ///
+        /// `spec` is JSON and travels as text on purpose: the tree belongs
+        /// to the apprt, and the core does not know which surfaces share a
+        /// tab.
+        layout: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+            spec: []const u8,
+        ) anyerror!LayoutAnswer,
+
         /// Change a task's title, its kind, or both. `null` leaves one alone.
         taskEdit: *const fn (
             ctx: *anyopaque,
@@ -4373,6 +4434,15 @@ pub const Host = struct {
         kind: Tasks.Kind,
     ) anyerror!u64 {
         return self.vtable.taskCreate(self.ctx, group, title, kind);
+    }
+
+    fn layout(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+        spec: []const u8,
+    ) anyerror!LayoutAnswer {
+        return self.vtable.layout(self.ctx, alloc, id, spec);
     }
 
     fn taskEdit(
@@ -4831,6 +4901,41 @@ pub fn dispatch(
                 ),
             };
             return .ok;
+        },
+
+        .terminal_layout => |p| {
+            const answer = host.layout(alloc, p.id, p.layout) catch |err| return switch (err) {
+                error.NoSuchTerminal,
+                error.UnknownTerminal,
+                => failure(error.UnknownTerminal),
+
+                // **A first-class answer, not a failure to be guessed at.**
+                // Two of the three apprts do not rearrange panes at all, and
+                // a caller told "it did not work" would simply try again.
+                error.LayoutUnsupported => hostFailure(
+                    "Unsupported",
+                    "this platform does not rearrange panes from a layout, and nothing " ++
+                        "was changed. terminal_action with new_split still works one " ++
+                        "split at a time -- but it cannot tell you which pane it made, " ++
+                        "which is what this call exists for.",
+                ),
+
+                else => hostFailure(
+                    "LayoutFailed",
+                    "the layout could not be given to that window",
+                ),
+            };
+
+            // **Refused carries a sentence, so it is not flattened into an
+            // error.** Which pane was left out, which ratio could not be
+            // honoured -- the caller wrote the shape and needs to know which
+            // part of it was the problem.
+            if (!answer.applied) return .{ .failed = .{
+                .code = "Refused",
+                .message = answer.text,
+            } };
+
+            return .{ .text = answer.text };
         },
 
         .terminal_answer_prompt => |p| {
@@ -6080,6 +6185,7 @@ const FakeHost = struct {
             .pluginTest = pluginTest,
             .taskCreate = taskCreate,
             .taskEdit = taskEdit,
+            .layout = layout,
             .taskAssign = taskAssign,
             .taskClose = taskClose,
             .taskOwner = taskOwner,
@@ -6147,6 +6253,19 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
         return panel.create(group, title, kind);
+    }
+
+    fn layout(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+        spec: []const u8,
+    ) anyerror!LayoutAnswer {
+        _ = ctx;
+        _ = id;
+        // Stands in for an apprt that does rearrange panes, and answers with
+        // what it was handed so a test can see the shape arrived intact.
+        return .{ .applied = true, .text = try alloc.dupe(u8, spec) };
     }
 
     fn taskEdit(

@@ -232,6 +232,21 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .key = try requireString(aa, params, "key"),
         } },
 
+        // **The one nested parameter on this surface**, and it is handed on
+        // as text rather than modelled here: the tree belongs to the apprt,
+        // and a structure re-declared at this layer would be a second model
+        // of something this side does not own.
+        .terminal_layout => .{ .terminal_layout = .{
+            .id = try requireId(params),
+            .layout = blk: {
+                const o = params orelse return error.BadParams;
+                const v = o.get("layout") orelse return error.BadParams;
+                var buf: std.Io.Writer.Allocating = .init(aa);
+                std.json.Stringify.value(v, .{}, &buf.writer) catch return error.BadParams;
+                break :blk buf.written();
+            },
+        } },
+
         .terminal_answer_prompt => .{
             .terminal_answer_prompt = .{
                 .id = try requireId(params),

@@ -138,6 +138,15 @@ impl Tab {
 
 pub enum Op {
     NewTab,
+    /// Rearrange this tab's panes into a shape given from outside.
+    ///
+    /// **Queued like every other mutation**, and for the sharper of the two
+    /// reasons: it makes windows, and `CreateWindowExW` sends `WM_CREATE`
+    /// and `WM_SIZE` back into our own window procedure before it returns --
+    /// so doing it anywhere the `STATE` lock might be held is a deadlock,
+    /// not a race. Running it here means the lock is not held: `run_ops`
+    /// takes it to dequeue and drops it before the arm runs.
+    ApplyLayout(crate::layout::Shape, crate::layout::Outcome),
     /// A second top-level window, with a tab in it.
     ///
     /// **Queued for the same reason `NewTab` is**, and it is the stronger
@@ -258,6 +267,7 @@ impl Op {
     pub fn name(&self) -> &'static str {
         match self {
             Op::NewTab => "NewTab",
+            Op::ApplyLayout(..) => "ApplyLayout",
             Op::NewWindow => "NewWindow",
             Op::CloseTab(_) => "CloseTab",
             Op::GotoTab(_) => "GotoTab",
@@ -2197,6 +2207,131 @@ pub fn create_tab_with(
 /// the `result` cell the core passes in; see the `ACTION_NEW_SPLIT` arm. This
 /// function can always honour it, because `create_pane` takes a `NewTab` and
 /// `NewTab` carries a `cwd`.
+/// Put a whole shape in place of the active tab's tree.
+///
+/// **Nothing is changed until every new pane exists.** A shape that fails
+/// half way would leave a tab whose tree names panes that were never made,
+/// which is worse than refusing: the tree is what `layout` places from, so
+/// the tab would draw wrong and nothing would say why.
+fn apply_layout(
+    frame: HWND,
+    app: App,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    shape: &crate::layout::Shape,
+) -> Result<String, String> {
+    let (bounds, current) = {
+        let Some(win) = window(frame) else {
+            return Err("that window is gone".into());
+        };
+        let sh = strip_h(win.scale);
+        let Some(bounds) = content_bounds(frame, sh) else {
+            return Err("that window has no content area to lay out".into());
+        };
+        let Some(tab) = win.tabs.get(win.active) else {
+            return Err("that window has no active tab".into());
+        };
+        (bounds, tab.panes.iter().map(|p| p.id).collect::<Vec<_>>())
+    };
+
+    // **Every pane that is here must be in the shape, and nothing else.**
+    // ⚠️ Rearranging is not a way to close a terminal: a shape that leaves one
+    // out would destroy it, turning a layout change into something
+    // irreversible that the caller did not say out loud. Closing is its own
+    // verb and has its own confirmation.
+    let mut named = Vec::new();
+    crate::layout::existing(shape, &mut named);
+    for id in &current {
+        if !named.contains(id) {
+            return Err(format!(
+                "the layout leaves out pane {id}, which is in this tab. Rearranging \
+                 never closes a terminal: close it first with close_surface, then \
+                 send the layout you want for what is left."
+            ));
+        }
+    }
+    for id in &named {
+        if !current.contains(id) {
+            return Err(format!("pane {id} is not in this tab"));
+        }
+    }
+    if named.len() != current.len() {
+        return Err("the layout names a pane twice".into());
+    }
+
+    // Ids first, then the tree, then the windows -- so the rectangles the
+    // panes are made at come from the finished shape rather than from a tree
+    // that is still being built.
+    let mut wanted = Vec::new();
+    crate::layout::fresh(shape, &mut wanted);
+    let ids: Vec<PaneId> = wanted.iter().map(|_| take_id()).collect();
+    let mut it = ids.clone().into_iter();
+    let node = crate::layout::to_node(shape, &mut it);
+    let tree = Tree::with_root(node);
+
+    let placed = tree.layout(bounds);
+    let mut made: Vec<Pane> = Vec::new();
+    for (id, cwd) in ids.iter().zip(wanted.iter()) {
+        let Some((_, Placement::Visible(r))) = placed.iter().find(|(p, _)| p == id).cloned() else {
+            // Undo: a pane already made for this shape must not be left
+            // behind, because nothing would ever refer to it again.
+            for p in made.drain(..) {
+                free_pane(p.id, p.hwnd, p.surface);
+            }
+            return Err(format!("pane {id} has no place in that layout"));
+        };
+        let spec = NewTab { cwd: (*cwd).clone(), ..NewTab::default() };
+        match create_pane(frame, app, hinst, *id, r, spec) {
+            Some(p) => made.push(p),
+            None => {
+                for p in made.drain(..) {
+                    free_pane(p.id, p.hwnd, p.surface);
+                }
+                return Err("a pane could not be created; nothing was changed".into());
+            }
+        }
+    }
+
+    {
+        let Some(mut win) = window(frame) else {
+            for p in made.drain(..) {
+                free_pane(p.id, p.hwnd, p.surface);
+            }
+            return Err("that window went while the layout was being built".into());
+        };
+        let active = win.active;
+        let Some(tab) = win.tabs.get_mut(active) else {
+            for p in made.drain(..) {
+                free_pane(p.id, p.hwnd, p.surface);
+            }
+            return Err("that tab went while the layout was being built".into());
+        };
+        for p in made.drain(..) {
+            tab.panes.push(p);
+        }
+        tab.tree = tree.clone();
+    }
+
+    layout(frame);
+    let reply = serde_json::json!({ "layout": crate::layout::describe(tree.root().unwrap()) });
+    wlogf!(frame, "[layout] applied; {} pane(s) made", ids.len());
+    Ok(reply.to_string())
+}
+
+/// Drain this window's queue so a caller can read what an op wrote.
+///
+/// ⚠️ **It empties the queue, it does not run one op**, and it cannot: `C6`
+/// forbids reordering, so skipping ahead to somebody's op would be exactly
+/// the thing that rule stops. Any op queued before theirs runs too. Named
+/// separately from `run_ops` so the call site says why it is draining.
+pub fn drain_for_layout(frame: HWND) {
+    let app = crate::app_handle();
+    let hinst: windows::Win32::Foundation::HINSTANCE =
+        unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }
+            .map(|h| h.into())
+            .unwrap_or_default();
+    run_ops(frame, app, hinst);
+}
+
 fn split_pane(
     frame: HWND,
     app: App,
@@ -3962,6 +4097,12 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 };
                 let ok = copy_to_clipboard(&title).is_ok();
                 wlogf!(frame, "[win] copy_title_to_clipboard {:?} -> {}", title, ok);
+            }
+            Op::ApplyLayout(shape, outcome) => {
+                let answer = apply_layout(frame, app, hinst, &shape);
+                if let Ok(mut cell) = outcome.lock() {
+                    *cell = Some(answer);
+                }
             }
             Op::NewSplit(dir, cwd, at) => {
                 // `ghostty_action_split_direction_e`

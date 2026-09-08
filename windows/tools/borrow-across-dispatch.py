@@ -65,6 +65,15 @@ KNOWN = {
                 "borrows, and it panics. **Nobody had ever checked this site** "
                 "-- it went through `with_quick`, and the old rule matched "
                 "neither `.with(` nor the word `borrow` at the call.",
+    "tabs.rs": "apply_layout. The two `free_pane` calls the probe sees are in "
+               "`let ... else` arms -- they run only when `window(frame)` "
+               "could **not** be taken, so no guard is alive on either path. "
+               "`layout(frame)` is outside the block that borrows, one line "
+               "after it closes, which is deliberate: the tree is installed "
+               "with the lock held and the panes are placed with it dropped. "
+               "⚠️ What would make this unsafe is moving `layout(frame)` up "
+               "into that block -- it moves child windows and every message "
+               "that raises comes back through `wnd_proc`, which borrows.",
     "divider.rs": "div_proc handles only WM_SETCURSOR/WM_LBUTTONDOWN/"
                   "WM_MOUSEMOVE; nothing sent during create or move reaches "
                   "it, so it all falls to DefWindowProc. Adding a WM_SIZE or "

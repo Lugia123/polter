@@ -961,7 +961,7 @@ extension Ghostty {
                 // a verdict now. What it claims is "this apprt will make the
                 // split you asked for, in the directory you asked for" --
                 // which is decided here, not later.
-                if let cell = v.result { cell.pointee = GHOSTTY_ACTION_NEW_SPLIT_RESULT_SPLIT }
+                if let cell = v.result { cell.pointee = GHOSTTY_ACTION_NEW_SPLIT_RESULT_WILL_SPLIT }
 
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewSplit,

@@ -2058,6 +2058,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .pluginTest = pluginTest,
         .taskCreate = taskCreate,
         .taskEdit = taskEdit,
+        .layout = poltergeistLayout,
         .taskAssign = taskAssign,
         .taskClose = taskClose,
         .taskOwner = taskOwner,
@@ -2506,6 +2507,58 @@ fn poltergeistRead(
 
     const text = try surface.dumpTextLocked(alloc, sel);
     return text.text;
+}
+
+/// Ask an apprt to rearrange a tab's panes.
+///
+/// **The core is a conduit here and nothing more.** It does not know which
+/// surfaces share a tab -- it has to ask, and `poltergeist_tab_panes` exists
+/// because of that -- so the shape travels as text and the apprt, which owns
+/// the tree, is the one that parses, validates and answers.
+///
+/// The reply buffer is the caller's, filled by the apprt. `unsupported` is a
+/// first-class answer: GTK and macOS do not implement this action, and the
+/// tool says so plainly rather than reporting a layout it did not set.
+fn poltergeistLayout(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    spec: []const u8,
+) anyerror!poltergeistpkg.rpc.LayoutAnswer {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+
+    const spec_z = try alloc.dupeZ(u8, spec);
+    defer alloc.free(spec_z);
+
+    // **The caller's buffer, sized once.** An apprt that needs more room says
+    // so in its reason rather than truncating; see the ABI note on `Out`.
+    const buf = try alloc.alloc(u8, 8 * 1024);
+    defer alloc.free(buf);
+
+    var out: apprt.action.PoltergeistLayout.Out = .{
+        .buf = buf.ptr,
+        .cap = buf.len,
+    };
+
+    _ = surface.rt_app.performAction(
+        .{ .surface = surface },
+        .poltergeist_layout,
+        .{ .spec = spec_z, .out = &out },
+    ) catch |err| {
+        log.warn("poltergeist: layout action failed err={}", .{err});
+        return error.LayoutFailed;
+    };
+
+    const said = buf[0..@min(out.len, buf.len)];
+    return switch (out.result) {
+        // **A cell nobody wrote reads as "not done"**, which is why zero is
+        // this value and why it is answered as its own thing rather than as
+        // a failure to be guessed at.
+        .unsupported => error.LayoutUnsupported,
+        .refused => .{ .applied = false, .text = try alloc.dupe(u8, said) },
+        .applied => .{ .applied = true, .text = try alloc.dupe(u8, said) },
+    };
 }
 
 fn poltergeistSend(
@@ -3144,7 +3197,7 @@ fn poltergeistOpenTerminal(
             },
         ) catch break :placed false;
 
-        if (result != .split) {
+        if (result != .will_split) {
             // ⚠️ **A live path, not a defensive one.** GTK cannot start a
             // split in a named directory, so it refuses rather than opening
             // one in the wrong place; every worker opened on Linux comes

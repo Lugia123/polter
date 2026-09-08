@@ -104,6 +104,11 @@ pub const ACTION_MOVE_TAB_TO_NEW_WINDOW: u32 = 69;
 pub const ACTION_POLTERGEIST_MARK: u32 = 70;
 pub const ACTION_POLTERGEIST_CLOSE: u32 = 71;
 pub const ACTION_POLTERGEIST_TAB_PANES: u32 = 72;
+/// `Action.Key.poltergeist_layout`, appended after `poltergeist_tab_panes`.
+/// ⚠️ **Appended, like every one before it**: inserting anywhere else
+/// renumbers the tags after it and this host then dispatches into a different
+/// action's arm, with no crash and no wrong-looking log line.
+pub const ACTION_POLTERGEIST_LAYOUT: u32 = 73;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
@@ -244,6 +249,20 @@ pub const SECURE_INPUT_TOGGLE: i32 = 2;
 /// reason the core sends both.
 #[repr(C)]
 #[derive(Clone, Copy)]
+/// `ghostty_action_poltergeist_layout_out_s`.
+///
+/// **The buffer is ours**, handed to the core and written by us; nothing
+/// crosses this boundary owning memory the other side has to free.
+#[repr(C)]
+pub struct LayoutOut {
+    /// `ghostty_action_poltergeist_layout_result_e`: 0 unsupported, 1
+    /// applied, 2 refused.
+    pub result: i32,
+    pub buf: *mut u8,
+    pub cap: usize,
+    pub len: usize,
+}
+
 pub struct PoltergeistMark {
     pub prefix: *const c_char,
     /// `ghostty_action_poltergeist_role_e`: 0 none, 1 supervisor, 2 watched.
@@ -424,6 +443,20 @@ impl Action {
     /// arrives zero, a tab holding the target holds at least that terminal,
     /// so zero can only mean "this host did not answer". Do not write zero to
     /// mean anything else.
+    /// `ghostty_action_poltergeist_layout_s { const char* spec; out_s* out; }`.
+    ///
+    /// The out cell is the caller's memory; this only hands back the pointer.
+    pub fn as_poltergeist_layout(&self) -> (String, *mut LayoutOut) {
+        let spec = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *const c_char;
+        let out = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *mut LayoutOut;
+        let text = if spec.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(spec) }.to_string_lossy().into_owned()
+        };
+        (text, out)
+    }
+
     pub fn as_poltergeist_tab_panes(&self) -> *mut u32 {
         usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *mut u32
     }
