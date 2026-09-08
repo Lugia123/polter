@@ -347,11 +347,20 @@ test "the shipped skills do not promise what the tools cannot do" {
     // it describes, and a skill still naming one would send the AI looking
     // for a tool that is not there. The hold that replaced them is the
     // user's from the menu, so there is nothing here to offer either.
+    //
+    // ⚠️ **`answer_prompt` came off this list on 2026-09-08**, and the
+    // reason is worth keeping: it was forbidden because no such tool
+    // existed, and `terminal_answer_prompt` now does. A guard that names
+    // things it believes do not exist has to be revisited when one of them
+    // starts to -- otherwise it fails on the skills that correctly describe
+    // the new tool, which is what it did the hour the tool landed. It is on
+    // the *other* list now, below: the skills must name it, because a
+    // supervisor that does not know it exists cannot find out that it is
+    // refused and why.
     for (builtin_sources, builtin_names) |source, name| {
         for ([_][]const u8{
             "approve(",
             "grant_permission",
-            "answer_prompt",
             "set_work_mode",
             "get_work_mode",
         }) |forbidden| {
@@ -378,6 +387,11 @@ test "the supervising skill names the tools it tells you to use" {
         "group_add",
         "set_watch",
         "become_supervisor",
+        // Named so a supervisor meeting a stopped worker knows there is a
+        // tool and that it is the *user's* switch that decides -- rather
+        // than concluding, as the skill used to say, that there is no tool
+        // and never will be.
+        "terminal_answer_prompt",
         "session_recall",
         "terminal_list",
 

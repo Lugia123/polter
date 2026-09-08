@@ -756,6 +756,12 @@ typedef struct {
   // because it is not derivable out here: a terminal with no role carries no
   // prefix whether it is held or not.
   bool held;
+  // The user has allowed a supervisor to answer this terminal's permission
+  // prompts. Its own field for the same reason `held` is, and it deliberately
+  // has no glyph in `prefix`: the other three are promises made to the person
+  // at the terminal, this is a permission they granted to somebody else, and
+  // it is shown in the menu it was granted from.
+  bool may_authorise;
 } ghostty_action_poltergeist_mark_s;
 
 // apprt.action.PromptTitle

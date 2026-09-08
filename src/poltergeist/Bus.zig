@@ -218,6 +218,49 @@ pub const Entry = struct {
     /// "you may not stop working", this says "nobody may touch you".
     shielded: bool = false,
 
+    /// Whether a supervisor may answer a permission prompt in this terminal
+    /// on its behalf.
+    ///
+    /// **Off by default, and the default is the point.** A worker stopped on
+    /// a permission prompt stays stopped until a person answers it -- that
+    /// was this program's rule, argued in `rpc.authorize`, and it is still
+    /// the behaviour of every terminal whose user has not said otherwise.
+    /// What changed on 2026-09-08 is that the user may now say otherwise,
+    /// per terminal, from the tab's own menu.
+    ///
+    /// **What it opens, in full.** With this on, a supervisor may answer
+    /// *either* option -- the one-off `Yes` and the persistent
+    /// `Yes, and don't ask again`. The second writes a standing permission
+    /// into that directory's configuration, so **every worker that runs
+    /// there afterwards stops being asked**. That is what the user is
+    /// agreeing to, and it is written here as well as on the menu item
+    /// because a switch whose consequence lives only in a comment is a
+    /// switch nobody consented to.
+    ///
+    /// ⚠️ **Polter cannot tell which of the two a supervisor pressed.** It
+    /// sends keys; the box is drawn by the program in the terminal. So
+    /// "open the one-off but not the persistent one" is not a narrowing
+    /// that can be added later by inspecting anything -- it would have to
+    /// be a tool that only ever sends the first option's keys. Whoever
+    /// comes to narrow this will meet that.
+    ///
+    /// **Only the user sets it**, like `held` and `shielded`, and for the
+    /// reason written on `shielded`: a guarantee the supervised party can
+    /// lift is not a guarantee. **It has no keybinding and no
+    /// command-palette entry**, deliberately -- `terminal_key` can press any
+    /// chord and drive the palette, so either one would be a door an agent
+    /// could open for itself and then walk through.
+    ///
+    /// ⚠️ **What it does not do**, stated here because the menu item says it
+    /// too: with this off, `terminal_send` can still put `1` and a return
+    /// into that terminal and answer the box that way. That path cannot be
+    /// closed without taking away the supervisor's ability to say anything
+    /// at all -- assigning a task *is* text plus a return. So this switch
+    /// stops the dedicated tool and the casual keypress, and **leaves a
+    /// published, logged bypass rather than a silent one**. See the note on
+    /// `rpc.authorize`.
+    may_authorise: bool = false,
+
     /// Which supervisor is minding this terminal -- that is, **which one
     /// gets told when it goes quiet**.
     ///
@@ -615,6 +658,31 @@ pub fn setShielded(
     // somebody would shield the terminal they are running the night from.
     // Clearing the role here would not protect it, it would stop it.
     if (shielded and e.role == .watched) self.unwatch(id);
+}
+
+/// Let a supervisor answer this terminal's permission prompts, or stop it.
+/// The user only, for the reason written on `Entry.shielded`.
+pub fn setMayAuthorise(
+    self: *Bus,
+    id: Id,
+    may: bool,
+    who: Authority,
+) SetHeldError!void {
+    if (who != .user) return error.NotPermitted;
+    const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
+    e.may_authorise = may;
+}
+
+/// Whether a supervisor may answer a permission prompt in this terminal.
+///
+/// **A terminal the bus has never registered answers `false`**, which is the
+/// opposite default from `isShielded` and deliberately so: an unknown id is
+/// open to being *read and typed into*, because carrying no mark is the open
+/// case -- but answering somebody's permission prompt is not something a
+/// terminal falls into by not being registered.
+pub fn mayAuthorise(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    return e.may_authorise;
 }
 
 /// Whether the tool surface may reach this terminal at all.
@@ -1990,6 +2058,64 @@ test "shielding a supervisor is allowed, and says nothing about holding it" {
 
     try b.setShielded(boss, false, .user);
     try testing.expect(!b.isShielded(boss) and b.get(boss).?.held);
+}
+
+test "only the user may let a supervisor answer prompts, and it starts off" {
+    var b = testBus();
+    defer b.deinit();
+    try b.register(worker);
+
+    // **Off to begin with.** The rule this switch relaxes is the one that
+    // held for every terminal before it existed, so the terminal that has
+    // never been switched behaves exactly as it did.
+    try testing.expect(!b.mayAuthorise(worker));
+
+    // A supervisor cannot grant itself the thing the switch governs. This
+    // is the whole of the protection: without it, the first move of any
+    // supervisor that wanted to answer a prompt would be to turn the
+    // switch on.
+    try testing.expectError(
+        error.NotPermitted,
+        b.setMayAuthorise(worker, true, .supervisor),
+    );
+    try testing.expect(!b.mayAuthorise(worker));
+
+    try b.setMayAuthorise(worker, true, .user);
+    try testing.expect(b.mayAuthorise(worker));
+
+    try b.setMayAuthorise(worker, false, .user);
+    try testing.expect(!b.mayAuthorise(worker));
+}
+
+test "an unregistered terminal does not let anyone answer its prompts" {
+    var b = testBus();
+    defer b.deinit();
+
+    // **The opposite default from `isShielded`, on purpose.** Carrying no
+    // mark means open to being reached; it does not mean open to having
+    // somebody's permission prompt answered for them.
+    try testing.expect(!b.mayAuthorise(0xDEAD));
+    try testing.expectError(
+        error.UnknownTerminal,
+        b.setMayAuthorise(0xDEAD, true, .user),
+    );
+}
+
+test "the two switches are independent" {
+    var b = testBus();
+    defer b.deinit();
+    try b.register(worker);
+
+    // Shielding is "nobody may touch you"; this is "a supervisor may answer
+    // your prompts". Neither implies the other, and a terminal can sensibly
+    // be both -- out of reach of the tools, with the switch left on from
+    // before. The combination is not a contradiction to resolve here.
+    try b.setMayAuthorise(worker, true, .user);
+    try b.setShielded(worker, true, .user);
+    try testing.expect(b.mayAuthorise(worker) and b.isShielded(worker));
+
+    try b.setShielded(worker, false, .user);
+    try testing.expect(b.mayAuthorise(worker) and !b.isShielded(worker));
 }
 
 test "a terminal the bus never registered is not shielded" {

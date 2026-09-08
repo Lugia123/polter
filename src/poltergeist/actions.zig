@@ -127,6 +127,7 @@ pub fn selfSafeTag(tag: std.meta.Tag(inputpkg.Binding.Action)) bool {
         .poltergeist_toggle_watch,
         .poltergeist_toggle_held,
         .poltergeist_toggle_shielded,
+        .poltergeist_toggle_authorise,
         .poltergeist_toggle_chat,
 
         // The splits, which are the point of all this.

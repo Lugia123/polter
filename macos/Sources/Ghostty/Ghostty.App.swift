@@ -1303,6 +1303,7 @@ extension Ghostty {
                     surfaceView.poltergeistRole = .none
                 }
                 surfaceView.poltergeistShielded = v.shielded
+                surfaceView.poltergeistMayAuthorise = v.may_authorise
                 return true
 
             default:

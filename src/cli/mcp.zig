@@ -629,6 +629,27 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "terminal_answer_prompt",
+        .description = "Answer a permission prompt that has stopped another terminal -- " ++
+            "the `Do you want to proceed? 1. Yes / 2. Yes, and don't ask again / 3. No` " ++
+            "box a worker sits on until somebody answers it. **Off for every terminal " ++
+            "until the user switches it on for that one**, from that terminal's own tab " ++
+            "menu; nothing you can call switches it on, and asking again will not " ++
+            "change it. With it off you get `AuthoriseOff`, and the right move is to " ++
+            "say which terminal is stopped and let the person answer -- that is what " ++
+            "this program did for every terminal before the switch existed. `choice` " ++
+            "counts the options from the highlighted one, starting at 1, and defaults " ++
+            "to 1: it walks down with the arrow keys and presses return, so **read the " ++
+            "terminal first** -- a wrong count takes a different option and reports " ++
+            "success. ⚠️ Note what the switch covers: with it off, this tool and the " ++
+            "keys that answer a box (return, the arrows, tab) are refused at that " ++
+            "terminal, while ctrl+c and escape still go through. Same reach rule as " ++
+            "terminal_read. Never at your own terminal: your own prompt is yours.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"choice":{"type":"integer"}},"required":["id"]}
+        ,
+    },
+    .{
         .name = "terminal_keys",
         .description = "The vocabulary terminal_key accepts: every modifier name and " ++
             "every key name, joined with `+`. Read this rather than guessing at a name.",
@@ -1029,6 +1050,13 @@ test "the tools that decide reach say so in their own description" {
             "terminal_send",
             "terminal_action",
             "terminal_key",
+            // Governed by the target's mark like the rest, **and by a
+            // second thing of the target's**: the user's per-terminal
+            // switch. A tool whose availability depends on the target has
+            // to say so in its own description, because `tools/list` is
+            // answered once, for the caller, with no target in the question
+            // -- so the list can never carry it.
+            "terminal_answer_prompt",
         }) |name| {
             if (!std.mem.eql(u8, t.name, name)) continue;
             seen_reach = true;

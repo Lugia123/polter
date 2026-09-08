@@ -98,6 +98,11 @@ pub struct Tab {
     /// so the hold row was the one toggle in the menu that could never show
     /// its own state.
     pub held: bool,
+    /// The user has allowed a supervisor to answer this terminal's permission
+    /// prompts. **No glyph on the tab**, unlike the three above: they are
+    /// promises to the person sitting here, this is a permission they granted
+    /// to somebody else, and it is shown in the menu it was granted from.
+    pub may_authorise: bool,
     /// The shell's working directory, as the core last reported it
     /// (`GHOSTTY_ACTION_PWD`). Kept so a reopened tab lands where the closed
     /// one was, which is the whole of what makes "reopen" different from
@@ -2153,6 +2158,7 @@ pub fn create_tab_with(
             role: 0,
             shielded: false,
             held: false,
+            may_authorise: false,
             cwd: pending_cwd,
             title_override: None,
         });
@@ -2670,7 +2676,7 @@ pub fn tab_mark(frame: HWND, id: TabId) -> (u8, bool) {
 /// mark's landing tab, and the button width), each time by two stores of one
 /// fact drifting apart with nothing to report it.
 // window-free: keyed by surface, which is unique in the process
-pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool, bool)> {
+pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool, bool, bool)> {
     let key = surface as usize;
     // Every window: a surface is unique in the process, so the window it is
     // in is an answer rather than a parameter.
@@ -2678,7 +2684,7 @@ pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool, bool)> {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
             .find(|t| t.panes.iter().any(|p| p.surface == key))
-            .map(|t| (t.role, t.shielded, t.held))
+            .map(|t| (t.role, t.shielded, t.held, t.may_authorise))
     })
 }
 
@@ -2691,7 +2697,13 @@ pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool, bool)> {
 /// from a supervisor elsewhere), and applying it to the active tab would put
 /// the tick on the wrong row while looking completely normal.
 // window-free: keyed by surface, which is unique in the process
-pub fn set_mark_for_surface(surface: Surface, role: u8, shielded: bool, held: bool) -> bool {
+pub fn set_mark_for_surface(
+    surface: Surface,
+    role: u8,
+    shielded: bool,
+    held: bool,
+    may_authorise: bool,
+) -> bool {
     let key = surface as usize;
     with_windows_mut(|ws| {
         for win in ws.iter_mut() {
@@ -2700,6 +2712,7 @@ pub fn set_mark_for_surface(surface: Surface, role: u8, shielded: bool, held: bo
                     tab.role = role;
                     tab.shielded = shielded;
                     tab.held = held;
+                    tab.may_authorise = may_authorise;
                     return true;
                 }
             }

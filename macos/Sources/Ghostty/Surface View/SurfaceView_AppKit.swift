@@ -129,6 +129,13 @@ extension Ghostty {
         @Published var poltergeistRole: PoltergeistRole = .none
         @Published var poltergeistShielded: Bool = false
 
+        /// The user has allowed a supervisor to answer this terminal's
+        /// permission prompts. **Its own bit and no tab glyph**: the marks
+        /// above are promises made to the person here, this is a permission
+        /// they granted to somebody else, so the menus it is granted from are
+        /// the only place it shows.
+        @Published var poltergeistMayAuthorise: Bool = false
+
         /// A clipboard confirmation waiting to be handled by its controller.
         @Published var pendingClipboardConfirmation: ClipboardConfirmationRequest? {
             didSet {
@@ -1666,6 +1673,9 @@ extension Ghostty {
             item = menu.addItem(withTitle: String(localized: "Keep Agents Out of This Terminal", comment: "右键菜单：护盾，任何 agent 都不许碰"), action: #selector(poltergeistToggleShielded(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "lock")
             item.state = poltergeistShielded ? .on : .off
+            item = menu.addItem(withTitle: String(localized: "Let a Supervisor Answer Prompts Here", comment: "右键菜单：允许总管替此终端点授权框，含「不再询问」"), action: #selector(poltergeistToggleAuthorise(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "hand.raised")
+            item.state = poltergeistMayAuthorise ? .on : .off
 
             return menu
         }
@@ -1817,6 +1827,10 @@ extension Ghostty {
 
         @objc func poltergeistToggleHeld(_ sender: Any) {
             poltergeistAction("poltergeist_toggle_held")
+        }
+
+        @objc func poltergeistToggleAuthorise(_ sender: Any) {
+            poltergeistAction("poltergeist_toggle_authorise")
         }
 
         @objc func poltergeistToggleShielded(_ sender: Any) {

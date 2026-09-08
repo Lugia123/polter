@@ -57,6 +57,7 @@ pub enum Tick {
     PgSupervisor,
     PgWatched,
     PgShielded,
+    PgMayAuthorise,
 }
 
 /// One row. `action` is a core binding string, or `None` for a separator.
@@ -132,6 +133,23 @@ const ROWS: &[Row] = &[
         "poltergeist_toggle_shielded",
         Tick::PgShielded,
     ),
+    // **The row the user asked for, and its label carries what it opens.**
+    // Off until ticked. Ticked, a supervisor may take *either* answer in a
+    // permission box here -- including "don't ask again", which writes a
+    // standing permission into this directory's configuration and stops
+    // every later worker being asked.
+    //
+    // ⚠️ **What it does not stop is on the label too.** With it off, the
+    // dedicated tool and the keys that answer a box are refused; a
+    // supervisor set on answering one can still type `1` and a return,
+    // because that is also how a task is assigned and nothing here can tell
+    // the two apart. A control on the tool and the keypress, with the rest
+    // written down and logged -- not a wall.
+    checkable(
+        "允许总管替此终端点授权框（含「不再询问」）",
+        "poltergeist_toggle_authorise",
+        Tick::PgMayAuthorise,
+    ),
     SEP,
     item("命令面板", "toggle_command_palette"),
 ];
@@ -193,7 +211,7 @@ static PG_NEVER_TOLD_LOGGED: AtomicBool = AtomicBool::new(false);
 /// screen from one whose state was never learned -- which is exactly the
 /// confusion §3.3 says these ticks exist to prevent. So the difference is
 /// stated in the log instead of left to be guessed at.
-fn mark_of(surface: Surface) -> Option<(u8, bool, bool)> {
+fn mark_of(surface: Surface) -> Option<(u8, bool, bool, bool)> {
     if surface.is_null() {
         return None;
     }
@@ -233,7 +251,7 @@ fn binding_on(surface: Surface, owner: HWND, name: &str) -> bool {
 /// **which surface the state is about** (`hud::is_readonly_for`).
 /// `hud::is_readonly()` exists and resolves the focused surface -- its own
 /// doc comment says a menu must not use it.
-fn tick_state(surface: Surface, mark: Option<(u8, bool, bool)>, t: Tick) -> bool {
+fn tick_state(surface: Surface, mark: Option<(u8, bool, bool, bool)>, t: Tick) -> bool {
     match t {
         Tick::Readonly => crate::hud::is_readonly_for(surface as usize),
         // **Three bits, read three times.** Sharing one getter between the
@@ -245,7 +263,13 @@ fn tick_state(surface: Surface, mark: Option<(u8, bool, bool)>, t: Tick) -> bool
         // that is a decision about which doors exist, not about ticks.
         Tick::PgSupervisor => matches!(mark, Some((r, ..)) if r == ROLE_SUPERVISOR),
         Tick::PgWatched => matches!(mark, Some((r, ..)) if r == ROLE_WATCHED),
-        Tick::PgShielded => matches!(mark, Some((_, s, _)) if s),
+        Tick::PgShielded => matches!(mark, Some((_, s, ..)) if s),
+        // The fourth bit, and it is a permission rather than a mark: the
+        // three above are promises to the person at this terminal, this is
+        // one they granted to a supervisor. It has no glyph on the tab for
+        // that reason, so this row is the only place its state is visible --
+        // which is exactly why it has to tick.
+        Tick::PgMayAuthorise => matches!(mark, Some((.., a)) if a),
     }
 }
 
@@ -533,6 +557,7 @@ mod tests {
             "poltergeist_supervisor",
             "poltergeist_toggle_watch",
             "poltergeist_toggle_shielded",
+            "poltergeist_toggle_authorise",
         ] {
             assert!(have.contains(&a), "the macOS menu has {a} and this one does not");
         }
@@ -705,7 +730,13 @@ mod tests {
     /// natural way to write this wrong.
     #[test]
     fn each_checkable_row_reads_its_own_bit() {
-        for probe in [Tick::Readonly, Tick::PgSupervisor, Tick::PgWatched, Tick::PgShielded] {
+        for probe in [
+            Tick::Readonly,
+            Tick::PgSupervisor,
+            Tick::PgWatched,
+            Tick::PgShielded,
+            Tick::PgMayAuthorise,
+        ] {
             let items = build(&no_shortcuts, &|t| t == probe);
             let ticked: Vec<&str> = items
                 .iter()
@@ -749,21 +780,39 @@ mod tests {
     /// dropped -- e.g. by testing `!= none` for both.
     #[test]
     fn supervisor_and_watched_are_mutually_exclusive() {
-        assert!(tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false, false)), Tick::PgSupervisor));
-        assert!(!tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false, false)), Tick::PgWatched));
+        assert!(tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false, false, false)), Tick::PgSupervisor));
+        assert!(!tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false, false, false)), Tick::PgWatched));
 
-        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false)), Tick::PgSupervisor));
-        assert!(tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false)), Tick::PgWatched));
+        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false, false)), Tick::PgSupervisor));
+        assert!(tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false, false)), Tick::PgWatched));
     }
 
     /// The shield is independent of the role: a shielded terminal that is
     /// neither supervisor nor watched must tick exactly one row.
     #[test]
     fn the_shield_is_its_own_bit() {
-        assert!(tick_state(NO_SURFACE, Some((0, true, false)), Tick::PgShielded));
-        assert!(!tick_state(NO_SURFACE, Some((0, true, false)), Tick::PgSupervisor));
-        assert!(!tick_state(NO_SURFACE, Some((0, true, false)), Tick::PgWatched));
-        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false)), Tick::PgShielded));
+        assert!(tick_state(NO_SURFACE, Some((0, true, false, false)), Tick::PgShielded));
+        assert!(!tick_state(NO_SURFACE, Some((0, true, false, false)), Tick::PgSupervisor));
+        assert!(!tick_state(NO_SURFACE, Some((0, true, false, false)), Tick::PgWatched));
+        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false, false)), Tick::PgShielded));
+    }
+
+    /// The authorise switch is its own bit too, and it is the one with no
+    /// glyph on the tab -- so this row is the only place its state shows.
+    /// Sharing a getter with the shield would tick both together, and no
+    /// test that looks at one row can see that.
+    #[test]
+    fn the_authorise_switch_is_its_own_bit() {
+        let on = Some((0u8, false, false, true));
+        assert!(tick_state(NO_SURFACE, on, Tick::PgMayAuthorise));
+        assert!(!tick_state(NO_SURFACE, on, Tick::PgShielded));
+        assert!(!tick_state(NO_SURFACE, on, Tick::PgSupervisor));
+        assert!(!tick_state(NO_SURFACE, on, Tick::PgWatched));
+
+        // Shielded and not authorising: the two must not move together.
+        let shielded = Some((0u8, true, false, false));
+        assert!(tick_state(NO_SURFACE, shielded, Tick::PgShielded));
+        assert!(!tick_state(NO_SURFACE, shielded, Tick::PgMayAuthorise));
     }
 
     /// **Never told is not "all off".** Both draw unticked; only the log line
@@ -771,13 +820,13 @@ mod tests {
     /// function rather than being flattened to `(0, false, false)` on the way in.
     #[test]
     fn an_unknown_mark_ticks_nothing_and_is_not_role_none() {
-        for t in [Tick::PgSupervisor, Tick::PgWatched, Tick::PgShielded] {
+        for t in [Tick::PgSupervisor, Tick::PgWatched, Tick::PgShielded, Tick::PgMayAuthorise] {
             assert!(!tick_state(NO_SURFACE, None, t), "{t:?} ticked with no mark at all");
         }
         // The distinction this test exists to protect: the two cases are
         // different values, so a caller can tell them apart.
-        let none_mark: Option<(u8, bool, bool)> = None;
-        let role_none: Option<(u8, bool, bool)> = Some((0, false, false));
+        let none_mark: Option<(u8, bool, bool, bool)> = None;
+        let role_none: Option<(u8, bool, bool, bool)> = Some((0, false, false, false));
         assert_ne!(none_mark, role_none);
     }
 }

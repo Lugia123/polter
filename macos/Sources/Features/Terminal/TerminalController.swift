@@ -1608,6 +1608,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_shielded")
     }
 
+    @IBAction func poltergeistToggleAuthorise(_ sender: Any?) {
+        guard let surface = focusedSurface?.surface else { return }
+        ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_authorise")
+    }
+
     // MARK: - TerminalViewDelegate
 
     override func focusedSurfaceDidChange(to: Ghostty.SurfaceView?) {
@@ -1854,6 +1859,10 @@ extension TerminalController {
 
         case #selector(poltergeistToggleShielded(_:)):
             item.state = (focusedSurface?.poltergeistShielded ?? false) ? .on : .off
+            return true
+
+        case #selector(poltergeistToggleAuthorise(_:)):
+            item.state = (focusedSurface?.poltergeistMayAuthorise ?? false) ? .on : .off
             return true
 
         case #selector(closeTabsOnTheRight):

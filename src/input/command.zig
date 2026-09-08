@@ -802,6 +802,22 @@ fn actionCommands(action: Action.Key) []const Command {
         .last_tab,
         => comptime &.{},
 
+        // ⚠️ **No palette entry, and this one is a decision rather than an
+        // omission.** An agent cannot call this switch -- `governed` refuses
+        // every `poltergeist_*` action to `terminal_action` -- but it *can*
+        // open another terminal's command palette with `terminal_key` and
+        // type into it with `terminal_send`. A palette entry would therefore
+        // be a way for an agent to turn on, in a terminal it can reach, the
+        // very permission this switch withholds from it.
+        //
+        // The hold and the shield are in the palette and are not exposed by
+        // that, but for a reason that does not carry over: a shielded
+        // terminal is already out of reach, so the palette cannot be driven
+        // to *lift* a shield. This switch has no such coincidence protecting
+        // it, so it stays off the palette and lives on the menus only.
+        .poltergeist_toggle_authorise,
+        => comptime &.{},
+
         // No commands for obvious reasons
         .ignore,
         .unbind,
@@ -1156,8 +1172,18 @@ test "menu labels reach the palette" {
         no_command: usize,
     };
     const sources = [_]Source{
-        .{ .path = "windows/host/src/menu.rs", .what = "the main menu", .paired_match = false, .min_rows = 40, .no_command = 6 },
-        .{ .path = "windows/host/src/ctxmenu.rs", .what = "the terminal's right-click menu", .paired_match = false, .min_rows = 15, .no_command = 1 },
+        // **6 -> 7 and 1 -> 2 on 2026-09-08, and this is the case the number
+        // exists to make somebody argue for.** Task 289's ruling on the last
+        // row that raised it was that "just change the number" is the wrong
+        // answer and the row should get a palette entry instead. This row is
+        // the exception, and the reason is written where the exception is
+        // taken (`poltergeist_toggle_authorise` in `defaults`): an agent can
+        // open another terminal's command palette with `terminal_key` and
+        // type into it, so a palette entry for this switch would be a way for
+        // an agent to grant itself the permission the switch withholds. The
+        // cost is that the row is unsearchable, and it is the smaller one.
+        .{ .path = "windows/host/src/menu.rs", .what = "the main menu", .paired_match = false, .min_rows = 40, .no_command = 7 },
+        .{ .path = "windows/host/src/ctxmenu.rs", .what = "the terminal's right-click menu", .paired_match = false, .min_rows = 15, .no_command = 2 },
         .{ .path = "windows/host/src/strip.rs", .what = "the blank strip's menu", .paired_match = false, .min_rows = 3, .no_command = 1 },
         .{ .path = "windows/host/src/strip.rs", .what = "the tab's right-click menu", .paired_match = true, .min_rows = 8, .no_command = 1 },
     };

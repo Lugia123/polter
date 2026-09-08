@@ -33,7 +33,10 @@ prompt; a permission or approval dialog; a numbered list of choices; an
 input box with a cursor and nothing else happening.
 
 **Do not answer it.** If it is a permission prompt, that is the user's to
-answer. If it is an ordinary question the agent asked its user, you may
+answer — unless they have said otherwise for that terminal, which they do from
+its own tab menu and which you cannot do for them. `terminal_answer_prompt`
+tells you which it is: refused with `AuthoriseOff` means it is still the
+user's. If it is an ordinary question the agent asked its user, you may
 answer it *if you know the answer from the task at hand* — but if you are
 guessing, leave it. A wrong answer here is worse than a delay.
 

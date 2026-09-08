@@ -189,6 +189,20 @@ pub const Method = enum {
     /// it has to guess at.
     terminal_keys,
 
+    /// Answer a permission prompt that has stopped another terminal.
+    ///
+    /// **This reverses a decision this file used to state as permanent**,
+    /// and the old wording is kept on `authorize` so that both halves can
+    /// be read. What changed: a worker stopped on a prompt is stopped, and
+    /// on a machine running several of them overnight that is the whole
+    /// night gone. The user asked for a way to unstick one.
+    ///
+    /// **Refused unless the user has turned the switch on for that
+    /// terminal**, from its own tab menu -- `Bus.Entry.may_authorise`, which
+    /// no agent can set. That is the whole of the control, and what it does
+    /// not reach is written there too.
+    terminal_answer_prompt,
+
     /// Stop being a supervisor.
     ///
     /// What a supervisor is left with once the work is done is an empty box
@@ -332,6 +346,12 @@ pub const Request = union(Method) {
     terminal_actions,
     terminal_key: struct { id: Bus.Id, key: []const u8 },
     terminal_keys,
+
+    /// `choice` is which option to take, counting the highlighted one as 1.
+    /// What is assumed about the box is written on the tool description and
+    /// on the dispatch arm, because it is an assumption rather than a fact
+    /// about anything in this repository.
+    terminal_answer_prompt: struct { id: Bus.Id, choice: u8 = 1 },
 
     stand_down,
     become_supervisor,
@@ -496,6 +516,11 @@ pub const Error = error{
     /// Refused to everyone, supervisors and plugins included.
     Shielded,
 
+    /// The user has not said a supervisor may answer this terminal's
+    /// permission prompts. Off until they do, per terminal, from its own
+    /// tab menu -- and settable from nowhere else.
+    AuthoriseOff,
+
     /// The caller is a plugin, and this method's meaning depends on which
     /// terminal is asking -- who authored it, who is in the group, whose
     /// box of notices it is, which window a new tab opens in.
@@ -570,6 +595,15 @@ pub fn callableByPlugin(method: Method) bool {
         .config_get,
         .skill_read,
         => true,
+
+        // **Closed to plugins, and not because of the switch.** Even with
+        // the user's switch on for a terminal, the party that may answer a
+        // prompt there is a supervisor -- somebody minding that work and
+        // able to say why the answer is the right one. A plugin is a
+        // setting of this machine; widening is easy and narrowing after
+        // somebody has built on the wider rule is not.
+        .terminal_answer_prompt,
+        => false,
 
         // About the caller: its identity, its standing, its box, its window.
         .me,
@@ -683,6 +717,15 @@ pub fn requiresSupervisor(method: Method) bool {
         .group_set_brief,
         .session_recall,
         .notify_user,
+
+        // **Answering somebody else's permission prompt is a supervisor's,
+        // on top of the user's switch.** Two conditions rather than one:
+        // the user allowed it for that terminal, and the caller is the
+        // party minding the work. Either alone would be the wrong shape --
+        // the switch without the standing would let any terminal answer any
+        // other's prompts, and the standing without the switch is the thing
+        // the user said no to by default.
+        .terminal_answer_prompt,
         => true,
 
         // Seeing what is here. Open, because the rule above is about
@@ -870,6 +913,11 @@ pub fn targetsTerminal(method: Method) bool {
         // own font size is an ordinary thing to want.
         .terminal_action,
         .terminal_key,
+
+        // Names the terminal whose prompt is being answered, and is
+        // checked for existence like the rest -- an answer typed at a
+        // mistyped id is an answer nobody gave to a box still waiting.
+        .terminal_answer_prompt,
         => true,
 
         // These name a terminal to put in or take out of a group. Checked
@@ -1004,6 +1052,18 @@ pub fn selfPermitted(req: Request) bool {
         .terminal_send,
         .terminal_key,
 
+        // **Refused, and this one is the asymmetry the user asked for.**
+        // A supervisor may answer a *worker's* prompt, with the worker's
+        // switch on; its own prompt is its own to answer, and answering it
+        // through this surface would be an agent granting itself whatever
+        // the box was asking about.
+        //
+        // Written here rather than relied on: this switch is exhaustive
+        // with no `else`, so a method added later does not compile until
+        // somebody puts it on a side. That is what makes "the asymmetry
+        // cannot be lost by accident" true rather than hoped for.
+        .terminal_answer_prompt,
+
         // **Refused: the same knot, tied in the arrangement rather than
         // in text.** A supervisor arranging its own supervision.
         .set_watch,
@@ -1044,6 +1104,123 @@ pub fn selfPermitted(req: Request) bool {
     };
 }
 
+/// Whether this key spec is one that takes an option in a list prompt.
+///
+/// **Three keys, and the shortness of the list is a measurement rather than
+/// a judgement.** The obvious answer set is bigger -- the digits, `y`, `n`,
+/// space -- but `keys.parse` already refuses every bare printable key
+/// (`error.PlainText`: ordinary characters are text and belong in
+/// `terminal_send`), so none of those can be pressed through this surface at
+/// all. What is left that can move or take a highlighted option is the
+/// arrows, `tab`, and the returns.
+///
+/// Spelling is compared after parsing rather than as text, so `ctrl+enter`
+/// and a differently written `arrow_down` are judged as the keys they are.
+/// A spec that will not parse is not this function's problem: the dispatch
+/// arm answers that as the typo it is.
+fn answersAPrompt(spec: []const u8) bool {
+    const trigger = keys.parse(spec) catch return false;
+    return switch (trigger.key) {
+        .physical => |k| switch (k) {
+            .enter,
+            .numpad_enter,
+            .arrow_up,
+            .arrow_down,
+            .arrow_left,
+            .arrow_right,
+            .tab,
+            => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+/// How far a method can go towards answering another terminal's prompt.
+///
+/// **The replacement for a check that matched names**, and the reason it is
+/// shaped as an exhaustive switch is the failure that check had: it looked
+/// for `approve`, `confirm` and `permission` in the method name, and the
+/// tool that does the forbidden thing is called `terminal_answer_prompt`.
+/// A guard that can be walked past by choosing a different word is a guard
+/// that will be.
+///
+/// There is no `else` here. A method added later does not compile until
+/// somebody has said which of these three it is, which is the only part of
+/// this that a future change cannot skip.
+///
+/// ⚠️ **NOT CHECKED: whether the classification is right.** Putting a new
+/// typing method on `.no` compiles and passes. What this buys is that the
+/// claim is *made*, in one place, by somebody who had to look -- not that
+/// it is true.
+pub fn promptReach(method: Method) enum {
+    /// Cannot put a keystroke into another terminal at all.
+    no,
+
+    /// Refused when the target's switch is off. `authorize` does it.
+    gated,
+
+    /// **Can answer a box and is not refused, on purpose.** These carry
+    /// text plus a return into another terminal, and that is also what
+    /// assigning a task is -- there is no way to refuse one without
+    /// refusing the other. Named here rather than left implicit, because a
+    /// bypass everybody knows about is a different thing from one nobody
+    /// wrote down; the menu item that turns the switch on says the same.
+    published,
+} {
+    return switch (method) {
+        .terminal_answer_prompt, .terminal_key => .gated,
+
+        // Text and a return. `terminal_action` belongs here for its
+        // `text:`, `csi:`, `esc:` and paste forms, which put characters
+        // into the target's input line exactly as `terminal_send` does.
+        .terminal_send, .terminal_action => .published,
+
+        // Types into a terminal, but never one the caller chose: the
+        // target is the task's owner, and what is typed is Polter's own
+        // sentence rather than the caller's.
+        .task_assign, .task_cancel => .published,
+
+        .me,
+        .terminal_list,
+        .terminal_read,
+        .terminal_open,
+        .terminal_actions,
+        .terminal_keys,
+        .notices,
+        .session_recall,
+        .notify_user,
+        .skill_read,
+        .config_get,
+        .clock_in,
+        .clock_out,
+        .set_quiescence_threshold,
+        .set_watch,
+        .stand_down,
+        .become_supervisor,
+        .group_create,
+        .group_destroy,
+        .group_compact,
+        .group_list,
+        .group_add,
+        .group_remove,
+        .group_post,
+        .group_read,
+        .group_history,
+        .group_members,
+        .group_set_brief,
+        .task_create,
+        .task_close,
+        .task_progress,
+        .task_list,
+        .task_history,
+        .plugin_list,
+        .plugin_configure,
+        .plugin_test,
+        => .no,
+    };
+}
+
 /// Decide whether `caller` may make this request.
 ///
 /// Note what is *not* here: there is no way to hold a terminal to its work
@@ -1054,8 +1231,34 @@ pub fn selfPermitted(req: Request) bool {
 /// what it sees is `held` on the terminal's entry, which it may act on but
 /// not change.
 ///
-/// There is also no tool for answering a permission prompt on another
-/// agent's behalf, and there will not be one. See `docs/poltergeist/`.
+/// **There is a tool for answering a permission prompt on another agent's
+/// behalf, and until 2026-09-08 this comment said there would never be one.**
+/// Both halves are kept, because the argument that was made against it is
+/// still the argument for the shape it ended up with.
+///
+/// What it said: *"A dedicated approve/deny tool would make it one step to
+/// hand away another agent's safety model, so there is none."* That is
+/// correct, and it is why `terminal_answer_prompt` is not a step anybody
+/// here can take on their own.
+///
+/// What changed, and who: the product owner, on 2026-09-08, after watching
+/// two workers stop on the same box overnight while the supervisor waited
+/// for reports that could not come. A worker stopped on a prompt is stopped,
+/// and on a machine running several of them that is the night.
+///
+/// **What was opened**: with the user's switch on for a terminal, a
+/// supervisor may answer *either* option there -- including
+/// `Yes, and don't ask again`, which writes a standing permission into that
+/// directory's configuration. The user chose that knowing it;
+/// `Bus.Entry.may_authorise` says so where the switch is defined, and the
+/// menu item says it to the person switching it on.
+///
+/// **What was not opened**: the switch is off until the user turns it on,
+/// per terminal, from that terminal's own tab menu; no agent can set it; a
+/// plugin cannot call the tool at all; and no one may answer their *own*
+/// prompt through this surface (`selfPermitted`). What the switch does not
+/// reach is written on `Bus.Entry.may_authorise` and said out loud on the
+/// menu item, rather than left for somebody to discover.
 pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
     const method: Method = req;
 
@@ -1184,6 +1387,61 @@ pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
         // `UnknownTerminal` when it does not. `set_watch` always worked
         // this way and needed a special case to say so; now everything
         // does and the special case is gone.
+    }
+
+    // **The user's switch, asked of the target.** Two calls arrive here,
+    // and the second is the one that makes the first worth anything.
+    //
+    // The rule this enforces is the user's: a supervisor may answer a
+    // worker's permission prompt only where the user has said so, from that
+    // terminal's own tab menu. `Bus.setMayAuthorise` takes `.user` and
+    // nothing else, so there is no order of calls that grants it here.
+    switch (req) {
+        // The dedicated tool. Nothing subtle: the switch is the whole
+        // condition.
+        .terminal_answer_prompt => |p| {
+            if (!bus.mayAuthorise(p.id)) return error.AuthoriseOff;
+        },
+
+        // **And the keys that would do the same thing by hand.** Without
+        // this the switch would be a rule rather than a control: the box in
+        // front of a stopped worker is a list with one option highlighted,
+        // so a return takes the highlighted one and the arrows move between
+        // them. Those are the keys, and they are refused at a terminal
+        // whose switch is off.
+        //
+        // ⚠️ **This looks at the key in the request, never at the screen**,
+        // and that is the design rather than a shortcut. Deciding "is that
+        // terminal stopped on a prompt right now" from what is drawn on it
+        // cannot be done honestly -- a terminal *showing* the words and a
+        // terminal *stopped on* them are the same text -- and this program
+        // has a standing rule against making that call (`App.notifyUser`:
+        // the supervisor decided a human was needed, "the program never
+        // makes that call itself"). It would also fail in the worst
+        // direction: a terminal wrongly judged to be at a prompt is a
+        // terminal a supervisor can no longer send ctrl+c to, and ctrl+c is
+        // how a stuck worker is rescued.
+        //
+        // So the cost is paid the other way round: an ordinary return, sent
+        // for an ordinary reason, is refused too. That refusal is visible
+        // and has a person at the end of it. The alternative is not.
+        //
+        // ⚠️ **What this does not close, deliberately and in public.**
+        // `terminal_send("1", submit)` still ends in a return and can still
+        // answer the box. It cannot be refused without refusing text plus a
+        // return in general -- which is exactly what assigning a task is.
+        // So this switch stops the dedicated tool and the casual keypress
+        // and leaves a bypass that is **published and logged** rather than
+        // silent. That is a weaker claim than "cannot be done", and the
+        // menu item says so in those words, because a protection believed
+        // to be airtight and not is worse than none.
+        .terminal_key => |p| {
+            if (!bus.mayAuthorise(p.id) and answersAPrompt(p.key)) {
+                return error.AuthoriseOff;
+            }
+        },
+
+        else => {},
     }
 
     // Refuse a clock-out the bus would refuse anyway, so the sidecar gets
@@ -1318,6 +1576,14 @@ pub fn errorMessage(err: Error) []const u8 {
             "is watching it -- and only a supervisor may reach a marked terminal. " ++
             "Terminals carrying no mark are open to you. If co-ordinating is your job, " ++
             "call become_supervisor and try again; otherwise ask the user",
+        error.AuthoriseOff => "the user has not allowed a supervisor to answer that " ++
+            "terminal's permission prompts. It is off until they switch it on from that " ++
+            "terminal's own tab menu, and nothing here can switch it on -- not being a " ++
+            "supervisor, not asking again. A worker stopped on a prompt therefore stays " ++
+            "stopped: say so, name the terminal, and let the person answer it. " ++
+            "**This also refused a key**: with the switch off, the keys that answer a " ++
+            "box -- return and the arrows -- are refused at that terminal, while ctrl+c " ++
+            "and escape still go through, so interrupting something is unaffected.",
         error.Shielded => "the user has put that terminal out of reach of these tools, " ++
             "and nothing here lifts that -- not being a supervisor, not being a plugin, " ++
             "not anything. Ask the person at the keyboard",
@@ -1438,6 +1704,13 @@ test "only what changes the arrangement needs the supervisor" {
             .task_assign,
             .task_close,
             .task_cancel,
+
+            // **Closed, and it is the one method here that is closed by two
+            // things at once.** The user's switch says whether that
+            // terminal's prompts may be answered at all; this says who may
+            // -- the party minding the work, not any terminal that can
+            // reach it. Either condition alone would be the wrong shape.
+            .terminal_answer_prompt,
             => false,
         };
         try testing.expectEqual(!open, requiresSupervisor(m));
@@ -2604,16 +2877,75 @@ test "the hold cannot be reached from this surface at all" {
     );
 }
 
-test "there is no tool for answering another agent's permission prompt" {
-    // `terminal_send` is a general text primitive and that is all there is.
-    // A dedicated approve/deny tool would make it one step to hand away
-    // another agent's safety model, so there is none.
+test "nothing answers another terminal's prompt around the user's switch" {
+    // **This replaced a check on the names.** It used to assert that no
+    // method was called `approve`, `confirm` or `permission`, on the
+    // reasoning that a dedicated tool would hand away another agent's
+    // safety model in one step. The reasoning was right and the check was
+    // not: `terminal_answer_prompt` -- the tool that does exactly the
+    // forbidden thing -- contains none of those three words, so the guard
+    // would have stayed green while the thing it forbade was built.
+    //
+    // What is asserted now is the capability. `promptReach` is exhaustive
+    // over `Method` with no `else`, so a method added next week does not
+    // compile until somebody has said which of the three it is, and the two
+    // that are gated are exercised against a bus with the switch off.
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    try b.register(boss);
+    try b.addSupervisor(boss);
+    try b.register(worker);
+
+    // The switch is off: this is the state every terminal is in until its
+    // user says otherwise.
+    try testing.expect(!b.mayAuthorise(worker));
+
+    try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
+    }));
+    try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
+        .terminal_key = .{ .id = worker, .key = "enter" },
+    }));
+    try testing.expectError(error.AuthoriseOff, authorize(&b, term(boss), .{
+        .terminal_key = .{ .id = worker, .key = "arrow_down" },
+    }));
+
+    // **The half that keeps a supervisor able to rescue a stuck worker.**
+    // Without this the switch would have taken away the interrupt, and the
+    // interrupt is the whole of what a supervisor can do for a worker that
+    // has stopped.
+    try authorize(&b, term(boss), .{ .terminal_key = .{ .id = worker, .key = "ctrl+c" } });
+    try authorize(&b, term(boss), .{ .terminal_key = .{ .id = worker, .key = "escape" } });
+
+    // Switched on, both go through.
+    try b.setMayAuthorise(worker, true, .user);
+    try authorize(&b, term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 2 },
+    });
+    try authorize(&b, term(boss), .{ .terminal_key = .{ .id = worker, .key = "enter" } });
+
+    // And the classification itself is total: every method has been put on
+    // a side, and the two above are the gated ones.
+    var gated: usize = 0;
     for (std.enums.values(Method)) |m| {
-        const name = @tagName(m);
-        try testing.expect(std.mem.indexOf(u8, name, "approve") == null);
-        try testing.expect(std.mem.indexOf(u8, name, "confirm") == null);
-        try testing.expect(std.mem.indexOf(u8, name, "permission") == null);
+        if (promptReach(m) == .gated) gated += 1;
     }
+    try testing.expectEqual(@as(usize, 2), gated);
+}
+
+test "a supervisor may not answer its own prompt, switch or no switch" {
+    // The asymmetry the user asked for, and it is `selfPermitted`'s doing
+    // rather than the switch's: answering your own box through this surface
+    // is an agent granting itself whatever the box was asking about.
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    try b.register(boss);
+    try b.addSupervisor(boss);
+    try b.setMayAuthorise(boss, true, .user);
+
+    try testing.expectError(error.SelfTarget, authorize(&b, term(boss), .{
+        .terminal_answer_prompt = .{ .id = boss, .choice = 1 },
+    }));
 }
 
 test "target reports the terminal a request acts on" {
@@ -4394,6 +4726,78 @@ pub fn dispatch(
                 else => hostFailure(
                     "KeyFailed",
                     "the terminal would not take that key just now",
+                ),
+            };
+            return .ok;
+        },
+
+        .terminal_answer_prompt => |p| {
+            // **What this assumes about the box, stated before it acts.**
+            //
+            // The prompts this exists for are a list with one option
+            // highlighted -- `1. Yes` / `2. Yes, and don't ask again` /
+            // `3. No` -- driven with the arrow keys and taken with return.
+            // So `choice` is walked to with `arrow_down` and taken with
+            // `enter`, counting the highlighted option as 1.
+            //
+            // ⚠️ **That is an assumption about a program in somebody else's
+            // repository, not a fact about anything here**, and it is the
+            // one thing in this arm that can be wrong without failing:
+            // sending the wrong number of arrows answers a *different*
+            // option and reports success. A caller that has not read the
+            // screen first does not know which option it is taking.
+            //
+            // **Which is also why the digits are not used instead.** A box
+            // that takes `1` directly would be one keystroke -- but
+            // `keys.parse` refuses a bare printable key by design
+            // (`error.PlainText`: ordinary characters are text and belong
+            // in `terminal_send`), so this surface cannot press one, and
+            // relaxing that for this would put every `terminal_key` call
+            // site up for review again.
+            if (p.choice == 0 or p.choice > 9) return hostFailure(
+                "BadParams",
+                "choice counts the options from the highlighted one, starting at 1. " ++
+                    "Read the terminal first: this walks down with the arrow keys, so " ++
+                    "the number has to match what is on the screen.",
+            );
+
+            var step: u8 = 1;
+            while (step < p.choice) : (step += 1) {
+                host.sendKey(p.id, "arrow_down") catch |err| return switch (err) {
+                    error.UnknownTerminal,
+                    error.NoSuchTerminal,
+                    => failure(error.UnknownTerminal),
+                    error.ChildExited => hostFailure(
+                        "ChildExited",
+                        "that terminal's process has already exited, so there is no " ++
+                            "prompt there to answer. Read it to see what happened.",
+                    ),
+                    // **Stops where it got to, and says so.** Half a walk
+                    // leaves the highlight somewhere the caller did not ask
+                    // for, and reporting success would have it believe an
+                    // option was taken while the box is still open on a
+                    // different one.
+                    else => hostFailure(
+                        "KeyFailed",
+                        "the terminal stopped taking keys part way through, so the " ++
+                            "highlight may have moved without anything being answered. " ++
+                            "Read it before trying again.",
+                    ),
+                };
+            }
+
+            host.sendKey(p.id, "enter") catch |err| return switch (err) {
+                error.UnknownTerminal,
+                error.NoSuchTerminal,
+                => failure(error.UnknownTerminal),
+                error.ChildExited => hostFailure(
+                    "ChildExited",
+                    "that terminal's process has already exited, so there is no prompt " ++
+                        "there to answer.",
+                ),
+                else => hostFailure(
+                    "KeyFailed",
+                    "the terminal would not take the return, so nothing was answered.",
                 ),
             };
             return .ok;

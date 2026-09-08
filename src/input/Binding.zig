@@ -730,6 +730,25 @@ pub const Action = union(enum) {
     /// have to be remembered.
     poltergeist_toggle_shielded,
 
+    /// Let a supervisor answer this terminal's permission prompts on its
+    /// behalf, or stop it. Off until you say otherwise.
+    ///
+    /// A worker stopped on a permission prompt stays stopped, which is
+    /// correct when the answer is yours to give and is a stalled agent when
+    /// it is not. This is where you say which.
+    ///
+    /// **It opens both answers**, including "and don't ask again" -- that
+    /// one writes a standing permission into the directory's configuration
+    /// and every worker running there afterwards stops being asked.
+    /// `Bus.Entry.may_authorise` argues the whole of it, including what the
+    /// switch does *not* stop.
+    ///
+    /// Yours alone, like the hold and the shield. ⚠️ **And, unlike them, it
+    /// has no command-palette entry**: an agent can open another terminal's
+    /// palette with `terminal_key` and type into it, so a palette entry
+    /// would be a way for an agent to grant itself the thing this governs.
+    poltergeist_toggle_authorise,
+
     /// Show or hide the window with what the terminals have said to each
     /// other.
     poltergeist_toggle_chat,
@@ -1524,6 +1543,7 @@ pub const Action = union(enum) {
             .poltergeist_toggle_watch,
             .poltergeist_toggle_held,
             .poltergeist_toggle_shielded,
+            .poltergeist_toggle_authorise,
             .poltergeist_toggle_chat,
             .resize_split,
             .equalize_splits,

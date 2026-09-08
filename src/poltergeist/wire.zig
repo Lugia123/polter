@@ -220,6 +220,16 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .key = try requireString(aa, params, "key"),
         } },
 
+        .terminal_answer_prompt => .{
+            .terminal_answer_prompt = .{
+                .id = try requireId(params),
+                // Defaults to the highlighted option, which is the one a box
+                // takes on a bare return -- so a caller that omits it gets the
+                // same thing a person pressing return would.
+                .choice = @intCast(@min(try optionalU64(params, "choice", 1), 255)),
+            },
+        },
+
         .group_history => .{ .group_history = .{
             .group = try requireString(aa, params, "group"),
             .before_seq = try optionalU64(params, "before_seq", 0),

@@ -713,6 +713,7 @@ extension TerminalWindow {
     private static let agentWatchIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentWatch")
     private static let agentHeldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentHeld")
     private static let agentShieldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentShield")
+    private static let agentAuthoriseIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentAuthorise")
 
     func configureTabContextMenuIfNeeded(_ menu: NSMenu) {
         guard isTabContextMenu(menu) else { return }
@@ -779,6 +780,7 @@ extension TerminalWindow {
             Self.agentWatchIdentifier,
             Self.agentHeldIdentifier,
             Self.agentShieldIdentifier,
+            Self.agentAuthoriseIdentifier,
         ])
 
         let separator = NSMenuItem.separator()
@@ -801,6 +803,11 @@ extension TerminalWindow {
              "lock",
              #selector(TerminalController.poltergeistToggleShielded(_:)),
              Self.agentShieldIdentifier),
+            (String(localized: "Let a Supervisor Answer Prompts Here",
+                    comment: "标签页右键菜单：允许总管替此终端点授权框，含「不再询问」"),
+             "hand.raised",
+             #selector(TerminalController.poltergeistToggleAuthorise(_:)),
+             Self.agentAuthoriseIdentifier),
         ]
 
         // Ticked when the terminal already is what the entry offers to make
@@ -819,6 +826,8 @@ extension TerminalWindow {
                 item.state = surface?.poltergeistRole == .watched ? .on : .off
             } else if identifier == Self.agentShieldIdentifier {
                 item.state = (surface?.poltergeistShielded ?? false) ? .on : .off
+            } else if identifier == Self.agentAuthoriseIdentifier {
+                item.state = (surface?.poltergeistMayAuthorise ?? false) ? .on : .off
             }
             menu.addItem(item)
         }

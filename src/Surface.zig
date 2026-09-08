@@ -193,6 +193,7 @@ poltergeist_tab_mark: poltergeistpkg.Bus.TabMark = .none,
 poltergeist_tab_shielded: bool = false,
 poltergeist_tab_role: poltergeistpkg.Bus.Role = .none,
 poltergeist_tab_held: bool = false,
+poltergeist_tab_may_authorise: bool = false,
 
 /// When a real key event last arrived from the user.
 ///
@@ -3555,6 +3556,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     const shielded = self.app.poltergeist.isShielded(self.id);
     const role = self.app.poltergeist.roleOf(self.id);
     const held = if (self.app.poltergeist.get(self.id)) |e| e.held else false;
+    const may_authorise = self.app.poltergeist.mayAuthorise(self.id);
 
     // Nothing has changed for this tab: leave it alone rather than
     // resending the same mark every time anything happens.
@@ -3571,18 +3573,21 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
         .shielded = shielded,
         .role = role,
         .held = held,
+        .may_authorise = may_authorise,
     };
     const was: PoltergeistTabState = .{
         .mark = self.poltergeist_tab_mark,
         .shielded = self.poltergeist_tab_shielded,
         .role = self.poltergeist_tab_role,
         .held = self.poltergeist_tab_held,
+        .may_authorise = self.poltergeist_tab_may_authorise,
     };
     if (!poltergeistTabMarkChanged(was, now)) return;
     self.poltergeist_tab_mark = mark;
     self.poltergeist_tab_shielded = shielded;
     self.poltergeist_tab_role = role;
     self.poltergeist_tab_held = held;
+    self.poltergeist_tab_may_authorise = may_authorise;
 
     // Unmarked is an empty prefix, not an empty title. This no longer
     // touches the title at all, so a tab the user renamed keeps its name
@@ -3602,6 +3607,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
             },
             .shielded = shielded,
             .held = held,
+            .may_authorise = may_authorise,
         },
     ) catch |err| {
         log.warn("poltergeist: could not mark the tab err={}", .{err});
@@ -3617,6 +3623,7 @@ const PoltergeistTabState = struct {
     shielded: bool,
     role: poltergeistpkg.Bus.Role,
     held: bool,
+    may_authorise: bool,
 };
 
 /// Is the new state different from the last one the apprt was sent?
@@ -3637,6 +3644,7 @@ test "a hold is a change even when nothing else moved" {
         .shielded = false,
         .role = .none,
         .held = false,
+        .may_authorise = false,
     };
 
     // **The defect, as one assertion.** A terminal nobody watches has no mark
@@ -6357,6 +6365,37 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // tick, because a terminal nobody samples never gets one.
             self.updatePoltergeistTabMark();
 
+            return true;
+        },
+
+        .poltergeist_toggle_authorise => {
+            const bus = &self.app.poltergeist;
+            const next = !bus.mayAuthorise(self.id);
+
+            // `.user`: this is a keypress or a menu click. The bus refuses
+            // it from anywhere else, and that refusal is the whole of the
+            // protection -- a supervisor that could turn this on would turn
+            // it on and then use it.
+            bus.setMayAuthorise(self.id, next, .user) catch |err| switch (err) {
+                // The terminal this is most often used on is a worker
+                // nobody ever watched, which has no entry at all. Without
+                // this, the switch would fail exactly where it is wanted.
+                error.UnknownTerminal => {
+                    try bus.register(self.id);
+                    try bus.setMayAuthorise(self.id, next, .user);
+                },
+                error.NotPermitted => unreachable,
+            };
+
+            log.info("poltergeist: supervisor may answer prompts here: {}", .{next});
+
+            // **No tab mark, unlike the hold and the shield**, and the
+            // difference is worth stating. Those two are promises made to
+            // the person at the terminal -- "you will not be clocked off",
+            // "nobody may touch you" -- so they are worn where the promise
+            // can be seen. This one is a permission the user granted to a
+            // supervisor, and the place it has to be visible is the menu
+            // the user granted it from, which shows its own state.
             return true;
         },
 

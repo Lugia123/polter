@@ -1932,6 +1932,24 @@ pub const PoltergeistMark = struct {
     /// only way the hold reaches a menu is as its own field.
     held: bool,
 
+    /// The user has said a supervisor may answer this terminal's permission
+    /// prompts.
+    ///
+    /// **The third time this cost has come due**, and the note above spells
+    /// out why it comes due at all: an apprt cannot read meaning out of the
+    /// rendered prefix, so a menu row that offers to change something cannot
+    /// tick itself from a string. `role` and `shielded` were added when a
+    /// menu item needed to; `held` when the hold row turned out to be the
+    /// one toggle that could not show its own state on every apprt at once.
+    /// This is a fourth toggle, and it would have been the same defect.
+    ///
+    /// ⚠️ **It has no glyph, unlike the other three.** The mark on a tab is
+    /// a promise made to the person sitting at the terminal -- not clocked
+    /// off, not reachable -- and this is a permission the user granted to
+    /// somebody else. It is shown where it was granted, in the menu, and the
+    /// prefix stays empty for it.
+    may_authorise: bool,
+
     /// What this terminal is in the arrangement.
     ///
     /// Sent alongside the rendered prefix rather than instead of it. The
@@ -1956,6 +1974,7 @@ pub const PoltergeistMark = struct {
         role: Role,
         shielded: bool,
         held: bool,
+        may_authorise: bool,
     };
 
     pub fn cval(self: PoltergeistMark) C {
@@ -1964,6 +1983,7 @@ pub const PoltergeistMark = struct {
             .role = self.role,
             .shielded = self.shielded,
             .held = self.held,
+            .may_authorise = self.may_authorise,
         };
     }
 

@@ -133,6 +133,7 @@ pub enum Flag {
     Watched,
     Shielded,
     Held,
+    MayAuthorise,
 }
 
 /// Shorthand for the common case: a labelled row that runs a core action.
@@ -295,6 +296,25 @@ const AGENTS_ROWS: &[Row] = &[
     toggle("将此终端设为总管", "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
     toggle("监督此终端", "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
     toggle("不让 agent 碰此终端", "poltergeist_toggle_shielded", Flag::Shielded, Ready::Always),
+    // **What this opens, in the label, because the menu is where it is
+    // granted.** Off for every terminal until this is ticked. With it on a
+    // supervisor may take *either* answer in that box -- including
+    // "don't ask again", which writes a standing permission into that
+    // directory's configuration and stops every later worker being asked.
+    //
+    // ⚠️ **And what it does not stop, said here too.** With it off, the
+    // dedicated tool and the keys that answer a box are refused; a supervisor
+    // determined to answer one can still type `1` and a return, because that
+    // is also how a task is assigned and the two cannot be told apart. So
+    // this is a control on the tool and the keypress and a record of the
+    // rest, not a wall -- and a protection believed to be a wall and not is
+    // worse than none.
+    toggle(
+        "允许总管替此终端点授权框（含「不再询问」）",
+        "poltergeist_toggle_authorise",
+        Flag::MayAuthorise,
+        Ready::Always,
+    ),
     // **The hold, and the only door into it on this platform.**
     //
     // A held terminal cannot be clocked off by anything, supervisor included,
@@ -637,13 +657,18 @@ fn default_state(flag: Flag) -> Option<bool> {
         // -- nothing in the host knew -- and that showed up in the log as
         // `4 evaluable` out of five.
         Flag::FloatOnTop => Some(crate::prompt::is_float_on_top()),
-        Flag::Supervisor | Flag::Watched | Flag::Shielded | Flag::Held => {
+        Flag::Supervisor
+        | Flag::Watched
+        | Flag::Shielded
+        | Flag::Held
+        | Flag::MayAuthorise => {
             let active = crate::tabs::active_surface(crate::tabs::overlay_frame());
-            let (role, shielded, held) = crate::tabs::mark_for_surface(active)?;
+            let (role, shielded, held, may_authorise) = crate::tabs::mark_for_surface(active)?;
             Some(match flag {
                 Flag::Supervisor => role == ROLE_SUPERVISOR,
                 Flag::Watched => role == ROLE_WATCHED,
                 Flag::Shielded => shielded,
+                Flag::MayAuthorise => may_authorise,
                 _ => held,
             })
         }
@@ -775,6 +800,7 @@ fn check_state_counts() -> (usize, usize, Vec<&'static str>) {
                 Flag::Watched => "Watched",
                 Flag::Shielded => "Shielded",
                 Flag::Held => "Held",
+                Flag::MayAuthorise => "MayAuthorise",
             }),
         }
     }

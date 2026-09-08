@@ -80,6 +80,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuPoltergeistSupervisor: NSMenuItem?
     @IBOutlet private var menuPoltergeistWatch: NSMenuItem?
     @IBOutlet private var menuPoltergeistShield: NSMenuItem?
+    @IBOutlet private var menuPoltergeistAuthorise: NSMenuItem?
     @IBOutlet private var menuLanguage: NSMenuItem?
     @IBOutlet private var menuPlugins: NSMenuItem?
     @IBOutlet private var menuReopenTab: NSMenuItem?
@@ -1337,6 +1338,7 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "poltergeist_supervisor", menuItem: self.menuPoltergeistSupervisor)
         syncMenuShortcut(config, action: "poltergeist_toggle_watch", menuItem: self.menuPoltergeistWatch)
         syncMenuShortcut(config, action: "poltergeist_toggle_shielded", menuItem: self.menuPoltergeistShield)
+        syncMenuShortcut(config, action: "poltergeist_toggle_authorise", menuItem: self.menuPoltergeistAuthorise)
 
         syncMenuShortcut(config, action: "toggle_secure_input", menuItem: self.menuSecureInput)
 

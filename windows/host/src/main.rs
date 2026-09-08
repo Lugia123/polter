@@ -2628,7 +2628,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // Done inline rather than queued because it touches no window: it
         // writes two fields under the same lock every `Op` would have taken.
         ffi::ACTION_POLTERGEIST_MARK => {
-            let (role, shielded, held) = action.as_poltergeist_mark();
+            let (role, shielded, held, may_authorise) = action.as_poltergeist_mark();
             // **Resolved once and passed on.** This arm knew which terminal
             // the mark was for and told nobody: `set_mark_for_surface` got it,
             // the notification below did not, and so the menu's own line could
@@ -2636,7 +2636,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // surface was here the whole time.
             let surface = target_surface(&target);
             let found =
-                surface.is_some_and(|s| tabs::set_mark_for_surface(s, role as u8, shielded, held));
+                surface.is_some_and(|s| {
+                    tabs::set_mark_for_surface(s, role as u8, shielded, held, may_authorise)
+                });
             // The surface's own right-click menu wants the same three bits.
             // It reads them back out of `tabs::mark_for_surface`; this call
             // is the notification that they changed, not a second copy.

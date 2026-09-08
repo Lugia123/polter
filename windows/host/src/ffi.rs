@@ -254,6 +254,11 @@ pub struct PoltergeistMark {
     /// terminal with no role carries no prefix at all, held or not, so the
     /// hold was invisible out here in exactly the case that is normal.
     pub held: bool,
+    /// The user has allowed a supervisor to answer this terminal's permission
+    /// prompts. Its own field for the same reason `held` is, and with no
+    /// glyph in `prefix`: the other three marks are promises to the person at
+    /// the terminal, this is a permission they granted to somebody else.
+    pub may_authorise: bool,
 }
 
 /// `ghostty_action_poltergeist_close_scope_e`.
@@ -364,9 +369,11 @@ impl Action {
     /// `held` is a second `bool` immediately after `shielded`, at 13. **Added
     /// at the end on purpose**: every offset above it is unchanged, so the
     /// struct grew without moving anything an older reading depended on.
-    pub fn as_poltergeist_mark(&self) -> (i32, bool, bool) {
+    pub fn as_poltergeist_mark(&self) -> (i32, bool, bool, bool) {
         let role = i32::from_ne_bytes(self.payload[8..12].try_into().unwrap());
-        (role, self.payload[12] != 0, self.payload[13] != 0)
+        // `shielded`, `held`, `may_authorise`: three bools in declaration
+        // order after the int, one byte each, no padding between them.
+        (role, self.payload[12] != 0, self.payload[13] != 0, self.payload[14] != 0)
     }
 
     /// `ghostty_action_poltergeist_close_s { scope; bool confirm; result*; }`.
