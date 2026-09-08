@@ -1950,7 +1950,15 @@ extension Ghostty {
                     return false
                 }
 
-            case .tab:
+            // **`.tab` and `.window` are one operation on this platform, and
+            // that is a fact about macOS rather than a shortcut.** A
+            // `BaseTerminalController` owns exactly one `NSWindow`; what the
+            // user sees as tabs are windows joined into a tab group. The
+            // rename both scopes want is `titleOverride`, whose own comment
+            // calls it "an override title for the tab/window" and which sets
+            // `window.title` through `applyTitleToWindow`. Splitting them
+            // would need two names for one string.
+            case .tab, .window:
                 switch target.tag {
                 case GHOSTTY_TARGET_APP:
                     guard let window = NSApp.mainWindow ?? NSApp.keyWindow,
@@ -1972,6 +1980,16 @@ extension Ghostty {
                     assertionFailure()
                     return false
                 }
+
+            // **Refused by name, and the refusal is the feature.** A scope
+            // this build has no case for is a newer core talking to an older
+            // app. Doing nothing and saying so lets the core log a failed
+            // action; picking whichever scope happens to be nearest is how
+            // `GHOSTTY_PROMPT_TITLE_WINDOW` spent its life renaming panes.
+            case .unknown:
+                Ghostty.logger.warning(
+                    "prompt title requested for a scope this build does not know; doing nothing")
+                return false
             }
         }
 

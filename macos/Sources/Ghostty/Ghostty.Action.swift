@@ -134,13 +134,31 @@ extension Ghostty.Action {
     enum PromptTitle {
         case surface
         case tab
+        case window
+
+        /// A value this build does not know about.
+        ///
+        /// **The point of this case is that it does nothing.** The C enum had
+        /// three members while this switch had two, and `GHOSTTY_PROMPT_TITLE_WINDOW`
+        /// landed in a `default:` that said `.surface` -- so asking to rename
+        /// the window silently renamed the pane instead. A `default:` pointing
+        /// at a real action turns every future member of that enum into a
+        /// wrong action performed confidently, and reads as "handled" to
+        /// anyone auditing it. Pointing it at a case that refuses is the
+        /// difference between a new value doing nothing and a new value doing
+        /// something else.
+        case unknown
 
         init(_ c: ghostty_action_prompt_title_e) {
             switch c {
+            case GHOSTTY_PROMPT_TITLE_SURFACE:
+                self = .surface
             case GHOSTTY_PROMPT_TITLE_TAB:
                 self = .tab
+            case GHOSTTY_PROMPT_TITLE_WINDOW:
+                self = .window
             default:
-                self = .surface
+                self = .unknown
             }
         }
     }
