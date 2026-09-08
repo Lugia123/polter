@@ -205,10 +205,22 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .key = (try optionalString(aa, params, "key")) orelse "",
         } },
 
-        .terminal_open => .{ .terminal_open = .{
-            .cwd = (try optionalString(aa, params, "cwd")) orelse "",
-            .watch = optionalBool(params, "watch", false),
-        } },
+        .terminal_open => .{
+            .terminal_open = .{
+                .cwd = (try optionalString(aa, params, "cwd")) orelse "",
+                .watch = optionalBool(params, "watch", false),
+                // **An unknown word is `auto`, not an error.** The three names
+                // are a hint about intent, and a caller that guessed one gets the
+                // sensible placement rather than a failed open -- but a caller
+                // that meant `tab` and typed it correctly gets the guarantee.
+                .place = blk: {
+                    const w = (try optionalString(aa, params, "place")) orelse break :blk .auto;
+                    if (std.mem.eql(u8, w, "tab")) break :blk .tab;
+                    if (std.mem.eql(u8, w, "here")) break :blk .here;
+                    break :blk .auto;
+                },
+            },
+        },
 
         .terminal_action => .{ .terminal_action = .{
             .id = try requireId(params),
@@ -259,26 +271,30 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .key = try requireString(aa, params, "key"),
         } },
 
-        .task_create => .{ .task_create = .{
-            .group = try requireString(aa, params, "group"),
-            .title = try requireString(aa, params, "title"),
-            // **Optional here and required one level up**, deliberately: a
-            // missing kind and a misspelt one are the same mistake to the
-            // caller, and answering both with the one sentence that lists
-            // the four names is worth more than telling it which of the two
-            // ways it got it wrong.
-            .kind = (try optionalString(aa, params, "kind")) orelse "",
-        } },
+        .task_create => .{
+            .task_create = .{
+                .group = try requireString(aa, params, "group"),
+                .title = try requireString(aa, params, "title"),
+                // **Optional here and required one level up**, deliberately: a
+                // missing kind and a misspelt one are the same mistake to the
+                // caller, and answering both with the one sentence that lists
+                // the four names is worth more than telling it which of the two
+                // ways it got it wrong.
+                .kind = (try optionalString(aa, params, "kind")) orelse "",
+            },
+        },
 
-        .task_edit => .{ .task_edit = .{
-            .task = try requireU64(params, "task"),
-            // Empty means "leave this one alone". Both empty is refused
-            // above rather than treated as a successful no-op: a call that
-            // changes nothing and answers `ok` reads as a change that
-            // happened.
-            .title = (try optionalString(aa, params, "title")) orelse "",
-            .kind = (try optionalString(aa, params, "kind")) orelse "",
-        } },
+        .task_edit => .{
+            .task_edit = .{
+                .task = try requireU64(params, "task"),
+                // Empty means "leave this one alone". Both empty is refused
+                // above rather than treated as a successful no-op: a call that
+                // changes nothing and answers `ok` reads as a change that
+                // happened.
+                .title = (try optionalString(aa, params, "title")) orelse "",
+                .kind = (try optionalString(aa, params, "kind")) orelse "",
+            },
+        },
 
         .task_assign => .{
             .task_assign = .{
@@ -1450,6 +1466,46 @@ test "a history reply carries the log cursor beside the group seq" {
     const out = w.buffered();
     try testing.expect(std.mem.indexOf(u8, out, "\"log_seq\":10431") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"seq\":0") != null);
+}
+
+test "terminal_open place: absent is auto, and tab is not a preference" {
+    // **Absent means `auto`, which is the thing most likely to be got wrong
+    // by a reader.** A caller that omits `place` used to get a tab, so the
+    // silent reading of "no place given" changed -- and a supervisor that
+    // needs its own tab now has to say so.
+    {
+        var p = try parse(
+            \\{"method":"terminal_open","params":{"cwd":"/tmp"}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(rpc.Placement.auto, p.value.terminal_open.place);
+    }
+
+    {
+        var p = try parse(
+            \\{"method":"terminal_open","params":{"cwd":"/tmp","place":"tab"}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(rpc.Placement.tab, p.value.terminal_open.place);
+    }
+
+    {
+        var p = try parse(
+            \\{"method":"terminal_open","params":{"cwd":"/tmp","place":"here"}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(rpc.Placement.here, p.value.terminal_open.place);
+    }
+
+    // A word nobody publishes is `auto` rather than a failed open: the three
+    // names are about intent, and a guess should still get a terminal.
+    {
+        var p = try parse(
+            \\{"method":"terminal_open","params":{"cwd":"/tmp","place":"beside-me"}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(rpc.Placement.auto, p.value.terminal_open.place);
+    }
 }
 
 test "a configure that only sets a parameter does not read as switching off" {

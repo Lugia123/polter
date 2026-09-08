@@ -359,7 +359,11 @@ pub const Request = union(Method) {
     plugin_test: struct { key: []const u8 },
 
     config_get: struct { key: []const u8 = "" },
-    terminal_open: struct { cwd: []const u8 = "", watch: bool = false },
+    terminal_open: struct {
+        cwd: []const u8 = "",
+        watch: bool = false,
+        place: Placement = .auto,
+    },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
     terminal_key: struct { id: Bus.Id, key: []const u8 },
@@ -3647,6 +3651,34 @@ pub const TaskPage = struct {
 /// may be a shell with a half-finished build in it, and only the first of
 /// those can be restored by a command. The directory and the name are true
 /// of both.
+/// Where a terminal opened through `terminal_open` should go.
+///
+/// **What a caller may say is what it wants, never where.** There is no way
+/// to name a pane, a row or a ratio here, and that is the point: the budget
+/// that turns "a worker" into a position lives in one place, instead of being
+/// recomputed by every supervisor that ever opens one.
+pub const Placement = enum {
+    /// Let Poltergeist decide: beside the caller while there is room in its
+    /// tab, a new tab once there is not. The default, and what a supervisor
+    /// wants unless it has a reason.
+    auto,
+
+    /// A new tab, always.
+    ///
+    /// ⚠️ **A guarantee, not a preference.** The whole reason it exists is
+    /// "do not put this in with the others" -- a long build whose scrollback
+    /// should not share a screen, something the person will want on its own.
+    /// If this ever quietly became a split, the caller would have no way to
+    /// tell and no other way to ask.
+    tab,
+
+    /// A split in the caller's own tab.
+    ///
+    /// Falls back to a tab when the budget has no room, and says so in the
+    /// log -- **a fallback that was silent would read as "here" having worked**.
+    here,
+};
+
 pub const Place = struct {
     id: Bus.Id,
     cwd: []const u8 = "",
@@ -3713,6 +3745,7 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
             cwd: []const u8,
             by: Bus.Id,
+            place: Placement,
         ) anyerror!?Bus.Id,
 
         /// Do one of the terminal's own keybinding actions to it.
@@ -4124,8 +4157,9 @@ pub const Host = struct {
         alloc: std.mem.Allocator,
         cwd: []const u8,
         by: Bus.Id,
+        place: Placement,
     ) anyerror!?Bus.Id {
-        return self.vtable.openTerminal(self.ctx, alloc, cwd, by);
+        return self.vtable.openTerminal(self.ctx, alloc, cwd, by, place);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -4620,7 +4654,7 @@ pub fn dispatch(
         },
 
         .terminal_open => |p| {
-            const opened = host.openTerminal(alloc, p.cwd, caller) catch |err| return switch (err) {
+            const opened = host.openTerminal(alloc, p.cwd, caller, p.place) catch |err| return switch (err) {
                 error.NotAbsolute => hostFailure(
                     "BadParams",
                     "a working directory has to be an absolute path.",
@@ -6488,6 +6522,7 @@ const FakeHost = struct {
         _: std.mem.Allocator,
         cwd: []const u8,
         by: Bus.Id,
+        _: Placement,
     ) anyerror!?Bus.Id {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.open_error) |err| return err;

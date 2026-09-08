@@ -594,9 +594,21 @@ const tools = [_]Tool{
             "other rather than a way round anything. So starting the worker in a " ++
             "mode that does not stop is still what saves a night. " ++
             "Until something is running, that terminal has no bracketed paste, " ++
-            "so the first send must be a single line. Supervisor only.",
+            "so the first send must be a single line. Supervisor only.\n\n" ++
+            "**`place` says what you want, never where.** There is no way to name a " ++
+            "pane or a position here, and that is deliberate: where a worker lands is " ++
+            "decided in one place rather than recomputed by every supervisor. " ++
+            "`auto` is the default and is what you want unless you have a reason -- " ++
+            "it puts the terminal beside you while there is room in your tab, and in " ++
+            "a new tab once there is not. ⚠️ **Not passing `place` means `auto`, not " ++
+            "`tab`**: if you need a terminal that is *not* in with the others -- a long " ++
+            "build whose scrollback should not share a screen, something the person " ++
+            "will want on its own -- you have to ask for `tab`, and asking for it is a " ++
+            "guarantee rather than a preference. `here` is the opposite request: a " ++
+            "split in your own tab, which falls back to a tab when there is no room " ++
+            "and says so in the log.",
         .schema =
-        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"}},"required":["cwd"]}
+        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here"],"description":"Defaults to auto: beside you while there is room, a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab."}},"required":["cwd"]}
         ,
     },
     .{
@@ -1120,8 +1132,8 @@ test "the initialize result is valid JSON and puts the tool families in it" {
     // one this exists for: it is the family that went missing.
     for ([_][]const u8{
         "terminal_send", "terminal_read", "group_post",
-        "task_create",   "task_edit",     "task_assign",   "task_list",
-        "skill_read",
+        "task_create",   "task_edit",     "task_assign",
+        "task_list",     "skill_read",
     }) |name| {
         std.testing.expect(std.mem.indexOf(u8, text, name) != null) catch |err| {
             std.debug.print("instructions never names {s}\n", .{name});

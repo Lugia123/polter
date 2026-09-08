@@ -399,6 +399,21 @@ like one that went right from inside a tool reply. What to expect today:
   needs to split a whole column rather than one pane, which no action can
   ask for yet.
 
+**When you want a tab, say so — leaving it out no longer means one.**
+`terminal_open` takes `place`, and it takes intent rather than position:
+`auto` (the default, the placement above), `tab`, `here`.
+
+⚠️ **`place: "tab"` is the one to remember**, because the silent reading
+changed: a call without `place` used to give you a tab and now gives you
+`auto`. Ask for `tab` when the terminal should not share a screen with the
+others — a long build whose scrollback would bury everything beside it, a
+session the person will want to look at on its own, anything you would not
+want three of your workers wedged in next to. It is a guarantee: `tab` never
+becomes a split.
+
+`here` is the opposite: put it beside me. It falls back to a tab when there
+is no room, and the log says both that it fell back and why.
+
 ⚠️ **The old rule of thumb "twelve workers should be two tabs" is wrong now**
 and would have you report a defect that is not one. With three workers to a
 tab, twelve is one tab plus four. The shape to check instead is the one

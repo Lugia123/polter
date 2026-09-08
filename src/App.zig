@@ -3075,6 +3075,7 @@ fn poltergeistOpenTerminal(
     alloc: Allocator,
     cwd: []const u8,
     by: poltergeistpkg.Bus.Id,
+    place: poltergeistpkg.rpc.Placement,
 ) anyerror!?poltergeistpkg.Bus.Id {
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(by) orelse return error.UnknownTerminal;
@@ -3111,8 +3112,26 @@ fn poltergeistOpenTerminal(
     // like the right ones. The two apprts answer one factual question -- how
     // full is this tab -- and hold none of the numbers below.
     const placed: bool = placed: {
-        const where = self.poltergeistPlaceWorker(rt_app, surface, by) orelse
+        // ⚠️ **`tab` is a guarantee, not a preference.** It exists so a
+        // caller can say "not in with the others", and a request that quietly
+        // became a split would leave it no way to tell and no other way to
+        // ask. So it never reaches the budget at all.
+        if (place == .tab) break :placed false;
+
+        const where = self.poltergeistPlaceWorker(rt_app, surface, by) orelse {
+            // **`here` was asked for and did not happen, and that is worth a
+            // second line.** For `auto` a tab is one of the normal answers;
+            // for `here` it is the caller not getting what it named, and the
+            // reason it did not is already on the line above this one. A
+            // fallback nobody distinguished would read as `here` having
+            // worked.
+            if (place == .here) log.info(
+                "poltergeist: `here` was asked for and could not be given; " ++
+                    "the terminal went into a tab -- see the line above for why",
+                .{},
+            );
             break :placed false;
+        };
 
         var result: apprt.action.NewSplit.Result = .unsupported;
         _ = rt_app.performAction(
