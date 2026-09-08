@@ -1842,6 +1842,14 @@ fn read_diagnostics() -> Vec<String> {
 /// Rows visible at once. The page is sized for this; scrolling covers the
 /// rest.
 const KB_VISIBLE: usize = 18;
+/// How far down the first row starts, and how tall a row is, before scaling.
+///
+/// ⚠️ **Named so that there is something to say "written once" about.**
+/// `one-place-decides-where-a-row-is.py` is the floor for this page as well
+/// as for the palette, and a floor that had to recognise `56` and `24` as
+/// literals would go quiet the day somebody wrote `28 * 2`.
+const KB_HEADER: i32 = 56;
+const KB_ROW_H: i32 = 24;
 
 /// What a UI Automation client is shown for one row.
 #[derive(Clone, Default)]
@@ -1885,8 +1893,8 @@ pub fn kb_row_rect_at(top: usize, dpi: i32, width: i32, index: usize) -> Option<
         return None;
     }
     let sc = |v: i32| v * dpi / 96;
-    let y = sc(PAD + 56) + n as i32 * sc(24);
-    Some(RECT { left: sc(PAD), top: y, right: width - sc(PAD), bottom: y + sc(24) })
+    let y = sc(PAD + KB_HEADER) + n as i32 * sc(KB_ROW_H);
+    Some(RECT { left: sc(PAD), top: y, right: width - sc(PAD), bottom: y + sc(KB_ROW_H) })
 }
 
 /// `kb_row_rect_at` against the page as it is right now.
@@ -2100,7 +2108,6 @@ unsafe fn kb_paint(win: HWND, hdc: HDC) {
 
             let name_w = s(230);
             let key_w = s(180);
-            let row_h = s(24);
 
             let end = (st.keybind_top + KB_VISIBLE).min(st.keybinds.len());
             for (offset, row) in st.keybinds[st.keybind_top..end].iter().enumerate() {
@@ -2119,7 +2126,8 @@ unsafe fn kb_paint(win: HWND, hdc: HDC) {
                 // The tag is always shown; the human title only exists for
                 // some actions, so it cannot be the column you navigate by.
                 let name = row.title.as_deref().unwrap_or(row.action);
-                let mut nr = RECT { left: s(PAD), top: y, right: s(PAD) + name_w, bottom: y + row_h };
+                let mut nr =
+                    RECT { left: s(PAD), top: y, right: s(PAD) + name_w, bottom: rr.bottom };
                 draw_text(hdc, name, &mut nr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, theme::text());
 
                 let keys = crate::keybinds::keys_label(row);
@@ -2127,21 +2135,21 @@ unsafe fn kb_paint(win: HWND, hdc: HDC) {
                     left: s(PAD) + name_w,
                     top: y,
                     right: s(PAD) + name_w + key_w,
-                    bottom: y + row_h,
+                    bottom: rr.bottom,
                 };
                 let key_colour = if row.triggers.is_empty() { theme::dim() } else { theme::text() };
                 draw_text(hdc, &keys, &mut kr, DT_LEFT | DT_SINGLELINE, key_colour);
 
                 let note = crate::keybinds::note(row);
                 if !note.is_empty() {
-                    let mut rr = RECT {
+                    let mut tr = RECT {
                         left: s(PAD) + name_w + key_w,
                         top: y,
                         right: rc.right - s(PAD),
-                        bottom: y + row_h,
+                        bottom: rr.bottom,
                     };
                     let colour = if row.hidden_from_menu { theme::warn() } else { theme::dim() };
-                    draw_text(hdc, note, &mut rr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, colour);
+                    draw_text(hdc, note, &mut tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, colour);
                 }
             }
 
