@@ -2917,7 +2917,14 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 dir,
                 cwd.as_deref().unwrap_or("(inherited)")
             );
-            let queued = queue_from(origin, Op::NewSplit(dir, cwd), "new_split action");
+            // **The pane the action named, not the one with focus.**
+            // A keybinding names the surface it came from, which is the
+            // focused one, so this is the same answer on that path -- one
+            // route, not two. It is different exactly where it has to be:
+            // a tool call naming a pane used to split whichever pane had
+            // focus, and say in the log that it had split.
+            let at = target_surface(&target).and_then(tabs::pane_id_of_surface);
+            let queued = queue_from(origin, Op::NewSplit(dir, cwd, at), "new_split action");
             if queued && !result.is_null() {
                 // `ghostty_action_new_split_result_e`: 1 == SPLIT.
                 unsafe { result.write(1) };

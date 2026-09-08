@@ -181,9 +181,10 @@ pub enum Op {
     CopyTitleToClipboard,
     PresentTerminal,
     /// `ghostty_action_split_direction_e`.
-    /// The direction, and where the new pane's shell starts (`None` means
-    /// wherever the split source is standing).
-    NewSplit(i32, Option<String>),
+    /// The direction, where the new pane's shell starts (`None` means
+    /// wherever the split source is standing), and **which pane to split**
+    /// (`None` means the focused one, which is what a keybinding means).
+    NewSplit(i32, Option<String>, Option<PaneId>),
     /// `ghostty_action_goto_split_e`.
     GotoSplit(i32),
     /// amount in pixels, `ghostty_action_resize_split_direction_e`.
@@ -2191,12 +2192,13 @@ pub fn create_tab_with(
 /// the `result` cell the core passes in; see the `ACTION_NEW_SPLIT` arm. This
 /// function can always honour it, because `create_pane` takes a `NewTab` and
 /// `NewTab` carries a `cwd`.
-fn split_focused(
+fn split_pane(
     frame: HWND,
     app: App,
     hinst: windows::Win32::Foundation::HINSTANCE,
     dir: NewSplit,
     cwd: Option<String>,
+    at: Option<PaneId>,
 ) {
     let (bounds, focused, tree) = {
         let Some(win) = window(frame) else {
@@ -2209,7 +2211,19 @@ fn split_focused(
         let Some(tab) = win.tabs.get(win.active) else {
             return;
         };
-        (bounds, tab.focused, tab.tree.clone())
+        // **One path, not two.** A keybinding names the surface it came from,
+        // and that surface is the focused one -- so `at` is `Some` there too
+        // and the fallback below is not the ordinary case. It is for an
+        // action that named no surface at all, or named one this window has
+        // since lost: falling back to the focused pane is what this did for
+        // every caller before, so nothing that worked stops working.
+        //
+        // ⚠️ **The bug this replaces was silent.** A tool call naming pane X
+        // split whichever pane had focus, and the log said it had split --
+        // so a supervisor placing worker terminals put them next to whatever
+        // the person was looking at, and every reading said it worked.
+        let target = at.filter(|p| tab.tree.contains(*p)).unwrap_or(tab.focused);
+        (bounds, target, tab.tree.clone())
     };
 
     let id = take_id();
@@ -3145,6 +3159,24 @@ pub fn tab_of_surface(surface: Surface) -> Option<(HWND, TabId)> {
     })
 }
 
+/// The pane a surface is bound to, by tree id.
+///
+/// **The twin of `pane_hwnd_of_surface`, for the tree rather than the window
+/// manager.** Actions name a surface; the tree names a `PaneId`; this is the
+/// one place that turns one into the other, so an action can act on the pane
+/// it was aimed at rather than on whichever one happens to have focus.
+// window-free: keyed by surface, which is unique in the process
+pub fn pane_id_of_surface(surface: Surface) -> Option<PaneId> {
+    let key = surface as usize;
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.surface == key)
+            .map(|p| p.id)
+    })
+}
+
 /// How many panes share a tab with `surface`.
 ///
 /// **A fact, not a judgement.** The core asks this because it cannot see the
@@ -3921,7 +3953,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 let ok = copy_to_clipboard(&title).is_ok();
                 wlogf!(frame, "[win] copy_title_to_clipboard {:?} -> {}", title, ok);
             }
-            Op::NewSplit(dir, cwd) => {
+            Op::NewSplit(dir, cwd, at) => {
                 // `ghostty_action_split_direction_e`
                 let d = match dir {
                     1 => NewSplit::Down,
@@ -3929,7 +3961,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     3 => NewSplit::Up,
                     _ => NewSplit::Right,
                 };
-                split_focused(frame, app, hinst, d, cwd);
+                split_pane(frame, app, hinst, d, cwd, at);
             }
             Op::GotoSplit(v) => {
                 // `ghostty_action_goto_split_e`
