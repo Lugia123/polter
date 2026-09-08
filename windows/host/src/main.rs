@@ -4926,7 +4926,7 @@ fn adopt_std_handles() -> String {
     if missing.is_empty() && colliding.is_empty() {
         let line = "[stdio] stdout and stderr both came from whoever started us, \
                     and neither is this log file; leaving them alone";
-        return with_verdict(line.to_string(), &evidence, "left alone");
+        return with_verdict(line.to_string(), &evidence, "left alone", true);
     }
 
     let file = unsafe {
@@ -4943,10 +4943,29 @@ fn adopt_std_handles() -> String {
     let Ok(file) = file else {
         // Said out loud: from here the core's log and any backtrace have
         // nowhere to go, and the shape of that failure is silence.
-        return format!(
-            "[stdio] {} missing and the log file could not be opened for them;              libghostty's log and any panic backtrace have NO sink this run",
-            missing.iter().map(|(_, n)| *n).collect::<Vec<_>>().join(" and ")
+        //
+        // **This exit goes through `with_verdict` like the other two, and it
+        // is the one that most needed to.** It was written returning a bare
+        // string, so on the single path where the log file cannot be opened
+        // at all -- the path on which nothing this host writes reaches
+        // anybody -- the evidence was discarded. It is also the path that
+        // swallows a *correctly detected* collision: `rescued` is filled in
+        // below, so if the append open fails, `re-opened for append` can
+        // never print no matter how right the classification was. A verdict
+        // that disappears exactly when the log does is the defect this
+        // function was just changed to end, one level in.
+        let why = format!(
+            "[stdio] {} missing or colliding, and the log file could not be opened for them; \
+             libghostty's log and any panic backtrace have NO sink this run, and neither \
+             does this host: nothing below ran, so no handle was adopted or rescued",
+            missing
+                .iter()
+                .map(|(_, n)| *n)
+                .chain(colliding.iter().map(|(_, n)| *n))
+                .collect::<Vec<_>>()
+                .join(" and ")
         );
+        return with_verdict(why, &evidence, "could not open the log; nothing acted", false);
     };
 
     let mut adopted: Vec<&str> = Vec::new();
@@ -4986,7 +5005,7 @@ fn adopt_std_handles() -> String {
         line.push_str(&format!(" SetStdHandle refused {};", refused.join(" and ")));
     }
     line.pop();
-    with_verdict(line, &evidence, "acted")
+    with_verdict(line, &evidence, "acted", true)
 }
 
 /// Put the verdict where the collision cannot reach it, and say in the log
@@ -4998,10 +5017,24 @@ fn adopt_std_handles() -> String {
 /// copy is -- and that sentence, in the case that matters, is exactly the one
 /// that did not survive. So it is written in both, and the one that survives
 /// is self-contained.
-fn with_verdict(line: String, evidence: &[String], outcome: &str) -> String {
+fn with_verdict(
+    line: String,
+    evidence: &[String],
+    outcome: &str,
+    log_reachable: bool,
+) -> String {
     let full = format!("[stdio] verdict={outcome}; {} ;; {line}", evidence.join("; "));
     match write_stdio_verdict(&full) {
-        Some(p) => format!("{line} [verdict also written to {}]", p.display()),
+        // **"also" is right on two exits and wrong on the third.** The exit
+        // where the log file could not be opened is the one where this string
+        // returns to a `logf!` that cannot write either -- there the sidecar
+        // is not a second copy, it is the only one, and a reader told "also
+        // written to" goes looking for a first copy that was never made.
+        Some(p) if log_reachable => format!("{line} [verdict also written to {}]", p.display()),
+        Some(p) => format!(
+            "{line} [this line has nowhere to go, so {} is the ONLY record of it]",
+            p.display()
+        ),
         // Said out loud: from here the only copy of this reading is in the
         // file the reading is about, which is the state this whole change
         // exists to leave behind.

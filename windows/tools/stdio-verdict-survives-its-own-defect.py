@@ -96,6 +96,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MAIN = os.path.normpath(os.path.join(HERE, "..", "host", "src", "main.rs"))
 
 
+EXEMPT = re.compile(r"//\s*no verdict here:\s*\S")
+
+
 def strip_comments(text: str) -> str:
     """Comments out, **string literals kept**: the sink's name lives in one."""
     return re.sub(r"//[^\n]*", "", text)
@@ -119,7 +122,8 @@ def body_of(src: str, header: str):
 
 
 def analyse(src: str):
-    code = strip_comments(src)
+    code = strip_comments(src)  # for the code questions
+
     bad = []
 
     fn = body_of(code, "fn adopt_std_handles(")
@@ -167,6 +171,45 @@ def analyse(src: str):
             "record. Write it to a sink the collision cannot take, and make "
             "that sink per-pid so it cannot be a redirect target either.")
         return bad, 1
+
+    # **Every exit, not just the existence of a sink.** A sink that two of
+    # three `return`s reach is a sink the third cannot use, and the third was
+    # the one that mattered: the branch where the log file could not be opened
+    # is precisely the branch on which nothing else this host writes reaches
+    # anybody. **Measured**: this gate was green with that branch returning a
+    # bare string.
+    #
+    # This is the fourth time in this round a checker has asked whether a
+    # mechanism exists instead of whether everything goes through it. The
+    # first three were about following delegation one hop too few; this one is
+    # about paths rather than calls, so counting `return`s is the shape of the
+    # question.
+    # **The exemption is looked for in the *unstripped* body.**
+    # `strip_comments` runs first, so a `// no verdict here:` written at the
+    # exit is gone by the time the returns are walked -- and the first version
+    # of this check duly rejected its own exemption canary. `strip_comments`
+    # keeps newlines, so line numbers line up between the two copies and the
+    # comment can be found where it was written. Same trap as
+    # `hang-instrument-carries-its-blindness.py`, which had to keep string
+    # literals for the opposite reason.
+    raw_fn = body_of(src, "fn adopt_std_handles(") or ""
+    raw_lines = raw_fn.split("\n")
+    for m in re.finditer(r"\breturn\b([^;]*);", fn):
+        stmt = m.group(0)
+        if "with_verdict" in stmt:
+            continue
+        line = fn.count("\n", 0, m.start()) + 1
+        near = "\n".join(raw_lines[max(0, line - 4) : line])
+        if EXEMPT.search(near):
+            continue
+        bad.append(
+            f"`adopt_std_handles` has a `return` (about {line} lines in) that "
+            "does not go through the verdict writer, so on that path the "
+            "surviving copy is never written. If that path is the one where "
+            "the log cannot be opened, it is the path on which nothing this "
+            "host says reaches anybody -- and it is the one a person is "
+            "reading the sidecar to understand. Route it through "
+            "`with_verdict`, or write `// no verdict here: <reason>` on it.")
 
     name = sidecar.group(0)
     if "{}" not in name and "{" not in name:
@@ -222,6 +265,29 @@ fn adopt_std_handles() -> String {
 }
 '''
 
+# A sink that exists, reached by one exit and not the other. **This is the
+# shape that was merged**, and the shape this gate was green on.
+SINK_NOT_ON_EVERY_PATH = '''
+fn adopt_std_handles() -> String {
+    if nothing_to_do {
+        return with_verdict(String::from("[stdio] ok"));
+    }
+    let Ok(file) = file else {
+        return format!("[stdio] the log file could not be opened");
+    };
+    with_verdict(String::from("[stdio] acted"))
+}
+fn with_verdict(line: String) -> String {
+    let name = format!("polter-host-stdio-{}.log", std::process::id());
+    line
+}
+'''
+
+EXCUSED_EXIT = SINK_NOT_ON_EVERY_PATH.replace(
+    '        return format!("[stdio] the log file could not be opened");',
+    '        // no verdict here: this branch cannot reach any sink at all\n'
+    '        return format!("[stdio] the log file could not be opened");')
+
 # The sink two calls away: what the repair actually looks like.
 TWO_HOPS = '''
 fn adopt_std_handles() -> String {
@@ -246,6 +312,15 @@ for sample, want_red, label in (
     (FIXED_NAME, True,
      "a sidecar with a fixed name -- redirectable, so still inside the family"),
     (PER_PID, False, "a per-pid sidecar, which no redirect can name in advance"),
+    (SINK_NOT_ON_EVERY_PATH, True,
+     "a sink that exists and that one exit does not reach. **This is what "
+     "shipped**: the gate asked whether a surviving sink existed, not whether "
+     "every path reached it, and the path it missed was the one where nothing "
+     "else the host writes gets out"),
+    (EXCUSED_EXIT, False,
+     "the same, with `// no verdict here:` written on the exit -- the "
+     "exemption has to be possible, and it has to be at the exit rather than "
+     "in a list somewhere else"),
     (TWO_HOPS, False,
      "a sink two calls away -- which is what the repair looks like, and what "
      "the one-hop version of this probe reported as the defect"),
