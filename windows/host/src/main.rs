@@ -4231,8 +4231,19 @@ fn log_pixel_format(hwnd: HWND, pf: i32) {
             return;
         }
         // 0x04 PFD_DRAW_TO_WINDOW, 0x20 PFD_SUPPORT_OPENGL, 0x100 PFD_DOUBLEBUFFER
+        //
+        // **`alpha` is here for a question this line could not answer.**
+        // `toggle_background_opacity` (task 286) needs a framebuffer with an
+        // alpha channel before any of the window-composition work is worth
+        // starting, and `alpha=0` would mean the pixel format has to change
+        // first -- a renderer change rather than a window one. That is the
+        // cheapest reading in the whole of 286 and it was missing from the
+        // one line that already prints everything else about this format.
+        //
+        // ⚠️ It says what the format carries, **not** that anything is drawn
+        // translucent: nothing in this host asks for transparency yet.
         logf!(
-            "[gl] pixel format {} on {:?}: flags=0x{:x} (window={} opengl={} double={}) color={} depth={}",
+            "[gl] pixel format {} on {:?}: flags=0x{:x} (window={} opengl={} double={}) color={} alpha={} depth={}",
             pf,
             hwnd.0,
             pfd.dwFlags.0,
@@ -4240,6 +4251,7 @@ fn log_pixel_format(hwnd: HWND, pf: i32) {
             pfd.dwFlags.0 & 0x20 != 0,
             pfd.dwFlags.0 & 0x100 != 0,
             pfd.cColorBits,
+            pfd.cAlphaBits,
             pfd.cDepthBits
         );
     }
