@@ -48,8 +48,18 @@ reason not to write another check for the shape, and that citation was made
 about it.** Measured on 2026-09-08, so that the size of the gap is a number
 rather than a worry:
 
-  * `src/Surface.zig` alone contains **97** mutex uses; `renderer_state.mutex`
-    is a `std.Io.Mutex`, which is **not reentrant**, exactly like the host's.
+  * `src/Surface.zig` alone holds dozens of critical sections;
+    `renderer_state.mutex` is a `std.Io.Mutex`, which is **not reentrant**,
+    exactly like the host's.
+
+    **The count is not written here any more, and that is the fix rather than
+    a loss.** It used to say "97 mutex uses" -- a number with no recorded
+    method, which is a number nobody can re-derive and therefore nobody can
+    maintain. Counting the word gives 116 lines or 106 occurrences; counting
+    calls gives 96. `the-cores-locks-are-unwatched.py` now carries the figure
+    **with its method** and fails when the tree stops matching it, so this
+    paragraph can say what kind of thing is there and let the checker say how
+    much.
   * the shape this gate hunts -- a guard alive across a call that can come
     back round -- therefore **does exist** on that side. The obvious way round
     is the apprt boundary: the core holds a lock, performs an action, the host
@@ -59,7 +69,9 @@ rather than a worry:
     *"Pasting can trigger a lock grab in complete clipboard request so we need
     to unlock."*
   * **how many such sites there are is not measured, and the first attempt at
-    measuring it was wrong.** A probe looking for `renderer_state.mutex.lock`
+    measuring it was wrong.** (Still true: the neighbouring checker counts the
+    critical sections and the two places that took care; **neither of those is
+    the number of risky sites**, which remains unknown.) A probe looking for `renderer_state.mutex.lock`
     followed by an apprt call matched the `lockUncancelable` inside that very
     `defer` -- the *re*-lock of a deliberate unlock -- and then scanned forward
     across a function boundary into the next function's body, and reported one
@@ -795,8 +807,10 @@ def main() -> int:
     print("  reach: windows/host/src/*.rs only. `src/` (the Zig core) is NOT "
           "scanned. Unlike `borrow-across-dispatch.py`, whose rule has no "
           "subject there, THIS one does: `std.Io.Mutex` is non-reentrant and "
-          "`src/Surface.zig` alone has 97 mutex uses. Nothing checks them. "
-          "See the header.\n")
+          "`src/Surface.zig` is full of critical sections and nothing checks "
+          "them. The size of that gap is counted, with its method, by "
+          "`the-cores-locks-are-unwatched.py`; see the header for why it is "
+          "not counted here.\n")
 
     # **The same sentence as the file guard, one level in.** An empty root set
     # or an empty locker set is what this gate looked like for the whole of its
