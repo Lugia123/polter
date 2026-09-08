@@ -7476,12 +7476,42 @@ pub const Keybinds = struct {
                 .{ .performable = true },
             );
 
-            // Selection clipboard paste
-            try self.set.put(
-                alloc,
-                .{ .key = .{ .physical = .insert }, .mods = .{ .shift = true } },
-                .{ .paste_from_selection = {} },
-            );
+            // Selection clipboard paste.
+            //
+            // **Not on Windows, and the reason is that the platform has no
+            // selection clipboard at all.** The embedded apprt there answers
+            // a selection read with a named refusal, so this binding put
+            // `shift+insert` -- the oldest paste chord on that platform --
+            // onto an action that cannot do anything: it was pressed and
+            // nothing happened.
+            //
+            // **It also cost the paste row its menu shortcut**, which is why
+            // this is one fix and not two. `shift+insert` is bound to
+            // `paste_from_clipboard` earlier in this same block, without
+            // `performable`, so it is the one paste binding that reaches the
+            // reverse map. Overwriting the trigger here removed that reverse
+            // entry (`Set.putFlags` drops the losing action's), and the only
+            // other Windows binding for pasting is a `performable` `ctrl+v`,
+            // which is never tracked -- so the menu had no shortcut to show
+            // and the chord did nothing. Skipping this one `put` restores
+            // both.
+            //
+            // A consequence worth stating rather than burying: **Windows is
+            // then left with no default chord for `paste_from_selection` at
+            // all.** That is the honest state. Turning a chord from "pressed
+            // and nothing happened" into "not bound" is trading a lie for
+            // silence, and the silence is accurate here.
+            //
+            // Everywhere else this block runs -- Linux, FreeBSD -- the
+            // selection clipboard is real and `shift+insert` pasting it is
+            // the X11 convention, so the binding stays exactly as it was.
+            if (comptime builtin.target.os.tag != .windows) {
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .insert }, .mods = .{ .shift = true } },
+                    .{ .paste_from_selection = {} },
+                );
+            }
         }
         {
             // On macOS we default to super but everywhere else
@@ -8258,6 +8288,24 @@ pub const Keybinds = struct {
         try testing.expect(std.meta.activeTag(shown.key) == .physical);
         try testing.expect(shown.key.physical == .insert);
         try testing.expect(shown.mods.ctrl and !shown.mods.shift);
+
+        // **The same claim for paste, which nobody made until it was wrong.**
+        //
+        // The four lines above are the copy half, and they were here on their
+        // own. Copy survived because nothing ever overwrote `ctrl+insert`;
+        // paste did not, because `shift+insert` was later taken by
+        // `paste_from_selection` and that removed paste's only reverse entry.
+        // The half of the pair that was never asserted is the half that
+        // broke, and it broke in a way the copy assertion cannot see.
+        const pasted = keybinds.set.getTrigger(.{ .paste_from_clipboard = {} }).?;
+        try testing.expect(std.meta.activeTag(pasted.key) == .physical);
+        try testing.expect(pasted.key.physical == .insert);
+        try testing.expect(pasted.mods.shift and !pasted.mods.ctrl);
+
+        // And the chord it lost it to is not bound here at all: Windows has
+        // no selection clipboard, so a default binding for reading it would
+        // be a key that does nothing.
+        try testing.expect(keybinds.set.getTrigger(.{ .paste_from_selection = {} }) == null);
     }
 
     test "parseCLI table definition" {
