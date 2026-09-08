@@ -1857,7 +1857,7 @@ docs 那条链本机跑不了（缺 `pandoc`），**但那只影响「另外再�
 | **209** | 符号化。⚠️ **路 A（解绑 `omit_frame_pointer`）已被实测排除**，见（十六之二）。剩下的是「同一次构建的两份产物够不够」这一问，以及那处未解的 strip 异常 |
 | **211** | `VERSION` 那条合法路径今天不可区分，所以 205 的警告会对合法 tarball 也喊 |
 | **206** | 分支名尾部那个横杠（`short_hash` 有 `trimEnd`，`branch` 没有） |
-| **202** | `wToPrefixedFileW` = 2 MB 的 50.06%。**不超，但一个函数吃掉一半**，调用链未量 |
+| **202** | ✅ **已结**（二十七）：1 MB 是 **Debug** 的数，出货档 196,696、排第四。⚠️ 出货档第一名 `dirRenameWindowsInner` = 393,432 没人看过；分母（工作线程 2 MB 还是 16 MB）仍未测 |
 | **178 / 180 / 192** | 闸只看 Rust 不看 Zig；`SendMessageTimeout` 类判据作废重写（模态循环下失明，边界与标定步骤见 `docs/windows/hang-readings.md`）；`reg()` 哨兵 |
 | **`Config.clone`** | 修法未落地。R2 是**测量变体不是补丁**——出参 + `var result: Config = undefined`，**错误路径上 `result` 未初始化**，而原版有 `errdefer result.deinit()` |
 | **213 / 212** | 各自那条要 Windows 的单元测试 |
@@ -4857,3 +4857,79 @@ if (self.isMouseReporting()) {
 **一条留给下一个改这份文档的人**：本文档第六节那张表里的每一条修正，
 **自己也要过一遍第七节第 7 条（负对照必须在过滤之前取）**。
 已经有一条没过——见第六节脚注。
+
+
+### （二十七）任务 202：那个全局第一是 **Debug 的排名**，出货档第一名换了人
+
+`wToPrefixedFileW = 1,049,840` 被记为「当前全局第一，而且 Windows 上真的会跑」。
+**两句都对，但它们描述的不是同一个二进制。**
+
+#### 复现，然后把那个倍数构造出来
+
+同一个函数交叉编译到 `x86_64-windows-gnu`，只改优化档，读序言里的 `.seh_stackalloc`：
+
+    Debug          1,049,856      （报告记的是 1,049,840，差 16 字节的记账口径）
+    ReleaseSmall     196,696
+    ReleaseFast      196,696
+
+`1,049,856 ÷ 65,584 = 16.008`。**这个 16 是数出来的，不是拟合出来的**：函数体里有
+**13 个 return 点 + 3 个具名 `WindowsPathSpace` 缓冲 = 16**，而
+`@sizeOf(WindowsPathSpace)` = `[32767:0]u16 + usize` = 65,544。
+成因与（十六）`Config.clone` 逐字相同：**Debug 给每个返回点单独开一份完整的
+按值返回临时**。
+
+⚠️ **第一次数错了 2 个**，因为过滤器只认行首的 `return`，漏掉了
+`error.UnrecognizedVolume => return error.Unexpected,` 这种写在 switch 分支里的。
+**错的是数法不是被测对象**，而 14 和 16 都足够接近 16.008，不重数就会当成对上了。
+
+#### 出货档里它是 196,696，而 196,696 正好是那三个缓冲
+
+`3 × 65,544 = 196,632`，实测 196,696。**Release 把 13 份返回临时全消了，一份没剩，
+三个具名缓冲一个不少**——这既解释了倍数，也说明**没有可修的东西**：那三个缓冲是
+函数的工作空间，不是浪费。
+
+#### ⚠️ 而排名换人了
+
+同一份对象、同一条文件 IO 入口（`Io.Dir.cwd().openFile` → `readStreaming`），
+按 `.seh_proc` 归属统计每个函数的帧：
+
+    Debug 前三                          ReleaseSmall 前三
+      1,049,856  wToPrefixedFileW         393,432  dirRenameWindowsInner
+        656,336  dirRenameWindowsInner    344,320  dirSymLinkWindows
+        476,344  dirSymLinkWindows        199,160  netLookup
+                                          196,696  wToPrefixedFileW  ← 第四
+
+⇒ **本文档此前那份排名是 Debug 排名。** 出货档的第一名是
+`dirRenameWindowsInner` = 393,432（2 MB 的 18.8%），**没有人看过它**。
+
+#### ⚠️ 帧大小不是函数自己的属性
+
+同一个函数在三处量出三个数：作为独立符号 **196,696**；被完全内联进一个极小的
+调用者时 **65,584**；Debug 下 **1,049,856**。
+⇒ **「某函数 = N 字节」这句话必须带上构建上下文**，否则两个人量同一个函数会得到
+不同的数而都没错。
+
+#### 那个 50.06% 的分母也可能是错的
+
+它用的是 PE 头里给**主线程**的 2 MB。但这个函数在哪个线程上跑，取决于谁调它。
+- `windows/host` 与 `src/` 里**没有任何一处显式指定线程栈大小**（全是
+  `std.Thread.spawn(.{}, …)`）——这答掉了任务 201 留的「未查」。
+- 而 `std.Thread.SpawnConfig.default_stack_size` = **16 MB**，std 在 Windows 上把它
+  放进 `NtCreateThreadEx` 的 **StackSize**，`MaximumStackSize` 传的是 `.default`。
+- ⚠️ **StackSize 是提交量还是保留量，我在这台机器上定不了**，而两种答案给出
+  「工作线程有 2 MB 还是 16 MB」两个不同的世界。**未检验，不是已排除。**
+
+#### 结论：不改代码
+
+Debug 那 1 MB 不进产物；出货档的 196,696 是三个必要缓冲；分母还没定。
+**三条里没有一条支持现在动 `std`。**
+
+#### 给 WT 的两条判据
+
+1. **出货档确认**：在发出去的 `ghostty-internal.dll` 里找 `wToPrefixedFileW` 这个符号。
+   **Release 会把它内联掉或留下一个 196,696 的帧；如果找到一个 ~1 MB 序言的它，
+   那说明发的是 Debug 档**——那本身就是要报的事。
+2. **分母**：在一个真正跑文件 IO 的工作线程里调 `GetCurrentThreadStackLimits`，
+   把 `LowLimit`/`HighLimit` 的差记下来。**2 MB 和 16 MB 会给出两条完全不同的结论**，
+   而今天文档里的每一个百分比都建立在猜的那一个上。
+
