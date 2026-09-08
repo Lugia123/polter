@@ -103,6 +103,7 @@ pub const ACTION_FLOAT_WINDOW: u32 = 45;
 pub const ACTION_MOVE_TAB_TO_NEW_WINDOW: u32 = 69;
 pub const ACTION_POLTERGEIST_MARK: u32 = 70;
 pub const ACTION_POLTERGEIST_CLOSE: u32 = 71;
+pub const ACTION_POLTERGEIST_TAB_PANES: u32 = 72;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
@@ -388,6 +389,20 @@ impl Action {
         let confirm = self.payload[4] != 0;
         let result = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *mut i32;
         (scope, confirm, result)
+    }
+
+    /// `ghostty_action_poltergeist_tab_panes_s { uint32_t* count; }`.
+    ///
+    /// **The core is asking, not telling.** It cannot see which surfaces
+    /// share a tab -- that is the apprt's -- so it hands over a cell and
+    /// reads what this host writes into it.
+    ///
+    /// ⚠️ **Writing nothing is an answer**, and the honest one: the cell
+    /// arrives zero, a tab holding the target holds at least that terminal,
+    /// so zero can only mean "this host did not answer". Do not write zero to
+    /// mean anything else.
+    pub fn as_poltergeist_tab_panes(&self) -> *mut u32 {
+        usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *mut u32
     }
 
     /// `ghostty_action_reload_config_s { bool soft; }`.

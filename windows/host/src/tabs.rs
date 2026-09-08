@@ -3127,6 +3127,29 @@ pub fn tab_of_surface(surface: Surface) -> Option<(HWND, TabId)> {
     })
 }
 
+/// How many panes share a tab with `surface`.
+///
+/// **A fact, not a judgement.** The core asks this because it cannot see the
+/// layout -- `App.zig` says as much where it refuses to decide `close_tab` --
+/// and then applies its own budget to the answer. **No number that belongs to
+/// that budget may appear in this file**: a second copy of it here would put
+/// two platforms' placements out of step while every log line read the same.
+///
+/// `None` when the surface is in no tab (the quick terminal, or a surface
+/// still being created). The caller reports that as "did not answer" rather
+/// than as a count, because a tab holding this surface always holds at least
+/// it.
+// window-free: keyed by surface, which is unique in the process
+pub fn panes_in_tab_of_surface(surface: Surface) -> Option<usize> {
+    let key = surface as usize;
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .find(|t| t.panes.iter().any(|p| p.surface == key))
+            .map(|t| t.panes.len())
+    })
+}
+
 /// The **pane window** a surface is bound to, for anything that has to post a
 /// message to it.
 ///

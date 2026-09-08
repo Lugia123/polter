@@ -1019,6 +1019,21 @@ typedef struct {
   ghostty_action_poltergeist_close_result_e* result;
 } ghostty_action_poltergeist_close_s;
 
+// apprt.action.PoltergeistTabPanes
+//
+// How many terminals share a tab with the target surface. The apprt writes
+// `count` before it returns and never reads it.
+//
+// Zero is the honest default and the core reads it as "this apprt did not
+// answer": a tab holding the target holds at least that one terminal, so no
+// truthful answer is ever zero. An apprt that does not implement this action
+// -- or writes nothing -- is therefore reported as not knowing, rather than
+// as knowing that a tab is empty. Same reasoning as
+// GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_UNSUPPORTED being first.
+typedef struct {
+  uint32_t* count;
+} ghostty_action_poltergeist_tab_panes_s;
+
 // apprt.Action.Key
 typedef enum {
   GHOSTTY_ACTION_QUIT,
@@ -1093,6 +1108,7 @@ typedef enum {
   GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW,
   GHOSTTY_ACTION_POLTERGEIST_MARK,
   GHOSTTY_ACTION_POLTERGEIST_CLOSE,
+  GHOSTTY_ACTION_POLTERGEIST_TAB_PANES,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1139,6 +1155,7 @@ typedef union {
   ghostty_action_open_config_e open_config;
   ghostty_action_poltergeist_mark_s poltergeist_mark;
   ghostty_action_poltergeist_close_s poltergeist_close;
+  ghostty_action_poltergeist_tab_panes_s poltergeist_tab_panes;
 } ghostty_action_u;
 
 typedef struct {

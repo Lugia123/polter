@@ -142,7 +142,7 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 `setPasswordInput` is about one terminal's prompt -- and a
 #                 badge saying PASSWORD over the wrong pane is worse than none,
 #                 because a person reads it and acts on another pane's state.
-MIN_CARRYING_ARMS = 18
+MIN_CARRYING_ARMS = 19
 
 # The notifications that carry no address **today**, by `TAG -> module::fn`.
 #

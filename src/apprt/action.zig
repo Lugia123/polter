@@ -404,6 +404,21 @@ pub const Action = union(Key) {
     /// alone" from any answer it might have wanted.
     poltergeist_close: PoltergeistClose,
 
+    /// How many terminals share a tab with the target surface.
+    ///
+    /// **A question, not an instruction.** The core cannot answer it: as
+    /// `App.zig` says where it refuses to decide `close_tab`, *nothing in the
+    /// core knows which surfaces share a tab*. The layout lives in the apprt
+    /// -- a `SplitTree` in Swift, a `polter_split_tree` in Rust -- so the
+    /// core asks and decides, rather than each apprt deciding for itself.
+    ///
+    /// **The budget that reads this answer lives in one place** (`App.zig`,
+    /// where a supervisor's worker terminals are placed). An apprt that held
+    /// its own copy would be a second copy to drift, and the shape of the
+    /// drift is the worst kind: two platforms laying panes out differently
+    /// while every log line and every reply reads the same.
+    poltergeist_tab_panes: PoltergeistTabPanes,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -478,6 +493,12 @@ pub const Action = union(Key) {
         move_tab_to_new_window,
         poltergeist_mark,
         poltergeist_close,
+        // **Added at the end, and that is load-bearing.** These values are
+        // the tags `windows/host/src/ffi.rs` redeclares by hand; inserting a
+        // member anywhere else renumbers the ones after it and the host then
+        // dispatches into a different action's arm, with no crash and no
+        // wrong-looking log line. The test below is what catches it.
+        poltergeist_tab_panes,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2003,6 +2024,24 @@ pub const PoltergeistMark = struct {
 /// nothing to convert: a scope, a bool and a pointer are already what the
 /// header says. A `cval` here would be a copy step whose only job is to
 /// forget nothing, and the way it fails is by forgetting the pointer.
+/// The answer to "how many terminals share a tab with this surface".
+pub const PoltergeistTabPanes = extern struct {
+    /// Written by the apprt before it returns. Never read by it.
+    ///
+    /// **Zero is the honest default**, and the core reads it as *this apprt
+    /// did not answer*. A tab holding the target holds at least that one
+    /// terminal, so no truthful answer is ever zero -- which makes zero free
+    /// to mean "no answer" without a second field to say so. An apprt that
+    /// does not implement this action, or implements it and writes nothing,
+    /// is then reported as not knowing rather than as knowing that a tab is
+    /// empty.
+    ///
+    /// ⚠️ **That branch is not hypothetical.** GTK does not implement this,
+    /// so on Linux the answer is always "did not answer" and the caller has
+    /// to fall back. It is a live path with a user, not a defensive one.
+    count: *u32,
+};
+
 pub const PoltergeistClose = extern struct {
     scope: Scope,
 

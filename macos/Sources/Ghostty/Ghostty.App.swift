@@ -493,6 +493,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_POLTERGEIST_CLOSE:
                 return poltergeistClose(app, target: target, v: action.action.poltergeist_close)
 
+            case GHOSTTY_ACTION_POLTERGEIST_TAB_PANES:
+                return poltergeistTabPanes(target: target, v: action.action.poltergeist_tab_panes)
+
             case GHOSTTY_ACTION_TOGGLE_FULLSCREEN:
                 toggleFullscreen(app, target: target, mode: action.action.toggle_fullscreen)
 
@@ -1926,6 +1929,42 @@ extension Ghostty {
             default:
                 return false
             }
+        }
+
+        /// How many terminals share a tab with the target surface.
+        ///
+        /// **A fact this side owns and the core does not.** The core places a
+        /// supervisor's worker terminals against a budget it keeps; the
+        /// budget needs to know how full the tab already is, and nothing in
+        /// the core knows which surfaces share a tab. So it hands over a cell
+        /// and reads what goes in it.
+        ///
+        /// ⚠️ **Writing nothing is a real answer** -- the cell arrives zero,
+        /// and a tab holding the target holds at least that terminal, so zero
+        /// can only mean "not answered". Returning false without writing is
+        /// how this says "I could not tell you", and the core opens a tab
+        /// instead of a split.
+        ///
+        /// **No number from the budget belongs in here.** A copy of it on
+        /// this side would put the two platforms' placements out of step
+        /// while every log line and every reply read the same.
+        private static func poltergeistTabPanes(
+            target: ghostty_target_s,
+            v: ghostty_action_poltergeist_tab_panes_s) -> Bool {
+            guard let cell = v.count else { return false }
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface),
+                  let controller = surfaceView.window?.windowController as? BaseTerminalController
+            else { return false }
+
+            // A macOS "tab" is this controller's own window; what the user
+            // sees as tabs are windows in a tab group. So the panes sharing a
+            // tab with this surface are the leaves of this controller's tree.
+            let panes = controller.surfaceTree.root?.leaves().count ?? 0
+            guard panes > 0 else { return false }
+            cell.pointee = UInt32(panes)
+            return true
         }
 
         private static func promptTitle(

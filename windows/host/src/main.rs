@@ -2825,6 +2825,51 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             polterclose::perform(&action, target_surface(&target))
         }
 
+        // **The core asking a question only this side can answer.** It places
+        // a supervisor's worker terminals against a budget, and the budget
+        // needs to know how full the supervisor's tab already is -- which the
+        // core cannot see, because nothing there knows which surfaces share a
+        // tab. So it hands over a cell and reads what goes in it.
+        //
+        // ⚠️ **Leaving the cell alone is a real answer**, and the honest one:
+        // it arrives zero, and a tab holding the target holds at least that
+        // terminal, so zero can only mean "not answered". The core falls back
+        // to opening a tab when it reads zero. **That branch has a permanent
+        // user** -- GTK does not implement this action at all -- so it is a
+        // path with traffic, not a defensive one.
+        ffi::ACTION_POLTERGEIST_TAB_PANES => {
+            let cell = action.as_poltergeist_tab_panes();
+            if cell.is_null() {
+                alogf!(origin, "[action] poltergeist_tab_panes: no result cell; not answered");
+                return false;
+            }
+            let Some(s) = target_surface(&target) else {
+                alogf!(
+                    origin,
+                    "[action] poltergeist_tab_panes with no surface (tag={}); not answered",
+                    target.tag
+                );
+                return false;
+            };
+            match tabs::panes_in_tab_of_surface(s) {
+                Some(n) => {
+                    // The count is what this host knows; what it is *for* is
+                    // decided in the core, and deliberately not here.
+                    unsafe { cell.write(n as u32) };
+                    alogf!(origin, "[action] poltergeist_tab_panes surface={:?} -> {}", s, n);
+                    true
+                }
+                None => {
+                    alogf!(
+                        origin,
+                        "[action] poltergeist_tab_panes surface={:?}: in no tab; not answered",
+                        s
+                    );
+                    false
+                }
+            }
+        }
+
         // **Hide every terminal window, or bring back the ones we hid.** An
         // action about the *set* of windows, so it lives with the other two in
         // `winnav.rs` rather than resolving a target here -- and it is
