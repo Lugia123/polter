@@ -30,14 +30,32 @@ pub fn detect(b: *std.Build) !Version {
             else => return err,
         };
 
+        // **Trim first, then sanitise. The order is the whole of this.**
+        //
+        // `git rev-parse` ends its output with a newline, and the loop below
+        // turns anything outside `[0-9A-Za-z-]` into `-` -- a newline
+        // included. Run the other way round, the trim finds nothing left to
+        // trim and **every branch name gains a trailing hyphen**: the version
+        // string read `1.3.2-HEAD-+1ca47f03b`, with `version_pre = "HEAD-"`.
+        //
+        // ⚠️ There *was* a `trimEnd` on this value, at the `return` below.
+        // It had simply already lost: by the time it ran, the newline was a
+        // hyphen and a hyphen is legal in a pre-release identifier. **A call
+        // that cannot fire is worse than a missing one** -- anyone reading
+        // that line concluded the branch was trimmed, which is why this
+        // survived long enough to reach a version string.
+        // Length, then re-slice the mutable buffer: `trimEnd` hands back a
+        // `[]const u8`, and the loop below writes.
+        const trimmed = tmp[0..std.mem.trimEnd(u8, tmp, "\r\n ").len];
+
         // Replace characters that are not valid in semantic version
         // pre-release identifiers (which only allow [0-9A-Za-z-]).
         // Slashes would also mess up dist tarball paths.
-        for (tmp) |*c| {
+        for (trimmed) |*c| {
             if (!std.ascii.isAlphanumeric(c.*) and c.* != '-') c.* = '-';
         }
 
-        break :b tmp;
+        break :b trimmed;
     };
 
     const short_hash = short_hash: {
@@ -81,6 +99,9 @@ pub fn detect(b: *std.Build) !Version {
         .short_hash = short_hash,
         .changes = changes,
         .tag = if (tag.len > 0) std.mem.trimEnd(u8, tag, "\r\n ") else null,
-        .branch = std.mem.trimEnd(u8, branch, "\r\n "),
+        // Already trimmed, above, before the sanitiser could hide the
+        // newline. Trimming again here is what this looked like when it was
+        // broken.
+        .branch = branch,
     };
 }
