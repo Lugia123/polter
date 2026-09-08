@@ -589,20 +589,16 @@ impl Line {
 /// the path conversion inside `open`), so it is fine for the healthy cadence
 /// and unusable for the alarm. The alarm uses `alarm` below.
 fn wd_log(msg: &str) {
-    use std::io::Write as _;
     // One buffer, newline included, for the reason `log_line` sets out: a
     // record written in two writes is a record the core's log can be spliced
     // into. The watchdog's lines are the ones read when everything else has
     // stopped saying anything, so a torn `[wd]` line is the worst one to have.
     let line = format!("[{}] {msg}\n", now_str());
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path())
-    {
-        let _ = f.write_all(line.as_bytes());
-        let _ = f.flush();
-    }
+    // The same held handle every other record goes through. ⚠️ **This one
+    // mattered most**: the watchdog's own "I could not open my alarm handle"
+    // notice went through here, so the report of the defect was swallowed by
+    // the defect.
+    sink().write(line.as_bytes());
 }
 
 /// Write the alarm line **without allocating anything**.
@@ -703,13 +699,15 @@ fn start_watchdog() {
         .name("polter-watchdog".into())
         .spawn(move || {
             let tid = unsafe { GetCurrentThreadId() };
-            // Opened here, while the process is healthy, and kept for the life
-            // of the thread: the alarm path must not open anything.
-            let alarm_file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path())
-                .ok();
+            // **The one the whole process writes through**, rather than a
+            // fourth handle of its own. It is already open by now and it is
+            // held, which is what the comment below has always asked for --
+            // the alarm path must not open anything, because the moment it
+            // runs is the moment opening things is least likely to work.
+            //
+            // It also ends the case task 317 measured, where this open failed
+            // and the notice below could not be written either.
+            let alarm_file = sink().file.as_ref();
             if alarm_file.is_none() {
                 wd_log("[wd] could not open the alarm handle; the BLOCKED line \
                         will be unavailable this run");
@@ -1125,6 +1123,170 @@ fn log_build_identity() {
     }
 }
 
+/// The one handle everything in this process writes its log through.
+///
+/// # Why this is held rather than opened per line
+///
+/// It used to be a `std::fs::OpenOptions::append` per record, in three
+/// separate places (`log_line`, `wd_log`, and the watchdog's alarm handle),
+/// and task 317 is what that cost. Pin `POLTER_HOST_LOG` at a file and
+/// redirect the shell onto the same file, and **every one of those opens
+/// fails** -- and each of them was written as `if let Ok(..)`, so the failure
+/// was three separate silences. The reading off the machine: 130 lines in the
+/// log, **not one of them the host's**, and nothing anywhere saying why.
+///
+/// ⚠️ **The most complete illustration of that defect is in this file
+/// already**: the watchdog notices when it cannot open its alarm handle and
+/// says so with `wd_log` -- which opens the same file the same way. **The
+/// sentence "I could not open my alarm handle" was itself swallowed by the
+/// thing it was reporting.**
+///
+/// # What holding it buys, and what it must not cost
+///
+/// **Nothing is buffered on this side.** The handle is opened for append and
+/// written with one `write_all` per record, so when that call returns the
+/// bytes are the kernel's. A process killed with `taskkill` between two
+/// records loses nothing that was written -- which is the property the
+/// per-line reopen was there for, kept rather than traded away.
+///
+/// **And no lock.** `OnceLock` after initialisation is an atomic load; the
+/// watchdog never waits on anything here. That is not a nicety: the alarm
+/// exists to report that the main thread has stopped, and one reason a thread
+/// stops is that it holds a lock -- so a watchdog that waits on a lock is
+/// silent in exactly the case it was built for. The same argument is written
+/// out at `alarm`, which has always opened its handle early and kept it. This
+/// makes the rest of the file agree with it.
+struct Sink {
+    /// `None` when nothing could be opened at all. Everything below still
+    /// runs; the records simply have nowhere to go, and `origin` says so.
+    file: Option<std::fs::File>,
+
+    /// Where the records are actually going, in words, for the line that
+    /// announces it. A reader who cannot find the host's records needs to be
+    /// told which file to look in, not left to work it out.
+    origin: &'static str,
+
+    /// The OS error from the direct open, when it failed.
+    ///
+    /// ⚠️ **This is the reading task 317 did not have.** The old code was
+    /// `let Ok(file) = file else` and `if let Ok(mut f)`, so the error was
+    /// discarded on every one of the three paths. "It could not be opened"
+    /// and "it could not be opened, because 32" are different facts, and only
+    /// the second one names a cause. Kept even when the rescue below
+    /// succeeds, because a rescue that works does not tell anybody what it
+    /// was rescuing from.
+    open_error: Option<i32>,
+}
+
+impl Sink {
+    fn write(&self, bytes: &[u8]) {
+        use std::io::Write as _;
+        if let Some(mut f) = self.file.as_ref() {
+            let _ = f.write_all(bytes);
+        }
+    }
+}
+
+static SINK: std::sync::OnceLock<Sink> = std::sync::OnceLock::new();
+
+/// The sink, opening the log directly if nothing has installed one yet.
+///
+/// **The fallback matters for ordering.** `install_log_sink` runs before the
+/// first record of a normal start, but anything that logs before it must
+/// still be able to; this keeps that path working and it is the ordinary
+/// case, where opening the log directly is exactly right.
+fn sink() -> &'static Sink {
+    SINK.get_or_init(|| Sink::direct(None))
+}
+
+impl Sink {
+    /// Open the log for append, and fall back to the per-pid sidecar.
+    ///
+    /// `rescue` is a handle this process was *given* that already names the
+    /// log file -- see `adopt_std_handles`. It is used only when the direct
+    /// open fails, and it is the whole of the repair for the case task 317
+    /// measured.
+    fn direct(rescue: Option<windows::Win32::Foundation::HANDLE>) -> Sink {
+        let err = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path())
+        {
+            Ok(f) => {
+                return Sink { file: Some(f), origin: "the log file", open_error: None };
+            }
+            Err(e) => e.raw_os_error(),
+        };
+
+        // **The handle we were handed is a handle to this very file**, so
+        // there is nothing to open: whoever started us already has it open,
+        // which is the most likely reason the open above failed. Using it
+        // needs one thing done first -- see `rescue_handle`.
+        if let Some(h) = rescue {
+            if let Some(f) = rescue_handle(h) {
+                return Sink {
+                    file: Some(f),
+                    origin: "the log file, through the handle we were given                              (the file could not be opened a second time)",
+                    open_error: err,
+                };
+            }
+        }
+
+        // **The sidecar, and it is chosen because it has been read.** When
+        // the log could not be opened at all, this is the file the machine's
+        // verdict came back in -- so it is a channel measured to work in this
+        // exact case rather than one believed to.
+        let name = format!("{}-stdio-{}.log", log_stem(), std::process::id());
+        let side = std::env::current_exe().ok().map(|p| p.with_file_name(name));
+        if let Some(path) = side {
+            if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                return Sink {
+                    file: Some(f),
+                    origin: "the per-pid stdio sidecar; the log file could not be opened",
+                    open_error: err,
+                };
+            }
+        }
+
+        Sink { file: None, origin: "nowhere; nothing could be opened", open_error: err }
+    }
+}
+
+/// Turn a handle this process was given into one the log may be written
+/// through.
+///
+/// **Two steps, and the second one is the difference between this and the
+/// defect it repairs.**
+///
+///   1. Duplicate it, so closing ours later cannot take away the stdout the
+///      core is writing through.
+///   2. ⚠️ **Move the file pointer to the end.** A handle handed over by a
+///      shell's `>` carries its own pointer, starting at 0 -- writing through
+///      it as it stands is precisely task 298's defect, the one where ~100 of
+///      500 host records ceased to exist. Moved to the end once, and then
+///      **every writer shares one pointer**, so nothing can land on top of
+///      anything: that is stronger than two append handles, not weaker.
+fn rescue_handle(h: windows::Win32::Foundation::HANDLE) -> Option<std::fs::File> {
+    use std::os::windows::io::FromRawHandle as _;
+    use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
+    use windows::Win32::Storage::FileSystem::{SetFilePointerEx, FILE_END};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    let me = unsafe { GetCurrentProcess() };
+    let mut dup = HANDLE::default();
+    unsafe { DuplicateHandle(me, h, me, &mut dup, 0, false, DUPLICATE_SAME_ACCESS) }.ok()?;
+
+    if unsafe { SetFilePointerEx(dup, 0, None, FILE_END) }.is_err() {
+        // Refused rather than used: writing through a pointer we could not
+        // move is the overwriting defect, and half a repair here is worse
+        // than none because the log would look healthy while losing records.
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(dup) };
+        return None;
+    }
+
+    Some(unsafe { std::fs::File::from_raw_handle(dup.0 as *mut std::ffi::c_void) })
+}
+
 pub fn log_line(msg: &str) {
     // **The newline is part of the record, not a second write.**
     //
@@ -1145,7 +1307,6 @@ pub fn log_line(msg: &str) {
     // `alarm` below has been this shape all along, for the unrelated reason
     // that it may not allocate.
     let s = format!("[{}] {}\n", now_str(), msg);
-    use std::io::Write as _;
     // **The file is the only copy, and it always was the one we trust**: it is
     // flushed on every line and it is the artifact that leaves the machine.
     // There used to be a `println!` here as well. It went with the console
@@ -1153,14 +1314,12 @@ pub fn log_line(msg: &str) {
     // it took two hazards with it: Rust's global stdout lock, which the
     // watchdog must never be able to block on (`wd_log`), and a banner
     // printed onto the stdout that a `+mcp` server speaks its protocol over.
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path())
-    {
-        let _ = f.write_all(s.as_bytes());
-        let _ = f.flush();
-    }
+    // **One handle, held; see `Sink`.** This used to open the file per line,
+    // which is what made task 317's failure total and silent: the open failed
+    // every time and the `if let Ok` said nothing. Nothing is buffered here,
+    // so the property the reopen was for -- a killed process loses no record
+    // that was written -- is kept.
+    sink().write(s.as_bytes());
 }
 
 #[macro_export]
@@ -4955,7 +5114,11 @@ fn adopt_std_handles() -> String {
     //  * **given, and it is something else** -- a pipe, a console, another
     //    file. Left exactly alone, as before.
     let mut missing: Vec<(STD_HANDLE, &str)> = Vec::new();
-    let mut colliding: Vec<(STD_HANDLE, &str)> = Vec::new();
+    // The raw handle travels with the classification, because it is not only
+    // something to re-point -- it is a handle to the log file that this
+    // process already owns, and that is what rescues the host's own records
+    // when the file cannot be opened a second time. See `Sink::direct`.
+    let mut colliding: Vec<(STD_HANDLE, &str, windows::Win32::Foundation::HANDLE)> = Vec::new();
     let mut untouched: Vec<&str> = Vec::new();
     // **The evidence, per stream, before any of it is acted on.** This is the
     // half that settles which of the two causes a missing rescue had: an
@@ -4985,11 +5148,33 @@ fn adopt_std_handles() -> String {
         match given(id) {
             None => missing.push((id, name)),
             Some(h) => match (file_identity(h), log_id) {
-                (Some(a), Some(b)) if a == b => colliding.push((id, name)),
+                (Some(a), Some(b)) if a == b => colliding.push((id, name, h)),
                 _ => untouched.push(name),
             },
         }
     }
+
+    // **The host's own records get their sink here, before anything else is
+    // decided.** Task 317: with the log pinned and the shell redirected onto
+    // it, opening the log a second time fails, and every one of this
+    // process's three log writers was an open-per-record that said nothing
+    // when it failed. The handle in `colliding` is a handle to that very
+    // file, so when the open fails there is a way through that does not
+    // depend on opening anything.
+    let installed = SINK.set(Sink::direct(colliding.first().map(|(_, _, h)| *h))).is_ok();
+    let chosen = sink();
+    evidence.push(format!(
+        "host records go to: {}{}{}",
+        chosen.origin,
+        match chosen.open_error {
+            Some(code) => format!(" (opening it directly failed with OS error {code})"),
+            None => String::new(),
+        },
+        // ⚠️ Said rather than assumed. If something logged before this ran,
+        // the sink was already chosen without the rescue handle, and the
+        // rescue is then not in play however well it was classified.
+        if installed { "" } else { " -- already chosen before this ran, so no rescue was used" },
+    ));
 
     if missing.is_empty() && colliding.is_empty() {
         let line = "[stdio] stdout and stderr both came from whoever started us, \
@@ -5022,18 +5207,36 @@ fn adopt_std_handles() -> String {
         // never print no matter how right the classification was. A verdict
         // that disappears exactly when the log does is the defect this
         // function was just changed to end, one level in.
+        // ⚠️ **The second half of this sentence used to be false as of task
+        // 317's repair, which is why it is two sentences now.** It said "and
+        // neither does this host", and that was true when every log writer
+        // opened the file per record. The host now has a sink chosen above --
+        // possibly the very handle this failure is about -- so saying it has
+        // none would be the log lying about itself in exactly the reading
+        // somebody takes when they are trying to find out why it is empty.
         let why = format!(
             "[stdio] {} missing or colliding, and the log file could not be opened for them; \
-             libghostty's log and any panic backtrace have NO sink this run, and neither \
-             does this host: nothing below ran, so no handle was adopted or rescued",
+             libghostty's log and any panic backtrace have NO sink this run: nothing below \
+             ran, so no handle was adopted or rescued. This host's own records are \
+             unaffected and are going to {}",
             missing
                 .iter()
                 .map(|(_, n)| *n)
-                .chain(colliding.iter().map(|(_, n)| *n))
+                .chain(colliding.iter().map(|(_, n, _)| *n))
                 .collect::<Vec<_>>()
-                .join(" and ")
+                .join(" and "),
+            sink().origin
         );
-        return with_verdict(why, &evidence, "could not open the log; nothing acted", false);
+        // `log_reachable` is now a question about the sink rather than about
+        // this open: the two came apart when the host stopped depending on
+        // opening the file a second time.
+        let reachable = sink().file.is_some();
+        return with_verdict(
+            why,
+            &evidence,
+            "could not open the log for the streams; nothing acted on them",
+            reachable,
+        );
     };
 
     let mut adopted: Vec<&str> = Vec::new();
@@ -5045,7 +5248,7 @@ fn adopt_std_handles() -> String {
             Err(_) => refused.push(name),
         }
     }
-    for (id, name) in colliding.iter().copied() {
+    for (id, name, _) in colliding.iter().copied() {
         match unsafe { SetStdHandle(id, file) } {
             Ok(()) => rescued.push(name),
             Err(_) => refused.push(name),
