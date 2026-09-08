@@ -104,6 +104,7 @@ mod ctxmenu;
 mod divider;
 mod dnd;
 mod ffi;
+mod keybinds;
 mod keys;
 mod hud;
 mod i18n;
@@ -4270,6 +4271,8 @@ fn load_api() -> Option<Api> {
             string_free: sym!(internal, "ghostty_string_free"),
             config_diagnostics_count: sym!(internal, "ghostty_config_diagnostics_count"),
             config_get_diagnostic: sym!(internal, "ghostty_config_get_diagnostic"),
+            config_keybind_count: sym!(internal, "ghostty_config_keybind_count"),
+            config_keybind: sym!(internal, "ghostty_config_keybind"),
             config_get: sym!(internal, "ghostty_config_get"),
             config_load_default_files: sym!(internal, "ghostty_config_load_default_files"),
             config_finalize: sym!(internal, "ghostty_config_finalize"),

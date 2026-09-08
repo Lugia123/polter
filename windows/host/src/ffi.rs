@@ -667,6 +667,80 @@ pub struct Diagnostic {
     pub message: *const c_char,
 }
 
+/// `ghostty_input_trigger_s { int tag; union { int physical; u32 unicode; } key; int mods; }`.
+///
+/// The same shape `ffi.rs` already describes inline for
+/// `ghostty_action_key_sequence_s`; it is spelled out as a type here because
+/// the keybind listing hands back whole structs rather than one field.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Trigger {
+    pub tag: i32,
+    pub key: u32,
+    pub mods: i32,
+}
+
+/// `ghostty_trigger_tag_e`.
+pub const TRIGGER_PHYSICAL: i32 = 0;
+pub const TRIGGER_UNICODE: i32 = 1;
+pub const TRIGGER_CATCH_ALL: i32 = 2;
+
+/// `ghostty_binding_flags_e`. **`PERFORMABLE` is the one this host cares
+/// about**: a binding carrying it is absent from the core's reverse map, which
+/// is why the menu cannot print its shortcut even though the key works.
+pub const BINDING_CONSUMED: u8 = 1 << 0;
+pub const BINDING_ALL: u8 = 1 << 1;
+pub const BINDING_GLOBAL: u8 = 1 << 2;
+pub const BINDING_PERFORMABLE: u8 = 1 << 3;
+
+/// `ghostty_keybind_s`: one row of the keybind listing.
+///
+/// **Not `config_trigger`.** That call reads the core's reverse map, which
+/// deliberately drops `performable` bindings so a GUI does not register them
+/// as menu accelerators -- so a page built on it is blind in exactly the
+/// places the menu is. This comes from the forward table.
+///
+/// `action` is static storage owned by the core: **do not free it**, and it
+/// stays valid for the life of the process.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Keybind {
+    pub action: *const u8,
+    pub action_len: usize,
+    /// `false` means "this action exists and has no key today". That is the
+    /// only way an action with no default binding -- `toggle_secure_input`,
+    /// say -- can appear in a listing at all.
+    pub bound: bool,
+    pub trigger: Trigger,
+    pub flags: u8,
+    /// The binding is reached through a leader-key sequence and `trigger` is
+    /// only its first step. ⚠️ **No real data stands behind this today**: the
+    /// core's default configuration has no sequenced bindings.
+    pub sequence: bool,
+}
+
+impl Keybind {
+    /// The action's tag, or `None` for the row an out-of-range index returns.
+    ///
+    /// **Borrowed from the core, not copied**: the pointer is a compile-time
+    /// constant on the other side of the ABI.
+    pub fn action(&self) -> Option<&'static str> {
+        if self.action.is_null() || self.action_len == 0 {
+            return None;
+        }
+        // SAFETY: the core documents this as static, NUL-free, UTF-8 storage
+        // whose length it reports; `action_len` is not a guess.
+        let bytes = unsafe { std::slice::from_raw_parts(self.action, self.action_len) };
+        std::str::from_utf8(bytes).ok()
+    }
+
+    /// Whether the core's reverse map -- and therefore the menu -- can see
+    /// this binding.
+    pub fn hidden_from_menu(&self) -> bool {
+        self.bound && (self.flags & BINDING_PERFORMABLE) != 0
+    }
+}
+
 // --- reading the screen, for the UIA provider (`uia.rs`) ---
 
 /// `ghostty_point_tag_e`.
@@ -756,6 +830,12 @@ pub struct Api {
     pub string_free: unsafe extern "C" fn(GString),
     pub config_diagnostics_count: unsafe extern "C" fn(Config) -> u32,
     pub config_get_diagnostic: unsafe extern "C" fn(Config, u32) -> Diagnostic,
+    /// The keybind listing: every binding, then every action that has none.
+    ///
+    /// **This is the data source for a "what are the shortcuts" page, and
+    /// `config_trigger` is not.** See `Keybind`.
+    pub config_keybind_count: unsafe extern "C" fn(Config) -> u32,
+    pub config_keybind: unsafe extern "C" fn(Config, u32) -> Keybind,
     /// Read one config value by key. **The return value is the answer to "did
     /// the user set this"**, not just an error code: `c_get.zig`'s optional
     /// arm returns false for a field that is null, so

@@ -389,6 +389,55 @@ typedef struct {
   const char* description;
 } ghostty_command_s;
 
+// One row of the keybind listing: either a binding, or an action that has no
+// binding at all.
+//
+// **Why this is not ghostty_config_trigger.** That call answers "what key
+// runs this action?" out of the reverse map, and the reverse map
+// deliberately omits `performable` bindings so that GUI toolkits do not
+// register them as menu accelerators. Correct for a menu, wrong for a
+// listing: a page built on it shows exactly the blanks the menu shows. This
+// listing reads the forward table. `ghostty_config_trigger` is unchanged and
+// remains the right call for a menu.
+//
+// **NOT COVERED: the action's argument.** `goto_tab:3` and `goto_tab:7` are
+// two bindings of one action, and this struct cannot tell them apart -- it
+// carries the action's tag, not the parsed action. A page that groups by
+// action does not need the difference. **A future "let the user rebind this"
+// feature will need it, and adding it means extending a published C ABI,
+// which is expensive.** It is left out deliberately rather than by oversight.
+typedef struct {
+  // The action's stable tag, e.g. "goto_tab". Static storage, never null, and
+  // never freed by the caller: it points at a compile-time constant. That is
+  // why this API allocates nothing and has no matching _free.
+  const char* action;
+  uintptr_t action_len;
+
+  // True when this row is a real binding. False means "this action exists and
+  // has no key today" -- the rows that let an action with no default binding,
+  // such as toggle_secure_input, appear in a listing at all.
+  bool bound;
+
+  // Meaningful only when `bound`. A struct rather than a string on purpose:
+  // macOS renders this as "⌘3" and Windows as "Ctrl+3", so the formatting
+  // belongs to the host.
+  ghostty_input_trigger_s trigger;
+
+  // Bits of ghostty_binding_flags_e. PERFORMABLE is the one a listing cares
+  // about: it is why the binding is missing from the reverse map, and so from
+  // the menu.
+  uint8_t flags;
+
+  // True when the binding is reached through a leader-key sequence, in which
+  // case `trigger` is only its FIRST step.
+  //
+  // **Zero real data stands behind this field today.** The default
+  // configuration contains no sequenced bindings -- that was measured, not
+  // assumed -- so nothing in the tree exercises it. It is declared, not
+  // verified.
+  bool sequence;
+} ghostty_keybind_s;
+
 typedef enum {
   GHOSTTY_BUILD_MODE_DEBUG,
   GHOSTTY_BUILD_MODE_RELEASE_SAFE,
@@ -1175,6 +1224,22 @@ GHOSTTY_API ghostty_input_trigger_s ghostty_config_trigger(ghostty_config_t,
                                                               const char*,
                                                               uintptr_t);
 GHOSTTY_API bool ghostty_config_key_is_binding(ghostty_config_t, ghostty_input_key_s);
+
+// The keybind listing. See ghostty_keybind_s for what a row is and for what
+// this deliberately does not carry.
+//
+// Rows come in a fixed order: every binding, in the order the configuration
+// declared it, then every action that never appeared, in declaration order.
+// Both halves are deterministic, so an index means the same row across calls
+// against the same config.
+//
+// **Only the root binding set.** Named key tables are not walked, while the
+// `+list-keybinds` CLI action does walk them -- so for a configuration that
+// uses key tables the two will report different totals. Whether any real
+// configuration uses them was not measured, which is not the same as saying
+// none does.
+GHOSTTY_API uint32_t ghostty_config_keybind_count(ghostty_config_t);
+GHOSTTY_API ghostty_keybind_s ghostty_config_keybind(ghostty_config_t, uint32_t);
 GHOSTTY_API uint32_t ghostty_config_diagnostics_count(ghostty_config_t);
 GHOSTTY_API ghostty_diagnostic_s ghostty_config_get_diagnostic(ghostty_config_t, uint32_t);
 GHOSTTY_API ghostty_string_s ghostty_config_open_path(void);
