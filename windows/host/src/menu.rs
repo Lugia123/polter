@@ -426,6 +426,11 @@ const ROOT: &[Row] = &[
     sub("帮助", HELP_ROWS),
     sep(),
     act("设置…", "open_config"),
+    // **Directly under 设置…, on both platforms.** The menu can print a
+    // shortcut only for a binding the core's reverse map holds, and that map
+    // deliberately leaves out `performable` ones -- so there are keys this
+    // menu cannot name. This row opens the one place they are all visible.
+    act("快捷键…", "__polter_keybinds"),
     act("关于 Polter", "__polter_about"),
 ];
 
@@ -453,6 +458,13 @@ fn run_host(frame: HWND, action: &str) -> bool {
         // running binary's identity -- the same line `[build]` logs.
         "__polter_about" => {
             crate::settings_ui::request_about();
+            true
+        }
+        // **The page reads the core's forward binding table**, not the
+        // reverse map this menu asks for its own accelerators -- which is why
+        // it can show what the rows above cannot.
+        "__polter_keybinds" => {
+            crate::settings_ui::request_keybinds();
             true
         }
         // The stack, and the tab it makes, both live in the host: see

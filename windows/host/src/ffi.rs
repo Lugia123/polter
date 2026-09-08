@@ -667,23 +667,15 @@ pub struct Diagnostic {
     pub message: *const c_char,
 }
 
-/// `ghostty_input_trigger_s { int tag; union { int physical; u32 unicode; } key; int mods; }`.
+/// `ghostty_input_trigger_s`, which `keys.rs` already declares as `TriggerC`
+/// along with its tag constants and the one function that renders it.
 ///
-/// The same shape `ffi.rs` already describes inline for
-/// `ghostty_action_key_sequence_s`; it is spelled out as a type here because
-/// the keybind listing hands back whole structs rather than one field.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct Trigger {
-    pub tag: i32,
-    pub key: u32,
-    pub mods: i32,
-}
-
-/// `ghostty_trigger_tag_e`.
-pub const TRIGGER_PHYSICAL: i32 = 0;
-pub const TRIGGER_UNICODE: i32 = 1;
-pub const TRIGGER_CATCH_ALL: i32 = 2;
+/// **Re-exported rather than declared again.** A second `repr(C)` struct of
+/// the same three fields would be a second thing to keep in step with the
+/// header, and -- worse -- it would invite a second renderer: two spellings
+/// of one shortcut that disagree quietly, between a menu and the page that
+/// claims to list what the menu shows.
+pub use crate::keys::TriggerC as Trigger;
 
 /// `ghostty_binding_flags_e`. **`PERFORMABLE` is the one this host cares
 /// about**: a binding carrying it is absent from the core's reverse map, which

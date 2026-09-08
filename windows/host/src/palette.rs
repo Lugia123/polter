@@ -446,6 +446,43 @@ fn windows() -> Option<Windows> {
 /// mean editing a file another line of work is in. The DLL is already loaded
 /// by the time this runs, so resolving the one symbol here costs nothing and
 /// keeps this feature to one file.
+/// The human title for an action tag, for anything that lists actions rather
+/// than commands.
+///
+/// **Only where the tag names exactly one command.** `goto_tab` is nine
+/// commands with nine different titles ("Go to Tab 1" and friends), and
+/// picking one of them to stand for the tag would put a wrong label on a row.
+/// A tag with several commands gets no title here and its reader falls back
+/// to the tag itself, which is at least not a lie.
+///
+/// Built on `load_commands` rather than beside it: a second reader of the
+/// same config value is a second thing to keep in step.
+pub fn action_titles(config: Config) -> Vec<(String, String)> {
+    let cmds = load_commands(config);
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for c in &cmds {
+        // The command's action carries its argument (`goto_tab:3`); the tag is
+        // what a listing of actions is keyed on.
+        *counts.entry(tag_of(&c.action)).or_insert(0) += 1;
+    }
+    let mut out = Vec::new();
+    for c in &cmds {
+        let tag = tag_of(&c.action);
+        if counts.get(tag) == Some(&1) {
+            out.push((tag.to_string(), c.title.clone()));
+        }
+    }
+    out
+}
+
+/// The action tag in front of any `:argument`.
+fn tag_of(action: &str) -> &str {
+    match action.find(':') {
+        Some(i) => &action[..i],
+        None => action,
+    }
+}
+
 fn load_commands(config: Config) -> Vec<Command> {
     #[repr(C)]
     struct CommandC {

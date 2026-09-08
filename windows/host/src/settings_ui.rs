@@ -50,6 +50,11 @@ const WM_ERRORS_SHOW: u32 = WM_APP + 9;
 /// the main menu's «About Polter». Posted rather than called so the window
 /// that owns the about box is the one that shows it.
 const WM_ABOUT_SHOW: u32 = WM_APP + 10;
+/// The keybind page. **`WM_APP + 11`**, taken because 8, 9 and 10 are spoken
+/// for above -- and `menu.rs` records that `WM_APP + 9` is already used twice
+/// on different windows, which is safe only because these messages are posted
+/// to one window each and never broadcast.
+const WM_KEYBINDS_SHOW: u32 = WM_APP + 11;
 
 const W: i32 = 720;
 const H: i32 = 460;
@@ -219,6 +224,7 @@ const ID_PARAM_BASE: usize = 2000;
 
 static HWND_SETTINGS: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_ERRORS: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static HWND_KEYBINDS: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_ABOUT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 /// The page's font.
@@ -270,6 +276,13 @@ struct State {
     /// Set when a required parameter is empty at save time.
     complaint: String,
     errors: Vec<String>,
+    /// The keybind page's rows, read once each time it is opened rather than
+    /// held: the config can be reloaded while the page is closed, and a list
+    /// kept from last time would be quietly stale.
+    keybinds: Vec<crate::keybinds::Row>,
+    /// First visible row. Kept in rows, not pixels, so it survives a DPI
+    /// change and a resize.
+    keybind_top: usize,
     /// Created once and kept: unlike the parameter controls these do not
     /// change with the selection, and destroying them on every selection
     /// change is how a button stops responding halfway through a session.
@@ -300,6 +313,7 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
             ),
             (errors_proc, w!("PolterConfigErrors")),
             (about_proc, w!("PolterAbout")),
+            (keybinds_proc, w!("PolterKeybinds")),
         ] {
             let wc = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -396,6 +410,15 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE) {
                 return;
             }
         };
+        let hk = match make(w!("PolterKeybinds"), 760, 560) {
+            Ok(h) => h,
+            Err(e) => {
+                // process-wide: the keybind page, one per process like the rest
+                plogf!("[set] keybinds CreateWindowExW failed: {e:?}");
+                return;
+            }
+        };
+        HWND_KEYBINDS.store(hk.0, Ordering::Release);
         HWND_SETTINGS.store(hs.0, Ordering::Release);
         HWND_ERRORS.store(he.0, Ordering::Release);
         HWND_ABOUT.store(ha.0, Ordering::Release);
@@ -427,6 +450,22 @@ pub fn request_about() {
         return;
     }
     let _ = unsafe { PostMessageW(Some(HWND(h)), WM_ABOUT_SHOW, WPARAM(0), LPARAM(0)) };
+}
+
+/// Show the keybind page. **Safe from any thread.**
+///
+/// **The listing is read here, not cached**: `config_keybind` walks the
+/// config the process is holding right now, and a page that showed what was
+/// bound at startup would be wrong for exactly the person who just changed a
+/// binding and came to check.
+pub fn request_keybinds() {
+    let h = HWND_KEYBINDS.load(Ordering::Acquire);
+    if h.is_null() {
+        // process-wide: the keybind window does not exist yet
+        plogf!("[set] keybinds was asked for before its window existed");
+        return;
+    }
+    let _ = unsafe { PostMessageW(Some(HWND(h)), WM_KEYBINDS_SHOW, WPARAM(0), LPARAM(0)) };
 }
 
 /// Show the config errors, if the core reported any. **Safe from any thread.**
@@ -1798,6 +1837,198 @@ fn read_diagnostics() -> Vec<String> {
         }
     }
     out
+}
+
+/// Rows visible at once. The page is sized for this; scrolling covers the
+/// rest.
+const KB_VISIBLE: usize = 18;
+
+unsafe extern "system" fn keybinds_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_KEYBINDS_SHOW => {
+                let rows = crate::keybinds::rows();
+                // process-wide: the listing is about the config, not a window
+                plogf!(
+                    "[set] keybinds: {} actions, {} of them with no key",
+                    rows.len(),
+                    rows.iter().filter(|r| r.triggers.is_empty()).count()
+                );
+                if rows.is_empty() {
+                    // Nothing to show means the core was not reachable, which
+                    // is not the same as "you have no shortcuts" -- so say
+                    // nothing rather than show an empty page claiming that.
+                    return LRESULT(0);
+                }
+                ST.with(|c| {
+                    let mut st = c.borrow_mut();
+                    st.keybinds = rows;
+                    st.keybind_top = 0;
+                });
+                let frame = crate::tabs::overlay_frame();
+                let mut fr = RECT::default();
+                if frame.0.is_null() || GetWindowRect(frame, &mut fr).is_err() {
+                    return LRESULT(0);
+                }
+                let sc = dpi_scale(win);
+                let (w, h) = (760 * sc / 96, 560 * sc / 96);
+                let x = fr.left + ((fr.right - fr.left) - w) / 2;
+                let y = fr.top + ((fr.bottom - fr.top) - h) / 2;
+                own_and_place(win, x, y, w, h);
+                let _ = InvalidateRect(Some(win), None, true);
+                LRESULT(0)
+            }
+
+            // **Esc closes; a click does not.** The errors box dismisses on
+            // any click because it is one short message. This page is a list
+            // the reader scrolls and points at, and a list that vanishes when
+            // you click it cannot be read.
+            WM_KEYDOWN => {
+                let vk = VIRTUAL_KEY(wp.0 as u16);
+                if vk == VK_ESCAPE {
+                    let _ = ShowWindow(win, SW_HIDE);
+                    return LRESULT(0);
+                }
+                let step: i32 = match vk {
+                    VK_DOWN => 1,
+                    VK_UP => -1,
+                    VK_NEXT => KB_VISIBLE as i32,
+                    VK_PRIOR => -(KB_VISIBLE as i32),
+                    _ => return DefWindowProcW(win, msg, wp, lp),
+                };
+                kb_scroll(win, step);
+                LRESULT(0)
+            }
+
+            WM_MOUSEWHEEL => {
+                let delta = ((wp.0 >> 16) & 0xffff) as i16;
+                kb_scroll(win, if delta > 0 { -3 } else { 3 });
+                LRESULT(0)
+            }
+
+            WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                theme::repaint_all(win);
+                LRESULT(0)
+            }
+            WM_ERASEBKGND => LRESULT(1),
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(win, &mut ps);
+                if !hdc.is_invalid() {
+                    kb_paint(win, hdc);
+                    let _ = EndPaint(win, &ps);
+                }
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(win, msg, wp, lp),
+        }
+    }
+}
+
+/// Move the first visible row, clamped so the list cannot be scrolled past
+/// either end.
+fn kb_scroll(win: HWND, by: i32) {
+    ST.with(|c| {
+        let mut st = c.borrow_mut();
+        let n = st.keybinds.len();
+        let last = n.saturating_sub(KB_VISIBLE);
+        let next = (st.keybind_top as i32 + by).clamp(0, last as i32) as usize;
+        if next == st.keybind_top {
+            return;
+        }
+        st.keybind_top = next;
+    });
+    let _ = unsafe { InvalidateRect(Some(win), None, true) };
+}
+
+unsafe fn kb_paint(win: HWND, hdc: HDC) {
+    unsafe {
+        let mut rc = RECT::default();
+        let _ = GetClientRect(win, &mut rc);
+        let sc = dpi_scale(win);
+        let s = |v: i32| v * sc / 96;
+
+        let b = CreateSolidBrush(COLORREF(theme::panel()));
+        FillRect(hdc, &rc, b);
+        let _ = DeleteObject(b.into());
+        SetBkMode(hdc, TRANSPARENT);
+
+        ST.with(|c| {
+            let st = c.borrow();
+            let old = SelectObject(hdc, font().into());
+
+            let mut r = RECT { left: s(PAD), top: s(PAD), right: rc.right - s(PAD), bottom: s(PAD + 24) };
+            draw_text(hdc, "快捷键", &mut r, DT_LEFT | DT_SINGLELINE, theme::text());
+
+            // ⚠️ **The legend is not decoration.** This page has an action
+            // count, a binding count and a command count in the same
+            // neighbourhood and they are different numbers; saying which one
+            // the list is keeps the next reader from taking it for another.
+            let mut lr = RECT {
+                left: s(PAD),
+                top: s(PAD + 26),
+                right: rc.right - s(PAD),
+                bottom: s(PAD + 48),
+            };
+            let legend = format!(
+                "这里列的是「动作」，共 {} 个；有的动作还没有分配快捷键。",
+                st.keybinds.len()
+            );
+            draw_text(hdc, &legend, &mut lr, DT_LEFT | DT_SINGLELINE, theme::dim());
+
+            let name_w = s(230);
+            let key_w = s(180);
+            let mut y = s(PAD + 56);
+            let row_h = s(24);
+
+            let end = (st.keybind_top + KB_VISIBLE).min(st.keybinds.len());
+            for row in &st.keybinds[st.keybind_top..end] {
+                // The tag is always shown; the human title only exists for
+                // some actions, so it cannot be the column you navigate by.
+                let name = row.title.as_deref().unwrap_or(row.action);
+                let mut nr = RECT { left: s(PAD), top: y, right: s(PAD) + name_w, bottom: y + row_h };
+                draw_text(hdc, name, &mut nr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, theme::text());
+
+                let keys = crate::keybinds::keys_label(row);
+                let mut kr = RECT {
+                    left: s(PAD) + name_w,
+                    top: y,
+                    right: s(PAD) + name_w + key_w,
+                    bottom: y + row_h,
+                };
+                let key_colour = if row.triggers.is_empty() { theme::dim() } else { theme::text() };
+                draw_text(hdc, &keys, &mut kr, DT_LEFT | DT_SINGLELINE, key_colour);
+
+                let note = crate::keybinds::note(row);
+                if !note.is_empty() {
+                    let mut rr = RECT {
+                        left: s(PAD) + name_w + key_w,
+                        top: y,
+                        right: rc.right - s(PAD),
+                        bottom: y + row_h,
+                    };
+                    let colour = if row.hidden_from_menu { theme::warn() } else { theme::dim() };
+                    draw_text(hdc, note, &mut rr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, colour);
+                }
+                y += row_h;
+            }
+
+            let mut fr = RECT {
+                left: s(PAD),
+                top: rc.bottom - s(28),
+                right: rc.right - s(PAD),
+                bottom: rc.bottom,
+            };
+            let footer = format!(
+                "{}–{} / {}    ↑↓ PgUp PgDn 滚动    Esc 关闭",
+                st.keybind_top + 1,
+                end,
+                st.keybinds.len()
+            );
+            draw_text(hdc, &footer, &mut fr, DT_LEFT | DT_SINGLELINE, theme::dim());
+            SelectObject(hdc, old);
+        });
+    }
 }
 
 unsafe extern "system" fn errors_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
