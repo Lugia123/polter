@@ -434,6 +434,74 @@ fn root_name(frame: HWND) -> String {
 // called without saying which window it is for, which is the whole of what
 // stops "the current window" coming back.
 
+/// Whether the window an element belongs to is accepting input.
+///
+/// # Why this property, and why it is asked of Windows rather than answered
+///
+/// **Every element this provider published reported `IsEnabled=false`** --
+/// the tab strip, every tab, the terminal, and all ninety command-palette
+/// rows, without exception. Not because anything was disabled: because
+/// `UIA_IsEnabledPropertyId` was never handled at all, so it fell to
+/// `variant_empty()` and the client filled in a default.
+///
+/// **That is not a missing feature, it is a missing answer**, and the cost is
+/// out of all proportion to the line it takes: filtering on `IsEnabled` is
+/// what an automation client does *first*, so every element was skipped, the
+/// program read as having nothing operable in it, and the client fell back to
+/// clicking screenshot coordinates -- which is the most expensive part of
+/// testing this port.
+///
+/// # Where the value comes from, and why it is not a constant
+///
+/// `IsWindowEnabled` on the window the element lives in. **Returning `true`
+/// everywhere would have been the same defect with the sign flipped**, and
+/// worse: a constant `false` is noticed the first time somebody looks, a
+/// constant `true` is believed.
+///
+/// It is genuinely `false` sometimes, and this host produces that state on
+/// purpose: `cb_confirm_read_clipboard` puts up a modal `MessageBoxW` owned
+/// by the frame, and Windows disables an owner while a modal is up. So during
+/// a paste confirmation the frame, its tabs and its terminal are all
+/// correctly `IsEnabled=false` -- and an automation client that skips them is
+/// then right to.
+///
+/// **Children follow their window.** The tab strip, the tabs and the terminal
+/// are drawn by the host rather than being windows of their own, so the state
+/// that governs them is the frame's; the palette's rows likewise follow the
+/// palette window. That is not an approximation -- it is the same rule Win32
+/// applies to real child windows.
+///
+/// ⚠️ **That derivation rests on a premise, and the premise is not permanent:
+/// these elements are *drawn*, not windows.** The day any of them is given an
+/// `HWND` of its own -- a real child window for the tab strip, say -- this
+/// function keeps returning the *frame's* state for it, the code still reads
+/// as correct, and the answer quietly starts being wrong for that element.
+/// **Whoever gives one of them a window has to come back here**, because
+/// nothing else will notice.
+///
+/// The reason this is spelled out rather than left as an obvious caveat is
+/// that this file has already had one written-down decision outlive its
+/// reason: the note saying a whole-window bounding rectangle was "the error a
+/// client can see" while a stale row rectangle was the invisible one. It was
+/// measured the other way round -- one rectangle for every row produces
+/// clicks that *succeed* on the wrong command. **A decision whose reason has
+/// expired still reads as correct; only a written premise makes the
+/// expiry findable.**
+///
+/// # What is deliberately *not* derived from here
+///
+/// A palette row for a command that cannot be run here is **not** shown
+/// disabled: `palette.rs` removes it from the list and logs why (see
+/// `UNAVAILABLE`). So every row that reaches this provider is one that can
+/// run, and asking the window is the whole answer rather than half of it.
+fn window_enabled(h: HWND) -> bool {
+    !h.0.is_null()
+        && unsafe {
+            windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(h)
+        }
+        .as_bool()
+}
+
 #[implement(
     IRawElementProviderSimple,
     IRawElementProviderFragment,
@@ -600,6 +668,8 @@ impl IRawElementProviderSimple_Impl for WindowRoot_Impl {
             // greater length, because the person who needs it reads that file
             // and not this one.
             UIA_AutomationIdPropertyId => variant_bstr(&winid::tag(self.hwnd())),
+            // Asked of Windows, never assumed; see `window_enabled`.
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
             _ => variant_empty(),
         })
@@ -752,6 +822,8 @@ impl IRawElementProviderSimple_Impl for TabList_Impl {
             UIA_ControlTypePropertyId => variant_i4(UIA_TabControlTypeId.0),
             UIA_NamePropertyId => variant_bstr("Tabs"),
             UIA_AutomationIdPropertyId => variant_bstr("tab-strip"),
+            // Asked of Windows, never assumed; see `window_enabled`.
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
             _ => variant_empty(),
         })
@@ -884,6 +956,8 @@ impl IRawElementProviderSimple_Impl for TabItem_Impl {
             // `AutomationId` would otherwise be pinning "third from the left".
             UIA_AutomationIdPropertyId => variant_bstr(&format!("tab-{}", self.tab.0)),
             UIA_HasKeyboardFocusPropertyId => variant_bool(idx == active),
+            // Asked of Windows, never assumed; see `window_enabled`.
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
             _ => variant_empty(),
         })
@@ -1071,6 +1145,8 @@ impl IRawElementProviderSimple_Impl for Document_Impl {
             UIA_NamePropertyId => variant_bstr(&format!("Terminal: {}", tabs_now[idx].title)),
             UIA_AutomationIdPropertyId => variant_bstr(&format!("terminal-{}", self.tab.0)),
             UIA_HasKeyboardFocusPropertyId => variant_bool(idx == active),
+            // Asked of Windows, never assumed; see `window_enabled`.
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
             _ => variant_empty(),
         })
@@ -1242,6 +1318,8 @@ impl IRawElementProviderSimple_Impl for PaletteRoot_Impl {
             UIA_ControlTypePropertyId => variant_i4(UIA_ListControlTypeId.0),
             UIA_NamePropertyId => variant_bstr("Command palette"),
             UIA_AutomationIdPropertyId => variant_bstr("command-palette"),
+            // Asked of Windows, never assumed; see `window_enabled`.
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
             _ => variant_empty(),
         })
@@ -1342,6 +1420,8 @@ impl IRawElementProviderSimple_Impl for PaletteItem_Impl {
             // so `palette-row-3` would name a different command a moment
             // later -- the same rule the tab items follow.
             UIA_AutomationIdPropertyId => variant_bstr(&action),
+            // Asked of Windows, never assumed; see `window_enabled`.
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
             _ => variant_empty(),
         })
