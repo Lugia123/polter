@@ -4605,17 +4605,19 @@ fn install_panic_hook() {
         );
 
         // The file first: it is the artifact that leaves the machine.
-        if let Some(path) = PANIC_LOG.get() {
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = f.write_all(line.as_bytes());
-                let _ = f.flush();
-            }
-        }
+        // **The fourth writer, and it joins the other three.** This opened
+        // the file itself, which is the shape task 317 was about: the open
+        // fails whenever somebody else holds the file, and the `if let Ok`
+        // says nothing when it does -- so the one record that exists to
+        // explain a crash was the one most able to vanish.
+        //
+        // Going through the sink is also **safer here than the open was**,
+        // which is the part worth stating because a panic path is where
+        // "safer" has to be argued rather than assumed: after startup this is
+        // an atomic load and a write, with **no allocation and no lock**,
+        // while building a path and opening a file wants the heap -- and a
+        // panic in an allocator is exactly when the heap is not to be asked.
+        sink().write(line.as_bytes());
         raw_stderr(line.as_bytes());
 
         IN_PANIC_HOOK.store(false, O::SeqCst);
@@ -5067,6 +5069,9 @@ fn adopt_std_handles() -> String {
     // `FILE_SHARE_DELETE` and read-only access, so asking the question changes
     // nothing about the file -- in particular it does not make the log
     // undeletable for the moment it is open, which a write handle would.
+    // not the log sink: this asks the file who it is and closes it again. It
+    // writes no record and must not -- the whole point is to compare an
+    // identity before deciding anything, including before the sink exists.
     let log_id = unsafe {
         CreateFileW(
             PCWSTR::from_raw(wide.as_ptr()),
@@ -5182,6 +5187,10 @@ fn adopt_std_handles() -> String {
         return with_verdict(line.to_string(), &evidence, "left alone", true);
     }
 
+    // not the log sink: this handle is for `SetStdHandle`, so that the
+    // *core's* stdout and stderr have somewhere to go. It is a different
+    // question from where this host's own records are written, and the two
+    // came apart in exactly this function -- see `log_reachable` below.
     let file = unsafe {
         CreateFileW(
             PCWSTR::from_raw(wide.as_ptr()),
@@ -5343,6 +5352,16 @@ fn with_verdict(
 /// anchors to.
 fn write_log_bom() {
     use std::io::Write as _;
+    // not the log sink: this makes the file and stamps its first three bytes.
+    // Two reasons it cannot go through `Sink`, and the second is the one that
+    // matters. **It truncates on purpose** -- the mark has to be the first
+    // bytes of a fresh file, and the sink is append-only by design. And it
+    // runs *before* `adopt_std_handles`: asking for the sink here would
+    // choose it early, without the handle that rescues the case task 317
+    // measured, and `SINK.set` would then quietly fail. ⚠️ **A writer that
+    // moves onto the sink too early does not break loudly -- it disables the
+    // rescue and looks fine**, which is why this exemption is written out
+    // rather than left as an oversight to be tidied up later.
     if let Ok(mut f) = std::fs::File::create(log_path()) {
         let _ = f.write_all("\u{feff}".as_bytes());
     }
