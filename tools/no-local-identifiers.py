@@ -217,6 +217,13 @@ KNOWN = {
     # bundle id. Editing it by hand would be undone by the next extraction.
     "po/com.lugia.polter.pot":
         "generated header carries the bundle id as the package name",
+    # **It went red the moment it was committed, not when it was written.**
+    # This checker reads `git ls-files`, so a new file is invisible to it while
+    # untracked and enters its scan at the instant of the commit -- which is
+    # after the run that said the tree was green. The gate has to name the
+    # template file it reads, and the template's name is the bundle id.
+    "tools/translations-still-attach.py":
+        "names the template file it reads, whose filename is the bundle id",
 }
 
 

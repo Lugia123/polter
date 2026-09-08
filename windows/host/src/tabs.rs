@@ -932,6 +932,52 @@ pub(crate) mod test_arena {
 /// red is indistinguishable from a mute detector** -- which is the very
 /// confusion this module is here to end.
 #[cfg(test)]
+mod left_button_pairing_tests {
+    use super::*;
+
+    /// **The pairing, which the gate beside it deliberately does not check.**
+    /// `windows/tools/one-release-per-press.py` pins that every send goes
+    /// through the pair; this pins what the pair then does.
+    ///
+    /// ⚠️ Runs on Windows only, like every test in this crate -- `polter-host`
+    /// does not build for the machine the port is written on. Said out loud
+    /// because a `#[test]` that never runs looks exactly like one that passes.
+    ///
+    /// `mouse_button` is not reached: the pane handle is not a window, so
+    /// `surface_of` answers null and the forwarder returns before touching
+    /// the core. What is under test is the bookkeeping, and that is the half
+    /// that was wrong.
+    #[test]
+    fn a_press_is_released_once_and_the_capture_arm_finds_nothing_left() {
+        let pane = HWND(0x1234 as *mut c_void);
+        let other = HWND(0x5678 as *mut c_void);
+        LEFT_DOWN_PANE.store(0, std::sync::atomic::Ordering::Release);
+
+        // Nothing is down: the capture arm must stay quiet. Without this the
+        // test below would pass against a `release_left` that always says yes.
+        assert!(!release_left(pane), "released a button that was never pressed");
+
+        press_left(pane);
+        // **The ordinary click.** `WM_LBUTTONUP` releases, then
+        // `ReleaseCapture` delivers `WM_CAPTURECHANGED`, which releases
+        // again -- and the second one is the browser's second window.
+        assert!(release_left(pane), "the first release did not happen");
+        assert!(!release_left(pane), "the capture arm sent a second release");
+
+        // **Capture taken instead of given back**, which is what that arm is
+        // for: nothing else will send this release, so it must happen.
+        press_left(pane);
+        assert!(release_left(pane), "a stolen capture left the button down");
+
+        // A release aimed at a pane that is not the one holding the button
+        // changes nothing -- neither the answer nor the slot.
+        press_left(pane);
+        assert!(!release_left(other), "released on the wrong pane");
+        assert!(release_left(pane), "the wrong-pane release consumed the slot");
+    }
+}
+
+#[cfg(test)]
 mod deadlock_detector_tests {
     use super::*;
     use std::time::Duration;
@@ -4239,6 +4285,61 @@ fn mouse_wheel(pane: HWND, wp: WPARAM, axis: WheelAxis) {
     unsafe { (api().surface_mouse_scroll)(s, xoff, yoff, 0) };
 }
 
+/// Which pane the core has been told is holding the left button, or 0.
+///
+/// **One `PRESS` gets exactly one `RELEASE`, and this is what enforces it.**
+/// Capture on Win32 ends in two ways that look the same from here: we give it
+/// back with `ReleaseCapture`, or something takes it. **Both send
+/// `WM_CAPTURECHANGED` to the window that had it** -- so the ordinary click
+/// path was
+///
+///   `WM_LBUTTONUP` -> release -> `ReleaseCapture()` -> `WM_CAPTURECHANGED`
+///   -> release
+///
+/// and the core got two. It was measured on the real machine as a strict
+/// doubling: four Ctrl+clicks on a link, eight `open_url` dispatches, the
+/// browser called twice each time. The core opens a link inside
+/// `if (button == .left and action == .release)` and opens it once per
+/// release, so nothing on that side could tell the two apart either.
+///
+/// A single slot rather than one per pane because Win32 gives capture to one
+/// window at a time on a thread, and it stores *which* pane rather than a
+/// bare flag so a release can never be attributed to a pane that was not the
+/// one holding the button.
+static LEFT_DOWN_PANE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Tell the core the left button went down on this pane, and remember it.
+fn press_left(pane: HWND) {
+    LEFT_DOWN_PANE.store(pane.0 as isize, std::sync::atomic::Ordering::Release);
+    mouse_button(pane, crate::ffi::MOUSE_PRESS, crate::ffi::MOUSE_LEFT);
+}
+
+/// Tell the core the left button came up on this pane -- **at most once per
+/// press.** Returns whether the release was actually sent.
+///
+/// The exchange is what makes it at-most-once: whichever of the two arms runs
+/// first takes the slot, and the other finds it empty and says nothing. They
+/// run on the same thread, so this could have been a plain load and store;
+/// it is an exchange because "only one of these two may win" is the whole
+/// property, and writing it as one operation is cheaper than a comment
+/// promising the ordering.
+fn release_left(pane: HWND) -> bool {
+    let key = pane.0 as isize;
+    if LEFT_DOWN_PANE
+        .compare_exchange(
+            key,
+            0,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    mouse_button(pane, crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_LEFT);
+    true
+}
+
 /// no position to report and must not invent one.
 fn mouse_button(pane: HWND, state: i32, button: i32) {
     let s = surface_of(pane);
@@ -4420,7 +4521,7 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 let _ = SetCapture(hwnd);
                 MOUSE_SAMPLE.store(true, std::sync::atomic::Ordering::Relaxed);
                 mouse_pos(hwnd, lp);
-                mouse_button(hwnd, crate::ffi::MOUSE_PRESS, crate::ffi::MOUSE_LEFT);
+                press_left(hwnd);
                 LRESULT(0)
             }
 
@@ -4447,7 +4548,12 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
 
             WM_LBUTTONUP => {
                 mouse_pos(hwnd, lp);
-                mouse_button(hwnd, crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_LEFT);
+                // **The release goes first and `WM_CAPTURECHANGED` finds the
+                // slot already empty.** `ReleaseCapture` below sends that
+                // message synchronously, so the order here is not a style
+                // choice: reversing it would let the capture arm report the
+                // release from a position `mouse_pos` had not yet updated.
+                release_left(hwnd);
                 let _ = ReleaseCapture();
                 LRESULT(0)
             }
@@ -4466,7 +4572,19 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             // is already gone, and asking for it back is how the pair stops
             // meaning anything.
             WM_CAPTURECHANGED => {
-                mouse_button(hwnd, crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_LEFT);
+                // **Only when the button is still down as far as the core is
+                // concerned.** This arm exists for capture being *taken* --
+                // an Alt+Tab, a modal, the window going away under a held
+                // button -- and in that case nothing else will ever send the
+                // release. But `ReleaseCapture` in the arm above sends this
+                // same message, and an unconditional release here is how one
+                // click became two.
+                if release_left(hwnd) {
+                    wlogf!(
+                        frame_of_surface(surface_of(hwnd)).unwrap_or_default(),
+                        "[win] capture taken while the left button was down; released it for the core"
+                    );
+                }
                 LRESULT(0)
             }
 
