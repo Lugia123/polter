@@ -406,7 +406,22 @@ const ROOT: &[Row] = &[
     sub("文件", FILE_ROWS),
     sub("编辑", EDIT_ROWS),
     sub("查看", VIEW_ROWS),
-    sub("Agents", AGENTS_ROWS),
+    // **The one English word left on the menu bar, and the name was already
+    // decided elsewhere.** `macos/Sources/App/zh-Hans.lproj/MainMenu.strings`
+    // translates this same group -- it is `pg0-Mn-Ma1.title`, the menu item
+    // whose `MainMenu.xib` title is `Agents` -- and that file's header states
+    // where its terms come from: *supervisor = 总管, group chat = 群聊*, both
+    // of which the rows below already use. So every row in this group was
+    // following that glossary and only the group's own name was not.
+    //
+    // **Not a translation decision, an alignment with one already made.**
+    //
+    // The rows keep saying «agent» in running text (`不让 agent 碰此终端`),
+    // and that is deliberate: macOS says the same in its own catalogue. The
+    // title takes the term, the prose keeps the word -- changing the prose
+    // here would be this port inventing terminology and would put the two
+    // platforms out of step.
+    sub("智能体", AGENTS_ROWS),
     sub("窗口", WINDOW_ROWS),
     sub("帮助", HELP_ROWS),
     sep(),
