@@ -2668,8 +2668,24 @@ const Action = struct {
 
     pub fn newSplit(
         target: apprt.Target,
-        direction: apprt.action.SplitDirection,
+        v: apprt.action.NewSplit,
     ) bool {
+        // **A directory this cannot honour is refused, not ignored.**
+        // `split-tree.new-split` takes a direction and nothing else, so a
+        // split made here starts wherever the split source is standing. When
+        // a caller has asked for a particular directory, doing the split
+        // anyway would tell it that it got what it asked for. Leaving
+        // `result` at `unsupported` and splitting nothing is the answer; the
+        // core then opens a tab, which can carry a directory.
+        if (v.working_directory.len > 0) {
+            log.info(
+                "new split asked for a working directory, which this apprt " ++
+                    "cannot give a split; not splitting",
+                .{},
+            );
+            return false;
+        }
+
         switch (target) {
             .app => {
                 log.warn("new split to app is unexpected", .{});
@@ -2679,11 +2695,15 @@ const Action = struct {
             .surface => |core| {
                 const surface = core.rt_surface.surface;
 
-                return surface.as(gtk.Widget).activateAction(
+                const ok = surface.as(gtk.Widget).activateAction(
                     "split-tree.new-split",
                     "&s",
-                    @tagName(direction).ptr,
+                    @tagName(v.direction).ptr,
                 ) != 0;
+                if (ok) if (v.result) |r| {
+                    r.* = .split;
+                };
+                return ok;
             },
         }
     }

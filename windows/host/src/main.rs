@@ -2896,10 +2896,33 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             queue_from(origin, Op::CopyTitleToClipboard, "copy_title_to_clipboard action")
         }
 
+        // **A named working directory is honoured, or nothing is split.**
+        //
+        // The core places a supervisor's worker terminals as splits, each in
+        // a directory of its own -- and a split that quietly started in the
+        // parent's directory would tell the caller it got what it asked for.
+        // This host can always honour it (`create_pane` takes a `NewTab`, and
+        // `NewTab` carries a `cwd`), so the only refusal here would be a
+        // queue that would not take the work.
+        //
+        // ⚠️ **Answered before the op runs**, because the op is queued to the
+        // window thread and this call has to return a verdict now. What the
+        // answer claims is "this host will split, in the directory asked
+        // for", which is decided here.
         ACTION_NEW_SPLIT => {
-            let dir = action.as_i32();
-            alogf!(origin, "[action] new_split dir={}", dir);
-            queue_from(origin, Op::NewSplit(dir), "new_split action")
+            let (dir, cwd, result) = action.as_new_split();
+            alogf!(
+                origin,
+                "[action] new_split dir={} cwd={}",
+                dir,
+                cwd.as_deref().unwrap_or("(inherited)")
+            );
+            let queued = queue_from(origin, Op::NewSplit(dir, cwd), "new_split action");
+            if queued && !result.is_null() {
+                // `ghostty_action_new_split_result_e`: 1 == SPLIT.
+                unsafe { result.write(1) };
+            }
+            queued
         }
         ACTION_GOTO_SPLIT => {
             let v = action.as_i32();

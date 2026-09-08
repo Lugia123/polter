@@ -1019,6 +1019,29 @@ typedef struct {
   ghostty_action_poltergeist_close_result_e* result;
 } ghostty_action_poltergeist_close_s;
 
+// apprt.action.NewSplit.Result
+//
+// UNSUPPORTED is first so that zero is the honest answer: an apprt that
+// writes nothing is reported as not having split, rather than inheriting
+// SPLIT by accident.
+typedef enum {
+  GHOSTTY_ACTION_NEW_SPLIT_RESULT_UNSUPPORTED,
+  GHOSTTY_ACTION_NEW_SPLIT_RESULT_SPLIT,
+} ghostty_action_new_split_result_e;
+
+// apprt.action.NewSplit
+//
+// An apprt that cannot start a split in `working_directory` must leave
+// `result` alone and not split: splitting anyway, in the parent's directory,
+// tells the caller it got what it asked for when it did not. `result` may be
+// NULL when nobody needs an answer, and `working_directory` may be empty,
+// which means "wherever the split source is standing".
+typedef struct {
+  ghostty_action_split_direction_e direction;
+  const char* working_directory;
+  ghostty_action_new_split_result_e* result;
+} ghostty_action_new_split_s;
+
 // apprt.action.PoltergeistTabPanes
 //
 // How many terminals share a tab with the target surface. The apprt writes
@@ -1112,7 +1135,7 @@ typedef enum {
 } ghostty_action_tag_e;
 
 typedef union {
-  ghostty_action_split_direction_e new_split;
+  ghostty_action_new_split_s new_split;
   ghostty_action_fullscreen_e toggle_fullscreen;
   ghostty_action_move_tab_s move_tab;
   ghostty_action_goto_tab_e goto_tab;

@@ -6154,7 +6154,10 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         .new_split => |direction| return try self.rt_app.performAction(
             .{ .surface = self },
             .new_split,
-            switch (direction) {
+            // A keybinding names no directory and wants no answer: the split
+            // starts where this surface is standing, which is what it has
+            // always done.
+            .{ .direction = switch (direction) {
                 .right => .right,
                 .left => .left,
                 .down => .down,
@@ -6163,7 +6166,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                     .right
                 else
                     .down,
-            },
+            } },
         ),
 
         .goto_split => |direction| return try self.rt_app.performAction(

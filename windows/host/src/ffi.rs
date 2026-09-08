@@ -391,6 +391,29 @@ impl Action {
         (scope, confirm, result)
     }
 
+    /// `ghostty_action_new_split_s { split_direction_e direction;
+    /// const char* working_directory; new_split_result_e* result; }`.
+    ///
+    /// The pointer fields are 8-aligned, so `direction` sits at 0 with four
+    /// bytes of padding after it, `working_directory` at 8 and `result` at
+    /// 16 -- the same alignment rule spelled out on `as_poltergeist_mark`.
+    ///
+    /// ⚠️ **An empty directory and a missing one are the same request**:
+    /// "wherever the split source is standing", which is what a keybinding
+    /// asks for and what every split did before this field existed.
+    pub fn as_new_split(&self) -> (i32, Option<String>, *mut i32) {
+        let dir = i32::from_ne_bytes(self.payload[0..4].try_into().unwrap());
+        let cwd_p = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *const c_char;
+        let cwd = if cwd_p.is_null() {
+            None
+        } else {
+            let s = unsafe { std::ffi::CStr::from_ptr(cwd_p) }.to_string_lossy().into_owned();
+            if s.is_empty() { None } else { Some(s) }
+        };
+        let result = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *mut i32;
+        (dir, cwd, result)
+    }
+
     /// `ghostty_action_poltergeist_tab_panes_s { uint32_t* count; }`.
     ///
     /// **The core is asking, not telling.** It cannot see which surfaces

@@ -95,7 +95,7 @@ pub const Action = union(Key) {
 
     /// Create a new split. The value determines the location of the split
     /// relative to the target.
-    new_split: SplitDirection,
+    new_split: NewSplit,
 
     /// Close all open windows.
     close_all_windows,
@@ -2171,6 +2171,64 @@ pub const PoltergeistClose = extern struct {
 /// It is here because that inheritance is the only way a tab could get a
 /// directory, and Poltergeist needs to put one somewhere the supervisor
 /// chose rather than somewhere a terminal already happens to be.
+/// A new split, and where it should start.
+///
+/// **`working_directory` is why this stopped being a bare direction.** A
+/// supervisor's worker terminals are placed as splits, and each one is asked
+/// for in a directory of its own -- that is the whole reason `terminal_open`
+/// exists rather than `terminal_action(new_tab)`, whose new tab starts
+/// wherever the terminal that opened it is standing. A split that quietly
+/// ignored the directory would rebuild exactly the defect that tool was
+/// built to avoid, and nothing on screen or in a log would say so.
+pub const NewSplit = struct {
+    direction: SplitDirection = .right,
+
+    /// Empty means "wherever the split source is standing", which is what
+    /// every split did before this field existed and what a keybinding still
+    /// asks for.
+    working_directory: [:0]const u8 = "",
+
+    /// Written by the apprt before it returns; never read by it.
+    ///
+    /// **An apprt that cannot start a split in a named directory must not
+    /// split at all.** Leaving this at `unsupported` and doing nothing is the
+    /// answer; splitting anyway, in the parent's directory, is the one
+    /// outcome that must not happen, because the caller would be told it got
+    /// what it asked for. The core then opens a tab instead, which can carry
+    /// a directory, and says in the log that it fell back and why.
+    ///
+    /// Null when nobody is asking -- a keybinding does not need an answer.
+    result: ?*Result = null,
+
+    /// Sync with: ghostty_action_new_split_result_e
+    ///
+    /// `unsupported` is first so that zero is the honest answer, the same
+    /// reasoning as `PoltergeistClose.Result`: a cell nobody wrote reads as
+    /// "not done" rather than inheriting "done" by accident.
+    pub const Result = enum(c_int) {
+        /// Nothing was split. Either this apprt does not do splits at all, or
+        /// it was asked for a directory it cannot honour.
+        unsupported,
+        /// A split was made, in the directory asked for if one was named.
+        split,
+    };
+
+    // Sync with: ghostty_action_new_split_s
+    pub const C = extern struct {
+        direction: SplitDirection,
+        working_directory: [*:0]const u8,
+        result: ?*Result,
+    };
+
+    pub fn cval(self: NewSplit) C {
+        return .{
+            .direction = self.direction,
+            .working_directory = self.working_directory.ptr,
+            .result = self.result,
+        };
+    }
+};
+
 pub const NewTab = struct {
     working_directory: [:0]const u8 = "",
 

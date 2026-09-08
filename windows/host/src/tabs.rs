@@ -181,7 +181,9 @@ pub enum Op {
     CopyTitleToClipboard,
     PresentTerminal,
     /// `ghostty_action_split_direction_e`.
-    NewSplit(i32),
+    /// The direction, and where the new pane's shell starts (`None` means
+    /// wherever the split source is standing).
+    NewSplit(i32, Option<String>),
     /// `ghostty_action_goto_split_e`.
     GotoSplit(i32),
     /// amount in pixels, `ghostty_action_resize_split_direction_e`.
@@ -262,7 +264,7 @@ impl Op {
             Op::SetTabTitle { .. } => "SetTabTitle",
             Op::CopyTitleToClipboard => "CopyTitleToClipboard",
             Op::PresentTerminal => "PresentTerminal",
-            Op::NewSplit(_) => "NewSplit",
+            Op::NewSplit(..) => "NewSplit",
             Op::GotoSplit(_) => "GotoSplit",
             Op::ResizeSplit(..) => "ResizeSplit",
             Op::EqualizeSplits => "EqualizeSplits",
@@ -2181,11 +2183,20 @@ pub fn create_tab_with(
 /// The new tree is computed **before** the window exists, because that is
 /// what says how big the new pane is -- and a pane has to be created at its
 /// final size (see `create_pane`).
+/// `cwd` is where the new pane's shell starts, or `None` for "wherever the
+/// split source is standing" -- which is what a keybinding asks for and what
+/// this did before the field existed.
+///
+/// ⚠️ **A caller that named a directory is told whether it got one**, through
+/// the `result` cell the core passes in; see the `ACTION_NEW_SPLIT` arm. This
+/// function can always honour it, because `create_pane` takes a `NewTab` and
+/// `NewTab` carries a `cwd`.
 fn split_focused(
     frame: HWND,
     app: App,
     hinst: windows::Win32::Foundation::HINSTANCE,
     dir: NewSplit,
+    cwd: Option<String>,
 ) {
     let (bounds, focused, tree) = {
         let Some(win) = window(frame) else {
@@ -2219,7 +2230,8 @@ fn split_focused(
         return;
     };
 
-    let Some(pane) = create_pane(frame, app, hinst, id, r, NewTab::default()) else {
+    let spec = NewTab { cwd: cwd.clone(), ..NewTab::default() };
+    let Some(pane) = create_pane(frame, app, hinst, id, r, spec) else {
         return;
     };
     {
@@ -2234,7 +2246,13 @@ fn split_focused(
     }
     layout(frame);
     focus_active(frame);
-    logf!("[split] {:?} -> pane {}; {} panes in this tab", dir, id, pane_count(frame));
+    logf!(
+        "[split] {:?} -> pane {} (cwd {}); {} panes in this tab",
+        dir,
+        id,
+        cwd.as_deref().unwrap_or("inherited"),
+        pane_count(frame)
+    );
 }
 
 /// Close one pane. The tab goes with it when it was the last one.
@@ -3903,7 +3921,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 let ok = copy_to_clipboard(&title).is_ok();
                 wlogf!(frame, "[win] copy_title_to_clipboard {:?} -> {}", title, ok);
             }
-            Op::NewSplit(dir) => {
+            Op::NewSplit(dir, cwd) => {
                 // `ghostty_action_split_direction_e`
                 let d = match dir {
                     1 => NewSplit::Down,
@@ -3911,7 +3929,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     3 => NewSplit::Up,
                     _ => NewSplit::Right,
                 };
-                split_focused(frame, app, hinst, d);
+                split_focused(frame, app, hinst, d, cwd);
             }
             Op::GotoSplit(v) => {
                 // `ghostty_action_goto_split_e`

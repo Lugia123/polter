@@ -2007,7 +2007,7 @@ pub const CAPI = struct {
         _ = ptr.app.performAction(
             .{ .surface = &ptr.core_surface },
             .new_split,
-            direction,
+            .{ .direction = direction },
         ) catch |err| {
             log.err("error creating new split err={}", .{err});
             return;

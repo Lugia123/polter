@@ -482,7 +482,7 @@ extension Ghostty {
                 openChat(app, target: target)
 
             case GHOSTTY_ACTION_NEW_SPLIT:
-                newSplit(app, target: target, direction: action.action.new_split)
+                newSplit(app, target: target, v: action.action.new_split)
 
             case GHOSTTY_ACTION_CLOSE_TAB:
                 closeTab(app, target: target, mode: action.action.close_tab_mode)
@@ -926,10 +926,23 @@ extension Ghostty {
             }
         }
 
+        /// - Parameter v: direction, an optional working directory, and a
+        ///   cell to answer in.
+        ///
+        /// **A named working directory is honoured or the split does not
+        /// happen.** Splitting anyway, in the parent's directory, would tell
+        /// the caller it got what it asked for; the core reads `unsupported`
+        /// and opens a tab instead, which can carry a directory.
         private static func newSplit(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
-            direction: ghostty_action_split_direction_e) {
+            v: ghostty_action_new_split_s) {
+            let direction = v.direction
+            let requested: String? = v.working_directory.flatMap {
+                let s = String(cString: $0)
+                return s.isEmpty ? nil : s
+            }
+
             switch target.tag {
             case GHOSTTY_TARGET_APP:
                 // New split does nothing with an app target
@@ -940,12 +953,22 @@ extension Ghostty {
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
 
+                var config = SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT))
+                if let requested { config.workingDirectory = requested }
+
+                // Answered before the notification goes out, because the
+                // split is handled asynchronously and this call has to return
+                // a verdict now. What it claims is "this apprt will make the
+                // split you asked for, in the directory you asked for" --
+                // which is decided here, not later.
+                if let cell = v.result { cell.pointee = GHOSTTY_ACTION_NEW_SPLIT_RESULT_SPLIT }
+
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewSplit,
                     object: surfaceView,
                     userInfo: [
                         "direction": direction,
-                        Notification.NewSurfaceConfigKey: SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT)),
+                        Notification.NewSurfaceConfigKey: config,
                     ]
                 )
 
