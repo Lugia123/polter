@@ -243,11 +243,33 @@ pub fn show(frame: HWND) -> bool {
             // which read identically before task 307. The fallback below is
             // then a second line, so the two together say what was tried and
             // what ran.
+            //
+            // ⚠️ **This used to say the HRESULT covers two situations. It
+            // covers at least three, and the machine we test on is the third
+            // one** -- which is worth knowing, because the third is the one a
+            // reader would not have thought of. Measured there:
+            //
+            //     HKCR\CLSID\{4ce576fa-...}  (Default) = "UIHostNoLaunch Class"
+            //                                 AppID     = {36938566-...}
+            //                                 no InprocServer32, no LocalServer32
+            //     HKCR\AppID\{36938566-...}  (Default) = "TabTip"
+            //                                 no LocalServer32 either
+            //     where TabTip.exe          -> not found
+            //
+            // So **the class is registered and the program implementing it is
+            // absent**, and COM answers `REGDB_E_CLASSNOTREG` (`0x80040154`)
+            // for that just as it does for a key that was never written. The
+            // claim that this host cannot tell them apart from in here still
+            // holds; what was wrong was counting the ways. **A comment that
+            // enumerates cases is a claim about the world, and it goes stale
+            // the same way a number does.**
             wlogf!(
                 frame,
                 "[osk] no touch keyboard here ({e:?}); falling back to osk.exe. \
-                 The class is undocumented and this host cannot tell an unregistered \
-                 CLSID from a Windows that no longer has one; both land here."
+                 The class is undocumented and this host cannot tell apart, from in \
+                 here, a CLSID that was never registered, a Windows that no longer \
+                 has one, and a registration whose server is missing; all three land \
+                 here and the HRESULT is the only thing that narrows it."
             );
         }
     }
@@ -276,11 +298,23 @@ pub fn show(frame: HWND) -> bool {
     // thread does not know how long it took -- the worker's own line carries
     // the real number. A `0ms` in this line would be a measurement nobody
     // made, sitting next to two that were.
+    //
+    // ⚠️ **The verb this line used to use is now reserved, deliberately.**
+    // `shellopen::detached` announces every site that moved off the window
+    // thread with one phrase, on purpose: one grep finds them all, across
+    // tags. This line means something else entirely -- the host took the
+    // request; whether the shell ran it is the worker's line -- and it used
+    // the same words, so one grep returned two opposite meanings sitting two
+    // lines apart in the same log. Found on the real machine, not reasoned
+    // about here. The phrase itself is not written out in this comment: a
+    // checker that counts call sites by scanning text would count prose
+    // about them too.
     wlogf!(
         frame,
-        "[osk] handed off {:?} -> {}; touch={} (max touches {}). The touch keyboard is a \
-         different program and this host does not raise it -- see this file's header. \
-         Whether the shell accepted it is on the worker's `[osk] ShellExecuteW returned` line.",
+        "[osk] accepted the request for {:?} -> {}; touch={} (max touches {}). The touch \
+         keyboard is a different program and this host does not raise it -- see this \
+         file's header. Whether the shell accepted it is on the worker's \
+         `[osk] ShellExecuteW returned` line.",
         path,
         ok as u8,
         if has_touch { "yes" } else { "no" },
