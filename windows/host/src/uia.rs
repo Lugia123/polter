@@ -129,6 +129,10 @@ const KIND_TABITEM: i32 = 3;
 const KIND_DOCUMENT: i32 = 4;
 const KIND_PALETTE: i32 = 5;
 const KIND_PALETTE_ITEM: i32 = 6;
+/// The tab strip's menu button. **Appended, never inserted**: these values
+/// are baked into runtime ids a client may have written down, so renumbering
+/// the existing ones would tell it that every element had been replaced.
+const KIND_MENU_BUTTON: i32 = 7;
 
 // ------------------------------------------------------------- text reading
 
@@ -592,6 +596,25 @@ struct Document {
     pane: PaneId,
 }
 
+#[implement(IRawElementProviderSimple, IRawElementProviderFragment, IInvokeProvider)]
+/// The tab strip's menu button.
+///
+/// # Why it is an element of ours rather than something Windows found
+///
+/// The strip is drawn by this host: there is no child window under the
+/// button, so the default provider has nothing to report and the button was
+/// **not in the tree at all**. A client could see the tabs beside it and not
+/// the one control that opens everything else.
+///
+/// Its rectangle comes from `strip::menu_button_rect`, the geometry the painter uses
+/// -- so it is correct on a window of any size. ⚠️ **The constant `(14, 15)`
+/// that a script used before this existed was right only while the window was
+/// maximised**, which is the failure this element exists to end.
+struct MenuButton {
+    frame: isize,
+}
+
+
 impl WindowRoot {
     fn hwnd(&self) -> HWND {
         HWND(self.frame as *mut core::ffi::c_void)
@@ -607,6 +630,12 @@ impl TabItem {
         HWND(self.frame as *mut core::ffi::c_void)
     }
 }
+impl MenuButton {
+    fn hwnd(&self) -> HWND {
+        HWND(self.frame as *mut core::ffi::c_void)
+    }
+}
+
 impl Document {
     fn hwnd(&self) -> HWND {
         HWND(self.frame as *mut core::ffi::c_void)
@@ -632,6 +661,8 @@ fn root_of(frame: isize) -> IRawElementProviderFragmentRoot {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RootChild {
     TabList,
+    /// The strip's menu button; see `MenuButton`.
+    MenuButton,
     /// One terminal, named by **which pane of which tab** it is. Both halves
     /// are needed: a pane id alone is unique in the process, but checking the
     /// pair is what keeps a pane that has moved to another tab from matching
@@ -661,6 +692,10 @@ fn root_children_ided(frame: HWND) -> Vec<(RootChild, IRawElementProviderFragmen
         tabs_now.iter().map(|t| t.panes.len()).sum::<usize>() + 1,
     );
     out.push((RootChild::TabList, TabList { frame: f }.into()));
+    // **After the tab list, before the documents.** The order is what several
+    // `Navigate` arms agree on, and it matches what a reader sees: the strip
+    // across the top, then the terminals under it.
+    out.push((RootChild::MenuButton, MenuButton { frame: f }.into()));
     for t in tabs_now.iter() {
         for p in t.panes.iter() {
             out.push((
@@ -1089,6 +1124,119 @@ impl IRawElementProviderFragment_Impl for TabList_Impl {
     }
     fn FragmentRoot(&self) -> WResult<IRawElementProviderFragmentRoot> {
         Ok(root_of(self.frame))
+    }
+}
+
+// --------------------------------------------------------------- MenuButton
+
+impl IRawElementProviderSimple_Impl for MenuButton_Impl {
+    fn ProviderOptions(&self) -> WResult<ProviderOptions> {
+        Ok(ProviderOptions_ServerSideProvider)
+    }
+    fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> WResult<IUnknown> {
+        if id == UIA_InvokePatternId {
+            let p: IInvokeProvider = MenuButton { frame: self.frame }.into();
+            return Ok(p.into());
+        }
+        // **No ExpandCollapse, on purpose.** The pattern would promise a
+        // client it can read whether the menu is open and close it again, and
+        // this host has no way to answer the second half: the menu is a
+        // `TrackPopupMenu` that runs its own loop. A pattern that answers one
+        // of its two questions is worse than one that is not offered.
+        Err(gone())
+    }
+    fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> WResult<VARIANT> {
+        if !live(self.hwnd()) {
+            return Err(gone());
+        }
+        Ok(match id {
+            UIA_ControlTypePropertyId => variant_i4(UIA_ButtonControlTypeId.0),
+            // The name a person would say. Through `tr` like the rest of the
+            // host's user-visible text, so it follows the catalogue rather
+            // than being a second English string.
+            UIA_NamePropertyId => variant_bstr(&crate::i18n::tr("Menu")),
+            // ⚠️ **The stable handle, and the reason it is not the name.** A
+            // client that writes down "Menu" has written down a word that
+            // changes with the display language; this does not.
+            UIA_AutomationIdPropertyId => variant_bstr("tab-strip-menu-button"),
+            // Asked of Windows, never assumed; see `window_enabled`.
+            UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
+            UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
+            _ => variant_empty(),
+        })
+    }
+    fn HostRawElementProvider(&self) -> WResult<IRawElementProviderSimple> {
+        // Null for the same reason the tab list gives: only the fragment root
+        // names an HWND.
+        Err(gone())
+    }
+}
+
+impl IRawElementProviderFragment_Impl for MenuButton_Impl {
+    fn Navigate(&self, direction: NavigateDirection) -> WResult<IRawElementProviderFragment> {
+        let frame = self.hwnd();
+        if !live(frame) {
+            return Err(gone());
+        }
+        match direction {
+            NavigateDirection_Parent => {
+                let r: IRawElementProviderFragment = WindowRoot { frame: self.frame }.into();
+                Ok(r)
+            }
+            // A leaf: the menu it opens is a `TrackPopupMenu`, which Windows
+            // provides for itself and which is not a child of this element.
+            NavigateDirection_FirstChild | NavigateDirection_LastChild => Err(gone()),
+            // Found by identity rather than by a constant index, for the
+            // reason `TabList::Navigate` gives: a written-down position is a
+            // second copy of the order in `root_children_ided`.
+            _ => step_among_root_children(frame, RootChild::MenuButton, direction),
+        }
+    }
+    fn GetRuntimeId(&self) -> WResult<*mut SAFEARRAY> {
+        if !live(self.hwnd()) {
+            return Err(gone());
+        }
+        runtime_id(winid::of(self.hwnd()), KIND_MENU_BUTTON, 0)
+    }
+    /// The button's rectangle, on screen.
+    ///
+    /// **Read from the strip's own geometry every time.** The button moves
+    /// with the window, and a client that was handed a constant would click
+    /// where the button is on a maximised window -- which is exactly what a
+    /// hard-coded `(14, 15)` did, and why it worked in one screenshot and
+    /// nowhere else.
+    fn BoundingRectangle(&self) -> WResult<UiaRect> {
+        let frame = self.hwnd();
+        if !live(frame) {
+            return Err(gone());
+        }
+        Ok(client_rect_to_screen(frame, crate::strip::menu_button_rect(frame)))
+    }
+    fn GetEmbeddedFragmentRoots(&self) -> WResult<*mut SAFEARRAY> {
+        empty_i4_array()
+    }
+    fn SetFocus(&self) -> WResult<()> {
+        Ok(())
+    }
+    fn FragmentRoot(&self) -> WResult<IRawElementProviderFragmentRoot> {
+        Ok(root_of(self.frame))
+    }
+}
+
+impl IInvokeProvider_Impl for MenuButton_Impl {
+    /// Open the menu.
+    ///
+    /// **Posted to the window's own thread, not run here.** This call arrives
+    /// on the automation core's thread, and `TrackPopupMenu` runs a modal
+    /// loop that must belong to the thread that owns the window -- the same
+    /// reason `activate_from_uia` posts.
+    fn Invoke(&self) -> WResult<()> {
+        let frame = self.hwnd();
+        if !live(frame) {
+            return Err(gone());
+        }
+        crate::strip::request_root_menu(frame);
+        Ok(())
     }
 }
 
@@ -1664,6 +1812,28 @@ impl IRawElementProviderSimple_Impl for PaletteItem_Impl {
             // Asked of Windows, never assumed; see `window_enabled`.
             UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
+            // **This is what makes a zero rectangle readable.**
+            //
+            // Only about a dozen of the rows are drawn; the rest have no
+            // place, and `BoundingRectangle` answers zero for them. But zero
+            // was also what a row answered when the window went away between
+            // the snapshot and the call -- so a client saw one value for two
+            // situations it must treat differently: *scroll to it* and *ask
+            // again, something is wrong*.
+            //
+            // Derived from `row_rect` and nothing else, which is what keeps
+            // the pair meaningful:
+            //
+            //   zero rectangle + IsOffscreen true   -> not in view; expected
+            //   zero rectangle + IsOffscreen false  -> the provider could not
+            //                                          answer; not expected
+            //
+            // ⚠️ **NOT COVERED: tabs scrolled out of the strip.** `TabItem`
+            // has the same question and does not answer it here; this arm is
+            // about the palette's rows, which is where it was measured.
+            UIA_IsOffscreenPropertyId => {
+                variant_bool(crate::palette::row_rect(self.index).is_none())
+            }
             _ => variant_empty(),
         })
     }
@@ -1728,12 +1898,11 @@ impl IRawElementProviderFragment_Impl for PaletteItem_Impl {
     /// the edge, because an invented one invites a client to scroll to it and
     /// click, which lands on whatever is really there.
     ///
-    /// ⚠️ **`IsOffscreen` is not yet answered, and it should be** -- a zero
-    /// rectangle is the only signal a client gets today. It is one line in
-    /// `GetPropertyValue`, deliberately not added in this change: that match
-    /// is where task 327 is working, and two people adding arms to it is how a
-    /// merge comes out clean and short by one branch. Owed with task 328's
-    /// second half.
+    /// **`IsOffscreen` now answers alongside this**, so a zero rectangle is
+    /// no longer the only signal: see the arm in `GetPropertyValue`. A zero
+    /// rectangle with `IsOffscreen` false is a provider that could not
+    /// answer, which is a different fact from a row that is merely not in
+    /// view.
     fn BoundingRectangle(&self) -> WResult<UiaRect> {
         let Some(r) = crate::palette::row_rect(self.index) else {
             return Ok(UiaRect { left: 0.0, top: 0.0, width: 0.0, height: 0.0 });

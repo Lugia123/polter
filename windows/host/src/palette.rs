@@ -220,6 +220,36 @@ pub fn invoke_row(i: usize) -> bool {
 /// Unscaled metrics. Everything is multiplied by the window's DPI at paint.
 const ROW_H: i32 = 26;
 const EDIT_H: i32 = 30;
+
+/// The filter box's control id, which is the whole of how it gets an
+/// `AutomationId`.
+///
+/// # Why an id and not a new provider element
+///
+/// The box is a real `EDIT` (see the note at the top of this file), so
+/// Windows already provides for it -- including the Value and Text patterns
+/// that make its contents readable. Wrapping it in a provider of ours to add
+/// one string would mean re-answering all of that. Giving the window a
+/// control id costs one argument, and the UIA bridge exposes a standard
+/// control's id as its `AutomationId`.
+///
+/// # Why a compile-time constant is the point, not an implementation detail
+///
+/// A client that finds this box will **write the id down and come back for
+/// it**, so an id that is stable-looking and not stable is worse than none at
+/// all. This one cannot vary: it is a literal, so it does not move with the
+/// DPI, the display language, or how many times the palette has been opened
+/// (and the palette's window is created once per process anyway).
+///
+/// ⚠️ **What is not verified here**: that the bridge really derives
+/// `AutomationId` from the control id on this Windows build. It is documented
+/// behaviour and it is why the argument exists, but nothing in this tree
+/// measures it. **Being wrong costs the id, not a wrong id** -- the box goes
+/// back to having none, which is today's state. See the criterion for 328b.
+///
+/// `0x50` for "palette"; the value is arbitrary and only has to be non-zero
+/// and unique among this window's children, of which there is one.
+const IDC_PALETTE_FILTER: usize = 0x50;
 const PAD: i32 = 8;
 const MAX_ROWS: i32 = 12;
 const WIDTH: i32 = 560;
@@ -798,7 +828,10 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config) {
             sc(WIDTH - PAD * 2),
             sc(EDIT_H - PAD),
             Some(hwnd),
-            None,
+            // The control id, which is what gives this box an `AutomationId`.
+            // Without it a client has to find the box as "the only `edit` in
+            // the tree", which stops being true the day there are two.
+            Some(HMENU(IDC_PALETTE_FILTER as *mut c_void)),
             Some(hinst),
             None,
         ) {

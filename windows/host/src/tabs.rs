@@ -150,6 +150,14 @@ pub enum Op {
     /// another strip. An index resolved later would then name a different tab
     /// -- silently, and looking entirely correct.
     ActivateTab(TabId),
+    /// Open the strip's root menu, as clicking its button does.
+    ///
+    /// **Queued rather than called**, for a reason stronger than the usual
+    /// one: the menu is a `TrackPopupMenu`, which runs a modal message loop
+    /// belonging to the thread that owns the window. Called from a UI
+    /// Automation client's thread it would either fail or pump somebody
+    /// else's messages.
+    ShowRootMenu,
     /// What the core's `move_tab` action carries: a relative shift of the
     /// active tab. Kept faithful to the action rather than resolved at the
     /// call site, because the tab set can change between queueing and running.
@@ -241,6 +249,7 @@ impl Op {
             Op::CloseTab(_) => "CloseTab",
             Op::GotoTab(_) => "GotoTab",
             Op::ActivateTab(_) => "ActivateTab",
+            Op::ShowRootMenu => "ShowRootMenu",
             Op::MoveTabBy(_) => "MoveTabBy",
             Op::ToggleFullscreen => "ToggleFullscreen",
             Op::ToggleMaximize => "ToggleMaximize",
@@ -3748,6 +3757,14 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // longer exists, and inventing a neighbour would be worse
                 // than doing nothing.
                 activate_tab(frame, id);
+            }
+            Op::ShowRootMenu => {
+                // **The button's rectangle is read here, on this thread, not
+                // carried in the op.** A rectangle put into the queue would
+                // be where the button was when the client asked; the window
+                // can be moved or resized before the op runs, and the menu
+                // would then open away from the button that opened it.
+                crate::menu::show_root_menu(frame, crate::strip::menu_button_rect(frame));
             }
             Op::MoveTabBy(delta) => {
                 // Resolve to an identity here, on the main thread, and hand

@@ -216,6 +216,29 @@ pub fn tab_rects(frame: HWND) -> Vec<(TabId, RECT)> {
     slots(frame).slots.iter().map(|s| (s.id, s.rect)).collect()
 }
 
+/// Where the menu button is drawn, in the frame's client coordinates.
+///
+/// **The same accessor shape as `tab_rects`, and for the same reason.** The
+/// caller is `uia.rs`, which has to give the button a `BoundingRectangle`,
+/// and the alternative -- a constant, or arithmetic repeated at the call site
+/// -- is what `(14, 15)` was: right on a maximised window and wrong on every
+/// other one. Reading the geometry the painter uses means the answer follows
+/// the window instead of describing one particular window.
+pub fn menu_button_rect(frame: HWND) -> RECT {
+    slots(frame).menu
+}
+
+/// Ask for the root menu from a thread that does not own the window.
+///
+/// **The only route in for UI Automation.** `show_root_menu` runs a modal
+/// loop and must happen on the window's own thread; this queues the op that
+/// gets it there. A client that could not reach the menu had one option left
+/// -- synthesise a click at a coordinate -- and that is the failure this
+/// exists to remove.
+pub fn request_root_menu(frame: HWND) {
+    crate::tabs::post_op(frame, crate::tabs::Op::ShowRootMenu, "uia");
+}
+
 fn slots(frame: HWND) -> Geometry {
     let (tabs_now, _) = tabs::strip_snapshot(frame);
     let scale = tabs::scale_of(frame);
@@ -2231,6 +2254,32 @@ mod menu_inset_tests {
         assert_eq!(menu_w(1.5), 69);
         assert_eq!(menu_w(2.0), 92);
         assert_eq!(menu_w(3.0), 138);
+    }
+
+    /// **The button's rectangle does not depend on the window's width.**
+    ///
+    /// This is the property `uia.rs` leans on for task 328c.
+    ///
+    /// ⚠️ **The rectangle is in the frame's client coordinates**, and that is
+    /// where the fixed `(14, 15)` a script used to click went wrong: the
+    /// button is at the strip's left end at every scale and every width, so
+    /// that point is inside it in *client* space always -- but a script
+    /// clicks in *screen* space, and the two coincide only while the window
+    /// is maximised. `uia.rs` converts through `client_rect_to_screen` on
+    /// every call, so the element follows the window; a constant cannot.
+    ///
+    /// What is pinned here is the client-space half: a real rectangle, and
+    /// the same one whatever the window's width and scale are. The
+    /// conversion needs a window and is verified on the machine.
+    #[test]
+    fn the_menu_button_is_where_it_is_regardless_of_the_windows_width() {
+        for &scale in &[1.0f64, 1.5, 2.0] {
+            let narrow = geometry(420, scale, 3, 0).menu;
+            let wide = geometry(2560, scale, 30, 0).menu;
+            assert_eq!(narrow, wide, "scale {scale}");
+            assert!(narrow.right > narrow.left, "scale {scale}");
+            assert!(narrow.bottom > narrow.top, "scale {scale}");
+        }
     }
 
     /// **The acceptance number: the first tab starts at `46 * scale`.**
