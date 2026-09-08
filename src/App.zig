@@ -2042,6 +2042,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .pluginConfigure = pluginConfigure,
         .pluginTest = pluginTest,
         .taskCreate = taskCreate,
+        .taskEdit = taskEdit,
         .taskAssign = taskAssign,
         .taskClose = taskClose,
         .taskOwner = taskOwner,
@@ -3128,6 +3129,7 @@ fn taskCreate(
     ctx: *anyopaque,
     group: []const u8,
     title: []const u8,
+    kind: poltergeistpkg.Tasks.Kind,
 ) anyerror!u64 {
     const self: *App = @ptrCast(@alignCast(ctx));
 
@@ -3135,9 +3137,28 @@ fn taskCreate(
     // members and no panel to draw it on.
     if (!self.chat.exists(group)) return error.NoSuchGroup;
 
-    const id = try self.tasks.create(group, title);
+    const id = try self.tasks.create(group, title, kind);
     self.logTask(.created, id);
     return id;
+}
+
+/// Correct a task already on the panel.
+///
+/// **Recorded before it is answered**, like every other change here: the
+/// panel's value is that it is a written record, and a correction nobody can
+/// see afterwards would take that away from exactly the tasks most worth
+/// checking. `null` means "leave this one alone", so a caller changing only
+/// the kind does not have to restate a title it might get wrong.
+fn taskEdit(
+    ctx: *anyopaque,
+    task: u64,
+    title: ?[]const u8,
+    kind: ?poltergeistpkg.Tasks.Kind,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (title) |t| try self.tasks.setTitle(task, t);
+    if (kind) |k| try self.tasks.setKind(task, k);
+    self.logTask(.edited, task);
 }
 
 fn taskAssign(ctx: *anyopaque, task: u64, id: poltergeistpkg.Bus.Id) anyerror!void {
@@ -3216,6 +3237,7 @@ fn taskList(
         .owner = t.owner,
         .state = @tagName(t.state),
         .progress = @tagName(t.progress),
+        .kind = @tagName(t.kind),
     };
     return out;
 }

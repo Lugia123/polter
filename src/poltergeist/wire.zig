@@ -262,6 +262,22 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .task_create => .{ .task_create = .{
             .group = try requireString(aa, params, "group"),
             .title = try requireString(aa, params, "title"),
+            // **Optional here and required one level up**, deliberately: a
+            // missing kind and a misspelt one are the same mistake to the
+            // caller, and answering both with the one sentence that lists
+            // the four names is worth more than telling it which of the two
+            // ways it got it wrong.
+            .kind = (try optionalString(aa, params, "kind")) orelse "",
+        } },
+
+        .task_edit => .{ .task_edit = .{
+            .task = try requireU64(params, "task"),
+            // Empty means "leave this one alone". Both empty is refused
+            // above rather than treated as a successful no-op: a call that
+            // changes nothing and answers `ok` reads as a change that
+            // happened.
+            .title = (try optionalString(aa, params, "title")) orelse "",
+            .kind = (try optionalString(aa, params, "kind")) orelse "",
         } },
 
         .task_assign => .{
@@ -840,6 +856,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.write(t.state);
                 try s.objectField("progress");
                 try s.write(t.progress);
+
+                // Always written, `unset` included, for the reason the owner
+                // is: a reader that sees no field has to guess whether it was
+                // dropped or the task predates it, and "predates it" is the
+                // one worth noticing -- it is the set somebody has to go back
+                // and sort.
+                try s.objectField("kind");
+                try s.write(t.kind);
                 try s.endObject();
             }
             try s.endArray();

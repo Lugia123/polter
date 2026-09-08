@@ -52,15 +52,28 @@ tree: daylog.Tree,
 
 /// What one line says happened.
 ///
-/// Five, matching the five things the panel can be told. There is no
-/// "edited": a title that was wrong is a task that gets cancelled and one
-/// that gets made, which is also what the worker needs to hear.
+/// Six, matching the six things the panel can be told.
+///
+/// **`edited` was added on 2026-09-09, and what stood here was the argument
+/// against it**: "a title that was wrong is a task that gets cancelled and
+/// one that gets made, which is also what the worker needs to hear." That is
+/// true of a task whose *work* changed. It is not true of the case that
+/// turned up: a title that described something correctly and then stopped
+/// being true, on a task everybody has already been referring to by number.
+/// Cancelling it renumbers the thing every earlier message named, and the
+/// old sentence stays on the panel misleading each new reader until somebody
+/// notices.
+///
+/// So it is recorded rather than forbidden. **That is what keeps the panel a
+/// written record rather than a whiteboard**: the current title is what the
+/// last line says, and what it used to say is still in the file above it.
 pub const Op = enum {
     created,
     assigned,
     progressed,
     closed,
     cancelled,
+    edited,
 };
 
 /// Open the record under a state directory, making it if it is not there.
@@ -139,6 +152,12 @@ fn render(
     try s.write(@tagName(task.state));
     try s.objectField("progress");
     try s.write(@tagName(task.progress));
+
+    // Written on every line, not only on `created`, for the reason the
+    // replay note below gives: a line carries the whole task, and a field
+    // that is only on some lines is a field the replay has to guess at.
+    try s.objectField("kind");
+    try s.write(@tagName(task.kind));
     try s.endObject();
 }
 
@@ -435,11 +454,26 @@ fn applyLine(self: *TaskLog, tasks: *Tasks, line: []const u8) void {
         str(obj, "progress") orelse "queued",
     ) orelse .queued;
 
+    const kind = std.meta.stringToEnum(
+        Tasks.Kind,
+        str(obj, "kind") orelse "unset",
+    ) orelse .unset;
+
     // Every line carries the whole task, so applying one is the same
     // operation whichever `op` it was: put the task where this line says
     // it was. Later lines overwrite earlier ones, which is what "in order"
     // means when the state is carried rather than derived.
     if (tasks.get(id) != null) {
+        // ⚠️ **The title and the kind are applied here, and until
+        // 2026-09-09 they were not.** The comment above said a line carries
+        // the whole task; this branch quietly applied four fields of it and
+        // dropped the rest. Nothing depended on that while a title could
+        // never change -- and the moment one could, the shape of the defect
+        // was: the edit works, the panel shows it, the group sees it, and
+        // **the old title comes back at the next restart**, far enough away
+        // that nobody connects the two.
+        tasks.setTitle(id, title) catch {};
+        if (kind.choosable()) tasks.setKind(id, kind) catch {};
         tasks.assign(id, owner) catch {};
         tasks.setProgress(id, owner, progress) catch {};
         switch (state) {
@@ -457,6 +491,10 @@ fn applyLine(self: *TaskLog, tasks: *Tasks, line: []const u8) void {
         .owner = owner,
         .state = state,
         .progress = progress,
+        // A record written before the field existed has no `kind`, and
+        // `unset` is what that means. It is a value nothing may ask for, so
+        // "everything older than the question" stays a query.
+        .kind = kind,
     }) catch {};
 }
 
@@ -499,19 +537,19 @@ test "the panel comes back after a restart" {
         var l = try TaskLog.open(alloc, io, dir);
         defer l.deinit();
 
-        const one = try tasks.create("build", "get the core building");
+        const one = try tasks.create("build", "get the core building", .bug);
         l.append(at, .created, tasks.get(one).?);
         try tasks.assign(one, 0x2222);
         l.append(at, .assigned, tasks.get(one).?);
         try tasks.setProgress(one, 0x2222, .working);
         l.append(at, .progressed, tasks.get(one).?);
 
-        const two = try tasks.create("build", "and the docs");
+        const two = try tasks.create("build", "and the docs", .research);
         l.append(at, .created, tasks.get(two).?);
         try tasks.close(two);
         l.append(at, .closed, tasks.get(two).?);
 
-        const three = try tasks.create("ops", "watch the deploy");
+        const three = try tasks.create("ops", "watch the deploy", .other);
         l.append(at, .created, tasks.get(three).?);
     }
 
@@ -537,7 +575,119 @@ test "the panel comes back after a restart" {
     try testing.expectEqual(@as(usize, 1), ops.len);
 
     // And a fresh task does not land on a number the record already used.
-    try testing.expect(try tasks.create("build", "new") > 3);
+    try testing.expect(try tasks.create("build", "new", .feature) > 3);
+}
+
+test "an edited title and kind are what comes back after a restart" {
+    // ⭐ **This is the reading, not the claim.** "Editable" is worth nothing
+    // if the edit lives only in memory: the panel is read as the thing that
+    // survives the night, so a correction that quietly reverts at the next
+    // start is worse than no correction -- it is a sentence somebody
+    // believed they had fixed.
+    //
+    // ⚠️ **And it is the cell that was failing until this change.** Replay's
+    // branch for a task it has already seen applied the owner, the progress
+    // and the state and **returned before the title**, so a later line
+    // carrying a new one was read and dropped. The defect only showed up at
+    // a restart, which is far enough from the edit that nobody would have
+    // put the two together.
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    const at: i64 = 1_700_000_000_000;
+    var id: Tasks.TaskId = undefined;
+
+    // Before the restart: made wrong, then corrected.
+    {
+        var tasks: Tasks = .init(alloc, .{});
+        defer tasks.deinit();
+        var l = try TaskLog.open(alloc, io, dir);
+        defer l.deinit();
+
+        id = try tasks.create("build", "must be done by hand, no script can cover it", .research);
+        l.append(at, .created, tasks.get(id).?);
+
+        try tasks.setTitle(id, "a script covers this now");
+        try tasks.setKind(id, .bug);
+        l.append(at + 1, .edited, tasks.get(id).?);
+
+        try testing.expectEqualStrings("a script covers this now", tasks.get(id).?.title);
+    }
+
+    // The restart: nothing but the file.
+    var tasks: Tasks = .init(alloc, .{});
+    defer tasks.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+    l.restore(&tasks);
+
+    const back = tasks.get(id).?;
+    try testing.expectEqualStrings("a script covers this now", back.title);
+    try testing.expectEqual(Tasks.Kind.bug, back.kind);
+
+    // And the number did not move, which is the whole reason this exists
+    // rather than "cancel it and make another one".
+    try testing.expectEqual(id, back.id);
+}
+
+test "a record written before the field existed comes back as unset" {
+    // The other population, and ⚠️ folding it into `other` would make
+    // "somebody chose other" and "this predates the question" the same fact,
+    // after which they could never be separated again.
+    //
+    // **The line is handed straight to the parser** rather than written to a
+    // file: what is being tested is what happens to a record this build
+    // could not have produced -- one with no `kind` in it at all -- and the
+    // shortest way to have one is to write it out here, where a reader can
+    // see that the field is missing rather than take it on trust.
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    var tasks: Tasks = .init(alloc, .{});
+    defer tasks.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+
+    l.applyLine(&tasks,
+        \\{"seq":1,"at_ms":1700000000000,"op":"created","task":7,"group":"build","title":"from before the field","owner":"0x0","state":"open","progress":"queued"}
+    );
+
+    const back = tasks.get(7).?;
+    try testing.expectEqualStrings("from before the field", back.title);
+    try testing.expectEqual(Tasks.Kind.unset, back.kind);
+
+    // And nobody may ask for that value, which is what keeps it meaning only
+    // the one thing.
+    try testing.expectError(error.BadKind, tasks.create("build", "new", .unset));
+    try testing.expectError(error.BadKind, tasks.setKind(7, .unset));
+
+    // A later line that *does* carry a kind corrects it, and one that says
+    // `unset` again does not overwrite a real answer with the placeholder.
+    l.applyLine(&tasks,
+        \\{"seq":2,"at_ms":1700000000001,"op":"edited","task":7,"group":"build","title":"from before the field","owner":"0x0","state":"open","progress":"queued","kind":"bug"}
+    );
+    try testing.expectEqual(Tasks.Kind.bug, tasks.get(7).?.kind);
+
+    l.applyLine(&tasks,
+        \\{"seq":3,"at_ms":1700000000002,"op":"progressed","task":7,"group":"build","title":"from before the field","owner":"0x0","state":"open","progress":"working","kind":"unset"}
+    );
+    try testing.expectEqual(Tasks.Kind.bug, tasks.get(7).?.kind);
 }
 
 test "the record pages back through what happened" {
@@ -561,7 +711,7 @@ test "the record pages back through what happened" {
     var l = try TaskLog.open(alloc, io, dir);
     defer l.deinit();
 
-    const one = try tasks.create("build", "get the core building");
+    const one = try tasks.create("build", "get the core building", .bug);
     l.append(at, .created, tasks.get(one).?);
     try tasks.assign(one, 0x2222);
     l.append(at + 1000, .assigned, tasks.get(one).?);
@@ -571,7 +721,7 @@ test "the record pages back through what happened" {
     l.append(at + 3000, .closed, tasks.get(one).?);
 
     // Another group's events must not turn up in this one's count.
-    const other = try tasks.create("ops", "watch the deploy");
+    const other = try tasks.create("ops", "watch the deploy", .research);
     l.append(at + 500, .created, tasks.get(other).?);
 
     {
@@ -664,7 +814,7 @@ test "a torn line does not consume a number" {
     defer l.deinit();
 
     const at: i64 = 1_700_000_000_000;
-    const one = try tasks.create("build", "kept");
+    const one = try tasks.create("build", "kept", .other);
     l.append(at, .created, tasks.get(one).?);
     l.tree.write("build", at, "{\"op\":\"crea\n");
     try tasks.close(one);
@@ -701,7 +851,7 @@ test "a cancelled task comes back cancelled, not open" {
         var l = try TaskLog.open(alloc, io, dir);
         defer l.deinit();
 
-        const id = try tasks.create("build", "never mind");
+        const id = try tasks.create("build", "never mind", .feature);
         l.append(1_700_000_000_000, .created, tasks.get(id).?);
         try tasks.assign(id, 0x2222);
         l.append(1_700_000_000_000, .assigned, tasks.get(id).?);
@@ -744,7 +894,7 @@ test "a torn line is skipped rather than fatal" {
         var l = try TaskLog.open(alloc, io, dir);
         defer l.deinit();
 
-        const id = try tasks.create("build", "kept");
+        const id = try tasks.create("build", "kept", .bug);
         l.append(1_700_000_000_000, .created, tasks.get(id).?);
 
         // Half a line, the way a run that died mid-write leaves one.
@@ -805,7 +955,7 @@ test "a group whose name is not a directory name still round-trips" {
         var l = try TaskLog.open(alloc, io, dir);
         defer l.deinit();
 
-        const id = try tasks.create("a/b", "awkward");
+        const id = try tasks.create("a/b", "awkward", .research);
         l.append(1_700_000_000_000, .created, tasks.get(id).?);
     }
 

@@ -258,6 +258,24 @@ The panel is not a task system and will not become one: no dependencies, no
 priorities, no due dates, no sub-tasks. Anything a line cannot hold has a
 better home.
 
+**One field was added to that list on 2026-09-09, by the product owner, and
+the sentence above is kept because it is still the rule.** Tasks now carry a
+`kind` — feature, bug, research, other — required when the task is made.
+What it is for: a supervisor sorting a night's panel was doing it by reading
+titles, and a convention written into titles is not something anything can
+filter on. What it is not: none of the four things named above. **Nothing else
+was opened** — the panel still stores who is doing which piece of work, how far
+along it is, and now what kind of work it is, and a fifth field means going
+back to `docs/poltergeist/tasks.md` first, exactly as this one did.
+
+**And `task_edit` was added with it**, because the same day showed why: a
+title written when something was true stays on the panel after it stops being
+true, and the only remedy was to cancel and re-create — which changes the
+number every earlier message named. Corrections are recorded as `edited` in
+`task_history`, so the panel is still a written record rather than a
+whiteboard. ⚠️ What it cannot reach is messages already sent quoting the old
+title; the history is where those are reconciled.
+
 ## What you may reach, and what refuses you
 
 Reach is decided by the terminal you point at, not by your relation to it.

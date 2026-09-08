@@ -236,6 +236,17 @@ pub const Method = enum {
     /// `docs/poltergeist/tasks.md` for the line and why it is drawn there.
     task_create,
 
+    /// Correct a task that is already on the panel: its title, its kind, or
+    /// both.
+    ///
+    /// **Added because the panel is read as a standing record and could not
+    /// be corrected.** A title written when something was true stays on the
+    /// panel after it stops being true, misleading everybody who reads it,
+    /// and the only remedy was to cancel and re-create -- which changes the
+    /// number every earlier message refers to. Every change is recorded, so
+    /// the panel is still a record rather than a whiteboard.
+    task_edit,
+
     /// Hand a task to a terminal, or take it back with id `0`.
     task_assign,
 
@@ -363,7 +374,8 @@ pub const Request = union(Method) {
     stand_down,
     become_supervisor,
 
-    task_create: struct { group: []const u8, title: []const u8 },
+    task_create: struct { group: []const u8, title: []const u8, kind: []const u8 = "" },
+    task_edit: struct { task: u64, title: []const u8 = "", kind: []const u8 = "" },
     task_assign: struct { task: u64, id: Bus.Id },
     task_close: struct { task: u64 },
     task_cancel: struct { task: u64 },
@@ -667,6 +679,7 @@ pub fn callableByPlugin(method: Method) bool {
         .task_create,
         .task_assign,
         .task_close,
+        .task_edit,
         .task_cancel,
         .task_progress,
         .task_list,
@@ -833,6 +846,7 @@ pub fn requiresSupervisor(method: Method) bool {
         .task_create,
         .task_assign,
         .task_close,
+        .task_edit,
         .task_cancel,
         => true,
 
@@ -903,6 +917,7 @@ pub fn targetsTerminal(method: Method) bool {
         // owner is not a parameter the caller gets to choose.
         .task_create,
         .task_close,
+        .task_edit,
         .task_cancel,
         .task_progress,
         .task_list,
@@ -979,6 +994,7 @@ pub fn target(req: Request) ?Bus.Id {
         // refused without anybody deciding it should be.
         .task_create,
         .task_close,
+        .task_edit,
         .task_cancel,
         .task_progress,
         .task_list,
@@ -1046,6 +1062,7 @@ pub fn selfPermitted(req: Request) bool {
         .terminal_keys,
         .task_create,
         .task_close,
+        .task_edit,
         .task_cancel,
         .task_progress,
         .task_list,
@@ -1231,6 +1248,7 @@ pub fn promptReach(method: Method) enum {
         .group_set_brief,
         .task_create,
         .task_close,
+        .task_edit,
         .task_progress,
         .task_list,
         .task_history,
@@ -1723,6 +1741,7 @@ test "only what changes the arrangement needs the supervisor" {
             .task_create,
             .task_assign,
             .task_close,
+            .task_edit,
             .task_cancel,
 
             // **Closed, and it is the one method here that is closed by two
@@ -3579,6 +3598,12 @@ pub const TaskView = struct {
     owner: Bus.Id,
     state: []const u8,
     progress: []const u8,
+
+    /// What kind of work this is: `feature`, `bug`, `research`, `other`, or
+    /// `unset` for a task made before there was a question. A word, like the
+    /// three above it and for the same reason -- a reader that met an
+    /// unfamiliar one can still show it.
+    kind: []const u8,
 };
 
 /// One thing that happened to one task, as the record wrote it down.
@@ -3982,7 +4007,16 @@ pub const Host = struct {
             ctx: *anyopaque,
             group: []const u8,
             title: []const u8,
+            kind: Tasks.Kind,
         ) anyerror!u64,
+
+        /// Change a task's title, its kind, or both. `null` leaves one alone.
+        taskEdit: *const fn (
+            ctx: *anyopaque,
+            task: u64,
+            title: ?[]const u8,
+            kind: ?Tasks.Kind,
+        ) anyerror!void,
 
         /// Hand a task to a terminal, or take it back with `0`.
         taskAssign: *const fn (
@@ -4298,8 +4332,22 @@ pub const Host = struct {
         return self.vtable.pluginTest(self.ctx, alloc, key, by);
     }
 
-    fn taskCreate(self: Host, group: []const u8, title: []const u8) anyerror!u64 {
-        return self.vtable.taskCreate(self.ctx, group, title);
+    fn taskCreate(
+        self: Host,
+        group: []const u8,
+        title: []const u8,
+        kind: Tasks.Kind,
+    ) anyerror!u64 {
+        return self.vtable.taskCreate(self.ctx, group, title, kind);
+    }
+
+    fn taskEdit(
+        self: Host,
+        task: u64,
+        title: ?[]const u8,
+        kind: ?Tasks.Kind,
+    ) anyerror!void {
+        return self.vtable.taskEdit(self.ctx, task, title, kind);
     }
 
     fn taskAssign(self: Host, task: u64, id: Bus.Id) anyerror!void {
@@ -5098,8 +5146,41 @@ pub fn dispatch(
             // must not be able to rearrange each other's arrangements.
             if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
 
-            const id = host.taskCreate(p.group, p.title) catch |err| return taskFailure(err);
+            // **Required, and refused rather than defaulted.** A field with
+            // a fallback is a field that is all fallback in a fortnight, and
+            // then it sorts nothing. The four names are in the message
+            // because being told the answer once is cheaper than a second
+            // call to find out what the answer could be.
+            const kind = parseKind(p.kind) orelse return hostFailure(
+                "BadParams",
+                "kind is required and must be one of: feature, bug, research, other. " ++
+                    "It is what a panel is sorted by, so there is no default -- a " ++
+                    "default would make everything one value and sort nothing. Tasks " ++
+                    "made before this field existed read as \"unset\", which nothing " ++
+                    "may ask for: that value means \"older than the question\" and is " ++
+                    "how they stay findable.",
+            );
+
+            const id = host.taskCreate(p.group, p.title, kind) catch |err| return taskFailure(err);
             return .{ .task = id };
+        },
+
+        .task_edit => |p| {
+            const title: ?[]const u8 = if (p.title.len > 0) p.title else null;
+            const kind: ?Tasks.Kind = if (p.kind.len > 0) k: {
+                break :k parseKind(p.kind) orelse return hostFailure(
+                    "BadParams",
+                    "kind must be one of: feature, bug, research, other.",
+                );
+            } else null;
+
+            if (title == null and kind == null) return hostFailure(
+                "BadParams",
+                "nothing to change: give a title, a kind, or both.",
+            );
+
+            host.taskEdit(p.task, title, kind) catch |err| return taskFailure(err);
+            return .ok;
         },
 
         .task_assign => |p| {
@@ -5612,6 +5693,17 @@ const key_arrived =
 /// moves from whoever reads it.
 const not_wired_up = "the plugin tools are not wired up in this build yet";
 
+/// The four kinds a caller may name, and nothing else.
+///
+/// ⚠️ **`unset` is deliberately not reachable from here.** It means "made
+/// before this field existed", and a caller able to ask for it would file new
+/// tasks in with the old ones -- after which "what predates the field" is a
+/// question nobody can answer again.
+fn parseKind(name: []const u8) ?Tasks.Kind {
+    const k = std.meta.stringToEnum(Tasks.Kind, name) orelse return null;
+    return if (k.choosable()) k else null;
+}
+
 /// A panel failure, in the words the agent needs.
 ///
 /// Separate from `chatFailure` rather than folded into it because the
@@ -5619,6 +5711,11 @@ const not_wired_up = "the plugin tools are not wired up in this build yet";
 /// worker can act on, and "no group by that name" is not.
 fn taskFailure(err: anyerror) wire.Response {
     return switch (err) {
+        error.BadKind => hostFailure(
+            "BadParams",
+            "that is not a kind anybody may ask for. The four are: feature, bug, " ++
+                "research, other.",
+        ),
         error.NoSuchTask => hostFailure(
             "NoSuchTask",
             "no task by that number. task_list shows what there is.",
@@ -5948,6 +6045,7 @@ const FakeHost = struct {
             .pluginConfigure = pluginConfigure,
             .pluginTest = pluginTest,
             .taskCreate = taskCreate,
+            .taskEdit = taskEdit,
             .taskAssign = taskAssign,
             .taskClose = taskClose,
             .taskOwner = taskOwner,
@@ -6006,10 +6104,27 @@ const FakeHost = struct {
         return alloc.dupe(u8, "tested");
     }
 
-    fn taskCreate(ctx: *anyopaque, group: []const u8, title: []const u8) anyerror!u64 {
+    fn taskCreate(
+        ctx: *anyopaque,
+        group: []const u8,
+        title: []const u8,
+        kind: Tasks.Kind,
+    ) anyerror!u64 {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
-        return panel.create(group, title);
+        return panel.create(group, title, kind);
+    }
+
+    fn taskEdit(
+        ctx: *anyopaque,
+        task: u64,
+        title: ?[]const u8,
+        kind: ?Tasks.Kind,
+    ) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        if (title) |t| try panel.setTitle(task, t);
+        if (kind) |k| try panel.setKind(task, k);
     }
 
     fn taskAssign(ctx: *anyopaque, task: u64, id: Bus.Id) anyerror!void {
@@ -6071,6 +6186,7 @@ const FakeHost = struct {
             .id = t.id,
             .title = t.title,
             .owner = t.owner,
+            .kind = @tagName(t.kind),
             .state = @tagName(t.state),
             .progress = @tagName(t.progress),
         };
@@ -8112,7 +8228,7 @@ test "a terminal with no agent listening is not given the work" {
     var fake = panelFixture(&panel);
     fake.agent_present = false;
 
-    const id = try panel.create("build", "take the machine");
+    const id = try panel.create("build", "take the machine", .bug);
 
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
         .task = id,
@@ -8151,7 +8267,7 @@ test "cancelling reaches a task whose terminal has no agent left" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const id = try panel.create("build", "take the machine");
+    const id = try panel.create("build", "take the machine", .research);
     try panel.assign(id, worker);
 
     // The agent that was assigned it has since gone.
@@ -8181,6 +8297,7 @@ test "making and handing out work is the supervisor's" {
     const made = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{
         .group = "build",
         .title = "get the core building",
+        .kind = "bug",
     } });
     try testing.expectEqual(@as(u64, 1), made.task);
 
@@ -8208,13 +8325,13 @@ test "a worker sees its own open work and nothing else" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const mine = try panel.create("build", "mine");
+    const mine = try panel.create("build", "mine", .other);
     try panel.assign(mine, worker);
 
-    const theirs = try panel.create("build", "theirs");
+    const theirs = try panel.create("build", "theirs", .feature);
     try panel.assign(theirs, other);
 
-    const shut = try panel.create("build", "shut");
+    const shut = try panel.create("build", "shut", .bug);
     try panel.assign(shut, worker);
     try panel.close(shut);
 
@@ -8255,7 +8372,7 @@ test "a closed task is gone from the worker and still on the panel" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const id = try panel.create("build", "one");
+    const id = try panel.create("build", "one", .research);
     try panel.assign(id, worker);
 
     // Visible before.
@@ -8299,7 +8416,7 @@ test "assigning says so to the worker before the panel says so" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const id = try panel.create("build", "take the machine");
+    const id = try panel.create("build", "take the machine", .other);
 
     try testing.expect(fake.sent == null);
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
@@ -8338,7 +8455,7 @@ test "an assignment the worker could not be told leaves the panel alone" {
 
     fake.send_error = error.ChildExited;
 
-    const id = try panel.create("build", "take the machine");
+    const id = try panel.create("build", "take the machine", .feature);
 
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
         .task = id,
@@ -8361,7 +8478,7 @@ test "taking a task off somebody types into nobody" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const id = try panel.create("build", "take the machine");
+    const id = try panel.create("build", "take the machine", .bug);
     try panel.assign(id, worker);
 
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
@@ -8387,7 +8504,7 @@ test "a closed task is refused before anybody is told it is theirs" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const id = try panel.create("build", "take the machine");
+    const id = try panel.create("build", "take the machine", .research);
     try panel.close(id);
 
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
@@ -8408,7 +8525,7 @@ test "cancelling says so to the worker before the task goes" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const id = try panel.create("build", "never mind");
+    const id = try panel.create("build", "never mind", .other);
     try panel.assign(id, worker);
 
     try testing.expect(fake.sent == null);
@@ -8449,7 +8566,7 @@ test "a cancellation the worker could not be told leaves the task standing" {
     // The way a terminal whose process has gone answers.
     fake.send_error = error.ChildExited;
 
-    const id = try panel.create("build", "never mind");
+    const id = try panel.create("build", "never mind", .feature);
     try panel.assign(id, worker);
 
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{
@@ -8470,7 +8587,7 @@ test "closing sends nothing, because the worker already reported" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const id = try panel.create("build", "one");
+    const id = try panel.create("build", "one", .bug);
     try panel.assign(id, worker);
     _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = id } });
     try testing.expect(fake.sent == null);
@@ -8486,9 +8603,9 @@ test "a worker may move its own task and is refused another's" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const mine = try panel.create("build", "mine");
+    const mine = try panel.create("build", "mine", .research);
     try panel.assign(mine, worker);
-    const theirs = try panel.create("build", "theirs");
+    const theirs = try panel.create("build", "theirs", .other);
     try panel.assign(theirs, other);
 
     _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_progress = .{
@@ -8523,7 +8640,7 @@ test "progress on a cancelled task refuses, so a missed cancellation is heard" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const id = try panel.create("build", "one");
+    const id = try panel.create("build", "one", .feature);
     try panel.assign(id, worker);
     _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = id } });
 
@@ -8548,6 +8665,7 @@ test "work cannot be put on a group somebody else made" {
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{
         .group = "build",
         .title = "one",
+        .kind = "bug",
     } });
     try testing.expectEqualStrings("NotYours", res.failed.code);
 }
@@ -8562,7 +8680,7 @@ test "a task handed to an id nobody has is refused" {
     const alloc = arena.allocator();
     var fake: FakeHost = .{ .panel = &panel, .open = &.{} };
 
-    const id = try panel.create("build", "one");
+    const id = try panel.create("build", "one", .bug);
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
         .task = id,
         .id = 0x9999,
@@ -8591,7 +8709,7 @@ test "a shielded terminal cannot be given work" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const id = try panel.create("build", "one");
+    const id = try panel.create("build", "one", .research);
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
         .task = id,
         .id = other,
@@ -8607,6 +8725,7 @@ test "no panel tool is a plugin's" {
         .task_create,
         .task_assign,
         .task_close,
+        .task_edit,
         .task_cancel,
         .task_progress,
         .task_list,
@@ -8655,7 +8774,7 @@ test "the whole life of a task, as it goes over the wire" {
         .{
             .who = boss,
             .line =
-            \\{"method":"task_create","params":{"group":"build","title":"get the core building"}}
+            \\{"method":"task_create","params":{"group":"build","title":"get the core building","kind":"feature"}}
             ,
             .want = "\"task\":1",
         },
@@ -8801,7 +8920,7 @@ test "a supervisor already using the panel is not told anything" {
     const alloc = arena.allocator();
     var fake: FakeHost = .{ .panel = &panel, .open = &.{}, .member_count = 4 };
 
-    _ = try panel.create("build", "something is on the panel");
+    _ = try panel.create("build", "something is on the panel", .other);
 
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_post = .{
         .group = "build",

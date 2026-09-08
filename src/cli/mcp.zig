@@ -51,7 +51,9 @@ const instructions =
     "\\n" ++
     "task_* -- the task panel. This is how work is handed out, and it is the part\\n" ++
     "that survives a restart, a compaction, and the night. A supervisor uses\\n" ++
-    "task_create, task_assign, task_close, task_cancel. Anyone uses task_progress\\n" ++
+    "task_create, task_edit, task_assign, task_close, task_cancel -- task_edit is\\n" ++
+    "how a title that has stopped being true gets corrected without changing the\\n" ++
+    "number every earlier message named. Anyone uses task_progress\\n" ++
     "on their own work, task_list to see where it stands, and task_history to see\\n" ++
     "when it got there -- which is the one that answers what happened overnight.\\n" ++
     "\\n" ++
@@ -704,9 +706,16 @@ const tools = [_]Tool{
     },
     .{
         .name = "task_create",
-        .description = "Put a piece of work on a group's panel: one line saying what it is. It answers with a task number. The panel is what survives the night -- an instruction you typed into a terminal has scrolled out of that agent's context by 3am, and so has your memory of sending it. Keep the title to a line; the acceptance test and the detail go in the message you send the worker, not here. Supervisor only, and only in a group you made.",
+        .description = "Put a piece of work on a group's panel: one line saying what it is, and what kind of work it is. It answers with a task number. The panel is what survives the night -- an instruction you typed into a terminal has scrolled out of that agent's context by 3am, and so has your memory of sending it. Keep the title to a line; the acceptance test and the detail go in the message you send the worker, not here. `kind` is required and has no default: feature, bug, research or other. A default would make everything one value inside a fortnight and sort nothing, which is what a panel read by eye at 3am cannot afford. Tasks made before the field existed read as \"unset\" and cannot be asked for -- that value means \"older than the question\", which is how they stay findable. Got the title or the kind wrong? task_edit fixes either without changing the number. Supervisor only, and only in a group you made.",
         .schema =
-        \\{"type":"object","properties":{"group":{"type":"string"},"title":{"type":"string","description":"One line. Not the requirement, just what it is."}},"required":["group","title"],"additionalProperties":false}
+        \\{"type":"object","properties":{"group":{"type":"string"},"title":{"type":"string","description":"One line. Not the requirement, just what it is."},"kind":{"type":"string","enum":["feature","bug","research","other"],"description":"Required. What kind of work this is."}},"required":["group","title","kind"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "task_edit",
+        .description = "Correct a task that is already on the panel: its title, its kind, or both. **The number does not change**, which is the point -- every message that already named it still names the same piece of work. Use it when a title has stopped being true: a sentence written when something was so stays on the panel misleading everybody who reads it afterwards, and until this existed the only remedy was to cancel and re-create, which renumbers the thing every earlier message refers to. Give only what you are changing; the rest is left alone. **It is recorded**: task_history shows the change as `edited`, so the panel stays a written record rather than a whiteboard. ⚠️ What it cannot do is reach messages already sent quoting the old title -- those still say what they said, and the history is where the two are reconciled. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"task":{"type":"integer"},"title":{"type":"string","description":"The new one line. Omit to leave it alone."},"kind":{"type":"string","enum":["feature","bug","research","other"],"description":"Omit to leave it alone."}},"required":["task"],"additionalProperties":false}
         ,
     },
     .{
@@ -1111,7 +1120,7 @@ test "the initialize result is valid JSON and puts the tool families in it" {
     // one this exists for: it is the family that went missing.
     for ([_][]const u8{
         "terminal_send", "terminal_read", "group_post",
-        "task_create",   "task_assign",   "task_list",
+        "task_create",   "task_edit",     "task_assign",   "task_list",
         "skill_read",
     }) |name| {
         std.testing.expect(std.mem.indexOf(u8, text, name) != null) catch |err| {

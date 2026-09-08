@@ -1,14 +1,23 @@
 //! The panel: who is doing which piece of work, and how far along it is.
 //!
 //! **What this stores is "who is doing what", never "what the work is."**
-//! A one-line title, the terminal responsible, open/closed/cancelled, and a
-//! progress word. Nothing else, and the shortness is the design rather than
-//! a stage it is passing through: see `docs/poltergeist/tasks.md`, which
-//! rewrote half of principle P7 to allow this much and drew the line at
-//! exactly this much. A requirement, a dependency, an acceptance criterion,
-//! a due date, a comment -- **anything a one-line title cannot hold belongs
-//! to another carrier**, and there are better ones. Adding a field here
-//! means going back and changing that chapter first.
+//! A one-line title, the terminal responsible, open/closed/cancelled, a
+//! progress word, and what kind of work it is. Nothing else, and the
+//! shortness is the design rather than a stage it is passing through: see
+//! `docs/poltergeist/tasks.md`, which rewrote half of principle P7 to allow
+//! this much and drew the line at exactly this much. A requirement, a
+//! dependency, an acceptance criterion, a due date, a comment -- **anything
+//! a one-line title cannot hold belongs to another carrier**, and there are
+//! better ones. Adding a field here means going back and changing that
+//! chapter first.
+//!
+//! ⚠️ **`kind` was added on 2026-09-09 and the chapter was changed first**,
+//! which is the procedure this paragraph asks for rather than an exception
+//! to it. The argument for it is not "one more field would be useful": it is
+//! that a supervisor sorting a night's panel was doing it by reading titles,
+//! and **a convention written into a title is not something anything can
+//! filter on** -- which is the same reason the panel exists at all rather
+//! than the instruction living in a terminal's scrollback.
 //!
 //! The reason it exists at all is attention. A command typed into a
 //! terminal with `terminal_send` scrolls off, gets compacted away, and by
@@ -84,6 +93,37 @@ pub const Progress = enum {
     done,
 };
 
+/// What kind of work this is, for a supervisor sorting a night's panel.
+///
+/// **Five values, four of them choosable**, and the fifth is the whole
+/// reason this is an enum rather than a word in the title.
+pub const Kind = enum {
+    feature,
+    bug,
+    research,
+
+    /// **A tier, not a fallback.** Nothing lands here by omission -- the
+    /// field is required at creation -- because a field with a default
+    /// arrives at "everything is other" inside a fortnight, and then it
+    /// sorts nothing.
+    other,
+
+    /// **Tasks made before this field existed**, restored from the record.
+    /// Not choosable: `task_create` refuses it.
+    ///
+    /// ⚠️ **The point of it being its own value rather than `other`** is
+    /// that the two facts are different and, folded together, can never be
+    /// separated again: "somebody looked and said other" and "this predates
+    /// the question". Kept apart, "show me everything older than the field"
+    /// is a query rather than an excavation.
+    unset,
+
+    /// Whether a caller may ask for this one.
+    pub fn choosable(self: Kind) bool {
+        return self != .unset;
+    }
+};
+
 pub const Task = struct {
     id: TaskId,
 
@@ -101,6 +141,9 @@ pub const Task = struct {
 
     state: State = .open,
     progress: Progress = .queued,
+
+    /// See `Kind`. Restored tasks that predate the field arrive as `unset`.
+    kind: Kind = .unset,
 };
 
 pub const Config = struct {
@@ -119,6 +162,9 @@ pub const Error = error{
 
     /// Nothing but whitespace where a title should be.
     BadTitle,
+
+    /// A kind that is not one a caller may ask for -- see `Kind.unset`.
+    BadKind,
 
     /// A worker reaching for a task that is not its own.
     NotYours,
@@ -151,11 +197,52 @@ pub fn deinit(self: *Tasks) void {
 }
 
 /// Make a task in a group. Nobody is on it until it is assigned.
-pub fn create(self: *Tasks, group: []const u8, title: []const u8) Error!TaskId {
+pub fn create(
+    self: *Tasks,
+    group: []const u8,
+    title: []const u8,
+    kind: Kind,
+) Error!TaskId {
+    // **Refused rather than silently filed.** `unset` means "made before
+    // there was a question"; letting a caller ask for it would put new
+    // tasks in with the old ones and make the one query this field is for
+    // -- what predates it -- unanswerable for good.
+    if (!kind.choosable()) return error.BadKind;
+
     const id = self.next_id;
     try self.put(id, group, title);
+    self.list.items[self.list.items.len - 1].kind = kind;
     self.next_id = id + 1;
     return id;
+}
+
+/// Change a task's title.
+///
+/// **The panel is a written record, so this leaves a trail** -- the caller
+/// is `TaskLog`'s to record as `edited`, the same way assigning is. What
+/// makes it worth having at all: a title that turned out to be wrong used
+/// to be uncorrectable, so a sentence that had stopped being true stayed on
+/// the panel misleading everybody who read it. Cancelling and re-creating
+/// was the only way, and it changes the number every earlier message refers
+/// to.
+///
+/// ⚠️ **What it cannot fix**: messages already sent quoting the old title.
+/// `task_history` is where those are reconciled, and that is the cost of
+/// this being editable at all.
+pub fn setTitle(self: *Tasks, id: TaskId, title: []const u8) Error!void {
+    const t = try self.find(id);
+    const kept = try self.oneLine(title);
+    errdefer self.alloc.free(kept);
+    self.alloc.free(t.title);
+    t.title = kept;
+}
+
+/// Change a task's kind. `unset` is refused here for the reason it is
+/// refused in `create`.
+pub fn setKind(self: *Tasks, id: TaskId, kind: Kind) Error!void {
+    if (!kind.choosable()) return error.BadKind;
+    const t = try self.find(id);
+    t.kind = kind;
 }
 
 /// Put a task back with the number it already had.
@@ -169,13 +256,18 @@ pub fn restore(self: *Tasks, task: Task) Error!void {
     t.owner = task.owner;
     t.state = task.state;
     t.progress = task.progress;
+    t.kind = task.kind;
     if (task.id >= self.next_id) self.next_id = task.id + 1;
 }
 
-fn put(self: *Tasks, id: TaskId, group: []const u8, title: []const u8) Error!void {
+/// A title, trimmed to the one line the panel can draw, owned by the panel.
+///
+/// **Shared by `put` and `setTitle` rather than written twice.** A second
+/// copy of "what a title is allowed to be" is how a title set one way comes
+/// to differ from a title set the other, and the panel draws them the same.
+fn oneLine(self: *Tasks, title: []const u8) Error![]u8 {
     const trimmed = std.mem.trim(u8, title, " \t\r\n");
     if (trimmed.len == 0) return error.BadTitle;
-    if (self.list.items.len >= self.config.max_tasks) return error.TooManyTasks;
 
     // A title is one line by construction, not by asking politely: a
     // newline in it would draw as two rows in the panel and the second one
@@ -183,11 +275,16 @@ fn put(self: *Tasks, id: TaskId, group: []const u8, title: []const u8) Error!voi
     const one_line = trimmed[0 .. std.mem.indexOfScalar(u8, trimmed, '\n') orelse trimmed.len];
     const kept = utf8Cut(std.mem.trim(u8, one_line, " \t\r"), self.config.max_title_bytes);
     if (kept.len == 0) return error.BadTitle;
+    return self.alloc.dupe(u8, kept);
+}
 
+fn put(self: *Tasks, id: TaskId, group: []const u8, title: []const u8) Error!void {
+    if (self.list.items.len >= self.config.max_tasks) return error.TooManyTasks;
+
+    const owned_title = try self.oneLine(title);
+    errdefer self.alloc.free(owned_title);
     const owned_group = try self.alloc.dupe(u8, group);
     errdefer self.alloc.free(owned_group);
-    const owned_title = try self.alloc.dupe(u8, kept);
-    errdefer self.alloc.free(owned_title);
 
     try self.list.append(self.alloc, .{
         .id = id,
@@ -355,7 +452,7 @@ test "a task starts open, unassigned and queued" {
     var t = testTasks();
     defer t.deinit();
 
-    const id = try t.create("build", "get the core building again");
+    const id = try t.create("build", "get the core building again", .bug);
     const got = t.get(id).?;
     try testing.expectEqual(State.open, got.state);
     try testing.expectEqual(Progress.queued, got.progress);
@@ -367,9 +464,9 @@ test "numbers are never reused" {
     var t = testTasks();
     defer t.deinit();
 
-    const first = try t.create("build", "one");
+    const first = try t.create("build", "one", .research);
     try t.close(first);
-    const second = try t.create("build", "two");
+    const second = try t.create("build", "two", .other);
     try testing.expect(second != first);
 }
 
@@ -377,13 +474,13 @@ test "a title is one line and bounded" {
     var t = testTasks();
     defer t.deinit();
 
-    try testing.expectError(error.BadTitle, t.create("build", "   \n  "));
+    try testing.expectError(error.BadTitle, t.create("build", "   \n  ", .feature));
 
-    const id = try t.create("build", "the headline\nand a paragraph nobody asked for");
+    const id = try t.create("build", "the headline\nand a paragraph nobody asked for", .bug);
     try testing.expectEqualStrings("the headline", t.get(id).?.title);
 
     var long: [400]u8 = @splat('x');
-    const wide = try t.create("build", &long);
+    const wide = try t.create("build", &long, .other);
     try testing.expect(t.get(wide).?.title.len <= 160);
 }
 
@@ -391,7 +488,7 @@ test "a title is not cut through the middle of a character" {
     var t: Tasks = .init(testing.allocator, .{ .max_title_bytes = 4 });
     defer t.deinit();
 
-    const id = try t.create("build", "日日");
+    const id = try t.create("build", "日日", .research);
     // Three bytes each: one whole character fits, and the second must not
     // be handed over in pieces.
     try testing.expectEqualStrings("日", t.get(id).?.title);
@@ -401,7 +498,7 @@ test "a worker may move its own task and nobody else's" {
     var t = testTasks();
     defer t.deinit();
 
-    const id = try t.create("build", "one");
+    const id = try t.create("build", "one", .other);
     try t.assign(id, worker_a);
 
     try t.setProgress(id, worker_a, .working);
@@ -415,7 +512,7 @@ test "progress on a task that is over is refused" {
     var t = testTasks();
     defer t.deinit();
 
-    const id = try t.create("build", "one");
+    const id = try t.create("build", "one", .feature);
     try t.assign(id, worker_a);
     try t.cancel(id);
 
@@ -428,21 +525,21 @@ test "a worker sees its own open tasks and nothing else" {
     var t = testTasks();
     defer t.deinit();
 
-    const mine = try t.create("build", "mine");
+    const mine = try t.create("build", "mine", .bug);
     try t.assign(mine, worker_a);
 
-    const theirs = try t.create("build", "theirs");
+    const theirs = try t.create("build", "theirs", .research);
     try t.assign(theirs, worker_b);
 
-    const shut = try t.create("build", "shut");
+    const shut = try t.create("build", "shut", .other);
     try t.assign(shut, worker_a);
     try t.close(shut);
 
-    const called_off = try t.create("build", "called off");
+    const called_off = try t.create("build", "called off", .feature);
     try t.assign(called_off, worker_a);
     try t.cancel(called_off);
 
-    _ = try t.create("build", "unclaimed");
+    _ = try t.create("build", "unclaimed", .bug);
 
     const seen = try t.forWorker(testing.allocator, "build", worker_a);
     defer testing.allocator.free(seen);
@@ -456,11 +553,11 @@ test "the panel keeps what a worker is spared" {
     var t = testTasks();
     defer t.deinit();
 
-    const shut = try t.create("build", "shut");
+    const shut = try t.create("build", "shut", .research);
     try t.assign(shut, worker_a);
     try t.close(shut);
 
-    const theirs = try t.create("build", "theirs");
+    const theirs = try t.create("build", "theirs", .other);
     try t.assign(theirs, worker_b);
 
     const seen = try t.inGroup(testing.allocator, "build");
@@ -476,7 +573,7 @@ test "an unassigned task is nobody's, not everybody's" {
     var t = testTasks();
     defer t.deinit();
 
-    _ = try t.create("build", "unclaimed");
+    _ = try t.create("build", "unclaimed", .feature);
 
     const seen = try t.forWorker(testing.allocator, "build", nobody);
     defer testing.allocator.free(seen);
@@ -487,9 +584,9 @@ test "tasks belong to a group, so another group's are not shown" {
     var t = testTasks();
     defer t.deinit();
 
-    const here = try t.create("build", "here");
+    const here = try t.create("build", "here", .bug);
     try t.assign(here, worker_a);
-    const there = try t.create("ops", "there");
+    const there = try t.create("ops", "there", .research);
     try t.assign(there, worker_a);
 
     const seen = try t.forWorker(testing.allocator, "build", worker_a);
@@ -502,7 +599,7 @@ test "a terminal closing leaves the work behind, without an owner" {
     var t = testTasks();
     defer t.deinit();
 
-    const id = try t.create("build", "one");
+    const id = try t.create("build", "one", .other);
     try t.assign(id, worker_a);
     t.forget(worker_a);
 
@@ -514,8 +611,8 @@ test "a group going takes its tasks with it" {
     var t = testTasks();
     defer t.deinit();
 
-    _ = try t.create("build", "one");
-    _ = try t.create("ops", "two");
+    _ = try t.create("build", "one", .feature);
+    _ = try t.create("ops", "two", .bug);
     t.forgetGroup("build");
 
     const left = try t.inGroup(testing.allocator, "build");
@@ -544,16 +641,16 @@ test "a restored task keeps its number and pushes the counter past it" {
     try testing.expectEqual(worker_a, got.owner);
     try testing.expectEqual(Progress.working, got.progress);
 
-    try testing.expectEqual(@as(TaskId, 41), try t.create("build", "fresh"));
+    try testing.expectEqual(@as(TaskId, 41), try t.create("build", "fresh", .research));
 }
 
 test "the panel refuses to grow without limit" {
     var t: Tasks = .init(testing.allocator, .{ .max_tasks = 2 });
     defer t.deinit();
 
-    _ = try t.create("build", "one");
-    _ = try t.create("build", "two");
-    try testing.expectError(error.TooManyTasks, t.create("build", "three"));
+    _ = try t.create("build", "one", .other);
+    _ = try t.create("build", "two", .feature);
+    try testing.expectError(error.TooManyTasks, t.create("build", "three", .bug));
 }
 
 test "a task that is not there is not a task" {
@@ -578,7 +675,18 @@ test "the panel stores what the chapter says it stores and no more" {
         break :blk out;
     };
 
-    const allowed = [_][]const u8{ "id", "group", "title", "owner", "state", "progress" };
+    // ⚠️ **`kind` was added on 2026-09-09, and the chapter was changed
+    // first** -- which is the whole procedure this test exists to force. It
+    // is written here as well as there because this list is what somebody
+    // edits when they want a seventh field, and the sentence they need to
+    // read is "go and change the chapter", not "add a string".
+    //
+    // What the chapter now says, in one line: the panel stores **who is
+    // doing which piece of work, how far along it is, and what kind of work
+    // it is** -- because a supervisor sorting a night's panel was doing it
+    // by reading titles, and a convention written into titles is not
+    // something anything can filter on.
+    const allowed = [_][]const u8{ "id", "group", "title", "owner", "state", "progress", "kind" };
     try testing.expectEqual(allowed.len, names.len);
     for (names) |n| {
         var ok = false;
