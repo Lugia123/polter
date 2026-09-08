@@ -84,7 +84,7 @@ mv Polter.app /Applications/
 
 | 配置项 | 作用 |
 | --- | --- |
-| `poltergeist-watch` | 是否采样终端屏幕，默认开 |
+| `poltergeist-watch` | 是否采样终端屏幕。默认关，总管用 `set_watch` 逐个打开 |
 | `poltergeist-quiescence-after` | 静止多久报给总管 |
 | `poltergeist-register-mcp` | 启动时是否注册 MCP，默认开 |
 

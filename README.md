@@ -86,7 +86,7 @@ Everything has a working default; you can run it without touching any of them. T
 
 | Setting | What it does |
 | --- | --- |
-| `poltergeist-watch` | Whether terminal screens are sampled. On by default. |
+| `poltergeist-watch` | Whether terminal screens are sampled. Off by default; the supervisor turns it on per terminal with `set_watch`. |
 | `poltergeist-quiescence-after` | How long a screen stays still before the supervisor is told |
 | `poltergeist-register-mcp` | Whether to register the MCP server at startup. On by default. |
 
