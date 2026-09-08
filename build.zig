@@ -39,6 +39,14 @@ pub fn build(b: *std.Build) !void {
         b,
         file_version orelse app_zon_version,
         lib_version,
+        // **The one bit `init` could not work out for itself.** It receives a
+        // version *string* and nothing else, so "1.3.2" from a tarball's
+        // VERSION file and "1.3.2-dev" from `build.zig.zon` arrive looking the
+        // same -- and when git then fails, the legitimate tarball and the
+        // accident (a checkout on a machine with no git) produced byte-for-byte
+        // identical warnings. Measured before this line existed: the two runs
+        // differed in nothing at all.
+        if (file_version != null) .tarball else .source_tree,
     );
     const test_filters = b.option(
         [][]const u8,

@@ -97,16 +97,31 @@ const unknown_commit = "0000000";
 /// cause" are two different things**, so the two are worded separately and
 /// each says what it actually observed.
 ///
-/// # This also fires on a legitimate source tarball, and that is not a bug
+/// # The legitimate case and the accident are told apart now
 ///
 /// A source tarball ships a `VERSION` file and no `.git`, so a perfectly
-/// correct tarball build lands here too and gets this warning. That is
-/// **not** a false alarm to be silenced: at this point in the build the two
-/// cases are genuinely indistinguishable, because whether the version came
-/// from a `VERSION` file is not threaded down to here -- `init` receives a
-/// version string and cannot tell where it was read from. Making the
-/// legitimate case distinguishable means changing that, which is a separate
-/// change; until then, a tarball build is expected to print this.
+/// correct tarball build lands here too. **It used to get the identical
+/// warning**, and the comment that stood here said why: whether the version
+/// came from a `VERSION` file was not threaded down, so `init` received a
+/// string and could not tell where it was read from -- and it named the fix
+/// as "a separate change". This is that change.
+///
+/// Measured before it: a tree with a `VERSION` file and one without, both
+/// built outside a git repository, produced **byte-for-byte identical**
+/// output -- same two warnings, same `0000000`. So the reader was being asked
+/// to tell two opposite situations apart from evidence that contained no
+/// difference.
+///
+/// # The version string is deliberately unchanged
+///
+/// Both cases still stamp `0000000`, and that is on purpose. That literal is
+/// a **two-language shared convention** (task 212; `windows/tools/
+/// unknown-commit-sentinel-agrees.py` pins it), and the version string has
+/// seven kinds of reader -- the C ABI's `ghostty_info`, the host's pairing
+/// check, `+version`, crash reports, the GTK about box. **The ambiguity is
+/// created at build time and it is resolved at build time**, in the one place
+/// that knows the answer; moving it into the string would make five other
+/// consumers care about a distinction only the builder needs.
 ///
 /// # Not the whole answer
 ///
@@ -115,7 +130,29 @@ const unknown_commit = "0000000";
 /// the same unidentifiable artifact. Closing that half means failing the
 /// build rather than warning, which is a policy decision and not one this
 /// function should make quietly.
-fn warnUnknownProvenance(err: anyerror) void {
+fn warnUnknownProvenance(err: anyerror, source: VersionSource) void {
+    switch (source) {
+        // **Expected, and said as expected.** A tarball has no `.git` to
+        // find; `0000000` is the honest answer here rather than a failure,
+        // and a reader who is told it is a failure goes looking for a broken
+        // git on a machine where nothing is broken.
+        .tarball => std.log.info(
+            "this build came from a source tarball (a VERSION file), which " ++
+                "ships no .git -- so there is no commit to name and the " ++
+                "metadata below is the correct answer, not a fault.",
+            .{},
+        ),
+        // **Not expected.** The version came from `build.zig.zon`, so this is
+        // somebody's working tree, and a tree that cannot name its own commit
+        // is the case this warning was written for.
+        .source_tree => std.log.warn(
+            "this build has no VERSION file, so it is a source tree -- and a " ++
+                "source tree that cannot name its own commit is a problem, " ++
+                "not a tarball.",
+            .{},
+        ),
+    }
+
     switch (err) {
         error.GitNotFound => std.log.warn(
             "this build cannot name its own commit: git is not on PATH.",
@@ -143,7 +180,29 @@ fn warnUnknownProvenance(err: anyerror) void {
     );
 }
 
-pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Config {
+/// Where the app version came from, which is the one thing `init` cannot
+/// tell from the string itself.
+///
+/// **Two callers' worth of knowledge, one bit wide.** `build.zig` reads a
+/// `VERSION` file when there is one (source tarballs ship it) and falls back
+/// to `build.zig.zon` otherwise. Both arrive here as a string, and the
+/// difference between them is exactly the difference between "no `.git` is
+/// expected" and "no `.git` is a problem".
+pub const VersionSource = enum {
+    /// A `VERSION` file was read: this is a source tarball, which ships no
+    /// `.git` by design.
+    tarball,
+    /// No `VERSION` file: the version came from `build.zig.zon`, so this is
+    /// somebody's working tree and a missing repository is a fault.
+    source_tree,
+};
+
+pub fn init(
+    b: *std.Build,
+    appVersion: []const u8,
+    libVersion: []const u8,
+    version_source: VersionSource,
+) !Config {
     // Setup our standard Zig target and optimize options, i.e.
     // `-Doptimize` and `-Dtarget`.
     const optimize = b.standardOptimizeOption(.{});
@@ -359,7 +418,7 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
             error.GitNotFound,
             error.GitNotRepository,
             => {
-                warnUnknownProvenance(err);
+                warnUnknownProvenance(err, version_source);
                 break :version .{
                     .major = app_version.major,
                     .minor = app_version.minor,
