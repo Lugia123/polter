@@ -24,9 +24,32 @@ that says which call it is about, and what its being the last line means,
 turns the diagnosis into a read.
 
 `ShellExecuteW` is the subject because it is what the incident was, and
-because it is a genuinely unbounded call on this host's **main thread**: it
-enters the shell, which may start a process, load handlers, or put up UI of
-its own, and this host has no timeout on it.
+because it is a genuinely unbounded call: it enters the shell, which may start
+a process, load handlers, or put up UI of its own, and this host has no
+timeout on it.
+
+# What task 324 changed, and why this gate did not become pointless
+
+**It no longer runs on the window thread.** 292's cause turned out to be two
+adjacent opens where the first is cold (~155 ms against 14 ms warm), both
+hangs stopping at a byte-identical `ntdll.dll+0x163fd4`; the repair was to
+stop the thread that owns every window from waiting for it. So the sentence
+"this hangs the application" is no longer what a missing line costs.
+
+**The rule survives the repair, and it is worth saying why rather than
+assuming it.** What the announcement buys is now *attribution*: the call runs
+on a worker nobody is watching, so if it never returns there is no window
+freezing to notice and no exception to catch -- there is a thread that is
+simply not there any more. The line before it is the only thing that says a
+worker went out, and the absent "returned" line is the only thing that says it
+did not come back. **A silence that used to be loud is now completely quiet,
+which makes the announcement matter more rather than less.**
+
+The subject set shrank from three call sites to one: `links.rs`, `osk.rs` and
+`main.rs`'s `open_config` arm all go through `shellopen::detached` now. If a
+later change removes that one too, the subject-set guard at the bottom fails
+rather than reporting a clean tree -- **a gate with nothing left to look at
+must not be able to pass**, which is the shape this directory exists for.
 
 **NOT CHECKED, and the second one is the bigger hole:**
 
@@ -82,15 +105,73 @@ def call_sites(src: str):
         yield line
 
 
+def enclosing_fn(src: str, line: int) -> str:
+    """The body of the `fn` that contains `line`.
+
+    **The window used to be a fixed number of lines above the call, and task
+    324 broke that** without breaking anything real: the announcement is now
+    written before the worker is spawned and the call happens inside the
+    closure, forty lines down. The two are still in one function, and one
+    function is what "before this call" actually means -- a line count was
+    always a proxy for it, and the proxy is what went wrong.
+    """
+    clean = strip_comments(src)
+    at = 0
+    for m in re.finditer(r"\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*[(<]", clean):
+        if clean.count("\n", 0, m.start()) + 1 <= line:
+            at = m.start()
+        else:
+            break
+    brace = clean.find("{", at)
+    if brace < 0:
+        return clean
+    depth, k = 0, brace
+    while k < len(clean):
+        if clean[k] == "{":
+            depth += 1
+        elif clean[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return clean[brace : k + 1]
+        k += 1
+    return clean[brace:]
+
+
 def announced(src: str, line: int) -> bool:
-    """Is there a log call naming `ShellExecuteW` in the lines just above?"""
-    lines = strip_comments(src).split("\n")
-    lo = max(0, line - 1 - REACH)
-    window = "\n".join(lines[lo : line - 1])
+    """Is there a log call naming `ShellExecuteW` **before** it, same function?
+
+    **Both halves, and the second one was briefly lost.** Widening the window
+    from "the lines above" to "the enclosing function" made the function's
+    *result* line -- `ShellExecuteW returned {} in {}ms` -- count as the
+    announcement, because it names the call too. That is the exact defect this
+    gate exists for: 292's whole point was that every line was written on a
+    way *out*, and a check that accepts one of them has stopped asking the
+    question. Measured: a mutation blanking the real announcement left this
+    green until the position test below was added.
+    """
+    window = enclosing_fn(src, line)
+    call_at = window.find(CALL + "(")
+    if call_at < 0:
+        call_at = len(window)
     for m in LOG.finditer(window):
-        # The macro's arguments, to the end of that statement.
-        rest = window[m.end() : m.end() + 600]
-        if CALL in rest:
+        if m.start() > call_at:
+            continue
+        # **The macro's own arguments, matched by parentheses -- not "the next
+        # 600 characters".** Once the search window became the whole function
+        # it contained the call itself, and a lookahead by length then counted
+        # `ShellExecuteW(` *the call* as if it were the announcement naming
+        # it: a generic line above a call passed. Measured, on this file's own
+        # `GENERIC_LINE` sample, the moment the window changed.
+        depth, k = 0, m.end() - 1
+        while k < len(window):
+            if window[k] == "(":
+                depth += 1
+            elif window[k] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        if CALL in window[m.end() : k]:
             return True
     return False
 
@@ -103,12 +184,13 @@ def analyse(files: dict):
             sites += 1
             if not announced(src, line):
                 bad.append(
-                    f"{name}:{line}: `{CALL}` is called with nothing above it "
-                    "saying so. It runs on the main thread and can take as long "
-                    "as the shell takes; when it does not come back, the log's "
-                    "silence looks exactly like a click that never arrived and "
-                    "like a branch that refused without logging. Write the line "
-                    "before the call, and have it name the call.")
+                    f"{name}:{line}: `{CALL}` is called with nothing in the "
+                    "same function saying so. It can take as long as the shell "
+                    "takes and, on the path task 292 found, can stop returning "
+                    "at all; when it does, the silence looks exactly like a "
+                    "click that never arrived and like a branch that refused "
+                    "without logging. Write the line before the call, and have "
+                    "it name the call.")
     return bad, sites
 
 
@@ -198,7 +280,7 @@ if not files or sites == 0:
 
 if not problems:
     print(f"OK: every `{CALL}` call names itself in the log before it runs.")
-    print("NOT CHECKED: every other main-thread call that can block forever. "
+    print("NOT CHECKED: every other call that can block forever, on any thread. "
           "This gate knows one name.")
     sys.exit(0)
 

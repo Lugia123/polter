@@ -12,10 +12,7 @@
 //! What is here is the Windows half: expanding `~`, calling `ShellExecuteW`,
 //! and reading its answer.
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 use polter_urlpolicy::{verdict, Verdict};
 
@@ -41,62 +38,13 @@ fn expand_home(url: &str) -> String {
     }
 }
 
-/// Hand `url` to the shell. Returns whether it started, and how long the call
-/// took.
+/// Hand `url` to the shell, on a thread the window loop does not wait for.
 ///
-/// `ShellExecuteW` returns a value typed as an `HINSTANCE` that is not one:
-/// anything **at or below 32** is an error code. The same reading is in
-/// `main.rs`'s `open_config` arm, which is the other caller in this port.
-///
-/// # Why there is a line before the call and not only after it
-///
-/// This runs **on the thread that owns every window in this process**, and it
-/// is unbounded: `ShellExecuteW` goes into the shell, which may start a
-/// process, load a handler, or put up UI of its own. Nothing here times it
-/// out.
-///
-/// When it did not come back -- Ctrl+click on an OSC 8 link, and the main
-/// thread never ran again -- **the log said nothing whatsoever**. Every line
-/// this file wrote was on a way *out*: no URL, refused, or the result. So the
-/// evidence for "it went in and never came out" was the *absence* of three
-/// different lines, and an absence has three readings that look identical:
-/// the click never arrived, a branch refused without logging, or the call is
-/// still running. Telling them apart took half an hour and two process dumps.
-///
-/// One line before the call collapses that to a read, which is why it names
-/// the call and says what its being last means.
-fn shell_open(frame: Option<HWND>, url: &str) -> (bool, u128) {
-    let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
-    match frame {
-        Some(f) => wlogf!(
-            f,
-            "[link] handing {url:?} to ShellExecuteW on the thread that owns the windows; \
-             IF THIS IS THE LAST LINE IN THE LOG, the call did not return"
-        ),
-        // process-wide: the action named no surface, so there is no window
-        // this line could belong to -- and the line still has to exist,
-        // because it is the one that says where the process went
-        None => plogf!(
-            "[link] handing {url:?} to ShellExecuteW on the thread that owns the windows; \
-             IF THIS IS THE LAST LINE IN THE LOG, the call did not return"
-        ),
-    }
-    let started = std::time::Instant::now();
-    let r = unsafe {
-        ShellExecuteW(
-            None,
-            windows::core::w!("open"),
-            PCWSTR(wide.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    // **Reported even when it returns**, because "it came back after 9
-    // seconds" and "it came back at once" are the same line without it -- and
-    // the first is the reading that says this call is the thing to move off
-    // this thread.
-    (r.0 as usize > 32, started.elapsed().as_millis())
+/// The waiting is what was wrong; `shellopen::detached` carries the whole of
+/// why, because the same reasoning applies to all three sites that call it
+/// and a copy here would be a second place for it to drift.
+fn shell_open(frame: Option<HWND>, url: &str) -> bool {
+    crate::shellopen::detached(frame, "[link]", url.to_string())
 }
 
 /// The `open_url` action.
@@ -140,14 +88,17 @@ pub fn on_open_url(frame: Option<HWND>, kind: i32, url: Option<String>) -> bool 
     }
 
     let target = expand_home(url.trim());
-    let (ok, ms) = shell_open(frame, &target);
+    // **`true` means "taken on", not "the shell accepted it".** The shell's
+    // answer is not known when this returns; it arrives in the log from the
+    // worker. See `shellopen::detached`.
+    let took = shell_open(frame, &target);
     match frame {
-        Some(f) => wlogf!(f, "[link] open_url kind={kind} {target:?} -> {ok} in {ms}ms"),
+        Some(f) => wlogf!(f, "[link] open_url kind={kind} {target:?} -> handed off: {took}"),
         // process-wide: the action named no surface, so this line is about the
         // process opening something rather than about a window
-        None => plogf!("[link] open_url kind={kind} {target:?} -> {ok} in {ms}ms"),
+        None => plogf!("[link] open_url kind={kind} {target:?} -> handed off: {took}"),
     }
-    ok
+    took
 }
 
 #[cfg(test)]

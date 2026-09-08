@@ -127,6 +127,7 @@ mod winnav;
 mod wintitle;
 mod search;
 mod shell;
+mod shellopen;
 mod strip;
 mod tabs;
 mod taskbar;
@@ -2341,39 +2342,19 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             if mode != 0 {
                 alogf!(origin, "[action] open_config mode {} not supported; opening with the OS", mode);
             }
-            let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
-            // **Before the call, for the reason written on `links::shell_open`**:
-            // this is the same unbounded call on the same thread, and the same
-            // silence when it does not come back. Two call sites, one rule --
-            // `windows/tools/blocking-call-says-so-first.py` is what stops the
-            // second one being forgotten again.
-            alogf!(
-                origin,
-                "[action] open_config handing {:?} to ShellExecuteW on the thread that owns \
-                 the windows; IF THIS IS THE LAST LINE IN THE LOG, the call did not return",
-                path
-            );
-            let started = std::time::Instant::now();
-            let r = unsafe {
-                windows::Win32::UI::Shell::ShellExecuteW(
-                    None,
-                    windows::core::w!("open"),
-                    windows::core::PCWSTR(wide.as_ptr()),
-                    windows::core::PCWSTR::null(),
-                    windows::core::PCWSTR::null(),
-                    SW_SHOWNORMAL,
-                )
-            };
-            // ShellExecuteW returns a fake HINSTANCE; <= 32 means it failed.
-            let ok = r.0 as usize > 32;
-            alogf!(
-                origin,
-                "[action] open_config {:?} -> {} in {}ms",
-                path,
-                ok,
-                started.elapsed().as_millis()
-            );
-            ok
+            // **Off the window thread, through the one place that does it.**
+            // Task 292's cause is two adjacent shell opens where the first is
+            // cold; this arm is one of the three sites that could supply
+            // either half. See `shellopen::detached` for why waiting here is
+            // the part that was wrong.
+            //
+            // **The answer changes meaning with the thread.** `true` now says
+            // this host took the request on, not that the shell accepted it --
+            // which is the same trade `poltergeist_close` makes, and it is
+            // honest for the same reason: the outcome is logged, not dropped.
+            let took = shellopen::detached(origin, "[action] open_config", path.clone());
+            alogf!(origin, "[action] open_config {:?} -> handed off: {}", path, took);
+            took
         }
 
         // **Read-only is per surface, and this arm used to drop `target`.**

@@ -49,13 +49,11 @@
 //! that says `touch=no` is saying "the path not taken is the one that could
 //! not have been checked here anyway".
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
-use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, NID_EXTERNAL_TOUCH, NID_INTEGRATED_TOUCH, NID_READY, SM_DIGITIZER,
-    SM_MAXIMUMTOUCHES, SW_SHOWNORMAL,
+    SM_MAXIMUMTOUCHES,
 };
 
 use crate::wlogf;
@@ -116,46 +114,29 @@ pub fn show(frame: HWND) -> bool {
         return false;
     };
 
-    let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
-    // **Said before the call, because this is the third site of the one that
-    // has already hung this host once.** Task 292 is a `ShellExecuteW` that
-    // returned and then froze the main thread; the gate that came out of it
-    // caught this call the moment the two changes met in a merge, which is
-    // what it is for. Same wording as `links.rs` so that a reader searching
-    // the log for one finds the other.
-    wlogf!(
-        frame,
-        "[osk] handing {path:?} to ShellExecuteW on the thread that owns the windows; \
-         IF THIS IS THE LAST LINE IN THE LOG, the call did not return"
-    );
-    let started = std::time::Instant::now();
-    let r = unsafe {
-        ShellExecuteW(
-            None,
-            windows::core::w!("open"),
-            PCWSTR(wide.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    // `ShellExecuteW` answers with a fake `HINSTANCE`; `<= 32` is a failure
-    // code. Same reading `open_config` takes of the same call.
-    let ok = r.0 as usize > 32;
-    let took = started.elapsed().as_millis();
+    // **The third site, and it goes the same way as the other two.** The gate
+    // that came out of task 292 caught this call the moment the two changes
+    // met in a merge; the answer that came out of 324 is that none of the
+    // three may wait on the window thread. See `shellopen::detached`.
+    let ok = crate::shellopen::detached(Some(frame), "[osk]", path.to_string());
 
     // **One line, and it carries the fact that decides how much it proves.**
     // On a machine with no digitiser this says so, which is the difference
     // between "the right keyboard came up" and "a keyboard came up, and the
     // one this machine would have wanted could not have been raised by this
     // host anyway".
+    // **No elapsed time here any more, and printing a zero would have been
+    // the easy way to keep the format.** The call is on a worker now, so this
+    // thread does not know how long it took -- the worker's own line carries
+    // the real number. A `0ms` in this line would be a measurement nobody
+    // made, sitting next to two that were.
     wlogf!(
         frame,
-        "[osk] started {:?} -> {} in {}ms; touch={} (max touches {}). The touch keyboard is a \
-         different program and this host does not raise it -- see this file's header.",
+        "[osk] handed off {:?} -> {}; touch={} (max touches {}). The touch keyboard is a \
+         different program and this host does not raise it -- see this file's header. \
+         Whether the shell accepted it is on the worker's `[osk] ShellExecuteW returned` line.",
         path,
         ok as u8,
-        took,
         if has_touch { "yes" } else { "no" },
         max_touches
     );
