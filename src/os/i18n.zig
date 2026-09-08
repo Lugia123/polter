@@ -2,7 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_config = @import("../build_config.zig");
 const global = @import("../global.zig");
-const locales = @import("i18n_locales.zig");
+// **The array, not the module.** It was imported as the module, and the two
+// declarations that use it -- `locales_map` and `staticLocale` -- were written
+// against the array. Neither compiled, and neither had to: nothing in the tree
+// referenced them, and Zig does not analyse a container-level declaration
+// nobody uses. See the test at the bottom of this file, which is what now
+// forces both to be compiled on every build.
+const locales = @import("i18n_locales.zig").locales;
 
 const log = std.log.scoped(.i18n);
 
@@ -206,15 +212,13 @@ fn fixZhLocale(locale: []const u8) ?[:0]const u8 {
 /// This can be called at any point a compile-time-known locale is
 /// available. This will use comptime to verify the locale is supported.
 pub fn staticLocale(comptime v: [*:0]const u8) [*:0]const u8 {
-    comptime {
+    return comptime found: {
         for (locales) |locale| {
-            if (std.mem.eql(u8, locale, v)) {
-                return locale;
-            }
+            if (std.mem.eql(u8, locale, std.mem.span(v))) break :found locale;
         }
 
-        @compileError("unsupported locale");
-    }
+        @compileError("unsupported locale: " ++ std.mem.span(v));
+    };
 }
 
 // Manually include function definitions for the gettext functions
@@ -282,12 +286,6 @@ fn windowsRequestedLocale(buf: []u8) ?[]const u8 {
 ///
 /// **Returns a pointer into that static list**, so there is nothing to free
 /// and nothing that can outlive its buffer.
-///
-/// Spelled `locales.locales` because `locales` here is the module. The two
-/// declarations at the top of this file that write `locales.len` and
-/// `for (locales)` are wrong and have never been compiled: nothing outside
-/// this file references either, and Zig does not analyse a container-level
-/// declaration nobody uses.
 fn matchLocale(requested: []const u8) ?[:0]const u8 {
     // `LANG` carries an encoding suffix (`zh_CN.UTF-8`); the Windows API
     // does not. Everything we install is UTF-8 either way.
@@ -304,13 +302,13 @@ fn matchLocale(requested: []const u8) ?[:0]const u8 {
     for (name, 0..) |ch, i| buf[i] = if (ch == '-') '_' else ch;
     const norm = buf[0..name.len];
 
-    for (locales.locales) |l| if (std.mem.eql(u8, l, norm)) return l;
+    for (locales) |l| if (std.mem.eql(u8, l, norm)) return l;
 
     // Language alone. `i18n_locales.zig` says outright that its ordering is
     // what decides this case: "if we know the user requested `zh` but has no
     // script code, then we'd pick the first locale that matches `zh`".
     const lang = norm[0 .. std.mem.indexOfScalar(u8, norm, '_') orelse norm.len];
-    for (locales.locales) |l| {
+    for (locales) |l| {
         if (l.len >= lang.len and
             std.mem.eql(u8, l[0..lang.len], lang) and
             (l.len == lang.len or l[lang.len] == '_')) return l;
@@ -863,4 +861,38 @@ test "locale: the shipped catalogue chosen for a user's language" {
     // Longer than the buffer it normalises into. Refused rather than
     // truncated: a truncated name could match a language nobody asked for.
     try std.testing.expect(matchLocale("de-" ++ "x" ** 200) == null);
+}
+
+test "locales_map and staticLocale are compiled at all" {
+    // **Neither of these had ever been compiled.** Nothing in the tree
+    // referenced either one, and Zig does not analyse a container-level
+    // declaration nobody uses -- so five compile errors sat in them, from
+    // three unrelated causes: the module imported where the array was meant
+    // (three sites), a `[*:0]const u8` handed to `std.mem.eql` where a slice
+    // was wanted, and a `return` from inside a `comptime` block. All five
+    // were found one at a time, because a compiler that stops at the first
+    // error and a file with one error produce the same output.
+    //
+    // **This test is the only thing keeping them compiled.** Delete it and
+    // the next person to break them gets a green build, exactly as before.
+    // What it asserts is deliberately thin -- being reachable is the whole
+    // point, and a thicker assertion would suggest the behaviour was the
+    // thing at risk.
+    const testing = std.testing;
+
+    // **The general form of the same guard.** `refAllDecls` forces every
+    // container-level declaration in this file to be analysed -- measured,
+    // not assumed: a `const` whose initialiser has a type error and a `fn`
+    // whose body has one are both caught by it, and by nothing else short of
+    // referencing them by hand. See `docs/preview-manual.md`.
+    testing.refAllDecls(@This());
+
+    try testing.expect(locales_map.get("zh_CN") != null);
+    try testing.expect(locales_map.get("pt_BR") != null);
+    try testing.expect(locales_map.get("en_US") == null);
+    try testing.expectEqual(locales.len, locales_map.kvs.len);
+
+    // `staticLocale` is comptime-only, so calling it is what compiles it.
+    try testing.expectEqualStrings("zh_CN", std.mem.span(staticLocale("zh_CN")));
+    try testing.expectEqualStrings("da", std.mem.span(staticLocale("da")));
 }

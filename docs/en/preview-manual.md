@@ -511,6 +511,65 @@ differential test, for instance (`src/terminal/compress/AGENTS.md:86`):
 GHOSTTY_LZ4_SLOW=1 zig build test -Dtest-filter="lz4 differential"
 ```
 
+### A declaration nobody references may never have been compiled
+
+`locales_map` and `staticLocale` in `src/os/i18n.zig` held **five compile
+errors** between them, from three unrelated causes, while the full test suite
+stayed green. **Zig analyses container-level declarations lazily**: nothing
+referenced these two, so nothing ever evaluated them, and no amount of being
+wrong would have said so. The fix is the test at the bottom of that file.
+
+**Not every kind of error can hide.** Every cell below was measured in this
+repository -- put a broken declaration in a file, run `zig build test`, read
+the exit code -- rather than reasoned about:
+
+| How it is referenced | Error in a `const` initialiser | Error in a `fn` body |
+| --- | --- | --- |
+| not referenced at all | **not reported** (lazy, never analysed) | **not reported** |
+| `_ = x;` | reported | **not reported** (only the name is taken) |
+| `_ = &x;` | reported | reported |
+| `std.testing.refAllDecls(@This())` | reported | reported |
+
+⚠️ **The trap that inverts this experiment**: if the "broken declaration" you
+plant uses an undeclared identifier, **every cell goes red** -- name resolution
+happens per file, eagerly, whether or not anything references the declaration.
+To reproduce this class the defect has to be a *type* error (using a module
+where an array was meant, say), which is what gets deferred with the
+declaration.
+
+**So the gate already exists in the language**: `std.testing.refAllDecls(@This())`.
+In a file that calls it, container-level declarations are always analysed; in a
+file that does not, only the ones something references.
+
+Readings over `src/` as of 2026-09-08, **each with the method that produced it**:
+
+- **607** `.zig` files.
+- **A = 45**: the file itself calls `refAllDecls(@This())` or
+  `refAllDeclsRecursive(@This())` -- its declarations are always evaluated.
+- **B = 110**: reached only by an `_ = <namespace>;` somewhere else, with no A
+  of its own -- **no guarantee**. `src/os/i18n.zig` was in this class.
+- **C = 452**: everything else. ⚠️ **Coverage of these 452 was not measured;
+  do not read it as "ruled out".**
+- **114** container-level declarations have no second textual reference
+  anywhere in `src/` (74 `fn`, 40 `const`/`var`). Method: after blanking `//`
+  comments and string literals, take the name of every `const`/`var`/`fn`
+  declared at indentation zero, and keep those appearing exactly once as an
+  identifier across all of `src/`; `export`/`extern` declarations are excluded
+  because an exported symbol is always analysed.
+  ⚠️ **This number is wrong in both directions**: it over-counts declarations
+  reached through `@field`, through a type, or only from `build.zig`; it
+  under-counts transitively dead code -- a declaration referenced only by
+  another declaration that itself is never compiled.
+- **114 ∩ B = 4**, the declarations in exactly `locales_map`'s position:
+  `src/lib/allocator.zig:6 convenience`, `src/os/macos.zig:9 isAtLeastVersion`,
+  `src/os/macos.zig:50 SetQosClassError`, and
+  `src/renderer/shadertoy.zig:429 test_focus`. All four were compiled by hand
+  once each, and **all four are fine**.
+
+**Whether adding `refAllDecls` to the B files would shake out other failures is
+not known** -- no reading taken today says it is safe -- so it was not done, and
+no new checker was written for it.
+
 ## Memory checking
 
 ```sh
