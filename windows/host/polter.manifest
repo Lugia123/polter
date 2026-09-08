@@ -19,14 +19,32 @@
   documented absence that answers "present" to every search is worse than no
   documentation. Searching the exe for that element must find nothing.
 
-  Search for it case sensitively, in the lower-case spelling a manifest uses.
-  That count is 0, and it is the question this paragraph is answering. A case
-  insensitive search is a different question and answers 7: the API call in
-  main.rs, its import and symbol names, and this paragraph, which ships inside
-  the exe with the rest of the file. All of them are the awareness *call*,
-  which is capitalised differently and is meant to be there. The first reading
-  of this was taken with a case sensitive grep and reported as a plain 0, which
-  was true and told the reader less than it seemed to.
+  Search for it case sensitively, in the lower case spelling a manifest uses.
+  That count is 0, in this file and in the exe built from it, and it is the
+  question this paragraph is answering. The first reading of this was taken
+  with a case sensitive grep and reported as a plain 0, which was true and told
+  the reader less than it seemed to.
+
+  A case insensitive search is a different question and does not answer 0.
+  Every hit is the awareness *call*, which is capitalised differently and is
+  meant to be there: the call in main.rs, its import and symbol names, and this
+  paragraph, which ships inside the exe with the rest of the file.
+
+  That question is not answered with a number here any more, and there are two
+  reasons. It used to say 7. On one tree, at one moment, both of these are
+  true:
+
+      debug build     7
+      release build   4
+
+  so the figure was never a property of the source. It is a property of an
+  artefact, and neither reading recorded which artefact it came from, which is
+  the whole of the disagreement. And it is self referential: this paragraph is
+  one of the things being counted, so writing the number down changes it.
+
+  What can be checked from a checkout is the rule, not the tally, and
+  `windows/tools/manifest-parses.py` checks it: the lower case spelling appears
+  in no manifest here. The command for the artefact side is in that file too.
 
   The rule this paragraph nearly broke: it must not spell the element itself.
   A draft of it did, to be helpful, and the built exe promptly answered

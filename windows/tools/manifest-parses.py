@@ -98,6 +98,63 @@ def build_rs_still_guards(path: str) -> list[str]:
     return problems
 
 
+# The element whose absence is the rule, assembled at run time from two
+# halves. **Spelling it out here would break the rule this checks**: the
+# manifest's own comment explains that a documented absence which answers
+# "present" to every search is worse than no documentation, and a checker that
+# lives in the same tree is one more thing a `git grep` finds. So the literal
+# is never written and this comment does not write it either.
+AWARENESS_ELEMENT = "dpi" + "aware"
+
+
+def awareness_element_absent(src):
+    """The manifest must not spell the DPI element, in the manifest's casing.
+
+    # The rule, and why it is a rule rather than a preference
+
+    `main.rs` asks for per-monitor awareness with an API call at startup. When
+    a manifest and a call both speak, **the manifest wins and the call fails,
+    returning false and saying nothing** -- so one of them has to be the only
+    one, and it is the call.
+
+    # Why the tally that used to sit next to this rule is gone
+
+    The manifest's comment used to record what a case *insensitive* search
+    answers: 7. Measured again on one tree at one moment:
+
+        debug build     7
+        release build   4
+
+    Both readings were taken the same way and neither is wrong. **The figure is
+    a property of an artefact, not of the source, and neither reading recorded
+    which artefact.** It is self-referential as well: the paragraph stating the
+    number ships inside the exe and is one of the things counted, so writing it
+    down changes it.
+
+    What is checkable from a checkout is the rule, so that is what is here.
+
+    # NOT CHECKED: the built exe
+
+    The property that matters is about what ships, and no checkout can read it.
+    The reading, for whoever has a build:
+
+        python3 -c "b=open(EXE,'rb').read(); w=('dpi'+'aware').encode(); \
+                    print(b.count(w), b.lower().count(w))"
+
+    The first number is the rule and must be 0. The second is the tally above:
+    non-zero, every hit the awareness *call*, and worth no more than a glance.
+    """
+    out = []
+    if AWARENESS_ELEMENT in src:
+        out.append(
+            "spells the DPI element in the casing a manifest uses. The manifest then "
+            "wins over `main.rs`'s call, which fails silently and returns false; and a "
+            "documented absence that answers \"present\" to every search is worse than "
+            "no documentation"
+        )
+    return out
+
+
 def main() -> int:
     self_test()
     found = []
@@ -123,14 +180,18 @@ def main() -> int:
                   "that produced it exits 0.")
         else:
             print(f"  {rel}: parses")
+        for problem in awareness_element_absent(open(p, encoding="utf-8").read()):
+            bad += 1
+            print(f"FAIL: {rel} {problem}")
 
     for problem in build_rs_still_guards(os.path.join(ROOT, "host", "build.rs")):
         bad += 1
         print(f"FAIL: {problem}")
 
-    print(f"scanned {len(found)} manifest(s) with expat; "
-          f"it cannot tell whether they say the right thing, and it cannot read "
-          f"a built exe.")
+    print(f"scanned {len(found)} manifest(s) with expat, and checked that none "
+          f"declares DPI awareness; it cannot tell whether they say the right thing "
+          f"otherwise, and it cannot read a built exe -- see "
+          f"`awareness_element_absent` for the command that does.")
     return 1 if bad else 0
 
 

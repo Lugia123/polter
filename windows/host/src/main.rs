@@ -167,7 +167,8 @@ fn now_str() -> String {
 }
 
 /// Where the log goes: `POLTER_HOST_LOG` if set, else
-/// `polter-host-<pid>.log` next to the exe.
+/// `<exe stem>-<pid>.log` next to the exe -- `polter-host-<pid>.log` for the
+/// GUI, `polter-cli-<pid>.log` for a `+action`. See `log_stem`.
 ///
 /// **The pid is not decoration.** Earlier builds all wrote
 /// `C:\\app\\polter-host.log`, so an older host left running on the test
@@ -398,7 +399,7 @@ fn dumpstate_path() -> Option<std::path::PathBuf> {
 /// Windows will let you remove. **A choice made for another reason is what
 /// made the deletion possible.**
 ///
-/// `polter-host-<pid>.log` already kept instances apart. **Only the pinned
+/// `<exe stem>-<pid>.log` already kept instances apart. **Only the pinned
 /// path was exempt -- and the person who pins it is the person debugging**,
 /// which is to say the defect waited for the moment its cost was highest.
 ///
@@ -413,7 +414,7 @@ fn dumpstate_path() -> Option<std::path::PathBuf> {
 /// that sentence rules out -- for the reader who pinned the path in order to
 /// read it.
 ///
-/// **So a guest writes its own `polter-host-<pid>.log` and says so on
+/// **So a guest writes its own `<exe stem>-<pid>.log` and says so on
 /// stderr**; see the `+action` branch in `main`. Without that line, "the log
 /// went back to per-pid" reaches the person debugging as "the log is gone".
 fn owns_the_log() -> bool {
@@ -4588,11 +4589,51 @@ fn log_path_given(owns: bool, pinned: Option<String>) -> std::path::PathBuf {
             return std::path::PathBuf::from(p);
         }
     }
-    let name = format!("polter-host-{}.log", std::process::id());
+    let name = format!("{}-{}.log", log_stem(), std::process::id());
     match std::env::current_exe() {
         Ok(exe) => exe.with_file_name(name),
         Err(_) => std::path::PathBuf::from(name),
     }
+}
+
+/// The first half of this process's log file name: **its own executable**, not
+/// a fixed string.
+///
+/// # What it was, and what that cost
+///
+/// It was the literal `polter-host`, so `polter-cli.exe` -- the binary a
+/// `+chat` tab runs, the same source built for the console subsystem -- wrote
+/// `polter-host-<pid>.log`. Two different programs, one naming scheme, and the
+/// only thing telling them apart was a pid nobody had written down.
+///
+/// It also made a tool wrong in a way nobody would notice:
+/// `windows/tools/uia-tree-dump.ps1` picks **the newest `polter-host-*.log`
+/// beside the exe**, and a chat subprocess started after the window is exactly
+/// that -- so the dump's log could be a subprocess's while reading as the
+/// host's. Deriving the stem separates them at the source rather than asking
+/// that tool to guess.
+///
+/// # What is deliberately unchanged
+///
+/// **The pid stays, and it is the part that carries an argument.**
+/// `write_stdio_verdict` explains it: a fixed name could itself be a redirect
+/// target, and **nobody can name a pid before the process exists**. That
+/// reasoning is about the pid and is untouched here; only the half that says
+/// *which program* is now derived rather than assumed.
+///
+/// # The fallback, and why it is this one
+///
+/// A process that cannot name its own executable has worse problems than its
+/// log's name, but it still has to write somewhere. It falls back to
+/// `polter-host`, which is the name every tool and every page of
+/// `docs/windows/status.md` already knows -- an unfamiliar name would be a
+/// second puzzle stacked on the first.
+fn log_stem() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "polter-host".to_string())
 }
 
 #[cfg(test)]
@@ -4799,7 +4840,7 @@ fn file_identity(h: windows::Win32::Foundation::HANDLE) -> Option<(u32, u64)> {
 /// failure could be reported is the log. That circle does not close.
 fn write_stdio_verdict(verdict: &str) -> Option<std::path::PathBuf> {
     use std::io::Write as _;
-    let name = format!("polter-host-stdio-{}.log", std::process::id());
+    let name = format!("{}-stdio-{}.log", log_stem(), std::process::id());
     let path = std::env::current_exe().ok()?.with_file_name(name);
     let mut line = String::from(verdict);
     line.push('\n');
