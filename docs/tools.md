@@ -2,8 +2,8 @@
 
 Every one of Polter's forty MCP tools, what it does, and which are the
 supervisor's alone. This is a reference — read it when you want to know exactly
-what a call does. [The README](../README.md#what-the-supervisor-can-do) has the
-shape of it in five paragraphs, which is enough to use the thing.
+what a call does. [The README](../README.md#what-it-does) has the shape of it in
+a short list, which is enough to use the thing.
 
 Tools marked 🔑 are the supervisor's alone.
 
