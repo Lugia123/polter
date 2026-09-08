@@ -3493,8 +3493,15 @@ fn chatGroups(
 /// a human was needed; the program never makes that call itself. What it
 /// does decide is the hour: a scheduling question inside quiet hours is
 /// handed back to the supervisor, while an authorisation prompt goes out
-/// regardless -- nobody may answer those for somebody else, so holding one
-/// back does not protect anyone's sleep, it just wastes the night.
+/// regardless -- the terminal is stopped until somebody answers, so holding
+/// one back does not protect anyone's sleep, it just wastes the night.
+///
+/// ⚠️ **The reason used to be "nobody may answer those for somebody else",
+/// and `terminal_answer_prompt` made that false** for a terminal whose
+/// switch the user has turned on. The rule this comment defends is
+/// unchanged; only the reason given for it had to be. A supervisor that
+/// *can* answer will answer rather than notify, and one that cannot still
+/// needs the person at whatever hour it is.
 ///
 /// The reply is a sentence rather than a code because the supervisor has
 /// to act on it: if nothing was sent, waiting for an answer is waiting for

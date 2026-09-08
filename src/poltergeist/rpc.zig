@@ -289,7 +289,14 @@ pub const Request = union(Method) {
 
     notify_user: struct {
         /// `scheduling` or `authorisation`. The second is never held back
-        /// for quiet hours, because nobody may answer it for them.
+        /// for quiet hours, because the terminal is stopped until it is
+        /// answered and the user may be the only one who can answer it.
+        ///
+        /// ⚠️ **This used to read "because nobody may answer it for them",
+        /// and `terminal_answer_prompt` made that false** for a terminal
+        /// whose switch the user has turned on. The reason for sending at
+        /// any hour survives the change; the claim about who may answer did
+        /// not.
         reason: []const u8,
         title: []const u8,
         body: []const u8 = "",

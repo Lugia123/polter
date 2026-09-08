@@ -567,6 +567,58 @@ const Chat = struct {
     /// stale complaint on screen.
     err: ?[]const u8 = null,
 
+    /// Which tasks the panel shows. Not persisted: it is a way of looking at
+    /// the panel for a moment, not a setting.
+    task_filter: TaskFilter = .all,
+
+    /// Which tasks the panel shows.
+    ///
+    /// **A view, not a query.** Every filter is applied to the list already
+    /// in hand; nothing here changes what is asked of `task_list` or what it
+    /// answers. That matters beyond tidiness: the panel and the tool are two
+    /// different questions -- the panel shows the whole group including
+    /// closed work, the tool hands a worker its own open work -- and a
+    /// filter that reached the wire would quietly make them one.
+    const TaskFilter = enum {
+        all,
+        open,
+        blocked,
+        shut,
+
+        fn next(self: TaskFilter) TaskFilter {
+            const values = std.enums.values(TaskFilter);
+            // **Widened before the add.** `@intFromEnum` gives the tag type,
+            // which for four members is a `u2`, so `3 + 1` overflows and
+            // panics -- on the last filter, which is the one you reach by
+            // pressing the key three times. The test below found this before
+            // it shipped; nothing about the code looked wrong.
+            const i = (@as(usize, @intFromEnum(self)) + 1) % values.len;
+            return values[i];
+        }
+
+        /// The label, and the key that reaches it. Written together so a
+        /// filter added later cannot get a name without getting a way in.
+        fn label(self: TaskFilter) []const u8 {
+            return switch (self) {
+                .all => tr("all"),
+                .open => tr("open"),
+                .blocked => tr("blocked"),
+                .shut => tr("closed"),
+            };
+        }
+
+        fn admits(self: TaskFilter, task: Task) bool {
+            const shut = std.mem.eql(u8, task.state, "closed") or
+                std.mem.eql(u8, task.state, "cancelled");
+            return switch (self) {
+                .all => true,
+                .open => !shut,
+                .blocked => !shut and std.mem.eql(u8, task.progress, "blocked"),
+                .shut => shut,
+            };
+        }
+    };
+
     const View = enum {
         chat,
         tasks,
@@ -1279,6 +1331,17 @@ const Chat = struct {
                 // question is one too many.
                 if (key.matches('d', .{})) {
                     self.askForget();
+                    return;
+                }
+
+                // Cycle the task filter. **Only on the tasks panel**: `f`
+                // on the other two would be a key that does nothing, which
+                // is the kind of thing people try once and stop trusting.
+                if (self.view == .tasks and key.matches('f', .{})) {
+                    self.task_filter = self.task_filter.next();
+                    // The list under the viewport just changed length, so
+                    // where we were looking no longer means anything.
+                    self.scroll = 0;
                     return;
                 }
 
@@ -2066,7 +2129,7 @@ const Chat = struct {
         }
     }
 
-    /// The panel: one row per task, oldest first.
+    /// The panel: one row per task, **newest first**.
     ///
     /// **Everything in the group, closed and cancelled included.** This is
     /// the person at the keyboard's view, and looking back over last night
@@ -2074,6 +2137,20 @@ const Chat = struct {
     /// through `task_list` is handed only its own open work; the two are
     /// different questions with different answers, and this is the one
     /// that shows the whole night.
+    ///
+    /// # Newest first, and filtered, entirely here
+    ///
+    /// It used to draw oldest first and anchor the viewport at the bottom,
+    /// so the newest row was the last one -- readable, but at the far end of
+    /// a panel that grows all night, and the thing most often wanted.
+    ///
+    /// ⚠️ **Both the order and the filter are applied to a copy that is
+    /// already in hand.** `group.tasks` keeps exactly what `task_list`
+    /// answered, in exactly the order it answered -- nothing here sorts it,
+    /// reverses it in place, or drops anything from it. The reversal is an
+    /// index walked backwards and the filter is a `continue`. That is not
+    /// tidiness: the panel and the tool are two different questions, and a
+    /// filter or an order that reached the wire would make them one.
     fn drawTasks(self: *Chat, win: vaxis.Window) void {
         if (win.height == 0 or win.width < 8) return;
 
@@ -2112,15 +2189,69 @@ const Chat = struct {
             while (widest >= 10) : (widest /= 10) id_width += 1;
         }
 
+        // The filter line. **One row, always drawn**, because a filter with
+        // no way of telling you it is on is a panel that has silently
+        // stopped showing you things -- and the reader's next thought is
+        // that the work went missing.
+        const shown_count = blk: {
+            var n: usize = 0;
+            for (group.tasks.items) |task| {
+                if (self.task_filter.admits(task)) n += 1;
+            }
+            break :blk n;
+        };
+        {
+            const head = std.fmt.allocPrint(
+                alloc,
+                "{s}: {s}  ({d}/{d})   f",
+                .{
+                    tr("filter"),
+                    self.task_filter.label(),
+                    shown_count,
+                    group.tasks.items.len,
+                },
+            ) catch tr("filter");
+            _ = win.printSegment(.{
+                .text = head,
+                .style = .{ .fg = c_dim, .italic = true },
+            }, .{ .row_offset = 0, .col_offset = 1 });
+        }
+
+        const rows = win.height -| 1;
+        if (rows == 0) return;
+
+        if (shown_count == 0) {
+            _ = win.printSegment(.{
+                .text = tr("Nothing matches this filter. Press f to change it."),
+                .style = .{ .fg = c_dim, .italic = true },
+            }, .{ .row_offset = 1, .col_offset = 1 });
+            return;
+        }
+
         // Clamped here rather than where the key is handled, the same as
         // the messages: how far you can scroll depends on what was drawn.
-        const max_scroll = group.tasks.items.len -| win.height;
+        // **Anchored at the top now**, because the newest row is the first
+        // one -- scrolling moves away from the newest rather than towards
+        // them.
+        const max_scroll = shown_count -| rows;
         if (self.scroll > max_scroll) self.scroll = max_scroll;
-        const first = group.tasks.items.len -| win.height -| self.scroll;
-        const last = @min(group.tasks.items.len, first + win.height);
 
-        for (group.tasks.items[first..last], 0..) |task, i| {
-            const y: u16 = @intCast(i);
+        // Walked backwards over the stored list, which stays in the order
+        // `task_list` gave it.
+        var drawn: usize = 0;
+        var skipped: usize = 0;
+        var n = group.tasks.items.len;
+        while (n > 0 and drawn < rows) {
+            n -= 1;
+            const task = group.tasks.items[n];
+            if (!self.task_filter.admits(task)) continue;
+            if (skipped < self.scroll) {
+                skipped += 1;
+                continue;
+            }
+            const i = drawn;
+            drawn += 1;
+            const y: u16 = @intCast(i + 1);
             const shut = std.mem.eql(u8, task.state, "closed") or
                 std.mem.eql(u8, task.state, "cancelled");
 
@@ -2150,13 +2281,18 @@ const Chat = struct {
             }, .{ .row_offset = y, .col_offset = 3 });
         }
 
+        // **`↑`, not `↓`.** With the newest row first, scrolling moves away
+        // from the newest, so the rows you cannot see are the newer ones and
+        // they are above. The arrow said the other thing when this panel was
+        // anchored at the bottom, and an arrow pointing the wrong way is
+        // worse than none: it is read, and believed.
         if (self.scroll > 0) {
-            const note = std.fmt.allocPrint(alloc, "↓ {d}", .{self.scroll}) catch "↓";
+            const note = std.fmt.allocPrint(alloc, "↑ {d}", .{self.scroll}) catch "↑";
             const at = win.width -| @as(u16, @intCast(note.len)) -| 1;
             _ = win.printSegment(.{
                 .text = note,
                 .style = .{ .fg = c_selected_bg, .bold = true },
-            }, .{ .row_offset = win.height -| 1, .col_offset = at });
+            }, .{ .row_offset = 0, .col_offset = at });
         }
     }
 
@@ -3597,4 +3733,55 @@ test "a task's mark says which of the three states it is in" {
     // A word this build does not know is drawn as open rather than as a
     // blank: an unfamiliar row beats an invisible one.
     try testing.expectEqualStrings("○", Chat.stateMark("something-newer"));
+}
+
+test "the task filter admits what its name says and nothing else" {
+    const F = Chat.TaskFilter;
+
+    const open_working: Task = .{ .id = 1, .title = "a", .owner = "x", .state = "open", .progress = "working" };
+    const open_blocked: Task = .{ .id = 2, .title = "b", .owner = "x", .state = "open", .progress = "blocked" };
+    const closed: Task = .{ .id = 3, .title = "c", .owner = "x", .state = "closed", .progress = "done" };
+    const cancelled: Task = .{ .id = 4, .title = "d", .owner = "x", .state = "cancelled", .progress = "queued" };
+
+    // `all` is the behaviour the panel had before there was a filter, and
+    // it has to stay reachable: the panel's whole point is looking back
+    // over a night, closed work included.
+    for ([_]Task{ open_working, open_blocked, closed, cancelled }) |t| {
+        try testing.expect(F.all.admits(t));
+    }
+
+    try testing.expect(F.open.admits(open_working));
+    try testing.expect(F.open.admits(open_blocked));
+    try testing.expect(!F.open.admits(closed));
+    try testing.expect(!F.open.admits(cancelled));
+
+    // **`blocked` is the one a supervisor scans for**, and a blocked task
+    // that has since been closed is not one of them.
+    try testing.expect(F.blocked.admits(open_blocked));
+    try testing.expect(!F.blocked.admits(open_working));
+    try testing.expect(!F.blocked.admits(closed));
+
+    // Cancelled counts as shut. It is not "closed" spelled differently --
+    // `stateMark` tells them apart -- but for "is this still live" it is
+    // the same answer, and a filter that showed cancelled work under
+    // `open` would put dead rows in the list a person acts on.
+    try testing.expect(F.shut.admits(closed));
+    try testing.expect(F.shut.admits(cancelled));
+    try testing.expect(!F.shut.admits(open_working));
+}
+
+test "cycling the filter reaches every one of them and comes back" {
+    const F = Chat.TaskFilter;
+
+    // **Every filter must be reachable from every other by pressing one
+    // key repeatedly.** A filter with a name and no way in is the shape of
+    // a feature that looks finished and is not.
+    var seen: std.EnumSet(F) = .initEmpty();
+    var f: F = .all;
+    for (0..std.enums.values(F).len) |_| {
+        seen.insert(f);
+        f = f.next();
+    }
+    try testing.expectEqual(std.enums.values(F).len, seen.count());
+    try testing.expectEqual(F.all, f);
 }

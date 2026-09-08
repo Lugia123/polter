@@ -190,9 +190,17 @@ pub fn init(opts: InitOpts) !void {
             "most compatible backend err={}", .{err});
     };
 
-    // Output some debug information right away
-    std.log.info("ghostty version={s}", .{build_config.version_string});
-    std.log.info("ghostty build optimize={s}", .{build_config.mode_string});
+    // Output some debug information right away.
+    //
+    // **The product's name, from the one place that holds it.**
+    // `windows/AGENTS.md` lists the log header among the user-visible
+    // strings, and these two lines are that header -- they are the first
+    // thing in every log a bug report carries. Task 278 corrected the CLI's
+    // output and did not reach here, because it scanned `src/cli` and
+    // `main_ghostty.zig`; **this was found afterwards by reading a log, not
+    // by that scan.**
+    std.log.info(build_config.app_name ++ " version={s}", .{build_config.version_string});
+    std.log.info(build_config.app_name ++ " build optimize={s}", .{build_config.mode_string});
     std.log.info("runtime={}", .{build_config.app_runtime});
     std.log.info("font_backend={}", .{build_config.font_backend});
     if (comptime build_config.font_backend.hasHarfbuzz()) {

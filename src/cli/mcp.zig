@@ -335,8 +335,14 @@ const Host = struct {
 ///
 /// The list is deliberately short and matches `src/poltergeist/rpc.zig`
 /// exactly. In particular there is no tool for holding a terminal to its
-/// work or letting one go, and none for answering another agent's
-/// permission prompt; see that file for why neither will be added.
+/// work or letting one go; see that file for why that one will not be added.
+///
+/// ⚠️ **The other half of that sentence used to say the same about answering
+/// another agent's permission prompt, and it stopped being true.**
+/// `terminal_answer_prompt` is eight lines below. `rpc.zig` keeps both halves
+/// of the reversal on the request itself; what matters here is that a
+/// description which states a permanent refusal goes on being read as one
+/// long after the refusal is gone.
 const tools = [_]Tool{
     .{
         .name = "me",
@@ -361,7 +367,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "notify_user",
-        .description = "Ask for the person to be told something. Use `reason: authorisation` when a terminal is stopped on a permission prompt -- nobody may answer those for it, so those go out at any hour. Use `reason: scheduling` for questions you could answer yourself (keep going, change tack, give up); those are held back during the hours the user set aside, and handed back to you to decide. **Read the reply**: it says whether the message actually went anywhere. If it did not, do not sit waiting for an answer. Supervisor only.",
+        .description = "Ask for the person to be told something. Use `reason: authorisation` when a terminal is stopped on a permission prompt -- those go out at any hour, because the terminal is stopped until somebody answers and that somebody may have to be the user. (You may be able to answer it yourself with terminal_answer_prompt; that depends on a per-terminal switch only the user can set.) Use `reason: scheduling` for questions you could answer yourself (keep going, change tack, give up); those are held back during the hours the user set aside, and handed back to you to decide. **Read the reply**: it says whether the message actually went anywhere. If it did not, do not sit waiting for an answer. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"reason":{"type":"string","enum":["authorisation","scheduling"]},"title":{"type":"string"},"body":{"type":"string"},"id":{"type":"string","description":"The terminal this is about, if it is about one"}},"required":["reason","title"]}
         ,
@@ -573,10 +579,18 @@ const tools = [_]Tool{
             "run there is a separate terminal_send -- and it need not be an " ++
             "agent CLI: a build, a server, a log to tail are all ordinary uses. " ++
             "**When it is an agent, start it in a mode that can run unattended** " ++
-            "-- an auto mode, off by default in most CLIs: " ++
-            "you cannot answer a permission prompt for it, no tool will, and a " ++
-            "worker stopped on one stays stopped until the user is fetched at " ++
-            "whatever hour it happens. " ++
+            "-- an auto mode, off by default in most CLIs. A worker stopped on a " ++
+            "permission prompt stays stopped until somebody answers it, and " ++
+            "whether that somebody can be you is the user's call, one terminal at " ++
+            "a time: terminal_answer_prompt is refused with `AuthoriseOff` until " ++
+            "they switch it on from that terminal's own tab menu, and nothing you " ++
+            "can call switches it on. With it off, the keys that answer a box " ++
+            "(return, the arrows, tab) are refused at that terminal too. " ++
+            "terminal_send is not behind that switch -- but it types text and " ++
+            "cannot press return, because the paste path it uses turns every " ++
+            "control byte into a space, and it is an ordinary logged call like any " ++
+            "other rather than a way round anything. So starting the worker in a " ++
+            "mode that does not stop is still what saves a night. " ++
             "Until something is running, that terminal has no bracketed paste, " ++
             "so the first send must be a single line. Supervisor only.",
         .schema =
