@@ -1547,7 +1547,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Wait for a frame to be available.
             const frame = try self.swap_chain.nextFrame();
-            errdefer self.swap_chain.releaseFrame();
+            // **Exactly one release per acquisition.** Once `beginFrame`
+            // succeeds, `frame_ctx.complete` releases the frame on every exit
+            // path including the failing ones, so an unconditional `errdefer`
+            // here would release a second time on any error after that point.
+            // An over-posted semaphore hands out more permits than there are
+            // frames, which lets the CPU write frame state the GPU is still
+            // reading -- the exact race the swap chain exists to prevent, and
+            // one whose symptom (tearing, flickering cells) looks nothing like
+            // a double release.
+            var frame_owned = true;
+            errdefer if (frame_owned) self.swap_chain.releaseFrame();
             // log.debug("drawing frame index={}", .{self.swap_chain.frame_index});
 
             // If we need to reinitialize our shaders, do so.
@@ -1657,6 +1667,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Get a frame context from the graphics API.
             var frame_ctx = try self.api.beginFrame(self, &frame.target);
+            frame_owned = false;
             defer frame_ctx.complete(sync);
 
             {
@@ -1797,6 +1808,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         ) void {
             // If our health value hasn't changed, then we do nothing. We don't
             // do a cmpxchg here because strict atomicity isn't important.
+            // **The permit comes back first, before anything that can wait.**
+            // The health report below is a blocking send into the *app*
+            // mailbox, which is drained by the UI thread; if that thread is
+            // busy for long enough to fill it, this send parks here. Parking
+            // before the release meant the frame was never handed back, so
+            // the next `nextFrame` blocked forever on the semaphore and the
+            // pane stopped drawing for good -- a moment of UI slowness turned
+            // into a permanently dead surface. Releasing first costs nothing:
+            // the frame's work is finished by the time we are called.
+            self.swap_chain.releaseFrame();
+
             if (self.health.load(.seq_cst) != health) {
                 self.health.store(health, .seq_cst);
 
@@ -1806,9 +1828,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .renderer_health = health,
                 }, .{ .forever = {} });
             }
-
-            // Always release our semaphore
-            self.swap_chain.releaseFrame();
         }
 
         /// Call this any time the background image path changes.
