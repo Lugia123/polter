@@ -1592,6 +1592,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // an escape that fires on change, so in a steady state silence is
             // the designed behaviour, not a symptom.
             if (comptime builtin.os.tag == .windows) {
+                // absence: proves nothing -- past the first `rsz_log_max` frames the
+                // only escape is a surface whose size differs from the one on record,
+                // which is false in every steady state. A pane drawing normally and a
+                // pane not drawing at all are both silent here.
                 if (self.rsz_log.hasRoom() or size_changed) {
                     _ = self.rsz_log.take();
                     log.info(
@@ -1689,6 +1693,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // conditions agreed and the counts still disagreed, so the
                 // counter itself is now in the line rather than inferred from
                 // the other one.
+                // absence: proves nothing -- same budget as the line above, and its
+                // escape is likewise false in a steady state. This one does not spend
+                // the budget, the line above does: by the frame the budget runs out
+                // that line has already taken the last unit, so this one prints one
+                // fewer time. Two lines that look like a pair are off by one.
                 if (self.rsz_log.hasRoom() or target_stale) {
                     log.info(
                         "[rsz] r={x} target={d}x{d} screen={d}x{d} stale={} spent={d}",

@@ -405,6 +405,25 @@ pub struct WindowState {
     /// be a line that is wrong about the one thing it exists to be right
     /// about.
     pub last_pane_cwd: Option<String>,
+    /// The shape the last layout pass gave this window, as text.
+    ///
+    /// **This exists so the per-pane layout lines can stop lying by
+    /// omission.** Those lines are capped at the first 40 layouts of the
+    /// process, and `docs/windows/split-target-criteria.md` reads them back
+    /// as its verdict for two of its three cells -- so on the 41st layout
+    /// that criterion silently stops being able to fail, and "the panes were
+    /// never moved" and "the cap ran out" produce the same empty search.
+    ///
+    /// Comparing this against the shape about to be applied gives the cap an
+    /// escape that is true exactly when there is something new to say: a
+    /// split, a close, a zoom, a tab switch and a resize all change it, while
+    /// a window that is laid out again into the same rectangles stays quiet.
+    ///
+    /// **Text, not a hash.** A hash is shorter and would collide roughly
+    /// never -- but "roughly never" buys a silent suppression of the one line
+    /// somebody is reading, which is the entire fault being repaired here. A
+    /// window has a handful of panes; the string is cheap.
+    pub last_layout: Option<String>,
 }
 
 impl WindowState {
@@ -443,6 +462,7 @@ impl WindowState {
             scale,
             initial,
             last_pane_cwd,
+            last_layout,
         } = self;
         let listed: Vec<String> = tabs
             .iter()
@@ -451,7 +471,7 @@ impl WindowState {
         let active_id = tabs.get(*active).map(|t| t.id.0).unwrap_or(0);
         format!(
             "frame=0x{:x} tabs=[{}] active={} n={} panes={} ops={} min={}x{} max={}x{} \
-             prefullscreen={} scale={:.2} initial={} lastcwd={}",
+             prefullscreen={} scale={:.2} initial={} lastcwd={} lastlayout={}",
             frame,
             listed.join(","),
             active_id,
@@ -475,6 +495,15 @@ impl WindowState {
             },
             match last_pane_cwd {
                 Some(c) => c.as_str(),
+                None => "none",
+            },
+            // Rendered whole rather than summarised, for the same reason the
+            // tab list is: this is the value the per-pane layout lines are
+            // gated against, so a dump that only said whether it was set
+            // could not answer the question somebody is holding the dump to
+            // ask -- "did this window's shape actually change".
+            match last_layout {
+                Some(shape) => shape.as_str(),
                 None => "none",
             },
         )
@@ -718,6 +747,10 @@ fn reg() -> Guard {
 
     // Contended. Say it once, with both ends of the story.
     let n = CONTENDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    // absence: depends -- the very first contention always speaks, so no
+    // line at all means the lock was never contended. After that only every
+    // ten-thousandth does: two lines in a log is not two contentions, and the
+    // number in the line is the count, not the number of lines.
     if n == 1 || n % 10_000 == 0 {
         logf!(
             "[state] contended #{}: waiter {}:{}, holder {}",
@@ -750,6 +783,10 @@ fn reg() -> Guard {
         };
         if let Some(g) = got {
             let waited = began.elapsed();
+            // absence: depends -- this rides the same `n` as the line above,
+            // so the pair is either both printed or both silent. A contention
+            // line with no resolution line after it is a wait that never
+            // ended; a gap in the numbering is only the sampling.
             if n == 1 || n % 10_000 == 0 {
                 logf!(
                     "[state] contended #{} resolved after {:.1}ms (churn, not a deadlock)",
@@ -1453,6 +1490,7 @@ pub(crate) fn add_window(frame: HWND) {
             scale: 1.0,
             initial: None,
             last_pane_cwd: None,
+            last_layout: None,
         });
         Some(ws.len())
     });
@@ -1762,13 +1800,14 @@ pub fn layout(frame: HWND) {
     // Pure work under the lock, Windows calls after it: `SetWindowPos` sends
     // WM_SIZE back into this thread, which takes the same lock.
     #[allow(clippy::type_complexity)]
-    let (place, hide, orphans): (
+    let (place, hide, orphans, shape_changed): (
         Vec<(PaneId, HWND, TreeRect)>,
         Vec<(PaneId, HWND)>,
         Vec<PaneId>,
+        bool,
     ) = {
         let mut orphans: Vec<PaneId> = Vec::new();
-        let Some(win) = window(frame) else {
+        let Some(mut win) = window(frame) else {
             return;
         };
         let sh = strip_h(win.scale);
@@ -1823,7 +1862,41 @@ pub fn layout(frame: HWND) {
                 }
             }
         }
-        (place, hide, orphans)
+
+        // **The shape of this layout, as the escape for the line cap below.**
+        //
+        // Built from the two lists that are about to be applied, so it is the
+        // same decision the per-pane lines report and not a second opinion
+        // about it: the placed panes with their rectangles in the order the
+        // tree gave them, then the hidden ones. Anything that moves, resizes,
+        // adds, removes, zooms or reorders a pane changes this string; laying
+        // the same window out again into the same rectangles does not.
+        //
+        // **Truncated to whole pixels the way the lines below print them,
+        // and clamped the way they do not.** The window call underneath
+        // raises a zero side to one; the printed rectangle does not, and
+        // neither does this. Clamping here would have made a pane collapsing
+        // from one pixel to none produce an identical shape -- silencing the
+        // line for the one layout where a degenerate rectangle is exactly
+        // what somebody would want to see.
+        let shape = {
+            let mut out = String::new();
+            for (id, _, r) in &place {
+                out.push_str(&format!(
+                    "{}@{},{},{},{};",
+                    id, r.x as i32, r.y as i32, r.w as i32, r.h as i32
+                ));
+            }
+            out.push('h');
+            for (id, _) in &hide {
+                out.push_str(&format!(":{id}"));
+            }
+            out
+        };
+        let shape_changed = win.last_layout.as_deref() != Some(shape.as_str());
+        win.last_layout = Some(shape);
+
+        (place, hide, orphans, shape_changed)
     };
 
     for id in orphans {
@@ -1839,7 +1912,30 @@ pub fn layout(frame: HWND) {
     // log could not say which one had been moved and which had been skipped.
     // A layout is a decision per pane; the log is now one line per decision.
     let n = LAYOUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    let verbose = n <= 40;
+    // absence: depends -- this window was laid out into the rectangles it was
+    // already in. A layout that changed anything always speaks, for the life
+    // of the process, so a shape that did change and printed nothing is a
+    // defect; a repeat that printed nothing is normal.
+    //
+    // **The cap has an escape, and the escape is why the absence can be
+    // read.** `LAYOUTS` is process-wide and never reset, so `n <= 40` alone
+    // is spent by ordinary use -- open two tabs, split once, drag the
+    // divider, and it is gone. Every later layout was then silent, and
+    // `docs/windows/split-target-criteria.md`, which reads these lines back
+    // as the verdict for two of its three cells, could not tell "the panes
+    // were never moved" from "the cap ran out". That criterion was green
+    // partly because it was run early.
+    //
+    // With `shape_changed` in the condition, a layout that had anything new
+    // to say always says it, for the life of the process. What the cap still
+    // buys is the *first* 40, including the repeats -- the startup sequence
+    // where the same shape is applied several times is worth seeing once.
+    //
+    // ⚠️ So the silence now means one thing: this window was laid out into
+    // the rectangles it was already in. **It does not mean nothing ran** --
+    // that case is the `[layout] refusing:` line further up, which is not
+    // capped.
+    let verbose = n <= 40 || shape_changed;
     unsafe {
         // Hide before showing, so a zoom toggle does not flash both.
         //
@@ -1896,6 +1992,9 @@ pub fn layout(frame: HWND) {
         crate::with_host_shuffle(|| {
             for (id, hw) in hide {
                 let ok = ShowWindow(hw, SW_HIDE).as_bool();
+                // absence: depends -- see `verbose` above: this window was
+                // laid out into the shape it was already in. A layout that
+                // changed anything speaks for the life of the process.
                 if verbose {
                     logf!("[layout #{}] pane {} -> hide (was visible: {})", n, id, ok);
                 }
@@ -1911,6 +2010,9 @@ pub fn layout(frame: HWND) {
                 (r.h as i32).max(1),
                 SWP_NOZORDER | SWP_SHOWWINDOW,
             );
+            // absence: depends -- see `verbose` above: this window was laid
+            // out into the shape it was already in. A layout that changed
+            // anything speaks for the life of the process.
             if verbose {
                 logf!(
                     "[layout #{}] pane {} -> {}x{}+{}+{} ({})",
@@ -2769,6 +2871,8 @@ fn ask(frame: HWND, what: &str) -> bool {
 /// `cb_close_surface`.
 pub fn close_tab_asking(frame: HWND, id: TabId) {
     let flags = tab_confirm_flags(frame, id);
+    // not-gated: the condition is the event -- one dialog was shown and the
+    // person said no. Silence here is a tab that was not kept.
     if dialogs_for(&flags) == 1 && !ask(frame, "这个标签页") {
         wlogf!(frame, "[close] tab {:?} kept", id);
         return;
@@ -2780,6 +2884,8 @@ pub fn close_tab_asking(frame: HWND, id: TabId) {
 /// holds.
 pub fn close_all_tabs_of_asking(frame: HWND) -> bool {
     let flags = window_confirm_flags(frame);
+    // not-gated: the condition is the event -- one dialog was shown and the
+    // person said no. Silence here is a window that was not kept.
     if dialogs_for(&flags) == 1 && !ask(frame, "这个窗口") {
         wlogf!(frame, "[close] window kept");
         return false;
@@ -4322,6 +4428,9 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // of one proves nothing**, because the throttle drops all
                 // but the first and every ten-thousandth.
                 let n = NO_TAB_STATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                // absence: proves nothing -- said again in the vocabulary
+                // the checker reads, because the paragraph above already
+                // says it in prose and prose is not what it scans.
                 if n == 1 || n % 10_000 == 0 {
                     // process-wide: the frame is in no window state, so there
                     // is nothing for this line to be tagged against

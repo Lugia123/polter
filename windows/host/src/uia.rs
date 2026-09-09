@@ -154,6 +154,9 @@ fn read_viewport(frame: HWND, tab: TabId, pane: PaneId) -> Option<String> {
 
     // Announce the TTL once, so a log has the number the criterion is paced
     // against rather than the number somebody remembers.
+    // absence: depends -- once per process. In a log that starts with the
+    // process, no such line means this function was never called; in a log
+    // taken from partway through, it means somebody already said it.
     if TTL_ANNOUNCED.swap(1, Ordering::Relaxed) == 0 {
         // process-wide: the TTL is a compile-time constant shared by every
         // window's terminals. Tagging it with whichever window happened to be
@@ -168,6 +171,11 @@ fn read_viewport(frame: HWND, tab: TabId, pane: PaneId) -> Option<String> {
             if let Some((_, at, text)) = rows.iter().find(|(k, _, _)| *k == key) {
                 if at.elapsed() < TEXT_TTL {
                     let n = CACHE_HITS.fetch_add(1, Ordering::Relaxed) + 1;
+                    // absence: depends -- the first twenty hits of the
+                    // process speak, then one in a hundred. A quiet log is a
+                    // cache that was not hit *or* one that was hit steadily
+                    // past its twentieth time; the number in the line is the
+                    // hit count and is the only thing that separates them.
                     if n <= 20 || n % 100 == 0 {
                         wlogf!(frame, "[uia] text cache hit #{} pane={}", n, pane);
                     }

@@ -127,10 +127,16 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
             // with ② absent means the window thread never came back, and ①
             // absent means nothing was triggered.
             //
-            // `worker tid=` and never a bare `tid=`: the watchdog's line
-            // carries two of them (`[wd] pid=… tid=<watchdog> up, watching
-            // main tid=<main>`), so a pattern anchored on the bare word picks
-            // the watchdog out of that line. The word `worker` is the anchor.
+            // `worker tid=` and never a bare `tid=`. The watchdog writes two
+            // thread ids of its own, and a pattern anchored on the bare word
+            // would pick one of those out of its lines instead of this one.
+            // The word `worker` is the anchor.
+            //
+            // ⚠️ The watchdog's own fields are named now (see `blocked_line`
+            // in `main.rs`), which removes the collision this sentence was
+            // written about -- but not the reason for it. The anchor stays:
+            // `worker` says which thread without the reader having to know
+            // what else is in the file.
             let me = unsafe {
                 windows::Win32::System::Threading::GetCurrentThreadId()
             };

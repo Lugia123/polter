@@ -461,6 +461,10 @@ pub fn present(self: *OpenGL, target: Target) !void {
     //
     // `err` is here because a blit that fails is currently silent, and a
     // silent failure and a stale drawable produce the same black pixels.
+    // absence: proves nothing -- a fixed budget with no escape. Once the
+    // first `present_log_max` presents of this renderer are spent the line
+    // never appears again, whatever happens, so a search that comes back
+    // empty separates nothing: not drawing and drawing look identical here.
     if (self.present_log.take()) {
         const fb = blk: {
             var v: gl.c.GLint = undefined;

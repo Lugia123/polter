@@ -538,10 +538,17 @@ impl Line {
     /// widest. **Adding a field to the alarm makes that test fail**, which is
     /// the whole point: the previous version had a comfortable margin and
     /// nothing connecting it to the line it had to hold.
-    /// 260 bytes is the widest this line can be (every number at `u64::MAX`);
-    /// the rest is room for a phrase to grow before anyone has to think about
-    /// it again. **The margin is not the safety here -- `alarm_line_fits` is.**
-    const CAP: usize = 320;
+    ///
+    /// 381 bytes is the widest this line can be (seven numbers, all at
+    /// `u64::MAX`, plus the timestamp and every fixed phrase); the rest is
+    /// room for a phrase to grow before anyone has to think about it again.
+    /// **The margin is not the safety here -- `alarm_line_fits` is.**
+    ///
+    /// ⚠️ It went from 320 to this when the alarm stopped printing one
+    /// unnamed thread id and started printing two named ones. That is what
+    /// the test is for: the field was added and this constant could not be
+    /// left alone.
+    const CAP: usize = 448;
 
     fn new() -> Self {
         Line { b: [0; Line::CAP], n: 0, truncated: false }
@@ -577,6 +584,22 @@ impl Line {
             }
         }
     }
+    /// Replace the tail with a visible notice that the line was cut.
+    ///
+    /// **Appending could not work, and it looked like it did.** `s` writes
+    /// only while there is room, so on the one path that calls this -- a line
+    /// that has already filled the buffer -- the previous `l.s("[TRUNCATED]")`
+    /// wrote nothing whatever. The newline had gone the same way, so the cut
+    /// line ran on into whatever the next writer put in the file, and the
+    /// reader was left with neither the end of the claim nor any sign that it
+    /// was missing. The tail is the one place there is room by construction.
+    fn mark_truncated(&mut self) {
+        const MARK: &[u8] = b"..[TRUNCATED]\n";
+        let end = self.n.min(self.b.len());
+        let start = end.saturating_sub(MARK.len());
+        self.b[start..end].copy_from_slice(&MARK[..end - start]);
+    }
+
     /// Two digits, so a timestamp reads like the ones `log_line` writes.
     fn u2(&mut self, v: u64) {
         if v < 10 {
@@ -631,7 +654,33 @@ fn alarm(f: &std::fs::File, line: &Line) {
 
 /// Build the "main thread blocked" line. Allocation-free, and shared with the
 /// test that pins it against `Line::CAP`.
-fn blocked_line(pid: u64, secs: u64, ticks: u64, seq: u64, pong: u64, tid: u64) -> Line {
+///
+/// # Why there are two thread ids and why neither is called `tid`
+///
+/// ⚠️ **This line used to end `tid=N`, and `N` was the watchdog's own.** The
+/// reader of this line is, always, somebody about to suspend a thread and take
+/// its stack -- that is what the line is for -- and the number handed to them
+/// was the one thread in the process guaranteed *not* to be stuck. The stack
+/// that came back was this watchdog asleep in its poll (`sleep` on top,
+/// `thread_start` at the bottom, `Instant::now` in the middle: four symbols
+/// that all agree, and all about the wrong thread). It was read as "the main
+/// thread is not stuck where we thought", and that conclusion was published.
+///
+/// **A wrong identifier does not look wrong.** It resolves, it symbolises, it
+/// produces a plausible stack. So the fix is not a better number in the same
+/// unnamed slot: both ids are printed, each says which thread it is, and the
+/// line says what to do with them. `blocked_tid` is the thread that has
+/// stopped answering; `wd_tid` is this watchdog, and it is running by
+/// definition -- if it were not, there would be no line.
+fn blocked_line(
+    pid: u64,
+    secs: u64,
+    ticks: u64,
+    seq: u64,
+    pong: u64,
+    blocked_tid: u64,
+    wd_tid: u64,
+) -> Line {
     let mut l = Line::new();
     stamp_into(&mut l);
     l.s("[wd] pid=");
@@ -644,9 +693,12 @@ fn blocked_line(pid: u64, secs: u64, ticks: u64, seq: u64, pong: u64, tid: u64) 
     l.u(seq);
     l.s(" UNANSWERED (last answered ");
     l.u(pong);
-    l.s("), tid=");
-    l.u(tid);
-    l.s(" -- nothing on this line was allocated\n");
+    l.s("), blocked_tid=");
+    l.u(blocked_tid);
+    l.s(" wd_tid=");
+    l.u(wd_tid);
+    l.s(" -- take the stack from blocked_tid; wd_tid is this watchdog");
+    l.s(" and is never the stuck one. Nothing on this line was allocated\n");
     l
 }
 
@@ -724,7 +776,7 @@ fn start_watchdog() {
                         will be unavailable this run");
             }
             wd_log(&format!(
-                "[wd] pid={pid} tid={tid} up, watching main tid={main_tid}, \
+                "[wd] pid={pid} wd_tid={tid} up, watching main_tid={main_tid}, \
                  poll={}s stall_after={}s",
                 POLL.as_secs(),
                 STALL_AFTER.as_secs()
@@ -787,12 +839,26 @@ fn start_watchdog() {
                             ticks,
                             seq,
                             pong,
+                            // **The thread that stopped, not the one noticing
+                            // it.** `main_tid` is read on the main thread
+                            // before this closure exists; `tid` below is read
+                            // inside it and is this watchdog's. Handing the
+                            // second one to a reader who is about to suspend a
+                            // thread is how a stack of `sleep` came to be read
+                            // as the main thread's.
+                            main_tid as u64,
                             tid as u64,
                         );
                         if l.truncated {
-                            // Cannot grow the buffer here, but silence about
-                            // it is worse than a short line.
-                            l.s("[TRUNCATED]");
+                            // **Cannot grow the buffer here, and appending was
+                            // not a notice.** A full line is full: `s` writes
+                            // nothing more, so the old `l.s("[TRUNCATED]")`
+                            // was itself discarded -- and with the newline
+                            // gone too, the cut line ran into whatever the
+                            // next writer put there. The marker overwrites the
+                            // tail instead, which is the one place there is
+                            // room by construction.
+                            l.mark_truncated();
                         }
                         alarm(f, &l);
                     }
@@ -6671,6 +6737,12 @@ fn main() {
             session::flush_if_dirty(hwnd);
         }
 
+        // absence: means it was not reached -- `ticks` counts iterations of
+        // this loop and nothing else, so the line stops exactly when the loop
+        // does. ⚠️ The resolution is one line per 125 iterations: a stall
+        // shorter than that fits between two healthy-looking lines, and a
+        // line having appeared once is not the loop still running. The
+        // reading is whether the number is still growing.
         if ticks % 125 == 0 {
             let sw = tabs::active_hwnd(hwnd);
             let pf = pixel_format_of(sw);
@@ -6784,7 +6856,15 @@ mod wd_tests {
     /// quietly losing the end of the alarm.
     #[test]
     fn alarm_line_fits() {
-        let l = blocked_line(u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX);
+        let l = blocked_line(
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+        );
         assert!(
             !l.truncated,
             "the alarm line no longer fits in Line::CAP ({} bytes); it needs {}+",
@@ -6801,6 +6881,29 @@ mod wd_tests {
             l.s("x");
         }
         assert!(l.truncated);
+    }
+
+    /// **The notice has to end up in the bytes that get written.**
+    ///
+    /// The previous version appended it, and appending to a full buffer is a
+    /// no-op -- so the one line that needed to say it had been cut said
+    /// nothing, and lost its newline into the bargain. `alarm` writes
+    /// `b[..n]`, so that is what this reads.
+    #[test]
+    fn a_cut_line_says_so_in_what_gets_written() {
+        let mut l = Line::new();
+        for _ in 0..Line::CAP + 50 {
+            l.s("x");
+        }
+        assert!(l.truncated);
+        l.mark_truncated();
+        let written = String::from_utf8_lossy(&l.b[..l.n]).to_string();
+        assert!(
+            written.ends_with("[TRUNCATED]\n"),
+            "the written bytes must end with the notice and a newline, not run \
+             into the next line; they end with {:?}",
+            &written[written.len().saturating_sub(20)..]
+        );
     }
 }
 

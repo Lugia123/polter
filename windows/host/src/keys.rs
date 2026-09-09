@@ -304,6 +304,11 @@ pub fn handle_key_message(
         // happen -- which is exactly why this is the line that has to exist.
         let n = KEYS_LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let modded = ev_mods & (MODS_CTRL | MODS_ALT | MODS_SUPER) != 0;
+        // absence: depends -- a key carrying ctrl, alt or the windows key
+        // always speaks, so for those a missing line means the message never
+        // reached here. For a bare key, or one held with shift alone, only
+        // the first twenty of the process speak: after that a missing line
+        // says nothing at all, and `mods` is what tells the two apart.
         if n <= 20 || modded {
             logf!(
                 "[key] msg=0x{:x} vk=0x{:02x} keycode=0x{:x} mods=0x{:x} text={} -> surface_key={}",

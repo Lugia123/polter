@@ -584,6 +584,13 @@ fn drawFrame(self: *Thread, now: bool) void {
             .{ .instant = {} },
         ) == 0) {
             self.app_mailbox_drops += 1;
+            // absence: means it was not reached -- the first drop always speaks,
+            // so no line at all means no message was ever dropped here. Only the
+            // count of the later ones is sampled.
+            //
+            // This arm is compiled only where the app thread must draw, which
+            // today is GTK alone; on Windows the branch above does not exist, so
+            // silence here is also what a build without it looks like.
             if (rendererpkg.shouldReport(self.app_mailbox_drops, 64)) {
                 log.warn(
                     "[mbox] app mailbox full, message dropped kind=redraw_surface drops={d}",
@@ -631,6 +638,13 @@ fn wakeupCallback(
     // expression, including the runtime `shouldReport` call, to be evaluated
     // at comptime. The left operand is comptime-known on its own, which is
     // all that is needed for the switch to cost nothing when it is off.
+    // absence: depends -- with the phase log off, one line per
+    // `heartbeat_interval` wakeups, so the line stopping means the thread
+    // stopped waking, but only after that many more would have happened;
+    // and a stall beginning between two heartbeats leaves a last line whose
+    // two counters agree, which is what a healthy one looks like. With the
+    // log on, every wakeup speaks and absence is immediate. Either way the
+    // reading is the counter advancing, not its last value -- see above.
     if (build_config.log_render_phase or
         rendererpkg.shouldReport(t.wakeups, heartbeat_interval))
     {

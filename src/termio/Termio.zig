@@ -834,6 +834,11 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
             .reset_cursor_blink = {},
         }, .{ .instant = {} }) == 0) {
             self.renderer_mailbox_drops += 1;
+            // absence: means it was not reached -- the first drop always
+            // speaks, so no line means nothing was dropped. ⚠️ What that does
+            // not cover: the push above only happens when the throttle a few
+            // lines up lets it, so a quiet log says nothing about how often
+            // the mailbox was full, only that no permitted push found it so.
             if (renderer.shouldReport(self.renderer_mailbox_drops, 64)) {
                 log.warn(
                     "[mbox] renderer mailbox full, message dropped kind=reset_cursor_blink drops={d}",

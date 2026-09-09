@@ -283,6 +283,11 @@ fn drag_to(frame: HWND, idx: usize) {
             st.complained = true;
             first
         });
+        // absence: depends -- one line per drag, not one per pointer
+        // message, so a drag that goes nowhere for the same reason a hundred
+        // times says so once. Within one drag, therefore, a second silent
+        // exit leaves no trace at all: the count of these lines is a count of
+        // drags, never of refusals.
         if first {
             wlogf!(frame, "[div] drag {} is going nowhere: {}", idx, what);
         }
