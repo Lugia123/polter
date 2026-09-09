@@ -4063,7 +4063,32 @@ pub fn focus_pane_at(hwnd: HWND) {
         );
         return;
     };
-    let changed = {
+    // **Confirmed, then committed -- in that order, and the order is the
+    // whole of the fix.**
+    //
+    // This used to write `win.active = tab_idx` first and only then look the
+    // tab up, with an `if let` that had no `else`. When the lookup missed,
+    // the window was already pointing at a tab index that does not exist,
+    // and `layout` reads exactly that: `if i != win.active` is true for every
+    // tab, so every tab is hidden, `place` comes out empty, and **the whole
+    // window goes blank**. The only trace was `focus_active`'s
+    // "nothing to focus", which says the active tab has no focused pane --
+    // true, and about the wrong thing. A reader chasing a blank window is
+    // told the tab has no focus, not that the tab is missing and that this
+    // click is what pointed at it.
+    //
+    // ⚠️ **An `else` arm would not have fixed it.** The write had already
+    // happened; a line there only annotates the blank window. Doing the
+    // lookup first means "`win.active` names a tab that is not there" stops
+    // being a state this function can produce at all.
+    //
+    // **Not reachable today, and that is not the reason to leave it.** The
+    // gap it needs is `tabs` changing between `pane_of` and `window(frame)`,
+    // and today nothing off this thread writes `tabs` -- every entry marked
+    // "Safe from any thread" either posts a message or touches a table of its
+    // own. That is a property of the rest of the file, not of this function,
+    // and it is not one this function can check.
+    let outcome: Option<bool> = 'commit: {
         let Some(mut win) = window(frame) else {
             wlogf!(
                 frame,
@@ -4074,11 +4099,26 @@ pub fn focus_pane_at(hwnd: HWND) {
             return;
         };
         let was = (win.active, win.tabs.get(win.active).map(|t| t.focused));
+        let Some(tab) = win.tabs.get_mut(tab_idx) else {
+            break 'commit None;
+        };
+        tab.focused = id;
         win.active = tab_idx;
-        if let Some(tab) = win.tabs.get_mut(tab_idx) {
-            tab.focused = id;
-        }
-        was != (tab_idx, Some(id))
+        Some(was != (tab_idx, Some(id)))
+    };
+    // **Said out here, with the guard dropped.** `wlogf!` reaches
+    // `winid::tag`, which takes a lock of its own, and this file's rule is
+    // that no guard is held across a call that can take one.
+    let Some(changed) = outcome else {
+        wlogf!(
+            frame,
+            "[pane] click on pane {} went nowhere: tab {} is no longer in this \
+             window, so nothing was made active; keystrokes still go wherever \
+             they went before",
+            id,
+            tab_idx
+        );
+        return;
     };
     if changed {
         layout(frame);
