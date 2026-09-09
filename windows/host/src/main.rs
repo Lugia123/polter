@@ -5149,6 +5149,49 @@ fn write_stdio_verdict(verdict: &str) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
+/// What is still true about libghostty's own output when this function could
+/// not re-point anything.
+///
+/// ⚠️ **The sentence this replaces was written in advance and measured
+/// false**: it said the core's log and any panic backtrace had *no sink* for
+/// the run, and in the case that matters most the core wrote 193 records into
+/// the very file the reader was told was empty (task 370). A **colliding**
+/// handle is by definition one that already points at the log file, so
+/// failing to re-point it leaves it pointing there -- with the overwriting
+/// this function exists to stop, but not with silence.
+///
+/// **"No handle was adopted" and "the core has nowhere to write" are two
+/// different facts.** They were one sentence, and the reader of this verdict
+/// is somebody deciding whether their core log went missing -- so the wrong
+/// one of the two sends them looking in the wrong place.
+///
+/// ⚠️ It says nothing about streams that were **given and name something
+/// else** (a pipe, a console, another file): those were never this
+/// function's to move, they are not in either count, and where they go is not
+/// something this process can read back.
+fn core_sink_note(missing: usize, colliding: usize) -> &'static str {
+    match (missing > 0, colliding > 0) {
+        // Both classes present: the collided streams still reach the log,
+        // the missing ones still have nowhere to go.
+        (true, true) => "The streams that collided still point at this log file and libghostty \
+                         still reaches it through them (their own file pointers, so its writes \
+                         may overwrite records this host appended -- that is what re-pointing \
+                         them would have prevented); the streams that were missing have nowhere \
+                         to go, and whatever libghostty writes to those is lost this run.",
+        (true, false) => "Windows gave us no handle for those streams and this run could not \
+                          give them one, so whatever libghostty writes to them -- its log, any \
+                          panic backtrace -- is lost this run.",
+        (false, true) => "Those streams still point at this log file, so libghostty's log and \
+                          any panic backtrace do reach it; they carry their own file pointers, \
+                          so its writes may overwrite records this host appended, which is what \
+                          re-pointing them would have prevented.",
+        // Unreachable while this is called only from the failure path (it is
+        // reached only when one of the two is non-empty), but stated rather
+        // than left to `unreachable!` -- a verdict is a bad place to panic.
+        (false, false) => "No stream needed re-pointing.",
+    }
+}
+
 fn adopt_std_handles() -> String {
     use std::os::windows::ffi::OsStrExt as _;
     use windows::Win32::Storage::FileSystem::{
@@ -5327,17 +5370,24 @@ fn adopt_std_handles() -> String {
         // possibly the very handle this failure is about -- so saying it has
         // none would be the log lying about itself in exactly the reading
         // somebody takes when they are trying to find out why it is empty.
+        //
+        // ⚠️ **And the first half was false too, task 370.** It stated flatly
+        // that the core's output had nowhere to go this run. What the failure
+        // above establishes is that *this function* re-pointed nothing; where
+        // the core writes was decided before we ran, by whoever started us.
+        // `core_sink_note` answers that from the classification instead of
+        // asserting it.
         let why = format!(
             "[stdio] {} missing or colliding, and the log file could not be opened for them; \
-             libghostty's log and any panic backtrace have NO sink this run: nothing below \
-             ran, so no handle was adopted or rescued. This host's own records are \
-             unaffected and are going to {}",
+             nothing below ran, so no handle was adopted or rescued. {} This host's own \
+             records are unaffected and are going to {}",
             missing
                 .iter()
                 .map(|(_, n)| *n)
                 .chain(colliding.iter().map(|(_, n, _)| *n))
                 .collect::<Vec<_>>()
                 .join(" and "),
+            core_sink_note(missing.len(), colliding.len()),
             sink().origin
         );
         // `log_reachable` is now a question about the sink rather than about
@@ -6716,5 +6766,55 @@ mod pairing_tests {
         // Too little in common to be an abbreviation of anything.
         assert!(!same_commit("ab", "abc1234"), "a stub must not match by prefix");
         assert!(!same_commit("", "abc1234"));
+    }
+}
+
+#[cfg(test)]
+mod core_sink_note_tests {
+    use super::core_sink_note;
+
+    /// ⚠️ **The defect, stated as a test.** A colliding handle points at the
+    /// log file; failing to re-point it leaves it pointing there. So the one
+    /// thing this note may never say, in any wording, is that nothing reaches
+    /// the log -- 193 core records reached it in the run that said so.
+    #[test]
+    fn a_collision_is_never_reported_as_silence() {
+        for (m, c) in [(0usize, 1usize), (1, 1), (0, 3)] {
+            let s = core_sink_note(m, c).to_ascii_lowercase();
+            assert!(
+                s.contains("still point at this log file"),
+                "missing={m} colliding={c}: a collided stream still reaches the log, and the \
+                 note must say so; got: {s}"
+            );
+            // ⚠️ Spelled in halves on purpose: the checker beside this
+            // (`the-stdio-verdict-reads-its-classification.py`) reads this
+            // file as text, and a test that writes the banned wording out in
+            // full is indistinguishable to it from the defect coming back.
+            assert!(
+                !s.contains(concat!("no ", "sink")),
+                "missing={m} colliding={c}: got: {s}"
+            );
+        }
+    }
+
+    /// The other half must stay sayable: streams Windows never gave us, that
+    /// this run could not point anywhere, really are lost.
+    #[test]
+    fn missing_alone_is_reported_as_lost() {
+        let s = core_sink_note(2, 0);
+        assert!(s.contains("lost this run"), "{s}");
+        assert!(!s.contains("still point at this log file"), "{s}");
+    }
+
+    /// Three different situations, three different sentences -- a note that
+    /// reads the same either way is a note that was not read from anything.
+    #[test]
+    fn the_three_cases_do_not_share_a_sentence() {
+        let a = core_sink_note(1, 0);
+        let b = core_sink_note(0, 1);
+        let c = core_sink_note(1, 1);
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
     }
 }
