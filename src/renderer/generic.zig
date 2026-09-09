@@ -3597,8 +3597,15 @@ test "frameCompleted reports a health change once per flip, not per frame" {
     // of this test and not something being worked around.
     r.health = .{ .raw = .healthy };
     r.swap_chain.frame_sema = .{ .permits = 0 };
+    // ⚠️ **A real runtime object, not `undefined`.** This used to be
+    // `undefined` and was safe, because `apprt.none.App.wakeup` did nothing
+    // at all -- the pointer was never followed. It counts calls now, so it
+    // follows the pointer, and `undefined` here is a segfault at
+    // 0xaaaaaaaaaaaaaaaa rather than a compile error: nothing warns, and it
+    // only shows up in tests that actually reach the send.
+    var rt_app: apprt.App = .{};
     r.surface_mailbox = .{ .surface = undefined, .app = .{
-        .rt_app = undefined,
+        .rt_app = &rt_app,
         .mailbox = q,
     } };
 

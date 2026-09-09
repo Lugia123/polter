@@ -219,3 +219,189 @@ pub fn newConfig(
 
     return copy;
 }
+
+test "a send into a full app mailbox returns within a budget" {
+    // ⚠️ **Skipped deliberately. The skip is part of the change. See 443.**
+    //
+    // This is the acceptance condition for bounding the blocking sends into
+    // the app mailbox, written before the fix so that it cannot be shaped to
+    // fit whatever the fix turns out to be. Against today's tree it fails,
+    // because the send it exercises waits with no deadline. Leaving it live
+    // would mean a permanently red main -- and a red that is expected hides
+    // every red that is not, which is the failure this whole family of bugs
+    // is made of. So it is skipped, not deleted.
+    //
+    // **Delete the line below when that send becomes bounded**, and it must
+    // go green. It already does against a bounded send: replacing the
+    // `.forever` further down with a `.ns` timeout passes today. That is
+    // what distinguishes a test waiting for a fix from a broken one.
+    //
+    // A skipped test is silent in every red, so the number is the thing to
+    // watch: removing this line moves one test out of `skipped` and into
+    // `passed`.
+    if (true) return error.SkipZigTest;
+
+    // **Today this fails, and that is the point.** The send is `.forever`:
+    // it waits on the queue's not-full condition with no deadline, and the
+    // only thing that can signal it is the UI thread taking a message out.
+    // A UI thread that is itself waiting -- which is the shape this whole
+    // family is about -- never does, and the sending thread is parked for
+    // the life of the process with nothing said anywhere.
+    //
+    // ⚠️ **Note what this does before asserting.** A test for "does it come
+    // back" must not hang when the answer is no: a hung test and a failing
+    // test do not read alike, and the hung one reads as broken CI rather
+    // than as the defect. So the blocked sender is freed first -- by taking
+    // one message out -- and joined, and only then is the verdict asserted.
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const q = try App.Mailbox.Queue.create(alloc);
+    defer q.destroy(alloc);
+
+    // ⚠️ **A real runtime object, not `undefined`.** This used to be
+    // `undefined` and was safe, because `apprt.none.App.wakeup` did nothing
+    // at all -- the pointer was never followed. It counts calls now, so it
+    // follows the pointer, and `undefined` here is a segfault at
+    // 0xaaaaaaaaaaaaaaaa rather than a compile error: nothing warns, and it
+    // only shows up in tests that actually reach the send.
+    var rt_app: apprt.App = .{};
+    const mb: Mailbox = .{
+        .surface = undefined,
+        .app = .{ .rt_app = &rt_app, .mailbox = q },
+    };
+
+    // Fill it. `.instant` returns 0 once there is no room.
+    while (mb.push(.{ .renderer_health = .healthy }, .{ .instant = {} }) > 0) {}
+
+    const Ctx = struct {
+        mb: Mailbox,
+        returned: std.atomic.Value(bool) = .init(false),
+
+        fn run(self: *@This()) void {
+            _ = self.mb.push(.{ .renderer_health = .healthy }, .{ .forever = {} });
+            self.returned.store(true, .seq_cst);
+        }
+    };
+    var ctx: Ctx = .{ .mb = mb };
+    const th = try std.Thread.spawn(.{}, Ctx.run, .{&ctx});
+
+    // The budget. Generous on purpose: this is not measuring how fast the
+    // send is, only that it is bounded at all.
+    const budget_ms = 200;
+    var waited: usize = 0;
+    while (waited < budget_ms and !ctx.returned.load(.seq_cst)) : (waited += 1) {
+        io.sleep(.fromNanoseconds(std.time.ns_per_ms), .awake) catch {};
+    }
+    const returned = ctx.returned.load(.seq_cst);
+
+    // Free the sender before judging it, so a "no" is a failure and not a hang.
+    if (!returned) _ = q.pop(io);
+    th.join();
+
+    try std.testing.expect(returned);
+}
+
+test "a send into the app mailbox wakes the app loop" {
+    // ⚠️ **The waker is installed here, and that is the whole point of this
+    // test.** In the product it is the runtime's `wakeup`, reached through
+    // `rt_app`; a test that leaves that pointer dangling asserts nothing --
+    // it would pass just as happily against a tree where the send never
+    // wakes anything, because there would be nothing to notice. So a real
+    // runtime object is passed in and the wake is read off it.
+    //
+    // That the counter itself is honest is established next door, in
+    // `apprt/none.zig`: it does not move on its own, and it moves when
+    // called. Without that, this test could only say "the number did not
+    // change", which is what a broken instrument says too.
+    const alloc = std.testing.allocator;
+
+    const q = try App.Mailbox.Queue.create(alloc);
+    defer q.destroy(alloc);
+
+    var rt_app: apprt.App = .{};
+    const mb: Mailbox = .{
+        .surface = undefined,
+        .app = .{ .rt_app = &rt_app, .mailbox = q },
+    };
+
+    try std.testing.expectEqual(@as(usize, 0), rt_app.wakeups);
+
+    // The result is read rather than discarded, and not only to satisfy the
+    // checker that says so: the wake happens *after* the push and does not
+    // depend on it succeeding, so a full queue would leave this test green
+    // while nothing was delivered. Asserting the send landed is what keeps
+    // the wake count meaning what it appears to mean.
+    try std.testing.expect(mb.push(.{ .renderer_health = .healthy }, .{ .instant = {} }) > 0);
+    try std.testing.expectEqual(@as(usize, 1), rt_app.wakeups);
+
+    try std.testing.expect(mb.push(.{ .renderer_health = .healthy }, .{ .instant = {} }) > 0);
+    try std.testing.expectEqual(@as(usize, 2), rt_app.wakeups);
+}
+
+test "a send into a full app mailbox still delivers" {
+    // ⚠️ **This is half of a pair, and the half it is not must stay visible.**
+    //
+    //   A. the slow path is taken and the message still arrives  <- this test
+    //   B. the slow path says so, so that a reader can tell it happened
+    //
+    // B cannot be written today: nothing on this path counts or logs when a
+    // send has to wait, so a test for it could only assert a field that does
+    // not exist -- which fails to compile, and a compile error says nothing
+    // about behaviour. B is owed, and it is owed *separately*: folding the
+    // two together gives a test that passes whenever the message arrives,
+    // while "waiting here is silent" survives untouched underneath.
+    //
+    // ⚠️ **The first assertion is what makes the second one mean anything.**
+    // Making room and then checking the message arrived does not establish
+    // that the sender ever waited -- if it never blocked, it simply pushed
+    // and this would pass against a queue that gives up instead of waiting.
+    // So the sender is confirmed to be *stuck* first, and only then is it
+    // released. An earlier version of this test omitted that and passed
+    // against exactly that mutation.
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const q = try App.Mailbox.Queue.create(alloc);
+    defer q.destroy(alloc);
+
+    var rt_app: apprt.App = .{};
+    const mb: Mailbox = .{
+        .surface = undefined,
+        .app = .{ .rt_app = &rt_app, .mailbox = q },
+    };
+
+    while (mb.push(.{ .renderer_health = .healthy }, .{ .instant = {} }) > 0) {}
+    const filled = q.len;
+
+    const Ctx = struct {
+        mb: Mailbox,
+        returned: std.atomic.Value(bool) = .init(false),
+        pushed: std.atomic.Value(usize) = .init(0),
+
+        fn run(self: *@This()) void {
+            const n = self.mb.push(.{ .renderer_health = .healthy }, .{ .forever = {} });
+            self.pushed.store(n, .seq_cst);
+            self.returned.store(true, .seq_cst);
+        }
+    };
+    var ctx: Ctx = .{ .mb = mb };
+    const th = try std.Thread.spawn(.{}, Ctx.run, .{&ctx});
+
+    // Give it long enough that a sender which was going to come back
+    // without waiting would have done so.
+    var waited: usize = 0;
+    while (waited < 100) : (waited += 1) {
+        io.sleep(.fromNanoseconds(std.time.ns_per_ms), .awake) catch {};
+        if (ctx.returned.load(.seq_cst)) break;
+    }
+    const blocked = !ctx.returned.load(.seq_cst);
+
+    // Release it either way, so a failure here is a failure and not a hang.
+    _ = q.pop(io);
+    th.join();
+
+    try std.testing.expect(blocked);
+    try std.testing.expect(ctx.pushed.load(.seq_cst) > 0);
+    try std.testing.expectEqual(filled, q.len);
+}
