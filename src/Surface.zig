@@ -1107,7 +1107,11 @@ pub fn activateInspector(self: *Surface) !void {
     }
 
     // Notify our components we have an inspector active
-    _ = self.renderer_thread.mailbox.push(global.io(), .{ .inspector = true }, .{ .forever = {} });
+    _ = rendererpkg.Thread.send(
+        self.renderer_thread.mailbox,
+        rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
+        .{ .inspector = true },
+    );
     self.queueIo(.{ .inspector = true }, .unlocked);
 }
 
@@ -1124,7 +1128,11 @@ pub fn deactivateInspector(self: *Surface) void {
     }
 
     // Notify our components we have deactivated inspector
-    _ = self.renderer_thread.mailbox.push(global.io(), .{ .inspector = false }, .{ .forever = {} });
+    _ = rendererpkg.Thread.send(
+        self.renderer_thread.mailbox,
+        rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
+        .{ .inspector = false },
+    );
     self.queueIo(.{ .inspector = false }, .unlocked);
 
     // Deinit the inspector
@@ -1651,14 +1659,20 @@ fn searchCallback_(
             const matches = try alloc.dupe(terminal.highlight.Flattened, matches_unowned);
             for (matches) |*m| m.* = try m.clone(alloc);
 
-            _ = self.renderer_thread.mailbox.push(
-                global.io(),
-                .{ .search_viewport_matches = .{
-                    .arena = arena,
-                    .matches = matches,
-                } },
-                .forever,
-            );
+            // ⚠️ **This message carries an arena the renderer takes over
+            // and frees.** A delivery that fails hands ownership back here,
+            // and dropping it on the floor would be a leak -- so the bounded
+            // send has to be paired with a release at every site whose
+            // message owns something. Bounded is not free; it is free only
+            // for messages that are pure values.
+            const vp_msg: rendererpkg.Message = .{ .search_viewport_matches = .{
+                .arena = arena,
+                .matches = matches,
+            } };
+            if (!rendererpkg.Thread.send(self.renderer_thread.mailbox, rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup), vp_msg)) {
+                var undelivered = vp_msg.search_viewport_matches;
+                undelivered.arena.deinit();
+            }
             try self.renderer_thread.wakeup.notify();
         },
 
@@ -1670,14 +1684,17 @@ fn searchCallback_(
                 const alloc = arena.allocator();
                 const match = try sel.highlight.clone(alloc);
 
-                _ = self.renderer_thread.mailbox.push(
-                    global.io(),
-                    .{ .search_selected_match = .{
-                        .arena = arena,
-                        .match = match,
-                    } },
-                    .forever,
-                );
+                // Owns an arena, same as above.
+                const sel_msg: rendererpkg.Message = .{ .search_selected_match = .{
+                    .arena = arena,
+                    .match = match,
+                } };
+                if (!rendererpkg.Thread.send(self.renderer_thread.mailbox, rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup), sel_msg)) {
+                    if (sel_msg.search_selected_match) |m| {
+                        var undelivered = m;
+                        undelivered.arena.deinit();
+                    }
+                }
 
                 // Send the selected index to the surface mailbox
                 _ = self.surfaceMailbox().push(
@@ -1686,10 +1703,10 @@ fn searchCallback_(
                 );
             } else {
                 // Reset our selected match
-                _ = self.renderer_thread.mailbox.push(
-                    global.io(),
+                _ = rendererpkg.Thread.send(
+                    self.renderer_thread.mailbox,
+                    rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
                     .{ .search_selected_match = null },
-                    .forever,
                 );
 
                 // Reset the selected index
@@ -1711,19 +1728,20 @@ fn searchCallback_(
 
         // When we quit, tell our renderer to reset any search state.
         .quit => {
-            _ = self.renderer_thread.mailbox.push(
-                global.io(),
+            _ = rendererpkg.Thread.send(
+                self.renderer_thread.mailbox,
+                rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
                 .{ .search_selected_match = null },
-                .forever,
             );
-            _ = self.renderer_thread.mailbox.push(
-                global.io(),
-                .{ .search_viewport_matches = .{
-                    .arena = .init(self.alloc),
-                    .matches = &.{},
-                } },
-                .forever,
-            );
+            // Owns an arena, same as above.
+            const clear_msg: rendererpkg.Message = .{ .search_viewport_matches = .{
+                .arena = .init(self.alloc),
+                .matches = &.{},
+            } };
+            if (!rendererpkg.Thread.send(self.renderer_thread.mailbox, rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup), clear_msg)) {
+                var undelivered = clear_msg.search_viewport_matches;
+                undelivered.arena.deinit();
+            }
             try self.renderer_thread.wakeup.notify();
 
             // Reset search totals in the surface
@@ -2007,7 +2025,11 @@ pub fn updateConfig(
     termio_config_ptr.* = try termio.Termio.DerivedConfig.init(self.alloc, config);
     errdefer termio_config_ptr.deinit();
 
-    _ = self.renderer_thread.mailbox.push(global.io(), renderer_message, .{ .forever = {} });
+    _ = rendererpkg.Thread.send(
+        self.renderer_thread.mailbox,
+        rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
+        renderer_message,
+    );
     self.queueIo(.{
         .change_config = .{
             .alloc = self.alloc,
@@ -2661,14 +2683,18 @@ pub fn setFontSize(self: *Surface, size: font.face.DesiredSize) !void {
 
     // Notify our render thread of the new font stack. The renderer
     // MUST accept the new font grid and deref the old.
-    _ = self.renderer_thread.mailbox.push(global.io(), .{
+    _ = rendererpkg.Thread.send(
+        self.renderer_thread.mailbox,
+        rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
+        .{
         .font_grid = .{
             .grid = font_grid,
             .set = &self.app.font_grid_set,
             .old_key = self.font_grid_key,
             .new_key = font_grid_key,
         },
-    }, .{ .forever = {} });
+    },
+    );
 
     // Once we've sent the key we can replace our key
     self.font_grid_key = font_grid_key;
@@ -4132,9 +4158,13 @@ pub fn occlusionCallback(self: *Surface, visible: bool) !void {
         } }, .unlocked);
     }
 
-    _ = self.renderer_thread.mailbox.push(global.io(), .{
+    _ = rendererpkg.Thread.send(
+        self.renderer_thread.mailbox,
+        rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
+        .{
         .visible = visible,
-    }, .{ .forever = {} });
+    },
+    );
 
     try self.queueRender();
 }
@@ -4153,9 +4183,13 @@ pub fn focusCallback(self: *Surface, focused: bool) !void {
     self.focused = focused;
 
     // Notify our render thread of the new state
-    _ = self.renderer_thread.mailbox.push(global.io(), .{
+    _ = rendererpkg.Thread.send(
+        self.renderer_thread.mailbox,
+        rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
+        .{
         .focus = focused,
-    }, .{ .forever = {} });
+    },
+    );
 
     if (!focused) unfocused: {
         // If we lost focus and we have a keypress, then we want to send a key
@@ -6609,7 +6643,11 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             .main => @panic("crash binding action, crashing intentionally"),
 
             .render => {
-                _ = self.renderer_thread.mailbox.push(global.io(), .{ .crash = {} }, .{ .forever = {} });
+                _ = rendererpkg.Thread.send(
+        self.renderer_thread.mailbox,
+        rendererpkg.Thread.wakerFor(&self.renderer_thread.wakeup),
+        .{ .crash = {} },
+    );
                 self.queueRender() catch |err| {
                     // Not a big deal if this fails.
                     log.warn("failed to notify renderer of crash message err={}", .{err});

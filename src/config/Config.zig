@@ -1319,6 +1319,58 @@ command: ?Command = null,
 /// Valid range is 1 to 256.
 @"poltergeist-max-agents": u16 = 64,
 
+/// Lower the renderer mailbox's capacity, so that a full mailbox can be
+/// reached deliberately. **Zero, the default, means the built-in bound.**
+///
+/// 🔴 **This is an instrument, not a tuning knob.** It exists so that a
+/// state can be produced on purpose for the purpose of watching what happens
+/// in it. There is no value of it that makes anything better, and the
+/// paragraph below says what it makes worse.
+///
+/// ## What it is for
+///
+/// The renderer's mailbox holds 64 messages, and every producer has to decide
+/// what to do when it is full. Getting that decision wrong is a deadlock:
+/// task 443 was the UI thread waiting, with no bound, for room in a mailbox
+/// that only the renderer could empty, while the renderer had stopped being
+/// woken. That is fixed -- but the fault that used to fill the mailbox was
+/// fixed too, so **there is no longer any way to reach a full mailbox by
+/// accident**, and a test machine cannot tell "the full-mailbox handling
+/// works" from "the mailbox never filled". Both produce no evidence at all.
+///
+/// Set this to a small number and the mailbox fills in the ordinary course of
+/// events, on exactly the code paths that run in a shipping build.
+///
+/// ## ⚠️ Why turning it down is not a tuning knob
+///
+/// It does not make anything faster and it is not a memory saving -- the
+/// storage is a fixed array either way, so a lower ceiling frees nothing.
+/// What it does is make delivery **fail**: past the ceiling, messages to the
+/// renderer are dropped after a wait, and a dropped message is not a
+/// slow-down but a state the renderer never hears about. A dropped focus
+/// change leaves the cursor blinking as though the window were still focused,
+/// and nothing corrects it, because the renderer keeps that state and only
+/// learns of changes from the message it just lost.
+///
+/// **Anything above about a dozen is indistinguishable from off in ordinary
+/// use** -- which is another way of saying that a value low enough to be
+/// useful is low enough to be visible.
+///
+/// ## Why there is no floor on it
+///
+/// A healthy renderer drains this mailbox at least every 600ms (the cursor
+/// blink guarantees a wake-up), so "full" only lasts as long as it takes one
+/// message to be answered. **A ceiling of one or two is the only range in
+/// which the queue actually fills**; four or eight never get there on a
+/// working machine. A minimum would therefore not make the setting safer, it
+/// would make it inert -- an instrument that is always off, which is the
+/// exact failure it was added to fix. The protection is instead that turning
+/// it on **says so in the log at startup**, so a report that begins here is
+/// traceable to it in one line.
+///
+/// Valid range is 0 (off) to 64.
+@"poltergeist-render-mailbox-capacity": u16 = 0,
+
 /// Register Polter as an MCP server with Claude Code, so that agents in
 /// any directory can reach it.
 ///

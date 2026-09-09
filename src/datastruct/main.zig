@@ -8,6 +8,7 @@ const intrusive_linked_list = @import("intrusive_linked_list.zig");
 const split_tree = @import("split_tree.zig");
 
 pub const BlockingQueue = blocking_queue.BlockingQueue;
+pub const Waker = blocking_queue.Waker;
 pub const CacheTable = cache_table.CacheTable;
 pub const CircBuf = circ_buf.CircBuf;
 pub const IntrusiveDoublyLinkedList = intrusive_linked_list.DoublyLinkedList;

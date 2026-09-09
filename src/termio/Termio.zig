@@ -600,7 +600,20 @@ pub fn resize(
     }
 
     // Mail the renderer so that it can update the GPU and re-render
-    _ = self.renderer_mailbox.push(global.io(), .{ .resize = size }, .{ .forever = {} });
+    // **The thirteenth site, and the one that is not like the other twelve.**
+    // This runs on the IO thread, not the UI thread, so blocking here does
+    // not freeze the window -- it stops the pty being read, which looks like
+    // a terminal that has gone quiet rather than one that has gone deaf.
+    // Different symptom, same fault, and the note is here so the next reader
+    // does not assume the two present alike.
+    //
+    // The message is a plain value and owns nothing, so a failed delivery
+    // needs no release.
+    _ = renderer.Thread.send(
+        self.renderer_mailbox,
+        renderer.Thread.wakerFor(self.renderer_wakeup),
+        .{ .resize = size },
+    );
     self.renderer_wakeup.notify() catch {};
 }
 

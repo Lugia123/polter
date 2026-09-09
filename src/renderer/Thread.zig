@@ -14,6 +14,7 @@ const apprt = @import("../apprt.zig");
 const configpkg = @import("../config.zig");
 const terminalpkg = @import("../terminal/main.zig");
 const BlockingQueue = @import("../datastruct/main.zig").BlockingQueue;
+const Waker = @import("../datastruct/main.zig").Waker;
 const App = @import("../App.zig");
 
 const Allocator = std.mem.Allocator;
@@ -42,6 +43,100 @@ const must_draw_from_app_thread =
 /// hardcoded with a capacity. We can make this a comptime parameter in
 /// the future if we want it configurable.
 pub const Mailbox = BlockingQueue(rendererpkg.Message, 64);
+
+/// How long a caller will wait for room in the mailbox before giving up.
+///
+/// **Where the number comes from.** `CURSOR_BLINK_INTERVAL` above is 600ms,
+/// and the cursor timer is what guarantees this thread wakes and drains even
+/// when nothing else is happening -- so 600ms is the longest a healthy
+/// renderer leaves the mailbox untouched. This is that with 1.67x of room.
+///
+/// **And where its ceiling comes from**: Windows marks a window "not
+/// responding" after five seconds without the message pump answering. A
+/// second is far enough under that a caller which does time out costs the
+/// user one hitch, not a greyed-out title bar.
+///
+/// ⚠️ **One known exception, recorded rather than designed around**:
+/// `cursorBlinkInterval()` returns `CURSOR_BLINK_INTERVAL * 5` under
+/// Valgrind, where a second would be short enough to fire spuriously.
+/// Valgrind is not a shipping path for this port.
+pub const send_timeout_ns: u64 = 1000 * std.time.ns_per_ms;
+
+/// A [`Waker`] for an async handle.
+///
+/// ⚠️ **The pointer has to be the handle the loop actually waits on.** On
+/// Windows `xev.Async` keeps its waiter inside the struct, so a copy of it
+/// notifies nothing -- that was task 508. Taking a pointer here rather than a
+/// value makes the mistake unspellable at this end.
+pub fn wakerFor(handle: *xev.Async) Waker {
+    return .{ .ctx = handle, .func = &wakeAsync };
+}
+
+fn wakeAsync(ctx: *anyopaque) void {
+    const handle: *xev.Async = @ptrCast(@alignCast(ctx));
+    handle.notify() catch |err| {
+        // Said out loud: a wake-up that failed leaves a producer waiting out
+        // its whole timeout for no reason, and the timeout alone does not say
+        // which of the two happened.
+        log.warn("renderer wake-up failed err={}", .{err});
+    };
+}
+
+/// Put a message in the renderer's mailbox and wake it up.
+///
+/// **The one way in, so that two rules hold by construction rather than by
+/// everybody remembering them.**
+///
+///   1. **A caller never waits without a bound.** The UI thread reaches this
+///      through half a dozen callbacks; a mailbox that only the renderer can
+///      drain, waited on forever, is a deadlock whenever the renderer stops
+///      for any reason at all -- and it stays one after the reason we know
+///      about today is fixed.
+///   2. **A delivery is always followed by a wake-up.** Pushing does not wake
+///      anybody; a message that fits and is never announced sits there until
+///      something else happens to wake the thread. Two call sites had exactly
+///      that shape before this function existed.
+///
+/// ⚠️ **The order is the whole point and it is the opposite of the queue's
+/// own.** Here the wake-up comes *after* a successful push, because its job
+/// is to say "there is something new to read". The queue's internal one comes
+/// *before* it waits, because its job is "make room for me". Swap either and
+/// it stops doing its job while still looking like it is doing it.
+///
+/// Returns whether the message was delivered.
+pub fn send(mailbox: *Mailbox, waker: Waker, msg: rendererpkg.Message) bool {
+    if (mailbox.push(global.io(), msg, .{ .ns = send_timeout_ns }) == 0) {
+        // absence: depends -- on whether the mailbox was ever made full.
+        //
+        // A healthy renderer drains this queue at least every 600ms, and a
+        // push that finds it full wakes the renderer *before* it waits -- so
+        // the round trip is milliseconds and **nobody ever reaches the whole
+        // timeout**. This line therefore does not appear on a working
+        // machine, and its silence on its own says nothing at all.
+        //
+        // 🔴 **It becomes a reading only next to two others.** With the
+        // mailbox capacity lowered on purpose (see the setting of that name)
+        // the queue does fill, and Termio's instant-drop line appears to
+        // prove it did. *Then* the absence of this line means the wake-up is
+        // connected and no caller waited out its bound -- which is the whole
+        // claim this work makes. Without that other line first, "never
+        // filled" and "handled correctly" are the same observation.
+        //
+        // ⚠️ **Worded so it cannot be confused with the other one.** Termio
+        // already prints a full-mailbox line, and that one is an instant push
+        // that gave up immediately. This one waited first. Two very different
+        // facts -- "the queue was momentarily full" and "the renderer did not
+        // drain for a whole second" -- and a reader grepping one phrase would
+        // have got both.
+        log.warn("[mbox] renderer mailbox STILL full after {d}ms; message dropped kind={s}", .{
+            send_timeout_ns / std.time.ns_per_ms,
+            @tagName(msg),
+        });
+        return false;
+    }
+    waker.wake();
+    return true;
+}
 
 /// Allocator used for some state
 alloc: std.mem.Allocator,
@@ -209,6 +304,21 @@ pub fn init(
     var mailbox = try Mailbox.create(alloc);
     errdefer mailbox.destroy(alloc);
 
+    // **The deliberate ceiling, applied once, here.** Zero leaves the queue
+    // comparing against its compile-time bound, which is what every build
+    // that does not set it does.
+    if (config.@"poltergeist-render-mailbox-capacity" > 0) {
+        mailbox.capacity_limit = @intCast(@min(
+            config.@"poltergeist-render-mailbox-capacity",
+            64,
+        ));
+        log.warn(
+            "renderer mailbox capacity lowered to {d} by configuration; " ++
+                "messages to the renderer will be dropped once that many are unread",
+            .{mailbox.capacity_limit},
+        );
+    }
+
     var result: Thread = .{
         .alloc = alloc,
         .config = .init(config),
@@ -293,6 +403,12 @@ fn threadMain_(self: *Thread) !void {
     defer self.renderer.threadExit();
 
     // Start the async handlers
+    // **Set here, not in `init`, and that is load-bearing twice over.**
+    // `init` builds a `Thread` that is then copied into the surface, so a
+    // waker made there would point at a struct nobody waits on. By this line
+    // `self` is the copy the thread actually runs, and the handle below is
+    // the one `wait` is about to fill in.
+    self.mailbox.waker = wakerFor(&self.wakeup);
     self.wakeup.wait(&self.loop, &self.wakeup_c, Thread, self, wakeupCallback);
     self.stop.wait(&self.loop, &self.stop_c, Thread, self, stopCallback);
     self.draw_now.wait(&self.loop, &self.draw_now_c, Thread, self, drawNowCallback);
@@ -964,3 +1080,196 @@ const Compression = struct {
         };
     }
 };
+
+test "a full mailbox does not hold its caller forever" {
+    // ⚠️ **Red as an assertion, not as a hang.** The obvious way to write
+    // this -- push on a full mailbox and see -- makes the failing case block
+    // the test process, and a build that times out reads like broken CI
+    // rather than like a failing check. So the push happens on a thread that
+    // is detached rather than joined, and this thread asserts on a flag it
+    // polls with a bound of its own.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    const q = try Mailbox.create(alloc);
+    defer q.destroy(alloc);
+
+    // Fill it to the brim.
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        try testing.expect(q.push(io, .{ .focus = true }, .{ .instant = {} }) != 0);
+    }
+
+    const Ctx = struct {
+        q: *Mailbox,
+        returned: std.atomic.Value(bool) = .init(false),
+        delivered: bool = true,
+
+        fn wakeNoop(_: *anyopaque) void {}
+
+        fn run(self: *@This()) void {
+            self.delivered = send(
+                self.q,
+                .{ .ctx = self, .func = &@This().wakeNoop },
+                .{ .focus = false },
+            );
+            self.returned.store(true, .release);
+        }
+    };
+    var ctx: Ctx = .{ .q = q };
+
+    const th = try std.Thread.spawn(.{}, Ctx.run, .{&ctx});
+    // **Detached on purpose**: if `send` never returns, joining would hang
+    // exactly the way this test exists to avoid.
+    th.detach();
+
+    // Generous against the bound `send` is supposed to honour, so that a slow
+    // machine cannot fail this on timing alone.
+    const deadline_ms: usize = 4_000;
+    var waited: usize = 0;
+    while (waited < deadline_ms and !ctx.returned.load(.acquire)) : (waited += 10) {
+        try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+    }
+    const returned_in_time = ctx.returned.load(.acquire);
+
+    // **Let a still-blocked pusher finish before the queue goes away.**
+    // Done whether or not the assertion below is going to fail: a detached
+    // thread parked on a destroyed queue is a second, unrelated failure, and
+    // it would land on whoever runs the suite next.
+    _ = q.pop(io);
+    var drain_wait: usize = 0;
+    while (drain_wait < 1_000 and !ctx.returned.load(.acquire)) : (drain_wait += 10) {
+        try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+    }
+
+    try testing.expect(returned_in_time);
+    try testing.expect(!ctx.delivered);
+}
+
+test "a delivered message wakes the renderer, and not before it is in the queue" {
+    // ⚠️ **Found by mutation.** Deleting the wake-up after a successful
+    // delivery left every other check green -- the queue's own tests are
+    // about the *full* case, and the bounded-return test is about giving up.
+    // Nothing was watching the ordinary path, which is the one that runs
+    // every time.
+    //
+    // ⭐ **And the assertion is the ordering, not the presence.** The probe
+    // records the queue's length at the moment it is called. Woken after the
+    // push, that is one; woken before, it is zero -- which is exactly the
+    // mistake of waking a consumer to look at something that is not there
+    // yet, and then going back to sleep.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    const q = try Mailbox.create(alloc);
+    defer q.destroy(alloc);
+
+    const Probe = struct {
+        q: *Mailbox,
+        calls: usize = 0,
+        len_at_call: usize = 999,
+
+        fn wake(ctx: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            self.len_at_call = self.q.len;
+        }
+    };
+    var probe: Probe = .{ .q = q };
+
+    try testing.expect(send(q, .{ .ctx = &probe, .func = &Probe.wake }, .{ .focus = true }));
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+    try testing.expectEqual(@as(usize, 1), probe.len_at_call);
+
+    _ = q.pop(io);
+}
+
+test "a lowered ceiling makes a delivery fail the way a real full mailbox would" {
+    // ⚠️ **What this does and does not establish.** It shows that with the
+    // ceiling on, `send` reaches the branch that gives up and reports -- the
+    // branch whose only other way of being reached was the fault that has
+    // since been fixed. It does **not** show that the line reaches a log
+    // file on a real machine; that is a reading somebody has to take there,
+    // and the criterion for that run is that the line appears at all.
+    // **Without it, "the mailbox never filled" and "the switch did nothing"
+    // are the same observation.**
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    const q = try Mailbox.create(alloc);
+    defer q.destroy(alloc);
+    q.capacity_limit = 1;
+
+    const Probe = struct {
+        calls: usize = 0,
+        fn wake(ctx: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+        }
+    };
+    var probe: Probe = .{};
+    const w: Waker = .{ .ctx = &probe, .func = &Probe.wake };
+    // ⚠️ **The queue needs its own waker, and it is not the same act as
+    // handing one to `send`.** `start` installs this on the real mailbox; a
+    // test that only passes a waker to `send` is exercising half the
+    // mechanism and would read the other half's absence as working.
+    q.waker = w;
+
+    // One fits.
+    try testing.expect(send(q, w, .{ .focus = true }));
+    try testing.expectEqual(@as(usize, 1), probe.calls);
+
+    // 🔴 **The second send goes on a detached thread, and that is not
+    // caution -- it is the difference between this cell failing and this cell
+    // hanging.** What it asserts is that `send` comes back; if it does not,
+    // calling it here would park the test process for ever. A mutation that
+    // puts the unbounded wait back did exactly that: three processes at 0%
+    // CPU for ninety-three minutes, which reads as *progress* rather than as
+    // a failure and is worse than either.
+    //
+    // ⭐ **The general form**: a test whose own termination depends on the
+    // thing under test being correct cannot report that thing being wrong.
+    const Runner = struct {
+        q: *Mailbox,
+        w: Waker,
+        returned: std.atomic.Value(bool) = .init(false),
+        delivered: bool = true,
+        waited_ms: i64 = -1,
+
+        fn run(self: *@This(), iio: std.Io) void {
+            const began: std.Io.Timestamp = .now(iio, .awake);
+            self.delivered = send(self.q, self.w, .{ .focus = false });
+            self.waited_ms = began.durationTo(.now(iio, .awake)).toMilliseconds();
+            self.returned.store(true, .release);
+        }
+    };
+    var runner: Runner = .{ .q = q, .w = w };
+    const th = try std.Thread.spawn(.{}, Runner.run, .{ &runner, io });
+    th.detach();
+
+    // Generously past the bound `send` must honour.
+    var waited: usize = 0;
+    while (waited < 4_000 and !runner.returned.load(.acquire)) : (waited += 10) {
+        try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+    }
+    const came_back = runner.returned.load(.acquire);
+
+    // Release it before the queue goes away, whatever the verdict below.
+    _ = q.pop(io);
+    var drain: usize = 0;
+    while (drain < 1_000 and !runner.returned.load(.acquire)) : (drain += 10) {
+        try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+    }
+
+    try testing.expect(came_back);
+    try testing.expect(!runner.delivered);
+    // It waited rather than failing instantly: the bound is real. Half of it,
+    // so a loaded machine cannot fail this on timing alone -- the fact being
+    // asserted is "it waited", not "it waited precisely".
+    try testing.expect(runner.waited_ms >= @as(i64, @intCast(send_timeout_ns / std.time.ns_per_ms / 2)));
+    // And it woke the consumer on the way in, which is the queue's own rule.
+    try testing.expectEqual(@as(usize, 2), probe.calls);
+}
