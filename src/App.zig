@@ -208,6 +208,24 @@ poltergeist_last_worker: std.AutoHashMapUnmanaged(
     poltergeistpkg.Bus.Id,
 ) = .empty,
 
+/// A split that has been asked for and whose terminal has not appeared yet.
+///
+/// ⚠️ **Why this exists: the id cannot be read when the split is requested.**
+/// Both apprts perform a split asynchronously -- the Windows host pushes the
+/// op onto its window thread's queue and returns, and macOS posts a
+/// notification -- so when `performAction(.new_split, …)` comes back, the
+/// surface does not exist. The first version recorded the new worker by
+/// looking for a surface that had appeared by then, which is never, so
+/// nothing was ever recorded and every worker after the first was placed as
+/// if the tab held somebody else's panes. Measured on the real machine as
+/// "the cap is one, not three".
+///
+/// So the attribution is settled on the **next** call instead, when the
+/// surface is certainly there. `before` is the set of surfaces that existed
+/// when the split was asked for; whatever is in `surfaces` and not in it is
+/// the worker.
+poltergeist_pending_worker: ?PendingWorker = null,
+
 /// Whether the resident plugins have been looked for. Testing the list
 /// instead would not do: with none installed it stays empty for ever,
 /// and every config reload would re-read every plugin's settings file to
@@ -363,6 +381,7 @@ pub fn deinit(self: *App) void {
     for (self.poltergeist_residents.items) |archive| archive.destroy();
     self.poltergeist_residents.deinit(self.alloc);
     self.poltergeist_last_worker.deinit(self.alloc);
+    if (self.poltergeist_pending_worker) |*p| p.deinit(self.alloc);
 
     // After them, and that order is the whole of it: each archive gives
     // its subscription back as it is destroyed.
@@ -3080,6 +3099,92 @@ fn poltergeistConfigText(
     return out.items;
 }
 
+/// Attribute the split asked for last time to the surface that appeared.
+///
+/// **Called at the start of the next placement, which is the first moment the
+/// surface is certainly there.** Doing it any earlier is what capped the
+/// placement at one worker: the code looked for a surface that the apprt had
+/// not created yet, found none, and recorded nothing -- so the second worker
+/// saw no worker of its own in the tab and read the tab as somebody else's.
+fn poltergeistSettlePendingWorker(self: *App) void {
+    var pending = self.poltergeist_pending_worker orelse return;
+    self.poltergeist_pending_worker = null;
+    defer pending.deinit(self.alloc);
+
+    for (self.surfaces.items) |v| {
+        const id = v.core().id;
+        if (pending.before.contains(id)) continue;
+        if (self.isChatSurface(id)) continue;
+        self.poltergeist_last_worker.put(self.alloc, pending.by, id) catch {};
+        return;
+    }
+    // The loop above is `PendingWorker.attribute` against live surfaces; the
+    // rule is stated once there and tested there, and read from the App's own
+    // list here because that is where the surfaces are.
+
+    // ⚠️ **Nothing new is an answer too.** The split was refused, or the
+    // person closed the pane before this ran. Said rather than left, because
+    // the next placement will read "no worker of ours here" and open a tab,
+    // and that line on its own does not say which of the two happened.
+    log.info(
+        "poltergeist: the split asked for earlier never produced a terminal; " ++
+            "the next worker will be placed as if this tab had none of ours",
+        .{},
+    );
+}
+
+/// A split asked for whose terminal has not appeared yet. See
+/// `poltergeist_pending_worker`.
+const PendingWorker = struct {
+    by: poltergeistpkg.Bus.Id,
+    before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void),
+
+    fn deinit(self: *PendingWorker, alloc: Allocator) void {
+        self.before.deinit(alloc);
+    }
+
+    /// Which of `now` is the terminal this split produced.
+    ///
+    /// **The rule is "new since the split was asked for, and not the chat".**
+    /// Split out from the App so the sequence it belongs to can be tested
+    /// without a window system -- and the sequence is the whole point, since
+    /// the defect it replaced was one of timing rather than of rule.
+    fn attribute(
+        self: *const PendingWorker,
+        now: []const poltergeistpkg.Bus.Id,
+        chat: []const poltergeistpkg.Bus.Id,
+    ) ?poltergeistpkg.Bus.Id {
+        for (now) |id| {
+            if (self.before.contains(id)) continue;
+            if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, chat, id) != null) continue;
+            return id;
+        }
+        return null;
+    }
+};
+
+test "a worker is attributed after its terminal exists, not when it was asked for" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // The tab as it stood when the split was asked for: the supervisor alone.
+    var pending: PendingWorker = .{ .by = 1, .before = .empty };
+    defer pending.deinit(alloc);
+    try pending.before.put(alloc, 1, {});
+
+    // ⚠️ **The moment the split was asked for.** Both apprts split
+    // asynchronously, so the surface list has not changed yet. Anything that
+    // tries to attribute here finds nothing -- which is exactly what capped
+    // the placement at one worker on the real machine.
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), pending.attribute(&.{1}, &.{}));
+
+    // The next placement is a later moment, and the terminal is there by then.
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), pending.attribute(&.{ 1, 2 }, &.{}));
+
+    // A chat surface opened in between is not the worker.
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 3), pending.attribute(&.{ 1, 2, 3 }, &.{2}));
+}
+
 /// What the budget says to do, given only numbers.
 ///
 /// **Split out so the budget can be tested without an apprt.** Every other
@@ -3254,6 +3359,13 @@ fn poltergeistOpenTerminal(
         dir_z = try alloc.dupeZ(u8, cwd);
     }
 
+    // **Settle the split asked for last time, now that its terminal exists.**
+    //
+    // It could not be settled when it was asked for: both apprts split
+    // asynchronously, so the surface was not there yet. It is there now --
+    // this call is a later moment, and every one of them is.
+    self.poltergeistSettlePendingWorker();
+
     var before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
     defer before.deinit(alloc);
     for (self.surfaces.items) |v| try before.put(alloc, v.core().id, {});
@@ -3300,6 +3412,20 @@ fn poltergeistOpenTerminal(
             },
         ) catch break :placed false;
 
+        if (result == .will_split) {
+            // **Remembered as a question, not as an answer.** What the next
+            // call will do with it is find the surface that was not here when
+            // this one was asked for.
+            //
+            // ⚠️ `will_split` is the apprt saying it *will*, before it has --
+            // which is exactly why the worker cannot be identified here and
+            // is attributed on the next call instead.
+            var snapshot: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
+            for (self.surfaces.items) |v| snapshot.put(self.alloc, v.core().id, {}) catch {};
+            if (self.poltergeist_pending_worker) |*old_pending| old_pending.deinit(self.alloc);
+            self.poltergeist_pending_worker = .{ .by = by, .before = snapshot };
+        }
+
         if (result != .will_split) {
             // ⚠️ **A live path, not a defensive one.** GTK cannot start a
             // split in a named directory, so it refuses rather than opening
@@ -3324,10 +3450,10 @@ fn poltergeistOpenTerminal(
         const id = v.core().id;
         if (before.contains(id)) continue;
         if (self.isChatSurface(id)) continue;
-        // Remembered only when it was placed as a split: a worker that went
-        // into its own tab is not the pane the next one grows from, and
-        // recording it would send the next split into the wrong tab.
-        if (placed) self.poltergeist_last_worker.put(self.alloc, by, id) catch {};
+        // ⚠️ **Nothing is recorded here.** This loop only sees a surface that
+        // already exists, and a split's surface never does yet -- that is the
+        // defect this replaced. The worker is attributed on the next call,
+        // through `poltergeist_pending_worker`.
         return id;
     }
     return null;
