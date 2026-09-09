@@ -37,9 +37,24 @@ const log = std.log.scoped(.poltergeist);
 /// and a couple of numbers; anything larger is a mistake or an attack.
 const max_request_bytes = 64 * 1024;
 
-/// How many agents may be connected at once. One per terminal running an
-/// agent is the shape of the real thing, so this is generous.
-const max_connections = 16;
+/// The cap when nobody says otherwise, and the bounds a setting is held to.
+///
+/// **This used to be `const max_connections = 16` with a comment calling it
+/// generous.** It was generous for the shape the author had in mind -- one
+/// person, a handful of terminals -- and it was measured full on an ordinary
+/// working day: fifteen agent CLIs alive at once, every one with a running
+/// parent, so nothing had leaked and nothing could be reclaimed. Past that
+/// point every new terminal is refused for as long as the others live, and
+/// the refusal does not heal on its own.
+///
+/// So the number is a setting now (`poltergeist-max-agents`). These bounds
+/// are here because a connection is a thread and two buffers, and because
+/// the array is allocated once at startup: zero would refuse everything and
+/// a very large value would reserve memory for connections that will never
+/// arrive.
+pub const default_max_connections = 64;
+pub const min_max_connections = 1;
+pub const limit_max_connections = 256;
 
 /// One connection's thread and socket, kept so shutdown can close the
 /// socket -- which is what unblocks a thread parked in read -- and then
@@ -142,8 +157,24 @@ pub const Submit = struct {
     ctx: *anyopaque,
     func: *const fn (ctx: *anyopaque, pending: *Pending) void,
 
+    /// Tell the person that an agent was turned away because every slot is
+    /// taken.
+    ///
+    /// **Separate from `func` because there is no `Pending` to carry it.** A
+    /// refused connection never handshakes, so it has no `Caller`, no
+    /// terminal and no session -- everything `Pending` is built out of. The
+    /// one thing left is to say it to the person, and the person is not in
+    /// any particular terminal from this side of the socket.
+    ///
+    /// Optional so tests and any other embedder can leave it out.
+    full: ?*const fn (ctx: *anyopaque, in_use: usize) void = null,
+
     fn call(self: Submit, pending: *Pending) void {
         self.func(self.ctx, pending);
+    }
+
+    fn callFull(self: Submit, in_use: usize) void {
+        if (self.full) |f| f(self.ctx, in_use);
     }
 };
 
@@ -190,7 +221,10 @@ running: std.atomic.Value(bool) = .init(false),
 /// after `deinit` had freed everything. These are joined instead, and the
 /// fixed size doubles as a cap: without one, anything that can reach the
 /// socket could spawn threads until the process ran out.
-slots: [max_connections]Slot = @splat(.{}),
+/// Allocated once at `init` and never resized: a connection thread holds an
+/// index into it, so growing it under them would move the memory they are
+/// using. Changing the setting takes effect the next time the socket opens.
+slots: []Slot,
 slots_mutex: std.Io.Mutex = .init,
 
 /// Whether the listening socket has been closed. `stop` closes it to
@@ -208,11 +242,25 @@ pub fn init(
     io: std.Io,
     path: []const u8,
     submit: Submit,
+    max_connections: usize,
 ) InitError!Server {
     if (!transport.available) return error.UnixSocketsUnavailable;
 
+    // Clamped rather than rejected: a config value out of range should not
+    // be the difference between "the agent socket is open" and "it is not",
+    // and a user who wrote 0 meant something, but not "refuse everything".
+    const slot_count = std.math.clamp(
+        max_connections,
+        min_max_connections,
+        limit_max_connections,
+    );
+
     const owned = try alloc.dupe(u8, path);
     errdefer alloc.free(owned);
+
+    const slots = try alloc.alloc(Slot, slot_count);
+    errdefer alloc.free(slots);
+    @memset(slots, .{});
 
     var listener = try transport.bind(alloc, io, owned);
     errdefer listener.deinit(io);
@@ -229,6 +277,7 @@ pub fn init(
         .submit = submit,
         .path = owned,
         .listener = listener,
+        .slots = slots,
     };
 }
 
@@ -246,6 +295,7 @@ pub fn deinit(self: *Server) void {
     self.closeListener();
     transport.unlink(self.io, self.path);
     self.alloc.free(self.path);
+    self.alloc.free(self.slots);
     self.* = undefined;
 }
 
@@ -505,8 +555,37 @@ fn listenMain(self: *Server) void {
         self.reapFinished();
 
         const index = self.claimSlot(stream) orelse {
-            log.warn("poltergeist: too many agent connections, refusing one", .{});
+            // # Why this writes a line before closing
+            //
+            // This used to be `log.warn` and a close, and `GHOSTTY_LOG` is
+            // unset for almost everybody who will ever hit it -- so the
+            // measured result was an agent CLI showing `CONNECTION_CLOSED`
+            // and nothing anywhere saying why. It took reading this
+            // constant out of the source to find out, and until then the
+            // only visible fact was "every terminal opened from now on has
+            // no tools".
+            //
+            // `cli/mcp.zig::complain` already made this argument for the
+            // other refusal on this path -- *"a diagnostic that was written
+            // and then thrown away costs more than none, because its author
+            // believes the user has been told"* -- and fixed only its own
+            // half. **This is the same path and the same lesson, one file
+            // over, and this half did not get it.**
+            //
+            // The client cannot be told by any other means: it has no slot,
+            // so it has no session to be answered in. One line on the socket
+            // before it goes is the whole of the channel.
+            self.refuseFull(stream);
+            log.warn(
+                "poltergeist: refusing an agent, all {d} slots are in use",
+                .{self.slots.len},
+            );
             stream.close(self.io);
+
+            // The person who just started an agent is looking at a terminal
+            // that quietly has no tools, and the line above goes to a log
+            // almost nobody has turned on.
+            self.submit.callFull(self.slots.len);
             continue;
         };
 
@@ -529,7 +608,7 @@ fn listenMain(self: *Server) void {
 
 /// Join and clear any connection whose thread has finished.
 fn reapFinished(self: *Server) void {
-    for (0..max_connections) |i| {
+    for (0..self.slots.len) |i| {
         self.slots_mutex.lockUncancelable(self.io);
         const done = self.slots[i].thread != null and
             self.slots[i].finished.load(.acquire);
@@ -548,7 +627,7 @@ fn claimSlot(self: *Server, stream: transport.Conn) ?usize {
     self.slots_mutex.lockUncancelable(self.io);
     defer self.slots_mutex.unlock(self.io);
 
-    for (0..max_connections) |i| {
+    for (0..self.slots.len) |i| {
         if (self.slots[i].stream == null) {
             self.slots[i] = .{ .stream = stream };
             return i;
@@ -581,7 +660,7 @@ pub fn agentPresent(self: *Server, id: Bus.Id) bool {
     self.slots_mutex.lockUncancelable(self.io);
     defer self.slots_mutex.unlock(self.io);
 
-    for (0..max_connections) |i| {
+    for (0..self.slots.len) |i| {
         // A plugin connection carries no surface, so there is nothing here
         // it could be mistaken for.
         const caller = self.slots[i].caller orelse continue;
@@ -606,7 +685,10 @@ fn releaseSlot(self: *Server, index: usize) void {
 /// about to write its answer gets an ordinary error instead of using a
 /// closed descriptor. Each thread closes its own socket on the way out.
 fn stopConnections(self: *Server) void {
-    var threads: [max_connections]?std.Thread = @splat(null);
+    // Sized to the hard limit rather than to `self.slots.len`, and left on
+    // the stack: this runs on the shutdown path, where an allocation that
+    // fails would leave threads unjoined and the server freed under them.
+    var threads: [limit_max_connections]?std.Thread = @splat(null);
 
     // **The shutdown happens under the lock, and that is deliberate.**
     // `connectionMain` clears its slot under this same lock *before* it
@@ -616,7 +698,7 @@ fn stopConnections(self: *Server) void {
     // reintroduces exactly the use-after-close this lock exists to prevent.
     // The join below is outside it because a join is not touching a handle.
     self.slots_mutex.lockUncancelable(self.io);
-    for (0..max_connections) |i| {
+    for (0..self.slots.len) |i| {
         if (self.slots[i].stream) |stream| transport.shutdownConn(stream, self.io);
         threads[i] = self.slots[i].thread;
     }
@@ -626,7 +708,7 @@ fn stopConnections(self: *Server) void {
 
     // Only now that every thread has finished is it safe to forget them.
     self.slots_mutex.lockUncancelable(self.io);
-    for (0..max_connections) |i| self.slots[i] = .{};
+    for (0..self.slots.len) |i| self.slots[i] = .{};
     self.slots_mutex.unlock(self.io);
 }
 
@@ -806,6 +888,33 @@ fn refuse(
     } }) catch return;
     writer.interface.flush() catch return;
 }
+
+/// Say why, on a connection that will never get a slot.
+///
+/// **`refuse` needs a `transport.Writer`, and the accept loop only has the
+/// raw stream** -- which is why this path skipped it and closed in silence
+/// for as long as it existed. The buffer is a local because the connection
+/// is over the moment this returns: nothing on the other side is going to
+/// send anything else, and nothing here is going to read it.
+///
+/// The code is what the client matches on, so it is a fixed string and not
+/// a sentence. The sentence is in `cli/mcp.zig`, where it can be written for
+/// somebody who is not reading this file.
+fn refuseFull(self: *Server, stream: transport.Conn) void {
+    var buf: [512]u8 = undefined;
+    var writer = stream.writer(self.io, &buf);
+    self.refuse(
+        &writer,
+        full_refusal_code,
+        "every agent slot on this socket is in use",
+    );
+}
+
+/// What `+mcp` matches on to know it was turned away for this reason and
+/// not another. Changing it changes a protocol, so both ends are named
+/// here: `cli/mcp.zig` reads it, `a-refusal-says-which-one.py` holds them
+/// together.
+pub const full_refusal_code = "AgentsFull";
 
 /// Where this process's socket lives.
 ///

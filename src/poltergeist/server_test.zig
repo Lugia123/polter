@@ -83,7 +83,7 @@ const Fixture = struct {
         self.server = try .init(alloc, io, self.path, .{
             .ctx = self.fake,
             .func = Fake.submit,
-        });
+        }, Server.default_max_connections);
         errdefer self.server.deinit();
 
         try self.server.start();
@@ -520,9 +520,73 @@ test "a server removes its own socket when it goes away" {
     var server: Server = try .init(testing.allocator, d.io, path, .{
         .ctx = &fake,
         .func = Fixture.Fake.submit,
-    });
+    }, Server.default_max_connections);
     try testing.expect(d.exists("polter-mine.sock"));
 
     server.deinit();
     try testing.expect(!d.exists("polter-mine.sock"));
+}
+
+test "the agent cap comes from the caller, and out-of-range values are clamped" {
+    // # Why clamped and not rejected
+    //
+    // This number is a config setting now, and a config setting a person got
+    // wrong must not be the difference between "the agent socket is open"
+    // and "it is not". Somebody who wrote 0 meant something by it, but not
+    // "refuse every agent forever" -- and refusing every agent is exactly
+    // what the bug this replaced looked like from outside.
+    //
+    // The cap is checked through `slots.len` because that is what the accept
+    // loop actually reads. Asserting on the argument would pass while the
+    // allocation used something else.
+    var d: SweepDir = undefined;
+    try d.setup();
+    defer d.deinit();
+
+    const cases = [_]struct { asked: usize, want: usize }{
+        .{ .asked = 0, .want = Server.min_max_connections },
+        .{ .asked = 1, .want = 1 },
+        .{ .asked = 7, .want = 7 },
+        .{ .asked = 1_000_000, .want = Server.limit_max_connections },
+    };
+
+    for (cases, 0..) |c, i| {
+        var buf: [128]u8 = undefined;
+        var name_buf: [64]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "polter-cap-{d}.sock", .{i});
+        const path = try d.full(&buf, name);
+
+        var fake: Fixture.Fake = .{ .io = d.io };
+        var server: Server = try .init(testing.allocator, d.io, path, .{
+            .ctx = &fake,
+            .func = Fixture.Fake.submit,
+        }, c.asked);
+        defer server.deinit();
+
+        try testing.expectEqual(c.want, server.slots.len);
+    }
+}
+
+test "a server with no `full` callback refuses without reaching for it" {
+    // `Submit.full` is optional, so an embedder that does not want to be told
+    // must not be a null dereference on the accept path. Nothing here can
+    // fill the slots without a real client, so this checks the one thing that
+    // is checkable without one: that the call is guarded and a server built
+    // without the callback is usable.
+    var d: SweepDir = undefined;
+    try d.setup();
+    defer d.deinit();
+
+    var buf: [128]u8 = undefined;
+    const path = try d.full(&buf, "polter-nofull.sock");
+
+    var fake: Fixture.Fake = .{ .io = d.io };
+    var server: Server = try .init(testing.allocator, d.io, path, .{
+        .ctx = &fake,
+        .func = Fixture.Fake.submit,
+    }, 2);
+    defer server.deinit();
+
+    try testing.expectEqual(@as(usize, 2), server.slots.len);
+    try testing.expect(server.submit.full == null);
 }

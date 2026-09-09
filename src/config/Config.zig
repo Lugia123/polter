@@ -1301,6 +1301,24 @@ command: ?Command = null,
 /// Set it to `false` for a plain terminal that opens no socket at all.
 @"poltergeist-mcp": bool = true,
 
+/// How many agents may hold the socket at once.
+///
+/// One connection is one agent CLI running in one terminal, and it lasts as
+/// long as that CLI does. The cap exists because each connection is a thread
+/// and a pair of buffers, and because anything that can reach the socket
+/// could otherwise spawn threads until the process ran out.
+///
+/// The number used to be a constant of 16 with a comment calling it
+/// generous. It was, for one person with a few terminals. It was measured
+/// full on an ordinary working day -- fifteen live agent CLIs, every one of
+/// them with a running parent, so nothing had leaked and nothing could be
+/// reclaimed -- and past that point *every new terminal* is refused, which
+/// is why this is a setting and not a larger constant. Whatever number is
+/// chosen here, somebody's day is the day they exceed it.
+///
+/// Valid range is 1 to 256.
+@"poltergeist-max-agents": u16 = 64,
+
 /// Register Polter as an MCP server with Claude Code, so that agents in
 /// any directory can reach it.
 ///

@@ -436,7 +436,10 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
     // must never take the app down with it: the terminal has to keep
     // working whether or not agents can reach it.
     self.poltergeist_rt_app = rt_app;
-    self.syncPoltergeistServer(config.@"poltergeist-mcp") catch |err| {
+    self.syncPoltergeistServer(
+        config.@"poltergeist-mcp",
+        config.@"poltergeist-max-agents",
+    ) catch |err| {
         log.warn("poltergeist: could not open the agent socket err={}", .{err});
     };
 
@@ -1573,10 +1576,15 @@ fn residentFor(self: *App, key: []const u8) ?*poltergeistpkg.Resident {
 /// *reload* -- neither apprt calls it at launch. Without this a user who
 /// set `poltergeist-mcp` in their config file would find no socket until
 /// they reloaded by hand, which reads as the feature being broken.
-pub fn ensurePoltergeistServer(self: *App, rt_app: *apprt.App, want: bool) void {
+pub fn ensurePoltergeistServer(
+    self: *App,
+    rt_app: *apprt.App,
+    want: bool,
+    max_agents: u16,
+) void {
     if (!want or self.poltergeist_server != null) return;
     self.poltergeist_rt_app = rt_app;
-    self.syncPoltergeistServer(true) catch |err| {
+    self.syncPoltergeistServer(true, max_agents) catch |err| {
         log.warn("poltergeist: could not open the agent socket err={}", .{err});
     };
 }
@@ -1799,7 +1807,7 @@ pub fn flushPoltergeistAlerts(self: *App, surface: *Surface) void {
 /// Turning it off tears the socket down rather than leaving it listening,
 /// since the point of turning it off is that nothing should be able to
 /// reach in any more.
-fn syncPoltergeistServer(self: *App, want: bool) !void {
+fn syncPoltergeistServer(self: *App, want: bool, max_agents: u16) !void {
     if (!want) {
         if (self.poltergeist_server) |*srv| {
             srv.deinit();
@@ -1843,7 +1851,8 @@ fn syncPoltergeistServer(self: *App, want: bool) !void {
     self.poltergeist_server = try .init(self.alloc, io, path, .{
         .ctx = self,
         .func = submitPoltergeistRequest,
-    });
+        .full = poltergeistAgentsFull,
+    }, max_agents);
     errdefer {
         self.poltergeist_server.?.deinit();
         self.poltergeist_server = null;
@@ -1851,6 +1860,53 @@ fn syncPoltergeistServer(self: *App, want: bool) !void {
 
     try self.poltergeist_server.?.start();
     log.info("poltergeist: agent socket open at {s}", .{path});
+}
+
+/// An agent was turned away because every slot on the socket is taken.
+///
+/// # Why this is an alert and not a notice
+///
+/// A notice is *typed into* a terminal, so its reader is whatever agent is
+/// running there. There is no agent here -- that is the whole problem, the
+/// one that just started has no tools -- so the reader is the person, and an
+/// alert is what gets printed rather than fed to a program.
+///
+/// # Why it does not name the terminal
+///
+/// The slot is claimed before the handshake, so at the moment of refusal the
+/// server does not know which terminal the connection came from: no token
+/// has been read, no `Caller` resolved. Naming the wrong terminal would be
+/// worse than naming none, and the person who just started an agent is
+/// looking at the right window anyway.
+fn poltergeistAgentsFull(ctx: *anyopaque, in_use: usize) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    // The number is in the sentence because the setting is the fix, and a
+    // person who is told "the limit" without being told what it is has to
+    // go and find it -- which today meant reading it out of the source.
+    const line = std.fmt.allocPrint(
+        self.alloc,
+        "Polter: an agent could not connect -- all {d} agent slots are in use. " ++
+            "Close a terminal running an agent, or raise `poltergeist-max-agents` " ++
+            "in your config and restart Polter.",
+        .{in_use},
+    ) catch return;
+
+    if (self.mailbox.push(
+        global.io(),
+        .{ .poltergeist_alert = line },
+        .{ .instant = {} },
+    ) == 0) {
+        // `.instant` and not `.forever`: this runs on the accept thread,
+        // and a full mailbox must not stop it accepting. Losing one alert
+        // costs a sentence; blocking here costs every later connection.
+        self.alloc.free(line);
+        return;
+    }
+
+    // Same reason `submitPoltergeistRequest` does it: queuing is not
+    // delivering, and the app loop sleeps until something wakes it.
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
 }
 
 /// Hand a request from a connection thread to the app thread.

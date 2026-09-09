@@ -711,7 +711,11 @@ pub fn init(
         // says so plainly rather than misbehaving.
         // The socket is opened here rather than only at config reload:
         // neither apprt calls `updateConfig` at launch.
-        app.ensurePoltergeistServer(rt_app, config.@"poltergeist-mcp");
+        app.ensurePoltergeistServer(
+            rt_app,
+            config.@"poltergeist-mcp",
+            config.@"poltergeist-max-agents",
+        );
 
         // Reaching Polter and knowing the tools exist are two different
         // things: the socket is in this terminal's environment either way,

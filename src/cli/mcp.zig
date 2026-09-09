@@ -4,6 +4,7 @@ const Action = @import("ghostty.zig").Action;
 const args = @import("args.zig");
 const global = @import("../global.zig");
 const transport = @import("../poltergeist/transport.zig");
+const poltergeist_server = @import("../poltergeist/Server.zig");
 
 const log = std.log.scoped(.mcp);
 
@@ -290,6 +291,37 @@ const Host = struct {
 
         const reply = (try self.reader.interface.takeDelimiter('\n')) orelse
             return error.EndOfStream;
+        // **The third one on this path, and the worst of them.** Before this
+        // the server closed a refused connection without a word, so the
+        // measured result was `CONNECTION_CLOSED` in the agent CLI and
+        // `+mcp failed: EndOfStream` in a log file the user has no reason to
+        // know about -- and then *every terminal opened afterwards* behaved
+        // the same way, with nothing anywhere naming the cause. It took
+        // reading a constant out of the source to find out.
+        //
+        // The code is matched, not the sentence: `server.full_refusal_code`
+        // is the contract and the sentence for the person is written here,
+        // where it can be about what to do rather than about a slot table.
+        if (std.mem.indexOf(u8, reply, poltergeist_server.full_refusal_code) != null) {
+            var buffer: [512]u8 = undefined;
+            var stderr: std.Io.File = .stderr();
+            var w = stderr.writerStreaming(io, &buffer);
+            w.interface.print(
+                \\Polter has no free agent slot, so this terminal gets no tools.
+                \\
+                \\Every slot is held by an agent CLI that is still running. They
+                \\are released when those CLIs exit -- nothing has leaked, there
+                \\are simply that many.
+                \\
+                \\Close a terminal running an agent, or raise
+                \\`poltergeist-max-agents` in
+                \\$XDG_CONFIG_HOME/polter/config.polter and restart Polter.
+                \\
+            , .{}) catch {};
+            w.end() catch {};
+            return error.AgentsFull;
+        }
+
         if (std.mem.indexOf(u8, reply, "\"ok\":true") == null) {
             // **The second one on this path, and it was just as invisible.**
             // Found by asking judgement 5 -- "how many more `log.err` can a
