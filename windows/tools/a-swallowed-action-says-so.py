@@ -56,6 +56,59 @@ SUBJECTS = [
     ("tabs.rs", "destroy_tab_at"),    # close a tab
     ("divider.rs", "drag_to"),        # drag a divider
     ("strip.rs", "show_overflow_menu"),  # the tab overflow button
+    # Added after 441/455: the function the `goto_split` investigation was
+    # standing inside. `focus_active` gave up quietly when there was no pane
+    # to focus, and every caller carried on -- one of them printing a line
+    # that said the focus had moved.
+    ("tabs.rs", "focus_active"),
+]
+
+# The `match op` arm that prints the outcome of a `goto_split`. Not a
+# function, so `SUBJECTS` cannot reach it, and the defect it is here for is
+# not a silent return at all: **the line was printed unconditionally, whether
+# or not anything moved.**
+#
+# The rule is therefore different in kind -- it asks that the claim be a
+# reading rather than an assumption -- and it is written as a text assertion
+# because there is nothing structural to hang it on.
+#
+# ⚠️ This one is checkable only as "the line names what it read". Whether
+# `focus_verdict` reads the right thing is not something this can see.
+# A call that can block forever must be bracketed, not merely announced.
+#
+# `blocking-call-says-so-first.py` established the "say so before" half for
+# `ShellExecuteW`. **One line is not enough here** and the difference is what
+# located the `goto_split` hang: a line before the call proves the thread
+# arrived, and a thread that died in the *next* statement leaves exactly the
+# same log. Only the pair says "went in and did not come out".
+#
+# `ghostty_surface_set_focus` is the subject because as of 2026-09-09 it is
+# the last surviving candidate for a permanent block on the window thread --
+# three field captures show `MAIN THREAD BLOCKED` with the watchdog ping
+# unanswered and no `PUMP BUSY` at all.
+BRACKETED = [
+    ("tabs.rs", "(api().surface_set_focus)"),
+]
+
+NONE_ARMS_SPEAK = [
+    ("tabs.rs", "Op::GotoSplit(v, at) => {"),
+]
+
+CLAIMS_ARE_READ = [
+    (
+        "tabs.rs",
+        # ⚠️ The full prefix, including `: recorded=`. A shorter needle matched
+        # the *refusal* lines added alongside it ("... not recorded: ...") and
+        # this check went red against correct code -- a reminder that a needle
+        # which merely appears in the right file is not the same as one that
+        # points at the right line.
+        '"[split] focus -> pane {}: recorded=',
+        "focus_verdict",
+        "the `[split] focus -> pane` line must report a read-back verdict, not\n"
+        "      the intention that preceded it. Three paths could make the old\n"
+        "      unconditional version a lie, and its absence was the only half\n"
+        "      anybody could use.",
+    ),
 ]
 
 LOG = re.compile(r"\b[wpah]?logf!|\blog_line\b|\bsay\(")
@@ -147,6 +200,42 @@ def silent_returns(lines):
             elif ch == "}":
                 depth -= 1
     return out, exempt
+
+
+def arm_body(text: str, at: int) -> str:
+    """The body of the match arm that starts at `at`.
+
+    ⚠️ **A fixed character window is what made this check useless the first
+    time.** Reading 400 characters after `None =>` reached past the end of a
+    short arm and into the *next* one, so deleting an inner arm's line left
+    the outer arm's line in view and the gate stayed green against a mutation
+    it existed to catch. The arm's own braces are the only honest boundary.
+    """
+    i = at
+    while i < len(text) and text[i].isspace():
+        i += 1
+    if i < len(text) and text[i] == "{":
+        depth = 0
+        for j in range(i, len(text)):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[i : j + 1]
+        return text[i:]
+    # A bodyless arm: up to the comma that ends it.
+    depth = 0
+    for j in range(i, len(text)):
+        if text[j] in "([{":
+            depth += 1
+        elif text[j] in ")]}":
+            if depth == 0:
+                return text[i:j]
+            depth -= 1
+        elif text[j] == "," and depth == 0:
+            return text[i:j]
+    return text[i:]
 
 
 def main() -> int:
@@ -298,6 +387,107 @@ def main() -> int:
             "      reading that cost task 440 an afternoon."
         )
         return 1
+
+    # ---- a call that can never return is bracketed, not just announced.
+    for fname, call in BRACKETED:
+        lines = (SRC / fname).read_text(encoding="utf-8").split("\n")
+        sites = 0
+        for i, line in enumerate(lines):
+            if call not in line:
+                continue
+            sites += 1
+            before = "\n".join(l.split("//")[0] for l in lines[max(0, i - 3) : i])
+            after = "\n".join(l.split("//")[0] for l in lines[i + 1 : i + 4])
+            if not (LOG.search(before) and LOG.search(after)):
+                which = []
+                if not LOG.search(before):
+                    which.append("nothing before it")
+                if not LOG.search(after):
+                    which.append("nothing after it")
+                print(
+                    f"FAIL: {fname}:{i + 1}  `{call}` has " + " and ".join(which) + ".\n"
+                    "      A line before proves the thread arrived; a thread that dies in\n"
+                    "      the next statement leaves the same log. The pair is what says\n"
+                    "      'went in and did not come out' -- the reading the goto_split\n"
+                    "      diagnosis was built on."
+                )
+                return 1
+        if sites == 0:
+            print(f"FAIL: no call site of `{call}` in {fname}; this check is blind.")
+            return 1
+        print(f"{sites} call site(s) of `{call}` are bracketed by a line each side.")
+
+    # ---- also structural: a `None =>` arm inside these regions must speak.
+    #
+    # **`silent_returns` cannot see this shape at all.** A match arm that
+    # yields `false` instead of returning is not a `return`, so the rule above
+    # walks straight past it -- which is how the two `else` branches added to
+    # `Op::GotoSplit` could have had their lines deleted with every check
+    # still green. The arms are where a swallow hides once `let .. else` has
+    # been cleaned up.
+    for fname, region in NONE_ARMS_SPEAK:
+        text = (SRC / fname).read_text(encoding="utf-8")
+        if region not in text:
+            print(f"FAIL: {fname} no longer contains the region {region!r}.")
+            return 1
+        start = text.index(region)
+        depth = 0
+        end = start
+        for i in range(text.index("{", start), len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        body = text[start:end]
+        arms = 0
+        for m in re.finditer(r"None\s*=>", body):
+            arms += 1
+            # Up to the next arm or the end: enough to hold one statement.
+            tail = arm_body(body, m.end())
+            tail = "\n".join(l.split("//")[0] for l in tail.split("\n"))
+            if not LOG.search(tail):
+                print(
+                    f"FAIL: {fname}: a `None =>` arm in {region!r} says nothing.\n"
+                    "      An arm that yields a value instead of returning is invisible\n"
+                    "      to the early-return rule above, and is where the next silent\n"
+                    "      refusal will be."
+                )
+                return 1
+        if arms == 0:
+            print(f"FAIL: no `None =>` arm found in {region!r}; this check is blind.")
+            return 1
+        print(f"{arms} `None =>` arm(s) in {region!r} checked; each says something.")
+
+    # ---- third: a claim in a log line must come from a reading.
+    for fname, needle, must_have, why in CLAIMS_ARE_READ:
+        text = (SRC / fname).read_text(encoding="utf-8")
+        if needle not in text:
+            print(
+                f"FAIL: {fname} no longer contains {needle!r}.\n"
+                "      The line was renamed or removed and this check has been\n"
+                "      asserting nothing about it."
+            )
+            return 1
+        at = text.index(needle)
+        # The verdict is read just above the line that prints it.
+        #
+        # ⚠️ **Comments are stripped first, and the reason is a live example.**
+        # The first version of this check searched the raw text, and the
+        # sentence you are reading sits in a doc comment that names
+        # `focus_verdict` -- so replacing the actual call with a constant left
+        # the check green, matching the prose that explains the check. A
+        # scanner that reads its own explanation is measuring nothing.
+        window_ = "\n".join(
+            l.split("//")[0] for l in text[max(0, at - 900) : at].split("\n")
+        )
+        if must_have not in window_:
+            print(f"FAIL: {fname}: {needle!r} is printed without `{must_have}` above it.")
+            print(f"      {why}")
+            return 1
+    print(f"{len(CLAIMS_ARE_READ)} log claim(s) checked for being read back, not assumed.")
 
     print("Nothing to report: every early return in these functions says why,")
     print("and every call site of the two-layer functions records the outcome.")

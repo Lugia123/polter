@@ -30,7 +30,7 @@ use std::sync::Mutex;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -2090,7 +2090,12 @@ fn create_pane(
     unsafe {
         (api().surface_set_content_scale)(s, scale, scale);
         (api().surface_set_size)(s, w as u32, h as u32);
+        // Bracketed like the two focus arms, and for the same reason: this
+        // is the same core call, and a pane that never finishes being created
+        // should not be harder to diagnose than one that never changes focus.
+        logf!("[focus] pane {} taking focus (at creation)", id);
         (api().surface_set_focus)(s, true);
+        logf!("[focus] pane {} took focus (at creation)", id);
     }
     // A window TSF has never seen has no document until it is told, and the
     // failure is silent: the IME looks switched on and nothing composes.
@@ -3489,13 +3494,77 @@ pub fn pane_count(frame: HWND) -> usize {
 /// Three things have to agree about which surface is being typed into: Win32
 /// focus, the core's own focus flag, and the window TSF measures the caret
 /// against. They are set together here so they cannot drift apart.
+/// Put the keyboard on the active tab's focused pane.
+///
+/// **No return value, and it is the same judgement as `destroy_tab_at`**:
+/// nine call sites, none of which has anywhere to put an answer. What the one
+/// caller that needs to know does instead is *read the result back* -- see
+/// `Op::GotoSplit`, which asks `focus_verdict` rather than believing this
+/// function. A reading is worth more than a returned claim here anyway: it
+/// covers the ways focus can fail to move that this function never sees.
+/// What actually happened to the focus, read back rather than assumed.
+///
+/// # Why this exists at all
+///
+/// `[split] focus -> pane N` used to be printed unconditionally after
+/// `focus_active`, and there are three separate ways for that line to be a
+/// lie: the model update above it is inside an `if let` with no `else`, and
+/// `focus_active` gives up early when there is no pane to focus. **For one
+/// investigation that line was the only record of a focus change, and it
+/// could not be trusted in the direction people wanted to use it.**
+///
+/// Its absence was still evidence -- a line that was never printed means the
+/// code never got that far, and that is exactly how a hang in `focus_active`
+/// was located. **What was missing was the other direction**: being able to
+/// say, from the log, that a focus change *did* land.
+///
+/// # Two answers, because they fail separately
+///
+/// `model` is what this host believes; `win32` is what Windows believes.
+/// They come apart in both directions -- `SetFocus` can be refused while the
+/// model happily records the new pane, and a foreign window can take the
+/// focus away afterwards while the model stays right. **A single boolean
+/// would have to pick one of those to hide.**
+///
+/// ⚠️ `GetFocus` answers for **this thread's** focus, which is what is wanted
+/// here (the pane belongs to this thread) and is not the same question as
+/// `GetForegroundWindow`. A window that is not in the foreground still has a
+/// focused child by this reckoning.
+fn focus_verdict(frame: HWND, want: PaneId) -> (bool, bool) {
+    let model = window(frame)
+        .and_then(|w| w.tabs.get(w.active).map(|t| t.focused == want))
+        .unwrap_or(false);
+    let wanted_hwnd = window(frame).and_then(|w| {
+        w.tabs
+            .get(w.active)
+            .and_then(|t| t.panes.iter().find(|p| p.id == want).map(|p| p.hwnd))
+    });
+    let win32 = match wanted_hwnd {
+        Some(h) => unsafe { GetFocus() }.0 as isize == h,
+        None => false,
+    };
+    (model, win32)
+}
+
 pub fn focus_active(frame: HWND) {
     let child = {
         let found = window(frame)
             .and_then(|w| w.tabs.get(w.active).and_then(|t| t.focused_pane()).map(|p| p.hwnd));
         match found {
             Some(hwnd) => HWND(hwnd as *mut c_void),
-            None => return,
+            // **The quiet one.** Every caller carries on as if the keyboard
+            // moved, and one of them then prints a line saying it did. There
+            // is no pane to focus here -- a tab mid-teardown, or a window
+            // whose last pane has gone -- and saying so is what stops the
+            // line downstream from being the only record.
+            None => {
+                wlogf!(
+                    frame,
+                    "[focus] nothing to focus: the active tab has no focused pane; \
+                     the keyboard stays where it was"
+                );
+                return;
+            }
         }
     };
     // **Wrapped, because this focus move can end somebody's composition --
@@ -3523,7 +3592,23 @@ pub fn focus_active(frame: HWND) {
     });
     let s = active_surface(frame);
     if !s.is_null() {
+        // **The third `set_focus` one focus change makes**, after the old
+        // pane's `WM_KILLFOCUS` and the new pane's `WM_SETFOCUS` -- both of
+        // which `SetFocus` above dispatched synchronously on this thread. It
+        // duplicates the second, and it is left in place rather than removed
+        // because the two arms only run when Windows actually moved the
+        // focus, and this runs when the host asked.
+        //
+        // Bracketed because it is a candidate for the block being chased in
+        // 443: by the readings of 2026-09-09 the window thread stops inside
+        // one of these three, and without a pair here the third one would be
+        // the one nobody could see.
+        let id = window(frame)
+            .and_then(|w| w.tabs.get(w.active).map(|t| t.focused))
+            .unwrap_or(0);
+        wlogf!(frame, "[focus] pane {} taking focus (host asked)", id);
         unsafe { (api().surface_set_focus)(s, true) };
+        wlogf!(frame, "[focus] pane {} took focus (host asked)", id);
     }
 }
 
@@ -4591,16 +4676,60 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 };
                 match target {
                     Some(id) => {
-                        {
-                            if let Some(mut win) = window(frame) {
+                        // **Both of these were `if let` with no `else`.** That
+                        // is the swallow shape the 448 census named and did
+                        // not cover -- it only read `let .. else` -- and it
+                        // was sitting in the function the investigation was
+                        // standing in. Either miss leaves `tab.focused`
+                        // pointing at the old pane while everything below
+                        // carries on as though it had moved.
+                        let recorded = match window(frame) {
+                            Some(mut win) => {
                                 let a = win.active;
-                                if let Some(tab) = win.tabs.get_mut(a) {
-                                    tab.focused = id;
+                                match win.tabs.get_mut(a) {
+                                    Some(tab) => {
+                                        tab.focused = id;
+                                        true
+                                    }
+                                    None => {
+                                        wlogf!(
+                                            frame,
+                                            "[split] focus -> pane {} not recorded: \
+                                             this window has no tab {}",
+                                            id, a
+                                        );
+                                        false
+                                    }
                                 }
                             }
-                        }
+                            None => {
+                                wlogf!(
+                                    frame,
+                                    "[split] focus -> pane {} not recorded: that window is gone",
+                                    id
+                                );
+                                false
+                            }
+                        };
                         focus_active(frame);
-                        logf!("[split] focus -> pane {}", id);
+                        // **Read back, not assumed.** This line used to be
+                        // printed unconditionally, and three separate paths
+                        // could make it a lie. Its *absence* was still good
+                        // evidence -- that is how a hang inside `focus_active`
+                        // was found -- but nobody could use it the other way
+                        // round, and "no positive record of a focus change
+                        // that worked" cost this investigation a day.
+                        //
+                        // `model` and `win32` are printed separately because
+                        // they fail separately; see `focus_verdict`.
+                        let (model, win32) = focus_verdict(frame, id);
+                        logf!(
+                            "[split] focus -> pane {}: recorded={} model={} win32={}",
+                            id,
+                            recorded as u8,
+                            model as u8,
+                            win32 as u8
+                        );
                     }
                     // No pane that way. Doing nothing is the honest answer;
                     // wrapping would put focus somewhere the user did not aim.
@@ -5351,19 +5480,62 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 LRESULT(0)
             }
 
+            // # Two lines, not one, and the pair is the point
+            //
+            // `ghostty_surface_set_focus` is the only call in these two arms
+            // that leaves the host, and on 2026-09-09 it is the last surviving
+            // candidate for a permanent block: three separate field captures
+            // show `MAIN THREAD BLOCKED` with the ping unanswered and not one
+            // `PUMP BUSY`, which rules out the thread still dispatching inside
+            // somebody's nested pump.
+            //
+            // **A single line before the call proves arrival and nothing
+            // else** -- a thread that reached it and died in the *next*
+            // statement leaves the same log. The pair is what turns the
+            // reading into "went in and did not come out", which is the shape
+            // the whole `goto_split` diagnosis was built on: two exits in
+            // `Op::GotoSplit`, neither line printed.
+            //
+            // ⚠️ Not rate-gated on purpose. Focus moves at the speed a person
+            // clicks, not at the speed of `WM_MOUSEMOVE` -- so unlike the
+            // divider drag line, absence here is evidence.
             WM_SETFOCUS => {
                 crate::ime_set_window(hwnd);
+                // ⚠️ `ime_focus` ends in `ITfThreadMgr::SetFocus`, which is
+                // unbounded. **By the readings of 2026-09-09 it is not in the
+                // suspect list** (see above); that is a statement about what
+                // three captures showed, not a claim that TSF cannot block.
                 crate::ime_focus(true);
                 let s = surface_of(hwnd);
                 if !s.is_null() {
+                    let (owner, id) = match pane_of(hwnd) {
+                        Some((f, _, id)) => (f, id),
+                        None => (GetAncestor(hwnd, GA_ROOT), 0),
+                    };
+                    wlogf!(owner, "[focus] pane {} taking focus", id);
                     (api().surface_set_focus)(s, true);
+                    wlogf!(owner, "[focus] pane {} took focus", id);
                 }
                 LRESULT(0)
             }
             WM_KILLFOCUS => {
                 let s = surface_of(hwnd);
                 if !s.is_null() {
+                    // **This is the one `goto_split` reaches first.** Moving
+                    // focus to another pane kills the old pane's focus before
+                    // the new one gets it, so of the three `set_focus` calls
+                    // one action makes, this is the earliest -- and the first
+                    // place a full mailbox would stop the thread.
+                    let (owner, id) = match pane_of(hwnd) {
+                        Some((f, _, id)) => (f, id),
+                        // A pane whose model entry has already gone still has
+                        // a window, and the frame it lives in is the only
+                        // name left to tag the line with.
+                        None => (GetAncestor(hwnd, GA_ROOT), 0),
+                    };
+                    wlogf!(owner, "[focus] pane {} losing focus", id);
                     (api().surface_set_focus)(s, false);
+                    wlogf!(owner, "[focus] pane {} lost focus", id);
                 }
                 LRESULT(0)
             }
