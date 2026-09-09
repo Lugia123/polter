@@ -19,6 +19,12 @@ const Allocator = std.mem.Allocator;
 const log = std.log.scoped(.renderer_thread);
 
 const DRAW_INTERVAL = 8; // 120 FPS
+
+/// One heartbeat line per this many wakeups (plus the very first). A pane
+/// under ordinary output wakes a couple of times a second, so this is a line
+/// every few seconds: dense enough to place a stall to within a handful of
+/// wakeups, sparse enough not to become the log.
+const heartbeat_interval = 8;
 const CURSOR_BLINK_INTERVAL = 600;
 
 /// Whether calls to `drawFrame` must be done from the app thread.
@@ -89,6 +95,24 @@ state: *rendererpkg.State,
 /// The mailbox that can be used to send this thread messages. Note
 /// this is a blocking queue so if it is full you will get errors (or block).
 mailbox: *Mailbox,
+
+/// How many times this thread has entered `wakeupCallback`, and how many of
+/// those it came back out of.
+///
+/// **These exist to tell "alive but rendering nothing" apart from "stopped".**
+/// Both look identical from outside -- the pane holds its last frame either
+/// way -- and every other signal we have (the surface still answers, the
+/// locks are still gettable, frames are still presented) is produced by other
+/// threads and stays true in both. A wakeup count that keeps climbing says
+/// the loop is running; a count that stops says it is not; and a final line
+/// whose `wakeup` is one past its `completed` says where it stopped: inside
+/// the callback, not waiting for one.
+wakeups: u64 = 0,
+wakeups_completed: u64 = 0,
+
+/// How many redraw requests were lost to a full app mailbox. See the send
+/// site in `drawFrame` for why losing one is not free.
+app_mailbox_drops: u64 = 0,
 
 /// Mailbox to send messages to the app thread
 app_mailbox: App.Mailbox,
@@ -533,10 +557,24 @@ fn drawFrame(self: *Thread, now: bool) void {
     if (!now and self.renderer.hasVsync()) return;
 
     if (must_draw_from_app_thread) {
-        _ = self.app_mailbox.push(
+        // **A lost redraw request is not free.** If the draw timer is idle
+        // -- which it is unless a custom shader wants animation -- the next
+        // frame is drawn only when something else wakes this thread. Losing
+        // this one can therefore leave the pane holding a stale frame with
+        // nothing scheduled to replace it, so at minimum it has to be
+        // countable.
+        if (self.app_mailbox.push(
             .{ .redraw_surface = self.surface },
             .{ .instant = {} },
-        );
+        ) == 0) {
+            self.app_mailbox_drops += 1;
+            if (rendererpkg.shouldReport(self.app_mailbox_drops, 64)) {
+                log.warn(
+                    "[mbox] app mailbox full, message dropped kind=redraw_surface drops={d}",
+                    .{self.app_mailbox_drops},
+                );
+            }
+        }
     } else {
         self.renderer.drawFrame(false) catch |err|
             log.warn("error drawing err={}", .{err});
@@ -555,6 +593,19 @@ fn wakeupCallback(
     };
 
     const t = self_.?;
+
+    // Heartbeat. Deliberately reported before the work rather than after, so
+    // that a callback which never returns still leaves the line that says it
+    // started: `wakeup` one ahead of `completed` is the signature of a
+    // renderer thread stuck inside its own callback.
+    t.wakeups += 1;
+    if (rendererpkg.shouldReport(t.wakeups, heartbeat_interval)) {
+        log.info("[rthread] r={x} wakeup={d} completed={d}", .{
+            @intFromPtr(t.renderer),
+            t.wakeups,
+            t.wakeups_completed,
+        });
+    }
 
     // When we wake up, we check the mailbox. Mailbox producers should
     // wake up our thread after publishing.
@@ -585,6 +636,7 @@ fn wakeupCallback(
     //     renderCallback,
     // );
 
+    t.wakeups_completed += 1;
     return .rearm;
 }
 

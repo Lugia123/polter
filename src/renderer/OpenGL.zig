@@ -97,6 +97,12 @@ blending: configpkg.Config.AlphaBlending,
 /// The most recently presented target, in case we need to present it again.
 last_target: ?Target = null,
 
+/// This renderer's own share of the `[blit]` instrumentation budget. Per
+/// instance on purpose: a process-wide budget is spent entirely by the first
+/// surface that draws, and every pane opened after that is silent from birth.
+/// See `renderer/log_budget.zig`.
+present_log: rendererpkg.LogBudget = .{ .max = present_log_max },
+
 /// Our WGL context, when we own one. See `Threading` above.
 context: if (wgl_enabled) wgl else void,
 
@@ -410,7 +416,6 @@ pub fn initTarget(self: *const OpenGL, width: usize, height: usize) !Target {
     });
 }
 
-var present_log_count: usize = 0;
 const present_log_max: usize = 40;
 
 /// Present the provided target.
@@ -455,8 +460,7 @@ pub fn present(self: *OpenGL, target: Target) !void {
     //
     // `err` is here because a blit that fails is currently silent, and a
     // silent failure and a stale drawable produce the same black pixels.
-    if (present_log_count < present_log_max) {
-        present_log_count += 1;
+    if (self.present_log.take()) {
         const fb = blk: {
             var v: gl.c.GLint = undefined;
             gl.glad.context.GetIntegerv.?(gl.c.GL_DRAW_FRAMEBUFFER_BINDING, &v);

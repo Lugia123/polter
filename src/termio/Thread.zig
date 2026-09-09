@@ -923,7 +923,10 @@ fn selectionScrollCallback(
     const cb = cb_ orelse return .disarm;
     const self = cb.self;
 
-    // Send the tick to the main surface
+    // Send the tick to the main surface. Instant, and losing one is safe
+    // *here specifically*: the timer below re-arms while the scroll is
+    // active, so a dropped tick costs one step of scrolling and the next
+    // one says the same thing.
     _ = cb.io.surface_mailbox.push(
         .{ .selection_scroll_tick = self.scroll_active },
         .{ .instant = {} },

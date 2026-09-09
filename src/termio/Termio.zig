@@ -66,6 +66,13 @@ renderer_wakeup: xev.Async,
 /// The mailbox for notifying the renderer of things.
 renderer_mailbox: *renderer.Thread.Mailbox,
 
+/// How many messages we failed to hand the renderer because its mailbox was
+/// full. **A full renderer mailbox is the visible half of a renderer thread
+/// that has stopped draining**, and the non-blocking sends below fail
+/// silently by design, so without this counter the condition leaves no trace
+/// anywhere: the log looks exactly like a quiet, healthy terminal.
+renderer_mailbox_drops: u64 = 0,
+
 /// The mailbox for communicating with the surface.
 surface_mailbox: apprt.surface.Mailbox,
 
@@ -807,9 +814,17 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
         }
 
         self.last_cursor_reset = now;
-        _ = self.renderer_mailbox.push(global.io(), .{
+        if (self.renderer_mailbox.push(global.io(), .{
             .reset_cursor_blink = {},
-        }, .{ .instant = {} });
+        }, .{ .instant = {} }) == 0) {
+            self.renderer_mailbox_drops += 1;
+            if (renderer.shouldReport(self.renderer_mailbox_drops, 64)) {
+                log.warn(
+                    "[mbox] renderer mailbox full, message dropped kind=reset_cursor_blink drops={d}",
+                    .{self.renderer_mailbox_drops},
+                );
+            }
+        }
     }
 
     // If we have an inspector, we enter SLOW MODE because we need to

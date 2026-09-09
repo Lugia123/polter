@@ -54,7 +54,12 @@ const log = std.log.scoped(.generic_renderer);
 /// runs, which are the two things this line exists to tell apart. It prints
 /// the first `rsz_log_max` frames unconditionally so "no line at all" can
 /// only mean "this function is not being called".
-var rsz_log_count: usize = 0;
+///
+/// **The budget is per renderer, not per process.** It used to be a file
+/// level `var`, and the first surface to draw spent all of it: every pane
+/// opened afterwards was silent from birth, so filtering the log for the
+/// pane under investigation returned nothing at all -- which reads exactly
+/// like "that code never ran". See `renderer/log_budget.zig`.
 const rsz_log_max: usize = 20;
 
 /// Create a renderer type with the provided graphics API wrapper.
@@ -113,6 +118,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// This mutex must be held whenever any state used in `drawFrame` is
         /// being modified, and also when it's being accessed in `drawFrame`.
         draw_mutex: std.Io.Mutex = .init,
+
+        /// This renderer's own share of the `[rsz]` instrumentation budget.
+        rsz_log: renderer.LogBudget = .{ .max = rsz_log_max },
 
         /// The configuration we need derived from the main config.
         config: DerivedConfig,
@@ -1512,10 +1520,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Windows canvas-follows-resize instrumentation. Four measured
             // numbers and one computed flag on a single line; nothing here is
-            // a statement about success. See `rsz_log_count`.
+            // a statement about success. See `rsz_log`.
             if (comptime builtin.os.tag == .windows) {
-                if (rsz_log_count < rsz_log_max or size_changed) {
-                    rsz_log_count += 1;
+                if (self.rsz_log.hasRoom() or size_changed) {
+                    _ = self.rsz_log.take();
                     log.info(
                         "[rsz] r={x} surface={d}x{d} screen={d}x{d} changed={} needs_redraw={}",
                         .{
@@ -1585,7 +1593,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const target_stale = frame.target.width != self.size.screen.width or
                 frame.target.height != self.size.screen.height;
             if (comptime builtin.os.tag == .windows) {
-                if (rsz_log_count <= rsz_log_max or target_stale) {
+                if (self.rsz_log.hasRoom() or target_stale) {
                     log.info(
                         "[rsz] r={x} target={d}x{d} screen={d}x{d} stale={}",
                         .{
