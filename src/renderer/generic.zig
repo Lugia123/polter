@@ -1552,6 +1552,32 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.hasAnimations() or
                 sync;
 
+            // **The components, on both sides of the decision.**
+            //
+            // These four were first printed inside the "nothing to redraw"
+            // early return, on the assumption that an idle pane would be
+            // taking it. It does not: on Windows every wakeup of a completely
+            // idle terminal computes `needs_redraw = true` and draws a full
+            // frame, so that branch was never once entered and the four
+            // numbers -- the only thing that says *why* it is true -- could
+            // not be read at all.
+            //
+            // ⚠️ An instrument attached to one arm of a branch is a bet that
+            // the branch goes that way. Both arms are candidates while the
+            // question is open, so this reports where the answer is computed
+            // rather than where one of the answers is used.
+            if (comptime build_config.log_render_phase) log.info(
+                "[rphase] r={x} at=decide needs_redraw={} size_changed={} cells_rebuilt={} animations={} sync={}",
+                .{
+                    @intFromPtr(self),
+                    needs_redraw,
+                    size_changed,
+                    self.cells_rebuilt,
+                    self.hasAnimations(),
+                    sync,
+                },
+            );
+
             // Windows canvas-follows-resize instrumentation. Four measured
             // numbers and one computed flag on a single line; nothing here is
             // a statement about success. See `rsz_log`.
@@ -1581,22 +1607,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             if (!needs_redraw) {
-                // **The four components, not just the verdict.** A pane that
-                // stops repainting leaves this branch taken every time, and
-                // which of the four is false is the whole question: a false
-                // `cells_rebuilt` points at `updateFrame`, a false
-                // `size_changed` at the surface size, and they are not the
-                // same defect.
-                if (comptime build_config.log_render_phase) log.info(
-                    "[rphase] r={x} at=noredraw size_changed={} cells_rebuilt={} animations={} sync={}",
-                    .{
-                        @intFromPtr(self),
-                        size_changed,
-                        self.cells_rebuilt,
-                        self.hasAnimations(),
-                        sync,
-                    },
-                );
+                // The components are reported above, where they are
+                // computed, so that they are readable whichever way this
+                // goes. This only marks the branch.
+                self.rphase("noredraw");
 
                 // We still need to present the last target again, because the
                 // apprt may be swapping buffers and display an outdated frame
