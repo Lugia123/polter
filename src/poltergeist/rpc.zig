@@ -1164,13 +1164,27 @@ pub fn selfPermitted(req: Request) bool {
 
 /// Whether this key spec is one that takes an option in a list prompt.
 ///
-/// **Three keys, and the shortness of the list is a measurement rather than
-/// a judgement.** The obvious answer set is bigger -- the digits, `y`, `n`,
-/// space -- but `keys.parse` already refuses every bare printable key
+/// **Six keys, and the shortness of the list is a measurement rather than a
+/// judgement.** The obvious answer set is bigger -- the digits, `y`, `n`,
+/// space -- but `keys.parse` refuses every bare *ordinary* key
 /// (`error.PlainText`: ordinary characters are text and belong in
 /// `terminal_send`), so none of those can be pressed through this surface at
-/// all. What is left that can move or take a highlighted option is the
-/// arrows, `tab`, and the returns.
+/// all. What is left that can move or take a highlighted option is the arrows
+/// and the returns.
+///
+/// ⚠️ **`tab` was on this list until task 372 and should not have been.** It
+/// went in with the arrows on a guess about how a list prompt is driven, and
+/// it was never measured. What `tab` and `shift+tab` are actually used for
+/// here is putting an agent CLI into unattended mode -- the one thing
+/// `supervising` tells a supervisor to do and, until 372, the one thing it
+/// could not do after the fact, because this list refused the key at every
+/// terminal whose switch was off. **A guessed entry cost a real workflow.**
+///
+/// **What removing it costs, said out loud**: a box that moves between its
+/// options with tab is no longer stopped by the switch. That is a real gap
+/// and it is small next to the published one -- `terminal_send` can answer a
+/// box whatever this list says -- and it buys back a capability that was
+/// being blocked every night.
 ///
 /// Spelling is compared after parsing rather than as text, so `ctrl+enter`
 /// and a differently written `arrow_down` are judged as the keys they are.
@@ -1186,7 +1200,6 @@ fn answersAPrompt(spec: []const u8) bool {
             .arrow_down,
             .arrow_left,
             .arrow_right,
-            .tab,
             => true,
             else => false,
         },
@@ -2995,6 +3008,14 @@ test "nothing answers another terminal's prompt around the user's switch" {
     // has stopped.
     try authorize(&b, term(boss), .{ .terminal_key = .{ .id = worker, .key = "ctrl+c" } });
     try authorize(&b, term(boss), .{ .terminal_key = .{ .id = worker, .key = "escape" } });
+
+    // ⚠️ **Task 372: the keys that put a CLI into unattended mode are not
+    // answers to a box**, and while they were on that list a supervisor could
+    // not press them at any terminal whose switch was off -- which is every
+    // terminal by default, and which is the state the instruction to start
+    // agents unattended has to be carried out in.
+    try authorize(&b, term(boss), .{ .terminal_key = .{ .id = worker, .key = "tab" } });
+    try authorize(&b, term(boss), .{ .terminal_key = .{ .id = worker, .key = "shift+tab" } });
 
     // Switched on, both go through.
     try b.setMayAuthorise(worker, true, .user);

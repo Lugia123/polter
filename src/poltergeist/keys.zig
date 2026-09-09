@@ -60,7 +60,7 @@ pub fn parse(spec: []const u8) Error!inputpkg.Trigger {
         .catch_all => return error.CatchAll,
         .physical => |k| {
             if (k == .unidentified) return error.NoKey;
-            if (k.printable() and !hasChord(trigger.mods)) return error.PlainText;
+            if (ordinaryText(k) and !hasChord(trigger.mods)) return error.PlainText;
         },
         .unicode => {
             if (!hasChord(trigger.mods)) return error.PlainText;
@@ -77,6 +77,40 @@ pub fn parse(spec: []const u8) Error!inputpkg.Trigger {
 /// something the program on the other end reads as a command.
 fn hasChord(mods: inputpkg.Mods) bool {
     return mods.ctrl or mods.alt or mods.super;
+}
+
+/// Whether pressing this key is the same thing as typing a character.
+///
+/// **This is the question the rule above was asking and getting wrong.** The
+/// rule exists because ordinary characters are text and belong in
+/// `terminal_send`, whose paste path is the one that has been argued safe.
+/// It was written as `Key.printable()`, which answers a different question:
+/// **does this key appear in the codepoint table at all** -- and `tab` does,
+/// as `0x09`.
+///
+/// ⚠️ **Task 372: a supervisor could not press `tab` or `shift+tab`**, which
+/// is how the agent CLIs in this project are put into unattended mode, so the
+/// whole "start it in a mode that can run unattended" instruction had no way
+/// to be carried out after the fact. Two measured facts settle it:
+///
+///   * **`shift+tab` is not a character at any spelling.** It is `CSI Z`, and
+///     `input/paste.zig` replaces ESC with a space -- so `terminal_send`
+///     cannot carry it either. **No verb on this surface could produce it.**
+///   * **A pasted `0x09` is not the Tab key.** The byte survives the paste
+///     path (it is not in the strip list, which was checked rather than
+///     assumed), but under bracketed paste a program reads it as literal
+///     text, not as the keypress it reacts to. So "it is text, send it as
+///     text" is false for this one.
+///
+/// So the line is drawn where the reason actually lies: a key whose codepoint
+/// is an **ordinary character** is text; a key whose codepoint is a **control
+/// character**, or which has none at all, is a keypress and nothing else can
+/// produce it. Letters, digits and punctuation are unaffected -- they are
+/// still refused without a chord, which is the whole of what the old rule was
+/// protecting.
+fn ordinaryText(k: inputpkg.Key) bool {
+    const cp = k.codepoint() orelse return false;
+    return cp >= 0x20 and cp != 0x7f;
 }
 
 /// The key event a person pressing this trigger would produce.
@@ -218,6 +252,29 @@ test "a ctrl chord encodes to the C0 byte it is supposed to" {
         try testing.expectEqual(@as(usize, 1), writer.buffered().len);
         try testing.expectEqual(c[1], writer.buffered()[0]);
     }
+}
+
+test "tab and shift+tab are keys, not text" {
+    // Task 372, and both halves are here because they fail for the same
+    // reason and only one of them is obvious. `shift+tab` is `CSI Z` and no
+    // amount of text can carry it; plain `tab` is a byte that *would* survive
+    // a paste, but a program under bracketed paste reads a pasted `0x09` as
+    // text rather than as the key it reacts to.
+    const shifted = try parse("shift+tab");
+    try testing.expectEqual(inputpkg.Key.tab, shifted.key.physical);
+    try testing.expect(shifted.mods.shift);
+
+    const plain = try parse("tab");
+    try testing.expectEqual(inputpkg.Key.tab, plain.key.physical);
+}
+
+test "a letter is still text, with or without shift" {
+    // **The half the old rule was right about**, kept as its own cell: the
+    // change above must not turn `terminal_key` into a second way to type.
+    try testing.expectError(error.PlainText, parse("a"));
+    try testing.expectError(error.PlainText, parse("shift+a"));
+    try testing.expectError(error.PlainText, parse("1"));
+    try testing.expectError(error.PlainText, parse("space"));
 }
 
 test "escape is a key on its own, and needs no modifier" {

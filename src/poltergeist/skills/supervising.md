@@ -480,7 +480,13 @@ work that runs through the night and work that waits for a person to wake up,
 and it is made at the moment you type the command. Most agent CLIs have such a
 mode — Claude Code calls it auto mode — and in most of them it is off until it
 is turned on, so leaving the command bare is choosing the stopping kind without
-meaning to. Which flag turns it on is your knowledge of the CLI you picked, and
+meaning to.
+
+**If you did leave it bare, you can still fix it**: `terminal_key(id, "shift+tab")`
+is how those CLIs cycle into that mode, at any terminal you can reach. ⚠️ It did
+not work until task 372 — `tab` and `shift+tab` were both refused as "that is
+text, use terminal_send", and no text can carry shift+tab, so the instruction
+above had no remedy once the command had been typed. Which flag turns it on is your knowledge of the CLI you picked, and
 it is one more reason to pick the one you know.
 
 The cost of the mode is the user's to weigh, not yours to decide for them: if

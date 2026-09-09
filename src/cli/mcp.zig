@@ -652,7 +652,11 @@ const tools = [_]Tool{
             "`f2`, `arrow_down`. This is how you interrupt something -- terminal_send " ++
             "cannot, because the text it types has its control characters stripped on " ++
             "the way in. Ordinary characters are refused here for the same reason in " ++
-            "reverse: `a` is text and belongs in terminal_send. Call terminal_keys for " ++
+            "reverse: `a` is text and belongs in terminal_send. **`tab` and `shift+tab` " ++
+            "are keys here, not text** -- they are how an agent CLI is put into " ++
+            "unattended mode, and no amount of text can carry shift+tab, so if you " ++
+            "started a worker without its unattended flag this is how you fix it " ++
+            "afterwards. Call terminal_keys for " ++
             "the vocabulary. Same reach rule as terminal_read.",
         .schema =
         \\{"type":"object","properties":{"id":{"type":"string"},"key":{"type":"string"}},"required":["id","key"]}
