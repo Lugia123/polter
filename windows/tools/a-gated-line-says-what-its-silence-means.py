@@ -248,7 +248,7 @@ PENDING = {
 # The number of statements the detector found when this was written. A drop
 # means the detector got worse, and a detector that finds nothing is a
 # checker that passes everything.
-SUBJECT_FLOOR = 78
+SUBJECT_FLOOR = 79
 
 # Caps that a written criterion reads back, and which must therefore keep an
 # escape that is true whenever there is something new to say.

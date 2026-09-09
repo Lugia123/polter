@@ -106,6 +106,86 @@ pub fn unshifted_codepoint(vk: u32) -> u32 {
 /// offered the keystroke first.
 static KEYS_LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Key events already reported, as `(msg, vk, mods, answer)`.
+///
+/// # Why a counter alone made this line blind
+///
+/// The gate used to be `n <= 20 || modded`, and `modded` was
+/// `ev_mods & (MODS_CTRL | MODS_ALT | MODS_SUPER)` -- **no shift**. So after
+/// the twentieth key of the process, a bare key and a shift-only combination
+/// stopped being reported at all, for ever. ⚠️ `docs/windows/keys.md` reads a
+/// missing `[key]` line into a verdict row; for `Ctrl-C` that is sound,
+/// because ctrl is in the mask, and for `A` or `Shift-A` it was not, and
+/// nothing in the line said which kind it was looking at.
+///
+/// **The thing deciding whether to speak saw less than the line reports.**
+/// That is the general shape: the line prints `mods=0x{:x}`, the whole value,
+/// while the decision was taken from three of its bits.
+///
+/// **What replaces it is not a bigger mask.** Adding shift would make every
+/// capital letter speak, which is not a throttle at all. The question this
+/// line exists to answer -- does `surface_key` handle this key, and what did
+/// it say -- is a question about a *kind* of key, not about a keystroke. So
+/// each distinct kind speaks once and repeats stay quiet: typing prose is a
+/// few dozen lines and then silence, and a key that has never been pressed,
+/// or one whose answer has changed, always speaks.
+static KEYS_SEEN: std::sync::Mutex<Vec<(u32, u16, i32, bool)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How many distinct kinds are remembered before this stops being a defence.
+///
+/// **Bounded, and it says so when it runs out.** An unbounded table here
+/// would grow with a stuck key repeating a modifier permutation; a silent cap
+/// would put the blindness back with no line to mark where. Five hundred and
+/// twelve is far past any real session -- a keyboard has a few hundred
+/// (message, key, modifier, answer) combinations a person can produce -- so
+/// reaching it is itself worth reading.
+const KEYS_SEEN_CAP: usize = 512;
+
+/// Whether the cap above has already been announced.
+static KEYS_SEEN_CAP_SAID: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this exact key event is one no line has reported yet.
+///
+/// **Records as it answers**, so the first of each kind speaks and the rest
+/// do not. A lock it cannot take answers `true`: the alternative is going
+/// quiet at the moment something else in the process has already gone wrong.
+fn first_of_its_kind(msg: u32, vk: u16, mods: i32, answered: bool) -> bool {
+    let Ok(mut seen) = KEYS_SEEN.lock() else {
+        return true;
+    };
+    if seen.iter().any(|e| *e == (msg, vk, mods, answered)) {
+        return false;
+    }
+    if seen.len() >= KEYS_SEEN_CAP {
+        // **Said once, at the boundary**, for the reason the pump's swallow
+        // counter gives: without it the line just stops appearing, and "no new
+        // kinds of key" and "we stopped writing them down" become the same
+        // reading.
+        //
+        // A flag of its own rather than a marker row in the table: a
+        // `(0, 0, 0, false)` entry among real key events is a thing the next
+        // reader has to work out, and `msg` is never zero, so it would also be
+        // a row that can never match.
+        // absence: depends -- said once for the life of the process. Before
+        // the cap it is missing because the cap has not been reached, which
+        // is the ordinary case; after it, because it has already been said.
+        if !KEYS_SEEN_CAP_SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            // process-wide: the table is one per process and this line is
+            // about the table, not about anything a window did
+            plogf!(
+                "[key] {} distinct key kinds reported; further new ones are not \
+                 tracked, so from here a missing line means nothing again",
+                KEYS_SEEN_CAP
+            );
+        }
+        return false;
+    }
+    seen.push((msg, vk, mods, answered));
+    true
+}
+
 use crate::ffi::{self, Surface};
 use crate::{api, hlogf, logf, plogf};
 use windows::Win32::Foundation::{HWND, LRESULT, WPARAM};
@@ -304,12 +384,22 @@ pub fn handle_key_message(
         // happen -- which is exactly why this is the line that has to exist.
         let n = KEYS_LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let modded = ev_mods & (MODS_CTRL | MODS_ALT | MODS_SUPER) != 0;
-        // absence: depends -- a key carrying ctrl, alt or the windows key
-        // always speaks, so for those a missing line means the message never
-        // reached here. For a bare key, or one held with shift alone, only
-        // the first twenty of the process speak: after that a missing line
-        // says nothing at all, and `mods` is what tells the two apart.
-        if n <= 20 || modded {
+        // **Evaluated before the test, not inside it.** It records what it
+        // answers, and `||` short-circuits: behind the two conditions above it
+        // would only record the events they did not already cover, so a key
+        // first seen with ctrl held would be reported a second time the moment
+        // it appeared without.
+        //
+        // ⚠️ **`ev_mods` whole, not `modded`.** Handing it the masked value
+        // would rebuild the defect one level down: the decision would again be
+        // taken from three bits of a value the line prints in full.
+        let novel = first_of_its_kind(msg, vk, ev_mods, consumed_by_core);
+        // absence: depends -- every kind of key event speaks the first time it
+        // happens, so a missing line means this exact combination of message,
+        // key, modifiers and answer has already been reported once. It does
+        // not mean the key did not arrive. Past `KEYS_SEEN_CAP` distinct
+        // kinds -- announced on its own line -- absence means nothing again.
+        if n <= 20 || modded || novel {
             logf!(
                 "[key] msg=0x{:x} vk=0x{:02x} keycode=0x{:x} mods=0x{:x} text={} -> surface_key={}",
                 msg,
