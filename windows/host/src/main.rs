@@ -732,6 +732,7 @@ fn start_watchdog() {
 
             let mut seq: u64 = 0;
             let mut last_ticks = TICKS.load(Ordering::Relaxed);
+            crate::name_this_thread("polter-watchdog");
             let mut last_progress = std::time::Instant::now();
             let mut last_heartbeat = std::time::Instant::now();
             let mut announced = false;
@@ -4828,6 +4829,10 @@ fn maybe_panic_test() {
             });
         }
         "thread" => {
+            // unnamed-thread: it exists to panic and is joined on the next
+            // line. Nothing can sample it -- by the time anybody has a reason
+            // to look at this process, this thread has been gone for the
+            // whole run.
             let h = std::thread::Builder::new()
                 .name("polter-panic-test".into())
                 .spawn(|| panic!("--panic-test=thread: panicking off the main thread"))
@@ -5617,6 +5622,38 @@ fn die() -> ! {
     std::process::exit(1)
 }
 
+/// Give this thread a name Windows itself will hand back, and say so in the
+/// log.
+///
+/// ⚠️ **Two halves, and the second one is the one that gets read.**
+/// `SetThreadDescription` puts the name where a debugger and
+/// `NtQueryInformationThread(ThreadNameInformation)` can find it -- neither of
+/// which is reachable from `Get-Process`. So the tid and the name also go into
+/// the log, once, as a line anybody can grep. **A process with 39 threads and
+/// two identifiable ones cannot answer "is this a cycle or is it congestion"**,
+/// and that is the question this exists for.
+///
+/// **Instrument only**: it records, it does not change what any thread does.
+/// Unconditional on purpose -- a naming call inside an `if` would be a naming
+/// call that changes which branch a reader is looking at.
+pub fn name_this_thread(name: &str) {
+    use windows::Win32::System::Threading::{
+        GetCurrentThread, GetCurrentThreadId, SetThreadDescription,
+    };
+    let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    let set = unsafe {
+        SetThreadDescription(GetCurrentThread(), windows::core::PCWSTR(wide.as_ptr()))
+    };
+    let tid = unsafe { GetCurrentThreadId() };
+    // process-wide: a thread is a fact about the process, not about a window
+    plogf!(
+        "[thread] tid={} name={} described={}",
+        tid,
+        name,
+        if set.is_ok() { "yes" } else { "no" }
+    );
+}
+
 fn main() {
     // **Only the instance that owns the log clears it.** These two statements
     // used to run unconditionally, above everything -- including above the
@@ -5644,6 +5681,9 @@ fn main() {
         log_path().display()
     );
     logf!("{stdio}");
+    // **The UI thread names itself first**, so the tid in every later
+    // `[thread]` line has something to be compared against.
+    name_this_thread("polter-ui");
     maybe_panic_test();
 
     if std::env::args().any(|a| a == "--draw-on-paint") {

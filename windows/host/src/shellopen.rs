@@ -105,6 +105,7 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
     let worker = std::thread::Builder::new()
         .name("polter-shell-open".into())
         .spawn(move || {
+            crate::name_this_thread("polter-shell-open");
             // **COM, per thread, and this is a new thread.** `ShellExecuteW`
             // goes through the shell's COM surface; the window thread has had
             // `CoInitializeEx(COINIT_APARTMENTTHREADED)` since `ime_init`, and

@@ -1103,6 +1103,9 @@ mod deadlock_detector_tests {
     /// what keeps it from happening.
     fn hold_the_lock_for(hold: Duration) -> std::thread::JoinHandle<()> {
         let (tx, rx) = std::sync::mpsc::channel();
+        // unnamed-thread: a test helper. Naming is for sampling a hung
+        // product process, and this thread only ever exists inside
+        // `cargo test`, where the sampler is the test itself.
         let holder = std::thread::Builder::new()
             .name("state-lock-holder".into())
             .spawn(move || {
@@ -1239,6 +1242,8 @@ mod deadlock_detector_tests {
             // release cannot race the timeout: a holder that let go first
             // would produce a `resolved` line and read as D2 failing.
             let holder = hold_the_lock_for(Duration::from_millis(5_800));
+            // unnamed-thread: a test helper, as above -- it never runs in
+            // the shipped host, so there is nothing to find it in.
             let waiter = std::thread::Builder::new()
                 .name("state-lock-waiter".into())
                 .spawn(|| drop(reg()))
