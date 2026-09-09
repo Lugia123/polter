@@ -21,6 +21,12 @@ that notices a thirteenth call site appearing.
     converted sites hand over an arena the renderer would have freed, and a
     dropped message hands it back. That pairing is enforced by the leak
     detector in the test allocator, not here.
+  * 🔴 **The waker contract.** `Waker`'s documentation forbids a wake-up that
+    re-enters its own queue, directly or indirectly -- it is called with the
+    queue's mutex held. **Nothing here checks it and nothing can**: the
+    dangerous implementation is a host callback on the other side of the C
+    boundary, and a sweep of this repository's text would go green on exactly
+    the case that matters. A green run of this file says nothing about it.
   * **The other mailboxes.** The app mailbox and the surface mailbox have the
     same shape and have **not** been swept -- there are seven unbounded waits
     on them in `Surface.zig` alone. They are a separate piece of work and
@@ -267,7 +273,8 @@ def main():
         return 1
     print(f"{len(sources)} file(s) swept for direct pushes, plus the one line that wires "
           "the waker to the handle its thread waits on.")
-    print("NOT CHECKED: that a dropped message releases what it owned (the test "
+    print("NOT CHECKED: the waker contract (no gate can follow a host callback across "
+          "the C boundary), that a dropped message releases what it owned (the test "
           "allocator's leak detector does that), and the app and surface mailboxes.")
     for f in found:
         print(f"HIT    {f}")

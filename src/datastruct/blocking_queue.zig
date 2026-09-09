@@ -36,10 +36,33 @@ const compat_thread = @import("../lib/compat/thread.zig");
 ///
 /// ⚠️ **Contract, and it is not optional**: `func` is called **with the
 /// queue's mutex held**. It must not block, and it must not re-enter this
-/// queue. Today's Windows implementation only posts a completion packet and
-/// returns, which satisfies both -- but that is the implementation being
-/// convenient, not the interface being safe, so the requirement is written
-/// here rather than left to be rediscovered.
+/// queue -- **including indirectly**: it must not do anything that could
+/// synchronously cause a push back onto the same queue, however many frames
+/// away that happens. Today's Windows implementation only posts a completion
+/// packet and returns, which satisfies both -- but that is the implementation
+/// being convenient, not the interface being safe, so the requirement is
+/// written here rather than left to be rediscovered.
+///
+/// **A concrete one that is not safe by inspection.** The app mailbox's waker
+/// is the runtime's own wake-up, and under the embedded runtime that is a
+/// callback the host supplies -- code on the other side of the C boundary,
+/// not in this repository at all. Nothing here can see whether it eventually
+/// posts to the app mailbox, and if it does, that is this mutex taken twice
+/// by one thread. **Whoever installs a waker owns this question**, because
+/// nothing on this side can answer it for them.
+///
+/// # ⚠️ Why this has documentation and no check
+///
+/// **Because the only honest check would have to follow a function pointer
+/// across a language boundary**, and none of the tools here do that. A gate
+/// reads this repository's text; the dangerous implementation is not in this
+/// repository's text. A gate that swept what it *can* see would go green on
+/// exactly the case that matters, which is worse than no gate: it would read
+/// as coverage.
+///
+/// 🔴 **So this is a rule the green runs do not cover.** "Every gate passed"
+/// says nothing about it, and it is written here so that nobody has to
+/// discover that by finding out the hard way.
 pub const Waker = struct {
     ctx: *anyopaque,
     func: *const fn (*anyopaque) void,
