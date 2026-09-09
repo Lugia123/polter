@@ -2601,7 +2601,16 @@ fn poltergeistLayout(
         // this value and why it is answered as its own thing rather than as
         // a failure to be guessed at.
         .unsupported => error.LayoutUnsupported,
-        .refused => .{ .applied = false, .text = try alloc.dupe(u8, said) },
+        // ⚠️ **The refusal text goes through the same map as the reply.**
+        // Task 412: the reply was translated and this was not, so a refusal
+        // read "the layout leaves out terminal 0x1e066b80000" -- a surface
+        // handle, in a sentence that tells the caller to go look at a
+        // terminal. Feeding that number to `terminal_read` fails, and the
+        // caller has no way to see why.
+        .refused => .{
+            .applied = false,
+            .text = try self.layoutHandlesInText(alloc, said),
+        },
         .applied => .{
             .applied = true,
             .text = try self.layoutSurfacesToIds(alloc, said),
@@ -2671,6 +2680,76 @@ fn rewriteLayoutValue(
         .array => |*a| for (a.items) |*child| try self.rewriteLayoutValue(alloc, child, to_surface),
         else => {},
     }
+}
+
+/// Replace every surface handle in free text with the terminal id behind it.
+///
+/// **For prose, where the reply's rewrite cannot reach.** `rewriteLayout`
+/// walks a JSON tree and edits `pane` cells; a refusal is a sentence, and the
+/// handles in it were being handed to the caller untranslated (task 412).
+///
+/// ⚠️ **A number this app does not recognise is left exactly as it was.** The
+/// apprt writes ratios, counts and its own private pane numbers into these
+/// sentences too, and a scan that rewrote whatever looked like a handle would
+/// turn one of those into a terminal id that means something else. Only
+/// `surfaceIdOfHandle` -- the same map the reply uses, not a second one --
+/// decides, and it answers by comparing against surfaces this app holds.
+fn layoutHandlesInText(self: *const App, alloc: Allocator, text: []const u8) ![]const u8 {
+    return rewriteHandles(alloc, text, self, struct {
+        fn lookup(ctx: *const anyopaque, handle: u64) ?u64 {
+            const app: *const App = @ptrCast(@alignCast(ctx));
+            return app.surfaceIdOfHandle(handle);
+        }
+    }.lookup);
+}
+
+/// The text scan itself, with the map passed in so it can be tested without
+/// an `App`.
+fn rewriteHandles(
+    alloc: Allocator,
+    text: []const u8,
+    ctx: *const anyopaque,
+    lookup: *const fn (*const anyopaque, u64) ?u64,
+) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+
+    var i: usize = 0;
+    while (i < text.len) {
+        // `0x` only where a number can start: `0x` inside a word is part of
+        // the word, not a handle.
+        const starts = text[i] == '0' and
+            i + 1 < text.len and
+            (text[i + 1] == 'x' or text[i + 1] == 'X') and
+            (i == 0 or !std.ascii.isAlphanumeric(text[i - 1]));
+        if (!starts) {
+            try out.append(alloc, text[i]);
+            i += 1;
+            continue;
+        }
+
+        var j = i + 2;
+        while (j < text.len and std.ascii.isHex(text[j])) j += 1;
+        const digits = text[i + 2 .. j];
+        const value: ?u64 = if (digits.len == 0)
+            null
+        else
+            std.fmt.parseUnsigned(u64, digits, 16) catch null;
+
+        if (value) |v| {
+            if (lookup(ctx, v)) |sid| {
+                try out.print(alloc, "0x{x}", .{sid});
+                i = j;
+                continue;
+            }
+        }
+
+        // Not ours: copied through byte for byte, including the `0x`.
+        try out.appendSlice(alloc, text[i..j]);
+        i = j;
+    }
+
+    return out.toOwnedSlice(alloc);
 }
 
 /// The terminal id behind a surface handle, or null if this app has no such
@@ -5252,3 +5331,68 @@ pub const Wasm = if (!builtin.target.isWasm()) struct {} else struct {
     //     }
     // }
 };
+
+test "a refusal names terminals, and leaves every other number alone" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // A map with one surface in it: handle 0x1e066b80000 is terminal
+    // 0x7c09e65171296e32. Everything else is not this app's.
+    const Map = struct {
+        fn lookup(_: *const anyopaque, handle: u64) ?u64 {
+            return if (handle == 0x1e066b80000) 0x7c09e65171296e32 else null;
+        }
+    };
+    const ctx: *const anyopaque = @ptrCast(&Map{});
+
+    {
+        // ⚠️ The sentence measured on the machine (task 412). The number in
+        // it was a surface handle, in a sentence telling the caller to go
+        // look at a terminal.
+        const got = try rewriteHandles(
+            alloc,
+            "the layout leaves out terminal 0x1e066b80000, which is in this tab.",
+            ctx,
+            Map.lookup,
+        );
+        defer alloc.free(got);
+        try testing.expectEqualStrings(
+            "the layout leaves out terminal 0x7c09e65171296e32, which is in this tab.",
+            got,
+        );
+    }
+
+    {
+        // **A number this app does not hold is not a handle.** The apprt puts
+        // its own pane numbers and other values in these sentences, and
+        // rewriting one of those would hand back an id that means something
+        // else -- worse than the defect, because it would look right.
+        const said = "0x16 is not a terminal in this tab; ratio 0.5; 0x1e066b80001 either";
+        const got = try rewriteHandles(alloc, said, ctx, Map.lookup);
+        defer alloc.free(got);
+        try testing.expectEqualStrings(said, got);
+    }
+
+    {
+        // Two in one sentence, and `0x` inside a word is part of the word.
+        const got = try rewriteHandles(
+            alloc,
+            "0x1e066b80000 and 0x1e066b80000 (id0x1e066b80000)",
+            ctx,
+            Map.lookup,
+        );
+        defer alloc.free(got);
+        try testing.expectEqualStrings(
+            "0x7c09e65171296e32 and 0x7c09e65171296e32 (id0x1e066b80000)",
+            got,
+        );
+    }
+
+    {
+        // A bare `0x` and an empty string: no digits, nothing to look up,
+        // nothing lost.
+        const got = try rewriteHandles(alloc, "0x and 0X", ctx, Map.lookup);
+        defer alloc.free(got);
+        try testing.expectEqualStrings("0x and 0X", got);
+    }
+}

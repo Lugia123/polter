@@ -198,7 +198,8 @@ pub const Method = enum {
     /// night gone. The user asked for a way to unstick one.
     ///
     /// **Refused unless the user has turned the switch on for that
-    /// terminal**, from its own tab menu -- `Bus.Entry.may_authorise`, which
+    /// terminal**, from its own right-click menu -- `Bus.Entry.may_authorise`,
+    /// which
     /// no agent can set. That is the whole of the control, and what it does
     /// not reach is written there too.
     terminal_answer_prompt,
@@ -1342,7 +1343,8 @@ pub fn promptReach(method: Method) enum {
 /// menu item says it to the person switching it on.
 ///
 /// **What was not opened**: the switch is off until the user turns it on,
-/// per terminal, from that terminal's own tab menu; no agent can set it; a
+/// per terminal, from that terminal's own right-click menu; no agent can set
+/// it; a
 /// plugin cannot call the tool at all; and no one may answer their *own*
 /// prompt through this surface (`selfPermitted`). What the switch does not
 /// reach is written on `Bus.Entry.may_authorise` and said out loud on the
@@ -1482,7 +1484,7 @@ pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
     //
     // The rule this enforces is the user's: a supervisor may answer a
     // worker's permission prompt only where the user has said so, from that
-    // terminal's own tab menu. `Bus.setMayAuthorise` takes `.user` and
+    // terminal's own right-click menu. `Bus.setMayAuthorise` takes `.user` and
     // nothing else, so there is no order of calls that grants it here.
     switch (req) {
         // The dedicated tool. Nothing subtle: the switch is the whole
@@ -1666,7 +1668,8 @@ pub fn errorMessage(err: Error) []const u8 {
             "call become_supervisor and try again; otherwise ask the user",
         error.AuthoriseOff => "the user has not allowed a supervisor to answer that " ++
             "terminal's permission prompts. It is off until they switch it on from that " ++
-            "terminal's own tab menu, and nothing here can switch it on -- not being a " ++
+            "terminal's own right-click menu, or the app menu, and nothing here can " ++
+            "switch it on -- not being a " ++
             "supervisor, not asking again. A worker stopped on a prompt therefore stays " ++
             "stopped: say so, name the terminal, and let the person answer it. " ++
             "**This also refused a key**: with the switch off, the keys that answer a " ++

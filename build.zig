@@ -250,6 +250,25 @@ pub fn build(b: *std.Build) !void {
                 lib_static.install("ghostty-internal.a");
             }
         }
+    } else {
+        // ⚠️ **Mutually exclusive, and it used to be silent.** `-Demit-lib-vt`
+        // takes this branch away: with it on, `ghostty-internal.dll` (and the
+        // static library beside it) are **not built at all**, and the build
+        // still exits 0. One command asking for both produces one of them,
+        // and the only way anybody noticed was the DLL's byte count -- the
+        // build said nothing, so there was nothing to notice in it.
+        //
+        // Saying it rather than failing: `-Demit-lib-vt` on its own is a
+        // legitimate, common build, and turning it into an error would break
+        // every caller who only ever wanted the vt library. **Two artifacts
+        // means two commands**, and this line is where somebody finds that
+        // out.
+        std.log.warn(
+            "-Demit-lib-vt is set, so ghostty-internal.dll/.so is NOT built by " ++
+                "this command; the two are exclusive. Run zig build again without " ++
+                "-Demit-lib-vt if you also want it.",
+            .{},
+        );
     }
 
     // macOS only artifacts. These will error if they're initialized for

@@ -715,6 +715,21 @@ pub fn init(
                 !config.emit_helpgen);
     };
 
+    // precedence: `orelse` binds tighter than `and`, so this reads
+    // `(option orelse !emit_lib_vt) and emit_xcframework` -- **the `and` is
+    // applied to the explicit value too**. Passing `-Demit-macos-app=true`
+    // together with `-Demit-xcframework=false` therefore leaves this false,
+    // and the build exits 0 having compiled no Swift at all (39/39 steps, no
+    // xcodebuild step; without the second flag, 296/296 and one). Measured
+    // 2026-09-09, task 371, and confirmed by construction:
+    // `opt orelse true and false` evaluates to `false`, not `true`.
+    //
+    // ⚠️ **Left as it is on purpose.** Adding the parentheses would change
+    // what an existing command does -- every caller who passes both flags
+    // today gets a fast build, and would start getting a full xcodebuild.
+    // That is a decision for whoever owns the build, not a drive-by fix; the
+    // shape is written down in `docs/windows/development.md` under "「exit 0」
+    // 不等于「mac 侧编过了」", and the reading that catches it is there too.
     config.emit_macos_app = b.option(
         bool,
         "emit-macos-app",

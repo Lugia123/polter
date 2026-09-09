@@ -1305,6 +1305,58 @@ zig build test -Demit-xcframework=false --summary all > full.log 2>&1; echo "EXI
    同理，要确认某个 `switch (apprt.runtime)` 的分支真被分析到，最省的办法是往里塞一个
    `@compileError` 再编一次——报出来才说明它在分析范围内。
 
+#### 「exit 0」不等于「mac 侧编过了」
+
+**`zig build -Demit-macos-app=true` 可以整趟不编一行 Swift 而退出 0。**
+
+两组读数，同一棵树、同一天（2026-09-09），只差一个开关：
+
+```
+zig build -Demit-macos-app=true                            → 296/296 steps，grep -c xcodebuild = 1
+zig build -Demit-macos-app=true -Demit-xcframework=false   →  39/39 steps，grep -c xcodebuild = 0
+```
+
+⚠️ **变量是 `-Demit-xcframework=false`，不是「Swift 文件有没有改过」。** 这一条曾经
+被记成「没 touch 过就不编」——那是错的，而且错得刚好安全：谁都不会因为它去查真机制，
+直到有人拿一个带着这个开关的「exit 0」当成「mac 侧编得过」交出去。
+
+**为什么**（构造出来的，不是猜的）：`src/build/Config.zig` 里那行
+
+```zig
+config.emit_macos_app = b.option(bool, "emit-macos-app", …) orelse
+    !config.emit_lib_vt and config.emit_xcframework;
+```
+
+⚠️ **`orelse` 比 `and` 绑得紧**，所以它读作 `(option orelse !emit_lib_vt) and
+emit_xcframework` —— **那个 `and` 也作用在你显式传进去的值上**。于是
+`-Demit-macos-app=true` 被 `-Demit-xcframework=false` 一票否决，而且没有任何一句话
+提到这件事。
+
+优先级本身是构造证明的，一个五行程序就够：
+
+```zig
+const opt: ?bool = true;
+opt orelse true and false      // → false   ← 实际语义
+(opt orelse true) and false    // → false   ← 与上面相同
+opt orelse (true and false)    // → true    ← 大多数人以为的语义
+```
+
+**怎么读出来**（判据，不是感觉）：
+
+```sh
+zig build -Demit-macos-app=true … --summary all 2>&1 | grep -c xcodebuild
+# 1 ⇒ 这一趟真的编了 Swift；0 ⇒ 没有，不管退出码是多少
+```
+
+⚠️ **只看 `exit 0` 是零信息量的**，和上面「不存在的测试过滤器也退 0」是同一类。
+交 mac 侧的绿之前，报那个计数，别报退出码。
+
+**没有修**：加括号会改变一条现有命令的行为——今天同时传两个开关的人拿到的是快构建，
+加了括号就会变成整趟 xcodebuild。那是构建的所有者该做的决定，不是顺手改。
+`Config.zig` 那一行旁边写了 `// precedence:` 说明，
+`tools/orelse-and-need-parentheses.py` 守着「新出现的同形写法要么加括号、要么写明
+理由」。
+
 #### 写在「没人引用的类型」内部的测试，永远不会执行
 
 **而测试计数和退出码都不会告诉你。**

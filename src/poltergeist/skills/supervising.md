@@ -471,7 +471,7 @@ compacted.
 agent, not a detail to settle afterwards, because afterwards is too late: a
 worker stopped on a permission prompt stays stopped, and by default you cannot
 answer it. `terminal_answer_prompt` exists, but it is refused at every terminal
-whose user has not switched it on from that terminal's own tab menu — you
+whose user has not switched it on from that terminal's own right-click menu — you
 cannot switch it on, and asking again will not change it. So plan for the
 default: the notification that fetches somebody goes out at whatever hour it
 happens, since `authorisation` is
@@ -734,7 +734,7 @@ to its work or release one that is held.
 **And one that depends on the user, per terminal.** Answering another agent's
 permission prompt used to be in that first list. It is now
 `terminal_answer_prompt`, and it is refused unless the user has switched it on
-for that terminal from its own tab menu — a switch nothing you can call will
+for that terminal from its own right-click menu — a switch nothing you can call will
 set. With it off, the answer is what it always was: say which terminal is
 stopped and on what, and do not type `yes` into it.
 

@@ -587,7 +587,7 @@ const tools = [_]Tool{
             "permission prompt stays stopped until somebody answers it, and " ++
             "whether that somebody can be you is the user's call, one terminal at " ++
             "a time: terminal_answer_prompt is refused with `AuthoriseOff` until " ++
-            "they switch it on from that terminal's own tab menu, and nothing you " ++
+            "they switch it on from that terminal's own right-click menu, and nothing you " ++
             "can call switches it on. With it off, the keys that answer a box " ++
             "(return, the arrows, tab) are refused at that terminal too. " ++
             "terminal_send is not behind that switch -- but it types text and " ++
@@ -667,8 +667,9 @@ const tools = [_]Tool{
         .description = "Answer a permission prompt that has stopped another terminal -- " ++
             "the `Do you want to proceed? 1. Yes / 2. Yes, and don't ask again / 3. No` " ++
             "box a worker sits on until somebody answers it. **Off for every terminal " ++
-            "until the user switches it on for that one**, from that terminal's own tab " ++
-            "menu; nothing you can call switches it on, and asking again will not " ++
+            "until the user switches it on for that one**, from that terminal's own " ++
+            "right-click menu; nothing you can call switches it on, and asking again " ++
+            "will not " ++
             "change it. With it off you get `AuthoriseOff`, and the right move is to " ++
             "say which terminal is stopped and let the person answer -- that is what " ++
             "this program did for every terminal before the switch existed. `choice` " ++
