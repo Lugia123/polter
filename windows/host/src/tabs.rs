@@ -3377,7 +3377,7 @@ fn acting_pane(tab: &Tab, at: Option<PaneId>) -> PaneId {
 /// Which tab an action lands on: **the one holding the pane it named**, and
 /// the active one only when it named nothing.
 ///
-/// ⚠️ **The other half of the rule `acting_pane` is one half of.** Task 362
+/// ⚠️ **The other half of the rule `acting_pane` is one half of.** Task 382
 /// fixed "the tool names a pane and the effect lands on whichever pane has
 /// focus" -- and fixed it *within a tab*, because every caller had already
 /// picked `win.active` before asking. So the same defect survived one level

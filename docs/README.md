@@ -22,7 +22,8 @@
 - [windows/](windows/design.md) — Windows 移植的设计与开发文档：用 Rust 写壳、走已有的 `embedded` apprt（macOS 的 Swift 应用走的就是它）。**步 1–4 已落地**：POSIX 假设修完（是五处，不是四处——第五处 `localtime_r` 要修完前四处才在链接阶段现形，而且它溢出了 Polter）、C API 有了 `GHOSTTY_PLATFORM_WIN32`、WGL 填进了 `embedded` 的空分支。**步 3（TSF）已在真机验过**，是这条路上最大的风险，结论是约 470 行、不是主体。DLL 在 Windows 上加载并调通了，但**屏幕上还没画出任何东西**。见 [windows/design.md](windows/design.md)（为什么这么做）、[windows/development.md](windows/development.md)（怎么动手）与 [windows/status.md](windows/status.md)（**走到哪了、还欠什么**）。
   ⚠️ **真机判据各自成文，不在上面三份里**，因为一份只活在群消息里的判据会随压缩消失（任务 90 标题指名的「分隔线判据 1–6」就是这么没的，今天全仓一条都找不回来）：
   [windows/keybinds-page-criteria.md](windows/keybinds-page-criteria.md)（快捷键页的 UIA 树，含 C0 地板与它的正对照）、
-  [windows/split-target-criteria.md](windows/split-target-criteria.md)（分屏动作作用在被指名的 pane 上，四条 + 四条键位回归）、
+  [windows/split-target-criteria.md](windows/split-target-criteria.md)（分屏动作作用在被指名的 pane 上，四条 + 四条键位回归；**并含 407 跨标签那三格**，因为那是同一条规则的另一半）、
+  [windows/layout-criteria.md](windows/layout-criteria.md)（`terminal_layout` 一次给出整份形状，六格 + 406 的 id 归属三格，**含「① 不绿则 ②③ 不算数」那条地板**）、
   [windows/worker-placement-criteria.md](windows/worker-placement-criteria.md)（worker 摆在哪，附五条欠账）。
   ⚠️ 三份里的键位一律以 `Keybinds.init` 的 `!isDarwin()` 分支为准——**判据写错键位的表现和功能真坏了一样：按下去没反应。**
 
