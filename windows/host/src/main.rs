@@ -2728,7 +2728,14 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 // from, and that is not always the tab in front.
                 match target_surface(&target) {
                     Some(s) => {
-                        queue_from(origin, Op::SetTabTitle { surface: s as usize, title: t }, "set_title action");
+                        queue_from(
+                            origin,
+                            // Not explicit: this is what the program calls
+                            // itself, and it is only a default for tabs that
+                            // nobody has named.
+                            Op::SetTabTitle { surface: s as usize, title: t, explicit: false },
+                            "set_title action",
+                        );
                     }
                     None => alogf!(origin, "[action] set_title with no surface (tag={}); tab label unchanged", target.tag),
                 }
@@ -2770,7 +2777,11 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                 alogf!(origin, "[action] set_tab_title {:?}", t);
                 match target_surface(&target) {
                     Some(s) => {
-                        queue_from(origin, Op::SetTabTitle { surface: s as usize, title: t }, "set_title action");
+                        queue_from(
+                            origin,
+                            Op::SetTabTitle { surface: s as usize, title: t, explicit: true },
+                            "set_tab_title action",
+                        );
                     }
                     None => alogf!(origin, "[action] set_tab_title with no surface (tag={}); dropped", target.tag),
                 }

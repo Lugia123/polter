@@ -124,7 +124,11 @@ pub struct Tab {
     /// set, this takes precedence over the computed title from the terminal."
     /// Only this field is worth remembering across a close; the program's own
     /// title belongs to the program that is gone.
-    pub title_override: Option<String>,
+    /// A name somebody chose for this tab, and who chose it.
+    ///
+    /// **`None` means nobody has, so the program's own title shows.** Set,
+    /// it outranks the program from then on -- see `rename_tab`.
+    pub title_override: Option<PinnedTitle>,
 }
 
 impl Tab {
@@ -193,7 +197,12 @@ pub enum Op {
     /// A `usize` rather than a `Surface`, matching `Pane.surface`: this queue
     /// lives behind the `STATE` mutex, and a raw pointer in it would make the
     /// whole of `State` un-`Send`.
-    SetTabTitle { surface: usize, title: String },
+    /// A tab's name. **`explicit` is the whole of task 420**: the program's
+    /// own title (OSC 0/2, arriving as `set_title`) and a name somebody chose
+    /// (`set_tab_title`) used to queue the identical op, so this host could
+    /// not tell them apart and the last writer won -- which is the program,
+    /// every prompt, forever.
+    SetTabTitle { surface: usize, title: String, explicit: bool },
     CopyTitleToClipboard,
     PresentTerminal,
     /// `ghostty_action_split_direction_e`.
@@ -2697,7 +2706,11 @@ pub fn tab_infos(frame: HWND) -> (Vec<TabInfo>, usize) {
                     id: t.id,
                     // The name the user gave wins over the one the program
                     // announced -- the same precedence the strip paints with.
-                    title: t.title_override.clone().unwrap_or_else(|| t.title.clone()),
+                    title: t
+                        .title_override
+                        .as_ref()
+                        .map(|p| p.text.clone())
+                        .unwrap_or_else(|| t.title.clone()),
                     pane: t.focused,
                     panes: t
                         .panes
@@ -2965,7 +2978,7 @@ pub fn set_mark_for_surface(
 /// takes precedence over the computed title from the terminal." The host was
 /// built to a mis-stated rule, which is why a renamed tab lost its name at the
 /// next `cd`.
-pub fn rename_tab(frame: HWND, id: TabId, title: String) {
+pub fn rename_tab(frame: HWND, id: TabId, title: String, by: NamedBy) {
     // **Whether the rename actually landed**, taken inside the block and read
     // outside it. Announcing a name that was never stored -- because the tab
     // had gone -- would tell a client to re-read a property that has not
@@ -2975,7 +2988,7 @@ pub fn rename_tab(frame: HWND, id: TabId, title: String) {
             match w.tabs.iter_mut().find(|t| t.id == id) {
                 Some(tab) => {
                     tab.title = title.clone();
-                    tab.title_override = Some(title.clone());
+                    tab.title_override = Some(PinnedTitle { text: title.clone(), by });
                     true
                 }
                 None => false,
@@ -2998,6 +3011,47 @@ pub fn rename_tab(frame: HWND, id: TabId, title: String) {
 /// **Ignored while the user has given the tab a name of their own.** Every
 /// `cd` in a shell sends one of these, so without the guard a name the user
 /// typed survives until their next command.
+/// A tab name somebody chose, and which "somebody".
+///
+/// ⚠️ **The two are one value on purpose.** They were nearly two fields, and
+/// two fields that must agree are the shape this file has now been bitten by
+/// three times -- see `rename_tab` for the tally.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinnedTitle {
+    pub text: String,
+    pub by: NamedBy,
+}
+
+/// Who pinned a tab's name.
+///
+/// **Recorded because the log has to say it.** The line that reports a
+/// program's title being turned away used to read *"the user named it"* --
+/// and once a supervisor could pin a name too, that sentence was wrong in the
+/// one place somebody would go to find out what happened. A reader would
+/// conclude a person had done it and stop looking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NamedBy {
+    /// Typed into the rename box on the strip.
+    User,
+    /// Set through the `set_tab_title` action -- a keybinding, or a tool call
+    /// from a supervisor naming a worker so a person can find it.
+    Tool,
+    /// Put back when a closed tab was reopened. Whoever chose it originally
+    /// is not remembered across the close; what is remembered is that it was
+    /// chosen.
+    Restored,
+}
+
+impl NamedBy {
+    fn describe(self) -> &'static str {
+        match self {
+            NamedBy::User => "the person at the keyboard named it",
+            NamedBy::Tool => "it was named through the set_tab_title action",
+            NamedBy::Restored => "it was named before it was closed, and the name came back",
+        }
+    }
+}
+
 /// What happened to a title a program announced.
 ///
 /// **Both outcomes carry the window as well as the index**, because a title
@@ -3009,8 +3063,9 @@ pub fn rename_tab(frame: HWND, id: TabId, title: String) {
 pub enum ShellTitle {
     /// `(frame, index in that window, how many tabs that window has)`
     Applied(isize, usize, usize),
-    /// The user named this tab; the program does not get to rename it.
-    Overridden(isize, usize, usize),
+    /// Somebody named this tab; the program does not get to rename it.
+    /// `(frame, index, how many, who named it)`
+    Overridden(isize, usize, usize, NamedBy),
     /// No tab owns that surface. **Distinct from the other two on purpose**:
     /// "the title went to the wrong tab" and "the title went nowhere" are
     /// different failures and used to produce the same silence.
@@ -3034,8 +3089,8 @@ fn set_shell_title(surface: usize, title: String) -> ShellTitle {
         let win = &mut ws[wi];
         let (owner, n) = (win.frame, win.tabs.len());
         let tab = &mut win.tabs[idx];
-        if tab.title_override.is_some() {
-            return ShellTitle::Overridden(owner, idx, n);
+        if let Some(pinned) = &tab.title_override {
+            return ShellTitle::Overridden(owner, idx, n, pinned.by);
         }
         tab.title = title;
         ShellTitle::Applied(owner, idx, n)
@@ -3657,7 +3712,7 @@ fn destroy_tab_at(frame: HWND, idx: usize) {
         // person chose is theirs to get back.
         let remembered = Some((
             tab.id,
-            tab.title_override.clone().unwrap_or_default(),
+            tab.title_override.as_ref().map(|p| p.text.clone()).unwrap_or_default(),
             tab.cwd.clone().unwrap_or_default(),
         ));
         if win.active >= win.tabs.len() && !win.tabs.is_empty() {
@@ -3968,7 +4023,7 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // the line claiming it had been restored would be describing
                 // something nobody could see.
                 if !title.is_empty() {
-                    rename_tab(frame, id, title.clone());
+                    rename_tab(frame, id, title.clone(), NamedBy::Restored);
                 }
                 // Back where it was. Clamped by `move_tab_to` itself: the tab
                 // list is shorter now than when it was closed, and index 7 of
@@ -4144,7 +4199,45 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     wlogf!(frame, "[win] reset_window_size -> {}x{}", w, h);
                 }
             }
-            Op::SetTabTitle { surface, title } => {
+            Op::SetTabTitle { surface, title, explicit } => {
+                // **A name somebody asked for outranks the one the program
+                // announces, from here on.**
+                //
+                // Same shape as the `set_window_title` rule: what was said
+                // explicitly is what counts, and what a program keeps
+                // announcing is only a default for tabs nobody has named.
+                // Tabs nobody named are untouched -- they still follow the
+                // program, which is what makes a fresh tab show what is
+                // running in it.
+                //
+                // ⚠️ **The cost, chosen rather than overlooked**: once a tab
+                // is named, what the program wants to display there never
+                // appears again. A supervisor naming a worker so a person can
+                // find it on the strip is trading "what is running" for "who
+                // this is", deliberately.
+                //
+                // **Safe to route apart, by construction**: `set_tab_title`
+                // never comes from a program. The core sends it only from the
+                // binding action; a program's OSC 0/2 becomes `set_title`,
+                // which arrives with `explicit: false`.
+                if explicit {
+                    match tab_of_surface(surface as Surface) {
+                        Some((owner, id)) => {
+                            rename_tab(owner, id, title.clone(), NamedBy::Tool);
+                            wlogf!(owner, "[tab] set_tab_title {:?} pinned; the program's own title will not replace it", title);
+                            unsafe {
+                                let _ = InvalidateRect(Some(frame), None, false);
+                            }
+                            continue;
+                        }
+                        None => {
+                            // process-wide: the surface is in no tab, so there
+                            // is no window this could belong to
+                            plogf!("[tab] set_tab_title {:?}: surface {} is in no tab; nothing named", title, surface);
+                            continue;
+                        }
+                    }
+                }
                 let outcome = set_shell_title(surface, title.clone());
                 unsafe {
                     let _ = InvalidateRect(Some(frame), None, false);
@@ -4163,13 +4256,14 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                         let owner = HWND(owner as *mut c_void);
                         wlogf!(owner, "[tab] set_tab_title {:?} on tab {} of {}", title, i + 1, n)
                     }
-                    ShellTitle::Overridden(owner, i, n) => {
+                    ShellTitle::Overridden(owner, i, n, by) => {
                         let owner = HWND(owner as *mut c_void);
                         wlogf!(owner,
-                            "[tab] set_tab_title {:?} ignored on tab {} of {}; the user named it",
+                            "[tab] the program's title {:?} was turned away on tab {} of {}; {}",
                             title,
                             i + 1,
-                            n
+                            n,
+                            by.describe()
                         )
                     }
                     // process-wide: no tab in any window owns this surface,

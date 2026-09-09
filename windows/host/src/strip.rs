@@ -831,7 +831,7 @@ pub fn end_rename(frame: HWND, commit: bool) {
         let n = unsafe { GetWindowTextW(edit, &mut buf) };
         if n > 0 {
             let title = String::from_utf16_lossy(&buf[..n as usize]);
-            tabs::rename_tab(frame, id, title.clone());
+            tabs::rename_tab(frame, id, title.clone(), tabs::NamedBy::User);
             logf!("[strip] rename {:?} -> {:?}", id, title);
         }
     }
@@ -1998,7 +1998,7 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
         19 => {
             let t = tabs_now();
             if let Some((id, _)) = t.first().cloned() {
-                tabs::rename_tab(frame, id, "MOVED-ME".to_string());
+                tabs::rename_tab(frame, id, "MOVED-ME".to_string(), tabs::NamedBy::User);
                 log_state(frame, "before move (the tab to watch is MOVED-ME)");
                 tabs::move_tab_to(frame, id, 2);
                 log_state(frame, "after move -- MOVED-ME must be at index 2");
