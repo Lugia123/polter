@@ -61,17 +61,27 @@ self-test.
     function cannot disagree with itself, which is the point, but "what the
     painter computes" and "what the user sees" are still two things and only a
     machine can compare them.
-  * **The plugin list in `settings_ui.rs`**, which is the same shape and is
-    *not* covered: its painter works a row out at line 1666 and its click
-    handler divides back at line 1514 -- **two copies, one of them an
-    inverse**, which is exactly the pair the palette's bug was made of. It is
-    outside this checker because nothing reads it but itself: that page has no
-    provider, so a disagreement between those two lines can misplace a click
-    at a row boundary but cannot lie to a client about where a row is. Written
-    down here rather than left to be discovered, because a checker that walked
-    past it silently would be the same failure this file was rewritten for.
-    ⚠️ **If that page ever gets a provider, it must get a `row_rect_at`
-    first**, and then this checker covers it with no change.
+  * **Whether a page with rows is in the accessibility tree at all.** This
+    checker used to require it: every `*_row_rect_at` had to be asked about by
+    `uia.rs`. That is a real claim and worth keeping -- **it is task 418** --
+    but it is a different claim from this file's subject, and a checker that
+    asserts two things cannot tell you which of them broke. The plugin list
+    made the ambiguity concrete: it became the first page with a row formula
+    and no provider, so the rule fired at a refactor that was entirely right.
+    ⚠️ **The direction that remains is the one that is this subject**: a
+    provider must ask rather than work a row's place out for itself. The
+    reverse -- every table must have a provider -- is gone from here.
+    **Written down because a rule that is removed and not accounted for leaves
+    a weaker checker and no trace of why.**
+  * **The plugin list's arithmetic.** It now has `plugin_row_rect_at` and its
+    click asks it, so the shape is covered here; whether the rectangle is the
+    one drawn is still a question only a machine can answer. The pair it used
+    to carry is worth remembering as the cleanest example of this family:
+    the painter went forwards and the click divided back, and
+    **`(y - PAD*sc/96)` is negative in the padding above the first row, where
+    Rust's integer division truncates toward zero -- so `-1 / 42` is `0` and
+    the padding selected row 0.** Two formulas that agree everywhere anyone
+    would think to click, and disagree only where nobody looks.
   * **A page that paints rows and defines no `row_rect_at` at all**, if its
     provider also never answers a per-row rectangle. There is then nothing to
     disagree about yet -- and the moment a provider is written for it, rule 3
@@ -127,18 +137,26 @@ def body_of(src, start):
 
 
 def pages(sources):
-    """Every source that defines a row formula, and the name of that function.
+    """Every row formula there is, as `(file, function)` pairs.
 
-    **This is the default-include part.** A new page is a page because it has
-    the function, not because it is written down here.
+    **This is the default-include part.** A page is a page because it has the
+    function, not because it is written down here.
+
+    ⚠️ **Every one of them, not the first one in each file.** This used to
+    return a dict keyed by file, so a file with two formulas contributed one
+    -- and adding a second to `settings_ui.rs` silently dropped the first from
+    the subject set. The checker stayed green, its output stayed the same
+    length, and it had stopped watching a page. **That is this file's own
+    subject happening one level up**: not "the formula got a second copy", but
+    "the thing the checker was looking at got swapped for another one", and
+    the two are indistinguishable in a passing run.
     """
-    out = {}
-    for name, src in sources.items():
+    out = []
+    for name, src in sorted(sources.items()):
         if name == UIA_NAME:
             continue
-        m = DEFINES_PAGE.search(strip_comments(src))
-        if m:
-            out[name] = m.group(1)
+        for m in DEFINES_PAGE.finditer(strip_comments(src)):
+            out.append((name, m.group(1)))
     return out
 
 
@@ -166,7 +184,7 @@ def findings(sources):
         )
 
     banned = {}
-    for name, fn in sorted(found.items()):
+    for name, fn in found:
         plain = strip_comments(sources[name])
         m = re.search(r"\bfn\s+%s\s*\(" % re.escape(fn), plain)
         body = body_of(plain, m.end()) if m else ""
@@ -194,14 +212,19 @@ def findings(sources):
                 "to disagree with the thing it is the inverse of -- at a boundary it selects "
                 "one row and runs another"
             )
-        asked = fn[: -len("_at")]  # `row_rect_at` -> `row_rect`
-        module = name[:-3]
-        if f"{module}::{asked}" not in uia:
-            out.append(
-                f"uia.rs does not ask `{module}::{asked}`. If the provider works a row's "
-                "place out for itself, it is the second copy again -- and the client cannot "
-                "see that the answer is wrong, it just clicks and runs something else"
-            )
+        # **The reverse-direction rule used to be here and has been split out.**
+        #
+        # It required every page with a row formula to be asked about by
+        # `uia.rs` -- which is a claim that every page with rows belongs in the
+        # accessibility tree. True, and worth doing, and **not this checker's
+        # subject**: this one is "one place decides where a row is". A checker
+        # that asserts two things cannot tell you which of them broke, and the
+        # first page without a provider (the plugin list) made exactly that
+        # ambiguity concrete. It is task 418 now.
+        #
+        # ⚠️ The direction that remains is the one that is this subject: a
+        # provider must **ask** rather than work a row's place out for itself.
+        # That is checked below, per `BoundingRectangle`.
         for c in layout_constants(sources[name], fn):
             banned[c] = name
 
@@ -269,16 +292,31 @@ def self_test():
          case(k=GOOD_K + "fn kb_paint() { let y = s(PAD + KB_HEADER) + o as i32 * s(KB_ROW_H); }\n"), 1),
         ("the inverse back in the hit test",
          case(p=GOOD_P + "fn hit2() { let row = (y - sc(EDIT_H)) / sc(ROW_H); }\n"), 1),
+        # Three, not four: the fourth was the reverse-direction rule that went
+        # to task 418. The three that remain are all this subject -- a
+        # provider knowing a layout instead of asking for it -- and the phrase
+        # below pins that, so this cell cannot start passing on some other
+        # rule's finding the way the third-page cell did.
         ("a provider that derives instead of asking",
          case(u="fn BoundingRectangle(&self) -> WResult<UiaRect> { let y = EDIT_H + i * ROW_H; }\n"
                 "fn BoundingRectangle(&self) -> WResult<UiaRect> { Ok(crate::settings_ui::kb_row_rect(i)) }\n"),
-         4),
+         3, "must ask where a row is"),
         ("the same formulas in comments only",
          case(p=GOOD_P + "// let y = sc(EDIT_H) + n as i32 * sc(ROW_H);\n"
                          "// let row = (y - sc(EDIT_H)) / sc(ROW_H);\n",
               u=GOOD_U + "// ROW_H and EDIT_H are palette.rs's business\n"), 0),
         # **The one the old version could not do.** A page nobody added to a
-        # list is still a page, and its provider is held to the same rule.
+        # list is still a page, and it is held to the same rule.
+        #
+        # ⚠️ **This cell used to prove something else.** Its page carried only
+        # a definition -- no second copy, no inverse -- so the single finding
+        # it produced came from the reverse-direction rule ("uia.rs does not
+        # ask this page"), not from the subject. It read like a guard on the
+        # subject for as long as both rules lived here, and when the reverse
+        # rule was split out to task 418 the cell went silently empty. **A
+        # self-test that passes by testing the wrong rule is the shape this
+        # whole file exists to catch**, so the page now carries the thing the
+        # subject is about, and the assertion names which finding it wants.
         ("a third page nobody told the checker about",
          case(extra={"tasklist.rs": """
 const TL_TOP: i32 = 40;
@@ -288,20 +326,57 @@ fn tl_row_rect_at(top: usize, dpi: i32, width: i32, index: usize) -> Option<RECT
     let y = sc(TL_TOP) + n as i32 * sc(TL_ROW_H);
     Some(RECT { left: 0, top: y, right: width, bottom: y + sc(TL_ROW_H) })
 }
-"""}), 1),
+fn tl_paint2() {
+    let sc = |v: i32| v * dpi / 96;
+    let y = sc(TL_TOP) + n as i32 * sc(TL_ROW_H);
+}
+"""}), 1, "worked out"),
+        # **Two formulas in one file, and only one of them has a second
+        # copy.** Without this cell the subject set could quietly shrink to
+        # one formula per file again -- which is how a whole page stopped
+        # being watched while the output stayed the same length and the exit
+        # code stayed 0. The finding must name the formula that actually has
+        # the copy, so the cell cannot be satisfied by noticing the other one.
+        ("two formulas in one file, one of them copied",
+         case(k=GOOD_K + """
+const P_ROW_H: i32 = 30;
+const P_PAD: i32 = 12;
+fn plug_row_rect_at(dpi: i32, index: usize) -> RECT {
+    let s = |v: i32| v * dpi / 96;
+    let y = s(P_PAD) + index as i32 * s(P_ROW_H);
+    RECT { left: 0, top: y, right: 0, bottom: y + s(P_ROW_H) }
+}
+fn plug_paint2() {
+    let s = |v: i32| v * dpi / 96;
+    let y = s(P_PAD) + i as i32 * s(P_ROW_H);
+}
+"""), 1, "plug_row_rect_at"),
         ("every page gone", {UIA_NAME: GOOD_U}, 1),
     ]
     ok = True
-    for what, sources, want in cases:
+    for entry in cases:
+        what, sources, want = entry[0], entry[1], entry[2]
+        # **The count is not the claim.** A cell can produce the right number
+        # of findings from the wrong rule -- this one did, for as long as two
+        # rules lived here -- so a cell may also name a phrase its finding has
+        # to contain.
+        must_contain = entry[3] if len(entry) > 3 else None
         got = findings(sources)
         if len(got) != want:
             print(f"probe self-test FAILED: {what} gave {len(got)} finding(s), expected {want}:")
             for f in got:
                 print(f"    {f}")
             ok = False
+        elif must_contain and not any(must_contain in f for f in got):
+            print(f"probe self-test FAILED: {what} gave {want} finding(s), but none of them "
+                  f"is the one this cell is about ({must_contain!r}):")
+            for f in got:
+                print(f"    {f}")
+            ok = False
     if ok:
         print("probe self-test: OK (a second forward copy in two spellings, the inverse, a "
-              "deriving provider, comments, an unlisted third page, and no pages at all)")
+              "deriving provider, comments, an unlisted third page, two formulas in one "
+              "file, and no pages at all)")
     return ok
 
 
@@ -319,7 +394,7 @@ def main():
         return 1
 
     found = pages(sources)
-    for name, fn in sorted(found.items()):
+    for name, fn in found:
         n = len(re.findall(r"\b%s\s*\(" % re.escape(fn), strip_comments(sources[name])))
         print(f"{name}: `{fn}` is written once and called {n - 1} time(s) besides its own "
               "definition")

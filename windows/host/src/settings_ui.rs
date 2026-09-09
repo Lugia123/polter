@@ -1511,11 +1511,12 @@ unsafe extern "system" fn settings_proc(
                 let x = (lp.0 & 0xFFFF) as i16 as i32;
                 let sc = dpi_scale(win);
                 if x < LIST_W * sc / 96 {
-                    let row = (y - PAD * sc / 96) / (ROW_H * sc / 96);
                     let hit = ST.with(|c| {
                         let mut st = c.borrow_mut();
-                        let i = row.max(0) as usize;
-                        if i < st.plugins.len() && i != st.selected {
+                        let Some(i) = plugin_row_at_y(sc, st.plugins.len(), y) else {
+                            return false;
+                        };
+                        if i != st.selected {
                             st.selected = i;
                             true
                         } else {
@@ -1663,13 +1664,8 @@ fn paint_settings(win: HWND) {
             }
 
             for (i, p) in st.plugins.iter().enumerate() {
-                let y = s(PAD) + i as i32 * s(ROW_H);
-                let row = RECT {
-                    left: 0,
-                    top: y,
-                    right: s(LIST_W),
-                    bottom: y + s(ROW_H),
-                };
+                let row = plugin_row_rect_at(sc, i);
+                let y = row.top;
                 if i == st.selected {
                     let b = CreateSolidBrush(COLORREF(theme::sel()));
                     FillRect(hdc, &row, b);
@@ -1884,6 +1880,41 @@ static KB_WIDTH: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::ne
 /// window's rectangle, and a client took the centre of what it was given,
 /// clicked, and ran a different command. A second copy of a layout is wrong
 /// only after a scroll, which is the kind of thing nobody reproduces.
+/// Where the plugin list draws row `index`, and the only place that decides.
+///
+/// **The third instance of "two copies of a row's geometry", and the second
+/// copy was the inverse.** The painter walked forwards
+/// (`y = s(PAD) + i * s(ROW_H)`) and the click walked back
+/// (`(y - PAD*sc/96) / (ROW_H*sc/96)`) -- which is how the command palette's
+/// bug was built, and it fails in the same place: **the boundaries**. A click
+/// in the padding above the first row makes that subtraction negative, and
+/// Rust's integer division truncates toward zero, so `-1 / 42` is `0` and the
+/// padding selects row 0. Two formulas agree everywhere a test is likely to
+/// click and disagree exactly where nobody looks.
+///
+/// So there is one formula and the click asks it. Same shape as
+/// `kb_row_rect_at` above -- and the same name, because
+/// `one-place-decides-where-a-row-is.py` finds the pages it guards by that
+/// naming: a page whose function is called something else is a page the
+/// checker does not know exists.
+pub fn plugin_row_rect_at(dpi: i32, index: usize) -> RECT {
+    let s = |v: i32| v * dpi / 96;
+    let y = s(PAD) + index as i32 * s(ROW_H);
+    RECT { left: 0, top: y, right: s(LIST_W), bottom: y + s(ROW_H) }
+}
+
+/// Which plugin row contains `y`, or `None` for none of them.
+///
+/// **Asks the rectangles rather than inverting them**, so the padding above
+/// the first row and the space below the last one are outside every row --
+/// which is what they look like.
+pub fn plugin_row_at_y(dpi: i32, count: usize, y: i32) -> Option<usize> {
+    (0..count).find(|&i| {
+        let r = plugin_row_rect_at(dpi, i);
+        y >= r.top && y < r.bottom
+    })
+}
+
 pub fn kb_row_rect_at(top: usize, dpi: i32, width: i32, index: usize) -> Option<RECT> {
     if top == usize::MAX {
         return None;
