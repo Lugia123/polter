@@ -1758,9 +1758,15 @@ pub fn on_right_click(frame: HWND, x: i32, y: i32) {
 /// caption.
 pub fn on_nc_right_click(frame: HWND, screen_x: i32, screen_y: i32) -> bool {
     let mut pt = POINT { x: screen_x, y: screen_y };
-    unsafe {
-        let _ = ScreenToClient(frame, &mut pt);
-    }
+    // **The conversion is one of the decisions, so it gets to be one of the
+    // refusals.** A failure here leaves the point in screen coordinates,
+    // where the vertical is almost always past the strip's height -- so the
+    // test below would refuse it for being outside the strip, and say so.
+    // That is the expensive shape: not silence, but one of this function's
+    // other real refusals standing in for a failure that never got a name of
+    // its own. Whoever read the line would be reading a true sentence about
+    // the wrong numbers.
+    let converted = unsafe { ScreenToClient(frame, &mut pt) }.as_bool();
     let sh = strip_h(tabs::scale_of(frame));
 
     // **Read before deciding, so one line can report the decision and the two
@@ -1774,7 +1780,9 @@ pub fn on_nc_right_click(frame: HWND, screen_x: i32, screen_y: i32) -> bool {
 
     // `None` means the click is ours; `Some(why)` is the refusal, in the words
     // the log will use.
-    let refused: Option<&str> = if pt.y < 0 || pt.y >= sh || pt.x < 0 {
+    let refused: Option<&str> = if !converted {
+        Some("the point stayed in screen coordinates")
+    } else if pt.y < 0 || pt.y >= sh || pt.x < 0 {
         Some("outside the strip")
     } else if !have_rc {
         Some("no client rect")

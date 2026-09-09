@@ -153,14 +153,29 @@ fn apply(job: Job) {
                 // The value first: setting NORMAL with a stale value shows the
                 // old bar for a frame, which reads as the wrong number rather
                 // than as no number.
-                if let Some(p) = pct {
-                    if flags != TBPF_NOPROGRESS && flags != TBPF_INDETERMINATE {
-                        let _ = unsafe { list.SetProgressValue(hwnd, p as u64, 100) };
+                // **`None` means no value was offered; `Some(false)` means
+                // one was and did not take.** The sibling below has been
+                // matched and reported since it was written, and this one was
+                // discarded two lines above it -- so the bar could keep the
+                // previous run's number while the line said the new one. The
+                // note above already says that a stale value reads as the
+                // wrong number rather than as no number; this is that
+                // sentence given somewhere to be read.
+                let value_set = match pct {
+                    Some(p) if flags != TBPF_NOPROGRESS && flags != TBPF_INDETERMINATE => {
+                        Some(unsafe { list.SetProgressValue(hwnd, p as u64, 100) }.is_ok())
                     }
-                }
+                    _ => None,
+                };
                 match unsafe { list.SetProgressState(hwnd, flags) } {
-                    Ok(()) => wlogf!(hwnd, "[taskbar] progress state={state} pct={pct:?} shown"),
-                    Err(e) => wlogf!(hwnd, "[taskbar] SetProgressState failed: {e:?}"),
+                    Ok(()) => wlogf!(
+                        hwnd,
+                        "[taskbar] progress state={state} pct={pct:?} value_set={value_set:?} shown"
+                    ),
+                    Err(e) => wlogf!(
+                        hwnd,
+                        "[taskbar] SetProgressState failed: {e:?} (value_set={value_set:?})"
+                    ),
                 }
             });
         }

@@ -4283,6 +4283,10 @@ fn go_fullscreen(frame: HWND) {
     }
 }
 
+/// How many times a drain found no window state. Counted rather than logged
+/// every time, for the reason written at the use site.
+static NO_TAB_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Drain the queue. Called on the main thread only.
 pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTANCE) {
     let delay = ops_delay_ms();
@@ -4291,6 +4295,42 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             let Some(mut w) = window(frame) else {
                 // The window went while its own pump was draining. Nothing
                 // left to run for it, and its queue went with it.
+                //
+                // **Said out loud, because the way in already says it.**
+                // `post_op` names this same condition -- a frame that is in
+                // no tab state -- and refuses with a line. Leaving the way
+                // out silent is what makes the two halves of the queue's
+                // record disagree: the line written when work was accepted
+                // has no answering line to pair with, and that gap reads as
+                // a pump that stopped dispatching.
+                //
+                // **The wording is the way in's, with the verb changed**, so
+                // the two refusals are told apart by one word and a reader
+                // needs no new vocabulary. ⚠️ **The words themselves are not
+                // repeated in this comment**: a checker that reads the file
+                // as text would find them here and stay green with the line
+                // below deleted. ⚠️ **It deliberately does
+                // not borrow the vocabulary of the line that announces work
+                // starting** -- a refusal that reads like a start would move
+                // the ambiguity one step later instead of removing it, and
+                // that ambiguity is the whole reason this line exists.
+                //
+                // **Throttled the way `reg` throttles.** The main loop
+                // reaches here once per tick per window, so an unthrottled
+                // line would be a flood in exactly the state that most needs
+                // reading. ⚠️ **A line here proves it happened; the absence
+                // of one proves nothing**, because the throttle drops all
+                // but the first and every ten-thousandth.
+                let n = NO_TAB_STATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if n == 1 || n % 10_000 == 0 {
+                    // process-wide: the frame is in no window state, so there
+                    // is nothing for this line to be tagged against
+                    crate::plogf!(
+                        "[ops] #{}: {:?} names no live window; not run",
+                        n,
+                        frame.0
+                    );
+                }
                 return;
             };
             let Some(head) = w.ops.first() else {

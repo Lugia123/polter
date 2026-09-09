@@ -300,8 +300,19 @@ pub fn note_reopened(frame: HWND, id: TabId) {
             r.push(Redo { frame: frame.0 as isize, tab: id });
             // The same bound as the undo side, for the same reason, and
             // dropped from the bottom so the newest is always redoable.
+            //
+            // **And it says what it dropped, for the same reason too.** The
+            // undo side writes a line here and states why on it: the bound
+            // working and an entry going missing look identical from the far
+            // side. That sentence was true of this half from the day it was
+            // written; only the line was missing. Without it the depth
+            // printed below sits at the bound and never moves, which is what
+            // a stack that is quietly losing its oldest entry looks like.
             while r.len() > LIMIT {
-                r.remove(0);
+                let dropped = r.remove(0);
+                // process-wide: one redo stack for the process, so its bound
+                // belongs to no window
+                plogf!("[redo] dropped oldest {:?} to stay at {}", dropped.tab, LIMIT);
             }
             r.len()
         }

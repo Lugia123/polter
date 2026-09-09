@@ -150,9 +150,17 @@ pub fn init_frame(hwnd: HWND) {
     };
     let ok_extend = unsafe { DwmExtendFrameIntoClientArea(hwnd, &m).is_ok() };
 
-    unsafe {
-        // Tell Windows the frame changed, so it asks us to recalculate it.
-        let _ = SetWindowPos(
+    // Tell Windows the frame changed, so it asks us to recalculate it.
+    //
+    // **It joins the line below, because without it the line is five true
+    // answers to the wrong question.** Every attribute above can be set and
+    // reported as set, and if this call does not go through, Windows is never
+    // asked to recalculate the frame and nothing on screen moves. A reader
+    // then has a log saying the attributes took and a title bar saying they
+    // did not -- which is indistinguishable from the build being too old for
+    // them, the very thing the rest of this line exists to tell apart.
+    let ok_framechanged = unsafe {
+        SetWindowPos(
             hwnd,
             None,
             0,
@@ -160,17 +168,19 @@ pub fn init_frame(hwnd: HWND) {
             0,
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
-        );
+        )
     }
+    .is_ok();
 
     logf!(
-        "[shell] build={} win11={} dark={} caption={} border={} extend={}",
+        "[shell] build={} win11={} dark={} caption={} border={} extend={} framechanged={}",
         build,
         is_win11(),
         ok_dark,
         ok_caption,
         ok_border,
-        ok_extend
+        ok_extend,
+        ok_framechanged
     );
 }
 
