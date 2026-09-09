@@ -118,6 +118,25 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// This mutex must be held whenever any state used in `drawFrame` is
         /// being modified, and also when it's being accessed in `drawFrame`.
+        ///
+        /// ⚠️ **Only the renderer thread may take this, and that is load
+        /// bearing.** `drawFrame` holds it for the whole frame, and the
+        /// health report near the end of that frame is a *blocking* send
+        /// into the app mailbox, drained by the UI thread. So a renderer
+        /// thread parked on that send is parked holding this mutex. Today no
+        /// UI-thread path asks for it: of the places that take it, all but
+        /// two run on the renderer thread itself, out of its own mailbox, and
+        /// the remaining two are only reachable from the GTK apprt. Add one
+        /// call from the UI thread -- a config change, a resize, anything
+        /// that reaches in directly rather than by posting a message -- and
+        /// the UI thread waits for a mutex held by a thread that is waiting
+        /// for the UI thread.
+        ///
+        /// ⚠️ Note what that argument rests on: not on the lock, but on who
+        /// happens to call. **Unreachable today is not the same as safe**,
+        /// and when the reason expires the decision still looks correct.
+        /// Anything that needs this state from the UI thread posts a message
+        /// and lets the renderer thread do the work.
         draw_mutex: std.Io.Mutex = .init,
 
         /// This renderer's own share of the `[rsz]` instrumentation budget.
@@ -3545,4 +3564,50 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             try texture.replaceRegion(0, 0, atlas.size, atlas.size, atlas.data);
         }
     };
+}
+
+test "frameCompleted reports a health change once per flip, not per frame" {
+    // **This test exists because that report had no coverage at all, and
+    // could not have had any.** It is a blocking send into the app mailbox,
+    // and until `apprt.none.App` grew a `wakeup` the app mailbox could not be
+    // instantiated under the runtime the default test build uses -- so the
+    // whole path went uncompiled, and nothing said so.
+    //
+    // What is checked is the gate: a health *change* reports, an unchanged
+    // health does not. That gate is why the line naming this phase has never
+    // appeared in any log -- the health of a renderer that is working never
+    // changes -- and telling "never reached" apart from "never wired up"
+    // needed something that could reach it.
+    //
+    // ⚠️ This asserts the *send*, not the log line that sits immediately
+    // above it inside the same branch. That the line is compiled in is a
+    // separate reading, and neither substitutes for seeing it on a machine.
+    const alloc = std.testing.allocator;
+    const App = @import("../App.zig");
+    const R = renderer.Renderer;
+
+    const q = try App.Mailbox.Queue.create(alloc);
+    defer q.destroy(alloc);
+
+    const r = try alloc.create(R);
+    defer alloc.destroy(r);
+
+    // Only the fields `frameCompleted` touches are set. It releases a swap
+    // chain frame before anything else, so the semaphore is a real dependency
+    // of this test and not something being worked around.
+    r.health = .{ .raw = .healthy };
+    r.swap_chain.frame_sema = .{ .permits = 0 };
+    r.surface_mailbox = .{ .surface = undefined, .app = .{
+        .rt_app = undefined,
+        .mailbox = q,
+    } };
+
+    r.frameCompleted(.unhealthy);
+    try std.testing.expectEqual(@as(usize, 1), q.len);
+
+    r.frameCompleted(.unhealthy);
+    try std.testing.expectEqual(@as(usize, 1), q.len);
+
+    r.frameCompleted(.healthy);
+    try std.testing.expectEqual(@as(usize, 2), q.len);
 }
