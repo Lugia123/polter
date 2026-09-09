@@ -11,6 +11,7 @@ const Target = @import("Target.zig");
 const RenderPass = @import("RenderPass.zig");
 
 const Health = @import("../../renderer.zig").Health;
+const build_config = @import("../../build_config.zig");
 
 const log = std.log.scoped(.opengl);
 
@@ -54,6 +55,13 @@ pub inline fn renderPass(
 /// NOTE: For OpenGL, `sync` is ignored and we always block.
 pub fn complete(self: *const Self, sync: bool) void {
     _ = sync;
+
+    // `gl.finish` blocks until the GPU has drained; `r` here is the
+    // `generic.Renderer`, the same address `[rsz]` prints.
+    if (comptime build_config.log_render_phase) log.info(
+        "[rphase] r={x} at=finish",
+        .{@intFromPtr(self.renderer)},
+    );
     gl.finish();
 
     // If there are any GL errors, consider the frame unhealthy.

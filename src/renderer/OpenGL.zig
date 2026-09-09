@@ -10,6 +10,7 @@ const apprt = @import("../apprt.zig");
 const font = @import("../font/main.zig");
 const configpkg = @import("../config.zig");
 const rendererpkg = @import("../renderer.zig");
+const build_config = @import("../build_config.zig");
 const Renderer = rendererpkg.GenericRenderer(OpenGL);
 
 pub const GraphicsAPI = OpenGL;
@@ -496,6 +497,16 @@ pub fn present(self: *OpenGL, target: Target) !void {
             );
         }
     }
+
+    // ⚠️ `r` here is the *graphics API* address, not the renderer's --
+    // `present` cannot reach the `generic.Renderer` that owns it (that
+    // dependency only runs the other way). It is the same address `[blit]`
+    // above prints, and differs from the `r` in `[rsz]` and every other
+    // `[rphase]` line by a fixed offset. Do not join them on `r`.
+    if (comptime build_config.log_render_phase) log.info(
+        "[rphase] r={x} at=swap",
+        .{@intFromPtr(self)},
+    );
 
     // On the WGL path nothing else is going to present for us. GTK swaps
     // buffers itself as part of its draw cycle; our host only owns the

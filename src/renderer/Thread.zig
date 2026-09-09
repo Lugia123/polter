@@ -9,6 +9,7 @@ const xev = global.xev;
 const crash = @import("../crash/main.zig");
 const internal_os = @import("../os/main.zig");
 const rendererpkg = @import("../renderer.zig");
+const build_config = @import("../build_config.zig");
 const apprt = @import("../apprt.zig");
 const configpkg = @import("../config.zig");
 const terminalpkg = @import("../terminal/main.zig");
@@ -599,7 +600,25 @@ fn wakeupCallback(
     // started: `wakeup` one ahead of `completed` is the signature of a
     // renderer thread stuck inside its own callback.
     t.wakeups += 1;
-    if (rendererpkg.shouldReport(t.wakeups, heartbeat_interval)) {
+
+    // ⚠️ **The sampled line cannot catch the stall it was built for.** The
+    // signature of a renderer thread stuck inside its callback is a *final*
+    // line whose `wakeup` is one ahead of its `completed` -- but with a
+    // sampling interval of `heartbeat_interval`, the wakeup that never
+    // returns only prints its own line one time in `heartbeat_interval`. The
+    // other times, the last line in the log belongs to an earlier wakeup
+    // that did finish, so it reads `wakeup == completed` and looks perfectly
+    // healthy. Against the default build the criterion is therefore not the
+    // content of the last line but whether `wakeup` is still climbing; with
+    // the phase log on, every wakeup reports and the final-line reading
+    // works.
+    // NOTE: no `comptime` keyword on this `if` -- it would force the whole
+    // expression, including the runtime `shouldReport` call, to be evaluated
+    // at comptime. The left operand is comptime-known on its own, which is
+    // all that is needed for the switch to cost nothing when it is off.
+    if (build_config.log_render_phase or
+        rendererpkg.shouldReport(t.wakeups, heartbeat_interval))
+    {
         log.info("[rthread] r={x} wakeup={d} completed={d}", .{
             @intFromPtr(t.renderer),
             t.wakeups,

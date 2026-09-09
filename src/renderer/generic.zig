@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const global = @import("../global.zig");
+const build_config = @import("../build_config.zig");
 const xev = global.xev;
 const wuffs = @import("wuffs");
 const apprt = @import("../apprt.zig");
@@ -1019,6 +1020,31 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// True if our renderer has animations so that a higher frequency
         /// timer is used.
+        /// Name the statement this thread is about to run, so that a log
+        /// which stops mid-frame says *where* it stopped.
+        ///
+        /// The renderer thread can stop inside `drawFrame`, and from outside
+        /// every way it can stop is identical: the pane keeps its last frame,
+        /// the surface still answers, the locks are still gettable. The
+        /// heartbeat in `renderer/Thread.zig` can say the thread is stuck
+        /// inside its own callback; it cannot say which statement, because
+        /// every one of them leaves it at the same value.
+        ///
+        /// ⚠️ **Deliberately unbudgeted, and therefore off by default.** A
+        /// budget would be spent during startup, long before a long-lived
+        /// pane freezes, and "printed nothing" would then be
+        /// indistinguishable from "never reached that statement" -- which is
+        /// the reading this exists to make possible. Verbosity is the price;
+        /// see `log_render_phase` in build/Config.zig.
+        ///
+        /// `r` is the `*Self` address, the same one `[rsz]` prints. Note
+        /// that `[blit]` and the `at=swap` line print the *graphics API*
+        /// address instead, which differs from this by a fixed offset.
+        inline fn rphase(self: *const Self, comptime at: []const u8) void {
+            if (comptime !build_config.log_render_phase) return;
+            log.info("[rphase] r={x} at=" ++ at, .{@intFromPtr(self)});
+        }
+
         pub fn hasAnimations(self: *const Self) bool {
             return self.has_custom_shaders;
         }
@@ -1215,6 +1241,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // If we're in a synchronized output state, we pause all rendering.
                 if (state.terminal.modes.get(.synchronized_output)) {
+                    // ⚠️ **The `debug` line below is invisible in a shipping
+                    // build.** `log_level` is `.info` outside Debug mode, so
+                    // it is compiled out, and this early return -- which
+                    // stops the cells from being rebuilt, and so stops the
+                    // pane from repainting -- has never once been observed on
+                    // a real machine. `rphase` is what makes it observable.
+                    self.rphase("syncout");
                     log.debug("synchronized output started, skipping render", .{});
                     return;
                 }
@@ -1504,6 +1537,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // If either of our surface dimensions is zero
             // then drawing is absurd, so we just return.
+            self.rphase("zerosize");
             if (surface_size.width == 0 or surface_size.height == 0) return;
 
             const size_changed =
@@ -1521,6 +1555,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // Windows canvas-follows-resize instrumentation. Four measured
             // numbers and one computed flag on a single line; nothing here is
             // a statement about success. See `rsz_log`.
+            //
+            // ⚠️ **This budget is shared with the target check further down,
+            // and this is the only place that spends it.** That asymmetry is
+            // not obvious from either site on its own, and three separate
+            // readers have now mis-predicted the line counts because of it:
+            // the budget runs down at the rate *this* check runs, while the
+            // one below is merely permitted or refused by whatever is left.
+            // Neither check's absence means the code did not run -- both have
+            // an escape that fires on change, so in a steady state silence is
+            // the designed behaviour, not a symptom.
             if (comptime builtin.os.tag == .windows) {
                 if (self.rsz_log.hasRoom() or size_changed) {
                     _ = self.rsz_log.take();
@@ -1537,15 +1581,34 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             if (!needs_redraw) {
+                // **The four components, not just the verdict.** A pane that
+                // stops repainting leaves this branch taken every time, and
+                // which of the four is false is the whole question: a false
+                // `cells_rebuilt` points at `updateFrame`, a false
+                // `size_changed` at the surface size, and they are not the
+                // same defect.
+                if (comptime build_config.log_render_phase) log.info(
+                    "[rphase] r={x} at=noredraw size_changed={} cells_rebuilt={} animations={} sync={}",
+                    .{
+                        @intFromPtr(self),
+                        size_changed,
+                        self.cells_rebuilt,
+                        self.hasAnimations(),
+                        sync,
+                    },
+                );
+
                 // We still need to present the last target again, because the
                 // apprt may be swapping buffers and display an outdated frame
                 // if we don't draw something new.
+                self.rphase("presentlast");
                 try self.api.presentLastTarget();
                 return;
             }
             self.cells_rebuilt = false;
 
             // Wait for a frame to be available.
+            self.rphase("nextframe");
             const frame = try self.swap_chain.nextFrame();
             // **Exactly one release per acquisition.** Once `beginFrame`
             // succeeds, `frame_ctx.complete` releases the frame on every exit
@@ -1603,14 +1666,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const target_stale = frame.target.width != self.size.screen.width or
                 frame.target.height != self.size.screen.height;
             if (comptime builtin.os.tag == .windows) {
+                // `spent` is printed because a measured log had 51 of these
+                // lines with `stale=false`, which the shared budget above
+                // cannot account for: that budget tops out at 20, and the
+                // check on the surface line -- which runs earlier in the same
+                // frame, and is the only thing that consumes it -- was
+                // measured stopping at exactly 20. Every reading of the two
+                // conditions agreed and the counts still disagreed, so the
+                // counter itself is now in the line rather than inferred from
+                // the other one.
                 if (self.rsz_log.hasRoom() or target_stale) {
                     log.info(
-                        "[rsz] r={x} target={d}x{d} screen={d}x{d} stale={}",
+                        "[rsz] r={x} target={d}x{d} screen={d}x{d} stale={} spent={d}",
                         .{
                             @intFromPtr(self),
                             frame.target.width,     frame.target.height,
                             self.size.screen.width, self.size.screen.height,
-                            target_stale,
+                            target_stale,           self.rsz_log.spent,
                         },
                     );
                 }
@@ -1651,6 +1723,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             texture: {
                 const modified = self.font_grid.atlas_grayscale.modified.load(.monotonic);
                 if (modified <= frame.grayscale_modified) break :texture;
+                self.rphase("fontlock");
                 self.font_grid.lock.lockSharedUncancelable(global.io());
                 defer self.font_grid.lock.unlockShared(global.io());
                 frame.grayscale_modified = self.font_grid.atlas_grayscale.modified.load(.monotonic);
@@ -1659,6 +1732,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             texture: {
                 const modified = self.font_grid.atlas_color.modified.load(.monotonic);
                 if (modified <= frame.color_modified) break :texture;
+                self.rphase("fontlock");
                 self.font_grid.lock.lockSharedUncancelable(global.io());
                 defer self.font_grid.lock.unlockShared(global.io());
                 frame.color_modified = self.font_grid.atlas_color.modified.load(.monotonic);
@@ -1824,6 +1898,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
                 // Our health value changed, so we notify the surface so that it
                 // can do something about it.
+                self.rphase("health");
                 _ = self.surface_mailbox.push(.{
                     .renderer_health = health,
                 }, .{ .forever = {} });

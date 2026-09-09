@@ -43,6 +43,11 @@ pub const font_backend: font.Backend = config.font_backend;
 pub const renderer: rendererpkg.Backend = config.renderer;
 pub const i18n: bool = config.i18n;
 
+/// Whether the `[rphase]` renderer phase lines are compiled in. Off by
+/// default; see `log_render_phase` in build/Config.zig for why it is not
+/// budgeted instead.
+pub const log_render_phase: bool = config.log_render_phase;
+
 /// The bundle ID for the app. This is used in many places and is currently
 /// hardcoded here. We could make this configurable in the future if there
 /// is a reason to do so.

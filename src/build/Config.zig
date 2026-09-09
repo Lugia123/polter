@@ -35,6 +35,21 @@ simd: bool = true,
 i18n: bool = true,
 wasm_shared: bool = true,
 
+/// Emit the `[rphase]` renderer phase log lines.
+///
+/// The renderer thread can stop inside `drawFrame`, and from outside every
+/// way it can stop looks the same: the pane holds its last frame. `[rphase]`
+/// names the statement it is about to run, so a log that ends mid-frame says
+/// *which* statement it ended at.
+///
+/// ⚠️ **Off by default because it is unbudgeted.** It prints on the order of
+/// two lines per wakeup, which is enough to bury the `[rsz]`, `[blit]` and
+/// `[mbox]` lines it is meant to sit alongside. Giving it a budget instead
+/// would reintroduce the exact failure it exists to avoid: a pane that has
+/// been quiet for a while spends its budget long before it freezes, and
+/// "printed nothing" then looks identical to "never reached that statement".
+log_render_phase: bool = false,
+
 /// Ghostty exe properties
 exe_entrypoint: ExeEntrypoint = .ghostty,
 version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 },
@@ -368,6 +383,12 @@ pub fn init(
         "gtk-x11",
         "Enables linking against X11 libraries when using the GTK rendering backend.",
     ) orelse gtk_targets.x11;
+
+    config.log_render_phase = b.option(
+        bool,
+        "log-render-phase",
+        "Log which statement the renderer thread is about to run inside a frame. Verbose; for diagnosing a pane that stops repainting.",
+    ) orelse false;
 
     config.i18n = b.option(
         bool,
@@ -852,6 +873,7 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(bool, "sentry", self.sentry);
     step.addOption(bool, "simd", self.simd);
     step.addOption(bool, "i18n", self.i18n);
+    step.addOption(bool, "log_render_phase", self.log_render_phase);
     step.addOption(ApprtRuntime, "app_runtime", self.app_runtime);
     step.addOption(FontBackend, "font_backend", self.font_backend);
     step.addOption(RendererBackend, "renderer", self.renderer);
@@ -950,6 +972,7 @@ pub fn fromOptions() Config {
         .wasm_target = std.meta.stringToEnum(WasmTarget, @tagName(options.wasm_target)).?,
         .wasm_shared = options.wasm_shared,
         .i18n = options.i18n,
+        .log_render_phase = options.log_render_phase,
     };
 }
 
