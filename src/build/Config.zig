@@ -715,26 +715,37 @@ pub fn init(
                 !config.emit_helpgen);
     };
 
-    // precedence: `orelse` binds tighter than `and`, so this reads
-    // `(option orelse !emit_lib_vt) and emit_xcframework` -- **the `and` is
-    // applied to the explicit value too**. Passing `-Demit-macos-app=true`
-    // together with `-Demit-xcframework=false` therefore leaves this false,
-    // and the build exits 0 having compiled no Swift at all (39/39 steps, no
-    // xcodebuild step; without the second flag, 296/296 and one). Measured
-    // 2026-09-09, task 371, and confirmed by construction:
-    // `opt orelse true and false` evaluates to `false`, not `true`.
+    // ⚠️ **The parentheses are load-bearing.** `orelse` binds tighter
+    // than `and`, so **without them** this reads
+    // `(option orelse !emit_lib_vt) and emit_xcframework` -- the `and` applied
+    // to the explicit value too, and `-Demit-macos-app=true` alongside
+    // `-Demit-xcframework=false` came out **false**: the build exited 0 having
+    // compiled no Swift at all (39/39 steps, no xcodebuild step). Task 371
+    // measured it, task 419 added the parentheses.
     //
-    // ⚠️ **Left as it is on purpose.** Adding the parentheses would change
-    // what an existing command does -- every caller who passes both flags
-    // today gets a fast build, and would start getting a full xcodebuild.
-    // That is a decision for whoever owns the build, not a drive-by fix; the
-    // shape is written down in `docs/windows/development.md` under "「exit 0」
-    // 不等于「mac 侧编过了」", and the reading that catches it is there too.
+    // ⚠️ **What that cost is worth writing down**, because the reading it
+    // produced looked exactly like every other green: `-Demit-xcframework=false`
+    // is the flag people add for speed, so "mac side, exit 0" was collected
+    // many times over without a line of Swift being compiled. **The default is
+    // unchanged** -- with no `-Demit-macos-app` at all, the app still follows
+    // the xcframework. Only the explicit answer is now honoured.
+    //
+    // ⚠️ **This comment deliberately does not open with the excuse prefix**
+    // that `tools/orelse-and-need-parentheses.py` accepts *instead of*
+    // parentheses (the one its own documentation names). Leaving one here
+    // would mean somebody could delete the parentheses tomorrow and the
+    // checker would still pass, excused by a comment describing the very
+    // thing that had just come back.
+    //
+    // ⚠️ And it is not spelled out in full anywhere in this block, because
+    // the checker reads this file as text: the first draft of this comment
+    // quoted the prefix, and that quotation **was** an excuse -- removing the
+    // parentheses left the checker green.
     config.emit_macos_app = b.option(
         bool,
         "emit-macos-app",
         "Build and install the macOS app bundle.",
-    ) orelse !config.emit_lib_vt and config.emit_xcframework;
+    ) orelse (!config.emit_lib_vt and config.emit_xcframework);
 
     //---------------------------------------------------------------
     // System Packages

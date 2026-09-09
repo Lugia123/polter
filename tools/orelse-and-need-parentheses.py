@@ -56,7 +56,12 @@ BUILD_DIR = os.path.join(HERE, "..", "src", "build")
 
 MIXES = re.compile(r"\borelse\b")
 LOGIC = re.compile(r"\b(and|or)\b")
-EXCUSED = re.compile(r"//\s*precedence:")
+# ⚠️ **Anchored at the start of the comment line.** Written as a `search`,
+# any prose that *names* the prefix -- including the paragraph explaining
+# why a particular line must not carry one -- counted as an excuse, and
+# deleting the parentheses left this checker green. Prose about a pattern
+# contains the pattern.
+EXCUSED = re.compile(r"^//\s*" + "precedence" + r":")
 
 
 def strip_comments(text):
@@ -172,6 +177,14 @@ def self_test():
         "Build and install the macOS app bundle.",
     ) orelse !config.emit_lib_vt and config.emit_xcframework;
 """}, 0),
+        # ⚠️ The paragraph that *explains* the excuse is not an excuse. This
+        # is the shape that made the first version of this rule useless.
+        ("prose naming the prefix, with no parentheses",
+         {"Config.zig": """
+    // The parentheses here are load-bearing; this comment deliberately does
+    // not open with the `// precedence:` prefix the checker accepts.
+    config.emit_macos_app = opt orelse !config.emit_lib_vt and config.emit_xcframework;
+"""}, 1),
         ("the logical operator before the orelse, not after",
          {"Config.zig": "    config.x = (a and b) orelse c;\n"}, 0),
     ]
@@ -186,7 +199,7 @@ def self_test():
     if ok:
         print("probe self-test: OK (the excuse removed, a new one, parentheses instead, and "
               "an operator that is not swallowed, an excuse with a semicolon in it, and one "
-              "above a multi-line call)")
+              "above a multi-line call, and prose that only names the prefix)")
     return ok
 
 

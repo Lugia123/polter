@@ -1307,41 +1307,7 @@ zig build test -Demit-xcframework=false --summary all > full.log 2>&1; echo "EXI
 
 #### 「exit 0」不等于「mac 侧编过了」
 
-**`zig build -Demit-macos-app=true` 可以整趟不编一行 Swift 而退出 0。**
-
-两组读数，同一棵树、同一天（2026-09-09），只差一个开关：
-
-```
-zig build -Demit-macos-app=true                            → 296/296 steps，grep -c xcodebuild = 1
-zig build -Demit-macos-app=true -Demit-xcframework=false   →  39/39 steps，grep -c xcodebuild = 0
-```
-
-⚠️ **变量是 `-Demit-xcframework=false`，不是「Swift 文件有没有改过」。** 这一条曾经
-被记成「没 touch 过就不编」——那是错的，而且错得刚好安全：谁都不会因为它去查真机制，
-直到有人拿一个带着这个开关的「exit 0」当成「mac 侧编得过」交出去。
-
-**为什么**（构造出来的，不是猜的）：`src/build/Config.zig` 里那行
-
-```zig
-config.emit_macos_app = b.option(bool, "emit-macos-app", …) orelse
-    !config.emit_lib_vt and config.emit_xcframework;
-```
-
-⚠️ **`orelse` 比 `and` 绑得紧**，所以它读作 `(option orelse !emit_lib_vt) and
-emit_xcframework` —— **那个 `and` 也作用在你显式传进去的值上**。于是
-`-Demit-macos-app=true` 被 `-Demit-xcframework=false` 一票否决，而且没有任何一句话
-提到这件事。
-
-优先级本身是构造证明的，一个五行程序就够：
-
-```zig
-const opt: ?bool = true;
-opt orelse true and false      // → false   ← 实际语义
-(opt orelse true) and false    // → false   ← 与上面相同
-opt orelse (true and false)    // → true    ← 大多数人以为的语义
-```
-
-**怎么读出来**（判据，不是感觉）：
+**判据在这一行，先记住它**：
 
 ```sh
 zig build -Demit-macos-app=true … --summary all 2>&1 | grep -c xcodebuild
@@ -1349,13 +1315,53 @@ zig build -Demit-macos-app=true … --summary all 2>&1 | grep -c xcodebuild
 ```
 
 ⚠️ **只看 `exit 0` 是零信息量的**，和上面「不存在的测试过滤器也退 0」是同一类。
-交 mac 侧的绿之前，报那个计数，别报退出码。
+交 mac 侧的绿之前，报那个计数，别报退出码。**这条今天仍然成立**——下面那个具体的
+缺陷已经修了，但「退出码不告诉你编没编」这件事跟那个缺陷无关。
 
-**没有修**：加括号会改变一条现有命令的行为——今天同时传两个开关的人拿到的是快构建，
-加了括号就会变成整趟 xcodebuild。那是构建的所有者该做的决定，不是顺手改。
-`Config.zig` 那一行旁边写了 `// precedence:` 说明，
-`tools/orelse-and-need-parentheses.py` 守着「新出现的同形写法要么加括号、要么写明
-理由」。
+四格读数（2026-09-09，**419 加上括号之后**）：
+
+| 命令 | steps | `grep -c xcodebuild` |
+|---|---|---|
+| `-Demit-macos-app=true` | 296/296 | **1** |
+| `-Demit-macos-app=true -Demit-xcframework=false` | 296/296 | **1** |
+| `-Demit-xcframework=false`（不给 `-Demit-macos-app`） | 39/39 | 0 |
+| `-Demit-macos-app=false -Demit-xcframework=false` | 39/39 | 0 |
+
+**默认没变**：不给 `-Demit-macos-app` 时，app 仍跟着 xcframework 走。**变的只有
+「显式说了的那个答案现在算数」。**
+
+##### 曾经的缺陷（371 量出、419 修好），留在这里因为它的形状会再来
+
+⚠️ **修好之前**，第二行是 `39/39 steps、count = 0` —— `-Demit-macos-app=true` 被
+`-Demit-xcframework=false` **静默一票否决**，整趟不编一行 Swift 而退出 0。
+
+这一条曾经被记成「没 touch 过就不编」，那是错的；变量从来不是「Swift 文件有没有改过」。
+真成因在 `src/build/Config.zig` 那一行**当时没有括号**：
+
+```zig
+config.emit_macos_app = b.option(bool, "emit-macos-app", …) orelse
+    !config.emit_lib_vt and config.emit_xcframework;
+```
+
+⚠️ **`orelse` 比 `and` 绑得紧**，所以它读作 `(option orelse !emit_lib_vt) and
+emit_xcframework` —— **那个 `and` 也作用在你显式传进去的值上**。优先级是构造证明的，
+一个五行程序就够：
+
+```zig
+const opt: ?bool = true;
+opt orelse true and false      // → false   ← 当时的实际语义
+(opt orelse true) and false    // → false   ← 与上面相同
+opt orelse (true and false)    // → true    ← 大多数人以为的语义，也是今天加了括号之后的
+```
+
+**为什么这个错能活那么久**：`-Demit-xcframework=false` 正是大家为了提速习惯性加上的
+开关，于是「mac 侧 exit 0」被收集过很多次而一行 Swift 都没编，**每一次读数都跟别的
+长得一样**。
+
+今天 `Config.zig` 那一行带括号，`tools/orelse-and-need-parentheses.py` 守着
+`src/build/` 里同形的写法：`orelse` 和 `and`/`or` 同表达式**要么加括号、要么写
+`// precedence:` 说明它到底是什么意思**。⚠️ 那一行旁边**故意没有**写 `// precedence:`
+——那个前缀是「代替括号」的豁免，留一个在那里，等于允许有人明天把括号删掉而闸照样绿。
 
 #### 写在「没人引用的类型」内部的测试，永远不会执行
 
