@@ -39,7 +39,9 @@ pub const StreamHandler = struct {
 
     /// A handle to wake up the renderer. This hints to the renderer that
     /// a repaint should happen.
-    renderer_wakeup: xev.Async,
+    /// ⚠️ A pointer -- see the field of the same name in Termio.zig. A
+    /// copy of this handle wakes nobody on Windows, and says nothing.
+    renderer_wakeup: *xev.Async,
 
     /// The response to use for ENQ requests. The memory is owned by
     /// whoever owns StreamHandler.
@@ -96,6 +98,17 @@ pub const StreamHandler = struct {
     /// This queues a render operation with the renderer thread. The render
     /// isn't guaranteed to happen immediately but it will happen as soon as
     /// practical.
+    ///
+    /// ⚠️ **There are two functions with this name and they are not the same
+    /// path.** `Surface.queueRender` wakes the renderer through the thread's
+    /// own handle and serves every UI action -- keys, mouse, focus, resize.
+    /// This one is the terminal's output path, and reaches the renderer
+    /// through the handle this struct was given. Reading "the pty output also
+    /// calls queueRender" as "so it takes the same route the keyboard does"
+    /// is wrong, and the two routes have already failed independently of each
+    /// other once: this one was handed a *copy* of the handle, whose `notify`
+    /// returns success and wakes nobody on Windows, while the UI route kept
+    /// working and made the terminal look healthy.
     pub inline fn queueRender(self: *StreamHandler) !void {
         try self.renderer_wakeup.notify();
     }

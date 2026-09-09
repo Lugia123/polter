@@ -773,7 +773,11 @@ pub fn init(
             .backend = .{ .exec = io_exec },
             .mailbox = io_mailbox,
             .renderer_state = &self.renderer_state,
-            .renderer_wakeup = render_thread.wakeup,
+            // The handle itself, not a copy of it: on Windows a copied
+            // `xev.Async` has no waiter and its `notify` silently wakes
+            // nobody. `self.renderer_thread` is already assigned above, and
+            // is the same field the renderer was handed a pointer to.
+            .renderer_wakeup = &self.renderer_thread.wakeup,
             .renderer_mailbox = render_thread.mailbox,
             .surface_mailbox = .{ .surface = self, .app = app_mailbox },
         });

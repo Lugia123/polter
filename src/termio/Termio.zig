@@ -61,7 +61,23 @@ poltergeist_transcript: ?poltergeist.Transcript = null,
 
 /// A handle to wake up the renderer. This hints to the renderer that
 /// a repaint should happen.
-renderer_wakeup: xev.Async,
+/// Handle used to wake the renderer thread when there is output to show.
+///
+/// ⚠️ **This is a pointer because `xev.Async` cannot be copied on every
+/// backend.** Where it is built on an eventfd the struct holds only that
+/// descriptor, so a copy still refers to the same kernel object and copying
+/// is harmless. The IOCP implementation keeps its entire state -- including
+/// the `waiter` that `wait()` fills in with the loop and completion to post
+/// to -- in the struct itself. A copy taken before `wait()` runs therefore
+/// has no waiter for ever, and `notify()` on it takes the other branch:
+/// it sets a flag on the copy, **returns success, and wakes nobody**.
+///
+/// That is how it hid. The renderer thread was woken by keyboard and mouse
+/// events, which use the original handle, so a terminal being typed into
+/// looked healthy; only a pane whose program writes on its own while nobody
+/// touches it stopped repainting, and it caught up the instant the window
+/// was touched again.
+renderer_wakeup: *xev.Async,
 
 /// The mailbox for notifying the renderer of things.
 renderer_mailbox: *renderer.Thread.Mailbox,

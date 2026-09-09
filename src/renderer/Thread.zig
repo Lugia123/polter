@@ -53,6 +53,21 @@ loop: xev.Loop,
 
 /// This can be used to wake up the renderer and force a render safely from
 /// any thread.
+/// Handle other threads use to wake this one.
+///
+/// ⚠️ **Hand out a pointer to this, never a copy.** `xev.Async` keeps its
+/// state in different places depending on the backend: on an eventfd the
+/// struct holds only the descriptor, so a copy still refers to the same
+/// kernel object, but the IOCP implementation keeps everything in the struct
+/// -- including the field `wait()` fills in with where to post. A copy taken
+/// before `wait()` runs has nowhere to post for ever, and `notify()` on it
+/// **returns success and wakes nobody**, on Windows only, in silence.
+///
+/// A copy of this handle was given to the terminal's IO side once. Output
+/// arriving from the program could then not wake this thread at all; only
+/// keyboard and mouse could, because those use this field directly. A pane
+/// whose program wrote while nobody touched the window simply stopped
+/// repainting, and caught up the moment the window was touched.
 wakeup: xev.Async,
 wakeup_c: xev.Completion = .{},
 

@@ -32,7 +32,12 @@ renderer_state: *renderer.State,
 
 /// A handle to wake up the renderer. This hints to the renderer that
 /// a repaint should happen.
-renderer_wakeup: xev.Async,
+/// Handle used to wake the renderer thread.
+///
+/// ⚠️ **A pointer, not a value.** See the note on the field of the same name
+/// in Termio.zig: on Windows this handle keeps its wiring inside the struct,
+/// so a copy of it is a handle that silently wakes nobody.
+renderer_wakeup: *xev.Async,
 
 /// The mailbox for renderer messages.
 renderer_mailbox: *renderer.Thread.Mailbox,
