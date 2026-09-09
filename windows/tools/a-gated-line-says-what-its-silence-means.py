@@ -116,6 +116,11 @@ alternative is dead or merely unlucky.
 
 **NOT CHECKED:**
 
+  * **How long a throttle waits.** `THROTTLED_SITES` requires the predicate
+    to be there, not that its interval is any particular length: changing one
+    second to five leaves this quiet. Pinning the number would make the entry
+    a place to argue about a constant, and the number that matters is a
+    property of the machine and the workload, not of the source.
   * **That the verdict is right.** This reads which of three words was
     chosen. Choosing wrong produces a wrong claim in a findable place, which
     is the improvement on offer; it is not a proof. `ESCAPE_SITES` is the one
@@ -174,6 +179,10 @@ GATE = re.compile(
     # Two entries is the cheaper mistake: a vocabulary that misses a
     # suppressor produces a subject nobody ever looks at.
     r"|\bfirst\b"
+    # A predicate whose name ends in `_due` is a rate limit by convention in
+    # this tree, and a rate limit is a suppressor: the call says nothing about
+    # the event, only about how recently the line last spoke.
+    r"|_due\("
 )
 
 # The four markers. Horizontal whitespace only -- `\s*` matches a newline, and
@@ -239,7 +248,7 @@ PENDING = {
 # The number of statements the detector found when this was written. A drop
 # means the detector got worse, and a detector that finds nothing is a
 # checker that passes everything.
-SUBJECT_FLOOR = 74
+SUBJECT_FLOOR = 78
 
 # Caps that a written criterion reads back, and which must therefore keep an
 # escape that is true whenever there is something new to say.
@@ -264,6 +273,30 @@ ESCAPE_SITES = [
 ]
 
 BINDING = "let {} ="
+
+# Lines that must stay behind a rate limit, and the predicate that provides it.
+#
+# **The same reasoning as `ESCAPE_SITES`, pointing the other way.** There the
+# risk is a cap losing its escape and the comment above it staying true-looking;
+# here it is a throttle being taken off and nothing noticing until a disk fills.
+# Removing a throttle does not make this file's ordinary check fail -- an
+# unthrottled line is simply not a subject any more, and a checker that goes
+# quiet when its subject disappears is the failure mode this repository keeps
+# meeting. So the requirement is written down separately.
+#
+# An entry is (file, tag, predicate, why). Every log statement whose format
+# string carries the tag must sit inside a condition that calls the predicate.
+THROTTLED_SITES = [
+    (
+        "windows/host/src/hud.rs",
+        "[hud] scrollbar",
+        "scroll_line_due",
+        "the core sends one scrollbar update per render; measured at 30 renders "
+        "a second this line was 75% of the entire log, about 150 MB a day for "
+        "one window, and a disk filling up does not look like a logging problem "
+        "when it happens",
+    ),
+]
 
 # How many distinct conditions each alternative of the vocabulary matched when
 # this was written.
@@ -294,10 +327,11 @@ VOCABULARY_CENSUS = {
     r"_LOGGED": 2,
     r"_ANNOUNCED": 1,
     r"\bfirst\b": 3,
+    r"_due\(": 1,
 }
 
 
-def mask(src: str, keep_comments: bool) -> str:
+def mask(src: str, keep_comments: bool, keep_strings: bool = False) -> str:
     """The source with string bodies blanked, and comments blanked or kept.
 
     **Two modes because the two questions are opposites.** Finding the gate
@@ -345,7 +379,10 @@ def mask(src: str, keep_comments: bool) -> str:
         else:
             if c == "\\":
                 nxt = src[i + 1] if i + 1 < n else ""
-                out.append(" " + ("\n" if nxt == "\n" else " "))
+                if keep_strings:
+                    out.append(src[i : i + 2])
+                else:
+                    out.append(" " + ("\n" if nxt == "\n" else " "))
                 i += 2
             elif c == '"':
                 out.append('"')
@@ -355,7 +392,7 @@ def mask(src: str, keep_comments: bool) -> str:
                 out.append("\n")
                 i += 1
             else:
-                out.append(" ")
+                out.append(c if keep_strings else " ")
                 i += 1
     return "".join(out)
 
@@ -513,6 +550,32 @@ def scan():
                 f"vocabulary `{alt}` matched {was} conditions when this was "
                 f"written and matches {now} now. Either those gates went away "
                 f"or the alternative stopped working; the second one is silent."
+            )
+
+    for rel, tag, predicate, why in THROTTLED_SITES:
+        src_t = (ROOT / rel).read_text(encoding="utf8")
+        code_t = mask(src_t, keep_comments=False)
+        held = 0
+        for line_no, cond, _ in flagged(src_t):
+            if predicate in cond:
+                held += 1
+        # **Counted with the comments gone and the strings kept**, which is the
+        # only view where "a log line carries this tag" is the question being
+        # asked. On the raw text a doc comment that quotes the tag -- and the
+        # one above `SCROLL_SAID` nearly does -- would be counted as a line.
+        literal = mask(src_t, keep_comments=False, keep_strings=True)
+        raw_hits = len(re.findall(re.escape(tag), literal))
+        if raw_hits == 0:
+            problems.append(
+                f"{rel}: no log line carries `{tag}` any more. If it was "
+                f"renamed this entry is protecting nothing; if it was deleted, "
+                f"say so here."
+            )
+        elif held < raw_hits:
+            problems.append(
+                f"{rel}: {raw_hits} line(s) carry `{tag}` and only {held} sit "
+                f"behind `{predicate}`. They have to stay throttled because "
+                f"{why}."
             )
 
     for rel, binding, why in ESCAPE_SITES:

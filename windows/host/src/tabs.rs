@@ -2637,13 +2637,36 @@ fn split_pane(
     }
     layout(frame);
     focus_active(frame);
-    logf!(
-        "[split] {:?} -> pane {} (cwd {}); {} panes in this tab",
-        dir,
-        id,
-        cwd.as_deref().unwrap_or("inherited"),
-        pane_count(frame)
-    );
+    // **Tagged with the window, and naming the tab it acted on.**
+    //
+    // It was a bare `logf!` naming only the new pane. That is exempt under
+    // `window-tagged-logs.py`'s third rule -- a pane id is process-unique, so
+    // the line is unambiguous about the pane. It was not unambiguous about
+    // the *tab*, and the tab is what the rest of the sentence counts. The
+    // exemption was true and the line was still unreadable.
+    match tab_pane_count(frame, tab_idx) {
+        Some((tab, panes)) => wlogf!(
+            frame,
+            "[split] {:?} -> pane {} in tab {:?} (cwd {}); {} pane(s) in that tab",
+            dir,
+            id,
+            tab,
+            cwd.as_deref().unwrap_or("inherited"),
+            panes
+        ),
+        // Not folded into a zero on the line above: "the tab holds no panes"
+        // and "there is no such tab" are different facts, and the split just
+        // pushed a pane into that tab, so the second one is a defect.
+        None => wlogf!(
+            frame,
+            "[split] {:?} -> pane {} (cwd {}); tab index {} names no tab, so its \
+             pane count is unknown",
+            dir,
+            id,
+            cwd.as_deref().unwrap_or("inherited"),
+            tab_idx
+        ),
+    }
     true
 }
 
@@ -3593,11 +3616,30 @@ fn move_tab_to_new_window(
     true
 }
 
-/// Panes in the active tab.
-pub fn pane_count(frame: HWND) -> usize {
-    window(frame)
-        .and_then(|w| w.tabs.get(w.active).map(|t| t.panes.len()))
-        .unwrap_or(0)
+/// Which tab this is, and how many panes it holds.
+///
+/// # Why the tab is a parameter
+///
+/// ⚠️ **This replaced `pane_count(frame)`, which answered about the *active*
+/// tab and had exactly one caller: the line that announces a split.** A split
+/// does not have to happen in the active tab -- `acting_tab` finds the tab
+/// containing the pane the caller named, and `terminal_action(id=A, ...)`
+/// against a pane in a background tab is not a corner case, it is the shape
+/// `docs/windows/split-target-criteria.md` exists to test. So the line said
+/// how many panes were in *some other* tab and called it "this tab".
+///
+/// **A count with no subject cannot be wrong out loud.** The number was
+/// plausible, of the right order, and changed when panes changed; nothing
+/// about it said it was answering a different question from the one the
+/// sentence asked. Naming the tab in the signature is what makes the two
+/// impossible to drift apart -- the caller now has to say which, and the
+/// answer carries the tab's identity so a reader can check it against the
+/// `[layout #N]` lines for the same tab.
+///
+/// `None` means the index names no tab, which is worth a different sentence
+/// at the call site rather than a zero folded into the same one.
+pub fn tab_pane_count(frame: HWND, tab_idx: usize) -> Option<(TabId, usize)> {
+    window(frame).and_then(|w| w.tabs.get(tab_idx).map(|t| (t.id, t.panes.len())))
 }
 
 /// Give the keyboard, and with it the IME, to the active tab.

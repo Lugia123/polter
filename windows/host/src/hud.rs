@@ -501,9 +501,21 @@ pub fn on_hover_link(surface: usize, url: Option<String>) -> bool {
 /// the top of the view, and how many rows the view shows.
 pub fn on_scrollbar(surface: usize, total: u64, offset: u64, len: u64) -> bool {
     if surface == 0 {
-        // process-wide: the action named surface 0, so there is no terminal
-        // and therefore no window this line could belong to
-        plogf!("[hud] scrollbar for surface 0 -- ignored, that names no terminal");
+        // **Throttled with the rest of the family, and for the same reason.**
+        // This is an error report, but its driver is the same per-render
+        // action: a core that named surface 0 once would name it thirty times
+        // a second. The first one always speaks -- there is no entry for
+        // surface 0 until this makes one -- so the transition into the fault
+        // is never the one that gets dropped.
+        //
+        // absence: depends -- see `SCROLL_SAID`: within a second of the last
+        // one it means nothing. It never means the core stopped sending
+        // surface 0, only that it has not been a second.
+        if scroll_line_due(surface) {
+            // process-wide: the action named surface 0, so there is no terminal
+            // and therefore no window this line could belong to
+            plogf!("[hud] scrollbar for surface 0 -- ignored, that names no terminal");
+        }
         return false;
     }
     match SCROLL.lock() {
@@ -1186,6 +1198,68 @@ unsafe extern "system" fn link_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
 /// only time it matters.
 static SCROLL_SHOWN_FOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// When the scrollbar's per-sync line last spoke, per surface.
+///
+/// # Why this line is throttled and the others in this file are not
+///
+/// `WM_HUD_SYNC` arrives once per scrollbar update, and the core sends one
+/// **per render**. Measured on a real machine after the render rate went from
+/// 1.6/s to 30/s: this one line became **75% of the whole log** (18365 of
+/// 23787 lines in a 38-second window), 14.2 lines a second against 1.1 before
+/// -- about 1.8 KB/s, 150 MB a day for one window with a program writing to
+/// it. ⚠️ **A disk filling up does not look like a logging problem when it
+/// happens**; it looks like whatever fails first.
+///
+/// **The cost is not the drawing.** Over the same change the process went
+/// from 1.50% to 3.28% CPU while wakeups went up about twentyfold, so the
+/// per-wakeup work is not what got expensive. It was one line priced per
+/// repaint with nothing limiting it.
+///
+/// **Per surface, not one clock for the file.** With a split, two panes both
+/// scrolling would take turns against a shared timestamp and each would be
+/// silenced by the other -- and worse, the two would be silenced *unevenly*,
+/// which reads as one pane having stopped.
+///
+/// One entry per surface, never removed -- the same as `SCROLL` above, and
+/// bounded the same way: by the number of surfaces the process has ever had.
+static SCROLL_SAID: std::sync::Mutex<Vec<(usize, std::time::Instant)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// At most one scrollbar line per surface per this long.
+///
+/// A second is chosen against what the line is for. It was written to answer
+/// "is the scrollbar being placed, for the right surface, with numbers that
+/// move" -- see the commit that added it, where none of `hud.rs` had ever run
+/// on Windows. One line a second answers all three; thirty answer them thirty
+/// times.
+const SCROLL_LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Whether the scrollbar line for `surface` should speak this time.
+///
+/// ⚠️ **A lock this cannot take speaks rather than stays quiet.** The
+/// alternative -- treating a poisoned or busy lock as "not due" -- makes the
+/// log go silent exactly when something else in the process has already gone
+/// wrong, which is when it is worth the most.
+fn scroll_line_due(surface: usize) -> bool {
+    let now = std::time::Instant::now();
+    let Ok(mut said) = SCROLL_SAID.lock() else {
+        return true;
+    };
+    match said.iter_mut().find(|(s, _)| *s == surface) {
+        Some(e) => {
+            if now.duration_since(e.1) < SCROLL_LOG_EVERY {
+                return false;
+            }
+            e.1 = now;
+            true
+        }
+        None => {
+            said.push((surface, now));
+            true
+        }
+    }
+}
+
 fn scroll_counts(surface: usize) -> Option<(u64, u64, u64)> {
     SCROLL
         .lock()
@@ -1208,11 +1282,19 @@ unsafe extern "system" fn scroll_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let Some(fr) = pane_rect_for(surface) else {
                     let _ = ShowWindow(hwnd, SW_HIDE);
                     SCROLL_SHOWN_FOR.store(0, Ordering::Release);
-                    hlogf!(
-                        frame_hwnd_of(surface),
-                        "[hud] scrollbar: no pane owns surface {:#x}; hidden",
-                        surface
-                    );
+                    // absence: depends -- see `SCROLL_SAID`: at most one line
+                    // per second per surface, so within a second absence means
+                    // nothing. Across several seconds it means no sync arrived
+                    // for this surface at all, which is the core no longer
+                    // reporting the scrollbar or this window no longer
+                    // pumping -- not that a pane was found.
+                    if scroll_line_due(surface) {
+                        hlogf!(
+                            frame_hwnd_of(surface),
+                            "[hud] scrollbar: no pane owns surface {:#x}; hidden",
+                            surface
+                        );
+                    }
                     return LRESULT(0);
                 };
                 let dpi = GetDpiForWindow(hwnd).max(96) as i32;
@@ -1224,13 +1306,19 @@ unsafe extern "system" fn scroll_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     // has stopped being updated look exactly the same.
                     let _ = ShowWindow(hwnd, SW_HIDE);
                     SCROLL_SHOWN_FOR.store(0, Ordering::Release);
-                    hlogf!(
-                        frame_hwnd_of(surface),
-                        "[hud] scrollbar hidden for surface {:#x} ({} rows, {} visible)",
-                        surface,
-                        total,
-                        len
-                    );
+                    // absence: depends -- see `SCROLL_SAID`: at most one line
+                    // per second per surface. Within a second it says nothing;
+                    // over several it says no sync arrived, not that the
+                    // scrollbar is showing.
+                    if scroll_line_due(surface) {
+                        hlogf!(
+                            frame_hwnd_of(surface),
+                            "[hud] scrollbar hidden for surface {:#x} ({} rows, {} visible)",
+                            surface,
+                            total,
+                            len
+                        );
+                    }
                     return LRESULT(0);
                 }
                 let w = sc(SCROLL_W);
@@ -1249,14 +1337,26 @@ unsafe extern "system" fn scroll_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     SWP_SHOWWINDOW | SWP_NOACTIVATE,
                 );
                 let _ = InvalidateRect(Some(hwnd), None, true);
-                hlogf!(
-                    frame_hwnd_of(surface),
-                    "[hud] scrollbar surface {:#x}: row {} of {}, {} visible",
-                    surface,
-                    offset,
-                    total,
-                    len
-                );
+                // absence: depends -- see `SCROLL_SAID`: at most one line per
+                // second per surface, so a gap shorter than that carries no
+                // information at all. A gap much longer than that means the
+                // syncs stopped, which is worth chasing; it does not mean the
+                // scrollbar was not placed, and it never meant the numbers
+                // stopped moving.
+                //
+                // ⚠️ The numbers themselves are now sampled, not continuous.
+                // Nobody may count these lines, or read two consecutive ones
+                // as consecutive states.
+                if scroll_line_due(surface) {
+                    hlogf!(
+                        frame_hwnd_of(surface),
+                        "[hud] scrollbar surface {:#x}: row {} of {}, {} visible",
+                        surface,
+                        offset,
+                        total,
+                        len
+                    );
+                }
                 LRESULT(0)
             }
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
