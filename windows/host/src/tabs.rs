@@ -137,7 +137,9 @@ impl Tab {
 }
 
 pub enum Op {
-    NewTab,
+    /// Where the new tab's shell starts (`None` means wherever the asking
+    /// terminal is standing, which is what a keybinding means).
+    NewTab(Option<String>),
     /// Rearrange this tab's panes into a shape given from outside.
     ///
     /// **Queued like every other mutation**, and for the sharper of the two
@@ -271,7 +273,7 @@ impl Op {
     /// glance and stable enough that a payload change does not rewrite them.
     pub fn name(&self) -> &'static str {
         match self {
-            Op::NewTab => "NewTab",
+            Op::NewTab(_) => "NewTab",
             Op::ApplyLayout(..) => "ApplyLayout",
             Op::NewWindow => "NewWindow",
             Op::CloseTab(_) => "CloseTab",
@@ -3891,8 +3893,8 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             op.name(), crate::winid::tag(frame), behind, from);
 
         match op {
-            Op::NewTab => {
-                create_tab(frame, app, hinst);
+            Op::NewTab(cwd) => {
+                create_tab_in(frame, app, hinst, cwd);
             }
             Op::NewWindow => {
                 // **A window and then a tab in it, and the log says which of

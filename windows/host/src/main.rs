@@ -2976,9 +2976,21 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // it toggles is not per-terminal
             quick::request_toggle()
         }
+        // **The directory the caller named, which this arm used to drop.**
+        // `terminal_open` exists because a tab opened without one starts
+        // wherever the asking terminal stands, and four jobs in four
+        // directories cannot be set up that way -- so dropping it here
+        // rebuilt exactly the defect that tool was written to avoid, and did
+        // it silently, because the `starting in` line only exists where a
+        // directory does.
         ACTION_NEW_TAB => {
-            alogf!(origin, "[action] new_tab");
-            queue_from(origin, Op::NewTab, "new_tab action")
+            let cwd = action.as_new_tab_cwd();
+            alogf!(
+                origin,
+                "[action] new_tab cwd={}",
+                cwd.as_deref().unwrap_or("(inherited)")
+            );
+            queue_from(origin, Op::NewTab(cwd), "new_tab action")
         }
         ACTION_CLOSE_TAB => {
             let mode = action.as_i32();
@@ -3102,6 +3114,11 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // reload here would call that again and the recursion has nothing to
         // stop it. It shared an arm with `reload_config` until the reload was
         // real, at which point one arm could no longer mean both.
+        // payload-unused: the payload is a handle to the config the core has
+        // just built, and this host does not read config through a handle --
+        // `reload::on_config_change` re-reads the document, which is the one
+        // place that knows what to do with a change. Taking the handle here
+        // would be a second reader of one fact.
         ACTION_CONFIG_CHANGE => {
             // The config is one document for the process, and a per-window
             // notification here would invite a second, per-window copy of a fact

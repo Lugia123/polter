@@ -410,6 +410,27 @@ impl Action {
         (scope, confirm, result)
     }
 
+    /// `ghostty_action_new_tab_s { const char* working_directory; }`.
+    ///
+    /// ⚠️ **Nothing read this until it was found missing.** The arm queued a
+    /// payload-less op, so every tab this host opened started wherever the
+    /// asking terminal stood -- including the ones `terminal_open` opened
+    /// with a directory it had checked and was waiting on an answer about.
+    /// **And the tab path printed no `starting in` line**, because that line
+    /// only exists where a directory does, so there was nothing in the log to
+    /// disagree with the request.
+    ///
+    /// An empty string is the same as no directory: "wherever the asking
+    /// terminal is standing", which is what a keybinding means.
+    pub fn as_new_tab_cwd(&self) -> Option<String> {
+        let p = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *const c_char;
+        if p.is_null() {
+            return None;
+        }
+        let s = unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        if s.is_empty() { None } else { Some(s) }
+    }
+
     /// `ghostty_action_new_split_s { split_direction_e direction;
     /// const char* working_directory; new_split_result_e* result; }`.
     ///
@@ -1091,4 +1112,49 @@ pub struct Api {
     /// using anything else makes the candidate window drift on exactly the
     /// characters an IME produces.
     pub grapheme_width: unsafe extern "C" fn(*const u32, usize, *mut u8) -> usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn action_with_pointer(tag: u32, p: *const c_char) -> Action {
+        let mut a = Action { tag, _pad: 0, payload: [0u8; 24] };
+        a.payload[0..8].copy_from_slice(&(p as usize).to_ne_bytes());
+        a
+    }
+
+    /// **The directory `terminal_open` was waiting on an answer about.**
+    ///
+    /// The `new_tab` arm queued an op with no directory in it, so every tab
+    /// this host opened started wherever the asking terminal stood -- and
+    /// nothing said so, because the `starting in` log line only exists where
+    /// a directory does. This is the decode that arm was missing.
+    ///
+    /// ⚠️ Runs on Windows only (`cargo test` needs the target); on a
+    /// development machine it is compiled and not run.
+    #[test]
+    fn a_new_tab_carries_the_directory_it_was_given() {
+        let dir = std::ffi::CString::new("C:\\app").unwrap();
+        let a = action_with_pointer(ACTION_NEW_TAB, dir.as_ptr());
+        assert_eq!(a.as_new_tab_cwd().as_deref(), Some("C:\\app"));
+
+        // A directory with a space is not a different case, and was checked
+        // as one on the real machine before the cause was known.
+        let spaced = std::ffi::CString::new("C:\\Program Files").unwrap();
+        let b = action_with_pointer(ACTION_NEW_TAB, spaced.as_ptr());
+        assert_eq!(b.as_new_tab_cwd().as_deref(), Some("C:\\Program Files"));
+    }
+
+    /// Null and empty both mean "wherever the asking terminal is standing",
+    /// which is what a keybinding means and what every tab did before.
+    #[test]
+    fn a_new_tab_with_no_directory_inherits_one() {
+        let none = action_with_pointer(ACTION_NEW_TAB, std::ptr::null());
+        assert_eq!(none.as_new_tab_cwd(), None);
+
+        let empty = std::ffi::CString::new("").unwrap();
+        let e = action_with_pointer(ACTION_NEW_TAB, empty.as_ptr());
+        assert_eq!(e.as_new_tab_cwd(), None);
+    }
 }
