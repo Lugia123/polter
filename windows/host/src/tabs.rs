@@ -2413,6 +2413,25 @@ pub fn drain_for_layout(frame: HWND) {
     run_ops(frame, app, hinst);
 }
 
+/// Split one pane in two. **`false` means no split happened**, and every path
+/// that answers `false` has said why on the line above it.
+///
+/// # Why the return value is not decoration
+///
+/// The failures here used to be silent, and the shape that made them
+/// expensive was not the silence on its own -- it was the silence *next to a
+/// line that says the action started*. `run_ops` prints `[ops] running
+/// NewSplit` before every op, unconditionally; a reader who greps for a
+/// missing split therefore finds proof that the host received it and nothing
+/// at all after that, which reads as "the host did its part and the core did
+/// not draw". **That is the same shape as task 440**, and for one afternoon
+/// it was being read as evidence for it.
+///
+/// So this follows `create_tab_with`: a line at the exit that names the
+/// reason, **and** a value the caller turns into a second line naming the
+/// outcome. One layer would have been cheaper and would not have helped --
+/// the reason and the outcome are read by different people at different
+/// times.
 fn split_pane(
     frame: HWND,
     app: App,
@@ -2420,18 +2439,26 @@ fn split_pane(
     dir: NewSplit,
     cwd: Option<String>,
     at: Option<PaneId>,
-) {
+) -> bool {
     let (bounds, tab_idx, focused, tree) = {
         let Some(win) = window(frame) else {
-            return;
+            wlogf!(frame, "[split] refused: that window is gone");
+            return false;
         };
         let sh = strip_h(win.scale);
+        // **The commonest way to reach this is a minimised window**, whose
+        // client area is 0x0. `content_bounds` writes its own line about the
+        // geometry, but that line does not name the split -- so without this
+        // one, a split swallowed by a minimise is a `[layout] refusing:` with
+        // nothing to connect it to.
         let Some(bounds) = content_bounds(frame, sh) else {
-            return;
+            wlogf!(frame, "[split] refused: that window has no content area to split");
+            return false;
         };
         let idx = acting_tab(&win, at);
         let Some(tab) = win.tabs.get(idx) else {
-            return;
+            wlogf!(frame, "[split] refused: tab {} is not in this window", idx);
+            return false;
         };
         (bounds, idx, acting_pane(tab, at), tab.tree.clone())
     };
@@ -2441,7 +2468,7 @@ fn split_pane(
         Ok(t) => t,
         Err(e) => {
             wlogf!(frame, "[split] insert failed: {:?}", e);
-            return;
+            return false;
         }
     };
     // Only `Visible` is acceptable for a pane being created: a brand new pane
@@ -2451,21 +2478,48 @@ fn split_pane(
         new_tree.layout(bounds).into_iter().find(|(p, _)| *p == id)
     else {
         wlogf!(frame, "[split] the new pane is not in the layout; refusing to create it");
-        return;
+        return false;
     };
 
     let spec = NewTab { cwd: cwd.clone(), ..NewTab::default() };
+    // `create_pane` writes its own line for the ways it can fail (a window
+    // that would not create, a surface the core refused). This one says which
+    // *action* died there, which is the half that line cannot know.
     let Some(pane) = create_pane(frame, app, hinst, id, r, spec) else {
-        return;
+        wlogf!(frame, "[split] refused: the new pane could not be created");
+        return false;
     };
     {
-        if let Some(mut win) = window(frame) {
+        // **Both of these were `if let` with no `else`**, which is the same
+        // swallow as a bare `return` and is invisible to a checker that only
+        // reads `let ... else`. A split that reached here with its window or
+        // its tab gone would have created a pane, dropped it on the floor,
+        // and reported success.
+        match window(frame) {
             // The tab chosen when the split was worked out, not whichever is
             // active now -- the same rule the read above used.
-            if let Some(tab) = win.tabs.get_mut(tab_idx) {
-                tab.tree = new_tree;
-                tab.panes.push(pane);
-                tab.focused = id;
+            Some(mut win) => match win.tabs.get_mut(tab_idx) {
+                Some(tab) => {
+                    tab.tree = new_tree;
+                    tab.panes.push(pane);
+                    tab.focused = id;
+                }
+                None => {
+                    wlogf!(
+                        frame,
+                        "[split] pane {} was created but tab {} went away; it is orphaned",
+                        id, tab_idx
+                    );
+                    return false;
+                }
+            },
+            None => {
+                wlogf!(
+                    frame,
+                    "[split] pane {} was created but the window went away; it is orphaned",
+                    id
+                );
+                return false;
             }
         }
     }
@@ -2478,25 +2532,42 @@ fn split_pane(
         cwd.as_deref().unwrap_or("inherited"),
         pane_count(frame)
     );
+    true
 }
 
 /// Close one pane. The tab goes with it when it was the last one.
-fn close_pane(frame: HWND, id: PaneId) {
+///
+/// **`false` means the pane is still there**, and the line above the return
+/// says which of the three ways it was. See `split_pane` for why the value
+/// and the line are both needed rather than either alone.
+fn close_pane(frame: HWND, id: PaneId) -> bool {
     let (hwnd, surface, tab_empty, tab_idx) = {
         let Some(mut win) = window(frame) else {
-            return;
+            wlogf!(frame, "[pane] close {} refused: that window is gone", id);
+            return false;
         };
+        // **Not the same question as the next one.** This asks whether any
+        // tab in this window owns the pane; the next asks where it sits in
+        // the tab that does. They fail for different reasons -- an id from
+        // another window, against `panes` and `tree` having drifted apart --
+        // and one message for both would name the wrong one half the time.
         let Some((idx, _)) = win
             .tabs
             .iter()
             .enumerate()
             .find(|(_, t)| t.pane(id).is_some())
         else {
-            return;
+            wlogf!(frame, "[pane] close {} refused: no tab in this window has it", id);
+            return false;
         };
         let tab = &mut win.tabs[idx];
         let Some(pos) = tab.panes.iter().position(|p| p.id == id) else {
-            return;
+            wlogf!(
+                frame,
+                "[pane] close {} BUG: tab {} owns it but `panes` does not list it",
+                id, idx
+            );
+            return false;
         };
         let pane = tab.panes.remove(pos);
         tab.tree = tab.tree.remove(id);
@@ -2522,13 +2593,14 @@ fn close_pane(frame: HWND, id: PaneId) {
             // recorded the window as finished and left it on the screen. See
             // `winid::close_window_now`.
             crate::winid::close_window_now(frame);
-            return;
+            return true;
         }
         set_active(frame, active_index(frame));
-        return;
+        return true;
     }
     layout(frame);
     focus_active(frame);
+    true
 }
 
 /// Close every tab in a window, on the way to closing the window itself.
@@ -3716,12 +3788,53 @@ pub fn pane_of(hwnd: HWND) -> Option<(HWND, usize, PaneId)> {
 /// used to be here was the caller's idea of which window the click was in,
 /// and every caller got it from the same single global -- so a click on
 /// window 2's pane moved window 1's active tab.
+/// Move the model's idea of "where the user is typing" to the pane that was
+/// clicked.
+///
+/// # This is the one in the family that could destroy something
+///
+/// Every other swallowed action in this file leaves the user looking at a
+/// screen that did not change, which is annoying and obvious. **This one
+/// leaves the screen looking exactly as if it had worked.** The click landed
+/// on the pane the user meant; what did not move is which surface the
+/// keystrokes go to. The next command they type is executed in a terminal
+/// they are not looking at -- and by the standard this repository uses for
+/// the 0.6 line, "will the user lose something they made?", a command in the
+/// wrong terminal is a yes.
+///
+/// It was also the least reachable failure in the whole family: it does not
+/// go through the op queue, so there was not even an `[ops] running` line to
+/// say a click had happened. **Both exits below are supposed to be
+/// impossible**, which is exactly why they are worth a line each -- an
+/// impossible thing that happens silently is indistinguishable from the
+/// keyboard being broken.
+///
+/// No return value: the only caller is a window procedure, which has nobody
+/// to hand a result to. Adding one that nothing reads would be the *shape* of
+/// the two-layer fix without its substance -- see `split_pane`, where the
+/// second layer exists because `run_ops` is a real second reader.
 pub fn focus_pane_at(hwnd: HWND) {
     let Some((frame, tab_idx, id)) = pane_of(hwnd) else {
+        // process-wide: without `pane_of` there is no frame to tag the line
+        // with, and which window this pane belonged to is exactly the fact
+        // that has gone missing.
+        plogf!(
+            "[pane] click on {:?} went nowhere: that window is in no tab; \
+             keystrokes still go wherever they went before",
+            hwnd.0
+        );
         return;
     };
     let changed = {
-        let Some(mut win) = window(frame) else { return };
+        let Some(mut win) = window(frame) else {
+            wlogf!(
+                frame,
+                "[pane] click on pane {} went nowhere: that window is gone; \
+                 keystrokes still go wherever they went before",
+                id
+            );
+            return;
+        };
         let was = (win.active, win.tabs.get(win.active).map(|t| t.focused));
         win.active = tab_idx;
         if let Some(tab) = win.tabs.get_mut(tab_idx) {
@@ -3820,14 +3933,34 @@ fn free_pane(id: PaneId, hwnd: isize, surface: usize) {
     );
 }
 
+/// Destroy the tab at `idx`, freeing its panes.
+///
+/// **No return value, and that is a judgement rather than an oversight.**
+/// There are eight call sites, all of them inside this file's own close
+/// paths, and none of them has anywhere to put an answer -- they are already
+/// committed to the tab being gone by the time they call. Threading a boolean
+/// through eight callers that would each write `let _ =` would be the two
+/// layer fix in shape only. The lines below are the whole of it.
+///
+/// ⚠️ The second exit is the interesting one: `idx >= len` means somebody
+/// computed a tab index and the tabs moved underneath it. That is a bug in
+/// the caller, and it used to close no tab and say nothing.
 fn destroy_tab_at(frame: HWND, idx: usize) {
     // Both come out of the one critical section: the panes to free, and what
     // `reopen.rs` should be told once the guard is gone.
     let (doomed, remembered): (Vec<(PaneId, isize, usize)>, Option<(TabId, String, String)>) = {
         let Some(mut win) = window(frame) else {
+            wlogf!(frame, "[tab] destroy at {} refused: that window is gone", idx);
             return;
         };
         if idx >= win.tabs.len() {
+            wlogf!(
+                frame,
+                "[tab] destroy at {} refused: this window has {} tab(s); \
+                 the caller's index is stale",
+                idx,
+                win.tabs.len()
+            );
             return;
         }
         let tab = win.tabs.remove(idx);
@@ -4432,7 +4565,12 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     3 => NewSplit::Up,
                     _ => NewSplit::Right,
                 };
-                split_pane(frame, app, hinst, d, cwd, at);
+                // **The outcome line, next to the `[ops] running NewSplit`
+                // that is already unconditional.** A start with no end is
+                // what made a swallowed split read as a core that would not
+                // draw; see `split_pane`.
+                let ok = split_pane(frame, app, hinst, d, cwd, at);
+                wlogf!(frame, "[ops] NewSplit finished: split={}", ok as u8);
             }
             Op::GotoSplit(v, at) => {
                 // `ghostty_action_goto_split_e`
@@ -4536,7 +4674,10 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 layout(frame);
                 wlogf!(frame, "[split] zoom -> {:?}", zoomed);
             }
-            Op::ClosePane(id) => close_pane(frame, id),
+            Op::ClosePane(id) => {
+                let ok = close_pane(frame, id);
+                wlogf!(frame, "[ops] ClosePane {} finished: closed={}", id, ok as u8);
+            }
             Op::ToggleQuickTerminal => crate::quick::toggle(app, hinst),
             Op::PresentTerminal => unsafe {
                 let _ = ShowWindow(frame, SW_RESTORE);

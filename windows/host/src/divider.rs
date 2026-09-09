@@ -70,6 +70,17 @@ struct State {
     /// Index into `pool` of the divider being dragged.
     dragging: Option<usize>,
     hot: Option<usize>,
+    /// Whether this drag has already said why it is going nowhere.
+    ///
+    /// **A drag is one line, not one line per `WM_MOUSEMOVE`.** The reasons
+    /// `drag_to` gives up are all sticky -- a window that is gone stays gone
+    /// for the rest of the drag -- so the first move to hit one says
+    /// everything the whole drag would, and printing it per move would be
+    /// thousands of lines a second. Cleared when a drag starts.
+    ///
+    /// ⚠️ **So this line proves a stuck drag happened, never how long it
+    /// went on for.** Do not count these to measure anything.
+    complained: bool,
 }
 
 thread_local! {
@@ -256,8 +267,31 @@ fn pointer_in_frame(frame: HWND) -> Option<POINT> {
     }
 }
 
+/// Put the divider being dragged where the pointer is.
+///
+/// **Every way out of here that is not a resize is announced**, at most once
+/// per drag (see `State::complained`). The `Err` arm below already said why
+/// in its own words -- "a divider that silently stops responding is
+/// indistinguishable from a frozen app" -- and every early exit above it had
+/// exactly the same consequence without the same treatment.
 fn drag_to(frame: HWND, idx: usize) {
-    let Some(p) = pointer_in_frame(frame) else { return };
+    // One place, so a new exit cannot forget the gate.
+    let say = |what: &str| {
+        let first = STATE.with(|c| {
+            let mut st = c.borrow_mut();
+            let first = !st.complained;
+            st.complained = true;
+            first
+        });
+        if first {
+            wlogf!(frame, "[div] drag {} is going nowhere: {}", idx, what);
+        }
+    };
+
+    let Some(p) = pointer_in_frame(frame) else {
+        say("the pointer is not in this frame");
+        return;
+    };
 
     let (path, axis) = STATE.with(|c| {
         let st = c.borrow();
@@ -267,6 +301,7 @@ fn drag_to(frame: HWND, idx: usize) {
             .unwrap_or((Vec::new(), Axis::Horizontal))
     });
     if path.is_empty() && idx > 0 {
+        say("this divider has no path in the tree");
         return;
     }
 
@@ -282,13 +317,18 @@ fn drag_to(frame: HWND, idx: usize) {
         // the guard below rather than inside it.
         let sh = crate::strip::strip_h(tabs::scale_of(frame));
         let Some(bounds) = tabs::content_bounds(frame, sh) else {
+            // `content_bounds` writes its own line about the geometry; this
+            // one says which action that geometry killed.
+            say("that window has no content area");
             return;
         };
         let Some(mut win) = tabs::window(frame) else {
+            say("that window is gone");
             return;
         };
         let active = win.active;
         let Some(tab) = win.tabs.get_mut(active) else {
+            say("that window has no active tab");
             return;
         };
         match tab.tree.resize_at(&path, position, bounds) {
@@ -339,7 +379,12 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
 
             WM_LBUTTONDOWN => {
                 if let Some(i) = index_of(hwnd) {
-                    STATE.with(|c| c.borrow_mut().dragging = Some(i));
+                    STATE.with(|c| {
+                        let mut st = c.borrow_mut();
+                        st.dragging = Some(i);
+                        // A new drag gets a new voice; see `complained`.
+                        st.complained = false;
+                    });
                     SetCapture(hwnd);
                     logf!("[div] drag start {}", i);
                 }

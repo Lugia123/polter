@@ -645,14 +645,25 @@ pub fn on_wheel(frame: HWND, delta: i16) {
 /// input method, and high-contrast themes come with it** -- all things a
 /// hand-drawn list would have to reimplement, and, being on nobody's
 /// acceptance list, would not.
+/// The list behind the overflow button.
+///
+/// **A button that does nothing when clicked is the cheapest possible
+/// impression that the application has frozen**, and both ways out of here
+/// without a menu used to give exactly that impression with nothing written
+/// down. No return value: the caller is a window procedure with nobody to
+/// tell.
 fn show_overflow_menu(frame: HWND, button: RECT) {
     let (tabs_now, active) = tabs::strip_snapshot(frame);
     if tabs_now.is_empty() {
+        wlogf!(frame, "[strip] overflow button clicked but this window has no tabs");
         return;
     }
 
     let chosen = unsafe {
-        let Ok(menu) = CreatePopupMenu() else { return };
+        let Ok(menu) = CreatePopupMenu() else {
+            wlogf!(frame, "[strip] overflow button clicked but CreatePopupMenu failed");
+            return;
+        };
         for (i, (_, title)) in tabs_now.iter().enumerate() {
             let label = format!("{}: {}", i + 1, title);
             let mut wide: Vec<u16> = label.encode_utf16().collect();
@@ -684,9 +695,20 @@ fn show_overflow_menu(frame: HWND, button: RECT) {
     };
 
     if chosen <= 0 {
+        // silent-ok: the user pressed Esc or clicked away. That is an answer,
+        // not a refusal, and it is the commonest way out of a menu -- a line
+        // per dismissal would push the interesting ones out of the log.
         return;
     }
+    // Not the same thing at all: the menu was built from a snapshot, and a tab
+    // closing while it was open leaves a choice that points at nothing.
     let Some((id, _)) = tabs_now.get((chosen - 1) as usize) else {
+        wlogf!(
+            frame,
+            "[strip] overflow menu chose entry {} but the tabs changed \
+             while it was open; nothing activated",
+            chosen
+        );
         return;
     };
     tabs::activate_tab(frame, *id);
