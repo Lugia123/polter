@@ -754,17 +754,55 @@ pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
 /// still gets all of them. Folding these into one number would turn "do
 /// not interrupt" into "cannot see", which is the opposite of the point.
 ///
-/// `watched` is the *reader's* standing, and it is asked for rather than
+/// `role` is the *reader's* standing, and it is asked for rather than
 /// looked up because roles live on the bus and the chat is not going to
-/// guess at one. The rule it encodes is one line: **a terminal somebody
-/// is minding is not the group's to interrupt.** Its supervisor directs
-/// it by typing into it, which is a channel the group cannot compete with
-/// and should not try to; an unminded terminal has no such channel, so
-/// the group is the only one it has and it is told. See
+/// guess at one.
+///
+/// # The rule, and what it used to be
+///
+/// **Only a supervisor is woken.** What stood here was "**a terminal
+/// somebody is minding is not the group's to interrupt**" -- true, and it
+/// only covered `watched`, so everything else was told: supervisors, and
+/// **every terminal carrying no mark at all**.
+///
+/// ⚠️ **Task 413, reported by the user**: release a worker and it keeps
+/// getting told. Nothing in the release does that; the release moves it from
+/// `watched` to `none`, and `none` was the bucket that *is* told. **So
+/// letting a worker go quietly turned its group notices back on.**
+///
+/// The old reasoning for telling an unmarked terminal was "nobody is
+/// directing it, so the group is the only channel it has". That is a reason
+/// to let it **see** the messages, and it does -- `unread` still counts every
+/// one of them and `group_read` still hands them over. It is not a reason to
+/// **interrupt** it, and interrupting is what this number decides. The two
+/// were already meant to be able to disagree; see the paragraph above.
+///
+/// **What a notice actually is**: a line typed into that terminal's input
+/// box. For a supervisor that is its box and reading it is its job. For
+/// anybody else it is an interruption with **no next step that anyone asked
+/// for** -- a released worker holds no task and answers to nobody, and a
+/// terminal the person is reading in gets a line pushed into their shell
+/// prompt.
+///
+/// ⚠️ **What this costs, and it is a real cost**: an unmarked terminal is no
+/// longer told, including one a person is sitting at. They keep the
+/// conversations window (`poltergeist_toggle_chat`), which is where a person
+/// reads a group; what they lose is a nudge in a terminal. **A released
+/// agent loses nothing it was going to act on.**
+///
+/// ⚠️ **And what this cannot see**: a released worker and a terminal the
+/// person is reading in are **the same thing to this code** -- both carry no
+/// mark, and nothing here can tell them apart. That is why the rule is drawn
+/// on "who acts on it" rather than on "who is it". See
 /// `docs/poltergeist/tasks.md`.
-pub fn waking(self: *const Chat, name: []const u8, id: Id, watched: bool) usize {
-    if (watched) return 0;
-    return self.unread(name, id);
+pub fn waking(self: *const Chat, name: []const u8, id: Id, role: Bus.Role) usize {
+    return switch (role) {
+        .supervisor => self.unread(name, id),
+
+        // Minded: its supervisor types into it, and the group cannot compete
+        // with that channel. Unmarked: nobody is expecting anything of it.
+        .watched, .none => 0,
+    };
 }
 
 /// Total unread across every group `id` is in.
@@ -923,9 +961,9 @@ pub fn shouldNotify(
     id: Id,
     now_ms: u64,
     gap_ms: u64,
-    watched: bool,
+    role: Bus.Role,
 ) bool {
-    if (self.waking(name, id, watched) == 0) return false;
+    if (self.waking(name, id, role) == 0) return false;
 
     const group = self.groups.getPtr(name) orelse return false;
     const who = group.members.getPtr(id) orelse return false;
@@ -1613,11 +1651,63 @@ test "notices are rate limited per group and per terminal" {
     try chat.add("build", a, .none, .{});
     _ = try chat.post("build", boss, "one", 0);
 
-    try testing.expect(chat.shouldNotify("build", a, 0, 1000, false));
-    try testing.expect(!chat.shouldNotify("build", a, 500, 1000, false));
+    try testing.expect(chat.shouldNotify("build", a, 0, 1000, .supervisor));
+    try testing.expect(!chat.shouldNotify("build", a, 500, 1000, .supervisor));
 
     _ = try chat.post("build", boss, "two", 900);
-    try testing.expect(chat.shouldNotify("build", a, 1000, 1000, false));
+    try testing.expect(chat.shouldNotify("build", a, 1000, 1000, .supervisor));
+}
+
+test "letting a worker go does not turn its notices back on" {
+    // ⭐ **Task 413, as one assertion.** The defect was not in the release: it
+    // was that `watched` and `none` were on opposite sides of this rule, so
+    // the release moved a terminal from the silent bucket into the told one.
+    // **Nothing in the release path had to be wrong for that to happen.**
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    _ = try chat.post("build", boss, "one", 0);
+
+    // While it is being minded: silent, because its supervisor types into it.
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
+
+    // Released. **This is the cell that was red before 413.**
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .none));
+}
+
+test "an unmarked terminal is not woken and still sees everything" {
+    // The distinction the two numbers exist to keep, and the reason `waking`
+    // is not `unread` with a filter on it: a terminal that is not
+    // interrupted still has everything waiting for it the moment it looks.
+    // ⚠️ Named apart from the older cell of the same shape, which asks this
+    // of a *watched* terminal -- 413 added the unmarked one, and folding the
+    // two would leave one of the roles untested.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    _ = try chat.post("build", boss, "one", 0);
+    _ = try chat.post("build", boss, "two", 0);
+
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .none));
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
+}
+
+test "a supervisor is the one that is woken" {
+    // The other side of the rule, kept as its own cell: silencing everybody
+    // would pass the two above and take away the box a supervisor works out
+    // of.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    _ = try chat.post("build", boss, "one", 0);
+
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .supervisor));
 }
 
 test "being noisy in one group does not silence another" {
@@ -1632,8 +1722,8 @@ test "being noisy in one group does not silence another" {
     _ = try chat.post("one", boss, "x", 0);
     _ = try chat.post("two", boss, "y", 0);
 
-    try testing.expect(chat.shouldNotify("one", a, 0, 60_000, false));
-    try testing.expect(chat.shouldNotify("two", a, 0, 60_000, false));
+    try testing.expect(chat.shouldNotify("one", a, 0, 60_000, .supervisor));
+    try testing.expect(chat.shouldNotify("two", a, 0, 60_000, .supervisor));
 }
 
 test "forgetting a terminal takes it out of every group" {
@@ -2001,12 +2091,12 @@ test "a watched terminal is not woken, whoever spoke" {
     try chat.add("build", b, .none, .{});
 
     _ = try chat.post("build", boss, "here is the plan", 0);
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, true));
-    try testing.expect(!chat.shouldNotify("build", a, 0, 1000, true));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
+    try testing.expect(!chat.shouldNotify("build", a, 0, 1000, .watched));
 
     _ = try chat.post("build", b, "core is green", 1);
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, true));
-    try testing.expect(!chat.shouldNotify("build", a, 1, 1000, true));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
+    try testing.expect(!chat.shouldNotify("build", a, 1, 1000, .watched));
 }
 
 test "an unminded terminal is woken by both, because the group is all it has" {
@@ -2018,11 +2108,11 @@ test "an unminded terminal is woken by both, because the group is all it has" {
     try chat.add("build", b, .none, .{});
 
     _ = try chat.post("build", boss, "here is the plan", 0);
-    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, false));
-    try testing.expect(chat.shouldNotify("build", a, 0, 1000, false));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .supervisor));
+    try testing.expect(chat.shouldNotify("build", a, 0, 1000, .supervisor));
 
     _ = try chat.post("build", b, "core is green", 1);
-    try testing.expectEqual(@as(usize, 2), chat.waking("build", a, false));
+    try testing.expectEqual(@as(usize, 2), chat.waking("build", a, .supervisor));
 }
 
 test "a supervisor is woken by both, because that is how it hears" {
@@ -2036,10 +2126,10 @@ test "a supervisor is woken by both, because that is how it hears" {
     try chat.add("build", a, .none, .{});
 
     _ = try chat.post("build", boss2, "here is the plan", 0);
-    try testing.expectEqual(@as(usize, 1), chat.waking("build", boss, false));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", boss, .supervisor));
 
     _ = try chat.post("build", a, "core is green", 1);
-    try testing.expectEqual(@as(usize, 2), chat.waking("build", boss, false));
+    try testing.expectEqual(@as(usize, 2), chat.waking("build", boss, .supervisor));
 }
 
 test "not being woken is not being kept out" {
@@ -2056,7 +2146,7 @@ test "not being woken is not being kept out" {
     _ = try chat.post("build", boss, "here is the plan", 0);
     _ = try chat.post("build", b, "core is green", 1);
 
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, true));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
     try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
     try testing.expectEqual(@as(usize, 2), chat.unreadTotal(a));
 

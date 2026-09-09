@@ -5079,6 +5079,17 @@ pub fn dispatch(
                 // Only the supervisor minding it may let it go.
                 if (!bus.minds(caller, p.id)) return failure(error.NotYours);
                 bus.unwatch(p.id);
+
+                // **Said back, because letting go changes more than the
+                // mark.** A released terminal is nobody's: it is not woken
+                // by the group either (`Chat.waking`), so anything that has
+                // to reach it now has to be typed at it. ⚠️ That used to be
+                // the opposite -- releasing turned its group notices *on* --
+                // and a supervisor who let three go had three terminals
+                // waking up with nothing to do (task 413).
+                return .{ .text = "Let go. It is nobody's now: no notices, and the " ++
+                    "group will not wake it either -- if it still has to hear something, " ++
+                    "type it there or take it out of the group." };
             }
 
             return .ok;

@@ -4540,7 +4540,13 @@ fn tellTerminalsAboutMessages(self: *App) void {
         // the user carries no mark, is minded by nobody, and is told.
         // A terminal with no mark is told for the same reason -- nobody is
         // directing it, so the group is the only channel it has.
-        const watched = self.poltergeist.roleOf(surface.id) == .watched;
+        // **The whole standing, not one bit of it.** This was
+        // `roleOf(...) == .watched`, which put "minded" on one side and
+        // *everything else* on the other -- so releasing a worker moved it
+        // into the told bucket and its notices came back on (task 413). The
+        // rule is `Chat.waking`'s to state; this hands over the answer it
+        // needs and nothing more.
+        const role = self.poltergeist.roleOf(surface.id);
 
         for (names) |name| {
             // Still the whole count, deliberately. Not being woken is not
@@ -4553,7 +4559,7 @@ fn tellTerminalsAboutMessages(self: *App) void {
                 surface.id,
                 now_ms,
                 chat_notice_gap_ms,
-                watched,
+                role,
             )) {
                 continue;
             }
