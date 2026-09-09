@@ -1909,6 +1909,26 @@ pub fn layout(frame: HWND) {
                     if res.is_ok() { "ok" } else { "SetWindowPos FAILED" }
                 );
             }
+
+            // **Told that its pixels are stale, because nothing else will.**
+            //
+            // ⚠️ Moving a window does not make Windows think its contents are
+            // wrong. A pane that kept its size gets no `WM_SIZE`, so the core
+            // is told nothing at all; the pane's own `WM_PAINT` only arrives
+            // if something invalidates *it*, and the `InvalidateRect` below
+            // is on the frame, which does not reach children. So after a
+            // rearrangement a pane could sit showing the frame it drew for
+            // where it used to be -- right tree, right geometry, right
+            // `terminal_read`, **stale screen** -- until it happened to be
+            // typed into or focused.
+            //
+            // `surface_refresh` *schedules* a render (`queueRender` in the
+            // core). **Not `surface_draw`**, which renders on the calling
+            // thread and is the `--draw-on-paint` experiment.
+            let s = surface_of_pane(id as u64);
+            if !s.is_null() {
+                unsafe { (crate::api().surface_refresh)(s) };
+            }
         }
         let _ = InvalidateRect(Some(frame), None, false);
     }
@@ -4764,15 +4784,33 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                     logf!("[paint] surface window got WM_PAINT #{}", m);
                 }
                 let s = surface_of(hwnd);
-                if !s.is_null() && crate::draw_on_paint() {
-                    let n = crate::paint_tick();
-                    // Log generously but bounded: during a resize these land
-                    // inside the window where the main loop is blocked, which
-                    // is exactly the evidence we are after.
-                    if n <= 400 {
-                        logf!("[paint] #{} main-thread surface_draw", n);
+                if !s.is_null() {
+                    if crate::draw_on_paint() {
+                        let n = crate::paint_tick();
+                        // Log generously but bounded: during a resize these
+                        // land inside the window where the main loop is
+                        // blocked, which is exactly the evidence we are after.
+                        if n <= 400 {
+                            logf!("[paint] #{} main-thread surface_draw", n);
+                        }
+                        (api().surface_draw)(s);
+                    } else {
+                        // **A paint request is answered, not swallowed.**
+                        //
+                        // ⚠️ This used to fall straight through to
+                        // `ValidateRect`: Windows was told the pixels were
+                        // fine, and nothing had drawn them. That is the
+                        // general form of the defect that showed up after a
+                        // rearrangement -- `layout` now refreshes the panes it
+                        // moves, but any *other* reason Windows has to ask
+                        // (a window uncovered, a monitor change) landed here
+                        // and was thrown away just the same.
+                        //
+                        // `surface_refresh` schedules a render rather than
+                        // performing one, so this stays off the drawing path
+                        // that `--draw-on-paint` exists to experiment with.
+                        (api().surface_refresh)(s);
                     }
-                    (api().surface_draw)(s);
                 }
                 let _ = ValidateRect(Some(hwnd), None);
                 LRESULT(0)

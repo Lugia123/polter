@@ -966,6 +966,16 @@ pub struct Api {
     pub app_tick: unsafe extern "C" fn(App),
     pub surface_config_new: unsafe extern "C" fn() -> SurfaceConfig,
     pub surface_new: unsafe extern "C" fn(App, *const SurfaceConfig) -> Surface,
+    /// **Schedule a render. Not the same as `surface_draw`.**
+    ///
+    /// `ghostty_surface_refresh` queues one (`refreshCallback` -> `queueRender`
+    /// in the core); `ghostty_surface_draw` renders on the calling thread,
+    /// which is why the only call to it sits behind `--draw-on-paint`.
+    ///
+    /// ⚠️ **It was in the header all along and nothing here bound it**, which
+    /// is how a moved pane could keep its old pixels: nothing in this host
+    /// had a way to say "these pixels are stale".
+    pub surface_refresh: unsafe extern "C" fn(Surface),
     pub surface_draw: unsafe extern "C" fn(Surface),
     pub surface_set_size: unsafe extern "C" fn(Surface, u32, u32),
     pub surface_set_content_scale: unsafe extern "C" fn(Surface, f64, f64),

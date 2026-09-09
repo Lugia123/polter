@@ -4560,6 +4560,7 @@ fn load_api() -> Option<Api> {
             app_tick: sym!(internal, "ghostty_app_tick"),
             surface_config_new: sym!(internal, "ghostty_surface_config_new"),
             surface_new: sym!(internal, "ghostty_surface_new"),
+            surface_refresh: sym!(internal, "ghostty_surface_refresh"),
             surface_draw: sym!(internal, "ghostty_surface_draw"),
             surface_set_size: sym!(internal, "ghostty_surface_set_size"),
             surface_set_content_scale: sym!(internal, "ghostty_surface_set_content_scale"),
