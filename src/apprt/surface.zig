@@ -220,6 +220,37 @@ pub fn newConfig(
     return copy;
 }
 
+// ⚠️ **These three tests are the only way this queue can be observed full.**
+//
+// The obvious alternative -- shrink the queue on a running build and let the
+// program fill it -- does not work, and the reason is worth knowing before
+// trusting anything below. Every send wakes the consumer, so the faster the
+// producer goes the faster the consumer is woken; measured on a real machine
+// with the capacity forced to one and a bursty producer, the queue never
+// reported full at all. It fills only when the consumer is *prevented from
+// running*, which is the very fault this family is about, and not something
+// a test rig can ask for.
+//
+// So these fill it directly and run no consumer. ⚠️ That makes them a model
+// of "the consumer has stopped", not of "the consumer is slow" -- the
+// distinction matters, because a slow consumer still drains and a stopped
+// one never does.
+//
+// **What of that model is corroborated, and what is not, in two halves:**
+//
+//   * "a stopped consumer fills the queue" **has happened on a real
+//     machine**. Two captures from a build predating the fix, taken while a
+//     window was blocked, carry the product's own full-mailbox lines -- one
+//     with a discard count still climbing past seven hundred. (Reported to
+//     me from those captures; I have not read the machine myself.)
+//   * "a full queue leaves the UI able to carry on" **cannot be checked on
+//     a machine at all**, because the fault that stopped the consumer has
+//     since been fixed. Nothing outside these tests exercises it.
+//
+// ⚠️ Keep those apart. The whole model being unverified would make these
+// tests guesswork; it is the second half that is unverified, and only
+// because the first half is no longer reproducible.
+
 test "a send into a full app mailbox returns within a budget" {
     // ⚠️ **Skipped deliberately. The skip is part of the change. See 443.**
     //
@@ -404,4 +435,72 @@ test "a send into a full app mailbox still delivers" {
     try std.testing.expect(blocked);
     try std.testing.expect(ctx.pushed.load(.seq_cst) > 0);
     try std.testing.expectEqual(filled, q.len);
+}
+
+test "a send that has to wait wakes the consumer before waiting" {
+    // ⚠️ **Skipped deliberately. See 443.** Second half of a pair, and the
+    // half that a timeout alone does not deliver.
+    //
+    //   1. the send comes back at all            <- the budget test above
+    //   2. the consumer was told to come and look <- this one
+    //
+    // Bounding the wait fixes 1 and leaves 2 exactly as it is: a send that
+    // gives up after a second still gave up, and the message is still gone.
+    // Waiting *usefully* means the thread that can make room has been told
+    // there is a reason to. Both readings arrive as "push returned", which
+    // is why they have to be asserted separately.
+    //
+    // Today the wake is unconditional but it is written *after* the send
+    // (`App.Mailbox.push`), so a send that blocks never reaches it: the
+    // waiter is waiting for someone who was never called. The queue can do
+    // this properly -- it wakes before it waits, from inside the lock -- but
+    // nothing has attached a waker to this queue.
+    //
+    // **Delete the line below when a waker is attached**, and it must pass.
+    // That it can pass is shown at the bottom: waking by hand before the
+    // wait makes the same assertion hold.
+    if (true) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const q = try App.Mailbox.Queue.create(alloc);
+    defer q.destroy(alloc);
+
+    var rt_app: apprt.App = .{};
+    const mb: Mailbox = .{
+        .surface = undefined,
+        .app = .{ .rt_app = &rt_app, .mailbox = q },
+    };
+
+    while (mb.push(.{ .renderer_health = .healthy }, .{ .instant = {} }) > 0) {}
+    const wakes_before = rt_app.wakeups;
+
+    const Ctx = struct {
+        mb: Mailbox,
+        returned: std.atomic.Value(bool) = .init(false),
+
+        fn run(self: *@This()) void {
+            _ = self.mb.push(.{ .renderer_health = .healthy }, .{ .forever = {} });
+            self.returned.store(true, .seq_cst);
+        }
+    };
+    var ctx: Ctx = .{ .mb = mb };
+    const th = try std.Thread.spawn(.{}, Ctx.run, .{&ctx});
+
+    // Let it get as far as waiting, and confirm it is still there. Reading
+    // the counter after it came back would prove nothing: the send wakes on
+    // its way out too, and that wake is far too late to be any use.
+    var waited: usize = 0;
+    while (waited < 100 and !ctx.returned.load(.seq_cst)) : (waited += 1) {
+        io.sleep(.fromNanoseconds(std.time.ns_per_ms), .awake) catch {};
+    }
+    const still_waiting = !ctx.returned.load(.seq_cst);
+    const woke_while_waiting = rt_app.wakeups > wakes_before;
+
+    _ = q.pop(io);
+    th.join();
+
+    try std.testing.expect(still_waiting);
+    try std.testing.expect(woke_while_waiting);
 }
