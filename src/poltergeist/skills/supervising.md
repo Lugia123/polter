@@ -395,9 +395,14 @@ have to read what came out, because a placement that went wrong looks exactly
 like one that went right from inside a tool reply. What to expect today:
 
 - Workers 1–3: beside you, top to bottom, with you on the left.
-- Worker 4 onward: **a new tab**. The host log says so and says why — it
-  needs to split a whole column rather than one pane, which no action can
-  ask for yet.
+- Worker 4 onward: **a new tab**. The host log says so and says why — a
+  fourth would need a second column beside the whole first one, and the
+  automatic placement only ever splits a single pane.
+
+⚠️ **That is a limit of the automatic placement, not of the tools.** If you
+want a shape it will not build — a two-by-two, say — `terminal_layout` takes
+a whole layout in one call and sets it. The placement above is what happens
+when you do not say.
 
 **When you want a tab, say so — leaving it out no longer means one.**
 `terminal_open` takes `place`, and it takes intent rather than position:
@@ -519,10 +524,22 @@ The judgement is what this file is for:
   An *unmarked* terminal still asks, and you will get `AwaitingConfirmation`
   with the terminal still open -- that button is the user's, not yours.
 - **Layout is the person's**; rearranging it while they are away is no favour.
-- **`set_surface_title:worker A` early.** Four hex ids in four identical
-  directories are not something you will tell apart in eight hours, and this
-  is what `terminal_list` reports back. (`set_tab_title` names the tab for the
-  person and does *not* reach that list.)
+- **Name every worker as soon as you open it, in both places.** They are two
+  different names for two different readers, and neither substitutes for the
+  other:
+  - **`set_surface_title:worker A`** is what `terminal_list` reports back —
+    **the name you will use**. Four hex ids in four identical directories are
+    not something you will tell apart in eight hours.
+  - **`set_tab_title:worker A`** is what appears on the tab strip — **the name
+    the person will use**, and the only one they can see without asking you.
+    It does *not* reach `terminal_list`.
+
+  ⚠️ **Naming a tab now keeps it.** Until recently the program running in the
+  worker overwrote that name at its next prompt, so naming a tab looked like
+  it worked and quietly did not. A name you set explicitly outranks the one
+  the program announces from then on — which also means **that tab stops
+  showing what is running in it**. That is the trade: on a worker you have
+  named, "who this is" replaces "what it is doing".
 - **The clipboard is the person's**, in whatever window they are in.
 
 None of it is forbidden — it is one keystroke away for the person sitting
