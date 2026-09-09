@@ -27,7 +27,32 @@
 > 而「我没记下来」和「用户自己分的屏」**打的是同一行**。
 >
 > **已修**：归属改到**下一次摆放时**结算（那时 surface 一定在了）。⇒ **上限恢复为
-> 设计值 3**，⚠️ **但那个 3 仍然只是设计值——没有人在真机上量到过它。**
+> 设计值 3**，~~⚠️ **但那个 3 仍然只是设计值——没有人在真机上量到过它。**~~
+>
+> ⭐ **2026-09-09：量到了。** 在 `ac197ec5f` 上背靠背发六个 `terminal_open`，逐字：
+>
+> ```
+> [split] Right -> pane 10 (cwd C:\PerfLogs); 2 panes in this tab
+> [split] Down  -> pane 11 (cwd C:\Windows);  3 panes in this tab
+> [split] Down  -> pane 12 (cwd C:\Users);    4 panes in this tab
+> worker 4/5/6: falling back to a tab -- 3 workers already here, and number 4
+>               would need a second column, which means splitting a subtree
+>               (not possible today)
+> ```
+>
+> ⇒ **3 是实测的上限，不再是设计值。** ⚠️ **原话划掉而不是删掉**：它被引用过，
+> 而一句被引用过的话消失掉，比它留着带一条勘误更难追。
+>
+> ### ⚠️ 顺带更正一条判断（411），记在主管头上
+>
+> 那句日志里既有一个**活的数**（`3 workers already here`）又有一个**定数**
+> （`number 4`），当时被判成「计数是活的、序数是写死的，自相矛盾」。**那是判错了。**
+> `number 4` 说的是**这个 tab 里的第 4 个** —— 而一个 tab 里始终只有 3 个 worker，
+> 所以下一个永远是第 4 个。**它不是「你一共开的第几个」，两个数说的是同一件事。**
+>
+> ⭐ **错在哪一步是可以说清的**：**看见「活的数旁边有个定数」就下了结论，
+> 没有去问那个定数是在数哪一个计数。** ⚠️ 而这一步一旦跳过，
+> **一个自洽的句子和一个自相矛盾的句子长得一模一样。**
 
 ⇒ **拿这条判据去测这一版，正确的结果是「不符合，且日志说明了为什么」，不是绿。**
 
@@ -44,11 +69,33 @@
 | 1 | 在总管**右边**；总管仍在最左、占满高 | `[split] Right -> pane N (cwd …)` |
 | 2 | 在**第 1 个的下方** | `[split] Down -> pane N (cwd …)` |
 | 3 | 在**第 2 个的下方**（右列三格） | 同上 |
-| 4 | **新开一个 tab** | `falling back to a tab -- 3 workers already here, and a fourth would need a second column, which means splitting a subtree (not possible today)` |
+| 4 | **新开一个 tab** | `falling back to a tab -- 3 workers already here, and number 4 would need a second column, which means splitting a subtree (not possible today)` |
 | 5 | 也在新 tab 里 | 同上 |
 
 ⚠️ **每个 worker 的 shell 必须真的在它自己的 `cwd` 里**——在每一格里 `pwd` 看一眼。
 这是那条硬约束：**要么在请求的目录里，要么根本没被分屏。**
+
+⭐ **2026-09-09：这条约束在「回落到新 tab」那条路上也成立，而这以前没有读数。**
+同一批六个里，落到新 tab 的三个逐字：
+```
+[pane] 13 starting in "C:\Program Files"
+[pane] 15 starting in "C:\Windows\System32"
+[pane] 17 starting in "C:\PerfLogs"
+```
+⇒ **410 的修法不只在分屏那条路上生效。** ⚠️ 这一格值得单独记，是因为
+**「分屏时带对了目录」和「回落时也带对了」是两条路**，而前者绿的时候后者可以是错的。
+
+## 1 之二、⚠️ 一条给下一个跑真机的人的地板：**这一批的第一条先调 `me`**
+
+**在发这一批 `terminal_open` 之前，先调一次 `me`。**
+
+⚠️ **理由不是礼貌，是身份会被抢走**：**分屏会把焦点从总管那里拿走**，
+于是这一批里后面的调用**可能是从新开的 worker 发出去的**，身份不再是总管。
+⇒ 那些调用会拿到 `NotPermitted`，而 **四条 `NotPermitted` 在日志里和「上限是 1」
+逐字同形** —— 一个是权限问题，一个是能力问题，**读起来一模一样**。
+
+⭐ **`me` 比坐标硬**：它**不依赖你点得准**，它直接问被测系统
+**「你现在认为我是谁」**，并且把这个答案和这一批读数**绑在同一次进程里**。
 
 ## 2. `place` 三档
 
