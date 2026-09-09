@@ -56,11 +56,28 @@ use crate::hlogf;
 
 /// Posted to a **pane** window when the core changed the pointer's visibility.
 ///
-/// `WM_APP + 13`: every smaller offset is spoken for somewhere in this crate
-/// (`tabs::WM_POLTER_OP`, the palette, search, the key-sequence overlay, the
-/// HUD, settings, the menu self-test, the prompt). Message ids only have to be
-/// unique per window class, but a shared numbering is one fewer thing to be
-/// wrong about.
+/// `WM_APP + 13`. ⚠️ **This used to say that every smaller offset was spoken
+/// for, and that the numbering was shared across the whole crate. Neither is
+/// true today**: `notify.rs` also uses `WM_APP + 13`, and `WM_APP + 14` was
+/// taken afterwards by the close confirmation. The sentence was accurate when
+/// it was written -- and it was written in the one place that can only see its
+/// own offset, so nothing was going to tell the next person who added one.
+/// ⚠️ **An assertion about a whole crate, made where only one member of it is
+/// visible, has no way to stay true.**
+///
+/// **The reuse is not a defect.** `WM_APP + N` is private to a window class:
+/// this one is posted to a **pane** window and read by the pane's window
+/// procedure; `notify.rs`'s `WM_TRAY_CALLBACK` is sent by the shell to
+/// **notify's own hidden window** (it registers a class and creates a window
+/// of its own) and read there. Two windows, two window procedures, no overlap.
+///
+/// ⚠️ **When it would become one** -- and this is here because the person who
+/// reads this paragraph is the person who would do it: **hang the tray
+/// callback on a frame or a pane** to save that hidden window, and the two
+/// meanings land in one window procedure. The collision is silent, because the
+/// shell packs its event code into the low word of `lParam`, which this
+/// message reads as something else entirely. If that hidden window ever looks
+/// like dead weight, it is not.
 pub const WM_POLTER_MOUSE_VISIBILITY: u32 = WM_APP + 13;
 
 /// How well the Win32 cursor answers the shape the core asked for.
