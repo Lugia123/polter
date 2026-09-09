@@ -741,7 +741,10 @@ pub fn on_button_up(frame: HWND, x: i32, y: i32) {
         if hit(&g, x, y) == Hit::Close(id) {
             logf!("[strip] close {:?}", id);
             crate::winid::close_requested(frame, crate::winid::CloseVia::StripCross);
-            tabs::close_tab(frame, id);
+            // **Asks first if the core says something is running.** A user
+            // gesture, in a window procedure -- not the op queue. See
+            // `tabs::close_tab_asking`.
+            tabs::close_tab_asking(frame, id);
             return;
         }
     }
@@ -1541,7 +1544,7 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
             // cannot say which one a person used -- and they are two different
             // gestures that a fix might cover only one of.
             crate::winid::close_requested(frame, crate::winid::CloseVia::Menu);
-            tabs::close_tab(frame, id);
+            tabs::close_tab_asking(frame, id);
             report_remaining(frame, &before, &format!("closed tab {}", at));
             true
         }

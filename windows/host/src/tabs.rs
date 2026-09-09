@@ -2587,6 +2587,135 @@ pub fn activate_tab(frame: HWND, id: TabId) {
 }
 
 /// Close a tab by identity, with every pane in it.
+// ------------------------------------------- closing something that is busy
+//
+// **The core already decides this**, and until task 422 the host threw the
+// answer away twice over:
+//
+//  * `ghostty_surface_needs_confirm_quit` was never resolved from the DLL, so
+//    the host's own close paths (the strip's cross, the tab menu, the window's
+//    X) never asked;
+//  * and `cb_close_surface` -- the path a keybinding or the core takes --
+//    **received the answer as its second argument and ignored it**, spelled
+//    `_confirm`. That is the same family as tasks 408 and 420: the concept was
+//    already in the code, wired to nothing.
+//
+// ⚠️ **Asking is not the hard part; asking the right number of times is.**
+// Closing a tab closes every pane in it, and a version that raises one dialog
+// per pane looks exactly like the correct one in a screenshot of the first
+// dialog. `dialogs_for` is the whole rule and it is tested.
+
+/// How many confirmations to raise for a group of surfaces being closed
+/// together. **Zero or one, never more.**
+///
+/// ⚠️ The number, not the decision, is what this returns -- because "did it
+/// ask" and "did it ask the right number of times" are two different
+/// questions and only the second one catches four dialogs for four panes.
+pub fn dialogs_for(needing: &[bool]) -> u32 {
+    if needing.iter().any(|b| *b) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Does the core want a confirmation before this surface goes?
+///
+/// ⚠️ **A null surface answers `false`.** A pane whose surface is already gone
+/// has nothing left to lose, and asking about it would put a dialog in front
+/// of somebody for a shell that is not there.
+fn surface_needs_confirm(surface: usize) -> bool {
+    if surface == 0 {
+        return false;
+    }
+    unsafe { (crate::api().surface_needs_confirm_quit)(surface as Surface) }
+}
+
+/// The per-surface answers for one tab, in tree order.
+fn tab_confirm_flags(frame: HWND, id: TabId) -> Vec<bool> {
+    let Some(win) = window(frame) else { return Vec::new() };
+    let Some(tab) = win.tabs.iter().find(|t| t.id == id) else { return Vec::new() };
+    tab.panes.iter().map(|p| surface_needs_confirm(p.surface)).collect()
+}
+
+/// The per-surface answers for every tab in a window.
+fn window_confirm_flags(frame: HWND) -> Vec<bool> {
+    let Some(win) = window(frame) else { return Vec::new() };
+    win.tabs
+        .iter()
+        .flat_map(|t| t.panes.iter())
+        .map(|p| surface_needs_confirm(p.surface))
+        .collect()
+}
+
+/// Put the question in front of the person. `true` means go ahead.
+///
+/// ⚠️ **Called from a window procedure, never from the op queue.** A modal box
+/// runs its own message loop; raising one while draining ops would stop the
+/// pump in the middle of a queue this host has already deadlocked once by
+/// other means. Every caller below is a user gesture or a posted message, and
+/// what reaches the queue is an op that has **already been decided**.
+fn ask(frame: HWND, what: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
+    };
+    let body: Vec<u16> = format!(
+        "{}里还有正在运行的程序。关掉它会一并结束那些程序。\n\n要关闭吗？",
+        what
+    )
+    .encode_utf16()
+    .chain(Some(0))
+    .collect();
+    let title: Vec<u16> = "确认关闭".encode_utf16().chain(Some(0)).collect();
+    let yes = unsafe {
+        MessageBoxW(
+            Some(frame),
+            windows::core::PCWSTR(body.as_ptr()),
+            windows::core::PCWSTR(title.as_ptr()),
+            MB_YESNO | MB_ICONWARNING,
+        ) == IDYES
+    };
+    wlogf!(frame, "[close] asked about {} -> {}", what, if yes { "yes" } else { "no" });
+    yes
+}
+
+/// Close a tab **after asking**, if the core says something would be lost.
+///
+/// The user-gesture entry point: the strip's cross and the tab menu. The
+/// keybinding and tool paths do not come through here -- they go through the
+/// core, which answers the same question itself and hands it to
+/// `cb_close_surface`.
+pub fn close_tab_asking(frame: HWND, id: TabId) {
+    let flags = tab_confirm_flags(frame, id);
+    if dialogs_for(&flags) == 1 && !ask(frame, "这个标签页") {
+        wlogf!(frame, "[close] tab {:?} kept", id);
+        return;
+    }
+    close_tab(frame, id);
+}
+
+/// Close every tab in a window **after asking once**, however many panes it
+/// holds.
+pub fn close_all_tabs_of_asking(frame: HWND) -> bool {
+    let flags = window_confirm_flags(frame);
+    if dialogs_for(&flags) == 1 && !ask(frame, "这个窗口") {
+        wlogf!(frame, "[close] window kept");
+        return false;
+    }
+    close_all_tabs_of(frame);
+    true
+}
+
+/// Close one pane **after asking**, for the path where the core already
+/// answered the question and the host is only carrying it.
+pub fn close_pane_asking(frame: HWND, id: PaneId) {
+    if !ask(frame, "这一格") {
+        wlogf!(frame, "[close] pane {} kept", id);
+        return;
+    }
+    post_op(frame, Op::ClosePane(id), "close_surface confirmed");
+}
+
 pub fn close_tab(frame: HWND, id: TabId) {
     let idx = {
         window(frame).and_then(|w| w.tabs.iter().position(|t| t.id == id))
@@ -5100,5 +5229,36 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
 
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
+    }
+}
+
+#[cfg(test)]
+mod close_confirmation_tests {
+    use super::dialogs_for;
+
+    /// ⚠️ **The rule that is easy to get wrong and impossible to see wrong.**
+    /// A tab with four busy panes must raise **one** box, not four -- and a
+    /// screenshot of the first box looks the same either way.
+    #[test]
+    fn one_dialog_however_many_panes_are_busy() {
+        assert_eq!(dialogs_for(&[true, true, true, true]), 1);
+        assert_eq!(dialogs_for(&[true]), 1);
+        assert_eq!(dialogs_for(&[false, true, false]), 1);
+    }
+
+    /// **The negative control, and it is the load-bearing one.** Without it,
+    /// "always asks" passes every test that "asks correctly" passes -- and
+    /// "always asks" is the version a user switches off, which brings the
+    /// defect back wearing a fixed label.
+    #[test]
+    fn nothing_busy_asks_nothing() {
+        assert_eq!(dialogs_for(&[false, false, false]), 0);
+        assert_eq!(dialogs_for(&[false]), 0);
+    }
+
+    /// A tab with no panes left is not a question.
+    #[test]
+    fn nothing_at_all_asks_nothing() {
+        assert_eq!(dialogs_for(&[]), 0);
     }
 }

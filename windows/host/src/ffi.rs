@@ -981,6 +981,22 @@ pub struct Api {
     pub surface_set_content_scale: unsafe extern "C" fn(Surface, f64, f64),
     pub surface_set_focus: unsafe extern "C" fn(Surface, bool),
     pub surface_free: unsafe extern "C" fn(Surface),
+    /// **Would closing this surface lose something?**
+    ///
+    /// The core answers from three things at once: the `confirm-close-surface`
+    /// configuration, whether the child process has already exited, and --
+    /// when the setting is `true` rather than `always` -- whether the cursor
+    /// is sitting at a prompt. ⚠️ **Which is why this host binds this and not
+    /// `ghostty_surface_process_exited`**: `needsConfirmQuit` already returns
+    /// false for an exited child, first thing, before it takes any lock. A
+    /// host that asked both and combined them would be writing the same rule
+    /// a second time, in a place where it can drift.
+    ///
+    /// ⚠️ **The failure this avoids is not "no dialog"**, it is a dialog on
+    /// every ordinary `exit`: asking after the child is gone is more annoying
+    /// than never asking, and it is the version a user turns off -- which
+    /// brings the defect back wearing a "fixed" label.
+    pub surface_needs_confirm_quit: unsafe extern "C" fn(Surface) -> bool,
     /// Drive a keybind action by name, e.g. "new_tab" or "goto_tab:2".
     ///
     /// This is how a menu item works on macOS: the core parses the string,

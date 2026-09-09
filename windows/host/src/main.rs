@@ -510,6 +510,16 @@ static WD_PONG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 /// Posted by the watchdog to the frame window once per poll.
 pub const WM_WD_PING: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 9;
 
+/// Ask the person whether a pane that is busy may be closed.
+///
+/// ⚠️ **A posted message rather than a call, and that is the whole point.**
+/// `cb_close_surface` runs on whichever thread the core called it from, and a
+/// modal box has to be on the window's own thread. Putting the question in an
+/// **op** would be worse still: ops are drained in a loop, and a modal box
+/// runs its own message loop inside that drain. What reaches the queue is an
+/// op that has already been decided.
+pub const WM_ASK_CLOSE_PANE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
+
 /// A fixed-size line builder that never allocates.
 ///
 /// Exists only for the alarm path below. Anything that reaches for the heap is
@@ -2081,6 +2091,9 @@ fn ime_init(hwnd: HWND) -> bool {
 
 // -------------------------------------------------------------- callbacks
 
+// unused-arg: `_ud` is this host's own pointer coming back, and there is
+// nothing to wake -- the window thread's own message loop is the wakeup. The
+// core's answer is not being discarded here; there is no answer in it.
 extern "C" fn cb_wakeup(_ud: *mut c_void) {}
 
 // ------------------------------------------------------------- clipboard
@@ -2317,7 +2330,7 @@ extern "C" fn cb_write_clipboard(
 /// which is the only thing that says *which* pane this is: with splits,
 /// quitting the whole process here would close three panes because one shell
 /// exited.
-extern "C" fn cb_close_surface(ud: *mut c_void, _confirm: bool) {
+extern "C" fn cb_close_surface(ud: *mut c_void, confirm: bool) {
     let id = ud as u64;
     logf!("[action] close_surface pane={}", id);
     if id == 0 {
@@ -2335,6 +2348,25 @@ extern "C" fn cb_close_surface(ud: *mut c_void, _confirm: bool) {
     // has one: it would close *some other pane*, because pane ids are unique
     // and the lookup would simply find nothing to remove.
     match tabs::frame_of_pane(id) {
+        // ⚠️ **The second argument is the core's answer, and it used to be
+        // thrown away** (it was spelled `_confirm`). `Surface.close` computes
+        // `needsConfirmQuit` -- the configuration, whether the child has
+        // exited, whether the cursor is at a prompt -- and hands the result
+        // here. Ignoring it is how a keybinding could close a tab with a build
+        // running in it and say nothing. Task 422.
+        Some(frame) if confirm => {
+            logf!("[close] pane={} the core wants this confirmed", id);
+            // Not `close_pane_asking` directly: this callback is on whatever
+            // thread the core used, and the box belongs to the window's.
+            let _ = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    Some(frame),
+                    WM_ASK_CLOSE_PANE,
+                    WPARAM(id as usize),
+                    LPARAM(0),
+                )
+            };
+        }
         Some(frame) => tabs::post_op(frame, tabs::Op::ClosePane(id), "close_surface callback"),
         // process-wide: the pane is in no window this host is tracking, which
         // is the fact being reported
@@ -2418,6 +2450,9 @@ fn queue_from(origin: Option<HWND>, op: tabs::Op, from: &'static str) -> bool {
     }
 }
 
+// unused-arg: `_app` is the app handle this host already holds; the target
+// and the action carry everything an arm needs. Nothing the core computed is
+// being thrown away with it.
 extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
     use tabs::Op;
     // Resolved once, at the top, so every arm below answers "which window"
@@ -3823,6 +3858,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // cannot itself be the thing that blocks -- and its arrival here
             // at all is the reading: it means this thread is still
             // dispatching, even if our own loop is not running.
+            m if m == WM_ASK_CLOSE_PANE => {
+                // On the window's own thread, and outside the op drain --
+                // see `WM_ASK_CLOSE_PANE`.
+                tabs::close_pane_asking(hwnd, wp.0 as u64);
+                LRESULT(0)
+            }
+
             m if m == WM_WD_PING => {
                 WD_PONG.store(wp.0 as u64, Ordering::Relaxed);
                 LRESULT(0)
@@ -4054,7 +4096,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // surfaces bound to them -- so without this the shells in a
                 // closed window keep running with no window attached. It was
                 // invisible while closing a window meant leaving the process.
-                tabs::close_all_tabs_of(hwnd);
+                //
+                // ⚠️ **One question for the whole window**, however many tabs
+                // and panes it holds -- and if the answer is no, the window
+                // stays: returning without `DefWindowProcW` is what keeps it,
+                // because that is the call that destroys it.
+                if !tabs::close_all_tabs_of_asking(hwnd) {
+                    return LRESULT(0);
+                }
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
 
@@ -4572,6 +4621,7 @@ fn load_api() -> Option<Api> {
             surface_config_new: sym!(internal, "ghostty_surface_config_new"),
             surface_new: sym!(internal, "ghostty_surface_new"),
             surface_refresh: sym!(internal, "ghostty_surface_refresh"),
+            surface_needs_confirm_quit: sym!(internal, "ghostty_surface_needs_confirm_quit"),
             surface_draw: sym!(internal, "ghostty_surface_draw"),
             surface_set_size: sym!(internal, "ghostty_surface_set_size"),
             surface_set_content_scale: sym!(internal, "ghostty_surface_set_content_scale"),
