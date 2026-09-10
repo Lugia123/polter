@@ -11,14 +11,11 @@ enum UntrustedURLAlert {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.icon = NSImage(named: NSImage.cautionName)
-            alert.messageText = "Open Link from Terminal Output?"
-            alert.informativeText = """
-            This link will open in \(handler). Only continue if you recognize \
-            and trust the destination.
-            """
+            alert.messageText = String(localized: "Open Link from Terminal Output?", comment: "打开外部链接前的确认框")
+            alert.informativeText = String(localized: "This link will open in \(handler). Only continue if you recognize and trust the destination.", comment: "打开外部链接前的确认框")
             alert.accessoryView = targetView(displayString)
-            alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Open Link")
+            alert.addButton(withTitle: String(localized: "Cancel", comment: "打开外部链接前的确认框"))
+            alert.addButton(withTitle: String(localized: "Open Link", comment: "打开外部链接前的确认框"))
 
             present(alert) { response in
                 // Cancel is deliberately the default action.
@@ -39,7 +36,7 @@ enum UntrustedURLAlert {
             alert.messageText = String(localized: "Polter Blocked This Link", comment: "拦截链接对话框标题")
             alert.informativeText = reason.message
             alert.accessoryView = targetView(displayString)
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: String(localized: "OK", comment: "打开外部链接前的确认框"))
             alert.addButton(withTitle: String(localized: "Copy Link", comment: "拦截链接：拷贝链接按钮"))
 
             present(alert) { response in

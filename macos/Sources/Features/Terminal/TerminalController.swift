@@ -422,9 +422,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         if let fullscreenStyle = parentController.fullscreenStyle,
            fullscreenStyle.isFullscreen && !fullscreenStyle.supportsTabs {
             let alert = NSAlert()
-            alert.messageText = "Cannot Create New Tab"
-            alert.informativeText = "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again."
-            alert.addButton(withTitle: "OK")
+            alert.messageText = String(localized: "Cannot Create New Tab", comment: "终端窗口的提醒框")
+            alert.informativeText = String(localized: "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again.", comment: "终端窗口的提醒框")
+            alert.addButton(withTitle: String(localized: "OK", comment: "终端窗口的提醒框"))
             alert.alertStyle = .warning
             alert.beginSheetModal(for: parent)
             return nil
@@ -960,10 +960,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
 
         let alert = NSAlert()
-        alert.messageText = "Close All Windows?"
-        alert.informativeText = "All terminal sessions will be terminated."
-        alert.addButton(withTitle: "Close All Windows")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = String(localized: "Close All Windows?", comment: "终端窗口的提醒框")
+        alert.informativeText = String(localized: "All terminal sessions will be terminated.", comment: "终端窗口的提醒框")
+        alert.addButton(withTitle: String(localized: "Close All Windows", comment: "终端窗口的提醒框"))
+        alert.addButton(withTitle: String(localized: "Cancel", comment: "终端窗口的提醒框"))
         alert.alertStyle = .warning
         alert.beginSheetModal(for: confirmWindow, completionHandler: { response in
             if response == .alertFirstButtonReturn {

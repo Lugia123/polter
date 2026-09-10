@@ -16,7 +16,7 @@ class KeybindsController: NSWindowController {
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
-        window.title = "Keyboard Shortcuts"
+        window.title = String(localized: "Keyboard Shortcuts", comment: "快捷键一览窗口的标题")
         window.center()
         super.init(window: window)
     }

@@ -22,9 +22,23 @@ struct KeybindsView: View {
 
             List(rows) { row in
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(row.action)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(width: 220, alignment: .leading)
+                    // **The name first, the tag under it.** The tag is what
+                    // a config file is written in and it stays on the page
+                    // for that reason; it is not what somebody scanning for
+                    // "the one that resets the font size" is reading. A page
+                    // of `reset_font_size` is in neither language.
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(row.name ?? row.action)
+                            .font(row.name == nil
+                                ? .system(.body, design: .monospaced)
+                                : .body)
+                        if row.name != nil {
+                            Text(row.action)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(width: 220, alignment: .leading)
 
                     // The keys, or a dash. **A dash rather than an empty
                     // cell**: blank reads as a rendering failure, and this

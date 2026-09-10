@@ -115,3 +115,88 @@
 "You can't configure settings in the GUI yet. To modify settings, " = "You can't configure settings in the GUI yet. To modify settings, ";
 "You're already running the latest version." = "You're already running the latest version.";
 "You're running a debug build of Polter! Performance will be degraded." = "You're running a debug build of Polter! Performance will be degraded.";
+
+
+/* AppKit's half: menu items, alerts, window titles and tooltips built in
+   code. The gate only watched the SwiftUI calls until these were found
+   shipping in English beside Chinese menu items from the same menu. */
+"Keyboard Shortcuts" = "Keyboard Shortcuts";
+"New Window" = "New Window";
+"New Tab" = "New Tab";
+"Close Tabs to the Right" = "Close Tabs to the Right";
+"Rename Tab..." = "Rename Tab...";
+"Reset Zoom" = "Reset Zoom";
+"Undo" = "Undo";
+"Undo %@" = "Undo %@";
+"Redo" = "Redo";
+"Redo %@" = "Redo %@";
+"Allow Polter to execute \"%@\"?" = "Allow Polter to execute \"%@\"?";
+"Failed to Set Default Terminal" = "Failed to Set Default Terminal";
+"You have %@ windows with running processes. Do you want to review these windows before quitting?" = "You have %@ windows with running processes. Do you want to review these windows before quitting?";
+"If you don't review your windows, any running processes will be terminated" = "If you don't review your windows, any running processes will be terminated";
+"Review Windows..." = "Review Windows...";
+"Terminate Processes" = "Terminate Processes";
+"Warning: Potentially Unsafe Paste" = "Warning: Potentially Unsafe Paste";
+"Authorize Clipboard Access" = "Authorize Clipboard Access";
+"Cannot Create New Tab" = "Cannot Create New Tab";
+"Tabs aren't supported in the Quick Terminal." = "Tabs aren't supported in the Quick Terminal.";
+"New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again." = "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again.";
+"Close All Windows?" = "Close All Windows?";
+"Close All Windows" = "Close All Windows";
+"All terminal sessions will be terminated." = "All terminal sessions will be terminated.";
+"Change Tab Title" = "Change Tab Title";
+"Change Terminal Title" = "Change Terminal Title";
+"Leave blank to restore the default." = "Leave blank to restore the default.";
+"Tabs are disabled" = "Tabs are disabled";
+"Enable window decorations to use tabs" = "Enable window decorations to use tabs";
+"Restart Later" = "Restart Later";
+"Don't Allow" = "Don't Allow";
+"Open Link from Terminal Output?" = "Open Link from Terminal Output?";
+"Open Link" = "Open Link";
+
+
+/* The notes column of the shortcuts window, and two alerts whose text is
+   assembled rather than written as one literal. */
+"These are your switches over an agent; the keys are set by the product." = "These are your switches over an agent; the keys are set by the product.";
+"Not turned on automatically." = "Not turned on automatically.";
+"Not shown in the menus (the key still works)." = "Not shown in the menus (the key still works).";
+"No shortcut yet." = "No shortcut yet.";
+"Polter could not be set as the default terminal application.\n\nError: %@" = "Polter could not be set as the default terminal application.\n\nError: %@";
+"This link will open in %@. Only continue if you recognize and trust the destination." = "This link will open in %@. Only continue if you recognize and trust the destination.";
+
+
+/* The keybind listing's names for the actions the core gives no command
+   for -- keyed by the action tag, because that is what the listing has.
+   The set comes out of the `=> comptime &.{}` arms in
+   src/input/command.zig and the gate reads those same arms. */
+"activate_key_table" = "Activate Key Table";
+"activate_key_table_once" = "Activate Key Table Once";
+"adjust_selection" = "Adjust Selection";
+"crash" = "Crash (for debugging)";
+"csi" = "Send CSI Sequence";
+"cursor_key" = "Send Cursor Key Sequence";
+"deactivate_all_key_tables" = "Deactivate All Key Tables";
+"deactivate_key_table" = "Deactivate Key Table";
+"end_key_sequence" = "End Key Sequence";
+"esc" = "Send Escape Sequence";
+"goto_tab" = "Go to Tab";
+"ignore" = "Do Nothing";
+"jump_to_prompt" = "Jump to Prompt";
+"last_tab" = "Go to Last Tab";
+"next_tab" = "Next Tab";
+"poltergeist_toggle_authorise" = "Toggle: Let a Supervisor Answer Prompts";
+"previous_tab" = "Previous Tab";
+"resize_split" = "Resize Split";
+"scroll_page_fractional" = "Scroll by a Fraction of a Page";
+"scroll_page_lines" = "Scroll by Lines";
+"scroll_to_row" = "Scroll to Row";
+"search" = "Search in Terminal";
+"set_font_size" = "Set Font Size";
+"set_surface_title" = "Set Terminal Title";
+"set_tab_title" = "Set Tab Title";
+"set_window_title" = "Set Window Title";
+"toggle_command_palette" = "Toggle Command Palette";
+"toggle_quick_terminal" = "Toggle Quick Terminal";
+"toggle_visibility" = "Toggle Polter Visibility";
+"unbind" = "Unbind This Key";
+"write_scrollback_file" = "Write Scrollback to a File";

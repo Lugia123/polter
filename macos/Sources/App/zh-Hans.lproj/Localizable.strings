@@ -124,3 +124,88 @@
 "You can't configure settings in the GUI yet. To modify settings, " = "目前还不能在图形界面里改设置。要修改设置，";
 "You're already running the latest version." = "你运行的已经是最新版本。";
 "You're running a debug build of Polter! Performance will be degraded." = "你运行的是 Polter 的调试构建！性能会下降。";
+
+
+/* AppKit's half: menu items, alerts, window titles and tooltips built in
+   code. The gate only watched the SwiftUI calls until these were found
+   shipping in English beside Chinese menu items from the same menu. */
+"Keyboard Shortcuts" = "快捷键";
+"New Window" = "新建窗口";
+"New Tab" = "新建标签页";
+"Close Tabs to the Right" = "关闭右侧的标签页";
+"Rename Tab..." = "重命名标签页…";
+"Reset Zoom" = "取消放大";
+"Undo" = "撤销";
+"Undo %@" = "撤销%@";
+"Redo" = "重做";
+"Redo %@" = "重做%@";
+"Allow Polter to execute \"%@\"?" = "允许 Polter 执行「%@」？";
+"Failed to Set Default Terminal" = "设为默认终端失败";
+"You have %@ windows with running processes. Do you want to review these windows before quitting?" = "你有 %@ 个窗口里还有进程在运行。要在退出前逐个看一下吗？";
+"If you don't review your windows, any running processes will be terminated" = "不逐个查看的话，正在运行的进程都会被结束";
+"Review Windows..." = "逐个查看…";
+"Terminate Processes" = "结束这些进程";
+"Warning: Potentially Unsafe Paste" = "警告：这次粘贴可能不安全";
+"Authorize Clipboard Access" = "授权访问剪贴板";
+"Cannot Create New Tab" = "无法新建标签页";
+"Tabs aren't supported in the Quick Terminal." = "快捷终端不支持标签页。";
+"New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again." = "非原生全屏下不能新建标签页。请先退出全屏再试。";
+"Close All Windows?" = "关闭全部窗口？";
+"Close All Windows" = "关闭全部窗口";
+"All terminal sessions will be terminated." = "所有终端会话都会被结束。";
+"Change Tab Title" = "修改标签页标题";
+"Change Terminal Title" = "修改终端标题";
+"Leave blank to restore the default." = "留空则恢复默认。";
+"Tabs are disabled" = "标签页已被关闭";
+"Enable window decorations to use tabs" = "要用标签页，请先开启窗口装饰";
+"Restart Later" = "稍后重启";
+"Don't Allow" = "不允许";
+"Open Link from Terminal Output?" = "要打开终端输出里的这个链接吗？";
+"Open Link" = "打开链接";
+
+
+/* The notes column of the shortcuts window, and two alerts whose text is
+   assembled rather than written as one literal. */
+"These are your switches over an agent; the keys are set by the product." = "这些是你对 agent 的开关，键位由产品定。";
+"Not turned on automatically." = "不会自动开启。";
+"Not shown in the menus (the key still works)." = "菜单里不显示（键仍然有效）。";
+"No shortcut yet." = "还没有快捷键。";
+"Polter could not be set as the default terminal application.\n\nError: %@" = "无法把 Polter 设为默认终端。\n\n错误：%@";
+"This link will open in %@. Only continue if you recognize and trust the destination." = "这个链接会用 %@ 打开。只有在你认得并信任目标地址时才继续。";
+
+
+/* The keybind listing's names for the actions the core gives no command
+   for -- keyed by the action tag, because that is what the listing has.
+   The set comes out of the `=> comptime &.{}` arms in
+   src/input/command.zig and the gate reads those same arms. */
+"activate_key_table" = "启用按键表";
+"activate_key_table_once" = "启用按键表（只生效一次）";
+"adjust_selection" = "调整选区";
+"crash" = "制造一次崩溃（调试用）";
+"csi" = "发送 CSI 序列";
+"cursor_key" = "发送光标键序列";
+"deactivate_all_key_tables" = "解除全部按键表";
+"deactivate_key_table" = "解除按键表";
+"end_key_sequence" = "结束组合按键序列";
+"esc" = "发送 Esc 序列";
+"goto_tab" = "跳转到指定标签页";
+"ignore" = "什么都不做";
+"jump_to_prompt" = "跳到上一个／下一个提示符";
+"last_tab" = "跳到最后一个标签页";
+"next_tab" = "下一个标签页";
+"poltergeist_toggle_authorise" = "切换：让总管替你回答权限询问";
+"previous_tab" = "上一个标签页";
+"resize_split" = "调整分屏大小";
+"scroll_page_fractional" = "按页的比例滚动";
+"scroll_page_lines" = "按行数滚动";
+"scroll_to_row" = "滚动到指定行";
+"search" = "在终端内搜索";
+"set_font_size" = "设置字号";
+"set_surface_title" = "设置终端标题";
+"set_tab_title" = "设置标签页标题";
+"set_window_title" = "设置窗口标题";
+"toggle_command_palette" = "打开／关闭命令面板";
+"toggle_quick_terminal" = "打开／关闭快捷终端";
+"toggle_visibility" = "显示／隐藏 Polter";
+"unbind" = "解除这个键的绑定";
+"write_scrollback_file" = "把回滚内容写入文件";

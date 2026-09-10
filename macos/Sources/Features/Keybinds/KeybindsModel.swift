@@ -26,6 +26,17 @@ struct KeybindRow: Identifiable {
     /// always there.
     let action: String
 
+    /// What the core calls this action for a person to read, already
+    /// translated -- "Go to Tab", "跳转到标签页".
+    ///
+    /// **Nil is a real answer, not a missing one.** Not every action is in
+    /// the command palette (`poltergeist_*` are switches over an agent, not
+    /// commands), and inventing a name by prettifying the tag would put a
+    /// phrase on screen that exists nowhere else in the product and cannot
+    /// be translated. When this is nil the tag is what is shown, which is
+    /// what the whole page showed before names were available at all.
+    let name: String?
+
     /// Every key bound to it, already written the way a person reads them.
     /// **Empty means the action has no key**, which is a row, not an omission.
     let keys: [String]
@@ -42,16 +53,16 @@ struct KeybindRow: Identifiable {
     /// page exists to make visible.
     var note: String {
         if action.hasPrefix("poltergeist_") {
-            return "These are your switches over an agent; the keys are set by the product."
+            return String(localized: "These are your switches over an agent; the keys are set by the product.", comment: "快捷键一览的说明列")
         }
         if action == "toggle_secure_input" {
-            return "Not turned on automatically."
+            return String(localized: "Not turned on automatically.", comment: "快捷键一览的说明列")
         }
         if hiddenFromMenu {
-            return "Not shown in the menus (the key still works)."
+            return String(localized: "Not shown in the menus (the key still works).", comment: "快捷键一览的说明列")
         }
         if keys.isEmpty {
-            return "No shortcut yet."
+            return String(localized: "No shortcut yet.", comment: "快捷键一览的说明列")
         }
         return ""
     }
@@ -104,12 +115,59 @@ enum KeybindsModel {
             if flags.contains(.performable) { hidden[action] = true }
         }
 
+        let names = titles(config: cfg)
         return order.map { action in
             KeybindRow(
                 action: action,
+                name: names[action] ?? namedByTag(action),
                 keys: keys[action] ?? [],
                 hiddenFromMenu: hidden[action] ?? false)
         }
+    }
+
+    /// The name for an action the core gives no command for.
+    ///
+    /// **Thirty-one of the ninety-four actions have no palette entry**, and
+    /// that is a decision written down in `src/input/command.zig`: they take
+    /// a parameter (`goto_tab`, `resize_split`) or they do not belong in a
+    /// palette (`next_tab`, `toggle_command_palette`). None of that makes
+    /// them nameless -- a listing still has to call them something, and
+    /// `goto_tab` in a row of `⌘1 ⌘2 ⌘3` is the page the user reported as
+    /// "neither Chinese nor English".
+    ///
+    /// So they are named here, in the table, keyed by the tag. The set is
+    /// not open-ended and is not maintained by hand: the gate
+    /// `tools/the-mac-strings-still-have-a-chinese-half.py` reads those same
+    /// arms out of `command.zig` and fails if one of them has no Chinese, so
+    /// an action that stops having a command starts needing a name here.
+    ///
+    /// Nil when the table has no entry, which is the tag falling through to
+    /// the screen -- the same thing this page did for every row before.
+    private static func namedByTag(_ tag: String) -> String? {
+        let name = Bundle.main.localizedString(forKey: tag, value: tag, table: nil)
+        return name == tag ? nil : name
+    }
+
+    /// The core's own name for each action, keyed by the action's tag.
+    ///
+    /// **Read from the command list rather than written here.** The names
+    /// already exist -- the command palette shows them and `po/` translates
+    /// them -- so a table in this file would be a second set of names for
+    /// the same actions, going stale in a different direction from the
+    /// first. Several commands can share a tag (`goto_tab:1`, `goto_tab:2`);
+    /// the first one's title wins, which is the one the core lists first.
+    private static func titles(config: ghostty_config_t) -> [String: String] {
+        var v: ghostty_config_command_list_s = .init()
+        let key = "command-palette-entry"
+        guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))),
+              v.len > 0 else { return [:] }
+
+        var out: [String: String] = [:]
+        for c in UnsafeBufferPointer(start: v.commands, count: v.len) {
+            let command = Ghostty.Command(cValue: c)
+            if out[command.actionKey] == nil { out[command.actionKey] = command.title }
+        }
+        return out
     }
 
     /// A trigger, written the way macOS writes keys.

@@ -378,7 +378,7 @@ class TerminalWindow: NSWindow {
         button.action = #selector(TerminalController.splitZoom(_:))
         button.isBordered = false
         button.allowsExpansionToolTips = true
-        button.toolTip = "Reset Zoom"
+        button.toolTip = String(localized: "Reset Zoom", comment: "标签页右键菜单／标题栏")
         button.contentTintColor = isMainWindow ? .controlAccentColor : .secondaryLabelColor
         button.state = .on
         button.image = NSImage(named: "ResetZoom")
@@ -727,7 +727,7 @@ extension TerminalWindow {
             .flatMap { $0.windowController as? TerminalController }
 
         // Close tabs to the right
-        let item = NSMenuItem(title: "Close Tabs to the Right", action: #selector(TerminalController.closeTabsOnTheRight(_:)), keyEquivalent: "")
+        let item = NSMenuItem(title: String(localized: "Close Tabs to the Right", comment: "标签页右键菜单／标题栏"), action: #selector(TerminalController.closeTabsOnTheRight(_:)), keyEquivalent: "")
         item.identifier = Self.closeTabsOnRightMenuItemIdentifier
         item.target = targetController
         item.setImageIfDesired(systemSymbolName: "xmark")
@@ -845,7 +845,7 @@ extension TerminalWindow {
         menu.addItem(separator)
 
         // Rename Tab...
-        let changeTitleItem = NSMenuItem(title: "Rename Tab...", action: #selector(TerminalWindow.renameTabFromContextMenu(_:)), keyEquivalent: "")
+        let changeTitleItem = NSMenuItem(title: String(localized: "Rename Tab...", comment: "标签页右键菜单／标题栏"), action: #selector(TerminalWindow.renameTabFromContextMenu(_:)), keyEquivalent: "")
         changeTitleItem.identifier = Self.changeTitleMenuItemIdentifier
         changeTitleItem.target = self
         changeTitleItem.representedObject = target?.window

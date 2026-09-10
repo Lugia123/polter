@@ -78,8 +78,8 @@ class UpdateController {
             )
             accessoryView.frame = .init(origin: .zero, size: accessoryView.fittingSize)
             alert.accessoryView = accessoryView
-            alert.addButton(withTitle: "Restart Now")
-            alert.addButton(withTitle: "Restart Later")
+            alert.addButton(withTitle: String(localized: "Restart Now", comment: "更新流程的系统提醒框"))
+            alert.addButton(withTitle: String(localized: "Restart Later", comment: "更新流程的系统提醒框"))
                 .keyEquivalent = .init([KeyboardShortcut(.escape).key.character])
             switch alert.runModal() {
             case .alertFirstButtonReturn:

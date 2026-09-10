@@ -52,11 +52,16 @@ for a check whose whole job is to notice new cases.
 - **The other thirty-one languages.** The macOS app ships Base and
   zh-Hans; `po/` is where the rest live, and `translations-still-attach.py`
   is what watches them.
-- **`MainMenu.xib` titles that no outlet or action reaches.** The menu
-  check reads the xib's `title=` attributes; an item built in code at
-  runtime is invisible to it.
-- **Strings reaching the user from the Zig side.** Those are gettext's, and
-  a different file's business.
+- **A `String(localized:` whose literal is on the next line.** The scan
+  reads the call and the literal that follows it on the same line. Broken
+  across lines for width, a string quietly stops being asked for -- so the
+  two places that were long enough to want it carry a comment saying they
+  have to stay on one line.
+- **Text that reaches the screen without passing any of the calls named
+  above.** A `String` handed to something this does not list is invisible
+  here. `KeybindsModel.note` was exactly that -- four sentences returned
+  from a computed property, on screen in the shortcuts window, and green
+  under this file until somebody read the window.
 """
 
 import os
@@ -72,9 +77,26 @@ ZH_DIR = MAC / "App" / "zh-Hans.lproj"
 # `Text("…")` and its relatives. The call is what makes a literal
 # user-visible: the same words as an argument to something else are usually
 # a key, a symbol name, or an identifier.
+# The SwiftUI half and the AppKit half.
+#
+# **The AppKit half was missing, and the gap had a shape.** This file's first
+# version watched only the SwiftUI calls, so a menu item built in code --
+# `NSMenuItem(title: "Rename Tab...")` -- passed a green gate and shipped in
+# English next to menu items from the xib that were in Chinese. The window
+# title of the shortcuts window did the same. Every one of these puts text on
+# screen; which framework drew it is not the question being asked.
 CALL = re.compile(
     r'\b(Text|Button|Label|TextField|SecureField|Toggle|Picker|'
-    r'navigationTitle|help|confirmationDialog|alert)\(\s*"'
+    r'navigationTitle|help|confirmationDialog|alert|'
+    r'NSMenuItem\(title:|NSMenu\(title:|addItem\(withTitle:|'
+    r'addButton\(withTitle:|setAccessibilityLabel)\(?\s*"'
+)
+
+# `x.messageText = "..."`, `window.title = "..."`: assignment, not a call, so
+# the pattern above cannot see them.
+ASSIGN = re.compile(
+    r'\.(messageText|informativeText|title|placeholderString|'
+    r'stringValue|toolTip|label)\s*=\s*"'
 )
 
 
@@ -119,8 +141,12 @@ def swift_literal_at(line: str, start: int):
 
 
 def visible_literals(line: str):
-    """Every user-visible literal on this line, with the call that shows it."""
+    """Every user-visible literal on this line, with what shows it."""
     for m in CALL.finditer(line):
+        text = swift_literal_at(line, m.end())
+        if text is not None:
+            yield m.group(1).rstrip("(").rstrip(":").split("(")[0], text
+    for m in ASSIGN.finditer(line):
         text = swift_literal_at(line, m.end())
         if text is not None:
             yield m.group(1), text
@@ -138,6 +164,13 @@ EXEMPT = {
     "Docs": "the label on a link to English-language documentation",
 }
 
+
+# The `=> comptime &.{}` arms of the command table: actions the core names no
+# command for. The capture keeps the tags stacked above the arm as well as the
+# one on the arm's own line, because that is how the file lists them.
+NO_COMMAND = re.compile(
+    r"((?:\s*\.\w+,\n)*\s*\.(\w+),?\s*)=>\s*comptime\s*&\.\{\s*\}"
+)
 
 LOCALIZED = re.compile(r'(?:String\(localized:|NSLocalizedString\()\s*"')
 
@@ -164,6 +197,16 @@ def interpolation_to_format(key: str) -> str:
                 depth -= 1
             i += 1
             continue
+        if c == "\\":
+            # **Swift escapes are the source's, not the table's.** A literal
+            # written `"execute \\"%@\\"?"` is the string `execute "%@"?`, and
+            # that -- without the backslashes -- is the key the table holds.
+            # Leaving them in asks the .strings file for a key nobody can
+            # write, and the check would stay red however much Chinese was
+            # added.
+            out.append(unescape(key[i:i + 2]))
+            i += 2
+            continue
         out.append(c)
         i += 1
     return "".join(out)
@@ -185,10 +228,34 @@ def looks_like_an_identifier(text: str) -> bool:
     return re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*", text) is not None
 
 
+def unescape(text: str) -> str:
+    r"""`\n` and `\"` as the byte they stand for.
+
+    **Both sides of every comparison here go through this.** The key is the
+    same string whether it is being read out of Swift source or out of a
+    .strings file, but the two spell it with their own escapes; normalising
+    one side and not the other reports a difference that only exists in the
+    spelling.
+    """
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            out.append({"n": "\n", "t": "\t", "r": "\r"}.get(nxt, nxt))
+            i += 2
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
 def strings_keys(path: Path) -> dict:
     if not path.is_file():
         return {}
-    return dict(STRINGS_ENTRY.findall(path.read_text(encoding="utf-8")))
+    return {
+        unescape(k): v
+        for k, v in STRINGS_ENTRY.findall(path.read_text(encoding="utf-8"))
+    }
 
 
 def self_test() -> None:
@@ -219,8 +286,20 @@ def self_test() -> None:
     assert interpolation_to_format('n: \\(x + 1) of \\(y)') == "n: %@ of %@", \
         "probe: interpolation was not turned into the key the table holds"
     assert interpolation_to_format("plain") == "plain"
+    assert interpolation_to_format(r'execute \"\(f)\"?') == 'execute "%@"?', \
+        "probe: a Swift escape was carried into the key the table holds"
 
-    print("probe self-test: OK (nested interpolation, format keys, the call shape)")
+    # The command-table pattern, against the shape the file actually uses:
+    # tags stacked above the arm, and one on the arm's own line.
+    sample = "        .goto_tab,\n        .resize_split,\n        => comptime &.{},\n"
+    got = [m for m in NO_COMMAND.finditer(sample)]
+    assert got, "probe: the `no command` arm shape was not matched"
+    tags = re.findall(r"\.(\w+)\s*,", got[0].group(1)) + [got[0].group(2)]
+    assert set(tags) == {"goto_tab", "resize_split"}, f"probe: read {tags!r}"
+    assert not NO_COMMAND.search("        .text => comptime &.{.{\n"), \
+        "probe: an arm that does name a command was read as naming none"
+
+    print("probe self-test: OK (nested interpolation, format keys, call and arm shapes)")
 
 
 def main() -> int:
@@ -326,6 +405,40 @@ def main() -> int:
                 "is printed anywhere. Add it to zh-Hans.lproj/Localizable.strings."
             )
 
+    # 4. Every action the core gives no command for has a name here.
+    #
+    # The keybind listing takes its names from the core's command list. The
+    # thirty-one actions with `=> comptime &.{}` have none -- deliberately,
+    # and for reasons written beside them -- so without an entry keyed by the
+    # tag that page shows `goto_tab` in a row of ⌘1 ⌘2 ⌘3, which is what the
+    # user reported as "neither Chinese nor English".
+    #
+    # **The set is read here rather than listed here.** A hand-kept copy would
+    # be right on the day it was written; this way an action that loses its
+    # command starts failing this check on the next run.
+    command_zig = ROOT / "src" / "input" / "command.zig"
+    if command_zig.is_file():
+        text = command_zig.read_text(encoding="utf-8")
+        arms = list(NO_COMMAND.finditer(text))
+        if not arms:
+            problems.append(
+                "src/input/command.zig: no `=> comptime &.{}` arms were read, "
+                "so this check is watching nothing. Either the file's shape "
+                "changed or the pattern stopped matching -- and a check that "
+                "finds nothing passes everything."
+            )
+        for m in arms:
+            tags = re.findall(r"\.(\w+)\s*,", m.group(1)) + [m.group(2)]
+            for tag in tags:
+                if tag not in localized_zh:
+                    problems.append(
+                        f"src/input/command.zig: the action {tag!r} has no "
+                        "command and no name.\n"
+                        "      The keybind listing will print the tag itself. "
+                        "Add a name for it, keyed by the tag, to both "
+                        "Localizable.strings tables."
+                    )
+
     if problems:
         print("FAIL: the macOS interface has English with no Chinese behind it:")
         for p in problems:
@@ -341,7 +454,8 @@ def main() -> int:
         print(f"      exempt: {k!r} -- {why}")
     print(
         "NOT CHECKED: whether the Chinese is right; the thirty-one languages "
-        "under po/; menu items built in code; strings from the Zig side."
+        "under po/; a `String(localized:` whose literal is on the next line; "
+        "text reaching the screen through a call this does not list."
     )
     return 0
 

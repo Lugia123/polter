@@ -232,6 +232,10 @@ extern fn dgettext(domainname: [*:0]const u8, msgid: [*:0]const u8) [*:0]const u
 // currently but probably will on Windows as well.
 extern fn _libintl_locale_name_canonicalize(name: [*:0]u8) void;
 
+// Used only by the test below, to put a language in place before the first
+// `dgettext` in the process.
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
 // -- Finding and loading the catalogue on Windows ----------------------------
 
 /// The catalogue `init` found, if it found one.
@@ -803,6 +807,76 @@ test "mo: msgfmt's own output reads the same way this reader believes it does" {
         if (lookupIn(bytes[0..n], "Save")) |v|
             try std.testing.expectEqualStrings("保存", v);
     }
+}
+
+test "libintl answers on this platform, not just the reader written above" {
+    // **Everything else in this file that reads a catalogue reads it with
+    // `lookupIn`, which is the Windows path.** On macOS and Linux `_` does
+    // not go near that code: it calls `dgettext`, and whether the answer
+    // comes back translated depends on libintl finding the catalogue that
+    // `init` bound and on it resolving the locale out of the environment.
+    // Neither of those is exercised by any other test here, and both are
+    // the reason a whole surface can ship untranslated while every test in
+    // the file is green -- the macOS command palette was left in English
+    // for exactly this doubt, with the doubt written into the source as a
+    // comment rather than settled.
+    //
+    // So this one builds a catalogue with the real `msgfmt`, lays it out
+    // the way an installation does, and asks `_` for it.
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime !build_config.i18n) return error.SkipZigTest;
+
+    // `LANG` has to be in place before the first `dgettext` in this
+    // process: libintl reads the environment once and caches. Nothing else
+    // in the test binary calls `_` at run time, but that is a property of
+    // today's test set rather than a guarantee, so a failure here is worth
+    // reading as "somebody added an earlier caller" before it is read as
+    // "translation is broken".
+    if (setenv("LANG", "zh_CN.UTF-8", 1) != 0) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // `init` takes a resources dir and binds its *parent*'s `locale`, so
+    // the catalogue has to sit beside the resources dir, not under it.
+    try tmp.dir.createDirPath(std.testing.io, "share/locale/zh_CN/LC_MESSAGES");
+    try tmp.dir.createDirPath(std.testing.io, "share/ghostty");
+
+    const po =
+        \\msgid ""
+        \\msgstr "Content-Type: text/plain; charset=UTF-8\n"
+        \\
+        \\msgid "Reset Terminal"
+        \\msgstr "重置终端"
+        \\
+    ;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "t.po", .data = po });
+
+    const mo = "share/locale/zh_CN/LC_MESSAGES/" ++ build_config.bundle_id ++ ".mo";
+    var child = std.process.spawn(std.testing.io, .{
+        .argv = &.{ "msgfmt", "-o", mo, "t.po" },
+        .cwd = .{ .dir = tmp.dir },
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    switch (child.wait(std.testing.io) catch return error.SkipZigTest) {
+        .exited => |code| if (code != 0) return error.SkipZigTest,
+        else => return error.SkipZigTest,
+    }
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var resources_dir = try tmp.dir.openDir(std.testing.io, "share/ghostty", .{});
+    defer resources_dir.close(std.testing.io);
+    const len = try resources_dir.realPath(std.testing.io, &buf);
+    try init(buf[0..len]);
+
+    // ⚠️ **The floor is the second assertion, not the first.** A `_` that
+    // simply handed back its argument would satisfy any test that only
+    // checked the msgid is still readable; what says libintl answered is
+    // that the bytes came back *different*, and equal to the catalogue.
+    const got = std.mem.span(@"_"("Reset Terminal"));
+    try std.testing.expect(!std.mem.eql(u8, got, "Reset Terminal"));
+    try std.testing.expectEqualStrings("重置终端", got);
 }
 
 test "locale: the shipped catalogue chosen for a user's language" {

@@ -246,7 +246,7 @@ class TitlebarTabsVenturaTerminalWindow: TerminalWindow {
 		button.action = #selector(TerminalController.splitZoom(_:))
 		button.isBordered = false
 		button.allowsExpansionToolTips = true
-		button.toolTip = "Reset Zoom"
+		button.toolTip = String(localized: "Reset Zoom", comment: "标题栏按钮提示")
 		button.contentTintColor = .controlAccentColor
 		button.state = .on
 		button.image = NSImage(named: "ResetZoom")

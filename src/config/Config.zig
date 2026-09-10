@@ -9699,14 +9699,23 @@ pub const RepeatableCommand = struct {
         try self.value.ensureUnusedCapacity(alloc, inputpkg.command.defaults.len);
         try self.value_c.ensureUnusedCapacity(alloc, inputpkg.command.defaults.len);
         for (inputpkg.command.defaults) |cmd| {
-            // Translation is currently a GTK-only feature. In particular,
-            // translating these shared strings for the embedded runtime gives
-            // the macOS app a localized command palette in an otherwise
-            // unlocalized UI.
-            const localized = if (comptime build_config.app_runtime == .gtk)
-                cmd.translated()
-            else
-                cmd;
+            // **Translated for every runtime, macOS included.** This used
+            // to be GTK-only, and the reason was written down: translating
+            // these "gives the macOS app a localized command palette in an
+            // otherwise unlocalized UI". That premise is gone -- the macOS
+            // menus, settings, alerts and overlays all go through
+            // `String(localized:)` now -- and with it gone the condition was
+            // holding the command palette and the keybind listing in English
+            // while everything around them had been translated.
+            //
+            // What the old condition was also standing in for is the doubt
+            // about whether gettext resolves at all on macOS, where a GUI
+            // app is launched with no `LANG`. It does: `main.swift` sets
+            // `LANG` from the chosen language before `ghostty_init`, and
+            // "libintl answers on this platform, not just the reader written
+            // above" in `src/os/i18n.zig` is the test that says so rather
+            // than a comment claiming it.
+            const localized = cmd.translated();
             self.value.appendAssumeCapacity(localized);
             self.value_c.appendAssumeCapacity(try localized.cval(alloc));
         }

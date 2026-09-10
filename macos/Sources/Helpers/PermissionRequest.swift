@@ -48,7 +48,7 @@ class PermissionRequest {
 
         // Add buttons (they appear in reverse order)
         alert.addButton(withTitle: allowText)
-        alert.addButton(withTitle: "Don't Allow")
+        alert.addButton(withTitle: String(localized: "Don't Allow", comment: "权限询问框"))
 
         // Create checkbox for remembering if duration is provided
         var checkbox: NSButton?

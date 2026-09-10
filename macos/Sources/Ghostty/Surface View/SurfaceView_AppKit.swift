@@ -599,8 +599,8 @@ extension Ghostty {
         func promptTitle() {
             // Create an alert dialog
             let alert = NSAlert()
-            alert.messageText = "Change Terminal Title"
-            alert.informativeText = "Leave blank to restore the default."
+            alert.messageText = String(localized: "Change Terminal Title", comment: "终端标题重命名框")
+            alert.informativeText = String(localized: "Leave blank to restore the default.", comment: "终端标题重命名框")
             alert.alertStyle = .informational
 
             // Add a text field to the alert
@@ -609,8 +609,8 @@ extension Ghostty {
             alert.accessoryView = textField
 
             // Add buttons
-            alert.addButton(withTitle: "OK")
-            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: String(localized: "OK", comment: "终端标题重命名框"))
+            alert.addButton(withTitle: String(localized: "Cancel", comment: "终端标题重命名框"))
 
             // Make the text field the first responder so it gets focus
             alert.window.initialFirstResponder = textField

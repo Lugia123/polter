@@ -393,7 +393,7 @@ class BaseTerminalController: NSWindowController,
         alert.messageText = messageText
         alert.informativeText = informativeText
         alert.addButton(withTitle: confirmButtonTitle)
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: String(localized: "Cancel", comment: "终端窗口的提醒框"))
         alert.alertStyle = .warning
         // Store our alert so we only ever show one.
         self.alert = alert
@@ -428,16 +428,16 @@ class BaseTerminalController: NSWindowController,
         guard let window else { return }
 
         let alert = NSAlert()
-        alert.messageText = "Change Tab Title"
-        alert.informativeText = "Leave blank to restore the default."
+        alert.messageText = String(localized: "Change Tab Title", comment: "终端窗口的提醒框")
+        alert.informativeText = String(localized: "Leave blank to restore the default.", comment: "终端窗口的提醒框")
         alert.alertStyle = .informational
 
         let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
         textField.stringValue = titleOverride ?? window.title
         alert.accessoryView = textField
 
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: String(localized: "OK", comment: "终端窗口的提醒框"))
+        alert.addButton(withTitle: String(localized: "Cancel", comment: "终端窗口的提醒框"))
 
         alert.window.initialFirstResponder = textField
 

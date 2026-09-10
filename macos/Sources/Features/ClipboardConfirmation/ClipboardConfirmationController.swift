@@ -46,9 +46,9 @@ class ClipboardConfirmationController: NSWindowController {
     private func configure(_ window: NSWindow) {
         switch confirmation.kind {
         case .paste:
-            window.title = "Warning: Potentially Unsafe Paste"
+            window.title = String(localized: "Warning: Potentially Unsafe Paste", comment: "剪贴板确认窗口的标题")
         case .osc_52_read, .osc_52_write:
-            window.title = "Authorize Clipboard Access"
+            window.title = String(localized: "Authorize Clipboard Access", comment: "剪贴板确认窗口的标题")
         }
 
         window.contentView = NSHostingView(rootView: ClipboardConfirmationView(

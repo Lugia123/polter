@@ -626,9 +626,9 @@ class AppDelegate: NSObject,
             // may want to show this as a sheet on the focused window (especially if we're
             // opening a tab). I'm not sure.
             let alert = NSAlert()
-            alert.messageText = "Allow Polter to execute \"\(filename)\"?"
-            alert.addButton(withTitle: "Allow")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = String(localized: "Allow Polter to execute \"\(filename)\"?", comment: "应用级提醒框／Dock 菜单")
+            alert.addButton(withTitle: String(localized: "Allow", comment: "应用级提醒框／Dock 菜单"))
+            alert.addButton(withTitle: String(localized: "Cancel", comment: "应用级提醒框／Dock 菜单"))
             alert.alertStyle = .warning
             switch alert.runModal() {
             case .alertFirstButtonReturn:
@@ -1231,8 +1231,8 @@ extension AppDelegate {
     }
 
     private func reloadDockMenu() {
-        let newWindow = NSMenuItem(title: "New Window", action: #selector(newWindow), keyEquivalent: "")
-        let newTab = NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "")
+        let newWindow = NSMenuItem(title: String(localized: "New Window", comment: "应用级提醒框／Dock 菜单"), action: #selector(newWindow), keyEquivalent: "")
+        let newTab = NSMenuItem(title: String(localized: "New Tab", comment: "应用级提醒框／Dock 菜单"), action: #selector(newTab), keyEquivalent: "")
 
         dockMenu.removeAllItems()
         dockMenu.addItem(newWindow)
@@ -1407,12 +1407,13 @@ extension AppDelegate {
             guard let error else { return }
             Task { @MainActor in
                 let alert = NSAlert()
-                alert.messageText = "Failed to Set Default Terminal"
-                alert.informativeText = """
-                Ghostty could not be set as the default terminal application.
-
-                Error: \(error.localizedDescription)
-                """
+                alert.messageText = String(localized: "Failed to Set Default Terminal", comment: "应用级提醒框／Dock 菜单")
+                // ⚠️ **One line, and it has to stay one line.** The check in
+                // `tools/the-mac-strings-still-have-a-chinese-half.py` reads
+                // `String(localized:` and the literal that follows it on the
+                // same line; broken across lines for width, this string stops
+                // being asked for in Chinese and nothing says so.
+                alert.informativeText = String(localized: "Polter could not be set as the default terminal application.\n\nError: \(error.localizedDescription)", comment: "应用级提醒框／Dock 菜单")
                 alert.alertStyle = .warning
                 alert.runModal()
             }
@@ -1441,17 +1442,17 @@ extension AppDelegate: NSMenuItemValidation {
 
         case #selector(undo(_:)):
             if undoManager.canUndo {
-                item.title = "Undo \(undoManager.undoActionName)"
+                item.title = String(localized: "Undo \(undoManager.undoActionName)", comment: "应用级提醒框／Dock 菜单")
             } else {
-                item.title = "Undo"
+                item.title = String(localized: "Undo", comment: "应用级提醒框／Dock 菜单")
             }
             return undoManager.canUndo
 
         case #selector(redo(_:)):
             if undoManager.canRedo {
-                item.title = "Redo \(undoManager.redoActionName)"
+                item.title = String(localized: "Redo \(undoManager.redoActionName)", comment: "应用级提醒框／Dock 菜单")
             } else {
-                item.title = "Redo"
+                item.title = String(localized: "Redo", comment: "应用级提醒框／Dock 菜单")
             }
             return undoManager.canRedo
 
@@ -1491,11 +1492,11 @@ extension AppDelegate {
             return .terminateLater
         } else {
             let alert = NSAlert()
-            alert.messageText = "You have \(controllersNeedConfirmation.count) windows with running processes. Do you want to review these windows before quitting?"
-            alert.informativeText = "If you don't review your windows, any running processes will be terminated"
-            alert.addButton(withTitle: "Review Windows...")
-            alert.addButton(withTitle: "Terminate Processes")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = String(localized: "You have \(controllersNeedConfirmation.count) windows with running processes. Do you want to review these windows before quitting?", comment: "应用级提醒框／Dock 菜单")
+            alert.informativeText = String(localized: "If you don't review your windows, any running processes will be terminated", comment: "应用级提醒框／Dock 菜单")
+            alert.addButton(withTitle: String(localized: "Review Windows...", comment: "应用级提醒框／Dock 菜单"))
+            alert.addButton(withTitle: String(localized: "Terminate Processes", comment: "应用级提醒框／Dock 菜单"))
+            alert.addButton(withTitle: String(localized: "Cancel", comment: "应用级提醒框／Dock 菜单"))
             alert.alertStyle = .warning
 
             switch alert.runModal() {
