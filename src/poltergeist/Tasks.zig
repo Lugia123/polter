@@ -152,8 +152,26 @@ pub const Config = struct {
     /// asked for anyway.
     max_title_bytes: usize = 160,
 
-    /// A ceiling so a runaway supervisor cannot fill memory with panels.
-    max_tasks: usize = 512,
+    /// A ceiling a caller may set. **The default is not one**, and that is
+    /// the point rather than an oversight.
+    ///
+    /// It used to be 512, to stop a runaway supervisor filling memory with
+    /// panels. What that reasoning missed is the other half of this file:
+    /// `close` and `cancel` set a state and leave the row where it is,
+    /// deliberately, because the panel is what somebody reads in the
+    /// morning and a finished task is part of that. So the ceiling counted
+    /// rows that never go away, and a panel that had done a lot of work
+    /// stopped being able to record any more -- while the error told the
+    /// caller to close what was finished, which is the one action that
+    /// cannot help. Two decisions that were each right, and wrong together.
+    ///
+    /// ⚠️ The list is a single table for every group at once, so the count
+    /// that ran out was not any one panel's. It ran out at 360 rows in the
+    /// group that hit it.
+    ///
+    /// The mechanism stays because a caller with a reason can still ask for
+    /// a limit, and the test below holds that path open.
+    max_tasks: usize = std.math.maxInt(usize),
 };
 
 pub const Error = error{
@@ -651,6 +669,31 @@ test "the panel refuses to grow without limit" {
     _ = try t.create("build", "one", .other);
     _ = try t.create("build", "two", .feature);
     try testing.expectError(error.TooManyTasks, t.create("build", "three", .bug));
+}
+
+test "closing a task does not free its row, so the default must not be a ceiling" {
+    // **The two halves of this were each right and together they were a
+    // trap.** Closed tasks stay on the panel on purpose -- the person
+    // reading it in the morning wants to see what was finished -- and
+    // `close` therefore only sets a state, leaving the row where it was.
+    // With a ceiling counted against rows, a panel that had done a lot of
+    // work stopped being able to record any more, and the error told the
+    // caller to close what was finished, which is the one action that
+    // cannot help. It happened at 360 rows in one group; the list is one
+    // table for every group at once, so the rest came from elsewhere and
+    // "this panel is full" was wrong about which panel, too.
+    var t: Tasks = .init(testing.allocator, .{});
+    defer t.deinit();
+
+    var i: usize = 0;
+    while (i < 600) : (i += 1) {
+        const id = try t.create("build", "a line", .other);
+        try t.close(id);
+    }
+    try testing.expectEqual(@as(usize, 600), t.list.items.len);
+
+    // And one more after all of those, which is the case that failed.
+    _ = try t.create("build", "the six hundred and first", .other);
 }
 
 test "a task that is not there is not a task" {
