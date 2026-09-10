@@ -5626,14 +5626,34 @@ pub fn dispatch(
             // never a supervisor on the bus -- so they are named here too.
             const whole_panel = bus.isSupervisor(caller) or caller == Chat.user_id;
 
-            // A limit the caller did not ask for, because the panel is
-            // read far more often than it is paged and an answer nobody
-            // can hold is worse than one that says there is more. The
-            // same two numbers `task_history` uses, for the same reason.
-            const want: usize = if (p.limit == 0)
-                default_task_list_limit
+            // A limit the caller did not ask for -- but only for an agent,
+            // and the exception is the whole point.
+            //
+            // **The panel and the tool are two different questions**, and
+            // `chat.zig` had already said so where its own filters are
+            // defined: those are a way of looking at the list in hand, and
+            // nothing there changes what is asked of `task_list`. The
+            // conversations view asks for a group and rebuilds itself from
+            // the answer, so a default page would quietly turn "the whole
+            // panel" into "the newest fifty" -- and the rest would not look
+            // cut off, it would look as though it had never been there.
+            // That is what it did, for as long as it took somebody to
+            // notice they could no longer scroll back.
+            //
+            // An agent is the other question: it spends a context window on
+            // the reply, and an answer nobody can hold is worse than one
+            // that says there is more. `task_history` picks its two numbers
+            // the same way, for the same reason.
+            //
+            // A caller may still ask for a page explicitly, from either
+            // side. What differs is only what silence means.
+            const from_the_keyboard = caller == Chat.user_id;
+            const want: usize = if (p.limit != 0)
+                @intCast(@min(p.limit, @as(u64, max_task_list_limit)))
+            else if (from_the_keyboard)
+                0
             else
-                @intCast(@min(p.limit, @as(u64, max_task_list_limit)));
+                default_task_list_limit;
 
             const win = host.taskList(alloc, p.group, caller, whole_panel, .{
                 .limit = want,
@@ -8641,6 +8661,50 @@ test "a worker sees its own open work and nothing else" {
             .group = "build",
         } });
         try testing.expectEqual(@as(usize, 3), res.tasks.rows.len);
+    }
+}
+
+test "the conversations view is not paged, and an agent is" {
+    // **The panel and the tool are two different questions**, and the
+    // default limit belongs to one of them. `chat.zig` says it out loud
+    // where its own filters are defined: those are a way of looking at the
+    // list already in hand, and nothing there changes what is asked of
+    // `task_list`. So the panel asks for the group and expects the group --
+    // it rebuilds itself from that answer every poll, and a page would
+    // silently turn "the whole panel" into "the newest fifty" with the
+    // rest looking as though it had never been there.
+    //
+    // An agent is the other question: it spends a context window on the
+    // reply, and an answer nobody can hold is worse than one that says
+    // there is more.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    var i: usize = 0;
+    while (i < default_task_list_limit + 10) : (i += 1) {
+        _ = try panel.create("build", "a line", .other);
+    }
+
+    {
+        const res = try dispatch(alloc, &b, fake.host(), term(Chat.user_id), .{ .task_list = .{
+            .group = "build",
+        } });
+        try testing.expectEqual(default_task_list_limit + 10, res.tasks.rows.len);
+        try testing.expect(!res.tasks.more);
+    }
+
+    {
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_list = .{
+            .group = "build",
+        } });
+        try testing.expectEqual(default_task_list_limit, res.tasks.rows.len);
+        try testing.expect(res.tasks.more);
     }
 }
 
