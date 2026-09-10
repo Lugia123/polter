@@ -442,6 +442,130 @@ pub fn forWorker(
     return out.toOwnedSlice(alloc);
 }
 
+/// What to keep, and how much of it.
+///
+/// This is a filter over one of the two views above, **not a way to choose
+/// between them**. A worker asking for closed work is asking a question the
+/// worker view exists to refuse, so the filter runs after the view has
+/// already decided what that caller may see.
+///
+/// The shape is `ChatLog.Filter`'s, deliberately: `limit`, a cursor, and a
+/// substring. That one was written when paging a night back one screen at a
+/// time turned out to be the wrong shape for finding a single line, and a
+/// panel is the same problem with different rows.
+pub const Page = struct {
+    /// 0 means "no limit", which is what the old callers get by passing
+    /// nothing at all.
+    limit: usize = 0,
+
+    /// Walk from just before this id, newest first. 0 starts at the newest.
+    /// The caller gets it from the last row of the page it just read.
+    before: TaskId = 0,
+
+    /// `null` keeps every state. A worker's view has already dropped
+    /// everything but `.open`, so asking for another one there yields
+    /// nothing rather than reaching past the view.
+    state: ?State = null,
+
+    /// `nobody` keeps every owner -- including unassigned rows, which are
+    /// not "everybody's" but are part of what a supervisor is looking at.
+    owner: Id = nobody,
+
+    /// A substring of the title. ASCII case is ignored; anything else is
+    /// compared as written, which is the only thing that can be said about
+    /// case without knowing the language.
+    match: []const u8 = "",
+
+    fn admits(self: Page, t: Task) bool {
+        if (self.state) |want| if (t.state != want) return false;
+        if (self.owner != nobody and t.owner != self.owner) return false;
+        if (self.match.len == 0) return true;
+        return std.ascii.indexOfIgnoreCase(t.title, self.match) != null;
+    }
+};
+
+/// A window of a panel, newest first, and whether the walk stopped early.
+pub const Window = struct {
+    tasks: []const Task,
+
+    /// True when the walk ran out of room rather than out of rows.
+    ///
+    /// **This is about the walk, not about the page being full.** A page
+    /// that came back short because the list ended has to say so, or the
+    /// caller asks once more and is answered with nothing.
+    more: bool,
+};
+
+/// Newest first, because that is what a caller almost always wants.
+///
+/// A default nobody has to learn is worth more than a second tool: making
+/// "the most recent ones" the thing you get for asking plainly means the
+/// common case needs no parameters, and the rarer walk backwards is the one
+/// that costs a cursor.
+pub fn page(
+    self: *const Tasks,
+    alloc: Allocator,
+    group: []const u8,
+    p: Page,
+) Allocator.Error!Window {
+    return self.walk(alloc, group, nobody, false, p);
+}
+
+/// The worker's view, paged. Still only its own, still only open.
+pub fn pageForWorker(
+    self: *const Tasks,
+    alloc: Allocator,
+    group: []const u8,
+    owner: Id,
+    p: Page,
+) Allocator.Error!Window {
+    return self.walk(alloc, group, owner, true, p);
+}
+
+fn walk(
+    self: *const Tasks,
+    alloc: Allocator,
+    group: []const u8,
+    only_owner: Id,
+    open_only: bool,
+    p: Page,
+) Allocator.Error!Window {
+    var out: std.ArrayListUnmanaged(Task) = .empty;
+    errdefer out.deinit(alloc);
+
+    // The worker view never hands out the unclaimed pile -- see `forWorker`.
+    if (open_only and only_owner == nobody) {
+        return .{ .tasks = try out.toOwnedSlice(alloc), .more = false };
+    }
+
+    var seen_cursor = p.before == 0;
+    var i = self.list.items.len;
+    while (i > 0) {
+        i -= 1;
+        const t = self.list.items[i];
+
+        if (!std.mem.eql(u8, t.group, group)) continue;
+        if (only_owner != nobody and t.owner != only_owner) continue;
+        if (open_only and t.state != .open) continue;
+
+        // The cursor is found on the same walk that skips past it, so a row
+        // that the view or the filter would have hidden can still be the
+        // one a caller paged from.
+        if (!seen_cursor) {
+            if (t.id == p.before) seen_cursor = true;
+            continue;
+        }
+
+        if (!p.admits(t)) continue;
+
+        if (p.limit != 0 and out.items.len == p.limit) {
+            return .{ .tasks = try out.toOwnedSlice(alloc), .more = true };
+        }
+        try out.append(alloc, t);
+    }
+    return .{ .tasks = try out.toOwnedSlice(alloc), .more = false };
+}
+
 /// `text` cut to at most `limit` bytes without splitting a character.
 ///
 /// The same reasoning as `Chat.utf8Cut`, and for the same consequence: the
@@ -694,6 +818,94 @@ test "closing a task does not free its row, so the default must not be a ceiling
 
     // And one more after all of those, which is the case that failed.
     _ = try t.create("build", "the six hundred and first", .other);
+}
+
+test "a page hands back a window and says whether there is more" {
+    var t = testTasks();
+    defer t.deinit();
+
+    var i: usize = 0;
+    while (i < 25) : (i += 1) _ = try t.create("build", "a line", .other);
+
+    // Newest first, because that is what a caller almost always wants and a
+    // default nobody has to learn is worth more than an extra tool.
+    const first = try t.page(testing.allocator, "build", .{ .limit = 10 });
+    defer testing.allocator.free(first.tasks);
+    try testing.expectEqual(@as(usize, 10), first.tasks.len);
+    try testing.expectEqual(@as(TaskId, 25), first.tasks[0].id);
+    try testing.expect(first.more);
+
+    const next = try t.page(testing.allocator, "build", .{ .limit = 10, .before = first.tasks[9].id });
+    defer testing.allocator.free(next.tasks);
+    try testing.expectEqual(@as(TaskId, 15), next.tasks[0].id);
+    try testing.expect(next.more);
+
+    const last = try t.page(testing.allocator, "build", .{ .limit = 10, .before = next.tasks[9].id });
+    defer testing.allocator.free(last.tasks);
+    try testing.expectEqual(@as(usize, 5), last.tasks.len);
+    // **`more` is about the walk, not about the page being full.** A page
+    // that came back short because the list ran out has to say so, or the
+    // caller asks once more for nothing.
+    try testing.expect(!last.more);
+}
+
+test "a page filtered by state, by owner, and by substring" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const a = try t.create("build", "the parser is slow", .bug);
+    const b = try t.create("build", "the parser is wrong", .bug);
+    const c = try t.create("build", "something else", .feature);
+    try t.assign(a, worker_a);
+    try t.assign(b, worker_b);
+    try t.close(c);
+
+    const open_only = try t.page(testing.allocator, "build", .{ .state = .open });
+    defer testing.allocator.free(open_only.tasks);
+    try testing.expectEqual(@as(usize, 2), open_only.tasks.len);
+
+    const mine = try t.page(testing.allocator, "build", .{ .owner = worker_a });
+    defer testing.allocator.free(mine.tasks);
+    try testing.expectEqual(@as(usize, 1), mine.tasks.len);
+    try testing.expectEqual(a, mine.tasks[0].id);
+
+    // ASCII case ignored, the same rule `ChatLog.Filter` uses and for the
+    // same reason: it is the only thing that can be said about case without
+    // knowing the language.
+    const matched = try t.page(testing.allocator, "build", .{ .match = "PARSER" });
+    defer testing.allocator.free(matched.tasks);
+    try testing.expectEqual(@as(usize, 2), matched.tasks.len);
+
+    const both = try t.page(testing.allocator, "build", .{ .match = "parser", .owner = worker_b });
+    defer testing.allocator.free(both.tasks);
+    try testing.expectEqual(@as(usize, 1), both.tasks.len);
+    try testing.expectEqual(b, both.tasks[0].id);
+}
+
+test "a worker's page is still only its own open work" {
+    // **The two views stay two.** A filter reaching across them would let a
+    // worker ask for `state = closed` and be answered, and the whole point
+    // of the worker view is that the answer to that question is not its
+    // business. So paging is a thing done to a view, not a way to pick one.
+    var t = testTasks();
+    defer t.deinit();
+
+    const mine_open = try t.create("build", "mine, open", .other);
+    const mine_closed = try t.create("build", "mine, closed", .other);
+    const theirs = try t.create("build", "not mine", .other);
+    try t.assign(mine_open, worker_a);
+    try t.assign(mine_closed, worker_a);
+    try t.assign(theirs, worker_b);
+    try t.close(mine_closed);
+
+    const p = try t.pageForWorker(testing.allocator, "build", worker_a, .{ .state = .closed });
+    defer testing.allocator.free(p.tasks);
+    try testing.expectEqual(@as(usize, 0), p.tasks.len);
+
+    const q = try t.pageForWorker(testing.allocator, "build", worker_a, .{});
+    defer testing.allocator.free(q.tasks);
+    try testing.expectEqual(@as(usize, 1), q.tasks.len);
+    try testing.expectEqual(mine_open, q.tasks[0].id);
 }
 
 test "a task that is not there is not a task" {

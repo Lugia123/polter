@@ -634,7 +634,15 @@ pub const Response = union(enum) {
     /// A task's number, answering `task_create`.
     task: u64,
 
-    tasks: []const rpc.TaskView,
+    tasks: struct {
+        rows: []const rpc.TaskView,
+
+        /// Whether the walk stopped for room rather than for rows -- the
+        /// same flag `messages` and `task_events` carry, and here for the
+        /// same reason: a page cut short by a limit is otherwise
+        /// indistinguishable from the end of the panel.
+        more: bool = false,
+    },
 
     /// What happened to a panel, answering `task_history`.
     task_events: struct {
@@ -865,12 +873,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.objectField("task");
             try s.write(id);
         },
-        .tasks => |list| {
+        .tasks => |page| {
             try s.objectField("ok");
             try s.write(true);
+            try s.objectField("more");
+            try s.write(page.more);
             try s.objectField("tasks");
             try s.beginArray();
-            for (list) |t| {
+            for (page.rows) |t| {
                 try s.beginObject();
                 try s.objectField("task");
                 try s.write(t.id);

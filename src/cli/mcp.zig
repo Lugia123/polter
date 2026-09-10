@@ -834,9 +834,9 @@ const tools = [_]Tool{
     },
     .{
         .name = "task_list",
-        .description = "The tasks in a group. What you get depends on who you are, because the two questions are different: a supervisor is handed the group's whole panel, closed and cancelled work included, and anybody else is handed its own tasks that are still open and nothing else. Not a restriction so much as the point -- what your peers are doing is not yours to spend context on.",
+        .description = "The tasks in a group, newest first. What you get depends on who you are, because the two questions are different: a supervisor is handed the group's whole panel, closed and cancelled work included, and anybody else is handed its own tasks that are still open and nothing else. Not a restriction so much as the point -- what your peers are doing is not yours to spend context on. **A page, not the whole panel.** Fifty rows unless you ask for fewer or more, and `more: true` means there are older ones; page with `before`, passing the `task` number of the last row you were given. A panel that has run a few nights is thousands of characters long, and an answer nobody can hold is worse than one that says there is more. **Narrow it rather than paging through it**: `state` (open / closed / cancelled), `owner` for one terminal's, `match` for a substring of the title with ASCII case ignored. `match` is what finds the one task you half remember without reading the night back; the filters compose. Asking for a state as a worker yields nothing rather than reaching past your own view -- closed work is not a narrower version of your question, it is somebody else's question.",
         .schema =
-        \\{"type":"object","properties":{"group":{"type":"string"}},"required":["group"],"additionalProperties":false}
+        \\{"type":"object","properties":{"group":{"type":"string"},"limit":{"type":"integer"},"before":{"type":"integer"},"state":{"type":"string","enum":["open","closed","cancelled"]},"owner":{"type":"integer"},"match":{"type":"string"}},"required":["group"],"additionalProperties":false}
         ,
     },
 };

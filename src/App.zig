@@ -3943,16 +3943,35 @@ fn taskList(
     group: []const u8,
     who: poltergeistpkg.Bus.Id,
     whole_panel: bool,
-) anyerror![]const poltergeistpkg.rpc.TaskView {
+    q: poltergeistpkg.rpc.TaskQuery,
+) anyerror!poltergeistpkg.rpc.TaskWindow {
     const self: *App = @ptrCast(@alignCast(ctx));
     if (!self.chat.exists(group)) return error.NoSuchGroup;
 
+    // A name the caller typed, turned into the panel's own enum here so a
+    // wrong one is a refusal rather than a silent "no filter at all" --
+    // which would answer a narrower question with the whole panel.
+    const want_state: ?poltergeistpkg.Tasks.State = if (q.state.len == 0)
+        null
+    else
+        std.meta.stringToEnum(poltergeistpkg.Tasks.State, q.state) orelse
+            return error.BadState;
+
+    const filter: poltergeistpkg.Tasks.Page = .{
+        .limit = q.limit,
+        .before = q.before,
+        .state = want_state,
+        .owner = q.owner,
+        .match = q.match,
+    };
+
     // The two filters, and they are two functions rather than one with a
     // flag through it. See `poltergeist/Tasks.zig`.
-    const list = if (whole_panel)
-        try self.tasks.inGroup(alloc, group)
+    const win = if (whole_panel)
+        try self.tasks.page(alloc, group, filter)
     else
-        try self.tasks.forWorker(alloc, group, who);
+        try self.tasks.pageForWorker(alloc, group, who, filter);
+    const list = win.tasks;
     defer alloc.free(list);
 
     const out = try alloc.alloc(poltergeistpkg.rpc.TaskView, list.len);
@@ -3966,7 +3985,7 @@ fn taskList(
         .progress = @tagName(t.progress),
         .kind = @tagName(t.kind),
     };
-    return out;
+    return .{ .rows = out, .more = win.more };
 }
 
 /// What happened to a group's panel, out of the record on disk.

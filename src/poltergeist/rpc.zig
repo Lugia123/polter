@@ -396,7 +396,34 @@ pub const Request = union(Method) {
     task_close: struct { task: u64 },
     task_cancel: struct { task: u64 },
     task_progress: struct { task: u64, progress: []const u8 },
-    task_list: struct { group: []const u8 },
+    task_list: struct {
+        group: []const u8,
+
+        /// Newest first, and these are how a caller asks for less than all
+        /// of it. The panel used to hand back every row every time, which
+        /// stopped being readable long before it stopped being allowed:
+        /// 360 rows came to 59,000 characters.
+        ///
+        /// Shaped like `group_history`'s, deliberately -- `limit`, a
+        /// cursor, and a substring -- because it is the same problem with
+        /// different rows, and a caller who has learned one should not have
+        /// to learn the other.
+        limit: u64 = 0,
+
+        /// Walk from just before this task number. 0 starts at the newest.
+        before: u64 = 0,
+
+        /// `open` / `closed` / `cancelled`. Empty keeps every state.
+        state: []const u8 = "",
+
+        /// Only this terminal's. 0 keeps every owner, including unassigned
+        /// rows -- which are not "everybody's", but are part of what the
+        /// person reading the panel is looking at.
+        owner: u64 = 0,
+
+        /// A substring of the title, ASCII case ignored.
+        match: []const u8 = "",
+    },
 
     // Paged the same way `group_history` is, and by the same kind of
     // cursor: the position of a line in the record. See `TaskLog.Event`
@@ -487,6 +514,17 @@ pub fn capHistory(lines: []const ChatLine) struct {
 /// events is already a night's work in most groups.
 const default_task_history_limit: usize = 100;
 const max_task_history_limit: usize = 200;
+
+/// And for the panel itself.
+///
+/// **A default rather than nothing**, because the old behaviour was to hand
+/// back every row and that stopped being readable long before it stopped
+/// being allowed: a group with 360 rows answered with about 59,000
+/// characters, which a caller had to spool to a file and parse to look at.
+/// Fifty is a screen; a caller who wants more says so and gets told there
+/// is more either way.
+const default_task_list_limit: usize = 50;
+const max_task_list_limit: usize = 500;
 
 /// Keep the newest events that fit the budget.
 ///
@@ -3669,6 +3707,26 @@ pub const LayoutAnswer = struct {
     text: []const u8,
 };
 
+/// What a caller wants out of a panel, on the wire's side of `Tasks.Page`.
+///
+/// Two structs rather than one shared: the wire speaks strings and numbers
+/// a stranger typed, and `Tasks.Page` speaks the panel's own enums. Turning
+/// one into the other is where a bad state name becomes a refusal instead
+/// of a silent "no filter at all".
+pub const TaskQuery = struct {
+    limit: usize = 0,
+    before: u64 = 0,
+    state: []const u8 = "",
+    owner: Bus.Id = 0,
+    match: []const u8 = "",
+};
+
+/// A page of a panel and whether the walk stopped early.
+pub const TaskWindow = struct {
+    rows: []const TaskView,
+    more: bool = false,
+};
+
 pub const TaskView = struct {
     id: u64,
     title: []const u8,
@@ -4180,7 +4238,8 @@ pub const Host = struct {
             group: []const u8,
             who: Bus.Id,
             whole_panel: bool,
-        ) anyerror![]const TaskView,
+            page: TaskQuery,
+        ) anyerror!TaskWindow,
 
         /// What happened to `group`'s panel, older than `before_seq`.
         ///
@@ -4509,8 +4568,9 @@ pub const Host = struct {
         group: []const u8,
         who: Bus.Id,
         whole_panel: bool,
-    ) anyerror![]const TaskView {
-        return self.vtable.taskList(self.ctx, alloc, group, who, whole_panel);
+        q: TaskQuery,
+    ) anyerror!TaskWindow {
+        return self.vtable.taskList(self.ctx, alloc, group, who, whole_panel, q);
     }
 
     fn taskHistory(
@@ -5266,7 +5326,11 @@ pub fn dispatch(
             const members = host.chatMembers(alloc, p.group) catch return .ok;
             if (members.len < 2) return .ok;
 
-            const panel = host.taskList(alloc, p.group, caller, true) catch return .ok;
+            // **No limit here on purpose.** This counts whether any task
+            // is still open, and a page would answer "none in the first
+            // fifty" -- which reads exactly like "none at all".
+            const win = host.taskList(alloc, p.group, caller, true, .{}) catch return .ok;
+            const panel = win.rows;
             // `@tagName` rather than a bare "open": renaming the enum
             // member then breaks the build instead of quietly turning this
             // into a test that can never fire.
@@ -5562,9 +5626,23 @@ pub fn dispatch(
             // never a supervisor on the bus -- so they are named here too.
             const whole_panel = bus.isSupervisor(caller) or caller == Chat.user_id;
 
-            const list = host.taskList(alloc, p.group, caller, whole_panel) catch |err|
-                return taskFailure(err);
-            return .{ .tasks = list };
+            // A limit the caller did not ask for, because the panel is
+            // read far more often than it is paged and an answer nobody
+            // can hold is worse than one that says there is more. The
+            // same two numbers `task_history` uses, for the same reason.
+            const want: usize = if (p.limit == 0)
+                default_task_list_limit
+            else
+                @intCast(@min(p.limit, @as(u64, max_task_list_limit)));
+
+            const win = host.taskList(alloc, p.group, caller, whole_panel, .{
+                .limit = want,
+                .before = p.before,
+                .state = p.state,
+                .owner = p.owner,
+                .match = p.match,
+            }) catch |err| return taskFailure(err);
+            return .{ .tasks = .{ .rows = win.rows, .more = win.more } };
         },
 
         .task_history => |p| {
@@ -6359,14 +6437,29 @@ const FakeHost = struct {
         group: []const u8,
         who: Bus.Id,
         whole_panel: bool,
-    ) anyerror![]const TaskView {
+        q: TaskQuery,
+    ) anyerror!TaskWindow {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
 
-        const list = if (whole_panel)
-            try panel.inGroup(alloc, group)
+        const want_state: ?Tasks.State = if (q.state.len == 0)
+            null
         else
-            try panel.forWorker(alloc, group, who);
+            std.meta.stringToEnum(Tasks.State, q.state) orelse return error.BadState;
+
+        const filter: Tasks.Page = .{
+            .limit = q.limit,
+            .before = q.before,
+            .state = want_state,
+            .owner = q.owner,
+            .match = q.match,
+        };
+
+        const win = if (whole_panel)
+            try panel.page(alloc, group, filter)
+        else
+            try panel.pageForWorker(alloc, group, who, filter);
+        const list = win.tasks;
         defer alloc.free(list);
 
         const out = try alloc.alloc(TaskView, list.len);
@@ -6378,7 +6471,7 @@ const FakeHost = struct {
             .state = @tagName(t.state),
             .progress = @tagName(t.progress),
         };
-        return out;
+        return .{ .rows = out, .more = win.more };
     }
 
     fn taskHistory(
@@ -8528,8 +8621,8 @@ test "a worker sees its own open work and nothing else" {
         const res = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_list = .{
             .group = "build",
         } });
-        try testing.expectEqual(@as(usize, 1), res.tasks.len);
-        try testing.expectEqualStrings("mine", res.tasks[0].title);
+        try testing.expectEqual(@as(usize, 1), res.tasks.rows.len);
+        try testing.expectEqualStrings("mine", res.tasks.rows[0].title);
     }
 
     // And the supervisor sees all three, closed one included: the two are
@@ -8539,7 +8632,7 @@ test "a worker sees its own open work and nothing else" {
         const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_list = .{
             .group = "build",
         } });
-        try testing.expectEqual(@as(usize, 3), res.tasks.len);
+        try testing.expectEqual(@as(usize, 3), res.tasks.rows.len);
     }
 
     // So does the person at the keyboard, who is no supervisor on the bus.
@@ -8547,7 +8640,7 @@ test "a worker sees its own open work and nothing else" {
         const res = try dispatch(alloc, &b, fake.host(), term(Chat.user_id), .{ .task_list = .{
             .group = "build",
         } });
-        try testing.expectEqual(@as(usize, 3), res.tasks.len);
+        try testing.expectEqual(@as(usize, 3), res.tasks.rows.len);
     }
 }
 
@@ -8569,7 +8662,7 @@ test "a closed task is gone from the worker and still on the panel" {
         const res = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_list = .{
             .group = "build",
         } });
-        try testing.expectEqual(@as(usize, 1), res.tasks.len);
+        try testing.expectEqual(@as(usize, 1), res.tasks.rows.len);
     }
 
     _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = id } });
@@ -8578,14 +8671,14 @@ test "a closed task is gone from the worker and still on the panel" {
         const res = try dispatch(alloc, &b, fake.host(), term(worker), .{ .task_list = .{
             .group = "build",
         } });
-        try testing.expectEqual(@as(usize, 0), res.tasks.len);
+        try testing.expectEqual(@as(usize, 0), res.tasks.rows.len);
     }
     {
         const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_list = .{
             .group = "build",
         } });
-        try testing.expectEqual(@as(usize, 1), res.tasks.len);
-        try testing.expectEqualStrings("closed", res.tasks[0].state);
+        try testing.expectEqual(@as(usize, 1), res.tasks.rows.len);
+        try testing.expectEqualStrings("closed", res.tasks.rows[0].state);
     }
 }
 
@@ -9035,12 +9128,12 @@ test "the whole life of a task, as it goes over the wire" {
         defer parsed.deinit();
 
         const mine = try dispatch(alloc, &b, fake.host(), term(worker), parsed.value);
-        try testing.expectEqual(@as(usize, 0), mine.tasks.len);
+        try testing.expectEqual(@as(usize, 0), mine.tasks.rows.len);
 
         const all = try dispatch(alloc, &b, fake.host(), term(Chat.user_id), parsed.value);
-        try testing.expectEqual(@as(usize, 1), all.tasks.len);
-        try testing.expectEqualStrings("closed", all.tasks[0].state);
-        try testing.expectEqualStrings("working", all.tasks[0].progress);
+        try testing.expectEqual(@as(usize, 1), all.tasks.rows.len);
+        try testing.expectEqualStrings("closed", all.tasks.rows[0].state);
+        try testing.expectEqualStrings("working", all.tasks.rows[0].progress);
     }
 }
 
