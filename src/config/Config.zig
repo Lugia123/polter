@@ -1338,8 +1338,44 @@ command: ?Command = null,
 /// accident**, and a test machine cannot tell "the full-mailbox handling
 /// works" from "the mailbox never filled". Both produce no evidence at all.
 ///
-/// Set this to a small number and the mailbox fills in the ordinary course of
-/// events, on exactly the code paths that run in a shipping build.
+/// Setting this to a small number was meant to make the mailbox fill in the
+/// ordinary course of events, on exactly the code paths a shipping build
+/// runs.
+///
+/// ## 🔴 On a real machine it does not do that
+///
+/// **Measured, six ways, all negative.** Ceilings of 1 and 2, against a
+/// steady output probe, against burst production, and against a tight
+/// non-modal resize loop; a seventh arrangement -- dragging the window frame
+/// by hand, which is modal -- ⚠️ **could not be carried out at all, which is
+/// not the same as a negative result** and is recorded separately for that
+/// reason.
+///
+/// **Why it fails, and the reason is structural rather than a matter of
+/// picking a smaller number:** every delivery wakes the consumer. So the
+/// faster messages are produced, the faster they are drained -- production
+/// and consumption rise together, and the queue does not accumulate. **It
+/// fills only while the consumer is prevented from running**, and being
+/// prevented from running is precisely the defect that has since been fixed.
+/// ⇒ The state this setting was added to reproduce is, on a healthy build,
+/// reachable by nothing this project has found.
+///
+/// ## Where it is still worth having
+///
+/// **In the tests, where the consumer can simply be left out.** Three checks
+/// in `blocking_queue.zig` and `renderer/Thread.zig` turn on it -- that the
+/// default ceiling holds exactly what it always held, that a lowered one
+/// makes the queue full early on the ordinary path, and that a caller then
+/// reaches the branch which gives up and reports. Two mutation cells have
+/// nothing to bite on without it either.
+///
+/// ⚠️ **So it is not useless; its use is not on a real machine.** Those are
+/// different sentences and only the second one is a limitation.
+///
+/// ⚠️ **And six negatives are six negatives.** If somebody finds an
+/// arrangement that does fill it, none of the above was wrong -- it was
+/// six specific attempts, and the list of what was tried is above so that a
+/// seventh does not have to repeat them.
 ///
 /// ## ⚠️ Why turning it down is not a tuning knob
 ///
@@ -1358,14 +1394,19 @@ command: ?Command = null,
 ///
 /// ## Why there is no floor on it
 ///
-/// A healthy renderer drains this mailbox at least every 600ms (the cursor
-/// blink guarantees a wake-up), so "full" only lasts as long as it takes one
-/// message to be answered. **A ceiling of one or two is the only range in
-/// which the queue actually fills**; four or eight never get there on a
-/// working machine. A minimum would therefore not make the setting safer, it
-/// would make it inert -- an instrument that is always off, which is the
-/// exact failure it was added to fix. The protection is instead that turning
-/// it on **says so in the log at startup**, so a report that begins here is
+/// **This section used to say that a ceiling of one or two was the only range
+/// in which the queue actually fills.** That was written before the six
+/// measurements above; 1 and 2 were among the settings tried, and neither
+/// filled it. The sentence is left named here rather than quietly deleted
+/// because it was the stated reason for having no floor, and a reason that
+/// has been replaced should say so.
+///
+/// **The conclusion is unchanged and the reason is now this**: a floor would
+/// remove the only settings that have any chance at all, on an instrument
+/// that is already not reaching its target. It would not make the setting
+/// safer, it would make it certainly inert. The protection against somebody
+/// turning it down and then reporting the consequences as a bug is instead
+/// that turning it on **says so in the log at startup**, so such a report is
 /// traceable to it in one line.
 ///
 /// Valid range is 0 (off) to 64.
