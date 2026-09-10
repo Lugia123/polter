@@ -2803,9 +2803,20 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         }
 
         ACTION_SET_TITLE => {
-            if let Some(t) = action.as_cstr() {
+            // **`is_explicit` now says which of two callers this is** (task
+            // 540): a plain OSC 0/2 report, or `set_surface_title` -- an
+            // agent or a person explicitly naming this terminal, which
+            // `src/apprt/action.zig`'s `SetTitle.explicit` doc comment says
+            // should get the same protection from being overwritten that
+            // `set_tab_title`'s explicit rename already gets below. Before
+            // this, every `set_title` was queued as `explicit: false`
+            // regardless of what core sent, which is what a real run
+            // confirmed: `set_surface_title` set a name that a plain shell
+            // OSC then silently overwrote a moment later.
+            let (title, is_explicit) = action.as_cstr_with_explicit();
+            if let Some(t) = title {
                 let t = t.to_string_lossy().to_string();
-                alogf!(origin, "[action] set_title {:?}", t);
+                alogf!(origin, "[action] set_title {:?} explicit={}", t, is_explicit as u8);
                 // **Through `wintitle`, and not to `HWND_G`.** Two things
                 // were wrong with writing the caption here. The window was
                 // the *first* one (`HWND_G`), so a title announced in the
@@ -2834,10 +2845,16 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                     Some(s) => {
                         queue_from(
                             origin,
-                            // Not explicit: this is what the program calls
-                            // itself, and it is only a default for tabs that
-                            // nobody has named.
-                            Op::SetTabTitle { surface: s as usize, title: t, explicit: false },
+                            // **Read from `is_explicit`, not hard-coded.**
+                            // `false` is still right for a plain OSC 0/2
+                            // report -- "the program calls itself this, and
+                            // it is only a default for tabs nobody has
+                            // named" is still true for that case. It is no
+                            // longer true unconditionally: `set_surface_title`
+                            // sends this same action with `is_explicit: true`,
+                            // and that case needs the same protection
+                            // `set_tab_title` below already gets.
+                            Op::SetTabTitle { surface: s as usize, title: t, explicit: is_explicit },
                             "set_title action",
                         );
                     }

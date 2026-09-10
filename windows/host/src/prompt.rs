@@ -66,6 +66,22 @@ fn scope_of(scope: i32) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// What happens to the typed text on accept.
+///
+/// **Added for task 533, kept separate from `action` rather than folding
+/// project-save into a fourth `scope_of` row.** `Binding` is "hand the text
+/// to a core keybind action, the same as a keybind would" -- that is what
+/// every row `scope_of` knows about does, and it is what the module doc
+/// comment above describes. `SaveProject` does not touch the core at all:
+/// it calls `project_ui::save_project` directly, against a *tab*, not a
+/// surface -- the two variants exist because the doc comment's "exactly one
+/// path that changes a title" claim is still true for titles and was never
+/// meant to also be true for saving a project.
+enum Completion {
+    Binding(&'static str),
+    SaveProject(crate::tabs::TabId),
+}
+
 struct Open {
     hwnd: isize,
     edit: isize,
@@ -77,10 +93,10 @@ struct Open {
     /// window procedure, which has no way back to the frame.
     frame: isize,
     /// The terminal the typed name will be applied to. 0 = whichever has
-    /// focus, which is a fallback and not a default.
+    /// focus, which is a fallback and not a default. Unused by
+    /// `Completion::SaveProject`, which names its tab directly.
     surface: usize,
-    /// Which binding the text will be sent through.
-    action: &'static str,
+    completion: Completion,
     label: &'static str,
     /// What had focus before, for `overlay::focus_back`.
     prev: isize,
@@ -286,6 +302,38 @@ pub fn prompt_title(scope: i32, surface: usize) {
         wlogf!(frame, "[prompt] title requested for unknown scope {scope}; nothing shown");
         return;
     };
+
+    // The tab's current name, so the box opens on what is being changed
+    // rather than on nothing. **Read from the model, not remembered here.**
+    let (tabs_now, active) = crate::tabs::strip_snapshot(frame);
+    let current = tabs_now.get(active).map(|(_, t)| t.clone()).unwrap_or_default();
+
+    open_prompt(frame, label, &current, surface, Completion::Binding(action), scope);
+}
+
+/// Ask for a name to save the given tab as a project under. **Main thread
+/// only**, same as `prompt_title` -- it makes windows the same way, and
+/// shares this function's window-creation code with it (`open_prompt`)
+/// rather than a second copy: this whole box's geometry, IME handoff and
+/// Enter/Escape handling is exactly `prompt_title`'s, only what happens on
+/// accept differs (see `Completion`).
+pub fn prompt_save_as_project(frame: HWND, tab: crate::tabs::TabId, default_name: String) {
+    open_prompt(frame, "另存为项目", &default_name, 0, Completion::SaveProject(tab), -1);
+}
+
+/// Shared by `prompt_title` and `prompt_save_as_project`: build the popup,
+/// pre-filled with `default_text`, over `frame`, and arm it so accepting
+/// runs `completion` on the typed text. `scope` is only for the log line at
+/// the end (`-1` for callers with no `scope_of` row, i.e. everything but
+/// `prompt_title`).
+fn open_prompt(
+    frame: HWND,
+    label: &'static str,
+    default_text: &str,
+    surface: usize,
+    completion: Completion,
+    scope: i32,
+) {
     close(false);
 
     if frame.0.is_null() {
@@ -296,11 +344,7 @@ pub fn prompt_title(scope: i32, surface: usize) {
     }
     let scale = crate::tabs::scale_of(frame);
     let s = |v: i32| ((v as f64) * scale).round() as i32;
-
-    // The tab's current name, so the box opens on what is being changed
-    // rather than on nothing. **Read from the model, not remembered here.**
-    let (tabs_now, active) = crate::tabs::strip_snapshot(frame);
-    let current = tabs_now.get(active).map(|(_, t)| t.clone()).unwrap_or_default();
+    let current = default_text.to_string();
 
     let mut fr = RECT::default();
     let _ = unsafe { GetWindowRect(frame, &mut fr) };
@@ -382,7 +426,7 @@ pub fn prompt_title(scope: i32, surface: usize) {
                 edit: edit.0 as isize,
                 frame: frame.0 as isize,
                 surface,
-                action,
+                completion,
                 label,
                 prev: prev.0 as isize,
             });
@@ -390,7 +434,7 @@ pub fn prompt_title(scope: i32, surface: usize) {
     }
     wlogf!(
         frame,
-        "[prompt] {label} box open, scope={scope}, surface={surface:#x}, current title {current:?}"
+        "[prompt] {label} box open, scope={scope}, surface={surface:#x}, current text {current:?}"
     );
 }
 
@@ -420,21 +464,37 @@ fn close(accept: bool) {
         return;
     }
     if text.trim().is_empty() {
-        // An empty name would clear the title, which is a different request
-        // from the one the menu row makes.
+        // An empty name would clear the title (or, for SaveProject, save
+        // under a name nobody chose) -- a different request from the one
+        // the menu row makes, either way.
         wlogf!(frame, "[prompt] {} accepted with an empty name; nothing sent", open.label);
         return;
     }
-    let binding = format!("{}:{}", open.action, text);
-    let ok = if open.surface != 0 {
-        crate::binding_on(open.surface as crate::ffi::Surface, &binding)
-    } else {
-        wlogf!(frame, "[prompt] {} had no surface of its own; applying to the focused one", open.label);
-        crate::binding(&binding)
-    };
-    // The action name is in the line because that is the half that says which
-    // of the three this box was.
-    wlogf!(frame, "[prompt] {} -> {:?} ok={}", open.label, binding, ok as i32);
+
+    match open.completion {
+        Completion::Binding(action) => {
+            let binding = format!("{action}:{text}");
+            let ok = if open.surface != 0 {
+                crate::binding_on(open.surface as crate::ffi::Surface, &binding)
+            } else {
+                wlogf!(frame, "[prompt] {} had no surface of its own; applying to the focused one", open.label);
+                crate::binding(&binding)
+            };
+            // The action name is in the line because that is the half that
+            // says which of the three this box was.
+            wlogf!(frame, "[prompt] {} -> {:?} ok={}", open.label, binding, ok as i32);
+        }
+        Completion::SaveProject(tab) => {
+            let Some(dir) = crate::project::resolve_state_dir().map(|s| crate::project::default_dir(&s)) else {
+                wlogf!(frame, "[prompt] save as project {:?}: no state directory available", text);
+                return;
+            };
+            match crate::project_ui::save_project(&dir, frame, tab, text.clone()) {
+                Ok(()) => wlogf!(frame, "[prompt] saved as project {:?}", text),
+                Err(e) => wlogf!(frame, "[prompt] save as project {:?} failed: {}", text, e),
+            }
+        }
+    }
 }
 
 fn register_class() {

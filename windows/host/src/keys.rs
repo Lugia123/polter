@@ -189,6 +189,7 @@ fn first_of_its_kind(msg: u32, vk: u16, mods: i32, answered: bool) -> bool {
 use crate::ffi::{self, Surface};
 use crate::{api, hlogf, logf, plogf};
 use windows::Win32::Foundation::{HWND, LRESULT, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// Host-level accelerators, tried **only for what the core did not take**.
@@ -272,6 +273,46 @@ fn accelerator(vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<&'static str>
         // The core binds `equalize_splits` to `super+ctrl+=`, which is the
         // macOS branch; there is no Windows default.
         (true, true, VK_OEM_PLUS) => Some("equalize_splits"),
+
+        // **Temporary, for task 533's real-machine verification only.** No
+        // UI exists yet for "Save as Project" (see the windows-port
+        // discussion on why prompt.rs was extended but the menu entry point
+        // was not, this session) -- this chord is the only way to reach
+        // `prompt::prompt_save_as_project` until that lands. Remove this row
+        // once a real menu item calls it instead.
+        //
+        // `ctrl+shift+j` and `ctrl+shift+k` were tried first and do not
+        // work: the core already claims both chords (`binding=yes
+        // performable=no`, confirmed in a real run's log -- `j` is
+        // `Config.zig:7249`'s default, `k`'s source was not tracked down),
+        // so neither reaches this table at all -- the exact trap
+        // `ctrl+shift+,` above is about. `ctrl+shift+u` was confirmed free
+        // the same way (`binding=no`, `surface_key=false` in a real run)
+        // before being kept.
+        (true, true, VK_U) => Some("__polter_save_as_project_test"),
+
+        // **Also temporary, also task 533 real-machine verification.**
+        // Loads the fixed project name `w3-533-test` (the one the row above
+        // saves) into a brand-new tab. Remove alongside the row above once a
+        // real "Load Project" entry point exists.
+        //
+        // `i`/`l`/`x` were tried first and are all claimed by the core's own
+        // Windows-relevant `ctrl+shift+*` defaults (confirmed in real runs'
+        // logs, and cross-checked against every `.{ .ctrl = true, .shift =
+        // true }` row in `src/config/Config.zig` rather than guessed one at
+        // a time again). `ctrl+shift+-` was also tried and is worse than
+        // claimed: it is not in that table at all, and on a real run it did
+        // not surface_key -- it opened this host's own local chat/task
+        // panel (a `#32770` "confirm close" dialog on top of it), reading
+        // real local Poltergeist state from this machine's user profile.
+        // No send was seen in the log for that window -- but whether a
+        // send would even be logged there was never checked, so that is not
+        // "nothing was sent", only "nothing was seen"; it stays unverified.
+        // It is a reminder either way that this table is not the only thing
+        // a chord can reach -- **do not keep guessing chords empirically;
+        // check `Config.zig`'s `ctrl = true, shift = true` rows first.** `r`
+        // is not one of them and was picked for that reason.
+        (true, true, VK_R) => Some("__polter_load_as_project_test"),
 
         // **`ctrl+tab` was here, and it should not have been.** The first
         // pass called it "not verified" and asked for a keypress on a real
@@ -458,6 +499,58 @@ pub fn handle_key_message(
                     "__polter_plugin_page" => {
                         crate::settings_ui::request_toggle();
                         true
+                    }
+                    // Temporary test hook -- see the accelerator table's
+                    // comment on this row (`ctrl+shift+j`).
+                    "__polter_save_as_project_test" => {
+                        match crate::tabs::frame_of_surface(surface) {
+                            Some(frame) => {
+                                let (tabs_now, active) = crate::tabs::strip_snapshot(frame);
+                                match tabs_now.get(active) {
+                                    Some((tab_id, _)) => {
+                                        crate::prompt::prompt_save_as_project(
+                                            frame,
+                                            *tab_id,
+                                            "w3-533-test".to_string(),
+                                        );
+                                        true
+                                    }
+                                    None => false,
+                                }
+                            }
+                            None => false,
+                        }
+                    }
+                    // Temporary test hook -- see the accelerator table's
+                    // comment on this row (`ctrl+shift+r`).
+                    "__polter_load_as_project_test" => {
+                        match crate::tabs::frame_of_surface(surface) {
+                            Some(frame) => {
+                                let app = crate::app_handle();
+                                let hinst: windows::Win32::Foundation::HINSTANCE =
+                                    GetModuleHandleW(None).unwrap().into();
+                                let dir = crate::project::resolve_state_dir()
+                                    .map(|s| crate::project::default_dir(&s));
+                                match dir {
+                                    Some(dir) => {
+                                        let result = crate::project_ui::load_project_into_new_tab(
+                                            frame,
+                                            app,
+                                            hinst,
+                                            &dir,
+                                            "w3-533-test",
+                                        );
+                                        logf!("[project] load_project_into_new_tab -> {:?}", result);
+                                        true
+                                    }
+                                    None => {
+                                        logf!("[project] load_project_into_new_tab: no state directory available");
+                                        false
+                                    }
+                                }
+                            }
+                            None => false,
+                        }
                     }
                     _ => crate::binding(name),
                 };

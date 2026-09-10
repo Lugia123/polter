@@ -5085,10 +5085,20 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // find it on the strip is trading "what is running" for "who
                 // this is", deliberately.
                 //
-                // **Safe to route apart, by construction**: `set_tab_title`
-                // never comes from a program. The core sends it only from the
-                // binding action; a program's OSC 0/2 becomes `set_title`,
-                // which arrives with `explicit: false`.
+                // **`explicit` is what tells the two apart now, not which
+                // action this arrived as (task 540).** `set_tab_title`
+                // always carries `explicit: true` -- it never comes from a
+                // program. `set_title` carries whatever core's own
+                // `is_explicit` said: `false` for a program's OSC 0/2 (the
+                // common case, still just a default for a tab nobody has
+                // named), but `true` when it came from `set_surface_title`
+                // -- an agent or a person explicitly naming this terminal,
+                // per `src/apprt/action.zig`'s doc comment on
+                // `SetTitle.explicit`. Before main.rs read that bit, every
+                // `set_title` arrived here as `explicit: false` regardless,
+                // and a name set through `set_surface_title` had no
+                // protection at all: a real run confirmed the very next OSC
+                // 0/2 from the shell silently overwrote it.
                 if explicit {
                     match tab_of_surface(surface as Surface) {
                         Some((owner, id)) => {

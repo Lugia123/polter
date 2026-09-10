@@ -384,6 +384,29 @@ impl Action {
         Some(unsafe { std::ffi::CStr::from_ptr(p) })
     }
 
+    /// `ghostty_action_set_title_s { const char* title; bool is_explicit; }`
+    /// -- the shape `set_title` and `set_tab_title` both carry. `is_explicit`
+    /// sits right after the 8-byte pointer, no padding: a `bool` needs no
+    /// alignment wider than 1, so nothing pushes it off offset 8. **That
+    /// assumption is pinned by `SetTitlePayload`'s size assert below**, not
+    /// left to this comment alone -- see its doc comment for what a
+    /// silent-drift failure here would look like.
+    ///
+    /// **Task 540.** Before this, Windows read only the title half (via
+    /// `as_cstr` above) and wrote every title as `explicit: false` when
+    /// reporting back through `set_tab_title`'s own re-announcement -- see
+    /// `src/apprt/action.zig`'s doc comment on `SetTitle.explicit`: a person
+    /// renaming a tab, or an agent calling `set_surface_title`, is supposed
+    /// to be told apart from a plain OSC 0/2 report, precisely so the tab
+    /// strip can keep the explicit one from being overwritten by the next
+    /// thing the program says. Reading `is_explicit` here is what lets
+    /// `main.rs`'s `ACTION_SET_TITLE`/`ACTION_SET_TAB_TITLE` arms stop
+    /// hard-coding that bit and start answering the question the field
+    /// exists to ask.
+    pub fn as_cstr_with_explicit(&self) -> (Option<&'static std::ffi::CStr>, bool) {
+        (self.as_cstr(), self.payload[8] != 0)
+    }
+
     /// `ghostty_action_poltergeist_mark_s { const char* prefix; int role;
     /// bool shielded; bool held; }`. The pointer is 8-aligned, so `role` is at
     /// offset 8 and `shielded` at 12 -- **not** packed after the pointer at 8
@@ -723,10 +746,36 @@ pub struct SurfaceConfig {
     pub history_restore: *const c_char,
 }
 
+/// `ghostty_action_set_title_s` (`include/ghostty.h:755-758`): `{ const
+/// char* title; bool is_explicit; }`. Not read through this struct --
+/// `Action::as_cstr`/`as_cstr_with_explicit` read `payload[0..8]` and
+/// `payload[8]` directly, because the payload is a shared byte buffer sized
+/// for the largest action, not a per-tag union Rust can express. **This
+/// struct exists only to pin that offset assumption at compile time** (see
+/// the assert below) -- without it, a field inserted or reordered on the C
+/// side would not fail to build; `is_explicit` would silently start reading
+/// some other field's byte, and since a `bool` there is "non-zero is true",
+/// garbage is far more likely to read as `true` than `false`. The visible
+/// shape of that failure is every title becoming permanently pinned the
+/// first time any title action fires -- not a crash, not a build error, just
+/// titles that stop updating, with nothing pointing at an offset as the
+/// cause.
+#[repr(C)]
+struct SetTitlePayload {
+    title: *const c_char,
+    is_explicit: bool,
+}
+
 const _: () = {
     assert!(std::mem::size_of::<Action>() == 32);
     assert!(std::mem::size_of::<Target>() == 16);
     assert!(std::mem::size_of::<SurfaceConfig>() == 104);
+    // 8-byte pointer, then a 1-byte bool immediately after it at offset 8 --
+    // asserted as a size rather than an offset because `SetTitlePayload` has
+    // only the one field after the pointer, so pinning the total size pins
+    // where that field starts exactly as precisely as an offset assert
+    // would (see the struct's doc comment for what this catches).
+    assert!(std::mem::size_of::<SetTitlePayload>() == 16);
     assert!(std::mem::size_of::<RuntimeConfig>() == 64);
     // action u32 + mods i32 + consumed i32 + keycode u32 then an 8-aligned
     // pointer, u32, bool, tail padding.
@@ -1159,6 +1208,37 @@ mod tests {
         let mut a = Action { tag, _pad: 0, payload: [0u8; 24] };
         a.payload[0..8].copy_from_slice(&(p as usize).to_ne_bytes());
         a
+    }
+
+    fn action_with_pointer_and_explicit(tag: u32, p: *const c_char, is_explicit: bool) -> Action {
+        let mut a = action_with_pointer(tag, p);
+        a.payload[8] = is_explicit as u8;
+        a
+    }
+
+    /// **Task 540's judgment.** `ghostty_action_set_title_s` is `{ const
+    /// char* title; bool is_explicit; }` -- the bool immediately after the
+    /// 8-byte pointer, offset 8, no padding. Both bits have to come back
+    /// correctly and independently: a title byte flipping the explicit bit,
+    /// or vice versa, would look like this passed if only one were checked
+    /// (same reasoning as `Action.Key.history_filename`'s Windows wiring:
+    /// getting the offset right and getting it right *for both fields* are
+    /// different claims).
+    #[test]
+    fn as_cstr_with_explicit_reads_both_fields_independently() {
+        let title = std::ffi::CString::new("SURFACE-540").unwrap();
+
+        let explicit = action_with_pointer_and_explicit(ACTION_SET_TITLE, title.as_ptr(), true);
+        let (t, is_explicit) = explicit.as_cstr_with_explicit();
+        assert_eq!(t.map(|c| c.to_string_lossy().to_string()), Some("SURFACE-540".to_string()));
+        assert!(is_explicit);
+
+        // Same title, only the explicit byte differs -- confirms the title
+        // read does not accidentally depend on it.
+        let plain = action_with_pointer_and_explicit(ACTION_SET_TITLE, title.as_ptr(), false);
+        let (t2, is_explicit2) = plain.as_cstr_with_explicit();
+        assert_eq!(t2.map(|c| c.to_string_lossy().to_string()), Some("SURFACE-540".to_string()));
+        assert!(!is_explicit2);
     }
 
     /// **The directory `terminal_open` was waiting on an answer about.**

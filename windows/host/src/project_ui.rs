@@ -43,23 +43,42 @@ use polter_split_tree::Node;
 /// `save_project`'s doc comment for how those two "empty" cases are told
 /// apart now (an apprt-side count, not just a hope that a log line was
 /// read).
+///
+/// **Reads every pane's metadata out of the same borrow that finds the
+/// tree, and does not call `tabs::cwd_of_pane`/`title_of_pane`/
+/// `history_of_pane`.** Those three each take `tabs::with_windows`'s lock
+/// themselves; calling any of them from inside the closure below -- which
+/// already holds that lock to find `tab` in the first place -- is the same
+/// non-reentrant-mutex-taken-twice shape `tabs.rs` has warned about at
+/// several of its own call sites (see `create_tab_with`'s comment on
+/// `take_id`/`take_pending_cwd`). A real run of this exact bug produced:
+/// `[state] DEADLOCK: host/src/tabs.rs:3288 waited 5s; holder is
+/// host/src/project_ui.rs:47` -- caught by the host's own watchdog rather
+/// than hanging silently, but a bug regardless. Building `meta` from
+/// `tab.panes` directly, while still inside the one borrow, is the fix.
 pub fn snapshot_for_tab(frame: HWND, id: TabId, name: String, saved_at: i64) -> Option<Snapshot> {
     let root = tabs::with_windows(|ws| {
         let win = ws.iter().find(|w| w.frame == frame.0 as isize)?;
         let tab = win.tabs.iter().find(|t| t.id == id)?;
         let node = tab.tree.root()?;
-        Some(build_saved_node(node))
+        let meta: std::collections::HashMap<polter_split_tree::PaneId, SavedLeaf> = tab
+            .panes
+            .iter()
+            .map(|p| {
+                (
+                    p.id,
+                    SavedLeaf {
+                        cwd: p.cwd.clone().unwrap_or_default(),
+                        title: p.title.clone().unwrap_or_default(),
+                        history: p.history.clone().unwrap_or_default(),
+                    },
+                )
+            })
+            .collect();
+        Some(project::describe(node, &|id| meta.get(&id).cloned().unwrap_or_default()))
     })?;
 
     Some(Snapshot { name, saved_at, root: Some(root) })
-}
-
-fn build_saved_node(node: &Node) -> SavedNode {
-    project::describe(node, &|id| SavedLeaf {
-        cwd: tabs::cwd_of_pane(id).unwrap_or_default(),
-        title: tabs::title_of_pane(id).unwrap_or_default(),
-        history: tabs::history_of_pane(id).unwrap_or_default(),
-    })
 }
 
 /// Number of leaves in a saved tree. Used by `save_project`'s log line and by
@@ -183,6 +202,19 @@ fn seed_leftmost(node: &SavedNode, seed_surface: usize) -> serde_json::Value {
     }
 }
 
+/// The same leaf `seed_leftmost` will address as `{"pane": "0x..."}` --
+/// walked once, before the seed pane exists, so its `cwd`/`history` can be
+/// given to the tab's *creation* instead of left for the layout step, which
+/// has no way to carry either onto a pane it did not create. See task 547 and
+/// `load_project_into_new_tab`'s doc comment on why this half of the fix
+/// belongs at creation time, not in `Shape`.
+fn leftmost_leaf(node: &SavedNode) -> &SavedLeaf {
+    match node {
+        SavedNode::Leaf(leaf) => leaf,
+        SavedNode::Split { left, .. } => leftmost_leaf(left),
+    }
+}
+
 /// Turn a loaded snapshot into the JSON `layout::parse` already understands.
 /// `None` for a project with no layout (`Snapshot::root` is `None`) -- there
 /// is nothing to build, which is a valid saved state (see `Project.zig`'s
@@ -195,6 +227,84 @@ fn seed_leftmost(node: &SavedNode, seed_surface: usize) -> serde_json::Value {
 /// path `poltergeist_layout` uses.
 pub fn shape_for_snapshot(snapshot: &Snapshot) -> Option<serde_json::Value> {
     snapshot.root.as_ref().map(project::to_layout_shape)
+}
+
+/// Load a saved project into a brand-new tab in `frame`. This is the
+/// end-to-end "does the existing `poltergeist_layout` pipeline actually
+/// build the tree, with the right cwd and `history_restore` on the fresh
+/// panes" path -- called from a fresh top-level context (a keybind's
+/// dispatch, same as `layout::perform` is normally reached from
+/// `cb_action`), **never from inside `tabs::run_ops`**: `post_op` +
+/// `drain_for_layout` below queue and then synchronously wait for a *second*
+/// op, and doing that from inside the op loop that would have to run it is
+/// the same non-reentrant shape `snapshot_for_tab`'s deadlock was, one level
+/// up (queueing into your own queue and then blocking for it to drain, while
+/// the thread that drains it is this one and it is not draining because it
+/// is here instead).
+///
+/// **Task 547, fixed here rather than worked around.** The earlier version
+/// of this function created its seed pane with `create_tab_in(frame, app,
+/// hinst, None)` -- a blank pane, then plugged in by identity as
+/// `Shape::Existing`. Confirmed on a real run: `Shape::Existing` has no
+/// `cwd` field (only `Shape::New` does) and cannot carry one, so the seed
+/// pane came back at the fresh tab's own default directory, unrelated to
+/// what was saved, while every other leaf landed exactly on its saved `cwd`.
+/// `history_restore` has the same shape of gap for the sharper reason that
+/// it can only be set once, at `surface_new`, which a blank seed pane has
+/// already passed before this function ever sees it.
+///
+/// **The fix is to stop creating the seed pane blank.** `leftmost_leaf`
+/// reads the same leaf `shape_for_snapshot_seeded` will later address as
+/// `{"pane": "0x..."}`, and its `cwd`/`history` seed the tab's creation via
+/// `NewTab` -- the same fields `Op::ApplyLayout`'s own fresh leaves already
+/// use. The seed pane is still plugged into the shape by identity afterward
+/// (unchanged: geometry has to come from the layout step regardless of how
+/// the pane started), but by the time that happens it is no longer blank.
+/// **What this does not fix**: a *saved project's* seed leaf's `history` is
+/// still capped by whatever `history_filename` core minted for it -- if that
+/// pane's own shell never turned history capture on, there is nothing here
+/// to restore, same as any other leaf, and that is not this function's gap.
+pub fn load_project_into_new_tab(
+    frame: HWND,
+    app: crate::ffi::App,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    dir: &std::path::Path,
+    name: &str,
+) -> Result<(), String> {
+    let snapshot = project::read(dir, name).map_err(|e| format!("{e:?}"))?;
+
+    let seed = snapshot.root.as_ref().map(leftmost_leaf);
+    let seed_spec = tabs::NewTab {
+        cwd: seed.filter(|l| !l.cwd.is_empty()).map(|l| l.cwd.clone()),
+        history: seed.filter(|l| !l.history.is_empty()).map(|l| l.history.clone()),
+        ..Default::default()
+    };
+    if !tabs::create_tab_with(frame, app, hinst, seed_spec) {
+        return Err("could not create a new tab".to_string());
+    }
+
+    let seed_surface = tabs::active_surface(frame);
+    if seed_surface.is_null() {
+        return Err("the new tab has no active surface".to_string());
+    }
+
+    let Some(shape_json) = shape_for_snapshot_seeded(&snapshot, seed_surface as usize) else {
+        // An empty project: the fresh blank tab this function already made
+        // is the whole of what there was to build.
+        return Ok(());
+    };
+    let shape = crate::layout::parse(&shape_json)?;
+    let at = tabs::pane_id_of_surface(seed_surface);
+
+    let outcome: crate::layout::Outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
+    tabs::post_op(frame, tabs::Op::ApplyLayout(shape, at, outcome.clone()), "load_project_into_new_tab");
+    tabs::drain_for_layout(frame);
+
+    match outcome.lock().ok().and_then(|mut o| o.take()) {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(e)) => Err(e),
+        None => Err("the layout was queued and did not run; the window may have closed".to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -382,5 +492,42 @@ mod tests {
         assert_eq!(shape["left"]["pane"], "0xabcd");
         // The other leaf is still freshly built, cwd intact.
         assert_eq!(shape["right"]["new"]["cwd"], "/b");
+    }
+
+    /// **Task 547's judgment.** `leftmost_leaf` has to find the exact same
+    /// leaf `seed_leftmost` addresses as `{"pane": "0x..."}` -- if the two
+    /// ever disagreed, the seed pane would be created with one leaf's
+    /// cwd/history and then plugged into the shape at a *different* leaf's
+    /// position, which is a worse bug than the one 547 opened with (a wrong
+    /// but at-least-consistent seed, versus a seed whose creation-time
+    /// metadata belongs to a different pane entirely).
+    #[test]
+    fn leftmost_leaf_finds_the_same_leaf_seed_leftmost_addresses() {
+        let root = sample_snapshot().root.unwrap();
+        let leaf = leftmost_leaf(&root);
+        assert_eq!(leaf.cwd, "/a");
+
+        // Same tree, walked the other way: the shape's "left" cell should be
+        // the seed placeholder, and its sibling should be the *other* leaf's
+        // cwd ("/b"), never "/a" showing up on the wrong side.
+        let shape = seed_leftmost(&root, 0x1234);
+        assert_eq!(shape["left"]["pane"], "0x1234");
+        assert_eq!(shape["right"]["new"]["cwd"], "/b");
+    }
+
+    #[test]
+    fn leftmost_leaf_descends_through_nested_splits() {
+        let nested = SavedNode::Split {
+            axis: polter_split_tree::Axis::Vertical,
+            ratio: 0.4,
+            left: Box::new(SavedNode::Split {
+                axis: polter_split_tree::Axis::Horizontal,
+                ratio: 0.6,
+                left: Box::new(SavedNode::Leaf(SavedLeaf { cwd: "/deep".to_string(), ..Default::default() })),
+                right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
+            }),
+            right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
+        };
+        assert_eq!(leftmost_leaf(&nested).cwd, "/deep");
     }
 }
