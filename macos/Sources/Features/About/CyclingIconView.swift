@@ -31,7 +31,7 @@ struct CyclingIconView: View {
         }
         .contextMenu {
             if let currentIcon = viewModel.currentIcon {
-                Button("Copy Icon Config") {
+                Button(String(localized: "Copy Icon Config", comment: "关于窗口的图标")) {
                     NSPasteboard.general.setString("macos-icon = \(currentIcon.rawValue)", forType: .string)
                 }
             }

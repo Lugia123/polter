@@ -18,8 +18,8 @@ struct SettingsView: View {
                 .frame(width: 128, height: 128)
 
             VStack(alignment: .leading) {
-                Text("Coming Soon. 🚧").font(.title)
-                Text("You can't configure settings in the GUI yet. To modify settings, " +
+                Text(String(localized: "Coming Soon. 🚧", comment: "设置窗口")).font(.title)
+                Text(String(localized: "You can't configure settings in the GUI yet. To modify settings, ", comment: "设置窗口") +
                      "edit the file at $HOME/.config/polter/config.polter and restart Polter.")
                 .multilineTextAlignment(.leading)
                 .lineLimit(nil)

@@ -80,7 +80,7 @@ struct AboutView: View {
                     Text("Polter")
                         .bold()
                         .font(.title)
-                    Text("A terminal that minds the agents running in it. \nBuilt on Ghostty.")
+                    Text(String(localized: "A terminal that minds the agents running in it. \nBuilt on Ghostty.", comment: "关于窗口"))
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .font(.caption)

@@ -108,10 +108,10 @@ private struct InstallingAccessoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Restart Required")
+                Text(String(localized: "Restart Required", comment: "更新流程的系统提醒框"))
                     .font(.system(size: 13, weight: .semibold))
 
-                Text("The update is ready. Please restart the application to complete the installation.")
+                Text(String(localized: "The update is ready. Please restart the application to complete the installation.", comment: "更新流程的系统提醒框"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -120,7 +120,7 @@ private struct InstallingAccessoryView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Link(destination: releaseNotesURL) {
                             HStack(spacing: 6) {
-                                Text("Version:")
+                                Text(String(localized: "Version:", comment: "更新流程的系统提醒框"))
                                     .foregroundColor(.secondary)
                                     .frame(width: 60, alignment: .trailing)
                                 Text(item.displayVersionString)
@@ -130,7 +130,7 @@ private struct InstallingAccessoryView: View {
 
                         if let date = item.date {
                             HStack(spacing: 6) {
-                                Text("Released:")
+                                Text(String(localized: "Released:", comment: "更新流程的系统提醒框"))
                                     .foregroundColor(.secondary)
                                     .frame(width: 60, alignment: .trailing)
                                 Text(date.formatted(date: .abbreviated, time: .omitted))

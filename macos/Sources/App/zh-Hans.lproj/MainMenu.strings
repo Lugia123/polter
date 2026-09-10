@@ -6,6 +6,7 @@
 "5kV-Vb-QxS.title" = "关于 Polter";
 "GEA-5y-yzH.title" = "检查更新…";
 "BOF-NM-1cW.title" = "设置…";
+"Kb1-Nd-Ls1.title" = "快捷键…";
 "KKH-XX-5py.title" = "重新载入配置";
 "oC6-w4-qI7.title" = "安全键盘输入";
 "b1t-oB-7MI.title" = "将 Polter 设为默认终端";
@@ -62,6 +63,7 @@
 "pg3-Su-Pv1.title" = "将此终端设为总管";
 "pg4-Wa-Tc1.title" = "监督此终端";
 "pg9-Sh-Ld1.title" = "不让 agent 碰此终端";
+"pgA-Au-Th1.title" = "允许总管在此终端替你回答权限询问";
 
 /* 窗口 */
 "aUF-d1-5bR.title" = "窗口";

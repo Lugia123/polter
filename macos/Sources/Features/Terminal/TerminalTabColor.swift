@@ -120,7 +120,7 @@ struct TabColorMenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("Tab Color")
+            Text(String(localized: "Tab Color", comment: "标签页右键菜单"))
                 .padding(.bottom, 2)
 
             ForEach(Self.paletteRows, id: \.self) { row in

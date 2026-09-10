@@ -651,7 +651,7 @@ extension TerminalWindow {
                             .foregroundColor(viewModel.isMainWindow ? .accentColor : .secondary)
                     }
                     .buttonStyle(.plain)
-                    .help("Reset Split Zoom")
+                    .help(String(localized: "Reset Split Zoom", comment: "窗口标题栏／菜单"))
                     .frame(width: 20, height: 20)
                     Spacer()
                 }

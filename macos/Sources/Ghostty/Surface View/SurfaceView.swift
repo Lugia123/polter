@@ -180,7 +180,7 @@ extension Ghostty {
                     .frame(width: 128, height: 128)
 
                 VStack(alignment: .leading) {
-                    Text("Oh, no. 😭").font(.title)
+                    Text(String(localized: "Oh, no. 😭", comment: "终端表面上的浮层提示")).font(.title)
                     Text("""
                         The renderer has failed. This is usually due to exhausting
                         available GPU memory. Please free up available resources.
@@ -202,7 +202,7 @@ extension Ghostty {
                     .frame(width: 128, height: 128)
 
                 VStack(alignment: .leading) {
-                    Text("Oh, no. 😭").font(.title)
+                    Text(String(localized: "Oh, no. 😭", comment: "终端表面上的浮层提示")).font(.title)
                     Text("""
                         The terminal failed to initialize. Please check the logs for
                         more information. This is usually a bug.
@@ -823,9 +823,9 @@ extension Ghostty {
                 VStack(alignment: .leading, spacing: 8) {
                     if !keyTables.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Label("Key Table", systemImage: "keyboard.badge.ellipsis")
+                            Label(String(localized: "Key Table", comment: "终端表面上的浮层提示"), systemImage: "keyboard.badge.ellipsis")
                                 .font(.headline)
-                            Text("A key table is a named set of keybindings, activated by some other key. Keys are interpreted using this table until it is deactivated.")
+                            Text(String(localized: "A key table is a named set of keybindings, activated by some other key. Keys are interpreted using this table until it is deactivated.", comment: "终端表面上的浮层提示"))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -837,9 +837,9 @@ extension Ghostty {
 
                     if !keySequence.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Label("Key Sequence", systemImage: "character.cursor.ibeam")
+                            Label(String(localized: "Key Sequence", comment: "终端表面上的浮层提示"), systemImage: "character.cursor.ibeam")
                                 .font(.headline)
-                            Text("A key sequence is a series of key presses that trigger an action. A pending key sequence is currently active.")
+                            Text(String(localized: "A key sequence is a series of key presses that trigger an action. A pending key sequence is currently active.", comment: "终端表面上的浮层提示"))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -1000,7 +1000,7 @@ extension Ghostty {
                     HStack(spacing: 5) {
                         Image(systemName: "eye.fill")
                             .font(.system(size: 12))
-                        Text("Read-only")
+                        Text(String(localized: "Read-only", comment: "终端表面上的浮层提示"))
                             .font(.system(size: 12, weight: .medium))
                     }
                     .padding(.horizontal, 8)
@@ -1044,11 +1044,11 @@ extension Ghostty {
                         Image(systemName: "eye.fill")
                             .foregroundColor(.orange)
                             .font(.system(size: 13))
-                        Text("Read-Only Mode")
+                        Text(String(localized: "Read-Only Mode", comment: "终端表面上的浮层提示"))
                             .font(.system(size: 13, weight: .semibold))
                     }
 
-                    Text("This terminal is in read-only mode. You can still view, select, and scroll through the content, but no input events will be sent to the running application.")
+                    Text(String(localized: "This terminal is in read-only mode. You can still view, select, and scroll through the content, but no input events will be sent to the running application.", comment: "终端表面上的浮层提示"))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1057,7 +1057,7 @@ extension Ghostty {
                 HStack {
                     Spacer()
 
-                    Button("Disable") {
+                    Button(String(localized: "Disable", comment: "终端表面上的浮层提示")) {
                         onDisable()
                         isPresented = false
                     }

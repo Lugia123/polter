@@ -67,7 +67,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
     var body: some View {
         switch ghostty.readiness {
         case .loading:
-            Text("Loading")
+            Text(String(localized: "Loading", comment: "终端视图"))
         case .error:
             ErrorView()
         case .ready:
@@ -154,7 +154,7 @@ struct DebugBuildWarningView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundColor(.yellow)
 
-            Text("You're running a debug build of Polter! Performance will be degraded.")
+            Text(String(localized: "You're running a debug build of Polter! Performance will be degraded.", comment: "终端视图"))
                 .padding(.all, 8)
                 .popover(isPresented: $isPopover, arrowEdge: .bottom) {
                     Text("""

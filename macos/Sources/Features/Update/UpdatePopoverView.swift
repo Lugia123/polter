@@ -56,17 +56,17 @@ private struct PermissionRequestView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Enable automatic updates?")
+                Text(String(localized: "Enable automatic updates?", comment: "更新弹出面板"))
                     .font(.system(size: 13, weight: .semibold))
 
-                Text("Polter can automatically check for updates in the background.")
+                Text(String(localized: "Polter can automatically check for updates in the background.", comment: "更新弹出面板"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack(spacing: 8) {
-                Button("Not Now") {
+                Button(String(localized: "Not Now", comment: "更新弹出面板")) {
                     request.reply(SUUpdatePermissionResponse(
                         automaticUpdateChecks: false,
                         sendSystemProfile: false))
@@ -76,7 +76,7 @@ private struct PermissionRequestView: View {
 
                 Spacer()
 
-                Button("Allow") {
+                Button(String(localized: "Allow", comment: "更新弹出面板")) {
                     request.reply(SUUpdatePermissionResponse(
                         automaticUpdateChecks: true,
                         sendSystemProfile: false))
@@ -99,13 +99,13 @@ private struct CheckingView: View {
             HStack(spacing: 10) {
                 ProgressView()
                     .controlSize(.small)
-                Text("Checking for updates…")
+                Text(String(localized: "Checking for updates…", comment: "更新弹出面板"))
                     .font(.system(size: 13))
             }
 
             HStack {
                 Spacer()
-                Button("Cancel") {
+                Button(String(localized: "Cancel", comment: "更新弹出面板")) {
                     checking.cancel()
                     dismiss()
                 }
@@ -127,12 +127,12 @@ private struct UpdateAvailableView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Update Available")
+                    Text(String(localized: "Update Available", comment: "更新弹出面板"))
                         .font(.system(size: 13, weight: .semibold))
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
-                            Text("Version:")
+                            Text(String(localized: "Version:", comment: "更新弹出面板"))
                                 .foregroundColor(.secondary)
                                 .frame(width: labelWidth, alignment: .trailing)
                             Text(update.appcastItem.displayVersionString)
@@ -141,7 +141,7 @@ private struct UpdateAvailableView: View {
 
                         if update.appcastItem.contentLength > 0 {
                             HStack(spacing: 6) {
-                                Text("Size:")
+                                Text(String(localized: "Size:", comment: "更新弹出面板"))
                                     .foregroundColor(.secondary)
                                     .frame(width: labelWidth, alignment: .trailing)
                                 Text(ByteCountFormatter.string(fromByteCount: Int64(update.appcastItem.contentLength), countStyle: .file))
@@ -151,7 +151,7 @@ private struct UpdateAvailableView: View {
 
                         if let date = update.appcastItem.date {
                             HStack(spacing: 6) {
-                                Text("Released:")
+                                Text(String(localized: "Released:", comment: "更新弹出面板"))
                                     .foregroundColor(.secondary)
                                     .frame(width: labelWidth, alignment: .trailing)
                                 Text(date.formatted(date: .abbreviated, time: .omitted))
@@ -163,13 +163,13 @@ private struct UpdateAvailableView: View {
                 }
 
                 HStack(spacing: 8) {
-                    Button("Skip") {
+                    Button(String(localized: "Skip", comment: "更新弹出面板")) {
                         update.reply(.skip)
                         dismiss()
                     }
                     .controlSize(.small)
 
-                    Button("Later") {
+                    Button(String(localized: "Later", comment: "更新弹出面板")) {
                         update.reply(.dismiss)
                         dismiss()
                     }
@@ -178,7 +178,7 @@ private struct UpdateAvailableView: View {
 
                     Spacer()
 
-                    Button("Install and Relaunch") {
+                    Button(String(localized: "Install and Relaunch", comment: "更新弹出面板")) {
                         update.reply(.install)
                         dismiss()
                     }
@@ -221,7 +221,7 @@ private struct DownloadingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Downloading Update")
+                Text(String(localized: "Downloading Update", comment: "更新弹出面板"))
                     .font(.system(size: 13, weight: .semibold))
 
                 if let expectedLength = download.expectedLength, expectedLength > 0 {
@@ -240,7 +240,7 @@ private struct DownloadingView: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") {
+                Button(String(localized: "Cancel", comment: "更新弹出面板")) {
                     download.cancel()
                     dismiss()
                 }
@@ -257,7 +257,7 @@ private struct ExtractingView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Preparing Update")
+            Text(String(localized: "Preparing Update", comment: "更新弹出面板"))
                 .font(.system(size: 13, weight: .semibold))
 
             VStack(alignment: .leading, spacing: 6) {
@@ -278,10 +278,10 @@ private struct NotFoundView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("No Updates Found")
+                Text(String(localized: "No Updates Found", comment: "更新弹出面板"))
                     .font(.system(size: 13, weight: .semibold))
 
-                Text("You're already running the latest version.")
+                Text(String(localized: "You're already running the latest version.", comment: "更新弹出面板"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -289,7 +289,7 @@ private struct NotFoundView: View {
 
             HStack {
                 Spacer()
-                Button("OK") {
+                Button(String(localized: "OK", comment: "更新弹出面板")) {
                     notFound.acknowledgement()
                     dismiss()
                 }
@@ -312,7 +312,7 @@ private struct UpdateErrorView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.orange)
                         .font(.system(size: 13))
-                    Text("Update Failed")
+                    Text(String(localized: "Update Failed", comment: "更新弹出面板"))
                         .font(.system(size: 13, weight: .semibold))
                 }
 
@@ -323,7 +323,7 @@ private struct UpdateErrorView: View {
             }
 
             HStack(spacing: 8) {
-                Button("OK") {
+                Button(String(localized: "OK", comment: "更新弹出面板")) {
                     error.dismiss()
                     dismiss()
                 }
@@ -332,7 +332,7 @@ private struct UpdateErrorView: View {
 
                 Spacer()
 
-                Button("Retry") {
+                Button(String(localized: "Retry", comment: "更新弹出面板")) {
                     error.retry()
                     dismiss()
                 }

@@ -73,3 +73,54 @@
 "Cancel" = "取消";
 "Save" = "保存";
 "Could not save: %@" = "保存失败：%@";
+
+
+/* Wrapped in `String(localized:)` across the interface. The key is the
+   English text, so rewording the English orphans the translation and the
+   interface silently comes back in English -- the gate
+   tools/the-mac-strings-still-have-a-chinese-half.py is what notices. */
+"%@ actions. Some have no shortcut yet." = "%@ 个动作。有些还没有快捷键。";
+"Key Table" = "按键表";
+"A key table is a named set of keybindings, activated by some other key. Keys are interpreted using this table until it is deactivated." = "按键表是一组有名字的快捷键，由另一个键激活。在它被解除之前，按键都按这张表来解释。";
+"Key Sequence" = "组合按键序列";
+"A key sequence is a series of key presses that trigger an action. A pending key sequence is currently active." = "组合按键序列是依次按下的几个键，合起来触发一个动作。当前有一个序列正等着后续按键。";
+"A terminal that minds the agents running in it. \nBuilt on Ghostty." = "一个会照看在里面干活的 agent 的终端。\n基于 Ghostty 构建。";
+"Allow" = "允许";
+"Checking for updates…" = "正在检查更新…";
+"Coming Soon. 🚧" = "即将推出。🚧";
+"Copy Icon Config" = "复制图标配置";
+"Disable" = "关闭";
+"Downloading Update" = "正在下载更新";
+"Enable automatic updates?" = "开启自动更新？";
+"Execute a command…" = "执行一个命令…";
+"Ignore" = "忽略";
+"Install and Relaunch" = "安装并重新启动";
+"Let a Supervisor Answer Prompts Here" = "允许总管在此终端替你回答权限询问";
+"Loading" = "加载中";
+"No Updates Found" = "没有可用更新";
+"No matches" = "没有匹配项";
+"Not Now" = "暂不";
+"OK" = "好";
+"Oh, no. 😭" = "糟了。😭";
+"Polter can automatically check for updates in the background." = "Polter 可以在后台自动检查更新。";
+"Preparing Update" = "正在准备更新";
+"Read-Only Mode" = "只读模式";
+"Read-only" = "只读";
+"Released:" = "发布时间：";
+"Reload Configuration" = "重新加载配置";
+"Reset Split Zoom" = "取消分屏放大";
+"Restart Required" = "需要重新启动";
+"Retry" = "重试";
+"Search" = "搜索";
+"Size:" = "大小：";
+"Skip" = "跳过";
+"Something went fatally wrong.\nCheck the logs and restart Polter." = "出了一个致命错误。\n看一下日志，然后重新启动 Polter。";
+"Tab Color" = "标签页颜色";
+"The update is ready. Please restart the application to complete the installation." = "更新已就绪。请重新启动应用以完成安装。";
+"This terminal is in read-only mode. You can still view, select, and scroll through the content, but no input events will be sent to the running application." = "这个终端处于只读模式。你仍然可以查看、选择和滚动内容，但输入不会送给正在运行的程序。";
+"Update Available" = "有可用更新";
+"Update Failed" = "更新失败";
+"Version:" = "版本：";
+"You can't configure settings in the GUI yet. To modify settings, " = "目前还不能在图形界面里改设置。要修改设置，";
+"You're already running the latest version." = "你运行的已经是最新版本。";
+"You're running a debug build of Polter! Performance will be degraded." = "你运行的是 Polter 的调试构建！性能会下降。";

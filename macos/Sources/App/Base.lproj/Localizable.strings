@@ -64,3 +64,54 @@
 "Cancel" = "Cancel";
 "Save" = "Save";
 "Could not save: %@" = "Could not save: %@";
+
+
+/* Wrapped in `String(localized:)` across the interface. The key is the
+   English text, so rewording the English orphans the translation and the
+   interface silently comes back in English -- the gate
+   tools/the-mac-strings-still-have-a-chinese-half.py is what notices. */
+"%@ actions. Some have no shortcut yet." = "%@ actions. Some have no shortcut yet.";
+"Key Table" = "Key Table";
+"A key table is a named set of keybindings, activated by some other key. Keys are interpreted using this table until it is deactivated." = "A key table is a named set of keybindings, activated by some other key. Keys are interpreted using this table until it is deactivated.";
+"Key Sequence" = "Key Sequence";
+"A key sequence is a series of key presses that trigger an action. A pending key sequence is currently active." = "A key sequence is a series of key presses that trigger an action. A pending key sequence is currently active.";
+"A terminal that minds the agents running in it. \nBuilt on Ghostty." = "A terminal that minds the agents running in it. \nBuilt on Ghostty.";
+"Allow" = "Allow";
+"Checking for updates…" = "Checking for updates…";
+"Coming Soon. 🚧" = "Coming Soon. 🚧";
+"Copy Icon Config" = "Copy Icon Config";
+"Disable" = "Disable";
+"Downloading Update" = "Downloading Update";
+"Enable automatic updates?" = "Enable automatic updates?";
+"Execute a command…" = "Execute a command…";
+"Ignore" = "Ignore";
+"Install and Relaunch" = "Install and Relaunch";
+"Let a Supervisor Answer Prompts Here" = "Let a Supervisor Answer Prompts Here";
+"Loading" = "Loading";
+"No Updates Found" = "No Updates Found";
+"No matches" = "No matches";
+"Not Now" = "Not Now";
+"OK" = "OK";
+"Oh, no. 😭" = "Oh, no. 😭";
+"Polter can automatically check for updates in the background." = "Polter can automatically check for updates in the background.";
+"Preparing Update" = "Preparing Update";
+"Read-Only Mode" = "Read-Only Mode";
+"Read-only" = "Read-only";
+"Released:" = "Released:";
+"Reload Configuration" = "Reload Configuration";
+"Reset Split Zoom" = "Reset Split Zoom";
+"Restart Required" = "Restart Required";
+"Retry" = "Retry";
+"Search" = "Search";
+"Size:" = "Size:";
+"Skip" = "Skip";
+"Something went fatally wrong.\nCheck the logs and restart Polter." = "Something went fatally wrong.\nCheck the logs and restart Polter.";
+"Tab Color" = "Tab Color";
+"The update is ready. Please restart the application to complete the installation." = "The update is ready. Please restart the application to complete the installation.";
+"This terminal is in read-only mode. You can still view, select, and scroll through the content, but no input events will be sent to the running application." = "This terminal is in read-only mode. You can still view, select, and scroll through the content, but no input events will be sent to the running application.";
+"Update Available" = "Update Available";
+"Update Failed" = "Update Failed";
+"Version:" = "Version:";
+"You can't configure settings in the GUI yet. To modify settings, " = "You can't configure settings in the GUI yet. To modify settings, ";
+"You're already running the latest version." = "You're already running the latest version.";
+"You're running a debug build of Polter! Performance will be degraded." = "You're running a debug build of Polter! Performance will be degraded.";

@@ -45,9 +45,9 @@ struct ConfigurationErrorsView<ViewModel: ConfigurationErrorsViewModel>: View {
 
             HStack {
                 Spacer()
-                Button("Ignore") { model.errors = [] }
+                Button(String(localized: "Ignore", comment: "配置有错时的提示条")) { model.errors = [] }
                     .keyboardShortcut(.cancelAction)
-                Button("Reload Configuration") { reloadConfig() }
+                Button(String(localized: "Reload Configuration", comment: "配置有错时的提示条")) { reloadConfig() }
                     .keyboardShortcut(.defaultAction)
             }
             .controlSize(.large)

@@ -126,7 +126,7 @@ enum BackportNSGlassStyle {
 ///         @State private var text = ""
 ///         @State private var selection: TextSelection?
 ///         var body: some View {
-///             TextField("Search", text: $text, selection: $selection)
+///             TextField(String(localized: "Search", comment: "搜索框占位文字"), text: $text, selection: $selection)
 ///         }
 ///     }
 struct BackportSelectionTextField: View {

@@ -73,7 +73,7 @@ struct PluginSettingsView: View {
             // Every plugin is now a resident subscriber with the same
             // lifetime, so there is nothing left to branch on.
             Toggle(isOn: $settings.enabled) {
-                Text("Let this plugin run")
+                Text(String(localized: "Let this plugin run", comment: "插件设置"))
             }
 
             // What it is handed, from its own `wants.events`.
@@ -94,13 +94,13 @@ struct PluginSettingsView: View {
             // written that way cannot be translated no matter how many
             // entries are added for it. Only a single literal is a
             // `LocalizedStringKey`.
-            Text("It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way. Changing this takes effect the next time Polter starts.")
+            Text(String(localized: "It runs for as long as Polter does and is handed those events as they happen. A plugin that stops, or cannot reach where it writes, catches up afterwards rather than losing anything -- Polter's own record on disk is what it is copied from and stays the record either way. Changing this takes effect the next time Polter starts.", comment: "插件设置"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if plugin.parameters.isEmpty {
-                Text("This plugin has nothing to configure.")
+                Text(String(localized: "This plugin has nothing to configure.", comment: "插件设置"))
                     .foregroundStyle(.secondary)
             } else {
                 // Laid out in the same stack as everything else rather than
@@ -118,7 +118,7 @@ struct PluginSettingsView: View {
 
             // Said once, next to the fields it applies to, rather than in
             // documentation nobody has open while typing a password in.
-            Text("A value may be a reference instead of the thing itself: env:NAME, file:/path, keychain:service/account, or cmd:… for a password manager. It is resolved at the moment the plugin is called, and never stored here.")
+            Text(String(localized: "A value may be a reference instead of the thing itself: env:NAME, file:/path, keychain:service/account, or cmd:… for a password manager. It is resolved at the moment the plugin is called, and never stored here.", comment: "插件设置"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -129,8 +129,8 @@ struct PluginSettingsView: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save") { save() }
+                Button(String(localized: "Cancel", comment: "插件设置")) { dismiss() }
+                Button(String(localized: "Save", comment: "插件设置")) { save() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(settings.enabled && !settings.isComplete(for: plugin))
             }
@@ -153,9 +153,9 @@ struct PluginSettingsView: View {
         let said = plugin.roles + plugin.unrecognisedEvents
 
         if said.isEmpty {
-            Text("This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it.")
+            Text(String(localized: "This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it.", comment: "插件设置"))
         } else {
-            Text("What it is handed: \(said.joined(separator: ", "))")
+            Text(String(localized: "What it is handed: \(said.joined(separator: ", "))", comment: "插件设置"))
         }
     }
 
@@ -194,13 +194,13 @@ struct PluginSettingsView: View {
                     // opened.
                     let current = settings.params[parameter.name] ?? ""
                     if !current.isEmpty, !choices.contains(where: { $0.value == current }) {
-                        Text("\(current) — not one of the choices").tag(current)
+                        Text(String(localized: "\(current) — not one of the choices", comment: "插件设置")).tag(current)
                     }
 
                     // An empty selection needs an entry of its own, or the
                     // menu shows a blank with no way back to it.
                     if current.isEmpty {
-                        Text("Not set").tag("")
+                        Text(String(localized: "Not set", comment: "插件设置")).tag("")
                     }
 
                     ForEach(choices) { choice in
@@ -220,7 +220,7 @@ struct PluginSettingsView: View {
             // secret in, and the value that belongs here is a reference the
             // user needs to read back and check.
             if parameter.looksSecret {
-                Text("Prefer a reference here so the secret stays out of this file.")
+                Text(String(localized: "Prefer a reference here so the secret stays out of this file.", comment: "插件设置"))
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

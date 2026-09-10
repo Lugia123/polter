@@ -12,7 +12,7 @@ struct KeybindsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("\(rows.count) actions. Some have no shortcut yet.")
+            Text(String(localized: "\(rows.count) actions. Some have no shortcut yet.", comment: "快捷键一览窗口"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
