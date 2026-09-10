@@ -734,7 +734,7 @@ const tools = [_]Tool{
             "closes a terminal. Leave one out and the whole call is refused and nothing moves; " ++
             "close it first with terminal_action close_surface, then send the layout for what " ++
             "is left. ⚠️ It is all-or-nothing: if any cell is wrong, no pane is touched. " ++
-            "⚠️ On macOS and Linux this answers `Unsupported` and changes nothing. " ++
+            "⚠️ On Linux this answers `Unsupported` and changes nothing. " ++
             "⚠️ It returns only after that window's queued work has run, so anything queued " ++
             "before it has happened too. Supervisor only. Same reach rule as terminal_read.",
         .schema =

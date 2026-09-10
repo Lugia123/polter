@@ -715,6 +715,10 @@ extension TerminalWindow {
     private static let agentShieldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentShield")
     private static let agentAuthoriseIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentAuthorise")
 
+    private static let projectSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSeparator")
+    private static let projectSaveAsIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSaveAs")
+    private static let projectLoadIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectLoad")
+
     func configureTabContextMenuIfNeeded(_ menu: NSMenu) {
         guard isTabContextMenu(menu) else { return }
 
@@ -745,6 +749,7 @@ extension TerminalWindow {
         }
 
         appendTabModifierSection(to: menu, target: targetController)
+        appendProjectSection(to: menu, target: targetController)
         appendAgentSection(to: menu, target: targetController)
     }
 
@@ -860,6 +865,42 @@ extension TerminalWindow {
             (target?.window as? TerminalWindow)?.tabColor = color
         }
         menu.addItem(paletteItem)
+    }
+
+    /// "Save as Project" / "Load Project" for the right-clicked tab.
+    ///
+    /// Distinct from "Reopen Closed Tab" (`ClosedTabs`): that's a 20-entry
+    /// undo stack keyed only by directory, for a tab you closed by
+    /// accident. A project is named, captures the whole split tree, and is
+    /// kept until you delete it.
+    private func appendProjectSection(to menu: NSMenu, target: TerminalController?) {
+        menu.removeItems(withIdentifiers: [
+            Self.projectSeparatorIdentifier,
+            Self.projectSaveAsIdentifier,
+            Self.projectLoadIdentifier,
+        ])
+
+        let separator = NSMenuItem.separator()
+        separator.identifier = Self.projectSeparatorIdentifier
+        menu.addItem(separator)
+
+        let saveItem = NSMenuItem(
+            title: String(localized: "Save as Project...", comment: "标签页右键菜单：另存为项目"),
+            action: #selector(TerminalController.saveAsProject(_:)),
+            keyEquivalent: "")
+        saveItem.identifier = Self.projectSaveAsIdentifier
+        saveItem.target = target
+        saveItem.setImageIfDesired(systemSymbolName: "square.and.arrow.down")
+        menu.addItem(saveItem)
+
+        let loadItem = NSMenuItem(
+            title: String(localized: "Load Project...", comment: "标签页右键菜单：加载项目"),
+            action: #selector(TerminalController.loadProject(_:)),
+            keyEquivalent: "")
+        loadItem.identifier = Self.projectLoadIdentifier
+        loadItem.target = target
+        loadItem.setImageIfDesired(systemSymbolName: "square.and.arrow.up")
+        menu.addItem(loadItem)
     }
 }
 

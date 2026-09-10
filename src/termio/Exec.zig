@@ -621,6 +621,19 @@ pub const Config = struct {
     resources_dir: ?[]const u8,
     term: []const u8,
 
+    /// The opaque per-pane history handle from a saved project
+    /// (`configpkg.Config._history_restore`), or null for an ordinary
+    /// pane. Expanded into a shell-specific env var in `Subprocess.init`,
+    /// after shell detection, using `history_dir`.
+    history_restore: ?[]const u8 = null,
+
+    /// Where this surface's command-history capture file lives
+    /// (`CommandHistory.defaultDir`'s return value), needed alongside
+    /// `history_restore` to build the full path -- `history_restore` is
+    /// just a filename (or, for fish, a session name that doubles as
+    /// one), not a path.
+    history_dir: ?[]const u8 = null,
+
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
 };
@@ -809,6 +822,13 @@ const Subprocess = struct {
         // This is not apprt-specific, so we do it here.
         _ = env.orderedRemove("VTE_VERSION");
 
+        // Set from inside the `shell:` block below once (if) shell
+        // integration actually identifies a shell. Declared out here
+        // because the block's own `integration` binding doesn't survive
+        // past it, and the history-restore expansion after the block
+        // needs to know which shell it's writing an env var for.
+        var detected_shell: ?shell_integration.Shell = null;
+
         // Setup our shell integration, if we can.
         const shell_command: configpkg.Command = shell: {
             // **The Windows arm below is unreachable today, and changed
@@ -889,8 +909,67 @@ const Subprocess = struct {
                 .{integration.shell},
             );
 
+            detected_shell = integration.shell;
             break :shell integration.command;
         };
+
+        // Expand a saved project's opaque history handle into whatever
+        // this shell actually uses to restore its own history -- can only
+        // happen here, after shell detection above, because the same
+        // string means a `HISTFILE` value for one shell and a session
+        // name for another. See `configpkg.Config._history_restore`'s
+        // doc comment and the windows-port group log (task 531, ~seq 20)
+        // for why this can't live any earlier in the pipeline.
+        if (cfg.history_restore) |restore| restore: {
+            const dir = cfg.history_dir orelse {
+                log.warn("history: restore handle given but no history dir, ignoring", .{});
+                break :restore;
+            };
+            const shell = detected_shell orelse {
+                log.warn("history: restore handle given but shell was not detected, ignoring", .{});
+                break :restore;
+            };
+
+            switch (shell) {
+                .bash, .zsh => {
+                    // No replay cap here, unlike fish below: bash/zsh load
+                    // `HISTFILE` themselves, in their own C code, on their
+                    // own schedule -- there is no point in this pipeline
+                    // where core or a script reads the file and could
+                    // choose to cap it. Whatever performance cost a huge
+                    // history file has is the shell's own, same as it
+                    // always was for a real `.bash_history`.
+                    const histfile = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ dir, restore });
+                    try env.put("HISTFILE", histfile);
+                },
+
+                .fish => {
+                    try env.put("fish_history", restore);
+                    const restore_file = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ dir, restore });
+                    try env.put("GHOSTTY_HISTORY_RESTORE_FILE", restore_file);
+
+                    // The file this points at is never truncated by core
+                    // -- capture keeps appending everything, unbounded.
+                    // Fish's shell integration script caps how much of it
+                    // it *replays* into the named session (most recent
+                    // 1000 lines, per W4's measurements: replay time is
+                    // superlinear in line count, and a pane that takes a
+                    // second to reach its first prompt is a cost every
+                    // restore pays, for history depth almost nobody
+                    // scrolls back to). If a restored fish pane's ↑ seems
+                    // to stop short, that's the replay cap, not lost
+                    // history -- the full record is still in this file.
+                },
+
+                // No restore mechanism for these yet (task 539 covers
+                // PowerShell). Leaving the shell's history untouched is
+                // the safe default -- not restoring is a visible gap, a
+                // wrong env var could be a silent wrong one.
+                .elvish, .nushell, .powershell => {
+                    log.warn("history: no restore mechanism for shell={}, ignoring", .{shell});
+                },
+            }
+        }
 
         // Add the environment variables that override any others.
         {

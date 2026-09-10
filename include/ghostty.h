@@ -543,6 +543,14 @@ typedef struct {
   // that requests from it count as the user rather than as a terminal.
   // Only the host may set this; see docs/poltergeist/chatui.md.
   bool poltergeist_chat;
+
+  // An opaque per-pane history handle from a saved project's pane
+  // (Project.Leaf.history in Zig), or NULL if this surface is not being
+  // restored from a project. The apprt does not interpret this string --
+  // what it means (a HISTFILE-compatible filename, a fish session name)
+  // depends on which shell core ends up spawning, which the apprt does
+  // not know in advance. See apprt.embedded.Surface.Options.history_restore.
+  const char* history_restore;
 } ghostty_surface_config_s;
 
 typedef struct {
@@ -736,8 +744,17 @@ typedef struct {
 } ghostty_action_desktop_notification_s;
 
 // apprt.action.SetTitle.C
+//
+// `is_explicit` is true when the title was chosen on purpose (a rename, or
+// `set_surface_title`) rather than reported by the running program; an
+// apprt that remembers an explicit title protects it from being
+// overwritten by the next thing the program says.
+//
+// Named `is_explicit` rather than `explicit`: the latter is a C++ keyword,
+// and this header is parsed by more than one C++ translation unit.
 typedef struct {
   const char* title;
+  bool is_explicit;
 } ghostty_action_set_title_s;
 
 // apprt.action.PoltergeistMark.Role
@@ -1067,6 +1084,17 @@ typedef struct {
   ghostty_action_poltergeist_layout_out_s* out;
 } ghostty_action_poltergeist_layout_s;
 
+// apprt.action.HistoryFilename
+//
+// Fired once, synchronously, when the surface is created (not on a
+// recurring basis the way GHOSTTY_ACTION_PWD is -- this value is fixed at
+// spawn). `filename` is the same opaque string the apprt should later
+// store as Project.Leaf.history if the user saves this pane into a
+// project. See src/CommandHistory.zig and src/Project.zig.
+typedef struct {
+  const char* filename;
+} ghostty_action_history_filename_s;
+
 // apprt.action.NewSplit
 //
 // An apprt that cannot start a split in `working_directory` must leave
@@ -1171,6 +1199,7 @@ typedef enum {
   GHOSTTY_ACTION_POLTERGEIST_CLOSE,
   GHOSTTY_ACTION_POLTERGEIST_TAB_PANES,
   GHOSTTY_ACTION_POLTERGEIST_LAYOUT,
+  GHOSTTY_ACTION_HISTORY_FILENAME,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1219,6 +1248,7 @@ typedef union {
   ghostty_action_poltergeist_close_s poltergeist_close;
   ghostty_action_poltergeist_tab_panes_s poltergeist_tab_panes;
   ghostty_action_poltergeist_layout_s poltergeist_layout;
+  ghostty_action_history_filename_s history_filename;
 } ghostty_action_u;
 
 typedef struct {

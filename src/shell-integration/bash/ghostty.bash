@@ -213,6 +213,46 @@ function __ghostty_preexec() {
   # End of input, start of output.
   builtin printf "\e]133;C;\a"
   _ghostty_executing=1
+
+  # Command-line capture (private OSC 60), opt-in via the "history"
+  # shell-integration-features member. This writes every command the user
+  # types to disk (for per-pane history restore), so unlike the marks above
+  # it must not be on by default.
+  #
+  # $cmd is shared by both the >=4.4 path (extracted from `history 1` in
+  # __ghostty_preexec_hook below) and the bash-preexec.sh path for older
+  # bash, which also calls this same function with the command as $1 -- one
+  # place handles both.
+  if [[ "$GHOSTTY_SHELL_FEATURES" == *"history"* && -n "$GHOSTTY_HISTORY_TOKEN" ]]; then
+    # $cmd already went through `history 1` above, which reconstructs a
+    # multi-line command as one line and drops the continuation backslash
+    # and the newline it followed in the process -- verified against a
+    # real `echo hello \` + newline + `world`, which lands here as
+    # `echo hello world`, not `echo hello \` + newline + `world`. That's
+    # bash's own `history` builtin doing it, not something stripped below;
+    # don't "fix" it into preserving the original formatting, and don't
+    # be surprised that this shell's captured history reads differently
+    # from zsh/fish's for the same typed input -- they don't reconstruct
+    # the line the way bash's history does, so they still have a literal
+    # newline in $1 for [[:cntrl:]] to flatten.
+    #
+    # The [[:cntrl:]] strip below still earns its keep here: a pasted
+    # command can still carry a literal tab, ESC, or BEL that `history 1`
+    # does not remove. C0 controls and DEL are not legal inside the OSC 60
+    # payload: the core side drops the entire message if any survive, and
+    # an embedded ESC or BEL risks faking the terminator early and
+    # truncating everything after it. Same [[:cntrl:]] class the title
+    # feature above already strips for the same framing reason, but
+    # replaced with a space instead of deleted, so a flattened command
+    # stays word-separated and legible in restored history.
+    #
+    # GHOSTTY_HISTORY_TOKEN proves this came from a shell reading its own
+    # environment, not from output the terminal is merely displaying --
+    # see command_capture.zig's doc comment. It's a second field, before
+    # the command; core issued it, so it's never run through the
+    # [[:cntrl:]] strip above.
+    builtin printf "\e]60;%s;%s\a" "$GHOSTTY_HISTORY_TOKEN" "${cmd//[[:cntrl:]]/ }"
+  fi
 }
 
 if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then

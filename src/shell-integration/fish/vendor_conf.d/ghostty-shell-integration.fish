@@ -43,6 +43,83 @@ ghostty_restore_xdg_data_dir
 # If we aren't interactive or we've already run, don't run.
 status --is-interactive || ghostty_exit
 
+# Per-pane history restore (reopening a saved project), independent of the
+# fish_prompt-deferred setup below -- replaying history doesn't touch the
+# prompt or need any other plugin to run first, it only needs
+# `fish_history` (an environment variable Ghostty set before this fish
+# process was even exec'd) to already have picked the right named
+# session, which it has by the time any script -- this one included --
+# gets to run.
+#
+# fish has no per-pane history file the way bash/zsh do (see
+# `CommandHistory.zig`'s doc comment): a session name (`fish_history`)
+# selects fish's own storage, and that storage starts out genuinely empty
+# for a session name nobody has used before, even if Ghostty captured
+# commands for this pane under the old one. `GHOSTTY_HISTORY_RESTORE_FILE`
+# is how those get back in -- the plain-text, one-command-per-line file
+# `CommandHistory.zig` wrote, replayed one `history append` at a time,
+# the same way `fc -p` lets zsh's own history mechanism take over instead
+# of this script inventing a second one.
+#
+# **Only the replay is capped at the most recent 1000 lines, not the
+# capture file.** `CommandHistory.zig` still writes and keeps every
+# command; this script just doesn't load all of it into a live fish
+# session. Losing that distinction reads as "history got truncated",
+# which isn't what happens -- the file a project points at is unchanged,
+# and re-restoring after raising the cap (or reading the file directly)
+# still sees everything.
+#
+# The cap exists because the cost of `history append` grows faster than
+# linearly with how much history is already loaded, not because 1000 is
+# some natural fish limit: 500/1000/2000/5000-line replays measured at
+# 0.045s/0.088s/0.26s/1.28s respectively. A pane that ran commands for
+# months could otherwise make every reopen of its project cost a
+# multi-second wait at the first prompt -- paid on every open, for
+# history the user is overwhelmingly unlikely to ever press up-arrow far
+# enough to reach. 1000 keeps that under the 0.1s mark.
+#
+# **bash/zsh have no equivalent of this cap and none is planned.** They
+# restore by pointing their own `HISTFILE` at the same file and letting
+# the shell load it itself (see the `history_restore` doc comment this
+# refers to) -- there is no per-line step in this codebase to intervene
+# on, so a bash/zsh pane's replay is whatever bash/zsh itself decides
+# to load. Don't read fish's cap as "how all three shells behave."
+function ghostty_restore_history -d "replay a saved pane's history into this fish session"
+    if not set -q GHOSTTY_HISTORY_RESTORE_FILE
+        return
+    end
+
+    # Read the value, then erase the variable immediately -- before doing
+    # any of the actual reading below, not after. A fish (or a script
+    # re-exec'ing fish) started from inside this pane would otherwise
+    # inherit the same variable and replay the same file a second time,
+    # duplicating every entry. Erasing first means even a `history
+    # append` that itself spawns something can't see it, not just
+    # "anything after this function returns".
+    set --function restore_file $GHOSTTY_HISTORY_RESTORE_FILE
+    set --erase GHOSTTY_HISTORY_RESTORE_FILE
+
+    # A missing or unreadable file is not an error -- a pane that was
+    # saved before it ever ran a command has nothing to restore, and
+    # `CommandHistory.zig`'s file only exists once something was
+    # captured.
+    test -r "$restore_file"; or return
+
+    # `tail` (not reading the whole file into a fish list first) so a
+    # file with tens of thousands of lines doesn't cost more than the
+    # 1000 lines actually replayed -- the file is never fully loaded
+    # into this process just to throw most of it away. `tail`'s output
+    # keeps the file's own chronological order (oldest of the kept lines
+    # first, newest last), which matters: replaying out of order would
+    # still "work" in the sense that every command is there, but the
+    # first up-arrow press would land on the wrong one.
+    command tail -n 1000 -- "$restore_file" | while read --local restore_line
+        builtin history append -- "$restore_line"
+    end
+end
+ghostty_restore_history
+functions -e ghostty_restore_history
+
 # We do the full setup on the first prompt render. We do this so that other
 # shell integrations that setup the prompt and modify things are able to run
 # first. We want to run _last_.
@@ -148,6 +225,39 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
     function __ghostty_mark_output_start --on-event fish_preexec
         set --global __ghostty_prompt_state pre-exec
         echo -en "\e]133;C\a"
+
+        # Command-line capture (private OSC 60), opt-in via the "history"
+        # shell-integration-features member. This writes every command the
+        # user types to disk (for per-pane history restore), so unlike the
+        # marks above it must not be on by default. $features (the list
+        # built near the top of __ghostty_setup) isn't visible here --
+        # this function is invoked later by the fish_preexec event
+        # dispatcher, not called from __ghostty_setup's own scope -- so
+        # $GHOSTTY_SHELL_FEATURES (a real exported env var) is re-split
+        # fresh instead.
+        if contains history (string split , -- $GHOSTTY_SHELL_FEATURES); and test -n "$GHOSTTY_HISTORY_TOKEN"
+            # $argv[1] is the whole typed command as one string, verified
+            # against a real backslash-continued multi-line command: fish
+            # hands fish_preexec the source text verbatim, embedded
+            # newline and all, not re-split per line. C0 controls
+            # (newline and tab included) and DEL are not legal inside the
+            # OSC 60 payload: the core side drops the entire message if
+            # any survive, and an embedded ESC or BEL risks faking the
+            # terminator early and truncating everything after it.
+            # [[:cntrl:]] is the same class zsh/bash strip for their title
+            # feature; replaced with a space rather than deleted so a
+            # flattened multi-line command stays word-separated and
+            # legible in restored history.
+            #
+            # GHOSTTY_HISTORY_TOKEN proves this came from a shell reading
+            # its own environment, not from output the terminal is merely
+            # displaying -- see command_capture.zig's doc comment. It's a
+            # second field, before the command, and is never itself run
+            # through the [[:cntrl:]] strip above: core issued it, core
+            # knows its exact shape.
+            set --local hist_cmd (string replace --all --regex '[[:cntrl:]]' ' ' -- $argv[1])
+            printf '\e]60;%s;%s\a' "$GHOSTTY_HISTORY_TOKEN" "$hist_cmd"
+        end
     end
 
     function __ghostty_mark_output_end --on-event fish_postexec

@@ -420,6 +420,15 @@ pub const Action = union(Key) {
     poltergeist_tab_panes: PoltergeistTabPanes,
     poltergeist_layout: PoltergeistLayout,
 
+    /// The filename (or, for fish, the session name) this surface's
+    /// command-history capture is using. Fired once, synchronously, at
+    /// surface creation -- unlike `pwd`, this value is fixed at spawn and
+    /// never changes, so there is no mailbox round-trip, just a direct
+    /// call where `history_filename` is decided (see `Surface.zig`).
+    /// The apprt stores it against this pane so a later "save as
+    /// project" can fill in `Project.Leaf.history` without asking core.
+    history_filename: HistoryFilename,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -501,6 +510,7 @@ pub const Action = union(Key) {
         // wrong-looking log line. The test below is what catches it.
         poltergeist_tab_panes,
         poltergeist_layout,
+        history_filename,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -1904,14 +1914,29 @@ pub const CellSize = extern struct {
 pub const SetTitle = struct {
     title: [:0]const u8,
 
+    /// True when this title was chosen on purpose -- a person renaming a
+    /// tab, or an agent calling `set_surface_title` -- rather than reported
+    /// by the program running in the surface (an OSC 0/2 escape sequence,
+    /// or the title this surface started with). An apprt that remembers an
+    /// explicit title uses this to keep it from being overwritten by the
+    /// next thing the program says, the same protection a person's own
+    /// rename already gets.
+    ///
+    /// Defaults to `false` so every existing call site -- the OSC-driven
+    /// one in `handleMessage`, the `config.title` ones -- keeps behaving
+    /// as it always has without having to name itself one by one.
+    explicit: bool = false,
+
     // Sync with: ghostty_action_set_title_s
     pub const C = extern struct {
         title: [*:0]const u8,
+        is_explicit: bool,
     };
 
     pub fn cval(self: SetTitle) C {
         return .{
             .title = self.title.ptr,
+            .is_explicit = self.explicit,
         };
     }
 };
@@ -2372,6 +2397,31 @@ pub const Pwd = struct {
         writer: *std.Io.Writer,
     ) !void {
         try writer.print("{s}{{ {s} }}", .{ @typeName(@This()), value.pwd });
+    }
+};
+
+/// See `Action.history_filename`'s doc comment.
+pub const HistoryFilename = struct {
+    filename: [:0]const u8,
+
+    // Sync with: ghostty_action_history_filename_s
+    pub const C = extern struct {
+        filename: [*:0]const u8,
+    };
+
+    pub fn cval(self: HistoryFilename) C {
+        return .{
+            .filename = self.filename.ptr,
+        };
+    }
+
+    pub fn format(
+        value: @This(),
+        comptime _: []const u8,
+        _: std.fmt.Options,
+        writer: *std.Io.Writer,
+    ) !void {
+        try writer.print("{s}{{ {s} }}", .{ @typeName(@This()), value.filename });
     }
 };
 

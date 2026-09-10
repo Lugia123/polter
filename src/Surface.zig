@@ -27,6 +27,7 @@ const unicode = @import("unicode/main.zig");
 const rendererpkg = @import("renderer.zig");
 const termio = @import("termio.zig");
 const poltergeistpkg = @import("poltergeist/main.zig");
+const CommandHistory = @import("CommandHistory.zig");
 const font = @import("font/main.zig");
 const Command = @import("Command.zig");
 const terminal = @import("terminal/main.zig");
@@ -220,6 +221,21 @@ last_key_time: ?std.Io.Timestamp = null,
 ///
 /// See `poltergeist/draft.zig` for what it can and cannot see.
 poltergeist_draft: poltergeistpkg.draft.Draft = .{},
+
+/// The per-session token given to this surface's child process at spawn
+/// (`GHOSTTY_HISTORY_TOKEN`), so shell integration can prove OSC 60
+/// (command capture, see `termio/stream_handler.zig`) came from code that
+/// can read its own environment, not from output the terminal is merely
+/// displaying. Empty when command-history capture is off (see
+/// `Config.ShellIntegrationFeatures.history`, off by default). Owned;
+/// freed in `deinit`.
+history_token: []const u8 = "",
+
+/// Where verified captures for this surface are appended
+/// (`CommandHistory.zig`), and the filename within it. Both owned; freed
+/// in `deinit`. Empty together with `history_token` when capture is off.
+history_dir: []const u8 = "",
+history_filename: []const u8 = "",
 
 /// The effect of an input event. This can be used by callers to take
 /// the appropriate action after an input event. For example, key
@@ -746,6 +762,96 @@ pub fn init(
             }
         }
 
+        // Same shape as the Poltergeist token above, for the same reason:
+        // command-history capture (OSC 60) needs a value the shell can
+        // echo back that content the terminal is merely displaying cannot
+        // read. Minted once here, handed to the child's own environment,
+        // kept on `self` so `history_token` (see its doc comment) can
+        // compare against it later. Off by default -- see
+        // `Config.ShellIntegrationFeatures.history` -- because unlike the
+        // rest of shell integration this writes what the user types to
+        // disk.
+        // Restoring a saved pane forces capture on for it even if the
+        // `history` feature is off by default: the user asked to load a
+        // project, which is asking for its history to keep working, and
+        // a pane that stops accumulating history the moment it's
+        // restored would be a silent regression from what was saved.
+        const history_restore: ?[]const u8 = config._history_restore;
+        if (config.@"shell-integration-features".history or history_restore != null) history: {
+            var raw: [termio.StreamHandler.history_token_len / 2]u8 = undefined;
+            global.io().randomSecure(&raw) catch |err| {
+                log.warn("history: no fresh entropy for a token, falling back err={}", .{err});
+                global.io().random(&raw);
+            };
+
+            const token = try alloc.alloc(u8, termio.StreamHandler.history_token_len);
+            errdefer alloc.free(token);
+            _ = std.fmt.bufPrint(token, "{x}", .{&raw}) catch unreachable;
+
+            var environ_map = global.environMap() catch |err| {
+                log.warn("history: could not read environment, command capture disabled err={}", .{err});
+                alloc.free(token);
+                break :history;
+            };
+            defer environ_map.deinit();
+
+            const state_dir = internal_os.xdg.state(
+                global.io(),
+                alloc,
+                &environ_map,
+                .{ .subdir = "polter" },
+            ) catch |err| {
+                log.warn("history: no state directory, command capture disabled err={}", .{err});
+                alloc.free(token);
+                break :history;
+            };
+            defer alloc.free(state_dir);
+
+            const history_dir = try CommandHistory.defaultDir(alloc, state_dir);
+            errdefer alloc.free(history_dir);
+
+            // A restored pane keeps writing to the exact file it was
+            // restored from -- so its history stays one continuous
+            // record across reopens instead of fragmenting into a new
+            // file every time -- rather than starting a fresh random one.
+            const history_filename = if (history_restore) |r|
+                try alloc.dupe(u8, r)
+            else
+                try CommandHistory.newFilename(alloc, global.io());
+            errdefer alloc.free(history_filename);
+
+            self.history_token = token;
+            self.history_dir = history_dir;
+            self.history_filename = history_filename;
+            try env.put("GHOSTTY_HISTORY_TOKEN", token);
+
+            // This proves the token reached the child's own environment,
+            // not merely that the config option reads as on -- those are
+            // a real failure mode apart (`env.put` above succeeding is
+            // what makes this line true, so it has to come after it, not
+            // next to the config check above). It does not prove core
+            // ever received a captured command; see the reply on task
+            // 546 for why nothing can prove that by its absence.
+            log.info(
+                "history: token placed in child environment, capture dir={s} file={s}",
+                .{ history_dir, history_filename },
+            );
+
+            // Told once, synchronously, because this value never changes
+            // for the life of the surface -- not through the termio
+            // mailbox `pwd` uses, which exists for values that do. The
+            // apprt stores this against the pane so a later "save as
+            // project" can fill in `Project.Leaf.history` without a
+            // round-trip back into core.
+            const history_filename_z = try alloc.dupeZ(u8, history_filename);
+            defer alloc.free(history_filename_z);
+            _ = try rt_app.performAction(
+                .{ .surface = self },
+                .history_filename,
+                .{ .filename = history_filename_z },
+            );
+        }
+
         // Initialize our IO backend
         var io_exec = try termio.Exec.init(alloc, .{
             .command = command,
@@ -757,6 +863,8 @@ pub fn init(
             .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
             .resources_dir = global.resourcesDir().host(),
             .term = config.term,
+            .history_restore = history_restore,
+            .history_dir = if (self.history_dir.len > 0) self.history_dir else null,
             .rt_pre_exec_info = .init(config),
             .rt_post_fork_info = .init(config),
         });
@@ -780,6 +888,9 @@ pub fn init(
             .renderer_wakeup = &self.renderer_thread.wakeup,
             .renderer_mailbox = render_thread.mailbox,
             .surface_mailbox = .{ .surface = self, .app = app_mailbox },
+            .history_token = self.history_token,
+            .history_dir = self.history_dir,
+            .history_filename = self.history_filename,
         });
     }
     // Outside the block, IO has now taken ownership of our temporary state
@@ -914,6 +1025,9 @@ pub fn deinit(self: *Surface) void {
     self.app.tasks.forget(self.id);
     self.app.removeChatSurface(self.id);
     if (self.app.poltergeist_server) |*srv| srv.revokeTokens(self.id);
+    if (self.history_token.len > 0) self.alloc.free(self.history_token);
+    if (self.history_dir.len > 0) self.alloc.free(self.history_dir);
+    if (self.history_filename.len > 0) self.alloc.free(self.history_filename);
 
     // Stop search thread
     if (self.search) |*s| s.deinit();
@@ -6018,10 +6132,13 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         .set_surface_title => |v| {
             const title = try self.alloc.dupeZ(u8, v);
             defer self.alloc.free(title);
+            // Explicit: this is a caller choosing a name, not the program
+            // reporting one, and an apprt is expected to protect it the
+            // same way it protects a person's own rename.
             return try self.rt_app.performAction(
                 .{ .surface = self },
                 .set_title,
-                .{ .title = title },
+                .{ .title = title, .explicit = true },
             );
         },
 

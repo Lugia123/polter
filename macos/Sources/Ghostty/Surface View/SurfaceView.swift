@@ -593,6 +593,15 @@ extension Ghostty {
         /// Extra input to send as stdin
         var initialInput: String?
 
+        /// Opaque token identifying the saved history this surface should
+        /// restore, or nil for a surface that starts with no history.
+        /// Passed straight through to `ghostty_surface_config_s.history_restore`
+        /// -- what it means (a filename, a fish session name, ...) is the
+        /// core's business per shell, not this apprt's. See `Project.Leaf.history`
+        /// in `ProjectDocument.swift`, which is where this value comes from
+        /// when loading a project.
+        var historyRestore: String?
+
         /// Wait after the command
         var waitAfterCommand: Bool = false
 
@@ -661,27 +670,31 @@ extension Ghostty {
                     return try initialInput.withCString { cInput in
                         config.initial_input = cInput
 
-                        // Convert dictionary to arrays for easier processing
-                        let keys = Array(environmentVariables.keys)
-                        let values = Array(environmentVariables.values)
+                        return try historyRestore.withCString { cHistoryRestore in
+                            config.history_restore = cHistoryRestore
 
-                        // Create C strings for all keys and values
-                        return try keys.withCStrings { keyCStrings in
-                            return try values.withCStrings { valueCStrings in
-                                // Create array of ghostty_env_var_s
-                                var envVars = [ghostty_env_var_s]()
-                                envVars.reserveCapacity(environmentVariables.count)
-                                for i in 0..<environmentVariables.count {
-                                    envVars.append(ghostty_env_var_s(
-                                        key: keyCStrings[i],
-                                        value: valueCStrings[i]
-                                    ))
-                                }
+                            // Convert dictionary to arrays for easier processing
+                            let keys = Array(environmentVariables.keys)
+                            let values = Array(environmentVariables.values)
 
-                                return try envVars.withUnsafeMutableBufferPointer { buffer in
-                                    config.env_vars = buffer.baseAddress
-                                    config.env_var_count = environmentVariables.count
-                                    return try body(&config)
+                            // Create C strings for all keys and values
+                            return try keys.withCStrings { keyCStrings in
+                                return try values.withCStrings { valueCStrings in
+                                    // Create array of ghostty_env_var_s
+                                    var envVars = [ghostty_env_var_s]()
+                                    envVars.reserveCapacity(environmentVariables.count)
+                                    for i in 0..<environmentVariables.count {
+                                        envVars.append(ghostty_env_var_s(
+                                            key: keyCStrings[i],
+                                            value: valueCStrings[i]
+                                        ))
+                                    }
+
+                                    return try envVars.withUnsafeMutableBufferPointer { buffer in
+                                        config.env_vars = buffer.baseAddress
+                                        config.env_var_count = environmentVariables.count
+                                        return try body(&config)
+                                    }
                                 }
                             }
                         }

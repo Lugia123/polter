@@ -128,6 +128,7 @@ pub const Action = union(Key) {
     kitty_color_report: kitty.color.OSC,
     color_operation: ColorOperation,
     semantic_prompt: SemanticPrompt,
+    command_capture: CommandCapture,
 
     pub const Key = lib.Enum(
         lib.target,
@@ -227,6 +228,7 @@ pub const Action = union(Key) {
             "kitty_color_report",
             "color_operation",
             "semantic_prompt",
+            "command_capture",
         },
     );
 
@@ -372,6 +374,20 @@ pub const Action = union(Key) {
 
         pub fn cval(self: ReportPwd) ReportPwd.C {
             return .init(self.url);
+        }
+    };
+
+    pub const CommandCapture = struct {
+        token: []const u8,
+        text: []const u8,
+
+        pub const C = extern struct {
+            token: lib.String,
+            text: lib.String,
+        };
+
+        pub fn cval(self: CommandCapture) CommandCapture.C {
+            return .{ .token = .init(self.token), .text = .init(self.text) };
         }
     };
 
@@ -2563,6 +2579,13 @@ pub fn Stream(comptime H: type) type {
                 .context_signal,
                 => {
                     log.debug("unimplemented OSC callback: {}", .{cmd});
+                },
+
+                .command_capture => |v| {
+                    self.handler.vt(.command_capture, .{
+                        .token = v.token,
+                        .text = v.text,
+                    });
                 },
 
                 .invalid => {

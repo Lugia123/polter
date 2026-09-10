@@ -554,6 +554,17 @@ pub const Surface = struct {
         /// These two are one struct across the C boundary and the order is
         /// the layout.
         poltergeist_chat: bool = false,
+
+        /// An opaque per-pane history handle from a saved project's pane
+        /// (`Project.Leaf.history`), or null if this surface is not being
+        /// restored from a project. Not interpreted here -- see
+        /// `configpkg.Config._history_restore` and `termio/Exec.zig`,
+        /// where core knows which shell it is about to spawn and this
+        /// gets expanded into `HISTFILE` (bash/zsh) or `fish_history` +
+        /// `GHOSTTY_HISTORY_RESTORE_FILE` (fish).
+        ///
+        /// Declared last to match `ghostty_surface_config_s`.
+        history_restore: ?[*:0]const u8 = null,
     };
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
@@ -625,6 +636,16 @@ pub const Surface = struct {
             if (cmd.len > 0) {
                 config.command = .{ .shell = cmd };
                 config.@"wait-after-command" = true;
+            }
+        }
+
+        // If we're restoring a pane from a saved project then pass its
+        // opaque history handle through. Not interpreted here -- see
+        // `configpkg.Config._history_restore`'s doc comment.
+        if (opts.history_restore) |c_restore| {
+            const restore = std.mem.sliceTo(c_restore, 0);
+            if (restore.len > 0) {
+                config._history_restore = try config.arenaAlloc().dupe(u8, restore);
             }
         }
 

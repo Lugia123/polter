@@ -496,6 +496,12 @@ extension Ghostty {
             case GHOSTTY_ACTION_POLTERGEIST_TAB_PANES:
                 return poltergeistTabPanes(target: target, v: action.action.poltergeist_tab_panes)
 
+            case GHOSTTY_ACTION_POLTERGEIST_LAYOUT:
+                return poltergeistLayout(app, target: target, v: action.action.poltergeist_layout)
+
+            case GHOSTTY_ACTION_HISTORY_FILENAME:
+                return historyFilename(target: target, v: action.action.history_filename)
+
             case GHOSTTY_ACTION_TOGGLE_FULLSCREEN:
                 toggleFullscreen(app, target: target, mode: action.action.toggle_fullscreen)
 
@@ -1128,6 +1134,77 @@ extension Ghostty {
                     // out loud rather than falling through, so that adding a
                     // case to `ToolCloseResult` is a compile error here.
                     out.pointee = GHOSTTY_ACTION_POLTERGEIST_CLOSE_RESULT_UNSUPPORTED
+                }
+                return true
+
+            default:
+                assertionFailure()
+                return false
+            }
+        }
+
+        /// Rearrange a tab's panes into a shape given from outside. See
+        /// `TerminalController.applyToolLayout` for the actual work; this
+        /// is the C ABI glue -- finding the target's controller and
+        /// writing the answer through `v.out`, the same buffer-owned-by-
+        /// the-caller shape `PoltergeistLayout.Out` documents.
+        private static func poltergeistLayout(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_poltergeist_layout_s
+        ) -> Bool {
+            guard let out = v.out else { return false }
+
+            // Writes into the caller's buffer, truncating rather than
+            // overflowing it -- the ABI note on `Out` says an apprt that
+            // needs more room says so in the reason instead.
+            func write(_ result: ghostty_action_poltergeist_layout_result_e, _ text: String) {
+                out.pointee.result = result
+                guard let buf = out.pointee.buf, out.pointee.cap > 0 else {
+                    out.pointee.len = 0
+                    return
+                }
+                let bytes = Array(text.utf8)
+                let n = min(bytes.count, out.pointee.cap)
+                out.pointee.len = n
+                guard n > 0 else { return }
+                buf.withMemoryRebound(to: UInt8.self, capacity: n) { dst in
+                    bytes.withUnsafeBufferPointer { src in
+                        dst.update(from: src.baseAddress!, count: n)
+                    }
+                }
+            }
+
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("poltergeist layout does nothing with an app target")
+                return false
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return false }
+                guard let surfaceView = self.surfaceView(from: surface) else { return false }
+                guard let controller = NSApp.windows
+                    .compactMap({ $0.windowController as? TerminalController })
+                    .first(where: { $0.surfaceTree.contains(surfaceView) })
+                else {
+                    // A surface with no TerminalController -- the quick
+                    // terminal, say -- has no tabs to lay out. `out` is
+                    // already `unsupported`, the value the core
+                    // initialised it to, so leaving it alone here is the
+                    // honest answer.
+                    return false
+                }
+
+                guard let specText = String(cString: v.spec!, encoding: .utf8) else {
+                    write(GHOSTTY_ACTION_POLTERGEIST_LAYOUT_REFUSED, "the layout is not valid UTF-8")
+                    return true
+                }
+
+                switch controller.applyToolLayout(specText) {
+                case .refused(let why):
+                    write(GHOSTTY_ACTION_POLTERGEIST_LAYOUT_REFUSED, why)
+                case .applied(let json):
+                    write(GHOSTTY_ACTION_POLTERGEIST_LAYOUT_APPLIED, json)
                 }
                 return true
 
@@ -1881,7 +1958,14 @@ extension Ghostty {
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
                 guard let title = String(cString: v.title!, encoding: .utf8) else { return }
-                surfaceView.setTitle(title)
+                // `is_explicit`: a caller chose this title on purpose
+                // (`set_surface_title`), as opposed to the program
+                // reporting one via OSC -- see `setExplicitTitle`.
+                if v.is_explicit {
+                    surfaceView.setExplicitTitle(title)
+                } else {
+                    surfaceView.setTitle(title)
+                }
 
             default:
                 assertionFailure()
@@ -1907,6 +1991,34 @@ extension Ghostty {
                       let controller = window.windowController as? BaseTerminalController
                 else { return false }
                 controller.titleOverride = titleOverride
+                return true
+
+            default:
+                assertionFailure()
+                return false
+            }
+        }
+
+        /// Fired once, at surface init, naming the file this surface's
+        /// captured commands are being appended to (see `Surface.zig`'s
+        /// `history_filename` -- it's a one-time value decided at spawn,
+        /// not something that changes later the way `pwd` does). Just
+        /// remembered on the surface; "Save as Project" reads it from
+        /// there when it needs `Leaf.history`.
+        private static func historyFilename(
+            target: ghostty_target_s,
+            v: ghostty_action_history_filename_s
+        ) -> Bool {
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("history filename does nothing with an app target")
+                return false
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return false }
+                guard let surfaceView = self.surfaceView(from: surface) else { return false }
+                guard let filename = String(cString: v.filename!, encoding: .utf8) else { return false }
+                surfaceView.historyFilename = filename
                 return true
 
             default:

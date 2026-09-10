@@ -246,6 +246,15 @@ extension Ghostty {
         // by the user, this is set to the prior value (which may be empty, but non-nil).
         private var titleFromTerminal: String?
 
+        /// The command-history file this surface's captured commands are
+        /// being appended to, as the core named it (`GHOSTTY_ACTION_HISTORY_FILENAME`,
+        /// fired once at surface init -- see `Ghostty.App.historyFilename`).
+        /// Nil until that action arrives, which only happens when
+        /// `shell-integration-features` has `history` on. Opaque: this
+        /// apprt doesn't parse it, just carries it into `Project.Leaf.history`
+        /// when the surface is saved as part of a project.
+        var historyFilename: String?
+
         // The cached contents of the screen.
         private(set) var cachedScreenContents: CachedValue<String>
         private(set) var cachedVisibleContents: CachedValue<String>
@@ -665,6 +674,18 @@ extension Ghostty {
                 }
                 self?.title = title
             }
+        }
+
+        /// Set the title because something outside chose it on purpose --
+        /// `set_surface_title`'s path, via `is_explicit` on the core's
+        /// `SetTitle` action -- protecting it the same way `promptTitle()`
+        /// protects a person's own rename: remember what the terminal was
+        /// showing, then show the chosen title instead. Without this,
+        /// `setTitle(_:)` treats every caller alike, and the very next OSC
+        /// title update (any prompt, any `cd`) silently takes the name back.
+        func setExplicitTitle(_ newTitle: String) {
+            titleFromTerminal = title
+            title = newTitle
         }
 
         // MARK: Local Events

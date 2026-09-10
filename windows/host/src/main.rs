@@ -119,6 +119,8 @@ mod osk;
 mod palette;
 mod plugins;
 mod polterclose;
+mod project;
+mod project_ui;
 mod prompt;
 mod settings_ui;
 mod quick;
@@ -3844,6 +3846,27 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         },
         ACTION_RENDER => true,
 
+        // Fired once, synchronously, at surface creation (see
+        // `Action.Key.history_filename`'s doc comment) -- the same timing
+        // `ACTION_PWD` above documents for the first `pwd`, so the same
+        // held-until-the-pane-exists handling applies; see
+        // `tabs::set_history_filename_for_surface` and `Pane::history`.
+        ACTION_HISTORY_FILENAME => {
+            let Some(filename) = action.as_cstr().map(|c| c.to_string_lossy().to_string()) else {
+                return true;
+            };
+            match target_surface(&target) {
+                Some(s) => {
+                    let attached = tabs::set_history_filename_for_surface(s, filename.clone());
+                    // Same non-failure as `pwd`'s `attached=0` above: held
+                    // pending until `create_pane` collects it.
+                    alogf!(origin, "[action] history_filename {:?} surface={:?} attached={}", filename, s, attached as u8);
+                }
+                None => alogf!(origin, "[action] history_filename {:?} with no surface (tag={}); dropped", filename, target.tag),
+            }
+            true
+        }
+
         // **An action this host does not answer leaves a line.**
         //
         // This arm was bare `_ => false`, and `new_window` fell through it
@@ -6164,6 +6187,19 @@ fn main() {
             if a == "--write-settings-fixture" {
                 let path = args.next().unwrap_or_default();
                 let ok = plugins::write_fixture(&path);
+                std::process::exit(if ok { 0 } else { 1 });
+            }
+        }
+    }
+
+    // `--write-project-fixture <path>`: same reason and same shape as
+    // `--write-settings-fixture` above, for `project.rs`.
+    {
+        let mut args = std::env::args();
+        while let Some(a) = args.next() {
+            if a == "--write-project-fixture" {
+                let path = args.next().unwrap_or_default();
+                let ok = project::write_fixture(&path);
                 std::process::exit(if ok { 0 } else { 1 });
             }
         }

@@ -61,6 +61,18 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// The notification cancellable for focused surface property changes.
     private var surfaceAppearanceCancellables: Set<AnyCancellable> = []
 
+    /// The "Save as Project" / "Load Project" / "Manage Projects" picker
+    /// window, owned per-controller so it closes along with its terminal
+    /// and doesn't leak into another window's lifetime. See
+    /// `TerminalController+Projects.swift`.
+    let projectPicker = ProjectPicker()
+
+    /// Set while the "Save as a Project Before Closing?" alert (or the
+    /// picker it can lead to) is up, so a second close request -- e.g. a
+    /// repeated Cmd-W -- doesn't stack a second one. See
+    /// `TerminalController+Projects.swift`.
+    var isPresentingCloseSaveAlert = false
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -150,7 +162,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         pendingInitialPresentation = nil
     }
 
-    private func scheduleInitialPresentation(_ block: @escaping () -> Void) {
+    func scheduleInitialPresentation(_ block: @escaping () -> Void) {
         cancelPendingInitialPresentation()
 
         var scheduledWorkItem: DispatchWorkItem?
@@ -1303,10 +1315,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
-        confirmClose(
-            messageText: "Close Tab?",
-            informativeText: "The terminal still has a running process. If you close the tab the process will be killed."
-        ) {
+        presentSaveAsProjectBeforeClosing {
             self.closeTabImmediately()
         }
     }
@@ -1553,6 +1562,19 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             .first(where: { $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) })
         else {
             closeWindowImmediately()
+            return
+        }
+
+        // A window with exactly one tab: closing it *is* closing "the
+        // terminal" from the user's point of view, so this is the same
+        // save-a-project opportunity as closing a single tab out of many
+        // (see `closeTab`). A window with several tabs keeps the plain
+        // warning below -- saving several tabs' worth of trees as one
+        // project isn't a thing this offers.
+        if windows.count == 1 {
+            confirmController.presentSaveAsProjectBeforeClosing {
+                self.closeWindowImmediately()
+            }
             return
         }
 

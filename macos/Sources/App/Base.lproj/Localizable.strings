@@ -200,3 +200,26 @@
 "toggle_visibility" = "Toggle Polter Visibility";
 "unbind" = "Unbind This Key";
 "write_scrollback_file" = "Write Scrollback to a File";
+
+/* Projects: save/load a tab's whole split tree */
+"Project Error" = "Project Error";
+"Project name can't be empty." = "Project name can't be empty.";
+"That project no longer exists." = "That project no longer exists.";
+"Overwrite" = "Overwrite";
+"Delete Project?" = "Delete Project?";
+"Delete" = "Delete";
+"New Project Name" = "New Project Name";
+"No Saved Projects" = "No Saved Projects";
+"Save as Project" = "Save as Project";
+"Load Project" = "Load Project";
+"Manage Projects" = "Manage Projects";
+"Overwrite Project?" = "Overwrite Project?";
+"\"%@\" already has %@ pane(s), saved %@. Overwriting it can't be undone." = "\"%@\" already has %@ pane(s), saved %@. Overwriting it can't be undone.";
+"%@ pane(s) · saved %@" = "%@ pane(s) · saved %@";
+"\"%@\" will be permanently deleted." = "\"%@\" will be permanently deleted.";
+"Save as Project..." = "Save as Project...";
+"Load Project..." = "Load Project...";
+"Save as a Project Before Closing?" = "Save as a Project Before Closing?";
+"The terminal still has a running process. Closing it without saving as a project will kill it." = "The terminal still has a running process. Closing it without saving as a project will kill it.";
+"Close Without Saving" = "Close Without Saving";
+"Saves this tab: %@ pane(s)" = "Saves this tab: %@ pane(s)";

@@ -228,6 +228,33 @@ _ghostty_deferred_init() {
         # than command output.
         builtin print -nu $_ghostty_fd '\e]133;C\a'
         (( _ghostty_state = 1 ))
+
+        # Command-line capture (private OSC 60), opt-in via the "history"
+        # shell-integration-features member. This writes every command the
+        # user types to disk (for per-pane history restore), so unlike the
+        # marks above it must not be on by default.
+        if [[ "$GHOSTTY_SHELL_FEATURES" == *"history"* && -n "$GHOSTTY_HISTORY_TOKEN" ]]; then
+            # $1 is the command as zsh's preexec convention hands it to us,
+            # verbatim -- multi-line commands keep their embedded newlines,
+            # and a pasted command can carry a literal ESC or BEL. C0
+            # controls (newline and tab included) and DEL are not legal
+            # inside the OSC 60 payload: the core side drops the entire
+            # message if any survive, and an embedded ESC or BEL risks
+            # faking the terminator early and truncating everything after
+            # it. [[:cntrl:]] is the same class the title feature above
+            # already strips for the same framing reason; we replace with a
+            # space instead of deleting so a flattened multi-line command
+            # stays word-separated and legible in restored history.
+            #
+            # GHOSTTY_HISTORY_TOKEN is what tells core this came from a
+            # shell reading its own environment, not from output the
+            # terminal is merely displaying -- see command_capture.zig's
+            # doc comment. It goes out as a second field, before the
+            # command, and is never itself run through the [[:cntrl:]]
+            # strip above: core issued it, core knows its exact shape.
+            builtin local _ghostty_hist_cmd=${1//[[:cntrl:]]/ }
+            builtin print -rnu $_ghostty_fd -- $'\e]60;'"$GHOSTTY_HISTORY_TOKEN"';'"$_ghostty_hist_cmd"$'\a'
+        fi
     }
 
     # Enable reporting current working dir to terminal. Ghostty supports

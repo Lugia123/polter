@@ -44,3 +44,16 @@ renderer_mailbox: *renderer.Thread.Mailbox,
 
 /// The mailbox for sending the surface messages.
 surface_mailbox: apprt.surface.Mailbox,
+
+/// The per-surface token issued to this surface's child process at spawn
+/// (`GHOSTTY_HISTORY_TOKEN`), or empty if command-history capture is off.
+/// See `termio/stream_handler.zig`'s `history_token` field for what it's
+/// for. Generated once per surface, not derived from `Config`, which is
+/// why it isn't part of `Termio.DerivedConfig`.
+history_token: []const u8 = "",
+
+/// Where verified OSC 60 captures get appended (`CommandHistory.zig`),
+/// and the filename within it unique to this surface. Both empty
+/// together with `history_token` when capture is off.
+history_dir: []const u8 = "",
+history_filename: []const u8 = "",

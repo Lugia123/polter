@@ -2592,8 +2592,8 @@ fn poltergeistRead(
 /// the tree, is the one that parses, validates and answers.
 ///
 /// The reply buffer is the caller's, filled by the apprt. `unsupported` is a
-/// first-class answer: GTK and macOS do not implement this action, and the
-/// tool says so plainly rather than reporting a layout it did not set.
+/// first-class answer: GTK does not implement this action, and the tool
+/// says so plainly rather than reporting a layout it did not set.
 fn poltergeistLayout(
     ctx: *anyopaque,
     alloc: Allocator,

@@ -109,6 +109,11 @@ pub const ACTION_POLTERGEIST_TAB_PANES: u32 = 72;
 /// renumbers the tags after it and this host then dispatches into a different
 /// action's arm, with no crash and no wrong-looking log line.
 pub const ACTION_POLTERGEIST_LAYOUT: u32 = 73;
+/// `Action.Key.history_filename`, appended after `poltergeist_layout`
+/// (task 531). ⚠️ **Appended, like every one before it** -- see the note
+/// on `ACTION_POLTERGEIST_LAYOUT` above; the same renumbering risk
+/// applies to every tag after this one too.
+pub const ACTION_HISTORY_FILENAME: u32 = 74;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
@@ -709,13 +714,19 @@ pub struct SurfaceConfig {
     pub wait_after_command: bool,
     pub context: u32,
     pub poltergeist_chat: bool,
-    pub _pad2: [u8; 7],
+    /// `Project.Leaf.history`, passed through unread -- see the field's doc
+    /// comment in `include/ghostty.h`: "The apprt does not interpret this
+    /// string". Null when this surface is not being restored from a project.
+    /// No explicit padding field before it: `#[repr(C)]` inserts the same
+    /// seven bytes between `poltergeist_chat` and this 8-aligned pointer
+    /// that the C compiler does, which is what the size assert below checks.
+    pub history_restore: *const c_char,
 }
 
 const _: () = {
     assert!(std::mem::size_of::<Action>() == 32);
     assert!(std::mem::size_of::<Target>() == 16);
-    assert!(std::mem::size_of::<SurfaceConfig>() == 96);
+    assert!(std::mem::size_of::<SurfaceConfig>() == 104);
     assert!(std::mem::size_of::<RuntimeConfig>() == 64);
     // action u32 + mods i32 + consumed i32 + keycode u32 then an 8-aligned
     // pointer, u32, bool, tail padding.

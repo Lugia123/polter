@@ -340,6 +340,9 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .osc_color_report_format = opts.config.osc_color_report_format,
         .clipboard_write = opts.config.clipboard_write,
         .enquiry_response = opts.config.enquiry_response,
+        .history_token = opts.history_token,
+        .history_dir = opts.history_dir,
+        .history_filename = opts.history_filename,
     };
 
     const thread_enter_state = try ThreadEnterState.create(

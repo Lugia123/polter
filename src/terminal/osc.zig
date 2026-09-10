@@ -163,6 +163,19 @@ pub const Command = union(Key) {
     /// https://uapi-group.org/specifications/specs/osc_context/
     context_signal: parsers.context_signal.Command,
 
+    /// Ghostty private OSC 60. The shell's preexec hook hands us the
+    /// command line it is about to run, verbatim, so it can be appended
+    /// to that surface's command-history file. Carries the per-session
+    /// token issued to this surface's child process at spawn, because
+    /// anything writing to the terminal -- `cat`, a build log, `ssh`
+    /// output -- can emit this OSC too, and without the token core has no
+    /// way to tell a real preexec hook from a forged one. See
+    /// `src/terminal/osc/parsers/command_capture.zig` for the byte shape.
+    command_capture: struct {
+        token: [:0]const u8,
+        text: [:0]const u8,
+    },
+
     pub const SemanticPrompt = parsers.semantic_prompt.Command;
 
     pub const KittyClipboardProtocol = parsers.kitty_clipboard_protocol.OSC;
@@ -199,6 +212,7 @@ pub const Command = union(Key) {
             "kitty_clipboard_protocol",
             "kitty_dnd_protocol",
             "context_signal",
+            "command_capture",
         },
     );
 
@@ -361,6 +375,7 @@ pub const Parser = struct {
         @"22",
         @"52",
         @"55",
+        @"60",
         @"66",
         @"72",
         @"77",
@@ -445,6 +460,7 @@ pub const Parser = struct {
             .kitty_clipboard_protocol,
             .kitty_dnd_protocol,
             .context_signal,
+            .command_capture,
             => {},
         }
 
@@ -726,11 +742,13 @@ pub const Parser = struct {
             },
 
             .@"6" => switch (c) {
+                '0' => self.state = .@"60",
                 '6' => self.state = .@"66",
                 else => self.state = .invalid,
             },
 
             .@"52",
+            .@"60",
             .@"66",
             => switch (c) {
                 ';' => self.captureTrailing(.allocating),
@@ -851,6 +869,8 @@ pub const Parser = struct {
 
             .@"52" => parsers.clipboard_operation.parse(self, terminator_ch),
 
+            .@"60" => parsers.command_capture.parse(self, terminator_ch),
+
             .@"55" => null,
 
             .@"3",
@@ -888,7 +908,7 @@ test {
 
 test "Parser allocating captures have a hard limit" {
     const testing = std.testing;
-    const prefixes = [_][]const u8{ "52;", "66;", "72;", "5522;" };
+    const prefixes = [_][]const u8{ "52;", "60;", "66;", "72;", "5522;" };
     const limit = Parser.MAX_BUF + 1;
 
     for (prefixes) |prefix| {

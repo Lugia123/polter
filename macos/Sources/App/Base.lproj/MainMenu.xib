@@ -440,6 +440,32 @@
                         </items>
                     </menu>
                 </menuItem>
+                <menuItem title="Project" id="pj0-Mn-Ma1" userLabel="Project">
+                    <modifierMask key="keyEquivalentModifierMask"/>
+                    <menu key="submenu" title="Project" id="pj0-Mn-Ma2">
+                        <items>
+                            <menuItem title="Save as Project..." id="pj1-Sv-As1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="saveAsProject:" target="-1" id="pj1-Sv-As2"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Load Project..." id="pj2-Ld-Pr1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="loadProject:" target="-1" id="pj2-Ld-Pr2"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem isSeparatorItem="YES" id="pj3-Sp-Ar1"/>
+                            <menuItem title="Manage Projects..." id="pj4-Mg-Pr1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="manageProjects:" target="-1" id="pj4-Mg-Pr2"/>
+                                </connections>
+                            </menuItem>
+                        </items>
+                    </menu>
+                </menuItem>
                 <menuItem title="Window" id="aUF-d1-5bR">
                     <modifierMask key="keyEquivalentModifierMask"/>
                     <menu key="submenu" title="Window" systemMenu="window" id="Td7-aD-5lo">

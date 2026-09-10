@@ -21,6 +21,22 @@ const log = std.log.scoped(.io_handler);
 /// It is NOT VALID to stop a stream handler, create a new one, and use that
 /// unless all of the member fields are copied.
 pub const StreamHandler = struct {
+    /// Length, in hex characters, of the token `history_token` is compared
+    /// against and the value `Surface.zig` puts in `GHOSTTY_HISTORY_TOKEN`.
+    /// Shared as a constant, not just a convention, because a length
+    /// mismatch is otherwise the kind of bug that passes every test
+    /// written against one side alone: both sides agreeing on 64 is what
+    /// makes the fast-path length check in `captureCommand` below
+    /// meaningful rather than a coincidence.
+    ///
+    /// A member of the struct, not file-scoped: `Surface.zig` reaches it
+    /// as `termio.StreamHandler.history_token_len` through the type, and
+    /// `termio.zig` only re-exports the struct, not this whole module's
+    /// namespace, so a file-scoped constant here is invisible from there
+    /// -- it compiles (nothing here catches it) and fails wherever
+    /// something actually spells the type-qualified name.
+    pub const history_token_len = 64;
+
     alloc: Allocator,
     size: *renderer.Size,
     terminal: *terminal.Terminal,
@@ -52,6 +68,24 @@ pub const StreamHandler = struct {
 
     /// The clipboard write access configuration.
     clipboard_write: configpkg.ClipboardAccess,
+
+    /// The random value this surface's child process was given at spawn
+    /// (`GHOSTTY_HISTORY_TOKEN`), or empty if command-history capture is
+    /// off. OSC 60 (`command_capture`) must carry this back exactly, or it
+    /// is dropped -- see `command_capture.zig`'s doc comment for why: OSC
+    /// is bytes written to the terminal, so anything that can write to
+    /// this pane (`cat`, a build log, the far end of an `ssh` session) can
+    /// send that OSC too, and without this check any of them could plant
+    /// a fabricated command in the pane's history, one up-arrow and an
+    /// Enter away from running.
+    history_token: []const u8 = "",
+
+    /// Where a verified capture is appended (`CommandHistory.zig`), and
+    /// the filename within it unique to this surface. Empty together with
+    /// `history_token` when capture is off, in which case `captureCommand`
+    /// never gets far enough to read either.
+    history_dir: []const u8 = "",
+    history_filename: []const u8 = "",
 
     //---------------------------------------------------------------
     // Internal state
@@ -333,6 +367,7 @@ pub const StreamHandler = struct {
             .decaln => try self.decaln(),
             .window_title => try self.windowTitle(value.title),
             .report_pwd => try self.reportPwd(value.url),
+            .command_capture => self.captureCommand(value.token, value.text),
             .show_desktop_notification => try self.showDesktopNotification(value.title, value.body),
             .progress_report => self.progressReport(value),
             .start_hyperlink => try self.startHyperlink(value.uri, value.id),
@@ -1037,6 +1072,62 @@ pub const StreamHandler = struct {
         try self.terminal.semanticPrompt(cmd);
     }
 
+    /// Handle OSC 60 (`command_capture`). Accepts the command only if
+    /// `token` matches `self.history_token` exactly -- see the doc comment
+    /// on `history_token` and on `command_capture.zig` for why that check
+    /// exists at all. A verified command is appended to `history_dir` /
+    /// `history_filename` via `CommandHistory.append`.
+    ///
+    /// "Empty history after turning the feature on" has at least four
+    /// different causes that all look the same from the outside (feature
+    /// never actually enabled, token never reached the shell, the shell's
+    /// own OSC 60 line is wrong, or it arrived and failed to parse/verify)
+    /// -- see the `log.info` in `Surface.zig` next to where `history_token`
+    /// is minted for the first of those, and the `log.debug`s below for
+    /// the rest. None of them substitute for the others: silence from one
+    /// doesn't rule out failure in a different one.
+    fn captureCommand(self: *StreamHandler, token: []const u8, text: []const u8) void {
+        if (self.history_token.len != history_token_len) {
+            // Capture wasn't configured for this surface at all (the
+            // `history` shell-integration feature is off by default, see
+            // `Config.ShellIntegrationFeatures`) -- nothing to compare
+            // against, so nothing is ever accepted.
+            return;
+        }
+
+        if (token.len != history_token_len) {
+            log.debug("OSC 60: rejected, wrong token length", .{});
+            return;
+        }
+
+        const match = std.crypto.timing_safe.eql(
+            [history_token_len]u8,
+            self.history_token[0..history_token_len].*,
+            token[0..history_token_len].*,
+        );
+        if (!match) {
+            log.debug("OSC 60: rejected, token mismatch", .{});
+            return;
+        }
+
+        const CommandHistory = @import("../CommandHistory.zig");
+        CommandHistory.append(
+            self.alloc,
+            global.io(),
+            self.history_dir,
+            self.history_filename,
+            text,
+        ) catch |err| {
+            log.warn("OSC 60: verified but could not append to history file={s} err={}", .{
+                self.history_filename,
+                err,
+            });
+            return;
+        };
+
+        log.debug("OSC 60: appended to history file={s}", .{self.history_filename});
+    }
+
     fn reportPwd(self: *StreamHandler, url: []const u8) !void {
         // Special handling for the empty URL. We treat the empty URL
         // as resetting the pwd as if we never saw a pwd. I can't find any
@@ -1510,3 +1601,266 @@ pub const StreamHandler = struct {
         self.surfaceMessageWriter(.{ .progress_report = report });
     }
 };
+
+// -- OSC 60 capture: end-to-end tests -------------------------------------
+//
+// The chain a real pane exercises is real shell bytes -> real
+// `terminal.osc.Parser` -> real `captureCommand` above -> real
+// `CommandHistory.append`/`read`. Every payload string below is not
+// hand-written to look plausible -- it is copied verbatim from real zsh,
+// bash, and fish sessions, driven through a real pty, with the `history`
+// shell-integration feature on (see the windows-port group log around
+// 2026-09-10 for the transcripts these came from). This is the only place
+// that chain is exercised as a whole; `CommandHistory.zig`'s own tests
+// cover `append`/`read` in isolation, and `command_capture.zig`'s cover
+// the parser in isolation, but neither proves the two actually agree with
+// each other or with what a shell script really emits. Losing this file
+// removes that proof: the failure mode it guards against is a silent one
+// (an empty history file, indistinguishable on its own from the feature
+// being off or the token never reaching the shell), so nothing else would
+// flag a regression here.
+const testing = std.testing;
+fn captureTestTmpDir(alloc: Allocator, io: std.Io) ![]const u8 {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-osc60-e2e-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    return dir;
+}
+
+/// Feeds a real OSC 60 body (the bytes between `]` and the terminator,
+/// e.g. `"60;<token>;<text>"`) through the real parser and returns the
+/// parsed command_capture, the same way `terminal.Stream` would after
+/// recognizing the OSC sequence in a real pty read.
+///
+/// `p.deinit()` frees the parser's own capture buffer, and `token`/`text`
+/// are slices *into* that buffer (see command_capture.zig's `parse`) --
+/// this dupes them into `alloc` first so the returned value outlives the
+/// parser, rather than handing the caller a dangling slice the moment
+/// this function returns.
+fn parseCommandCapture(alloc: Allocator, body: []const u8) @FieldType(terminal.osc.Command, "command_capture") {
+    var p: terminal.osc.Parser = .init(testing.allocator);
+    defer p.deinit();
+    for (body) |ch| p.next(ch);
+    const cmd = p.end(null).?.*;
+    return .{
+        .token = alloc.dupeZ(u8, cmd.command_capture.token) catch @panic("oom"),
+        .text = alloc.dupeZ(u8, cmd.command_capture.text) catch @panic("oom"),
+    };
+}
+
+const test_history_token = "35d02133a71f91e1cae01cf1d02ea55e29c1ef4ed1572ee79c321b511bafa3d4";
+
+/// A `StreamHandler` with only the fields `captureCommand` reads today
+/// (`alloc`, `history_token`, `history_dir`, `history_filename`) set to
+/// real values; everything else -- `terminal`, `size`, the mailboxes,
+/// `renderer_wakeup` -- is `undefined`, because building real instances
+/// of those (a real `terminal.Terminal`, a real renderer thread) would
+/// make this test about the harness rather than about capture.
+///
+/// **This is a live assumption, not a settled fact.** If `captureCommand`
+/// is ever extended to read one of the `undefined` fields (say, to look
+/// at `self.terminal` for something), this constructor does not fail to
+/// compile and does not fail loudly at the call site that changed --
+/// it becomes undefined behavior *here*, in a file the person making
+/// that change may never open. Zig's debug builds poison `undefined`
+/// memory with a fixed bit pattern specifically so a stray read tends to
+/// crash rather than silently "work" with garbage, which is why this
+/// hasn't been a problem in practice -- but that is a debug-build safety
+/// net, not a guarantee, and it will not point back to this comment when
+/// it fires. Widening this to build a real `terminal.Terminal` and the
+/// rest is the fix if `captureCommand` ever needs it; short of that,
+/// there is no version of "only touch the real fields" that the type
+/// system can check for you.
+fn testStreamHandler(alloc: Allocator, dir: []const u8, token: []const u8) StreamHandler {
+    return .{
+        .alloc = alloc,
+        .size = undefined,
+        .terminal = undefined,
+        .termio_mailbox = undefined,
+        .surface_mailbox = undefined,
+        .renderer_state = undefined,
+        .renderer_mailbox = undefined,
+        .renderer_wakeup = undefined,
+        .enquiry_response = "",
+        .osc_color_report_format = .none,
+        .clipboard_write = .allow,
+        .history_token = token,
+        .history_dir = dir,
+        .history_filename = "pane.history",
+    };
+}
+
+test "OSC 60: a plain command reaches the history file byte-for-byte" {
+    const CommandHistory = @import("../CommandHistory.zig");
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const dir = try captureTestTmpDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const cap = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";echo hello");
+    try testing.expectEqualStrings(test_history_token, cap.token);
+
+    var handler = testStreamHandler(alloc, dir, test_history_token);
+    handler.captureCommand(cap.token, cap.text);
+
+    // "session-internal read": no process exit happened, this is the same
+    // test's control flow reading right back after append returned.
+    const during = try CommandHistory.read(alloc, io, dir, "pane.history");
+    try testing.expectEqual(@as(usize, 1), during.len);
+    try testing.expectEqualStrings("echo hello", during[0]);
+
+    // "post-exit read": a wholly separate open/read/close, standing in for
+    // a different process (or this test, later) opening the file cold --
+    // append() and read() never share a handle, so this is a genuine
+    // re-read, not a cached one. Both agreeing is the actual answer to
+    // "is the write immediate or deferred until exit": there is no
+    // deferral point in this codebase for it to be waiting on.
+    const after = try CommandHistory.read(alloc, io, dir, "pane.history");
+    try testing.expectEqual(@as(usize, 1), after.len);
+    try testing.expectEqualStrings("echo hello", after[0]);
+}
+
+test "OSC 60: real zsh/bash/fish multi-line, heredoc, quoted, and semicolon payloads land correctly" {
+    const CommandHistory = @import("../CommandHistory.zig");
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const dir = try captureTestTmpDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var handler = testStreamHandler(alloc, dir, test_history_token);
+
+    // Exact payloads captured over real pty sessions for `echo hello \` +
+    // newline + `world`, typed at a real prompt:
+    const zsh_multiline = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";echo hello \\ world");
+    const bash_multiline = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";echo hello world");
+    const fish_multiline = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";echo hello \\ world");
+    // A real heredoc (`cat <<EOF` / two body lines / `EOF`): zsh flattens
+    // the whole thing to one line same as any other multi-line input;
+    // bash's `history 1` reconstruction only recovers the invoking line,
+    // the heredoc body is not in bash's own history mechanism at all --
+    // this is bash's `history` builtin's behavior, not something this
+    // module or the shell integration script drops.
+    const zsh_heredoc = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";cat <<EOF heredoc body line 1 heredoc body line 2 EOF");
+    const bash_heredoc = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";cat <<EOF");
+    const quoted = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";echo \"quoted arg\" 'single'");
+    const semicolon = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";ls; pwd");
+
+    handler.captureCommand(zsh_multiline.token, zsh_multiline.text);
+    handler.captureCommand(bash_multiline.token, bash_multiline.text);
+    handler.captureCommand(fish_multiline.token, fish_multiline.text);
+    handler.captureCommand(zsh_heredoc.token, zsh_heredoc.text);
+    handler.captureCommand(bash_heredoc.token, bash_heredoc.text);
+    handler.captureCommand(quoted.token, quoted.text);
+    handler.captureCommand(semicolon.token, semicolon.text);
+
+    const got = try CommandHistory.read(alloc, io, dir, "pane.history");
+    try testing.expectEqual(@as(usize, 7), got.len);
+    try testing.expectEqualStrings("echo hello \\ world", got[0]);
+    try testing.expectEqualStrings("echo hello world", got[1]);
+    try testing.expectEqualStrings("echo hello \\ world", got[2]);
+    try testing.expectEqualStrings("cat <<EOF heredoc body line 1 heredoc body line 2 EOF", got[3]);
+    try testing.expectEqualStrings("cat <<EOF", got[4]);
+    try testing.expectEqualStrings("echo \"quoted arg\" 'single'", got[5]);
+    // The one this whole exercise is really about: `ls; pwd` survives
+    // with its `;` intact, proving "only the first `;` splits" holds on
+    // bytes a real shell script actually emitted, not just on a
+    // hand-written parser unit test string.
+    try testing.expectEqualStrings("ls; pwd", got[6]);
+}
+
+test "OSC 60: a wrong token is rejected, not written -- the only real test of the anti-forgery check" {
+    const CommandHistory = @import("../CommandHistory.zig");
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const dir = try captureTestTmpDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var handler = testStreamHandler(alloc, dir, test_history_token);
+
+    // A forged OSC 60 -- the exact shape `cat`ing a hostile file or the
+    // far end of an ssh session could write into this pane -- carrying a
+    // token that is the right length but not the one this surface
+    // actually issued.
+    const wrong_token = "ff" ** 32;
+    try testing.expectEqual(@as(usize, 64), wrong_token.len);
+    const forged = parseCommandCapture(alloc, "60;" ++ wrong_token ++ ";echo PWNED");
+    handler.captureCommand(forged.token, forged.text);
+
+    const got = try CommandHistory.read(alloc, io, dir, "pane.history");
+    try testing.expectEqual(@as(usize, 0), got.len);
+
+    // Positive control in the same session: the real token, right after,
+    // does get through -- proving the zero above is the token check
+    // doing its job, not the harness being broken.
+    const real = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";echo REAL");
+    handler.captureCommand(real.token, real.text);
+    const got2 = try CommandHistory.read(alloc, io, dir, "pane.history");
+    try testing.expectEqual(@as(usize, 1), got2.len);
+    try testing.expectEqualStrings("echo REAL", got2[0]);
+}
+
+test "OSC 60: history feature off (no token configured) means nothing is ever written" {
+    const CommandHistory = @import("../CommandHistory.zig");
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const dir = try captureTestTmpDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    // No history_token/history_dir/history_filename set (their `= ""`
+    // defaults), the same shape StreamHandler has when the `history`
+    // shell-integration-features member is off -- Surface.zig never
+    // mints a token or these paths in that case.
+    // `dir` is still passed as the tmp dir (only for the filesystem
+    // check below to have somewhere real to look), but the token is
+    // empty -- `captureCommand`'s first guard clause checks token length
+    // before it ever reads `history_dir`/`history_filename`, so the
+    // directory argument here is inert as far as the handler is
+    // concerned.
+    var handler = testStreamHandler(alloc, dir, "");
+
+    // Even a well-formed, correctly-tokened-looking OSC 60 (as if
+    // something guessed or replayed a token) has nothing to check against.
+    const cap = parseCommandCapture(alloc, "60;" ++ test_history_token ++ ";echo should_not_appear");
+    handler.captureCommand(cap.token, cap.text);
+
+    // `dir` itself exists -- captureTestTmpDir made it, for cleanup's
+    // sake, and that's not the thing under test (the handler above was
+    // never told about it). What must NOT exist is a history file inside
+    // it: captureCommand's first guard clause returns before ever calling
+    // CommandHistory.append, so no file, not just an empty one --
+    // matching "feature off" being indistinguishable from "no pane has
+    // ever captured anything" from the filesystem's view.
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var file_exists = true;
+    if (d.openFile(io, "pane.history", .{})) |f| {
+        var ff = f;
+        ff.close(io);
+    } else |_| {
+        file_exists = false;
+    }
+    try testing.expect(!file_exists);
+
+    // CommandHistory.read agrees, for good measure -- empty either way,
+    // but this confirms the two observations aren't contradicting each
+    // other.
+    const got = try CommandHistory.read(alloc, io, dir, "pane.history");
+    try testing.expectEqual(@as(usize, 0), got.len);
+}

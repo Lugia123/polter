@@ -262,6 +262,8 @@ test {
     _ = @import("input.zig");
     _ = @import("cli.zig");
     _ = @import("surface_mouse.zig");
+    _ = @import("Project.zig");
+    _ = @import("CommandHistory.zig");
 
     // Libraries
     _ = @import("tripwire.zig");

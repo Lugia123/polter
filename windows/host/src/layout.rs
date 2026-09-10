@@ -64,7 +64,16 @@ pub enum Shape {
     /// namespace that crosses this boundary is the one the caller has.
     Existing(SurfaceKey),
     /// A pane to make. `cwd` is where its shell starts, or the default.
-    New(Option<String>),
+    ///
+    /// `history` is `ghostty_surface_config_s.history_restore`
+    /// (`Project.Leaf.history`) for the pane this cell creates -- passed
+    /// through unread, same as `cwd`. **Not part of the `poltergeist_layout`
+    /// tool's documented contract**: it exists so task 533's project loader
+    /// can reuse this pipeline rather than build a second way to create a
+    /// tab, and every caller that never sends a `"history"` key (which is
+    /// every caller except that loader, today) gets `None` here exactly as
+    /// before this field existed.
+    New { cwd: Option<String>, history: Option<String> },
     Split {
         axis: Axis,
         ratio: f64,
@@ -90,15 +99,22 @@ pub fn parse(v: &serde_json::Value) -> Result<Shape, String> {
     }
 
     if let Some(n) = obj.get("new") {
-        let cwd = match n {
-            serde_json::Value::Object(o) => match o.get("cwd") {
-                Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
-                _ => None,
-            },
-            serde_json::Value::Null => None,
+        let (cwd, history) = match n {
+            serde_json::Value::Object(o) => {
+                let cwd = match o.get("cwd") {
+                    Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                };
+                let history = match o.get("history") {
+                    Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                };
+                (cwd, history)
+            }
+            serde_json::Value::Null => (None, None),
             _ => return Err("\"new\" must be an object or null".to_string()),
         };
-        return Ok(Shape::New(cwd));
+        return Ok(Shape::New { cwd, history });
     }
 
     let axis = match obj.get("split").and_then(|s| s.as_str()) {
@@ -150,7 +166,7 @@ fn parse_key(s: &str) -> Result<SurfaceKey, String> {
 pub fn existing(shape: &Shape, out: &mut Vec<SurfaceKey>) {
     match shape {
         Shape::Existing(id) => out.push(*id),
-        Shape::New(_) => {}
+        Shape::New { .. } => {}
         Shape::Split { left, right, .. } => {
             existing(left, out);
             existing(right, out);
@@ -158,11 +174,12 @@ pub fn existing(shape: &Shape, out: &mut Vec<SurfaceKey>) {
     }
 }
 
-/// Every cell that needs a pane made, in the order they will be numbered.
-pub fn fresh<'a>(shape: &'a Shape, out: &mut Vec<&'a Option<String>>) {
+/// Every cell that needs a pane made, in the order they will be numbered:
+/// its `cwd` and, for task 533's loader, its `history`.
+pub fn fresh<'a>(shape: &'a Shape, out: &mut Vec<(&'a Option<String>, &'a Option<String>)>) {
     match shape {
         Shape::Existing(_) => {}
-        Shape::New(cwd) => out.push(cwd),
+        Shape::New { cwd, history } => out.push((cwd, history)),
         Shape::Split { left, right, .. } => {
             fresh(left, out);
             fresh(right, out);
@@ -181,7 +198,7 @@ pub fn to_node(
         // Checked before this runs; a surface with no pane here would have
         // been refused by name.
         Shape::Existing(key) => Node::Leaf(pane_of(*key).unwrap_or(0)),
-        Shape::New(_) => Node::Leaf(made.next().expect("one id per new cell")),
+        Shape::New { .. } => Node::Leaf(made.next().expect("one id per new cell")),
         Shape::Split { axis, ratio, left, right } => Node::Split(Box::new(Split {
             axis: *axis,
             ratio: *ratio,

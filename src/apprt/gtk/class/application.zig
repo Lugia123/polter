@@ -842,6 +842,9 @@ pub const Application = extern struct {
             // the dialog and reports back. The macOS side is the shape to
             // copy.
             .poltergeist_close,
+
+            // No project UI on GTK yet -- nothing to hand this to.
+            .history_filename,
             => {
                 log.warn("unimplemented action={}", .{action});
                 return false;

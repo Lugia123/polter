@@ -56,6 +56,40 @@ pub struct Pane {
     pub id: PaneId,
     pub hwnd: isize,
     pub surface: usize,
+    /// This pane's own last-reported `PWD` (`GHOSTTY_ACTION_PWD`), independent
+    /// of `Tab::cwd`.
+    ///
+    /// **Added for project save (task 533), not a replacement for `Tab::cwd`.**
+    /// Before this field existed, `set_cwd_for_surface` wrote only
+    /// `tab.cwd`, keyed by surface for *routing* but landing on one field
+    /// shared by every pane in the tab -- so a three-pane tab in three
+    /// different directories remembered only whichever pane reported last,
+    /// and the other two directories were never recorded anywhere, not
+    /// merely un-read. `apply_pane_cwd`'s tests exercise exactly that case.
+    /// `Tab::cwd` keeps being written the same way it always was (see
+    /// `apply_pane_cwd`) -- reopen-a-single-tab still wants "wherever it was
+    /// last", and nothing reading `Tab::cwd` today needed to change.
+    pub cwd: Option<String>,
+    /// This pane's own last-reported shell title, independent of
+    /// `Tab::title`. Same reasoning as `cwd` above; see `apply_pane_title`.
+    pub title: Option<String>,
+    /// This pane's opaque command-history handle (`GHOSTTY_ACTION_HISTORY_FILENAME`,
+    /// `Action.Key.history_filename`), for `project::SavedLeaf::history`.
+    ///
+    /// **Unlike `cwd`/`title`, there is no `Tab`-level fallback for this to
+    /// preserve** -- this is new with task 533, not a fix for something that
+    /// already existed at tab granularity. And unlike `cwd`, this has no
+    /// "changes later" case to handle: per the action's doc comment it is
+    /// "fixed at spawn and never changes", so once set it is set for the
+    /// pane's whole life.
+    ///
+    /// **Always arrives before the `Pane` exists.** The action fires
+    /// synchronously inside `ghostty_surface_new` (again per its doc
+    /// comment) -- the same timing `pending_cwd`'s doc comment describes for
+    /// the *first* `pwd`, except this one has no later report to fall back
+    /// on if the first is missed. See `pending_history` (on `State`) and its
+    /// three call sites in `create_pane`'s callers.
+    pub history: Option<String>,
 }
 
 /// A tab's identity. **Never an index, and never reused.**
@@ -573,6 +607,14 @@ pub struct State {
     /// per-window copy would need the answer this exists precisely because
     /// nobody has yet.
     pub pending_cwd: Vec<(usize, String)>,
+    /// Same reasoning as `pending_cwd`, for `history_filename`: per
+    /// `Action.Key.history_filename`'s doc comment it is "fired once,
+    /// synchronously, at surface creation" -- the same synchronous-during-
+    /// `surface_new` timing `pending_cwd`'s doc comment describes for `pwd`,
+    /// so it needs the identical held-until-the-pane-exists treatment. See
+    /// `Pane::history`'s doc comment for why every pane's first report of
+    /// this, unlike `pwd`, has nowhere else to have come from.
+    pub pending_history: Vec<(usize, String)>,
 }
 
 impl State {
@@ -581,6 +623,7 @@ impl State {
             next_id: 1,
             initial_input: None,
             pending_cwd: Vec::new(),
+            pending_history: Vec::new(),
         }
     }
 
@@ -2178,6 +2221,27 @@ fn create_pane(
             spec.chat
         );
     }
+    // **Same lifetime rule as `working_directory`/`command`/`initial_input`
+    // above.** Only ever set by task 533's project loader (see `NewTab::history`);
+    // every other caller leaves `spec.history` `None` and `sc.history_restore`
+    // stays null, same as before this field existed. **Passed through
+    // unread** -- see `ghostty_surface_config_s.history_restore`'s doc
+    // comment in `include/ghostty.h`; this file does not decide whether it
+    // is a HISTFILE-compatible filename or a fish session name.
+    let history_c = match &spec.history {
+        None => None,
+        Some(h) => match std::ffi::CString::new(h.clone()) {
+            Ok(h) => Some(h),
+            Err(_) => {
+                logf!("[pane] {} history {:?} has an interior NUL; restoring with no history", id, h);
+                None
+            }
+        },
+    };
+    if let Some(h) = &history_c {
+        sc.history_restore = h.as_ptr();
+        logf!("[pane] {} history_restore set ({} bytes)", id, h.as_bytes().len());
+    }
 
     let s = unsafe { (api().surface_new)(app, &sc) };
     if s.is_null() {
@@ -2213,10 +2277,25 @@ fn create_pane(
     crate::dnd::attach(child);
     logf!("[pane] {} surface = {:?}", id, s);
 
+    // **Taken here, once, right after the surface exists -- not at each of
+    // this function's three call sites.** `pwd`'s first report and
+    // `history_filename` both fire synchronously inside `surface_new` above,
+    // before this function returns and therefore before any caller has a
+    // `Pane` to write them onto directly. Draining the pending queues here
+    // means every caller gets an already-populated `Pane` for free, rather
+    // than needing its own copy of this dance -- see `Pane::history`'s doc
+    // comment for why `history` in particular has no second chance if this
+    // is skipped.
+    let pending_cwd = take_pending_cwd(s as usize);
+    let pending_history = take_pending_history(s as usize);
+
     Some(Pane {
         id,
         hwnd: child.0 as isize,
         surface: s as usize,
+        cwd: pending_cwd,
+        title: None,
+        history: pending_history,
     })
 }
 
@@ -2247,6 +2326,10 @@ pub fn create_tab(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINS
 pub struct NewTab {
     /// Where the shell starts. Only a reopened tab passes one.
     pub cwd: Option<String>,
+    /// `ghostty_surface_config_s.history_restore` (`Project.Leaf.history`)
+    /// for this pane, or `None` for every caller but task 533's project
+    /// loader. Passed through to `create_pane` unread, same as `cwd`.
+    pub history: Option<String>,
     /// What to run instead of the configured shell. `polter +chat` for the
     /// chat surface; nothing else uses it yet.
     pub command: Option<String>,
@@ -2290,22 +2373,16 @@ pub fn create_tab_with(
     let Some(pane) = create_pane(frame, app, hinst, id, bounds, spec) else {
         return false;
     };
-    // **Read before the tab exists, because the core reports it before the
-    // tab exists.** `pwd` can arrive during `surface_new`, which runs inside
-    // `create_pane` above -- at which point there is no `Tab` to write it to.
-    let pane_surface = pane.surface;
-    // **Taken before the guard, and the comment eight lines up says why.**
-    // `take_pending_cwd` locks. Written as a field initialiser inside the
-    // struct literal below -- which is where it was, and which deadlocked the
-    // host on startup with no window ever appearing -- it is evaluated *after*
-    // that literal's destination has already taken the same non-re-entrant
-    // lock. The shape is invisible at the call site: it reads as fetching a
-    // value, not as acquiring anything.
-    //
-    // This is the same paragraph that was already written above for `take_id`,
-    // about the same struct literal. Rewriting it rather than pointing at it,
-    // because the first copy did not stop the second instance.
-    let pending_cwd = take_pending_cwd(pane_surface);
+    // **Read from the pane, not re-taken from the pending queue.**
+    // `create_pane` already drained `pending_cwd`/`pending_history` for this
+    // surface into `pane.cwd`/`pane.history` before returning -- both are
+    // keyed by surface and removed on take, so taking again here would find
+    // nothing. `tab.cwd` below is a clone of the same value, kept for
+    // `reopen.rs`'s sake (see `Pane::cwd`'s doc comment); it is computed
+    // before `pane` moves into the struct literal, not fetched separately,
+    // so there is only one source of truth for what this pane's starting
+    // directory was.
+    let initial_cwd = pane.cwd.clone();
     {
         // **The tab goes into the window it was asked for.** Nothing else
         // here changed when windows became plural; this line is the whole of
@@ -2325,7 +2402,7 @@ pub fn create_tab_with(
             shielded: false,
             held: false,
             may_authorise: false,
-            cwd: pending_cwd,
+            cwd: initial_cwd,
             title_override: None,
         });
         win.active = win.tabs.len() - 1;
@@ -2446,7 +2523,7 @@ fn apply_layout(
     // Kept so the reply can name the new panes by surface: after `made` is
     // drained into the tab, the pairs are gone from here.
     let mut fresh_pairs: Vec<(PaneId, usize)> = Vec::new();
-    for (id, cwd) in ids.iter().zip(wanted.iter()) {
+    for (id, (cwd, history)) in ids.iter().zip(wanted.iter()) {
         let Some((_, Placement::Visible(r))) = placed.iter().find(|(p, _)| p == id).cloned() else {
             // Undo: a pane already made for this shape must not be left
             // behind, because nothing would ever refer to it again.
@@ -2455,7 +2532,7 @@ fn apply_layout(
             }
             return Err(format!("pane {id} has no place in that layout"));
         };
-        let spec = NewTab { cwd: (*cwd).clone(), ..NewTab::default() };
+        let spec = NewTab { cwd: (*cwd).clone(), history: (*history).clone(), ..NewTab::default() };
         match create_pane(frame, app, hinst, *id, r, spec) {
             Some(p) => {
                 fresh_pairs.push((p.id, p.surface));
@@ -3161,11 +3238,8 @@ pub fn set_cwd_for_surface(surface: Surface, cwd: String) -> bool {
     // it is the same question asked where the answer can now be.
     let landed = with_windows_mut(|ws| {
         for win in ws.iter_mut() {
-            for tab in win.tabs.iter_mut() {
-                if tab.panes.iter().any(|p| p.surface == key) {
-                    tab.cwd = Some(cwd.clone());
-                    return true;
-                }
+            if apply_pane_cwd(&mut win.tabs, key, &cwd) {
+                return true;
             }
         }
         false
@@ -3185,6 +3259,92 @@ fn take_pending_cwd(surface: usize) -> Option<String> {
     let mut st = shared();
     let at = st.pending_cwd.iter().position(|(s, _)| *s == surface)?;
     Some(st.pending_cwd.remove(at).1)
+}
+
+/// The pure decision `set_cwd_for_surface` delegates to: find the pane with
+/// this surface among `tabs`, and record `cwd` on *that pane* -- not only on
+/// its tab. Returns whether a pane was found.
+///
+/// `tab.cwd` is still written too, unconditionally, exactly as before this
+/// field existed -- see `Pane::cwd`'s doc comment for why neither the field
+/// nor its callers change: `reopen.rs` (a single pane) still wants "wherever
+/// this tab was last", and this only adds the fact that a project (many
+/// panes, each its own directory) needs and did not have anywhere to go.
+fn apply_pane_cwd(tabs: &mut [Tab], surface: usize, cwd: &str) -> bool {
+    for tab in tabs.iter_mut() {
+        if let Some(pane) = tab.panes.iter_mut().find(|p| p.surface == surface) {
+            pane.cwd = Some(cwd.to_string());
+            tab.cwd = Some(cwd.to_string());
+            return true;
+        }
+    }
+    false
+}
+
+/// A live pane's own last-reported directory, or `None` if it never reported
+/// one. **This is what task 533's project save reads** -- `Tab::cwd` cannot
+/// answer this question for any pane but whichever reported most recently.
+pub fn cwd_of_pane(id: PaneId) -> Option<String> {
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.id == id)
+            .and_then(|p| p.cwd.clone())
+    })
+}
+
+/// Take whatever `history_filename` arrived for a surface before its `Pane`
+/// existed. Mirrors `take_pending_cwd`; see `pending_history`'s doc comment
+/// on `State` for why this one, unlike `pwd`, has no later chance to land if
+/// missed here.
+fn take_pending_history(surface: usize) -> Option<String> {
+    let mut st = shared();
+    let at = st.pending_history.iter().position(|(s, _)| *s == surface)?;
+    Some(st.pending_history.remove(at).1)
+}
+
+/// Record the command-history handle the core reported for a surface, once,
+/// at surface creation. Mirrors `set_cwd_for_surface`'s two outcomes (found
+/// live, or held pending until `create_pane` collects it) with one
+/// difference: there is no tab-level field to also write, because there was
+/// nothing at tab granularity to preserve here in the first place (see
+/// `Pane::history`'s doc comment).
+// window-free: keyed by surface, which is unique in the process
+pub fn set_history_filename_for_surface(surface: Surface, filename: String) -> bool {
+    let key = surface as usize;
+    let landed = with_windows_mut(|ws| {
+        for win in ws.iter_mut() {
+            for tab in win.tabs.iter_mut() {
+                if let Some(pane) = tab.panes.iter_mut().find(|p| p.surface == key) {
+                    pane.history = Some(filename.clone());
+                    return true;
+                }
+            }
+        }
+        false
+    });
+    if landed {
+        return true;
+    }
+    let mut st = shared();
+    st.pending_history.retain(|(s, _)| *s != key);
+    st.pending_history.push((key, filename));
+    false
+}
+
+/// A live pane's own command-history handle, or `None` if it never got one
+/// (history capture is off by default -- see `Config.ShellIntegrationFeatures`
+/// -- so this is the common case, not a bug). Mirrors `cwd_of_pane`; this is
+/// what task 533's project save reads for `SavedLeaf::history`.
+pub fn history_of_pane(id: PaneId) -> Option<String> {
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.id == id)
+            .and_then(|p| p.history.clone())
+    })
 }
 
 /// Teach `reopen.rs` how to build a tab. Called once, at startup.
@@ -3412,31 +3572,157 @@ pub enum ShellTitle {
     NoSuchSurface,
 }
 
+/// The pure decision `set_shell_title` delegates to, for the tabs of *one*
+/// window: find the pane with this surface, record the pane's own title
+/// unconditionally, and separately decide whether the tab's displayed title
+/// changes. `None` if this window does not own the surface.
+///
+/// **The pane is written regardless of the override.** An override decides
+/// what the *tab strip* shows; it says nothing about what this pane's own
+/// program is actually called, and task 533's project save wants the
+/// latter -- a saved leaf's `title` should be what the shell said, not
+/// whatever the strip happened to display because a different pane in the
+/// same tab had focus and a name (see `Pane::title`'s doc comment).
+fn apply_pane_title(tabs: &mut [Tab], surface: usize, title: &str) -> Option<(usize, Option<NamedBy>)> {
+    let idx = tabs.iter().position(|t| t.panes.iter().any(|p| p.surface == surface))?;
+    let tab = &mut tabs[idx];
+    if let Some(pane) = tab.panes.iter_mut().find(|p| p.surface == surface) {
+        pane.title = Some(title.to_string());
+    }
+    if let Some(pinned) = &tab.title_override {
+        return Some((idx, Some(pinned.by)));
+    }
+    tab.title = title.to_string();
+    Some((idx, None))
+}
+
 // window-free: keyed by surface; it reports which window it landed in
 fn set_shell_title(surface: usize, title: String) -> ShellTitle {
-    // Which window, then which tab in it. Searched rather than assumed: the
-    // surface is the only thing the action carried.
+    // Every window, same reasoning as `set_cwd_for_surface`: the surface
+    // names itself, so searching all of them is the same question asked
+    // where the answer can now be, not a widening of scope.
     with_windows_mut(|ws| {
-        let found = ws.iter().enumerate().find_map(|(wi, w)| {
-            w.tabs
-                .iter()
-                .position(|t| t.panes.iter().any(|p| p.surface == surface))
-                .map(|ti| (wi, ti))
-        });
-        let Some((wi, idx)) = found else {
-            return ShellTitle::NoSuchSurface;
-        };
-        let win = &mut ws[wi];
-        let (owner, n) = (win.frame, win.tabs.len());
-        let tab = &mut win.tabs[idx];
-        if let Some(pinned) = &tab.title_override {
-            return ShellTitle::Overridden(owner, idx, n, pinned.by);
+        for win in ws.iter_mut() {
+            if let Some((idx, blocked)) = apply_pane_title(&mut win.tabs, surface, &title) {
+                let (owner, n) = (win.frame, win.tabs.len());
+                return match blocked {
+                    Some(by) => ShellTitle::Overridden(owner, idx, n, by),
+                    None => ShellTitle::Applied(owner, idx, n),
+                };
+            }
         }
-        tab.title = title;
-        ShellTitle::Applied(owner, idx, n)
+        ShellTitle::NoSuchSurface
     })
 }
 
+/// A live pane's own last-reported shell title, or `None` if it never
+/// reported one (or reported one before this field existed in the running
+/// process). Mirrors `cwd_of_pane`; see `Pane::title`'s doc comment.
+pub fn title_of_pane(id: PaneId) -> Option<String> {
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.id == id)
+            .and_then(|p| p.title.clone())
+    })
+}
+
+#[cfg(test)]
+mod pane_metadata_tests {
+    use super::*;
+
+    fn test_pane(id: u64, surface: usize) -> Pane {
+        Pane { id, hwnd: 0, surface, cwd: None, title: None, history: None }
+    }
+
+    fn test_tab(panes: Vec<Pane>) -> Tab {
+        Tab {
+            id: TabId(0),
+            tree: Tree::new(),
+            focused: 0,
+            panes,
+            title: String::new(),
+            color: 0,
+            role: 0,
+            shielded: false,
+            held: false,
+            may_authorise: false,
+            cwd: None,
+            title_override: None,
+        }
+    }
+
+    /// **The case task 533 exists to fix.** Before `Pane::cwd`, the only
+    /// place a directory could be read back from was `tab.cwd` -- one field
+    /// for the whole tab -- so a three-pane split in three different
+    /// directories remembered only whichever pane reported last. This is
+    /// the permanent, green regression test for the fix in this file; the
+    /// actual red-then-green run (same setup, `tab.cwd` read swapped for
+    /// `pane.cwd`) was done in a throwaway crate outside this repo, because
+    /// this file cannot be built to a runnable binary on the machine this
+    /// was written on, and its output is quoted in the task report rather
+    /// than reproduced as a test here that would need the old, buggy
+    /// `apply_pane_cwd` kept around on purpose just to fail.
+    #[test]
+    fn three_panes_in_three_directories_each_keep_their_own() {
+        let mut tabs = vec![test_tab(vec![test_pane(1, 10), test_pane(2, 20), test_pane(3, 30)])];
+
+        assert!(apply_pane_cwd(&mut tabs, 10, "/repo/a"));
+        assert!(apply_pane_cwd(&mut tabs, 20, "/repo/b"));
+        assert!(apply_pane_cwd(&mut tabs, 30, "/repo/c"));
+
+        assert_eq!(tabs[0].panes[0].cwd.as_deref(), Some("/repo/a"));
+        assert_eq!(tabs[0].panes[1].cwd.as_deref(), Some("/repo/b"));
+        assert_eq!(tabs[0].panes[2].cwd.as_deref(), Some("/repo/c"));
+
+        // tab.cwd is unchanged behaviour, not this fix's job: still
+        // whichever pane reported last, for `reopen.rs`'s sake.
+        assert_eq!(tabs[0].cwd.as_deref(), Some("/repo/c"));
+    }
+
+    #[test]
+    fn a_surface_nobody_owns_is_not_found() {
+        let mut tabs = vec![test_tab(vec![test_pane(1, 10)])];
+        assert!(!apply_pane_cwd(&mut tabs, 999, "/nowhere"));
+    }
+
+    /// Same case, for title: three panes running three different programs
+    /// each keep the name their own shell announced, independent of
+    /// whichever one the tab strip happens to be showing.
+    #[test]
+    fn three_panes_running_three_programs_each_keep_their_own_title() {
+        let mut tabs = vec![test_tab(vec![test_pane(1, 10), test_pane(2, 20), test_pane(3, 30)])];
+
+        assert_eq!(apply_pane_title(&mut tabs, 10, "vim"), Some((0, None)));
+        assert_eq!(apply_pane_title(&mut tabs, 20, "make -j8"), Some((0, None)));
+        assert_eq!(apply_pane_title(&mut tabs, 30, "ssh box"), Some((0, None)));
+
+        assert_eq!(tabs[0].panes[0].title.as_deref(), Some("vim"));
+        assert_eq!(tabs[0].panes[1].title.as_deref(), Some("make -j8"));
+        assert_eq!(tabs[0].panes[2].title.as_deref(), Some("ssh box"));
+
+        // tab.title, same as tab.cwd above, is still "whichever reported
+        // last" -- unchanged behaviour for the strip to show.
+        assert_eq!(tabs[0].title, "ssh box");
+    }
+
+    /// The pane's own title is recorded **even when an override blocks the
+    /// tab strip from showing it** -- that is exactly the case task 533
+    /// needs (a user-renamed tab should not erase what the program inside
+    /// each pane is actually called for the purposes of saving a project).
+    #[test]
+    fn an_override_blocks_the_strip_but_not_the_panes_own_title() {
+        let mut tab = test_tab(vec![test_pane(1, 10)]);
+        tab.title_override = Some(PinnedTitle { by: NamedBy::User, text: "my build".to_string() });
+        let mut tabs = vec![tab];
+
+        let result = apply_pane_title(&mut tabs, 10, "vim");
+        assert_eq!(result, Some((0, Some(NamedBy::User))));
+        assert_eq!(tabs[0].title_override.as_ref().unwrap().text, "my build");
+        assert_eq!(tabs[0].panes[0].title.as_deref(), Some("vim"));
+    }
+}
 
 /// Move one tab to a position, **by identity**.
 ///

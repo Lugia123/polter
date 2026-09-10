@@ -227,3 +227,50 @@ if ($global:GhosttyHasLocationEvent) {
 
 # The starting directory, which no change event will ever announce.
 __GhosttyReport
+
+# ── Command-line capture (private preexec hook) ──────────────────────────
+#
+# Per-pane command history capture needs the raw command line before it
+# runs -- the same thing OSC 133's `C` mark gives bash and zsh. This section
+# does not add OSC 133 (the block near the top of this file explains at
+# length why not); it implements only the narrower thing that capture
+# needs: a hook that hands the typed line to __GhosttyPreexec before it
+# executes, for whatever private protocol carries it out to the terminal.
+#
+# The only place to intercept "the user is done typing" is
+# `PSConsoleHostReadLine`, the function PSReadLine defines. Wrapping it has
+# the exact fragility already documented above for `prompt`: re-importing
+# PSReadLine (a user profile, a module upgrade, `Import-Module PSReadLine
+# -Force`) redefines the function outright and drops this wrapper with no
+# error anywhere -- there is no event to catch that with. **Verified**: a
+# running session that does `Import-Module PSReadLine -Force` stops being
+# captured immediately afterward, silently. Not solved here -- VS Code's own
+# `shellIntegration.ps1` has the identical gap, for the identical reason.
+# Chaining (save-then-call, never replace outright) only protects against
+# something ELSE wrapping *after* this file does; it cannot protect against
+# something redefining the function from scratch.
+#
+# PSReadLine is not guaranteed to be loaded yet at this point. Unlike an
+# interactive login, this script runs via `-Command` (see setupPowershell in
+# shell_integration.zig), and PSReadLine's own auto-load has not necessarily
+# happened by then. Force it, so there is a function here to wrap at all.
+try { Import-Module PSReadLine -ErrorAction Stop } catch { }
+
+if (Test-Path function:PSConsoleHostReadLine) {
+    $global:GhosttyOriginalPSConsoleHostReadLine = $function:PSConsoleHostReadLine
+    function global:PSConsoleHostReadLine {
+        $line = & $global:GhosttyOriginalPSConsoleHostReadLine
+        if ($line) {
+            try { __GhosttyPreexec $line } catch { }
+        }
+        $line
+    }
+}
+
+# Single splice point for whatever private OSC ends up carrying
+# $CommandLine to the terminal. Left empty here: the byte format is not
+# decided yet. Wiring it in later means touching this one function body,
+# not the wrapper above.
+function global:__GhosttyPreexec {
+    param([string]$CommandLine)
+}

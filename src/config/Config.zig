@@ -3371,6 +3371,11 @@ keybind: Keybinds = .{},
 ///     This is particularly useful on macOS where PATH is often overridden by
 ///     system scripts. The directory is only added if not already present.
 ///
+///   * `history` - Report each command about to run to Ghostty via a private
+///     escape sequence, so a pane's command history can be saved and restored
+///     as part of a saved project. Off by default: unlike the other features
+///     here, this writes what you type to disk.
+///
 /// SSH features work independently and can be combined for optimal experience:
 /// when both `ssh-env` and `ssh-terminfo` are enabled, Ghostty will install its
 /// terminfo on remote hosts and use `xterm-ghostty` as TERM, falling back to
@@ -4367,6 +4372,17 @@ _diagnostics: cli.DiagnosticList = .{},
 /// The conditional truths for the configuration. This is used to
 /// determine if a conditional configuration matches or not.
 _conditional_state: conditional.State = .{},
+
+/// An opaque per-pane history handle from a saved project's pane
+/// (`Project.Leaf.history`), set by the apprt on a per-surface basis (see
+/// `apprt.embedded.Surface.Options.history_restore`) rather than read
+/// from the config file -- there is no user-facing config key for this,
+/// which is why it carries the same `_` prefix as `_conditional_state`.
+/// Consumed in `termio/Exec.zig`'s `Subprocess.init`, after shell
+/// detection resolves, because what this string means (a `HISTFILE`
+/// value, a fish session name) depends on which shell core ends up
+/// spawning.
+_history_restore: ?[]const u8 = null,
 
 /// The conditional keys that are used at any point during the configuration
 /// loading. This is used to speed up the conditional evaluation process.
@@ -9664,6 +9680,7 @@ pub const ShellIntegrationFeatures = packed struct {
     @"ssh-env": bool = false,
     @"ssh-terminfo": bool = false,
     path: bool = true,
+    history: bool = false,
 };
 
 pub const SplitPreserveZoom = packed struct {
