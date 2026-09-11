@@ -1525,14 +1525,6 @@ pub const Action = union(Key) {
                 .{ .vk = "VK_M", .physical = false, .key = "m" },
                 .{ .vk = "VK_P", .physical = false, .key = "p" },
                 .{ .vk = "VK_Z", .physical = false, .key = "z" },
-                // Added for the two temporary project chords (task 549). The
-                // point of adding them is not to silence this test -- it is
-                // that until they were here, **nothing checked whether the
-                // core already binds `ctrl+shift+u` or `ctrl+shift+r`**, and
-                // the host would have lost that chord to the core without a
-                // word. They go out with the chords.
-                .{ .vk = "VK_U", .physical = false, .key = "u" },
-                .{ .vk = "VK_R", .physical = false, .key = "r" },
                 .{ .vk = "VK_OEM_COMMA", .physical = false, .key = "," },
                 .{ .vk = "VK_OEM_PLUS", .physical = false, .key = "=" },
                 .{ .vk = "VK_TAB", .physical = true, .key = "tab" },

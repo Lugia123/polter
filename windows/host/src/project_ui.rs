@@ -26,7 +26,6 @@ use windows::Win32::Foundation::HWND;
 use crate::plogf;
 use crate::project::{self, SavedLeaf, SavedNode, Snapshot};
 use crate::tabs::{self, TabId};
-use polter_split_tree::Node;
 
 /// Build a `Snapshot` from a live tab. `None` if the tab (or its window) is
 /// gone by the time this runs -- callers are expected to be reacting to a
