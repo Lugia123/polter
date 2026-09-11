@@ -1381,19 +1381,19 @@ const Chat = struct {
                 }
 
                 if (key.matches(vaxis.Key.page_up, .{})) {
-                    self.scroll +|= 10;
+                    self.scrollBack(10);
                     return;
                 }
                 if (key.matches(vaxis.Key.page_down, .{})) {
-                    self.scroll -|= 10;
+                    self.scrollForward(10);
                     return;
                 }
                 if (key.matches(vaxis.Key.home, .{})) {
-                    self.scroll = std.math.maxInt(usize);
+                    self.scrollToOldest();
                     return;
                 }
                 if (key.matches(vaxis.Key.end, .{})) {
-                    self.scroll = 0;
+                    self.scrollToNewest();
                     return;
                 }
             },
@@ -1583,6 +1583,55 @@ const Chat = struct {
     /// The scroll goes back to the bottom, for the same reason changing
     /// group does: it counts rows in whatever was last laid out, and the
     /// two views have nothing like the same number of them.
+    /// Scroll by `n` rows in the direction the person meant, whichever view
+    /// is showing.
+    ///
+    /// **`scroll` does not mean the same thing in both views, and the input
+    /// side used to assume it did.** `drawMessages` counts rows up from the
+    /// bottom, so a larger `scroll` walks back through the conversation --
+    /// wheel-up, page-up and home all want it bigger. `drawTasks` draws the
+    /// newest row first and counts rows down from the top, so a larger
+    /// `scroll` walks *away* from the newest: the same key has to make it
+    /// smaller there. Wiring the keys to `scroll` directly meant the wheel,
+    /// page-up/down and home/end were all inverted on the task panel, which
+    /// is what the user hit.
+    ///
+    /// So the four call sites say what the person asked for -- earlier or
+    /// later -- and this is the one place that knows which way that is.
+    fn scrollBack(self: *Chat, n: usize) void {
+        switch (self.view) {
+            // `.stats` reads no scroll at all today -- `drawStats` never
+            // looks at the field -- so which side it sits on here changes
+            // nothing that can be observed. It is grouped with the
+            // conversation because that is the direction it would want if it
+            // ever grew a scroll, not because anything measured it.
+            .chat, .stats => self.scroll +|= n,
+            .tasks => self.scroll -|= n,
+        }
+    }
+
+    fn scrollForward(self: *Chat, n: usize) void {
+        switch (self.view) {
+            .chat, .stats => self.scroll -|= n,
+            .tasks => self.scroll +|= n,
+        }
+    }
+
+    /// The far end in the direction `scrollBack` goes.
+    fn scrollToOldest(self: *Chat) void {
+        switch (self.view) {
+            .chat, .stats => self.scroll = std.math.maxInt(usize),
+            .tasks => self.scroll = 0,
+        }
+    }
+
+    fn scrollToNewest(self: *Chat) void {
+        switch (self.view) {
+            .chat, .stats => self.scroll = 0,
+            .tasks => self.scroll = std.math.maxInt(usize),
+        }
+    }
+
     fn selectView(self: *Chat, view: View) void {
         if (self.view == view) return;
         self.view = view;
@@ -1631,8 +1680,8 @@ const Chat = struct {
         switch (m.button) {
             // The wheel scrolls whatever is under it, and the message pane
             // is the only thing long enough to scroll.
-            .wheel_up => self.scroll +|= 3,
-            .wheel_down => self.scroll -|= 3,
+            .wheel_up => self.scrollBack(3),
+            .wheel_down => self.scrollForward(3),
 
             .left => {
                 if (m.type != .press) return;
@@ -3476,6 +3525,54 @@ const testing = std.testing;
 test {
     _ = layout;
     _ = chat_stats;
+}
+
+test "the wheel means the same thing in both views, and the field does not" {
+    // **The defect this is here for.** Both panes scroll with one `scroll`
+    // field, and they read it in opposite directions: `drawMessages` counts
+    // rows up from the bottom, `drawTasks` draws the newest first and counts
+    // down from the top. The keys used to be wired straight to the field, so
+    // every scroll input -- wheel, page up/down, home/end -- did the right
+    // thing in the conversation and the wrong thing in the task panel.
+    //
+    // Asserted on the field rather than on a rendered screen, because the
+    // direction *is* the field: a test that drew both panes would be testing
+    // the renderer, and the renderer was never wrong.
+    var chat: Chat = undefined;
+    chat.scroll = 100;
+
+    chat.view = .chat;
+    chat.scrollBack(3);
+    try testing.expectEqual(@as(usize, 103), chat.scroll);
+    chat.scrollForward(3);
+    try testing.expectEqual(@as(usize, 100), chat.scroll);
+
+    // The same call, the other view, the other way.
+    chat.view = .tasks;
+    chat.scrollBack(3);
+    try testing.expectEqual(@as(usize, 97), chat.scroll);
+    chat.scrollForward(3);
+    try testing.expectEqual(@as(usize, 100), chat.scroll);
+
+    // The ends, which were inverted for the same reason.
+    chat.view = .chat;
+    chat.scrollToOldest();
+    try testing.expectEqual(std.math.maxInt(usize), chat.scroll);
+    chat.scrollToNewest();
+    try testing.expectEqual(@as(usize, 0), chat.scroll);
+
+    chat.view = .tasks;
+    chat.scrollToOldest();
+    try testing.expectEqual(@as(usize, 0), chat.scroll);
+    chat.scrollToNewest();
+    try testing.expectEqual(std.math.maxInt(usize), chat.scroll);
+
+    // Saturating, not wrapping: a wheel at the end of the list must not turn
+    // the newest row into the oldest one.
+    chat.view = .tasks;
+    chat.scroll = 1;
+    chat.scrollBack(3);
+    try testing.expectEqual(@as(usize, 0), chat.scroll);
 }
 
 test "the last hours of the day survive a narrow column" {
