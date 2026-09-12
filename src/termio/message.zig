@@ -93,6 +93,19 @@ pub const Message = union(enum) {
     /// The surface gained or lost focus.
     focused: bool,
 
+    /// Hold the writes queued behind this one for this many milliseconds.
+    ///
+    /// **This is a gap between two writes, not a delay on one.** Poltergeist
+    /// puts one between the text of a `terminal_send` and the return that
+    /// submits it, because the receiving program decides whether a return is
+    /// a submission or part of a paste by **when** it arrived, not by what
+    /// the bytes are -- see `docs/windows/terminal-send-not-submitted.md`.
+    ///
+    /// Handled on the IO thread by pausing the mailbox drain, so nothing
+    /// sleeps and no other terminal is affected. Messages already queued
+    /// behind it wait, which is the whole point: the return is one of them.
+    write_delay: u64,
+
     /// Write where the data fits in the union.
     write_small: WriteReq.Small,
 

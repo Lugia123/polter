@@ -4055,6 +4055,35 @@ pub fn poltergeistMayType(self: *Surface) !void {
     }
 }
 
+/// How long to wait between the text of a `terminal_send` and the return
+/// that submits it, in milliseconds.
+///
+/// **A range, drawn fresh each time, not a constant.** The number is not
+/// tuned to any threshold we measured -- we never measured one, and the one
+/// that matters lives in somebody else's program and moves between versions.
+/// It is here to type at a human pace rather than a machine's, and a spread
+/// is part of that.
+///
+/// Windows starts higher because the receiving program's own guard is
+/// explicitly platform-gated: qwen sets `pasteWorkaround` on `win32` and
+/// then refuses to submit for 500ms after a paste. The floor sits above
+/// that window on purpose.
+pub const submit_delay_ms: struct { min: u64, max: u64 } = if (builtin.os.tag == .windows)
+    .{ .min = 600, .max = 1000 }
+else
+    .{ .min = 200, .max = 1000 };
+
+fn submitDelayMs() u64 {
+    // Same source the surface id is drawn from, a few hundred lines up.
+    const rng_impl: std.Random.IoSource = .{ .io = global.io() };
+    const rng = rng_impl.interface();
+    return rng.intRangeAtMost(
+        u64,
+        submit_delay_ms.min,
+        submit_delay_ms.max,
+    );
+}
+
 pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void {
     if (text.len == 0) return;
 
@@ -4149,11 +4178,40 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
         return;
     }
 
+    // **A gap between the text and the return that submits it.**
+    //
+    // The return has always been its own `keyCallback` (below), and its
+    // bytes have always been their own write -- what was missing was the
+    // pause between them. The receiving program decides whether a return
+    // submits the line or belongs to a paste by **when** it arrived: qwen
+    // refuses to submit for 500ms after a paste, in as many words, in
+    // `InputPrompt.tsx`. The whole argument, including the four root causes
+    // this was mistaken for first, is in
+    // `docs/windows/terminal-send-not-submitted.md`.
+    //
+    // ⚠️ **It goes in the mailbox, not in a sleep here.** This runs on the
+    // app thread; sleeping would freeze the window. The IO thread holds its
+    // drain instead, so the gap costs this terminal's queued writes and
+    // nothing else. See `write_delay` in `termio/message.zig`.
+    //
+    // ⚠️ **And it goes in before the `keyCallback` below, not after** -- the
+    // return's write is queued by that call, so a delay queued afterwards
+    // would land on the wrong side of it.
+    self.queueIo(.{ .write_delay = submitDelayMs() }, .unlocked);
+
     // `keyCallback` stamps `last_key_time`, and this key is ours, not the
     // user's. Leaving the stamp would have Poltergeist mistake its own
     // typing for somebody being at the keyboard. **The draft is not
     // restored with it**: this return submits the line, so the line really
     // is empty afterwards -- see the field.
+    //
+    // ⚠️ **The gap above does not reach this.** `keyCallback` is still
+    // called here, synchronously, and the stamp is restored when this
+    // function returns -- only the *write* waits, out on the IO thread. Had
+    // the return been moved into a callback instead, this `defer` would have
+    // run long before it, and Poltergeist would have read its own typing as
+    // a person at the keyboard and refused the next `terminal_send` with
+    // `UserPresent`. That is the trap this shape avoids.
 
     const stamp = self.last_key_time;
     defer self.last_key_time = stamp;
@@ -7289,4 +7347,27 @@ test "queueIo frees allocated writes in readonly mode" {
         .alloc = testing.allocator,
         .data = data,
     } }, .unlocked);
+}
+
+test "the submit gap is a range, and Windows starts above the guard it has to clear" {
+    const testing = std.testing;
+
+    // A point value would be a number tuned to a threshold nobody measured.
+    // The spread is the feature; a range that collapsed would be a typo
+    // nothing else would catch.
+    try testing.expect(submit_delay_ms.min < submit_delay_ms.max);
+
+    // The receiving program's own guard is 500ms and is gated on Windows.
+    // The floor there has to sit above it, and this is the only place that
+    // says so in a way that survives somebody "tidying" the constants.
+    if (comptime builtin.os.tag == .windows) {
+        try testing.expect(submit_delay_ms.min > 500);
+    }
+
+    // Drawn from the range, every time, inclusive at both ends.
+    for (0..64) |_| {
+        const ms = submitDelayMs();
+        try testing.expect(ms >= submit_delay_ms.min);
+        try testing.expect(ms <= submit_delay_ms.max);
+    }
 }

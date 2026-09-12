@@ -121,6 +121,21 @@ sync_reset: xev.Timer,
 sync_reset_c: xev.Completion = .{},
 sync_reset_cancel_c: xev.Completion = .{},
 
+/// Holds the mailbox drain for a `write_delay` message.
+///
+/// **A pause, not a sleep.** Sleeping in the drain would stop this
+/// terminal's whole event loop -- the process watcher, the termios timer and
+/// Poltergeist's sampler all live on it -- for as long as the gap lasts.
+/// Pausing the drain instead leaves the loop free and costs only what the
+/// gap is for: the messages queued behind it wait.
+write_delay: xev.Timer,
+write_delay_c: xev.Completion = .{},
+
+/// True from the moment a `write_delay` is taken until its timer fires.
+/// While it is set, `drainMailbox` returns without popping anything, so a
+/// wakeup arriving during the gap does not step over it.
+write_delay_active: bool = false,
+
 /// Poltergeist's quiescence sampler. This lives on the IO thread rather
 /// than the renderer thread on purpose: the renderer stops rebuilding
 /// frames entirely while a surface is not visible (see the visibility
@@ -174,6 +189,10 @@ pub fn init(
     var sync_reset_h = try xev.Timer.init();
     errdefer sync_reset_h.deinit();
 
+    // This timer holds the drain for a `write_delay` message.
+    var write_delay_h = try xev.Timer.init();
+    errdefer write_delay_h.deinit();
+
     return Thread{
         .alloc = alloc,
         .loop = loop,
@@ -181,6 +200,7 @@ pub fn init(
         .scroll = scroll_h,
         .coalesce = coalesce_h,
         .sync_reset = sync_reset_h,
+        .write_delay = write_delay_h,
     };
 }
 
@@ -191,6 +211,7 @@ pub fn deinit(self: *Thread) void {
     self.scroll.deinit();
     self.coalesce.deinit();
     self.sync_reset.deinit();
+    self.write_delay.deinit();
     self.stop.deinit();
     self.loop.deinit();
 }
@@ -475,6 +496,11 @@ fn drainMailbox(
         return;
     }
 
+    // A gap is running. Everything still queued belongs behind it -- the
+    // return that submits a `terminal_send` is the message this exists for
+    // -- so we pop nothing and let the timer call us back.
+    if (self.write_delay_active) return;
+
     // This holds the mailbox lock for the duration of the drain. The
     // expectation is that all our message handlers will be non-blocking
     // ENOUGH to not mess up throughput on producers.
@@ -524,6 +550,27 @@ fn drainMailbox(
             .start_synchronized_output => self.startSynchronizedOutput(cb),
             .linefeed_mode => |v| self.flags.linefeed_mode = v,
             .focused => |v| try io.focusGained(data, v),
+            .write_delay => |ms| {
+                // Stop draining here. `write_delay_active` keeps a wakeup
+                // from stepping over the gap, and the callback resumes from
+                // exactly this point -- the queue is where the remaining
+                // messages have been all along.
+                self.write_delay_active = true;
+                self.write_delay.run(
+                    &self.loop,
+                    &self.write_delay_c,
+                    ms,
+                    CallbackData,
+                    cb,
+                    writeDelayCallback,
+                );
+
+                // The messages already handled in this pass are worth a
+                // frame, and the gap is long enough that waiting for the
+                // rest would be visible.
+                if (redraw) try io.renderer_wakeup.notify();
+                return;
+            },
             .write_small => |v| try io.queueWrite(
                 data,
                 v.data[0..v.len],
@@ -879,6 +926,30 @@ fn stopCallback(
     return .disarm;
 }
 
+fn writeDelayCallback(
+    cb_: ?*CallbackData,
+    _: *xev.Loop,
+    _: *xev.Completion,
+    r: xev.Timer.RunError!void,
+) xev.CallbackAction {
+    const cb = cb_ orelse return .disarm;
+
+    // **Cleared before anything can fail.** A gap that never lifts would
+    // leave this terminal unable to write anything again, which is a far
+    // worse outcome than a gap that came out the wrong length.
+    cb.self.write_delay_active = false;
+
+    _ = r catch |err| switch (err) {
+        error.Canceled => {},
+        else => log.warn("error during write delay callback err={}", .{err}),
+    };
+
+    cb.self.drainMailbox(cb) catch |err|
+        log.err("error draining mailbox after write delay err={}", .{err});
+
+    return .disarm;
+}
+
 fn startScrollTimer(self: *Thread, cb: *CallbackData) void {
     self.scroll_active = true;
 
@@ -966,4 +1037,71 @@ test "a configured threshold reaches the sampler in the unit it left in" {
     // applies -- but only there.
     try testing.expectEqual(@as(u64, quiescence_sample_ms), quiescenceFloor(0));
     try testing.expectEqual(@as(u64, quiescence_sample_ms), quiescenceFloor(1));
+}
+
+test "a write delay pauses the drain, so the return is not written with the text" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // `Termio` is far too big to stand up here, so only the fields this
+    // drain actually reads are set -- the same shape the two `Surface`
+    // tests use. If somebody makes the drain read a third field this test
+    // crashes rather than passing, which is the right way round.
+    const io = try alloc.create(termio.Termio);
+    defer alloc.destroy(io);
+    io.* = undefined;
+    io.alloc = alloc;
+
+    var wakeup = try xev.Async.init();
+    defer wakeup.deinit();
+    io.renderer_wakeup = &wakeup;
+
+    io.mailbox = try .initSPSC(alloc);
+    defer io.mailbox.deinit(alloc);
+
+    var thread: Thread = try .init(alloc);
+    defer thread.deinit();
+
+    var cb: CallbackData = .{ .self = &thread, .io = io };
+    cb.data = undefined;
+    cb.data.backend = .{ .exec = undefined };
+
+    // The child having gone is what stops `Exec.queueWrite` before it
+    // reaches a pty we do not have. The writes still travel the whole drain;
+    // only the final syscall is skipped.
+    cb.data.backend.exec.exited = true;
+
+    const write = struct {
+        fn f(bytes: []const u8) termio.Message {
+            var small: termio.Message.WriteReq.Small = .{};
+            @memcpy(small.data[0..bytes.len], bytes);
+            small.len = @intCast(bytes.len);
+            return .{ .write_small = small };
+        }
+    }.f;
+
+    // The shape a submitting `terminal_send` puts in the mailbox: the text,
+    // the gap, and the return that submits it.
+    io.mailbox.send(write("abc"), null);
+    io.mailbox.send(.{ .write_delay = 5 }, null);
+    io.mailbox.send(write("\r"), null);
+
+    try thread.drainMailbox(&cb);
+
+    // ⭐ **The point of the whole change.** Without the pause the drain pops
+    // all three in one pass and the return goes out against the text; the
+    // receiving program then reads the return as part of a paste and does
+    // not submit. Here the drain stops at the gap.
+    try testing.expect(thread.write_delay_active);
+
+    const left = io.mailbox.spsc.queue.pop(global.io());
+    try testing.expect(left != null);
+    try testing.expectEqualStrings("\r", left.?.write_small.data[0..left.?.write_small.len]);
+
+    // And a wakeup arriving inside the gap must not step over it. Put the
+    // return back and drain again: nothing may move.
+    io.mailbox.send(left.?, null);
+    try thread.drainMailbox(&cb);
+    try testing.expect(thread.write_delay_active);
+    try testing.expectEqual(@as(usize, 1), io.mailbox.spsc.queue.len);
 }
