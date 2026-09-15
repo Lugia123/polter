@@ -443,7 +443,7 @@ pub struct WindowState {
     ///
     /// **This exists so the per-pane layout lines can stop lying by
     /// omission.** Those lines are capped at the first 40 layouts of the
-    /// process, and `docs/windows/split-target-criteria.md` reads them back
+    /// process, and `dev-docs/windows/split-target-criteria.md` reads them back
     /// as its verdict for two of its three cells -- so on the 41st layout
     /// that criterion silently stops being able to fail, and "the panes were
     /// never moved" and "the cap ran out" produce the same empty search.
@@ -1964,7 +1964,7 @@ pub fn layout(frame: HWND) {
     // read.** `LAYOUTS` is process-wide and never reset, so `n <= 40` alone
     // is spent by ordinary use -- open two tabs, split once, drag the
     // divider, and it is gone. Every later layout was then silent, and
-    // `docs/windows/split-target-criteria.md`, which reads these lines back
+    // `dev-docs/windows/split-target-criteria.md`, which reads these lines back
     // as the verdict for two of its three cells, could not tell "the panes
     // were never moved" from "the cap ran out". That criterion was green
     // partly because it was run early.
@@ -2030,7 +2030,7 @@ pub fn layout(frame: HWND) {
         // floor has to be run again -- the guard cannot tell you it stopped
         // covering something.
         //
-        // The open question is recorded in `docs/windows/status.md`; it is a
+        // The open question is recorded in `dev-docs/windows/status.md`; it is a
         // debt, not a blocker, because the wide guard is safe.
         crate::with_host_shuffle(|| {
             for (id, hw) in hide {
@@ -2114,7 +2114,7 @@ pub fn layout(frame: HWND) {
 /// `ghostty_surface_new`.** That is not tidiness: the renderer sizes itself
 /// from `GetClientRect` of this HWND inside `surface_new`, and a surface built
 /// on a placeholder-sized window renders black with no error anywhere. See
-/// docs/windows/development.md section 5.2, item 4.
+/// dev-docs/windows/development.md section 5.2, item 4.
 #[allow(clippy::too_many_arguments)]
 fn create_pane(
     frame: HWND,
@@ -3911,7 +3911,7 @@ fn move_tab_to_new_window(
 /// does not have to happen in the active tab -- `acting_tab` finds the tab
 /// containing the pane the caller named, and `terminal_action(id=A, ...)`
 /// against a pane in a background tab is not a corner case, it is the shape
-/// `docs/windows/split-target-criteria.md` exists to test. So the line said
+/// `dev-docs/windows/split-target-criteria.md` exists to test. So the line said
 /// how many panes were in *some other* tab and called it "this tab".
 ///
 /// **A count with no subject cannot be wrong out loud.** The number was

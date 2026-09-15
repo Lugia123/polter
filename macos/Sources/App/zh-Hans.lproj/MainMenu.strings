@@ -1,6 +1,6 @@
 /* Polter 主菜单简体中文。
    键是 MainMenu.xib 里的 object id —— 改 xib 时 id 不变，标题变了这里也要跟着改。
-   术语跟着 docs/poltergeist 走：supervisor = 总管，group chat = 群聊。*/
+   术语跟着 dev-docs/poltergeist 走：supervisor = 总管，group chat = 群聊。*/
 
 /* 应用菜单 */
 "5kV-Vb-QxS.title" = "关于 Polter";

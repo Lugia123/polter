@@ -5,7 +5,7 @@
 //! `Watcher` as opaque bytes; all the decisions live in `Sampler`.
 //!
 //! The caller is responsible for holding the renderer state lock. See
-//! `docs/poltergeist/sensing.md`.
+//! `dev-docs/poltergeist/sensing.md`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

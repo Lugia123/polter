@@ -28,7 +28,7 @@
 //! only place that guarantee comes free. And it means any language: a
 //! twenty-line `curl` script is a complete plugin, where requiring Zig
 //! would mean the extension point does not exist. See
-//! `docs/poltergeist/plugins.md` for the routes that were rejected.
+//! `dev-docs/poltergeist/plugins.md` for the routes that were rejected.
 //!
 //! **Nothing here knows what a plugin is for.** Which events one asked for
 //! is a name this file parses and stores; what those events mean, and what
@@ -134,7 +134,7 @@ pub const Event = enum {
 /// They are **not** a sandbox and nothing here stops a plugin doing either.
 /// Saying that plainly is the point: `"network": false` must never be read
 /// as "it cannot reach the network". Real isolation has to be designed
-/// together with signing; see `docs/poltergeist/plugins.md`.
+/// together with signing; see `dev-docs/poltergeist/plugins.md`.
 ///
 /// The line between the two halves is not how dangerous the thing is. It is
 /// **whether the host stands on the path**. Every event goes through
@@ -312,7 +312,7 @@ pub const Manifest = struct {
 ///
 /// **Which file to run is the plugin's to say; how to start that kind of file
 /// is this host's.** Those are two different questions and only the first one
-/// was ever settled -- see `docs/poltergeist/provisioning.md` section 9. The
+/// was ever settled -- see `dev-docs/poltergeist/provisioning.md` section 9. The
 /// plugin answers the first with `exec_<os>`; this table answers the second,
 /// and it is deliberately short.
 ///
@@ -422,7 +422,7 @@ pub fn launchArgvFor(
 /// The manifest is JSON rather than YAML: Zig has no YAML in its standard
 /// library, and a hand-written subset parser gets indentation and
 /// implicit typing wrong in ways that silently mean something else. See
-/// `docs/poltergeist/plugins.md`.
+/// `dev-docs/poltergeist/plugins.md`.
 pub fn load(
     arena: Allocator,
     io: std.Io,
@@ -484,7 +484,7 @@ pub fn load(
     // POSIX. The alternatives -- `exec` becoming an object, an array of
     // `{os, path}` -- would have made every existing manifest and every
     // example ambiguous to save a few flat keys. See
-    // `docs/poltergeist/provisioning.md` 9.2.
+    // `dev-docs/poltergeist/provisioning.md` 9.2.
     //
     // The name is `builtin.os.tag`'s own: `exec_windows`, `exec_macos`,
     // `exec_linux`.

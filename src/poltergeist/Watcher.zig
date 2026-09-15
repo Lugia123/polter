@@ -7,7 +7,7 @@
 //! Still pure with respect to the terminal: it takes rows as bytes and time
 //! as a parameter. The glue that walks a real `Screen` and reads the clock
 //! lives outside this file, which is what keeps all of this testable without
-//! a terminal. See `docs/poltergeist/sensing.md`.
+//! a terminal. See `dev-docs/poltergeist/sensing.md`.
 
 const Watcher = @This();
 

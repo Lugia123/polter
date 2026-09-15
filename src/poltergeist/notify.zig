@@ -24,7 +24,7 @@
 //! That distinction came from watching a real run: a worker stopped on an
 //! MCP authorisation prompt and the supervisor correctly refused to touch
 //! it -- and the terminal then sat there, because there was nowhere for
-//! the question to go. See `docs/poltergeist/supervisor.md`.
+//! the question to go. See `dev-docs/poltergeist/supervisor.md`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

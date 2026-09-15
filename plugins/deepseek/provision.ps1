@@ -1,7 +1,7 @@
 # Tell DeepSeek-TUI that Polter is here. The Windows half.
 #
 # The implementation is in `_sdk/provision.ps1`; this file is the answers.
-# See docs/poltergeist/provisioning.md and docs/windows/development.md 5.3.
+# See dev-docs/poltergeist/provisioning.md and dev-docs/windows/development.md 5.3.
 #
 # **DeepSeek ships no CLI of its own.** V4-Pro is a model; the terminal agents
 # for it are third-party, and this one targets DeepSeek-TUI, which is the one

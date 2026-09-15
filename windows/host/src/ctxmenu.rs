@@ -1,7 +1,7 @@
 //! The terminal's right-click menu.
 //!
 //! **Why it exists.** Before this, the host handled no right-button message at
-//! all -- `docs/windows/discoverability.md` §3.2 quotes the exhaustive list of
+//! all -- `dev-docs/windows/discoverability.md` §3.2 quotes the exhaustive list of
 //! mouse messages the host processed and there is not one of them in it. So a
 //! person who selected some text and reached for the right button got nothing,
 //! and the only way to copy was a shortcut nobody had told them about.
@@ -17,7 +17,7 @@
 //!
 //! **The shortcut half of every label comes from the core's binding table.**
 //! It used to be a string constant compiled into the label (`"Copy\tCtrl+
-//! Shift+C"`). `docs/windows/s4.md` §3.4 point 1 is about exactly that: a
+//! Shift+C"`). `dev-docs/windows/s4.md` §3.4 point 1 is about exactly that: a
 //! constant is wrong the moment the user rebinds the action, and **nothing
 //! anywhere reports it** -- there is no failing action, no red log line, just
 //! a menu quietly instructing the user to press the wrong key. The labels

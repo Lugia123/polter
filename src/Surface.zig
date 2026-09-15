@@ -4187,7 +4187,7 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
     // refuses to submit for 500ms after a paste, in as many words, in
     // `InputPrompt.tsx`. The whole argument, including the four root causes
     // this was mistaken for first, is in
-    // `docs/windows/terminal-send-not-submitted.md`.
+    // `dev-docs/windows/terminal-send-not-submitted.md`.
     //
     // ⚠️ **It goes in the mailbox, not in a sleep here.** This runs on the
     // app thread; sleeping would freeze the window. The IO thread holds its

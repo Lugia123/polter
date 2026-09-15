@@ -488,7 +488,7 @@ const WindowsPty = struct {
     /// handle -- cannot do this job: it cancels *registered, cancellable*
     /// requests, and a synchronous read on this pipe is often not one. It
     /// reports `ERROR_NOT_FOUND` and changes nothing. See
-    /// `docs/windows/status.md` section 七.8: the same function had already
+    /// `dev-docs/windows/status.md` section 七.8: the same function had already
     /// been wrong three times in the named-pipe shutdown, where the answer
     /// was also to stop cancelling and close the thing being waited on.
     pub fn closeConsole(self: *Pty) void {

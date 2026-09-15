@@ -46,7 +46,7 @@
 #                        **Printing nothing means this host has no skills**,
 #                        which is a degradation and not a failure: the tools
 #                        still arrive, and the tool-family map in `initialize`
-#                        arrives with them. See docs/poltergeist/provisioning.md.
+#                        arrives with them. See dev-docs/poltergeist/provisioning.md.
 #   host_rules_file()    prints the user-level rules file this CLI reads on
 #                        every turn -- `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`.
 #                        **Printing nothing means nothing is written**, which is

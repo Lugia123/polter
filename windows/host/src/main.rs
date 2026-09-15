@@ -5,7 +5,7 @@
 //! the default window title, the log header, the binary name. Internal
 //! artifacts keep the upstream Ghostty names (ghostty-internal.dll,
 //! ghostty-vt.dll, the C API symbols) so that merging upstream stays cheap.
-//! This is the same split macOS already uses. See docs/windows/development.md
+//! This is the same split macOS already uses. See dev-docs/windows/development.md
 //! section 4.2.
 //!
 //! Four contracts this host must satisfy. **None of them fails loudly**, which
@@ -1419,7 +1419,7 @@ static CELL_W: AtomicU32 = AtomicU32::new(0);
 static CELL_H: AtomicU32 = AtomicU32::new(0);
 /// Whether to call ghostty_surface_draw from the window procedure.
 /// Off by default: the renderer thread owns the WGL context, so a
-/// main-thread draw has no context current. See docs/windows/status.md.
+/// main-thread draw has no context current. See dev-docs/windows/status.md.
 static DRAW_ON_PAINT: AtomicU32 = AtomicU32::new(0);
 /// How many key messages `ITfKeystrokeMgr` claimed before dispatch.
 static TSF_ATE: AtomicU32 = AtomicU32::new(0);
@@ -4481,7 +4481,7 @@ pub fn binding(name: &str) -> bool {
 /// create a context, and a pixel format is a property of that window's DC --
 /// so it is readable from here, on this thread, without the core telling us
 /// anything. libghostty's own `std.log` does not reach the process stderr on
-/// Windows (docs/windows/status.md, section 5.2), so this is the cheapest
+/// Windows (dev-docs/windows/status.md, section 5.2), so this is the cheapest
 /// observation available about whether WGL ever bound to our window at all.
 ///
 /// A format that stays 0 forever means the core never got as far as our HWND.
@@ -5091,7 +5091,7 @@ fn log_path_given(owns: bool, pinned: Option<String>) -> std::path::PathBuf {
 /// A process that cannot name its own executable has worse problems than its
 /// log's name, but it still has to write somewhere. It falls back to
 /// `polter-host`, which is the name every tool and every page of
-/// `docs/windows/status.md` already knows -- an unfamiliar name would be a
+/// `dev-docs/windows/status.md` already knows -- an unfamiliar name would be a
 /// second puzzle stacked on the first.
 fn log_stem() -> String {
     std::env::current_exe()
@@ -5844,7 +5844,7 @@ fn main() {
 
     // **Turn on libghostty's own logging before initialising it.**
     //
-    // `docs/windows/status.md` carried this as a debt -- "libghostty's log is
+    // `dev-docs/windows/status.md` carried this as a debt -- "libghostty's log is
     // invisible on the test machine, so every real-machine failure costs a
     // guess" -- and it was promoted to a blocker the moment a hang landed
     // *inside* `ghostty_surface_free`, where the only thing that can say what

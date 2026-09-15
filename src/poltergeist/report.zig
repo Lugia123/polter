@@ -4,7 +4,7 @@
 //! the allocator that ends up owning the result. The wording **is** the whole
 //! of what this file does -- an agent reads these sentences and acts on what
 //! they say -- so it has to be comparable against the two tables in
-//! `docs/poltergeist/mcp.md` that write the wording down.
+//! `dev-docs/poltergeist/mcp.md` that write the wording down.
 //!
 //! Which is why it is a file of its own rather than a few private functions
 //! in `App.zig`: that file has no test block, and nothing in it is reachable

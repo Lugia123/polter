@@ -8,7 +8,7 @@ this application stuck*. A nested modal loop (a `MessageBoxW`, a menu, a
 window move/size) **keeps pumping**, so all three answer "fine" while the
 person has been unable to use the window for two and a half minutes.
 
-Measured on 2026-09-03 and recorded in `docs/windows/status.md`:
+Measured on 2026-09-03 and recorded in `dev-docs/windows/status.md`:
 
     state                 SendMessageTimeout(WM_NULL)   IsHungAppWindow
     healthy               ok=true 14ms                  false
@@ -26,14 +26,14 @@ This repository has now had the same shape four times in one round: a rule
 learned, written into a comment, and broken again one call up. **A comment is
 not a defence; a checker is.** So: every place in the tree that names one of
 these APIs must, within a few lines, either name what it is blind to or point
-at `docs/windows/hang-readings.md`, which holds the whole reading.
+at `dev-docs/windows/hang-readings.md`, which holds the whole reading.
 
 # Scope, and the class this is really for
 
 The third class is the one that gets missed and the one that does the damage:
 not product code and not a probe, but **prose -- a doc or a task that tells
 somebody to use it**. That is what the next person copies. So this reads
-`.md`, `.rs`, `.zig`, `.py` and `.ps1` alike, under `docs/`, `src/` and
+`.md`, `.rs`, `.zig`, `.py` and `.ps1` alike, under `dev-docs/`, `src/` and
 `windows/`, and it reads **this file too**: a gate that names the API and does
 not carry the caveat would be its own first offender.
 
@@ -44,7 +44,7 @@ not carry the caveat would be its own first offender.
   * anything outside the repository. The real users of this family are real-
     machine probes and criteria written in tasks and messages, which is where
     the void readings came from and where no checker reaches. That is what
-    `docs/windows/hang-readings.md` is for.
+    `dev-docs/windows/hang-readings.md` is for.
   * the other direction: a *correct* use ("did this window pump in 5s") is not
     distinguished from a wrong one. Both must carry the caveat; only one of
     them needed it.
@@ -59,14 +59,14 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
-DOC = "docs/windows/hang-readings.md"
+DOC = "dev-docs/windows/hang-readings.md"
 
 INSTRUMENT = re.compile(r"IsHungAppWindow|SendMessageTimeout|Process\.Responding|\.Responding\b")
 # Either the blindness by name, or a pointer at the file that holds it.
 CAVEAT = re.compile(r"模态|modal|hang-readings|失明|blind")
 REACH = 6
 
-SUBJECTS = ("docs", "src", "windows")
+SUBJECTS = ("dev-docs", "src", "windows")
 EXTENSIONS = (".md", ".rs", ".zig", ".py", ".ps1")
 
 
@@ -121,10 +121,10 @@ def analyse(sources: dict):
 
 # -- self-test ---------------------------------------------------------------
 
-BARE = {"docs/x.md": "用 `IsHungAppWindow` 判一下卡没卡。\n"}
-WITH_CAVEAT = {"docs/x.md": "模态循环下它会答「没卡」。\n用 `IsHungAppWindow` 判窗口有没有泵消息。\n"}
-WITH_POINTER = {"docs/x.md": "`IsHungAppWindow` -- 边界见 docs/windows/hang-readings.md\n"}
-FAR_AWAY = {"docs/x.md": "模态\n" + "\n" * 20 + "`IsHungAppWindow`\n"}
+BARE = {"dev-docs/x.md": "用 `IsHungAppWindow` 判一下卡没卡。\n"}
+WITH_CAVEAT = {"dev-docs/x.md": "模态循环下它会答「没卡」。\n用 `IsHungAppWindow` 判窗口有没有泵消息。\n"}
+WITH_POINTER = {"dev-docs/x.md": "`IsHungAppWindow` -- 边界见 dev-docs/windows/hang-readings.md\n"}
+FAR_AWAY = {"dev-docs/x.md": "模态\n" + "\n" * 20 + "`IsHungAppWindow`\n"}
 # **This gate reads itself**, so the sample below carries the caveat the rule
 # asks for -- a modal loop is what these instruments are blind to. Excluding
 # this file instead would have been the easier fix and the wrong one: a

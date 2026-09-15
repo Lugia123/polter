@@ -54,7 +54,7 @@ which is a different runtime with different assemblies available -- so:
     -AssemblyName UIAutomationClient` succeeds on 5.1 and fails on 7, and no
     parser will tell you that.
 
-That distinction is the whole reason `docs/windows/uia.md` still says a change
+That distinction is the whole reason `dev-docs/windows/uia.md` still says a change
 to those scripts is unverified until a real machine has run one.
 
 # If `pwsh` is missing this gate FAILS rather than passing
@@ -197,6 +197,6 @@ print(f"scanned {len(scripts)} script(s) with {os.path.basename(pwsh)}'s own par
 print("NOT CHECKED: whether they RUN. These target Windows PowerShell 5.1, whose")
 print("             assemblies (UIAutomationClient, System.IO.Pipes) this parser")
 print("             knows nothing about. A change here is unverified until a real")
-print("             machine has run one -- see docs/windows/uia.md.")
+print("             machine has run one -- see dev-docs/windows/uia.md.")
 
 sys.exit(1 if bad else 0)

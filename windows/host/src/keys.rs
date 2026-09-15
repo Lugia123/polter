@@ -113,7 +113,7 @@ static KEYS_LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 /// The gate used to be `n <= 20 || modded`, and `modded` was
 /// `ev_mods & (MODS_CTRL | MODS_ALT | MODS_SUPER)` -- **no shift**. So after
 /// the twentieth key of the process, a bare key and a shift-only combination
-/// stopped being reported at all, for ever. ⚠️ `docs/windows/keys.md` reads a
+/// stopped being reported at all, for ever. ⚠️ `dev-docs/windows/keys.md` reads a
 /// missing `[key]` line into a verdict row; for `Ctrl-C` that is sound,
 /// because ctrl is in the mask, and for `A` or `Shift-A` it was not, and
 /// nothing in the line said which kind it was looking at.
@@ -238,7 +238,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 /// legible.** A tightened condition that merely does nothing turns "this key
 /// does not work" into silence, and silence is indistinguishable from the key
 /// never having arrived -- which is a live, unresolved problem in this host
-/// (see `docs/windows/keys.md` §2.3). So the caller logs *which* modifier
+/// (see `dev-docs/windows/keys.md` §2.3). So the caller logs *which* modifier
 /// stopped it.
 fn blocking_mods(alt: bool, win: bool) -> Option<&'static str> {
     match (alt, win) {
@@ -458,7 +458,7 @@ pub fn handle_key_message(
                     // be able to tell "the host refused it" from "the key
                     // never arrived"; those two look the same from a chair,
                     // and this host has an open question about exactly that
-                    // (`docs/windows/keys.md` §2.3).
+                    // (`dev-docs/windows/keys.md` §2.3).
                     // `hlogf!`, not `logf!`: this is about one window, and
                     // the handle is a surface, so it is walked up to its frame
                     // (or the line says it is about no window at all).
@@ -524,7 +524,7 @@ pub fn handle_key_message(
 
 // **What a menu shows after the tab must come from the core.**
 //
-// `docs/windows/s4.md` §3.4 point 1: a hand-written `"Ctrl+Shift+C"` in a menu
+// `dev-docs/windows/s4.md` §3.4 point 1: a hand-written `"Ctrl+Shift+C"` in a menu
 // label is wrong the moment a user rebinds the action, **and nothing reports
 // it**. There is no assertion that can fire, no action that fails, no log line
 // that goes red -- the menu simply tells the user to press a key that does

@@ -4,7 +4,7 @@
 //! platform. It also inherits everything a terminal already does well:
 //! equal-width text so pasted code lines up, ANSI so a pasted log keeps its
 //! colours, and CJK display and input handled by the host surface rather
-//! than by us. See `docs/poltergeist/chatui.md`.
+//! than by us. See `dev-docs/poltergeist/chatui.md`.
 //!
 //! It reads and writes over the same endpoint the agents use -- a unix socket
 //! on POSIX, a named pipe on Windows; `poltergeist/transport.zig` chooses and
@@ -1836,7 +1836,7 @@ const Chat = struct {
     /// The box that asks before a group leaves the list.
     ///
     /// **Drawn here rather than raised as a system dialog.** This view is a
-    /// terminal window on purpose (see `docs/poltergeist/chatui.md`); a box
+    /// terminal window on purpose (see `dev-docs/poltergeist/chatui.md`); a box
     /// from the operating system would arrive in front of whatever the
     /// person was doing in another app, for a question about a list in this
     /// one.

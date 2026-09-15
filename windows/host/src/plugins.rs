@@ -359,7 +359,7 @@ fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
 // answers with the manifest verbatim: an agent reading different tool
 // descriptions on a Chinese machine and an English one stops being
 // reproducible. A person gets their own language; an agent gets the same
-// words everywhere. See `docs/poltergeist/boundary.md` §4 and the macOS
+// words everywhere. See `dev-docs/poltergeist/boundary.md` §4 and the macOS
 // original, `PluginLocale.swift`.
 
 /// Whether a candidate is a language tag and nothing more.

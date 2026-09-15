@@ -14,7 +14,7 @@
 //! program's, the verdict is the supervisor's. `over` below means "past
 //! the mark you set", never "stuck".
 //!
-//! See `docs/poltergeist/stats.md`.
+//! See `dev-docs/poltergeist/stats.md`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

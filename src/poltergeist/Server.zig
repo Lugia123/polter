@@ -16,7 +16,7 @@
 //! its semaphore, and writes whatever came back. That wait is bounded: a
 //! request that the app never gets to must not wedge a connection forever.
 //!
-//! See `docs/poltergeist/mcp.md`.
+//! See `dev-docs/poltergeist/mcp.md`.
 
 const Server = @This();
 

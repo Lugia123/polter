@@ -7079,7 +7079,7 @@ pub const Keybinds = struct {
             // comment above explains why every other platform does not. This
             // is a deliberate divergence and it is written down in three
             // places -- here, `selection-clear-on-copy`, and
-            // `docs/windows/keys.md` -- because it is the kind of thing that
+            // `dev-docs/windows/keys.md` -- because it is the kind of thing that
             // reads as somebody not knowing about SIGINT.
             //
             // Windows Terminal, conhost and every Windows editor bind
@@ -7158,7 +7158,7 @@ pub const Keybinds = struct {
                 // binding out of the reverse map (`track_reverse =
                 // !flags.performable`), and a binding outside it draws no
                 // shortcut in any menu -- the class documented in
-                // `docs/windows/keys.md` §3.7, thirty rows of "the key works
+                // `dev-docs/windows/keys.md` §3.7, thirty rows of "the key works
                 // and the menu cannot say so". `performable` buys something
                 // only where an action can decline and let the key through;
                 // these five are toggles with no such state, so it would cost
@@ -8519,7 +8519,7 @@ pub const Keybinds = struct {
         // *reverse* map, which is what a menu asks -- so this is the one
         // assertion that fails if any of these is ever made `performable`,
         // and being outside that map is precisely how thirty other rows came
-        // to have working keys and blank menus (`docs/windows/keys.md` §3.7).
+        // to have working keys and blank menus (`dev-docs/windows/keys.md` §3.7).
         for ([_]struct { a: inputpkg.Binding.Action, c: u21 }{
             .{ .a = .{ .poltergeist_supervisor = {} }, .c = 's' },
             .{ .a = .{ .poltergeist_toggle_held = {} }, .c = 'h' },

@@ -7,8 +7,8 @@
 //! is the agent thinking, stuck, or done; should it be nudged or left alone
 //! -- belongs to the supervisor AI, not to this code.
 //!
-//! See `docs/poltergeist/README.md` for the design, and
-//! `docs/poltergeist/sensing.md` for why the sensing layer is this thin.
+//! See `dev-docs/poltergeist/README.md` for the design, and
+//! `dev-docs/poltergeist/sensing.md` for why the sensing layer is this thin.
 
 pub const Resident = @import("Resident.zig");
 pub const Bus = @import("Bus.zig");

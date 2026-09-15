@@ -13,10 +13,10 @@
 
 ## 本文不覆盖什么
 
-- 线程模型、mailbox 全貌与各线程职责 —— 见 `docs/architecture.md`。
-- VT 解析、`Screen`/`PageList`、kitty 协议的终端侧状态、libghostty-vt —— 见 `docs/terminal-core.md`。
-- 渲染后端、着色器、字体栈 —— 见 `docs/rendering-and-font.md`。
-- 所有构建、运行、调试命令的完整用法 —— 见 `docs/preview-manual.md`。
+- 线程模型、mailbox 全貌与各线程职责 —— 见 `dev-docs/architecture.md`。
+- VT 解析、`Screen`/`PageList`、kitty 协议的终端侧状态、libghostty-vt —— 见 `dev-docs/terminal-core.md`。
+- 渲染后端、着色器、字体栈 —— 见 `dev-docs/rendering-and-font.md`。
+- 所有构建、运行、调试命令的完整用法 —— 见 `dev-docs/preview-manual.md`。
 - 具体配置项的取值语义。那属于 Ghostty 官方文档与 `ghostty +show-config --docs` 的范围，本文只讲配置系统本身的机制。
 
 ## 一句话概括
@@ -148,7 +148,7 @@ pub const runtime = switch (build_config.artifact) {
 
 ### Mailbox 实际走主线程
 
-`Mailbox.push` 会把消息重新包装成 `App.Mailbox` 的 `surface_message` 再发出去，注释明说 surface 消息实际是在主线程上实现的（`src/apprt/surface.zig:139-154`）。线程模型本身见 `docs/architecture.md`。
+`Mailbox.push` 会把消息重新包装成 `App.Mailbox` 的 `surface_message` 再发出去，注释明说 surface 消息实际是在主线程上实现的（`src/apprt/surface.zig:139-154`）。线程模型本身见 `dev-docs/architecture.md`。
 
 ### 新 surface 的配置继承
 
@@ -208,7 +208,7 @@ pub const runtime = switch (build_config.artifact) {
 pub const must_draw_from_app_thread = true;
 ```
 
-渲染线程侧如何响应这个标志属于渲染路径，见 `docs/architecture.md` 与 `docs/rendering-and-font.md`。
+渲染线程侧如何响应这个标志属于渲染路径，见 `dev-docs/architecture.md` 与 `dev-docs/rendering-and-font.md`。
 
 ### UI 用 blueprint 描述，按 libadwaita 版本分目录
 
@@ -263,7 +263,7 @@ macOS 的全局键绑定用 `CGEventTap` 实现，`GlobalEventTap` 是单例并�
 
 ### 构建纪律
 
-`macos/AGENTS.md:3-11` 规定的四条纪律（不是教程，命令完整用法见 `docs/preview-manual.md`）：
+`macos/AGENTS.md:3-11` 规定的四条纪律（不是教程，命令完整用法见 `dev-docs/preview-manual.md`）：
 
 1. 用 `swiftlint` 格式化与检查 Swift 代码。
 2. 若修改了 `macos/` 之外的代码，先跑 `zig build -Demit-macos-app=false` 更新底层库，再构建 macOS 应用。
@@ -354,7 +354,7 @@ App Intents 是另一套机制，位于 `macos/Sources/Features/App Intents/`，
 
 `openPath()`（`src/config/edit.zig:21`）的注释说明了平台差异：Linux 只有 XDG 路径有效；macOS 因为优先 App Support，所以按「App Support 存在 → XDG 存在 → 都不存在则 App Support」的顺序决定，且存在性判断偏好非空文件（`src/config/edit.zig:9-20`）。
 
-CLI 参数也能通过 `zig build run` 转发：`app_runtime` 非 `.none` 时走 `run_cmd.addArgs(args)`（`build.zig:250`），macOS 的 `.none` 路径则由 open step 追加（`src/build/GhosttyXcodebuild.zig:161-163`），后者还会强制设置 `GHOSTTY_LOG=stderr,macos` 与 `GHOSTTY_MAC_LAUNCH_SOURCE=zig_run`（`:156-159`）。命令用法见 `docs/preview-manual.md`。
+CLI 参数也能通过 `zig build run` 转发：`app_runtime` 非 `.none` 时走 `run_cmd.addArgs(args)`（`build.zig:250`），macOS 的 `.none` 路径则由 open step 追加（`src/build/GhosttyXcodebuild.zig:161-163`），后者还会强制设置 `GHOSTTY_LOG=stderr,macos` 与 `GHOSTTY_MAC_LAUNCH_SOURCE=zig_run`（`:156-159`）。命令用法见 `dev-docs/preview-manual.md`。
 
 ## 输入与键绑定
 
@@ -408,7 +408,7 @@ CLI 参数也能通过 `zig build run` 转发：`app_runtime` 非 `.none` 时走
 - `modify_other_keys_state_2` — xterm modifyOtherKeys mode 2
 - `kitty_flags` — kitty keyboard protocol 标志
 
-`src/input/kitty.zig:3-11` 是 kitty keyboard protocol 的键表，`Entry` 含 `key`/`code`/`final`/`modifier` 四个字段，注释说只有约 100 条、建议直接线性搜索。协议的终端侧状态与语义见 `docs/terminal-core.md`。
+`src/input/kitty.zig:3-11` 是 kitty keyboard protocol 的键表，`Entry` 含 `key`/`code`/`final`/`modifier` 四个字段，注释说只有约 100 条、建议直接线性搜索。协议的终端侧状态与语义见 `dev-docs/terminal-core.md`。
 
 ### 默认键绑定的平台差异
 
@@ -451,4 +451,4 @@ CJK 用例（`HACKING.md:315-333`）：按 `Ctrl+Shift` 切到平假名，美式
 - [HACKING.md](../HACKING.md) —— 额外依赖与输入栈手工测试清单
 - [macos/AGENTS.md](../macos/AGENTS.md) —— macOS 构建纪律与 AppleScript 规范
 - [AGENTS.md](../AGENTS.md) —— 仓库级 agent 指南（根 `CLAUDE.md` 是它的符号链接）
-- `docs/architecture.md`、`docs/terminal-core.md`、`docs/rendering-and-font.md`、`docs/preview-manual.md`
+- `dev-docs/architecture.md`、`dev-docs/terminal-core.md`、`dev-docs/rendering-and-font.md`、`dev-docs/preview-manual.md`

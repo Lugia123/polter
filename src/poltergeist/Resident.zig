@@ -18,7 +18,7 @@
 //! complete whether or not any plugin exists, and are never a plugin's
 //! data source. This file therefore names no path, opens no log and keeps
 //! no cursor file: change how the core stores things and nothing here has
-//! to move. See `docs/poltergeist/plugins.md`.
+//! to move. See `dev-docs/poltergeist/plugins.md`.
 //!
 //! What that costs, said plainly: a plugin that is away for an hour misses
 //! the hour. Its subscription is bounded, so past the bound the oldest

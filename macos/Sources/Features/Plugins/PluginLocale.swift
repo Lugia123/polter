@@ -22,7 +22,7 @@ import Foundation
 /// machine's language, the same agent would read different tool descriptions
 /// on a Chinese machine and an English one, and stop being reproducible. A
 /// person gets their own language; an agent gets the same words everywhere.
-/// See `docs/poltergeist/boundary.md` section 4.
+/// See `dev-docs/poltergeist/boundary.md` section 4.
 enum PluginLocale {
     /// Which sidecar files to look for, in the order they should be tried.
     ///
@@ -35,7 +35,7 @@ enum PluginLocale {
     ///     en-GB       →  en-Latn-GB, en-Latn, en-GB, en
     ///
     /// Three decisions are packed in here, and this is where they are
-    /// written down (`docs/poltergeist/boundary.md` had them open):
+    /// written down (`dev-docs/poltergeist/boundary.md` had them open):
     ///
     /// 1. **Script beats region.** `zh-Hans` is tried before `zh-CN`,
     ///    because what a Chinese reader cannot read is the other script,

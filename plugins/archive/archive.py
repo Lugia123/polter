@@ -20,13 +20,13 @@ depends on this plugin being installed, switched on, or working; this plugin is
 never handed a file to follow, only the live events. So the copy here is an
 extra one, and the point of it is that you can put it somewhere the core would
 never write: a synced folder, an external disk, a NAS. See
-docs/poltergeist/boundary.md section 1.
+dev-docs/poltergeist/boundary.md section 1.
 
 **Why a day and not a group.** The core's record is `<group>/<date>.jsonl`,
 which is the shape for "what did that job say". This one is the other
 cut: everything that happened on one evening, in the order it happened, in one
 file you can `tail -f`. A second copy of the first shape at a second path would
-add nothing, and that objection is on the record (docs/poltergeist/gaps.md).
+add nothing, and that objection is on the record (dev-docs/poltergeist/gaps.md).
 
 An acknowledgement that names a cursor is a promise that everything at or below
 it is on disk, so nothing here ever names a seq that did not come out of the
@@ -41,7 +41,7 @@ a `chat` is passed over here -- the host will not send one, but a plugin that
 trusts the host to filter is a plugin that breaks the day somebody adds an
 event to its subscription.
 
-Design: docs/poltergeist/plugins.md. The host side is src/poltergeist/Resident.zig.
+Design: dev-docs/poltergeist/plugins.md. The host side is src/poltergeist/Resident.zig.
 
 **Only acknowledgements may go to stdout.** Anything else is judged misconduct
 and the process is killed. Diagnostics go to stderr, which is Polter's log.

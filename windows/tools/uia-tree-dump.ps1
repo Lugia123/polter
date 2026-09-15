@@ -34,14 +34,14 @@
               while the operator adds, closes, switches and renames tabs.
               **The only mode that exercises the provider with a client
               attached**, and therefore the only one that can reach the
-              call-back path described in `docs/windows/uia.md`.
+              call-back path described in `dev-docs/windows/uia.md`.
 
 .PARAMETER LogPath
   The host's log, for the `concurrent` mode's counting. Defaults to the
   newest `polter-host-*.log` beside the exe.
 
 .NOTES
-  What this cannot tell you is in `docs/windows/uia.md`. The short version,
+  What this cannot tell you is in `dev-docs/windows/uia.md`. The short version,
   because it is the one people forget: **a UIA client reaching the tree is not
   a screen reader reading it aloud.** This script proves the first and says
   nothing at all about the second.
@@ -166,7 +166,7 @@ function Get-DocumentText {
         $pattern = $null
         # ValuePattern, not TextPattern: the provider implements the first and
         # not the second, on purpose and at a cost written down in
-        # `docs/windows/uia.md`. A script asking for TextPattern here would
+        # `dev-docs/windows/uia.md`. A script asking for TextPattern here would
         # fail for a reason that is scope, not a defect.
         if ($d.TryGetCurrentPattern(
                 [System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
@@ -423,7 +423,7 @@ switch ($Mode) {
         }
         Write-Host ''
         Write-Host "total: $($script:heard.Count) event(s)"
-        Write-Host 'Check against the table in docs/windows/uia.md. In particular: switching'
+        Write-Host 'Check against the table in dev-docs/windows/uia.md. In particular: switching'
         Write-Host 'tabs must produce a HasKeyboardFocus PropertyChanged and NOT a'
         Write-Host 'StructureChanged -- a structure event there would be announcing something'
         Write-Host 'that did not happen.'

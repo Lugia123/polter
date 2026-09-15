@@ -2,7 +2,7 @@
 # Tell opencode that Polter is here.
 #
 # The implementation is in `_sdk/provision.sh`; this file is the answers.
-# See docs/poltergeist/provisioning.md.
+# See dev-docs/poltergeist/provisioning.md.
 
 set -eu
 

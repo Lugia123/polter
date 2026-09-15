@@ -35,7 +35,7 @@ The same fact is why a tab is a child window rather than a repaint, and why
 
 - A surface window must be **created at its final size** before
   `ghostty_surface_new`; a later `set_size` does not repair it. See
-  `docs/windows/development.md` section 5.2, item 4.
+  `dev-docs/windows/development.md` section 5.2, item 4.
 - Identity is `PaneId` / `TabId` out of one shared counter, **never an index**.
   Panes and tabs are reordered and removed, and an index quietly starts naming
   a different one.
@@ -78,7 +78,7 @@ point is resolved with `GetProcAddress` in `main.rs`.
 
 User-visible strings are **Polter** -- window classes, default title, log
 header, binary name. Internal artifacts keep the upstream Ghostty names, so
-merging upstream stays cheap. See `docs/windows/development.md` section 4.2;
+merging upstream stays cheap. See `dev-docs/windows/development.md` section 4.2;
 the Windows-only places that are easy to miss (window class, AppUserModelID,
 mutex, registry) are listed there.
 
@@ -98,7 +98,7 @@ them fails loudly** when broken.
 
 ## Where the ground truth is
 
-`docs/windows/status.md` -- what is verified on a real machine and what is
+`dev-docs/windows/status.md` -- what is verified on a real machine and what is
 still owed. Claims there are marked 实测 or not; unmarked means untested.
 
 ## 提交前要跑的检查

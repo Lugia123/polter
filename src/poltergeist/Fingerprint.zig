@@ -3,7 +3,7 @@
 //! Poltergeist's sensing layer measures exactly one thing: how long a
 //! terminal's visible screen has gone unchanged. It deliberately does not
 //! interpret *what* is on screen -- that judgement belongs to the supervisor
-//! AI. See `docs/poltergeist/sensing.md`.
+//! AI. See `dev-docs/poltergeist/sensing.md`.
 //!
 //! This file is pure: it takes opaque bytes per row and knows nothing about
 //! `Screen`, `Page` or `Cell`. The caller decides what a "row" hashes over.

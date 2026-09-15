@@ -6,7 +6,7 @@
 
 ## What this file is for
 
-Most of `docs/` is written in Chinese. This file fixes the English spelling of
+Most of `dev-docs/` is written in Chinese. This file fixes the English spelling of
 every name that both halves of the tree have to agree on, so that a term
 introduced in one English document is not silently renamed in the next one.
 
@@ -32,14 +32,14 @@ Chinese for translators writing Chinese, this one maps it back.
 | 总管                      | **supervisor**                                   | The agent the user has put in charge of other terminals — an ordinary agent CLI session, not a dashboard and not a process manager.                                                          | `README.md`, `src/poltergeist/main.zig:1-9`                                      |
 | （被监督的）终端 / worker | **worker**                                       | A terminal doing a piece of the work, as seen from the supervisor; it is an independent session in its own tab, never a sub-agent of the supervisor.                                         | `README.md`, `src/poltergeist/skills/supervising.md`                             |
 | 群聊                      | **group chat** (a **group**)                     | The place terminals talk. A group is made by the supervisor, which decides who is in it; there are no direct messages, because a two-terminal group is one set of rules instead of two.      | `src/poltergeist/Chat.zig:1-6`                                                   |
-| 任务面板                  | **task panel** (the **panel**)                   | One line per piece of work: a title, the terminal responsible, open/closed/cancelled, and a progress word. Deliberately not a task tracker.                                                  | `src/poltergeist/Tasks.zig:1-10`, `docs/poltergeist/tasks.md`                    |
+| 任务面板                  | **task panel** (the **panel**)                   | One line per piece of work: a title, the terminal responsible, open/closed/cancelled, and a progress word. Deliberately not a task tracker.                                                  | `src/poltergeist/Tasks.zig:1-10`, `dev-docs/poltergeist/tasks.md`                    |
 | 静止                      | **quiet** (prose) / **quiescence** (identifiers) | The one thing Polter measures: how long a terminal's visible screen has gone unchanged. It is a duration, never a verdict — "quiet" does not mean "stuck".                                   | `src/poltergeist/Sampler.zig:1-12`, `src/poltergeist/Fingerprint.zig:1-9`        |
-| 提醒                      | **notices**                                      | The batch of things the supervisor has not been shown yet — which screens went quiet and for how long, plus at most one line per group — delivered on one clock and never on a second one.   | `src/poltergeist/notes.zig:1-12`, `docs/tools.md`                                |
+| 提醒                      | **notices**                                      | The batch of things the supervisor has not been shown yet — which screens went quiet and for how long, plus at most one line per group — delivered on one clock and never on a second one.   | `src/poltergeist/notes.zig:1-12`, `dev-docs/tools.md`                                |
 | 监督                      | **watch**                                        | To put a terminal under a supervisor: it gets the `watched` mark on the bus, and something starts sampling its screen.                                                                       | `src/poltergeist/Bus.zig:1-4`, `src/poltergeist/rpc.zig:3383-3396`               |
 | 被监督（标记）            | **watched**                                      | The `role` a terminal has once somebody is minding it; the other two roles are `none` and `supervisor`.                                                                                      | `src/poltergeist/skills/operating-a-terminal.md:24`                              |
 | 屏蔽                      | **shielded**                                     | A lock only the user can set: the terminal is out of reach of the tool surface entirely, refusing supervisors and plugins alike.                                                             | `src/poltergeist/skills/operating-a-terminal.md:25`, `README.md`                 |
 | 按住 / 保持               | **held**                                         | The other lock only the user can set: the terminal may not be clocked off, so a supervisor asking for that is refused.                                                                       | `src/poltergeist/skills/operating-a-terminal.md:26`, `src/poltergeist/skill.zig` |
-| 下班 / 上班               | **clock out / clock in**                         | Mark a terminal done for the day, so its going quiet stops being reported — refused for one the user is holding.                                                                             | `docs/tools.md:65`                                                               |
+| 下班 / 上班               | **clock out / clock in**                         | Mark a terminal done for the day, so its going quiet stops being reported — refused for one the user is holding.                                                                             | `dev-docs/tools.md:65`                                                               |
 | 插件（原「常驻插件」）    | **plugin**                                       | A process, spawned once and kept running, fed live events on stdin: `spawn -> hello -> a line of events -> a line of acknowledgement`. Do not write "resident plugin" — every plugin is one. | `src/poltergeist/Resident.zig:1-13`                                              |
 | 供给 / 注册               | **provisioning**                                 | Telling one agent CLI's runtime that Polter is here — registering the MCP endpoint and installing the skills — which is a plugin's job and not the core's.                                   | `src/poltergeist/provision.zig:1-19`                                             |
 | 转录                      | **transcript**                                   | What actually ran in a terminal, written down by the terminal: the lines that have scrolled out of the active screen, one JSON object per line.                                              | `src/poltergeist/Transcript.zig:1-14`                                            |
@@ -103,7 +103,7 @@ missing is claiming to have read something it did not read.
 The instruction behind this file was: where the existing English text already
 uses two names for one thing, do not pick one silently. Eleven such splits were
 found. Six have since been ruled on and are recorded here as decisions; the
-rest are still open. **No file outside `docs/en/` was changed to make any of
+rest are still open. **No file outside `dev-docs/en/` was changed to make any of
 this true.**
 
 ### Settled
@@ -183,17 +183,17 @@ necessarily what is on disk now.
 
 - **供给 vs 注册 for provisioning.** English is consistent
   ("provisioning plugin"). The Chinese was not: `README_CN.md` says 注册插件
-  throughout, after `docs/readme-reviews/round-2.md:84-85` recorded that 供给
+  throughout, after `dev-docs/readme-reviews/round-2.md:84-85` recorded that 供给
   was a literal translation nobody could parse and changed all four
-  occurrences — while several `docs/poltergeist/` chapters still said 供给插件.
+  occurrences — while several `dev-docs/poltergeist/` chapters still said 供给插件.
   That is a missed edit rather than two spellings coexisting, which is what
   makes it decidable. Note that the two occurrences in `round-2.md` itself
   must **not** be changed: they quote the old word, and rewriting them turns
   the record into "changed 注册插件 to 注册插件".
 
 - **被监视 vs 被监督 for `watched`.** `README_CN.md` wrote 被监视 in two
-  places; `docs/README.md` and the `poltergeist/` chapters write 被监督.
-  `docs/windows/status.md` also contains 被监视, but about a watchdog thread
+  places; `dev-docs/README.md` and the `poltergeist/` chapters write 被监督.
+  `dev-docs/windows/status.md` also contains 被监视, but about a watchdog thread
   and the main thread it watches — a different concept, and not part of this
   split.
 

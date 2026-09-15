@@ -21,7 +21,7 @@
 //! .jsonl` is the **record**: what a person greps the next morning and what
 //! `group_history` pages through, never rotated and never trimmed. The
 //! record is the fuller of the two, because the stream forgets. See the
-//! section beginning "the record" below, and `docs/poltergeist/storage.md`.
+//! section beginning "the record" below, and `dev-docs/poltergeist/storage.md`.
 //!
 //! Kept out of `Chat.zig` so that the model stays pure -- no allocation
 //! beyond its registry, no clock, no filesystem. The host owns the side

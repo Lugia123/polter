@@ -23,7 +23,7 @@
 //             return .{ .bracketed = t.modes.get(.bracketed_paste) };
 //         }
 //
-// A real-machine reading (docs/windows/terminal-send-not-submitted.md,
+// A real-machine reading (dev-docs/windows/terminal-send-not-submitted.md,
 // section 6, reading 2) says a probe that had sent `ESC[?2004h` still saw
 // `terminal_send` arrive as bare bytes -- no `ESC[200~`, no `ESC[201~`.
 // Those two facts can only both be true if, at that moment,

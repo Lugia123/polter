@@ -50,8 +50,8 @@ The edge is the useful half of a checker's documentation, so:
   * **English prose spellings** -- "line 42", "lines 10-20". Not matched.
     They do not appear in this tree today; adding them is a one-line change
     to `PATTERNS` and a new baseline.
-  * **Anything outside this port.** The scan is `docs/windows/`,
-    `windows/host/src/` and `windows/tools/`. `docs/` at large belongs to
+  * **Anything outside this port.** The scan is `dev-docs/windows/`,
+    `windows/host/src/` and `windows/tools/`. `dev-docs/` at large belongs to
     upstream Ghostty and is not this ratchet's business -- including it would
     raise the number with references nobody here maintains, and a ratchet
     whose number moves for reasons the reader cannot act on is a ratchet the
@@ -80,7 +80,7 @@ ROOT = os.path.join(HERE, "..", "..")
 
 # The scan. See the boundary note above for why it stops here.
 GLOBS = (
-    "docs/windows/*.md",
+    "dev-docs/windows/*.md",
     "windows/host/src/*.rs",
     "windows/tools/*.py",
 )
@@ -190,7 +190,7 @@ See Config.zig:6920-6924 and settings_ui.rs:968,1316,1644.
 """
 
 # **Every line below is a real occurrence from this tree, not an invented one.**
-# Five of the eight `第 N 行` in `docs/windows` are these: table rows, lines of a
+# Five of the eight `第 N 行` in `dev-docs/windows` are these: table rows, lines of a
 # pasted log, "the log stopped at line 24". They were flagged by the first
 # version of this check, which is how the guard above came to exist -- so they
 # are kept here as the specimens they are. A constructed near-miss proves that

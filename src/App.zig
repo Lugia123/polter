@@ -889,7 +889,7 @@ fn scanPlugins(
     // `<key>.json` and `archiveFor` looks one up by key. Two directories
     // whose manifests claim one key would therefore share a settings file
     // and start two resident copies of one plugin, each subscribing and
-    // each storing every message -- see `docs/poltergeist/plugins.md`.
+    // each storing every message -- see `dev-docs/poltergeist/plugins.md`.
     var keys: std.StringHashMapUnmanaged([]const u8) = .empty;
 
     for (self.pluginSearchPath(arena, io, environ_map)) |base| {
@@ -1350,7 +1350,7 @@ fn newestShellFirst(
 /// There is no longer a kind to select on: what starts is what has a
 /// non-empty `wants.events`, and what a plugin then receives is whichever
 /// of those events it asked for. See `poltergeist/Resident.zig` for what
-/// being resident costs and `docs/poltergeist/plugins.md` for the protocol.
+/// being resident costs and `dev-docs/poltergeist/plugins.md` for the protocol.
 ///
 /// Nothing here fails quietly. A plugin that will not start, or that
 /// subscribes to nothing and so has nothing to be given, is named in a
@@ -1473,7 +1473,7 @@ fn pluginLogDir(self: *App) []const u8 {
 ///
 /// The duplicate check is not tidiness. Two copies of one plugin confirm
 /// into the same cursor file, and the cursor can then go backwards or skip
-/// -- the one failure `docs/poltergeist/plugins.md` spends a section ruling
+/// -- the one failure `dev-docs/poltergeist/plugins.md` spends a section ruling
 /// out. This is the only path that starts one, so it is where the guarantee
 /// belongs.
 fn startResident(
@@ -1597,7 +1597,7 @@ pub fn ensurePoltergeistServer(
 /// question that has a different answer for every agent CLI. The core's
 /// side is the data: this binary, this build, these skills and where their
 /// files are. See `poltergeist/provision.zig` and
-/// `docs/poltergeist/boundary.md` section 3.
+/// `dev-docs/poltergeist/boundary.md` section 3.
 ///
 /// Whatever fails here is put on a terminal's screen rather than into the
 /// log. What fails is the agent's tool surface, so the agent is exactly the
@@ -2286,7 +2286,7 @@ fn configuredValue(
 /// first line to a notification plugin as a parameter value. That is what a
 /// `file:` reference *is* -- it moves a file's contents into a parameter --
 /// and `roots` is the only thing deciding which files. It is written this
-/// way because `docs/poltergeist/mcp.md` names both directories twice; if
+/// way because `dev-docs/poltergeist/mcp.md` names both directories twice; if
 /// that is revisited, the two narrowings on the table are dropping the state
 /// root entirely, or replacing it with a `secrets` subdirectory meant only
 /// for credentials.
@@ -3817,7 +3817,7 @@ fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {
     // **Off the list, not off the disk.** Every word said in this group is
     // still in `<state>/chat/<group>/` and nothing here goes near it; all
     // that changes is that the group stops being offered in the list. The
-    // record red line in `docs/poltergeist/gaps.md` is what this is: the
+    // record red line in `dev-docs/poltergeist/gaps.md` is what this is: the
     // record is never what gets deleted.
     if (self.group_log) |*l| l.forget(group);
 

@@ -7,7 +7,7 @@
 
 ## 本章覆盖什么
 
-- `docs/poltergeist/` 下所有文档共用的红线、骨架、引用格式、代码块规则。
+- `dev-docs/poltergeist/` 下所有文档共用的红线、骨架、引用格式、代码块规则。
 - 本批文档的固定文件清单与各章归属，用于消除章节间重复。
 - Poltergeist 统一术语表（产品与角色、状态与模式、感知层、通信与界面）。
 - 提交前自检清单。
@@ -21,11 +21,11 @@
 
 ## 一句话概括
 
-本文继承 `docs/_conventions.md`；本批是**设计文档**而非现状文档，两者冲突时以本文为准。
+本文继承 `dev-docs/_conventions.md`；本批是**设计文档**而非现状文档，两者冲突时以本文为准。
 
 ## 绝对红线
 
-1. 只允许新建 / 修改 `docs/poltergeist/` 下的文件。严禁碰 `src/`、`macos/`、`build.zig`、`build.zig.zon`、根 `AGENTS.md`。
+1. 只允许新建 / 修改 `dev-docs/poltergeist/` 下的文件。严禁碰 `src/`、`macos/`、`build.zig`、`build.zig.zon`、根 `AGENTS.md`。
 2. 禁止 `git add` / `git commit` / 建 issue / 建 PR。
 3. 反幻觉：写任何路径前先 `test -e` 或 Read；写任何函数 / 类型 / 字段前先 grep 到定义并给出 `相对路径:行号`。禁止用「终端模拟器一般怎么做」补写。不确定就写 `（未核实：<结论>，核实方式是 <怎么核实>）`。
 4. 单篇 `（未核实）` 占比超过 15% = 调研不足，回去读代码。
@@ -35,7 +35,7 @@
 
 ## 文件与骨架
 
-目录 `docs/poltergeist/`，固定 6 个文件：
+目录 `dev-docs/poltergeist/`，固定 6 个文件：
 
 - `README.md` — 总览与索引，不展开任何一章细节。
 - `sensing.md` — 感知层。
@@ -44,7 +44,7 @@
 - `chatui.md` — 群聊与私信界面。
 - `tabs.md` — tab 合并与状态标记。
 
-本文件 `_spec.md` 是规范附件，不计入这 6 个之内，命名沿用 `docs/_conventions.md` 的下划线前缀惯例。
+本文件 `_spec.md` 是规范附件，不计入这 6 个之内，命名沿用 `dev-docs/_conventions.md` 的下划线前缀惯例。
 
 **文件名是规范性的。** 禁止写成 `mcp-and-skills.md`、`chat-ui.md`、`tabs-and-status.md` 等变体 —— 各章之间的相对链接依赖这份清单，改名会直接产生死链。文件名一律小写连字符，UTF-8 / LF / 末尾一个换行。
 
@@ -94,7 +94,7 @@
 
 正文一律简体中文。以下保持原文不译：代码标识符（`PageList`、`RenderState`、`renderer_state`）、文件与目录路径、命令与参数、环境变量、构建选项、第三方项目名（Zig、GTK4、libadwaita、SwiftUI、AppKit、Metal、libxev、imgui、z2d、MCP、D-Bus）。
 
-Ghostty 侧沿用 `docs/_conventions.md` 的既有译法：表面（surface）、应用运行时（apprt）、终端 IO（termio）、渲染器、渲染线程、IO 线程、读线程、`mailbox`、`scrollback`、页 / 页链表、pty 不译。
+Ghostty 侧沿用 `dev-docs/_conventions.md` 的既有译法：表面（surface）、应用运行时（apprt）、终端 IO（termio）、渲染器、渲染线程、IO 线程、读线程、`mailbox`、`scrollback`、页 / 页链表、pty 不译。
 
 ## 术语表：产品与角色
 
@@ -163,7 +163,7 @@ Ghostty 侧沿用 `docs/_conventions.md` 的既有译法：表面（surface）�
 | 群聊 / 私信界面的承载方式选型                                     | [chatui.md](chatui.md)         |
 | tab 合并、tab 状态标记、macOS/GTK 差异                            | [tabs.md](tabs.md)             |
 
-`docs/poltergeist/README.md` 只做总览与索引，不展开任何一章的细节。
+`dev-docs/poltergeist/README.md` 只做总览与索引，不展开任何一章的细节。
 
 ## 提交前自检清单
 
@@ -177,8 +177,8 @@ Ghostty 侧沿用 `docs/_conventions.md` 的既有译法：表面（surface）�
 - [ ] 所有推测带 `（未核实）` 且写了核实方式
 - [ ] 行数在 150–400 之间
 - [ ] 术语与本文术语表一致，全文无 "Ghostty Agent Loop"、无「一键开关」、无「语义哈希」
-- [ ] 没有修改 `docs/poltergeist/` 之外的任何文件
-- [ ] 已跑 `prettier -w docs/`
+- [ ] 没有修改 `dev-docs/poltergeist/` 之外的任何文件
+- [ ] 已跑 `prettier -w dev-docs/`
 - [ ] 没有 `git add` / `git commit`，没有建 issue / PR
 
 ## 延伸阅读

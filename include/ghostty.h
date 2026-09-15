@@ -541,7 +541,7 @@ typedef struct {
 
   // True when this surface is being opened to run the chat interface, so
   // that requests from it count as the user rather than as a terminal.
-  // Only the host may set this; see docs/poltergeist/chatui.md.
+  // Only the host may set this; see dev-docs/poltergeist/chatui.md.
   bool poltergeist_chat;
 
   // An opaque per-pane history handle from a saved project's pane

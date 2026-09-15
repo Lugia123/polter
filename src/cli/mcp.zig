@@ -25,7 +25,7 @@ const protocol_version = "2024-11-05";
 /// tool list from memory of what it used yesterday, and `task_*` was not on
 /// it. Every later decision was then made without the panel on the table --
 /// not chosen against, never present. A skill cannot catch that, because the
-/// narrowing happens before anything gets read. See docs/poltergeist/tasks.md.
+/// narrowing happens before anything gets read. See dev-docs/poltergeist/tasks.md.
 ///
 /// The index is there because knowing a tool exists is not the same as
 /// noticing you are standing in the situation it is for. A list answers

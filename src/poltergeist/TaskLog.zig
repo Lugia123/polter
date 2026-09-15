@@ -8,7 +8,7 @@
 //! directory per group, one file per local day, one JSON object per line --
 //! the same layout `ChatLog`'s record half and the terminal transcript use,
 //! under `<state>/tasks` beside `<state>/chat` and `<state>/terminals`.
-//! Inventing a third layout was the specific thing `docs/poltergeist/gaps.md`
+//! Inventing a third layout was the specific thing `dev-docs/poltergeist/gaps.md`
 //! warns about: one state directory holding two rules that disagree about
 //! where a given name's files go. The encoding of a group name into a
 //! directory name is decided in exactly one place and this is not it.

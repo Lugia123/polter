@@ -15,7 +15,7 @@
 //! `claude mcp add` and a copy into `~/.claude/skills/` written straight
 //! into the core, which meant that swapping in another agent CLI left
 //! nowhere for anybody to put the equivalent. See
-//! `docs/poltergeist/boundary.md` section 3.
+//! `dev-docs/poltergeist/boundary.md` section 3.
 //!
 //! **A failure here is never only a log line.** What this step fails at is
 //! giving the agent a tool surface, so the agent is precisely the party

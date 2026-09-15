@@ -4,7 +4,7 @@
 //! A one-line title, the terminal responsible, open/closed/cancelled, a
 //! progress word, and what kind of work it is. Nothing else, and the
 //! shortness is the design rather than a stage it is passing through: see
-//! `docs/poltergeist/tasks.md`, which rewrote half of principle P7 to allow
+//! `dev-docs/poltergeist/tasks.md`, which rewrote half of principle P7 to allow
 //! this much and drew the line at exactly this much. A requirement, a
 //! dependency, an acceptance criterion, a due date, a comment -- **anything
 //! a one-line title cannot hold belongs to another carrier**, and there are
@@ -65,7 +65,7 @@ pub const State = enum {
     closed,
 
     /// Called off before it was finished. The worker was told; see
-    /// `docs/poltergeist/tasks.md`.
+    /// `dev-docs/poltergeist/tasks.md`.
     cancelled,
 };
 
@@ -921,7 +921,7 @@ test "a task that is not there is not a task" {
 
 test "the panel stores what the chapter says it stores and no more" {
     // The red line, made mechanical. A field added here without going back
-    // to `docs/poltergeist/tasks.md` fails this, which is the only form of
+    // to `dev-docs/poltergeist/tasks.md` fails this, which is the only form of
     // "do not let it grow into a task system" that outlives whoever wrote
     // the sentence.
     const names = comptime blk: {

@@ -3,7 +3,7 @@
 Manual tests for `plugins/*/provision.ps1` and `plugins/_sdk/provision.ps1`
 — the PowerShell half of the provisioning plugins, added because Windows
 cannot execute a `.sh` and refuses the plugins with `error.InvalidExe`. See
-`docs/windows/development.md` 5.3 and `docs/poltergeist/provisioning.md`.
+`dev-docs/windows/development.md` 5.3 and `dev-docs/poltergeist/provisioning.md`.
 
 **These run on Windows only**, which is why they are here and not in the Zig
 test suite: `zig build test` runs on a machine with no PowerShell on it, and

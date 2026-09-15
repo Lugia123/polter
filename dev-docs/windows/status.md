@@ -270,7 +270,7 @@ vs 点一下文本框再按 `Esc`(假设成立则关不掉)。
    且只在目标文件已存在时才炸）。测试在 `test/plugins/`。
    连带记一条**机制缺口**：插件清单里没有「在这个系统上执行哪个文件」这个字段，
    所以那 7 份 `.ps1` 宿主现在够不着。设计见
-   `docs/poltergeist/provisioning.md`「九、一个插件在不同系统上执行什么」，
+   `dev-docs/poltergeist/provisioning.md`「九、一个插件在不同系统上执行什么」，
    **待拍板**，不在 M5 范围内。
 
 ## 二之三、M3 中文输入：已在真终端里打出汉字【实测】
@@ -774,7 +774,7 @@ UIA 事件**的机器上跑 `-Mode events`，四个动作各自收到预期的�
 
 **状态**：未验 · **销案**：WT 跑完下面六格，**尤其第 4 格出现 `-> window buttons`**。
 
-判据写在这里而不是 `docs/windows/keys.md`：那一份是键盘。
+判据写在这里而不是 `dev-docs/windows/keys.md`：那一份是键盘。
 
 #### 任务标题里那句话是错的，而它花掉了两轮
 
@@ -810,7 +810,7 @@ w1 [strip] nc right-click client=(600,20)  strip_h=45 reserved_right=207 -> hand
 
 #### 判据
 
-**第 0 步**：`docs/windows/keys.md` §2.0.2 的「第 0 步（通则）」，**正文在那里，不抄**。
+**第 0 步**：`dev-docs/windows/keys.md` §2.0.2 的「第 0 步（通则）」，**正文在那里，不抄**。
 这条判据的正对照具体是：**在标签条空白正中右键一次，确认 `[strip] nc right-click …
 -> handed on` 和 `[stripmenu] shown` 两行都出得来。两行都没有，本轮作废。**
 
@@ -1890,7 +1890,7 @@ docs 那条链本机跑不了（缺 `pandoc`），**但那只影响「另外再�
 | **211** | `VERSION` 那条合法路径今天不可区分，所以 205 的警告会对合法 tarball 也喊 |
 | **206** | 分支名尾部那个横杠（`short_hash` 有 `trimEnd`，`branch` 没有） |
 | **202** | ✅ **已结**（二十七）：1 MB 是 **Debug** 的数，出货档 196,696、排第四。⚠️ 出货档第一名 `dirRenameWindowsInner` = 393,432 没人看过；分母（工作线程 2 MB 还是 16 MB）仍未测 |
-| **178 / 180 / 192** | 闸只看 Rust 不看 Zig；`SendMessageTimeout` 类判据作废重写（模态循环下失明，边界与标定步骤见 `docs/windows/hang-readings.md`）；`reg()` 哨兵 |
+| **178 / 180 / 192** | 闸只看 Rust 不看 Zig；`SendMessageTimeout` 类判据作废重写（模态循环下失明，边界与标定步骤见 `dev-docs/windows/hang-readings.md`）；`reg()` 哨兵 |
 | **`Config.clone`** | 修法未落地。R2 是**测量变体不是补丁**——出参 + `var result: Config = undefined`，**错误路径上 `result` 未初始化**，而原版有 `errdefer result.deinit()` |
 | **213 / 212** | 各自那条要 Windows 的单元测试 |
 
@@ -2389,7 +2389,7 @@ Splits 的三个视图、`SurfaceView.swift` 的 SwiftUI 包装、插件页、�
 - 被否决的另一边是「出厂绕、第三方按机器当前策略走，被拦住就报一条清楚的错」，
   代价是第三方插件作者要处理签名或让用户改策略。
 
-**这条不是机械结论，是被看过之后的决定**（`docs/poltergeist/provisioning.md` 9.6 第②条）。
+**这条不是机械结论，是被看过之后的决定**（`dev-docs/poltergeist/provisioning.md` 9.6 第②条）。
 
 ## 五之三、Ctrl-C：判据在跑之前先写死
 
@@ -2995,7 +2995,7 @@ if (self.isMouseReporting()) {
 > **这一句是判据里原本缺的。** 上面那段写清了「没有 N7 会怎样」，**却没写「N7 自己
 > 在默认值撞上时会怎样」**。凡是判据依赖一个默认值（配置的、系统的），**那个默认值
 > 要写进判据**，并说明相等时这一格没有区分力、以及要把它改成什么。
-> 同族的完整讨论见 `docs/windows/s4.md`「观测手段的作用域，和被观测对象的实际形状，
+> 同族的完整讨论见 `dev-docs/windows/s4.md`「观测手段的作用域，和被观测对象的实际形状，
 > 不是同一个集合」。
 
 | **N8** | 横向滚轮（触控板双指横滑 / 倾斜滚轮） | **本机大概率无法验证** ——见下 |

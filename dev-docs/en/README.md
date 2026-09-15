@@ -13,9 +13,9 @@ point at the wrong line number after a refactor. Where a document and the
 source disagree, the source wins — and while you are there, update the commit
 stamp at the top of the document.
 
-## Most of `docs/` is in Chinese
+## Most of `dev-docs/` is in Chinese
 
-38 of the 39 files under `docs/` were written in Chinese — the exception is
+38 of the 39 files under `dev-docs/` were written in Chinese — the exception is
 [`../tools.md`](../tools.md), which was written in English and has a Chinese
 translation beside it as `tools_CN.md`. The gap matters for exactly two files,
 because [`CONTRIBUTING.md`](../../CONTRIBUTING.md) names those two as the
@@ -66,9 +66,9 @@ what they are about to open.
   stranger-reads-the-README reviews, including the feedback that was **not**
   acted on and why.
 - [`../_conventions.md`](../_conventions.md) — the writing rules every file
-  under `docs/` follows: citation format, the anti-hallucination rule, and how
+  under `dev-docs/` follows: citation format, the anti-hallucination rule, and how
   to mark something unverified. Read it before adding or changing anything in
-  `docs/`; [`GLOSSARY.md`](GLOSSARY.md) is its English-side companion.
+  `dev-docs/`; [`GLOSSARY.md`](GLOSSARY.md) is its English-side companion.
 
 The index to all of it, also in Chinese, is [`../README.md`](../README.md).
 
@@ -90,7 +90,7 @@ The index to all of it, also in Chinese, is [`../README.md`](../README.md).
 
 - The root [`AGENTS.md`](../../AGENTS.md) (`CLAUDE.md` is a symlink to it) is
   the entry index for agents. It carries only the shortest path and points at
-  `docs/` for everything else. It is in English.
+  `dev-docs/` for everything else. It is in English.
 - [`CONTRIBUTING.md`](../../CONTRIBUTING.md) says which half of this tree is
   this fork's and which half is upstream Ghostty's, and states the one design
   rule. English.

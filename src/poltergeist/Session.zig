@@ -4,7 +4,7 @@
 //! **material**, written down so that after a restart the supervisor can
 //! read what last night's arrangement was and rebuild it. Deciding which
 //! terminal on screen now is which one from last night is a judgement, and
-//! judgements belong to the supervisor -- see `docs/poltergeist/supervisor.md`
+//! judgements belong to the supervisor -- see `dev-docs/poltergeist/supervisor.md`
 //! for why the program guessing that is worse than it asking.
 //!
 //! What is deliberately absent is as much of the design as what is here:
@@ -348,7 +348,7 @@ pub fn parse(arena: Allocator, bytes: []const u8) ?Snapshot {
 /// makes that ordering impossible to get wrong rather than merely
 /// documented.
 ///
-/// See `docs/poltergeist/supervisor.md`, and note that this is *recall*:
+/// See `dev-docs/poltergeist/supervisor.md`, and note that this is *recall*:
 /// the arrangement that was lost. The live one is what the group tools
 /// are for.
 pub const Recall = struct {

@@ -5,7 +5,7 @@
 //! developing, which matters for something that otherwise only ever runs
 //! with two agents and a terminal attached.
 //!
-//! Pure: bytes in, values out. See `docs/poltergeist/mcp.md`.
+//! Pure: bytes in, values out. See `dev-docs/poltergeist/mcp.md`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

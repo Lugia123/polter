@@ -11,7 +11,7 @@
 - 日志（`GHOSTTY_LOG`）、inspector、单元测试、Valgrind、benchmark 等观察与验证手段。
 - 提交前的格式化与 lint 清单，以及构建/运行环节最容易踩的坑。
 
-本仓库的构建与运行命令以本篇为唯一权威，`docs/README.md:20` 也是这么写的。
+本仓库的构建与运行命令以本篇为唯一权威，`dev-docs/README.md:20` 也是这么写的。
 
 ## 本文不覆盖什么
 

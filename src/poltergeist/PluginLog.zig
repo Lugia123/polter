@@ -10,7 +10,7 @@
 //! lived in the shipped SDK, then a log would exist for the plugins that
 //! happened to use the SDK and for no others -- which is not a log, it is
 //! luck. The same argument is already written down in this repository as
-//! red line 3 of `docs/poltergeist/gaps.md`, about the terminal transcript:
+//! red line 3 of `dev-docs/poltergeist/gaps.md`, about the terminal transcript:
 //!
 //! > Recording is the terminal's job, not the hosted program's. Leave it to
 //! > the agent and the record exists only for the programs that happen to

@@ -57,7 +57,7 @@ These are specific and each one has a place in the code.
   implemented, which is why the number is published as three; every one of the
   72 now gets a named answer and none falls through to a bare tag number. Both numbers are measured rather than
   remembered, and the commands are in
-  [`docs/windows/status.md`](docs/windows/status.md) — **an earlier version of
+  [`dev-docs/windows/status.md`](dev-docs/windows/status.md) — **an earlier version of
   this line said 24, from a command anchored to line numbers that had moved.**
 - **The `archive` plugin's Windows script — done, and left here for the way
   this line was wrong.** It said the plugin shipped only `archive.py` and was
@@ -78,7 +78,7 @@ These are specific and each one has a place in the code.
   **The argument outlives the item, so it stays.** Plugins can already say what
   to run per system, and the seven agent-CLI plugins do. An `os` field — "do
   not load me here at all" — was considered and **decided against**
-  (`docs/poltergeist/provisioning.md` §9.5), because `exec_<os>` expresses
+  (`dev-docs/poltergeist/provisioning.md` §9.5), because `exec_<os>` expresses
   today's only real case. What was ever missing was the script, never a way to
   say it — which is why the fix was one file and no schema change.
 

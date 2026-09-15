@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Does every entry in the landed-but-unverified ledger say its state and how it closes?
 
-`docs/windows/status.md` §五之一之二 is where work that has landed but is not
+`dev-docs/windows/status.md` §五之一之二 is where work that has landed but is not
 yet proven lives. Two things went wrong with it on the day it was created, and
 both are structural rather than careless:
 
@@ -157,14 +157,14 @@ print("probe self-test: OK (state, closing condition, bare 半验, exemption, an
 # -- the tree ----------------------------------------------------------------
 
 here = os.path.dirname(os.path.abspath(__file__))
-path = os.path.join(here, "..", "..", "docs", "windows", "status.md")
+path = os.path.join(here, "..", "..", "dev-docs", "windows", "status.md")
 with open(path, encoding="utf-8") as fh:
     src = fh.read()
 
 found = list(entries(src))
 if not found:
     print()
-    print(f"FAIL: no entries found under `{SECTION}` in docs/windows/status.md.")
+    print(f"FAIL: no entries found under `{SECTION}` in dev-docs/windows/status.md.")
     print("      Either the section was renamed or the heading shape changed --")
     print("      **and this gate would otherwise report a clean ledger for a file")
     print("      it could not read.**")

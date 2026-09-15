@@ -34,7 +34,7 @@ A file for [guiding coding agents](https://agents.md/).
 ## Repository Map
 
 `src/` shared Zig core, `macos/` Swift app, `include/` public C headers,
-`pkg/` and `vendor/` third-party, plus `test/`, `nix/`, `po/`, `docs/`.
+`pkg/` and `vendor/` third-party, plus `test/`, `nix/`, `po/`, `dev-docs/`.
 
 Inside `src/`: `main_ghostty.zig` (entrypoint), `App.zig` / `Surface.zig`
 (one surface per terminal), `apprt/` (runtime abstraction: `none`, `gtk`,
@@ -58,14 +58,14 @@ one before editing. They exist under `macos/`, `example/`, `src/benchmark/`,
 
 ## Docs
 
-`docs/README.md` is the index. Start with `docs/preview-manual.md` to build,
-run or debug, and `docs/architecture.md` for how the pieces fit together.
+`dev-docs/README.md` is the index. Start with `dev-docs/preview-manual.md` to build,
+run or debug, and `dev-docs/architecture.md` for how the pieces fit together.
 Code is always the source of truth; if a doc disagrees, fix the doc.
 
 Where a keypress actually goes on Windows -- split by whether the host or the
 core handles it, the known cases where a menu's label and the key's behaviour
 disagree, and why most work on the test machine should never touch the GUI:
-`docs/windows/keys.md`. Read it before changing the accelerator table in
+`dev-docs/windows/keys.md`. Read it before changing the accelerator table in
 `keys.rs` or `Keybinds.init` in `Config.zig`.
 
 ## Issues and PRs

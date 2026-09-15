@@ -119,6 +119,6 @@ So everything about the terminal itself belongs upstream: escape sequences, perf
 
 What Polter adds is `src/poltergeist/`, the MCP tool surface, the chat TUI, terminal transcripts and the plugin host. This project is not affiliated with the Ghostty project — don't file bugs found here over there unless they reproduce on upstream Ghostty.
 
-Building is in [`docs/preview-manual.md`](docs/preview-manual.md); the design reasoning is under [`docs/poltergeist/`](docs/poltergeist/README.md).
+Building is in [`dev-docs/preview-manual.md`](dev-docs/preview-manual.md); the design reasoning is under [`dev-docs/poltergeist/`](dev-docs/poltergeist/README.md).
 
 MIT, same as upstream.

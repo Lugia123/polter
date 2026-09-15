@@ -22,7 +22,7 @@
 
 **This document is the single authority for this repository's build and run
 commands.** [`CONTRIBUTING.md:22`](../../CONTRIBUTING.md) says the same, and
-so does [`docs/README.md:20`](../README.md).
+so does [`dev-docs/README.md:20`](../README.md).
 
 ## What this document does not cover
 

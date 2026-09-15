@@ -154,7 +154,7 @@ and multi-line text when the target does not have bracketed paste on
 (`src/Surface.zig:3770-3773`). It is otherwise the ordinary paste path, framed
 the way a paste is framed. **There is no tool that answers a permission prompt
 on another agent's behalf, and adding one is out of scope by decision**
-(`docs/poltergeist/mcp.md:22`).
+(`dev-docs/poltergeist/mcp.md:22`).
 
 Text from a plugin that is printed onto a screen or into a log is stripped of
 every byte below `0x20`, `DEL`, and the C1 range first
@@ -211,7 +211,7 @@ Everything lives under `$XDG_STATE_HOME/polter` (`LOCALAPPDATA` on Windows).
   day-file records are never rotated and never trimmed; a day past 8MB
   continues in a `.partN` file beside itself rather than moving anything aside
   (`src/config/Config.zig:1500-1503`, `:1544-1545`;
-  `docs/poltergeist/storage.md`).
+  `dev-docs/poltergeist/storage.md`).
 - **Nothing is redacted.** Terminal output contains API keys, tokens and paths.
   A scrubber that caught nine keys in ten would be worse than none, because it
   would make the file feel safe to send somewhere
@@ -249,7 +249,7 @@ output, a web page a worker fetched, a commit message.
 Polter does not sanitise this and cannot: the content is the product. This is
 stated as a known limitation in
 [issue #7, item 4](https://github.com/Lugia123/polter/issues/7), and the design
-gap behind it is written up at `docs/poltergeist/gaps.md:476-495`.
+gap behind it is written up at `dev-docs/poltergeist/gaps.md:476-495`.
 
 What exists is structural rather than filtering:
 

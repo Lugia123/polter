@@ -16,7 +16,7 @@
 //! files are user-editable, and a constraint readable from one would be a
 //! constraint a user could weaken by accident while editing prose.
 //!
-//! Pure: text in, values out. See `docs/poltergeist/mcp.md`.
+//! Pure: text in, values out. See `dev-docs/poltergeist/mcp.md`.
 
 const std = @import("std");
 

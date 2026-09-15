@@ -3,7 +3,7 @@
 # **The counterpart of `provision.sh` beside it, not a replacement.** Windows
 # cannot execute a `.sh`, and which systems a plugin runs on is the plugin's
 # own business to state rather than the host's to guess -- see
-# `docs/windows/development.md` 5.3. Everything else about this file is the
+# `dev-docs/windows/development.md` 5.3. Everything else about this file is the
 # same claim the `sh` one makes: the implementation is in
 # `_sdk/provision.ps1` and this file is the answers.
 

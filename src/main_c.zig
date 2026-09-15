@@ -81,7 +81,7 @@ pub const std_options = main.std_options;
 ///
 /// > **`zig build test` stayed green through the version that did not
 /// > compile** (4027/4046, unchanged) -- the test step does not build this
-/// > library target. Same shape as the warning in `docs/windows/keys.md`:
+/// > library target. Same shape as the warning in `dev-docs/windows/keys.md`:
 /// > the check we reach for does not cover this code.
 pub const _DllMainCRTStartup = if (builtin.os.tag == .windows) struct {
     extern fn DllMainCRTStartup(

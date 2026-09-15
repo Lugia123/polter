@@ -1,7 +1,7 @@
 # Tell Google's Gemini CLI that Polter is here. The Windows half.
 #
 # The implementation is in `_sdk/provision.ps1`; this file is the answers.
-# See docs/poltergeist/provisioning.md and docs/windows/development.md 5.3.
+# See dev-docs/poltergeist/provisioning.md and dev-docs/windows/development.md 5.3.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'

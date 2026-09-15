@@ -267,7 +267,7 @@ ESCAPE_SITES = [
         "windows/host/src/tabs.rs",
         "verbose",
         "the per-pane layout lines are the verdict for two of the three cells "
-        "in docs/windows/split-target-criteria.md; a bare count made that "
+        "in dev-docs/windows/split-target-criteria.md; a bare count made that "
         "criterion unable to fail after the first forty layouts of the process",
     ),
 ]

@@ -84,7 +84,7 @@ def build_empty_tree(gates, extra=()):
     """A tree where every gate's subject is present but empty."""
     top = tempfile.mkdtemp(prefix="gates-fail-on-empty-")
     tools = os.path.join(top, "windows", "tools")
-    for d in ("windows/tools", "windows/host/src", "docs/windows", "src", "include/ghostty"):
+    for d in ("windows/tools", "windows/host/src", "dev-docs/windows", "src", "include/ghostty"):
         os.makedirs(os.path.join(top, *d.split("/")), exist_ok=True)
     for g in gates:
         shutil.copy2(os.path.join(HERE, g), tools)

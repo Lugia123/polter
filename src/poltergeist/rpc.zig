@@ -10,7 +10,7 @@
 //! This file is pure -- it decides what is permitted, not how to do it. The
 //! doing lives in the app, which has the surfaces. Keeping the matrix here
 //! means it can be tested exhaustively without a terminal, a socket, or an
-//! agent. See `docs/poltergeist/mcp.md`.
+//! agent. See `dev-docs/poltergeist/mcp.md`.
 
 const std = @import("std");
 
@@ -242,7 +242,7 @@ pub const Method = enum {
     /// off and gets compacted away, so by three in the morning the worker
     /// no longer knows what it was set to do. What it holds is who is
     /// doing what, never what the work is -- see
-    /// `docs/poltergeist/tasks.md` for the line and why it is drawn there.
+    /// `dev-docs/poltergeist/tasks.md` for the line and why it is drawn there.
     task_create,
 
     /// Correct a task that is already on the panel: its title, its kind, or

@@ -266,7 +266,7 @@ titles, and a convention written into titles is not something anything can
 filter on. What it is not: none of the four things named above. **Nothing else
 was opened** — the panel still stores who is doing which piece of work, how far
 along it is, and now what kind of work it is, and a fifth field means going
-back to `docs/poltergeist/tasks.md` first, exactly as this one did.
+back to `dev-docs/poltergeist/tasks.md` first, exactly as this one did.
 
 **And `task_edit` was added with it**, because the same day showed why: a
 title written when something was true stays on the panel after it stops being

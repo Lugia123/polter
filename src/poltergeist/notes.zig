@@ -4,7 +4,7 @@
 //! the quiet-screen reports and rides out on the same clock (`Bus.leaveNote`,
 //! `poltergeist-notice-interval`). A second schedule would be a way round
 //! the one number the user set to say how often a supervisor may be
-//! interrupted at all -- see `docs/poltergeist/stats.md`, which argues the
+//! interrupted at all -- see `dev-docs/poltergeist/stats.md`, which argues the
 //! same point against an hourly summary.
 //!
 //! **Everything here is arithmetic, and none of it is a verdict.** How long

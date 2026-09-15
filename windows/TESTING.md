@@ -150,7 +150,7 @@ info(i18n): loaded catalog locale=zh_CN entries=… path=…\share\locale\zh_CN\
 - **还没答的一问**：同样是 `0x0D`，**真键盘按下去能提交，`terminal_send` 带的那个不能**。
   **目前已知的唯一差别是写的边界** —— 真键盘是两次写，`terminal_send` 是一次。
 
-**详细的判据、排除和读数在** `docs/windows/terminal-send-not-submitted.md`。
+**详细的判据、排除和读数在** `dev-docs/windows/terminal-send-not-submitted.md`。
 ⚠️ **那份文件说什么以它为准**，这里不转述。
 
 ### 其余五条
@@ -161,7 +161,7 @@ info(i18n): loaded catalog locale=zh_CN entries=… path=…\share\locale\zh_CN\
   ⚠️ **这句话原来只说「有些」，而「有些」让人以为是零星几条、不值得追。** 实际是菜单里
   48 个动作中的 30 个。**最常撞到的是分屏那一批**：`goto_split`（在分屏间跳）和
   `resize_split`（改分屏大小）共十条，**菜单上一个提示都没有，键全是好的**。
-  成因写在 `docs/windows/keys.md` §3.7。**不用报。**
+  成因写在 `dev-docs/windows/keys.md` §3.7。**不用报。**
 - **设置页里下拉框的那圈边框是系统画的**，深色主题下它仍然偏亮。这一处我们管不到。
 - **窗口全部关掉之后进程才退出**，中间可能有短暂的延迟。
 - ⚠️ **「设置…」（`Ctrl+,`）弹出「你要如何打开这个 .polter 文件？」—— 在没有关联的机器上这是预期行为。**

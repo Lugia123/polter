@@ -5,7 +5,7 @@
 //! menu bar" is true and is about a strip across the top of the window; the
 //! question actually being asked was "how does someone who was never told
 //! find the 96 commands", and the palette answers that only for people who
-//! already know the palette exists. `docs/windows/s4.md` §3.0 reverses the
+//! already know the palette exists. `dev-docs/windows/s4.md` §3.0 reverses the
 //! call; this file is the reversal.
 //!
 //! **Every row here is either a command the core publishes or a host action

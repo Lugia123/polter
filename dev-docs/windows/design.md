@@ -10,8 +10,8 @@
 ## 本章不覆盖什么
 
 - 怎么动手（[development.md](development.md)）
-- Ghostty 核心怎么工作（`docs/architecture.md`）
-- Polter 的监管模型（`docs/poltergeist/`）
+- Ghostty 核心怎么工作（`dev-docs/architecture.md`）
+- Polter 的监管模型（`dev-docs/poltergeist/`）
 
 ## 一句话概括
 

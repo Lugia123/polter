@@ -11,7 +11,7 @@
 //!
 //! What a terminal is *told* when a message arrives is only that there is
 //! one, and where. The body is fetched by asking. See
-//! `docs/poltergeist/mcp.md`.
+//! `dev-docs/poltergeist/mcp.md`.
 //!
 //! Pure: time arrives as a parameter, and the only allocation is the log.
 
@@ -127,7 +127,7 @@ const Member = struct {
     ///
     /// None of it is used by the program. It is material handed back to
     /// the supervisor so *it* can work out what to resume and where; see
-    /// `docs/poltergeist/supervisor.md`. `Surface.id` is a fresh random
+    /// `dev-docs/poltergeist/supervisor.md`. `Surface.id` is a fresh random
     /// number every run, so it is worthless for this and is not kept.
     footing: Footing = .{},
 };
@@ -181,7 +181,7 @@ const Group = struct {
     /// which one still needs watching.
     ///
     /// Opaque to the program. It is never parsed, never matched on, and has
-    /// no status of its own; see `docs/poltergeist/mcp.md` for why that
+    /// no status of its own; see `dev-docs/poltergeist/mcp.md` for why that
     /// last part is the line between keeping a note and managing a task.
     brief: []const u8 = "",
 
@@ -794,7 +794,7 @@ pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
 /// person is reading in are **the same thing to this code** -- both carry no
 /// mark, and nothing here can tell them apart. That is why the rule is drawn
 /// on "who acts on it" rather than on "who is it". See
-/// `docs/poltergeist/tasks.md`.
+/// `dev-docs/poltergeist/tasks.md`.
 pub fn waking(self: *const Chat, name: []const u8, id: Id, role: Bus.Role) usize {
     return switch (role) {
         .supervisor => self.unread(name, id),

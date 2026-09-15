@@ -14,11 +14,11 @@
 
 ## 本文不覆盖什么
 
-- 渲染器怎么把 cell 画到屏幕、字体与图集（atlas）——见 `docs/rendering-and-font.md`。
-- 键盘/鼠标事件的**编码**（`src/input/`）与 apprt/config——见 `docs/platform-and-config.md`；kitty 键盘协议的**解析**（`src/terminal/kitty/key.zig`）留在本篇。
-- 线程模型、消息信箱（mailbox）、Surface 生命周期——见 `docs/architecture.md`。
-- 完整的构建/调试流程与全部命令——唯一权威是 `docs/preview-manual.md`，本篇只给最小集。
-- 终端 IO（termio）如何驱动 pty 与读线程——见 `docs/architecture.md`，本篇只给一个衔接点。
+- 渲染器怎么把 cell 画到屏幕、字体与图集（atlas）——见 `dev-docs/rendering-and-font.md`。
+- 键盘/鼠标事件的**编码**（`src/input/`）与 apprt/config——见 `dev-docs/platform-and-config.md`；kitty 键盘协议的**解析**（`src/terminal/kitty/key.zig`）留在本篇。
+- 线程模型、消息信箱（mailbox）、Surface 生命周期——见 `dev-docs/architecture.md`。
+- 完整的构建/调试流程与全部命令——唯一权威是 `dev-docs/preview-manual.md`，本篇只给最小集。
+- 终端 IO（termio）如何驱动 pty 与读线程——见 `dev-docs/architecture.md`，本篇只给一个衔接点。
 
 ## 一句话概括
 
@@ -224,7 +224,7 @@ hyperlink 用同一套机制（引入见 `src/terminal/hyperlink.zig:10`）：`h
 
 `kitty.zig` 聚合三个子模块，`graphics` 受 `build_options.kitty_graphics` 门控，关闭时退化成空 struct（`src/terminal/kitty.zig:5-11`）。
 
-键盘协议的核心是 `FlagStack`：固定 8 层、无堆分配，实现 `CSI > u`（push）/ `CSI < u`（pop）语义（`src/terminal/kitty/key.zig:1-11`）；栈满时靠 `idx` 的 `u3` 回绕淘汰最老项（`:37-43`）。这里是**解析与状态**侧；编码侧在 `src/input/`，见 `docs/platform-and-config.md`。
+键盘协议的核心是 `FlagStack`：固定 8 层、无堆分配，实现 `CSI > u`（push）/ `CSI < u`（pop）语义（`src/terminal/kitty/key.zig:1-11`）；栈满时靠 `idx` 的 `u3` 回绕淘汰最老项（`:37-43`）。这里是**解析与状态**侧；编码侧在 `src/input/`，见 `dev-docs/platform-and-config.md`。
 
 `kitty/graphics.zig` 只是聚合层，把 `graphics_command` / `graphics_exec` / `graphics_image` / `graphics_render` / `graphics_storage` / `graphics_unicode` 六个文件汇成 `Command`、`CommandParser`、`Image`、`LoadingImage`、`ImageStorage`、`RenderPlacement`、`Response`、`execute`（`:19-34`）。文件头列出未实现项——共享内存传输、unicode 虚拟放置、动画——并自陈这个子系统性能不佳（`:1-17`）。
 
@@ -246,7 +246,7 @@ hyperlink 用同一套机制（引入见 `src/terminal/hyperlink.zig:10`）：`h
 
 - `src/terminal/Selection.zig:14-22` 有作者的自我批评注释：排序操作频繁用到 `pointFromPin` 而它很慢，之所以保留是因为太多调用方已依赖该行为，未来需要重做。
 - `highlight.zig` 是更通用的「连续 cell 区间」概念，用于选择、搜索结果等，注释写明计划最终完全取代 `Selection`，但因耦合太深需要时间（`src/terminal/highlight.zig:1-10`）。
-- `render.zig` 特意放在 `src/terminal` 而不是 `src/renderer`，目的是对多种渲染器保持通用，尤其能帮 libghostty-vt 把终端状态转成可渲染形式；它取代了旧的「每帧 clone 视口 Screen」做法，clone 时间一直是阻塞 IO 的瓶颈（`src/terminal/render.zig:20-35`）。具体渲染见 `docs/rendering-and-font.md`。
+- `render.zig` 特意放在 `src/terminal` 而不是 `src/renderer`，目的是对多种渲染器保持通用，尤其能帮 libghostty-vt 把终端状态转成可渲染形式；它取代了旧的「每帧 clone 视口 Screen」做法，clone 时间一直是阻塞 IO 的瓶颈（`src/terminal/render.zig:20-35`）。具体渲染见 `dev-docs/rendering-and-font.md`。
 - `SelectionGesture.zig` 只负责解释一条指针事件流，除 `autoscrollTick` 会滚动视口外不直接修改终端选择，由调用方把返回的 `Selection` 应用到活动屏幕（`src/terminal/SelectionGesture.zig:1-8`）。
 - `formatter.zig` 的 `Format` 枚举包含 `plain` 与保留颜色/样式/URL 的 VT 序列格式（`src/terminal/formatter.zig:23-31`）。
 - `modes.zig` 的文件头说明它用了很重的 comptime 来保证各类型与逻辑同步（`src/terminal/modes.zig:1-8`）；`ModeState.saved` 每个模式只允许保存一次，与其他实现 XTSAVE/XTRESTORE 的终端一致，理由是防 DoS（`:18-22`）。
@@ -317,7 +317,7 @@ hyperlink 用同一套机制（引入见 `src/terminal/hyperlink.zig:10`）：`h
 
 ## 构建与测试命令（最小集）
 
-命令的唯一权威是 `docs/preview-manual.md`；这里只列与终端核心直接相关的四条。
+命令的唯一权威是 `dev-docs/preview-manual.md`；这里只列与终端核心直接相关的四条。
 
 构建 libghostty-vt（出处 `AGENTS.md:21`）：
 
@@ -372,7 +372,7 @@ GHOSTTY_LZ4_SLOW=1 zig build test -Dtest-filter="lz4 differential"
 
 ## 与 Ghostty 应用的衔接点
 
-Ghostty 应用**不**使用 `stream_terminal.Handler`，而是用自己的 handler 实例化同一个泛型 Stream：`pub const Stream = terminal.Stream(StreamHandler);`（`src/termio/stream_handler.zig:80`），该 handler 的自述是「有状态、预期存活整个终端生命周期」（`:19-21`）。termio 如何驱动 pty、读线程与 IO 线程，见 `docs/architecture.md`。
+Ghostty 应用**不**使用 `stream_terminal.Handler`，而是用自己的 handler 实例化同一个泛型 Stream：`pub const Stream = terminal.Stream(StreamHandler);`（`src/termio/stream_handler.zig:80`），该 handler 的自述是「有状态、预期存活整个终端生命周期」（`:19-21`）。termio 如何驱动 pty、读线程与 IO 线程，见 `dev-docs/architecture.md`。
 
 ## 延伸阅读
 
@@ -383,4 +383,4 @@ Ghostty 应用**不**使用 `stream_terminal.Handler`，而是用自己的 handl
 - [src/terminal/apc/glyph/AGENTS.md](../src/terminal/apc/glyph/AGENTS.md) — glyph 协议规范来源
 - [example/AGENTS.md](../example/AGENTS.md) — 示例项目与 Doxygen snippet 约定
 - [src/benchmark/AGENTS.md](../src/benchmark/AGENTS.md) — `ghostty-bench` 的通用工作流（本篇未展开）
-- 其他篇目：`docs/architecture.md`、`docs/rendering-and-font.md`、`docs/platform-and-config.md`、`docs/preview-manual.md`
+- 其他篇目：`dev-docs/architecture.md`、`dev-docs/rendering-and-font.md`、`dev-docs/platform-and-config.md`、`dev-docs/preview-manual.md`

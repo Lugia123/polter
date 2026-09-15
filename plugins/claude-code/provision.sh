@@ -12,7 +12,7 @@
 # different answer for every agent CLI, and there are eight of them now. What
 # they need is identical -- register a server, mirror the skills -- and only
 # the shape differs, so only the shape belongs here. See
-# `docs/poltergeist/provisioning.md`.
+# `dev-docs/poltergeist/provisioning.md`.
 
 set -eu
 

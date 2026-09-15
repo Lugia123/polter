@@ -313,7 +313,7 @@ pub enum Hit {
     Overflow,
     /// The `+`. **Added 2026-09-02**: the strip had no target for "make
     /// another one of these", so the only way to open a tab was a keyboard
-    /// shortcut nobody is told about. `docs/windows/discoverability.md` §3.1
+    /// shortcut nobody is told about. `dev-docs/windows/discoverability.md` §3.1
     /// quotes this enum as the evidence that D1 could not pass; that quote
     /// needs updating now that this variant exists.
     New,

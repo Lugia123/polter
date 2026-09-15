@@ -10,7 +10,7 @@ a keystroke reached the core. Its gate was:
 **Three bits of a value the line prints in full.** Shift is not in that mask,
 so after the twentieth key of the process a bare key and a shift-only
 combination stopped being reported for ever, while `Ctrl-C` went on speaking.
-`docs/windows/keys.md` reads a missing `[key]` line into a verdict row -- and
+`dev-docs/windows/keys.md` reads a missing `[key]` line into a verdict row -- and
 for a control key that reading is sound, which is what made the hole so hard
 to see: the criterion worked every time anybody tried it.
 
@@ -158,7 +158,7 @@ def check(src: str) -> list:
         return [
             f"keys.rs: the line {NEEDLE} is gone. If it was renamed this checker "
             f"has been asserting nothing; if it was removed, the criterion in "
-            f"docs/windows/keys.md that reads its absence has to go with it."
+            f"dev-docs/windows/keys.md that reads its absence has to go with it."
         ]
     at = code.find("logf!", max(0, raw_at - 200))
     at = at if at >= 0 else raw_at

@@ -15,7 +15,7 @@
 //! **Why the input box is a native `EDIT` and not self-drawn.** A self-drawn
 //! field would need its own caret, selection, and — the expensive part — its
 //! own `ITextStoreACP`, because an IME composes into a document, not into a
-//! rectangle. By the measurement in `docs/windows/design.md` §1.6 that second
+//! rectangle. By the measurement in `dev-docs/windows/design.md` §1.6 that second
 //! text store alone would cost more than this whole file's budget. The native
 //! `EDIT` already has a TSF document, so Chinese input works in the palette
 //! for free.

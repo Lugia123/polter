@@ -19,8 +19,8 @@ zig build test -Dtest-filter=<name>  # the full suite is slow
 zig fmt .
 ```
 
-[`docs/preview-manual.md`](docs/preview-manual.md) is the authority on
-building, running and debugging. [`docs/architecture.md`](docs/architecture.md)
+[`dev-docs/preview-manual.md`](dev-docs/preview-manual.md) is the authority on
+building, running and debugging. [`dev-docs/architecture.md`](dev-docs/architecture.md)
 is how the pieces fit. [`AGENTS.md`](AGENTS.md) is the short version, and there
 are nested `AGENTS.md` files with rules for their own subtrees — read the
 nearest one before editing.

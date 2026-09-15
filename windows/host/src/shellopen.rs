@@ -123,7 +123,7 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
             // on purpose.** A line printed before the *spawn* says the request
             // was dispatched; this one says the call actually started. That
             // difference is what makes the three-tier reading in
-            // `docs/windows/hang-readings.md` §7 possible at all: ① present
+            // `dev-docs/windows/hang-readings.md` §7 possible at all: ① present
             // with ② absent means the window thread never came back, and ①
             // absent means nothing was triggered.
             //
@@ -251,7 +251,7 @@ pub fn detached(frame: Option<HWND>, tag: &'static str, target: String) -> bool 
     // **It is not evidence that nothing hangs.** It says this thread came
     // back, on this occasion; whether the window thread survives the two
     // adjacent opens that produced task 292 is answered by the recipe in
-    // `docs/windows/hang-readings.md` §7, and by nothing here. Two readings,
+    // `dev-docs/windows/hang-readings.md` §7, and by nothing here. Two readings,
     // and neither substitutes for the other.
     let spawned = match &worker {
         Ok(h) => {

@@ -12,7 +12,7 @@
 //!
 //! Poltergeist also never holds tasks. There is no queue here, no task list,
 //! and no scheduling -- work comes from whatever system the agents already
-//! read from. See `docs/poltergeist/mcp.md`.
+//! read from. See `dev-docs/poltergeist/mcp.md`.
 //!
 //! Pure: no allocation beyond the registry, time arrives as a parameter.
 

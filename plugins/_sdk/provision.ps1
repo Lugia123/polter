@@ -26,7 +26,7 @@
 # **Why a second file at all, rather than teaching the host to pick an
 # interpreter for `.sh`.** Because whether a plugin can run on this system is
 # a property of the plugin, not something for the host to infer. See
-# `docs/windows/development.md` 5.3.
+# `dev-docs/windows/development.md` 5.3.
 #
 # **The host still has to invoke this correctly**, and that is the one thing
 # a plugin cannot do for itself: Windows will not execute a `.ps1` any more
@@ -64,7 +64,7 @@
 #                         **Returning nothing means this host has no skills**,
 #                         which is a degradation and not a failure: the tools
 #                         still arrive, and the tool-family map in `initialize`
-#                         arrives with them. See docs/poltergeist/provisioning.md.
+#                         arrives with them. See dev-docs/poltergeist/provisioning.md.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -303,7 +303,7 @@ function Edit-PolterJson {
             # which is to say only on the second write to a machine -- so a
             # suite that creates a config and checks it passes, and every user
             # whose config already existed fails. Found by injection, not by
-            # any assertion; see the note in docs/windows/development.md 5.3.
+            # any assertion; see the note in dev-docs/windows/development.md 5.3.
             #
             # Naming it costs one file for the length of a rename and buys
             # back the old contents if this process dies mid-write.

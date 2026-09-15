@@ -9,7 +9,7 @@
 //! of a replay.
 //!
 //! Written by the program on a clock, and that is only acceptable because
-//! it interrupts nobody. `docs/poltergeist/stats.md` argues at length
+//! it interrupts nobody. `dev-docs/poltergeist/stats.md` argues at length
 //! against an hourly summary *from the supervisor* -- it spends the one
 //! thing that is scarcest here, and an hour with nothing new in it still
 //! has to say something, so it says "all is well" until nobody reads it.
@@ -19,7 +19,7 @@
 //! The shape is `daylog.Tree` again -- one directory per group, one file
 //! per local day, one JSON object per line, under `<state>/stats` beside
 //! `<state>/tasks` and `<state>/chat`. A third layout in one state
-//! directory is the thing `docs/poltergeist/gaps.md` warns about, and how a
+//! directory is the thing `dev-docs/poltergeist/gaps.md` warns about, and how a
 //! group name becomes a directory name is decided in exactly one place,
 //! which is not this file.
 //!

@@ -47,7 +47,7 @@ actual selling point. Line 9 hides it.」
   reference tables of forty MCP tools, each cell a paragraph … That's API
   documentation. It does not belong in a README.」
 - 中文读者独立给出同样建议：「**四十个工具的完整表格（第 216-330 行，115 行）不该
-  在 README 里。** 那是参考手册，扔进 `docs/`。它把 README 从"读物"变成了"文档"，
+  在 README 里。** 那是参考手册，扔进 `dev-docs/`。它把 README 从"读物"变成了"文档"，
   而这两种东西的读者不是同一批人。」
 
 ### 4. 上手部分有一个洞：MCP 工具是怎么来的
@@ -111,7 +111,7 @@ actual selling point. Line 9 hides it.」
 | 换终端的成本被当脚注 | 新增「决定之前」一节，第一条就是它，并补上从未说过的缓解办法：它本身是个完整终端，可以先当普通终端用一周 |
 | 通知插件不随包发 | 同一节第二条，明写「发行包里不带任何通知插件」 |
 | token 成本无人提 | 同一节末尾一段 |
-| 四十个工具的表格 | 搬到 `docs/tools.md` 和 `docs/tools_CN.md`，README 里留五个家族加一个链接。两版各瘦 64 / 67 行 |
+| 四十个工具的表格 | 搬到 `dev-docs/tools.md` 和 `dev-docs/tools_CN.md`，README 里留五个家族加一个链接。两版各瘦 64 / 67 行 |
 | 上手的洞 | 第 2 步和第 3 步之间加验证步骤：问它 `me` 返回什么，答不出就停下，并就地解释 MCP 工具从哪来 |
 | 黑话 | `tool surface`、「超过你设的线」、「不许下班」在首次出现处解释或改写 |
 | HTML 坏了 | 修 |

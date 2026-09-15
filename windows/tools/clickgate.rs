@@ -19,7 +19,7 @@
 //!
 //! # `--twice`, and why 40 milliseconds
 //!
-//! `docs/windows/hang-readings.md` has the reading this exists for: one
+//! `dev-docs/windows/hang-readings.md` has the reading this exists for: one
 //! `open_url` never hangs, two of them close together do -- but only when the
 //! first one is the process's *first*, the expensive one. `--twice <ms>` sends
 //! the second click after that many milliseconds, **gating again first**,

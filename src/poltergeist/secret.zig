@@ -583,7 +583,7 @@ test "classify knows every prefix resolve does" {
 }
 
 test "a file: reference expands a leading tilde" {
-    // `docs/poltergeist/plugins.md` writes the example as
+    // `dev-docs/poltergeist/plugins.md` writes the example as
     // `file:~/.config/polter/feishu.key`, and until this it did not work:
     // nothing expands `~` here, so the path was taken literally and the
     // reference failed for everybody who copied the documented line.

@@ -99,7 +99,7 @@ pub const Message = union(enum) {
     /// puts one between the text of a `terminal_send` and the return that
     /// submits it, because the receiving program decides whether a return is
     /// a submission or part of a paste by **when** it arrived, not by what
-    /// the bytes are -- see `docs/windows/terminal-send-not-submitted.md`.
+    /// the bytes are -- see `dev-docs/windows/terminal-send-not-submitted.md`.
     ///
     /// Handled on the IO thread by pausing the mailbox drain, so nothing
     /// sleeps and no other terminal is affected. Messages already queued

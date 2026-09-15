@@ -5,7 +5,7 @@
 
 ## 本文覆盖什么
 
-- `docs/` 下全部 Markdown 文档的写作、引用、排版规范。
+- `dev-docs/` 下全部 Markdown 文档的写作、引用、排版规范。
 - 根 `AGENTS.md`（`CLAUDE.md` 是它的符号链接）新增章节的风格约束。
 - 反幻觉铁律：什么算"有出处"，什么必须标 `（未核实）`。
 - 五篇主文档的边界划分与去重规则。
@@ -16,7 +16,7 @@
 - 具体技术内容。架构见 [architecture.md](architecture.md)，终端核心见 [terminal-core.md](terminal-core.md)，渲染与字体见 [rendering-and-font.md](rendering-and-font.md)，平台与配置见 [platform-and-config.md](platform-and-config.md)。
 - 构建与运行命令。唯一权威是 [preview-manual.md](preview-manual.md)。
 - 代码贡献流程、CLA、AI 使用政策。见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AI_POLICY.md](../AI_POLICY.md)。
-- Zig / Swift 源码本身的编码风格。那不属于 `docs/`。
+- Zig / Swift 源码本身的编码风格。那不属于 `dev-docs/`。
 
 ## 最高铁律：反幻觉
 
@@ -83,20 +83,20 @@
 
 固定产出五篇主文档，加一个索引页和本规范页：
 
-- `docs/README.md` — 索引，只做目录跳转，不重复内容。
-- `docs/architecture.md`
-- `docs/terminal-core.md`
-- `docs/rendering-and-font.md`
-- `docs/platform-and-config.md`
-- `docs/preview-manual.md`（重点篇）
-- `docs/_conventions.md` — 本文。
+- `dev-docs/README.md` — 索引，只做目录跳转，不重复内容。
+- `dev-docs/architecture.md`
+- `dev-docs/terminal-core.md`
+- `dev-docs/rendering-and-font.md`
+- `dev-docs/platform-and-config.md`
+- `dev-docs/preview-manual.md`（重点篇）
+- `dev-docs/_conventions.md` — 本文。
 
 文件名小写连字符、`.md` 结尾。编码 UTF-8、LF 换行、文件末尾留一个换行（与 `.editorconfig` 一致）。
 
-`docs/` 会被 Prettier 检查（[HACKING.md](../HACKING.md) 的 Prettier 一节说明非 Zig 资源用 Prettier lint，CI 会因格式不合格失败），所以要遵守 Prettier 默认风格：无行尾空格、无序列表用 `-`、有序列表用 `1.`、表格不能破损。提交前跑：
+`dev-docs/` 会被 Prettier 检查（[HACKING.md](../HACKING.md) 的 Prettier 一节说明非 Zig 资源用 Prettier lint，CI 会因格式不合格失败），所以要遵守 Prettier 默认风格：无行尾空格、无序列表用 `-`、有序列表用 `1.`、表格不能破损。提交前跑：
 
 ```sh
-prettier -w docs/
+prettier -w dev-docs/
 ```
 
 ## 每篇文档的固定骨架
@@ -167,7 +167,7 @@ prettier -w docs/
 
 ## 篇幅与密度
 
-- 每篇 200–500 行 Markdown（含代码块与空行）。`docs/preview-manual.md` 取 350–500 行。
+- 每篇 200–500 行 Markdown（含代码块与空行）。`dev-docs/preview-manual.md` 取 350–500 行。
 - 单个 `##` 章节不超过 80 行，超了就拆 `###`。
 - 段落不超过 6 行。优先用表格和有序步骤代替长段落。
 - 表格列数 ≤ 5。超宽信息改用 `- **字段** — 说明` 这种定义列表式写法。
@@ -252,7 +252,7 @@ $ zig build --release=fast --run
 - 若编辑工具因符号链接失败，用 `AGENTS.md` 作为路径重试。
 - 现有内容一字不改、位置不动，尤其是 `## Issue and PR Guidelines` 全段。
 - 新增内容一律追加在文件末尾，用英文书写（与该文件既有语言一致），风格保持 `## ` 二级标题加 `- ` 短条目。
-- 它是给 agent 读的索引，不是教程。细节一律指向 `docs/`。
+- 它是给 agent 读的索引，不是教程。细节一律指向 `dev-docs/`。
 
 ## 提交前自检清单
 
@@ -264,8 +264,8 @@ $ zig build --release=fast --run
 - [ ] 所有推测都带 `（未核实）`
 - [ ] 行数在 200–500 之间
 - [ ] 术语译法与本文术语表一致
-- [ ] 没有修改 `docs/` 与根 `AGENTS.md` 之外的任何文件
-- [ ] 已跑 `prettier -w docs/`
+- [ ] 没有修改 `dev-docs/` 与根 `AGENTS.md` 之外的任何文件
+- [ ] 已跑 `prettier -w dev-docs/`
 - [ ] 没有执行 `git add` / `git commit`，没有创建 issue 或 PR
 
 ## 延伸阅读

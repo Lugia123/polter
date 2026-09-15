@@ -11,7 +11,7 @@ and the number came from `pane_count(frame)`, which counted the panes of the
 `acting_tab` picks the tab holding the pane the caller named, so
 `terminal_action(id=A, "new_split:down")` against a pane in a background tab
 lands somewhere the active tab knows nothing about. That is not a corner
-case -- it is the exact shape `docs/windows/split-target-criteria.md` was
+case -- it is the exact shape `dev-docs/windows/split-target-criteria.md` was
 written to test, and the cell that tests it is the one where the two tabs
 differ by construction.
 

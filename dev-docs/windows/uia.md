@@ -167,7 +167,7 @@ TTL 时**拒绝运行**，而不是照跑然后给一个绿。
 
 > 这一节讲的是终端窗口那棵树。**快捷键页（`class=PolterKeybinds`，根的
 > `AutomationId=keybinds-list`）有自己的一份判据**，连同它的地板和正对照，在
-> `docs/windows/keybinds-page-criteria.md`。
+> `dev-docs/windows/keybinds-page-criteria.md`。
 
 脚本：`windows/tools/uia-tree-dump.ps1`。
 

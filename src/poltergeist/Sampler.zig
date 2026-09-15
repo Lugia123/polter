@@ -7,7 +7,7 @@
 //! It deliberately does not decide *why* the screen stopped -- thinking,
 //! waiting for input, crashed, finished -- because that is a semantic
 //! judgement about content, and content judgement belongs to the supervisor
-//! AI. See `docs/poltergeist/sensing.md`.
+//! AI. See `dev-docs/poltergeist/sensing.md`.
 //!
 //! This file is pure: time arrives as a parameter and no allocation happens,
 //! so the whole state machine is testable without a terminal or a clock.

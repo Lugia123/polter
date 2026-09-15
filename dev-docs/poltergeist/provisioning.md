@@ -242,13 +242,13 @@ host_rules_file() { printf '%s/.claude/CLAUDE.md' "$home"; }   # 空 = 这家不
 > 仍是待议**。落地与设计的差异逐条记在 9.3 和 9.4 里，**没有合并进正文**——把偏离
 > 写进结论里，下一个人就再也看不到它偏在哪。
 
-Windows 上出厂的 7 个注册插件各补了一份 `provision.ps1`（`docs/windows/development.md`
+Windows 上出厂的 7 个注册插件各补了一份 `provision.ps1`（`dev-docs/windows/development.md`
 5.3）。**在此之前宿主够不着它们**：`plugin.json` 里只有一个 `exec`，指向 `provision.sh`，
 Windows 执行不了 `.sh`，报 `error.InvalidExe`。
 
 **这不是 Windows 专属的缺口。** 今天是 Windows，明天是一个只在 Linux 上有意义的
 插件，或者一个在 macOS 上要走 `.scpt`、别处走别的东西的插件。所以这一节在
-provisioning 自己的文档里，不在 `docs/windows/`。
+provisioning 自己的文档里，不在 `dev-docs/windows/`。
 
 ### 9.1 一个问题还是两个
 
@@ -463,7 +463,7 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
    这是宿主主动跳过了一道用户或管理员设的闸。**这是一个安全形状的决定，不是机械的**，
    拍板时该被看见——哪怕结论仍然是「就这么做」，也该是被看过之后的「就这么做」。
 
-   > **已裁决（用户，2026-09-01）：全部绕过。** 见 `docs/windows/status.md` 五之二
+   > **已裁决（用户，2026-09-01）：全部绕过。** 见 `dev-docs/windows/status.md` 五之二
    > 第 5 条。**结论和「不看就照做」会得到的一样，但它现在是被看过之后的那一个**——
    > 这正是提出它的目的，而不是希望它被否掉。
 3. **扩展名表必须是封闭的。** 一旦它变成「按扩展名找解释器」的通用机制，
@@ -475,7 +475,7 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
 - **那 7 份 `plugin.json` 各加的一行**（`"exec_windows": "provision.ps1"`）：`archive`
   没有加，因为 `.py` 跨平台——**而这恰好让它成为 Windows 上唯一走进 `unsupported` 的
   出厂插件**，见 9.4 末尾。
-- **`exec_windows` 之外的 Windows 移植事项**，见 `docs/windows/development.md`。
+- **`exec_windows` 之外的 Windows 移植事项**，见 `dev-docs/windows/development.md`。
 - 那 7 份 `.ps1` 本身怎么写、PowerShell 相对 `sh` 哪里简单哪里麻烦，见
   `plugins/_sdk/provision.ps1` 的头注释和 `test/plugins/README.md`。
 

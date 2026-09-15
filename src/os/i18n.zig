@@ -958,7 +958,7 @@ test "locales_map and staticLocale are compiled at all" {
     // container-level declaration in this file to be analysed -- measured,
     // not assumed: a `const` whose initialiser has a type error and a `fn`
     // whose body has one are both caught by it, and by nothing else short of
-    // referencing them by hand. See `docs/preview-manual.md`.
+    // referencing them by hand. See `dev-docs/preview-manual.md`.
     testing.refAllDecls(@This());
 
     try testing.expect(locales_map.get("zh_CN") != null);

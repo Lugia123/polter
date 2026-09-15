@@ -119,7 +119,7 @@ pub const Action = union(Key) {
     toggle_command_palette,
 
     /// Toggle the window showing what the terminals have said to each
-    /// other. See `docs/poltergeist/chatui.md`.
+    /// other. See `dev-docs/poltergeist/chatui.md`.
     toggle_poltergeist_chat,
 
     /// Toggle the visibility of all Ghostty terminal windows.
@@ -2294,7 +2294,7 @@ pub const NewSplit = struct {
 /// something this side does not own. A string is a conduit; a struct would
 /// be a claim.
 pub const PoltergeistLayout = struct {
-    /// The shape asked for. See `docs/poltergeist/` and the tool description.
+    /// The shape asked for. See `dev-docs/poltergeist/` and the tool description.
     spec: [:0]const u8,
 
     /// Where the apprt writes its answer.
