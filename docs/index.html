@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polter — 让一个 Claude Code 会话去管另外几个</title>
+<meta name="description" content="One Claude Code session supervises the agents in your other terminal tabs: which is stuck, which is done, which is still running. A fork of Ghostty. No account, no API key.">
+<meta property="og:title" content="Polter">
+<meta property="og:image" content="poster-en.jpg">
+<link rel="icon" href="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0A0A0C;
+    --line:#26262B;
+    --ink:#EDEBE5;
+    --ink-2:#8E8C86;
+    --indigo:#6F68F0;
+    --sans:'Inter','Noto Sans SC',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--bg);color:var(--ink)}
+  body{font-family:var(--sans);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;
+       min-height:100vh;display:flex;flex-direction:column}
+  .wrap{width:100%;max-width:1120px;margin:0 auto;padding:0 20px}
+
+  header .wrap{display:flex;align-items:center;gap:12px;height:64px}
+  header img{width:24px;height:24px;border-radius:6px}
+  header b{font-weight:700;letter-spacing:-.01em}
+  header nav{margin-left:auto;display:flex;align-items:center;gap:18px;font-size:14px}
+  header a{color:var(--ink-2);text-decoration:none}
+  header a:hover{color:var(--ink)}
+  .lang{border:1px solid var(--line);color:var(--ink);background:none;font:inherit;font-size:13px;
+        padding:3px 12px;border-radius:999px;cursor:pointer}
+  .lang:hover{border-color:var(--ink-2)}
+
+  main{flex:1;display:flex;flex-direction:column;justify-content:center;padding:12px 0 40px}
+  .stage{position:relative;display:flex;flex-direction:column}
+  .player{border:1px solid var(--line);border-radius:14px;overflow:hidden;
+          background:#000;aspect-ratio:16/9;max-width:100%}
+  video{display:block;width:100%;height:100%;object-fit:cover}
+  .sound{position:absolute;right:14px;bottom:14px;display:flex;align-items:center;gap:7px;
+         border:1px solid rgba(255,255,255,.18);background:rgba(10,10,12,.66);color:var(--ink);
+         backdrop-filter:blur(6px);font:500 13px var(--sans);padding:6px 13px;border-radius:999px;
+         cursor:pointer}
+  .sound:hover{background:rgba(10,10,12,.85)}
+  .sound svg{width:15px;height:15px}
+
+  .under{margin-top:28px;display:flex;flex-wrap:wrap;align-items:center;gap:16px 28px}
+  .under h1{font-size:clamp(19px,2.4vw,24px);font-weight:700;letter-spacing:-.015em;flex:1 1 360px}
+  .under h1 span{display:block;margin-top:2px;font-size:14px;font-weight:400;color:var(--ink-2);letter-spacing:0}
+  .cta{display:flex;gap:10px;flex-wrap:wrap}
+  .btn{display:inline-block;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:500;
+       text-decoration:none;border:1px solid var(--indigo);transition:.15s;white-space:nowrap}
+  .btn-p{background:var(--indigo);color:#fff}
+  .btn-p:hover{opacity:.88}
+  .btn-s{color:var(--ink);border-color:var(--line)}
+  .btn-s:hover{border-color:var(--ink-2)}
+
+  footer{padding:24px 0 36px;font-size:12px;color:var(--ink-2)}
+  footer a{color:var(--ink-2)}
+
+  html[lang="zh"] [data-lang="en"],
+  html[lang="en"] [data-lang="zh"]{display:none}
+  @media(max-width:560px){
+    header nav a{display:none}
+    main{justify-content:flex-start;padding-top:8px}
+    .player{border-radius:10px}
+    /* 窄屏时视频字幕离右下角太近，按钮挪到视频下方 */
+    .sound{position:static;margin:10px 0 0 auto}
+    .under{margin-top:18px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <img src="icon.png" alt="">
+    <b>Polter</b>
+    <nav>
+      <a href="https://github.com/Lugia123/polter">GitHub</a>
+      <button class="lang" id="lang" type="button"></button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <div class="stage">
+      <div class="player">
+        <!-- 浏览器只允许静音自动播放；声音由按钮打开 -->
+        <video id="v" autoplay muted loop playsinline preload="auto"></video>
+      </div>
+      <button class="sound" id="sound" type="button"></button>
+    </div>
+
+    <div class="under">
+      <h1 data-lang="zh">让一个 Claude Code 会话去管另外几个。
+        <span>macOS 与 Windows · MIT · 基于 Ghostty 的 fork · 不要账号，不要 API key</span></h1>
+      <h1 data-lang="en">Put one Claude Code session in charge of the others.
+        <span>macOS and Windows · MIT · a fork of Ghostty · no account, no API key</span></h1>
+      <div class="cta">
+        <a class="btn btn-p" href="https://github.com/Lugia123/polter/releases/latest">
+          <span data-lang="zh">下载</span><span data-lang="en">Download</span></a>
+        <a class="btn btn-s" href="https://github.com/Lugia123/polter">GitHub</a>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p data-lang="zh">让它成为一个好终端的一切都是 <a href="https://github.com/ghostty-org/ghostty">Ghostty</a> 的功劳。Polter 与 Ghostty 项目无关联。</p>
+    <p data-lang="en">Everything that makes this a good terminal is <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>'s doing. Polter is not affiliated with the Ghostty project.</p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var html=document.documentElement,v=document.getElementById('v'),
+      langBtn=document.getElementById('lang'),snd=document.getElementById('sound');
+  var ICON_OFF='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m23 9-6 6M17 9l6 6"/></svg>',
+      ICON_ON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>';
+
+  function paintSound(){
+    var zh=html.lang==='zh';
+    snd.innerHTML=v.muted
+      ?ICON_OFF+(zh?'打开声音':'Sound on')
+      :ICON_ON+(zh?'静音':'Mute');
+  }
+  function setLang(l){
+    html.lang=l;
+    langBtn.textContent=(l==='zh'?'EN':'中文');
+    document.title=(l==='zh'
+      ?'Polter — 让一个 Claude Code 会话去管另外几个'
+      :'Polter — Put one Claude Code session in charge of the others');
+    var src='polter-'+l+'.mp4';
+    if(v.getAttribute('src')!==src){
+      v.poster='poster-'+l+'.jpg';
+      v.src=src;
+      var p=v.play(); if(p&&p.catch)p.catch(function(){});
+    }
+    paintSound();
+    try{localStorage.setItem('polter-lang',l)}catch(e){}
+  }
+
+  var saved=null;
+  try{saved=localStorage.getItem('polter-lang')}catch(e){}
+  setLang(saved||((navigator.language||'').toLowerCase().indexOf('zh')===0?'zh':'en'));
+
+  langBtn.addEventListener('click',function(){setLang(html.lang==='zh'?'en':'zh')});
+  snd.addEventListener('click',function(){
+    v.muted=!v.muted;
+    if(!v.muted){v.currentTime=0;}
+    var p=v.play(); if(p&&p.catch)p.catch(function(){});
+    paintSound();
+  });
+})();
+</script>
+</body>
+</html>
