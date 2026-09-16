@@ -767,12 +767,12 @@ pub fn init(
         // echo back that content the terminal is merely displaying cannot
         // read. Minted once here, handed to the child's own environment,
         // kept on `self` so `history_token` (see its doc comment) can
-        // compare against it later. Off by default -- see
-        // `Config.ShellIntegrationFeatures.history` -- because unlike the
-        // rest of shell integration this writes what the user types to
-        // disk.
-        // Restoring a saved pane forces capture on for it even if the
-        // `history` feature is off by default: the user asked to load a
+        // compare against it later. On by default -- see
+        // `Config.ShellIntegrationFeatures.history` for why, and for the
+        // fact that unlike the rest of shell integration this writes what
+        // the user types to disk.
+        // Restoring a saved pane forces capture on for it even when the
+        // `history` feature has been turned off: the user asked to load a
         // project, which is asking for its history to keep working, and
         // a pane that stops accumulating history the moment it's
         // restored would be a silent regression from what was saved.

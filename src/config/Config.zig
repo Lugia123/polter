@@ -1453,6 +1453,21 @@ command: ?Command = null,
 /// redrawn without changing -- a spinner, for instance -- still counts as
 /// unchanged, which is deliberate: the redraw tells you the program is
 /// alive, not that it is making progress.
+///
+/// ## A short value and a closed laptop lid
+///
+/// A machine asleep does not stop entirely. macOS wakes it for a few tens of
+/// seconds every quarter of an hour or so to do maintenance, and Ghostty is
+/// running during those windows. Sampling knows about this: a gap far larger
+/// than the sampling interval is treated as a window nobody was watching the
+/// screen in, so it is not counted as stillness and nothing is reported.
+///
+/// **But a wake window is long enough to be quiescent in its own right, if
+/// you set this short enough.** At the default of three minutes it is not --
+/// a wake ends long before the terminal earns a report. Set this to less
+/// than about a minute and each wake becomes its own little idle period, and
+/// a laptop left shut overnight can report itself once per wake. Nothing
+/// below can prevent that: it is this setting asking for reports that fast.
 @"poltergeist-quiescence-after": Duration = .{ .duration = 3 * std.time.ns_per_min },
 
 /// How long to wait before reporting a terminal that is *still* quiescent.
@@ -3373,8 +3388,15 @@ keybind: Keybinds = .{},
 ///
 ///   * `history` - Report each command about to run to Ghostty via a private
 ///     escape sequence, so a pane's command history can be saved and restored
-///     as part of a saved project. Off by default: unlike the other features
-///     here, this writes what you type to disk.
+///     as part of a saved project. On by default, because a project that
+///     restores its panes' directories but not their commands is a
+///     half-restored project, and the capture has to already have been
+///     running by the time you save -- a feature you have to know to turn on
+///     first is one that is off exactly when it would have been useful.
+///     Unlike every other feature here, this writes what you type to disk
+///     (one plain-text file per pane under Ghostty's state directory, mode
+///     0600; see `src/CommandHistory.zig`). Turn it off with
+///     `shell-integration-features = no-history`.
 ///
 /// SSH features work independently and can be combined for optimal experience:
 /// when both `ssh-env` and `ssh-terminfo` are enabled, Ghostty will install its
@@ -9680,7 +9702,7 @@ pub const ShellIntegrationFeatures = packed struct {
     @"ssh-env": bool = false,
     @"ssh-terminfo": bool = false,
     path: bool = true,
-    history: bool = false,
+    history: bool = true,
 };
 
 pub const SplitPreserveZoom = packed struct {

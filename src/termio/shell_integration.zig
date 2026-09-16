@@ -395,6 +395,18 @@ test "setup features" {
         try testing.expectEqualStrings("cursor:blink,history,path,ssh-env,ssh-terminfo,sudo,title", env.get("GHOSTTY_SHELL_FEATURES").?);
     }
 
+    // Test: the defaults, spelled out. Every other case here passes an
+    // explicit struct, so none of them would notice a default changing --
+    // and `history` is the one default here that writes to disk, so a
+    // silent flip of it in either direction is worth a test of its own.
+    {
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+
+        try setupFeatures(&env, .{}, true);
+        try testing.expectEqualStrings("cursor:blink,history,path,title", env.get("GHOSTTY_SHELL_FEATURES").?);
+    }
+
     // Test: all features disabled
     {
         var env = EnvMap.init(alloc);
@@ -409,7 +421,7 @@ test "setup features" {
         var env = EnvMap.init(alloc);
         defer env.deinit();
 
-        try setupFeatures(&env, .{ .cursor = false, .sudo = true, .title = false, .@"ssh-env" = true, .@"ssh-terminfo" = false, .path = false }, true);
+        try setupFeatures(&env, .{ .cursor = false, .sudo = true, .title = false, .@"ssh-env" = true, .@"ssh-terminfo" = false, .path = false, .history = false }, true);
         try testing.expectEqualStrings("ssh-env,sudo", env.get("GHOSTTY_SHELL_FEATURES").?);
     }
 
@@ -417,7 +429,7 @@ test "setup features" {
     {
         var env = EnvMap.init(alloc);
         defer env.deinit();
-        try setupFeatures(&env, .{ .cursor = true, .sudo = false, .title = false, .@"ssh-env" = false, .@"ssh-terminfo" = false, .path = false }, true);
+        try setupFeatures(&env, .{ .cursor = true, .sudo = false, .title = false, .@"ssh-env" = false, .@"ssh-terminfo" = false, .path = false, .history = false }, true);
         try testing.expectEqualStrings("cursor:blink", env.get("GHOSTTY_SHELL_FEATURES").?);
     }
 
@@ -425,7 +437,7 @@ test "setup features" {
     {
         var env = EnvMap.init(alloc);
         defer env.deinit();
-        try setupFeatures(&env, .{ .cursor = true, .sudo = false, .title = false, .@"ssh-env" = false, .@"ssh-terminfo" = false, .path = false }, false);
+        try setupFeatures(&env, .{ .cursor = true, .sudo = false, .title = false, .@"ssh-env" = false, .@"ssh-terminfo" = false, .path = false, .history = false }, false);
         try testing.expectEqualStrings("cursor:steady", env.get("GHOSTTY_SHELL_FEATURES").?);
     }
 }
