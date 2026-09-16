@@ -931,16 +931,46 @@ const Subprocess = struct {
             };
 
             switch (shell) {
-                .bash, .zsh => {
-                    // No replay cap here, unlike fish below: bash/zsh load
-                    // `HISTFILE` themselves, in their own C code, on their
-                    // own schedule -- there is no point in this pipeline
+                .bash => {
+                    // No replay cap here, unlike fish below: bash loads
+                    // `HISTFILE` itself, in its own C code, on its own
+                    // schedule -- there is no point in this pipeline
                     // where core or a script reads the file and could
                     // choose to cap it. Whatever performance cost a huge
                     // history file has is the shell's own, same as it
                     // always was for a real `.bash_history`.
                     const histfile = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ dir, restore });
                     try env.put("HISTFILE", histfile);
+                },
+
+                .zsh => {
+                    // zsh gets the same `HISTFILE` as bash *and* a second,
+                    // script-side path, because on macOS the environment
+                    // variable alone does not survive startup: the
+                    // system-wide `/etc/zshrc` Apple ships assigns
+                    // `HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history`
+                    // unconditionally, before any user rc file and before
+                    // zsh reads the history file. A restored pane then
+                    // silently showed the user's *global* history on the up
+                    // arrow -- the pane's own commands were never lost, they
+                    // were never loaded. Verified on macOS 25.5:
+                    // `HISTFILE=/tmp/x zsh -i -c 'print $HISTFILE'` prints
+                    // `~/.zsh_history`.
+                    //
+                    // So the zsh integration re-applies it and calls `fc -R`
+                    // from `precmd`, which runs after every rc file. That is
+                    // the same shape as fish below (a script-side restore
+                    // driven by an env var core sets) and for the same class
+                    // of reason: the shell's own startup gets the last word
+                    // over the environment.
+                    //
+                    // `HISTFILE` is still set here as well. On systems whose
+                    // rc files leave it alone it is what actually restores
+                    // the history, and where it is overwritten it costs
+                    // nothing.
+                    const histfile = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ dir, restore });
+                    try env.put("HISTFILE", histfile);
+                    try env.put("GHOSTTY_HISTORY_RESTORE_FILE", histfile);
                 },
 
                 .fish => {

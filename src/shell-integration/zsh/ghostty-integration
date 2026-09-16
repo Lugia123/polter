@@ -229,10 +229,11 @@ _ghostty_deferred_init() {
         builtin print -nu $_ghostty_fd '\e]133;C\a'
         (( _ghostty_state = 1 ))
 
-        # Command-line capture (private OSC 60), opt-in via the "history"
-        # shell-integration-features member. This writes every command the
-        # user types to disk (for per-pane history restore), so unlike the
-        # marks above it must not be on by default.
+        # Command-line capture (private OSC 60), gated on the "history"
+        # shell-integration-features member -- on by default, but unlike
+        # the marks above this one writes every command the user types to
+        # disk (for per-pane history restore), so it is a member they can
+        # turn off: `shell-integration-features = no-history`.
         if [[ "$GHOSTTY_SHELL_FEATURES" == *"history"* && -n "$GHOSTTY_HISTORY_TOKEN" ]]; then
             # $1 is the command as zsh's preexec convention hands it to us,
             # verbatim -- multi-line commands keep their embedded newlines,
@@ -399,6 +400,41 @@ _ghostty_deferred_init() {
             builtin zle -N $widget $func
         fi
     done
+
+    # Restore a saved project pane's own command history. GHOSTTY_HISTORY_RESTORE_FILE
+    # is the full path to this pane's history file, set by core only for a
+    # pane being restored from a project (see `_history_restore` in
+    # `src/config/Config.zig` and the `.zsh` arm of `Subprocess.init` in
+    # `src/termio/Exec.zig`).
+    #
+    # Core also exports HISTFILE, and on many systems that alone would do
+    # it. It does not on macOS: the `/etc/zshrc` Apple ships assigns
+    # `HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history` unconditionally, before any
+    # user rc file and before zsh reads its history -- so a restored pane
+    # showed the user's global history on the up arrow, with the pane's own
+    # commands sitting unread on disk. This code runs from `precmd`, which
+    # is after every rc file has had its say, which is why the restore has
+    # to happen here rather than purely in the environment.
+    #
+    # `fc -p` rather than `fc -R`: -R would *merge* this pane's commands
+    # into whatever history the rc files already loaded, and then, since
+    # HISTFILE now names the pane's file, write that mixture back into it
+    # on exit -- the pane's history file would slowly fill up with the
+    # user's unrelated global history. -p pushes a fresh history stack
+    # whose file is this pane's, so what the user sees on the up arrow is
+    # this pane's commands and nothing else, and what gets written back is
+    # the same.
+    #
+    # HISTSIZE/SAVEHIST are carried over from whatever the user's config
+    # settled on rather than overridden: this is the user's own preference
+    # about how much history to keep, and a project pane is not a reason to
+    # disagree with it. (On a stock macOS that is 2000/1000 from
+    # `/etc/zshrc`, so a very long-lived pane's up-arrow can reach back less
+    # far than its history file goes -- the full record is still in the
+    # file, the same caveat fish's replay cap has.)
+    if [[ -n "$GHOSTTY_HISTORY_RESTORE_FILE" && -r "$GHOSTTY_HISTORY_RESTORE_FILE" ]]; then
+        builtin fc -p -- "$GHOSTTY_HISTORY_RESTORE_FILE" ${HISTSIZE:-2000} ${SAVEHIST:-1000}
+    fi
 
     if (( $+functions[_ghostty_preexec] )); then
         builtin typeset -ag preexec_functions
