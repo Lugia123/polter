@@ -255,7 +255,7 @@ poltergeist_pending_worker: ?PendingWorker = null,
 /// ⚠️ **Shutdown answers these without us**: `Server.stop` settles every
 /// request it is still tracking, so a parked wait cannot wedge a connection
 /// thread at `pending.done`.
-poltergeist_persona_waits: std.ArrayListUnmanaged(PersonaWait) = .empty,
+poltergeist_persona_waits: poltergeistpkg.PersonaWaits = undefined,
 
 /// Whether the resident plugins have been looked for. Testing the list
 /// instead would not do: with none installed it stays empty for ever,
@@ -393,6 +393,7 @@ pub fn init(
         .config_conditional_state = .{},
         .poltergeist = .init(alloc, .{}),
         .personas = .{ .alloc = alloc },
+        .poltergeist_persona_waits = .{ .alloc = alloc, .io = global.io() },
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
         .tasks = .init(alloc, .{}),
@@ -436,7 +437,7 @@ pub fn deinit(self: *App) void {
     self.tasks.deinit();
     self.poltergeist.deinit();
     self.personas.deinit();
-    self.poltergeist_persona_waits.deinit(self.alloc);
+    self.poltergeist_persona_waits.deinit();
 
     // Clean up our font group cache
     // We should have zero items in the grid set at this point because
@@ -2146,41 +2147,15 @@ pub fn clearSurfacePersona(self: *App, id: poltergeistpkg.Bus.Id) !void {
     self.refreshPoltergeistTabs();
 }
 
-const PersonaWait = struct {
-    /// Ours until we complete it; we took a reference when we parked it.
-    pending: *poltergeistpkg.Server.Pending,
-    id: poltergeistpkg.Bus.Id,
-
-    /// The epoch the caller had when it asked. It is told as soon as the
-    /// terminal's epoch differs from this.
-    epoch: u64,
-
-    /// Borrowed from the pending's own arena, so it lives exactly as long
-    /// as the request does.
-    slot: []const u8,
-
-    /// When to give up and answer `timeout`.
-    deadline_ms: u64,
-};
-
-/// How long a `persona_wait` is held before it is answered with
-/// `timeout: true`.
-///
-/// ⚠️ **Swept when other requests arrive, not by a timer.** On a completely
-/// idle app a parked wait can overstay this. That is a real limitation and
-/// not a rounding error, but it costs nothing on the path this exists for:
-/// what wakes a wait is the persona changing, and a persona changes because
-/// somebody did something. The timeout is for noticing a connection that
-/// has died quietly, and a dead connection on an idle machine harms nobody
-/// until the machine stops being idle.
-const persona_wait_timeout_ms: u64 = 30 * std.time.ms_per_s;
-
 /// Hold a `persona_wait` if there is nothing to tell it yet.
 ///
 /// Returns true when the request has been parked and must not be answered
-/// by the caller. Returns false when it should go through `dispatch` as
-/// usual -- either because the answer is already different from what the
-/// caller had, or because there is no terminal to wait on.
+/// by the caller.
+///
+/// **The bookkeeping is in `poltergeist/PersonaWaits.zig`**, which is where
+/// it can be tested: held here it was reachable only through a running
+/// application, and it was the one part of the persona path that nothing
+/// could put a floor under.
 fn parkPersonaWait(
     self: *App,
     pending: *poltergeistpkg.Server.Pending,
@@ -2191,77 +2166,52 @@ fn parkPersonaWait(
 
     self.ensurePersonas();
 
-    // Already moved on: answer now. **This is the anti-missed-wake half** --
-    // a caller that was away while the persona changed must not be put to
-    // sleep on an epoch that is already history.
-    if (self.personas.stateOf(id).epoch != req.epoch) return false;
-
-    self.poltergeist_persona_waits.append(self.alloc, .{
-        .pending = pending,
-        .id = id,
-        .epoch = req.epoch,
-        .slot = req.slot,
-        .deadline_ms = self.poltergeistElapsedMs() + persona_wait_timeout_ms,
-    }) catch return false;
-
-    // The caller's `defer pending.release()` drops the reference it was
-    // handed; this is the one that keeps the request alive while parked.
-    pending.retain();
-    return true;
+    return self.poltergeist_persona_waits.park(
+        pending,
+        id,
+        req.slot,
+        req.epoch,
+        self.personas.stateOf(id).epoch,
+        self.poltergeistElapsedMs(),
+    );
 }
 
 /// Answer every wait this terminal has parked, because something moved.
 fn wakePersonaWaits(self: *App, id: poltergeistpkg.Bus.Id) void {
-    var i: usize = 0;
-    while (i < self.poltergeist_persona_waits.items.len) {
-        const w = self.poltergeist_persona_waits.items[i];
-        if (w.id != id) {
-            i += 1;
-            continue;
-        }
-        _ = self.poltergeist_persona_waits.swapRemove(i);
-        self.answerPersonaWait(w, false);
-    }
+    const woken = self.poltergeist_persona_waits.take(self.alloc, id) catch return;
+    defer self.alloc.free(woken);
+    for (woken) |w| self.answerPersonaWait(w, false);
 }
 
 /// Answer waits whose deadline has passed.
 fn sweepPersonaWaits(self: *App) void {
-    if (self.poltergeist_persona_waits.items.len == 0) return;
-    const now = self.poltergeistElapsedMs();
-
-    var i: usize = 0;
-    while (i < self.poltergeist_persona_waits.items.len) {
-        const w = self.poltergeist_persona_waits.items[i];
-        if (now < w.deadline_ms) {
-            i += 1;
-            continue;
-        }
-        _ = self.poltergeist_persona_waits.swapRemove(i);
-        self.answerPersonaWait(w, true);
-    }
+    const due = self.poltergeist_persona_waits.takeExpired(
+        self.alloc,
+        self.poltergeistElapsedMs(),
+    ) catch return;
+    defer self.alloc.free(due);
+    for (due) |w| self.answerPersonaWait(w, true);
 }
 
-fn answerPersonaWait(self: *App, w: PersonaWait, timed_out: bool) void {
-    defer w.pending.release();
-
+fn answerPersonaWait(
+    self: *App,
+    w: poltergeistpkg.PersonaWaits.Entry,
+    timed_out: bool,
+) void {
     const answer = poltergeistPersonaSlot(self, w.id, w.slot) catch {
-        w.pending.complete(global.io(), .{ .failed = .{
-            .code = "PersonaFailed",
-            .message = "could not work out what this terminal is wearing",
-        } });
+        self.poltergeist_persona_waits.answerFailed(
+            w,
+            "PersonaFailed",
+            "could not work out what this terminal is wearing",
+        );
         return;
     };
 
-    // ⚠️ **`timeout` is not "nothing happened"** -- it is "the wait ran out
-    // with this terminal's epoch where you left it". The caller still has
-    // to compare `wanted` with what it had, because the epoch belongs to
-    // the whole terminal: somebody switching an unrelated skill wakes every
-    // slot on it without changing any of their answers.
-    w.pending.complete(global.io(), .{ .persona_slot = .{
-        .wanted = answer.wanted,
-        .epoch = answer.epoch,
-        .timeout = timed_out,
-    } });
+    self.poltergeist_persona_waits.answer(
+        w,
+        .{ .wanted = answer.wanted, .epoch = answer.epoch },
+        timed_out,
+    );
 }
 
 /// Whether this surface is one the app opened to run the chat interface.

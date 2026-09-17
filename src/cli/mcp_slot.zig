@@ -660,6 +660,16 @@ const Slot = struct {
     /// Set once the client's stdin closes, to bring the watcher down.
     done: std.atomic.Value(bool) = .init(false),
 
+    /// Counts how many times the `min_wait_ms` floor actually slept.
+    ///
+    /// **An instrument, not a switch.** It is `null` in the product, so no
+    /// branch here runs differently because of it; all it does is record.
+    /// It exists because the floor it counts spent its whole first life as
+    /// dead code -- the stub it was tested against parked its own wait, so
+    /// `took < min_wait_ms` was never true, and a floor that never executes
+    /// is not a floor but a piece of code shaped like one.
+    floor_hits: ?*std.atomic.Value(u32) = null,
+
     fn init(
         alloc: Allocator,
         io: std.Io,
@@ -1055,6 +1065,7 @@ const Slot = struct {
             if (v.timed_out) {
                 const took = started.durationTo(.now(self.io, .awake)).toMilliseconds();
                 if (took < min_wait_ms) {
+                    if (self.floor_hits) |c| _ = c.fetchAdd(1, .acq_rel);
                     const rest: u64 = @intCast(min_wait_ms - took);
                     self.io.sleep(
                         .fromNanoseconds(rest * std.time.ns_per_ms),
@@ -1526,58 +1537,104 @@ test "mcp-slot: garbage and half-understood replies fall to unknown" {
 
 const builtin = @import("builtin");
 const transport = @import("../poltergeist/transport.zig");
+const Server = @import("../poltergeist/Server.zig");
+const Bus = @import("../poltergeist/Bus.zig");
+const rpc = @import("../poltergeist/rpc.zig");
 
-/// A Polter that knows the two methods of `personas-contract.md` section
-/// four and nothing else.
-const StubPolter = struct {
+/// Polter's real agent socket, with only the persona answer faked.
+///
+/// # What this replaced, and why the replacement is the point
+///
+/// This used to be a hand-written stub that spoke the two methods itself.
+/// It was honest about being a stub and it still hid the thing most worth
+/// checking: **the stub parked its own long poll, so a slot passing this
+/// test proved nothing about whether Polter parks one.** Both produce the
+/// same bytes when they work.
+///
+/// So the socket, the handshake, the framing and the dispatch are now the
+/// product's own: `Server` accepts and authenticates, `wire` decodes,
+/// `rpc.dispatch` runs the real `persona_slot` and `persona_wait` arms.
+/// What is faked is one function -- what this terminal's persona says about
+/// one slot -- because that is the only thing a test needs to move.
+///
+/// **What is still not covered, stated so it is not assumed:** parking a
+/// wait lives in `App.zig`, and there is no app-level test host in this
+/// tree. So `persona_wait` here takes `rpc.zig`'s "nobody parked it" arm
+/// and answers at once. That is a real code path -- an embedder that has
+/// not wired parking up gets exactly this -- but it is **not** the path a
+/// running Polter takes, and the difference is the one thing a real-machine
+/// run has to look at first.
+///
+/// One thing falls out of that and is worth having: because this answers
+/// instantly, the `min_wait_ms` floor is **executed** here. Against the old
+/// stub it was dead code, since a stub that holds for 1500 ms never lets
+/// `took < min_wait_ms` be true.
+const RealPolter = struct {
     alloc: Allocator,
     io: std.Io,
-    path: []u8,
-    listener: transport.Listener,
-    thread: ?std.Thread = null,
+    path: [:0]u8,
+    server: Server,
+    bus: Bus,
+    token: []const u8,
 
     mutex: std.Io.Mutex = .init,
     wanted: bool,
     epoch: u64 = 1,
 
-    stop: std.atomic.Value(bool) = .init(false),
     /// Counted so a test can tell "the slot never asked" apart from "the
-    /// slot asked and got the answer it acted on". Those two produce the
-    /// same tool list in the withheld case.
+    /// slot asked and acted on the answer". Those two produce the same
+    /// empty tool list.
     asked: std.atomic.Value(u32) = .init(0),
-    authed: std.atomic.Value(u32) = .init(0),
 
-    /// How long `persona_wait` holds before answering `timeout`. Short,
-    /// because the stub's job is to be re-asked quickly in a test, not to
-    /// be economical with connections.
-    const wait_ms = 1500;
-    const tick_ms = 5;
+    /// Only `personaSlot` is ever reached; see `submit`, which refuses
+    /// everything else before `dispatch` can look at another entry.
+    vtable: rpc.Host.VTable = undefined,
 
-    fn start(alloc: Allocator, io: std.Io, wanted: bool) !*StubPolter {
+    /// The terminal this slot's token belongs to. Any id will do; it only
+    /// has to be the same one throughout.
+    const terminal: Bus.Id = 0x5151;
+
+    fn start(alloc: Allocator, io: std.Io, wanted: bool) !*RealPolter {
         var raw: [6]u8 = undefined;
         io.random(&raw);
-        const path = try std.fmt.allocPrint(alloc, "/tmp/pg-stub-{x}.sock", .{&raw});
+        const path = try std.fmt.allocPrintSentinel(
+            alloc,
+            "/tmp/pg-real-{x}.sock",
+            .{&raw},
+            0,
+        );
         errdefer alloc.free(path);
 
-        const self = try alloc.create(StubPolter);
+        const self = try alloc.create(RealPolter);
         errdefer alloc.destroy(self);
 
         self.* = .{
             .alloc = alloc,
             .io = io,
             .path = path,
-            .listener = try transport.bind(alloc, io, path),
+            .server = undefined,
+            .bus = .init(alloc, .{}),
+            .token = undefined,
             .wanted = wanted,
         };
-        self.thread = try std.Thread.spawn(.{}, accept, .{self});
+
+        self.vtable = undefined;
+        self.vtable.personaSlot = personaSlot;
+
+        self.server = try .init(alloc, io, path, .{
+            .ctx = self,
+            .func = submit,
+        }, Server.default_max_connections);
+        errdefer self.server.deinit();
+
+        self.token = try self.server.issueToken(terminal);
+        try self.server.start();
         return self;
     }
 
-    fn deinit(self: *StubPolter) void {
-        self.stop.store(true, .release);
-        self.listener.wake(self.io);
-        if (self.thread) |t| t.join();
-        transport.unlink(self.io, self.path);
+    fn deinit(self: *RealPolter) void {
+        self.server.deinit();
+        self.bus.deinit();
         self.alloc.free(self.path);
         self.alloc.destroy(self);
     }
@@ -1587,100 +1644,65 @@ const StubPolter = struct {
     /// `epoch` moves with it, and it has to: a waiting slot is parked on
     /// the epoch it last saw, so an answer that changed without the number
     /// changing would never reach it.
-    fn setWanted(self: *StubPolter, w: bool) void {
+    fn setWanted(self: *RealPolter, w: bool) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.wanted = w;
         self.epoch += 1;
     }
 
-    fn snapshot(self: *StubPolter) struct { wanted: bool, epoch: u64 } {
+    fn host(self: *RealPolter) rpc.Host {
+        return .{ .ctx = self, .vtable = &self.vtable };
+    }
+
+    /// The app thread's job, done here.
+    ///
+    /// ⚠️ **The gate above `dispatch` is what makes the half-filled vtable
+    /// safe.** Only the two persona methods get through, and those reach
+    /// exactly one entry. Anything else is refused here rather than being
+    /// allowed to call through a field that was never set -- which would
+    /// not fail, it would jump somewhere.
+    fn submit(ctx: *anyopaque, pending: *Server.Pending) void {
+        const self: *RealPolter = @ptrCast(@alignCast(ctx));
+        defer pending.release();
+
+        switch (pending.request) {
+            .persona_slot, .persona_wait => {},
+            else => {
+                pending.complete(self.io, .{ .failed = .{
+                    .code = "NotInThisFixture",
+                    .message = "this test host only answers the persona slot methods",
+                } });
+                return;
+            },
+        }
+
+        const response = rpc.dispatch(
+            pending.arena.allocator(),
+            &self.bus,
+            self.host(),
+            pending.caller,
+            pending.request,
+        ) catch {
+            pending.complete(self.io, .{ .failed = .{
+                .code = "OutOfMemory",
+                .message = "out of memory",
+            } });
+            return;
+        };
+        pending.complete(self.io, response);
+    }
+
+    fn personaSlot(
+        ctx: *anyopaque,
+        _: Bus.Id,
+        _: []const u8,
+    ) anyerror!rpc.Host.PersonaSlot {
+        const self: *RealPolter = @ptrCast(@alignCast(ctx));
+        _ = self.asked.fetchAdd(1, .acq_rel);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         return .{ .wanted = self.wanted, .epoch = self.epoch };
-    }
-
-    fn accept(self: *StubPolter) void {
-        while (!self.stop.load(.acquire)) {
-            const conn = self.listener.accept(self.io) catch return;
-            self.serveOne(conn);
-            conn.close(self.io);
-        }
-    }
-
-    fn serveOne(self: *StubPolter, conn: transport.Conn) void {
-        const rbuf = self.alloc.alloc(u8, 64 * 1024) catch return;
-        defer self.alloc.free(rbuf);
-        const wbuf = self.alloc.alloc(u8, 64 * 1024) catch return;
-        defer self.alloc.free(wbuf);
-
-        var reader = conn.reader(self.io, rbuf);
-        var writer = conn.writer(self.io, wbuf);
-
-        // The handshake, byte for byte what `Server.handshake` does: one
-        // auth line in, `{"ok":true}` out. Anything else and the client
-        // would be testing against a protocol nobody speaks.
-        const auth = (reader.interface.takeDelimiter('\n') catch return) orelse return;
-        if (std.mem.indexOf(u8, auth, "\"method\":\"auth\"") == null) return;
-        _ = self.authed.fetchAdd(1, .acq_rel);
-        writer.interface.writeAll("{\"ok\":true}\n") catch return;
-        writer.interface.flush() catch return;
-
-        while (!self.stop.load(.acquire)) {
-            const line = (reader.interface.takeDelimiter('\n') catch return) orelse return;
-
-            if (std.mem.indexOf(u8, line, method_slot) != null) {
-                _ = self.asked.fetchAdd(1, .acq_rel);
-                const s = self.snapshot();
-                writer.interface.print(
-                    \\{{"ok":true,"wanted":{},"epoch":{d}}}
-                ++ "\n", .{ s.wanted, s.epoch }) catch return;
-                writer.interface.flush() catch return;
-                continue;
-            }
-
-            if (std.mem.indexOf(u8, line, method_wait) != null) {
-                const since = epochOf(line);
-                var waited: u64 = 0;
-                while (waited < wait_ms and !self.stop.load(.acquire)) {
-                    const s = self.snapshot();
-                    // Already behind: answer at once rather than hold. The
-                    // contract's guard against "it moved while I slept".
-                    if (s.epoch != since) {
-                        writer.interface.print(
-                            \\{{"ok":true,"wanted":{},"epoch":{d}}}
-                        ++ "\n", .{ s.wanted, s.epoch }) catch return;
-                        writer.interface.flush() catch return;
-                        break;
-                    }
-                    self.io.sleep(
-                        .fromNanoseconds(tick_ms * std.time.ns_per_ms),
-                        .awake,
-                    ) catch {};
-                    waited += tick_ms;
-                } else {
-                    const s = self.snapshot();
-                    writer.interface.print(
-                        \\{{"ok":true,"timeout":true,"epoch":{d}}}
-                    ++ "\n", .{s.epoch}) catch return;
-                    writer.interface.flush() catch return;
-                }
-                continue;
-            }
-
-            writer.interface.writeAll("{\"ok\":false}\n") catch return;
-            writer.interface.flush() catch return;
-        }
-    }
-
-    fn epochOf(line: []const u8) u64 {
-        const at = std.mem.indexOf(u8, line, "\"epoch\":") orelse return 0;
-        var i = at + "\"epoch\":".len;
-        var n: u64 = 0;
-        while (i < line.len and line[i] >= '0' and line[i] <= '9') : (i += 1) {
-            n = n * 10 + (line[i] - '0');
-        }
-        return n;
     }
 };
 
@@ -1690,9 +1712,11 @@ const SlotSide = struct {
     io: std.Io,
     listener: *transport.Listener,
     stub_path: []const u8,
+    token: []const u8,
     name: []const u8,
     argv: []const []const u8,
     failed: std.atomic.Value(bool) = .init(false),
+    floor_hits: std.atomic.Value(u32) = .init(0),
 
     fn run(self: *SlotSide) void {
         const conn = self.listener.accept(self.io) catch {
@@ -1701,7 +1725,7 @@ const SlotSide = struct {
         };
         defer conn.close(self.io);
 
-        var link = Link.open(self.alloc, self.io, self.stub_path, "tok") catch {
+        var link = Link.open(self.alloc, self.io, self.stub_path, self.token) catch {
             self.failed.store(true, .release);
             return;
         };
@@ -1729,6 +1753,7 @@ const SlotSide = struct {
             return;
         };
         defer slot.deinit();
+        slot.floor_hits = &self.floor_hits;
 
         const rbuf = self.alloc.alloc(u8, max_line) catch return;
         defer self.alloc.free(rbuf);
@@ -1770,7 +1795,7 @@ const upstream_script =
 const E2E = struct {
     alloc: Allocator,
     io: std.Io,
-    stub: *StubPolter,
+    stub: *RealPolter,
     listener: transport.Listener,
     client_path: []u8,
     side: *SlotSide,
@@ -1813,7 +1838,7 @@ const E2E = struct {
         io.random(&raw);
         const client_path = try std.fmt.allocPrint(alloc, "/tmp/pg-cli-{x}.sock", .{&raw});
 
-        const stub = try StubPolter.start(alloc, io, wanted);
+        const stub = try RealPolter.start(alloc, io, wanted);
         const listener = try transport.bind(alloc, io, client_path);
 
         const side = try alloc.create(SlotSide);
@@ -1822,6 +1847,7 @@ const E2E = struct {
             .io = io,
             .listener = undefined,
             .stub_path = stub.path,
+            .token = stub.token,
             .name = "argus",
             .argv = argv,
         };
@@ -1911,6 +1937,39 @@ const E2E = struct {
     }
 };
 
+/// Wait, briefly, for the busy-loop floor to have run at least once.
+///
+/// # Why this is a wait and not a read
+///
+/// 🔬 Written first as a plain `expect(floor_hits >= 1)` next to the first
+/// tool list, it failed -- and then passed when debug printing was added,
+/// which is the signature of a race rather than a defect. The watcher is a
+/// separate thread; whether it has completed its first `persona_wait` by
+/// the time the client has sent two requests is a question about
+/// scheduling, and the answer changes with how busy the machine is.
+///
+/// **That is exactly the failure shape this round has been warning about**:
+/// on a machine also running somebody's rebuild, a timing-dependent
+/// assertion goes red and the red is indistinguishable from a real one. So
+/// it is bounded-wait rather than instant-read, and the bound is generous
+/// on purpose -- the thing being detected (a floor that never executes at
+/// all) does not become true after three seconds.
+fn expectFloorRan(fx: *E2E) !void {
+    var waited: u64 = 0;
+    while (waited < 3000) {
+        if (fx.side.floor_hits.load(.acquire) >= 1) return;
+        fx.io.sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+        waited += 20;
+    }
+    std.debug.print(
+        "\nthe min_wait_ms floor never ran: either it is dead code again, " ++
+            "or nothing asked. Both are worth knowing; neither is this " ++
+            "test being slow.\n",
+        .{},
+    );
+    return error.FloorNeverRan;
+}
+
 fn exists(io: std.Io, path: []const u8) bool {
     _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
     return true;
@@ -1963,7 +2022,6 @@ test "mcp-slot e2e: a withheld slot never starts its upstream, and a grant start
 
     // And the control for it: the slot really did ask, over the real
     // socket, rather than defaulting to empty because nothing answered.
-    try testing.expect(fx.stub.authed.load(.acquire) >= 1);
     try testing.expect(fx.stub.asked.load(.acquire) >= 1);
 
     // -- the user picks a persona that has argus ------------------------
@@ -2009,6 +2067,15 @@ test "mcp-slot e2e: a withheld slot never starts its upstream, and a grant start
     const empty2 = try fx.recv();
     try testing.expect(std.mem.indexOf(u8, empty2, "\"tools\":[]") != null);
     try testing.expect(std.mem.indexOf(u8, empty2, "argus_recon") == null);
+
+    // **The busy-loop floor really ran**, and it could only be asserted
+    // once the stub was replaced: `rpc.zig`'s unparked arm answers a
+    // `persona_wait` at once, which is the case the floor exists for. The
+    // hand-written stub held its wait for 1500 ms, so the branch was
+    // unreachable and this assertion would have been false in the other
+    // direction -- a floor nobody had ever executed, sitting in a test
+    // that passed.
+    try expectFloorRan(fx);
 }
 
 test "mcp-slot e2e: an upstream that will not start is not an empty tool list" {

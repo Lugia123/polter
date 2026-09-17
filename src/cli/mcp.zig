@@ -1115,13 +1115,27 @@ fn handleOne(
         // tens of kilobytes that never change and sending them over the
         // socket on every list would be paying for the same bytes forever.
         //
-        // ⚠️ **A host that cannot answer means every tool stays visible.**
-        // That is the deliberate direction. The filter is a convenience --
-        // the gate that actually stops a call is on the host, where
-        // `dispatch` checks the caller's own face -- so failing closed here
-        // would take a terminal's tools away over a hiccup while buying no
-        // safety at all. Failing open loses nothing that was being
-        // protected.
+        // ⚠️ **A host that cannot answer means every tool stays visible,
+        // and today that is the only door there is.**
+        //
+        // An earlier version of this comment said the real gate was on the
+        // host, in `dispatch`, so that failing open here cost nothing.
+        // **That was not true and was never true**: `toolVisible` has one
+        // caller outside its own tests, and it is the loop a few lines from
+        // here that builds this very list. `authorize` and `dispatch` do
+        // not know what a persona is. A tool left in this list is a tool
+        // that can be called.
+        //
+        // The direction is still deliberate, but the reason is smaller than
+        // the one that was written down: a terminal that loses its tools
+        // because one reply did not parse is a worse failure, and a more
+        // common one, than a persona that goes unenforced for the length of
+        // a hiccup. It is a judgement about which failure to have, **not**
+        // a case of nothing being at stake.
+        //
+        // Enforcing on the call itself is written up as owed work in
+        // `dev-docs/poltergeist/personas-contract.md`. Until it exists,
+        // nothing here should be described as a convenience.
         const visible: ?[]const []const u8 = blk: {
             const reply = host.call(
                 \\{"method":"persona_face"}
