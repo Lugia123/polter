@@ -6,6 +6,7 @@
 "5kV-Vb-QxS.title" = "关于 Polter";
 "GEA-5y-yzH.title" = "检查更新…";
 "BOF-NM-1cW.title" = "设置…";
+"pg7-La-Ng1.title" = "语言";
 "Kb1-Nd-Ls1.title" = "快捷键…";
 "KKH-XX-5py.title" = "重新载入配置";
 "oC6-w4-qI7.title" = "安全键盘输入";
@@ -99,9 +100,6 @@
 /* 帮助 */
 "wpr-3q-Mcd.title" = "帮助";
 "FKE-Sm-Kum.title" = "Polter 帮助";
-
-/* 语言子菜单 */
-"pg7-La-Ng1.title" = "语言";
 
 /* 插件菜单 */
 "pg8-Pl-Ug1.title" = "插件";

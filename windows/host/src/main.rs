@@ -109,6 +109,7 @@ mod keys;
 mod hud;
 mod i18n;
 mod keyseq;
+mod language;
 mod links;
 mod layout;
 mod menu;
@@ -2286,14 +2287,30 @@ extern "C" fn cb_confirm_read_clipboard(
     if text.chars().count() > 400 {
         preview.push_str("\n…");
     }
+    // **Both halves are the core's own, word for word.**
+    // `clipboard_confirmation_dialog.zig`'s `.paste` arm warns about
+    // exactly this, and both msgids are in `po/` with translations -- so this box asks in
+    // the same words as the GTK one instead of putting a second wording of
+    // one warning into every catalogue.
+    //
+    // The line count is the one thing that sentence does not carry, and it is
+    // worth keeping: "may contain commands" reads very differently for two
+    // lines and for two hundred. It is a separate msgid so the number can
+    // move within its own sentence.
     let body = format!(
-        "要粘贴的内容有 {} 行，其中可能含有会立即执行的字符。\n\n{}\n\n确定要粘贴吗？",
-        text.lines().count(),
-        preview
+        "{}\n\n{}\n\n{}",
+        i18n::tr(
+            "Pasting this text into the terminal may be dangerous as it looks like some commands may be executed."
+        ),
+        preview,
+        i18n::tr("{} lines in all.").replace("{}", &text.lines().count().to_string())
     );
     let yes = unsafe {
         let b: Vec<u16> = body.encode_utf16().chain(Some(0)).collect();
-        let t: Vec<u16> = "确认粘贴".encode_utf16().chain(Some(0)).collect();
+        let t: Vec<u16> = i18n::tr("Warning: Potentially Unsafe Paste")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
         MessageBoxW(
             // The confirmation is modal over a window; which one is the
             // same gap every panel has. See `tabs::overlay_frame`.
@@ -5915,7 +5932,11 @@ fn main() {
     // because the parameter is non-optional; it is not read.
     let arg0 = CString::new("polter-host.exe").unwrap();
     let argv: [*const std::os::raw::c_char; 2] = [arg0.as_ptr(), std::ptr::null()];
+    // The menu's language choice rides in on `LANG` and is taken back out
+    // before any shell can inherit it; `language.rs` says why that is safe.
+    language::apply_before_init();
     let rc = unsafe { (api_box.init)(1, argv.as_ptr()) };
+    language::restore_after_init();
     logf!("ghostty_init -> {}", rc);
     if rc != 0 {
         logf!("FATAL ghostty_init failed");

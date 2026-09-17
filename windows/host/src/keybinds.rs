@@ -35,6 +35,7 @@
 //! ⚠️ **The two 93s above are a coincidence**, not one number seen twice.
 
 use crate::ffi::Keybind;
+use crate::i18n::n_;
 use crate::keys::TriggerC as Trigger;
 
 /// One action and every key bound to it.
@@ -96,25 +97,29 @@ pub fn group(rows: &[Keybind]) -> Vec<Row> {
 /// tell "this has no key" from "this has a key the menu cannot print" learns
 /// the wrong thing from the page, and the second of those is the defect the
 /// page exists to make visible.
+/// ⚠️ **Returns the msgid, not the translation.** `tr` hands back a `String`,
+/// and threading an owned string out of here would change every caller for
+/// nothing: the one place this is drawn already has a translation step. The
+/// log lines and the page's own tests then keep seeing a stable English word.
 pub fn note(row: &Row) -> &'static str {
     // The five gates the user has over an agent. They have keys now (333) and
     // the page must show them, but rebinding them is a policy question and
     // not this version's to answer.
     if is_agent_gate(row.action) {
-        return "这几条是你对 agent 的开关，键由产品定，暂不支持自行更改。";
+        return n_("These are your switches over an agent. The keys are set by the product and cannot be rebound yet.");
     }
     // ⚠️ On Windows the core's own "is this a password prompt" detection is
     // not implemented, so this never turns itself on -- and the screen-capture
     // exclusion it brings with it never turns itself on either. Without this
     // line the only way to find it is to already know its name.
     if row.action == "toggle_secure_input" {
-        return "Windows 上不自动开启，需手动打开";
+        return n_("Not switched on automatically on Windows; turn it on by hand.");
     }
     if row.hidden_from_menu {
-        return "菜单里不显示这个快捷键（键仍然有效）";
+        return n_("The menu does not show this shortcut (the key still works).");
     }
     if row.triggers.is_empty() {
-        return "尚无快捷键";
+        return n_("No shortcut yet");
     }
     ""
 }
@@ -273,9 +278,9 @@ mod tests {
         let plain = note(&row("new_tab", 1, false));
 
         assert!(gate.contains("agent"));
-        assert!(secure.contains("手动"));
-        assert!(hidden.contains("菜单"));
-        assert!(unbound.contains("尚无"));
+        assert!(secure.contains("by hand"));
+        assert!(hidden.contains("menu"));
+        assert!(unbound.contains("No shortcut"));
         assert_eq!(plain, "");
 
         // No two of them are the same sentence.

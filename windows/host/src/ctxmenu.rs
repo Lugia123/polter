@@ -42,6 +42,7 @@ use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::ffi::Surface;
+use crate::i18n::{n_, tr};
 use crate::{hlogf, logf, plogf};
 
 /// Which state bit ticks a row.
@@ -85,51 +86,51 @@ const SEP: Row = Row { label: "", action: None, tick: None };
 /// `start_search`. That mismatch is the same one the palette has, and it is
 /// being fixed there separately.
 const ROWS: &[Row] = &[
-    item("复制", "copy_to_clipboard"),
-    item("粘贴", "paste_from_clipboard"),
-    item("全选", "select_all"),
+    item(n_("Copy"), "copy_to_clipboard"),
+    item(n_("Paste"), "paste_from_clipboard"),
+    item(n_("Select All"), "select_all"),
     SEP,
-    item("查找…", "start_search"),
+    item(n_("Find…"), "start_search"),
     SEP,
-    item("新建标签页", "new_tab"),
+    item(n_("New Tab"), "new_tab"),
     // **Not here because the strip's close cross is missing** -- it is not; a
     // test in `strip.rs` now pins that it never can be. It is here because
     // this is a second place to look, and the one place a person who has not
     // noticed the cross would think to look next. The alternative they reach
     // for otherwise is the window's ×, which takes every other tab with it.
-    item("关闭标签页", "close_tab:this"),
+    item(n_("Close Tab"), "close_tab:this"),
     SEP,
     // All four directions, because macOS has all four. Two of them were
     // missing here, and a split menu that offers right and down but not left
     // and up reads as "this terminal cannot split left", not as "this menu is
     // short".
-    item("向右分屏", "new_split:right"),
-    item("向左分屏", "new_split:left"),
-    item("向下分屏", "new_split:down"),
-    item("向上分屏", "new_split:up"),
+    item(n_("Split Right"), "new_split:right"),
+    item(n_("Split Left"), "new_split:left"),
+    item(n_("Split Down"), "new_split:down"),
+    item(n_("Split Up"), "new_split:up"),
     SEP,
-    item("重置终端", "reset"),
-    item("终端检查器", "inspector:toggle"),
-    checkable("只读", "toggle_readonly", Tick::Readonly),
+    item(n_("Reset Terminal"), "reset"),
+    item(n_("Terminal Inspector"), "inspector:toggle"),
+    checkable(n_("Read-only"), "toggle_readonly", Tick::Readonly),
     SEP,
     // Two different titles, and they are genuinely different: the tab title
     // sticks to the tab and survives focus moving inside it, the surface
     // title is this pane's. The core has a separate action for each.
-    item("改标签标题…", "prompt_tab_title"),
-    item("改终端标题…", "prompt_surface_title"),
+    item(n_("Rename Tab…"), "prompt_tab_title"),
+    item(n_("Rename Terminal…"), "prompt_surface_title"),
     SEP,
     checkable(
-        "将此终端设为总管",
+        n_("Make This Terminal a Supervisor"),
         "poltergeist_supervisor",
         Tick::PgSupervisor,
     ),
     checkable(
-        "监督此终端",
+        n_("Toggle Supervision of This Terminal"),
         "poltergeist_toggle_watch",
         Tick::PgWatched,
     ),
     checkable(
-        "不让 agent 碰此终端",
+        n_("Keep Agents Out of This Terminal"),
         "poltergeist_toggle_shielded",
         Tick::PgShielded,
     ),
@@ -146,12 +147,20 @@ const ROWS: &[Row] = &[
     // the two apart. A control on the tool and the keypress, with the rest
     // written down and logged -- not a wall.
     checkable(
-        "允许总管替此终端点授权框（含「不再询问」）",
+        // **The msgid is the short one, and the Chinese says more than it.**
+        // `menu.rs` is the other way into this same switch and uses this same
+        // phrase; a longer msgid here would put two entries for one thing in
+        // the catalogue, and two entries drift. What the comment above says
+        // the label carries -- that this also covers "don't ask again" --
+        // lives in the translation, which is what a person actually reads. A
+        // msgstr saying more than its msgid is ordinary gettext, not a
+        // compromise.
+        n_("Let a Supervisor Answer Prompts Here"),
         "poltergeist_toggle_authorise",
         Tick::PgMayAuthorise,
     ),
     SEP,
-    item("命令面板", "toggle_command_palette"),
+    item(n_("Command Palette"), "toggle_command_palette"),
 ];
 
 /// Command ids start here so they cannot collide with anything Windows sends.
@@ -311,9 +320,16 @@ fn build(
             // The tab and everything after it is the shortcut half. A row
             // with no binding gets no tab either -- a trailing tab renders as
             // a column of empty space next to every unbound item.
+            // **`tr` here, `n_` in the table.** A `const` cannot call a
+            // function, so the rows carry the English msgid and the lookup
+            // happens once per row as the menu is built -- which is also why
+            // `hlogf` below prints the msgid rather than the translation: a
+            // log a second person has to search must not change with the
+            // reader's locale.
+            let label = tr(row.label);
             let text = match shortcut(action) {
-                Some(k) if !k.is_empty() => format!("{}\t{}", row.label, k),
-                _ => row.label.to_string(),
+                Some(k) if !k.is_empty() => format!("{}\t{}", label, k),
+                _ => label,
             };
             Item {
                 index,
@@ -595,8 +611,8 @@ mod tests {
         let a = label_of(&build(&default_cfg, &no_ticks));
         let b = label_of(&build(&rebound_cfg, &no_ticks));
 
-        assert_eq!(a, "复制\tCtrl+Shift+C");
-        assert_eq!(b, "复制\tAlt+Y");
+        assert_eq!(a, "Copy\tCtrl+Shift+C");
+        assert_eq!(b, "Copy\tAlt+Y");
         assert_ne!(
             a, b,
             "the label must follow the config; a constant would make these equal"

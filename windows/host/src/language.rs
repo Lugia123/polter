@@ -1,0 +1,346 @@
+//! Which language the host draws itself in, chosen from the menu.
+//!
+//! # The model is macOS's, on purpose
+//!
+//! `macos/Sources/Features/Language/AppLanguage.swift` is the other half of
+//! this file: the same two languages, the same names, the same "write it down
+//! and it takes effect next launch". **Two entries, not the 32 catalogues in
+//! `src/os/i18n_locales.zig`.** Offering more is a decision for both
+//! platforms at once; a Windows menu with 34 rows next to a macOS menu with
+//! two would undo the point of putting the two menus in the same place.
+//!
+//! # How a choice reaches the core
+//!
+//! **The core is a DLL in this process, not a child of it**, and on Windows it
+//! reads the environment from the live process block: `ghostty_init` hands
+//! `global.init` `.use_global = true`. `LANG` is read by exactly one function
+//! there, `windowsRequestedLocale`, which only `loadWindowsCatalog` calls, which
+//! only `i18n.init` calls, which only `global.init` calls -- inside
+//! `ghostty_init`. The catalogue it loads is kept for the life of the process.
+//!
+//! So `apply_before_init` puts `LANG` in place just before `ghostty_init`, the
+//! same thing `GHOSTTY_LOG` already does in `main.rs` and `main.swift` does
+//! with `setenv("LANG", ...)` -- and `restore_after_init` puts it back straight
+//! afterwards, **so the shells this host starts do not inherit a language the
+//! person chose for the menus**. GTK does the same for its children
+//! (`src/apprt/gtk/class/surface.zig`, which hands them the old `LANG`).
+//!
+//! Restoring is only safe because nothing reads `LANG` after `ghostty_init`
+//! on this platform. `ensureLocale` also runs inside `global.init`, and on
+//! Windows it only calls `setlocale(LC_ALL, "")`, which takes its answer from
+//! the OS rather than from `LANG`. **If a second reader of `LANG` is ever added
+//! to the core, restoring would leave the menus in one language and that
+//! reader in another** -- and that is the change that must come back here.
+//!
+//! # A `LANG` that is already set wins
+//!
+//! `src/os/i18n.zig` calls `LANG` "the only way a test or a bug report can ask
+//! for a specific language without changing a system setting". A saved choice
+//! that overrode it would close that way, and the symptom -- "I set `LANG` and
+//! nothing changed" -- points nobody at a file in `%LOCALAPPDATA%`. So a
+//! non-empty `LANG` is left alone, and the log says which one won.
+//!
+//! This is the one place the two platforms differ: `main.swift` overwrites.
+//! A process started from the Start menu or Explorer has no `LANG`, so the
+//! difference only shows when somebody set one deliberately.
+//!
+//! # Where the choice is kept
+//!
+//! `%LOCALAPPDATA%\polter\language`, one line, the same value macOS keeps in
+//! `AppleLanguages`: `en` or `zh-Hans`. No file means no choice. Plain text so
+//! that what was saved can be read with `type`, beside `session.json`.
+
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::Mutex;
+
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::UI::WindowsAndMessaging::*;
+
+use crate::i18n::tr;
+use crate::{plogf, wlogf};
+
+/// The languages the menu offers. `AppLanguage.allCases`, in the same order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AppLanguage {
+    English,
+    SimplifiedChinese,
+}
+
+impl AppLanguage {
+    pub const ALL: [AppLanguage; 2] = [AppLanguage::English, AppLanguage::SimplifiedChinese];
+
+    /// What is written to the file. `AppLanguage`'s raw values, so a file
+    /// and a macOS defaults entry holding the same choice say the same thing.
+    pub fn raw(self) -> &'static str {
+        match self {
+            AppLanguage::English => "en",
+            AppLanguage::SimplifiedChinese => "zh-Hans",
+        }
+    }
+
+    /// Shown in its own language, never translated -- and therefore not
+    /// wrapped in `tr`. A menu that says "Chinese" to someone who cannot read
+    /// English is no use to them.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AppLanguage::English => "English",
+            AppLanguage::SimplifiedChinese => "简体中文",
+        }
+    }
+
+    /// What goes into `LANG`. The same strings `posixLocale` hands the core
+    /// on macOS. `en_US` matches no catalogue, which is how English is chosen:
+    /// the msgids are English.
+    pub fn posix_locale(self) -> &'static str {
+        match self {
+            AppLanguage::English => "en_US.UTF-8",
+            AppLanguage::SimplifiedChinese => "zh_CN.UTF-8",
+        }
+    }
+
+    /// Read back a stored or reported name. **By prefix**, as macOS does, so a
+    /// hand-edited `zh-Hans-CN` still counts.
+    fn from_name(name: &str) -> Option<AppLanguage> {
+        let name = name.trim();
+        AppLanguage::ALL
+            .into_iter()
+            .find(|l| !name.is_empty() && name.starts_with(l.raw()))
+    }
+}
+
+/// `%LOCALAPPDATA%\polter\language`, the sibling of `session.json`.
+fn path() -> Option<PathBuf> {
+    Some(crate::plugins::user_dir()?.parent()?.join("language"))
+}
+
+/// What the next launch will use, or `None` when nothing has been chosen.
+pub fn selected() -> Option<AppLanguage> {
+    let text = std::fs::read_to_string(path()?).ok()?;
+    AppLanguage::from_name(&text)
+}
+
+/// How a pick ended. Three outcomes because "already chosen" and "could not
+/// be written" both mean no prompt, and only one of them is fine.
+#[derive(Debug, PartialEq, Eq)]
+enum Saved {
+    Written,
+    AlreadyChosen,
+    Failed,
+}
+
+/// Keep `language` for the next launch.
+fn select(frame: HWND, language: AppLanguage) -> Saved {
+    if selected() == Some(language) {
+        wlogf!(frame, "[lang] {} was already the saved choice; nothing written", language.raw());
+        return Saved::AlreadyChosen;
+    }
+    let Some(path) = path() else {
+        wlogf!(frame, "[lang] no LOCALAPPDATA; {} not saved", language.raw());
+        return Saved::Failed;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Temporary file and rename, like `session.rs`: a half-written choice is
+    // read back as no choice, one launch after whatever interrupted it.
+    let tmp = path.with_extension("tmp");
+    if let Err(e) = std::fs::write(&tmp, language.raw().as_bytes()) {
+        wlogf!(frame, "[lang] write failed: {} path={}", e, tmp.display());
+        return Saved::Failed;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        wlogf!(frame, "[lang] rename failed: {} path={}", e, path.display());
+        let _ = std::fs::remove_file(&tmp);
+        return Saved::Failed;
+    }
+    wlogf!(frame, "[lang] saved {} -> {}", language.raw(), path.display());
+    Saved::Written
+}
+
+// ------------------------------------------------------------- at startup
+
+/// `LANG` as it was before `apply_before_init` wrote it, when it did.
+/// `Some(None)` is "there was no `LANG`"; `None` is "nothing was written, so
+/// there is nothing to put back".
+static PRIOR_LANG: Mutex<Option<Option<OsString>>> = Mutex::new(None);
+
+/// Put the saved choice into `LANG` for `ghostty_init` to read.
+///
+/// **Call immediately before `ghostty_init`, and `restore_after_init`
+/// immediately after.** Anything started in between inherits the choice.
+pub fn apply_before_init() {
+    let inherited = std::env::var_os("LANG");
+    let saved = selected();
+    let inherited_is_set = inherited.as_ref().is_some_and(|v| !v.is_empty());
+
+    match (inherited_is_set, saved) {
+        (true, Some(s)) => {
+            // process-wide: startup, before any window exists
+            plogf!(
+                "[lang] LANG={} present, honouring it over saved choice {}",
+                inherited.as_ref().unwrap().to_string_lossy(),
+                s.raw()
+            );
+        }
+        (true, None) => {
+            // process-wide: startup, before any window exists
+            plogf!(
+                "[lang] LANG={} present and no saved choice",
+                inherited.as_ref().unwrap().to_string_lossy()
+            );
+        }
+        (false, Some(s)) => {
+            std::env::set_var("LANG", s.posix_locale());
+            *PRIOR_LANG.lock().unwrap() = Some(inherited);
+            // process-wide: startup, before any window exists
+            plogf!("[lang] saved choice {} -> LANG={} for ghostty_init", s.raw(), s.posix_locale());
+        }
+        (false, None) => {
+            // process-wide: startup, before any window exists
+            plogf!("[lang] no saved choice and no LANG; following the system");
+        }
+    }
+}
+
+/// Put `LANG` back the way the process found it, so shells do not inherit it.
+pub fn restore_after_init() {
+    let Some(prior) = PRIOR_LANG.lock().unwrap().take() else {
+        return;
+    };
+    match prior {
+        Some(v) => {
+            std::env::set_var("LANG", &v);
+            // process-wide: startup, before any window exists
+            plogf!("[lang] LANG restored to {:?} after ghostty_init", v);
+        }
+        None => {
+            std::env::remove_var("LANG");
+            // process-wide: startup, before any window exists
+            plogf!("[lang] LANG removed again after ghostty_init");
+        }
+    }
+}
+
+// -------------------------------------------------------------- the picker
+
+/// The window the pending picker belongs to, and where the pointer was.
+static PENDING_FRAME: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static PENDING_AT: Mutex<POINT> = Mutex::new(POINT { x: 0, y: 0 });
+
+const ID_BASE: usize = 1;
+
+/// Open the picker for `frame`. **Returns at once**; the menu opens from the
+/// thread's own message loop.
+///
+/// Deferred for the reason `settings_ui::request_about` is: `--menu-selftest`
+/// dispatches this row through the same call a click makes, and a
+/// `TrackPopupMenu` entered here would hold the self-test inside its modal
+/// loop until somebody dismissed it. A thread timer needs no window procedure
+/// to reach, and runs on the thread that set it -- the one that owns `frame`.
+///
+/// ⚠️ **The cost, written here so it is not mistaken for a defect:** a
+/// `--menu-selftest` run puts this menu on screen once, after the run, the
+/// same way it shows the about box. The self-test performs every row, and
+/// performing this one is opening the picker.
+pub fn request_picker(frame: HWND) -> bool {
+    let mut at = POINT::default();
+    let _ = unsafe { GetCursorPos(&mut at) };
+    *PENDING_AT.lock().unwrap() = at;
+    PENDING_FRAME.store(frame.0, Ordering::Release);
+    let id = unsafe { SetTimer(None, 0, 0, Some(picker_timer)) };
+    // not-gated: the condition is the event -- the timer was refused, and
+    // without this line a click that opened nothing would leave no trace.
+    if id == 0 {
+        wlogf!(frame, "[lang] SetTimer failed; picker not opened");
+        return false;
+    }
+    wlogf!(frame, "[lang] picker requested at {},{}", at.x, at.y);
+    true
+}
+
+unsafe extern "system" fn picker_timer(_: HWND, _: u32, id: usize, _: u32) {
+    let _ = KillTimer(None, id);
+    let frame = HWND(PENDING_FRAME.swap(std::ptr::null_mut(), Ordering::AcqRel));
+    if frame.0.is_null() {
+        return;
+    }
+    let at = *PENDING_AT.lock().unwrap();
+    show_picker(frame, at);
+}
+
+fn show_picker(frame: HWND, at: POINT) {
+    let current = selected();
+    let chosen = unsafe {
+        let menu = match CreatePopupMenu() {
+            Ok(m) => m,
+            Err(e) => {
+                wlogf!(frame, "[lang] CreatePopupMenu failed: {e:?}");
+                return;
+            }
+        };
+        for (i, l) in AppLanguage::ALL.iter().enumerate() {
+            let mut flags = MF_STRING;
+            if current == Some(*l) {
+                flags |= MF_CHECKED;
+            }
+            let wide: Vec<u16> = l.display_name().encode_utf16().chain(Some(0)).collect();
+            let _ = AppendMenuW(menu, flags, ID_BASE + i, PCWSTR(wide.as_ptr()));
+        }
+        wlogf!(
+            frame,
+            "[lang] picker open, {} languages, saved={}",
+            AppLanguage::ALL.len(),
+            current.map_or("none", |l| l.raw())
+        );
+        let c = TrackPopupMenu(menu, TPM_RETURNCMD, at.x, at.y, None, frame, None);
+        let _ = DestroyMenu(menu);
+        c
+    };
+
+    let id = chosen.0 as usize;
+    let Some(language) = id.checked_sub(ID_BASE).and_then(|i| AppLanguage::ALL.get(i)) else {
+        // "Dismissed" and "never opened" look the same from outside.
+        wlogf!(frame, "[lang] picker dismissed without a choice");
+        return;
+    };
+    if select(frame, *language) != Saved::Written {
+        return;
+    }
+
+    // **No restart button.** Restarting ends every shell and agent session in
+    // every window; macOS's `relaunch()` does that, and it is not copied here.
+    // The wording promises nothing about which language comes back: a `LANG`
+    // set in the environment still wins.
+    let title: Vec<u16> = tr("Language").encode_utf16().chain(Some(0)).collect();
+    let body: Vec<u16> = tr("The language changes the next time Polter starts.")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    unsafe {
+        MessageBoxW(
+            Some(frame),
+            PCWSTR(body.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+    wlogf!(frame, "[lang] told the person the change waits for the next start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The file holds macOS's raw values, and reading one back is by prefix.
+    #[test]
+    fn stored_names_read_back() {
+        assert_eq!(AppLanguage::from_name("en"), Some(AppLanguage::English));
+        assert_eq!(AppLanguage::from_name("zh-Hans\r\n"), Some(AppLanguage::SimplifiedChinese));
+        assert_eq!(AppLanguage::from_name("zh-Hans-CN"), Some(AppLanguage::SimplifiedChinese));
+        assert_eq!(AppLanguage::from_name(""), None);
+        assert_eq!(AppLanguage::from_name("de"), None);
+    }
+}

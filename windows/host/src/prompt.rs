@@ -31,6 +31,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::i18n::{n_, tr};
 use crate::{logf, plogf, wlogf};
 
 /// Requests posted here from `cb_action`.
@@ -59,9 +60,13 @@ pub const SCOPE_WINDOW: i32 = 2;
 /// drifted once already, in the menu, and nothing on screen showed it.
 fn scope_of(scope: i32) -> Option<(&'static str, &'static str)> {
     match scope {
-        SCOPE_SURFACE => Some(("set_surface_title", "改终端标题")),
-        SCOPE_TAB => Some(("set_tab_title", "改标签标题")),
-        SCOPE_WINDOW => Some(("set_window_title", "改窗口标题")),
+        // **The core already asks these three.** `title_dialog.zig`'s
+        // `Target.title` titles the same box for the same three scopes, and
+        // those msgids are in `po/` with translations. A fresh wording here would be a second
+        // entry for one question in every catalogue.
+        SCOPE_SURFACE => Some(("set_surface_title", n_("Change Terminal Title"))),
+        SCOPE_TAB => Some(("set_tab_title", n_("Change Tab Title"))),
+        SCOPE_WINDOW => Some(("set_window_title", n_("Change Window Title"))),
         _ => None,
     }
 }
@@ -318,7 +323,12 @@ pub fn prompt_title(scope: i32, surface: usize) {
 /// Enter/Escape handling is exactly `prompt_title`'s, only what happens on
 /// accept differs (see `Completion`).
 pub fn prompt_save_as_project(frame: HWND, tab: crate::tabs::TabId, default_name: String) {
-    open_prompt(frame, "另存为项目", &default_name, 0, Completion::SaveProject(tab), -1);
+    // **No ellipsis, and that is not an oversight.** macOS spells the *menu
+    // row* `Save as Project...`; this is the box that row opens, and a title
+    // that still promises a further dialog would be wrong. `title_dialog.zig`
+    // draws the same distinction -- `Change Tab Title…` on the row, `Change
+    // Tab Title` on the box.
+    open_prompt(frame, n_("Save as Project"), &default_name, 0, Completion::SaveProject(tab), -1);
 }
 
 /// Shared by `prompt_title` and `prompt_save_as_project`: build the popup,
@@ -572,7 +582,7 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     SetTextColor(hdc, COLORREF(theme::text()));
                     let font = GetStockObject(DEFAULT_GUI_FONT);
                     let old = SelectObject(hdc, font);
-                    let mut wide: Vec<u16> = label.encode_utf16().collect();
+                    let mut wide: Vec<u16> = tr(label).encode_utf16().collect();
                     let mut r = RECT { left: 12, top: 12, right: rc.right - 12, bottom: 40 };
                     DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
                     SelectObject(hdc, old);

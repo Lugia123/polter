@@ -31,6 +31,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::{logf, plogf, wlogf};
+use crate::i18n::{n_, tr};
 use crate::menu::{draw_menu_button, show_root_menu};
 use crate::tabs::{self, TabId};
 
@@ -1278,17 +1279,28 @@ pub fn tab_menu_target(frame: HWND, x: i32, y: i32) -> Option<MenuTarget> {
 /// The tab colours, `0` being none. Nine plus none, which is what
 /// `TerminalTabColor.swift` has; `s4.md` §3.3 says eight and is out by one.
 /// The values are macOS's own system colours, as `COLORREF` (`0x00BBGGRR`).
+///
+/// **The names are `TerminalTabColor.localizedName`'s, word for word**, and
+/// that file rather than `MainMenu.strings` is the source because this menu
+/// is not in the nib: the submenu macOS shows here is built in Swift from
+/// this same enum. Taking the words from anywhere else would be inventing a
+/// second set of colour names for one product.
+///
+/// A table cannot call a function, so these are marked with `n_` and looked
+/// up with `tr` where the menu is built (and where the log line is written --
+/// see `run_tab_colour`, which now prints the English msgid, which is the
+/// stable thing to grep for).
 const TAB_COLORS: &[(&str, u32)] = &[
-    ("无颜色", 0x00000000),
-    ("蓝", 0x00FF840A),
-    ("紫", 0x00F25ABF),
-    ("粉", 0x005F37FF),
-    ("红", 0x003A45FF),
-    ("橙", 0x000A9FFF),
-    ("黄", 0x000AD6FF),
-    ("绿", 0x0058D130),
-    ("青", 0x00E2E663),
-    ("石墨", 0x00938E8E),
+    (n_("None"), 0x00000000),
+    (n_("Blue"), 0x00FF840A),
+    (n_("Purple"), 0x00F25ABF),
+    (n_("Pink"), 0x005F37FF),
+    (n_("Red"), 0x003A45FF),
+    (n_("Orange"), 0x000A9FFF),
+    (n_("Yellow"), 0x000AD6FF),
+    (n_("Green"), 0x0058D130),
+    (n_("Teal"), 0x00E2E663),
+    (n_("Graphite"), 0x00938E8E),
 ];
 
 /// One row of the tab menu, ported item for item from
@@ -1310,14 +1322,14 @@ enum TabCmd {
 impl TabCmd {
     fn label(self) -> &'static str {
         match self {
-            TabCmd::Close => "关闭标签页",
-            TabCmd::CloseOthers => "关闭其他标签",
-            TabCmd::CloseRight => "关闭右侧的标签",
-            TabCmd::MoveToNewWindow => "移到新窗口",
-            TabCmd::Rename => "重命名标签…",
-            TabCmd::Supervisor => "将此终端设为总管",
-            TabCmd::Watch => "监督此终端",
-            TabCmd::Shield => "不让 agent 碰此终端",
+            TabCmd::Close => n_("Close Tab"),
+            TabCmd::CloseOthers => n_("Close Other Tabs"),
+            TabCmd::CloseRight => n_("Close Tabs to the Right"),
+            TabCmd::MoveToNewWindow => n_("Move Tab to New Window"),
+            TabCmd::Rename => n_("Rename Tab..."),
+            TabCmd::Supervisor => n_("Make This Terminal a Supervisor"),
+            TabCmd::Watch => n_("Toggle Supervision of This Terminal"),
+            TabCmd::Shield => n_("Keep Agents Out of This Terminal"),
         }
     }
 
@@ -1421,7 +1433,7 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
             return;
         };
         for (i, (name, _)) in TAB_COLORS.iter().enumerate() {
-            let mut wide: Vec<u16> = name.encode_utf16().collect();
+            let mut wide: Vec<u16> = tr(name).encode_utf16().collect();
             wide.push(0);
             let flags = if i as u8 == colour {
                 MF_STRING | MF_CHECKED
@@ -1438,7 +1450,7 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
                 // The colour submenu goes after the second separator, which
                 // is where macOS puts it (right below "Rename Tab...").
                 if i == 6 {
-                    let mut wide: Vec<u16> = "标签颜色".encode_utf16().collect();
+                    let mut wide: Vec<u16> = tr("Tab Color").encode_utf16().collect();
                     wide.push(0);
                     let _ = AppendMenuW(
                         menu,
@@ -1457,7 +1469,7 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
             if !cmd.enabled() {
                 flags |= MF_GRAYED;
             }
-            let mut wide: Vec<u16> = cmd.label().encode_utf16().collect();
+            let mut wide: Vec<u16> = tr(cmd.label()).encode_utf16().collect();
             wide.push(0);
             let _ = AppendMenuW(menu, flags, TAB_ID_BASE + i, PCWSTR(wide.as_ptr()));
             items += 1;
@@ -1643,14 +1655,14 @@ fn report_remaining(frame: HWND, before: &[TabId], what: &str) {
 /// the core knows about; `reopen_closed_tab` is the host's own, so it is
 /// dispatched here rather than handed to `binding`.
 const STRIP_MENU: &[(&str, &str, bool)] = &[
-    ("新建标签页", "new_tab", true),
+    (n_("New Tab"), "new_tab", true),
     // **The host's, not the core's.** There is no `reopen_closed_tab` in
     // `Binding.zig`; macOS's row calls `reopenClosedTab:`, an application
     // selector backed by `ClosedTabs.swift`. The equivalent stack lives in
     // `reopen.rs`, so the action string here names the host and is never
     // handed to `binding_action`, which would silently return false.
-    ("重开关闭的标签", "host:reopen_closed_tab", false),
-    ("命令面板", "toggle_command_palette", true),
+    (n_("Reopen Closed Tab"), "host:reopen_closed_tab", false),
+    (n_("Command Palette"), "toggle_command_palette", true),
 ];
 
 fn show_strip_menu(frame: HWND, x: i32, y: i32) {
@@ -1665,7 +1677,7 @@ fn show_strip_menu(frame: HWND, x: i32, y: i32) {
         // line below is where it says it.
         let can_reopen = crate::reopen::can_reopen();
         for (i, (label, action, _)) in STRIP_MENU.iter().enumerate() {
-            let mut wide: Vec<u16> = label.encode_utf16().collect();
+            let mut wide: Vec<u16> = tr(label).encode_utf16().collect();
             wide.push(0);
             let live = *action != "host:reopen_closed_tab" || can_reopen;
             let flags = if live { MF_STRING } else { MF_STRING | MF_GRAYED };
@@ -2435,7 +2447,7 @@ mod menu_inset_tests {
     #[test]
     fn the_colour_submenu_goes_after_the_second_separator() {
         assert!(TAB_MENU[6].is_none(), "index 6 must be the separator before the agent rows");
-        assert_eq!(TAB_MENU[5], Some(TabCmd::Rename), "the colours follow 重命名标签…");
+        assert_eq!(TAB_MENU[5], Some(TabCmd::Rename), "the colours follow Rename Tab...");
         assert_eq!(TAB_MENU[7], Some(TabCmd::Supervisor));
         assert_eq!(TAB_MENU.iter().filter(|r| r.is_none()).count(), 2);
     }
@@ -2512,6 +2524,41 @@ mod menu_inset_tests {
         assert_eq!(TAB_COLORS[0].1, 0, "index 0 is 'no colour' and draws nothing");
         for (name, c) in &TAB_COLORS[1..] {
             assert_ne!(*c, 0, "{name} would draw as no colour at all");
+        }
+    }
+
+    /// **The floor under "these names are macOS's own".**
+    ///
+    /// The table above says in a comment that its ten words are
+    /// `TerminalTabColor.localizedName`'s. The test above checks the
+    /// *colours*; nothing checked the *words*, and a word is the half a
+    /// translator sees. Renaming one on either side -- here, or in the Swift
+    /// -- would leave one product calling the same colour two things, with
+    /// the two names landing in the catalogue as two unrelated entries.
+    ///
+    /// Read at compile time: the test binary runs on a Windows machine with
+    /// no checkout on it.
+    #[test]
+    fn the_colour_names_are_the_macos_ones() {
+        const SWIFT: &str =
+            include_str!("../../../macos/Sources/Features/Terminal/TerminalTabColor.swift");
+
+        // The floor's own floor. Pointed at the wrong file -- or an empty one
+        // -- every check below would fail for a reason that has nothing to do
+        // with the names, and a laxer version of this test would pass.
+        assert!(
+            SWIFT.contains("var localizedName: String"),
+            "the included file is not TerminalTabColor.swift any more"
+        );
+
+        for (name, _) in TAB_COLORS {
+            let ret = format!("return \"{}\"", name);
+            assert!(
+                SWIFT.contains(&ret),
+                "{:?} is not a name macOS shows for a tab colour; \
+                 one product must not call one colour two things",
+                name
+            );
         }
     }
 

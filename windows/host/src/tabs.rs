@@ -37,6 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use polter_split_tree::{Focus, NewSplit, PaneId, Placement, Rect as TreeRect, Side, Tree};
 
 use crate::ffi::*;
+use crate::i18n::{n_, tr};
 use crate::{api, logf, plogf, wlogf};
 
 /// Posted to the frame window when the action queue has something in it.
@@ -2939,18 +2940,72 @@ fn window_confirm_flags(frame: HWND) -> Vec<bool> {
 /// pump in the middle of a queue this host has already deadlocked once by
 /// other means. Every caller below is a user gesture or a posted message, and
 /// what reaches the queue is an op that has **already been decided**.
-fn ask(frame: HWND, what: &str) -> bool {
+/// What is being closed. **Two different jobs, kept apart on purpose.**
+///
+/// The words on the box are a sentence a person reads, so they are
+/// translated. The word in the log line is an identifier somebody greps for,
+/// so it is not: a log whose nouns change with the machine's locale cannot be
+/// searched for by a second person, and that is the whole reason a log line
+/// exists.
+///
+/// Before this, one Chinese fragment did both -- it was interpolated into the
+/// box's sentence *and* printed in the log. The box's half of that is the
+/// classic i18n defect: English wants "in this tab" where Chinese wants the
+/// noun in front, and a sentence assembled from a fragment can only be right
+/// in the language it was written in.
+#[derive(Clone, Copy)]
+enum Subject {
+    Tab,
+    Window,
+    Pane,
+}
+
+impl Subject {
+    /// **Not newly worded.** `src/apprt/gtk/class/close_confirmation_dialog.zig`
+    /// asks this exact question for the exact same three targets, and its
+    /// msgids are already in `po/` with translations in every language the
+    /// project ships -- `po/zh_CN.po:333` and `:341` are two of them. Writing
+    /// a fresh English sentence here would have put a second wording of one
+    /// question into the catalogue and asked 30-odd translators to do work
+    /// that is already done.
+    ///
+    /// The `surface` row there is spelled "split" rather than "pane", which
+    /// is the word this host uses internally; the user-facing word follows
+    /// the other two platforms, not this file's type names.
+    fn title(self) -> &'static str {
+        match self {
+            Subject::Tab => n_("Close Tab?"),
+            Subject::Window => n_("Close Window?"),
+            Subject::Pane => n_("Close Split?"),
+        }
+    }
+
+    fn body(self) -> &'static str {
+        match self {
+            Subject::Tab => n_("All terminal sessions in this tab will be terminated."),
+            Subject::Window => n_("All terminal sessions in this window will be terminated."),
+            Subject::Pane => n_("The currently running process in this split will be terminated."),
+        }
+    }
+
+    /// ⚠️ **Never translated, and that is the point.** This is what
+    /// `[close] asked about ...` prints, and a reader searching a log from
+    /// somebody else's machine has to be able to type the word.
+    fn log_key(self) -> &'static str {
+        match self {
+            Subject::Tab => "tab",
+            Subject::Window => "window",
+            Subject::Pane => "pane",
+        }
+    }
+}
+
+fn ask(frame: HWND, what: Subject) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{
         MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
     };
-    let body: Vec<u16> = format!(
-        "{}里还有正在运行的程序。关掉它会一并结束那些程序。\n\n要关闭吗？",
-        what
-    )
-    .encode_utf16()
-    .chain(Some(0))
-    .collect();
-    let title: Vec<u16> = "确认关闭".encode_utf16().chain(Some(0)).collect();
+    let body: Vec<u16> = tr(what.body()).encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = tr(what.title()).encode_utf16().chain(Some(0)).collect();
     let yes = unsafe {
         MessageBoxW(
             Some(frame),
@@ -2959,7 +3014,7 @@ fn ask(frame: HWND, what: &str) -> bool {
             MB_YESNO | MB_ICONWARNING,
         ) == IDYES
     };
-    wlogf!(frame, "[close] asked about {} -> {}", what, if yes { "yes" } else { "no" });
+    wlogf!(frame, "[close] asked about {} -> {}", what.log_key(), if yes { "yes" } else { "no" });
     yes
 }
 
@@ -2973,7 +3028,7 @@ pub fn close_tab_asking(frame: HWND, id: TabId) {
     let flags = tab_confirm_flags(frame, id);
     // not-gated: the condition is the event -- one dialog was shown and the
     // person said no. Silence here is a tab that was not kept.
-    if dialogs_for(&flags) == 1 && !ask(frame, "这个标签页") {
+    if dialogs_for(&flags) == 1 && !ask(frame, Subject::Tab) {
         wlogf!(frame, "[close] tab {:?} kept", id);
         return;
     }
@@ -2986,7 +3041,7 @@ pub fn close_all_tabs_of_asking(frame: HWND) -> bool {
     let flags = window_confirm_flags(frame);
     // not-gated: the condition is the event -- one dialog was shown and the
     // person said no. Silence here is a window that was not kept.
-    if dialogs_for(&flags) == 1 && !ask(frame, "这个窗口") {
+    if dialogs_for(&flags) == 1 && !ask(frame, Subject::Window) {
         wlogf!(frame, "[close] window kept");
         return false;
     }
@@ -2997,7 +3052,7 @@ pub fn close_all_tabs_of_asking(frame: HWND) -> bool {
 /// Close one pane **after asking**, for the path where the core already
 /// answered the question and the host is only carrying it.
 pub fn close_pane_asking(frame: HWND, id: PaneId) {
-    if !ask(frame, "这一格") {
+    if !ask(frame, Subject::Pane) {
         wlogf!(frame, "[close] pane {} kept", id);
         return;
     }
@@ -6079,7 +6134,7 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
 
 #[cfg(test)]
 mod close_confirmation_tests {
-    use super::dialogs_for;
+    use super::{dialogs_for, Subject};
 
     /// ⚠️ **The rule that is easy to get wrong and impossible to see wrong.**
     /// A tab with four busy panes must raise **one** box, not four -- and a
@@ -6105,5 +6160,44 @@ mod close_confirmation_tests {
     #[test]
     fn nothing_at_all_asks_nothing() {
         assert_eq!(dialogs_for(&[]), 0);
+    }
+
+    /// **The floor under the claim that this box reuses the core's wording.**
+    ///
+    /// `Subject` says in a comment that its six phrases are
+    /// `close_confirmation_dialog.zig`'s, word for word, and that is the
+    /// whole reason they are already translated. A comment cannot keep that
+    /// true: somebody tidying the English on either side, in either file,
+    /// breaks the match and **nothing else notices** -- the box keeps
+    /// working, in English, and the 30-odd translations quietly stop being
+    /// found. That is the failure this pins, and it is invisible from a
+    /// screenshot taken on an English machine.
+    ///
+    /// Read at compile time rather than from disk, because the test binary
+    /// runs on a Windows machine that has no checkout on it.
+    #[test]
+    fn the_close_question_is_the_cores_own_wording() {
+        const GTK: &str =
+            include_str!("../../../src/apprt/gtk/class/close_confirmation_dialog.zig");
+
+        // The floor's own floor: if the path ever stops pointing at that
+        // dialog, every `contains` below would fail for the wrong reason, or
+        // -- worse -- an empty file would make a lax check pass.
+        assert!(
+            GTK.contains("pub fn title(self: Target)") && GTK.contains("pub fn body(self: Target)"),
+            "the included file is not the close-confirmation dialog any more"
+        );
+
+        for subject in [Subject::Tab, Subject::Window, Subject::Pane] {
+            for msgid in [subject.title(), subject.body()] {
+                let call = format!("i18n._(\"{}\")", msgid);
+                assert!(
+                    GTK.contains(&call),
+                    "{:?} is not a msgid the core asks for; \
+                     a new wording here means a new entry in every catalogue",
+                    msgid
+                );
+            }
+        }
     }
 }

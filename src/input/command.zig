@@ -1117,10 +1117,39 @@ test "menu labels reach the palette" {
         fn pairedMatchRows(src: []const u8, out: *std.ArrayList(Row), a: Allocator) !void {
             const labels = armsOf(src, "fn label(self)");
             const actions = armsOf(src, "fn action(self)");
+            if (labels.len == 0 or actions.len == 0) {
+                std.debug.print(
+                    "neither `fn label(self)` nor `fn action(self)` could be found; a table " ++
+                        "this reader cannot locate contributes nothing and reads like one " ++
+                        "that is fully covered\n",
+                    .{},
+                );
+                return error.MenuTableUnparsed;
+            }
             var it = std.mem.splitScalar(u8, labels, '\n');
             while (it.next()) |raw| {
-                const arm = armPair(raw) orelse continue;
-                const action = findArm(actions, arm.key) orelse continue;
+                // **Not an arm and an arm I cannot read are told apart here.**
+                // Skipping the second is how this table went to zero rows in
+                // 562 without a word; it is an error now.
+                if (!looksLikeArm(raw)) continue;
+                const arm = armPair(raw) orelse {
+                    std.debug.print(
+                        "this match arm is a row and cannot be read: {s}\n" ++
+                            "  A label may be a bare string or sit inside one of the calls " ++
+                            "named in `label_wrappers`. Anything else is a wrapper this " ++
+                            "reader has not been taught, and a row it silently drops is a " ++
+                            "row nothing checks.\n",
+                        .{std.mem.trim(u8, raw, " \t\r")},
+                    );
+                    return error.MenuArmUnreadable;
+                };
+                const action = findArm(actions, arm.key) orelse {
+                    std.debug.print(
+                        "`fn label(self)` has an arm for {s} and `fn action(self)` has none\n",
+                        .{arm.key},
+                    );
+                    return error.MenuArmUnreadable;
+                };
                 try out.append(a, .{ .label = arm.value, .action = action });
             }
         }
@@ -1133,14 +1162,52 @@ test "menu labels reach the palette" {
 
         const Arm = struct { key: []const u8, value: []const u8 };
 
+        /// Calls a label may be written inside. **The value of this list is
+        /// that it is a list**: a name on it is a promise that the call hands
+        /// back its string argument unchanged, and anything not on it is a
+        /// wrapper this parser has not been taught -- which `armPair` reports
+        /// rather than skips. Both of these live in
+        /// `windows/host/src/i18n.rs`: `n_` marks a msgid for `xgettext` and
+        /// returns it, `tr` looks it up at run time with the msgid as the
+        /// fallback.
+        const label_wrappers = [_][]const u8{ "n_", "tr" };
+
+        fn knownLabelWrapper(name: []const u8) bool {
+            for (label_wrappers) |w| if (std.mem.eql(u8, name, w)) return true;
+            return false;
+        }
+
+        /// Does this line look like a match arm at all? Used to tell "not an
+        /// arm" from "an arm I could not read", which are the same thing to a
+        /// pattern and very different things to a reader.
+        fn looksLikeArm(line: []const u8) bool {
+            const arrow = std.mem.indexOf(u8, line, " => ") orelse return false;
+            return std.mem.lastIndexOf(u8, line[0..arrow], "::") != null;
+        }
+
+        /// `Enum::Variant => "text"`, or the same with the text inside one of
+        /// `label_wrappers`.
+        ///
+        /// **It was `" => \""` -- the arrow with a quote welded to it** -- and
+        /// task 562 wrapped these arms as `=> n_("Close Tab")`. The quote was
+        /// no longer where the pattern looked, every arm returned null, and
+        /// this table contributed **zero rows**. It was caught only because
+        /// `min_rows` exists; nothing else in the run moved.
         fn armPair(line: []const u8) ?Arm {
-            const arrow = std.mem.indexOf(u8, line, " => \"") orelse return null;
+            const arrow = std.mem.indexOf(u8, line, " => ") orelse return null;
             const colons = std.mem.lastIndexOf(u8, line[0..arrow], "::") orelse return null;
             const key = std.mem.trim(u8, line[colons + 2 .. arrow], " \t\r");
-            const q1 = arrow + " => \"".len;
-            const q2 = std.mem.indexOfScalarPos(u8, line, q1, '"') orelse return null;
             if (key.len == 0) return null;
-            return .{ .key = key, .value = line[q1..q2] };
+            var rest = std.mem.trim(u8, line[arrow + " => ".len ..], " \t\r");
+            if (rest.len == 0) return null;
+            if (rest[0] != '"') {
+                const paren = std.mem.indexOfScalar(u8, rest, '(') orelse return null;
+                if (!knownLabelWrapper(std.mem.trim(u8, rest[0..paren], " \t\r"))) return null;
+                rest = std.mem.trim(u8, rest[paren + 1 ..], " \t\r");
+                if (rest.len == 0 or rest[0] != '"') return null;
+            }
+            const q2 = std.mem.indexOfScalarPos(u8, rest, 1, '"') orelse return null;
+            return .{ .key = key, .value = rest[1..q2] };
         }
 
         fn findArm(arms: []const u8, key: []const u8) ?[]const u8 {

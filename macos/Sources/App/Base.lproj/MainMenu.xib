@@ -108,6 +108,9 @@
                                     <action selector="openConfig:" target="bbz-4X-AYv" id="X65-fg-iWU"/>
                                 </connections>
                             </menuItem>
+                            <menuItem title="Language" id="pg7-La-Ng1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                            </menuItem>
                             <menuItem title="Keyboard Shortcuts…" id="Kb1-Nd-Ls1">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
@@ -432,9 +435,6 @@
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="pg6-Sp-Ar1"/>
                             <menuItem title="Plugins" id="pg8-Pl-Ug1">
-                                <modifierMask key="keyEquivalentModifierMask"/>
-                            </menuItem>
-                            <menuItem title="Language" id="pg7-La-Ng1">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                             </menuItem>
                         </items>

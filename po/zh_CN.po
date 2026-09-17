@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-08 06:53+0800\n"
+"POT-Creation-Date: 2026-09-14 03:06+0800\n"
 "PO-Revision-Date: 2026-02-12 01:56+0800\n"
 "Last-Translator: Leah <hi@pluie.me>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -49,7 +49,7 @@ msgstr "本提示将在重载配置后再次出现"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2319
+#: src/apprt/gtk/class/application.zig:2322
 msgid "Cancel"
 msgstr "取消"
 
@@ -76,7 +76,7 @@ msgstr "忽略"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:439 src/apprt/gtk/ui/1.5/window.blp:318
-#: windows/host/src/menu.rs:402
+#: windows/host/src/menu.rs:409
 msgid "Reload Configuration"
 msgstr "重新加载配置"
 
@@ -90,7 +90,8 @@ msgstr "⚠️ Ghostty 正在以调试模式运行！性能将大打折扣。"
 msgid "Ghostty: Terminal Inspector"
 msgstr "Ghostty 终端检查器"
 
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/menu.rs:231
+#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:93
+#: windows/host/src/menu.rs:232
 msgid "Find…"
 msgstr "查找…"
 
@@ -119,17 +120,18 @@ msgstr ""
 "本终端当前处于只读模式。你仍可浏览、选择、并滚动其中内容，但任何用户输入都不"
 "会传给运行中的程序。"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/menu.rs:271
+#: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/ctxmenu.rs:114
+#: windows/host/src/menu.rs:272
 msgid "Read-only"
 msgstr "只读"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/menu.rs:241
+#: windows/host/src/ctxmenu.rs:89 windows/host/src/menu.rs:242
 msgid "Copy"
 msgstr "复制"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:321 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/menu.rs:242
+#: windows/host/src/ctxmenu.rs:90 windows/host/src/menu.rs:243
 msgid "Paste"
 msgstr "粘贴"
 
@@ -154,30 +156,30 @@ msgid "Change Title…"
 msgstr "更改标题…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:353 src/apprt/gtk/ui/1.5/window.blp:180
-#: src/apprt/gtk/ui/1.5/window.blp:258 windows/host/src/menu.rs:223
-#: src/input/command.zig:487
+#: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
+#: windows/host/src/ctxmenu.rs:110 windows/host/src/menu.rs:224
 msgid "Split Up"
 msgstr "向上分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:359 src/apprt/gtk/ui/1.5/window.blp:185
-#: src/apprt/gtk/ui/1.5/window.blp:263 windows/host/src/menu.rs:222
-#: src/input/command.zig:492
+#: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
+#: windows/host/src/ctxmenu.rs:109 windows/host/src/menu.rs:223
 msgid "Split Down"
 msgstr "向下分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:365 src/apprt/gtk/ui/1.5/window.blp:190
-#: src/apprt/gtk/ui/1.5/window.blp:268 windows/host/src/menu.rs:221
-#: src/input/command.zig:477
+#: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
+#: windows/host/src/ctxmenu.rs:108 windows/host/src/menu.rs:222
 msgid "Split Left"
 msgstr "向左分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:371 src/apprt/gtk/ui/1.5/window.blp:195
-#: src/apprt/gtk/ui/1.5/window.blp:273 windows/host/src/menu.rs:220
-#: src/input/command.zig:482
+#: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
+#: windows/host/src/ctxmenu.rs:107 windows/host/src/menu.rs:221
 msgid "Split Right"
 msgstr "向右分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:225
+#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:226
 msgid "Close Split"
 msgstr "关闭分屏"
 
@@ -192,16 +194,18 @@ msgstr "更改标签页标题…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
-#: windows/host/src/menu.rs:201 src/input/command.zig:427
+#: src/input/command.zig:427 windows/host/src/ctxmenu.rs:95
+#: windows/host/src/menu.rs:202 windows/host/src/strip.rs:1658
 msgid "New Tab"
 msgstr "新建标签页"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:396 src/apprt/gtk/ui/1.5/window.blp:242
-#: windows/host/src/menu.rs:226 src/input/command.zig:668
+#: src/input/command.zig:668 windows/host/src/ctxmenu.rs:101
+#: windows/host/src/menu.rs:227 windows/host/src/strip.rs:1325
 msgid "Close Tab"
 msgstr "关闭标签页"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:411
+#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:433
 msgid "Window"
 msgstr "窗口"
 
@@ -210,12 +214,12 @@ msgid "Change Window Title…"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:220
-#: windows/host/src/menu.rs:200 src/input/command.zig:421
+#: src/input/command.zig:421 windows/host/src/menu.rs:201
 msgid "New Window"
 msgstr "新建窗口"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:416 src/apprt/gtk/ui/1.5/window.blp:225
-#: windows/host/src/menu.rs:227 src/input/command.zig:685
+#: src/input/command.zig:685 windows/host/src/menu.rs:228
 msgid "Close Window"
 msgstr "关闭窗口"
 
@@ -251,11 +255,13 @@ msgstr "浏览标签页"
 msgid "Main Menu"
 msgstr "主菜单"
 
-#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/menu.rs:260
+#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:163
+#: windows/host/src/menu.rs:261 windows/host/src/strip.rs:1665
 msgid "Command Palette"
 msgstr "命令面板"
 
-#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/menu.rs:281
+#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:113
+#: windows/host/src/menu.rs:282
 msgid "Terminal Inspector"
 msgstr "终端检查器"
 
@@ -271,27 +277,27 @@ msgstr "退出"
 msgid "Execute a command…"
 msgstr "选择要执行的命令…"
 
-#: src/apprt/gtk/class/application.zig:1802
+#: src/apprt/gtk/class/application.zig:1805
 msgid "The keybind was revoked by the system."
 msgstr "系统撤销了该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1804
+#: src/apprt/gtk/class/application.zig:1807
 msgid "The keybind was denied by the system."
 msgstr "系统拒绝绑定该快捷键。"
 
-#: src/apprt/gtk/class/application.zig:1815
+#: src/apprt/gtk/class/application.zig:1818
 msgid "Global keybind unavailable"
 msgstr "全局快捷键不可用"
 
-#: src/apprt/gtk/class/application.zig:2315
+#: src/apprt/gtk/class/application.zig:2318
 msgid "Export Terminal IO Events"
 msgstr "导出终端输入输出事件"
 
-#: src/apprt/gtk/class/application.zig:2318
+#: src/apprt/gtk/class/application.zig:2321
 msgid "Export"
 msgstr "导出"
 
-#: src/apprt/gtk/class/application.zig:2845
+#: src/apprt/gtk/class/application.zig:2868
 msgid "Editing configuration file"
 msgstr ""
 
@@ -308,10 +314,12 @@ msgid ""
 msgstr "一个应用正在试图从剪贴板读取内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
+#: windows/host/src/main.rs:2310
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "警告：粘贴内容可能不安全"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
+#: windows/host/src/main.rs:2303
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -322,14 +330,17 @@ msgid "Quit Ghostty?"
 msgstr "退出 Ghostty 吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
+#: windows/host/src/tabs.rs:2977
 msgid "Close Tab?"
 msgstr "关闭标签页吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
+#: windows/host/src/tabs.rs:2978
 msgid "Close Window?"
 msgstr "关闭窗口吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
+#: windows/host/src/tabs.rs:2979
 msgid "Close Split?"
 msgstr "关闭分屏吗？"
 
@@ -338,14 +349,17 @@ msgid "All terminal sessions will be terminated."
 msgstr "终端内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
+#: windows/host/src/tabs.rs:2985
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "标签页内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
+#: windows/host/src/tabs.rs:2986
 msgid "All terminal sessions in this window will be terminated."
 msgstr "窗口内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
+#: windows/host/src/tabs.rs:2987
 msgid "The currently running process in this split will be terminated."
 msgstr "分屏内正在运行中的进程将被终止。"
 
@@ -363,17 +377,17 @@ msgstr "命令执行成功"
 msgid "Command Failed"
 msgstr "命令执行失败"
 
-#: src/apprt/gtk/class/title_dialog.zig:227
+#: src/apprt/gtk/class/title_dialog.zig:227 windows/host/src/prompt.rs:67
 msgid "Change Terminal Title"
 msgstr "更改终端标题"
 
-#: src/apprt/gtk/class/title_dialog.zig:228
+#: src/apprt/gtk/class/title_dialog.zig:228 windows/host/src/prompt.rs:68
 msgid "Change Tab Title"
 msgstr "更改标签页标题"
 
-#: src/apprt/gtk/class/title_dialog.zig:229
+#: src/apprt/gtk/class/title_dialog.zig:229 windows/host/src/prompt.rs:69
 msgid "Change Window Title"
-msgstr ""
+msgstr "改窗口标题"
 
 #: src/apprt/gtk/class/window.zig:1159
 msgid "Reloaded the configuration"
@@ -391,233 +405,7 @@ msgstr "已清空剪贴板"
 msgid "Ghostty Developers"
 msgstr "Ghostty 开发团队"
 
-#: windows/host/src/menu.rs:212
-msgid "Reopen Closed Tab"
-msgstr "重开关闭的标签"
-
-#: windows/host/src/menu.rs:234
-msgid "Next"
-msgstr "下一个"
-
-#: windows/host/src/menu.rs:235
-msgid "Previous"
-msgstr "上一个"
-
-#: windows/host/src/menu.rs:237
-msgid "Hide the Find Bar"
-msgstr "隐藏查找条"
-
-#: windows/host/src/menu.rs:250 src/input/command.zig:249
-msgid "Select All"
-msgstr "全选"
-
-#: windows/host/src/menu.rs:252
-msgid "Find"
-msgstr "查找"
-
-#: windows/host/src/menu.rs:256 src/input/command.zig:237
-msgid "Reset Font Size"
-msgstr "重置字号"
-
-#: windows/host/src/menu.rs:257
-msgid "Zoom In"
-msgstr "放大"
-
-#: windows/host/src/menu.rs:258
-msgid "Zoom Out"
-msgstr "缩小"
-
-#: windows/host/src/menu.rs:268
-msgid "Rename Tab…"
-msgstr "改标签标题…"
-
-#: windows/host/src/menu.rs:269
-msgid "Rename Terminal…"
-msgstr "改终端标题…"
-
-#: windows/host/src/menu.rs:273
-msgid "Quick Terminal"
-msgstr "快速终端"
-
-#: windows/host/src/menu.rs:294 src/input/command.zig:606
-msgid "Terminal Conversations"
-msgstr "终端群聊"
-
-#: windows/host/src/menu.rs:296 src/input/command.zig:557
-msgid "Make This Terminal a Supervisor"
-msgstr "将此终端设为总管"
-
-#: windows/host/src/menu.rs:297 src/input/command.zig:563
-msgid "Toggle Supervision of This Terminal"
-msgstr "监督此终端"
-
-#: windows/host/src/menu.rs:298 src/input/command.zig:600
-msgid "Keep Agents Out of This Terminal"
-msgstr "不让 agent 碰此终端"
-
-#: windows/host/src/menu.rs:322 src/input/command.zig:594
-msgid "Hold This Terminal to Its Work"
-msgstr "保持这个终端在岗"
-
-#: windows/host/src/menu.rs:325
-msgid "Plugins…"
-msgstr "插件…"
-
-#: windows/host/src/menu.rs:332
-msgid "Language…"
-msgstr "语言…"
-
-#: windows/host/src/menu.rs:342
-msgid "Up"
-msgstr "上"
-
-#: windows/host/src/menu.rs:343
-msgid "Down"
-msgstr "下"
-
-#: windows/host/src/menu.rs:344
-msgid "Left"
-msgstr "左"
-
-#: windows/host/src/menu.rs:345
-msgid "Right"
-msgstr "右"
-
-#: windows/host/src/menu.rs:349 src/input/command.zig:612
-msgid "Equalize Splits"
-msgstr "均分分屏大小"
-
-#: windows/host/src/menu.rs:351
-msgid "Grow Up"
-msgstr "向上"
-
-#: windows/host/src/menu.rs:352
-msgid "Grow Down"
-msgstr "向下"
-
-#: windows/host/src/menu.rs:353
-msgid "Grow Left"
-msgstr "向左"
-
-#: windows/host/src/menu.rs:354
-msgid "Grow Right"
-msgstr "向右"
-
-#: windows/host/src/menu.rs:360
-msgid "Minimize"
-msgstr "最小化"
-
-#: windows/host/src/menu.rs:361
-msgid "Maximize"
-msgstr "最大化"
-
-#: windows/host/src/menu.rs:363
-msgid "Full Screen"
-msgstr "全屏"
-
-#: windows/host/src/menu.rs:365
-msgid "Split Zoom"
-msgstr "分屏缩放"
-
-#: windows/host/src/menu.rs:366
-msgid "Previous Split"
-msgstr "上一个分屏"
-
-#: windows/host/src/menu.rs:367
-msgid "Next Split"
-msgstr "下一个分屏"
-
-#: windows/host/src/menu.rs:368
-msgid "Select Split"
-msgstr "选择分屏"
-
-#: windows/host/src/menu.rs:369
-msgid "Resize Split"
-msgstr "调整分屏"
-
-#: windows/host/src/menu.rs:371 src/input/command.zig:618
-msgid "Reset Window Size"
-msgstr "重置窗口大小"
-
-#: windows/host/src/menu.rs:373
-msgid "Float on Top"
-msgstr "置顶"
-
-#: windows/host/src/menu.rs:380
-msgid "Polter Help"
-msgstr "Polter 帮助"
-
-#: windows/host/src/menu.rs:395
-msgid "Check for Updates…"
-msgstr "检查更新…"
-
-#: windows/host/src/menu.rs:407
-msgid "File"
-msgstr "文件"
-
-#: windows/host/src/menu.rs:408
-msgid "Edit"
-msgstr "编辑"
-
-#: windows/host/src/menu.rs:409
-msgid "View"
-msgstr "查看"
-
-#: windows/host/src/menu.rs:412
-msgid "Help"
-msgstr "帮助"
-
-#: windows/host/src/menu.rs:414
-msgid "Settings…"
-msgstr "设置…"
-
-#: windows/host/src/menu.rs:415 windows/host/src/settings_ui.rs:1028
-msgid "About Polter"
-msgstr "关于 Polter"
-
-#: windows/host/src/settings_ui.rs:163
-msgid "Keeps the conversations"
-msgstr "保管终端之间的对话"
-
-#: windows/host/src/settings_ui.rs:164
-msgid "Notifies you"
-msgstr "在终端安静下来时通知你"
-
-#: windows/host/src/settings_ui.rs:165
-msgid "Sets your agent up to reach Polter"
-msgstr "把你的 agent 配置成能连到 Polter"
-
-#: windows/host/src/settings_ui.rs:176
-msgid ""
-"Subscribes to nothing, so Polter has nothing to hand it and will not start "
-"it."
-msgstr "没有订阅任何事件，因此 Polter 没有东西可以交给它，也不会启动它。"
-
-#: windows/host/src/settings_ui.rs:196
-msgid "What it is handed: {}"
-msgstr "它会收到：{}"
-
-#: windows/host/src/settings_ui.rs:969
-msgid "Enabled"
-msgstr "已启用"
-
-#: windows/host/src/settings_ui.rs:975
-msgid "Save"
-msgstr "保存"
-
-#: windows/host/src/settings_ui.rs:1027
-msgid "Open config file…"
-msgstr "打开配置文件…"
-
-#: windows/host/src/settings_ui.rs:1096
-msgid "MIT licensed. A fork of Ghostty."
-msgstr "MIT 许可。Ghostty 的一个分支。"
-
-#: windows/host/src/settings_ui.rs:1190 windows/host/src/settings_ui.rs:1894
-msgid "Esc or click to dismiss"
-msgstr "按 Esc 或点击以关闭"
-
-#: src/input/command.zig:149
+#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:112
 msgid "Reset Terminal"
 msgstr "重置终端"
 
@@ -748,6 +536,10 @@ msgstr "缩小字号"
 msgid "Decrease the font size by 1 point."
 msgstr "将字体大小缩小 1pt。"
 
+#: src/input/command.zig:237 windows/host/src/menu.rs:257
+msgid "Reset Font Size"
+msgstr "重置字号"
+
 #: src/input/command.zig:238
 msgid "Reset the font size to the default."
 msgstr "将字体大小重置到默认值。"
@@ -759,6 +551,11 @@ msgstr "清除屏幕"
 #: src/input/command.zig:244
 msgid "Clear the screen and scrollback."
 msgstr "清除屏幕和回滚内容。"
+
+#: src/input/command.zig:249 windows/host/src/ctxmenu.rs:91
+#: windows/host/src/menu.rs:251
+msgid "Select All"
+msgstr "全选"
 
 #: src/input/command.zig:250
 msgid "Select all text on the screen."
@@ -1001,9 +798,9 @@ msgstr "标签页右移"
 msgid "Move the current tab to the right."
 msgstr "将当前标签页向右移动。"
 
-#: src/input/command.zig:446
+#: src/input/command.zig:446 windows/host/src/strip.rs:1328
 msgid "Move Tab to New Window"
-msgstr ""
+msgstr "移到新窗口"
 
 #: src/input/command.zig:447
 msgid "Move the current tab to a new window."
@@ -1125,6 +922,11 @@ msgstr "切换只读模式"
 msgid "Toggle read-only mode for the current surface."
 msgstr "切换当前分屏的只读状态。"
 
+#: src/input/command.zig:557 windows/host/src/ctxmenu.rs:123
+#: windows/host/src/menu.rs:297 windows/host/src/strip.rs:1330
+msgid "Make This Terminal a Supervisor"
+msgstr "将此终端设为总管"
+
 #: src/input/command.zig:558
 msgid ""
 "Let this terminal's agent mind terminals it claims. There may be several "
@@ -1133,9 +935,18 @@ msgstr ""
 "让这个终端的 agent 去看着它认领的终端。总管可以有好几个，每个只碰自己认领的那"
 "些。"
 
+#: src/input/command.zig:563 windows/host/src/ctxmenu.rs:128
+#: windows/host/src/menu.rs:298 windows/host/src/strip.rs:1331
+msgid "Toggle Supervision of This Terminal"
+msgstr "监督此终端"
+
 #: src/input/command.zig:564
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr "这个终端的屏幕静止下来时，报给总管。"
+
+#: src/input/command.zig:594 windows/host/src/menu.rs:342
+msgid "Hold This Terminal to Its Work"
+msgstr "保持这个终端在岗"
 
 #: src/input/command.zig:595
 msgid ""
@@ -1143,6 +954,11 @@ msgid ""
 "Its tab wears a ring while the hold lasts. Only you can set this."
 msgstr ""
 "阻止这个终端被下班——无论是总管还是别的什么。只有键盘前的人能设置或解除它。"
+
+#: src/input/command.zig:600 windows/host/src/ctxmenu.rs:133
+#: windows/host/src/menu.rs:299 windows/host/src/strip.rs:1332
+msgid "Keep Agents Out of This Terminal"
+msgstr "不让 agent 碰此终端"
 
 #: src/input/command.zig:601
 msgid ""
@@ -1152,13 +968,25 @@ msgstr ""
 "不让任何 agent（总管也在内）读这个终端、或者往里打字。屏蔽期间，它的 tab 上会"
 "带一把锁。只有你能设这一项。"
 
+#: src/input/command.zig:606 windows/host/src/menu.rs:295
+msgid "Terminal Conversations"
+msgstr "终端群聊"
+
 #: src/input/command.zig:607
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr "开一个终端，显示各个终端之间说过的话。"
 
+#: src/input/command.zig:612 windows/host/src/menu.rs:356
+msgid "Equalize Splits"
+msgstr "均分分屏大小"
+
 #: src/input/command.zig:613
 msgid "Equalize the size of all splits."
 msgstr "使所有分屏大小相等。"
+
+#: src/input/command.zig:618 windows/host/src/menu.rs:378
+msgid "Reset Window Size"
+msgstr "重置窗口大小"
 
 #: src/input/command.zig:619
 msgid "Reset the window size to the default."
@@ -1224,7 +1052,7 @@ msgstr "关闭当前终端。"
 msgid "Close the current tab."
 msgstr "关闭当前标签页。"
 
-#: src/input/command.zig:673
+#: src/input/command.zig:673 windows/host/src/strip.rs:1326
 msgid "Close Other Tabs"
 msgstr "关闭其他标签页"
 
@@ -1232,7 +1060,7 @@ msgstr "关闭其他标签页"
 msgid "Close all tabs in this window except the current one."
 msgstr "关闭当前窗口内除了当前标签页以外的所有标签页。"
 
-#: src/input/command.zig:678
+#: src/input/command.zig:678 windows/host/src/strip.rs:1327
 msgid "Close Tabs to the Right"
 msgstr "关闭右侧标签页"
 
@@ -1345,254 +1173,594 @@ msgstr "Ghostty"
 msgid "Put a little Ghostty in your terminal."
 msgstr "把一只小 Ghostty 塞进终端里。"
 
-#: src/cli/chat.zig:1743
+#: src/cli/chat.zig:603
+msgid "all"
+msgstr ""
+
+#: src/cli/chat.zig:604
+msgid "open"
+msgstr ""
+
+#: src/cli/chat.zig:605
+msgid "blocked"
+msgstr ""
+
+#: src/cli/chat.zig:606
+msgid "closed"
+msgstr ""
+
+#: src/cli/chat.zig:1855
 msgid "Take the group \"{0}\" off this list?"
 msgstr "把群「{0}」从列表里移除？"
 
-#: src/cli/chat.zig:1748
+#: src/cli/chat.zig:1860
 msgid "Not one word of the conversation is deleted:"
 msgstr "聊天记录一个字都不会删：磁盘上"
 
-#: src/cli/chat.zig:1749
+#: src/cli/chat.zig:1861
 msgid "every day of it stays exactly as it is under"
 msgstr "<state>/chat/ 里的每一天原样保留，"
 
-#: src/cli/chat.zig:1750
+#: src/cli/chat.zig:1862
 msgid "<state>/chat/, to be read and grepped later."
 msgstr "以后还能翻、还能 grep。"
 
-#: src/cli/chat.zig:1751
+#: src/cli/chat.zig:1863
 msgid "What goes is one row of this list."
 msgstr "移除的只是这个列表里的一行。"
 
-#: src/cli/chat.zig:1753
+#: src/cli/chat.zig:1865
 msgid "y to confirm    any other key cancels"
 msgstr "y 确认    其他任意键取消"
 
-#: src/cli/chat.zig:1818
+#: src/cli/chat.zig:1930
 msgid "GROUPS   d removes"
 msgstr "群聊 / GROUPS  d 移除"
 
-#: src/cli/chat.zig:1822
+#: src/cli/chat.zig:1934
 msgid "  (no groups yet)"
 msgstr "  (还没有群)"
 
-#: src/cli/chat.zig:1870
+#: src/cli/chat.zig:1982
 msgid "MEMBERS"
 msgstr "成员 / MEMBERS"
 
-#: src/cli/chat.zig:2082
+#: src/cli/chat.zig:2208
 msgid "No groups. Tasks will appear here once a supervisor makes one."
 msgstr "  没有群聊。总管建群之后，任务会出现在这里。"
 
-#: src/cli/chat.zig:2091
+#: src/cli/chat.zig:2217
 msgid "No tasks in this group yet."
 msgstr "  这个群还没有任务。"
 
-#: src/cli/chat.zig:2181
+#: src/cli/chat.zig:2257 src/cli/chat.zig:2262
+msgid "filter"
+msgstr ""
+
+#: src/cli/chat.zig:2274
+msgid "Nothing matches this filter. Press f to change it."
+msgstr ""
+
+#: src/cli/chat.zig:2366
 msgid "No groups. There will be numbers here once a supervisor makes one."
 msgstr "  没有群聊。总管建群之后，这里会有数字。"
 
-#: src/cli/chat.zig:2308
+#: src/cli/chat.zig:2493
 msgid "Waiting on you"
 msgstr "在等你"
 
-#: src/cli/chat.zig:2310 src/cli/chat.zig:2586
+#: src/cli/chat.zig:2495 src/cli/chat.zig:2771
 msgid "  The task record has not been read yet."
 msgstr "  还没有读到任务记录。"
 
-#: src/cli/chat.zig:2312
+#: src/cli/chat.zig:2497
 msgid "  Nothing open."
 msgstr "  没有开着的任务。"
 
-#: src/cli/chat.zig:2328 src/cli/chat.zig:2341
+#: src/cli/chat.zig:2513 src/cli/chat.zig:2526
 msgid "with nothing happening"
 msgstr "没动静"
 
-#: src/cli/chat.zig:2338
+#: src/cli/chat.zig:2523
 msgid "#{0}  {1} {2}  {3}"
 msgstr "#{0}  {1} {2}  {3}"
 
-#: src/cli/chat.zig:2347
+#: src/cli/chat.zig:2532
 msgid "  and {0} more still open"
 msgstr "  还有 {0} 个开着的"
 
-#: src/cli/chat.zig:2354
+#: src/cli/chat.zig:2539
 msgid "Where it stopped"
 msgstr "停摆"
 
-#: src/cli/chat.zig:2362
+#: src/cli/chat.zig:2547
 msgid "  a day {0}"
 msgstr "  一天 {0}"
 
-#: src/cli/chat.zig:2366
+#: src/cli/chat.zig:2551
 msgid "  last message {0} ago"
 msgstr "  最近一条 {0}前"
 
-#: src/cli/chat.zig:2373
+#: src/cli/chat.zig:2558
 msgid "  longest silence {0} (from {1})"
 msgstr "  最长静默 {0}（{1} 起）"
 
-#: src/cli/chat.zig:2382
+#: src/cli/chat.zig:2567
 msgid "Saying · doing"
 msgstr "谁在说 · 谁在做"
 
-#: src/cli/chat.zig:2384
+#: src/cli/chat.zig:2569
 msgid "  Nobody has been in this group."
 msgstr "  这个群还没有成员。"
 
-#: src/cli/chat.zig:2418 src/cli/chat.zig:2432
+#: src/cli/chat.zig:2603 src/cli/chat.zig:2617
 msgid "said"
 msgstr "说"
 
-#: src/cli/chat.zig:2419 src/cli/chat.zig:2435
+#: src/cli/chat.zig:2604 src/cli/chat.zig:2620
 msgid "doing"
 msgstr "做"
 
-#: src/cli/chat.zig:2430
+#: src/cli/chat.zig:2615
 msgid "  {0} {1} {2} {3}  {4} {5} {6}"
 msgstr "  {0} {1} {2} {3}  {4} {5} {6}"
 
-#: src/cli/chat.zig:2442
+#: src/cli/chat.zig:2627
 msgid "  and {0} more"
 msgstr "  还有 {0} 个"
 
-#: src/cli/chat.zig:2449
+#: src/cli/chat.zig:2634
 msgid "Terminals"
 msgstr "终端"
 
-#: src/cli/chat.zig:2452
+#: src/cli/chat.zig:2637
 msgid "  {0} in the group now, {1} in the record"
 msgstr "  现在 {0} 个在群里，记录里出现过 {1} 个"
 
-#: src/cli/chat.zig:2490
+#: src/cli/chat.zig:2675
 msgid "  no supervisor was recorded"
 msgstr "  没有记录到总管"
 
-#: src/cli/chat.zig:2492
+#: src/cli/chat.zig:2677
 msgid "  last supervisor:"
 msgstr "  上次的总管："
 
-#: src/cli/chat.zig:2513
+#: src/cli/chat.zig:2698
 msgid "  and {0} other terminals"
 msgstr "  另有 {0} 个终端"
 
-#: src/cli/chat.zig:2543
+#: src/cli/chat.zig:2728
 msgid "This session"
 msgstr "这一场"
 
-#: src/cli/chat.zig:2548
+#: src/cli/chat.zig:2733
 msgid "  first line {0} · {1} since · {2} messages"
 msgstr "  第一句 {0} · 至今 {1} · 消息 {2}"
 
-#: src/cli/chat.zig:2563
+#: src/cli/chat.zig:2748
 msgid "  made {0} · closed {1} · cancelled {2} · open {3}"
 msgstr "  建 {0} · 关 {1} · 取消 {2} · 开着 {3}"
 
-#: src/cli/chat.zig:2578
+#: src/cli/chat.zig:2763
 msgid "  {0} handed round · {1} progress reports / {2}"
 msgstr "  重派 {0} 个 · 进度上报 {1} 次 / {2}"
 
-#: src/cli/chat.zig:2590
+#: src/cli/chat.zig:2775
 msgid "Task mix"
 msgstr "任务构成"
 
-#: src/cli/chat.zig:2598
+#: src/cli/chat.zig:2783
 msgid "  No tasks in this group yet."
 msgstr "  这个群还没有任务。"
 
-#: src/cli/chat.zig:2631
+#: src/cli/chat.zig:2816
 msgid "closed {0}"
 msgstr "关 {0}"
 
-#: src/cli/chat.zig:2636
+#: src/cli/chat.zig:2821
 msgid "past the mark {0}"
 msgstr "跨阈值 {0}"
 
-#: src/cli/chat.zig:2641
+#: src/cli/chat.zig:2826
 msgid "open {0}"
 msgstr "开 {0}"
 
-#: src/cli/chat.zig:2646
+#: src/cli/chat.zig:2831
 msgid "cancelled {0}"
 msgstr "取消 {0}"
 
-#: src/cli/chat.zig:2653
+#: src/cli/chat.zig:2838
 msgid "How long tasks lived"
 msgstr "任务寿命"
 
-#: src/cli/chat.zig:2655
+#: src/cli/chat.zig:2840
 msgid "  Nothing has been closed yet."
 msgstr "  还没有关掉的任务。"
 
-#: src/cli/chat.zig:2663
+#: src/cli/chat.zig:2848
 msgid "  fastest {0} · median {1} · slowest {2} (over {3})"
 msgstr "  最快 {0} · 中位 {1} · 最慢 {2}（{3} 个）"
 
-#: src/cli/chat.zig:2673
+#: src/cli/chat.zig:2858
 msgid "Rhythm"
 msgstr "节奏"
 
-#: src/cli/chat.zig:2681
+#: src/cli/chat.zig:2866
 msgid "  00:00{0}23:00"
 msgstr "  0时{0}23时"
 
-#: src/cli/chat.zig:2687
+#: src/cli/chat.zig:2872
 msgid "  busiest {0}:00 ({1} messages)"
 msgstr "  最忙 {0}:00（{1} 条）"
 
-#: src/cli/chat.zig:2852
+#: src/cli/chat.zig:3037
 msgid "Chat"
 msgstr "群聊"
 
-#: src/cli/chat.zig:2853
+#: src/cli/chat.zig:3038
 msgid "Tasks"
 msgstr "任务"
 
-#: src/cli/chat.zig:2854
+#: src/cli/chat.zig:3039
 msgid "Stats"
 msgstr "统计"
 
-#: src/cli/chat.zig:2878
+#: src/cli/chat.zig:3063
 msgid "· unassigned"
 msgstr "· 未分配"
 
-#: src/cli/chat.zig:2902
+#: src/cli/chat.zig:3087
 msgid ""
 "No groups. The conversation will appear here once a supervisor makes one."
 msgstr "  没有群聊。总管建群之后，对话会出现在这里。"
 
-#: src/cli/chat.zig:2925
+#: src/cli/chat.zig:3110
 msgid "── nothing older ──"
 msgstr "── 没有更早的了 ──"
 
-#: src/cli/chat.zig:2936
+#: src/cli/chat.zig:3121
 msgid "  (summary)"
 msgstr "  (摘要)"
 
-#: src/cli/chat.zig:3171
+#: src/cli/chat.zig:3356
 msgid "under a minute"
 msgstr "不到 1 分钟"
 
-#: src/cli/chat.zig:3174
+#: src/cli/chat.zig:3359
 msgid "{0} min"
 msgstr "{0} 分钟"
 
-#: src/cli/chat.zig:3179
+#: src/cli/chat.zig:3364
 msgid "{0} h"
 msgstr "{0} 小时"
 
-#: src/cli/chat.zig:3180
+#: src/cli/chat.zig:3365
 msgid "{0} h {1} min"
 msgstr "{0} 小时 {1} 分"
 
-#: src/cli/chat.zig:3185
+#: src/cli/chat.zig:3370
 msgid "{0} d"
 msgstr "{0} 天"
 
-#: src/cli/chat.zig:3186
+#: src/cli/chat.zig:3371
 msgid "{0} d {1} h"
 msgstr "{0} 天 {1} 小时"
+
+# U+2026, action prompt_tab_title: opens the title overlay (menu.rs, ctxmenu.rs). "Rename Tab..." with three ASCII dots is a DIFFERENT action, rename_tab, in-place on the tab strip. Do not merge them.
+#: windows/host/src/ctxmenu.rs:119 windows/host/src/menu.rs:269
+msgid "Rename Tab…"
+msgstr "改标签标题…"
+
+#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:270
+msgid "Rename Terminal…"
+msgstr "改终端标题…"
+
+# The Chinese is longer than the English on purpose: the parenthesis says this also answers "Don't Ask Again", which writes a lasting grant. English matches macOS verbatim. Shared by menu.rs and ctxmenu.rs.
+#: windows/host/src/ctxmenu.rs:158 windows/host/src/menu.rs:314
+msgid "Let a Supervisor Answer Prompts Here"
+msgstr "允许总管替此终端点授权框（含「不再询问」）"
+
+#: windows/host/src/i18n.rs:360 windows/host/src/settings_ui.rs:168
+msgid "Keeps the conversations"
+msgstr "保管终端之间的对话"
+
+#: windows/host/src/keybinds.rs:109
+msgid ""
+"These are your switches over an agent. The keys are set by the product and "
+"cannot be rebound yet."
+msgstr "这几条是你对 agent 的开关，键由产品定，暂不支持自行更改。"
+
+#: windows/host/src/keybinds.rs:116
+msgid "Not switched on automatically on Windows; turn it on by hand."
+msgstr "Windows 上不自动开启，需手动打开"
+
+#: windows/host/src/keybinds.rs:119
+msgid "The menu does not show this shortcut (the key still works)."
+msgstr "菜单里不显示这个快捷键（键仍然有效）"
+
+#: windows/host/src/keybinds.rs:122
+msgid "No shortcut yet"
+msgstr "尚无快捷键"
+
+#: windows/host/src/language.rs:317
+msgid "Language"
+msgstr "语言"
+
+#: windows/host/src/language.rs:318
+msgid "The language changes the next time Polter starts."
+msgstr "语言将在下次启动 Polter 时生效。"
+
+#: windows/host/src/main.rs:2306
+#, rust-format
+msgid "{} lines in all."
+msgstr "共 {} 行。"
+
+#: windows/host/src/menu.rs:213 windows/host/src/strip.rs:1664
+msgid "Reopen Closed Tab"
+msgstr "重开关闭的标签"
+
+#: windows/host/src/menu.rs:235
+msgid "Next"
+msgstr "下一个"
+
+#: windows/host/src/menu.rs:236
+msgid "Previous"
+msgstr "上一个"
+
+#: windows/host/src/menu.rs:238
+msgid "Hide the Find Bar"
+msgstr "隐藏查找条"
+
+#: windows/host/src/menu.rs:253
+msgid "Find"
+msgstr "查找"
+
+#: windows/host/src/menu.rs:258
+msgid "Zoom In"
+msgstr "放大"
+
+#: windows/host/src/menu.rs:259
+msgid "Zoom Out"
+msgstr "缩小"
+
+#: windows/host/src/menu.rs:274
+msgid "Quick Terminal"
+msgstr "快速终端"
+
+#: windows/host/src/menu.rs:345
+msgid "Plugins…"
+msgstr "插件…"
+
+#: windows/host/src/menu.rs:349
+msgid "Up"
+msgstr "上"
+
+#: windows/host/src/menu.rs:350
+msgid "Down"
+msgstr "下"
+
+#: windows/host/src/menu.rs:351
+msgid "Left"
+msgstr "左"
+
+#: windows/host/src/menu.rs:352
+msgid "Right"
+msgstr "右"
+
+#: windows/host/src/menu.rs:358
+msgid "Grow Up"
+msgstr "向上"
+
+#: windows/host/src/menu.rs:359
+msgid "Grow Down"
+msgstr "向下"
+
+#: windows/host/src/menu.rs:360
+msgid "Grow Left"
+msgstr "向左"
+
+#: windows/host/src/menu.rs:361
+msgid "Grow Right"
+msgstr "向右"
+
+#: windows/host/src/menu.rs:367
+msgid "Minimize"
+msgstr "最小化"
+
+#: windows/host/src/menu.rs:368
+msgid "Maximize"
+msgstr "最大化"
+
+#: windows/host/src/menu.rs:370
+msgid "Full Screen"
+msgstr "全屏"
+
+#: windows/host/src/menu.rs:372
+msgid "Split Zoom"
+msgstr "分屏缩放"
+
+#: windows/host/src/menu.rs:373
+msgid "Previous Split"
+msgstr "上一个分屏"
+
+#: windows/host/src/menu.rs:374
+msgid "Next Split"
+msgstr "下一个分屏"
+
+#: windows/host/src/menu.rs:375
+msgid "Select Split"
+msgstr "选择分屏"
+
+#: windows/host/src/menu.rs:376
+msgid "Resize Split"
+msgstr "调整分屏"
+
+#: windows/host/src/menu.rs:380
+msgid "Float on Top"
+msgstr "置顶"
+
+#: windows/host/src/menu.rs:387
+msgid "Polter Help"
+msgstr "Polter 帮助"
+
+#: windows/host/src/menu.rs:402
+msgid "Check for Updates…"
+msgstr "检查更新…"
+
+#: windows/host/src/menu.rs:414
+msgid "File"
+msgstr "文件"
+
+#: windows/host/src/menu.rs:415
+msgid "Edit"
+msgstr "编辑"
+
+#: windows/host/src/menu.rs:416
+msgid "View"
+msgstr "查看"
+
+#: windows/host/src/menu.rs:432
+msgid "Agents"
+msgstr "智能体"
+
+#: windows/host/src/menu.rs:434
+msgid "Help"
+msgstr "帮助"
+
+#: windows/host/src/menu.rs:436
+msgid "Settings…"
+msgstr "设置…"
+
+#: windows/host/src/menu.rs:448
+msgid "Language…"
+msgstr "语言…"
+
+# Menu item (menu.rs ROOT). Deliberately a different msgid from "Keyboard Shortcuts" without the ellipsis, which is the page title and accessible name (settings_ui.rs, uia.rs). The ellipsis says the item opens a page; macOS MainMenu.xib Kb1-Nd-Ls1 has it too. Do not merge the two.
+#: windows/host/src/menu.rs:461
+msgid "Keyboard Shortcuts…"
+msgstr "快捷键…"
+
+#: windows/host/src/menu.rs:462 windows/host/src/settings_ui.rs:1067
+msgid "About Polter"
+msgstr "关于 Polter"
+
+#: windows/host/src/prompt.rs:331
+msgid "Save as Project"
+msgstr "另存为项目"
+
+#: windows/host/src/settings_ui.rs:169
+msgid "Notifies you"
+msgstr "在终端安静下来时通知你"
+
+#: windows/host/src/settings_ui.rs:170
+msgid "Sets your agent up to reach Polter"
+msgstr "把你的 agent 配置成能连到 Polter"
+
+#: windows/host/src/settings_ui.rs:181
+msgid ""
+"Subscribes to nothing, so Polter has nothing to hand it and will not start "
+"it."
+msgstr "没有订阅任何事件，因此 Polter 没有东西可以交给它，也不会启动它。"
+
+#: windows/host/src/settings_ui.rs:201
+#, rust-format
+msgid "What it is handed: {}"
+msgstr "它会收到：{}"
+
+#: windows/host/src/settings_ui.rs:1008
+msgid "Enabled"
+msgstr "已启用"
+
+#: windows/host/src/settings_ui.rs:1014
+msgid "Save"
+msgstr "保存"
+
+#: windows/host/src/settings_ui.rs:1066
+msgid "Open config file…"
+msgstr "打开配置文件…"
+
+#: windows/host/src/settings_ui.rs:1135
+msgid "MIT licensed. A fork of Ghostty."
+msgstr "MIT 许可。Ghostty 的一个分支。"
+
+#: windows/host/src/settings_ui.rs:1229 windows/host/src/settings_ui.rs:2320
+msgid "Esc or click to dismiss"
+msgstr "按 Esc 或点击以关闭"
+
+# Page title and accessible name (settings_ui.rs, uia.rs). Deliberately a different msgid from the menu item "Keyboard Shortcuts…" (U+2026). Do not merge the two.
+#: windows/host/src/settings_ui.rs:2129 windows/host/src/uia.rs:2038
+msgid "Keyboard Shortcuts"
+msgstr "快捷键"
+
+#. TRANSLATORS: `{}` is how many actions the list holds. It is
+#. not at the start of the sentence on purpose, so a language that
+#. needs the number elsewhere can move it.
+#: windows/host/src/settings_ui.rs:2144
+#, rust-format
+msgid ""
+"This page lists actions; {} in all. Some actions have no shortcut assigned."
+msgstr "这里列的是「动作」，共 {} 个；有的动作还没有分配快捷键。"
+
+#. TRANSLATORS: the runs of four spaces are column padding that
+#. separates the three groups; please keep them. `{}-{} / {}` is
+#. first-shown, last-shown, total.
+#: windows/host/src/settings_ui.rs:2219
+#, rust-format
+msgid "{}–{} / {}    ↑↓ PgUp PgDn Scroll    Esc Close"
+msgstr "{}–{} / {}    ↑↓ PgUp PgDn 滚动    Esc 关闭"
+
+#: windows/host/src/strip.rs:1294
+msgid "None"
+msgstr "无颜色"
+
+#: windows/host/src/strip.rs:1295
+msgid "Blue"
+msgstr "蓝"
+
+#: windows/host/src/strip.rs:1296
+msgid "Purple"
+msgstr "紫"
+
+#: windows/host/src/strip.rs:1297
+msgid "Pink"
+msgstr "粉"
+
+#: windows/host/src/strip.rs:1298
+msgid "Red"
+msgstr "红"
+
+#: windows/host/src/strip.rs:1299
+msgid "Orange"
+msgstr "橙"
+
+#: windows/host/src/strip.rs:1300
+msgid "Yellow"
+msgstr "黄"
+
+#: windows/host/src/strip.rs:1301
+msgid "Green"
+msgstr "绿"
+
+#: windows/host/src/strip.rs:1302
+msgid "Teal"
+msgstr "青"
+
+#: windows/host/src/strip.rs:1303
+msgid "Graphite"
+msgstr "石墨"
+
+# Three ASCII dots, action rename_tab: the host renames the tab in place on the tab strip (strip.rs). "Rename Tab…" with U+2026 is a DIFFERENT action, prompt_tab_title, which opens an overlay. The two msgids differ by one invisible character on purpose; do not merge them.
+#: windows/host/src/strip.rs:1329
+msgid "Rename Tab..."
+msgstr "重命名标签…"
+
+#: windows/host/src/strip.rs:1453
+msgid "Tab Color"
+msgstr "标签颜色"
+
+#: windows/host/src/uia.rs:1168
+msgid "Menu"
+msgstr "菜单"
 
 #~ msgid "Keep This Terminal Working"
 #~ msgstr "保持此终端工作"

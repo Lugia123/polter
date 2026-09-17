@@ -703,7 +703,10 @@ The rest:
 - After changing i18n strings, run `zig build update-translations`
   (`build.zig:76-79`, `:388-394`). Note that with `-Di18n=false` this step
   errors outright with "cannot update translations when i18n is disabled"
-  (`build.zig:392-394`). The details are in
+  (`build.zig:392-394`). ⚠️ The step needs **gettext 0.24 or newer**, because
+  the Windows host is extracted as Rust; an older one stops with
+  `language 'Rust' unknown`. An ordinary `zig build` only runs `msgfmt` and is
+  not affected. The details are in
   [`po/README_CONTRIBUTORS.md`](../../po/README_CONTRIBUTORS.md).
 - The release-related `zig build dist` and `zig build distcheck`
   (`build.zig:112`, `:114`); their output paths are not verified (this

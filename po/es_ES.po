@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-08-10 10:06-0500\n"
+"POT-Creation-Date: 2026-09-14 03:06+0800\n"
 "PO-Revision-Date: 2026-08-13 21:24+0200\n"
 "Last-Translator: José Miguel Sarasola <alosarjos@gmail.com>\n"
 "Language-Team: \n"
@@ -49,7 +49,7 @@ msgstr "Recargar configuración para volver a mostrar este aviso"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2263
+#: src/apprt/gtk/class/application.zig:2322
 msgid "Cancel"
 msgstr "Cancelar"
 
@@ -77,6 +77,7 @@ msgstr "Ignorar"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:439 src/apprt/gtk/ui/1.5/window.blp:318
+#: windows/host/src/menu.rs:409
 msgid "Reload Configuration"
 msgstr "Recargar configuración"
 
@@ -92,7 +93,8 @@ msgstr ""
 msgid "Ghostty: Terminal Inspector"
 msgstr "Ghostty: Inspector de terminal"
 
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:29
+#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:93
+#: windows/host/src/menu.rs:232
 msgid "Find…"
 msgstr "Buscar…"
 
@@ -122,15 +124,18 @@ msgstr ""
 "scroll del contenido, pero no se enviarán eventos de entrada a la aplicación "
 "en ejecución."
 
-#: src/apprt/gtk/ui/1.2/surface.blp:112
+#: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/ctxmenu.rs:114
+#: windows/host/src/menu.rs:272
 msgid "Read-only"
 msgstr "Solo lectura"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:203
+#: windows/host/src/ctxmenu.rs:89 windows/host/src/menu.rs:242
 msgid "Copy"
 msgstr "Copiar"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:321 src/apprt/gtk/ui/1.5/window.blp:208
+#: windows/host/src/ctxmenu.rs:90 windows/host/src/menu.rs:243
 msgid "Paste"
 msgstr "Pegar"
 
@@ -156,25 +161,29 @@ msgstr "Cambiar título…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:353 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
+#: windows/host/src/ctxmenu.rs:110 windows/host/src/menu.rs:224
 msgid "Split Up"
 msgstr "Dividir arriba"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:359 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
+#: windows/host/src/ctxmenu.rs:109 windows/host/src/menu.rs:223
 msgid "Split Down"
 msgstr "Dividir abajo"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:365 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
+#: windows/host/src/ctxmenu.rs:108 windows/host/src/menu.rs:222
 msgid "Split Left"
 msgstr "Dividir a la izquierda"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:371 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
+#: windows/host/src/ctxmenu.rs:107 windows/host/src/menu.rs:221
 msgid "Split Right"
 msgstr "Dividir a la derecha"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:377
+#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:226
 msgid "Close Split"
 msgstr "Cerrar división"
 
@@ -189,16 +198,18 @@ msgstr "Cambiar título de la pestaña…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
-#: src/input/command.zig:427
+#: src/input/command.zig:427 windows/host/src/ctxmenu.rs:95
+#: windows/host/src/menu.rs:202 windows/host/src/strip.rs:1658
 msgid "New Tab"
 msgstr "Nueva pestaña"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:396 src/apprt/gtk/ui/1.5/window.blp:242
-#: src/input/command.zig:613
+#: src/input/command.zig:668 windows/host/src/ctxmenu.rs:101
+#: windows/host/src/menu.rs:227 windows/host/src/strip.rs:1325
 msgid "Close Tab"
 msgstr "Cerrar pestaña"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:403
+#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:433
 msgid "Window"
 msgstr "Ventana"
 
@@ -207,12 +218,12 @@ msgid "Change Window Title…"
 msgstr "Cambiar el título de la ventana…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421
+#: src/input/command.zig:421 windows/host/src/menu.rs:201
 msgid "New Window"
 msgstr "Nueva ventana"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:416 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:630
+#: src/input/command.zig:685 windows/host/src/menu.rs:228
 msgid "Close Window"
 msgstr "Cerrar ventana"
 
@@ -248,19 +259,21 @@ msgstr "Ver pestañas abiertas"
 msgid "Main Menu"
 msgstr "Menú principal"
 
-#: src/apprt/gtk/ui/1.5/window.blp:293
+#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:163
+#: windows/host/src/menu.rs:261 windows/host/src/strip.rs:1665
 msgid "Command Palette"
 msgstr "Paleta de comandos"
 
-#: src/apprt/gtk/ui/1.5/window.blp:298
+#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:113
+#: windows/host/src/menu.rs:282
 msgid "Terminal Inspector"
 msgstr "Inspector de terminal"
 
-#: src/apprt/gtk/ui/1.5/window.blp:326 src/apprt/gtk/class/window.zig:1991
+#: src/apprt/gtk/ui/1.5/window.blp:326 src/apprt/gtk/class/window.zig:1997
 msgid "About Ghostty"
 msgstr "Acerca de Ghostty"
 
-#: src/apprt/gtk/ui/1.5/window.blp:331 src/input/command.zig:702
+#: src/apprt/gtk/ui/1.5/window.blp:331 src/input/command.zig:757
 msgid "Quit"
 msgstr "Salir"
 
@@ -268,27 +281,27 @@ msgstr "Salir"
 msgid "Execute a command…"
 msgstr "Ejecutar un comando…"
 
-#: src/apprt/gtk/class/application.zig:1767
+#: src/apprt/gtk/class/application.zig:1805
 msgid "The keybind was revoked by the system."
 msgstr "El atajo de teclado fue revocado por el sistema."
 
-#: src/apprt/gtk/class/application.zig:1769
+#: src/apprt/gtk/class/application.zig:1807
 msgid "The keybind was denied by the system."
 msgstr "El atajo de teclado fue denegado por el sistema."
 
-#: src/apprt/gtk/class/application.zig:1780
+#: src/apprt/gtk/class/application.zig:1818
 msgid "Global keybind unavailable"
 msgstr "Atajo de teclado global no disponible"
 
-#: src/apprt/gtk/class/application.zig:2259
+#: src/apprt/gtk/class/application.zig:2318
 msgid "Export Terminal IO Events"
 msgstr "Exportar eventos de E/S del terminal"
 
-#: src/apprt/gtk/class/application.zig:2262
+#: src/apprt/gtk/class/application.zig:2321
 msgid "Export"
 msgstr "Exportar"
 
-#: src/apprt/gtk/class/application.zig:2783
+#: src/apprt/gtk/class/application.zig:2868
 msgid "Editing configuration file"
 msgstr "Editando el fichero de configuración"
 
@@ -309,10 +322,12 @@ msgstr ""
 "actual del portapapeles se muestra a continuación."
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
+#: windows/host/src/main.rs:2310
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "Advertencia: Pegado potencialmente inseguro"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
+#: windows/host/src/main.rs:2303
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -325,14 +340,17 @@ msgid "Quit Ghostty?"
 msgstr "¿Salir de Ghostty?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
+#: windows/host/src/tabs.rs:2977
 msgid "Close Tab?"
 msgstr "¿Cerrar pestaña?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
+#: windows/host/src/tabs.rs:2978
 msgid "Close Window?"
 msgstr "¿Cerrar ventana?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
+#: windows/host/src/tabs.rs:2979
 msgid "Close Split?"
 msgstr "¿Cerrar división?"
 
@@ -341,60 +359,63 @@ msgid "All terminal sessions will be terminated."
 msgstr "Todas las sesiones del terminal serán finalizadas."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
+#: windows/host/src/tabs.rs:2985
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "Todas las sesiones del terminal en esta pestaña serán finalizadas."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
+#: windows/host/src/tabs.rs:2986
 msgid "All terminal sessions in this window will be terminated."
 msgstr "Todas las sesiones del terminal en esta ventana serán finalizadas."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
+#: windows/host/src/tabs.rs:2987
 msgid "The currently running process in this split will be terminated."
 msgstr "El proceso ejecutándose en esta división será finalizado."
 
-#: src/apprt/gtk/class/surface.zig:1181
+#: src/apprt/gtk/class/surface.zig:1184
 msgid "Command Finished"
 msgstr "Comando finalizado"
 
-#: src/apprt/gtk/class/surface.zig:1182
+#: src/apprt/gtk/class/surface.zig:1185
 #: src/apprt/gtk/class/surface_child_exited.zig:109
 msgid "Command Succeeded"
 msgstr "Comando completado"
 
-#: src/apprt/gtk/class/surface.zig:1183
+#: src/apprt/gtk/class/surface.zig:1186
 #: src/apprt/gtk/class/surface_child_exited.zig:113
 msgid "Command Failed"
 msgstr "Comando fallido"
 
-#: src/apprt/gtk/class/title_dialog.zig:227
+#: src/apprt/gtk/class/title_dialog.zig:227 windows/host/src/prompt.rs:67
 msgid "Change Terminal Title"
 msgstr "Cambiar el título del terminal"
 
-#: src/apprt/gtk/class/title_dialog.zig:228
+#: src/apprt/gtk/class/title_dialog.zig:228 windows/host/src/prompt.rs:68
 msgid "Change Tab Title"
 msgstr "Cambiar el título de la pestaña"
 
-#: src/apprt/gtk/class/title_dialog.zig:229
+#: src/apprt/gtk/class/title_dialog.zig:229 windows/host/src/prompt.rs:69
 msgid "Change Window Title"
 msgstr "Cambiar el título de la ventana"
 
-#: src/apprt/gtk/class/window.zig:1153
+#: src/apprt/gtk/class/window.zig:1159
 msgid "Reloaded the configuration"
 msgstr "Configuración recargada"
 
-#: src/apprt/gtk/class/window.zig:1830
+#: src/apprt/gtk/class/window.zig:1836
 msgid "Copied to clipboard"
 msgstr "Copiado al portapapeles"
 
-#: src/apprt/gtk/class/window.zig:1832
+#: src/apprt/gtk/class/window.zig:1838
 msgid "Cleared clipboard"
 msgstr "Portapapeles vaciado"
 
-#: src/apprt/gtk/class/window.zig:1972
+#: src/apprt/gtk/class/window.zig:1978
 msgid "Ghostty Developers"
 msgstr "Desarrolladores de Ghostty"
 
-#: src/input/command.zig:149
+#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:112
 msgid "Reset Terminal"
 msgstr "Restablecer terminal"
 
@@ -532,7 +553,7 @@ msgstr "Reducir el tamaño de la fuente"
 msgid "Decrease the font size by 1 point."
 msgstr "Reducir el tamaño de la fuente en 1 punto."
 
-#: src/input/command.zig:237
+#: src/input/command.zig:237 windows/host/src/menu.rs:257
 msgid "Reset Font Size"
 msgstr "Restablecer tamaño de fuente"
 
@@ -548,7 +569,8 @@ msgstr "Limpiar pantalla"
 msgid "Clear the screen and scrollback."
 msgstr "Limpiar la pantalla y el historial de desplazamiento."
 
-#: src/input/command.zig:249
+#: src/input/command.zig:249 windows/host/src/ctxmenu.rs:91
+#: windows/host/src/menu.rs:251
 msgid "Select All"
 msgstr "Seleccionar todo"
 
@@ -826,7 +848,7 @@ msgstr "Mover pestaña a la derecha"
 msgid "Move the current tab to the right."
 msgstr "Mover la pestaña actual hacia la derecha."
 
-#: src/input/command.zig:446
+#: src/input/command.zig:446 windows/host/src/strip.rs:1328
 msgid "Move Tab to New Window"
 msgstr "Mover pestaña a una nueva ventana"
 
@@ -950,205 +972,838 @@ msgstr "Alternar modo de solo lectura"
 msgid "Toggle read-only mode for the current surface."
 msgstr "Alternar el modo de solo lectura de la superficie actual."
 
-#: src/input/command.zig:557
+#: src/input/command.zig:557 windows/host/src/ctxmenu.rs:123
+#: windows/host/src/menu.rs:297 windows/host/src/strip.rs:1330
+msgid "Make This Terminal a Supervisor"
+msgstr ""
+
+#: src/input/command.zig:558
+msgid ""
+"Let this terminal's agent mind terminals it claims. There may be several "
+"supervisors; each reaches only its own."
+msgstr ""
+
+#: src/input/command.zig:563 windows/host/src/ctxmenu.rs:128
+#: windows/host/src/menu.rs:298 windows/host/src/strip.rs:1331
+msgid "Toggle Supervision of This Terminal"
+msgstr ""
+
+#: src/input/command.zig:564
+msgid "Report this terminal to the supervisor when its screen goes quiet."
+msgstr ""
+
+#: src/input/command.zig:594 windows/host/src/menu.rs:342
+msgid "Hold This Terminal to Its Work"
+msgstr ""
+
+#: src/input/command.zig:595
+msgid ""
+"Stop this terminal being clocked off, by a supervisor or by anything else. "
+"Its tab wears a ring while the hold lasts. Only you can set this."
+msgstr ""
+
+#: src/input/command.zig:600 windows/host/src/ctxmenu.rs:133
+#: windows/host/src/menu.rs:299 windows/host/src/strip.rs:1332
+msgid "Keep Agents Out of This Terminal"
+msgstr ""
+
+#: src/input/command.zig:601
+msgid ""
+"Stop every agent, supervisors included, from reading this terminal or typing "
+"into it. Its tab wears a lock while the shield stands. Only you can set this."
+msgstr ""
+
+#: src/input/command.zig:606 windows/host/src/menu.rs:295
+msgid "Terminal Conversations"
+msgstr ""
+
+#: src/input/command.zig:607
+msgid "Open a terminal showing what the terminals have said to each other."
+msgstr ""
+
+#: src/input/command.zig:612 windows/host/src/menu.rs:356
 msgid "Equalize Splits"
 msgstr "Igualar divisiones"
 
-#: src/input/command.zig:558
+#: src/input/command.zig:613
 msgid "Equalize the size of all splits."
 msgstr "Igualar el tamaño de todas las divisiones."
 
-#: src/input/command.zig:563
+#: src/input/command.zig:618 windows/host/src/menu.rs:378
 msgid "Reset Window Size"
 msgstr "Restablecer tamaño de ventana"
 
-#: src/input/command.zig:564
+#: src/input/command.zig:619
 msgid "Reset the window size to the default."
 msgstr "Restablecer el tamaño de la ventana al valor predeterminado."
 
-#: src/input/command.zig:569
+#: src/input/command.zig:624
 msgid "Toggle Inspector"
 msgstr "Alternar inspector"
 
-#: src/input/command.zig:570
+#: src/input/command.zig:625
 msgid "Toggle the inspector."
 msgstr "Alternar el inspector."
 
-#: src/input/command.zig:575
+#: src/input/command.zig:630
 msgid "Show the GTK Inspector"
 msgstr "Mostrar el inspector de GTK"
 
-#: src/input/command.zig:576
+#: src/input/command.zig:631
 msgid "Show the GTK inspector."
 msgstr "Mostrar el inspector de GTK."
 
-#: src/input/command.zig:581
+#: src/input/command.zig:636
 msgid "Show On-Screen Keyboard"
 msgstr "Mostrar teclado en pantalla"
 
-#: src/input/command.zig:582
+#: src/input/command.zig:637
 msgid "Show the on-screen keyboard if present."
 msgstr "Mostrar el teclado en pantalla si está disponible."
 
-#: src/input/command.zig:588
+#: src/input/command.zig:643
 msgid "Open Config Using OS editor"
 msgstr "Abrir configuración con el editor del sistema operativo"
 
-#: src/input/command.zig:589
+#: src/input/command.zig:644
 msgid "Open the config file with the OS's default editor."
 msgstr ""
 "Abrir el fichero de configuración con el editor predeterminado del sistema "
 "operativo."
 
-#: src/input/command.zig:593
+#: src/input/command.zig:648
 msgid "Open Config in New Terminal Window"
 msgstr "Abrir configuración en una nueva ventana de terminal"
 
-#: src/input/command.zig:594
+#: src/input/command.zig:649
 msgid "Open the config file in a new window using $EDITOR or $VISUAL."
 msgstr ""
 "Abrir el fichero de configuración en una nueva ventana usando $EDITOR o "
 "$VISUAL."
 
-#: src/input/command.zig:600
+#: src/input/command.zig:655
 msgid "Reload Config"
 msgstr "Recargar configuración"
 
-#: src/input/command.zig:601
+#: src/input/command.zig:656
 msgid "Reload the config file."
 msgstr "Recargar el fichero de configuración."
 
-#: src/input/command.zig:606
+#: src/input/command.zig:661
 msgid "Close Terminal"
 msgstr "Cerrar terminal"
 
-#: src/input/command.zig:607
+#: src/input/command.zig:662
 msgid "Close the current terminal."
 msgstr "Cerrar el terminal actual."
 
-#: src/input/command.zig:614
+#: src/input/command.zig:669
 msgid "Close the current tab."
 msgstr "Cerrar la pestaña actual."
 
-#: src/input/command.zig:618
+#: src/input/command.zig:673 windows/host/src/strip.rs:1326
 msgid "Close Other Tabs"
 msgstr "Cerrar otras pestañas"
 
-#: src/input/command.zig:619
+#: src/input/command.zig:674
 msgid "Close all tabs in this window except the current one."
 msgstr "Cerrar todas las pestañas de esta ventana excepto la actual."
 
-#: src/input/command.zig:623
+#: src/input/command.zig:678 windows/host/src/strip.rs:1327
 msgid "Close Tabs to the Right"
 msgstr "Cerrar pestañas a la derecha"
 
-#: src/input/command.zig:624
+#: src/input/command.zig:679
 msgid "Close all tabs to the right of the current one."
 msgstr "Cerrar todas las pestañas a la derecha de la actual."
 
-#: src/input/command.zig:631
+#: src/input/command.zig:686
 msgid "Close the current window."
 msgstr "Cerrar la ventana actual."
 
-#: src/input/command.zig:636
+#: src/input/command.zig:691
 msgid "Close All Windows"
 msgstr "Cerrar todas las ventanas"
 
-#: src/input/command.zig:637
+#: src/input/command.zig:692
 msgid "Close all windows."
 msgstr "Cerrar todas las ventanas."
 
-#: src/input/command.zig:642
+#: src/input/command.zig:697
 msgid "Toggle Maximize"
 msgstr "Alternar maximizado"
 
-#: src/input/command.zig:643
+#: src/input/command.zig:698
 msgid "Toggle the maximized state of the current window."
 msgstr "Alternar el estado de maximizado de la ventana actual."
 
-#: src/input/command.zig:648
+#: src/input/command.zig:703
 msgid "Toggle Fullscreen"
 msgstr "Alternar pantalla completa"
 
-#: src/input/command.zig:649
+#: src/input/command.zig:704
 msgid "Toggle the fullscreen state of the current window."
 msgstr "Alternar el estado de pantalla completa de la ventana actual."
 
-#: src/input/command.zig:654
+#: src/input/command.zig:709
 msgid "Toggle Window Decorations"
 msgstr "Alternar decoraciones de ventana"
 
-#: src/input/command.zig:655
+#: src/input/command.zig:710
 msgid "Toggle the window decorations."
 msgstr "Alternar las decoraciones de la ventana."
 
-#: src/input/command.zig:660
+#: src/input/command.zig:715
 msgid "Toggle Float on Top"
 msgstr "Alternar modo siempre encima"
 
-#: src/input/command.zig:661
+#: src/input/command.zig:716
 msgid "Toggle the float on top state of the current window."
 msgstr "Alternar si la ventana actual permanece siempre encima de las demás."
 
-#: src/input/command.zig:666
+#: src/input/command.zig:721
 msgid "Toggle Secure Input"
 msgstr "Alternar entrada segura"
 
-#: src/input/command.zig:667
+#: src/input/command.zig:722
 msgid "Toggle secure input mode."
 msgstr "Alternar el modo de entrada segura."
 
-#: src/input/command.zig:672
+#: src/input/command.zig:727
 msgid "Toggle Mouse Reporting"
 msgstr "Alternar informe del ratón"
 
-#: src/input/command.zig:673
+#: src/input/command.zig:728
 msgid "Toggle whether mouse events are reported to terminal applications."
 msgstr ""
 "Alternar si los eventos del ratón se envían a las aplicaciones del terminal."
 
-#: src/input/command.zig:678
+#: src/input/command.zig:733
 msgid "Toggle Background Opacity"
 msgstr "Alternar opacidad del fondo"
 
-#: src/input/command.zig:679
+#: src/input/command.zig:734
 msgid "Toggle the background opacity of a window that started transparent."
 msgstr ""
 "Alternar la opacidad del fondo de una ventana que se inició como "
 "transparente."
 
-#: src/input/command.zig:684
+#: src/input/command.zig:739
 msgid "Check for Updates"
 msgstr "Buscar actualizaciones"
 
-#: src/input/command.zig:685
+#: src/input/command.zig:740
 msgid "Check for updates to the application."
 msgstr "Buscar actualizaciones de la aplicación."
 
-#: src/input/command.zig:690
+#: src/input/command.zig:745
 msgid "Undo"
 msgstr "Deshacer"
 
-#: src/input/command.zig:691
+#: src/input/command.zig:746
 msgid "Undo the last action."
 msgstr "Deshacer la última acción."
 
-#: src/input/command.zig:696
+#: src/input/command.zig:751
 msgid "Redo"
 msgstr "Rehacer"
 
-#: src/input/command.zig:697
+#: src/input/command.zig:752
 msgid "Redo the last undone action."
 msgstr "Rehacer la última acción deshecha."
 
-#: src/input/command.zig:703
+#: src/input/command.zig:758
 msgid "Quit the application."
 msgstr "Salir de la aplicación."
 
-#: src/input/command.zig:708
+#: src/input/command.zig:763
 msgid "Ghostty"
 msgstr "Ghostty"
 
-#: src/input/command.zig:709
+#: src/input/command.zig:764
 msgid "Put a little Ghostty in your terminal."
 msgstr "Pon un poco de Ghostty en tu terminal."
+
+#: src/cli/chat.zig:603
+msgid "all"
+msgstr ""
+
+#: src/cli/chat.zig:604
+msgid "open"
+msgstr ""
+
+#: src/cli/chat.zig:605
+msgid "blocked"
+msgstr ""
+
+#: src/cli/chat.zig:606
+msgid "closed"
+msgstr ""
+
+#: src/cli/chat.zig:1855
+msgid "Take the group \"{0}\" off this list?"
+msgstr ""
+
+#: src/cli/chat.zig:1860
+msgid "Not one word of the conversation is deleted:"
+msgstr ""
+
+#: src/cli/chat.zig:1861
+msgid "every day of it stays exactly as it is under"
+msgstr ""
+
+#: src/cli/chat.zig:1862
+msgid "<state>/chat/, to be read and grepped later."
+msgstr ""
+
+#: src/cli/chat.zig:1863
+msgid "What goes is one row of this list."
+msgstr ""
+
+#: src/cli/chat.zig:1865
+msgid "y to confirm    any other key cancels"
+msgstr ""
+
+#: src/cli/chat.zig:1930
+msgid "GROUPS   d removes"
+msgstr ""
+
+#: src/cli/chat.zig:1934
+msgid "  (no groups yet)"
+msgstr ""
+
+#: src/cli/chat.zig:1982
+msgid "MEMBERS"
+msgstr ""
+
+#: src/cli/chat.zig:2208
+msgid "No groups. Tasks will appear here once a supervisor makes one."
+msgstr ""
+
+#: src/cli/chat.zig:2217
+msgid "No tasks in this group yet."
+msgstr ""
+
+#: src/cli/chat.zig:2257 src/cli/chat.zig:2262
+msgid "filter"
+msgstr ""
+
+#: src/cli/chat.zig:2274
+msgid "Nothing matches this filter. Press f to change it."
+msgstr ""
+
+#: src/cli/chat.zig:2366
+msgid "No groups. There will be numbers here once a supervisor makes one."
+msgstr ""
+
+#: src/cli/chat.zig:2493
+msgid "Waiting on you"
+msgstr ""
+
+#: src/cli/chat.zig:2495 src/cli/chat.zig:2771
+msgid "  The task record has not been read yet."
+msgstr ""
+
+#: src/cli/chat.zig:2497
+msgid "  Nothing open."
+msgstr ""
+
+#: src/cli/chat.zig:2513 src/cli/chat.zig:2526
+msgid "with nothing happening"
+msgstr ""
+
+#: src/cli/chat.zig:2523
+msgid "#{0}  {1} {2}  {3}"
+msgstr ""
+
+#: src/cli/chat.zig:2532
+msgid "  and {0} more still open"
+msgstr ""
+
+#: src/cli/chat.zig:2539
+msgid "Where it stopped"
+msgstr ""
+
+#: src/cli/chat.zig:2547
+msgid "  a day {0}"
+msgstr ""
+
+#: src/cli/chat.zig:2551
+msgid "  last message {0} ago"
+msgstr ""
+
+#: src/cli/chat.zig:2558
+msgid "  longest silence {0} (from {1})"
+msgstr ""
+
+#: src/cli/chat.zig:2567
+msgid "Saying · doing"
+msgstr ""
+
+#: src/cli/chat.zig:2569
+msgid "  Nobody has been in this group."
+msgstr ""
+
+#: src/cli/chat.zig:2603 src/cli/chat.zig:2617
+msgid "said"
+msgstr ""
+
+#: src/cli/chat.zig:2604 src/cli/chat.zig:2620
+msgid "doing"
+msgstr ""
+
+#: src/cli/chat.zig:2615
+msgid "  {0} {1} {2} {3}  {4} {5} {6}"
+msgstr ""
+
+#: src/cli/chat.zig:2627
+msgid "  and {0} more"
+msgstr ""
+
+#: src/cli/chat.zig:2634
+msgid "Terminals"
+msgstr ""
+
+#: src/cli/chat.zig:2637
+msgid "  {0} in the group now, {1} in the record"
+msgstr ""
+
+#: src/cli/chat.zig:2675
+msgid "  no supervisor was recorded"
+msgstr ""
+
+#: src/cli/chat.zig:2677
+msgid "  last supervisor:"
+msgstr ""
+
+#: src/cli/chat.zig:2698
+msgid "  and {0} other terminals"
+msgstr ""
+
+#: src/cli/chat.zig:2728
+msgid "This session"
+msgstr ""
+
+#: src/cli/chat.zig:2733
+msgid "  first line {0} · {1} since · {2} messages"
+msgstr ""
+
+#: src/cli/chat.zig:2748
+msgid "  made {0} · closed {1} · cancelled {2} · open {3}"
+msgstr ""
+
+#: src/cli/chat.zig:2763
+msgid "  {0} handed round · {1} progress reports / {2}"
+msgstr ""
+
+#: src/cli/chat.zig:2775
+msgid "Task mix"
+msgstr ""
+
+#: src/cli/chat.zig:2783
+msgid "  No tasks in this group yet."
+msgstr ""
+
+#: src/cli/chat.zig:2816
+msgid "closed {0}"
+msgstr ""
+
+#: src/cli/chat.zig:2821
+msgid "past the mark {0}"
+msgstr ""
+
+#: src/cli/chat.zig:2826
+msgid "open {0}"
+msgstr ""
+
+#: src/cli/chat.zig:2831
+msgid "cancelled {0}"
+msgstr ""
+
+#: src/cli/chat.zig:2838
+msgid "How long tasks lived"
+msgstr ""
+
+#: src/cli/chat.zig:2840
+msgid "  Nothing has been closed yet."
+msgstr ""
+
+#: src/cli/chat.zig:2848
+msgid "  fastest {0} · median {1} · slowest {2} (over {3})"
+msgstr ""
+
+#: src/cli/chat.zig:2858
+msgid "Rhythm"
+msgstr ""
+
+#: src/cli/chat.zig:2866
+msgid "  00:00{0}23:00"
+msgstr ""
+
+#: src/cli/chat.zig:2872
+msgid "  busiest {0}:00 ({1} messages)"
+msgstr ""
+
+#: src/cli/chat.zig:3037
+msgid "Chat"
+msgstr ""
+
+#: src/cli/chat.zig:3038
+msgid "Tasks"
+msgstr ""
+
+#: src/cli/chat.zig:3039
+msgid "Stats"
+msgstr ""
+
+#: src/cli/chat.zig:3063
+msgid "· unassigned"
+msgstr ""
+
+#: src/cli/chat.zig:3087
+msgid ""
+"No groups. The conversation will appear here once a supervisor makes one."
+msgstr ""
+
+#: src/cli/chat.zig:3110
+msgid "── nothing older ──"
+msgstr ""
+
+#: src/cli/chat.zig:3121
+msgid "  (summary)"
+msgstr ""
+
+#: src/cli/chat.zig:3356
+msgid "under a minute"
+msgstr ""
+
+#: src/cli/chat.zig:3359
+msgid "{0} min"
+msgstr ""
+
+#: src/cli/chat.zig:3364
+msgid "{0} h"
+msgstr ""
+
+#: src/cli/chat.zig:3365
+msgid "{0} h {1} min"
+msgstr ""
+
+#: src/cli/chat.zig:3370
+msgid "{0} d"
+msgstr ""
+
+#: src/cli/chat.zig:3371
+msgid "{0} d {1} h"
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:119 windows/host/src/menu.rs:269
+msgid "Rename Tab…"
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:270
+msgid "Rename Terminal…"
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:158 windows/host/src/menu.rs:314
+msgid "Let a Supervisor Answer Prompts Here"
+msgstr ""
+
+#: windows/host/src/i18n.rs:360 windows/host/src/settings_ui.rs:168
+msgid "Keeps the conversations"
+msgstr ""
+
+#: windows/host/src/keybinds.rs:109
+msgid ""
+"These are your switches over an agent. The keys are set by the product and "
+"cannot be rebound yet."
+msgstr ""
+
+#: windows/host/src/keybinds.rs:116
+msgid "Not switched on automatically on Windows; turn it on by hand."
+msgstr ""
+
+#: windows/host/src/keybinds.rs:119
+msgid "The menu does not show this shortcut (the key still works)."
+msgstr ""
+
+#: windows/host/src/keybinds.rs:122
+msgid "No shortcut yet"
+msgstr ""
+
+#: windows/host/src/language.rs:317
+msgid "Language"
+msgstr ""
+
+#: windows/host/src/language.rs:318
+msgid "The language changes the next time Polter starts."
+msgstr ""
+
+#: windows/host/src/main.rs:2306
+#, rust-format
+msgid "{} lines in all."
+msgstr ""
+
+#: windows/host/src/menu.rs:213 windows/host/src/strip.rs:1664
+msgid "Reopen Closed Tab"
+msgstr ""
+
+#: windows/host/src/menu.rs:235
+msgid "Next"
+msgstr ""
+
+#: windows/host/src/menu.rs:236
+msgid "Previous"
+msgstr ""
+
+#: windows/host/src/menu.rs:238
+msgid "Hide the Find Bar"
+msgstr ""
+
+#: windows/host/src/menu.rs:253
+msgid "Find"
+msgstr ""
+
+#: windows/host/src/menu.rs:258
+msgid "Zoom In"
+msgstr ""
+
+#: windows/host/src/menu.rs:259
+msgid "Zoom Out"
+msgstr ""
+
+#: windows/host/src/menu.rs:274
+msgid "Quick Terminal"
+msgstr ""
+
+#: windows/host/src/menu.rs:345
+msgid "Plugins…"
+msgstr ""
+
+#: windows/host/src/menu.rs:349
+msgid "Up"
+msgstr ""
+
+#: windows/host/src/menu.rs:350
+msgid "Down"
+msgstr ""
+
+#: windows/host/src/menu.rs:351
+msgid "Left"
+msgstr ""
+
+#: windows/host/src/menu.rs:352
+msgid "Right"
+msgstr ""
+
+#: windows/host/src/menu.rs:358
+msgid "Grow Up"
+msgstr ""
+
+#: windows/host/src/menu.rs:359
+msgid "Grow Down"
+msgstr ""
+
+#: windows/host/src/menu.rs:360
+msgid "Grow Left"
+msgstr ""
+
+#: windows/host/src/menu.rs:361
+msgid "Grow Right"
+msgstr ""
+
+#: windows/host/src/menu.rs:367
+msgid "Minimize"
+msgstr ""
+
+#: windows/host/src/menu.rs:368
+msgid "Maximize"
+msgstr ""
+
+#: windows/host/src/menu.rs:370
+msgid "Full Screen"
+msgstr ""
+
+#: windows/host/src/menu.rs:372
+msgid "Split Zoom"
+msgstr ""
+
+#: windows/host/src/menu.rs:373
+msgid "Previous Split"
+msgstr ""
+
+#: windows/host/src/menu.rs:374
+msgid "Next Split"
+msgstr ""
+
+#: windows/host/src/menu.rs:375
+msgid "Select Split"
+msgstr ""
+
+#: windows/host/src/menu.rs:376
+msgid "Resize Split"
+msgstr ""
+
+#: windows/host/src/menu.rs:380
+msgid "Float on Top"
+msgstr ""
+
+#: windows/host/src/menu.rs:387
+msgid "Polter Help"
+msgstr ""
+
+#: windows/host/src/menu.rs:402
+msgid "Check for Updates…"
+msgstr ""
+
+#: windows/host/src/menu.rs:414
+msgid "File"
+msgstr ""
+
+#: windows/host/src/menu.rs:415
+msgid "Edit"
+msgstr ""
+
+#: windows/host/src/menu.rs:416
+msgid "View"
+msgstr ""
+
+#: windows/host/src/menu.rs:432
+msgid "Agents"
+msgstr ""
+
+#: windows/host/src/menu.rs:434
+msgid "Help"
+msgstr ""
+
+#: windows/host/src/menu.rs:436
+msgid "Settings…"
+msgstr ""
+
+#: windows/host/src/menu.rs:448
+msgid "Language…"
+msgstr ""
+
+#: windows/host/src/menu.rs:461
+msgid "Keyboard Shortcuts…"
+msgstr ""
+
+#: windows/host/src/menu.rs:462 windows/host/src/settings_ui.rs:1067
+msgid "About Polter"
+msgstr ""
+
+#: windows/host/src/prompt.rs:331
+msgid "Save as Project"
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:169
+msgid "Notifies you"
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:170
+msgid "Sets your agent up to reach Polter"
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:181
+msgid ""
+"Subscribes to nothing, so Polter has nothing to hand it and will not start "
+"it."
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:201
+#, rust-format
+msgid "What it is handed: {}"
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:1008
+msgid "Enabled"
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:1014
+msgid "Save"
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:1066
+msgid "Open config file…"
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:1135
+msgid "MIT licensed. A fork of Ghostty."
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:1229 windows/host/src/settings_ui.rs:2320
+msgid "Esc or click to dismiss"
+msgstr ""
+
+#: windows/host/src/settings_ui.rs:2129 windows/host/src/uia.rs:2038
+msgid "Keyboard Shortcuts"
+msgstr ""
+
+#. TRANSLATORS: `{}` is how many actions the list holds. It is
+#. not at the start of the sentence on purpose, so a language that
+#. needs the number elsewhere can move it.
+#: windows/host/src/settings_ui.rs:2144
+#, rust-format
+msgid ""
+"This page lists actions; {} in all. Some actions have no shortcut assigned."
+msgstr ""
+
+#. TRANSLATORS: the runs of four spaces are column padding that
+#. separates the three groups; please keep them. `{}-{} / {}` is
+#. first-shown, last-shown, total.
+#: windows/host/src/settings_ui.rs:2219
+#, rust-format
+msgid "{}–{} / {}    ↑↓ PgUp PgDn Scroll    Esc Close"
+msgstr ""
+
+#: windows/host/src/strip.rs:1294
+msgid "None"
+msgstr ""
+
+#: windows/host/src/strip.rs:1295
+msgid "Blue"
+msgstr ""
+
+#: windows/host/src/strip.rs:1296
+msgid "Purple"
+msgstr ""
+
+#: windows/host/src/strip.rs:1297
+msgid "Pink"
+msgstr ""
+
+#: windows/host/src/strip.rs:1298
+msgid "Red"
+msgstr ""
+
+#: windows/host/src/strip.rs:1299
+msgid "Orange"
+msgstr ""
+
+#: windows/host/src/strip.rs:1300
+msgid "Yellow"
+msgstr ""
+
+#: windows/host/src/strip.rs:1301
+msgid "Green"
+msgstr ""
+
+#: windows/host/src/strip.rs:1302
+msgid "Teal"
+msgstr ""
+
+#: windows/host/src/strip.rs:1303
+msgid "Graphite"
+msgstr ""
+
+#: windows/host/src/strip.rs:1329
+msgid "Rename Tab..."
+msgstr ""
+
+#: windows/host/src/strip.rs:1453
+msgid "Tab Color"
+msgstr ""
+
+#: windows/host/src/uia.rs:1168
+msgid "Menu"
+msgstr ""

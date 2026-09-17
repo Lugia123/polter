@@ -2119,7 +2119,14 @@ unsafe fn kb_paint(win: HWND, hdc: HDC) {
             let old = SelectObject(hdc, font().into());
 
             let mut r = RECT { left: s(PAD), top: s(PAD), right: rc.right - s(PAD), bottom: s(PAD + 24) };
-            draw_text(hdc, "快捷键", &mut r, DT_LEFT | DT_SINGLELINE, theme::text());
+            // **Not `Keyboard Shortcuts…`.** `uia.rs`'s `GetPropertyValue`
+            // for `keybinds-list` already names this same page `Keyboard
+            // Shortcuts` for a screen reader, and the two have to agree. The spelling with U+2026 is a *different* msgid
+            // and a deliberate one: it is the menu row, where the ellipsis
+            // says "this opens a window" (`MainMenu.xib:111` has it too).
+            // Folding the two together would read as tidying up a duplicate
+            // and would silently orphan one translation.
+            draw_text(hdc, &tr("Keyboard Shortcuts"), &mut r, DT_LEFT | DT_SINGLELINE, theme::text());
 
             // ⚠️ **The legend is not decoration.** This page has an action
             // count, a binding count and a command count in the same
@@ -2131,10 +2138,11 @@ unsafe fn kb_paint(win: HWND, hdc: HDC) {
                 right: rc.right - s(PAD),
                 bottom: s(PAD + 48),
             };
-            let legend = format!(
-                "这里列的是「动作」，共 {} 个；有的动作还没有分配快捷键。",
-                st.keybinds.len()
-            );
+            // TRANSLATORS: `{}` is how many actions the list holds. It is
+            // not at the start of the sentence on purpose, so a language that
+            // needs the number elsewhere can move it.
+            let legend = tr("This page lists actions; {} in all. Some actions have no shortcut assigned.")
+                .replace("{}", &st.keybinds.len().to_string());
             draw_text(hdc, &legend, &mut lr, DT_LEFT | DT_SINGLELINE, theme::dim());
 
             let name_w = s(230);
@@ -2180,7 +2188,11 @@ unsafe fn kb_paint(win: HWND, hdc: HDC) {
                         bottom: rr.bottom,
                     };
                     let colour = if row.hidden_from_menu { theme::warn() } else { theme::dim() };
-                    draw_text(hdc, note, &mut tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, colour);
+                    // Spelled out rather than `tr(note)`: the `RECT` a line
+                    // above is also called `tr`, and the shadowing is only
+                    // visible if you are looking for it.
+                    let note = crate::i18n::tr(note);
+                    draw_text(hdc, &note, &mut tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS, colour);
                 }
             }
 
@@ -2190,12 +2202,24 @@ unsafe fn kb_paint(win: HWND, hdc: HDC) {
                 right: rc.right - s(PAD),
                 bottom: rc.bottom,
             };
-            let footer = format!(
-                "{}–{} / {}    ↑↓ PgUp PgDn 滚动    Esc 关闭",
-                st.keybind_top + 1,
-                end,
-                st.keybinds.len()
-            );
+            // ⚠️ **One msgid for the whole line, runs of spaces included.**
+            // Splitting out the two verbs would hand the word order to this
+            // `format!`, which is the same defect the close-confirmation box
+            // had in `tabs.rs`. A translator needs to be able to move
+            // "Scroll" and "Close" around the key names, and in some
+            // languages to put them first.
+            //
+            // The four spaces are column padding rather than prose; they are
+            // called out to the translator in the extractor comment below so
+            // a run of whitespace does not read as a typo to be tidied.
+            //
+            // TRANSLATORS: the runs of four spaces are column padding that
+            // separates the three groups; please keep them. `{}-{} / {}` is
+            // first-shown, last-shown, total.
+            let footer = tr("{}–{} / {}    ↑↓ PgUp PgDn Scroll    Esc Close")
+                .replacen("{}", &(st.keybind_top + 1).to_string(), 1)
+                .replacen("{}", &end.to_string(), 1)
+                .replacen("{}", &st.keybinds.len().to_string(), 1);
             draw_text(hdc, &footer, &mut fr, DT_LEFT | DT_SINGLELINE, theme::dim());
             SelectObject(hdc, old);
         });

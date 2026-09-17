@@ -45,6 +45,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::i18n::{n_, tr};
 use crate::{plogf, wlogf};
 
 // ------------------------------------------------------------------- table
@@ -197,8 +198,8 @@ const fn sub(label: &'static str, rows: &'static [Row]) -> Row {
 // here on purpose -- see `design.md` §1.3.
 
 const FILE_ROWS: &[Row] = &[
-    act("新建窗口", "new_window"),
-    act("新建标签页", "new_tab"),
+    act(n_("New Window"), "new_window"),
+    act(n_("New Tab"), "new_tab"),
     sep(),
     // The core's `undo` is scoped to surface lifecycle, which is what
     // "reopen the tab I just closed" is.
@@ -209,7 +210,7 @@ const FILE_ROWS: &[Row] = &[
     // the stack is empty -- the first row in this menu whose greying is a
     // fact about right now.
     Row {
-        label: "重开关闭的标签",
+        label: n_("Reopen Closed Tab"),
         action: Some("__polter_reopen_tab"),
         sub: None,
         check: None,
@@ -217,29 +218,29 @@ const FILE_ROWS: &[Row] = &[
         enabled: Enable::WhenReopenable,
     },
     sep(),
-    act("向右分屏", "new_split:right"),
-    act("向左分屏", "new_split:left"),
-    act("向下分屏", "new_split:down"),
-    act("向上分屏", "new_split:up"),
+    act(n_("Split Right"), "new_split:right"),
+    act(n_("Split Left"), "new_split:left"),
+    act(n_("Split Down"), "new_split:down"),
+    act(n_("Split Up"), "new_split:up"),
     sep(),
-    act("关闭分屏", "close_surface"),
-    act("关闭标签页", "close_tab:this"),
-    act("关闭窗口", "close_window"),
+    act(n_("Close Split"), "close_surface"),
+    act(n_("Close Tab"), "close_tab:this"),
+    act(n_("Close Window"), "close_window"),
 ];
 
 const FIND_ROWS: &[Row] = &[
-    act("查找…", "start_search"),
+    act(n_("Find…"), "start_search"),
     // `s4.md` §3.2 called these `next_search_result` / `previous_search_result`;
     // the core has no such actions. It publishes one action with a direction.
-    act_state("下一个", "navigate_search:next", "needs an open search"),
-    act_state("上一个", "navigate_search:previous", "needs an open search"),
+    act_state(n_("Next"), "navigate_search:next", "needs an open search"),
+    act_state(n_("Previous"), "navigate_search:previous", "needs an open search"),
     sep(),
-    act_state("隐藏查找条", "end_search", "reports performed only if a search was open"),
+    act_state(n_("Hide the Find Bar"), "end_search", "reports performed only if a search was open"),
 ];
 
 const EDIT_ROWS: &[Row] = &[
-    act_state("复制", "copy_to_clipboard", "needs a selection: Surface.zig returns false when there is none"),
-    act("粘贴", "paste_from_clipboard"),
+    act_state(n_("Copy"), "copy_to_clipboard", "needs a selection: Surface.zig returns false when there is none"),
+    act(n_("Paste"), "paste_from_clipboard"),
     // **«粘贴选区» is gone, and its absence is the point.** It pastes the
     // *selection* clipboard, which X11 and macOS have and Windows does not.
     // This host declares no selection support and `cb_write_clipboard`
@@ -247,17 +248,17 @@ const EDIT_ROWS: &[Row] = &[
     // and `s4.md` §3.2's own rule is that a concept Windows does not have
     // is not ported. A row that can never work is worse than a missing one:
     // it is the "click does nothing" this whole menu was audited to remove.
-    act("全选", "select_all"),
+    act(n_("Select All"), "select_all"),
     sep(),
-    sub("查找", FIND_ROWS),
+    sub(n_("Find"), FIND_ROWS),
 ];
 
 const VIEW_ROWS: &[Row] = &[
-    act("重置字号", "reset_font_size"),
-    act("放大", "increase_font_size:1"),
-    act("缩小", "decrease_font_size:1"),
+    act(n_("Reset Font Size"), "reset_font_size"),
+    act(n_("Zoom In"), "increase_font_size:1"),
+    act(n_("Zoom Out"), "decrease_font_size:1"),
     sep(),
-    act("命令面板", "toggle_command_palette"),
+    act(n_("Command Palette"), "toggle_command_palette"),
     // **Two rows, because the core has two actions and they do different
     // things.** `prompt_tab_title` renames the tab and keeps the name against
     // whatever the shell sets; `prompt_surface_title` renames this pane's
@@ -265,12 +266,12 @@ const VIEW_ROWS: &[Row] = &[
     // row labelled for the first and wired to the second, which is a defect
     // that looks like a working menu item: the dialog opens, a name is typed,
     // and the wrong thing is renamed.
-    act("改标签标题…", "prompt_tab_title"),
-    act("改终端标题…", "prompt_surface_title"),
+    act(n_("Rename Tab…"), "prompt_tab_title"),
+    act(n_("Rename Terminal…"), "prompt_surface_title"),
     // §3.2 called this `toggle_surface_read_only`; the core's name is shorter.
-    toggle("只读", "toggle_readonly", Flag::ReadOnly, Ready::Always),
+    toggle(n_("Read-only"), "toggle_readonly", Flag::ReadOnly, Ready::Always),
     sep(),
-    act("快速终端", "toggle_quick_terminal"),
+    act(n_("Quick Terminal"), "toggle_quick_terminal"),
     sep(),
     // **Blocked on the core's C API, not on host work.** The only inspector
     // renderer libghostty publishes is `ghostty_inspector_metal_*`, and that
@@ -278,7 +279,7 @@ const VIEW_ROWS: &[Row] = &[
     // handled now -- it says this in the log instead of falling through
     // silently -- but there is nothing on Windows to render into.
     act_gap(
-        "终端检查器",
+        n_("Terminal Inspector"),
         "inspector:toggle",
         "libghostty publishes no inspector renderer outside Apple (ghostty_inspector_metal_* is \
          inside #ifdef __APPLE__)",
@@ -291,11 +292,11 @@ const AGENTS_ROWS: &[Row] = &[
     // The chat is a TUI (`polter +chat`), so opening it is opening a terminal
     // with a command and one flag set -- and both of those are `create_pane`'s
     // to set, in `tabs.rs`. The tag is handled and says so.
-    act("终端群聊", "poltergeist_toggle_chat"),
+    act(n_("Terminal Conversations"), "poltergeist_toggle_chat"),
     sep(),
-    toggle("将此终端设为总管", "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
-    toggle("监督此终端", "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
-    toggle("不让 agent 碰此终端", "poltergeist_toggle_shielded", Flag::Shielded, Ready::Always),
+    toggle(n_("Make This Terminal a Supervisor"), "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
+    toggle(n_("Toggle Supervision of This Terminal"), "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
+    toggle(n_("Keep Agents Out of This Terminal"), "poltergeist_toggle_shielded", Flag::Shielded, Ready::Always),
     // **What this opens, in the label, because the menu is where it is
     // granted.** Off for every terminal until this is ticked. With it on a
     // supervisor may take *either* answer in that box -- including
@@ -310,7 +311,7 @@ const AGENTS_ROWS: &[Row] = &[
     // rest, not a wall -- and a protection believed to be a wall and not is
     // worse than none.
     toggle(
-        "允许总管替此终端点授权框（含「不再询问」）",
+        n_("Let a Supervisor Answer Prompts Here"),
         "poltergeist_toggle_authorise",
         Flag::MayAuthorise,
         Ready::Always,
@@ -338,65 +339,52 @@ const AGENTS_ROWS: &[Row] = &[
     // holding an ordinary terminal changed nothing it compared, and it
     // returned before performing the action. The hold was toggled, the core
     // logged it, and no apprt was ever told.
-    toggle("保持这个终端在岗", "poltergeist_toggle_held", Flag::Held, Ready::Always),
+    toggle(n_("Hold This Terminal to Its Work"), "poltergeist_toggle_held", Flag::Held, Ready::Always),
     sep(),
     // Host rows: the core knows nothing about either page.
-    act("插件…", "__polter_plugin_page"),
-    // Greyed: nothing behind it yet. `s4.md` §3.4.3 -- greyed says "this
-    // exists, not now"; a row that is missing and a row that never existed
-    // look the same, and a row that does nothing is worse than both.
-    // greyed: no language picker exists yet -- nothing to open, and a row that
-    // opens nothing is what §3.4.3 greys rather than hides.
-    Row {
-        label: "语言…",
-        action: Some("__polter_language"),
-        sub: None,
-        check: None,
-        ready: Ready::HostGap("no language picker exists yet"),
-        enabled: Enable::No,
-    },
+    act(n_("Plugins…"), "__polter_plugin_page"),
 ];
 
 const GOTO_SPLIT_ROWS: &[Row] = &[
-    act("上", "goto_split:up"),
-    act("下", "goto_split:down"),
-    act("左", "goto_split:left"),
-    act("右", "goto_split:right"),
+    act(n_("Up"), "goto_split:up"),
+    act(n_("Down"), "goto_split:down"),
+    act(n_("Left"), "goto_split:left"),
+    act(n_("Right"), "goto_split:right"),
 ];
 
 const RESIZE_SPLIT_ROWS: &[Row] = &[
-    act("均分分屏大小", "equalize_splits"),
+    act(n_("Equalize Splits"), "equalize_splits"),
     sep(),
-    act("向上", "resize_split:up,10"),
-    act("向下", "resize_split:down,10"),
-    act("向左", "resize_split:left,10"),
-    act("向右", "resize_split:right,10"),
+    act(n_("Grow Up"), "resize_split:up,10"),
+    act(n_("Grow Down"), "resize_split:down,10"),
+    act(n_("Grow Left"), "resize_split:left,10"),
+    act(n_("Grow Right"), "resize_split:right,10"),
 ];
 
 const WINDOW_ROWS: &[Row] = &[
     // The core has no `minimize`: on macOS that is AppKit's, and here it is
     // one `ShowWindow` call the host makes itself.
-    act("最小化", "__polter_minimize"),
-    act("最大化", "toggle_maximize"),
+    act(n_("Minimize"), "__polter_minimize"),
+    act(n_("Maximize"), "toggle_maximize"),
     sep(),
-    act("全屏", "toggle_fullscreen"),
+    act(n_("Full Screen"), "toggle_fullscreen"),
     sep(),
-    act("分屏缩放", "toggle_split_zoom"),
-    act("上一个分屏", "goto_split:previous"),
-    act("下一个分屏", "goto_split:next"),
-    sub("选择分屏", GOTO_SPLIT_ROWS),
-    sub("调整分屏", RESIZE_SPLIT_ROWS),
+    act(n_("Split Zoom"), "toggle_split_zoom"),
+    act(n_("Previous Split"), "goto_split:previous"),
+    act(n_("Next Split"), "goto_split:next"),
+    sub(n_("Select Split"), GOTO_SPLIT_ROWS),
+    sub(n_("Resize Split"), RESIZE_SPLIT_ROWS),
     sep(),
-    act("重置窗口大小", "reset_window_size"),
+    act(n_("Reset Window Size"), "reset_window_size"),
     sep(),
-    toggle("置顶", "toggle_window_float_on_top", Flag::FloatOnTop, Ready::Always),
+    toggle(n_("Float on Top"), "toggle_window_float_on_top", Flag::FloatOnTop, Ready::Always),
 ];
 
 const HELP_ROWS: &[Row] = &[
     // Greyed for the same reason as «语言…»: the docs URL has no opener yet.
     // greyed: no docs opener exists yet in this host.
     Row {
-        label: "Polter 帮助",
+        label: n_("Polter Help"),
         action: Some("__polter_help_docs"),
         sub: None,
         check: None,
@@ -411,21 +399,21 @@ const HELP_ROWS: &[Row] = &[
     // this row. Kept visible on purpose: a missing row and a row that never
     // existed look the same.
     Row {
-        label: "检查更新…",
+        label: n_("Check for Updates…"),
         action: Some("check_for_updates"),
         sub: None,
         check: None,
         ready: Ready::HostGap("block L is not built"),
         enabled: Enable::No,
     },
-    act("重新加载配置", "reload_config"),
+    act(n_("Reload Configuration"), "reload_config"),
 ];
 
 /// The root: six group rows, then the two tail items.
 const ROOT: &[Row] = &[
-    sub("文件", FILE_ROWS),
-    sub("编辑", EDIT_ROWS),
-    sub("查看", VIEW_ROWS),
+    sub(n_("File"), FILE_ROWS),
+    sub(n_("Edit"), EDIT_ROWS),
+    sub(n_("View"), VIEW_ROWS),
     // **The one English word left on the menu bar, and the name was already
     // decided elsewhere.** `macos/Sources/App/zh-Hans.lproj/MainMenu.strings`
     // translates this same group -- it is `pg0-Mn-Ma1.title`, the menu item
@@ -441,17 +429,37 @@ const ROOT: &[Row] = &[
     // title takes the term, the prose keeps the word -- changing the prose
     // here would be this port inventing terminology and would put the two
     // platforms out of step.
-    sub("智能体", AGENTS_ROWS),
-    sub("窗口", WINDOW_ROWS),
-    sub("帮助", HELP_ROWS),
+    sub(n_("Agents"), AGENTS_ROWS),
+    sub(n_("Window"), WINDOW_ROWS),
+    sub(n_("Help"), HELP_ROWS),
     sep(),
-    act("设置…", "open_config"),
-    // **Directly under 设置…, on both platforms.** The menu can print a
-    // shortcut only for a binding the core's reverse map holds, and that map
-    // deliberately leaves out `performable` ones -- so there are keys this
-    // menu cannot name. This row opens the one place they are all visible.
-    act("快捷键…", "__polter_keybinds"),
-    act("关于 Polter", "__polter_about"),
+    act(n_("Settings…"), "open_config"),
+    // **Directly under Preferences, by task 561.** It used to sit at the end
+    // of the Agents group. The row is about the app rather than about a
+    // terminal, and the settings group is where a person goes looking for it.
+    // Where the macOS tree keeps its `pg7-La-Ng1` is that tree's to say --
+    // this comment deliberately does not restate it, because a copy of
+    // somebody else's current arrangement is a claim that goes stale without
+    // anything going red.
+    //
+    // Opens `language.rs`'s picker (task 564). `Ready::Always`: the picker
+    // opens whatever the terminal is doing, so `ok=0` on this row is a defect.
+    Row {
+        label: n_("Language…"),
+        action: Some("__polter_language"),
+        sub: None,
+        check: None,
+        ready: Ready::Always,
+        enabled: Enable::Yes,
+    },
+    // **Still in the settings group, with the language row now between.**
+    // What was being copied from macOS is the grouping rather than the
+    // adjacency. The menu can print a shortcut only
+    // for a binding the core's reverse map holds, and that map deliberately
+    // leaves out `performable` ones -- so there are keys this menu cannot
+    // name. This row opens the one place they are all visible.
+    act(n_("Keyboard Shortcuts…"), "__polter_keybinds"),
+    act(n_("About Polter"), "__polter_about"),
 ];
 
 /// The six groups, for the log line and for the tests. Kept next to `ROOT`
@@ -495,12 +503,21 @@ fn run_host(frame: HWND, action: &str) -> bool {
             let _ = unsafe { ShowWindow(frame, SW_MINIMIZE) };
             true
         }
+        // **Returns before the picker is on screen.** It opens from this
+        // thread's message loop, not from inside this call, because
+        // `--menu-selftest` comes through here too and a modal menu entered
+        // here would hold the self-test until somebody dismissed it.
+        // ⚠️ So a self-test run **does put the language menu on screen once**,
+        // after the run, the same way it shows the about box. That is the
+        // row being performed, as every row in the self-test is -- not a
+        // defect.
+        "__polter_language" => crate::language::request_picker(frame),
         // Not built, and **greyed in the table** rather than live: a row that
         // is clickable and does nothing is worse than one that is greyed, and
         // it is the exact defect this menu exists to stop. A click cannot
-        // reach these, so this arm is only a backstop -- if it ever fires,
-        // something un-greyed them.
-        "__polter_language" | "__polter_help_docs" => {
+        // reach this, so this arm is only a backstop -- if it ever fires,
+        // something un-greyed it.
+        "__polter_help_docs" => {
             // process-wide: a row naming a host action with no handler is a gap in the table, the same one for every window
             plogf!("[menu] host action {action:?} is not built; the row should have been greyed");
             false
@@ -517,6 +534,14 @@ const HOST_ACTIONS: &[&str] = &[
     "__polter_language",
     "__polter_about",
     "__polter_help_docs",
+    // **This one was missing, and had been since the row was added.**
+    // `run_host` has had an arm for it all along; only this list did not,
+    // which is exactly the shape both `all_host_rows_are_handled` and
+    // `assert_actions_exist` are built to catch -- and both were red on this
+    // tree before task 561 touched anything. Found by running the suite on
+    // Windows; it cannot be seen from a macOS `cargo check`, because the
+    // whole crate's tests only compile for a Windows target.
+    "__polter_keybinds",
 ];
 
 // ------------------------------------------------------- the core's actions
@@ -996,7 +1021,7 @@ fn build(frame: HWND, rows: &[Row], next: &mut usize) -> Option<HMENU> {
                 // left out here would shift every id after it, and the menu
                 // would then run the wrong command while looking right.
                 let child = build(frame, children, next)?;
-                let wide: Vec<u16> = r.label.encode_utf16().chain(Some(0)).collect();
+                let wide: Vec<u16> = tr(r.label).encode_utf16().chain(Some(0)).collect();
                 let _ = AppendMenuW(
                     menu,
                     MF_POPUP | MF_STRING,
@@ -1010,9 +1035,17 @@ fn build(frame: HWND, rows: &[Row], next: &mut usize) -> Option<HMENU> {
             // `label\tshortcut`. No `\t` when there is no shortcut: an empty
             // right-hand column is the same width as none and reads as a
             // shortcut that failed to render.
+            // **`tr` here and not in the table.** The table is a `const`, and a
+            // `const` cannot call a function -- so the rows carry `n_`, which
+            // marks the msgid for `xgettext` and does nothing at run time, and
+            // the lookup happens on the way to the screen. `i18n.rs` says why
+            // skipping the marker is the worst of the three states: `tr` would
+            // ask for a msgid no translator was ever offered, miss every time,
+            // and say so nowhere.
+            let label = tr(r.label);
             let text = match accel_of(action) {
-                Some(a) if !a.is_empty() => format!("{}\t{}", r.label, a),
-                _ => r.label.to_string(),
+                Some(a) if !a.is_empty() => format!("{label}\t{a}"),
+                _ => label,
             };
             let mut flags = MF_STRING;
             if !row_enabled(r) {
@@ -1451,13 +1484,24 @@ mod tests {
 
     /// Six groups, and each of them a submenu. The log line says six; this is
     /// what makes that a fact rather than a constant.
+    ///
+    /// **The tail count had drifted before task 561.** The name said two and
+    /// the assertion said two while `ROOT` carried three -- «快捷键…» and
+    /// «关于 Polter» had been added and this number had not -- so this test
+    /// was red on the tree 561 started from. 561 adds the language row here
+    /// as well, which makes four. The first of them is still the settings
+    /// row, and that is the part worth pinning: the tail is where the
+    /// app-level rows live, not a place things land by accident.
     #[test]
-    fn the_root_has_six_groups_and_two_tail_items() {
+    fn the_root_has_six_groups_and_four_tail_items() {
         let groups = ROOT.iter().filter(|r| r.sub.is_some()).count();
         assert_eq!(groups, GROUP_COUNT);
         let tail: Vec<_> = ROOT.iter().filter(|r| r.action.is_some()).collect();
-        assert_eq!(tail.len(), 2);
+        assert_eq!(tail.len(), 4);
         assert_eq!(tail[0].action, Some("open_config"));
+        // Directly under it, by task 561. If the language row moves back into
+        // the Agents group, this is the line that says so.
+        assert_eq!(tail[1].action, Some("__polter_language"));
     }
 
     /// Ids must not reach into `ctxmenu.rs`'s range, or into Windows'.
@@ -1503,11 +1547,12 @@ mod tests {
         }
     }
 
-    /// Three rows are greyed **always**, and the list is spelled out: when one
+    /// Two rows are greyed **always**, and the list is spelled out: when one
     /// of them gets built, this test is what says "un-grey it" rather than the
     /// menu quietly staying grey forever. The conditional one is next door.
+    /// It was three until task 564 built the language picker.
     #[test]
-    fn the_greyed_rows_are_the_three_that_are_not_built() {
+    fn the_greyed_rows_are_the_two_that_are_not_built() {
         let mut greyed: Vec<_> = all_rows()
             .iter()
             .filter(|r| r.enabled == Enable::No)
@@ -1517,7 +1562,7 @@ mod tests {
         // Sorted, not in table order: this test is about *which* rows are
         // greyed. Pinning the traversal order here would make it fail the next
         // time a group is reordered, for a reason it does not care about.
-        let mut want = vec!["语言…", "检查更新…", "Polter 帮助"];
+        let mut want = vec!["Check for Updates…", "Polter Help"];
         want.sort_unstable();
         assert_eq!(greyed, want);
     }
@@ -1532,10 +1577,16 @@ mod tests {
         let rows = all_rows();
         let leaves: Vec<_> = rows.iter().filter(|r| r.action.is_some()).collect();
         let n = |f: fn(&Ready) -> bool| leaves.iter().filter(|r| f(&r.ready)).count();
-        assert_eq!(leaves.len(), 54);
-        assert_eq!(n(|r| matches!(r, Ready::Always)), 45, "unconditional rows");
+        // **These four numbers had drifted before task 561**, in the same way
+        // and for the same reason as the tail count next door: rows were added
+        // and the counts were not, and nobody saw it because this crate's
+        // tests only run on Windows. 561 moves a row without adding or
+        // removing one, so only the stale half is corrected here. 564 moves
+        // the language row from the last bucket to the first.
+        assert_eq!(leaves.len(), 57);
+        assert_eq!(n(|r| matches!(r, Ready::Always)), 49, "unconditional rows");
         assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 5, "state-dependent rows");
-        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 4, "rows this host does not answer yet");
+        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 3, "rows this host does not answer yet");
     }
 
     /// Both non-trivial buckets have to say why, because the reason is what
@@ -1562,8 +1613,8 @@ mod tests {
         let find = |label: &str| {
             rows.iter().find(|r| r.label == label).and_then(|r| r.action).unwrap_or("")
         };
-        assert_eq!(find("改标签标题…"), "prompt_tab_title");
-        assert_eq!(find("改终端标题…"), "prompt_surface_title");
+        assert_eq!(find("Rename Tab…"), "prompt_tab_title");
+        assert_eq!(find("Rename Terminal…"), "prompt_surface_title");
     }
 
     /// Exactly one row's greying depends on the moment rather than on
@@ -1578,7 +1629,7 @@ mod tests {
             .filter(|r| matches!(r.enabled, Enable::WhenReopenable))
             .map(|r| r.label)
             .collect();
-        assert_eq!(conditional, vec!["重开关闭的标签"]);
+        assert_eq!(conditional, vec!["Reopen Closed Tab"]);
     }
 
     /// A greyed row still names something. **Greying is not a way to park a

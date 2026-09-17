@@ -443,7 +443,7 @@ shellcheck --check-sourced --severity=warning $(find . \( -name "*.sh" -o -name 
 
 - Nix 用户统一加前缀 `nix develop -c <tool> ...`（`HACKING.md:142-146`、`:153-157`、`:171-178`、`:202-212`）。工具版本要与 `nix/devShell.nix` 对齐（`HACKING.md:140`、`:165`、`:200`）。
 - 改了 `build.zig.zon` 之后跑 `./nix/build-support/check-zig-cache.sh --update`，它会写出 `nix/zigCacheHash.nix`，需要一并提交（`HACKING.md:225-232`）。
-- 改了 i18n 字符串跑 `zig build update-translations`（`build.zig:76-79`、`:388-394`）；注意 `-Di18n=false` 时这个 step 会直接报错 "cannot update translations when i18n is disabled"（`build.zig:392-394`）。细节见 [po/README_CONTRIBUTORS.md](../po/README_CONTRIBUTORS.md)。
+- 改了 i18n 字符串跑 `zig build update-translations`（`build.zig:76-79`、`:388-394`）；注意 `-Di18n=false` 时这个 step 会直接报错 "cannot update translations when i18n is disabled"（`build.zig:392-394`）。⚠️ 这个 step 要 **gettext 0.24 以上**（Windows host 按 Rust 抽取），版本太旧时会报「语言“Rust”未知」并中止；普通 `zig build` 只用 `msgfmt`，不受影响。细节见 [po/README_CONTRIBUTORS.md](../po/README_CONTRIBUTORS.md)。
 - 发布相关的 `zig build dist` 与 `zig build distcheck`（`build.zig:112`、`:114`）；产物路径未核实（本文未构建过）。
 - 贡献流程见 [CONTRIBUTING.md](../CONTRIBUTING.md)，本文不复述。
 

@@ -1,8 +1,10 @@
-//! Re-reading the config file, which is the whole of what «重载配置» means.
+//! Re-reading the config file, which is the whole of what «Reload
+//! Configuration» means.
 //!
-//! **What was here before.** `menu.rs` has a `重载配置` row and `keys.rs`
-//! binds `ctrl+shift+,` to `reload_config`. Both worked, in the sense that the
-//! core parsed the binding, performed it, and handed
+//! **What was here before.** `menu.rs` has a `Reload Configuration` row (the
+//! msgid; what the row says on screen is whatever the catalogue answers) and
+//! `keys.rs` binds `ctrl+shift+,` to `reload_config`. Both worked, in the
+//! sense that the core parsed the binding, performed it, and handed
 //! `GHOSTTY_ACTION_RELOAD_CONFIG` to the host -- where the arm asked the
 //! settings window to refresh its error list and answered `true`. Nothing
 //! re-read the file and nothing told the core. Editing the config and
@@ -92,7 +94,7 @@ pub fn init(hinst: HINSTANCE) {
         if RegisterClassW(&wc) == 0 {
             // process-wide: one window class for the whole process, before any
             // frame is involved
-            plogf!("[reload] RegisterClassW failed; «重载配置» will do nothing");
+            plogf!("[reload] RegisterClassW failed; «Reload Configuration» will do nothing");
             return;
         }
         // Message-only: it never shows, and its messages are pumped by the
@@ -122,7 +124,7 @@ pub fn init(hinst: HINSTANCE) {
             // state this file was written to leave behind.
             // process-wide: no window exists to attribute this to; that is the
             // fact being reported
-            Err(e) => plogf!("[reload] CreateWindowExW failed: {e:?}; «重载配置» will do nothing"),
+            Err(e) => plogf!("[reload] CreateWindowExW failed: {e:?}; «Reload Configuration» will do nothing"),
         }
     }
 }

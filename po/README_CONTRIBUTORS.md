@@ -76,6 +76,29 @@ requires any updates. You can update the translation template by running
 `zig build update-translations`, which would also synchronize translation files
 for other locales (`.po` files) to reflect the state of the template file.
 
+> [!IMPORTANT]
+> **`zig build update-translations` needs GNU gettext 0.24 or newer.** The
+> Windows host (`windows/host/src`) is Rust, and `src/build/GhosttyI18n.zig`
+> extracts it with `xgettext --language=Rust`, which gettext added in 0.24
+> (February 2025, per its `NEWS`). Reading Rust as C instead produced dozens
+> of "unterminated character constant" warnings on every lifetime and
+> misread raw strings, `\` continuations and `\u{…}` escapes into msgids the
+> host never looks up.
+>
+> Check which one your `PATH` finds first -- a conda or system install can
+> shadow a newer one:
+>
+> ```sh
+> xgettext --version | head -1
+> ```
+>
+> With an older one the step stops with `language 'Rust' unknown` (or its
+> translation, e.g. `语言“Rust”未知`) and writes nothing. Put a newer gettext
+> first, e.g. `PATH=/opt/homebrew/bin:$PATH zig build update-translations`.
+>
+> **An ordinary `zig build` is not affected.** It only runs `msgfmt` to compile
+> the `.po` files that are already committed, and does not call `xgettext`.
+
 During the build process, each locale in `.po` files is compiled
 into binary `.mo` files, stored under `share/locale/<LOCALE>/LC_MESSAGES/com.mitchellh.ghostty.mo`.
 This can be directly accessed by `libintl`, which provide the various `gettext`

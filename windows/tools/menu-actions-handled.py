@@ -39,7 +39,24 @@ row, and nothing anywhere says why it went grey. So every row that is greyed
 (there is nothing to reopen yet) is a different thing and is counted
 separately: its greyness moves, and a number that moves is a reading.
 
-Exit: 0 if the unreasoned count equals the baseline, 1 otherwise.
+Exit: 0 if the unreasoned count equals the baseline **and every row of every
+      table could be read**, 1 otherwise.
+
+# The third thing it checks, and why it was added
+
+**A checker that stops seeing a row reads exactly like a clean tree.** On
+2026-09-14 task 561 wrapped every label in `menu.rs` as `n_("…")` so the msgid
+could reach the catalogue. The two regexes that found rows wanted a quote
+immediately after the label position; they found `n_(` and **skipped**. The
+reading fell from 88 rows scanned / 46 reaching the host / 1 greyed by state to
+31 / 15 / 0, and the exit code stayed 0 the whole way -- including the greyed
+count, whose whole value is "exactly one row is greyed by state" and which an
+empty scan satisfies for free.
+
+So the table reader below does not look for rows that match a shape. It
+**accounts for every element of every row table**, and a label it has not been
+taught to read is a failure with a name printed beside it. Wrappers are named
+in `LABEL_WRAPPERS` with the reason each one is safe; anything else is red.
 
 # What this does NOT check, and which gate does
 
@@ -89,67 +106,416 @@ def action_shaped(s: str) -> bool:
     return bool(s) and all(c in "abcdefghijklmnopqrstuvwxyz0123456789_:," for c in s)
 
 
-def gap_is_row_punctuation(gap: str) -> bool:
-    gap = gap.replace("action: Some(", "", 1)
-    return all(c in " \t\r\n," for c in gap)
+# ------------------------------------------------------- reading the tables
+#
+# **Why this is a parser and not a pair of regexes.** It was two regexes, and
+# on 2026-09-14 task 561 wrapped every label in `menu.rs` as `n_("…")` so the
+# msgid could reach the catalogue. Both regexes wanted a quote immediately
+# after the label position, found none, and **skipped the row**. The reading
+# went from 88 rows scanned / 46 reaching the host / 1 greyed by state to
+# 31 / 15 / 0 -- and the exit code stayed 0 the whole way. Fifty-seven rows
+# left this checker's sight and nothing anywhere said so.
+#
+# So the shape below is not "find rows that look like this". It is **"account
+# for every element of every row table, and say so out loud when one cannot be
+# read"**. A wrapper this file has not been taught is a failure, not a skip.
+
+#: Calls that wrap a label without changing it. **The value is the reason**,
+#: the same bargain `// greyed:` strikes with a greyed row: a name on this list
+#: is a promise that the call returns its string argument unchanged, and the
+#: reason is where the next person checks that promise.
+LABEL_WRAPPERS = {
+    "n_": "i18n.rs: marks a msgid for xgettext and returns it unchanged",
+    "tr": "i18n.rs: looks the msgid up at run time; the msgid is the fallback",
+}
 
 
-def adjacent_rows(src: str):
-    """Rows written as two adjacent string literals."""
-    i = 0
-    while True:
-        o1 = src.find('"', i)
-        if o1 < 0:
-            return
-        c1 = src.find('"', o1 + 1)
-        if c1 < 0:
-            return
-        label = src[o1 + 1 : c1]
-        i = c1 + 1
-        o2 = src.find('"', i)
-        if o2 < 0:
-            return
-        if not gap_is_row_punctuation(src[c1 + 1 : o2]):
+def mask(src: str) -> str:
+    """`src` with every string body, char literal and comment blanked out.
+
+    Same length as `src`, so an index into one is an index into the other.
+    Depth and comma finding run on the mask; slices are taken from the source.
+    """
+    out = list(src)
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            while i < n and src[i] != "\n":
+                out[i] = " "
+                i += 1
             continue
-        c2 = src.find('"', o2 + 1)
-        if c2 < 0:
-            return
-        action = src[o2 + 1 : c2]
-        if not action_shaped(action) or not label or action_shaped(label):
+        if c == "/" and i + 1 < n and src[i + 1] == "*":
+            depth = 0
+            while i < n:
+                if src.startswith("/*", i):
+                    depth += 1
+                    out[i] = out[i + 1] = " "
+                    i += 2
+                    continue
+                if src.startswith("*/", i):
+                    depth -= 1
+                    out[i] = out[i + 1] = " "
+                    i += 2
+                    if depth == 0:
+                        break
+                    continue
+                if src[i] != "\n":
+                    out[i] = " "
+                i += 1
             continue
-        yield label, action, src[:o1].count("\n") + 1
+        if c == "r" and i + 1 < n and src[i + 1] in '#"':
+            j = i + 1
+            hashes = 0
+            while j < n and src[j] == "#":
+                hashes += 1
+                j += 1
+            if j < n and src[j] == '"':
+                term = '"' + "#" * hashes
+                k = src.find(term, j + 1)
+                k = n if k < 0 else k
+                for p in range(j + 1, min(k, n)):
+                    if src[p] != "\n":
+                        out[p] = " "
+                i = min(k + len(term), n)
+                continue
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if src[j] == "\\":
+                    out[j] = " "
+                    if j + 1 < n:
+                        out[j + 1] = " "
+                    j += 2
+                    continue
+                if src[j] == '"':
+                    break
+                if src[j] != "\n":
+                    out[j] = " "
+                j += 1
+            i = j + 1
+            continue
+        if c == "'":
+            # A char literal, or a lifetime. Only the first has a closing quote
+            # a couple of characters along, and reading `'static` as a string
+            # is the mistake that makes `xgettext` warn twelve times on this
+            # very file.
+            m = re.match(r"'(?:\\.|[^'\\])'", src[i:])
+            if m:
+                for p in range(i + 1, i + m.end() - 1):
+                    out[p] = " "
+                i += m.end()
+                continue
+            i += 1
+            continue
+        i += 1
+    return "".join(out)
 
 
-def paired_match_rows(src: str):
+def matching(msk: str, start: int) -> int:
+    """Index just past the bracket opened at `start`."""
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    want = [pairs[msk[start]]]
+    i = start + 1
+    while i < len(msk) and want:
+        c = msk[i]
+        if c in pairs:
+            want.append(pairs[c])
+        elif c == want[-1]:
+            want.pop()
+        i += 1
+    return i
+
+
+def trim(text: str, msk: str):
+    """`text` with leading and trailing whitespace **and comments** removed.
+
+    Trimmed by the mask rather than by the text, because a comment is
+    whitespace to a parser and prose to `str.strip`. Both were wrong once:
+    a comment between two elements put `// **The hold, and…` where a label
+    goes, and a comment **inside an argument list** -- which `ctxmenu.rs`
+    really has, eight lines of it before the label -- did the same one level
+    in. Returns the trimmed text, its mask, and how far in it started.
+    """
+    lead = len(msk) - len(msk.lstrip())
+    t, m = text[lead:], msk[lead:]
+    tail = len(m) - len(m.rstrip())
+    if tail:
+        t, m = t[: len(t) - tail], m[: len(m) - tail]
+    return t, m, lead
+
+
+def split_top_level(body: str, msk: str):
+    """`body` split on the commas that are not inside anything.
+
+    Yields `(text, mask, offset)` -- the mask travels with the text because
+    every consumer has to trim comments off its piece, and a consumer holding
+    text without its mask cannot.
+    """
+    out = []
+    depth = 0
+    start = 0
+    for i, c in enumerate(msk):
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            out.append((body[start:i], msk[start:i], start))
+            start = i + 1
+    if msk[start:].strip():
+        out.append((body[start:], msk[start:], start))
+    return out
+
+
+ARRAY_DECL = re.compile(r"(?m)^(?:pub(?:\([^)]*\))?\s+)?(?:static|const)\s+([A-Z_][A-Z_0-9]*)\s*:[^=;]*?=\s*&\[")
+STRING_LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def carries_prose(text: str) -> bool:
+    """Does this table hold words a person reads, rather than action names?
+
+    **The question decides what gets checked at all, so it is asked the
+    inclusive way**: a table is in unless every string in it is an action
+    name. A new table of labels is therefore checked the day it appears, and
+    a table nobody thought about is not silently outside.
+    """
+    for m in STRING_LIT.finditer(text):
+        s = m.group(1)
+        if s and not action_shaped(s):
+            return True
+    return False
+
+
+def label_of(expr: str):
+    """The msgid a label expression names, or why it cannot be read.
+
+    Returns `(literal, None)` when it reads, `(None, expr)` when it does not.
+    **The second is a failure, never a skip** -- see the note at the top of
+    this section for what a skip cost.
+    """
+    e = expr.strip()
+    m = re.fullmatch(r'"((?:[^"\\]|\\.)*)"', e)
+    if m:
+        return m.group(1), None
+    m = re.fullmatch(r'([A-Za-z_][A-Za-z_0-9]*)\s*\(\s*"((?:[^"\\]|\\.)*)"\s*,?\s*\)', e)
+    if m and m.group(1) in LABEL_WRAPPERS:
+        return m.group(2), None
+    return None, e
+
+
+def element_parts(text: str, msk: str):
+    """One table element, read as a dict, or `None` for a separator.
+
+    Four shapes, and the split between them is made on punctuation rather than
+    on a list of constructor names: a `Row { … }` literal, a call, a bare
+    tuple, and a name standing for one of those. **A shape this does not know
+    comes back with a `?` in front of it** -- the caller turns that into a
+    printed failure, never a skip.
+    """
+    t, tm, off = trim(text, msk)
+    if not tm:
+        return None
+    brace = tm.find("{")
+    if brace >= 0 and re.match(r"[A-Za-z_][A-Za-z_0-9]*\s*\{", tm):
+        inner_end = matching(tm, brace)
+        fields = split_top_level(t[brace + 1 : inner_end - 1], tm[brace + 1 : inner_end - 1])
+        out = {"label": None, "action": None, "enabled": None, "at": off + brace + 1}
+        for ftext, fmsk, foff in fields:
+            ft, fm, flead = trim(ftext, fmsk)
+            for key in ("label:", "action:", "enabled:"):
+                if not ft.startswith(key):
+                    continue
+                vt, _vm, vlead = trim(ft[len(key) :], fm[len(key) :])
+                if key == "label:":
+                    out["label"] = vt
+                    out["at"] = off + brace + 1 + foff + flead + len(key) + vlead
+                elif key == "action:":
+                    a = STRING_LIT.search(vt)
+                    out["action"] = a.group(1) if a else None
+                else:
+                    out["enabled"] = vt.replace("Enable::", "")
+        return out
+    if re.match(r"([A-Za-z_][A-Za-z_0-9]*)?\s*\(", tm):
+        paren = tm.index("(")
+        end = matching(tm, paren)
+        args = split_top_level(t[paren + 1 : end - 1], tm[paren + 1 : end - 1])
+        if not args:
+            return None  # `sep()` -- a separator carries no label
+        lt, _lm, llead = trim(args[0][0], args[0][1])
+        action = None
+        if len(args) > 1:
+            at1, _am1, _al = trim(args[1][0], args[1][1])
+            a = re.fullmatch(r'"((?:[^"\\]|\\.)*)"', at1)
+            if a and action_shaped(a.group(1)):
+                action = a.group(1)
+        return {
+            "label": lt,
+            "action": action,
+            "enabled": None,
+            "at": off + paren + 1 + args[0][2] + llead,
+        }
+    if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", t):
+        return {"label": "NAME:" + t, "action": None, "enabled": None, "at": off}
+    return {"label": "?" + t, "action": None, "enabled": None, "at": off}
+
+
+def named_const(src: str, msk: str, name: str):
+    """The right-hand side of `const NAME: … = …;`, for an element that is a
+    name rather than a literal (`SEP`). Unresolvable is a failure, not a skip:
+    a name this cannot follow is a row nobody is checking."""
+    m = re.search(r"(?m)^(?:pub\s+)?const\s+%s\s*:[^=;]*=\s*" % re.escape(name), msk)
+    if not m:
+        return None
+    end = msk.find(";", m.end())
+    if end < 0:
+        return None
+    return src[m.end() : end], msk[m.end() : end]
+
+
+def table_rows(whole: str):
+    """Every row of every table in one file, and every element that could not
+    be read.
+
+    The second return value is the whole point of this function existing. See
+    the note above `LABEL_WRAPPERS`.
+    """
+    body = whole.split("#[cfg(test)]")[0]
+    bmask = mask(body)
+    rows, unparsed, greys = [], [], []
+    for tname, btext, bm, boff in row_tables_in(body, bmask):
+        for etext, emsk, eoff in split_top_level(btext, bm):
+            parts = element_parts(etext, emsk)
+            if parts is None or parts["label"] is None:
+                continue
+            at = boff + eoff + parts["at"]
+            line = body[:at].count("\n") + 1
+            expr = parts["label"]
+            if expr.startswith("NAME:"):
+                got = named_const(body, bmask, expr[5:])
+                if got is None:
+                    unparsed.append((tname, expr[5:], line))
+                    continue
+                inner = element_parts(got[0], got[1])
+                if inner is None or inner["label"] is None:
+                    continue
+                expr = inner["label"]
+                parts["action"] = parts["action"] or inner["action"]
+                parts["enabled"] = parts["enabled"] or inner["enabled"]
+            lit, bad = label_of(expr)
+            if bad is not None:
+                unparsed.append((tname, bad, line))
+                continue
+            if parts["enabled"] is not None and lit:
+                greys.append((lit, parts["enabled"], at))
+            if parts["action"] and lit:
+                rows.append((lit, parts["action"], line))
+    return rows, unparsed, greys
+
+
+def row_tables_in(body: str, bmask: str):
+    for m in ARRAY_DECL.finditer(bmask):
+        open_at = m.end() - 1
+        close_at = matching(bmask, open_at)
+        inner = body[open_at + 1 : close_at - 1]
+        if not carries_prose(inner):
+            continue
+        yield m.group(1), inner, bmask[open_at + 1 : close_at - 1], open_at + 1
+
+
+def enum_arms(src: str, msk: str, fn_name: str):
+    """`{variant: (expression, offset)}` for one `fn <name>(self) { match self {…} }`.
+
+    `None` when the function or its match cannot be found, or when an arm is
+    not `Enum::Variant => …`. **`None` is a failure the caller prints**, not an
+    empty dict: the version this replaces returned `{}` on a miss, and a `{}`
+    here and a menu with no rows in it are the same reading.
+    """
+    m = re.search(r"fn %s\(self\)[^{]*\{" % re.escape(fn_name), msk)
+    if not m:
+        return None
+    end = matching(msk, m.end() - 1)
+    inner, inner_m, base = src[m.end() : end - 1], msk[m.end() : end - 1], m.end()
+    mm = re.search(r"match\s+self\s*\{", inner_m)
+    if not mm:
+        return None
+    arms_end = matching(inner_m, mm.end() - 1)
+    at, am, abase = (
+        inner[mm.end() : arms_end - 1],
+        inner_m[mm.end() : arms_end - 1],
+        base + mm.end(),
+    )
+    out = {}
+    for atext, amsk, aoff in split_top_level(at, am):
+        t, tm, lead = trim(atext, amsk)
+        if not tm:
+            continue
+        k = re.match(r"\w+::(\w+)\s*=>\s*", t)
+        if not k:
+            return None
+        out[k.group(1)] = (t[k.end() :], abase + aoff + lead + k.end())
+    return out or None
+
+
+def paired_match_rows(whole: str):
     """The tab menu keeps labels and actions in two `match` arms over one enum,
-    so the two halves are never adjacent. Joined on the variant name."""
+    so the two halves are never adjacent. Joined on the variant name.
 
-    def arms(fn):
-        m = re.search(r"fn %s\(self\)[^\{]*\{\s*match self \{(.*?)\n        \}" % fn, src, re.S)
-        return dict(re.findall(r"(\w+)::(\w+) => \"([^\"]*)\"", m.group(1))and
-                    [(k, v) for _, k, v in re.findall(r"(\w+)::(\w+) => \"([^\"]*)\"", m.group(1))]) if m else {}
-
-    labels, actions = arms("label"), arms("action")
-    for key, label in labels.items():
-        if key in actions:
-            yield label, actions[key], 0
+    **This half went blind too, and later.** Task 561 wrapped `menu.rs`; the
+    row reader was rebuilt for it and this function was not, so when the same
+    wrapping reached `strip.rs`'s `fn label` its regex stopped matching and all
+    eight tab rows left the count -- 88 to 80, exit code 0. Measured on the
+    working tree while fixing the first half. So the reading here goes through
+    the same `label_of`, and an arm it cannot read is reported.
+    """
+    src = whole.split("#[cfg(test)]")[0]
+    msk = mask(src)
+    labels = enum_arms(src, msk, "label")
+    actions = enum_arms(src, msk, "action")
+    if labels is None or actions is None:
+        which = "label" if labels is None else "action"
+        return [], [("TabCmd", "fn %s(self) could not be read at all" % which, 0)]
+    rows, unparsed = [], []
+    for variant, (expr, at) in labels.items():
+        line = src[:at].count("\n") + 1
+        lit, bad = label_of(expr)
+        if bad is not None:
+            unparsed.append(("TabCmd::" + variant, bad, line))
+            continue
+        if variant not in actions:
+            unparsed.append(("TabCmd::" + variant, "no arm in fn action(self)", line))
+            continue
+        act_lit, act_bad = label_of(actions[variant][0])
+        if act_bad is not None:
+            unparsed.append(("TabCmd::" + variant, act_bad, line))
+            continue
+        rows.append((lit, act_lit, line))
+    return rows, unparsed
 
 
 def menu_rows():
-    """Every row of every menu, with where it came from."""
+    """Every row of every menu, with where it came from.
+
+    Also carries, per file, the elements that could not be read and the
+    greyness each row declares -- both read out of the same walk over the
+    tables, so there is no second parser to fall out of step with this one.
+    """
     out = []
     for name, kind in (
-        ("menu.rs", "adjacent"),
-        ("ctxmenu.rs", "adjacent"),
-        ("strip.rs", "adjacent"),
+        ("menu.rs", "tables"),
+        ("ctxmenu.rs", "tables"),
+        ("strip.rs", "tables"),
         ("strip.rs", "paired"),
     ):
         path = os.path.join(ROOT, name)
         with open(path, encoding="utf-8") as fh:
             whole = fh.read()
-        body = whole.split("#[cfg(test)]")[0]
-        rows = list(adjacent_rows(body)) if kind == "adjacent" else list(paired_match_rows(whole))
-        out.append((name, kind, rows, whole))
+        if kind == "tables":
+            rows, unparsed, greys = table_rows(whole)
+        else:
+            rows, unparsed = paired_match_rows(whole)
+            greys = []
+        out.append((name, kind, rows, whole, unparsed, greys))
     return out
 
 
@@ -182,46 +548,70 @@ def declared_constants(ffi_src: str):
     return set(re.findall(r"^pub const (ACTION_[A-Z0-9_]+):", ffi_src, re.M))
 
 
-STATIC_GREY = (
-    # `menu.rs`: a row literal that says so.
-    re.compile(r'label:\s*"([^"]*)"[\s\S]{0,400}?enabled:\s*Enable::No'),
-    # `menu.rs`: the older spelling, kept so this does not go quiet if it comes back.
-    re.compile(r'label:\s*"([^"]*)"[\s\S]{0,400}?enabled:\s*false'),
-)
+# `strip.rs` decides greyness in a function over the enum instead of in the
+# table, so that one is read on its own.
+ENUM_ENABLED = re.compile(r"fn enabled\(self\)[^{]*\{")
 
-STATE_GREY = re.compile(r'label:\s*"([^"]*)"[\s\S]{0,400}?enabled:\s*Enable::(\w+)')
+#: `enabled:` values that mean "greyed by a decision somebody made".
+DECIDED_GREY = ("No", "false")
+#: …and the ones that mean "live". Everything else is greyed **by state**:
+#: its greyness is a fact about right now, and a number that moves is a
+#: reading rather than a constant.
+LIVE = ("Yes", "true")
 
-# `strip.rs` decides greyness in a function over the enum instead.
-ENUM_GREY = re.compile(r"fn enabled\(self\) -> bool \{\s*!matches!\(self, ([^)]*)\)")
+
+def enum_greyed(whole: str):
+    """The variants `fn enabled(self)` greys, and whether it could be read.
+
+    **Two shapes are understood and a third is a failure.** `true` greys
+    nothing; `!matches!(self, A | B)` greys A and B. Anything else is reported,
+    because the version this replaces was a single regex that returned no
+    variants for a body it did not understand -- and "greys nothing" and
+    "could not tell" printed the same number.
+    """
+    src = whole.split("#[cfg(test)]")[0]
+    msk = mask(src)
+    m = ENUM_ENABLED.search(msk)
+    if not m:
+        return [], []
+    end = matching(msk, m.end() - 1)
+    body, _bm, _lead = trim(src[m.end() : end - 1], msk[m.end() : end - 1])
+    line = src[: m.start()].count("\n") + 1
+    if body == "true":
+        return [], []
+    mm = re.fullmatch(r"!matches!\(\s*self\s*,([\s\S]*)\)", body)
+    if mm:
+        return re.findall(r"\w+::(\w+)", mm.group(1)), []
+    return [], [("fn enabled(self)", body, line)]
 
 
-def statically_greyed(src: str):
+def statically_greyed(src: str, greys, enum_variants):
     """Rows greyed by a decision, with whether a reason is written beside them.
 
     **Not the same question as "is it greyed".** A row can be grey because
     somebody wrote down why, or because greying it was the cheapest way to
     make a checker stop talking -- and the two are indistinguishable from the
     row itself.
+
+    `greys` comes from the table walk rather than from a pattern of its own.
+    That is deliberate: the reading this whole file lost in task 561 was lost
+    because the greyness check had **its own** regex for finding a label, so a
+    label the row reader could not see was a label the grey reader could not
+    see either -- twice the blindness, once the warning, which was none.
     """
-    seen = set()
-    for pattern in STATIC_GREY:
-        for m in pattern.finditer(src):
-            label = m.group(1)
-            if label in seen:
-                continue
-            seen.add(label)
-            yield label, reason_near_index(src, m.start())
-    m = ENUM_GREY.search(src)
-    if m:
-        for variant in re.findall(r"\w+::(\w+)", m.group(1)):
-            yield variant, reason_near_index(src, m.start())
+    for label, state, at in greys:
+        if state in DECIDED_GREY:
+            yield label, reason_near_index(src, at)
+    m = ENUM_ENABLED.search(mask(src))
+    for variant in enum_variants:
+        yield variant, reason_near_index(src, m.start() if m else 0)
 
 
-def state_greyed(src: str):
+def state_greyed(greys):
     """Rows whose greyness is a fact about right now, not a decision."""
-    for m in STATE_GREY.finditer(src):
-        if m.group(2) not in ("No", "Yes"):
-            yield m.group(1), m.group(2)
+    for label, state, _at in greys:
+        if state not in DECIDED_GREY and state not in LIVE:
+            yield label, state
 
 
 def reason_near_index(src: str, idx: int) -> bool:
@@ -271,6 +661,45 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
 '''
 
 
+# The table reader's own canary. **It is the shape the reader actually meets**
+# -- a wrapped label, a bare one, a comment sitting between two elements, a row
+# greyed by a decision, one greyed by state, and a separator -- because a probe
+# that is tidier than the source proves nothing about the source.
+CANARY_TABLE = '''
+const CANARY_ROWS: &[Row] = &[
+    act(n_("New Window"), "new_window"),
+    act("Plain Label", "new_tab"),
+    // A comment between two elements. This is not decoration: trimming the
+    // element with `str.strip` instead of with the mask put this sentence
+    // where a label goes, and every row after it read as unparseable.
+    Row { label: n_("Greyed Always"), action: Some("check_for_updates"), enabled: Enable::No },
+    Row { label: "Greyed Now", action: Some("close_tab:this"), enabled: Enable::WhenReopenable },
+    sep(),
+];
+'''
+
+
+# The paired half's canary. It went blind three hours after the table half did
+# and for the same reason, so it gets the same treatment: read it forwards, and
+# read a wrapper it has not been taught backwards.
+CANARY_ENUM = '''
+impl TabCmd {
+    fn label(self) -> &'static str {
+        match self {
+            TabCmd::Close => n_("Close Tab"),
+            TabCmd::Rename => "Rename Tab",
+        }
+    }
+    fn action(self) -> &'static str {
+        match self {
+            TabCmd::Close => "close_tab:this",
+            TabCmd::Rename => "rename_tab",
+        }
+    }
+}
+'''
+
+
 def self_test() -> None:
     tags, arms = handled_tags(CANARY_MAIN)
     want = {
@@ -302,7 +731,105 @@ def self_test() -> None:
     if GREYED_REASON.search("    // greyed because nobody wrote it"):
         print("FAIL: the reason pattern accepts a comment with no `greyed:` marker.")
         sys.exit(1)
-    print("probe self-test: OK (both spellings, or-patterns, arm bodies excluded, reason shape pinned)")
+    # ---- the table reader, in both directions.
+    rows, unparsed, greys = table_rows(CANARY_TABLE)
+    if unparsed:
+        print(f"FAIL: the table reader cannot read its own canary: {unparsed}")
+        sys.exit(1)
+    want_rows = [
+        ("New Window", "new_window"),
+        ("Plain Label", "new_tab"),
+        ("Greyed Always", "check_for_updates"),
+        ("Greyed Now", "close_tab:this"),
+    ]
+    if [(l, a) for l, a, _ in rows] != want_rows:
+        print(f"FAIL: the table reader read {[(l, a) for l, a, _ in rows]}, wanted {want_rows}.")
+        sys.exit(1)
+    if [(l, g) for l, g, _ in greys] != [("Greyed Always", "No"), ("Greyed Now", "WhenReopenable")]:
+        print(f"FAIL: the greyness read out of the canary is {[(l, g) for l, g, _ in greys]}.")
+        sys.exit(1)
+    if [l for l, _ in statically_greyed(CANARY_TABLE, greys, [])] != ["Greyed Always"]:
+        print("FAIL: the decided-grey split does not hold on the canary.")
+        sys.exit(1)
+    if [l for l, _ in state_greyed(greys)] != ["Greyed Now"]:
+        print("FAIL: the state-grey split does not hold on the canary.")
+        sys.exit(1)
+
+    # **And the direction task 561 went, which is the one that cost 57 rows.**
+    # A wrapper this file has not been taught must be a printed failure. If
+    # this probe ever passes silently, the checker is back to skipping rows and
+    # reading like a clean tree while it does it.
+    unknown = CANARY_TABLE.replace('n_("New Window")', 'LOCALISE("New Window")')
+    rows2, unparsed2, greys2 = table_rows(unknown)
+    if not unparsed2:
+        print(
+            "FAIL: an unknown label wrapper was skipped instead of reported. That is the "
+            "exact failure this reader replaced: the row leaves the count and nothing says so."
+        )
+        sys.exit(1)
+    if any(l == "New Window" for l, _, _ in rows2):
+        print("FAIL: a label it says it cannot read still came back as a row.")
+        sys.exit(1)
+    if len(rows2) != len(rows) - 1:
+        print(f"FAIL: an unreadable label cost {len(rows) - len(rows2)} rows, wanted 1.")
+        sys.exit(1)
+
+    # The same, one field along: greyness is read from the same walk, so an
+    # unreadable label has to take its grey row with it rather than leaving a
+    # grey count that quietly went down.
+    unknown_grey = CANARY_TABLE.replace('n_("Greyed Always")', 'LOCALISE("Greyed Always")')
+    _r3, unparsed3, greys3 = table_rows(unknown_grey)
+    if not unparsed3 or any(l == "Greyed Always" for l, _, _ in greys3):
+        print("FAIL: an unreadable label on a greyed row did not reach the unreadable list.")
+        sys.exit(1)
+
+    # ---- the paired half, forwards and backwards.
+    prows, punparsed = paired_match_rows(CANARY_ENUM)
+    if punparsed or [(l, a) for l, a, _ in prows] != [
+        ("Close Tab", "close_tab:this"),
+        ("Rename Tab", "rename_tab"),
+    ]:
+        print(f"FAIL: the paired reader read {prows} / {punparsed} from its canary.")
+        sys.exit(1)
+    _pr2, pu2 = paired_match_rows(CANARY_ENUM.replace('n_("Close Tab")', 'LOCALISE("Close Tab")'))
+    if not pu2:
+        print("FAIL: the paired reader skipped an unknown wrapper instead of reporting it.")
+        sys.exit(1)
+    _pr3, pu3 = paired_match_rows(CANARY_ENUM.replace("fn label(self)", "fn caption(self)"))
+    if not pu3:
+        print(
+            "FAIL: with no `fn label` at all the paired reader returned quietly. An enum it "
+            "cannot find and an enum with no rows are the same reading, which is the bug."
+        )
+        sys.exit(1)
+
+    # ---- the enum-greyness reader: two shapes understood, a third reported.
+    if enum_greyed("fn enabled(self) -> bool {\n        true\n    }") != ([], []):
+        print("FAIL: `fn enabled { true }` should grey nothing and read cleanly.")
+        sys.exit(1)
+    greyed_two = enum_greyed(
+        "fn enabled(self) -> bool {\n        !matches!(self, X::A | X::B)\n    }"
+    )
+    if greyed_two != (["A", "B"], []):
+        print(f"FAIL: the `!matches!` shape read as {greyed_two}.")
+        sys.exit(1)
+    _v, unread_enum = enum_greyed(
+        "fn enabled(self) -> bool {\n        self.thing().is_some()\n    }"
+    )
+    if not unread_enum:
+        print(
+            "FAIL: a `fn enabled` body it does not understand greyed nothing and said nothing. "
+            "'greys nothing' and 'could not tell' must not print the same number."
+        )
+        sys.exit(1)
+
+    print(
+        "probe self-test: OK (both spellings, or-patterns, arm bodies excluded, reason shape "
+        "pinned; the table reader reads wrapped and bare labels across a comment, splits "
+        "decided from state greyness, and reports an unknown wrapper rather than skipping it; "
+        "the paired reader does the same and speaks up when it cannot find the enum at all; "
+        "and an `fn enabled` body it cannot read is reported rather than counted as zero)"
+    )
 
 
 def main() -> int:
@@ -316,19 +843,25 @@ def main() -> int:
     declared = declared_constants(ffi_src)
 
     unreasoned_grey = []
+    decided_grey = []
     state_grey = []
+    unreadable = []
     total = reaches_host = ok = greyed = 0
     core_only = 0
     hosts_own = 0
     bad = []
     seen_files = set()
-    for name, kind, rows, whole in menu_rows():
+    for name, kind, rows, whole, unparsed, greys in menu_rows():
+        unreadable += [(name, table, what, line) for table, what, line in unparsed]
         if name not in seen_files:
             seen_files.add(name)
-            for label, has_reason in statically_greyed(whole):
+            enum_variants, enum_unparsed = enum_greyed(whole)
+            unreadable += [(name, t, w, l) for t, w, l in enum_unparsed]
+            for label, has_reason in statically_greyed(whole, greys, enum_variants):
+                decided_grey.append((name, label))
                 if not has_reason:
                     unreasoned_grey.append((name, label))
-            for label, how in state_greyed(whole):
+            for label, how in state_greyed(greys):
                 state_grey.append((name, label, how))
         for label, action, line in rows:
             total += 1
@@ -357,8 +890,14 @@ def main() -> int:
         f"{reaches_host} reach the host -- {ok} handled, {greyed} greyed with a written reason"
     )
 
+    # **Both halves of the fraction, because the top one is true of nothing.**
+    # "0 greyed without a reason" is what a clean tree says and it is also what
+    # a tree this could not read says -- task 561 printed exactly that while 57
+    # rows were outside its sight. Printing how many were found makes the zero
+    # a reading rather than a sentence.
     print(
-        f"greyed rows: {len(unreasoned_grey)} greyed by a decision with no `// greyed:` reason; "
+        f"greyed rows: {len(unreasoned_grey)} of {len(decided_grey)} greyed by a decision "
+        f"have no `// greyed:` reason; "
         f"{len(state_grey)} greyed by state "
         + (f"({', '.join(l for _, l, _ in state_grey)})" if state_grey else "(none)")
     )
@@ -379,6 +918,31 @@ def main() -> int:
             f"       Either add the branch, or grey the row and write `// greyed: <why>` "
             f"beside whatever decides it."
         )
+
+    # **Before the ratchet, because this one has no baseline to park it in.**
+    # A row nobody could read is not a smaller version of a row that does
+    # nothing when clicked -- it is this file not knowing what it is looking
+    # at, and every number printed above is short by one for each of them.
+    for name, table, what, line in unreadable:
+        print(
+            f"UNREAD {name}:{line}  in `{table}`, this label cannot be read: {what.strip()!r}"
+        )
+        print(
+            f"       Rows are counted by reading every element of every table, so a label "
+            f"this does not understand is a row that silently leaves the count -- which is "
+            f"exactly how 57 of them left it in task 561."
+        )
+        print(
+            f"       If the wrapper returns its argument unchanged, add it to "
+            f"LABEL_WRAPPERS with the reason. If it does not, this row's label is not a "
+            f"msgid and the menu is not saying what you think it says."
+        )
+    if unreadable:
+        print(
+            f"\n{len(unreadable)} table element(s) could not be read. Every count above is "
+            f"short by that many, and none of them would have said so."
+        )
+        return 1
 
     n = len(bad) + len(unreasoned_grey)
     if n == BASELINE_UNREASONED:
