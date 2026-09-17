@@ -11,10 +11,51 @@ A file for [guiding coding agents](https://agents.md/).
 - **Test (Zig):** `zig build test`
   - Prefer to run targeted tests with `-Dtest-filter` because the full
     test suite is slow to run.
+  - ⚠️ **但交付前必须跑一次不带 filter 的 `zig build test`。** 带 filter 的构建
+    **不编译没被选中的测试**，所以它的绿连「这棵树编得过」都不证明。见下一节。
 - **Test filter (Zig)**: `zig build test -Dtest-filter=<test name>`
 - **Formatting (Zig)**: `zig fmt .`
 - **Formatting (Swift)**: `swiftlint lint --strict --fix`
 - **Formatting (other)**: `prettier -w .`
+
+## 验证：这个仓栽过的几条
+
+**这一节的每一条都对应一次真实的返工，不是通用建议。**
+
+1. **带 filter 的绿几乎不证明什么。** `-Dtest-filter` 确实在过滤，但**匹配不到时
+   不是 0 pass，是一个健康的三位数 + exit 0**（那批测试无论 filter 写什么都跑）。
+   而且带 filter 的构建**不编译**其它测试——一次全量 `zig build test` 曾在六个
+   「全绿」的提交之后，红在一条从没被编译过的穷举 switch 上。
+   ⇒ **报计数要同时报基线**（`-Dtest-filter=zz-nothing`），差值才是你的测试；
+   ⇒ **报读数一律带 `--summary all`**，`--summary` 的默认值随「短命/长命」变，
+   全绿时可能一个字节都不打印。
+
+2. **绿不是证据，地板才是。** 一条判据要先**故意打坏被测对象、看它红在哪一条**，
+   才算数。⚠️ 而且**要读红的是哪一行**：本仓已三次出现「编译错误冒充地板」——
+   把守卫整行删掉会得到 `unused function parameter`，那一格其实一次都没跑到断言。
+   拆守卫时要让代码**仍然编得过**（用 `if (...) {}` 而不是删行）。
+
+3. **「我读到了代码」≠「我编的是那份代码」。** 在提交 A 上建树、却用工作副本
+   （已经是 B）确认「修复在不在里面」——于是量到的全是修复前的读数，而它会被
+   报成「修好了还是不对」。⇒ 证据要取自**被测的那棵树/那个产物本身**
+   （在建好的树里 grep，或 `nm` 查产物的符号）。
+
+4. **闸是两个集合。** `windows/tools/` 那十六道**不覆盖仓根 `tools/`**，而公开仓的
+   泄密闸在仓根。⚠️ 泄密闸**只扫已跟踪的文件**，所以顺序固定是
+   **`git add` → 跑闸 → `git commit`**；判据是 `scanned N tracked files` 的 N 变了。
+
+5. **两件事长得一样时，加一个状态位把它们分开。** 判据：这个标志是不是同时在说
+   「我不知道」和「我知道，答案是没有」？或者同时在说「会自己好」和「永远不会好」？
+   任一为是就该分。
+
+6. **失败的形式是「某处沉默」时，让沉默编不过。** 结构体字段取消默认值 + 给一个
+   写全了的具名常量（`X.none`），于是漏填当场是编译错误、编译器点名缺哪个。
+   **消费端的判据永远看不见生产端的沉默**，再加一个观察者没用。
+
+7. **多 agent 同一棵树时**：**一次构建读到的树，必须在整个构建期间没有人写。**
+   要构建就独占并说一声；不构建不用排队。⚠️ `zig build`（**任何形态，包括
+   `-Demit-macos-app=false`**）会**先删后建** `macos/GhosttyKit.xcframework`，
+   期间任何 `xcodebuild` 都会死在一个与你的改动毫无关系的路径上。
 
 ## libghostty-vt
 
