@@ -3827,6 +3827,30 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // action itself "This does nothing when `background-opacity` is set to
         // 1 or above". Wiring the switch with nothing underneath it would
         // produce a row that is offered, pressed, and does nothing.
+        // owed: 581 -- reviewed and deferred; this host has the tabs, not the answer.
+        ffi::ACTION_POLTERGEIST_GROUPING => {
+            // Leaving both cells alone is the honest answer and the core
+            // reads it as one: they arrive zero, an on-screen surface is in
+            // some window and some tab, so zero can only mean "not
+            // answered" -- and `terminal_list` then reports null rather than
+            // inventing a grouping. Same shape as the `poltergeist_tab_panes`
+            // arm above, which has the same permanent user in GTK.
+            //
+            // Not refused: this host does know which strip a surface is in
+            // (`tabs::panes_in_tab_of_surface` walks exactly that), so the
+            // answer is buildable here. What is missing is a stable key per
+            // strip and per window, which is a decision about identity and
+            // not a five-line change. Reviewed and not done, rather than
+            // missed.
+            alogf!(
+                origin,
+                "[action] poltergeist_grouping: deferred (task 581) -- this host can see the \
+                 strip a surface is in but has no stable key to name it by, so it answers \
+                 nothing and the listing reports null."
+            );
+            return false;
+        }
+
         // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
         ffi::ACTION_TOGGLE_BACKGROUND_OPACITY => {
             alogf!(

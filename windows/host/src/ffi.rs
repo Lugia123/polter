@@ -115,6 +115,13 @@ pub const ACTION_POLTERGEIST_LAYOUT: u32 = 73;
 /// applies to every tag after this one too.
 pub const ACTION_HISTORY_FILENAME: u32 = 74;
 
+/// `Action.Key.poltergeist_grouping`, appended after `history_filename`
+/// (task 581). ⚠️ **Appended, like every one before it** -- see the note on
+/// `ACTION_POLTERGEIST_LAYOUT`; the renumbering it describes is exactly what
+/// this task hit on its first attempt, and `apprt/action.zig`'s
+/// "the Windows host's action tags" test is what caught it.
+pub const ACTION_POLTERGEIST_GROUPING: u32 = 75;
+
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
 // **Every ordinal below was counted twice, from two files that are generated

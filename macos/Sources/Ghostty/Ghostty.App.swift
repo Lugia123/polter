@@ -496,6 +496,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_POLTERGEIST_TAB_PANES:
                 return poltergeistTabPanes(target: target, v: action.action.poltergeist_tab_panes)
 
+            case GHOSTTY_ACTION_POLTERGEIST_GROUPING:
+                return poltergeistGrouping(target: target, v: action.action.poltergeist_grouping)
+
             case GHOSTTY_ACTION_POLTERGEIST_LAYOUT:
                 return poltergeistLayout(app, target: target, v: action.action.poltergeist_layout)
 
@@ -2122,6 +2125,41 @@ extension Ghostty {
             let panes = controller.surfaceTree.root?.leaves().count ?? 0
             guard panes > 0 else { return false }
             cell.pointee = UInt32(panes)
+            return true
+        }
+
+        /// Which window and which tab this surface is in, as two opaque keys.
+        ///
+        /// **Addresses of live objects, deliberately.** They are never
+        /// looked up and never stored: the only thing anybody may do with
+        /// them is compare two of them. An address is the cheapest value
+        /// that is unique among live objects and can never be zero, and zero
+        /// is what tells the core this apprt did not answer.
+        ///
+        /// The two keys differ on this platform and that is the whole point.
+        /// What the user calls a tab is its own window inside a tab group
+        /// (see `poltergeistTabPanes`), so:
+        ///   - the panes sharing one tab share that window, and
+        ///   - the tabs of one window share that window's tab group.
+        /// A window in no tab group is a window of one tab, so it stands in
+        /// for its own group -- which keeps "same window" true for the panes
+        /// inside it rather than leaving them ungrouped.
+        private static func poltergeistGrouping(
+            target: ghostty_target_s,
+            v: ghostty_action_poltergeist_grouping_s) -> Bool {
+            guard let windowCell = v.window, let tabCell = v.tab else { return false }
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface),
+                  let window = surfaceView.window,
+                  // Same gate as `poltergeistTabPanes`: only a terminal
+                  // window has a tab and panes to talk about.
+                  window.windowController is BaseTerminalController
+            else { return false }
+
+            let group: AnyObject = window.tabGroup ?? window
+            tabCell.pointee = UInt64(UInt(bitPattern: ObjectIdentifier(window)))
+            windowCell.pointee = UInt64(UInt(bitPattern: ObjectIdentifier(group)))
             return true
         }
 

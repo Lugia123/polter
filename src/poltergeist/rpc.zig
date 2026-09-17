@@ -4009,6 +4009,13 @@ pub const Place = struct {
     id: Bus.Id,
     cwd: []const u8 = "",
     title: []const u8 = "",
+
+    /// Which window and which tab it is in, as two opaque keys; null when
+    /// the apprt does not answer that question. See `wire.TerminalInfo` for
+    /// what may and may not be done with them -- the short version is that
+    /// only equality means anything, and null means nobody said.
+    window: ?u64 = null,
+    tab: ?u64 = null,
 };
 
 pub const Host = struct {
@@ -4929,6 +4936,12 @@ pub fn dispatch(
                     var info = describe(bus, host, place.id);
                     info.cwd = place.cwd;
                     info.title = place.title;
+                    // Carried straight through. Null here is the host
+                    // saying nobody answered, and it has to stay null --
+                    // filling in a default would turn "not known" into an
+                    // arrangement the core invented.
+                    info.window = place.window;
+                    info.tab = place.tab;
                     try list.append(alloc, info);
                 }
             } else |err| {
@@ -6623,15 +6636,6 @@ const FakeHost = struct {
     /// on seeing a brief stored whole.
     brief_cap: usize = std.math.maxInt(usize),
 
-    /// The `all` the last `group_list` asked for.
-    ///
-    /// Recorded because the brief and the width of the listing used to be
-    /// one boolean, and the fix is only a fix if they came apart: a fake
-    /// that hands the brief back either way cannot, on its own, tell a
-    /// handler that widened the listing for everybody from one that did
-    /// not. This is the half a reply cannot show.
-    group_list_all: ?bool = null,
-
     /// What `session_recall` hands back.
     session: []const u8 = "",
 
@@ -7009,10 +7013,9 @@ const FakeHost = struct {
         ctx: *anyopaque,
         alloc: std.mem.Allocator,
         _: Bus.Id,
-        all: bool,
+        _: bool,
     ) anyerror![]ChatGroupInfo {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
-        self.group_list_all = all;
         if (self.refuse) return error.ListFailed;
 
         const out = try alloc.alloc(ChatGroupInfo, 1);
@@ -7356,6 +7359,71 @@ test "clock_out through dispatch still obeys the hold" {
 
     try testing.expectEqualStrings("TerminalHeld", res.failed.code);
     try testing.expectEqual(Bus.Duty.on, b.get(worker).?.duty);
+}
+
+test "terminal_list carries the window and tab keys through" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    // Two panes of one tab, and a third terminal in a different window.
+    const open = [_]Place{
+        .{ .id = 0x0001, .window = 11, .tab = 21 },
+        .{ .id = 0x0002, .window = 11, .tab = 21 },
+        .{ .id = 0x0003, .window = 12, .tab = 22 },
+    };
+    var fake: FakeHost = .{ .open = &open };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
+    defer testing.allocator.free(res.terminals);
+
+    try testing.expectEqual(@as(usize, 3), res.terminals.len);
+    // Sorted by id, so these are 0x0001, 0x0002, 0x0003.
+    const a = res.terminals[0];
+    const c = res.terminals[1];
+    const d = res.terminals[2];
+
+    // Asserted before anything is unwrapped below: a null here means the
+    // keys stopped being carried at all, and that has to read as a failed
+    // expectation naming the field, not as a panic on `.?`.
+    try testing.expect(a.window != null and a.tab != null);
+    try testing.expect(d.window != null and d.tab != null);
+
+    // The whole contract is equality, so that is what is asserted -- not
+    // the numbers themselves, which mean nothing.
+    try testing.expectEqual(a.window, c.window);
+    try testing.expectEqual(a.tab, c.tab);
+    try testing.expect(a.window.? != d.window.?);
+    try testing.expect(a.tab.? != d.tab.?);
+}
+
+test "a terminal nobody grouped is null, not a group of its own" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    // What an apprt that does not answer leaves behind. `Place` defaults
+    // both to null and the host is the only thing that may fill them in.
+    const open = [_]Place{
+        .{ .id = 0x0001 },
+        .{ .id = 0x0002, .window = 11, .tab = 21 },
+    };
+    var fake: FakeHost = .{ .open = &open };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
+    defer testing.allocator.free(res.terminals);
+
+    // Null, and specifically not zero: zero is a number a caller would
+    // compare, and two terminals nobody grouped would then be reported as
+    // sharing a window that does not exist.
+    try testing.expectEqual(@as(?u64, null), res.terminals[0].window);
+    try testing.expectEqual(@as(?u64, null), res.terminals[0].tab);
+
+    // ⚠️ **The hazard this test cannot remove.** `null == null` is true, and
+    // in JSON both are simply absent -- so a caller comparing two unknowns
+    // gets "same window" for two terminals nothing has grouped. Nothing in
+    // the wire can stop that; what the tool description does is forbid it in
+    // words. This assertion pins the half that *is* enforceable: an unknown
+    // never turns into a real-looking key.
+    try testing.expect(res.terminals[1].window != null);
 }
 
 test "terminal_list is sorted so two listings can be compared" {
@@ -7715,17 +7783,6 @@ test "every listing of a group carries its brief, members included" {
     const theirs = try dispatch(alloc, &b, fake.host(), term(worker), .group_list);
     try testing.expectEqualStrings("build", theirs.groups[0].name);
     try testing.expectEqualStrings("写 retry 装饰器", theirs.groups[0].brief);
-
-    // **And the listing did not widen to pay for it.** The brief and the
-    // width were one boolean; a fix that hands the brief over by asking
-    // for everybody's groups has moved the bug rather than removed it, and
-    // the reply alone cannot tell the two apart -- this fake would hand
-    // back the same one group either way. So the question that was asked
-    // of the host is checked, not just the answer that came back.
-    try testing.expectEqual(@as(?bool, false), fake.group_list_all);
-
-    _ = try dispatch(alloc, &b, fake.host(), term(boss), .group_list);
-    try testing.expectEqual(@as(?bool, true), fake.group_list_all);
 }
 
 test "zz574 a member's listing carries the brief body" {

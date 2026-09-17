@@ -3920,10 +3920,27 @@ fn poltergeistOpenTerminals(
         if (self.isChatSurface(surface.id)) continue;
 
         const footing = self.footingOf(alloc, surface.id);
+
+        // **The question only the apprt can answer**, the same way
+        // `poltergeist_tab_panes` is. Zero comes back when it did not answer
+        // at all -- an on-screen surface is in some window and some tab, so
+        // no apprt writes zero -- and zero becomes null rather than a group
+        // of its own. A terminal nobody grouped must not be reported as
+        // being somewhere.
+        var window: u64 = 0;
+        var tab: u64 = 0;
+        _ = surface.rt_app.performAction(
+            .{ .surface = surface },
+            .poltergeist_grouping,
+            .{ .window = &window, .tab = &tab },
+        ) catch {};
+
         try out.append(alloc, .{
             .id = surface.id,
             .cwd = footing.cwd,
             .title = footing.title,
+            .window = if (window == 0) null else window,
+            .tab = if (tab == 0) null else tab,
         });
     }
 

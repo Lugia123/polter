@@ -1182,6 +1182,22 @@ typedef struct {
   uint32_t* count;
 } ghostty_action_poltergeist_tab_panes_s;
 
+// Which window and which tab a surface is in, as two opaque keys. The
+// caller's question is "are these two terminals in the same place", and
+// equality answers it -- so no list crosses this boundary and no second id
+// namespace is invented. The keys are not handles: nothing may be looked up
+// by them and they do not survive a restart.
+//
+// Zero is the honest default and the core reads it as "this apprt did not
+// answer", same as the count above: a surface that is on screen is in some
+// window and some tab, so no truthful answer is ever zero. GTK does not
+// implement this, so on Linux both stay zero and the tool reports null --
+// which must keep meaning "nobody said", never "they are not together".
+typedef struct {
+  uint64_t* window;
+  uint64_t* tab;
+} ghostty_action_poltergeist_grouping_s;
+
 // apprt.Action.Key
 typedef enum {
   GHOSTTY_ACTION_QUIT,
@@ -1259,6 +1275,7 @@ typedef enum {
   GHOSTTY_ACTION_POLTERGEIST_TAB_PANES,
   GHOSTTY_ACTION_POLTERGEIST_LAYOUT,
   GHOSTTY_ACTION_HISTORY_FILENAME,
+  GHOSTTY_ACTION_POLTERGEIST_GROUPING,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1306,6 +1323,7 @@ typedef union {
   ghostty_action_poltergeist_mark_s poltergeist_mark;
   ghostty_action_poltergeist_close_s poltergeist_close;
   ghostty_action_poltergeist_tab_panes_s poltergeist_tab_panes;
+  ghostty_action_poltergeist_grouping_s poltergeist_grouping;
   ghostty_action_poltergeist_layout_s poltergeist_layout;
   ghostty_action_history_filename_s history_filename;
 } ghostty_action_u;

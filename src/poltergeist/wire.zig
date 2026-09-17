@@ -603,6 +603,26 @@ pub const TerminalInfo = struct {
     /// since it last resumed. The clock-out skill counts against this.
     /// Null on the same terms as `quiet_ms`.
     rounds: ?u16 = null,
+
+    /// Which window and which tab this terminal is in, as two opaque keys.
+    ///
+    /// **Only equality means anything.** They are not handles, nothing may
+    /// be looked up by them, and they do not survive a restart. Two
+    /// terminals are in the same window when their `window` values are
+    /// equal, and in the same tab when their `tab` values are.
+    ///
+    /// The pair is what the supervisor needs to tell "the user split one tab
+    /// into four" from "four unrelated terminals", which before this could
+    /// only be guessed at from `cwd` and `title` -- and a guess that is
+    /// wrong reads exactly like one that is right.
+    ///
+    /// ⚠️ **Null is "nobody said", never "they are not together."** The core
+    /// does not know this; it has to ask the apprt, and an apprt that does
+    /// not implement the question leaves both null. GTK is exactly that, so
+    /// on Linux every terminal reports null and a caller that reads null as
+    /// "separate windows" would be inventing an arrangement.
+    window: ?u64 = null,
+    tab: ?u64 = null,
 };
 
 pub const Response = union(enum) {

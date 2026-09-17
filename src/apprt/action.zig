@@ -428,6 +428,7 @@ pub const Action = union(Key) {
     /// The apprt stores it against this pane so a later "save as
     /// project" can fill in `Project.Leaf.history` without asking core.
     history_filename: HistoryFilename,
+    poltergeist_grouping: PoltergeistGrouping,
 
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
@@ -511,6 +512,7 @@ pub const Action = union(Key) {
         poltergeist_tab_panes,
         poltergeist_layout,
         history_filename,
+        poltergeist_grouping,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2211,6 +2213,43 @@ pub const PoltergeistTabPanes = extern struct {
     /// so on Linux the answer is always "did not answer" and the caller has
     /// to fall back. It is a live path with a user, not a defensive one.
     count: *u32,
+};
+
+/// Which window and which tab a surface is in, as two opaque keys.
+///
+/// **Keys, not members.** The question a caller has is "are these two
+/// terminals in the same place", and equality answers it without anything
+/// having to marshal a list across this boundary or invent a second id
+/// namespace. `terminal_layout` already proves how expensive the other
+/// shape is: it owns a private pane numbering that the core has to
+/// translate in both directions (`App.layoutIdsToSurfaces`, the whole of
+/// task 406), and that exists because a *list* had to cross.
+///
+/// The keys mean nothing on their own. They are not handles, they are not
+/// stable across a restart, and nothing may be looked up by them -- two
+/// surfaces are in the same window when their `window` keys are equal, and
+/// that is the entire contract.
+///
+/// ⚠️ **Zero is the honest default, on the same terms as
+/// `PoltergeistTabPanes`**: the apprt did not answer. A surface that is on
+/// screen is in *some* window and *some* tab, so no truthful answer is ever
+/// zero -- which leaves zero free to mean "not known" without a second
+/// field to say so. GTK does not implement this, so on Linux both are
+/// always zero and the tool reports them as null. **That is a live path
+/// with a user, not a defensive branch** -- and null there has to keep
+/// meaning "nobody said", never "they are not together".
+pub const PoltergeistGrouping = extern struct {
+    /// Written by the apprt before it returns. Never read by it.
+    window: *u64,
+
+    /// Written by the apprt before it returns. Never read by it.
+    ///
+    /// Separate from `window` because on macOS they genuinely differ: what
+    /// the user calls a tab is its own window inside a tab group, so the
+    /// panes of one tab share a `tab` key while every tab of the window
+    /// shares a `window` key. Collapsing them would lose exactly the
+    /// distinction this action exists for.
+    tab: *u64,
 };
 
 pub const PoltergeistClose = extern struct {
