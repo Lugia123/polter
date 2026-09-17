@@ -529,10 +529,18 @@ fn drainMailbox(
             },
             .poltergeist_watch => |v| self.setQuiescenceWatch(io, cb, v),
             .poltergeist_threshold => |ms| {
-                if (self.quiescence) |*q| q.watcher.setConfig(.{
-                    .quiescence_ms = quiescenceFloor(ms),
-                    .repeat_ms = quiescenceFloor(io.config.poltergeist_repeat_ms),
-                });
+                // **Built from `samplerConfig`, not beside it.** This used to
+                // list the fields again, and a second list of the same
+                // fields is how one of them goes missing: a field added for
+                // new terminals would simply not reach a terminal whose
+                // threshold was changed at runtime, and nothing would say
+                // so. The only field this site knows better is the one the
+                // message carries.
+                if (self.quiescence) |*q| {
+                    var config = samplerConfig(io);
+                    config.quiescence_ms = quiescenceFloor(ms);
+                    q.watcher.setConfig(config);
+                }
             },
             .inspector => |v| self.flags.has_inspector = v,
             .resize => |v| self.handleResize(cb, v),
@@ -659,6 +667,13 @@ fn samplerConfig(io: *termio.Termio) poltergeist.Sampler.Config {
     return .{
         .quiescence_ms = quiescenceFloor(io.config.poltergeist_quiescence_ms),
         .repeat_ms = quiescenceFloor(io.config.poltergeist_repeat_ms),
+
+        // **How often we intend to tick, told rather than inferred.** The
+        // sampler uses it to tell a late tick from a window nothing ran in
+        // at all -- a closed lid, most of all. It cannot work this out for
+        // itself: every interval it could measure has already happened, so
+        // it would learn the sleep gap as normal and stop noticing.
+        .sample_interval_ms = quiescence_sample_ms,
     };
 }
 
