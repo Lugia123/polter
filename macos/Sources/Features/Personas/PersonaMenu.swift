@@ -34,6 +34,12 @@ enum PersonaMenu {
     ///     `false` and an empty `personas` are different facts and get
     ///     different sentences.
     ///   - target: who the items act on.
+    ///   - imagesDesired: whether this system puts icons on menu items.
+    ///     Defaults to what the running system says, which is what every
+    ///     caller in the app uses; it is a parameter at all because the
+    ///     other answer is unreachable on a macOS 26 machine and is the
+    ///     answer every older one gets. See
+    ///     `NSMenuItem.menuItemImagesAreDesired`.
     ///
     /// Takes its inputs rather than reaching for `PersonaCatalog.shared`, so
     /// that the whole menu is a function of its arguments and can be built
@@ -43,20 +49,53 @@ enum PersonaMenu {
         shielded: Bool = false,
         personas: [Persona],
         personasKnown: Bool,
-        target: PersonaMenuTarget?
+        target: PersonaMenuTarget?,
+        imagesDesired: Bool = NSMenuItem.menuItemImagesAreDesired
     ) -> NSMenuItem {
-        let item = NSMenuItem(title: title(state: state, personas: personas),
-                              action: nil,
-                              keyEquivalent: "")
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        configure(
+            item,
+            state: state,
+            shielded: shielded,
+            personas: personas,
+            personasKnown: personasKnown,
+            target: target,
+            imagesDesired: imagesDesired)
+        return item
+    }
+
+    /// The same item, onto one that already exists.
+    ///
+    /// The menu bar's copy comes out of `MainMenu.xib` and cannot be replaced
+    /// wholesale, only filled in -- and it has to be re-filled every time the
+    /// menu opens, because the terminal it is about changes underneath it.
+    /// So the building is expressed as "make this item be the role item", and
+    /// `makeItem` is that applied to a fresh one. A third menu was the moment
+    /// to find out whether one builder really served them all; it does, and
+    /// this is the whole of the difference.
+    ///
+    /// The title is set here rather than by the caller: it is one of the two
+    /// claims that are not allowed to be wrong (see `title(state:personas:)`),
+    /// and a caller free to set it is a caller free to get it wrong.
+    static func configure(
+        _ item: NSMenuItem,
+        state: PersonaState,
+        shielded: Bool = false,
+        personas: [Persona],
+        personasKnown: Bool,
+        target: PersonaMenuTarget?,
+        imagesDesired: Bool = NSMenuItem.menuItemImagesAreDesired
+    ) {
+        item.title = title(state: state, personas: personas)
         item.identifier = itemIdentifier
-        item.setImageIfDesired(systemSymbolName: "person.crop.square.filled.and.at.rectangle")
+        item.setImage(systemSymbolName: PersonaSymbol.parent.rawValue, desired: imagesDesired)
         item.submenu = makeSubmenu(
             state: state,
             shielded: shielded,
             personas: personas,
             personasKnown: personasKnown,
-            target: target)
-        return item
+            target: target,
+            imagesDesired: imagesDesired)
     }
 
     /// "Role" on its own, or "Role: 射手" / "Role: 射手（已改）" once one is
@@ -84,7 +123,8 @@ enum PersonaMenu {
         shielded: Bool,
         personas: [Persona],
         personasKnown: Bool,
-        target: PersonaMenuTarget?
+        target: PersonaMenuTarget?,
+        imagesDesired: Bool
     ) -> NSMenu {
         let menu = NSMenu()
 
@@ -95,7 +135,7 @@ enum PersonaMenu {
             menu.addItem(disabledNote(
                 String(localized: "Agents are kept out of this terminal, so its role cannot be changed",
                        comment: "角色菜单：护盾的终端拒绝一切换装，对总管也一样；用词跟「不让 agent 碰此终端」对齐，好让用户认出是自己勾的那一项"),
-                symbol: "lock"))
+                symbol: .shield, imagesDesired: imagesDesired))
             menu.addItem(.separator())
         }
 
@@ -104,7 +144,7 @@ enum PersonaMenu {
         // look like it already changed, and a note under a list the user has
         // already clicked in is a note read too late.
         if let note = state.hostClass.pendingRestartNote {
-            menu.addItem(disabledNote(note, symbol: "clock.arrow.circlepath"))
+            menu.addItem(disabledNote(note, symbol: .pendingRestart, imagesDesired: imagesDesired))
             menu.addItem(.separator())
         }
 
@@ -116,7 +156,7 @@ enum PersonaMenu {
             menu.addItem(disabledNote(
                 String(localized: "No agent is connected here, so nothing is wearing this yet",
                        comment: "角色菜单：这个终端里没有 agent 连着 Polter，角色存着但没兑现"),
-                symbol: "person.slash"))
+                symbol: .noAgent, imagesDesired: imagesDesired))
             menu.addItem(.separator())
         }
 
@@ -127,12 +167,12 @@ enum PersonaMenu {
             menu.addItem(disabledNote(
                 String(localized: "Nothing has reported which roles exist yet",
                        comment: "角色菜单：角色清单还没接上来源，不是「一个都没定义」"),
-                symbol: "ellipsis"))
+                symbol: .rolesUnknown, imagesDesired: imagesDesired))
         } else if personas.isEmpty {
             menu.addItem(disabledNote(
                 String(localized: "No roles are defined",
                        comment: "角色菜单：用户还没定义任何角色"),
-                symbol: "tray"))
+                symbol: .noRoles, imagesDesired: imagesDesired))
         } else {
             for persona in personas {
                 let isCurrent = persona.key == state.key
@@ -174,7 +214,7 @@ enum PersonaMenu {
             action: #selector(PersonaMenuTarget.showPoltergeistPersonaEditor(_:)),
             keyEquivalent: "")
         editor.target = target
-        editor.setImageIfDesired(systemSymbolName: "slider.horizontal.3")
+        editor.setImage(systemSymbolName: PersonaSymbol.editor.rawValue, desired: imagesDesired)
         menu.addItem(editor)
 
         // A submenu built here is fully decided here, so AppKit is told not
@@ -191,10 +231,14 @@ enum PersonaMenu {
     ///
     /// `action` stays `nil` so a stray click on it does nothing at all
     /// rather than nothing visible.
-    private static func disabledNote(_ text: String, symbol: String) -> NSMenuItem {
+    private static func disabledNote(
+        _ text: String,
+        symbol: PersonaSymbol,
+        imagesDesired: Bool
+    ) -> NSMenuItem {
         let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
         item.isEnabled = false
-        item.setImageIfDesired(systemSymbolName: symbol)
+        item.setImage(systemSymbolName: symbol.rawValue, desired: imagesDesired)
         return item
     }
 }

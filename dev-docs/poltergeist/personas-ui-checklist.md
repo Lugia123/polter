@@ -89,6 +89,10 @@ ps -Ao pid,comm | grep 'Polter.app/Contents/MacOS/polter$' | grep -v ' +mcp'
 **该看到**：菜单底部一组里有一行 **「角色」**，右边有子菜单箭头 `>`。
 **算不对**：没有这一行 / 有字但没有箭头。
 
+> 🤖 **图标那一半已经不用看了**（`PersonaIconTests`）。两条版本分支各判一次：
+> macOS 26 以上每个该有图标的行 `image != nil`，26 以下**一个都没有**。
+> 还要人看的是「这一行真的挂在右键菜单上」——那是接线，不是建菜单。
+
 > ⚠️ **菜单图标只在 macOS 26 以上才有**（`NSMenuItem.setImageIfDesired` 里
 > `if #available(macOS 26, *)`），所以更老的系统上**菜单里一个图标都没有是正确的**，
 > 不要记成缺陷。这台机器是 26.5.1，所以这里应该有图标。
@@ -121,6 +125,13 @@ ps -Ao pid,comm | grep 'Polter.app/Contents/MacOS/polter$' | grep -v ' +mcp'
 **该看到**：两条长中文各占**一行**，完整，没有 `…`；菜单整体宽度还算正常。
 **算不对**：句子被截断成 `还没有人报上来…`；或者菜单宽得跨过半个屏幕。
 
+> 🤖 **这一条整条交给机器了**（`PersonaMenuWidthTests`）。不是看有没有 `…`，
+> 是拿 `NSAttributedString` 在菜单字体下量出宽度，加上从真 `NSMenu.size`
+> 标定出来的边框开销，跟 640pt（1280pt 的一半）比。**每一种语言都量**，
+> 因为长的那句往往来自译文。今天最宽的是 Base 的
+> 「Agents are kept out of this terminal, so its role cannot be changed」，450.9pt。
+> ⚠️ 不覆盖**角色自己的名字**——那是用户文件里的字，长度不归我们管（第 11 条还是人看）。
+
 ## 4. 终端里右键，同一套东西
 
 **做**：在终端**内容区域**（不是标签）点右键。
@@ -151,6 +162,11 @@ ps -Ao pid,comm | grep 'Polter.app/Contents/MacOS/polter$' | grep -v ' +mcp'
 - 第 2、3、4 区那三句**「还没有人报上来…」用了同一句话** —— 它们说的是三件不同的事
   （有哪些角色 / 这个终端交出去了什么 / 这台机器装了什么），串成一句就是缺陷。
 
+> 🤖 **分区顺序和那句必须在的小字，现在由快照钉住**
+> （`PersonaEditorSnapshotTests`，参考图在 `macos/Tests/Personas/__Snapshots__/`）。
+> 快照只回答「有没有变」，不回答「好不好看」——所以上面的**判断题仍然是人的**，
+> 而「上次是什么样」不用再靠记忆。
+
 ## 7. 图标不是空白方块
 
 **做**：把**编辑器窗口里**出现的图标扫一眼 —— 时钟、圆圈 / 实心对勾圆圈。
@@ -162,11 +178,21 @@ ps -Ao pid,comm | grep 'Polter.app/Contents/MacOS/polter$' | grep -v ' +mcp'
 > —— 一个 macOS 14 才加的符号在这里查得到、在 13 上是空的，所以这一条在**旧系统**
 > 上仍然要人看。
 
+> 🤖 **「逐个查过」这句话现在是每次跑测试都重查一遍**：那 11 个名字收在
+> `PersonaSymbol` 这一个枚举里，菜单和编辑器都从它取，测试走 `allCases`。
+> 手抄一份名单在测试里是会过期的，而过期的名单照样全绿。
+> ⚠️ **旧系统那半依然只能人看**，理由一字未改：这台机器答的是 26.5.1 的账。
+
 ## 8. 把编辑器窗口拖到最窄
 
 **做**：拖窗口左右边缘，缩到拖不动为止。
 **该看到**：文字自动换行，上下不重叠，右边不被裁掉。
 **算不对**：句子被右边缘切断 / 两行字叠在一起 / 出现横向滚动条。
+
+> 🤖 **有一张 460×420（`minWidth`/`minHeight` 本身）的快照钉着它**
+> （`theSameEditorAtItsNarrowest`）。它能保证「今天这张图不再变」，
+> **不能替你判断这张图本身对不对**——录的时候人看过一次：右侧那两句
+> 「手动关掉的 / 手动加上的」在最窄处仍然完整，没有横向滚动条。
 
 ## 9. 深色浅色各看一眼
 
@@ -243,13 +269,122 @@ ps -Ao pid,comm | grep 'Polter.app/Contents/MacOS/polter$' | grep -v ' +mcp'
 
 # 已经不用人看的（自动化钉住了）
 
-这些跑 `xcodebuild … test -only-testing:GhosttyTests/PersonaMenuTests` 就有答案，
-**别再用眼睛验一遍**：子菜单的项数与顺序、勾选落在哪一项、每行带的是不是自己的
-key、护盾时哪些行禁用哪些不禁用、冷 / unknown / 热三句各自出现与不出现、
-「没有 agent 连着时父项不声称角色」、「已改的名字处处不同于没改的」、
-以及「还没有人报上来有哪些角色」和「还没有定义任何角色」不许是同一句。
+跑这一条就有答案：
+
+```sh
+xcodebuild -project macos/Ghostty.xcodeproj -scheme Ghostty -configuration Debug \
+  -destination 'platform=macOS' test \
+  -only-testing:GhosttyTests/PersonaMenuTests \
+  -only-testing:GhosttyTests/PersonaDecodingTests \
+  -only-testing:GhosttyTests/PersonaIconTests \
+  -only-testing:GhosttyTests/PersonaMenuWidthTests \
+  -only-testing:GhosttyTests/PersonaEditorSnapshotTests
+```
+
+45 条，`** TEST SUCCEEDED **`。（其中 31 条是原有的
+`PersonaMenuTests` / `PersonaDecodingTests`，14 条是下面这三个文件。）
+
+## 原来就有的（结构 / 措辞选择）
+
+子菜单的项数与顺序、勾选落在哪一项、每行带的是不是自己的 key、护盾时哪些行禁用
+哪些不禁用、冷 / unknown / 热三句各自出现与不出现、「没有 agent 连着时父项不声称
+角色」、「已改的名字处处不同于没改的」、以及「还没有人报上来有哪些角色」和
+「还没有定义任何角色」不许是同一句。
 
 **这些断言证明过自己会红**：把 `agentPresent` 那个分支故意写反，红的是
 `withNoAgentConnectedTheParentDoesNotClaimThePersona`、
 `theParentNamesThePersonaWithoutBeingOpened`、
 `aDeviatedPersonaReadsDifferentlyEverywhereItIsNamed` 三条。
+
+## 新接管的三样，以及各自的地板
+
+**没有地板的绿不算。** 下面每一格都是先把被测对象故意打坏、跑一遍、把红在哪一条
+和原文抄下来，再把对象修回去。
+
+### 1. 图标 —— `macos/Tests/Personas/PersonaIconTests.swift`（5 条）
+
+判据是 `item.image != nil`，**两条 macOS 版本分支各判一次**。为了能判第二条，
+`#available(macOS 26, *)` 被拆成了具名的 `NSMenuItem.menuItemImagesAreDesired`，
+菜单builder 收一个 `imagesDesired` 参数（默认就是那个值，所以 app 里没有一个
+调用点改过行为）。**这台机器永远只会走到 true 那条**，所以不拆开的话，
+「26 以下一个图标都没有」这句话没有任何东西在证明它。
+
+| 打坏什么 | 红在哪一条 | 原文 |
+| --- | --- | --- |
+| `PersonaSymbol.noRoles` 的名字改成 `"tray.no.such.symbol"` | `everySymbolTheRoleUINamesResolvesOnThisSystem`、`theEmptyListNoteCarriesItsOwnIcon` | 两条都 `failed`（前者点名 `tray.no.such.symbol resolved to no image`） |
+| `setImage` 里 `if desired` 改成 `if true`（即门控失效） | `onASystemThatDoesNotWantIconsNothingHasOne` | 5 处断言，逐行点名，例如 `Expectation failed: (row.image → <NSImage … symbol = lock>) == nil: 不让 agent 碰此终端，所以它的角色也不能改 has an icon on a system that wants none` |
+
+### 2. 文案截断 —— `macos/Tests/Personas/PersonaMenuWidthTests.swift`（2 条）
+
+`NSAttributedString(…, .font: NSFont.menuFont(ofSize: 0)).size().width`
+＋从真 `NSMenu.size` 标定出来的边框开销，对 640pt 预算；**每一种本地化都量一遍**。
+
+地板打了两次，第一次没红，那一次同样是结论：
+
+| 打坏什么 | 结果 |
+| --- | --- |
+| zh-Hans 那句改成 41 个汉字（607pt） | **仍然全绿** —— 没到 640。不是判据坏了，是我打得不够坏；顺带这给出了今天的余量 |
+| 再加长到 56 个汉字（827pt） | `everyLocalizationOfEveryRowFitsTheBudget` 和 `theMenuFitsTheBudgetInTheLanguageThisMachineRunsIn` 双双红：<br>`Expectation failed: (total → 827.0) <= (Self.budget → 640.0): zh-Hans: "还没有人报上来这台机器上到底…" needs 827.0pt, over the 640.0pt budget` |
+
+⚠️ **这个扫描自己带一道自检**：`translated >= 5`。没有它，一次「每种语言都查不到
+译文、于是全都回落成英文」的扫描会**全绿**，而它跟真的扫过长得一模一样。
+
+### 3. SwiftUI —— `macos/Tests/Personas/PersonaEditorSnapshotTests.swift`（7 条）
+
+四张参考图在 `macos/Tests/Personas/__Snapshots__/`：满状态的亮/暗、
+什么都没报上来的亮、以及最窄（460×420）那张。重录用
+`POLTER_SNAPSHOT_RECORD=1`。
+
+| 打坏什么 | 红在哪几条 | 原文 |
+| --- | --- | --- |
+| 删掉只读区那句「列在这里，是为了让你看见角色没有覆盖到哪里。Polter 不会动这些。」 | `anEditorWithARoleOnAndOneThingChangedByHand`、`theSameEditorInDarkMode`、`anEditorWithNothingReportedYet` | `editor-rich-light: 11650 of 613600 pixels differ (1.899%), over the 0.1% allowance`（暗 12400 / 空 3811） |
+
+最窄那张**没有**红，这是对的：那句小字在 420pt 高度下本来就在 ScrollView 的
+折叠线以下。
+
+⚠️ **这一节的尺子自己坏过一次，值得记下来。** 第一版的合成方式（`drawn.draw(in:)`
+画进一张带 alpha 的画布）把整张图留在了 **alpha 通道**里，RGB 平面两张图逐字节相同。
+于是「删掉一整行字」的那次地板，亮色那两张报的是 **0 of 613600 pixels differ**——
+**红的只有暗色一张，而我差点把它当成「地板成立」收工**。现在合成走
+`NSImage.draw(…, operation: .sourceOver)`，比对连 alpha 一起比，并且多了一条
+`everyRenderIsOpaqueSoTheComparisonIsLookingAtColour` 专门钉住这件事。
+另外两条 `renderingTheSameModelTwiceGivesTheSamePixels` /
+`twoDifferentModelsAreNotTheSamePicture` 是同一类守卫：一个防「渲染不可复现」，
+一个防「在比两张空白」。
+
+⚠️ **参考图是一台机器的录音。** 录于 macOS 26.5.1 / Xcode 26.6。换一个系统版本，
+或者**换一个系统强调色**（复选框那一列跟随它，单选圈已经用 `.tint(.blue)` 钉死了），
+都可能让它们变红而仓库里什么都没改。红了先看图（失败时会把实际图和参考图都写到
+`/tmp`），不要条件反射地重录。
+
+---
+
+# 仍然只能人眼看的，以及各自为什么
+
+**「这条判据不覆盖 X」是合格产出。** 下面每一条都说清楚机器卡在哪儿，而不是
+「大概测不了」。
+
+## 第一部分里剩下的
+
+| # | 为什么机器判不了 |
+| --- | --- |
+| 0a / 0b | 起一个新实例、确认眼前窗口来自它。这个仓库的 agent **不许启动 Polter GUI**（用户正开着一个在用），所以这一步没有机器能替。 |
+| 1（除图标外） | 「这一行真的挂在标签右键菜单上」是**接线**，不是建菜单。测试拿到的是 `PersonaMenu.makeItem` 的产物；`TerminalWindow` 有没有把它加进那个菜单，要么真去点一次，要么写一条会开窗口的测试——后者这一轮没做。 |
+| 2 | 项数、顺序、勾、禁用态、三句措辞**已经全在** `PersonaMenuTests` 里。人这一侧剩下的只有「弹出来的那个菜单就是这份代码建的」，同第 1 条。 |
+| 4 | 同上：两处菜单**由同一个 builder 建**（两处都调 `PersonaMenu.makeItem`，`TerminalWindow.swift` 和 `SurfaceView_AppKit.swift` 各一处）这件事是代码结构，能读；**弹出来的那两个菜单确实是它建的**是接线。 |
+| 5 | 窗口本身——标题、「完成」按钮、能不能拖大拖小、第二次点是不是把旧窗口提到最前。这些全在 `PersonaEditor`（`NSWindow`）上，验它要真开一个窗口。快照测的是**窗口里画的内容**，不是窗口。 |
+| 7（旧系统） | 这台机器上 11 个符号都取得到——**那是 26.5.1 答的账**。一个 macOS 14 才加的符号在这里 `!= nil`、在 13 上是空的，而这里没有 13 可跑。 |
+| 8（判断那一半） | 快照能保证「不再变」，不能判断「现在这张对不对」。「右边没被裁掉 / 两行没叠在一起」录的时候人看过一次，写在第 8 条下面了。 |
+| 9 | **灰色小字在两种模式下读不读得清**是个可读性判断。快照能抓住颜色变了，抓不住「变得看不清了」——要机器答，得改成算对比度，那是另一件事，这一轮没做。 |
+| 10 | 护盾时哪些行禁用、哪句提示出现，`PersonaMenuTests` 已经钉住；剩下的是「右键 →『不让 agent 碰此终端』这条路真的把 `shielded` 传进来了」，同第 1 条，是接线。 |
+
+## 第二部分（写了 `personas.json` 之后）
+
+**整段仍然是人的**，而且理由跟界面无关：11–20 里除 11 / 18 / 19b 之外，
+今天要么核心没接（`_skill` / `_mcp` / `host_class` / 槽位进程），要么要真去改一个
+真文件再重载。11 / 18 / 19b 今天能做但都要一份真的 `personas.json` 和一次真的重载，
+这一轮没有把「造一份配置文件喂给核心」做成测试。
+
+⚠️ 还有一条是原则性的，不要指望以后哪个测试能收掉：**第 12 行之后那半
+「agent 手上到底还有没有那个工具」，判据必须在 agent 那边**（让它真去调用一个被
+拿掉的工具）。界面说什么和 agent 拿到什么走的是两条路，这里的任何测试都只能答前者。

@@ -104,21 +104,21 @@ struct PersonaEditorView: View {
                 caption(String(
                     localized: "Agents are kept out of this terminal, so its role cannot be changed",
                     comment: "角色菜单：护盾的终端拒绝一切换装，对总管也一样；用词跟「不让 agent 碰此终端」对齐，好让用户认出是自己勾的那一项"),
-                    symbol: "lock")
+                    symbol: .shield)
             }
 
             // The same line the menu shows, for the same reason: a pick that
             // only takes hold on the next start must never read as one that
             // already took hold.
             if let note = model.state.hostClass.pendingRestartNote {
-                caption(note, symbol: "clock.arrow.circlepath")
+                caption(note, symbol: .pendingRestart)
             }
 
             if model.state.key != nil && !model.state.agentPresent {
                 caption(String(
                     localized: "No agent is connected here, so nothing is wearing this yet",
                     comment: "角色菜单：这个终端里没有 agent 连着 Polter，角色存着但没兑现"),
-                    symbol: "person.slash")
+                    symbol: .noAgent)
             }
 
             // A file that failed to load keeps the previous one in effect
@@ -131,7 +131,7 @@ struct PersonaEditorView: View {
             // without them swallows a diagnosable error, and them without a
             // lead-in is a sentence with no subject.
             if let kind = model.face.errorKind, let lead = Self.errorLead(kind) {
-                caption(lead, symbol: "exclamationmark.triangle")
+                caption(lead, symbol: .loadError)
             }
             if let error = model.face.loadError {
                 Text(error)
@@ -181,7 +181,7 @@ struct PersonaEditorView: View {
     ) -> some View {
         Button(action: action) {
             HStack {
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                Image(systemName: (selected ? PersonaSymbol.selected : .unselected).rawValue)
                     .foregroundStyle(selected ? Color.accentColor : Color.secondary)
                 Text(title)
                 Spacer()
@@ -347,7 +347,7 @@ struct PersonaEditorView: View {
                     caption(String(
                         localized: "Some agents' configuration couldn't be read, so this count may be low",
                         comment: "角色编辑器：槽位数旁边——有 agent 的配置没读到，这个数是下界不是真值"),
-                        symbol: "questionmark.circle")
+                        symbol: .countMayBeLow)
                 }
             }
         }
@@ -468,8 +468,8 @@ struct PersonaEditorView: View {
         }
     }
 
-    private func caption(_ text: String, symbol: String) -> some View {
-        Label(text, systemImage: symbol)
+    private func caption(_ text: String, symbol: PersonaSymbol) -> some View {
+        Label(text, systemImage: symbol.rawValue)
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
