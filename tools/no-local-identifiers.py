@@ -177,6 +177,12 @@ KNOWN = {
     # public identity -- the same one in the bundle id, the copyright line and
     # the About window.
     "README.md": "links to the releases page of this fork's own repository",
+    # The project site, whose three hits are the two links a visitor came
+    # for -- the repository and its releases page -- written the one way
+    # GitHub Pages will serve them. It is published from `main`'s `/docs`,
+    # so the name in these URLs is the same public identity the bundle id
+    # and the copyright line already carry.
+    "docs/index.html": "links to this fork's own repository and releases page",
     "README_CN.md": "links to the releases page of this fork's own repository",
     "macos/Sources/App/AppDelegate.swift": "links to the fork's public documentation",
     # **This one is here rather than skipped, and the difference matters.**
