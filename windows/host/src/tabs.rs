@@ -137,6 +137,16 @@ pub struct Tab {
     /// prompts. **No glyph on the tab**, unlike the three above: they are
     /// promises to the person sitting here, this is a permission they granted
     /// to somebody else, and it is shown in the menu it was granted from.
+    /// The persona half of the same mark. **Beside the other bits, not in a
+    /// second store**: this file's own comment on `mark_for_surface` records
+    /// that every consumer which cached a mark separately became a second
+    /// place for one fact to be right, and that shape has gone wrong here
+    /// four times.
+    ///
+    /// `None` means no mark carrying a persona has arrived for this tab yet,
+    /// which is **not** the same as "no persona chosen" -- the core says that
+    /// with a `key` of null inside a persona that is always present.
+    pub persona: Option<crate::personas::TabPersona>,
     pub may_authorise: bool,
     /// The shell's working directory, as the core last reported it
     /// (`GHOSTTY_ACTION_PWD`). Kept so a reopened tab lands where the closed
@@ -2403,6 +2413,7 @@ pub fn create_tab_with(
             shielded: false,
             held: false,
             may_authorise: false,
+            persona: None,
             cwd: initial_cwd,
             title_override: None,
         });
@@ -3490,6 +3501,44 @@ pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool, bool, bool)> {
     })
 }
 
+/// The persona half of the mark for one surface.
+///
+/// `None` is a **third state**: no mark carrying a persona has reached this
+/// tab. It is not "no persona chosen" -- the core says that with a null `key`
+/// inside a persona that is always present -- and the menu draws the two
+/// differently, so collapsing them here would collapse them on screen.
+// window-free: keyed by surface, which is unique in the process
+pub fn persona_for_surface(surface: Surface) -> Option<crate::personas::TabPersona> {
+    let key = surface as usize;
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .find(|t| t.panes.iter().any(|p| p.surface == key))
+            .and_then(|t| t.persona.clone())
+    })
+}
+
+/// Record the persona half of a mark against **the surface it was sent for**,
+/// for the same reason `set_mark_for_surface` does.
+// window-free: keyed by surface, which is unique in the process
+pub fn set_persona_for_surface(
+    surface: Surface,
+    persona: Option<crate::personas::TabPersona>,
+) -> bool {
+    let key = surface as usize;
+    with_windows_mut(|ws| {
+        for win in ws.iter_mut() {
+            for tab in win.tabs.iter_mut() {
+                if tab.panes.iter().any(|p| p.surface == key) {
+                    tab.persona = persona;
+                    return true;
+                }
+            }
+        }
+        false
+    })
+}
+
 /// Record a `poltergeist_mark` against **the surface it was sent for**.
 ///
 /// **The surface, not the active tab.** `set_tab_title` and its neighbours
@@ -3703,6 +3752,7 @@ mod pane_metadata_tests {
             shielded: false,
             held: false,
             may_authorise: false,
+            persona: None,
             cwd: None,
             title_override: None,
         }

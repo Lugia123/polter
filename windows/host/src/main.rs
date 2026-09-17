@@ -118,6 +118,8 @@ mod notify;
 mod overlay;
 mod osk;
 mod palette;
+mod personas;
+mod personas_ui;
 mod plugins;
 mod polterclose;
 mod project;
@@ -1707,6 +1709,16 @@ pub fn api() -> &'static Api {
 /// not. `i18n::tr` is the first of the second kind: a string can be wanted by
 /// a log line or a panic path, and a null dereference for the sake of a
 /// translation is a poor trade.
+/// The core's app handle, or null before start-up has made one.
+///
+/// **Guarded rather than unwrapped**, for the same reason `api_opt` is: a
+/// menu cannot open this early, but a log line or a panic path can reach a
+/// persona lookup before the app exists, and a null dereference for the sake
+/// of an empty list would be a poor trade.
+pub fn app_opt() -> ffi::App {
+    APP.load(std::sync::atomic::Ordering::Acquire)
+}
+
 pub fn api_opt() -> Option<&'static Api> {
     let p = API.load(Ordering::Acquire) as *const Api;
     if p.is_null() {
@@ -2944,8 +2956,22 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // not say which terminal -- or which window -- it was about. The
             // surface was here the whole time.
             let surface = target_surface(&target);
+            // **Read inside the callback, while the strings are alive.** The
+            // header gives `key` and `name` for the duration of this call and
+            // no longer; a port that stored the pointers would see nothing go
+            // wrong until the next frame.
+            let persona = unsafe { personas::persona_from_mark(&action) };
+            if persona.is_none() {
+                // process-wide: the core says this pointer is never null, so
+                // this is a bug on that side rather than a state. Drawn as
+                // "never chosen", which is the safe reading, and said out
+                // loud so the two do not become one picture.
+                // absence: proves nothing -- silent on every healthy build.
+                plogf!("[persona] the mark carried no persona; the core says that cannot happen");
+            }
             let found =
                 surface.is_some_and(|s| {
+                    tabs::set_persona_for_surface(s, persona);
                     tabs::set_mark_for_surface(s, role as u8, shielded, held, may_authorise)
                 });
             // The surface's own right-click menu wants the same three bits.
@@ -4752,6 +4778,9 @@ fn load_api() -> Option<Api> {
             surface_set_focus: sym!(internal, "ghostty_surface_set_focus"),
             surface_free: sym!(internal, "ghostty_surface_free"),
             surface_binding_action: sym!(internal, "ghostty_surface_binding_action"),
+            app_personas: sym!(internal, "ghostty_app_personas"),
+            app_persona_hosts: sym!(internal, "ghostty_app_persona_hosts"),
+            surface_persona_face: sym!(internal, "ghostty_surface_persona_face"),
             surface_complete_clipboard_request: sym!(
                 internal,
                 "ghostty_surface_complete_clipboard_request"
@@ -6290,6 +6319,10 @@ fn main() {
     notify::init(hinst);
     divider::init(hinst);
     settings_ui::init(hinst);
+    personas_ui::init(hinst);
+    // **After the API is loaded**, because the provider asks it questions the
+    // moment a menu is built.
+    personas::install_core_provider();
     reload::init(hinst);
     // A config that failed to parse is the one thing worth interrupting a
     // start-up for: the terminal comes up looking normal and behaving like a

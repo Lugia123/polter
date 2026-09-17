@@ -68,6 +68,11 @@ struct Row {
     check: Option<Flag>,
     /// What has to be true before this row can succeed. See `Ready`.
     ready: Ready,
+    /// This row is the persona submenu; its children are built when the menu
+    /// opens, from `personas::entries`. **It carries no label** -- the label
+    /// says which persona this terminal has, which only the run time knows,
+    /// and a `const` cannot call a function.
+    personas: bool,
     /// Whether the row can be picked. See `Enable`.
     ///
     /// **Greyed, not hidden** (§3.4.3): a menu item that is missing and one
@@ -139,7 +144,7 @@ pub enum Flag {
 
 /// Shorthand for the common case: a labelled row that runs a core action.
 const fn act(label: &'static str, action: &'static str) -> Row {
-    Row { label, action: Some(action), sub: None, check: None, ready: Ready::Always, enabled: Enable::Yes }
+    Row { label, action: Some(action), sub: None, personas: false, check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
 /// A row the terminal's own state can legitimately refuse.
@@ -148,6 +153,7 @@ const fn act_state(label: &'static str, action: &'static str, why: &'static str)
         label,
         action: Some(action),
         sub: None,
+        personas: false,
         check: None,
         ready: Ready::NeedsState(why),
         enabled: Enable::Yes,
@@ -160,6 +166,7 @@ const fn act_gap(label: &'static str, action: &'static str, why: &'static str) -
         label,
         action: Some(action),
         sub: None,
+        personas: false,
         check: None,
         ready: Ready::HostGap(why),
         enabled: Enable::Yes,
@@ -168,16 +175,30 @@ const fn act_gap(label: &'static str, action: &'static str, why: &'static str) -
 
 /// A row that runs a core action and shows a check mark for `flag`.
 const fn toggle(label: &'static str, action: &'static str, flag: Flag, ready: Ready) -> Row {
-    Row { label, action: Some(action), sub: None, check: Some(flag), ready, enabled: Enable::Yes }
+    Row { label, action: Some(action), sub: None, personas: false, check: Some(flag), ready, enabled: Enable::Yes }
+}
+
+/// The persona submenu. **With the agent rows**, because a persona is a fact
+/// about the agent in this terminal rather than about the terminal.
+const fn personas_row() -> Row {
+    Row {
+        label: "",
+        action: None,
+        sub: None,
+        personas: true,
+        check: None,
+        ready: Ready::Always,
+        enabled: Enable::Yes,
+    }
 }
 
 const fn sep() -> Row {
-    Row { label: "", action: None, sub: None, check: None, ready: Ready::Always, enabled: Enable::Yes }
+    Row { label: "", action: None, sub: None, personas: false, check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
 /// A row that opens a nested menu.
 const fn sub(label: &'static str, rows: &'static [Row]) -> Row {
-    Row { label, action: None, sub: Some(rows), check: None, ready: Ready::Always, enabled: Enable::Yes }
+    Row { label, action: None, sub: Some(rows), personas: false, check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
 // The prefix that marks a row as the host's own, and the predicate for it,
@@ -213,6 +234,7 @@ const FILE_ROWS: &[Row] = &[
         label: n_("Reopen Closed Tab"),
         action: Some("__polter_reopen_tab"),
         sub: None,
+        personas: false,
         check: None,
         ready: Ready::NeedsState("needs a tab closed in this session; the row is greyed until then"),
         enabled: Enable::WhenReopenable,
@@ -340,9 +362,11 @@ const AGENTS_ROWS: &[Row] = &[
     // returned before performing the action. The hold was toggled, the core
     // logged it, and no apprt was ever told.
     toggle(n_("Hold This Terminal to Its Work"), "poltergeist_toggle_held", Flag::Held, Ready::Always),
+    personas_row(),
     sep(),
     // Host rows: the core knows nothing about either page.
     act(n_("Plugins…"), "__polter_plugin_page"),
+    act(n_("Role Editor..."), "__polter_persona_page"),
 ];
 
 const GOTO_SPLIT_ROWS: &[Row] = &[
@@ -387,6 +411,7 @@ const HELP_ROWS: &[Row] = &[
         label: n_("Polter Help"),
         action: Some("__polter_help_docs"),
         sub: None,
+        personas: false,
         check: None,
         ready: Ready::HostGap("no docs opener exists yet"),
         enabled: Enable::No,
@@ -402,6 +427,7 @@ const HELP_ROWS: &[Row] = &[
         label: n_("Check for Updates…"),
         action: Some("check_for_updates"),
         sub: None,
+        personas: false,
         check: None,
         ready: Ready::HostGap("block L is not built"),
         enabled: Enable::No,
@@ -448,6 +474,7 @@ const ROOT: &[Row] = &[
         label: n_("Language…"),
         action: Some("__polter_language"),
         sub: None,
+        personas: false,
         check: None,
         ready: Ready::Always,
         enabled: Enable::Yes,
@@ -493,6 +520,13 @@ fn run_host(frame: HWND, action: &str) -> bool {
         // it can show what the rows above cannot.
         "__polter_keybinds" => {
             crate::settings_ui::request_keybinds();
+            true
+        }
+        // The personas page. The core owns the personas themselves (the
+        // contract puts storage and the closed-set check there); this opens
+        // the window that shows them.
+        "__polter_persona_page" => {
+            crate::personas_ui::request_toggle();
             true
         }
         // The stack, and the tab it makes, both live in the host: see
@@ -542,6 +576,7 @@ const HOST_ACTIONS: &[&str] = &[
     // Windows; it cannot be seen from a macOS `cargo check`, because the
     // whole crate's tests only compile for a Windows target.
     "__polter_keybinds",
+    "__polter_persona_page",
 ];
 
 // ------------------------------------------------------- the core's actions
@@ -981,11 +1016,32 @@ pub fn draw_menu_button(hdc: HDC, rect: RECT, scale: f64, hover: bool) {
 /// range would return ids that both files think are theirs.
 const ID_BASE: usize = 0x5000;
 
+/// The highest id the static tree can ever return.
+///
+/// **Computed from the tree, not written down.** `personas.rs` puts its own
+/// range above this and asserts the gap; a number copied over there would
+/// agree until a row was added here, and two ranges that touch produce a menu
+/// that runs a different command from the one clicked.
+#[cfg(test)]
+pub fn max_static_id() -> usize {
+    let mut flat: Vec<&Row> = Vec::new();
+    flatten(ROOT, &mut flat);
+    ID_BASE + flat.len()
+}
+
 /// Flatten the tree in the order the menus are built, so an id is an index.
 fn flatten<'a>(rows: &'a [Row], out: &mut Vec<&'a Row>) {
     for r in rows {
         if let Some(s) = r.sub {
             flatten(s, out);
+            continue;
+        }
+        // The persona rows are not in this order at all: their count is only
+        // known when the menu opens, so they take ids out of
+        // `personas::ID_BASE` instead of out of this index. Skipped here for
+        // the same reason `sub` is -- an entry that took an index and then
+        // appended a different number of items would shift every id after it.
+        if r.personas {
             continue;
         }
         if r.action.is_some() {
@@ -1001,7 +1057,12 @@ fn flatten<'a>(rows: &'a [Row], out: &mut Vec<&'a Row>) {
 /// same for every window -- but the line below is printed exactly on the day
 /// somebody needs to know which of two windows lost its menu, and a line that
 /// cannot say is a line that arrives too late to be worth having.
-fn build(frame: HWND, rows: &[Row], next: &mut usize) -> Option<HMENU> {
+fn build(
+    frame: HWND,
+    rows: &[Row],
+    next: &mut usize,
+    personas: &mut Vec<crate::personas::Entry>,
+) -> Option<HMENU> {
     unsafe {
         let menu = match CreatePopupMenu() {
             Ok(m) => m,
@@ -1011,6 +1072,28 @@ fn build(frame: HWND, rows: &[Row], next: &mut usize) -> Option<HMENU> {
             }
         };
         for r in rows {
+            if r.personas {
+                // **The surface, not the window.** A persona belongs to one
+                // terminal, and this menu hangs off a frame that may hold
+                // several. `tabs::active_surface` is the frame's answer to
+                // "which terminal is this menu about", which is the same
+                // answer every other per-terminal row here already uses
+                // through `crate::binding`.
+                let surface = crate::tabs::active_surface(frame);
+                *personas = crate::personas::entries(surface);
+                let Some(child) = build_personas(frame, personas) else { return None };
+                let wide: Vec<u16> = crate::personas::submenu_label(surface)
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                let _ = AppendMenuW(
+                    menu,
+                    MF_POPUP | MF_STRING,
+                    child.0 as usize,
+                    PCWSTR(wide.as_ptr()),
+                );
+                continue;
+            }
             if r.label.is_empty() {
                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
                 continue;
@@ -1020,7 +1103,7 @@ fn build(frame: HWND, rows: &[Row], next: &mut usize) -> Option<HMENU> {
                 // walking the tree the same way this does; a submenu quietly
                 // left out here would shift every id after it, and the menu
                 // would then run the wrong command while looking right.
-                let child = build(frame, children, next)?;
+                let child = build(frame, children, next, personas)?;
                 let wide: Vec<u16> = tr(r.label).encode_utf16().chain(Some(0)).collect();
                 let _ = AppendMenuW(
                     menu,
@@ -1065,6 +1148,35 @@ fn build(frame: HWND, rows: &[Row], next: &mut usize) -> Option<HMENU> {
     }
 }
 
+/// Build the persona popup. `None` when Windows would not give us a menu.
+fn build_personas(frame: HWND, entries: &[crate::personas::Entry]) -> Option<HMENU> {
+    unsafe {
+        let menu = match CreatePopupMenu() {
+            Ok(m) => m,
+            Err(e) => {
+                wlogf!(frame, "[menu] CreatePopupMenu for personas failed: {e:?}");
+                return None;
+            }
+        };
+        for (i, e) in entries.iter().enumerate() {
+            if e.separator {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                continue;
+            }
+            let mut flags = MF_STRING;
+            if e.checked {
+                flags = flags | MF_CHECKED;
+            }
+            if !e.enabled {
+                flags = flags | MF_GRAYED;
+            }
+            let wide: Vec<u16> = e.text.encode_utf16().chain(Some(0)).collect();
+            let _ = AppendMenuW(menu, flags, crate::personas::ID_BASE + i, PCWSTR(wide.as_ptr()));
+        }
+        Some(menu)
+    }
+}
+
 /// Open the root menu with its top-left at a screen point.
 ///
 /// **Runs on the thread that owns `frame`.** `TrackPopupMenu` pumps its own
@@ -1076,7 +1188,12 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     flatten(ROOT, &mut order);
 
     let mut next = 0usize;
-    let Some(menu) = build(frame, ROOT, &mut next) else { return };
+    // **Kept for as long as the menu is up.** The persona ids are indices
+    // into this vector, so this vector is what the pick is resolved against;
+    // rebuilding it afterwards would be a second walk that can disagree with
+    // the first.
+    let mut personas: Vec<crate::personas::Entry> = Vec::new();
+    let Some(menu) = build(frame, ROOT, &mut next, &mut personas) else { return };
 
     // Items on the root itself, which is what a person sees when it opens:
     // the six groups plus the two tail rows. Not the 50-odd leaves below.
@@ -1105,6 +1222,18 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     let _ = unsafe { InvalidateRect(Some(frame), None, false) };
 
     let id = chosen.0 as usize;
+    // **Before the table.** The persona range sits above it, and an index
+    // computed from `ID_BASE` would run off the end of the flattened tree and
+    // be reported as "an id outside the table" -- the one message that would
+    // send a reader looking in the wrong file.
+    if id >= crate::personas::ID_BASE {
+        let Some(entry) = personas.get(id - crate::personas::ID_BASE) else {
+            wlogf!(frame, "[menu] a persona id came back with no entry behind it: {id}");
+            return;
+        };
+        crate::personas::perform(frame, crate::tabs::active_surface(frame), entry);
+        return;
+    }
     if id < ID_BASE {
         // "Dismissed" and "never opened" are different bugs that look the same
         // from the far side of the screen.
@@ -1583,8 +1712,13 @@ mod tests {
         // tests only run on Windows. 561 moves a row without adding or
         // removing one, so only the stale half is corrected here. 564 moves
         // the language row from the last bucket to the first.
-        assert_eq!(leaves.len(), 57);
-        assert_eq!(n(|r| matches!(r, Ready::Always)), 49, "unconditional rows");
+        // 571 adds one leaf, «Role Editor...», which is unconditional -- so
+        // both the total and the first bucket move by one and the other two
+        // do not. The persona submenu itself is **not** a leaf: it carries no
+        // action, its children are built when the menu opens, and they take
+        // ids out of `personas::ID_BASE` rather than out of this tree.
+        assert_eq!(leaves.len(), 58);
+        assert_eq!(n(|r| matches!(r, Ready::Always)), 50, "unconditional rows");
         assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 5, "state-dependent rows");
         assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 3, "rows this host does not answer yet");
     }

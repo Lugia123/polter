@@ -286,6 +286,50 @@ pub struct PoltergeistMark {
     pub may_authorise: bool,
 }
 
+/// `ghostty_poltergeist_persona_s`. **Reached through a pointer on the mark**,
+/// which is the whole reason the mark still fits where it did.
+///
+/// ⚠️ **Laid out flat this would have cost every other action.** Four extra
+/// fields take the mark from 16 bytes to 40, which sizes `ghostty_action_u`
+/// up from 24 and `ghostty_action_s` from 32 to 48 -- moving the payload
+/// offset of `set_title`, `new_split`, `layout` and the rest. The assertion
+/// below protects a rebuild; it does not protect an old `polter-host.exe`
+/// loaded against a new `ghostty-internal.dll`, and those are two artifacts
+/// resolved by `GetProcAddress` with no version handshake.
+///
+/// ⚠️ **`host_class` is at 20, not 18.** Two `bool`s then four bytes of
+/// int-wide enum: the enum is 4-aligned, so there are **two bytes of padding**
+/// after `agent_present`. Read at 18 it comes back as one bool plus padding
+/// plus half the enum -- and that value is very likely non-zero, which turns
+/// `UNKNOWN` into `HOT`. `UNKNOWN` drawn as `HOT` is the one sentence
+/// `roles.md` §6 forbids: "not yet in effect" wearing the face of "already
+/// in effect". The offsets are asserted below rather than trusted.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PersonaMark {
+    /// The chosen preset's key, or null when the user never chose one.
+    /// **That and only that** -- "no agent is connected" is `agent_present`.
+    pub key: *const c_char,
+    /// Display name. Null exactly when `key` is.
+    pub name: *const c_char,
+    pub deviated: bool,
+    /// Whether an agent is connected to Polter here. The persona is kept
+    /// either way; only a terminal with somebody in it may be shown as
+    /// *wearing* one.
+    pub agent_present: bool,
+    /// `ghostty_action_poltergeist_host_class_e`: 0 unknown, 1 hot, 2 warm,
+    /// 3 cold. **Zero is the honest answer**, not a flavour of the others.
+    pub host_class: i32,
+}
+
+/// `ghostty_persona_s`, one row of `ghostty_app_personas`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PersonaRow {
+    pub key: *const c_char,
+    pub name: *const c_char,
+}
+
 /// `ghostty_action_poltergeist_close_scope_e`.
 pub const POLTERGEIST_CLOSE_THIS_TAB: i32 = 0;
 pub const POLTERGEIST_CLOSE_OTHER_TABS: i32 = 1;
@@ -422,6 +466,23 @@ impl Action {
         // `shielded`, `held`, `may_authorise`: three bools in declaration
         // order after the int, one byte each, no padding between them.
         (role, self.payload[12] != 0, self.payload[13] != 0, self.payload[14] != 0)
+    }
+
+    /// The `persona` pointer the mark now carries, at offset 16.
+    ///
+    /// **Null is the core's bug, not a state.** The header says so in as many
+    /// words: there is always something to say, if only "nothing chosen,
+    /// nobody connected", so every distinction lives in the fields rather
+    /// than in a second nearly-synonymous null. Checked anyway -- a null
+    /// dereference for the sake of trusting a comment is a poor trade -- and
+    /// the caller logs it rather than drawing it as "never chosen", because
+    /// those two must not become the same picture.
+    ///
+    /// ⚠️ **Valid for the duration of the callback and no longer**, the same
+    /// rule `prefix` follows. Anything kept must be copied before this
+    /// function's caller returns.
+    pub fn as_poltergeist_persona(&self) -> *const PersonaMark {
+        usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *const PersonaMark
     }
 
     /// `ghostty_action_poltergeist_close_s { scope; bool confirm; result*; }`.
@@ -790,6 +851,27 @@ const _: () = {
     assert!(std::mem::size_of::<Text>() == 40);
     assert!(std::mem::size_of::<Point>() == 16);
     assert!(std::mem::size_of::<Selection>() == 36);
+
+    // -- the persona ABI, contract §3.1.
+    //
+    // **The first of these is the one that matters most, and it must not be
+    // "fixed" by editing the number.** `Action` staying 32 is the entire
+    // claim the pointer shape was chosen for: that adding personas moved no
+    // other action's payload. If this goes red, the core widened the union
+    // and every other accessor in this file is now reading at the wrong
+    // offset -- the fix is on that side, not here.
+    assert!(std::mem::size_of::<Action>() == 32);
+    assert!(std::mem::size_of::<PersonaMark>() == 24);
+    // Two pointers, two bools, then **two bytes of padding** before an
+    // int-wide enum. The padding is why `host_class` is at 20 and not 18,
+    // and reading it at 18 turns `UNKNOWN` into a non-zero value -- which is
+    // `HOT`, the one answer that must never be shown when it is not true.
+    assert!(std::mem::offset_of!(PersonaMark, key) == 0);
+    assert!(std::mem::offset_of!(PersonaMark, name) == 8);
+    assert!(std::mem::offset_of!(PersonaMark, deviated) == 16);
+    assert!(std::mem::offset_of!(PersonaMark, agent_present) == 17);
+    assert!(std::mem::offset_of!(PersonaMark, host_class) == 20);
+    assert!(std::mem::size_of::<PersonaRow>() == 16);
 };
 
 /// Resolved entry points. We load at runtime rather than link, because the
@@ -1190,6 +1272,22 @@ pub struct Api {
     /// loaded by `i18n.init` during `ghostty_init`; this is the only thing
     /// the host needed in order to use them. See `i18n.rs`.
     pub translate: unsafe extern "C" fn(*const c_char) -> *const c_char,
+
+    // -- personas. Contract §3.3 / §3.4 / §3.5.
+    //
+    // All three follow one rule: **write what fits and return the real
+    // total**, so a caller asks with `cap = 0` first and allocates once.
+    // `buf` may be null when `cap` is zero. The two JSON ones return a byte
+    // count that does **not** count the terminating NUL, and write one after
+    // the text when it fits -- so they can be read by length or as a C
+    // string, and this host reads by length.
+    /// `ghostty_app_personas`. Rows belong to the core and are valid until
+    /// the next call or the next config reload; copy them at once.
+    pub app_personas: unsafe extern "C" fn(App, *mut PersonaRow, usize) -> usize,
+    /// `ghostty_app_persona_hosts`. JSON; `stale` is **not** an empty list.
+    pub app_persona_hosts: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_surface_persona_face`. JSON, per terminal.
+    pub surface_persona_face: unsafe extern "C" fn(Surface, *mut u8, usize) -> usize,
 
     // from ghostty-vt.dll -- proves both DLLs are loaded and callable
     pub codepoint_width: unsafe extern "C" fn(u32) -> u8,

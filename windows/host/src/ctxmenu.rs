@@ -62,19 +62,30 @@ pub enum Tick {
 }
 
 /// One row. `action` is a core binding string, or `None` for a separator.
+///
+/// **`roles` is the fourth kind of row and it carries no label**, because the
+/// label of a submenu that says which role this terminal has can only be
+/// computed when the menu opens -- `roles::submenu_label`. A `const` cannot
+/// call a function, which is the same constraint that puts `n_` in this table
+/// and `tr` at the point of use.
 struct Row {
     label: &'static str,
     action: Option<&'static str>,
     tick: Option<Tick>,
+    /// This row is the persona submenu. See `personas.rs`.
+    roles: bool,
 }
 
 const fn item(label: &'static str, action: &'static str) -> Row {
-    Row { label, action: Some(action), tick: None }
+    Row { label, action: Some(action), tick: None, roles: false }
 }
 const fn checkable(label: &'static str, action: &'static str, tick: Tick) -> Row {
-    Row { label, action: Some(action), tick: Some(tick) }
+    Row { label, action: Some(action), tick: Some(tick), roles: false }
 }
-const SEP: Row = Row { label: "", action: None, tick: None };
+const SEP: Row = Row { label: "", action: None, tick: None, roles: false };
+/// The roles submenu. **Placed with the agent rows**, because a role is a
+/// fact about the agent in this terminal and not about the terminal.
+const ROLES: Row = Row { label: "", action: None, tick: None, roles: true };
 
 /// **Chosen for frequency, not for coverage.** A right-click menu that listed
 /// all 96 commands would be a worse answer to "how do I copy this" than the
@@ -159,12 +170,24 @@ const ROWS: &[Row] = &[
         "poltergeist_toggle_authorise",
         Tick::PgMayAuthorise,
     ),
+    ROLES,
     SEP,
     item(n_("Command Palette"), "toggle_command_palette"),
 ];
 
 /// Command ids start here so they cannot collide with anything Windows sends.
 const ID_BASE: usize = 0x4000;
+
+/// The highest id this table can ever return.
+///
+/// **Computed from the table rather than written down.** `roles.rs` puts its
+/// own range above this one and asserts the gap; a constant copied over there
+/// would agree until a row was added here, and the symptom of the two ranges
+/// touching is a menu that runs a different command from the one clicked.
+#[cfg(test)]
+pub fn max_static_id() -> usize {
+    ID_BASE + ROWS.len()
+}
 
 // ------------------------------------------------------ poltergeist marking
 
@@ -293,6 +316,9 @@ pub struct Item {
     pub text: String,
     pub separator: bool,
     pub checked: bool,
+    /// This item is the roles submenu; its children come from
+    /// `roles::entries` and take ids out of `roles::ID_BASE`.
+    pub roles: bool,
 }
 
 /// Render the whole menu.
@@ -309,12 +335,25 @@ fn build(
     ROWS.iter()
         .enumerate()
         .map(|(index, row)| {
+            if row.roles {
+                // **The text is filled in by `show`**, which has the surface.
+                // `build` is the testable half and deliberately takes no
+                // surface -- see its doc comment.
+                return Item {
+                    index,
+                    text: String::new(),
+                    separator: false,
+                    checked: false,
+                    roles: true,
+                };
+            }
             let Some(action) = row.action else {
                 return Item {
                     index,
                     text: String::new(),
                     separator: true,
                     checked: false,
+                    roles: false,
                 };
             };
             // The tab and everything after it is the shortcut half. A row
@@ -336,6 +375,7 @@ fn build(
                 text,
                 separator: false,
                 checked: row.tick.map(&*tick).unwrap_or(false),
+                roles: false,
             }
         })
         .collect()
@@ -367,7 +407,29 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
 
         let mut with_shortcut = 0usize;
         let mut shown = 0usize;
+        // **Kept alive for as long as the menu is.** The ids the role rows
+        // take are indices into this vector, so the vector is what `show`
+        // dispatches against: rebuilding it after the click would be a second
+        // walk, and the catalogue can change between two walks.
+        let mut role_entries: Vec<crate::personas::Entry> = Vec::new();
         for it in &items {
+            if it.roles {
+                role_entries = crate::personas::entries(surface);
+                if let Some(child) = build_roles_menu(surface_hwnd, &role_entries) {
+                    let wide: Vec<u16> = crate::personas::submenu_label(surface)
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                    let _ = AppendMenuW(
+                        menu,
+                        MF_POPUP | MF_STRING,
+                        child.0 as usize,
+                        PCWSTR(wide.as_ptr()),
+                    );
+                    shown += 1;
+                }
+                continue;
+            }
             if it.separator {
                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
                 continue;
@@ -424,6 +486,18 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
         let _ = DestroyMenu(menu);
 
         let id = chosen.0 as usize;
+        // **Checked before the table**, because the role ids sit above it and
+        // an index computed from `ID_BASE` would run off the end of `ROWS`
+        // and be reported as "an id outside the table" -- which is the one
+        // message that would send a reader looking in the wrong file.
+        if id >= crate::personas::ID_BASE {
+            let Some(entry) = role_entries.get(id - crate::personas::ID_BASE) else {
+                logf!("[ctx] a role id came back with no entry behind it: {}", id);
+                return;
+            };
+            crate::personas::perform(surface_hwnd, surface, entry);
+            return;
+        }
         if id < ID_BASE {
             // 0 means dismissed. Logged because "the menu did nothing" and
             // "the menu never appeared" are different bugs and look the same
@@ -467,6 +541,40 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
             action,
             ok
         );
+    }
+}
+
+/// Build the roles popup. `None` when Windows would not give us a menu.
+///
+/// **A greyed row is still appended.** `roles::entries` returns a row saying
+/// *why* there is nothing to pick, and dropping it would leave a submenu that
+/// opens onto nothing -- which reads as a broken menu rather than as an
+/// answer. `menu.rs`'s `Enable::No` makes the same argument.
+fn build_roles_menu(owner: HWND, entries: &[crate::personas::Entry]) -> Option<HMENU> {
+    unsafe {
+        let menu = match CreatePopupMenu() {
+            Ok(m) => m,
+            Err(e) => {
+                hlogf!(owner, "[ctx] CreatePopupMenu for roles failed: {e:?}");
+                return None;
+            }
+        };
+        for (i, e) in entries.iter().enumerate() {
+            if e.separator {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                continue;
+            }
+            let mut flags = MF_STRING;
+            if e.checked {
+                flags |= MF_CHECKED;
+            }
+            if !e.enabled {
+                flags |= MF_GRAYED;
+            }
+            let wide: Vec<u16> = e.text.encode_utf16().chain(Some(0)).collect();
+            let _ = AppendMenuW(menu, flags, crate::personas::ID_BASE + i, PCWSTR(wide.as_ptr()));
+        }
+        Some(menu)
     }
 }
 
