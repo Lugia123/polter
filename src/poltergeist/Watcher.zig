@@ -56,6 +56,12 @@ pub fn isQuiescent(self: *const Watcher) bool {
     return self.sampler.isQuiescent();
 }
 
+/// The live quiet figure, when it is time to state it again. See
+/// `Sampler.heartbeat`.
+pub fn heartbeat(self: *Watcher, now_ms: u64) ?u64 {
+    return self.sampler.heartbeat(now_ms);
+}
+
 /// Apply new thresholds, keeping everything observed so far.
 pub fn setConfig(self: *Watcher, config: Sampler.Config) void {
     self.sampler.setConfig(config);

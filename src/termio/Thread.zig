@@ -801,6 +801,7 @@ fn sampleQuiescence(self: *Thread, io: *termio.Termio) void {
     // time. Hand the gap to the sampler as activity instead.
     if (!io.renderer_state.mutex.tryLock()) {
         if (q.watcher.noteMissedSample(now_ms)) |event| self.reportQuiescence(io, event);
+        self.noteQuiescence(io, now_ms);
         return;
     }
     defer io.renderer_state.mutex.unlock(global.io());
@@ -817,9 +818,36 @@ fn sampleQuiescence(self: *Thread, io: *termio.Termio) void {
     ) catch |err| {
         log.warn("poltergeist: sample failed err={}", .{err});
         return;
-    } orelse return;
+    };
 
-    self.reportQuiescence(io, event);
+    if (event) |e| self.reportQuiescence(io, e);
+
+    // Unconditionally, and after the event rather than instead of it: the
+    // ticks that say nothing are exactly the ones the supervisor's figure
+    // is extrapolated across, and a screen that is moving produces nothing
+    // but those. `heartbeat` decides when there is anything to say.
+    self.noteQuiescence(io, now_ms);
+}
+
+/// Restate how long this terminal's screen has been unchanged, if the
+/// sampler thinks it is time to.
+///
+/// Separate from `reportQuiescence` because it is not a report: it makes no
+/// notice, wakes nobody, and is not worth a log line every few seconds. It
+/// only keeps `Bus.quietMs` from counting a working terminal's work as
+/// stillness -- see `Sampler.heartbeat`.
+fn noteQuiescence(self: *Thread, io: *termio.Termio, now_ms: u64) void {
+    const q = if (self.quiescence) |*p| p else return;
+    const quiet_ms = q.watcher.heartbeat(now_ms) orelse return;
+
+    // Instant, and dropped without complaint if the mailbox is full: the
+    // next tick restates the same thing a moment later.
+    _ = io.surface_mailbox.app.push(.{
+        .poltergeist_quiet = .{
+            .from = io.surface_mailbox.surface.id,
+            .quiet_ms = quiet_ms,
+        },
+    }, .{ .instant = {} });
 }
 
 /// Log the event, then hand it to the app so it can decide whether the

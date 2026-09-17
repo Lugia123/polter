@@ -36,6 +36,15 @@ pub const Config = struct {
     /// default matches it so a caller that forgets is no worse off.
     sample_interval_ms: u64 = 1000,
 
+    /// How often the live quiet figure is restated to whoever is keeping
+    /// it, on ticks that produce no event. See `heartbeat`.
+    ///
+    /// It bounds how far the supervisor's figure may drift from the truth,
+    /// and nothing else: every tick would be correct too, only chattier.
+    /// Five seconds is short against the three minutes that makes a screen
+    /// worth mentioning, and long against the one second a tick takes.
+    heartbeat_ms: u64 = 5 * std.time.ms_per_s,
+
     /// The gap, in sample intervals, above which a window counts as one the
     /// machine was not running for. See `gap_intervals`.
     fn sleepGapMs(self: Config) u64 {
@@ -172,6 +181,9 @@ stale: bool = false,
 /// minute as a sleeping machine, which is the opposite of the truth.
 last_sample_ms: ?u64 = null,
 
+/// When the live quiet figure was last restated. Null until the first one.
+last_heartbeat_ms: ?u64 = null,
+
 pub fn init(config: Config) Sampler {
     return .{ .config = config };
 }
@@ -189,6 +201,39 @@ pub fn isQuiescent(self: *const Sampler) bool {
 /// so a terminal that had been still for an hour would look brand new.
 pub fn setConfig(self: *Sampler, config: Config) void {
     self.config = config;
+}
+
+/// The live quiet figure, when it is time to state it again.
+///
+/// **The number this exists to stop.** Whoever keeps the figure for the
+/// supervisor -- `Bus.quietMs` -- does not store a duration, it stores the
+/// last one it was told and adds the time since. That is exact while the
+/// screen is still, because a screen that moved would have produced a
+/// `resumed`. It is false the moment the screen is moving: this file only
+/// speaks on transitions, so a terminal working flat out for half an hour
+/// produces no event at all, and half an hour is exactly what the
+/// supervisor is then shown. Two terminals whose screens were visibly
+/// changing were reported quiet for 29 and 31 minutes and climbing, which
+/// is the reading a supervisor interrupts somebody over.
+///
+/// So the moving case gets the one thing the still case gets for free: a
+/// statement, often enough that nobody's figure can drift past
+/// `heartbeat_ms`. It is not a report and never becomes a notice -- the
+/// screen moving is not news -- it only keeps the arithmetic honest.
+///
+/// Silent in two cases, both because the figure is already right without
+/// it: before the first observation there is nothing measured to state,
+/// and while quiescence stands the extrapolation is exact.
+pub fn heartbeat(self: *Sampler, now_ms: u64) ?u64 {
+    if (self.last_screen == null) return null;
+    if (self.last_report_ms != null) return null;
+
+    if (self.last_heartbeat_ms) |last| {
+        if (now_ms -| last < self.config.heartbeat_ms) return null;
+    }
+
+    self.last_heartbeat_ms = now_ms;
+    return now_ms -| self.last_change_ms;
 }
 
 /// Feed one sample. Returns an event only on a transition worth reporting,
@@ -804,4 +849,88 @@ test "sample_interval_ms defaults to the value termio.Thread ticks at" {
     const d: Config = .{};
     try testing.expectEqual(@as(u64, 1000), d.sample_interval_ms);
     try testing.expectEqual(@as(u64, 10_000), d.sleepGapMs());
+}
+
+test "the heartbeat says nothing before the first observation" {
+    var s: Sampler = .init(fast);
+    try testing.expect(s.heartbeat(0) == null);
+    try testing.expect(s.heartbeat(60_000) == null);
+}
+
+test "a moving screen restates its quiet time at the heartbeat interval" {
+    var s: Sampler = .init(.{ .quiescence_ms = 1000, .repeat_ms = 5000, .heartbeat_ms = 5000 });
+
+    // The first observation arms it, and the first heartbeat states what it
+    // has: nothing has been still for any time at all yet.
+    _ = s.observe(sample(0, 1, 10));
+    try testing.expectEqual(@as(u64, 0), s.heartbeat(0) orelse return error.TestExpectedHeartbeat);
+
+    // Too soon: the figure whoever holds it already has is good to within
+    // the interval, so there is nothing to say.
+    try testing.expect(s.heartbeat(1000) == null);
+    try testing.expect(s.heartbeat(4999) == null);
+
+    // A screen changing once a second, restated every five.
+    var now: u64 = 1000;
+    var screen: u64 = 1;
+    var heard: usize = 0;
+    while (now <= 30_000) : (now += 1000) {
+        screen += 1;
+        _ = s.observe(sample(now, screen, 10));
+        if (s.heartbeat(now)) |quiet_ms| {
+            heard += 1;
+
+            // The screen moved on this very tick, so the whole of what it
+            // has been still for is nothing.
+            try testing.expectEqual(@as(u64, 0), quiet_ms);
+        }
+    }
+    try testing.expectEqual(@as(usize, 6), heard);
+}
+
+test "a screen that has stopped is restated until it is reported" {
+    var s: Sampler = .init(.{ .quiescence_ms = 60_000, .repeat_ms = 5000, .heartbeat_ms = 5000 });
+    _ = s.observe(sample(0, 7, 0));
+    _ = s.heartbeat(0);
+
+    // Below the threshold there is no event, and the figure still has to be
+    // right: a terminal still for forty seconds is forty seconds quiet, not
+    // "nothing has been said about it".
+    //
+    // Sampled every second the way `termio.Thread` does, because jumping
+    // straight to forty would be a gap the sampler reads as a window it was
+    // not running for -- which is a different case with a different answer.
+    var now: u64 = 1000;
+    var last: u64 = 0;
+    while (now <= 40_000) : (now += 1000) {
+        try testing.expect(s.observe(sample(now, 7, 0)) == null);
+        if (s.heartbeat(now)) |quiet_ms| {
+            try testing.expectEqual(now, quiet_ms);
+            last = quiet_ms;
+        }
+    }
+    try testing.expectEqual(@as(u64, 40_000), last);
+}
+
+test "a reported quiescence needs no heartbeat" {
+    var s: Sampler = .init(fast);
+    _ = s.observe(sample(0, 7, 0));
+    _ = s.heartbeat(0);
+
+    _ = s.observe(sample(1000, 7, 0)) orelse return error.TestExpectedEvent;
+    try testing.expect(s.isQuiescent());
+
+    // The report said how long it had been still, and nothing has moved
+    // since, so adding the elapsed time to it is exact. Restating it would
+    // be the same number arrived at twice.
+    try testing.expect(s.heartbeat(6000) == null);
+    try testing.expect(s.heartbeat(9000) == null);
+
+    // Back at work: the figure is live again, and so is the heartbeat.
+    const e = s.observe(sample(9000, 8, 10)) orelse return error.TestExpectedEvent;
+    try testing.expect(e == .resumed);
+    try testing.expectEqual(
+        @as(u64, 0),
+        s.heartbeat(9000) orelse return error.TestExpectedHeartbeat,
+    );
 }

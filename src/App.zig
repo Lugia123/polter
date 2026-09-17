@@ -5243,6 +5243,11 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
             .close => |surface| self.closeSurface(surface),
             .surface_message => |msg| try self.surfaceMessage(msg.surface, msg.message),
             .poltergeist_report => |msg| self.poltergeistReport(msg.from, msg.event),
+            .poltergeist_quiet => |msg| self.poltergeist.noteQuiet(
+                msg.from,
+                msg.quiet_ms,
+                self.poltergeistElapsedMs(),
+            ),
             .poltergeist_request => |p| self.poltergeistRequest(p),
             .poltergeist_alert => |line| self.poltergeistAlert(line),
             .redraw_surface => |surface| try self.redrawSurface(rt_app, surface),
@@ -5555,6 +5560,19 @@ pub const Message = union(enum) {
     poltergeist_report: struct {
         from: poltergeistpkg.Bus.Id,
         event: poltergeistpkg.Sampler.Event,
+    },
+
+    /// A surface restating how long its screen has been unchanged, on a
+    /// tick that produced no report.
+    ///
+    /// Deliberately not a `poltergeist_report`: nobody is told, no round is
+    /// counted, no tab is redrawn. It exists because the report stream says
+    /// nothing at all while a screen is moving, and the supervisor's figure
+    /// is extrapolated from the last thing it was told. See
+    /// `Sampler.heartbeat`.
+    poltergeist_quiet: struct {
+        from: poltergeistpkg.Bus.Id,
+        quiet_ms: u64,
     },
 
     /// A request from an agent, waiting on its connection thread for an

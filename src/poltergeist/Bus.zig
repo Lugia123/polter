@@ -441,10 +441,20 @@ pub fn get(self: *const Bus, id: Id) ?Entry {
 
 /// How long this terminal's screen has been unchanged, as of now.
 ///
-/// Extrapolated rather than stale, and exactly so: a screen that changed
-/// would have produced a `resumed` report, so the absence of one since the
-/// last report means it has not changed since either. Adding the elapsed
-/// time is therefore the true figure, not an estimate.
+/// Extrapolated rather than stale, and that is exact **only because
+/// something says so whenever the screen is moving.** The old reasoning
+/// here was that a screen that changed would have produced a `resumed`
+/// report, so the absence of one meant it had not changed. Half true:
+/// `resumed` is emitted once, when a *reported* quiescence ends, and a
+/// terminal that has been working ever since produces nothing further. The
+/// figure then counted up through the whole of that work, and two
+/// terminals whose screens were plainly changing were shown as still for
+/// half an hour -- the reading a supervisor interrupts somebody over.
+///
+/// What closes it is `Sampler.heartbeat`, which restates the live figure
+/// while the screen is moving; `noteQuiet` is where it lands. So the
+/// invariant this relies on is now stated rather than assumed: **between
+/// two things we are told, the screen did not change.**
 ///
 /// Zero for a terminal nothing has sampled yet, which is the honest
 /// direction to be wrong in: zero moves the supervisor to do nothing, and
@@ -453,6 +463,24 @@ pub fn quietMs(self: *const Bus, id: Id, now_ms: u64) u64 {
     const e = self.entries.get(id) orelse return 0;
     const since = e.last_event_ms orelse return 0;
     return e.last_quiet_ms + (now_ms -| since);
+}
+
+/// Record how long this terminal's screen has been unchanged, as measured
+/// just now by whatever is sampling it.
+///
+/// Not a report: it makes no notice, counts no round, and wakes nobody. It
+/// exists so that `quietMs` has something recent to extrapolate from while
+/// the screen is moving, which is the window the event stream says nothing
+/// about. See `Sampler.heartbeat`.
+///
+/// A terminal the bus has never registered is ignored rather than
+/// registered here: this arrives once every few seconds from a surface that
+/// may never be put under watch, and registering on it would fill the table
+/// with entries nobody asked for.
+pub fn noteQuiet(self: *Bus, id: Id, quiet_ms: u64, now_ms: u64) void {
+    const e = self.entries.getPtr(id) orelse return;
+    e.last_quiet_ms = quiet_ms;
+    e.last_event_ms = now_ms;
 }
 
 /// Whether anything has ever sampled this terminal. A caller that can say
@@ -613,6 +641,21 @@ pub fn unwatch(self: *Bus, id: Id) void {
     if (self.entries.getPtr(id)) |e| {
         if (e.role == .watched) e.role = .none;
         e.watched_by = null;
+
+        // Letting go stops the sampling (`Host.setWatching`), so the last
+        // figure stops being extrapolated from and starts being extended
+        // by time nobody measured. Forgetting it is what makes the
+        // terminal read as "not measured" again, which is what it is --
+        // and what `TerminalInfo.quiet_ms` already promised for a terminal
+        // nobody is minding. A released terminal used to keep counting up
+        // for as long as the window stayed open.
+        e.last_event_ms = null;
+        e.last_quiet_ms = 0;
+
+        // The count belongs to the watch that has just ended. Carried
+        // across, it would start the next one partway through a tally of
+        // reports nobody in it had been given.
+        e.rounds = 0;
     }
 }
 
@@ -2183,4 +2226,91 @@ test "unshielding does not put a terminal back under supervision" {
     // anything. Who minds what is the supervisor's arrangement to make,
     // and guessing it back would be this code deciding on its behalf.
     try testing.expectEqual(Role.none, b.roleOf(worker));
+}
+
+/// Drive a real sampler and a real bus together for `ms` milliseconds of
+/// simulated time, one sample a second, and return the largest figure
+/// `quietMs` ever gave while it ran.
+///
+/// `moving` says whether the screen changes between samples. Everything
+/// else is the production path: the sampler decides what is an event and
+/// what is a heartbeat, and the bus is told each the way the app tells it.
+fn runSampler(b: *Bus, s: *Sampler, id: Id, from_ms: u64, ms: u64, moving: bool) struct { u64, u64 } {
+    var now = from_ms;
+    var peak: u64 = 0;
+    var screen: u64 = from_ms;
+
+    while (now < from_ms + ms) : (now += 1000) {
+        if (moving) screen += 1;
+
+        const obs: Sampler.Observation = .{
+            .now_ms = now,
+            .bytes = if (moving) 10 else 0,
+            .fingerprint = .{ .screen = screen, .changed_rows = 1, .total_rows = 24 },
+        };
+        if (s.observe(obs)) |event| _ = b.report(id, event, now);
+        if (s.heartbeat(now)) |quiet_ms| b.noteQuiet(id, quiet_ms, now);
+
+        peak = @max(peak, b.quietMs(id, now));
+    }
+    return .{ peak, now };
+}
+
+test "a terminal whose screen keeps changing is not reported as quiet" {
+    // The defect this is here for. `quietMs` extrapolates from the last
+    // thing it was told, and the sampler used to tell it nothing at all
+    // while a screen was moving -- so a terminal that went quiet once and
+    // then worked for half an hour was reported as still for half an hour,
+    // climbing. A supervisor reading that goes and interrupts somebody who
+    // is in the middle of the job.
+    //
+    // Constructed rather than observed: the screen below provably changes
+    // between every pair of samples, so any figure above one sample
+    // interval plus one heartbeat interval is wrong by construction.
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, null);
+
+    var s: Sampler = .init(.{
+        .quiescence_ms = 3 * std.time.ms_per_min,
+        .repeat_ms = 15 * std.time.ms_per_min,
+        .sample_interval_ms = 1000,
+        .heartbeat_ms = 5000,
+    });
+
+    // Four minutes of a still screen first, because the wrong number was
+    // extrapolated from a quiescence that had been reported and then ended.
+    const still = runSampler(&b, &s, worker, 0, 4 * std.time.ms_per_min, false);
+    try testing.expect(still[0] >= 3 * std.time.ms_per_min);
+    try testing.expect(b.quietMs(worker, still[1]) >= 3 * std.time.ms_per_min);
+
+    // Half an hour of work, one screen change a second.
+    const working = runSampler(&b, &s, worker, still[1], 30 * std.time.ms_per_min, true);
+
+    // One sample interval, one heartbeat interval, and a second of slack.
+    try testing.expect(working[0] <= 7000);
+
+    // And it is not merely small at the end: the figure stopped climbing.
+    // A number sampled once cannot tell a healthy terminal from a stuck
+    // one -- it is whether it keeps growing that says which.
+    try testing.expect(b.quietMs(worker, working[1]) <= 7000);
+}
+
+test "letting a terminal go stops measuring it rather than extrapolating" {
+    // Nothing samples a terminal nobody is minding, so the last figure it
+    // had stops being a measurement the moment it is released. It used to
+    // go on being extended by the time since, which is time nobody looked.
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    _ = b.report(worker, quiet(180_000), 180_000);
+    try testing.expect(b.observed(worker));
+    try testing.expectEqual(@as(u64, 240_000), b.quietMs(worker, 240_000));
+
+    b.unwatch(worker);
+    try testing.expect(!b.observed(worker));
+    try testing.expectEqual(@as(u64, 0), b.quietMs(worker, 10 * std.time.ms_per_hour));
 }

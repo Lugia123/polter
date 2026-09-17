@@ -355,7 +355,15 @@ come to ignore the next.
 time, duty state and round count. An unwatched terminal has **no quiet time at
 all**, and that absence is information: do not read a missing `quiet_ms` as
 zero, which would mean busy this instant. `set_watch(id, false)` stops the
-sampling and takes the mark off without taking your reach away.
+sampling and takes the mark off without taking your reach away -- and takes
+the quiet time with it, because nothing is measuring it any more.
+
+A watched terminal that is working has a **small** `quiet_ms`, not none: its
+screen is sampled once a second and the figure is restated while it moves. So
+a figure that keeps climbing is a screen that has genuinely stopped, and one
+that stays small is a terminal you can see is still going. Read it twice a
+minute apart rather than once: whether it is growing is the question, and no
+single reading answers it.
 
 ## Interrupting: `terminal_key`
 

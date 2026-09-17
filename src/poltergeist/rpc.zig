@@ -6236,7 +6236,14 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         // terminal nobody has looked at yet gives no grounds for one.
         .quiet_ms = if (bus.observed(id)) host.quietMs(id) else null,
         .watching = e.role == .watched,
-        .rounds = e.rounds,
+
+        // On the same terms as `quiet_ms`, which is what `TerminalInfo`
+        // says about it. The two are one answer: "it has been still for
+        // this long, and it has been said this many times". Sending the
+        // count on its own would say a terminal nothing is measuring had
+        // nevertheless been reported, which is a claim about a watch that
+        // is over.
+        .rounds = if (bus.observed(id)) e.rounds else null,
     };
 }
 
