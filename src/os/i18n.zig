@@ -235,6 +235,7 @@ extern fn _libintl_locale_name_canonicalize(name: [*:0]u8) void;
 // Used only by the test below, to put a language in place before the first
 // `dgettext` in the process.
 extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern fn unsetenv(name: [*:0]const u8) c_int;
 
 // Also only for the test below: it asks the C library whether it actually
 // knows the locale, which is not the same question as whether translation
@@ -849,6 +850,28 @@ test "libintl answers on this platform, not just the reader written above" {
     // today's test set rather than a guarantee, so a failure here is worth
     // reading as "somebody added an earlier caller" before it is read as
     // "translation is broken".
+    // ⚠️ **gettext reads four variables, in this order: `LANGUAGE`, `LC_ALL`,
+    // `LC_MESSAGES`, `LANG`.** Setting only the last one leaves the first
+    // three able to override it, so this test used to be at the mercy of
+    // whoever ran it. On this development machine `LANG` is already
+    // `zh_CN.UTF-8` and the other three are unset -- so that `setenv` was a
+    // no-op and the test was never exercising the environment it thought it
+    // had set up; it was reading the developer's shell. Anywhere `LC_ALL` has
+    // a value, the same code reddens, and it reddens in the shape of "the
+    // translation is broken". `LC_ALL=C zig build test …` reproduces it in
+    // one line.
+    //
+    // ⚠️ **`LANGUAGE` outranks both of these and is deliberately not handled.**
+    // It is a colon-separated list, so it cannot be set to one locale; it
+    // would have to be cleared. Clearing it with `unsetenv` made this test
+    // abort with `aborting due to recursive panic` instead of failing --
+    // measured, against the same cell on the previous commit where it merely
+    // failed, so the abort was introduced by the clearing and not already
+    // there. The cause was not chased and this is not that fix: with
+    // `LANGUAGE` set in the environment this test still reddens, exactly as
+    // it did before. What is fixed is the `LC_ALL` case, which is the one CI
+    // is in.
+    if (setenv("LC_ALL", "zh_CN.UTF-8", 1) != 0) return error.SkipZigTest;
     if (setenv("LANG", "zh_CN.UTF-8", 1) != 0) return error.SkipZigTest;
 
     // ⚠️ **A machine that does not have this locale installed is not a
