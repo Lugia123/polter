@@ -25,6 +25,7 @@ const new_tab = @import("new_tab.zig");
 const toggle_quick_terminal = @import("toggle_quick_terminal.zig");
 const chat = @import("chat.zig");
 const mcp = @import("mcp.zig");
+const mcp_slot = @import("mcp_slot.zig");
 const global = @import("../global.zig");
 
 /// Special commands that can be invoked via CLI flags. These are all
@@ -92,6 +93,10 @@ pub const Action = enum {
     // Poltergeist supervisor is watching.
     chat,
     mcp,
+
+    // One upstream MCP server behind one slot, exposed to this terminal
+    // according to its role. See `cli/mcp_slot.zig`.
+    @"mcp-slot",
 
     pub fn detectSpecialCase(arg: []const u8) ?SpecialCase(Action) {
         // If we see a "-e" and we haven't seen a command yet, then
@@ -295,6 +300,7 @@ pub const Action = enum {
             .@"toggle-quick-terminal" => try toggle_quick_terminal.run(alloc),
             .chat => try chat.run(alloc),
             .mcp => try mcp.run(alloc),
+            .@"mcp-slot" => try mcp_slot.run(alloc),
         };
     }
 
@@ -340,6 +346,7 @@ pub const Action = enum {
                 .@"toggle-quick-terminal" => toggle_quick_terminal.Options,
                 .chat => chat.Options,
                 .mcp => mcp.Options,
+                .@"mcp-slot" => mcp_slot.Options,
             };
         }
     }

@@ -418,11 +418,11 @@ struct PluginSettingsTests {
             events: ["chat"])
     }
 
-
     /// Exercises the same decoding the app uses, without touching the disk.
     private func decode(_ json: String) throws -> PluginSettings {
-        let root = try JSONSerialization.jsonObject(
-            with: Data(json.utf8)) as! [String: Any]
+        struct NotAnObject: Error {}
+        guard let root = try JSONSerialization.jsonObject(
+            with: Data(json.utf8)) as? [String: Any] else { throw NotAnObject() }
 
         let modern = root["params"] != nil || root["enabled"] != nil
         if !modern {

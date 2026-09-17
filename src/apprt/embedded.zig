@@ -1555,6 +1555,96 @@ pub const CAPI = struct {
         return v.opts.userdata;
     }
 
+    /// The personas the user has defined, for building a menu from.
+    ///
+    /// **Copies what fits and returns the real total**, so a caller asks
+    /// with `cap = 0` first and allocates once. `buf` may be null when `cap`
+    /// is zero; a null `buf` with a non-zero `cap` is treated as zero rather
+    /// than written through. Truncating in silence is the thing this shape
+    /// exists to avoid -- the same rule `PoltergeistLayout.Out` states for
+    /// its own buffer.
+    ///
+    /// The strings belong to the core and are valid until the next call or
+    /// the next config reload; copy them before doing anything else.
+    ///
+    /// ⚠️ **Answers zero today, honestly.** Nothing loads `personas.json`
+    /// yet. Zero personas and "the file has not been read" are different
+    /// things and the interface has to tell them apart -- that distinction
+    /// arrives on `ghostty_surface_persona_face`'s `error` field, not here.
+    export fn ghostty_app_personas(
+        app: *App,
+        buf: ?[*]Persona,
+        cap: usize,
+    ) usize {
+        _ = app;
+        _ = buf;
+        _ = cap;
+        return 0;
+    }
+
+    /// Sync with: ghostty_persona_s
+    const Persona = extern struct {
+        key: [*:0]const u8,
+        name: [*:0]const u8,
+    };
+
+    /// What this terminal is actually handing out right now, as JSON.
+    ///
+    /// JSON rather than a struct because the shape is a list of lists whose
+    /// lengths are the user's -- `a string is a conduit; a struct would be a
+    /// claim`, which is the reasoning `PoltergeistLayout` already wrote down
+    /// for its own spec.
+    ///
+    /// Returns the byte count **without** the terminating NUL. When it fits,
+    /// one NUL is written after it, so a caller may read it by length or as
+    /// a C string. When it does not fit, nothing is NUL-terminated and the
+    /// return value is still the real length, for the retry.
+    export fn ghostty_surface_persona_face(
+        surface: *Surface,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        _ = surface;
+
+        // The empty-but-valid answer: no persona, nothing switched by hand,
+        // no error. An apprt must be able to draw this, because it is also
+        // what every terminal looks like before anybody chooses anything.
+        const json =
+            \\{"key":null,"name":null,"deviated":false,"epoch":0,"agent_present":false,"host_class":"unknown","prompt":null,"skills":[],"mcp":[],"error":null,"error_kind":null}
+        ;
+        if (buf) |b| if (json.len + 1 <= cap) {
+            @memcpy(b[0..json.len], json);
+            b[json.len] = 0;
+        };
+        return json.len;
+    }
+
+    /// What is installed on this machine that a persona does not cover, as
+    /// JSON. Read only: Polter lists these so the user can see where a
+    /// persona stops, and changes none of them.
+    ///
+    /// Same buffer rule as `ghostty_surface_persona_face`.
+    ///
+    /// ⚠️ **`stale` is not the same as an empty list**, and an interface
+    /// that collapses them tells the user this machine has nothing
+    /// installed. Until the scan behind this is wired up it is always
+    /// `true`.
+    export fn ghostty_app_persona_hosts(
+        app: *App,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        _ = app;
+        const json =
+            \\{"stale":true,"hosts":[]}
+        ;
+        if (buf) |b| if (json.len + 1 <= cap) {
+            @memcpy(b[0..json.len], json);
+            b[json.len] = 0;
+        };
+        return json.len;
+    }
+
     export fn ghostty_app_free(v: *App) void {
         const core_app = v.core_app;
         v.terminate();

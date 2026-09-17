@@ -714,6 +714,7 @@ extension TerminalWindow {
     private static let agentHeldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentHeld")
     private static let agentShieldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentShield")
     private static let agentAuthoriseIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentAuthorise")
+    private static let agentPersonaIdentifier = PersonaMenu.itemIdentifier
 
     private static let projectSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSeparator")
     private static let projectSaveAsIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSaveAs")
@@ -786,6 +787,7 @@ extension TerminalWindow {
             Self.agentHeldIdentifier,
             Self.agentShieldIdentifier,
             Self.agentAuthoriseIdentifier,
+            Self.agentPersonaIdentifier,
         ])
 
         let separator = NSMenuItem.separator()
@@ -836,6 +838,20 @@ extension TerminalWindow {
             }
             menu.addItem(item)
         }
+
+        // "Role ▸" sits with the four toggles because it is the same kind
+        // of thing: one terminal, decided from the tab strip rather than by
+        // clicking into each tab first. Built by `PersonaMenu` so this copy and
+        // the terminal's own context menu cannot drift apart -- and pointed
+        // at `target`, the right-clicked tab, not the focused one.
+        let catalog = PersonaCatalog.shared
+        catalog.reload()
+        menu.addItem(PersonaMenu.makeItem(
+            state: surface?.poltergeistPersonaState ?? .none,
+            shielded: surface?.poltergeistShielded ?? false,
+            personas: catalog.personas,
+            personasKnown: catalog.isKnown,
+            target: target))
     }
 
     private func appendTabModifierSection(to menu: NSMenu, target: TerminalController?) {

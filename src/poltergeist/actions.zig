@@ -130,6 +130,17 @@ pub fn selfSafeTag(tag: std.meta.Tag(inputpkg.Binding.Action)) bool {
         .poltergeist_toggle_authorise,
         .poltergeist_toggle_chat,
 
+        // The four persona actions. Same footing as the five above: an
+        // agent cannot reach them at all (`governed` matches the
+        // `poltergeist_` prefix, so they are not in the catalogue and are
+        // refused by name), and `NotPermitted` is the answer that says so.
+        // Answering `SelfTarget` here instead would point the caller at the
+        // wrong thing.
+        .poltergeist_persona_set,
+        .poltergeist_persona_clear,
+        .poltergeist_persona_skill,
+        .poltergeist_persona_mcp,
+
         // The splits, which are the point of all this.
         .new_split,
         .goto_split,
@@ -644,5 +655,50 @@ test "the user's close is the identity, so that path is unchanged by constructio
     // test rather than as a comment because the comment cannot fail.
     for ([_]bool{ true, false }) |needs| {
         try testing.expectEqual(needs, confirmsClose(.user) and needs);
+    }
+}
+
+test "persona: the four persona actions are governed, so no agent can reach one" {
+    // **The assertion is that they are absent from the catalogue**, not
+    // that asking for one is refused. `all` is what an agent picks from,
+    // and an entry that is always refused is an invitation to spend a turn
+    // finding that out.
+    //
+    // It holds today because `governed` matches the `poltergeist_` prefix
+    // rather than a list -- so these four were covered the moment they were
+    // named. That is worth a test anyway: the protection is a naming
+    // convention, and a fifth persona action called something else would be
+    // reachable with nothing to say so.
+    const inCatalogue = struct {
+        fn f(name: []const u8) bool {
+            for (all) |entry| {
+                if (std.mem.eql(u8, entry.name, name)) return true;
+            }
+            return false;
+        }
+    }.f;
+
+    // **The positive control, and it earns its line.** The loop below
+    // proves an absence, and an absence is also what a search that never
+    // matches anything produces. `new_tab` is ungoverned and really is in
+    // the catalogue, so finding it proves the search works before the
+    // absences below are read as meaning anything.
+    try std.testing.expect(inCatalogue("new_tab"));
+
+    for ([_][]const u8{
+        "poltergeist_persona_set",
+        "poltergeist_persona_clear",
+        "poltergeist_persona_skill",
+        "poltergeist_persona_mcp",
+    }) |name| {
+        try std.testing.expect(governed(name));
+        if (inCatalogue(name)) {
+            std.debug.print(
+                "{s} is in the agent catalogue; a persona is a capability " ++
+                    "grant and must not be reachable from the tool surface\n",
+                .{name},
+            );
+            return error.PersonaActionReachable;
+        }
     }
 }

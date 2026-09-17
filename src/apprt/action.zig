@@ -1998,6 +1998,33 @@ pub const PoltergeistMark = struct {
     /// prefix stays empty for it.
     may_authorise: bool,
 
+    /// Which persona this terminal is wearing, and whether anybody is in
+    /// there to wear it.
+    ///
+    /// ⚠️ **Behind a pointer, and that is the whole of why this payload did
+    /// not widen the action union.** Laid out flat, four more fields take
+    /// `PoltergeistMark.C` from 16 bytes to 40; the union is sized by its
+    /// largest member (`NewSplit` at 24 today), so it would go to 40 and
+    /// `ghostty_action_s` to 48 -- **and then every other action's payload
+    /// starts at a different offset**. The Windows host reads payloads out
+    /// of a fixed `[u8; 24]` at hand-computed offsets, and while a compile
+    /// time assertion there catches a rebuild, nothing catches an old
+    /// `polter-host.exe` loaded against a new `ghostty-internal.dll` -- two
+    /// separately shipped artefacts joined at runtime by `GetProcAddress`,
+    /// with no version handshake, and a combination that happens on every
+    /// real-machine check. The symptom would be every action misreading at
+    /// once, which nobody would read as "the persona feature is broken".
+    /// One pointer keeps the struct at 24 and the blast radius at this
+    /// field.
+    ///
+    /// ⚠️ **Never null.** There were nearly two nulls here -- "no persona"
+    /// and "nothing to say" -- and two nearly synonymous nulls is the shape
+    /// this whole design keeps tripping over. The core always has something
+    /// to say, if only "never chosen one, nobody connected", so the pointer
+    /// is always valid and every distinction lives in the fields. A null
+    /// arriving at an apprt is a core bug, not a state.
+    persona: *const Persona,
+
     /// What this terminal is in the arrangement.
     ///
     /// Sent alongside the rendered prefix rather than instead of it. The
@@ -2016,6 +2043,58 @@ pub const PoltergeistMark = struct {
         watched = 2,
     };
 
+    /// Sync with: ghostty_poltergeist_persona_s
+    pub const Persona = extern struct {
+        /// The chosen preset's key, or null if the user never chose one.
+        ///
+        /// ⚠️ **Null means that and only that.** An earlier draft had it
+        /// also mean "no agent is connected here", which merged two states
+        /// the interface is required to keep apart: with them merged, a tab
+        /// whose agent has not connected yet can only tick "No Role" --
+        /// telling the user their choice is gone, so they choose again. The
+        /// window where `Server.agentPresent` answers false for an agent
+        /// still shaking hands makes that a routine occurrence rather than
+        /// an edge: "nothing is wearing it yet" fixes itself, "you never
+        /// chose one" sends the user to do it again.
+        key: ?[*:0]const u8 = null,
+
+        /// Display name, null exactly when `key` is.
+        name: ?[*:0]const u8 = null,
+
+        /// The effective set has moved away from what the persona declared.
+        deviated: bool = false,
+
+        /// Whether an agent is connected to Polter in this terminal.
+        ///
+        /// The persona is kept either way -- it is the user's intent for the
+        /// terminal, not a measurement of what is running in it -- but a tab
+        /// may only be shown *as* wearing one while somebody is in there.
+        agent_present: bool = false,
+
+        host_class: HostClass = .unknown,
+    };
+
+    /// How the agent CLI in this terminal takes a change of persona.
+    ///
+    /// Sync with: ghostty_action_poltergeist_host_class_e
+    pub const HostClass = enum(c_int) {
+        /// Not known: no agent has connected, or its `clientInfo.name` is
+        /// not one we have measured.
+        ///
+        /// **Zero is the honest answer**, the same reasoning as
+        /// `PoltergeistLayout.Result.unsupported`. It is a fourth state and
+        /// not a flavour of the other three: drawn as hot, "not yet in
+        /// effect" would look like "already in effect"; drawn as cold, a
+        /// Claude Code user restarts for nothing.
+        unknown = 0,
+        /// Swaps its tools the moment it is told. claude-code, gemini.
+        hot = 1,
+        /// Has a runtime channel of its own. qwen-code.
+        warm = 2,
+        /// Only a restart. codex, opencode, and the two unmeasured ones.
+        cold = 3,
+    };
+
     // Sync with: ghostty_action_poltergeist_mark_s
     pub const C = extern struct {
         prefix: [*:0]const u8,
@@ -2023,6 +2102,7 @@ pub const PoltergeistMark = struct {
         shielded: bool,
         held: bool,
         may_authorise: bool,
+        persona: *const Persona,
     };
 
     pub fn cval(self: PoltergeistMark) C {
@@ -2032,7 +2112,45 @@ pub const PoltergeistMark = struct {
             .shielded = self.shielded,
             .held = self.held,
             .may_authorise = self.may_authorise,
+            .persona = self.persona,
         };
+    }
+
+    test "the persona payload leaves the action union where it was" {
+        // **The assertion W4 measured on the target triple, kept on this
+        // side too.** It is not about this struct being small: it is about
+        // `ghostty_action_s` not moving, because every other action's
+        // payload offset rides on it and the host reads those offsets by
+        // hand. If this reddens, the fix is here, not in the host's
+        // `size_of::<Action>() == 32`.
+        const testing = std.testing;
+        try testing.expectEqual(@as(usize, 24), @sizeOf(C));
+        try testing.expectEqual(@as(usize, 24), @sizeOf(Persona));
+        try testing.expect(@sizeOf(C) <= @sizeOf(NewSplit.C));
+
+        // ⚠️ **The offsets, because the other side reads them by hand.**
+        // The Windows host pulls fields out of a byte array at computed
+        // positions, so these are not an implementation detail here -- they
+        // are the interface. `host_class` is at 20 and not at 18: two bools
+        // sit at 16 and 17, and then **two bytes of padding**, because an
+        // int-wide enum wants four-byte alignment.
+        //
+        // Read at 18 instead, the other side gets one bool, that padding,
+        // and the low half of the enum glued together -- a number that is
+        // very likely non-zero, so `unknown` arrives as `hot`. That is
+        // precisely the confusion `roles.md` §6 exists to forbid: "already
+        // swapped" and "waiting for a restart" must not look alike.
+        //
+        // Measured on x86_64-w64-mingw32 with `_Static_assert`, with a
+        // negative control (asserting 18 fails to compile). This is the
+        // same set of numbers, asserted on this side, so that the two
+        // cannot drift apart in silence.
+        try testing.expectEqual(@as(usize, 0), @offsetOf(Persona, "key"));
+        try testing.expectEqual(@as(usize, 8), @offsetOf(Persona, "name"));
+        try testing.expectEqual(@as(usize, 16), @offsetOf(Persona, "deviated"));
+        try testing.expectEqual(@as(usize, 17), @offsetOf(Persona, "agent_present"));
+        try testing.expectEqual(@as(usize, 20), @offsetOf(Persona, "host_class"));
+        try testing.expectEqual(@as(usize, 16), @offsetOf(C, "persona"));
     }
 
     pub fn format(

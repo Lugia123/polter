@@ -136,6 +136,46 @@ extension Ghostty {
         /// the only place it shows.
         @Published var poltergeistMayAuthorise: Bool = false
 
+        /// Which persona this terminal has been given, and whether its
+        /// face has since been changed by hand (roles.md §5.2).
+        ///
+        /// Called `persona`, not `role`: `poltergeistRole` two lines up is
+        /// supervisor / watched / none, a different thing entirely, and two
+        /// fields one suffix apart that mean unrelated things do not fail
+        /// when confused -- they just look right
+        /// (`personas-contract.md` §0).
+        ///
+        /// ⚠️ **PENDING-W1-568: nothing writes this yet.** The core does not
+        /// carry personas at all today, so every terminal reads as "no
+        /// persona, host class unknown" and the menu says exactly that
+        /// rather than pretending. When task 568 lands the per-terminal
+        /// state -- `ghostty_action_poltergeist_mark_s` growing
+        /// `persona_key` / `persona_name` / `persona_deviated` /
+        /// `persona_host_class` -- fill this in
+        /// `Ghostty.App.setPoltergeistMark` and delete every
+        /// `PENDING-W1-568` in the tree.
+        ///
+        /// Kept as real state rather than faked in the menu builder on
+        /// purpose: an interface wired to invented data looks exactly like
+        /// one that is wired up.
+        @Published var poltergeistPersonaState: PersonaState = .none {
+            didSet {
+                guard oldValue != poltergeistPersonaState else { return }
+                refreshPersonaEditor()
+            }
+        }
+
+        /// PENDING-W1-568: what this terminal is actually exposing. Arrives
+        /// from the surface-scoped face query the contract review asked for;
+        /// until then `isKnown` is false and the editor says so instead of
+        /// showing an empty list.
+        @Published var poltergeistPersonaFace: PersonaFace = .init() {
+            didSet {
+                guard oldValue != poltergeistPersonaFace else { return }
+                refreshPersonaEditor()
+            }
+        }
+
         /// A clipboard confirmation waiting to be handled by its controller.
         @Published var pendingClipboardConfirmation: ClipboardConfirmationRequest? {
             didSet {
@@ -1697,6 +1737,19 @@ extension Ghostty {
             item = menu.addItem(withTitle: String(localized: "Let a Supervisor Answer Prompts Here", comment: "右键菜单：允许总管替此终端点授权框，含「不再询问」"), action: #selector(poltergeistToggleAuthorise(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "hand.raised")
             item.state = poltergeistMayAuthorise ? .on : .off
+
+            // Same submenu as the tab strip's, pointed at this terminal.
+            // Built by `PersonaMenu` rather than written out twice: two copies
+            // of a menu are two copies that drift, and this one carries two
+            // claims that are not allowed to be wrong.
+            let catalog = PersonaCatalog.shared
+            catalog.reload()
+            menu.addItem(PersonaMenu.makeItem(
+                state: poltergeistPersonaState,
+                shielded: poltergeistShielded,
+                personas: catalog.personas,
+                personasKnown: catalog.isKnown,
+                target: self))
 
             return menu
         }

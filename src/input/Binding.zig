@@ -753,6 +753,54 @@ pub const Action = union(enum) {
     /// other.
     poltergeist_toggle_chat,
 
+    /// Put this terminal into a persona: the tools, skills and upstream MCP
+    /// slots the user declared under that key in `personas.json`.
+    ///
+    /// The parameter is the key. Choosing one **resets** what this terminal
+    /// hands out to what the persona declares -- it does not merge with
+    /// whatever was switched on by hand before.
+    ///
+    /// ⚠️ **Deliberately not in the command palette, and with no default
+    /// binding.** `poltergeist_toggle_authorise` below argues the whole of
+    /// it: an agent can open another terminal's palette with `terminal_key`
+    /// and type into it, so a palette entry is a way for an agent to reach
+    /// something it is not allowed to reach. Changing a persona changes what
+    /// a terminal may do, which puts it in exactly that family.
+    ///
+    /// ⚠️ **The set of personas is the user's and only the user's.** There
+    /// is no action here that creates or edits one, and no tool either --
+    /// see `dev-docs/poltergeist/roles.md` §7. A supervisor that could write
+    /// a persona could give a worker an MCP server the user never agreed to
+    /// and then use it through that worker.
+    poltergeist_persona_set: []const u8,
+
+    /// Take this terminal out of any persona, back to handing out
+    /// everything -- which is what Polter does with no persona at all.
+    poltergeist_persona_clear,
+
+    /// Switch one of Polter's own skills on or off for this terminal alone,
+    /// without leaving the persona. This is the path that produces
+    /// "archer (modified)".
+    ///
+    /// The parameter is `on,<id>` or `off,<id>`.
+    ///
+    /// ⚠️ **`<id>` is a minted id, never a name.** Two reasons, and the
+    /// second is the one that is easy to miss. The first: the Windows host
+    /// asserts every action string matches `[a-z0-9_:,-]`, and skill and
+    /// slot names are other people's -- this machine really does have
+    /// `claude_ai_Claude_Docs` and `kanban:task-review`, and the second of
+    /// those would be split on its own colon. The second: a menu is built
+    /// now and clicked later, so a bare row number is not an identity --
+    /// take a row out and put it back and the numbering is reused, and the
+    /// click lands on something else. The id is `<epoch>-<index>`, where the
+    /// epoch is the version of this terminal's effective set, so a click
+    /// built against an older version is refused rather than misapplied.
+    /// See `poltergeist/persona.zig`.
+    poltergeist_persona_skill: []const u8,
+
+    /// The same, for an upstream MCP slot.
+    poltergeist_persona_mcp: []const u8,
+
     /// Resize the current split in the specified direction and amount in
     /// pixels. The two arguments should be joined with a comma (`,`),
     /// like in `resize_split:up,10`.
@@ -1545,6 +1593,10 @@ pub const Action = union(enum) {
             .poltergeist_toggle_shielded,
             .poltergeist_toggle_authorise,
             .poltergeist_toggle_chat,
+            .poltergeist_persona_set,
+            .poltergeist_persona_clear,
+            .poltergeist_persona_skill,
+            .poltergeist_persona_mcp,
             .resize_split,
             .equalize_splits,
             .inspector,

@@ -100,10 +100,20 @@ const instructions =
 
 /// The whole `initialize` result, kept as one literal so the test below
 /// parses the bytes that actually go out rather than a copy of them.
+///
+/// ⚠️ **`tools.listChanged` is a promise, and without it the notification is
+/// never heard.** A persona change rewrites what this terminal may see, and
+/// the way a running agent finds out is
+/// `notifications/tools/list_changed`. A client that follows the spec
+/// subscribes to that only for a server that advertised the capability --
+/// so with `"tools":{}` here, Polter can send the notification perfectly
+/// and a well-behaved client will ignore it. **"The client did not listen"
+/// and "we never sent it" leave the same trace in a server log**, which is
+/// why this is a literal with a test on it rather than a detail.
 const initialize_result =
     \\{"protocolVersion":"
 ++ protocol_version ++
-    \\","capabilities":{"tools":{}},"serverInfo":{"name":"poltergeist","version":"0"},"instructions":"
+    \\","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"poltergeist","version":"0"},"instructions":"
 ++ instructions ++
     \\"}
 ;
@@ -234,7 +244,12 @@ fn complain(io: std.Io, missing: []const u8) u8 {
 }
 
 /// The connection back to Ghostty.
-const Host = struct {
+///
+/// **`pub` because `cli/mcp_slot.zig` connects the same way.** A slot needs
+/// the identical handshake -- same socket, same token, same three refusals
+/// spelled out on stderr -- and a second copy of it would be a second place
+/// for those sentences to drift out of step with the server's constants.
+pub const Host = struct {
     alloc: Allocator,
     io: std.Io,
     stream: transport.Conn,
@@ -258,7 +273,7 @@ const Host = struct {
     /// sentence was written as a statement of fact and was not one.** A comment
     /// that describes an arrangement nobody implemented is worse than none: it
     /// answers the question, so the next person stops looking.
-    fn connect(
+    pub fn connect(
         alloc: Allocator,
         io: std.Io,
         path: []const u8,
@@ -302,20 +317,44 @@ const Host = struct {
         // The code is matched, not the sentence: `server.full_refusal_code`
         // is the contract and the sentence for the person is written here,
         // where it can be about what to do rather than about a slot table.
+        //
+        // ⚠️ **It has two readers, and it used to be written for one.** This
+        // file is the handshake for `+mcp` *and* for every `+mcp-slot`, so
+        // the person reading this may be looking at a terminal whose agent
+        // failed to start, or at one whose upstream never came up. The old
+        // wording said "every slot is held by an agent CLI" and offered one
+        // remedy, "close a terminal running an agent" -- and under
+        // `K x (2 + M)` the connections that actually ran out are more
+        // likely to be slot processes than agents, so for half its readers
+        // that sentence **named the wrong thing and pointed at the wrong
+        // action**.
+        //
+        // What it still cannot do is say *how many* of them are agents and
+        // how many are slots: the server counts connections, and nothing in
+        // the handshake says which kind a connection is. Printing a split we
+        // have not got would be an inference formatted as a reading. The
+        // arithmetic below is the honest version -- it tells the person how
+        // to work the number out from what they can see.
         if (std.mem.indexOf(u8, reply, poltergeist_server.full_refusal_code) != null) {
             var buffer: [512]u8 = undefined;
             var stderr: std.Io.File = .stderr();
             var w = stderr.writerStreaming(io, &buffer);
             w.interface.print(
-                \\Polter has no free agent slot, so this terminal gets no tools.
+                \\Polter has no free connection on this socket, so this
+                \\terminal gets no tools.
                 \\
-                \\Every slot is held by an agent CLI that is still running. They
-                \\are released when those CLIs exit -- nothing has leaked, there
-                \\are simply that many.
+                \\Every connection is held by something that is still running,
+                \\and there are two kinds of holder -- this message cannot say
+                \\which one ran out, because both of them arrive through here.
+                \\An agent CLI holds two: one to ask with, and one parked
+                \\waiting to be told its tools changed. Each upstream MCP
+                \\server you have handed to Polter holds one more, in every
+                \\terminal -- so a terminal with N of them accounts for 2 + N.
                 \\
-                \\Close a terminal running an agent, or raise
-                \\`poltergeist-max-agents` in
-                \\$XDG_CONFIG_HOME/polter/config.polter and restart Polter.
+                \\Nothing has leaked; there are simply that many. Any of three
+                \\will do: close a terminal that is running an agent, hand
+                \\fewer upstreams to Polter, or raise `poltergeist-max-agents`
+                \\in $XDG_CONFIG_HOME/polter/config.polter and restart Polter.
                 \\
             , .{}) catch {};
             w.end() catch {};
@@ -347,7 +386,7 @@ const Host = struct {
         return self;
     }
 
-    fn deinit(self: *Host) void {
+    pub fn deinit(self: *Host) void {
         self.stream.close(self.io);
         self.alloc.free(self.read_buf);
         self.alloc.free(self.write_buf);
@@ -356,7 +395,7 @@ const Host = struct {
 
     /// Send one request line and return the reply line. The reply borrows
     /// the read buffer and is valid until the next call.
-    fn call(self: *Host, line: []const u8) ![]const u8 {
+    pub fn call(self: *Host, line: []const u8) ![]const u8 {
         try self.writer.interface.writeAll(line);
         try self.writer.interface.writeByte('\n');
         try self.writer.interface.flush();
@@ -1196,10 +1235,9 @@ test "the initialize result is valid JSON and puts the tool families in it" {
     // The map is only worth having if every family is named. `task_` is the
     // one this exists for: it is the family that went missing.
     for ([_][]const u8{
-        "terminal_send", "terminal_read", "group_post",
-        "task_create",   "task_edit",     "task_assign",   "task_list",
-        "terminal_layout",
-        "skill_read",
+        "terminal_send", "terminal_read",   "group_post",
+        "task_create",   "task_edit",       "task_assign",
+        "task_list",     "terminal_layout", "skill_read",
     }) |name| {
         std.testing.expect(std.mem.indexOf(u8, text, name) != null) catch |err| {
             std.debug.print("instructions never names {s}\n", .{name});
@@ -1225,4 +1263,36 @@ test "the initialize result is valid JSON and puts the tool families in it" {
             return err;
         };
     }
+}
+
+test "mcp: initialize promises listChanged, or the notification is never heard" {
+    // **The assertion is on the parsed capability, not on the substring**,
+    // because `"listChanged":true` appearing anywhere in the literal --
+    // including inside `instructions` -- would satisfy a substring check
+    // while the client reads `capabilities.tools` and finds nothing.
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        initialize_result,
+        .{},
+    );
+    defer parsed.deinit();
+
+    const tools_cap = parsed.value.object
+        .get("capabilities").?.object
+        .get("tools").?.object;
+
+    const advertised = tools_cap.get("listChanged") orelse {
+        // A `.?` here would abort with "attempt to use null value", which
+        // says nothing about what the terminal loses. Measured: that is
+        // exactly what this printed before the sentence was added.
+        std.debug.print(
+            "initialize does not advertise tools.listChanged, so a " ++
+                "spec-following client never subscribes and a persona " ++
+                "change reaches a running agent not at all\n",
+            .{},
+        );
+        return error.ListChangedNotAdvertised;
+    };
+    try std.testing.expectEqual(std.json.Value{ .bool = true }, advertised);
 }

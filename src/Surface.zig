@@ -196,6 +196,17 @@ poltergeist_tab_role: poltergeistpkg.Bus.Role = .none,
 poltergeist_tab_held: bool = false,
 poltergeist_tab_may_authorise: bool = false,
 
+/// The persona half of this tab's mark, kept here because the action hands
+/// the apprt a pointer to it and that pointer has to outlive the call.
+///
+/// Baseline state: no persona chosen, nobody connected, host not
+/// identified. Every one of those is a thing the interface must be able to
+/// draw anyway -- the window while an agent is still shaking hands answers
+/// `agentPresent` false, and a host whose `clientInfo.name` we have never
+/// measured is `unknown` forever -- so this is the honest empty answer, not
+/// a placeholder.
+poltergeist_persona: apprt.action.PoltergeistMark.Persona = .{},
+
 /// When a real key event last arrived from the user.
 ///
 /// Poltergeist uses this to keep out of the way: it will not type a notice
@@ -3706,6 +3717,19 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     const held = if (self.app.poltergeist.get(self.id)) |e| e.held else false;
     const may_authorise = self.app.poltergeist.mayAuthorise(self.id);
 
+    // A persona is the user's intent for the terminal, not a measurement of
+    // what is running in it -- so it is kept whether or not an agent is
+    // there, and this bit is what lets the apprt show "nothing is wearing
+    // it yet" rather than "you never chose one". Those two are different
+    // sentences to the user: the first fixes itself, the second sends them
+    // to choose again.
+    const persona: apprt.action.PoltergeistMark.Persona = .{
+        .agent_present = if (self.app.poltergeist_server) |*srv|
+            srv.agentPresent(self.id)
+        else
+            false,
+    };
+
     // Nothing has changed for this tab: leave it alone rather than
     // resending the same mark every time anything happens.
     //
@@ -3722,6 +3746,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
         .role = role,
         .held = held,
         .may_authorise = may_authorise,
+        .persona = persona,
     };
     const was: PoltergeistTabState = .{
         .mark = self.poltergeist_tab_mark,
@@ -3729,6 +3754,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
         .role = self.poltergeist_tab_role,
         .held = self.poltergeist_tab_held,
         .may_authorise = self.poltergeist_tab_may_authorise,
+        .persona = self.poltergeist_persona,
     };
     if (!poltergeistTabMarkChanged(was, now)) return;
     self.poltergeist_tab_mark = mark;
@@ -3736,6 +3762,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     self.poltergeist_tab_role = role;
     self.poltergeist_tab_held = held;
     self.poltergeist_tab_may_authorise = may_authorise;
+    self.poltergeist_persona = persona;
 
     // Unmarked is an empty prefix, not an empty title. This no longer
     // touches the title at all, so a tab the user renamed keeps its name
@@ -3756,6 +3783,9 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
             .shielded = shielded,
             .held = held,
             .may_authorise = may_authorise,
+            // The field, not the local: the apprt is handed a pointer, and
+            // a pointer to a local would dangle the moment this returns.
+            .persona = &self.poltergeist_persona,
         },
     ) catch |err| {
         log.warn("poltergeist: could not mark the tab err={}", .{err});
@@ -3772,6 +3802,16 @@ const PoltergeistTabState = struct {
     role: poltergeistpkg.Bus.Role,
     held: bool,
     may_authorise: bool,
+
+    /// ⚠️ **Compared by value, and the two string fields are pointers.**
+    /// `std.meta.eql` on a slice or a many-pointer compares the address, so
+    /// once these carry a key and a name, reloading `personas.json` will
+    /// move them and this will read as a change even though the text is the
+    /// same. That direction is harmless -- one redundant mark -- and the
+    /// other direction cannot happen, because two personas never share a
+    /// buffer. When the key starts being filled in, copying it into a fixed
+    /// array here is the version with nothing to remember.
+    persona: apprt.action.PoltergeistMark.Persona,
 };
 
 /// Is the new state different from the last one the apprt was sent?
@@ -3793,6 +3833,7 @@ test "a hold is a change even when nothing else moved" {
         .role = .none,
         .held = false,
         .may_authorise = false,
+        .persona = .{},
     };
 
     // **The defect, as one assertion.** A terminal nobody watches has no mark
@@ -6624,6 +6665,23 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             .toggle_poltergeist_chat,
             {},
         ),
+
+        // The four persona actions. **They are wired up to nothing yet and
+        // say so by returning false**, which is the answer a binding gives
+        // when it did not handle the key -- so a menu row driving one of
+        // these does visibly nothing rather than appearing to work.
+        //
+        // ⚠️ `false` is also what a *stale id* will return once they are
+        // wired up, and those two must not stay indistinguishable: the
+        // contract's answer is that a refusal writes its reason into this
+        // terminal's face (`error_kind`) and the mark is sent again so the
+        // interface knows to re-read it. **That half is not built yet**, so
+        // for now these are honestly inert.
+        .poltergeist_persona_set,
+        .poltergeist_persona_clear,
+        .poltergeist_persona_skill,
+        .poltergeist_persona_mcp,
+        => return false,
 
         .reset_window_size => return try self.rt_app.performAction(
             .{ .surface = self },

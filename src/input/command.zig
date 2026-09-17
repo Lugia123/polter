@@ -818,6 +818,24 @@ fn actionCommands(action: Action.Key) []const Command {
         .poltergeist_toggle_authorise,
         => comptime &.{},
 
+        // ⚠️ **Off the palette for the reason directly above, and it is the
+        // same reason rather than a similar one.** Putting a terminal into a
+        // persona changes what that terminal may do -- which tools it sees,
+        // which upstream MCP servers it reaches -- and an agent can open
+        // another terminal's palette with `terminal_key` and type into it.
+        // A palette entry would be a way for an agent to give a terminal it
+        // can reach capabilities the user never handed it.
+        //
+        // `governed` already keeps these four off `terminal_action`, for
+        // free, because it matches the `poltergeist_` prefix rather than a
+        // list. The palette is the second road, and this is where it is
+        // closed.
+        .poltergeist_persona_set,
+        .poltergeist_persona_clear,
+        .poltergeist_persona_skill,
+        .poltergeist_persona_mcp,
+        => comptime &.{},
+
         // No commands for obvious reasons
         .ignore,
         .unbind,

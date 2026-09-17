@@ -23,6 +23,7 @@
 - 群聊与私信界面的承载方式选型 —— 见 [chatui.md](chatui.md)。
 - tab 合并与状态标记的平台差异 —— 见 [tabs.md](tabs.md)。
 - 终端里跑了什么、输出了什么怎么留痕 —— 见 [transcript.md](transcript.md)。
+- 一个终端里的 agent 手上有哪些工具与技能、怎么按终端换 —— 见 [roles.md](roles.md)。
 - 写作规范与术语表 —— 见 [\_spec.md](_spec.md)。
 - Ghostty 现有架构、屏幕数据结构、apprt 与配置、构建与调试命令 —— 分别见 [architecture.md](../architecture.md)、[terminal-core.md](../terminal-core.md)、[platform-and-config.md](../platform-and-config.md)、[preview-manual.md](../preview-manual.md)。
 
@@ -188,6 +189,7 @@ Poltergeist 本身不管理任务。任务由其他系统 / 载体承载，AI �
 | [plugins.md](plugins.md)       | R3 的一半  | 插件的全部：一个常驻协议、订阅声明取代 `Kind`、插件与 agent 共用一个能力面、凭据、权限、照着写一个 | 拆掉 `Kind`（它同时管生命周期和契约，出过两次同一个 bug）；不写 SDK，让插件直接说 MCP 那套线协议 |
 | [plugin/](plugin/)             | —          | 随构建装出去的两个插件各自的说明（`archive`、`claude-code`） | 官方插件的说明和插件框架分开，改一个不牵动另一个 |
 | [storage.md](storage.md)      | —          | 核心自己的存储：流与记录两种形状、按天布局、往回翻       | 核心的存储是核心功能，不作为插件的数据源——插件那一半整个搬去了 plugins.md |
+| [roles.md](roles.md)           | —          | 角色：按终端决定 agent 手上有哪些工具、技能、提示词；哪几家宿主能在跑着的时候改 | **设计，未实现。** 不聚合上游 MCP（聚合会把宿主按服务器授权的能力吞掉）；角色技能走工具面而非文件（文件不按终端分） |
 | [surface.md](surface.md)      | —          | 菜单栏逐条盘点：哪些该经 MCP 开放给 AI，哪些故意不给    | 判据是「会不会让读到一段文字变成在这台机器上做一件事」 |
 | [gaps.md](gaps.md)            | —          | 作为 AI 原生终端还差什么：感知、记录、双向渠道、成本、注入 | 记录那两条已落地，论证保留；还缺的排在「排序」一节 |
 | [transcript.md](transcript.md) | —         | 终端转录：录滚出去的行，按终端按天落盘                    | 录第 2 层而不是原始字节流，量由内容决定而不是由重绘决定 |

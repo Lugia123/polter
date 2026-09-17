@@ -764,6 +764,52 @@ typedef enum {
   GHOSTTY_POLTERGEIST_ROLE_WATCHED,
 } ghostty_action_poltergeist_role_e;
 
+// apprt.action.PoltergeistMark.HostClass
+//
+// How the agent CLI in this terminal takes a change of persona. UNKNOWN is
+// zero because zero is the honest answer: no agent has connected, or its
+// clientInfo.name is not one that has been measured. It is a fourth state,
+// not a flavour of the other three -- drawn as HOT, "not yet in effect"
+// looks like "already in effect"; drawn as COLD, a Claude Code user
+// restarts for nothing.
+typedef enum {
+  GHOSTTY_POLTERGEIST_HOST_UNKNOWN = 0,
+  GHOSTTY_POLTERGEIST_HOST_HOT,
+  GHOSTTY_POLTERGEIST_HOST_WARM,
+  GHOSTTY_POLTERGEIST_HOST_COLD,
+} ghostty_action_poltergeist_host_class_e;
+
+// One row of ghostty_app_personas: a key to name in an action string, and a
+// name to show. Both belong to the core; copy them.
+typedef struct {
+  const char* key;
+  const char* name;
+} ghostty_persona_s;
+
+// apprt.action.PoltergeistMark.Persona
+//
+// Which persona this terminal is wearing. Reached through a pointer on the
+// mark below so that adding it does not widen ghostty_action_u -- see the
+// comment there.
+typedef struct {
+  // The chosen preset's key, or NULL if the user never chose one.
+  //
+  // NULL means that and ONLY that. "No agent is connected" is the separate
+  // field below, because merging them leaves a tab whose agent is still
+  // connecting able to show only "No Role" -- telling the user their choice
+  // is gone, so they make it again.
+  const char* key;
+  // Display name. NULL exactly when `key` is.
+  const char* name;
+  // The effective set has been moved away from what the persona declared.
+  bool deviated;
+  // Whether an agent is connected to Polter in this terminal. The persona is
+  // kept either way; a tab may only be shown as *wearing* one while somebody
+  // is in there to wear it.
+  bool agent_present;
+  ghostty_action_poltergeist_host_class_e host_class;
+} ghostty_poltergeist_persona_s;
+
 // apprt.action.PoltergeistMark.C
 typedef struct {
   const char* prefix;
@@ -779,6 +825,19 @@ typedef struct {
   // at the terminal, this is a permission they granted to somebody else, and
   // it is shown in the menu it was granted from.
   bool may_authorise;
+  // Never NULL. The core always has something to say -- if only "no persona
+  // chosen, nobody connected" -- so every distinction lives in the fields
+  // rather than in a second nearly-synonymous NULL.
+  //
+  // A pointer rather than four more fields: laid out flat this struct goes
+  // from 16 bytes to 40, which sizes ghostty_action_u up from 24 and
+  // ghostty_action_s from 32 to 48 -- moving *every other action's* payload
+  // offset. The Windows host reads those offsets by hand out of a fixed
+  // byte array, and its compile-time size assertion protects a rebuild but
+  // not an old polter-host.exe loaded against a new ghostty-internal.dll.
+  // Valid for the duration of the callback and no longer, the same rule
+  // `prefix` follows.
+  const ghostty_poltergeist_persona_s* persona;
 } ghostty_action_poltergeist_mark_s;
 
 // apprt.action.PromptTitle
@@ -1363,6 +1422,16 @@ GHOSTTY_API ghostty_string_s ghostty_config_open_path(void);
 GHOSTTY_API ghostty_app_t ghostty_app_new(const ghostty_runtime_config_s*,
                                              ghostty_config_t);
 GHOSTTY_API void ghostty_app_free(ghostty_app_t);
+// The personas the user has defined, for building a menu from. Same "write
+// what fits, return the real total" rule as above; `buf` may be NULL when
+// `cap` is 0. The strings belong to the core and are valid until the next
+// call or the next config reload -- copy them before doing anything else.
+GHOSTTY_API uintptr_t ghostty_app_personas(ghostty_app_t, ghostty_persona_s*, uintptr_t);
+// What is installed on this machine that a persona does not cover, as JSON.
+// Read only: these are listed so the user can see where a persona stops, and
+// Polter changes none of them. `stale` is NOT an empty list -- an interface
+// that draws them the same way tells the user nothing is installed here.
+GHOSTTY_API uintptr_t ghostty_app_persona_hosts(ghostty_app_t, char*, uintptr_t);
 GHOSTTY_API void ghostty_app_tick(ghostty_app_t);
 GHOSTTY_API void* ghostty_app_userdata(ghostty_app_t);
 GHOSTTY_API void ghostty_app_set_focus(ghostty_app_t, bool);
@@ -1428,6 +1497,11 @@ GHOSTTY_API void ghostty_surface_split_resize(ghostty_surface_t,
                                                  uint16_t);
 GHOSTTY_API void ghostty_surface_split_equalize(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_binding_action(ghostty_surface_t, const char*, uintptr_t);
+// What this terminal is handing out right now, as JSON. Writes what fits and
+// returns the real byte count, NOT counting a terminating NUL; when it fits,
+// one NUL is written after it, so it may be read by length or as a C string.
+// `buf` may be NULL when `cap` is 0, which is how you ask for the size first.
+GHOSTTY_API uintptr_t ghostty_surface_persona_face(ghostty_surface_t, char*, uintptr_t);
 GHOSTTY_API void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
                                                                const char*,
                                                                void*,
