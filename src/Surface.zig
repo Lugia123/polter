@@ -233,6 +233,26 @@ last_key_time: ?std.Io.Timestamp = null,
 /// See `poltergeist/draft.zig` for what it can and cannot see.
 poltergeist_draft: poltergeistpkg.draft.Draft = .{},
 
+/// How many key presses this surface has encoded and handed to the pty.
+///
+/// **Only `sendPoltergeistKey` reads it, and it reads a difference rather
+/// than a value**, so it may wrap and it may be racy against anything else;
+/// neither matters for the one question it answers, which is whether the
+/// call it just made produced bytes for the program in this terminal.
+///
+/// ⚠️ **It exists because predicting that question got it wrong.** The
+/// first version of `sendPoltergeistKey` asked `keyEventIsBinding` before
+/// pressing the key and reported `.binding` when the answer was yes. That
+/// is not the same question: a *performable* binding that turns out not to
+/// be performable is treated by `keyCallback` as though it were not there,
+/// and the key is encoded and sent after all. Measured against a raw-mode
+/// probe: `escape` was reported as taken by Ghostty while the program in
+/// the terminal received `\x1b[27u` -- the instrument was telling a caller
+/// to go to the machine in person for a key that had landed, which is worse
+/// than the bare `ok` it replaced. So the fate is counted where it happens
+/// instead of guessed at beforehand.
+poltergeist_keys_written: u64 = 0,
+
 /// The per-session token given to this surface's child process at spawn
 /// (`GHOSTTY_HISTORY_TOKEN`), so shell integration can prove OSC 60
 /// (command capture, see `termio/stream_handler.zig`) came from code that
@@ -3203,6 +3223,11 @@ pub fn keyCallback(
             .stable => |v| .{ .write_stable = v },
             .alloc => |v| .{ .write_alloc = v },
         }, .unlocked);
+
+        // **The one place in this function where a key becomes bytes for
+        // the program.** Counted here rather than inferred anywhere else;
+        // see the field.
+        self.poltergeist_keys_written +%= 1;
     } else {
         // No valid request means that we didn't encode anything.
         return .ignored;
@@ -3975,7 +4000,11 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !void {
     // A refused notice is not an error worth propagating: the sampler will
     // say the same thing again on its repeat interval.
     self.typePoltergeistText(text, true) catch |err| switch (err) {
-        error.ChildExited, error.UserPresent, error.UnsafeText => {},
+        error.ChildExited,
+        error.UserPresent,
+        error.DraftInLine,
+        error.UnsafeText,
+        => {},
         else => return err,
     };
 }
@@ -4040,8 +4069,21 @@ pub const TypeError = error{
     /// The terminal's child process has exited.
     ChildExited,
 
-    /// Somebody is using this terminal right now.
+    /// A key reached this terminal within the last ten seconds.
+    ///
+    /// **Says a key arrived and nothing more** -- not who sent it, not that
+    /// anybody is there. It clears on its own.
     UserPresent,
+
+    /// Characters have been typed here that were neither submitted nor
+    /// abandoned, however long ago.
+    ///
+    /// ⚠️ **Kept separate from `UserPresent` on purpose.** The two used to
+    /// be one error, and the caller's next move is not the same: that one
+    /// clears itself within ten seconds, and this one clears only when a
+    /// return or a ctrl+u reaches that terminal. Told only "somebody is
+    /// there", a supervisor waits for a thing that will not happen.
+    DraftInLine,
 
     /// The text held something that would run on arrival whatever the
     /// target is doing -- an end-of-paste sequence, which is how a paste
@@ -4116,13 +4158,22 @@ pub fn poltergeistMayType(self: *Surface) !void {
     // caller's side -- nothing was typed, nothing was said, try again -- and
     // two errors for one outcome would have the two senders written twice.
     // What it measured is spelled out where the message is, in `rpc.zig`.
+    // ⚠️ **A different error from the one above, and that is the point.**
+    // They were one error for as long as they have both existed, on the
+    // argument that the caller's next move is the same either way -- try
+    // again. It is not. The clock above clears on its own within ten
+    // seconds; this one clears when somebody presses return or ctrl+u at
+    // that terminal, and **the terminal cannot press it for itself**. A
+    // supervisor told only "UserPresent" waits for a thing that is not
+    // going to happen, which is the state task 572 was filed about: the
+    // sentence said "try again shortly" and no amount of shortly helped.
     if (self.poltergeist_draft.outstanding) {
         log.info(
             "poltergeist: notice deferred, this terminal has unsubmitted text " ++
                 "in its input line",
             .{},
         );
-        return error.UserPresent;
+        return error.DraftInLine;
     }
 }
 
@@ -4350,13 +4401,39 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
 ///     the draft guard, and this door can now reach those actions.**
 ///     Whoever comes to weigh those risks should not have to notice that
 ///     for themselves.
-pub fn sendPoltergeistKey(self: *Surface, spec: []const u8) !void {
+pub fn sendPoltergeistKey(
+    self: *Surface,
+    spec: []const u8,
+) !poltergeistpkg.keys.Outcome {
     const trigger = try poltergeistpkg.keys.parse(spec);
 
     if (self.child_exited) {
         log.info("poltergeist: key dropped, the child process has exited", .{});
         return error.ChildExited;
     }
+
+    const event = poltergeistpkg.keys.event(trigger);
+
+    // **What became of the key is counted, not predicted.** `keyCallback`
+    // answers `.consumed` both for a key one of Ghostty's own keybindings
+    // took and for a key it encoded and handed to the program, and those
+    // are the two a caller most needs to tell apart: one means the program
+    // got the interrupt, the other means Ghostty ate it. The difference in
+    // this counter across the one call that can move it is that answer.
+    // See the field for the measurement that killed the version which
+    // asked `keyEventIsBinding` beforehand instead.
+    const written_before = self.poltergeist_keys_written;
+
+    // **Taken before the call, and put back below if the key turns out not
+    // to have reached the program.** `keyCallback` folds every event into
+    // `poltergeist_draft` on its way past, and it does so *before* anything
+    // is encoded -- so a ctrl+u that encodes to no bytes at all still
+    // clears the flag that says this terminal has a half-written line in
+    // it. The flag then says "no draft" in exactly the case where nothing
+    // was done about the draft, which is the wrong direction for a guard to
+    // be wrong in: the next notice lands inside the line that is still
+    // there.
+    const draft = self.poltergeist_draft;
 
     // `keyCallback` stamps `last_key_time`, and this key is ours rather
     // than the user's. Leaving the stamp would have Poltergeist mistake
@@ -4365,7 +4442,32 @@ pub fn sendPoltergeistKey(self: *Surface, spec: []const u8) !void {
     const stamp = self.last_key_time;
     defer self.last_key_time = stamp;
 
-    _ = try self.keyCallback(poltergeistpkg.keys.event(trigger));
+    const effect = try self.keyCallback(event);
+    const wrote = self.poltergeist_keys_written != written_before;
+
+    const outcome: poltergeistpkg.keys.Outcome = switch (effect) {
+        // The surface is gone. Whatever was encoded went with it.
+        .closed => .closed,
+
+        // Nothing was encoded and nothing was consumed.
+        .ignored => .ignored,
+
+        // Consumed. Which of the two kinds of consumed it was is the
+        // counter's answer: bytes went to the program, or a keybinding took
+        // the key and nothing did.
+        .consumed => if (wrote) .written else .binding,
+    };
+
+    // Only a key the program actually received may change what we believe
+    // about that program's input line.
+    if (outcome != .written) self.poltergeist_draft = draft;
+
+    log.info(
+        "poltergeist: key spec={s} outcome={s}",
+        .{ spec, @tagName(outcome) },
+    );
+
+    return outcome;
 }
 
 pub fn textCallback(self: *Surface, text: []const u8) !void {

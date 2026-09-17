@@ -2391,7 +2391,7 @@ test "a key goes to the host as written, and a key that is not one never gets th
     const ok = try dispatch(alloc, &b, fake.host(), term(boss), .{
         .terminal_key = .{ .id = worker, .key = "ctrl+c" },
     });
-    try testing.expect(ok == .ok);
+    try testing.expect(ok == .text);
     try testing.expectEqualStrings("ctrl+c", fake.keyed.?.key);
     try testing.expectEqual(worker, fake.keyed.?.id);
 
@@ -2414,6 +2414,82 @@ test "a key goes to the host as written, and a key that is not one never gets th
     try testing.expectEqualStrings("BadKey", plain.failed.code);
     try testing.expect(std.mem.indexOf(u8, plain.failed.message, "terminal_send") != null);
     try testing.expect(fake.keyed == null);
+}
+
+test "a key that never reached the program does not come back looking like one that did" {
+    // **The defect this is the floor for.** All three fates used to be
+    // `{"ok":true}`, so a supervisor pressing ctrl+u at a terminal with half
+    // a line in it was told the same thing whether the line had been killed
+    // or whether the key had died inside Ghostty. The three answers have to
+    // be three different strings on the wire.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    fake.key_outcome = .written;
+    const sent = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_key = .{ .id = worker, .key = "ctrl+u" },
+    });
+
+    fake.key_outcome = .ignored;
+    const nowhere = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_key = .{ .id = worker, .key = "ctrl+u" },
+    });
+
+    fake.key_outcome = .binding;
+    const eaten = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_key = .{ .id = worker, .key = "ctrl+u" },
+    });
+
+    // Every one of them is still a success at the transport level -- the
+    // call was accepted and the key was pressed. What changed is that the
+    // sentence is no longer the same sentence.
+    try testing.expect(sent == .text);
+    try testing.expect(nowhere == .text);
+    try testing.expect(eaten == .text);
+
+    try testing.expect(!std.mem.eql(u8, sent.text, nowhere.text));
+    try testing.expect(!std.mem.eql(u8, sent.text, eaten.text));
+    try testing.expect(!std.mem.eql(u8, nowhere.text, eaten.text));
+
+    // And the two that did not reach the program say so in words a reader
+    // acts on, rather than leaving it to be inferred from a missing word.
+    try testing.expect(std.mem.indexOf(u8, nowhere.text, "nobody received it") != null);
+    try testing.expect(std.mem.indexOf(u8, eaten.text, "never saw it") != null);
+}
+
+test "a prompt answered with a return that never arrived is a failure, not an ok" {
+    // `terminal_answer_prompt` walks with arrows and takes with return. If
+    // the return encodes to nothing, the box is still open -- and possibly
+    // on a different option than it was, because the arrows may have
+    // landed. Reporting `ok` there tells the caller an option was taken.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    // The gate in front of this tool, opened so that the assertion below is
+    // about the return and not about the switch. Two refusals that both
+    // read as "no" is exactly the shape that makes a floor lie.
+    try b.setMayAuthorise(worker, true, .user);
+
+    fake.key_outcome = .written;
+    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
+    });
+    try testing.expect(taken == .ok);
+
+    fake.key_outcome = .ignored;
+    const lost = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 2 },
+    });
+    try testing.expectEqualStrings("KeyFailed", lost.failed.code);
+    try testing.expect(std.mem.indexOf(u8, lost.failed.message, "moved the highlight") != null);
 }
 
 test "pressing a key is not typing text, and the two do not share a pipe" {
@@ -4066,11 +4142,18 @@ pub const Host = struct {
         /// answered as a spelling mistake rather than as a refusal by the
         /// terminal; and by the host, which is the side holding the
         /// keyboard path.
+        ///
+        /// **Answers what became of the key, not merely that it was
+        /// accepted.** A key one of Ghostty's own keybindings took, a key
+        /// handed to the program in the terminal, and a key that encoded to
+        /// no bytes at all were once all reported as success, and the
+        /// caller could not tell "the program ignored your ctrl+c" from
+        /// "your ctrl+c never left Ghostty". See `keys.Outcome`.
         sendKey: *const fn (
             ctx: *anyopaque,
             id: Bus.Id,
             key: []const u8,
-        ) anyerror!void,
+        ) anyerror!keys.Outcome,
 
         /// How long that terminal's screen has been unchanged.
         quietMs: *const fn (ctx: *anyopaque, id: Bus.Id) u64,
@@ -4438,7 +4521,7 @@ pub const Host = struct {
         return self.vtable.personaFace(self.ctx, alloc, id);
     }
 
-    fn sendKey(self: Host, id: Bus.Id, key: []const u8) anyerror!void {
+    fn sendKey(self: Host, id: Bus.Id, key: []const u8) anyerror!keys.Outcome {
         return self.vtable.sendKey(self.ctx, id, key);
     }
 
@@ -4982,6 +5065,7 @@ pub fn dispatch(
                 ),
 
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
+                error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
 
                 else => hostFailure("SendFailed", "could not type into that terminal"),
             };
@@ -5142,6 +5226,7 @@ pub fn dispatch(
                 // two different sentences for the one fact would be the
                 // next one.
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
+                error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
 
                 error.ChildExited => hostFailure(
                     "ChildExited",
@@ -5170,7 +5255,7 @@ pub fn dispatch(
                 keys.refusal(err),
             );
 
-            host.sendKey(p.id, p.key) catch |err| return switch (err) {
+            const outcome = host.sendKey(p.id, p.key) catch |err| return switch (err) {
                 error.UnknownTerminal,
                 error.NoSuchTerminal,
                 => failure(error.UnknownTerminal),
@@ -5191,7 +5276,14 @@ pub fn dispatch(
                     "the terminal would not take that key just now",
                 ),
             };
-            return .ok;
+
+            // **Not `.ok`, and that is the point of this arm.** Three
+            // different fates used to share one word here, and a caller
+            // pressing ctrl+c at a stuck terminal could not tell whether
+            // the program had ignored its interrupt or whether the
+            // interrupt had never left Ghostty. The sentence is the
+            // answer; `keys.Outcome` argues each one.
+            return .{ .text = outcome.describe() };
         },
 
         .terminal_layout => |p| {
@@ -5261,7 +5353,7 @@ pub fn dispatch(
 
             var step: u8 = 1;
             while (step < p.choice) : (step += 1) {
-                host.sendKey(p.id, "arrow_down") catch |err| return switch (err) {
+                _ = host.sendKey(p.id, "arrow_down") catch |err| return switch (err) {
                     error.UnknownTerminal,
                     error.NoSuchTerminal,
                     => failure(error.UnknownTerminal),
@@ -5284,7 +5376,7 @@ pub fn dispatch(
                 };
             }
 
-            host.sendKey(p.id, "enter") catch |err| return switch (err) {
+            const taken = host.sendKey(p.id, "enter") catch |err| return switch (err) {
                 error.UnknownTerminal,
                 error.NoSuchTerminal,
                 => failure(error.UnknownTerminal),
@@ -5298,6 +5390,18 @@ pub fn dispatch(
                     "the terminal would not take the return, so nothing was answered.",
                 ),
             };
+
+            // **A return that never reached the program answered nothing.**
+            // The arrows above may still have walked the highlight, so this
+            // is a refusal with a fact in it rather than a bare success: the
+            // box is still open, possibly on a different option than it was.
+            if (taken != .written) return .{ .failed = .{
+                .code = "KeyFailed",
+                .message = "the return did not reach the program in that terminal, so " ++
+                    "nothing was answered -- but the arrow keys before it may have " ++
+                    "moved the highlight. Read the terminal before trying again.",
+            } };
+
             return .ok;
         },
 
@@ -5729,6 +5833,12 @@ pub fn dispatch(
                             "the panel is unchanged.",
                     ),
 
+                    error.DraftInLine => hostFailure(
+                        "DraftInLine",
+                        draft_in_line ++ " Nothing was said, so nothing was assigned: " ++
+                            "the panel is unchanged.",
+                    ),
+
                     else => hostFailure(
                         "SendFailed",
                         "could not tell that terminal the task is theirs, so it was not " ++
@@ -6119,8 +6229,11 @@ fn chatFailure(err: anyerror) wire.Response {
 /// not touched the machine. The refusal is a fact about a surface, and it
 /// was being handed over as a fact about a person.
 ///
-/// `Surface.poltergeistMayType` looks at two things now, and they are
-/// different facts that happen to share an answer:
+/// `Surface.poltergeistMayType` looks at two things, and **they no longer
+/// share an answer.** They did, and task 572 is what that cost: one sentence
+/// covering both, ending in "try again shortly", where only the first of
+/// them ever goes away by being waited for. The second is now
+/// `DraftInLine`, with its own sentence saying what has to happen instead:
 ///
 ///   1. **How long ago a key event reached that surface.** Not who sent it,
 ///      not whether anything was typed. A modifier on its own counts. So
@@ -6150,20 +6263,34 @@ fn chatFailure(err: anyerror) wire.Response {
 /// division the rest of this program keeps: it measures how long a
 /// terminal has been still and never says it is stuck.
 const key_arrived =
-    "that terminal is being written in, so nothing was typed into it: text " ++
-    "arriving mid-sentence lands inside whatever is being written and " ++
-    "submits it. Two things produce this and they are different facts. " ++
-    "Either a key reached that terminal within the last ten seconds -- " ++
-    "which says a key arrived and nothing more, not who sent it and not " ++
-    "that anyone is there; a modifier by itself counts, so does releasing " ++
-    "one, and so does switching away from the window -- or characters have " ++
-    "been typed there and neither submitted with return nor abandoned with " ++
-    "ctrl+c, ctrl+u or ctrl+d, however long ago that was. The second one " ++
-    "still does not read the input line: it counts what went in, so " ++
-    "backspacing a line empty leaves it set. The first clears on its own in " ++
-    "a moment; the second clears when somebody presses return at that " ++
-    "terminal, which may be a while. Try again shortly, and if it keeps " ++
-    "saying this, that terminal has a half-written line sitting in it.";
+    "a key reached that terminal within the last ten seconds, so nothing was " ++
+    "typed into it: text arriving mid-sentence lands inside whatever is " ++
+    "being written and submits it. This says a key arrived and nothing " ++
+    "more -- not who sent it, and not that anyone is there; a modifier by " ++
+    "itself counts, so does releasing one, and so does switching away from " ++
+    "the window. **It clears on its own.** Try again in a moment.";
+
+/// The other half of what used to be one sentence.
+///
+/// ⚠️ **They were one error and one message, and that is what task 572 was
+/// filed about.** The old wording told a caller both facts and left it to
+/// work out which one it had -- and the two have opposite next moves. One
+/// goes away by itself in ten seconds. This one does not go away at all
+/// until a return or a ctrl+u reaches that terminal, and the old sentence
+/// ended by telling the reader to "try again shortly", which for this half
+/// is advice to wait for something that is not going to happen.
+const draft_in_line =
+    "that terminal has characters in its input line that were neither " ++
+    "submitted with return nor abandoned with ctrl+c, ctrl+u or ctrl+d -- " ++
+    "however long ago they were typed. Text sent now would land inside that " ++
+    "line and submit the pair, so nothing was typed. **Waiting will not " ++
+    "clear this**, which is the difference from UserPresent: something has " ++
+    "to press a key at that terminal. terminal_key(id, \"ctrl+u\") is that " ++
+    "something, and it now tells you whether it landed -- if it answers " ++
+    "that the key reached the program, this refusal is gone; if it answers " ++
+    "that nothing received the key, a person has to go to that machine. " ++
+    "Note that this never read the input line: it counts what went in, so " ++
+    "backspacing a line empty also leaves it set.";
 
 /// Said when the host has the tools but this build has not wired them up.
 ///
@@ -6243,6 +6370,13 @@ fn taskFailure(err: anyerror) wire.Response {
         error.UserPresent => hostFailure(
             "NotTold",
             key_arrived ++ " It was not told, and the task is still open.",
+        ),
+        // Same outcome for the panel, different fact about the terminal --
+        // and this one does not clear by waiting, so "ask again in a
+        // moment" would be the wrong thing to say.
+        error.DraftInLine => hostFailure(
+            "NotTold",
+            draft_in_line ++ " It was not told, and the task is still open.",
         ),
         error.NotImplemented => hostFailure("NotImplemented", not_wired_up),
         else => hostFailure("HostRefused", "the panel could not do that"),
@@ -6409,6 +6543,11 @@ const FakeHost = struct {
     /// The last key asked for, and what the fake does with it.
     keyed: ?struct { id: Bus.Id, key: []const u8 } = null,
     key_error: ?anyerror = null,
+
+    /// What the fake terminal reports became of the key. `.written` is the
+    /// ordinary case; the others are set by the tests that check the
+    /// wording each one gets back.
+    key_outcome: keys.Outcome = .written,
 
     /// The last terminal asked for, what the fake hands back, and how it
     /// can be made to refuse.
@@ -7045,10 +7184,11 @@ const FakeHost = struct {
         return self.open_result;
     }
 
-    fn sendKey(ctx: *anyopaque, id: Bus.Id, k: []const u8) anyerror!void {
+    fn sendKey(ctx: *anyopaque, id: Bus.Id, k: []const u8) anyerror!keys.Outcome {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.key_error) |err| return err;
         self.keyed = .{ .id = id, .key = k };
+        return self.key_outcome;
     }
 
     fn performAction(
@@ -9613,6 +9753,14 @@ test "each reason a send can fail says which one it was" {
         .{ .err = error.ChildExited, .code = "ChildExited" },
         .{ .err = error.UserPresent, .code = "UserPresent" },
 
+        // ⚠️ **The row that would have been missing.** `DraftInLine` and
+        // `UserPresent` were one error with one sentence, and that is task
+        // 572: the two have opposite next moves and the reader could not
+        // tell which one it had. The `seen` count below is what makes this
+        // row mean something -- a new code handed the old sentence would
+        // satisfy every other assertion here.
+        .{ .err = error.DraftInLine, .code = "DraftInLine" },
+
         // Anything the host grows later still has an answer, and it is the
         // old one rather than a crash. `named = false`: this one is
         // deliberately terse, because there is nothing to say -- a cause
@@ -9644,9 +9792,9 @@ test "each reason a send can fail says which one it was" {
         try seen.put(alloc, res.failed.message, {});
     }
 
-    // Five causes, five distinct sentences. Without this the switch could
-    // hand back the same text five times and every assertion above would
-    // still pass.
+    // One distinct sentence per cause. Without this the switch could hand
+    // back the same text for every one of them and every assertion above
+    // would still pass.
     try testing.expectEqual(@as(usize, cases.len), seen.count());
 }
 

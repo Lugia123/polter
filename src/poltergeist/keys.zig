@@ -359,3 +359,60 @@ test "the catalogue is built from the types, not typed out" {
         try testing.expect(found);
     }
 }
+
+
+/// What actually became of a key `terminal_key` pressed.
+///
+/// **This type exists because three different things used to be one `ok`.**
+/// `Surface.sendPoltergeistKey` returned `void`, so the call answered the
+/// question "was the request accepted" and never the question the caller
+/// was actually asking, which is "did anything happen". A key taken by one
+/// of Ghostty's own keybindings, a key encoded and handed to the program in
+/// the terminal, and a key that encoded to no bytes at all were reported
+/// with the same word -- and the middle one is the only one that does what
+/// a supervisor pressing ctrl+c means to do.
+///
+/// The distinction is not cosmetic. It is the difference between "the
+/// program ignored your interrupt" and "your interrupt never left Ghostty",
+/// and those two have opposite next steps.
+pub const Outcome = enum {
+    /// One of Ghostty's own keybindings matched and took the key. **It
+    /// never reached the program in the terminal**, so whatever that
+    /// program would have done with it did not happen.
+    binding,
+
+    /// Encoded to bytes and queued for the pty. The program in the
+    /// terminal received it. What it did with it is its own business --
+    /// this says the key arrived, not that it had an effect.
+    ///
+    /// ⚠️ **It does not say the program read them.** A program that has
+    /// stopped reading its pty leaves the screen unchanged while this
+    /// answer is still true, and Ghostty cannot see the difference from
+    /// here. That is a fourth state, and this enum deliberately does not
+    /// pretend to name it.
+    written,
+
+    /// Encoded to nothing, and no binding took it. **Nobody anywhere
+    /// received this key.** The call would have said `ok`.
+    ignored,
+
+    /// The surface closed as a result, so it is gone.
+    closed,
+
+    /// The sentence for a caller, which is the whole reason the enum is
+    /// carried out to the wire rather than logged and dropped.
+    pub fn describe(self: Outcome) []const u8 {
+        return switch (self) {
+            .binding => "that key is bound to one of Ghostty's own actions at that " ++
+                "terminal, so Ghostty took it and the program running in there never " ++
+                "saw it. Nothing was sent to the program.",
+            .written => "sent to the program running in that terminal. That says the " ++
+                "bytes were handed over, not that the program read them: a program " ++
+                "that has stopped reading leaves the screen unchanged and this answer " ++
+                "is still true.",
+            .ignored => "the key encoded to nothing and no keybinding took it, so " ++
+                "nobody received it. The call was accepted and had no effect.",
+            .closed => "that surface closed as a result of the key",
+        };
+    }
+};

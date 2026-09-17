@@ -3052,10 +3052,10 @@ fn poltergeistSendKey(
     ctx: *anyopaque,
     id: poltergeistpkg.Bus.Id,
     key: []const u8,
-) anyerror!void {
+) anyerror!poltergeistpkg.keys.Outcome {
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
-    try surface.sendPoltergeistKey(key);
+    return try surface.sendPoltergeistKey(key);
 }
 
 /// Do one of the terminal's own keybinding actions to it.
