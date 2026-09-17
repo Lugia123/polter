@@ -74,7 +74,6 @@ pub const NamePair = struct {
     name: [:0]const u8,
 };
 
-
 pub fn deinit(self: *PersonaStore) void {
     if (self.arena) |*a| a.deinit();
     if (self.load_error) |e| self.alloc.free(e);
@@ -229,6 +228,19 @@ pub fn clearPersona(self: *PersonaStore, id: Bus.Id) !void {
 /// Forget a terminal. Called when a surface goes.
 pub fn forget(self: *PersonaStore, id: Bus.Id) void {
     _ = self.states.remove(id);
+}
+
+/// The NUL-terminated key and name for a persona, for the C surface.
+///
+/// Null when no such key is defined -- which happens when `personas.json`
+/// was edited to remove one a terminal is still wearing. The terminal keeps
+/// the key it was given; what it loses is a name to show, and the interface
+/// is told that by getting nothing rather than by getting an empty string.
+pub fn cName(self: *const PersonaStore, key: []const u8) ?NamePair {
+    for (self.names) |pair| {
+        if (std.mem.eql(u8, pair.key, key)) return pair;
+    }
+    return null;
 }
 
 /// Write this terminal's effective set as the JSON the interface reads.
@@ -543,4 +555,40 @@ test "personas: a face with nothing chosen is still valid JSON and says it is no
     // so.** Drawn as an empty list this is "you have no personas", which is
     // a different sentence and sends the user somewhere else.
     try testing.expect(o.get("stale").?.bool);
+}
+
+test "personas: a worn persona has a name to show, and a deleted one still has its key" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const path = try std.fmt.allocPrint(aa, "{s}/personas.json", .{dir});
+    try write(io, path,
+        \\{"version":1,"personas":[{"key":"archer","name":"射手"}]}
+    );
+
+    var store: PersonaStore = .{ .alloc = testing.allocator };
+    defer store.deinit();
+    store.load(io, path);
+
+    // **What the tab mark is built from.** The pair is NUL-terminated
+    // because the apprt is handed `const char*`; the parsed strings point
+    // into the JSON text and have no terminator to stop at.
+    const pair = store.cName("archer") orelse return error.NoName;
+    try testing.expectEqualStrings("archer", pair.key);
+    try testing.expectEqualStrings("射手", pair.name);
+    try testing.expectEqual(@as(u8, 0), pair.key.ptr[pair.key.len]);
+    try testing.expectEqual(@as(u8, 0), pair.name.ptr[pair.name.len]);
+
+    // A key the file no longer defines: the terminal keeps wearing it, and
+    // what it loses is a name to show. The interface is told that by
+    // getting nothing rather than by getting an empty string, which would
+    // draw as a persona with a blank label.
+    try testing.expectEqual(@as(?NamePair, null), store.cName("scribe"));
 }

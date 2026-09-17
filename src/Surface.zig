@@ -205,7 +205,7 @@ poltergeist_tab_may_authorise: bool = false,
 /// `agentPresent` false, and a host whose `clientInfo.name` we have never
 /// measured is `unknown` forever -- so this is the honest empty answer, not
 /// a placeholder.
-poltergeist_persona: apprt.action.PoltergeistMark.Persona = .{},
+poltergeist_persona: apprt.action.PoltergeistMark.Persona = .none,
 
 /// When a real key event last arrived from the user.
 ///
@@ -3723,11 +3723,41 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     // it yet" rather than "you never chose one". Those two are different
     // sentences to the user: the first fixes itself, the second sends them
     // to choose again.
-    const persona: apprt.action.PoltergeistMark.Persona = .{
-        .agent_present = if (self.app.poltergeist_server) |*srv|
+    const persona: apprt.action.PoltergeistMark.Persona = persona: {
+        const present = if (self.app.poltergeist_server) |*srv|
             srv.agentPresent(self.id)
         else
-            false,
+            false;
+
+        // ⚠️ **Asked of the store, not left to a default.** This used to
+        // fill in `present` and stop, so every terminal reported "no
+        // persona" however many it had been given -- the tools really
+        // changed and both platforms went on ticking "No Role". The fields
+        // have no defaults now, so this cannot be half-written again.
+        self.app.ensurePersonas();
+        const state = self.app.personas.stateOf(self.id);
+
+        const key = state.key orelse break :persona .{
+            .key = null,
+            .name = null,
+            .deviated = false,
+            .agent_present = present,
+            .host_class = .unknown,
+        };
+
+        const pair = self.app.personas.cName(key);
+        break :persona .{
+            .key = if (pair) |p| p.key.ptr else null,
+            .name = if (pair) |p| p.name.ptr else null,
+            .deviated = state.deviated(self.app.personas.set),
+            .agent_present = present,
+            // Until `clientInfo.name` is read off the agent's `initialize`
+            // and mapped, this is the honest answer. Reporting anything
+            // else would be an inference dressed as a reading, and the one
+            // it would be mistaken for -- `hot` -- is the one that makes
+            // "not in effect yet" look like "already in effect".
+            .host_class = .unknown,
+        };
     };
 
     // Nothing has changed for this tab: leave it alone rather than
@@ -3833,7 +3863,7 @@ test "a hold is a change even when nothing else moved" {
         .role = .none,
         .held = false,
         .may_authorise = false,
-        .persona = .{},
+        .persona = .none,
     };
 
     // **The defect, as one assertion.** A terminal nobody watches has no mark

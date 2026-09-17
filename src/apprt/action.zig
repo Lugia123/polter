@@ -2056,22 +2056,48 @@ pub const PoltergeistMark = struct {
         /// still shaking hands makes that a routine occurrence rather than
         /// an edge: "nothing is wearing it yet" fixes itself, "you never
         /// chose one" sends the user to do it again.
-        key: ?[*:0]const u8 = null,
+        key: ?[*:0]const u8,
 
         /// Display name, null exactly when `key` is.
-        name: ?[*:0]const u8 = null,
+        name: ?[*:0]const u8,
 
         /// The effective set has moved away from what the persona declared.
-        deviated: bool = false,
+        deviated: bool,
 
         /// Whether an agent is connected to Polter in this terminal.
         ///
         /// The persona is kept either way -- it is the user's intent for the
         /// terminal, not a measurement of what is running in it -- but a tab
         /// may only be shown *as* wearing one while somebody is in there.
-        agent_present: bool = false,
+        agent_present: bool,
 
-        host_class: HostClass = .unknown,
+        host_class: HostClass,
+
+        /// Nothing chosen, nobody connected, host not identified.
+        ///
+        /// ⚠️ **A named constant rather than defaults on the fields, and
+        /// this is the fix for a real defect rather than a preference.**
+        /// With defaults, the one place that builds this filled in
+        /// `agent_present` and left the rest -- so a terminal that really
+        /// was wearing a persona reported `key = null`, the menus ticked
+        /// "No Role" on both platforms, and nothing anywhere was wrong
+        /// enough to say so. The interface was the only thing that knew,
+        /// and it was lying.
+        ///
+        /// The lesson generalises past this struct: **a consumer's tests
+        /// cannot see a producer's silence.** Thirty-one tests covered what
+        /// the interface does with a key, and not one of them could fail
+        /// when no key was ever sent. What catches that is not another
+        /// observer -- it is making the omission impossible to write, so
+        /// every constructor is asked by the compiler and anybody who does
+        /// want the empty one says `.none`, which reads as a choice.
+        pub const none: Persona = .{
+            .key = null,
+            .name = null,
+            .deviated = false,
+            .agent_present = false,
+            .host_class = .unknown,
+        };
     };
 
     /// How the agent CLI in this terminal takes a change of persona.
