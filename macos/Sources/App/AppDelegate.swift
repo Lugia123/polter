@@ -84,6 +84,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuPoltergeistWatch: NSMenuItem?
     @IBOutlet private var menuPoltergeistShield: NSMenuItem?
     @IBOutlet private var menuPoltergeistAuthorise: NSMenuItem?
+    @IBOutlet private var menuPoltergeistPersona: NSMenuItem?
     @IBOutlet private var menuLanguage: NSMenuItem?
     @IBOutlet private var menuPlugins: NSMenuItem?
     @IBOutlet private var menuReopenTab: NSMenuItem?
@@ -186,6 +187,10 @@ class AppDelegate: NSObject,
 
     /// Fills in the Plugins submenu, and rebuilds it each time it opens.
     @MainActor private lazy var pluginMenu = PluginMenu()
+
+    /// Fills in the menu bar's `Role` submenu, and rebuilds it each time the
+    /// Agents menu opens -- the terminal it is about changes underneath it.
+    @MainActor private lazy var personaMenuBar = PersonaMenuBar()
 
     override init() {
 #if DEBUG
@@ -346,6 +351,11 @@ class AppDelegate: NSObject,
 
         // The Plugins submenu is filled in from what is installed on disk.
         if let item = menuPlugins { pluginMenu.attach(to: item) }
+
+        // The same `Role` submenu the two right-click menus carry, built by
+        // the same `PersonaMenu` -- and rebuilt when the Agents menu opens,
+        // because which terminal it is about is decided then, not now.
+        if let item = menuPoltergeistPersona { personaMenuBar.attach(to: item) }
 
         // Check if secure input was enabled when we last quit.
         if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {

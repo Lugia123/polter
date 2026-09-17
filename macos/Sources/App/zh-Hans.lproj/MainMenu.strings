@@ -65,6 +65,7 @@
 "pg4-Wa-Tc1.title" = "监督此终端";
 "pg9-Sh-Ld1.title" = "不让 agent 碰此终端";
 "pgA-Au-Th1.title" = "允许总管在此终端替你回答权限询问";
+"pgB-Ro-Le1.title" = "角色";
 
 /* 项目 —— 存整棵分屏树，和「重开关闭的标签页」是两码事 */
 "pj0-Mn-Ma1.title" = "项目";
