@@ -4663,9 +4663,9 @@ fn chatSetBrief(
     ctx: *anyopaque,
     group: []const u8,
     text: []const u8,
-) anyerror!void {
+) anyerror!poltergeistpkg.Chat.Kept {
     const self: *App = @ptrCast(@alignCast(ctx));
-    try self.chat.setBrief(group, text);
+    const kept = try self.chat.setBrief(group, text);
 
     // Taken back out of the chat rather than written from `text`, so what
     // lands on disk is what the chat actually kept -- trimmed, and cut to
@@ -4673,28 +4673,34 @@ fn chatSetBrief(
     if (self.group_log) |*l| l.note(group, self.chat.briefOf(group) catch text);
 
     self.saveSession();
+
+    // Handed straight back: whether it all fitted is not this layer's to
+    // interpret, and the sentence the writer reads is built where the
+    // reply is written.
+    return kept;
 }
 
-/// The groups a terminal is in, with each group's note when it is asked
-/// for. Not asked for means not read -- see the vtable for why that is
-/// better than reading and discarding.
+/// The groups a terminal may see, each with that group's note.
+///
+/// `all` widens the listing past this terminal's own memberships. It does
+/// not decide whether the note comes along -- see the vtable for what that
+/// conflation cost.
 fn chatGroupInfo(
     ctx: *anyopaque,
     alloc: Allocator,
     id: poltergeistpkg.Bus.Id,
-    want_brief: bool,
+    all: bool,
 ) anyerror![]poltergeistpkg.rpc.ChatGroupInfo {
     const self: *App = @ptrCast(@alignCast(ctx));
 
     const live = try self.liveTerminals(alloc);
     defer alloc.free(live);
 
-    // The brief and the whole list travel together: both are for whoever
-    // is arranging the groups, which is the supervisor and the person whose
-    // machine this is. `want_brief` is already that question answered, so
-    // it is the one asked here too rather than a second rule that could
-    // drift from it.
-    const names = try self.chat.groupsSeenBy(alloc, id, live, want_brief);
+    // `all` is about the listing only. The brief comes back for every
+    // group in it, to whoever can see the group: a brief the members
+    // cannot read is a briefing that was never delivered, and it looks
+    // delivered from where it was written.
+    const names = try self.chat.groupsSeenBy(alloc, id, live, all);
     defer alloc.free(names);
 
     const out = try alloc.alloc(poltergeistpkg.rpc.ChatGroupInfo, names.len);
@@ -4710,10 +4716,10 @@ fn chatGroupInfo(
     for (names, 0..) |n, i| {
         // Copied for the same reason as above: the reply is written after
         // this returns, and the chat can move underneath it.
-        const brief = if (want_brief) brief: {
+        const brief = brief: {
             const b = self.chat.briefOf(n) catch "";
             break :brief if (b.len > 0) try alloc.dupe(u8, b) else "";
-        } else "";
+        };
         const joined = self.chat.hasMember(n, id);
 
         out[i] = .{ .name = try alloc.dupe(u8, n), .brief = brief, .joined = joined };

@@ -4270,20 +4270,15 @@ pub const Host = struct {
         ) anyerror![]const ChatMember,
 
         /// Say what a group is for. Replaces whatever was there.
+        ///
+        /// Returns how much of it was stored, because the store has a
+        /// limit and used to enforce it in silence -- see `Chat.Kept`.
         chatSetBrief: *const fn (
             ctx: *anyopaque,
             group: []const u8,
             text: []const u8,
-        ) anyerror!void,
+        ) anyerror!Chat.Kept,
 
-        /// The groups this terminal is in.
-        ///
-        /// `want_brief` decides whether each group's note comes along.
-        /// Passed down rather than filtered afterwards: a note that was
-        /// never fetched cannot be leaked by a later mistake, and there is
-        /// nothing to free.
-        ///
-        /// Returned memory belongs to the caller's allocator.
         /// Tell the person something, through whatever they configured.
         ///
         /// Returns what came of it, as a sentence to hand back -- the
@@ -4309,11 +4304,22 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
         ) anyerror![]const u8,
 
+        /// The groups `id` may see, each with the group's brief.
+        ///
+        /// `all` widens the listing past `id`'s own memberships; it does
+        /// **not** decide whether the brief comes back. Those were one
+        /// boolean until a supervisor wrote a whole round's instructions
+        /// into a brief that no member could read -- the write succeeded,
+        /// the supervisor's own listing showed it, and four workers were
+        /// never told anything. A note nobody can read is a note that was
+        /// not sent, so the brief now travels with every listing of a
+        /// group, and `all` is left saying only what it always meant:
+        /// whether groups you are not in are shown at all.
         chatGroupInfo: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
             id: Bus.Id,
-            want_brief: bool,
+            all: bool,
         ) anyerror![]ChatGroupInfo,
 
         chatGroups: *const fn (
@@ -4461,9 +4467,8 @@ pub const Host = struct {
         ///
         /// `whole_panel` decides which of the two questions is being
         /// answered -- the group's entire panel, or `who`'s own open work.
-        /// Passed down rather than filtered afterwards, the same way
-        /// `chatGroupInfo` takes `want_brief`: what was never fetched
-        /// cannot be handed over by a later mistake.
+        /// Passed down rather than filtered afterwards: what was never
+        /// fetched cannot be handed over by a later mistake.
         ///
         /// Returned memory belongs to `alloc`.
         taskList: *const fn (
@@ -4587,7 +4592,7 @@ pub const Host = struct {
         return self.vtable.sessionRecall(self.ctx, alloc);
     }
 
-    fn chatSetBrief(self: Host, group: []const u8, text: []const u8) anyerror!void {
+    fn chatSetBrief(self: Host, group: []const u8, text: []const u8) anyerror!Chat.Kept {
         return self.vtable.chatSetBrief(self.ctx, group, text);
     }
 
@@ -4595,9 +4600,9 @@ pub const Host = struct {
         self: Host,
         alloc: std.mem.Allocator,
         id: Bus.Id,
-        want_brief: bool,
+        all: bool,
     ) anyerror![]ChatGroupInfo {
-        return self.vtable.chatGroupInfo(self.ctx, alloc, id, want_brief);
+        return self.vtable.chatGroupInfo(self.ctx, alloc, id, all);
     }
 
     fn chatOwner(self: Host, group: []const u8) anyerror!Bus.Id {
@@ -4966,9 +4971,40 @@ pub fn dispatch(
 
         .group_set_brief => |p| {
             if (!host.ownsGroup(p.group, caller)) return failure(error.NotYours);
-            host.chatSetBrief(p.group, p.text) catch
+            const kept = host.chatSetBrief(p.group, p.text) catch
                 return hostFailure("NoSuchGroup", "no group by that name");
-            return .ok;
+
+            // **A brief that was cut must not answer `ok`.** The store
+            // keeps a bounded amount and used to drop the rest without
+            // saying so, which is the same failure as the one that opened
+            // this area: what the writer is shown is not what the reader
+            // gets. It surfaced on the text most likely to run long -- a
+            // round's opening instructions -- and what falls off the end
+            // of those is whatever was written last.
+            //
+            // Numbers rather than a flag, and in the sentence rather than
+            // in a field beside `ok`: a field nobody prints is the silence
+            // again with a name. The writer needs to know how much to cut
+            // by, and CJK is where this bites first, so the ratio is said
+            // outright rather than left to be discovered.
+            if (!kept.cut()) return .ok;
+            return .{ .text = try std.fmt.allocPrint(
+                alloc,
+                "the brief was cut. You wrote {d} bytes and {d} were kept, so the " ++
+                    "last {d} are gone -- and what goes missing is what you wrote " ++
+                    "last, not what matters least. The limit is on bytes, not " ++
+                    "characters: a Chinese or Japanese character costs three, so " ++
+                    "the {d} bytes kept are about {d} of them. Shorten it and set " ++
+                    "it again, or put the long half somewhere the group can read " ++
+                    "and name that instead.",
+                .{
+                    kept.given,
+                    kept.kept,
+                    kept.given - kept.kept,
+                    kept.kept,
+                    kept.kept / 3,
+                },
+            ) };
         },
 
         .group_members => |p| {
@@ -5597,18 +5633,27 @@ pub fn dispatch(
         },
 
         .group_list => {
-            // The brief goes to the supervisor, who wrote it, and to the
-            // person at the keyboard, whose machine this is -- they face
-            // the same question of what a group called "build" was for.
+            // **The brief goes to everybody in the group.** It used to go
+            // only to the supervisor who wrote it and to the person at the
+            // keyboard, on the reasoning that a note you might have to
+            // justify to your peers stops being worth writing. What that
+            // cost was worse: the brief is the obvious place to put what a
+            // round of work is for, a supervisor put a round's whole
+            // briefing there, and the members could not read a word of it.
+            // The mistake is invisible from where it is made -- the write
+            // returns ok and the supervisor's own `group_list` shows the
+            // text back -- so it is not one a supervisor finds by looking.
             //
-            // Not to the other members. The reason is not secrecy: it is
-            // that a note you might have to justify to your peers stops
-            // being worth writing, and this one's whole value is that it
-            // can be written carelessly.
-            const want_brief = bus.isSupervisor(caller) or
-                caller == Chat.user_id;
+            // What is still not everybody's is the *listing*: a worker is
+            // shown the groups it is in, and a supervisor (and the user,
+            // whose machine this is) every group, because after a restart
+            // a supervisor is a member of nothing and would otherwise be
+            // told last night is gone. That is `all`, and it is a separate
+            // question from the brief -- they were one boolean, which is
+            // how the brief came to be withheld in the first place.
+            const all = bus.isSupervisor(caller) or caller == Chat.user_id;
 
-            const groups = host.chatGroupInfo(alloc, caller, want_brief) catch
+            const groups = host.chatGroupInfo(alloc, caller, all) catch
                 return hostFailure("ListFailed", "could not list groups");
             return .{ .groups = groups };
         },
@@ -6566,6 +6611,20 @@ const FakeHost = struct {
     /// The last brief that was written, if any.
     brief_set: ?struct { group: []const u8, text: []const u8 } = null,
 
+    /// What the fake store keeps. Big enough to be no limit at all unless
+    /// a test asks for one, so every test that is not about the cut goes
+    /// on seeing a brief stored whole.
+    brief_cap: usize = std.math.maxInt(usize),
+
+    /// The `all` the last `group_list` asked for.
+    ///
+    /// Recorded because the brief and the width of the listing used to be
+    /// one boolean, and the fix is only a fix if they came apart: a fake
+    /// that hands the brief back either way cannot, on its own, tell a
+    /// handler that widened the listing for everybody from one that did
+    /// not. This is the half a reply cannot show.
+    group_list_all: ?bool = null,
+
     /// What `session_recall` hands back.
     session: []const u8 = "",
 
@@ -6943,18 +7002,16 @@ const FakeHost = struct {
         ctx: *anyopaque,
         alloc: std.mem.Allocator,
         _: Bus.Id,
-        want_brief: bool,
+        all: bool,
     ) anyerror![]ChatGroupInfo {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.group_list_all = all;
         if (self.refuse) return error.ListFailed;
 
         const out = try alloc.alloc(ChatGroupInfo, 1);
         out[0] = .{
             .name = try alloc.dupe(u8, "build"),
-            .brief = if (want_brief)
-                try alloc.dupe(u8, "写 retry 装饰器")
-            else
-                "",
+            .brief = try alloc.dupe(u8, "写 retry 装饰器"),
         };
         return out;
     }
@@ -6979,10 +7036,11 @@ const FakeHost = struct {
         return alloc.dupe(u8, self.session);
     }
 
-    fn chatSetBrief(ctx: *anyopaque, group: []const u8, text: []const u8) anyerror!void {
+    fn chatSetBrief(ctx: *anyopaque, group: []const u8, text: []const u8) anyerror!Chat.Kept {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
         self.brief_set = .{ .group = group, .text = text };
+        return .{ .given = text.len, .kept = @min(text.len, self.brief_cap) };
     }
 
     fn chatMembers(
@@ -7629,7 +7687,11 @@ test "a group's brief is the supervisor's alone to write" {
     try testing.expect(requiresSupervisor(.group_set_brief));
 }
 
-test "only the supervisor's listing carries the brief" {
+test "every listing of a group carries its brief, members included" {
+    // This asserted the opposite until a supervisor wrote a round's whole
+    // briefing into a brief and four workers never saw a word of it. The
+    // supervisor's own listing showed the text back, so nothing about the
+    // mistake was visible from where it was made.
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var fake: FakeHost = .{};
@@ -7640,13 +7702,75 @@ test "only the supervisor's listing carries the brief" {
 
     // The supervisor sees what it wrote.
     const mine = try dispatch(alloc, &b, fake.host(), term(boss), .group_list);
-    try testing.expect(mine.groups[0].brief.len > 0);
+    try testing.expectEqualStrings("写 retry 装饰器", mine.groups[0].brief);
 
-    // A member gets the group but not the note. Not an error -- asking
-    // which groups you are in is a fair question.
+    // And so does a member, which is the whole point of writing one.
     const theirs = try dispatch(alloc, &b, fake.host(), term(worker), .group_list);
     try testing.expectEqualStrings("build", theirs.groups[0].name);
-    try testing.expectEqualStrings("", theirs.groups[0].brief);
+    try testing.expectEqualStrings("写 retry 装饰器", theirs.groups[0].brief);
+
+    // **And the listing did not widen to pay for it.** The brief and the
+    // width were one boolean; a fix that hands the brief over by asking
+    // for everybody's groups has moved the bug rather than removed it, and
+    // the reply alone cannot tell the two apart -- this fake would hand
+    // back the same one group either way. So the question that was asked
+    // of the host is checked, not just the answer that came back.
+    try testing.expectEqual(@as(?bool, false), fake.group_list_all);
+
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .group_list);
+    try testing.expectEqual(@as(?bool, true), fake.group_list_all);
+}
+
+test "zz574 a member's listing carries the brief body" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const theirs = try dispatch(alloc, &b, fake.host(), term(worker), .group_list);
+    try testing.expectEqualStrings("build", theirs.groups[0].name);
+    try testing.expectEqualStrings("写 retry 装饰器", theirs.groups[0].brief);
+}
+
+test "zz574 a brief that was cut does not come back as ok" {
+    // `ok` on a brief the store could not keep whole is the same lie the
+    // rest of this area was opened for: the writer is shown success and
+    // the reader gets less than was written. The numbers have to be in the
+    // sentence -- a field beside `ok` is the silence again with a name.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .brief_cap = 9 };
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .group_set_brief = .{ .group = "build", .text = "0123456789abc" },
+    });
+
+    // Not `ok`, and the two numbers are both there to be read.
+    try testing.expect(res != .ok);
+    try testing.expect(std.mem.indexOf(u8, res.text, "13") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "9") != null);
+}
+
+test "zz574 a brief that fitted still comes back as ok" {
+    // The positive control. Without it the test above passes just as well
+    // on an implementation that never answers `ok` at all.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{};
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .group_set_brief = .{ .group = "build", .text = "0123456789abc" },
+    });
+    try testing.expectEqual(wire.Response.ok, res);
 }
 
 test "setting a brief reaches the host with what was written" {

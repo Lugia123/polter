@@ -298,7 +298,12 @@ pub fn restoreShell(
 
     // After `create`, so a note too long to store leaves a group with no
     // note rather than no group.
-    if (brief.len > 0) try self.setBrief(name, brief);
+    //
+    // The cut is discarded here and nowhere else: this is a brief coming
+    // back off disk, so whatever cut there was happened when it was first
+    // written, and was reported then. Telling anybody now would be
+    // reporting a restart as if it were an edit.
+    if (brief.len > 0) _ = try self.setBrief(name, brief);
 }
 
 /// Whether anybody is working in this group right now.
@@ -339,11 +344,23 @@ pub fn isActive(self: *const Chat, name: []const u8, live: []const Id) bool {
 ///
 /// Replaces rather than appends: it is one note, kept current, not a
 /// history of intentions.
+///
+/// **Returns what was actually stored, and the caller may not ignore it.**
+/// This used to return nothing, so a brief too long to keep was cut here
+/// in silence and `group_set_brief` answered `ok`. That is the same shape
+/// as the bug this whole area was opened for: what the writer sees is not
+/// what the reader gets. A supervisor's round-opening brief is exactly the
+/// text that runs long, and the part that falls off the end is the part
+/// written last -- which, in the one real case, was the list of rules.
+///
+/// A count rather than a flag, because "it was cut" is not actionable and
+/// "you wrote N and M were kept" is. Returning it forces the question to
+/// be answered at every call site: `void` is what let it go unasked.
 pub fn setBrief(
     self: *Chat,
     name: []const u8,
     text: []const u8,
-) Error!void {
+) Error!Kept {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
 
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
@@ -354,12 +371,24 @@ pub fn setBrief(
     const owned = try self.alloc.dupe(u8, kept);
     if (group.brief.len > 0) self.alloc.free(group.brief);
     group.brief = owned;
+
+    return .{ .given = trimmed.len, .kept = kept.len };
 }
 
-/// What a group is for, or empty when nobody has said.
+/// What `setBrief` did with the text it was handed.
 ///
-/// The caller decides who may see this. It is the supervisor's memo to
-/// itself, and `read` deliberately does not carry it.
+/// `given` is after trimming, so trailing whitespace is not reported as
+/// something that went missing.
+pub const Kept = struct {
+    given: usize,
+    kept: usize,
+
+    /// Whether anything fell off the end.
+    pub fn cut(self: Kept) bool {
+        return self.kept < self.given;
+    }
+};
+
 /// Who made this group.
 ///
 /// With several supervisors in a window, a group belongs to the one that
@@ -377,6 +406,12 @@ pub fn hasMember(self: *const Chat, name: []const u8, id: Id) bool {
     return group.members.contains(id);
 }
 
+/// What a group is for, or empty when nobody has said.
+///
+/// Everybody who can see the group can see this -- it is how a round of
+/// work is handed over, not a memo the supervisor keeps to itself. It is
+/// still not carried by `read`: it belongs to the group, not to any one
+/// message, and repeating it in the stream would bury the conversation.
 pub fn briefOf(self: *const Chat, name: []const u8) Error![]const u8 {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     return group.brief;
@@ -1466,7 +1501,7 @@ test "a restored shell does not overwrite the live group of the same name" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    try chat.setBrief("build", "live");
+    _ = try chat.setBrief("build", "live");
     try chat.add("build", a, .none, .{});
 
     try testing.expectError(error.GroupExists, chat.restoreShell("build", "stale", 1));
@@ -1771,15 +1806,42 @@ test "a group's brief is kept and replaced, not appended to" {
     try chat.create("build", boss);
     try testing.expectEqualStrings("", try chat.briefOf("build"));
 
-    try chat.setBrief("build", "写 retry 装饰器，B 定接口 C 写测试");
+    _ = try chat.setBrief("build", "写 retry 装饰器，B 定接口 C 写测试");
     try testing.expectEqualStrings(
         "写 retry 装饰器，B 定接口 C 写测试",
         try chat.briefOf("build"),
     );
 
     // One note kept current, not a history of intentions.
-    try chat.setBrief("build", "接口定了，现在等测试");
+    _ = try chat.setBrief("build", "接口定了，现在等测试");
     try testing.expectEqualStrings("接口定了，现在等测试", try chat.briefOf("build"));
+}
+
+test "zz574 setBrief says how much of the brief it kept" {
+    // The floor this is here to hold: a brief too long to store used to be
+    // cut in silence, and the only real one to hit the limit was a round's
+    // opening instructions whose last section was the rules. "It was cut"
+    // is not enough to act on; the two numbers are.
+    var chat = testChat();
+    defer chat.deinit();
+    chat.config.max_text_bytes = 8;
+
+    try chat.create("build", boss);
+
+    const fits = try chat.setBrief("build", "日日");
+    try testing.expectEqual(@as(usize, 6), fits.given);
+    try testing.expectEqual(@as(usize, 6), fits.kept);
+    try testing.expect(!fits.cut());
+
+    const cut = try chat.setBrief("build", "日日日");
+    try testing.expectEqual(@as(usize, 9), cut.given);
+    try testing.expectEqual(@as(usize, 6), cut.kept);
+    try testing.expect(cut.cut());
+
+    // Trailing whitespace is not something that went missing: `given` is
+    // measured after the trim, so trimming alone never reads as a cut.
+    const spaced = try chat.setBrief("build", "  日日  ");
+    try testing.expect(!spaced.cut());
 }
 
 test "a brief is cut on a character boundary like any other text" {
@@ -1788,7 +1850,7 @@ test "a brief is cut on a character boundary like any other text" {
     chat.config.max_text_bytes = 8;
 
     try chat.create("build", boss);
-    try chat.setBrief("build", "日日日");
+    _ = try chat.setBrief("build", "日日日");
 
     const brief = try chat.briefOf("build");
     try testing.expect(std.unicode.utf8ValidateSlice(brief));
@@ -1803,7 +1865,7 @@ test "a brief does not appear in the messages" {
 
     try chat.create("build", boss);
     try chat.add("build", a, .all, .{});
-    try chat.setBrief("build", "这个群在等 B 定接口");
+    _ = try chat.setBrief("build", "这个群在等 B 定接口");
     _ = try chat.post("build", boss, "开始吧", 1);
 
     const seen = try chat.read(testing.allocator, "build", a, 0);

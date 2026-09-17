@@ -456,7 +456,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "group_set_brief",
-        .description = "Say what a group is for, in your own words. Write this right after creating a group, while you still know why you made it -- in eight hours group_list will show you a name you no longer recognise, and that is exactly when you have to decide whether it still needs watching. Only you and the person at the keyboard see it; the members do not. Supervisor only.",
+        .description = "Say what a group is for, in your own words. Write this right after creating a group, while you still know why you made it -- in eight hours group_list will show you a name you no longer recognise, and that is exactly when you have to decide whether it still needs watching. **Everyone in the group reads this**, so it is also where a round's terms belong -- what the work is, what is off limits, where to put the artefacts. Writing to a group you are in is still yours alone. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"}},"required":["group","text"]}
         ,
