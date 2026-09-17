@@ -236,6 +236,23 @@ extern fn _libintl_locale_name_canonicalize(name: [*:0]u8) void;
 // `dgettext` in the process.
 extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
+// Also only for the test below: it asks the C library whether it actually
+// knows the locale, which is not the same question as whether translation
+// works.
+//
+// ⚠️ **`std.c.LC` cannot be used for the category.** That enum is laid out
+// for glibc (`CTYPE = 0` … `ALL = 6`); on Darwin the header says `LC_ALL` is
+// 0 and 6 is `LC_MESSAGES`. Passing `std.c.LC.ALL` there sets the messages
+// category instead -- and since gettext reads exactly that category, it
+// would appear to work while meaning something else. Values below are read
+// out of `MacOSX.sdk/usr/include/locale.h` and glibc's `locale.h`.
+extern fn setlocale(category: c_int, locale: ?[*:0]const u8) ?[*:0]const u8;
+
+const lc_all: c_int = switch (builtin.os.tag) {
+    .macos, .ios, .tvos, .watchos, .visionos => 0,
+    else => 6,
+};
+
 // -- Finding and loading the catalogue on Windows ----------------------------
 
 /// The catalogue `init` found, if it found one.
@@ -834,6 +851,21 @@ test "libintl answers on this platform, not just the reader written above" {
     // "translation is broken".
     if (setenv("LANG", "zh_CN.UTF-8", 1) != 0) return error.SkipZigTest;
 
+    // ⚠️ **A machine that does not have this locale installed is not a
+    // machine where translation is broken**, and the two are indistinguishable
+    // from the assertion at the bottom: libintl resolves the catalogue out of
+    // the locale, and when the C library does not know it, `dgettext` hands
+    // the msgid straight back. That is the library working. Read as a failure
+    // it says "translation is broken" about a machine that merely has no
+    // Chinese locale -- which is what CI is, and what made this test the one
+    // red line on every push for a week.
+    //
+    // So the precondition is asked directly, and its absence skips.
+    // ⚠️ The cost is worth stating: on such a machine this test protects
+    // nothing, and it is *quiet* about protecting nothing. It covers the
+    // developer's machine, not the build.
+    if (setlocale(lc_all, "zh_CN.UTF-8") == null) return error.SkipZigTest;
+
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -875,6 +907,19 @@ test "libintl answers on this platform, not just the reader written above" {
     // checked the msgid is still readable; what says libintl answered is
     // that the bytes came back *different*, and equal to the catalogue.
     const got = std.mem.span(@"_"("Reset Terminal"));
+    if (std.mem.eql(u8, got, "Reset Terminal")) {
+        // The locale was accepted above, so the environment is not the
+        // answer here and the bare inequality failure would send the reader
+        // looking in the wrong half. Say what was actually in place.
+        std.debug.print(
+            \\
+            \\libintl handed back the msgid although the C library accepted
+            \\the locale, so this is not "the machine has no zh_CN".
+            \\  catalogue written to: {s}
+            \\  directory bound by init: {s}
+            \\
+        , .{ mo, buf[0..len] });
+    }
     try std.testing.expect(!std.mem.eql(u8, got, "Reset Terminal"));
     try std.testing.expectEqualStrings("重置终端", got);
 }
