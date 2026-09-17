@@ -5,6 +5,7 @@
 .DS_Store
 .vscode/
 .claude/
+.serena/
 .direnv/
 .envrc.local
 .flatpak-builder/
