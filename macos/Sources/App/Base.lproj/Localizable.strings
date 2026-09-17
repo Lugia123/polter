@@ -185,6 +185,10 @@
 "last_tab" = "Go to Last Tab";
 "next_tab" = "Next Tab";
 "poltergeist_toggle_authorise" = "Toggle: Let a Supervisor Answer Prompts";
+"poltergeist_persona_set" = "Set This Terminal's Role";
+"poltergeist_persona_clear" = "Clear This Terminal's Role";
+"poltergeist_persona_skill" = "Switch One Skill On or Off Here";
+"poltergeist_persona_mcp" = "Switch One MCP Server On or Off Here";
 "previous_tab" = "Previous Tab";
 "resize_split" = "Resize Split";
 "scroll_page_fractional" = "Scroll by a Fraction of a Page";

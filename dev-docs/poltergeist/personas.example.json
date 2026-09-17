@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "personas": [
+    {
+      "key": "archer",
+      "name": "射手（侦察 / 只读调研）",
+      "skills": ["reading-a-terminal"],
+      "mcp": [],
+      "tools": {
+        "allow": ["terminal_read", "terminal_list", "group_*", "task_*"],
+        "deny": []
+      }
+    },
+    {
+      "key": "builder",
+      "name": "工兵（改代码 / 跑构建）",
+      "skills": ["operating-a-terminal"],
+      "mcp": [],
+      "tools": {
+        "deny": ["notify_user", "plugin_configure", "plugin_test"]
+      }
+    },
+    {
+      "key": "marshal",
+      "name": "总管（分派 / 盯进度）",
+      "skills": ["supervising", "reading-a-terminal"],
+      "mcp": [],
+      "tools": {},
+      "hint": {
+        "model": "opus"
+      }
+    }
+  ]
+}

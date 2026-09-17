@@ -187,7 +187,7 @@ pub fn run(alloc: Allocator) !u8 {
     var host: Host = try .connect(alloc, io, socket_path, token);
     defer host.deinit();
 
-    return serve(alloc, io, &host);
+    return serve(alloc, io, &host, socket_path, token);
 }
 
 /// Say why this will not start, where whoever ran it will see it.
@@ -886,7 +886,145 @@ const Tool = struct {
     schema: []const u8,
 };
 
-fn serve(alloc: Allocator, io: std.Io, host: *Host) !u8 {
+/// Everything the notifier thread and the serve loop share.
+///
+/// **The mutex is over stdout, and it is the whole reason this struct
+/// exists.** Until now one thread owned the protocol stream; a second one
+/// writing a notification into the middle of a half-written reply would
+/// corrupt the stream in a way that looks, from the agent's side, like
+/// Polter talking nonsense.
+const Shared = struct {
+    out: *std.Io.Writer,
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
+
+    fn notifyToolsChanged(self: *Shared) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        self.out.print(
+            \\{{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}}
+        ++ "\n", .{}) catch return;
+        self.out.flush() catch return;
+    }
+};
+
+/// Sit on `persona_wait` and say so when this terminal's tools change.
+///
+/// ⚠️ **A second connection, not the serve one.** `Host.call` is lock-step:
+/// a long poll on that connection would hold every tool call behind it for
+/// as long as nothing changed, which is most of the time.
+///
+/// ⚠️ **It compares before it speaks.** `epoch` belongs to the whole
+/// terminal, so a wait wakes when *anything* about the persona moves --
+/// including a change to some other slot. Sending a notification for every
+/// wake would have every agent re-list its tools every time the user
+/// touched anything; the contract says to compare first and this is where
+/// that is done.
+fn notifier(
+    alloc: Allocator,
+    io: std.Io,
+    socket_path: []const u8,
+    token: []const u8,
+    shared: *Shared,
+) void {
+    var host: Host = Host.connect(alloc, io, socket_path, token) catch {
+        // No second connection: the terminal keeps working, it just will
+        // not hear about a change until it lists its tools for some other
+        // reason. Quiet on purpose -- stdout is the protocol and stderr
+        // here would be a line the user cannot act on.
+        return;
+    };
+    defer host.deinit();
+
+    var epoch: u64 = 0;
+    var last: ?[]const u8 = null;
+    defer if (last) |l| alloc.free(l);
+
+    while (true) {
+        const started: std.Io.Timestamp = .now(io, .awake);
+
+        var buf: [256]u8 = undefined;
+        const request = std.fmt.bufPrint(
+            &buf,
+            \\{{"method":"persona_wait","params":{{"slot":"","epoch":{d}}}}}
+        ,
+            .{epoch},
+        ) catch return;
+
+        const reply = host.call(request) catch return;
+
+        // The reply borrows the host's read buffer, which the next call
+        // reuses. Anything compared across iterations has to be copied.
+        const next = alloc.dupe(u8, reply) catch return;
+        var changed = true;
+        if (last) |l| changed = !std.mem.eql(u8, l, next);
+        if (last) |l| alloc.free(l);
+        last = next;
+
+        epoch = epochOf(alloc, next) orelse epoch;
+        if (changed) shared.notifyToolsChanged();
+
+        // ⚠️ **The floor, and it is permanent.** The host is supposed to
+        // hold this request until something moves, but a host that does not
+        // -- a test host, an embedder, any implementation that has not
+        // wired the parking up -- answers at once, and then this loop is
+        // not polling, it is spinning as fast as the socket allows. There
+        // is one of these processes per terminal, so the cost is
+        // multiplied by everything the user has open.
+        //
+        // **It is not something to remove once the server does park.** What
+        // it guards against is the server *not* parking, which is a
+        // condition that never stops being possible. A real change does not
+        // come through here -- it wakes the parked request -- so this costs
+        // nothing on the path that matters.
+        const spent_ms: u64 = @intCast(std.math.clamp(
+            started.durationTo(.now(io, .awake)).toMilliseconds(),
+            0,
+            std.math.maxInt(i64),
+        ));
+        if (spent_ms < min_wait_ms) {
+            std.Io.sleep(
+                io,
+                .fromMilliseconds(@intCast(min_wait_ms - spent_ms)),
+                .awake,
+            ) catch return;
+        }
+    }
+}
+
+/// The shortest a `persona_wait` round trip may take before the next one is
+/// sent. See the floor above.
+const min_wait_ms: u64 = 250;
+
+/// Pull `epoch` out of a reply, or null if it is not there.
+fn epochOf(alloc: Allocator, reply: []const u8) ?u64 {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+
+    const v = std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        reply,
+        .{},
+    ) catch return null;
+    const obj = switch (v) {
+        .object => |o| o,
+        else => return null,
+    };
+    return switch (obj.get("epoch") orelse return null) {
+        .integer => |i| if (i < 0) null else @intCast(i),
+        else => null,
+    };
+}
+
+fn serve(
+    alloc: Allocator,
+    io: std.Io,
+    host: *Host,
+    socket_path: []const u8,
+    token: []const u8,
+) !u8 {
     var in_buf: [max_line]u8 = undefined;
     var out_buf: [64 * 1024]u8 = undefined;
 
@@ -902,14 +1040,32 @@ fn serve(alloc: Allocator, io: std.Io, host: *Host) !u8 {
     // -- how an agent CLI actually runs it -- the two are byte for byte alike.
     var writer = stdout.writerStreaming(io, &out_buf);
 
+    var shared: Shared = .{ .out = &writer.interface, .io = io };
+
+    // Detached: it lives as long as this process does, and there is nothing
+    // to join -- when stdin closes the process is on its way out anyway.
+    if (std.Thread.spawn(.{}, notifier, .{ alloc, io, socket_path, token, &shared })) |t| {
+        t.detach();
+    } else |err| {
+        // Same reasoning as a failed second connection: this terminal still
+        // works, it just will not be told about a change as it happens.
+        log.warn("mcp: could not start the persona notifier err={}", .{err});
+    }
+
     while (true) {
         // A null line is end of stdin: the client closed, so we are done.
         const line = (try reader.interface.takeDelimiter('\n')) orelse return 0;
         if (line.len == 0) continue;
 
-        handleOne(alloc, host, &writer.interface, line) catch |err| {
-            log.warn("mcp: could not handle a message err={}", .{err});
-        };
+        {
+            // The notifier may write between replies, never inside one.
+            shared.mutex.lockUncancelable(io);
+            defer shared.mutex.unlock(io);
+
+            handleOne(alloc, host, &writer.interface, line) catch |err| {
+                log.warn("mcp: could not handle a message err={}", .{err});
+            };
+        }
     }
 }
 

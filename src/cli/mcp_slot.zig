@@ -96,6 +96,22 @@ const max_line = 1024 * 1024;
 const reconnect_delay_ms = 1000;
 const reconnect_delay_max_ms = 30 * 1000;
 
+/// The shortest a `persona_wait` round trip may take before the next one is
+/// allowed to go out.
+///
+/// ⚠️ **This is not tuning, it is a guard against a busy loop.** A long
+/// poll is only long if the far end parks it. 🔬 Today nothing does:
+/// `rpc.zig` has an arm for "nobody parked it" that answers
+/// `{"timeout":true}` at once, and its comment says a caller looping on it
+/// "degrades to polling instead of breaking" -- but polling with no
+/// interval is a spin, and there is one of these processes per slot per
+/// terminal. Measured only by reading: nothing in `src/` intercepts
+/// `persona_wait` at all.
+///
+/// So the floor lives on this side as well as on that one. It costs a
+/// *change* nothing, because a change does not come back as a timeout.
+const min_wait_ms = 250;
+
 /// The two methods of `personas-contract.md` section four.
 ///
 /// `persona_slot` asks once; `persona_wait` is the long poll that answers
@@ -1028,8 +1044,25 @@ const Slot = struct {
     /// the source, which is why it is written down here.
     fn watch(self: *Slot) void {
         while (!self.done.load(.acquire)) {
+            const started: std.Io.Timestamp = .now(self.io, .awake);
             const v = self.link.wait(self.name, self.epoch);
             if (self.done.load(.acquire)) return;
+
+            // A timeout that came back instantly means the far end did not
+            // park it. Sleeping the difference turns that into the polling
+            // its own comment claims it is, rather than a spin. A real
+            // change never lands here: it is not a timeout.
+            if (v.timed_out) {
+                const took = started.durationTo(.now(self.io, .awake)).toMilliseconds();
+                if (took < min_wait_ms) {
+                    const rest: u64 = @intCast(min_wait_ms - took);
+                    self.io.sleep(
+                        .fromNanoseconds(rest * std.time.ns_per_ms),
+                        .awake,
+                    ) catch {};
+                    if (self.done.load(.acquire)) return;
+                }
+            }
 
             // Even a timeout carries the epoch, and taking it is what keeps
             // the next wait from starting behind and returning at once.

@@ -244,6 +244,19 @@ poltergeist_last_worker: std.AutoHashMapUnmanaged(
 /// the worker.
 poltergeist_pending_worker: ?PendingWorker = null,
 
+/// `persona_wait` requests that are being held rather than answered.
+///
+/// A slot process asks "tell me when this terminal's persona might want me
+/// differently" and we do not answer until something moves. The machinery
+/// for that already exists -- `Server.Pending` is built for the app
+/// answering later -- so holding one is a matter of keeping the pointer and
+/// remembering to complete it.
+///
+/// ⚠️ **Shutdown answers these without us**: `Server.stop` settles every
+/// request it is still tracking, so a parked wait cannot wedge a connection
+/// thread at `pending.done`.
+poltergeist_persona_waits: std.ArrayListUnmanaged(PersonaWait) = .empty,
+
 /// Whether the resident plugins have been looked for. Testing the list
 /// instead would not do: with none installed it stays empty for ever,
 /// and every config reload would re-read every plugin's settings file to
@@ -423,6 +436,7 @@ pub fn deinit(self: *App) void {
     self.tasks.deinit();
     self.poltergeist.deinit();
     self.personas.deinit();
+    self.poltergeist_persona_waits.deinit(self.alloc);
 
     // Clean up our font group cache
     // We should have zero items in the grid set at this point because
@@ -2077,6 +2091,18 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
         break :caller .{ .terminal = id };
     };
 
+    // Anything arriving is a chance to notice a wait that has run out.
+    // See `persona_wait_timeout_ms` for what this is and is not.
+    self.sweepPersonaWaits();
+
+    // **Held rather than answered**, when it is a wait and nothing has
+    // moved. Done here rather than in `dispatch` because `dispatch` is pure
+    // and synchronous: blocking in there would stop the app thread, which
+    // is every terminal's thread.
+    if (pending.request == .persona_wait) {
+        if (self.parkPersonaWait(pending, caller)) return;
+    }
+
     const response = poltergeistpkg.rpc.dispatch(
         pending.arena.allocator(),
         &self.poltergeist,
@@ -2091,6 +2117,151 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     };
 
     pending.complete(global.io(), response);
+}
+
+/// Put a terminal into a persona, and tell everything that is waiting.
+///
+/// The three steps are one call on purpose: a persona that changed without
+/// waking the waits is a change that the agent in that terminal never hears
+/// about, and a persona that changed without refreshing the tabs is a tab
+/// that goes on claiming the old one. Both are the interface disagreeing
+/// with the truth, which is the failure this whole feature is built not to
+/// have.
+pub fn setSurfacePersona(
+    self: *App,
+    id: poltergeistpkg.Bus.Id,
+    key: []const u8,
+) !void {
+    self.ensurePersonas();
+    try self.personas.setPersona(id, key);
+    self.wakePersonaWaits(id);
+    self.refreshPoltergeistTabs();
+}
+
+/// Take a terminal out of any persona, back to handing out everything.
+pub fn clearSurfacePersona(self: *App, id: poltergeistpkg.Bus.Id) !void {
+    self.ensurePersonas();
+    try self.personas.clearPersona(id);
+    self.wakePersonaWaits(id);
+    self.refreshPoltergeistTabs();
+}
+
+const PersonaWait = struct {
+    /// Ours until we complete it; we took a reference when we parked it.
+    pending: *poltergeistpkg.Server.Pending,
+    id: poltergeistpkg.Bus.Id,
+
+    /// The epoch the caller had when it asked. It is told as soon as the
+    /// terminal's epoch differs from this.
+    epoch: u64,
+
+    /// Borrowed from the pending's own arena, so it lives exactly as long
+    /// as the request does.
+    slot: []const u8,
+
+    /// When to give up and answer `timeout`.
+    deadline_ms: u64,
+};
+
+/// How long a `persona_wait` is held before it is answered with
+/// `timeout: true`.
+///
+/// ⚠️ **Swept when other requests arrive, not by a timer.** On a completely
+/// idle app a parked wait can overstay this. That is a real limitation and
+/// not a rounding error, but it costs nothing on the path this exists for:
+/// what wakes a wait is the persona changing, and a persona changes because
+/// somebody did something. The timeout is for noticing a connection that
+/// has died quietly, and a dead connection on an idle machine harms nobody
+/// until the machine stops being idle.
+const persona_wait_timeout_ms: u64 = 30 * std.time.ms_per_s;
+
+/// Hold a `persona_wait` if there is nothing to tell it yet.
+///
+/// Returns true when the request has been parked and must not be answered
+/// by the caller. Returns false when it should go through `dispatch` as
+/// usual -- either because the answer is already different from what the
+/// caller had, or because there is no terminal to wait on.
+fn parkPersonaWait(
+    self: *App,
+    pending: *poltergeistpkg.Server.Pending,
+    caller: poltergeistpkg.Bus.Caller,
+) bool {
+    const id = caller.terminalId() orelse return false;
+    const req = pending.request.persona_wait;
+
+    self.ensurePersonas();
+
+    // Already moved on: answer now. **This is the anti-missed-wake half** --
+    // a caller that was away while the persona changed must not be put to
+    // sleep on an epoch that is already history.
+    if (self.personas.stateOf(id).epoch != req.epoch) return false;
+
+    self.poltergeist_persona_waits.append(self.alloc, .{
+        .pending = pending,
+        .id = id,
+        .epoch = req.epoch,
+        .slot = req.slot,
+        .deadline_ms = self.poltergeistElapsedMs() + persona_wait_timeout_ms,
+    }) catch return false;
+
+    // The caller's `defer pending.release()` drops the reference it was
+    // handed; this is the one that keeps the request alive while parked.
+    pending.retain();
+    return true;
+}
+
+/// Answer every wait this terminal has parked, because something moved.
+fn wakePersonaWaits(self: *App, id: poltergeistpkg.Bus.Id) void {
+    var i: usize = 0;
+    while (i < self.poltergeist_persona_waits.items.len) {
+        const w = self.poltergeist_persona_waits.items[i];
+        if (w.id != id) {
+            i += 1;
+            continue;
+        }
+        _ = self.poltergeist_persona_waits.swapRemove(i);
+        self.answerPersonaWait(w, false);
+    }
+}
+
+/// Answer waits whose deadline has passed.
+fn sweepPersonaWaits(self: *App) void {
+    if (self.poltergeist_persona_waits.items.len == 0) return;
+    const now = self.poltergeistElapsedMs();
+
+    var i: usize = 0;
+    while (i < self.poltergeist_persona_waits.items.len) {
+        const w = self.poltergeist_persona_waits.items[i];
+        if (now < w.deadline_ms) {
+            i += 1;
+            continue;
+        }
+        _ = self.poltergeist_persona_waits.swapRemove(i);
+        self.answerPersonaWait(w, true);
+    }
+}
+
+fn answerPersonaWait(self: *App, w: PersonaWait, timed_out: bool) void {
+    defer w.pending.release();
+
+    const answer = poltergeistPersonaSlot(self, w.id, w.slot) catch {
+        w.pending.complete(global.io(), .{ .failed = .{
+            .code = "PersonaFailed",
+            .message = "could not work out what this terminal is wearing",
+        } });
+        return;
+    };
+
+    // ⚠️ **`timeout` is not "nothing happened"** -- it is "the wait ran out
+    // with this terminal's epoch where you left it". The caller still has
+    // to compare `wanted` with what it had, because the epoch belongs to
+    // the whole terminal: somebody switching an unrelated skill wakes every
+    // slot on it without changing any of their answers.
+    w.pending.complete(global.io(), .{ .persona_slot = .{
+        .wanted = answer.wanted,
+        .epoch = answer.epoch,
+        .timeout = timed_out,
+    } });
 }
 
 /// Whether this surface is one the app opened to run the chat interface.
@@ -2122,6 +2293,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .sendText = poltergeistSend,
         .agentPresent = poltergeistAgentPresent,
         .personaFace = poltergeistPersonaFace,
+        .personaSlot = poltergeistPersonaSlot,
         .sendKey = poltergeistSendKey,
         .performAction = poltergeistPerformAction,
         .quietMs = poltergeistQuiet,
@@ -3175,6 +3347,30 @@ fn poltergeistPersonaFace(
         .tools = try names.toOwnedSlice(alloc),
         .epoch = self.personas.stateOf(id).epoch,
     };
+}
+
+/// Whether this terminal's persona wants a named upstream slot.
+///
+/// A terminal wearing no persona wants everything, which is what Polter
+/// does today -- so a machine with no `personas.json` behaves exactly as it
+/// did before this existed.
+fn poltergeistPersonaSlot(
+    ctx: *anyopaque,
+    id: poltergeistpkg.Bus.Id,
+    slot: []const u8,
+) anyerror!poltergeistpkg.rpc.Host.PersonaSlot {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    self.ensurePersonas();
+
+    const state = self.personas.stateOf(id);
+    if (state.key == null) return .{ .wanted = true, .epoch = state.epoch };
+
+    for (state.effective.slots) |name| {
+        if (std.mem.eql(u8, name, slot)) {
+            return .{ .wanted = true, .epoch = state.epoch };
+        }
+    }
+    return .{ .wanted = false, .epoch = state.epoch };
 }
 
 fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {

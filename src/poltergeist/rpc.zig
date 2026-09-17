@@ -165,6 +165,25 @@ pub const Method = enum {
     /// tens of kilobytes that never change; the sidecar already has them.
     persona_face,
 
+    /// Whether this terminal's persona wants a given upstream MCP slot.
+    ///
+    /// Asked by a slot process about itself, the same way `persona_face` is
+    /// asked by `+mcp` about itself: identity is the token, not a
+    /// parameter.
+    persona_slot,
+
+    /// The same question, but do not answer until the answer might have
+    /// changed.
+    ///
+    /// ⚠️ **`epoch` is the whole terminal's version, not this slot's.** So
+    /// a wake does *not* mean this slot's answer moved -- the user
+    /// switching some other skill wakes every slot on the terminal.
+    /// **Compare `wanted` with what you had before deciding to send
+    /// `notifications/tools/list_changed`**: "woke up" and "changed" look
+    /// identical in the code and differ by an order of magnitude on a real
+    /// machine.
+    persona_wait,
+
     /// Open a terminal in this window, starting in a chosen directory.
     ///
     /// Separate from `terminal_action` and its `new_tab` because a tab
@@ -383,6 +402,8 @@ pub const Request = union(Method) {
 
     config_get: struct { key: []const u8 = "" },
     persona_face,
+    persona_slot: struct { slot: []const u8 },
+    persona_wait: struct { slot: []const u8, epoch: u64 = 0 },
     terminal_open: struct {
         cwd: []const u8 = "",
         watch: bool = false,
@@ -691,6 +712,8 @@ pub fn callableByPlugin(method: Method) bool {
         // `NotATerminal`, which says so, instead of quietly answering for
         // terminal zero.
         .persona_face,
+        .persona_slot,
+        .persona_wait,
 
         // **Closed to plugins.** Rearranging somebody's window is a change
         // to what the person is looking at, and a plugin is a setting of this
@@ -881,6 +904,8 @@ pub fn requiresSupervisor(method: Method) bool {
         // find out what it is allowed to do -- which is the one thing every
         // terminal has to know about itself.
         .persona_face => false,
+        .persona_slot => false,
+        .persona_wait => false,
 
         // Who talks to whom is the supervisor's to arrange, the same way
         // who is watched is. A terminal that could make its own groups and
@@ -1010,6 +1035,8 @@ pub fn targetsTerminal(method: Method) bool {
         // Names a setting, not a terminal.
         .config_get,
         .persona_face,
+        .persona_slot,
+        .persona_wait,
 
         // These name a task, which is not a terminal. `task_cancel` does
         // reach one -- it types the cancellation into the worker's
@@ -1090,6 +1117,8 @@ pub fn target(req: Request) ?Bus.Id {
         .terminal_open,
         .config_get,
         .persona_face,
+        .persona_slot,
+        .persona_wait,
 
         // Named here rather than left to the `inline else` below, because
         // that one reads `v.id` off whatever payload has one and these
@@ -1148,6 +1177,8 @@ pub fn selfPermitted(req: Request) bool {
         .skill_read,
         .config_get,
         .persona_face,
+        .persona_slot,
+        .persona_wait,
         .group_create,
         .group_destroy,
         .group_compact,
@@ -1357,6 +1388,8 @@ pub fn promptReach(method: Method) enum {
         .skill_read,
         .config_get,
         .persona_face,
+        .persona_slot,
+        .persona_wait,
         .clock_in,
         .clock_out,
         .set_quiescence_threshold,
@@ -3866,6 +3899,11 @@ pub const Host = struct {
         epoch: u64,
     };
 
+    pub const PersonaSlot = struct {
+        wanted: bool,
+        epoch: u64,
+    };
+
     pub const VTable = struct {
         /// The visible screen, or the last `lines` rows when non-zero.
         /// Returned memory belongs to the caller's allocator.
@@ -3891,6 +3929,13 @@ pub const Host = struct {
         /// that holds what the user wrote and what each terminal has been
         /// put into. What this file owns is the rule that the answer is
         /// about the *caller* and no one else.
+        /// Whether this terminal's persona wants a named upstream slot.
+        personaSlot: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+            slot: []const u8,
+        ) anyerror!PersonaSlot,
+
         personaFace: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
@@ -4334,6 +4379,10 @@ pub const Host = struct {
         return self.vtable.agentPresent(self.ctx, id);
     }
 
+    fn personaSlot(self: Host, id: Bus.Id, slot: []const u8) anyerror!PersonaSlot {
+        return self.vtable.personaSlot(self.ctx, id, slot);
+    }
+
     fn personaFace(
         self: Host,
         alloc: std.mem.Allocator,
@@ -4681,6 +4730,41 @@ pub fn dispatch(
 
     switch (req) {
         .me => return .{ .me = describe(bus, host, caller) },
+
+        .persona_slot => |p| {
+            const answer = host.personaSlot(caller, p.slot) catch
+                return hostFailure(
+                    "PersonaFailed",
+                    "could not work out what this terminal is wearing",
+                );
+            return .{ .persona_slot = .{
+                .wanted = answer.wanted,
+                .epoch = answer.epoch,
+            } };
+        },
+
+        .persona_wait => |p| {
+            // **Reaching here means nobody parked it**, and the honest
+            // thing is to answer at once rather than to block the app
+            // thread. The app intercepts this request before dispatch and
+            // holds it until the terminal's epoch moves or the wait runs
+            // out; this arm is what happens when that interception is not
+            // in place -- a test host, or an embedder that has not wired it
+            // up.
+            //
+            // The answer is still correct, just not delayed, so a caller
+            // that loops on it degrades to polling instead of breaking.
+            const answer = host.personaSlot(caller, p.slot) catch
+                return hostFailure(
+                    "PersonaFailed",
+                    "could not work out what this terminal is wearing",
+                );
+            return .{ .persona_slot = .{
+                .wanted = answer.wanted,
+                .epoch = answer.epoch,
+                .timeout = answer.epoch == p.epoch,
+            } };
+        },
 
         .persona_face => {
             const face = host.personaFace(alloc, caller) catch
@@ -6357,6 +6441,9 @@ const FakeHost = struct {
     /// empty terminal sets it false.
     agent_present: bool = true,
 
+    /// The one slot this terminal's persona wants, for the slot tests.
+    slot_wanted: ?[]const u8 = null,
+
     /// A tool name this terminal's persona hides, for the filter tests.
     persona_hidden: ?[]const u8 = null,
 
@@ -6366,6 +6453,7 @@ const FakeHost = struct {
             .sendText = send,
             .agentPresent = agentPresent,
             .personaFace = personaFace,
+            .personaSlot = personaSlot,
             .sendKey = sendKey,
             .performAction = performAction,
             .openTerminal = openTerminal,
@@ -6828,6 +6916,15 @@ const FakeHost = struct {
     fn agentPresent(ctx: *anyopaque, _: Bus.Id) bool {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.agent_present;
+    }
+
+    fn personaSlot(ctx: *anyopaque, _: Bus.Id, slot: []const u8) anyerror!Host.PersonaSlot {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return .{
+            .wanted = self.slot_wanted != null and
+                std.mem.eql(u8, self.slot_wanted.?, slot),
+            .epoch = 7,
+        };
     }
 
     /// Every method is visible unless a test says otherwise, which is what

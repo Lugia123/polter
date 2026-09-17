@@ -6666,19 +6666,36 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             {},
         ),
 
-        // The four persona actions. **They are wired up to nothing yet and
-        // say so by returning false**, which is the answer a binding gives
-        // when it did not handle the key -- so a menu row driving one of
-        // these does visibly nothing rather than appearing to work.
-        //
-        // ⚠️ `false` is also what a *stale id* will return once they are
-        // wired up, and those two must not stay indistinguishable: the
-        // contract's answer is that a refusal writes its reason into this
-        // terminal's face (`error_kind`) and the mark is sent again so the
-        // interface knows to re-read it. **That half is not built yet**, so
-        // for now these are honestly inert.
-        .poltergeist_persona_set,
-        .poltergeist_persona_clear,
+        .poltergeist_persona_set => |key| {
+            self.app.setSurfacePersona(self.id, key) catch |err| {
+                // **A key that is not in the file is the ordinary case**,
+                // not a broken one: a menu built a moment ago names a
+                // persona the user has since renamed or deleted. `false`
+                // says the binding did nothing, which is true.
+                log.warn(
+                    "poltergeist: could not set persona {s} err={}",
+                    .{ key, err },
+                );
+                return false;
+            };
+            return true;
+        },
+
+        .poltergeist_persona_clear => {
+            self.app.clearSurfacePersona(self.id) catch |err| {
+                log.warn("poltergeist: could not clear the persona err={}", .{err});
+                return false;
+            };
+            return true;
+        },
+
+        // ⚠️ **Not wired up, and they say so by doing nothing.** These are
+        // the two that produce "archer (modified)", and they need the id to
+        // be resolved against the face the menu was built from -- including
+        // the refusal that has to be *visible* when that id is stale, which
+        // is written down in the contract and is not built. Half of it
+        // would be worse than none: a switch that silently applies to the
+        // wrong row is exactly what the minted id exists to prevent.
         .poltergeist_persona_skill,
         .poltergeist_persona_mcp,
         => return false,

@@ -99,6 +99,13 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
     const value: rpc.Request = switch (method) {
         .me => .me,
         .persona_face => .persona_face,
+        .persona_slot => .{ .persona_slot = .{
+            .slot = try requireString(aa, params, "slot"),
+        } },
+        .persona_wait => .{ .persona_wait = .{
+            .slot = try requireString(aa, params, "slot"),
+            .epoch = try optionalU64(params, "epoch", 0),
+        } },
         .terminal_list => .terminal_list,
         .notices => .notices,
         .session_recall => .session_recall,
@@ -610,6 +617,22 @@ pub const Response = union(enum) {
     /// and schemas, which are tens of kilobytes and do not change. Sending
     /// them over the socket on every `tools/list` would be paying for the
     /// same bytes forever to learn one thing.
+    /// What a slot process is told: whether this terminal's persona wants
+    /// it, and the version that answer belongs to.
+    ///
+    /// `timeout` distinguishes "the wait ran out with nothing changed" from
+    /// "here is a new answer". They are not the same thing: one means keep
+    /// what you have and ask again, the other means look at `wanted`. And
+    /// the connection stays open either way -- closing it would be
+    /// indistinguishable, from the slot's side, from a handshake that
+    /// failed, which is the one condition that makes it pass the upstream
+    /// through whole.
+    persona_slot: struct {
+        wanted: bool,
+        epoch: u64,
+        timeout: bool = false,
+    },
+
     persona_face: struct {
         tools: []const []const u8,
 
@@ -702,6 +725,18 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.write(true);
             try s.objectField("text");
             try s.write(t);
+        },
+        .persona_slot => |v| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("wanted");
+            try s.write(v.wanted);
+            try s.objectField("epoch");
+            try s.write(v.epoch);
+            if (v.timeout) {
+                try s.objectField("timeout");
+                try s.write(true);
+            }
         },
         .persona_face => |f| {
             try s.objectField("ok");

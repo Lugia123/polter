@@ -171,6 +171,19 @@ KNOWN = {
     "macos/Ghostty-Info.plist": "pasteboard type derived from the bundle id",
     "macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift":
         "NSUserInterfaceItemIdentifier values namespaced by the bundle id",
+    # The same thing one file over: the `Role` submenu's own item identifier,
+    # namespaced the way every other menu identifier in this app is. Listed
+    # rather than spelled differently, because a single file using a private
+    # convention is one a later reader "fixes" back -- and that day the gate
+    # goes red for a change nobody meant to make.
+    #
+    # The cost is the one this file's own documentation names: KNOWN allows by
+    # *path*, so every hit in this file is now skipped, not just this one. It
+    # is a menu builder -- strings for the user, an identifier, and a symbol
+    # name -- and it has no reason to ever contain a path off this machine,
+    # which is the thing that must not leak.
+    "macos/Sources/Features/Personas/PersonaMenu.swift":
+        "NSUserInterfaceItemIdentifier value namespaced by the bundle id",
     "macos/Sources/Features/About/AboutView.swift": "links to the fork's public repository",
     # The download link. A README that tells people where to get the releases
     # has to name the repository, and the repository's name is the fork's

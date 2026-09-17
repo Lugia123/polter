@@ -43,7 +43,7 @@
 **做**（拷这三行）：
 
 ```sh
-cd "/Users/lugia/claude lugia/ghostty"
+# 在这个仓库的根目录里跑（下面那个相对路径要这个前提）
 APP=$(ls -dt ~/Library/Developer/Xcode/DerivedData/Ghostty-*/Build/Products/Debug/Polter.app macos/build/Debug/Polter.app 2>/dev/null | head -1)
 echo "$APP"; ls -ld "$APP"; open -n "$APP"
 ```
