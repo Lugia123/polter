@@ -1567,19 +1567,25 @@ pub const CAPI = struct {
     /// The strings belong to the core and are valid until the next call or
     /// the next config reload; copy them before doing anything else.
     ///
-    /// ⚠️ **Answers zero today, honestly.** Nothing loads `personas.json`
-    /// yet. Zero personas and "the file has not been read" are different
-    /// things and the interface has to tell them apart -- that distinction
-    /// arrives on `ghostty_surface_persona_face`'s `error` field, not here.
+    /// ⚠️ **Zero is an answer, not an absence.** Zero personas and "the
+    /// file has not been read" are different things and the interface has
+    /// to tell them apart; that distinction is the `stale` field on
+    /// `ghostty_surface_persona_face`, not a count of nothing here.
     export fn ghostty_app_personas(
         app: *App,
         buf: ?[*]Persona,
         cap: usize,
     ) usize {
-        _ = app;
-        _ = buf;
-        _ = cap;
-        return 0;
+        app.core_app.ensurePersonas();
+        const names = app.core_app.personas.names;
+
+        if (buf) |b| {
+            const n = @min(names.len, cap);
+            for (names[0..n], 0..) |pair, i| {
+                b[i] = .{ .key = pair.key.ptr, .name = pair.name.ptr };
+            }
+        }
+        return names.len;
     }
 
     /// Sync with: ghostty_persona_s
@@ -1604,14 +1610,45 @@ pub const CAPI = struct {
         buf: ?[*]u8,
         cap: usize,
     ) usize {
-        _ = surface;
+        const app = surface.core_surface.app;
+        app.ensurePersonas();
 
-        // The empty-but-valid answer: no persona, nothing switched by hand,
-        // no error. An apprt must be able to draw this, because it is also
-        // what every terminal looks like before anybody chooses anything.
-        const json =
-            \\{"key":null,"name":null,"deviated":false,"epoch":0,"agent_present":false,"host_class":"unknown","prompt":null,"skills":[],"mcp":[],"error":null,"error_kind":null}
-        ;
+        const id = surface.core_surface.id;
+        const present = if (app.poltergeist_server) |*srv|
+            srv.agentPresent(id)
+        else
+            false;
+
+        // Rendered into a scratch buffer and then copied, because the
+        // caller may have asked with `cap = 0` purely to learn the length.
+        // Writing straight into their buffer would mean either refusing
+        // that question or rendering twice.
+        var out: std.Io.Writer.Allocating = .init(app.alloc);
+        defer out.deinit();
+        app.personas.writeFaceJson(&out.writer, id, present) catch {
+            // A face we cannot render is not an empty face -- drawing "you
+            // have nothing" would be a lie the interface cannot detect.
+            //
+            // ⚠️ **But `stale` alone is not the right answer either, and
+            // that was this function's first version.** `stale` means
+            // "nobody has read it yet", which is a state that fixes itself;
+            // a render that threw is a bug that never will. Sharing one
+            // flag between them leaves the user reading a mild "nothing has
+            // reported which personas exist yet" and waiting forever for
+            // something that is not coming. So the failure names itself,
+            // and an interface that does not recognise `render` shows the
+            // sentence rather than guessing.
+            const fallback =
+                \\{"stale":true,"error":"the persona face could not be rendered","error_kind":"render"}
+            ;
+            if (buf) |b| if (fallback.len + 1 <= cap) {
+                @memcpy(b[0..fallback.len], fallback);
+                b[fallback.len] = 0;
+            };
+            return fallback.len;
+        };
+
+        const json = out.written();
         if (buf) |b| if (json.len + 1 <= cap) {
             @memcpy(b[0..json.len], json);
             b[json.len] = 0;

@@ -258,7 +258,6 @@
 "Plugins" = "插件";
 "Shown so you can see what a role doesn't cover. Polter doesn't change any of this." = "列在这里，是为了让你看见角色没有覆盖到哪里。Polter 不会动这些。";
 "Nothing has reported what's installed here yet" = "还没有人报上来这台机器装了什么";
-"This terminal is shielded, so nothing may change what it hands out" = "这个终端有护盾，谁都不许改它交出去的东西";
 "Done" = "完成";
 "Nothing has reported which roles exist yet" = "还没有人报上来有哪些角色";
 "Nobody has checked where this agent keeps these yet" = "还没有人核实过这家 agent 把它们放在哪";
@@ -267,3 +266,7 @@
 "This server didn't start. Your role isn't what's withholding it." = "这个服务器没有起来。不是你的角色没给你它。";
 "Some agents' configuration couldn't be read, so this count may be low" = "还有 agent 的配置没读到，这个数可能偏小";
 "Nothing has reported what this terminal hands out yet" = "还没有人报上来这个终端交出去了什么";
+"Agents are kept out of this terminal, so its role cannot be changed" = "不让 agent 碰此终端，所以它的角色也不能改";
+"The roles file could not be read, so the previous one is still in use" = "角色文件读不出来，现在用的还是上一份";
+"This menu is out of date. Close it and open it again" = "这份菜单已经过期了，关掉重开一次";
+"Polter isn't managing this server, so the agent sees all of it" = "Polter 没有接管这个服务器，所以 agent 看得到它的全部";

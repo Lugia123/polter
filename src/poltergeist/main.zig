@@ -33,6 +33,7 @@ pub const PluginLog = @import("PluginLog.zig");
 pub const notes = @import("notes.zig");
 pub const notify = @import("notify.zig");
 pub const persona = @import("persona.zig");
+pub const PersonaStore = @import("PersonaStore.zig");
 pub const reap = @import("reap.zig");
 pub const report = @import("report.zig");
 pub const scrub = @import("scrub.zig");
@@ -76,6 +77,7 @@ test {
     _ = StatsLog;
     _ = notify;
     _ = persona;
+    _ = PersonaStore;
     _ = Plugin;
     _ = PluginLog;
     _ = reap;

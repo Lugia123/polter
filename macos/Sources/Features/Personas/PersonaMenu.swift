@@ -93,8 +93,8 @@ enum PersonaMenu {
         // reason goes above them.
         if shielded {
             menu.addItem(disabledNote(
-                String(localized: "This terminal is shielded, so nothing may change what it hands out",
-                       comment: "角色菜单：护盾的终端拒绝一切换装，对总管也一样"),
+                String(localized: "Agents are kept out of this terminal, so its role cannot be changed",
+                       comment: "角色菜单：护盾的终端拒绝一切换装，对总管也一样；用词跟「不让 agent 碰此终端」对齐，好让用户认出是自己勾的那一项"),
                 symbol: "lock"))
             menu.addItem(.separator())
         }

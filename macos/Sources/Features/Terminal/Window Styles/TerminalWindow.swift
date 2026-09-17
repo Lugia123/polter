@@ -846,6 +846,7 @@ extension TerminalWindow {
         // at `target`, the right-clicked tab, not the focused one.
         let catalog = PersonaCatalog.shared
         catalog.reload()
+        surface?.reloadPersonaFace()
         menu.addItem(PersonaMenu.makeItem(
             state: surface?.poltergeistPersonaState ?? .none,
             shielded: surface?.poltergeistShielded ?? false,

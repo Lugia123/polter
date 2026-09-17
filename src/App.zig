@@ -41,6 +41,24 @@ surfaces: SurfaceList,
 /// surfaces; a surface only ever reports into it.
 poltergeist: poltergeistpkg.Bus,
 
+/// The personas the user has written, and what each terminal is wearing.
+///
+/// On the app rather than on a surface because the file is one file: every
+/// terminal reads the same declarations, and only the wearing is per
+/// terminal. Loaded lazily the first time anything asks, the same shape as
+/// `ensurePoltergeistConfigText` -- a user with no `personas.json` should
+/// not pay for a file read at startup.
+personas: poltergeistpkg.PersonaStore,
+
+/// Whether `personas` has been asked to read the file yet.
+///
+/// ⚠️ **Separate from `personas.loaded`**, which says whether the read
+/// succeeded. This one says whether we have tried. The interface needs the
+/// first to know it is still waiting and the second to know the answer, and
+/// a single flag would make "not yet" and "nothing there" the same state --
+/// the distinction the whole `stale` field exists for.
+personas_attempted: bool = false,
+
 /// What the terminals have said to each other. Separate from the bus
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
@@ -361,6 +379,7 @@ pub fn init(
         .font_grid_set = font_grid_set,
         .config_conditional_state = .{},
         .poltergeist = .init(alloc, .{}),
+        .personas = .{ .alloc = alloc },
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
         .tasks = .init(alloc, .{}),
@@ -403,6 +422,7 @@ pub fn deinit(self: *App) void {
     self.chat.deinit();
     self.tasks.deinit();
     self.poltergeist.deinit();
+    self.personas.deinit();
 
     // Clean up our font group cache
     // We should have zero items in the grid set at this point because
@@ -2101,6 +2121,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .readTerminal = poltergeistRead,
         .sendText = poltergeistSend,
         .agentPresent = poltergeistAgentPresent,
+        .personaFace = poltergeistPersonaFace,
         .sendKey = poltergeistSendKey,
         .performAction = poltergeistPerformAction,
         .quietMs = poltergeistQuiet,
@@ -3123,6 +3144,39 @@ fn poltergeistAgentPresent(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
     return self.agentPresent(id);
 }
 
+/// Which of Polter's tools this terminal may see.
+///
+/// **Worked out from `rpc.Method` rather than from a list kept beside it.**
+/// The tools and the host's methods are the same set -- `cli/mcp.zig` has a
+/// test both ways round asserting it -- so deriving the names from the enum
+/// means a tool added upstream is covered here the moment it exists. A list
+/// would be wrong the first time somebody added one, and wrong silently: the
+/// new tool would simply never be filtered.
+fn poltergeistPersonaFace(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+) anyerror!poltergeistpkg.rpc.Host.PersonaFace {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    self.ensurePersonas();
+
+    const all = std.enums.values(poltergeistpkg.rpc.Method);
+    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer names.deinit(alloc);
+    try names.ensureTotalCapacity(alloc, all.len);
+
+    for (all) |m| {
+        const name = @tagName(m);
+        if (!self.personas.toolVisible(id, name)) continue;
+        names.appendAssumeCapacity(name);
+    }
+
+    return .{
+        .tools = try names.toOwnedSlice(alloc),
+        .epoch = self.personas.stateOf(id).epoch,
+    };
+}
+
 fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.poltergeist.quietMs(id, self.poltergeistElapsedMs());
@@ -3167,6 +3221,29 @@ fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
 pub fn ensurePoltergeistConfigText(self: *App, config: *const Config) void {
     if (self.poltergeist_config_text.len > 0) return;
     self.refreshPoltergeistConfigText(config);
+}
+
+/// Read `personas.json`, once, the first time anybody asks.
+///
+/// Lazy for `ensurePoltergeistConfigText`'s reason: a user who has never
+/// written one should not pay a file read at startup. Idempotent -- every
+/// caller runs it and only the first does the work.
+///
+/// **It answers "we looked" even when it finds nothing**, which is what
+/// lets the interface tell "you have not defined any personas" apart from
+/// "nobody has read the file yet". Those two want different sentences and
+/// an empty list cannot carry both.
+pub fn ensurePersonas(self: *App) void {
+    if (self.personas_attempted) return;
+    self.personas_attempted = true;
+
+    const path = poltergeistpkg.PersonaStore.defaultPath(self.alloc) catch |err| {
+        log.warn("poltergeist: could not work out where personas.json lives err={}", .{err});
+        return;
+    };
+    defer self.alloc.free(path);
+
+    self.personas.load(global.io(), path);
 }
 
 /// Re-render the configuration as text.

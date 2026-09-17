@@ -102,8 +102,8 @@ struct PersonaEditorView: View {
 
             if model.shielded {
                 caption(String(
-                    localized: "This terminal is shielded, so nothing may change what it hands out",
-                    comment: "角色菜单：护盾的终端拒绝一切换装，对总管也一样"),
+                    localized: "Agents are kept out of this terminal, so its role cannot be changed",
+                    comment: "角色菜单：护盾的终端拒绝一切换装，对总管也一样；用词跟「不让 agent 碰此终端」对齐，好让用户认出是自己勾的那一项"),
                     symbol: "lock")
             }
 
@@ -124,8 +124,21 @@ struct PersonaEditorView: View {
             // A file that failed to load keeps the previous one in effect
             // (contract §①) -- so the list below is real, just old, and the
             // only place the user can find out is here.
+            //
+            // The lead-in says which kind of trouble it is, because the two
+            // ask different things of the user: fix the file, versus reopen
+            // the menu. The core's own words go underneath -- a lead-in
+            // without them swallows a diagnosable error, and them without a
+            // lead-in is a sentence with no subject.
+            if let kind = model.face.errorKind, let lead = Self.errorLead(kind) {
+                caption(lead, symbol: "exclamationmark.triangle")
+            }
             if let error = model.face.loadError {
-                caption(error, symbol: "exclamationmark.triangle")
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -240,13 +253,17 @@ struct PersonaEditorView: View {
 
             Spacer()
 
-            // Checked before the deviation badge: a slot whose server never
-            // came up is not a persona problem at all, and the user who
-            // reads it as one goes and edits the wrong thing.
-            if entry.broken {
-                Text(String(
-                    localized: "This server didn't start. Your role isn't what's withholding it.",
-                    comment: "角色编辑器：槽位 broken —— 上游服务器没起来，不是角色没给"))
+            // The slot's own state comes before the deviation badge, and
+            // only two of its four states say anything here.
+            //
+            // `granted` and `withheld` are already on screen -- the tick box
+            // says exactly that -- so repeating them would put a line on
+            // every row, and the row that matters would be lost in it. That
+            // is not hypothetical: `withheld` is what every slot reports
+            // today, so a note there would be noise on all of them while
+            // `broken` is the one nobody must miss.
+            if let note = Self.slotNote(entry.slot) {
+                Text(note)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if entry.isDeviation {
@@ -406,6 +423,49 @@ struct PersonaEditorView: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// What a slot's state adds to what the tick box already says.
+    ///
+    /// `nil` for the two states the box covers. An unrecognised state is
+    /// also `nil`: a status this build does not know is not one it should be
+    /// writing a sentence about.
+    static func slotNote(_ slot: PersonaFace.SlotStatus?) -> String? {
+        switch slot {
+        case .broken:
+            // The one state `enabled` cannot express: the persona granted
+            // it and the server would not come up. A user who reads that as
+            // "my role didn't give it to me" goes and edits the wrong thing.
+            return String(
+                localized: "This server didn't start. Your role isn't what's withholding it.",
+                comment: "角色编辑器：槽位 broken —— 上游服务器没起来，不是角色没给")
+        case .transparent:
+            // Outside Polter. Worth saying because the persona is not what
+            // is deciding here, and the agent has more than this row admits.
+            return String(
+                localized: "Polter isn't managing this server, so the agent sees all of it",
+                comment: "角色编辑器：槽位 transparent —— 在 Polter 之外，上游工具原样透传")
+        case .granted, .withheld, .none:
+            return nil
+        }
+    }
+
+    /// The sentence that goes above the core's error text, chosen by
+    /// `error_kind` rather than by matching on the message: prose is not a
+    /// way to tell two failures apart.
+    static func errorLead(_ kind: String) -> String? {
+        switch kind {
+        case "parse":
+            return String(
+                localized: "The roles file could not be read, so the previous one is still in use",
+                comment: "角色编辑器：personas.json 没加载成功，整份没生效、用的是上一份")
+        case "stale_id":
+            return String(
+                localized: "This menu is out of date. Close it and open it again",
+                comment: "角色编辑器：菜单是按旧版生效集建的，点的那一项已经不存在了")
+        default:
+            return nil
+        }
     }
 
     private func caption(_ text: String, symbol: String) -> some View {

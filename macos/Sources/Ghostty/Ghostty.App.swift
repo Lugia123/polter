@@ -1407,6 +1407,29 @@ extension Ghostty {
                 }
                 surfaceView.poltergeistShielded = v.shielded
                 surfaceView.poltergeistMayAuthorise = v.may_authorise
+
+                // Which persona, and whether anybody is in there wearing it.
+                //
+                // Copied out of the pointer immediately: the core says it is
+                // "valid for the duration of the callback and no longer", the
+                // same rule `prefix` above follows. Stashing the pointer
+                // compiles, runs, and is garbage one frame later.
+                //
+                // The core documents `persona` as never NULL -- it always has
+                // something to say, if only "nothing chosen, nobody here" --
+                // so NULL is its bug and not a fifth state. Handled anyway,
+                // as the state that asks the least of the user.
+                if let persona = v.persona?.pointee {
+                    surfaceView.poltergeistPersonaState = PersonaState(
+                        key: persona.key.map { String(cString: $0) },
+                        name: persona.name.map { String(cString: $0) },
+                        deviated: persona.deviated,
+                        hostClass: .init(persona.host_class),
+                        agentPresent: persona.agent_present)
+                } else {
+                    Ghostty.logger.warning("poltergeist mark arrived with no persona payload")
+                    surfaceView.poltergeistPersonaState = .none
+                }
                 return true
 
             default:

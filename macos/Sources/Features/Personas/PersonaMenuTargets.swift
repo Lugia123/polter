@@ -11,9 +11,11 @@ import GhosttyKit
 /// union is a menu row that silently does nothing -- and "clicked it, nothing
 /// happened" looks exactly like "not wired up yet".
 ///
-/// ⚠️ **PENDING-W1-568: none of these exists in the union yet.** Until they
-/// do, every one of them makes `ghostty_surface_binding_action` return false
-/// and log a warning. Nothing happens, and nothing claims to have happened.
+/// ⚠️ **All four are in the union now, and all four still answer `false`.**
+/// `Surface.zig` handles them by returning "did not handle this binding",
+/// because the core side behind them is not built yet. So a click does
+/// visibly nothing -- the honest answer -- and `sendPersonaAction` below is
+/// what keeps it from being a *silent* nothing.
 ///
 /// The two toggles spell their direction `on,` / `off,` and carry the
 /// **core's minted id**, not the skill or slot's own name. Both halves of
@@ -77,12 +79,12 @@ extension Ghostty.SurfaceView: PersonaMenuTarget {
         let accepted = ghostty_surface_binding_action(
             surface, action, UInt(action.lengthOfBytes(using: .utf8)))
         if !accepted {
-            // PENDING-W1-568: the re-read lands here once
-            // `ghostty_surface_persona_face` exists. Until then the mark
-            // action the core sends alongside the refusal is what gets the
-            // editor redrawn, and there is nothing in the face to show.
             AppDelegate.logger.warning(
                 "persona action refused action=\(action, privacy: .public)")
+            // Re-read rather than assume: the core puts its reason in this
+            // terminal's face (`error_kind`), so the way to find out what
+            // "no" meant is to ask, not to guess from the action string.
+            reloadPersonaFace()
             refreshPersonaEditor()
         }
     }
@@ -110,10 +112,21 @@ extension Ghostty.SurfaceView: PersonaMenuTarget {
             })
     }
 
+    /// Pull this terminal's face out of the core.
+    ///
+    /// Called before a menu is built and after an action is refused -- the
+    /// two moments when a stale answer would be shown to somebody about to
+    /// act on it.
+    func reloadPersonaFace() {
+        guard let surface = self.surface else { return }
+        poltergeistPersonaFace = PersonaFace.read(surface: surface) ?? .init()
+    }
+
     /// The snapshot the editor draws, gathered fresh.
     var personaEditorModel: PersonaEditorModel {
         let catalog = PersonaCatalog.shared
         catalog.reload()
+        reloadPersonaFace()
         return PersonaEditorModel(
             terminalTitle: title,
             state: poltergeistPersonaState,

@@ -98,6 +98,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
 
     const value: rpc.Request = switch (method) {
         .me => .me,
+        .persona_face => .persona_face,
         .terminal_list => .terminal_list,
         .notices => .notices,
         .session_recall => .session_recall,
@@ -602,6 +603,20 @@ pub const Response = union(enum) {
     me: TerminalInfo,
     terminals: []const TerminalInfo,
     text: []const u8,
+
+    /// Which tools this terminal may see, and the version of that answer.
+    ///
+    /// Names, not definitions: the sidecar already holds the descriptions
+    /// and schemas, which are tens of kilobytes and do not change. Sending
+    /// them over the socket on every `tools/list` would be paying for the
+    /// same bytes forever to learn one thing.
+    persona_face: struct {
+        tools: []const []const u8,
+
+        /// Bumped by any change to this terminal's effective set. A caller
+        /// that has seen a higher one has already been told.
+        epoch: u64,
+    },
     skill: struct { name: []const u8, body: []const u8 },
     messages: struct {
         lines: []const rpc.ChatLine,
@@ -687,6 +702,16 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.write(true);
             try s.objectField("text");
             try s.write(t);
+        },
+        .persona_face => |f| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("tools");
+            try s.beginArray();
+            for (f.tools) |name| try s.write(name);
+            try s.endArray();
+            try s.objectField("epoch");
+            try s.write(f.epoch);
         },
         .skill => |k| {
             try s.objectField("ok");

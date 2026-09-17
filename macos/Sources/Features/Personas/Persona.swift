@@ -1,4 +1,5 @@
 import Foundation
+import GhosttyKit
 
 // MARK: - Why this says "persona" and the interface says "Role"
 //
@@ -91,6 +92,21 @@ enum PersonaHostClass: Equatable {
 
     /// codex, opencode, kimi, deepseek: only a restart.
     case cold
+
+    /// Sync with: `ghostty_action_poltergeist_host_class_e`.
+    ///
+    /// Anything the core sends that this does not know maps to `.unknown`,
+    /// which is the only safe default: a class added later and silently read
+    /// as `.hot` would be a change that has not happened, drawn as one that
+    /// has.
+    init(_ c: ghostty_action_poltergeist_host_class_e) {
+        switch c {
+        case GHOSTTY_POLTERGEIST_HOST_HOT: self = .hot
+        case GHOSTTY_POLTERGEIST_HOST_WARM: self = .warm
+        case GHOSTTY_POLTERGEIST_HOST_COLD: self = .cold
+        default: self = .unknown
+        }
+    }
 
     /// The one line the menu shows so that picking a persona cannot be
     /// mistaken for a change that already happened. `nil` when it is

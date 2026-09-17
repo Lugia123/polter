@@ -188,7 +188,7 @@ struct PersonaMenuTests {
         let menu = try submenu(wearingArcher, shielded: true)
 
         #expect(menu.items[0].title == String(
-            localized: "This terminal is shielded, so nothing may change what it hands out"))
+            localized: "Agents are kept out of this terminal, so its role cannot be changed"))
 
         let personaRows = menu.items.filter { $0.representedObject is String }
         #expect(personaRows.count == 2)

@@ -954,13 +954,35 @@ fn handleOne(
     }
 
     if (std.mem.eql(u8, method, "tools/list")) {
+        // Ask the host which of them this terminal may see. The names come
+        // back; the descriptions and schemas stay here, because they are
+        // tens of kilobytes that never change and sending them over the
+        // socket on every list would be paying for the same bytes forever.
+        //
+        // ⚠️ **A host that cannot answer means every tool stays visible.**
+        // That is the deliberate direction. The filter is a convenience --
+        // the gate that actually stops a call is on the host, where
+        // `dispatch` checks the caller's own face -- so failing closed here
+        // would take a terminal's tools away over a hiccup while buying no
+        // safety at all. Failing open loses nothing that was being
+        // protected.
+        const visible: ?[]const []const u8 = blk: {
+            const reply = host.call(
+                \\{"method":"persona_face"}
+            ) catch break :blk null;
+            break :blk parseFaceTools(aa, reply) catch break :blk null;
+        };
+
         var body: std.Io.Writer.Allocating = .init(aa);
         defer body.deinit();
         const w = &body.writer;
 
         try w.writeAll("{\"tools\":[");
-        for (tools, 0..) |t, i| {
-            if (i > 0) try w.writeAll(",");
+        var written: usize = 0;
+        for (tools) |t| {
+            if (visible) |names| if (!listHas(names, t.name)) continue;
+            if (written > 0) try w.writeAll(",");
+            written += 1;
             try w.print(
                 \\{{"name":"{s}","description":{f},"inputSchema":{s}}}
             , .{ t.name, std.json.fmt(t.description, .{}), t.schema });
@@ -1024,6 +1046,45 @@ fn handleOne(
     }
 
     try writeError(out, id, aa, -32601, "method not found");
+}
+
+/// Pull `tools` out of a `persona_face` reply.
+///
+/// Returns null rather than an error for a reply that is not what we
+/// expected, because the caller treats "no answer" and "an answer I cannot
+/// read" the same way: show everything. Telling them apart would be a
+/// distinction with nothing behind it.
+fn parseFaceTools(aa: Allocator, reply: []const u8) !?[]const []const u8 {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, aa, reply, .{}) catch
+        return null;
+    const obj = switch (parsed) {
+        .object => |o| o,
+        else => return null,
+    };
+    if (obj.get("ok")) |v| switch (v) {
+        .bool => |b| if (!b) return null,
+        else => return null,
+    };
+    const arr = switch (obj.get("tools") orelse return null) {
+        .array => |a| a,
+        else => return null,
+    };
+
+    const out = try aa.alloc([]const u8, arr.items.len);
+    for (arr.items, 0..) |item, i| {
+        out[i] = switch (item) {
+            .string => |str| str,
+            else => return null,
+        };
+    }
+    return out;
+}
+
+fn listHas(names: []const []const u8, name: []const u8) bool {
+    for (names) |n| {
+        if (std.mem.eql(u8, n, name)) return true;
+    }
+    return false;
 }
 
 fn writeResult(

@@ -183,7 +183,21 @@ pub fn run(alloc: Allocator) !u8 {
 
     var slot: Slot = try .init(alloc, io, parsed.slot, parsed.upstream, &link, first);
     defer slot.deinit();
-    return slot.serve();
+
+    const out_buf = try alloc.alloc(u8, 64 * 1024);
+    defer alloc.free(out_buf);
+    const in_buf = try alloc.alloc(u8, max_line);
+    defer alloc.free(in_buf);
+
+    var stdin: std.Io.File = .stdin();
+    var stdout: std.Io.File = .stdout();
+    var reader = stdin.reader(io, in_buf);
+    // Streaming for the reason `cli/mcp.zig` gives: a positional writer
+    // would overwrite whatever was already in the file when stdout is
+    // redirected to one, which is how somebody reads the protocol back.
+    var writer = stdout.writerStreaming(io, out_buf);
+
+    return slot.serve(&reader.interface, &writer.interface);
 }
 
 const Parsed = struct {
@@ -630,10 +644,6 @@ const Slot = struct {
     /// Set once the client's stdin closes, to bring the watcher down.
     done: std.atomic.Value(bool) = .init(false),
 
-    stdout_file: std.Io.File = undefined,
-    out_storage: std.Io.File.Writer = undefined,
-    out_buf: []u8 = undefined,
-
     fn init(
         alloc: Allocator,
         io: std.Io,
@@ -666,14 +676,38 @@ const Slot = struct {
         if (self.reason.len > 0) self.alloc.free(self.reason);
     }
 
-    fn serve(self: *Slot) !u8 {
-        const io = self.io;
+    /// Run until the client closes its end.
+    ///
+    /// # Why the two streams are arguments
+    ///
+    /// In the product they are this process's stdin and stdout, and `run`
+    /// hands them over. They are parameters so that a test can put a real
+    /// socket there instead and drive the whole of this -- the state
+    /// machine, the upstream child, the watcher thread, the notification --
+    /// over a real connection rather than over a mock of one.
+    ///
+    /// **The seam changes where the bytes come from and nothing else.**
+    /// Every line below runs identically either way; what the test does not
+    /// cover is the two lines in `run` that name `.stdin()` and `.stdout()`,
+    /// and that is stated here rather than left to be assumed.
+    fn serve(self: *Slot, in: *std.Io.Reader, out: *std.Io.Writer) !u8 {
+        self.out = out;
 
-        self.out_buf = try self.alloc.alloc(u8, 64 * 1024);
-        defer self.alloc.free(self.out_buf);
-        self.stdout_file = .stdout();
-        self.out_storage = self.stdout_file.writerStreaming(io, self.out_buf);
-        self.out = &self.out_storage.interface;
+        // **The upstream is brought down here, not in `deinit`, and that
+        // ordering is load-bearing.**
+        //
+        // The drain thread writes to `out`, and `out`'s buffer belongs to
+        // the caller -- which frees it as its own `defer`s unwind. Those
+        // run *before* a `defer slot.deinit()` registered earlier, so
+        // leaving the join to `deinit` means the drain thread writes into
+        // freed memory. 🔬 Measured: a segfault inside `writeAll`, reached
+        // from `drain` -> `announceChange`, the first time this was run
+        // over a real socket. Every unit test above passed while that was
+        // true, because none of them had a second thread.
+        //
+        // Registered before the watcher's `defer` so that it runs after
+        // it: the watcher is the thing that can start a *new* upstream.
+        defer self.stopUpstream();
 
         const watcher = std.Thread.spawn(.{}, watch, .{self}) catch null;
         defer if (watcher) |t| {
@@ -681,13 +715,8 @@ const Slot = struct {
             t.join();
         };
 
-        const in_buf = try self.alloc.alloc(u8, max_line);
-        defer self.alloc.free(in_buf);
-        var stdin: std.Io.File = .stdin();
-        var reader = stdin.reader(io, in_buf);
-
         while (true) {
-            const line = (try reader.interface.takeDelimiter('\n')) orelse break;
+            const line = (try in.takeDelimiter('\n')) orelse break;
             if (line.len == 0) continue;
             self.handle(line) catch |err| {
                 log.warn("mcp-slot: could not handle a message err={}", .{err});
@@ -944,15 +973,33 @@ const Slot = struct {
         log.warn("mcp-slot: upstream for {s} is not running: {}", .{ self.name, err });
     }
 
+    /// Close the upstream down and wait for its drain thread.
+    ///
+    /// ⚠️ **Called without `state_mutex` held, and it takes the lock itself
+    /// only to detach the upstream.** The drain thread takes that same lock
+    /// on its way out, so joining it from inside the lock is a deadlock.
+    /// 🔬 Measured rather than reasoned about: the first end-to-end run
+    /// wedged here and only came back when the test's watchdog broke the
+    /// connection. Under unit tests it could not happen, because nothing
+    /// there ever started a second thread.
     fn stopUpstream(self: *Slot) void {
-        const u = &(if (self.upstream) |*p| p else return).*;
+        self.state_mutex.lockUncancelable(self.io);
+        var u = self.upstream orelse {
+            self.state_mutex.unlock(self.io);
+            return;
+        };
+        self.upstream = null;
+        self.state_mutex.unlock(self.io);
+
+        // Closing its stdin is how the upstream is told the conversation is
+        // over; it ends, its stdout closes, and the drain thread falls out
+        // of its read.
         if (u.child.stdin) |f| {
             f.close(self.io);
             u.child.stdin = null;
         }
         if (u.reader_thread) |t| t.join();
         _ = u.child.wait(self.io) catch {};
-        self.upstream = null;
     }
 
     // -- the role changing --------------------------------------------
@@ -1019,12 +1066,26 @@ const Slot = struct {
                 if (self.init_request) |req| {
                     self.startUpstreamLate(req) catch |err| self.becomeBroken(err);
                 }
+                self.state_mutex.unlock(self.io);
             } else {
-                self.stopUpstream();
-                self.failOutstanding();
+                // **The state moves first, and the teardown follows it.**
+                // The drain thread wakes when the upstream's stdout closes
+                // and asks "am I still meant to have one"; if the answer
+                // were still `granted` at that moment it would announce a
+                // `broken` upstream that nothing is wrong with -- and the
+                // user would be told their server crashed at the exact
+                // moment they took it away on purpose.
                 self.state = .withheld;
+                self.state_mutex.unlock(self.io);
+
+                // Outside the lock: `stopUpstream` joins the drain thread,
+                // and the drain thread wants this lock.
+                self.stopUpstream();
+
+                self.state_mutex.lockUncancelable(self.io);
+                self.failOutstanding();
+                self.state_mutex.unlock(self.io);
             }
-            self.state_mutex.unlock(self.io);
 
             self.announceChange();
         }
@@ -1411,4 +1472,546 @@ test "mcp-slot: garbage and half-understood replies fall to unknown" {
     try testing.expectEqual(Answer.no, interpret(a,
         \\{"ok":true,"wanted":false,"epoch":2,"reason":"not in this persona"}
     ).answer);
+}
+
+// -- end to end, over a real socket ------------------------------------
+//
+// Everything above this line is tested as pure functions, and pure
+// functions were never the risk here. `server_test.zig` states the reason
+// in its own header and it applies word for word: *"the first version of
+// this server compiled, type-checked against two targets, passed every unit
+// test, and served exactly zero requests"*. What this section runs is the
+// whole of it -- a real socket, a real handshake, a real child process, the
+// watcher thread, and the notification arriving on the client's stream
+// while the client is sitting idle.
+//
+// **The stub is deliberately only section six of the contract.** When
+// Polter's own `persona_slot` / `persona_wait` land, the only thing that
+// changes in this picture is which process is on the far end of that
+// socket. Keeping the stub afterwards is what makes that a one-variable
+// change rather than a two-variable one.
+
+const builtin = @import("builtin");
+const transport = @import("../poltergeist/transport.zig");
+
+/// A Polter that knows the two methods of `personas-contract.md` section
+/// four and nothing else.
+const StubPolter = struct {
+    alloc: Allocator,
+    io: std.Io,
+    path: []u8,
+    listener: transport.Listener,
+    thread: ?std.Thread = null,
+
+    mutex: std.Io.Mutex = .init,
+    wanted: bool,
+    epoch: u64 = 1,
+
+    stop: std.atomic.Value(bool) = .init(false),
+    /// Counted so a test can tell "the slot never asked" apart from "the
+    /// slot asked and got the answer it acted on". Those two produce the
+    /// same tool list in the withheld case.
+    asked: std.atomic.Value(u32) = .init(0),
+    authed: std.atomic.Value(u32) = .init(0),
+
+    /// How long `persona_wait` holds before answering `timeout`. Short,
+    /// because the stub's job is to be re-asked quickly in a test, not to
+    /// be economical with connections.
+    const wait_ms = 1500;
+    const tick_ms = 5;
+
+    fn start(alloc: Allocator, io: std.Io, wanted: bool) !*StubPolter {
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        const path = try std.fmt.allocPrint(alloc, "/tmp/pg-stub-{x}.sock", .{&raw});
+        errdefer alloc.free(path);
+
+        const self = try alloc.create(StubPolter);
+        errdefer alloc.destroy(self);
+
+        self.* = .{
+            .alloc = alloc,
+            .io = io,
+            .path = path,
+            .listener = try transport.bind(alloc, io, path),
+            .wanted = wanted,
+        };
+        self.thread = try std.Thread.spawn(.{}, accept, .{self});
+        return self;
+    }
+
+    fn deinit(self: *StubPolter) void {
+        self.stop.store(true, .release);
+        self.listener.wake(self.io);
+        if (self.thread) |t| t.join();
+        transport.unlink(self.io, self.path);
+        self.alloc.free(self.path);
+        self.alloc.destroy(self);
+    }
+
+    /// Move the answer, the way a user picking a persona off a menu would.
+    ///
+    /// `epoch` moves with it, and it has to: a waiting slot is parked on
+    /// the epoch it last saw, so an answer that changed without the number
+    /// changing would never reach it.
+    fn setWanted(self: *StubPolter, w: bool) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.wanted = w;
+        self.epoch += 1;
+    }
+
+    fn snapshot(self: *StubPolter) struct { wanted: bool, epoch: u64 } {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return .{ .wanted = self.wanted, .epoch = self.epoch };
+    }
+
+    fn accept(self: *StubPolter) void {
+        while (!self.stop.load(.acquire)) {
+            const conn = self.listener.accept(self.io) catch return;
+            self.serveOne(conn);
+            conn.close(self.io);
+        }
+    }
+
+    fn serveOne(self: *StubPolter, conn: transport.Conn) void {
+        const rbuf = self.alloc.alloc(u8, 64 * 1024) catch return;
+        defer self.alloc.free(rbuf);
+        const wbuf = self.alloc.alloc(u8, 64 * 1024) catch return;
+        defer self.alloc.free(wbuf);
+
+        var reader = conn.reader(self.io, rbuf);
+        var writer = conn.writer(self.io, wbuf);
+
+        // The handshake, byte for byte what `Server.handshake` does: one
+        // auth line in, `{"ok":true}` out. Anything else and the client
+        // would be testing against a protocol nobody speaks.
+        const auth = (reader.interface.takeDelimiter('\n') catch return) orelse return;
+        if (std.mem.indexOf(u8, auth, "\"method\":\"auth\"") == null) return;
+        _ = self.authed.fetchAdd(1, .acq_rel);
+        writer.interface.writeAll("{\"ok\":true}\n") catch return;
+        writer.interface.flush() catch return;
+
+        while (!self.stop.load(.acquire)) {
+            const line = (reader.interface.takeDelimiter('\n') catch return) orelse return;
+
+            if (std.mem.indexOf(u8, line, method_slot) != null) {
+                _ = self.asked.fetchAdd(1, .acq_rel);
+                const s = self.snapshot();
+                writer.interface.print(
+                    \\{{"ok":true,"wanted":{},"epoch":{d}}}
+                ++ "\n", .{ s.wanted, s.epoch }) catch return;
+                writer.interface.flush() catch return;
+                continue;
+            }
+
+            if (std.mem.indexOf(u8, line, method_wait) != null) {
+                const since = epochOf(line);
+                var waited: u64 = 0;
+                while (waited < wait_ms and !self.stop.load(.acquire)) {
+                    const s = self.snapshot();
+                    // Already behind: answer at once rather than hold. The
+                    // contract's guard against "it moved while I slept".
+                    if (s.epoch != since) {
+                        writer.interface.print(
+                            \\{{"ok":true,"wanted":{},"epoch":{d}}}
+                        ++ "\n", .{ s.wanted, s.epoch }) catch return;
+                        writer.interface.flush() catch return;
+                        break;
+                    }
+                    self.io.sleep(
+                        .fromNanoseconds(tick_ms * std.time.ns_per_ms),
+                        .awake,
+                    ) catch {};
+                    waited += tick_ms;
+                } else {
+                    const s = self.snapshot();
+                    writer.interface.print(
+                        \\{{"ok":true,"timeout":true,"epoch":{d}}}
+                    ++ "\n", .{s.epoch}) catch return;
+                    writer.interface.flush() catch return;
+                }
+                continue;
+            }
+
+            writer.interface.writeAll("{\"ok\":false}\n") catch return;
+            writer.interface.flush() catch return;
+        }
+    }
+
+    fn epochOf(line: []const u8) u64 {
+        const at = std.mem.indexOf(u8, line, "\"epoch\":") orelse return 0;
+        var i = at + "\"epoch\":".len;
+        var n: u64 = 0;
+        while (i < line.len and line[i] >= '0' and line[i] <= '9') : (i += 1) {
+            n = n * 10 + (line[i] - '0');
+        }
+        return n;
+    }
+};
+
+/// The slot, running on the far end of a socket the test holds.
+const SlotSide = struct {
+    alloc: Allocator,
+    io: std.Io,
+    listener: *transport.Listener,
+    stub_path: []const u8,
+    name: []const u8,
+    argv: []const []const u8,
+    failed: std.atomic.Value(bool) = .init(false),
+
+    fn run(self: *SlotSide) void {
+        const conn = self.listener.accept(self.io) catch {
+            self.failed.store(true, .release);
+            return;
+        };
+        defer conn.close(self.io);
+
+        var link = Link.open(self.alloc, self.io, self.stub_path, "tok") catch {
+            self.failed.store(true, .release);
+            return;
+        };
+        defer link.close();
+
+        const first = link.ask(self.name);
+        if (first.answer == .unknown) {
+            // The stub answered nothing, so the product would go
+            // transparent. In this fixture that is always a fault in the
+            // test rather than the behaviour under test, so it is a
+            // failure rather than a silent branch.
+            self.failed.store(true, .release);
+            return;
+        }
+
+        var slot: Slot = Slot.init(
+            self.alloc,
+            self.io,
+            self.name,
+            self.argv,
+            &link,
+            first,
+        ) catch {
+            self.failed.store(true, .release);
+            return;
+        };
+        defer slot.deinit();
+
+        const rbuf = self.alloc.alloc(u8, max_line) catch return;
+        defer self.alloc.free(rbuf);
+        const wbuf = self.alloc.alloc(u8, 64 * 1024) catch return;
+        defer self.alloc.free(wbuf);
+
+        var reader = conn.reader(self.io, rbuf);
+        var writer = conn.writer(self.io, wbuf);
+        _ = slot.serve(&reader.interface, &writer.interface) catch {};
+    }
+};
+
+/// An upstream MCP server in six lines of shell.
+///
+/// It answers `initialize` and `tools/list` and touches a file on the way
+/// in. That file is the assertion behind "上游进程根本不启动": an empty
+/// tool list proves the client saw nothing, and only the sentinel proves
+/// the process was never there to produce anything.
+///
+/// ⚠️ **The quotes in the patterns are load-bearing.** `*initialize*` also
+/// matches `notifications/initialized`, which this is sent when a late
+/// start replays the handshake -- so a looser pattern makes the stub answer
+/// a notification, and that spurious line is then forwarded to the client
+/// verbatim (correctly: a slot forwards whatever the upstream says) and
+/// lands where the test expects the reply to its next request. It cost one
+/// run to find and it would have been read as a forwarding bug.
+const upstream_script =
+    \\touch "$1"
+    \\while IFS= read -r line; do
+    \\  case "$line" in
+    \\    *'"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"stub-upstream","version":"1"}}}' ;;
+    \\    *'"tools/list"'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"argus_recon","description":"reconnoitre","inputSchema":{"type":"object"}}]}}' ;;
+    \\  esac
+    \\done
+;
+
+/// One end-to-end fixture: a stub Polter, a socket for the client, and a
+/// thread with the slot on it.
+const E2E = struct {
+    alloc: Allocator,
+    io: std.Io,
+    stub: *StubPolter,
+    listener: transport.Listener,
+    client_path: []u8,
+    side: *SlotSide,
+    thread: std.Thread,
+    conn: transport.Conn,
+    reader: transport.Reader,
+    writer: transport.Writer,
+    rbuf: []u8,
+    wbuf: []u8,
+    watchdog: ?std.Thread = null,
+    watchdog_stop: std.atomic.Value(bool) = .init(false),
+    /// Set the moment the deadline thread cuts the connection.
+    ///
+    /// ⚠️ **Without this the two are the same error.** A read that ends
+    /// because the watchdog broke the socket and a read that ends because
+    /// the slot closed it both surface as "the stream is gone" -- so a
+    /// machine that was merely busy (a concurrent rebuild is the ordinary
+    /// cause) produces the same output as a protocol defect, and the first
+    /// place anybody looks is their own stub. The flag is what makes the
+    /// busy case say so about itself instead of being reconstructed later
+    /// from what else was running.
+    watchdog_fired: std.atomic.Value(bool) = .init(false),
+
+    /// A test that hangs is a test nobody keeps, and every read below is a
+    /// blocking read on a socket. So a thread waits, and if the whole
+    /// exchange has not finished in time it breaks the connection -- which
+    /// turns a freeze into a failed read with a line number.
+    const deadline_ms = 20 * 1000;
+
+    fn start(
+        alloc: Allocator,
+        io: std.Io,
+        wanted: bool,
+        argv: []const []const u8,
+    ) !*E2E {
+        const self = try alloc.create(E2E);
+        errdefer alloc.destroy(self);
+
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        const client_path = try std.fmt.allocPrint(alloc, "/tmp/pg-cli-{x}.sock", .{&raw});
+
+        const stub = try StubPolter.start(alloc, io, wanted);
+        const listener = try transport.bind(alloc, io, client_path);
+
+        const side = try alloc.create(SlotSide);
+        side.* = .{
+            .alloc = alloc,
+            .io = io,
+            .listener = undefined,
+            .stub_path = stub.path,
+            .name = "argus",
+            .argv = argv,
+        };
+
+        self.* = .{
+            .alloc = alloc,
+            .io = io,
+            .stub = stub,
+            .listener = listener,
+            .client_path = client_path,
+            .side = side,
+            .thread = undefined,
+            .conn = undefined,
+            .reader = undefined,
+            .writer = undefined,
+            .rbuf = try alloc.alloc(u8, max_line),
+            .wbuf = try alloc.alloc(u8, 64 * 1024),
+        };
+        self.side.listener = &self.listener;
+        self.thread = try std.Thread.spawn(.{}, SlotSide.run, .{self.side});
+
+        self.conn = try transport.connect(io, client_path);
+        self.reader = self.conn.reader(io, self.rbuf);
+        self.writer = self.conn.writer(io, self.wbuf);
+        self.watchdog = std.Thread.spawn(.{}, watch_deadline, .{self}) catch null;
+        return self;
+    }
+
+    fn watch_deadline(self: *E2E) void {
+        var waited: u64 = 0;
+        while (waited < deadline_ms) {
+            if (self.watchdog_stop.load(.acquire)) return;
+            self.io.sleep(.fromNanoseconds(25 * std.time.ns_per_ms), .awake) catch {};
+            waited += 25;
+        }
+        self.watchdog_fired.store(true, .release);
+        transport.shutdownConn(self.conn, self.io);
+    }
+
+    fn deinit(self: *E2E) void {
+        self.watchdog_stop.store(true, .release);
+        if (self.watchdog) |t| t.join();
+        transport.shutdownConn(self.conn, self.io);
+        self.conn.close(self.io);
+        self.thread.join();
+        self.listener.deinit(self.io);
+        transport.unlink(self.io, self.client_path);
+        self.stub.deinit();
+        self.alloc.free(self.rbuf);
+        self.alloc.free(self.wbuf);
+        self.alloc.free(self.client_path);
+        self.alloc.destroy(self.side);
+        self.alloc.destroy(self);
+    }
+
+    fn send(self: *E2E, line: []const u8) !void {
+        try self.writer.interface.writeAll(line);
+        try self.writer.interface.writeByte('\n');
+        try self.writer.interface.flush();
+    }
+
+    /// One line from the slot, or an error that says which kind of silence
+    /// this was.
+    fn recv(self: *E2E) ![]const u8 {
+        const line = self.reader.interface.takeDelimiter('\n') catch |err| {
+            return self.blame(err);
+        };
+        return line orelse self.blame(error.ClientStreamClosed);
+    }
+
+    /// Turn "the stream ended" into one of the two things it can mean.
+    ///
+    /// `DeadlineExpired` is **not** a claim that the code under test is
+    /// fine. It is a claim that this run does not know, which is the honest
+    /// answer when the clock ran out -- and it is a different sentence from
+    /// the one a genuine protocol failure prints, which is the entire point.
+    fn blame(self: *E2E, err: anyerror) anyerror {
+        if (!self.watchdog_fired.load(.acquire)) return err;
+        std.debug.print(
+            "\nmcp-slot e2e: the {d}s deadline expired and cut the " ++
+                "connection. This run proves nothing either way -- check " ++
+                "whether anything else was building at the time before " ++
+                "reading it as a protocol failure.\n",
+            .{deadline_ms / 1000},
+        );
+        return error.DeadlineExpired;
+    }
+};
+
+fn exists(io: std.Io, path: []const u8) bool {
+    _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return true;
+}
+
+test "mcp-slot e2e: a withheld slot never starts its upstream, and a grant starts it without renaming a tool" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const sentinel = try std.fmt.allocPrint(alloc, "/tmp/pg-up-{x}.touched", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, sentinel) catch {};
+        alloc.free(sentinel);
+    }
+
+    const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_script, "upstream", sentinel };
+
+    // Start withheld: the persona this terminal wears does not include
+    // `argus`.
+    var fx = E2E.start(alloc, io, false, argv) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    // -- withheld ------------------------------------------------------
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    const init_reply = try fx.recv();
+    // Answered here, not by an upstream -- there is no upstream.
+    try testing.expect(std.mem.indexOf(u8, init_reply, "polter:argus") != null);
+    try testing.expect(std.mem.indexOf(u8, init_reply, "stub-upstream") == null);
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    );
+    const empty = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, empty, "\"tools\":[]") != null);
+
+    // **The assertion the empty list cannot make.** A tool list with
+    // nothing in it is equally what a started-and-silent upstream
+    // produces; only the sentinel says the process was never there.
+    try testing.expect(!exists(io, sentinel));
+
+    // And the control for it: the slot really did ask, over the real
+    // socket, rather than defaulting to empty because nothing answered.
+    try testing.expect(fx.stub.authed.load(.acquire) >= 1);
+    try testing.expect(fx.stub.asked.load(.acquire) >= 1);
+
+    // -- the user picks a persona that has argus ------------------------
+
+    fx.stub.setWanted(true);
+
+    // Arrives unprompted, on a stream the client is not writing to. This
+    // is the whole mechanism of a hot change.
+    const notice = try fx.recv();
+    try testing.expect(
+        std.mem.indexOf(u8, notice, "notifications/tools/list_changed") != null,
+    );
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    );
+    const listed = try fx.recv();
+
+    // **Unrenamed.** The name the upstream published is the name that
+    // reaches the client -- no prefix, no namespace, nothing that would
+    // make the upstream's own documentation wrong.
+    try testing.expect(std.mem.indexOf(u8, listed, "\"argus_recon\"") != null);
+    try testing.expect(std.mem.indexOf(u8, listed, "polter_argus_recon") == null);
+    try testing.expect(std.mem.indexOf(u8, listed, "polter:argus_recon") == null);
+
+    // Now it exists, which is the other half of the sentinel assertion:
+    // without this, "never created" above would also pass for a script
+    // that could not run at all.
+    try testing.expect(exists(io, sentinel));
+
+    // -- and taken away again ------------------------------------------
+
+    fx.stub.setWanted(false);
+
+    const notice2 = try fx.recv();
+    try testing.expect(
+        std.mem.indexOf(u8, notice2, "notifications/tools/list_changed") != null,
+    );
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    );
+    const empty2 = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, empty2, "\"tools\":[]") != null);
+    try testing.expect(std.mem.indexOf(u8, empty2, "argus_recon") == null);
+}
+
+test "mcp-slot e2e: an upstream that will not start is not an empty tool list" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Granted by the persona, and there is no such program.
+    const argv: []const []const u8 = &.{"/nonexistent/polter-upstream-that-is-not-there"};
+
+    var fx = E2E.start(alloc, io, true, argv) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    _ = try fx.recv();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    );
+    const listed = try fx.recv();
+
+    // The distinction roles.md's second open question asks for, asserted
+    // on the bytes a client actually receives rather than on a state enum.
+    try testing.expect(
+        std.mem.indexOf(u8, listed, "polter_slot_unavailable") != null,
+    );
+    try testing.expect(std.mem.indexOf(u8, listed, "\"tools\":[]") == null);
+
+    // A calling agent reads the description, so the description is what
+    // has to carry the difference -- and it has to say which of the two
+    // silences this is, in so many words.
+    try testing.expect(std.mem.indexOf(u8, listed, "角色") != null);
 }

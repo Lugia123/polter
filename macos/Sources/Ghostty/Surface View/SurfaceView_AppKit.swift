@@ -145,19 +145,12 @@ extension Ghostty {
         /// when confused -- they just look right
         /// (`personas-contract.md` §0).
         ///
-        /// ⚠️ **PENDING-W1-568: nothing writes this yet.** The core does not
-        /// carry personas at all today, so every terminal reads as "no
-        /// persona, host class unknown" and the menu says exactly that
-        /// rather than pretending. When task 568 lands the per-terminal
-        /// state -- `ghostty_action_poltergeist_mark_s` growing
-        /// `persona_key` / `persona_name` / `persona_deviated` /
-        /// `persona_host_class` -- fill this in
-        /// `Ghostty.App.setPoltergeistMark` and delete every
-        /// `PENDING-W1-568` in the tree.
-        ///
-        /// Kept as real state rather than faked in the menu builder on
-        /// purpose: an interface wired to invented data looks exactly like
-        /// one that is wired up.
+        /// Filled from `ghostty_action_poltergeist_mark_s`'s `persona`
+        /// payload in `Ghostty.App.setPoltergeistMark`. Today the core sends
+        /// `agent_present` for real and leaves the rest at "nothing chosen",
+        /// because nothing loads `personas.json` yet -- so this reads as a
+        /// terminal with no persona, and the menu says exactly that rather
+        /// than pretending otherwise.
         @Published var poltergeistPersonaState: PersonaState = .none {
             didSet {
                 guard oldValue != poltergeistPersonaState else { return }
@@ -165,10 +158,6 @@ extension Ghostty {
             }
         }
 
-        /// PENDING-W1-568: what this terminal is actually exposing. Arrives
-        /// from the surface-scoped face query the contract review asked for;
-        /// until then `isKnown` is false and the editor says so instead of
-        /// showing an empty list.
         @Published var poltergeistPersonaFace: PersonaFace = .init() {
             didSet {
                 guard oldValue != poltergeistPersonaFace else { return }
@@ -1744,6 +1733,7 @@ extension Ghostty {
             // claims that are not allowed to be wrong.
             let catalog = PersonaCatalog.shared
             catalog.reload()
+            reloadPersonaFace()
             menu.addItem(PersonaMenu.makeItem(
                 state: poltergeistPersonaState,
                 shielded: poltergeistShielded,

@@ -151,6 +151,20 @@ pub const Method = enum {
     /// itself off duty -- rather than discovering it by being refused.
     config_get,
 
+    /// Which of Polter's tools this terminal may see, and the version of
+    /// the answer.
+    ///
+    /// **Asked by the caller about itself and nothing else.** There is no
+    /// `id`: identity comes from the token the connection proved, so an
+    /// agent cannot ask what some other terminal is allowed to do -- which
+    /// would make the tool face a reconnaissance surface as well as a
+    /// capability one.
+    ///
+    /// `+mcp` calls this to build `tools/list`. It carries names rather
+    /// than whole tool definitions because the descriptions and schemas are
+    /// tens of kilobytes that never change; the sidecar already has them.
+    persona_face,
+
     /// Open a terminal in this window, starting in a chosen directory.
     ///
     /// Separate from `terminal_action` and its `new_tab` because a tab
@@ -368,6 +382,7 @@ pub const Request = union(Method) {
     plugin_test: struct { key: []const u8 },
 
     config_get: struct { key: []const u8 = "" },
+    persona_face,
     terminal_open: struct {
         cwd: []const u8 = "",
         watch: bool = false,
@@ -669,6 +684,14 @@ pub fn callableByPlugin(method: Method) bool {
         .skill_read,
         => true,
 
+        // **Closed to plugins**, and this one is closed because the
+        // question has no answer for a plugin rather than because it would
+        // be too much reach. `persona_face` asks what *this terminal* may
+        // do, and a plugin is not a terminal -- `authorize` turns this into
+        // `NotATerminal`, which says so, instead of quietly answering for
+        // terminal zero.
+        .persona_face,
+
         // **Closed to plugins.** Rearranging somebody's window is a change
         // to what the person is looking at, and a plugin is a setting of this
         // machine rather than a party minding the work. Widening is easy;
@@ -853,6 +876,12 @@ pub fn requiresSupervisor(method: Method) bool {
         // refusing would mean an agent cannot find out why it was nudged.
         .skill_read => false,
 
+        // What this terminal itself may do. The same kind of question as
+        // `me`, and needing standing for it would mean a worker could not
+        // find out what it is allowed to do -- which is the one thing every
+        // terminal has to know about itself.
+        .persona_face => false,
+
         // Who talks to whom is the supervisor's to arrange, the same way
         // who is watched is. A terminal that could make its own groups and
         // pull others into them would be building a structure the user
@@ -896,6 +925,12 @@ pub fn requiresSupervisor(method: Method) bool {
 
         // The settings it is working under are the supervisor's business;
         // a watched terminal has `me` for the parts that concern it.
+        //
+        // `persona_face` is deliberately *not* here: it asks what the
+        // caller's own terminal may do, which is the same kind of question
+        // as `me`. Requiring standing for it would mean a worker could not
+        // find out what it is allowed to do, which is the one thing every
+        // terminal needs to know about itself.
         .config_get,
 
         // Making, handing out, closing and calling off work is arranging
@@ -974,6 +1009,7 @@ pub fn targetsTerminal(method: Method) bool {
 
         // Names a setting, not a terminal.
         .config_get,
+        .persona_face,
 
         // These name a task, which is not a terminal. `task_cancel` does
         // reach one -- it types the cancellation into the worker's
@@ -1053,6 +1089,7 @@ pub fn target(req: Request) ?Bus.Id {
         .terminal_keys,
         .terminal_open,
         .config_get,
+        .persona_face,
 
         // Named here rather than left to the `inline else` below, because
         // that one reads `v.id` off whatever payload has one and these
@@ -1110,6 +1147,7 @@ pub fn selfPermitted(req: Request) bool {
         .notify_user,
         .skill_read,
         .config_get,
+        .persona_face,
         .group_create,
         .group_destroy,
         .group_compact,
@@ -1318,6 +1356,7 @@ pub fn promptReach(method: Method) enum {
         .notify_user,
         .skill_read,
         .config_get,
+        .persona_face,
         .clock_in,
         .clock_out,
         .set_quiescence_threshold,
@@ -3820,6 +3859,13 @@ pub const Host = struct {
     ctx: *anyopaque,
     vtable: *const VTable,
 
+    /// What `personaFace` answers. The slice and the names belong to the
+    /// allocator that was passed in.
+    pub const PersonaFace = struct {
+        tools: []const []const u8,
+        epoch: u64,
+    };
+
     pub const VTable = struct {
         /// The visible screen, or the last `lines` rows when non-zero.
         /// Returned memory belongs to the caller's allocator.
@@ -3837,6 +3883,19 @@ pub const Host = struct {
             text: []const u8,
             submit: bool,
         ) anyerror!void,
+
+        /// Which of Polter's tools this terminal may see, and the version
+        /// of that answer.
+        ///
+        /// **Computed by the app rather than here**, because it is the app
+        /// that holds what the user wrote and what each terminal has been
+        /// put into. What this file owns is the rule that the answer is
+        /// about the *caller* and no one else.
+        personaFace: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+        ) anyerror!PersonaFace,
 
         /// Whether an agent is listening in this terminal right now.
         ///
@@ -4275,6 +4334,14 @@ pub const Host = struct {
         return self.vtable.agentPresent(self.ctx, id);
     }
 
+    fn personaFace(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+    ) anyerror!PersonaFace {
+        return self.vtable.personaFace(self.ctx, alloc, id);
+    }
+
     fn sendKey(self: Host, id: Bus.Id, key: []const u8) anyerror!void {
         return self.vtable.sendKey(self.ctx, id, key);
     }
@@ -4614,6 +4681,15 @@ pub fn dispatch(
 
     switch (req) {
         .me => return .{ .me = describe(bus, host, caller) },
+
+        .persona_face => {
+            const face = host.personaFace(alloc, caller) catch
+                return hostFailure(
+                    "PersonaFailed",
+                    "could not work out what this terminal is wearing",
+                );
+            return .{ .persona_face = .{ .tools = face.tools, .epoch = face.epoch } };
+        },
 
         .terminal_list => {
             var list: std.ArrayListUnmanaged(wire.TerminalInfo) = .empty;
@@ -6281,11 +6357,15 @@ const FakeHost = struct {
     /// empty terminal sets it false.
     agent_present: bool = true,
 
+    /// A tool name this terminal's persona hides, for the filter tests.
+    persona_hidden: ?[]const u8 = null,
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
             .sendText = send,
             .agentPresent = agentPresent,
+            .personaFace = personaFace,
             .sendKey = sendKey,
             .performAction = performAction,
             .openTerminal = openTerminal,
@@ -6748,6 +6828,30 @@ const FakeHost = struct {
     fn agentPresent(ctx: *anyopaque, _: Bus.Id) bool {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.agent_present;
+    }
+
+    /// Every method is visible unless a test says otherwise, which is what
+    /// a terminal wearing no persona gets.
+    fn personaFace(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        _: Bus.Id,
+    ) anyerror!Host.PersonaFace {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.persona_hidden) |hidden| {
+            var names: std.ArrayListUnmanaged([]const u8) = .empty;
+            for (std.enums.values(Method)) |m| {
+                const name = @tagName(m);
+                if (std.mem.eql(u8, name, hidden)) continue;
+                try names.append(alloc, name);
+            }
+            return .{ .tools = try names.toOwnedSlice(alloc), .epoch = 7 };
+        }
+
+        const all = std.enums.values(Method);
+        const names = try alloc.alloc([]const u8, all.len);
+        for (all, 0..) |m, i| names[i] = @tagName(m);
+        return .{ .tools = names, .epoch = 0 };
     }
 
     fn quietMs(ctx: *anyopaque, _: Bus.Id) u64 {
@@ -9400,4 +9504,45 @@ test "each reason a send can fail says which one it was" {
     // hand back the same text five times and every assertion above would
     // still pass.
     try testing.expectEqual(@as(usize, cases.len), seen.count());
+}
+
+test "persona_face: the caller is told which tools it may see, and it is about itself" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+
+    var fake: FakeHost = .{ .persona_hidden = "notify_user" };
+    const res = try dispatch(alloc, &bus, fake.host(), .{ .terminal = worker }, .persona_face);
+
+    const face = switch (res) {
+        .persona_face => |f| f,
+        else => {
+            std.debug.print("persona_face answered {t}\n", .{res});
+            return error.WrongResponse;
+        },
+    };
+
+    // **The positive control first.** The assertion below is an absence,
+    // and a list that came back empty would satisfy it for the wrong
+    // reason.
+    var saw_me = false;
+    var saw_hidden = false;
+    for (face.tools) |name| {
+        if (std.mem.eql(u8, name, "me")) saw_me = true;
+        if (std.mem.eql(u8, name, "notify_user")) saw_hidden = true;
+    }
+    try testing.expect(saw_me);
+    try testing.expect(!saw_hidden);
+    try testing.expectEqual(@as(u64, 7), face.epoch);
+
+    // ⚠️ **No `id` parameter, and that is the point rather than an
+    // omission.** Identity comes from the token the connection proved, so
+    // there is no way to spell "what is *that* terminal allowed to do" --
+    // which would make the tool face a reconnaissance surface as well as a
+    // capability one.
+    try testing.expect(!targetsTerminal(.persona_face));
+    try testing.expectEqual(@as(?Bus.Id, null), target(.persona_face));
 }
