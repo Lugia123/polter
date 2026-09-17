@@ -30,7 +30,7 @@ const usage =
     \\
     \\ssh flags and the destination go after +ssh's own flags (or after `--`).
     \\
-;
+    ;
 
 pub const Options = struct {
     /// Set by the CLI parser for deinit.

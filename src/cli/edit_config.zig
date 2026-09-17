@@ -88,10 +88,10 @@ fn runInner(alloc: Allocator, stderr: *std.Io.Writer) !u8 {
     if (comptime builtin.os.tag == .windows) {
         try stderr.print(
             "The `" ++ build_config.exe_name ++ " +edit-config` command is not supported on Windows.\n" ++
-            \\Please edit the configuration file manually at the following path:
-            \\
-            \\
-        ,
+                \\Please edit the configuration file manually at the following path:
+                \\
+                \\
+            ,
             .{},
         );
         return 1;
