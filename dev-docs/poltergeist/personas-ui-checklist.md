@@ -175,6 +175,44 @@ ps -Ao pid,comm | grep 'Polter.app/Contents/MacOS/polter$' | grep -v ' +mcp'
 >
 > 🔴 **最后一行是一个缺陷候选，成因未定。** 排除过仪器盲：`AXRaise` 在这条通道里
 > 是看得见的——我自己抬编辑器时顺序确实翻转过。所以「没看见提前」不是读不到。
+
+> 🟡 **2026-09-18 05:3x 复查（任务 587）：它今天不复现，但这条仍然未决——因为没有地板。**
+>
+> 在**含 588 修复**的产物上，把终端窗口抬到最前再点第二次「角色编辑器…」，**连跑三次**：
+>
+> ```
+> 点击时菜单首行 = 可能要 agent 重启之后才生效   ⇒ 这次点击有 target
+> 点前 windowOrder = ~/…/Polter_Test, 角色编辑器
+> 点后 windowOrder = 角色编辑器, ~/…/Polter_Test   ⇒ 已有窗口被提到最前
+> count = 2 → 2                                  ⇒ 没有开出第二个
+> ```
+>
+> **为什么不据此结案**：三次绿**没有地板**。要证明这条顺序判据不是空转，得把
+> `PersonaEditor.present` 里的 `makeKeyAndOrderFront` 拆掉、看它会不会红——
+> **那一步没做成**，卡在真机上（见下）。**没有地板的绿不算证据**，所以这里不写
+> 「它其实是 589 的表现」，尽管那是目前最像的解释：586 那次缺一个判别量——当时读不到
+> 「这次点击有没有 target」，而 588 新增的那条说明行正好就是这个探针。
+>
+> ⚠️ **另外两个已知的、当时没记下来的环境差**：586 那次 `set frontmost` 之后只
+> `delay 1`（今天是 `delay 2`），而且那一次**根本没读 `frontmost`**；588 期间我
+> 亲眼见过 `set frontmost of p to true` 返回正常而 `frontmost` 仍是 `false`。
+> 所以「今天不复现」和「当时读错了」这两件事**今天仍然分不开**，要分开就得跑
+> `delay 1` 那格对照——同样卡在真机上。
+>
+> 🔴 **卡在哪：没有活着的显示器时，这个 app 起得来但一个窗口都不开。** 判据不是
+> 「看起来没反应」：产品自己的日志写着 `No windows open yet` 和
+> `CVDisplayLinkCreateWithCGDisplays error -6661 due to invalid display count (0)`，
+> `screencapture` 拍出来**整幅全黑**（它 exit=0 且写出了 156 KB 文件，**退出码在这里
+> 没有判别力**），`count of windows = 0` 且点 `File ▸ 新建窗口` 之后仍然是 0。
+> 归属也做过实验：在隔离 worktree 上 checkout **HEAD 干净重建**，行为一模一样
+> ⇒ 不是谁的未完成改动，也不是签名。**要接着验这一条，先得有人把屏幕唤醒。**
+>
+> ⚠️ 顺带一条只在重建后出现、和上面无关的坑：**同一路径重建之后第一次 `open` 会被
+> `Taskgated Invalid Signature` SIGKILL**（崩溃报告在 `~/Library/Logs/DiagnosticReports/polter-*.ips`），
+> 而隔离 worktree 里新建的那份第一次 `open` 就起得来 ⇒ 是路径相关的陈旧 ad-hoc cdhash，
+> 不是产物坏。重签要带上 entitlements，否则 8 条全被剥掉：
+> `codesign --force --deep --sign - --options runtime --entitlements macos/GhosttyDebug.entitlements zig-out/Polter.app`
+> （`optimize` 默认 Debug ⇒ Xcode 走 `Debug` 配置，所以是 `GhosttyDebug.entitlements`。）
 >
 > ⚠️ **还有一个反例值得记住**：实例**不在前台**时，同一条点击返回 `clicked` + exit 0
 > 而窗口数**不变**，三次都一样；菜单项那时 `enabled = true`。唯一变量换成
