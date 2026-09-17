@@ -460,7 +460,17 @@ test "every tool an unmarked terminal may call is named in some skill" {
 
     inline for (@typeInfo(rpc.Method).@"enum".fields) |f| {
         const method = @field(rpc.Method, f.name);
-        if (!rpc.requiresSupervisor(method)) {
+
+        // ⚠️ **A method no agent can invoke needs no prose teaching agents
+        // to invoke it.** `rpc.offeredAsTool` is the one place that says
+        // which those are; `cli/mcp.zig` reads the same answer from the
+        // other side. Leaving them out here is not a hole: if one of them
+        // ever *is* offered, that file's test fails first.
+        //
+        // (Folded into the condition rather than a `continue`, because this
+        // is an `inline for` and a `continue` in one is comptime control
+        // flow inside a runtime block.)
+        if (rpc.offeredAsTool(method) and !rpc.requiresSupervisor(method)) {
             const named = for (builtin_sources) |source| {
                 if (namesTool(source, f.name)) break true;
             } else false;

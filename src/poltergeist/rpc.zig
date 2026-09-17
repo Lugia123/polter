@@ -813,6 +813,43 @@ pub fn callableByPlugin(method: Method) bool {
 /// `set_watch` were open, any terminal could claim any other and there
 /// would be a second, looser road to standing than `become_supervisor` --
 /// which at least refuses a terminal that is already being watched.
+/// Whether this method is part of the tool surface an agent picks from.
+///
+/// Almost everything is. The exceptions are the methods that exist for
+/// **another program** -- a slot process asking about the terminal it was
+/// started in -- and offering those to an agent would be listing two tools
+/// that do nothing it can use and that it cannot reason about.
+///
+/// # Why `else => true` is safe here, when this file argues against it
+///
+/// `selfSafeTag` a few hundred lines up refuses an `else` on purpose: a new
+/// action would default to "safe" silently. This one cannot go silent,
+/// because **a second gate catches the default**. `cli/mcp.zig`'s "the tool
+/// list matches the host's method names" requires every offered method to
+/// have a tool entry, so a method added without one fails there, by name.
+/// The `else` therefore means "offered", and being wrong about that is a
+/// red test rather than a quiet hole.
+///
+/// # Both gates read this, and that is the point
+///
+/// `cli/mcp.zig` skips these when it checks that every method is offered,
+/// and `poltergeist/skill.zig` skips them when it checks that every tool an
+/// unmarked terminal may call is named in a skill. Without one place to say
+/// it, the exemption would have to be written twice and the two copies
+/// would drift -- and the drift would show up as prose teaching agents to
+/// call something they cannot call.
+pub fn offeredAsTool(method: Method) bool {
+    return switch (method) {
+        // Asked by a slot process about the terminal it was started in.
+        // An agent has no use for either: it is not the thing that starts
+        // an upstream MCP server, and `persona_face` already answers the
+        // question it does have -- what may I see.
+        .persona_slot, .persona_wait => false,
+
+        else => true,
+    };
+}
+
 pub fn requiresSupervisor(method: Method) bool {
     return switch (method) {
         // Every terminal may ask about itself.
@@ -1834,6 +1871,16 @@ test "only what changes the arrangement needs the supervisor" {
         const open = switch (m) {
             .me,
             .skill_read,
+
+            // What this terminal itself may do -- the same kind of
+            // question as `me`. Needing the supervisor's standing for it
+            // would mean a worker could not find out what it is allowed to
+            // do, and `persona_slot` / `persona_wait` are asked by a slot
+            // process about itself. Matches the answer `authorize` gives
+            // them; this switch and that one must not drift apart.
+            .persona_face,
+            .persona_slot,
+            .persona_wait,
 
             // Open on purpose, and the only method here that is open
             // *because* of who cannot call it: requiring the supervisor's

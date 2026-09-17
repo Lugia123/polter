@@ -509,6 +509,13 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "persona_face",
+        .description = "Which of Polter's tools you may see right now, and the version of that answer. About **you**: there is no way to ask what some other terminal is allowed to do. Worth calling when a reply says a tool does not exist and you were sure it did -- the user can change what a terminal is holding while it runs, and what you were told at the start is not a promise about now.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "skill_read",
         .description = "Read one of Polter's skills: how to supervise, how to operate another terminal, or how to read one. Start with `supervising` if you are minding terminals and `operating-a-terminal` if you are not.",
         .schema =
@@ -1317,12 +1324,37 @@ test "the tool list matches the host's method names" {
     }
 
     // And every host method is offered, so nothing is silently unreachable.
+    //
+    // ⚠️ **Except the ones that say they are not offered**, and the
+    // exemption lives with the methods rather than here -- see
+    // `rpc.offeredAsTool`. Written as a list in this file it would need a
+    // second copy in `poltergeist/skill.zig`, which checks the same set
+    // from the other side, and the two would drift.
     for (std.enums.values(rpc.Method)) |m| {
         var found = false;
         for (tools) |t| {
             if (std.mem.eql(u8, t.name, @tagName(m))) found = true;
         }
-        try std.testing.expect(found);
+
+        if (!rpc.offeredAsTool(m)) {
+            // **The exemption is checked, not trusted.** A method that
+            // claims not to be offered and then appears in the table would
+            // mean the two halves disagree about what an agent can reach,
+            // and the table is the half that wins at runtime.
+            if (found) {
+                std.debug.print(
+                    "{s} says it is not offered as a tool, but the table lists it\n",
+                    .{@tagName(m)},
+                );
+                return error.ExemptButOffered;
+            }
+            continue;
+        }
+
+        if (!found) {
+            std.debug.print("no tool is named {s}\n", .{@tagName(m)});
+            return error.MethodNotOffered;
+        }
     }
 }
 

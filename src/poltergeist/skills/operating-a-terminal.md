@@ -63,6 +63,19 @@ not yours to call at all.
 is holding you. Worth one call at the start so you do not mistake somebody
 else's terminal for your own in the listing.
 
+`persona_face()` says which of these tools you may see right now. **It is
+about you**: there is no way to ask what some other terminal may do, because
+the answer is keyed to the token your connection proved.
+
+Two reasons it is worth knowing about. The user can change what a terminal
+is holding **while that terminal is running** -- a tool you had at the start
+can be gone by the time you reach for it, and one you did not have can
+appear. And your own memory of the tool list is not evidence: a list was
+injected at the start of this conversation and it is still sitting in your
+context, unchanged, whatever has happened since. So when a call comes back
+saying a tool does not exist and you were sure it did, **that is not a bug
+to work around** -- ask, and you will be told what you are actually holding.
+
 ## Typing and pressing a key are two different tools
 
 **`terminal_send(id, text)` types text, and only text.** It goes down the
