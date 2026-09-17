@@ -264,6 +264,7 @@
 "Nothing has reported what's installed here yet" = "还没有人报上来这台机器装了什么";
 "Done" = "完成";
 "Nothing has reported which roles exist yet" = "还没有人报上来有哪些角色";
+"There is no terminal here to change" = "这里没有终端可改";
 "Nobody has checked where this agent keeps these yet" = "还没有人核实过这家 agent 把它们放在哪";
 "Looked there, and nothing is installed" = "去那儿看过了，那里什么都没装";
 "Couldn't read what's installed here" = "这儿装了什么，读不出来";

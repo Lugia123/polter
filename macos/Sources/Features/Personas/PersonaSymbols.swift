@@ -43,6 +43,9 @@ enum PersonaSymbol: String, CaseIterable {
     /// The editor's picker, on every other row.
     case unselected = "circle"
 
+    /// There is no terminal for the menu to be about.
+    case noTerminal = "rectangle.slash"
+
     /// The core sent an error with the persona file.
     case loadError = "exclamationmark.triangle"
 

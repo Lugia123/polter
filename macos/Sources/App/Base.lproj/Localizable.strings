@@ -255,6 +255,7 @@
 "Nothing has reported what's installed here yet" = "Nothing has reported what's installed here yet";
 "Done" = "Done";
 "Nothing has reported which roles exist yet" = "Nothing has reported which roles exist yet";
+"There is no terminal here to change" = "There is no terminal here to change";
 "Nobody has checked where this agent keeps these yet" = "Nobody has checked where this agent keeps these yet";
 "Looked there, and nothing is installed" = "Looked there, and nothing is installed";
 "Couldn't read what's installed here" = "Couldn't read what's installed here";

@@ -128,6 +128,30 @@ enum PersonaMenu {
     ) -> NSMenu {
         let menu = NSMenu()
 
+        // Nothing to act on, so nothing may look actionable.
+        //
+        // **This is the one thing a menu must never do**, and it is the
+        // shape this very submenu was caught in: every row enabled, a click
+        // delivered, and nothing happening. `autoenablesItems = false` (see
+        // the note at the end of this function) is what makes it possible --
+        // it stops AppKit re-enabling the rows above, and it also stops
+        // AppKit disabling a row whose target cannot answer. So the second
+        // half has to be done here.
+        //
+        // Reachable by a person, not only by a driver: the menu bar's copy
+        // is built against `NSApp.keyWindow ?? .mainWindow`, and with every
+        // window closed there is no terminal to be about. Finding "some"
+        // surface instead would be worse than a grey row -- it would act on
+        // a terminal the user is not looking at.
+        let actionable = target != nil
+        if !actionable {
+            menu.addItem(disabledNote(
+                String(localized: "There is no terminal here to change",
+                       comment: "角色菜单：没有终端可作用（例如一个窗口都没开时的菜单栏），所以下面几行是死的"),
+                symbol: .noTerminal, imagesDesired: imagesDesired))
+            menu.addItem(.separator())
+        }
+
         // A shielded terminal refuses every re-equip, a supervisor included.
         // Greying the rows without saying why is just a broken menu, so the
         // reason goes above them.
@@ -185,7 +209,7 @@ enum PersonaMenu {
                 entry.target = target
                 entry.representedObject = persona.key
                 entry.state = isCurrent ? .on : .off
-                entry.isEnabled = !shielded
+                entry.isEnabled = !shielded && actionable
                 menu.addItem(entry)
             }
         }
@@ -201,7 +225,7 @@ enum PersonaMenu {
         clear.target = target
         clear.representedObject = nil
         clear.state = state.key == nil ? .on : .off
-        clear.isEnabled = !shielded
+        clear.isEnabled = !shielded && actionable
         menu.addItem(clear)
 
         menu.addItem(.separator())
@@ -214,6 +238,10 @@ enum PersonaMenu {
             action: #selector(PersonaMenuTarget.showPoltergeistPersonaEditor(_:)),
             keyEquivalent: "")
         editor.target = target
+        // The shield leaves this one alive on purpose -- looking at a
+        // shielded terminal was never what it forbids. Having nothing to
+        // look at is a different fact, and it does disable it.
+        editor.isEnabled = actionable
         editor.setImage(systemSymbolName: PersonaSymbol.editor.rawValue, desired: imagesDesired)
         menu.addItem(editor)
 

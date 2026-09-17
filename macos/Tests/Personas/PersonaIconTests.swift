@@ -23,6 +23,7 @@ import Testing
 @Suite
 struct PersonaIconTests {
     private let archer = Persona(key: "archer", name: "Archer")
+    private let target = PersonaMenuTargetStub()
 
     /// A terminal that makes the menu draw every note row it has: shielded,
     /// on an unknown host, with a persona set and nobody wearing it.
@@ -41,7 +42,7 @@ struct PersonaIconTests {
             shielded: true,
             personas: personas,
             personasKnown: personasKnown,
-            target: nil,
+            target: target,
             imagesDesired: imagesDesired)
     }
 
@@ -101,6 +102,24 @@ struct PersonaIconTests {
         #expect(row.image != nil)
     }
 
+    /// The note that appears when there is no terminal to act on carries one
+    /// too. Its own test because it and the shield note cannot both be the
+    /// first row, and because a symbol nobody renders is a symbol nobody
+    /// notices is missing.
+    @Test func theNoTerminalNoteCarriesItsOwnIcon() throws {
+        let item = PersonaMenu.makeItem(
+            state: everyNoteAtOnce,
+            personas: [archer],
+            personasKnown: true,
+            target: nil,
+            imagesDesired: true)
+        let rows = try #require(item.submenu).items
+        let row = try #require(rows.first {
+            $0.title == String(localized: "There is no terminal here to change")
+        })
+        #expect(row.image != nil)
+    }
+
     // MARK: Older than macOS 26
 
     /// The branch this machine cannot take by itself.
@@ -130,7 +149,7 @@ struct PersonaIconTests {
             shielded: true,
             personas: [],
             personasKnown: false,
-            target: nil)
+            target: target)
         #expect((item.image != nil) == NSMenuItem.menuItemImagesAreDesired)
     }
 }

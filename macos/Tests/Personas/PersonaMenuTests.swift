@@ -25,6 +25,11 @@ struct PersonaMenuTests {
     private let archer = Persona(key: "archer", name: "Archer")
     private let scribe = Persona(key: "scribe", name: "Scribe")
 
+    /// Every menu here is built pointing at something, because a menu built
+    /// pointing at nothing is a *different* menu -- see
+    /// `PersonaMenuTargetStub` and `noTerminalToActOn…` below.
+    private let target = PersonaMenuTargetStub()
+
     private var both: [Persona] { [archer, scribe] }
 
     private func makeItem(
@@ -38,7 +43,7 @@ struct PersonaMenuTests {
             shielded: shielded,
             personas: personas ?? both,
             personasKnown: personasKnown,
-            target: nil)
+            target: target)
     }
 
     private func submenu(
@@ -233,6 +238,66 @@ struct PersonaMenuTests {
     @Test func theParentNamesThePersonaWithoutBeingOpened() throws {
         #expect(makeItem(wearingArcher).title.contains("Archer"))
         #expect(!makeItem(PersonaState(hostClass: .hot)).title.contains("Archer"))
+    }
+
+    // MARK: Nothing to act on
+
+    /// The state this submenu was actually caught in: every row enabled, the
+    /// click delivered, and nothing happening.
+    ///
+    /// Measured on a real window before the fix (task 586): with the app not
+    /// frontmost, `click` returned `clicked` and exit 0 while the window
+    /// count stayed at 1, three times running, and the item read
+    /// `enabled = true` throughout. `autoenablesItems = false` is why AppKit
+    /// did not grey it for us -- that flag is load-bearing for the rows
+    /// above, so the other half of its job has to be done by hand.
+    ///
+    /// A person reaches this with every window closed, which is when the
+    /// menu bar's copy has no terminal to be about.
+    @Test func withNoTerminalToActOnNothingIsClickable() throws {
+        let menu = try #require(PersonaMenu.makeItem(
+            state: wearingArcher,
+            personas: both,
+            personasKnown: true,
+            target: nil).submenu)
+
+        // The reason, above the grey rows. This file's own rule: greying
+        // rows without saying why is just a broken menu.
+        #expect(menu.items.first?.title == String(localized: "There is no terminal here to change"))
+        #expect(menu.items.first?.isEnabled == false)
+
+        for row in menu.items where !row.isSeparatorItem {
+            #expect(!row.isEnabled, "\(row.title) is still clickable with nothing to act on")
+        }
+    }
+
+    /// The contrast, and the reason the one above is not vacuous: the same
+    /// menu with something to act on has those rows live.
+    @Test func withATerminalToActOnTheSameRowsAreClickable() throws {
+        let menu = try submenu(wearingArcher)
+
+        #expect(menu.items.first?.title != String(localized: "There is no terminal here to change"))
+        let clickable = menu.items.filter { !$0.isSeparatorItem && $0.isEnabled }
+        // Both personas, "No Role", and the editor.
+        #expect(clickable.count == 4)
+    }
+
+    /// The shield and an empty menu bar are different facts, and the editor
+    /// is where they part: looking at a shielded terminal is allowed, and
+    /// that is what `aShieldedTerminalOffersNothingToClickButTheEditor`
+    /// pins. With no terminal at all there is nothing to look at.
+    @Test func theEditorSurvivesTheShieldButNotAnEmptyMenuBar() throws {
+        let shielded = try submenu(wearingArcher, shielded: true)
+        let editorWhenShielded = try #require(
+            shielded.items.first { $0.title == String(localized: "Role Editor...") })
+        #expect(editorWhenShielded.isEnabled)
+
+        let targetless = try #require(PersonaMenu.makeItem(
+            state: wearingArcher, personas: both, personasKnown: true,
+            target: nil).submenu)
+        let editorWhenTargetless = try #require(
+            targetless.items.first { $0.title == String(localized: "Role Editor...") })
+        #expect(!editorWhenTargetless.isEnabled)
     }
 
     @Test func theSubmenuDecidesItsOwnEnabledState() throws {

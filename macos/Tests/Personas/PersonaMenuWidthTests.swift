@@ -35,6 +35,7 @@ struct PersonaMenuWidthTests {
     static let budget = narrowestSupportedScreenWidth / 2
 
     private let archer = Persona(key: "archer", name: "Archer")
+    private let target = PersonaMenuTargetStub()
 
     private static let menuFont = NSFont.menuFont(ofSize: 0)
 
@@ -56,7 +57,13 @@ struct PersonaMenuWidthTests {
         return [
             try #require(PersonaMenu.makeItem(
                 state: waiting, shielded: true, personas: [archer],
-                personasKnown: false, target: nil).submenu),
+                personasKnown: false, target: target).submenu),
+            try #require(PersonaMenu.makeItem(
+                state: cold, shielded: false, personas: [],
+                personasKnown: true, target: target).submenu),
+            // Built pointing at nothing, which is a different menu and has
+            // a sentence of its own -- left out, the sweep would not know
+            // that string exists.
             try #require(PersonaMenu.makeItem(
                 state: cold, shielded: false, personas: [],
                 personasKnown: true, target: nil).submenu),
