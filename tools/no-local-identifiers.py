@@ -166,6 +166,14 @@ KNOWN = {
     "src/build/bundle_id.zig":
         "the single definition of the bundle id both sides of the build read",
     "src/apprt/gtk/build/info.zig": "GTK application id, same identity as the bundle id",
+    # The mac driving channel's documentation. Every hit is the bundle id, and
+    # it is there as a value the reader has to type: the row to switch on is
+    # found by it, and the `sqlite3 … where client='com.lugia.polter'` query
+    # does not work with the id paraphrased. Same identity as every entry
+    # above; replacing it with a placeholder would make the documented
+    # commands wrong rather than making the file safer.
+    "dev-docs/macos/driving-the-mac-app.md":
+        "bundle id is the TCC subject the documented commands query by",
     "src/main_ghostty.zig": "log predicate in a comment quotes the bundle id",
     "src/build/PolterVersion.zig": "names the fork's own remote, Lugia123/polter",
     "macos/Ghostty-Info.plist": "pasteboard type derived from the bundle id",

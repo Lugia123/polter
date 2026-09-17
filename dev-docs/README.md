@@ -29,6 +29,10 @@
   ⚠️ 另有一份**不是判据**的表：[windows/c-api-surface-bindings.md](windows/c-api-surface-bindings.md)（C API 的 `ghostty_surface_*` 导出里，宿主接了哪些、剩下的 22 条各是什么；**一次定性，没有闸，也没有一条被真机验过**）。
   ⚠️ 判据里的键位一律以 `Keybinds.init` 的 `!isDarwin()` 分支为准——**判据写错键位的表现和功能真坏了一样：按下去没反应。**
 
+- [macos/driving-the-mac-app.md](macos/driving-the-mac-app.md) — **mac 上等效 argus 的那条驱动通道**：用系统自带的 `screencapture` + `osascript` + 辅助功能 API 截图、读菜单树、点菜单项，驱动脚本是 `tools/mac-drive.sh`。在 macOS 26.5.1 上实测，含六格地板。
+  ⚠️ 里面最要紧的一条不是权限，是 **`set p to first process whose unix id is N` 求值成的是按名字的引用**（`«class pcap» "polter"`）——这台机器上三个进程都叫 `polter`，于是它**稳定地**返回用户正在工作的那个实例，一步都不报错。照直觉写出来的驱动工具会从错误的窗口读出看起来完全合理的数据，然后往那里打字。
+  ⚠️ 权限那半：只需在「隐私与安全性 → 辅助功能」里打开 **`Polter`** 那一行（归属一律回溯到宿主 app，不是 `osascript`），一个开关同时覆盖三条轴；勾上**不需要重启**——**但那只对变更之后新 fork 的进程成立，长驻进程自身那一格从来没被测过，而下一个人的判据会和我的一样全绿**。
+
 ## 先读哪一篇
 
 - 第一次上手、想把东西跑起来 → [preview-manual.md](preview-manual.md)
