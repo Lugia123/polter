@@ -3056,8 +3056,9 @@ pub fn keyCallback(
     defer crash.sentry.thread_state = null;
 
     // Note that somebody is at this terminal, so Poltergeist keeps out of
-    // the way. Releases count too: a key held down during a pause in typing
-    // still means a person is here.
+    // the way. **Presses only** -- see `keyIsPresence`, which is where the
+    // argument is, and which is a pure function so that it can be
+    // constructed in a test.
     //
     // `.boot` rather than `.awake`, and it has to match the clock the
     // comparison below uses. `.awake` is `CLOCK_UPTIME_RAW` on macOS and
@@ -3066,7 +3067,7 @@ pub fn keyCallback(
     // *awake* seconds apart across a closed lid -- and every notice in the
     // ten seconds after the lid opened was held back on account of
     // somebody who had gone to bed.
-    self.last_key_time = .now(global.io(), .boot);
+    if (keyIsPresence(event)) self.last_key_time = .now(global.io(), .boot);
 
     // The same event, answering the other question. Deliberately *not*
     // restored by the injected-key paths below, for the reason on the field
@@ -4095,6 +4096,63 @@ pub const TypeError = error{
     /// than as commands.
     UnbracketedMultiline,
 };
+
+/// Whether a key event is evidence that a person is at this terminal.
+///
+/// **A press is. A release is not**, and that is the whole of task 573.
+///
+/// The rule used to be "any key event at all, releases included", on the
+/// argument that a key held down during a pause in typing still means
+/// somebody is here. That argument is sound and it is also redundant: the
+/// press that began the hold stamped the same clock, and the window is ten
+/// seconds, so a release can only ever re-stamp what a press already did --
+/// **except in the one case where no press was ever seen.**
+///
+/// That case is the defect. `focusCallback` manufactures a release for the
+/// held key and for every held modifier the moment a window loses focus, so
+/// *switching away from a terminal marked it occupied for the next ten
+/// seconds* -- the terminal the person had just left, and the one
+/// Poltergeist most wants to deliver into. A user holding cmd to change
+/// windows silenced every terminal they touched on the way past. "Somebody
+/// is watching this terminal" had quietly become "this terminal had focus a
+/// moment ago", which is close to the opposite.
+///
+/// ⚠️ **This does not make the name true.** A key press is still not a
+/// person: it says a key arrived at this surface, nothing about who sent it
+/// or whether they are still there. `poltergeistMayType` and the wording in
+/// `rpc.zig` both say so, and they have to keep saying so.
+pub fn keyIsPresence(event: input.KeyEvent) bool {
+    return event.action != .release;
+}
+
+test "a terminal that only lost focus has nobody typing in it" {
+    const testing = std.testing;
+
+    // **Constructed, not measured**: a `Surface` cannot be built in a test,
+    // so what is built here is the exact shape `focusCallback` hands to
+    // `keyCallback` when a window loses focus while a key is down -- the
+    // held key released, then both sides of every held modifier, named the
+    // way that code names them (`keyname ++ "_" ++ side`, with `super`
+    // spelled `meta` and `ctrl` spelled `control`).
+    const on_focus_loss = [_]input.KeyEvent{
+        .{ .action = .release, .key = .key_a, .mods = .{ .super = true } },
+        .{ .action = .release, .key = .meta_left },
+        .{ .action = .release, .key = .meta_right },
+        .{ .action = .release, .key = .shift_left },
+        .{ .action = .release, .key = .control_left },
+    };
+    for (on_focus_loss) |ev| {
+        try testing.expect(!keyIsPresence(ev));
+    }
+
+    // The positive control, without which the assertions above would hold
+    // for a predicate that simply always said no -- which is the other way
+    // to break this: a terminal nobody is ever judged to be at is one
+    // Poltergeist will type into while somebody is mid-sentence.
+    try testing.expect(keyIsPresence(.{ .action = .press, .key = .key_a, .utf8 = "a" }));
+    try testing.expect(keyIsPresence(.{ .action = .repeat, .key = .key_a, .utf8 = "a" }));
+    try testing.expect(keyIsPresence(.{ .action = .press, .key = .meta_left }));
+}
 
 /// Whether Poltergeist may put characters into this terminal's input line
 /// right now, as the one answer both callers get.
