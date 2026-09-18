@@ -360,7 +360,6 @@ test "the catalogue is built from the types, not typed out" {
     }
 }
 
-
 /// What actually became of a key `terminal_key` pressed.
 ///
 /// **This type exists because three different things used to be one `ok`.**
