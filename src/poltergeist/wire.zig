@@ -201,7 +201,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
 
         .group_read => .{ .group_read = .{
             .group = try requireString(aa, params, "group"),
-            .since = try optionalU64(params, "since", 0),
+            .since = try optionalMaybeU64(params, "since"),
         } },
 
         .stand_down => .stand_down,
@@ -471,6 +471,25 @@ fn optionalI64(
     };
 }
 
+/// The same, but able to say "the caller did not mention it".
+///
+/// ⚠️ **Absent and zero are two different instructions for `group_read`**,
+/// and folding them into one value is what made a polling caller read the
+/// same oldest batch forever: not saying `since` means "carry on from where
+/// I am", and saying `since: 0` means "from the beginning of what I may
+/// see". A `u64` with a default cannot hold both.
+fn optionalMaybeU64(
+    params: ?std.json.ObjectMap,
+    key: []const u8,
+) ParseError!?u64 {
+    const p = params orelse return null;
+    const v = p.get(key) orelse return null;
+    return switch (v) {
+        .integer => |i| if (i < 0) error.BadParams else @as(u64, @intCast(i)),
+        else => error.BadParams,
+    };
+}
+
 fn optionalU64(
     params: ?std.json.ObjectMap,
     key: []const u8,
@@ -670,6 +689,18 @@ pub const Response = union(enum) {
         /// of the conversation, and a reader stops one screenful in
         /// believing it has everything -- which is exactly what happened.
         more: bool = false,
+
+        /// What to pass as `since` on the next `group_read` of this group.
+        ///
+        /// **The sequence number of the last line in this reply**, so the
+        /// next call starts at the one after it. Carried rather than left to
+        /// be worked out, because working it out is where it went wrong:
+        /// `since` is exclusive, a reader that treated it as inclusive lost
+        /// the message on the boundary every time it paged, and the one it
+        /// lost was the one saying a tree had been given up.
+        ///
+        /// Zero only when the reply is empty and the caller passed nothing.
+        next: u64 = 0,
     },
     groups: []const rpc.ChatGroupInfo,
     members: []const rpc.ChatMember,
@@ -828,6 +859,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.write(true);
             try s.objectField("more");
             try s.write(v.more);
+
+            // **Written even when it is zero.** A field that appears only
+            // sometimes is a field a reader learns to do without, and this
+            // one is the whole of how a caller pages without losing the
+            // message on the boundary.
+            try s.objectField("next");
+            try s.write(v.next);
+
             try s.objectField("messages");
             try s.beginArray();
             for (v.lines) |m| {

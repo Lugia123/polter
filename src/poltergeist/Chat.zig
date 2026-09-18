@@ -533,13 +533,31 @@ pub fn forget(self: *Chat, id: Id) void {
 }
 
 /// Say something to a group.
+/// What one `post` did: where it landed, and how much of it landed.
+///
+/// **`wrote` is not optional and not a flag**, for the reason `Kept`
+/// already gives where it was introduced for briefs: "it was cut" is not
+/// actionable and "you wrote N bytes and M were kept" is. It is returned
+/// rather than logged because the writer is the only one who can do
+/// anything about it, and the writer is not reading our logs.
+///
+/// Before this, a message over `max_text_bytes` was trimmed in silence and
+/// `post` answered with a sequence number, so a supervisor who wrote a long
+/// instruction saw `ok` and believed all of it had been said. The readers
+/// got the first eight kilobytes and no sign that there had been more --
+/// the same shape as the brief that no member could read.
+pub const Posted = struct {
+    seq: u64,
+    wrote: Kept,
+};
+
 pub fn post(
     self: *Chat,
     name: []const u8,
     from: Id,
     text: []const u8,
     now_ms: u64,
-) Error!u64 {
+) Error!Posted {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     if (!group.members.contains(from)) return error.NotAMember;
     return self.append(group, from, text, now_ms, false);
@@ -617,7 +635,7 @@ fn append(
     text: []const u8,
     now_ms: u64,
     summary: bool,
-) Error!u64 {
+) Error!Posted {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (trimmed.len == 0) return error.Empty;
 
@@ -645,7 +663,7 @@ fn append(
     if (now_ms > group.last_ms) group.last_ms = now_ms;
 
     self.trim(group);
-    return seq;
+    return .{ .seq = seq, .wrote = .{ .given = trimmed.len, .kept = kept.len } };
 }
 
 fn trim(self: *Chat, group: *Group) void {
@@ -678,7 +696,7 @@ pub fn compact(
     summary: []const u8,
     by: Id,
     now_ms: u64,
-) Error!u64 {
+) Error!Posted {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
 
     const trimmed = std.mem.trim(u8, summary, " \t\r\n");
@@ -745,7 +763,12 @@ pub fn compact(
         }
     }
 
-    return seq;
+    // **The same answer a post gives, for the same reason.** A summary is
+    // the one message that stands in for everything it replaced, so a
+    // summary quietly cut is a stretch of the conversation that nobody can
+    // recover from the group -- and the supervisor who wrote it was told
+    // `ok`.
+    return .{ .seq = seq, .wrote = .{ .given = trimmed.len, .kept = kept.len } };
 }
 
 /// How much text this group is carrying, in bytes.
@@ -848,7 +871,60 @@ pub fn unreadTotal(self: *const Chat, id: Id) usize {
     return n;
 }
 
-/// Everything `id` may see in this group above `since`, oldest first.
+/// How much one batch may carry.
+///
+/// **The budget lives in the call that decides what to hand over**, and that
+/// is the whole of task 579. It used to live in the caller: `read` returned
+/// everything and marked the member as having seen all of it, and then
+/// `rpc.capMessages` cut the reply down to what would fit on one socket
+/// line. Each half was right. Together they lost messages -- what fell off
+/// the end had already been marked read on the way past, so it was never
+/// offered again, `unread` said nothing was waiting, and a supervisor read
+/// the same oldest batch three times without ever reaching the message that
+/// said a tree had been given up.
+///
+/// One rule, and it is now impossible to write code that breaks it: **the
+/// call that decides what is delivered is the one that moves the cursor.**
+pub const Budget = struct {
+    /// Raw message text, in bytes.
+    bytes: usize,
+
+    /// What the caller will add for each line on top of its text -- the
+    /// author's name, the JSON scaffolding around it. Counted here because
+    /// the caller cannot cut the batch afterwards without putting the two
+    /// halves back out of step.
+    per_line: usize = 0,
+
+    /// No limit. For callers that are not writing to a socket -- the tests
+    /// below, mostly. Spelled out rather than left as a magic number so
+    /// that "this one really is unbounded" is a decision on the page.
+    pub const unlimited: Budget = .{ .bytes = std.math.maxInt(usize) };
+};
+
+/// What one `read` handed over.
+pub const Batch = struct {
+    messages: []const Message,
+
+    /// Whether the budget cut it short. **Without this a capped batch is
+    /// indistinguishable from the end of the conversation**, and a reader
+    /// stops one screenful in believing it has everything.
+    more: bool,
+};
+
+/// What `id` may see in this group after `since`, oldest first, up to
+/// `budget` -- and `id` is marked as having seen exactly that much.
+///
+/// `since` is **exclusive**: it is the sequence number of the last message
+/// the caller already holds, so the reply starts at `since + 1`. Passing the
+/// `seq` of a message you have been given will never hand it to you twice,
+/// and will never skip the one after it.
+///
+/// **`null` means "carry on from where I am"** -- it resumes from this
+/// member's own cursor. That is what makes a caller which never passes
+/// `since`, which is every caller that just wants to know what is new,
+/// advance instead of being handed the same oldest batch forever. Passing
+/// `0` is a different instruction and still means "from the beginning of
+/// what I may see"; the two were one value, and that is the defect.
 ///
 /// The slice is the caller's; the texts inside it still belong to the
 /// group, so a caller that keeps them must copy.
@@ -857,26 +933,51 @@ pub fn read(
     alloc: Allocator,
     name: []const u8,
     id: Id,
-    since: u64,
-) Error![]const Message {
+    since: ?u64,
+    budget: Budget,
+) Error!Batch {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     const who = group.members.getPtr(id) orelse return error.NotAMember;
+
+    // **Absent resumes; a number is obeyed, including zero.** They are two
+    // instructions and they used to be one value: a caller that never said
+    // `since` got the same oldest batch every time, and a caller that meant
+    // "from the beginning" had no way to say so. Given a number, it is the
+    // caller's own claim about what it holds and it is taken at face value
+    // in both directions -- asking again for an older range gets it.
+    const after = since orelse who.cursor;
 
     var out: std.ArrayListUnmanaged(Message) = .empty;
     errdefer out.deinit(alloc);
 
+    var used: usize = 0;
+    var more = false;
     for (group.log.items) |m| {
-        if (m.seq <= since) continue;
+        if (m.seq <= after) continue;
         if (m.seq <= who.floor) continue;
+
+        used += m.text.len + budget.per_line;
+        if (used > budget.bytes and out.items.len > 0) {
+            // **At least one, however big it is.** A reply of nothing would
+            // have the caller poll forever without its cursor ever moving,
+            // which is the same standstill by another route.
+            more = true;
+            break;
+        }
+
         try out.append(alloc, m);
     }
 
-    if (group.log.items.len > 0) {
-        const newest = group.log.items[group.log.items.len - 1].seq;
-        if (newest > who.cursor) who.cursor = newest;
+    // **Exactly what went out, and not one message further.** The old line
+    // here reached for the newest message in the log instead, which is the
+    // defect: it claimed on the member's behalf to have seen things that
+    // were about to be cut off the end of this very reply.
+    if (out.items.len > 0) {
+        const delivered = out.items[out.items.len - 1].seq;
+        if (delivered > who.cursor) who.cursor = delivered;
     }
 
-    return out.toOwnedSlice(alloc);
+    return .{ .messages = try out.toOwnedSlice(alloc), .more = more };
 }
 
 /// Who is in this group, sorted so two listings can be compared.
@@ -1165,7 +1266,7 @@ test "a group that does not exist refuses everything" {
     try testing.expectError(error.NoSuchGroup, chat.destroy("nope"));
     try testing.expectError(
         error.NoSuchGroup,
-        chat.read(testing.allocator, "nope", boss, 0),
+        chat.read(testing.allocator, "nope", boss, 0, .unlimited),
     );
 }
 
@@ -1180,7 +1281,7 @@ test "a terminal added without history sees nothing that came before" {
     try chat.add("build", a, .none, .{});
     try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
 
-    const seen = try chat.read(testing.allocator, "build", a, 0);
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 0), seen.len);
 
@@ -1199,7 +1300,7 @@ test "a terminal added with history sees everything still in the log" {
     try chat.add("build", a, .all, .{});
     try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
 
-    const seen = try chat.read(testing.allocator, "build", a, 0);
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 2), seen.len);
     try testing.expectEqualStrings("old one", seen[0].text);
@@ -1229,7 +1330,7 @@ test "removing a member stops them reading" {
 
     try testing.expectError(
         error.NotAMember,
-        chat.read(testing.allocator, "build", a, 0),
+        chat.read(testing.allocator, "build", a, 0, .unlimited),
     );
     try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
 }
@@ -1257,12 +1358,12 @@ test "reading marks seen, and a cursor picks up where it left off" {
 
     try chat.create("build", boss);
     try chat.add("build", a, .none, .{});
-    const first = try chat.post("build", boss, "one", 0);
+    const first = (try chat.post("build", boss, "one", 0)).seq;
     _ = try chat.post("build", boss, "two", 1);
 
     try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
 
-    const rest = try chat.read(testing.allocator, "build", a, first);
+    const rest = (try chat.read(testing.allocator, "build", a, first, .unlimited)).messages;
     defer testing.allocator.free(rest);
     try testing.expectEqual(@as(usize, 1), rest.len);
     try testing.expectEqualStrings("two", rest[0].text);
@@ -1281,10 +1382,10 @@ test "compacting replaces what it covers with one summary" {
     }
     _ = try chat.post("build", boss, "kept", 9);
 
-    const at = try chat.compact("build", 5, "we argued about the build", boss, 10);
+    const at = (try chat.compact("build", 5, "we argued about the build", boss, 10)).seq;
     try testing.expectEqual(@as(u64, 5), at);
 
-    const seen = try chat.read(testing.allocator, "build", a, 0);
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
     defer testing.allocator.free(seen);
 
     try testing.expectEqual(@as(usize, 2), seen.len);
@@ -1309,7 +1410,7 @@ test "compacting leaves somebody who had not caught up with the summary" {
 
     _ = try chat.compact("build", 4, "the gist of it", boss, 5);
 
-    const seen = try chat.read(testing.allocator, "build", a, 0);
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 1), seen.len);
     try testing.expectEqualStrings("the gist of it", seen[0].text);
@@ -1331,7 +1432,7 @@ test "compacting does not make read messages unread again" {
     }
 
     // Caught up on everything.
-    const first = try chat.read(testing.allocator, "build", a, 0);
+    const first = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
     testing.allocator.free(first);
     try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
 
@@ -1359,7 +1460,7 @@ test "compacting does not hand over history a member was kept out of" {
     _ = try chat.post("build", boss, "anyway, the build is green", 3);
     _ = try chat.compact("build", 3, "credentials, rotation, and a green build", boss, 4);
 
-    const seen = try chat.read(testing.allocator, "build", a, 0);
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 0), seen.len);
 }
@@ -1377,7 +1478,7 @@ test "a message is cut on a character boundary, not a byte one" {
     // Three-byte characters against a limit that falls mid-character.
     _ = try chat.post("build", boss, "日日日", 1);
 
-    const seen = try chat.read(testing.allocator, "build", boss, 0);
+    const seen = (try chat.read(testing.allocator, "build", boss, 0, .unlimited)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 1), seen.len);
     try testing.expect(std.unicode.utf8ValidateSlice(seen[0].text));
@@ -1421,7 +1522,7 @@ test "compacting shrinks what a later read has to carry" {
 
     _ = try chat.compact("build", 20, "twenty lines of chatter", boss, 21);
 
-    const seen = try chat.read(testing.allocator, "build", a, 0);
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 1), seen.len);
 }
@@ -1868,7 +1969,7 @@ test "a brief does not appear in the messages" {
     _ = try chat.setBrief("build", "这个群在等 B 定接口");
     _ = try chat.post("build", boss, "开始吧", 1);
 
-    const seen = try chat.read(testing.allocator, "build", a, 0);
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
     defer testing.allocator.free(seen);
 
     try testing.expectEqual(@as(usize, 1), seen.len);
@@ -1989,10 +2090,10 @@ test "a posted message learns where it landed on disk" {
     try chat.create("build", boss);
     try chat.add("build", a, .all, .{});
 
-    const seq = try chat.post("build", a, "hello", 100);
+    const seq = (try chat.post("build", a, "hello", 100)).seq;
 
     {
-        const got = try chat.read(testing.allocator, "build", boss, 0);
+        const got = (try chat.read(testing.allocator, "build", boss, 0, .unlimited)).messages;
         defer testing.allocator.free(got);
         try testing.expectEqual(@as(u64, 0), got[0].log_seq);
     }
@@ -2000,7 +2101,7 @@ test "a posted message learns where it landed on disk" {
     chat.setLogSeq("build", seq, 10432);
 
     {
-        const got = try chat.read(testing.allocator, "build", boss, 0);
+        const got = (try chat.read(testing.allocator, "build", boss, 0, .unlimited)).messages;
         defer testing.allocator.free(got);
         try testing.expectEqual(@as(u64, 10432), got[0].log_seq);
     }
@@ -2014,7 +2115,7 @@ test "a member added without history is barred in both numberings" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    const seq = try chat.post("build", boss, "before you arrived", 100);
+    const seq = (try chat.post("build", boss, "before you arrived", 100)).seq;
     chat.setLogSeq("build", seq, 500);
 
     try chat.add("build", a, .none, .{});
@@ -2035,7 +2136,7 @@ test "a message logged after a member joined raises that member's log floor" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    const seq = try chat.post("build", boss, "before you arrived", 100);
+    const seq = (try chat.post("build", boss, "before you arrived", 100)).seq;
     try chat.add("build", a, .none, .{});
 
     try testing.expectEqual(@as(u64, 0), (try chat.floorOf("build", a)).log_seq);
@@ -2066,7 +2167,7 @@ test "the log floor is a bar, and a bar is never lowered" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    const seq = try chat.post("build", boss, "before you arrived", 100);
+    const seq = (try chat.post("build", boss, "before you arrived", 100)).seq;
     chat.setLogSeq("build", seq, 500);
     try chat.add("build", a, .none, .{});
 
@@ -2101,9 +2202,9 @@ test "compacting does not make a full-history member look barred" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    const s1 = try chat.post("build", boss, "one", 100);
+    const s1 = (try chat.post("build", boss, "one", 100)).seq;
     chat.setLogSeq("build", s1, 1866);
-    const s2 = try chat.post("build", boss, "two", 101);
+    const s2 = (try chat.post("build", boss, "two", 101)).seq;
     chat.setLogSeq("build", s2, 1867);
 
     try chat.add("build", a, .all, .{});
@@ -2125,13 +2226,13 @@ test "compacting does not unbar a member that joined without history" {
     defer chat.deinit();
 
     try chat.create("build", boss);
-    const s1 = try chat.post("build", boss, "before you arrived", 100);
+    const s1 = (try chat.post("build", boss, "before you arrived", 100)).seq;
     chat.setLogSeq("build", s1, 1866);
 
     try chat.add("build", a, .none, .{});
     try testing.expect((try chat.floorOf("build", a)).barred);
 
-    const s2 = try chat.post("build", boss, "after", 101);
+    const s2 = (try chat.post("build", boss, "after", 101)).seq;
     chat.setLogSeq("build", s2, 1867);
     _ = try chat.compact("build", s2, "what those amounted to", boss, 200);
 
@@ -2212,7 +2313,7 @@ test "not being woken is not being kept out" {
     try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
     try testing.expectEqual(@as(usize, 2), chat.unreadTotal(a));
 
-    const seen = try chat.read(testing.allocator, "build", a, 0);
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 2), seen.len);
     try testing.expectEqualStrings("here is the plan", seen[0].text);
@@ -2223,7 +2324,7 @@ test "not being woken is not being kept out" {
     // joined with `.none`, so anything said before it arrived stays hidden.
     try chat.add("build", 0x5555, .none, .{});
     _ = try chat.post("build", boss, "after", 2);
-    const late = try chat.read(testing.allocator, "build", 0x5555, 0);
+    const late = (try chat.read(testing.allocator, "build", 0x5555, 0, .unlimited)).messages;
     defer testing.allocator.free(late);
     try testing.expectEqual(@as(usize, 1), late.len);
 }

@@ -372,7 +372,20 @@ pub const Request = union(Method) {
     group_compact: struct { group: []const u8, through: u64, summary: []const u8 },
     group_list,
     group_post: struct { group: []const u8, text: []const u8 },
-    group_read: struct { group: []const u8, since: u64 = 0 },
+    group_read: struct {
+        group: []const u8,
+
+        /// The sequence number of the last message the caller already
+        /// holds; the reply starts at the one after it.
+        ///
+        /// **Leaving it out is not the same as passing 0.** Absent means
+        /// "carry on from where I am", which is what a caller asking what
+        /// is new wants and is the only form that advances; 0 means "from
+        /// the beginning of what I may see". They were one value, and a
+        /// caller that never passed it was handed the same oldest batch on
+        /// every call while its unread count said nothing was waiting.
+        since: ?u64 = null,
+    },
     group_history: struct {
         group: []const u8,
         before_seq: u64 = 0,
@@ -484,33 +497,28 @@ pub const Request = union(Method) {
 /// that doubling inside the smaller of the two read buffers.
 pub const read_budget_bytes: usize = 96 * 1024;
 
-/// Keep the oldest messages that fit the budget.
+/// What each line costs on top of its text: the author's name and the JSON
+/// scaffolding around both.
 ///
-/// Oldest first, not newest: the caller polls with a cursor, so handing
-/// back the front of the range lets it advance and ask again. Nothing is
-/// lost, it only arrives in instalments. Handing back the newest instead
-/// would strand everything before them behind a cursor that had already
-/// moved past.
-pub fn capMessages(lines: []const ChatLine) struct {
-    lines: []const ChatLine,
-    more: bool,
-} {
-    var used: usize = 0;
-    for (lines, 0..) |line, i| {
-        used += line.text.len + line.author.len;
-        if (used > read_budget_bytes) {
-            // At least one, however big it is: returning none would have
-            // the caller poll forever without its cursor ever moving.
-            //
-            // **And say that it was cut.** A capped batch is otherwise
-            // indistinguishable from the end of the conversation, and a
-            // reader stops one screenful in believing it has everything --
-            // which is what froze the conversations view for two days.
-            return .{ .lines = lines[0..@max(i, 1)], .more = true };
-        }
-    }
-    return .{ .lines = lines, .more = false };
-}
+/// **A reserve rather than a measurement**, and pessimistic on purpose. The
+/// cut has to be decided by `Chat.read`, which is the only place that may
+/// then say what has been seen -- and that code cannot know what a terminal
+/// is called. A thousand short messages with long titles would otherwise
+/// walk past the budget a byte at a time, and the reply that results is not
+/// a slow reply, it is a connection that never recovers.
+pub const read_line_overhead_bytes: usize = 128;
+
+// **`capMessages` used to live here, and deleting it is part of the fix.**
+// It cut a `group_read` reply down to the budget -- correctly -- after
+// `Chat.read` had already marked the member as having seen everything the
+// group held. Two right halves, and between them the messages that did not
+// fit were read by nobody and never offered again.
+//
+// The cut now happens inside `Chat.read`, which is the only place that may
+// then say what has been seen. Leaving a dead function here that still
+// looked like the thing enforcing the budget would be worse than the gap:
+// the next reader would call it and put the two halves back out of step.
+// See `Chat.Budget`.
 
 /// How many messages one `group_history` reply carries when the caller does
 /// not say, and the most it will carry however loudly it asks.
@@ -519,7 +527,8 @@ const max_history_limit: usize = 200;
 
 /// Keep the newest messages that fit the budget.
 ///
-/// The mirror of `capMessages`, and the direction is the whole point: a
+/// The mirror of what `Chat.read` does for `group_read`, and the direction
+/// is the whole point: a
 /// history caller pages *backwards*, so what it carries on from is the
 /// oldest line it was handed. Dropping from the old end leaves the range
 /// contiguous with what it already holds; dropping from the new end would
@@ -535,7 +544,7 @@ pub fn capHistory(lines: []const ChatLine) struct {
         used += lines[i].text.len + lines[i].author.len;
         if (used > read_budget_bytes) {
             // At least one, however big it is, for the same reason
-            // `capMessages` keeps one: a reply of nothing tells the caller
+            // `Chat.read` keeps one: a reply of nothing tells the caller
             // it has reached the beginning when it has not.
             return .{ .lines = lines[@min(i + 1, lines.len - 1)..], .more = true };
         }
@@ -3514,6 +3523,12 @@ fn screenReply(
 }
 
 /// One message as it goes out on the wire.
+/// One `group_read` reply's worth of lines, and whether there are more.
+pub const ChatBatch = struct {
+    lines: []const ChatLine,
+    more: bool,
+};
+
 pub const ChatLine = struct {
     seq: u64,
 
@@ -4304,20 +4319,34 @@ pub const Host = struct {
             id: Bus.Id,
         ) anyerror!void,
 
+        /// Replace a stretch of a group's history with a summary, and
+        /// answer with how much of that summary was kept.
+        ///
+        /// ⚠️ **The one message that has to survive whole.** It stands in
+        /// for everything it replaced, so a summary trimmed in silence is a
+        /// stretch of the night that nobody can get back out of the group.
         chatCompact: *const fn (
             ctx: *anyopaque,
             group: []const u8,
             through: u64,
             summary: []const u8,
             by: Bus.Id,
-        ) anyerror!void,
+        ) anyerror!Chat.Kept,
 
+        /// Say something in a group, and answer with how much of it was
+        /// kept.
+        ///
+        /// ⚠️ **A count rather than nothing**, for the reason `setBrief`
+        /// gives: a message over the per-message limit used to be trimmed
+        /// in silence, so a supervisor who wrote a long instruction was
+        /// told `ok` and believed all of it had been said, while the
+        /// readers got the first part and no sign that there had been more.
         chatPost: *const fn (
             ctx: *anyopaque,
             group: []const u8,
             from: Bus.Id,
             text: []const u8,
-        ) anyerror!void,
+        ) anyerror!Chat.Kept,
 
         /// Groups `id` is in. The slice and the names inside it must belong
         /// to `alloc`.
@@ -4392,19 +4421,26 @@ pub const Host = struct {
             id: Bus.Id,
         ) anyerror![]const []const u8,
 
-        /// Messages `id` has not seen in `group`, above `since`.
+        /// What `id` has not seen in `group` after `since`, and whether
+        /// the budget cut it short.
         ///
         /// Both the slice and the text inside it must belong to `alloc`.
         /// Borrowing from the log would not survive: the reply is written
         /// by the connection thread after the app thread has moved on, and
         /// the log trims itself as it grows.
+        ///
+        /// ⚠️ **The cut happens on the host's side, not here**, and `more`
+        /// is how this side finds out. It used to be the other way round --
+        /// the host handed over everything and this file cut it down -- and
+        /// the messages that were cut had already been marked as read on
+        /// the way past. See `Chat.Budget`.
         chatRead: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
             group: []const u8,
             id: Bus.Id,
-            since: u64,
-        ) anyerror![]const ChatLine,
+            since: ?u64,
+        ) anyerror!ChatBatch,
 
         /// Messages older than `before_seq` in `group`, out of the log on
         /// disk.
@@ -4748,7 +4784,7 @@ pub const Host = struct {
         through: u64,
         summary: []const u8,
         by: Bus.Id,
-    ) anyerror!void {
+    ) anyerror!Chat.Kept {
         return self.vtable.chatCompact(self.ctx, group, through, summary, by);
     }
 
@@ -4757,7 +4793,7 @@ pub const Host = struct {
         group: []const u8,
         from: Bus.Id,
         text: []const u8,
-    ) anyerror!void {
+    ) anyerror!Chat.Kept {
         return self.vtable.chatPost(self.ctx, group, from, text);
     }
 
@@ -4774,8 +4810,8 @@ pub const Host = struct {
         alloc: std.mem.Allocator,
         group: []const u8,
         id: Bus.Id,
-        since: u64,
-    ) anyerror![]const ChatLine {
+        since: ?u64,
+    ) anyerror!ChatBatch {
         return self.vtable.chatRead(self.ctx, alloc, group, id, since);
     }
 
@@ -5694,8 +5730,28 @@ pub fn dispatch(
         },
 
         .group_compact => |p| {
-            host.chatCompact(p.group, p.through, p.summary, caller) catch |err|
+            const wrote = host.chatCompact(p.group, p.through, p.summary, caller) catch |err|
                 return chatFailure(err);
+
+            // **The summary is the one message that cannot be cut quietly.**
+            // It stands in for everything it replaced, and those messages
+            // are gone from the group the moment this returns -- so what
+            // fell off the end of the summary is a stretch of the night
+            // that nobody can read back out of the group at all.
+            if (wrote.cut()) return .{ .text = try std.fmt.allocPrint(
+                alloc,
+                "compacted, but the summary was cut: you wrote {d} bytes and {d} were " ++
+                    "kept. The messages it replaced are already gone from the group, so " ++
+                    "what is past the limit cannot be read back out of the group at all. " ++
+                    "group_history reads the record off disk, which is written from the " ++
+                    "text as it was handed over and cut at a far higher ceiling of its " ++
+                    "own -- so it very likely still has the whole of what you wrote, but " ++
+                    "that is a different store with a different limit and not a promise " ++
+                    "made here. Write a shorter summary, or post the rest as its own " ++
+                    "message.",
+                .{ wrote.given, wrote.kept },
+            ) };
+
             return .ok;
         },
 
@@ -5726,7 +5782,24 @@ pub fn dispatch(
         },
 
         .group_post => |p| {
-            host.chatPost(p.group, caller, p.text) catch |err| return chatFailure(err);
+            const wrote = host.chatPost(p.group, caller, p.text) catch |err|
+                return chatFailure(err);
+
+            // **Said before anything else, because it changes what was
+            // said.** A message over the per-message limit is trimmed, and
+            // it used to be trimmed in silence: the writer saw `ok` and
+            // believed the whole thing had gone, while the readers got the
+            // front of it with no sign there had been more. The note below
+            // about handing work out is advice; this is a fact about what
+            // the group now holds, and a fact outranks advice.
+            if (wrote.cut()) return .{ .text = try std.fmt.allocPrint(
+                alloc,
+                "posted, but cut: you wrote {d} bytes and the group kept {d}. " ++
+                    "A message has a size limit and what is past it is gone -- " ++
+                    "the readers see no sign that there was more, so say the rest " ++
+                    "in a second message rather than leaving it to be guessed at.",
+                .{ wrote.given, wrote.kept },
+            ) };
 
             // **A post is not a way of handing work out, and this is the
             // one moment that is worth saying so.**
@@ -5775,10 +5848,27 @@ pub fn dispatch(
         },
 
         .group_read => |p| {
-            const lines = host.chatRead(alloc, p.group, caller, p.since) catch |err|
+            // **Nothing is cut here any more.** The host cut it, because the
+            // host is where the cursor lives and the two have to be the same
+            // decision. Cutting again on this side would put them back out
+            // of step, which is the defect this arm used to carry.
+            const batch = host.chatRead(alloc, p.group, caller, p.since) catch |err|
                 return chatFailure(err);
-            const capped = capMessages(lines);
-            return .{ .messages = .{ .lines = capped.lines, .more = capped.more } };
+
+            // What to pass as `since` next time, so a caller paging through
+            // a long backlog never has to work the boundary out for itself
+            // -- getting it wrong by one in either direction is a message
+            // read twice or a message never read at all.
+            const next: u64 = if (batch.lines.len > 0)
+                batch.lines[batch.lines.len - 1].seq
+            else
+                p.since orelse 0;
+
+            return .{ .messages = .{
+                .lines = batch.lines,
+                .more = batch.more,
+                .next = next,
+            } };
         },
 
         .group_history => |p| {
@@ -6663,6 +6753,16 @@ const FakeHost = struct {
     keyed: ?struct { id: Bus.Id, key: []const u8 } = null,
     key_error: ?anyerror = null,
 
+    /// What the fake says about whether its reply was cut short.
+    read_more: bool = false,
+
+    /// What the fake says it kept of a post. Null means "all of it", which
+    /// is what nearly every test wants; the tests about the cut set it.
+    post_kept: ?Chat.Kept = null,
+
+    /// The same for a compaction's summary.
+    compact_kept: ?Chat.Kept = null,
+
     /// What the fake terminal reports became of the key. `.written` is the
     /// ordinary case; the others are set by the tests that check the
     /// wording each one gets back.
@@ -7041,7 +7141,7 @@ const FakeHost = struct {
         through: u64,
         summary: []const u8,
         by: Bus.Id,
-    ) anyerror!void {
+    ) anyerror!Chat.Kept {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
         self.compacted = .{
@@ -7050,6 +7150,7 @@ const FakeHost = struct {
             .summary = summary,
             .by = by,
         };
+        return self.compact_kept orelse .{ .given = summary.len, .kept = summary.len };
     }
 
     fn chatPost(
@@ -7057,10 +7158,11 @@ const FakeHost = struct {
         group: []const u8,
         from: Bus.Id,
         text: []const u8,
-    ) anyerror!void {
+    ) anyerror!Chat.Kept {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
         self.posted = .{ .group = group, .from = from, .text = text };
+        return self.post_kept orelse .{ .given = text.len, .kept = text.len };
     }
 
     fn chatGroupInfo(
@@ -7141,22 +7243,26 @@ const FakeHost = struct {
         alloc: std.mem.Allocator,
         group: []const u8,
         _: Bus.Id,
-        since: u64,
-    ) anyerror![]const ChatLine {
+        since: ?u64,
+    ) anyerror!ChatBatch {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NotAMember;
         self.read_group = group;
 
         const one = try alloc.alloc(ChatLine, 1);
         one[0] = .{
-            .seq = since + 1,
+            .seq = (since orelse 0) + 1,
             .from = 0x9999,
             .author = try alloc.dupe(u8, "a terminal"),
             .at_ms = 0,
             .summary = false,
             .text = try alloc.dupe(u8, "hello"),
         };
-        return one;
+
+        // `more` is the host's to say now, and this fake never cuts. The
+        // one that can cut is a real `Chat`, which is what the 579 tests
+        // use -- see the note above them for why the fake cannot stand in.
+        return .{ .lines = one, .more = self.read_more };
     }
 
     fn chatHistory(
@@ -7960,58 +8066,77 @@ test "the person at the keyboard sees the brief too" {
 }
 
 test "a reply is capped so it cannot outgrow the line buffer" {
-    // The failure this prevents is not a slow reply, it is `StreamTooLong`
-    // and a connection that never recovers: the next attempt asks for the
-    // same range and fails the same way. It took a few days of real use to
-    // reach, because it needs a group with a few hundred long messages in
-    // it.
+    // The failure this guards against is not a slow reply: the protocol is
+    // one JSON object per line and both readers take a line into a fixed
+    // buffer, so an over-long reply is `StreamTooLong` and a connection
+    // that never recovers, because the next attempt asks for the same range
+    // and fails the same way.
+    //
+    // ⚠️ **Asked of `Chat.read` rather than of a capper in this file**,
+    // because that is where the cut moved and a test of anything else would
+    // be a test of something that no longer runs. See `Chat.Budget`.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var chat = seamChat();
+    defer chat.deinit();
+    try chat.create("g", boss);
+    try chat.add("g", worker, .all, .{});
+
     const big = "x" ** 8192;
+    for (0..64) |i| _ = try chat.post("g", boss, big, i);
 
-    var lines: [64]ChatLine = undefined;
-    for (&lines, 0..) |*line, i| line.* = .{
-        .seq = i,
-        .from = 1,
-        .author = "worker",
-        .at_ms = 0,
-        .summary = false,
-        .text = big,
-    };
-
-    const kept = capMessages(&lines).lines;
-    try testing.expect(kept.len < lines.len);
+    const batch = try chat.read(alloc, "g", worker, null, seam_budget);
+    try testing.expect(batch.messages.len < 64);
 
     var total: usize = 0;
-    for (kept) |line| total += line.text.len + line.author.len;
+    for (batch.messages) |m| total += m.text.len + read_line_overhead_bytes;
 
     // Inside the budget, and not so far inside that a caller polling one
     // instalment at a time would be here all day.
     try testing.expect(total <= read_budget_bytes + big.len);
-    try testing.expect(kept.len > 1);
+    try testing.expect(batch.messages.len > 1);
 }
 
 test "one message larger than the whole budget is still delivered" {
     // Returning nothing would leave the caller polling forever with a
-    // cursor that never moves -- a quieter failure than the one this
+    // cursor that never moves -- a quieter failure than the one it
     // replaced, and a worse one.
-    const huge = "y" ** (128 * 1024);
-    const lines = [_]ChatLine{.{
-        .seq = 1,
-        .from = 1,
-        .author = "worker",
-        .at_ms = 0,
-        .summary = false,
-        .text = huge,
-    }};
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
-    try testing.expectEqual(@as(usize, 1), capMessages(&lines).lines.len);
+    var chat = seamChat();
+    defer chat.deinit();
+    chat.config.max_text_bytes = 256 * 1024;
+    try chat.create("g", boss);
+    try chat.add("g", worker, .all, .{});
+    _ = try chat.post("g", boss, "y" ** (128 * 1024), 0);
+
+    const batch = try chat.read(alloc, "g", worker, null, seam_budget);
+    try testing.expectEqual(@as(usize, 1), batch.messages.len);
+
+    // And the cursor moved with it, which is the half that keeps the caller
+    // from being handed the same oversized message for ever.
+    try testing.expectEqual(@as(usize, 0), chat.unread("g", worker));
 }
 
-test "a reply that fits is passed through whole" {
-    const lines = [_]ChatLine{
-        .{ .seq = 1, .from = 1, .author = "a", .at_ms = 0, .summary = false, .text = "hello" },
-        .{ .seq = 2, .from = 2, .author = "b", .at_ms = 0, .summary = false, .text = "there" },
-    };
-    try testing.expectEqual(@as(usize, 2), capMessages(&lines).lines.len);
+test "a reply that fits is passed through whole and says there is no more" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var chat = seamChat();
+    defer chat.deinit();
+    try chat.create("g", boss);
+    try chat.add("g", worker, .all, .{});
+    _ = try chat.post("g", boss, "hello", 0);
+    _ = try chat.post("g", boss, "there", 1);
+
+    const batch = try chat.read(alloc, "g", worker, null, seam_budget);
+    try testing.expectEqual(@as(usize, 2), batch.messages.len);
+    try testing.expect(!batch.more);
 }
 
 test "set_watch works on a terminal nobody is watching, which is the point" {
@@ -8109,36 +8234,22 @@ test "talking in a group you were added to is not rearranging it" {
 }
 
 test "a capped reply says it was capped" {
-    // Without this a reader that gets the budget's worth stops there,
-    // believing it has the whole conversation. The conversations view did
-    // exactly that for two days: 324 messages in the log, 35 on screen,
-    // and every poll asking from the beginning and getting the same
-    // oldest batch back.
-    const big = "x" ** 8192;
+    // Without this a capped batch is indistinguishable from the end of the
+    // conversation, and a reader stops one screenful in believing it has
+    // everything.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
-    var lines: [64]ChatLine = undefined;
-    for (&lines, 0..) |*line, i| line.* = .{
-        .seq = i,
-        .from = 1,
-        .author = "worker",
-        .at_ms = 0,
-        .summary = false,
-        .text = big,
-    };
+    var chat = seamChat();
+    defer chat.deinit();
+    try chat.create("g", boss);
+    try chat.add("g", worker, .all, .{});
+    try seamFill(&chat, "g", boss);
 
-    const capped = capMessages(&lines);
-    try testing.expect(capped.lines.len < lines.len);
-    try testing.expect(capped.more);
-}
-
-test "a reply that fits says there is no more" {
-    const lines = [_]ChatLine{
-        .{ .seq = 1, .from = 1, .author = "a", .at_ms = 0, .summary = false, .text = "hello" },
-    };
-
-    const capped = capMessages(&lines);
-    try testing.expectEqual(@as(usize, 1), capped.lines.len);
-    try testing.expect(!capped.more);
+    const batch = try chat.read(alloc, "g", worker, null, seam_budget);
+    try testing.expect(batch.messages.len < 60);
+    try testing.expect(batch.more);
 }
 
 /// Run one `group_history` against the fake and free what comes back.
@@ -10111,4 +10222,181 @@ test "persona_face: the caller is told which tools it may see, and it is about i
     // capability one.
     try testing.expect(!targetsTerminal(.persona_face));
     try testing.expectEqual(@as(?Bus.Id, null), target(.persona_face));
+}
+
+// -- task 579 ---------------------------------------------------------------
+//
+// **A real `Chat`, not `FakeHost`.** The fake has no cursor, so it cannot
+// show the defect these are the floor for: the cursor being moved over
+// messages that the budget then cut off the end of the reply. And they call
+// `Chat.read` itself rather than a re-implementation of it here -- the
+// number that goes in a report has to come out of the code that ships.
+
+fn seamChat() Chat {
+    return .init(testing.allocator, .{});
+}
+
+/// A budget the size of the real one, so the cut happens where it would.
+const seam_budget: Chat.Budget = .{
+    .bytes = read_budget_bytes,
+    .per_line = read_line_overhead_bytes,
+};
+
+/// Enough messages to go over that budget several times.
+fn seamFill(chat: *Chat, group: []const u8, from: Bus.Id) !void {
+    const body = "x" ** 4096;
+    var i: usize = 0;
+    while (i < 60) : (i += 1) _ = try chat.post(group, from, body, i);
+}
+
+test "579: a second read with no cursor of its own does not hand back the same batch" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var chat = seamChat();
+    defer chat.deinit();
+    try chat.create("g", boss);
+    try chat.add("g", worker, .all, .{});
+    try seamFill(&chat, "g", boss);
+
+    // Two calls, exactly as a caller that does not pass `since` makes them:
+    // `null`, not `0`. Those are the two instructions that used to be one
+    // value, and this test is about the one that has to advance.
+    const one = try chat.read(alloc, "g", worker, null, seam_budget);
+    const two = try chat.read(alloc, "g", worker, null, seam_budget);
+
+    try testing.expect(one.more);
+    try testing.expect(one.messages.len > 0);
+    try testing.expect(two.messages.len > 0);
+
+    // **The criterion.** The second call carries on from where the first
+    // stopped rather than repeating it, and carries on with no gap: the
+    // first message of the second batch is the one after the last of the
+    // first. Both halves matter -- repeating wastes the reply, skipping
+    // loses a message, and it was the skipped one that said a tree had been
+    // given up.
+    const last_of_one = one.messages[one.messages.len - 1].seq;
+    try testing.expectEqual(last_of_one + 1, two.messages[0].seq);
+}
+
+test "579: a capped read leaves what it could not deliver unread" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var chat = seamChat();
+    defer chat.deinit();
+    try chat.create("g", boss);
+    try chat.add("g", worker, .all, .{});
+    try seamFill(&chat, "g", boss);
+
+    const first = try chat.read(alloc, "g", worker, null, seam_budget);
+    try testing.expect(first.more);
+
+    // **The criterion, and it is the one that makes the count trustworthy.**
+    // Messages that did not fit were never handed over, so they are still
+    // unread. With the cursor moved over the whole log before the cut, this
+    // was 0: the count said "nothing waiting" about messages nobody had
+    // been shown.
+    try testing.expect(chat.unread("g", worker) > 0);
+
+    // And the two agree, which is what makes the count usable rather than
+    // merely non-zero: the number left unread is exactly how many the next
+    // unbounded read hands over, and after that read nothing is waiting.
+    const waiting = chat.unread("g", worker);
+    const rest = try chat.read(alloc, "g", worker, null, Chat.Budget.unlimited);
+    try testing.expectEqual(waiting, rest.messages.len);
+    try testing.expectEqual(@as(usize, 0), chat.unread("g", worker));
+}
+
+test "579: since is exclusive, and the message on the boundary is not lost" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var chat = seamChat();
+    defer chat.deinit();
+    try chat.create("g", boss);
+    try chat.add("g", worker, .all, .{});
+    for (0..5) |i| {
+        var buf: [8]u8 = undefined;
+        _ = try chat.post("g", boss, try std.fmt.bufPrint(&buf, "m{d}", .{i}), i);
+    }
+
+    const all = try chat.read(alloc, "g", worker, 0, Chat.Budget.unlimited);
+    try testing.expectEqual(@as(usize, 5), all.messages.len);
+
+    // Hand back the seq of a message already held: the next one follows it,
+    // and the one held is not repeated.
+    const third = all.messages[2].seq;
+    const after = try chat.read(alloc, "g", worker, third, Chat.Budget.unlimited);
+    try testing.expectEqual(@as(usize, 2), after.messages.len);
+    try testing.expectEqual(third + 1, after.messages[0].seq);
+}
+
+test "579: a post that was cut says how much of it survived" {
+    // **This one is a floor at the reply, not at the model.** `Chat.post`
+    // had no channel to say it at all, so an assertion written against the
+    // model would have been a compile error -- which proves a symbol is
+    // missing, not that behaviour is wrong. The difference a test can watch
+    // is here: a bare `ok` before, a sentence with two numbers in it after.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{};
+
+    // Nothing fell off: the writer is not told anything, because there is
+    // nothing to tell and a note at every post is noise.
+    fake.post_kept = .{ .given = 12, .kept = 12 };
+    const whole = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .group_post = .{ .group = "build", .text = "all of this" },
+    });
+    try testing.expect(whole != .failed);
+
+    // Something did: the writer is told what it wrote and what survived.
+    fake.post_kept = .{ .given = 9000, .kept = 8192 };
+    const cut = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .group_post = .{ .group = "build", .text = "far too much" },
+    });
+    try testing.expect(cut == .text);
+    try testing.expect(std.mem.indexOf(u8, cut.text, "9000") != null);
+    try testing.expect(std.mem.indexOf(u8, cut.text, "8192") != null);
+    try testing.expect(std.mem.indexOf(u8, cut.text, "cut") != null);
+}
+
+test "579: a compaction whose summary was cut says so, and says what is gone" {
+    // The same family as the post above, and the worse half of it: the
+    // messages a summary replaces are already gone from the group when this
+    // returns, so what fell off the end of the summary cannot be read back
+    // out of the group at all.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{};
+
+    fake.compact_kept = .{ .given = 40, .kept = 40 };
+    const whole = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .group_compact = .{ .group = "build", .through = 5, .summary = "all of it" },
+    });
+    try testing.expect(whole == .ok);
+
+    fake.compact_kept = .{ .given = 9000, .kept = 8192 };
+    const cut = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .group_compact = .{ .group = "build", .through = 5, .summary = "far too much" },
+    });
+    try testing.expect(cut == .text);
+    try testing.expect(std.mem.indexOf(u8, cut.text, "9000") != null);
+    try testing.expect(std.mem.indexOf(u8, cut.text, "8192") != null);
+
+    // And it names where the originals still are, because "it is gone" and
+    // "it is gone from here" are different facts and only one of them is
+    // true.
+    try testing.expect(std.mem.indexOf(u8, cut.text, "group_history") != null);
 }

@@ -4384,16 +4384,19 @@ fn chatCompact(
     through: u64,
     summary: []const u8,
     by: poltergeistpkg.Bus.Id,
-) anyerror!void {
+) anyerror!poltergeistpkg.Chat.Kept {
     const self: *App = @ptrCast(@alignCast(ctx));
     const at: u64 = @intCast(self.poltergeistWallMs());
-    const seq = try self.chat.compact(group, through, summary, by, at);
+    const done = try self.chat.compact(group, through, summary, by, at);
+    const seq = done.seq;
 
     // Written after the messages it replaced, not over them. Compaction
     // frees the agents' context; it is not an instruction to forget, and
     // the record of a night is worth more than the shape it was in when
     // the supervisor tidied up.
     self.logChat(group, seq, by, at, true, summary);
+
+    return done.wrote;
 }
 
 fn chatPost(
@@ -4401,10 +4404,11 @@ fn chatPost(
     group: []const u8,
     from: poltergeistpkg.Bus.Id,
     text: []const u8,
-) anyerror!void {
+) anyerror!poltergeistpkg.Chat.Kept {
     const self: *App = @ptrCast(@alignCast(ctx));
     const at: u64 = @intCast(self.poltergeistWallMs());
-    const seq = try self.chat.post(group, from, text, at);
+    const posted = try self.chat.post(group, from, text, at);
+    const seq = posted.seq;
 
     // A terminal's title moves with its work, so the record follows it.
     // Speaking is the right moment: it is infrequent, and a terminal that
@@ -4416,6 +4420,11 @@ fn chatPost(
     self.logChat(group, seq, from, at, false, text);
 
     self.tellTerminalsAboutMessages();
+
+    // Handed straight back: whether it all fitted is not this layer's to
+    // interpret, and the sentence the writer reads is built where the reply
+    // is written. The same shape `setBrief` already answers with.
+    return posted.wrote;
 }
 
 /// Put one message in the log on disk, if there is one.
@@ -4810,11 +4819,18 @@ fn chatRead(
     alloc: Allocator,
     group: []const u8,
     id: poltergeistpkg.Bus.Id,
-    since: u64,
-) anyerror![]const poltergeistpkg.rpc.ChatLine {
+    since: ?u64,
+) anyerror!poltergeistpkg.rpc.ChatBatch {
     const self: *App = @ptrCast(@alignCast(ctx));
 
-    const messages = try self.chat.read(alloc, group, id, since);
+    // **The budget is handed down rather than applied up here**, because
+    // whoever cuts the batch is the one that may say what has been seen.
+    // See `Chat.Budget`, and task 579 for what the two being separate cost.
+    const batch = try self.chat.read(alloc, group, id, since, .{
+        .bytes = poltergeistpkg.rpc.read_budget_bytes,
+        .per_line = poltergeistpkg.rpc.read_line_overhead_bytes,
+    });
+    const messages = batch.messages;
     defer alloc.free(messages);
 
     const out = try alloc.alloc(poltergeistpkg.rpc.ChatLine, messages.len);
@@ -4837,7 +4853,7 @@ fn chatRead(
         };
     }
 
-    return out;
+    return .{ .lines = out, .more = batch.more };
 }
 
 /// Read further back than the group still holds, out of the log on disk.

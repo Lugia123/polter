@@ -578,16 +578,19 @@ const tools = [_]Tool{
             "found something the others need** -- what you print on your own screen " ++
             "reaches nobody, so a result that was only printed was never delivered. " ++
             "It says something to a group you are in. The others are told they have a " ++
-            "message; they read it when they choose to.",
+            "message; they read it when they choose to. **A message has a size limit, " ++
+            "and a long one is cut**: when that happens the reply says how much you " ++
+            "wrote and how much the group kept, because the readers see no sign that " ++
+            "there was more. Say the rest in a second message.",
         .schema =
         \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"}},"required":["group","text"]}
         ,
     },
     .{
         .name = "group_read",
-        .description = "Read messages you have not seen in a group. Pass the last seq you saw to pick up from there. A message marked `summary` stands in for older ones that were compacted away.",
+        .description = "Read messages you have not seen in a group. **Leave `since` out and it carries on from where you got to** -- that is the form to poll with, and the only one that advances. `since` is *exclusive*: pass the `seq` of the last message you were given and the reply starts at the one after it, so the message on the boundary is neither repeated nor skipped. `since: 0` is a different instruction and means \"from the beginning of what I may see\". **Every reply carries `next`** -- the seq of its last line -- so pass that back rather than working the boundary out yourself. A long backlog comes in instalments: `more: true` means there is more waiting *right now*, so call again immediately instead of waiting to be told. Messages that did not fit are still counted as unread, so the unread count and what you have actually been handed cannot drift apart. A message marked `summary` stands in for older ones that were compacted away.",
         .schema =
-        \\{"type":"object","properties":{"group":{"type":"string"},"since":{"type":"integer"}},"required":["group"]}
+        \\{"type":"object","properties":{"group":{"type":"string"},"since":{"type":"integer","description":"Exclusive: the seq of the last message you hold. Omit to carry on from your own cursor; 0 means from the beginning."}},"required":["group"]}
         ,
     },
     .{
