@@ -4117,12 +4117,34 @@ pub const TypeError = error{
 /// is watching this terminal" had quietly become "this terminal had focus a
 /// moment ago", which is close to the opposite.
 ///
+/// **A modifier on its own is not either**, and that is the other half.
+/// `cmd+tab` presses cmd *at the terminal being left*, so switching away
+/// from a terminal marked it occupied for ten seconds -- and pressing cmd to
+/// switch away is the clearest evidence available that the person is
+/// **going**. Shift, ctrl and alt on their own are the same shape: a
+/// modifier alone puts nothing into the line, which is what "someone is
+/// typing here" is supposed to mean.
+///
+/// The modifier set is `input.Key.modifier()`, computed off the key enum
+/// rather than listed here. A second list would be a second thing to keep
+/// in step, and the day it drifts nothing says so.
+/// ⚠️ **`caps_lock` is not in that set** (upstream's definition), so caps
+/// lock on its own still counts as somebody typing. Narrow and known,
+/// rather than a second list invented here to fix it.
+///
 /// ⚠️ **This does not make the name true.** A key press is still not a
 /// person: it says a key arrived at this surface, nothing about who sent it
 /// or whether they are still there. `poltergeistMayType` and the wording in
 /// `rpc.zig` both say so, and they have to keep saying so.
 pub fn keyIsPresence(event: input.KeyEvent) bool {
-    return event.action != .release;
+    // A release carries no evidence a press did not already carry -- except
+    // the manufactured ones, which are the defect above.
+    if (event.action == .release) return false;
+
+    // Nothing was put into the line, so nobody is typing here.
+    if (event.key.modifier()) return false;
+
+    return true;
 }
 
 test "a terminal that only lost focus has nobody typing in it" {
@@ -4151,7 +4173,39 @@ test "a terminal that only lost focus has nobody typing in it" {
     // Poltergeist will type into while somebody is mid-sentence.
     try testing.expect(keyIsPresence(.{ .action = .press, .key = .key_a, .utf8 = "a" }));
     try testing.expect(keyIsPresence(.{ .action = .repeat, .key = .key_a, .utf8 = "a" }));
-    try testing.expect(keyIsPresence(.{ .action = .press, .key = .meta_left }));
+
+    // A key that puts no text in the line is still input: it sends bytes to
+    // the program, and somebody pressed it.
+    try testing.expect(keyIsPresence(.{ .action = .press, .key = .arrow_up }));
+}
+
+test "holding cmd to switch away is not somebody typing here" {
+    const testing = std.testing;
+
+    // `cmd+tab` presses cmd **at the terminal being left**. Every modifier
+    // on its own, both sides, both directions -- the press is what the old
+    // rule counted and it is the one that matters, because the release is
+    // already excluded by the test above.
+    const leaving = [_]input.Key{
+        .meta_left,    .meta_right,
+        .shift_left,   .shift_right,
+        .control_left, .control_right,
+        .alt_left,     .alt_right,
+    };
+    for (leaving) |key| {
+        try testing.expect(!keyIsPresence(.{ .action = .press, .key = key }));
+        try testing.expect(!keyIsPresence(.{ .action = .release, .key = key }));
+    }
+
+    // The positive control: the same chord's *other* key is typing. Without
+    // this, a predicate that refused everything would pass the loop above,
+    // and Poltergeist would type into a terminal somebody is mid-sentence
+    // in.
+    try testing.expect(keyIsPresence(.{
+        .action = .press,
+        .key = .tab,
+        .mods = .{ .super = true },
+    }));
 }
 
 /// Whether Poltergeist may put characters into this terminal's input line
