@@ -91,6 +91,12 @@ polter_tell() {
   )"
 }
 
+# A reading squashed onto one line, so a multi-line registration cannot turn
+# one report into several and be read as several events.
+polter_one_line() {
+  printf '%s' "$1" | tr '\n\r\t' '   ' | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//'
+}
+
 fail() {
   say "status=failed step=$1 -- $2"
   polter_tell "$POLTER_HOST_LABEL: $2. Polter's tools will not appear in it until this is fixed."
@@ -223,6 +229,7 @@ polter_provision() {
   fi
 
   wrote=no
+  declined=no
   note=
 
   # --- the MCP server -------------------------------------------------------
@@ -238,16 +245,76 @@ polter_provision() {
   # key and the value rather than being trusted to invent one.
   current=$(host_mcp_current)
 
-  stale=yes
-  case "$current" in
-    *"$exe"*)
+  # **Three states, and they were one flag.** `stale=yes` used to mean all
+  # three of these at once:
+  #
+  #   * nothing is registered here at all;
+  #   * *this* build is registered at an older version -- an in-place
+  #     upgrade, which is the case the version marker was added for;
+  #   * **another installation is registered**, and overwriting it points
+  #     the user's agent at a binary that is not the one they installed.
+  #
+  # The third is not a stale entry. It is somebody else's entry, and the
+  # night this was written it was taken over five times: every build run out
+  # of a `zig-out` or a temporary worktree registered itself, and the next
+  # `zig build` deleted the binary it had just pointed the user at. Those
+  # are exactly the paths that do not survive, so what the user was left
+  # with was not a worse Polter -- it was no Polter, from a client that
+  # still thought it had one.
+  #
+  # **A build under test cannot recognise itself**, and asking it to would
+  # be a second rule to keep in step with how this machine happens to be
+  # laid out. What it can tell is whether the entry that is already there is
+  # its own. That is the whole of the distinction, it needs no path
+  # patterns, and it is the same answer on every host.
+  registration=other
+  if [ -z "$current" ]; then
+    registration=none
+  else
+    case "$current" in
+      *"$exe"*) registration=mine ;;
+    esac
+  fi
+
+  stale=no
+  case "$registration" in
+    none) stale=yes ;;
+    mine)
       case "$current" in
         *"$version"*) stale=no ;;
+        *) stale=yes ;;
       esac
+      ;;
+    other)
+      # **Refused, and said twice.** Once into this log, because that is
+      # where somebody debugging it will look, and once to the person,
+      # because a refusal nobody is told about is the same silence in the
+      # other direction -- the user would see Polter's tools missing from a
+      # build they are running and have nothing to read.
+      #
+      # ⚠️ What this deliberately does not do is ask whether the registered
+      # command still exists. Telling a moved install from a live one means
+      # parsing a path out of eight different `mcp get` shapes, and a
+      # half-right parse here would take over exactly when it guessed
+      # wrong. So a user who has genuinely moved their install is told to
+      # clear the old entry, which is one command, rather than having this
+      # guess for them.
+      declined=yes
+      say "status=declined step=mcp -- another installation is already registered here"
+      say "registration-kept=$(polter_one_line "$current")"
+      say "registration-refused=$exe ($version_key=$version)"
+      say "refused-by=$exe version=$version"
+      polter_tell "$POLTER_HOST_LABEL is already registered to another Polter installation, so this build left it alone rather than pointing your agents at itself. Its tools will not appear in it. To hand it to this build, remove the existing \`polter\` server from $POLTER_HOST_LABEL and start Polter again."
       ;;
   esac
 
   if [ "$stale" = yes ]; then
+    # Said before the write, not after: these three are the whole of what
+    # changed, and after the write the first of them cannot be read back.
+    say "registration-was=$(polter_one_line "$current")"
+    say "registration-now=$exe ($version_key=$version)"
+    say "written-by=$exe version=$version"
+
     # **stdout is discarded; stderr is not.** A CLI's chatter on success is
     # noise, but the sentence explaining a failure is the only useful thing
     # in the whole exchange -- and for the hosts whose registration is a
@@ -479,6 +546,13 @@ polter_provision() {
 polter_provision_done() {
   if [ "$wrote" = yes ]; then
     say "status=provisioned${note:-}"
+  elif [ "${declined:-no}" = yes ]; then
+    # **Not `unchanged`.** Nothing was written in both cases, and that is
+    # the only thing they have in common: one means everything this host
+    # needs is already there, the other means it is not and this build
+    # declined to put it there. Reported as the same word, the second reads
+    # as "all present" for as long as nobody opens the log.
+    say "status=declined${note:-}"
   else
     say "status=unchanged${note:-}"
   fi

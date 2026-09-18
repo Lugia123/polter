@@ -3770,6 +3770,14 @@ const ShippedRun = struct {
     key: []const u8,
     version: []const u8,
 
+    /// The path the event says Polter is at. Overridable because the one
+    /// thing a second installation differs by **is** this path: two builds
+    /// with different versions at the same path is an upgrade, and the same
+    /// version at two paths is two installations. A fixture that could only
+    /// vary the version could not tell those apart, and that is exactly the
+    /// pair the plugin now has to.
+    exe: []const u8 = "/nowhere/polter",
+
     /// Handed to the stub in the environment so it can record its argv.
     argv_log: ?[]const u8 = null,
 
@@ -3880,7 +3888,7 @@ fn runShippedProvision(
     const events: []const Feed.Event = &.{.{ .provision = .{
         .n = 1,
         .at_ms = 1786819271275,
-        .exe = "/nowhere/polter",
+        .exe = opts.exe,
         .version = version,
         .version_key = "POLTER_REGISTERED",
         .home = home,
@@ -3901,24 +3909,43 @@ fn runShippedProvision(
     }
 
     try stdin.writeStreamingAll(io, batch);
-    switch (readLine(&reader)) {
-        .got => |l| {
-            const ack = parseAck(alloc, l) orelse {
+
+    // **A plugin may speak to the person before it answers.** `polter_tell`
+    // writes `{"tell":"..."}` and, with no `"ok"` in it, that line shows the
+    // text and leaves the batch unanswered -- which is what `tellIn` means by
+    // `answers`, and what `fail` has always done in production.
+    //
+    // This fixture read exactly one line and handed it to `parseAck`, where
+    // a missing `"ok"` reads as `false` ("not saying it worked is not saying
+    // it worked"). So any plugin path that tells the person **and** succeeds
+    // was reported here as a refusal -- the fixture could not express a case
+    // the host handles every day. Skipped rather than counted, so the line
+    // that answers is the line that is judged.
+    const reply = reply: while (true) {
+        switch (readLine(&reader)) {
+            .got => |l| {
+                if (tellIn(alloc, l)) |t| if (!t.answers) continue;
+                break :reply l;
+            },
+            else => {
                 _ = child.wait(io) catch {};
-                return error.BatchAnswerWasNotAnAcknowledgement;
-            };
-            if (ack.ok != opts.expect_ok) {
-                _ = child.wait(io) catch {};
-                return if (opts.expect_ok)
-                    error.PluginRefusedTheProvisionEvent
-                else
-                    error.PluginAcceptedWhatItShouldHaveRefused;
-            }
-        },
-        else => {
+                return error.PluginNeverAnsweredTheBatch;
+            },
+        }
+    };
+
+    {
+        const ack = parseAck(alloc, reply) orelse {
             _ = child.wait(io) catch {};
-            return error.PluginNeverAnsweredTheBatch;
-        },
+            return error.BatchAnswerWasNotAnAcknowledgement;
+        };
+        if (ack.ok != opts.expect_ok) {
+            _ = child.wait(io) catch {};
+            return if (opts.expect_ok)
+                error.PluginRefusedTheProvisionEvent
+            else
+                error.PluginAcceptedWhatItShouldHaveRefused;
+        }
     }
 
     stdin.close(io);
@@ -4356,6 +4383,161 @@ test "a registration that is already current is not written again" {
         try testing.expectEqual(@as(usize, 2), try count(alloc, io, argv_log));
 
         try runShippedProvision(alloc, io, dir, .{ .key = host.key, .version = "9.9.9", .argv_log = argv_log });
+        try testing.expectEqual(@as(usize, 2), try count(alloc, io, argv_log));
+    }
+}
+
+test "another installation's registration is left alone, and said out loud" {
+    // **The night this was written, a user's `~/.claude.json` was taken over
+    // five times.** Every Polter built for testing -- out of a `zig-out`, out
+    // of a temporary worktree -- registered itself as *the* Polter on the
+    // machine, and the next `zig build` deleted the binary it had just
+    // pointed the user's agent at. What was left was not a worse Polter; it
+    // was a client that still believed it had one.
+    //
+    // The cause was one flag saying three things. `stale=yes` meant "nothing
+    // is registered", "I am registered at an older version", and "**somebody
+    // else** is registered" all at once, and the third is the only one that
+    // must not be acted on.
+    //
+    // So this asks three questions in one fixture, and the third is the one
+    // that stops the fix being bought by never writing at all:
+    //
+    //   1. nothing registered   -> writes                       (count 1)
+    //   2. a different exe      -> **does not write**, declines (count 1)
+    //   3. the same exe, newer  -> writes                       (count 2)
+    //
+    // Without (3) a plugin that had simply been switched off would pass.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const pair: []const struct {
+        key: []const u8,
+        bin: []const u8,
+        src: []const u8,
+    } = &.{
+        .{ .key = "qwen-code", .bin = "qwen", .src = @embedFile("plugin_qwen_code_sh") },
+        .{ .key = "gemini", .bin = "gemini", .src = @embedFile("plugin_gemini_sh") },
+    };
+
+    for (pair) |host| {
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-takeover-{x}", .{&raw});
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        const argv_log = try std.fmt.allocPrint(alloc, "{s}/argv.txt", .{dir});
+
+        {
+            var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+            defer d.close(io);
+
+            try d.createDirPath(io, host.key);
+            var f = try d.createFile(
+                io,
+                try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{host.key}),
+                fixtureMode(0o755),
+            );
+            try f.writeStreamingAll(io, host.src);
+            f.close(io);
+
+            try d.createDirPath(io, "_sdk");
+            var sdk = try d.createFile(io, "_sdk/provision.sh", fixtureMode(0o644));
+            try sdk.writeStreamingAll(io, @embedFile("plugin_sdk_provision_sh"));
+            sdk.close(io);
+
+            try d.createDirPath(io, "bin");
+            var c = try d.createFile(
+                io,
+                try std.fmt.allocPrint(alloc, "bin/{s}", .{host.bin}),
+                fixtureMode(0o755),
+            );
+            try c.writeStreamingAll(io, mcp_add_stub);
+            c.close(io);
+
+            var sk = try d.createFile(io, "mine.md", .{});
+            try sk.writeStreamingAll(io,
+                \\---
+                \\name: mine
+                \\version: 1
+                \\description: a skill for the test
+                \\---
+                \\
+                \\Body.
+                \\
+            );
+            sk.close(io);
+        }
+
+        const count = struct {
+            fn f(a: Allocator, i: std.Io, path: []const u8) !usize {
+                const text = std.Io.Dir.cwd().readFileAlloc(i, path, a, .unlimited) catch return 0;
+                var n: usize = 0;
+                var calls = std.mem.splitSequence(u8, text, "--CALL--\n");
+                _ = calls.next();
+                while (calls.next()) |call| {
+                    if (std.mem.startsWith(u8, call, "mcp\nadd\n")) n += 1;
+                }
+                return n;
+            }
+        }.f;
+
+        // 1. Nothing registered yet.
+        try runShippedProvision(alloc, io, dir, .{
+            .key = host.key,
+            .version = "1.2.3",
+            .argv_log = argv_log,
+        });
+        try testing.expectEqual(@as(usize, 1), try count(alloc, io, argv_log));
+
+        // 2. A second installation, newer, at a different path. It must not
+        //    take the entry, and it must **say so** -- to this log, because
+        //    a refusal nobody is told about is the same silence in the other
+        //    direction. Read from stderr rather than inferred from the file,
+        //    because "did not write" and "never ran" leave the same file.
+        var said: std.ArrayList(u8) = .empty;
+        try runShippedProvision(alloc, io, dir, .{
+            .key = host.key,
+            .version = "9.9.9",
+            .exe = "/elsewhere/polter",
+            .argv_log = argv_log,
+            .stderr_out = &said,
+        });
+        try testing.expectEqual(@as(usize, 1), try count(alloc, io, argv_log));
+        try testing.expect(std.mem.indexOf(u8, said.items, "status=declined") != null);
+        try testing.expect(std.mem.indexOf(u8, said.items, "status=provisioned") == null);
+
+        // And it must not *also* report that nothing needed doing.
+        //
+        // **Asserted separately, because `status=declined` is said twice** --
+        // once by the branch that refuses and once by the line that reports
+        // the launch -- so an assertion on that string alone is satisfied by
+        // either, and removing one of them tests nothing. `unchanged` is
+        // only ever said by the second, which is the one that decides how
+        // this launch reads to somebody scanning the log: `unchanged` and
+        // `declined` both mean nothing was written, and that is all they
+        // share. Reported as the first, a refusal reads as "all present".
+        try testing.expect(std.mem.indexOf(u8, said.items, "status=unchanged") == null);
+
+        // What was kept and what was refused, both named. A refusal that does
+        // not say which two things it was choosing between cannot be acted on.
+        try testing.expect(std.mem.indexOf(u8, said.items, "registration-kept=") != null);
+        try testing.expect(std.mem.indexOf(u8, said.items, "/nowhere/polter") != null);
+        try testing.expect(std.mem.indexOf(u8, said.items, "/elsewhere/polter") != null);
+
+        // 3. The same installation, newer. **This still has to get through**,
+        //    or the fix bought its safety by never registering anything.
+        try runShippedProvision(alloc, io, dir, .{
+            .key = host.key,
+            .version = "9.9.9",
+            .argv_log = argv_log,
+        });
         try testing.expectEqual(@as(usize, 2), try count(alloc, io, argv_log));
     }
 }

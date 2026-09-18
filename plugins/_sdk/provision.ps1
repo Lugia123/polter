@@ -110,6 +110,7 @@ $script:PolterErr.AutoFlush = $true
 $script:PolterHome = ''
 $script:PolterWrote = $false
 $script:PolterNote = ''
+$script:PolterDeclined = $false
 
 function Write-PolterLog {
     param([string]$Message)
@@ -143,6 +144,14 @@ function Get-PolterProp {
 # by hand what one call does correctly. Control characters are still stripped
 # first, because the host clamps and strips them anyway and a `\u0007` that
 # survives to a person's screen is a beep.
+# A reading squashed onto one line, so a multi-line registration cannot turn
+# one report into several and be read as several events.
+function ConvertTo-PolterOneLine {
+    param([string]$Text)
+    if ($null -eq $Text) { return '' }
+    return (($Text -replace '[\r\n\t]', ' ') -replace ' {2,}', ' ').Trim()
+}
+
 function Write-PolterTell {
     param([string]$Text)
     $clean = [regex]::Replace($Text, '[\x00-\x1f]', '')
@@ -385,6 +394,7 @@ function Invoke-PolterProvision {
 
     $script:PolterWrote = $false
     $script:PolterNote = ''
+    $script:PolterDeclined = $false
 
     # --- the MCP server -------------------------------------------------------
     #
@@ -400,9 +410,57 @@ function Invoke-PolterProvision {
     $current = ''
     try { $current = (Get-HostMcpCurrent | Out-String) } catch { $current = '' }
 
-    $stale = -not ($current.Contains($exe) -and $current.Contains($version))
+    # **Three states, and they were one flag.** `$stale` used to mean all
+    # three of these at once: nothing is registered here; *this* build is
+    # registered at an older version (an in-place upgrade, which is what the
+    # version marker was added for); and **another installation is
+    # registered**, where overwriting it points the user's agent at a binary
+    # that is not the one they installed.
+    #
+    # The third is not a stale entry, it is somebody else's. The night this
+    # was written it was taken over five times by builds running out of a
+    # `zig-out` or a temporary worktree -- and the next build deleted the
+    # binary it had just pointed the user at, so what they were left with was
+    # not a worse Polter but no Polter, from a client that still thought it
+    # had one.
+    #
+    # Kept in step with `provision.sh`, which has the same split and the same
+    # reasoning. Two readers of one rule.
+    $registration = 'other'
+    if ([string]::IsNullOrWhiteSpace($current)) {
+        $registration = 'none'
+    } elseif ($current.Contains($exe)) {
+        $registration = 'mine'
+    }
+
+    $stale = $false
+    switch ($registration) {
+        'none' { $stale = $true }
+        'mine' { $stale = -not $current.Contains($version) }
+        'other' {
+            # Refused, and said twice: once into this log, once to the
+            # person. A refusal nobody is told about is the same silence in
+            # the other direction.
+            #
+            # this deliberately does not ask whether the registered command
+            # still exists: telling a moved install from a live one means
+            # parsing a path out of eight different `mcp get` shapes, and a
+            # half-right parse would take over exactly when it guessed wrong.
+            $script:PolterDeclined = $true
+            Write-PolterLog 'status=declined step=mcp -- another installation is already registered here'
+            Write-PolterLog "registration-kept=$(ConvertTo-PolterOneLine $current)"
+            Write-PolterLog "registration-refused=$exe ($versionKey=$version)"
+            Write-PolterLog "refused-by=$exe version=$version"
+            Write-PolterTell "$($script:PolterHostLabel) is already registered to another Polter installation, so this build left it alone rather than pointing your agents at itself. Its tools will not appear in it. To hand it to this build, remove the existing polter server from $($script:PolterHostLabel) and start Polter again."
+        }
+    }
 
     if ($stale) {
+        # Said before the write, not after: these three are the whole of what
+        # changed, and after the write the first of them cannot be read back.
+        Write-PolterLog "registration-was=$(ConvertTo-PolterOneLine $current)"
+        Write-PolterLog "registration-now=$exe ($versionKey=$version)"
+        Write-PolterLog "written-by=$exe version=$version"
         try {
             Register-HostMcp -Version $version -VersionKey $versionKey -Exe $exe -Scope $script:PolterScope
         } catch {
@@ -638,6 +696,11 @@ function Get-PolterSkillName {
 function Write-PolterProvisionDone {
     if ($script:PolterWrote) {
         Write-PolterLog "status=provisioned$script:PolterNote"
+    } elseif ($script:PolterDeclined) {
+        # **Not `unchanged`.** Nothing was written in both cases, and that is
+        # all they have in common: one means everything is already there, the
+        # other means it is not and this build declined to put it there.
+        Write-PolterLog "status=declined$script:PolterNote"
     } else {
         Write-PolterLog "status=unchanged$script:PolterNote"
     }
