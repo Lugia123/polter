@@ -14,7 +14,9 @@
 > 一份」、B1 之后哪些事实仍然只有一份、三个按窗口的登记表更新顺序为什么不能反、
 > 以及 `windows/tools/` 那些闸能看见什么看不见什么。
 
-> 最后更新：**2026-09-03**（见下面第〇之二节：这一夜有一批东西从「写完了」变成了
+> 最后更新：**2026-09-21**（inspector 落地，见 §五之一之二（二十八）；
+> M6 的三个数同日重量，见 §二之二 第 2 条）。上一次实质改写是
+> **2026-09-03**（见下面第〇之二节：这一夜有一批东西从「写完了」变成了
 > 「被证明能用」——**那一节是当时的快照，不是总账**；要看某件事今天验没验过，读
 > §五之一之二 的「状态」行）。上一次是 2026-09-02 清晨（S4-A 菜单系统一档）。
 > 下面每条结论都标了是实测还是推理；**凡是没标的，默认没验过。**
@@ -221,12 +223,21 @@ vs 点一下文本框再按 `Esc`(假设成立则关不掉)。
 ## 二之二、下一步（按性价比排，都有判据）
 
 1. ~~**M3 中文输入**~~ → **已完成，见第二之三节。**
-2. **M6 能力对齐**：**三个数，不是一个**（2026-09-08 实测）：核心 72 个 action 里，
-   宿主**实现 63、具名拒绝 7、仍欠 2**，且**落到 `_ =>` 的是 0**——72 个动作
-   每一个都有具名答复。cb_action 里出现的 `ACTION_*` 现在正好是 72，
-   把它当成「实现了多少」会往对我们有利的方向多算 9。
-   09-06 那次实现数是 46。仍欠的 2 个都是审过决定本轮不做并记了理由的：
+2. **M6 能力对齐**：**三个数，不是一个**（2026-09-21 实测）：核心 76 个 action 里，
+   宿主**实现 70、具名拒绝 4、记账待做 2**，且**落到 `_ =>` 的是 0**——76 个动作
+   每一个都有具名答复。cb_action 里出现的 `ACTION_*` 现在正好是 76，
+   把它当成「实现了多少」会往对我们有利的方向多算 6。
+   记账待做的 2 个都是审过决定不做并写了理由的：
    toggle_background_opacity(286) / quit_timer(285)。
+
+   > **这一格的历史读数，留着是因为差值本身是信息**：09-06 实现 46；
+   > 09-08 是 72 个 action 里「实现 63 / 具名拒绝 7 / 仍欠 2」。
+   > 09-21 的变化有两处来源：核心的 action 总数从 72 涨到 76，
+   > 以及 `fa80afba2` 把 inspector 从具名拒绝改成了实现——**具名拒绝从 7 降到 5**
+   > （`inspector` 和 `render_inspector` 两条离开了那个集合，
+   > `export_terminal_io` 仍在里面，它只能从 inspector 自己的 IO 面板触发）。
+   > 同日稍后 `a916b6ab6` 把 `check_for_updates` 从拒绝改成实现（拒绝 5→4），
+   > `43f4388fa` 把 `poltergeist_grouping`(581) 从待做改成实现（待做 3→2）。
 
    ⚠️ **这两个数的量法换过一次，而旧的那条今天会静默给出 `0`：**
 
@@ -234,14 +245,22 @@ vs 点一下文本框再按 `Esc`(假设成立则关不掉)。
    # 旧（已废）——锚在行号上，而 cb_action 早已从 422–575 移到 2209–2859
    sed -n '422,575p' windows/host/src/main.rs | grep -oE 'ACTION_[A-Z_]+' | sort -u | wc -l
 
-   # 实现数 → 46
+   # 具名答复数（不是实现数！）→ 76
    awk '/^extern "C" fn cb_action/,/^\}/' windows/host/src/main.rs \
      | grep -oE 'ACTION_[A-Z_0-9]+' | sort -u | wc -l
 
-   # 总数 → 72
+   # 总数 → 76
    awk '/^pub const Action = union/,/^\};/' src/apprt/action.zig \
      | grep -cE '^    [a-z][a-z_0-9]*(:|,)'
+
+   # 具名拒绝 → 4 ／ 记账待做 → 2 ／ 实现数 = 76 - 4 - 2 = 70
+   grep -c '// refuses:' windows/host/src/main.rs
+   grep -c '// owed:'    windows/host/src/main.rs
    ```
+
+   ⚠️ **上面第一条量的是「有没有被点名答复」，不是「实现了多少」。**
+   这两件事差 6，而差的那 6 条各自有标记，所以实现数只能用减法得到——
+   直接数 `ACTION_*` 会把每一条具名拒绝都算成一个实现。
 
    **旧那条不报错，它给一个数。** 照着记录复算的人会得到「实现了 0 个」——
    比它原来记的 24 更错，**而且和一次成功的测量长得一模一样**。锚在函数名上
@@ -519,8 +538,9 @@ like for some reason in macOS its already scaled. I'm not sure why that is"*。
 `SplitTree.swift` 1,413 行里 63% 的代码行能照搬，详见 `design.md` §1.4。
 **接线等第五节第 5 条落定。**
 
-**M6 能力对齐**：**实现 63 / 具名拒绝 7 / 仍欠 2**（2026-09-08 实测，
-量法见二之二第 2 条；09-06 那次实现数是 46）。⚠️ **这一处原来写着「24 个」，和二之二那处是同一个过期的数** ——
+**M6 能力对齐**：**76 个 action 里实现 70 / 具名拒绝 4 / 记账待做 2**
+（2026-09-21 实测，量法见二之二第 2 条；历史读数：09-06 实现 46，09-08 是
+72 个里「63 / 7 / 2」）。⚠️ **这一处原来写着「24 个」，和二之二那处是同一个过期的数** ——
 改一处而漏另一处，等于把「哪个才作数」留给读者去猜。「必须实现 54 个」两处都没有推导，
 所以这里也不再重复它。
 
@@ -4965,3 +4985,303 @@ Debug 那 1 MB 不进产物；出货档的 196,696 是三个必要缓冲；分�
    把 `LowLimit`/`HighLimit` 的差记下来。**2 MB 和 16 MB 会给出两条完全不同的结论**，
    而今天文档里的每一个百分比都建立在猜的那一个上。
 
+
+### （二十八）任务 648：inspector 的 OpenGL 后端一直在 DLL 里，只是没人调用它
+
+**状态**：已验（真机截图 + 日志 + PE 导出表，逐条见下）· **提交**：`fa80afba2`
+（8 文件 +949/-91）· **日期**：2026-09-21
+
+#### 那句拒绝理由对了一半
+
+Windows 上 `inspector` / `render_inspector` / `export_terminal_io` 三条一直是具名
+拒绝，理由写的是「libghostty 在 Apple 之外不发布 inspector 渲染器」。**C API 那半
+是真的**：`include/ghostty.h` 里三个 `ghostty_inspector_metal_*` 声明在
+`#ifdef __APPLE__` 块内，`embedded.zig` 的 `Inspector.Backend` 只有 `.metal` 一项。
+
+**但后端一直在包里。** `src/build/SharedDeps.zig` 的 `backend-opengl3` 是
+`!isDarwin()`，而 `src/build/Config.zig` 那段 `.pdata` 覆盖测量点名说过：改之前
+被 `RUNTIME_FUNCTION` 覆盖的 7 个导出**全是 `ImGui_ImplOpenGL3_*`**。缺的从来不是
+后端，是 Zig 这一侧的四行调用、三个导出，和一个承载它的窗口。
+
+#### ⚠️ 参照系是 GTK，不是 mac —— 这一条会把人带错方向
+
+`InspectorView.swift` 441 行**一行都用不上**：Metal 没有「当前上下文」这个概念。
+能抄的是 `src/apprt/gtk/class/imgui_widget.zig` 的四处调用
+（`Init(null)` / `ShutdownWithLoaderCleanup` / `NewFrame` / `RenderDrawData`）。
+
+宿主侧给 inspector **自己的 HWND**，不在现有 pane 上重绘 —— 这是 `tabs.rs` 开头
+已经立好的形状：一个 surface 绑死一个 HWND 终身，`wgl.zig` 取 `CS_OWNDC` 并持有
+到 GL 上下文销毁。它也有**自己的 WGL 上下文**，因为渲染线程持有终端那个，
+主线程没有 current context（`main.rs` 的 `DRAW_ON_PAINT` 注释）。
+
+#### 三条判据各自看得见什么 —— 不是三个独立证据
+
+| 判据 | 读数 | 它看不见什么 |
+| --- | --- | --- |
+| mac `zig build` | rc=0 | **对新增的三个 export 覆盖力为零**。`CAPI` 的 comptime 块是 `if (isDarwin()) { _ = Darwin; } else { _ = OpenGL3; }`，Zig 惰性分析，mac 上 `OpenGL3` 整个 struct 从未被编译 |
+| `-Dtarget=x86_64-windows-gnu` | rc=0 | 唯一让那三个 export 过编译的。⚠️ 它不分析测试体 |
+| PE 导出表 | 改前 0，改后 3（序号 002e/002f/0030） | 唯一证明它们真的出货的 |
+
+**那条正对照是必需的**：同一条命令 grep `ghostty_inspector` 两次都匹配到 9 个
+已有符号 —— 没有它就分不开「符号不存在」和「工具不认这个文件」。
+
+#### ⚠️ `nm` 在 mac 上对 PE 撒谎，而且 exit 0
+
+    $ nm zig-out/lib/ghostty-internal.dll
+    zig-out/lib/ghostty-internal.dll: no symbols
+    $ echo $?
+    0
+
+不是报错，是一句看起来像结论的话。**任何 `nm <PE> | grep <符号>` 的判据在 mac 上
+恒为 0 匹配**，与「符号真的不在」逐字同形。可用的是
+`x86_64-w64-mingw32-objdump -x <dll> | grep <符号>`。
+
+#### 命令面板是第二条路，而它独立隐藏着同一个功能
+
+菜单接通之后，命令面板仍在隐藏 `Toggle Inspector`，理由是同一段已经不成立的话。
+摘掉它之后的日志**自带负对照**：
+
+    [palette] loaded 91 commands from the core; 5 hidden as unavailable on this host (of 96 published)
+    [palette] synonyms: 85 lines, 1 naming no command -> ["Check for Updates"]
+
+隐藏数 6→5、naming-no-command 2→1，**而其余五条该隐藏的仍然隐藏** —— 这比
+「那一行出现在列表里」强：它同时证明修复是精确摘掉一条，不是把机制整个关掉。
+
+⚠️ **界面判据在这台机器上不可靠**：往命令面板搜索框打字会被中文输入法候选窗吃掉
+（argus `type_text` 的 keystroke 模式过 IME，`mode=unicode` 才绕过），症状是
+「搜索框有字但列表没过滤」，和「修复没生效」同形。**日志判据不受它影响。**
+
+#### 一条测试必须换而不是删
+
+`action.zig` 用 `inspector` 当「注释跳过机制」的正对照 —— 它既被具名拒绝、
+又在注释里被提到。648 把它真实现了，**这条断言从此会在每次运行时红，
+不是因为回归，是因为我们做了工作**。换成 `export_terminal_io`（仍拒绝、仍在
+`RENDER_INSPECTOR` 的注释里出现、这次不碰它）。删掉它会让机制失去保护。
+
+#### 故意不做 / 未验证
+
+- **`export_terminal_io` 仍然拒绝**：它只能从 inspector 自己的 IO 面板触发，
+  这次没接那个按钮。
+- **两个 WGL 上下文共存没有做压力测试**。⚠️ §五 第 1 条那个「上下文冲突无害且
+  无用」的结论**不能引用来论证它** —— 那条的前提正是进程里只有一个 GL 上下文。
+- `src/inspector/` 没有任何单元测试（它自己的 `AGENTS.md` 写明），所以这条的全部
+  证据就是上面那些构建、符号表、闸和真机读数。
+
+#### 顺带三条读数陷阱，都是这一轮真咬过的
+
+1. **`git diff --stat` 看不见 untracked 新文件**。C 段主体写在新建的
+   `inspector.rs`（658 行）里，主控连续几小时读到的 `239 insertions` 一动不动，
+   据此得出「worker 一个半小时没写任何文件」——**错的**。盯进度要用
+   `git status --porcelain`。
+2. **Rust 测试的 filter 打不中时，输出是 `test result: ok` 配 `0 passed`**。
+   第一次跑 `the_three_readiness_buckets_are_what_we_think` 少了模块前缀，
+   315 filtered out、0 passed，而第一个词是 `ok`。用 `--list` 拿全名
+   （`menu::tests::...`）重跑才是真的 1 passed。
+3. **`Get-ChildItem` 对正被进程打开写入的日志报陈旧的 `Length` 和
+   `LastWriteTime`**：pid 4720 的日志被报成「3 字节、最后写入停在启动那一刻」，
+   而它实际已有 87,487 行。按那个读数会得出「这进程一天没动静」。
+
+#### 顺带：Rust 测试其实能交叉编译送真机
+
+worker 报「mac 上跑不了 cargo test」——**那只对 native 目标成立**。
+`cargo test --no-run --target x86_64-pc-windows-gnu -p polter-host` rc=0，
+产出 37 MB 的测试 exe，上传真机后 `menu::tests::the_three_readiness_buckets_are_what_we_think`
+真的跑出了 1 passed。`windows-future` 只在 Windows 目标成立，所以编不过的是
+mac 的 native 目标，不是这条路。
+
+### （二十九）任务 581/652：grouping 在所有平台上都从没到达过 agent
+
+**状态**：已验（真机日志 + JSON 线上字节 + 变异地板）· **日期**：2026-09-21
+
+#### 本来要做的那半：Windows 给出 window/tab 两个 key
+
+`WindowState` 加 `id: u64`，取自 `tabs.rs` 的 `take_id()` —— 进程级、单调递增、
+**永不复用**（全仓 `next_id` 只有初始化为 1 和 `+= 1` 两处写入，穷举过）。
+tab key 用现成的 `Tab.id.0`（同一个计数器）。**不用 HWND**：窗口销毁后
+Windows 会把 HWND 值发给下一个新窗口，那是一个会别名的 key。
+
+`id` 字段**没有默认值**，所以 `WindowState` 的每个构造点漏填都是编译错误，
+`state_fields()` 的穷尽解构也同步加了它。
+
+⚠️ 中途撞过一次真死锁：`take_id()` 锁的是 `with_windows_mut` 已经持有的同一个
+`STATE` 互斥量，写在闭包里就自死锁（真机 5 秒超时 panic）。修法是挪到闭包外先求值，
+照的是 `tabs.rs` 自己写着的规矩「no guard is held across a call that can take one」。
+
+#### 真机读数，以及一次当场发生的地址复用
+
+两个窗口各两个 tab，宿主日志（`C:\w1-grouping-test\polter-host-13432.log`）：
+
+    window=1 tab=3   window=1 tab=5   window=6 tab=8   window=6 tab=10
+
+同窗口 window 相同、tab 不同；不同窗口 window 不同。关掉 tab=3 再开一个新 tab：
+
+    12:28:10  surface=0x1ea482bfac0 -> window=1 tab=3
+    12:31:37  surface=0x1ea482bfac0 -> window=1 tab=12
+
+**新 tab 的 surface 拿到了和被关掉那个一模一样的地址**（分配器复用），而 key 是 12
+不是 3。这次改动要防的别名在真机上当场发生了，key 没跟着回来。
+⚠️ **macOS 今天用的是 `ObjectIdentifier` 的位模式（对象指针），同样会被复用**，
+这一点上 Windows 现在比 mac 稳。未改 mac 侧。
+
+#### 真正的发现：`writeTerminal()` 从来不写 window 和 tab
+
+`src/poltergeist/wire.zig` 的 `TerminalInfo` 上一直有 `window: ?u64` / `tab: ?u64`，
+`rpc.zig` 的 handler 也正确地把 `place.window/tab` 赋给了它们——**但把 struct
+变成发给 agent 的字节的 `writeTerminal()` 是手写逐字段序列化，从来没写这两个字段。**
+
+`rpc.zig` 自己的测试只查内存里的 `Response.terminals[n].window`，从没调用
+`writeTerminal()`，所以一直是绿的。**结果是：grouping 在所有平台上都从来没有一个
+字节到达过 agent**，mac 那边填得好好的指针地址也一样。Windows 做 581 时在真机上
+经命名管道直连 `terminal_list` 才看出来。这正是「消费端的判据看不见生产端的沉默」。
+
+修法：`writeTerminal()` 补两个字段，照 `quiet_ms`/`rounds` 的「有值才写」。
+新测试 `grouping reaches the wire, not just the in-memory Response (task 650)`
+**断言的是 JSON 文本**，且同时断言「有值时出现」和「没分组时缺席」（`count == 1`）。
+
+| 判据 | 读数 |
+| --- | --- |
+| 地板：删掉修复、保留测试 | 红在断言上 `expected 1, found 0`，其余 87/88 照过（不是编译错误冒充） |
+| 放回修复 | 88/88，对 `zz-nothing` 基线 87/87，**差 1** |
+| poltergeist 全模块 | 824/824 |
+| cargo check | rc=0，警告 30（基线 30） |
+| `windows/tools/` 全部 60 道 | 与 `fa80afba2` 逐道一致，无新增红 |
+
+#### 顺带：`a-position-is-not-an-identity.py` 看名字像是管这个，其实不管
+
+它只检查 `uia.rs` 里 Navigate 的位置算术。这次它是绿的，**但不是因为它覆盖到了
+这次改动**——名字对得上不等于判据覆盖得到。
+
+### （三十）任务 649/651：检查更新 —— 查 GitHub、只提示，而 `0.1.x` 会劝人降级
+
+**状态**：已验（真机菜单点击 → 真实请求 → 比较结果；mac 与 Windows 单测；全部闸）·
+**日期**：2026-09-21
+
+#### 做了什么
+
+查本仓库在 GitHub 上的 `releases/latest` 接口（地址写在 `update.rs` 与 `GitHubUpdateChecker.swift` 里，两处都已进 `tools/no-local-identifiers.py` 的 `KNOWN` 表；匿名，
+限速 60 次/小时/IP），比版本，**只提示、给 release 页链接，不下载不安装**。
+
+- **mac**：原来的 Sparkle 链路是通的，断点是 `UpdateDelegate.feedURLString` 故意
+  返回 `nil`（Polter 不能借 Ghostty 的 appcast，否则会被静默换成另一个程序）。
+  这个 `nil` 保留不动。Sparkle 的 `SUAppcastItem` 没有可用的公开初始化器
+  （`init` 是 `NS_UNAVAILABLE`，designated initializer 在私有头），所以没法把
+  自己查到的结果塞进它的状态机。改为给 `UpdateViewModel` 加一个不绑 appcast 的
+  分支，只走「提示 + 打开 release 页」，下载/解压/安装三态完全不碰。
+- **Windows**：宿主原来没有任何更新 UI，从零写 `update.rs`：WinHTTP 同步调用放
+  后台线程，结果走已有的桌面通知。没加新 crate，只开了 `windows` crate 已有的
+  `Win32_Networking_WinHttp` feature。
+- **403 限速是单独的失败分支**，两端都是，绝不落进「已是最新」—— 限速和
+  「查过了没有新版」在界面上会长成同一句话。
+
+#### ⚠️ `0.1.693` 同时在说两件事
+
+真机端到端第一次读数：
+
+    [update] check_for_updates: current=0.1.693 latest=0.6.656 -> update available
+
+这份代码比 0.6.656 新，却被判「有更新」—— **劝用户降级**。成因：版本号的
+`major.minor` 取自 HEAD 上的 tag 或 `feature/vX.Y` 分支名，两者都没有时
+（detached worktree、CI checkout、别人从源码编）诚实地回落成 `0.1.<fork 以来的提交数>`。
+回落是对的，**问题是回落值和一个真的 0.1.x 版本长得一模一样**，消费端分不出来。
+
+修法是让产生版本号的地方把「来源」带出来：`PolterVersion.zig` 新增
+`Source = { tag, branch, fallback }`，经 `GhosttyXcodebuild.zig` 写进 Info.plist 的
+`PolterVersionSource`；Windows 的 `build.rs` 同步产出 `POLTER_VERSION_SOURCE`。
+来源不是 tag/branch 时，检查更新报「无法判断当前版本」，**不联网、不比较**。
+修后同一台机器：
+
+    cannot tell what version this build is (current=0.1.693, POLTER_VERSION_SOURCE=fallback); not comparing against GitHub
+
+在名字符合 `feature/v0.9` 的分支上构建则 `source=branch`，照常比较、报 up to date ——
+守卫没有误伤真正知道自己版本的构建。
+
+⚠️ **mac 侧是白名单，不是黑名单**：只有 `tag`/`branch` 算知道，`fallback`、
+缺失、空、任何没见过的值一律算猜。第一版写成了「等于 `fallback` 才算猜」，缺失时
+照常比较 —— 而**会产生缺失的正是 `macos/build.nu`**：它直接调 xcodebuild，绕过
+`GhosttyXcodebuild.zig` 的传参，构建出的 Info.plist 里 `PolterVersionSource` 和
+`PolterCommit` 都是空的。来源字段缺失的构建，恰好是版本号最不可信的构建。
+Windows 侧没有「缺失」这个状态：`env!` 是编译期宏，`build.rs` 三选一且必定产出。
+
+#### 「只在你点的时候」是一条公开承诺，由一道闸钉住（`3db4c4e36`）
+
+README 中英文开头、SECURITY.md 两处、ROADMAP.md「这个项目不会变成什么」一节，原来都写着
+Polter 不发任何网络请求。检查更新让这 5 处同时变成了假话。用户拍板：保留功能，
+**严格按需**——不后台、不定时，只在人点「检查更新」（或点它报错时的「重试」）时才问一次。
+5 处措辞已改，并写明 GitHub 能看到什么：IP，外加 User-Agent。Windows 是固定的
+`Polter-UpdateCheck/1.0`，mac 是 URLSession 的默认值，里面带 app 构建号和 Darwin 版本。
+
+`tools/update-checks-only-on-demand.py` 找出 4 个联网入口的全部调用点，分两层核对：
+点击落地处（Windows 的 `ACTION_CHECK_FOR_UPDATES` 那条 arm；mac 的 `checkForUpdates()`
+或 `retry:` 闭包）和真正发请求处（`fetch_latest` 只在 `update::check` 里；`makeCheckTask`
+只在 `beginGitHubCheck()` 里）。只守外层会放过最可能出现的回归：在某个无关函数里直接调底层。
+三个地板各红在具体行上，其中一个是主控另选位置补做的：在启动时执行的
+`UpdateController.startUpdater()` 第一行加一次调用。
+
+#### 两处常量，一道闸钉住
+
+Windows 的 `build.rs` 里有一份 `POLTER_FORK_POINT`，必须等于
+`src/build/PolterVersion.zig` 的 `fork_point`（Cargo 和 Zig 构建互不调用，只能复制）。
+漂移的症状是「同一个提交 Windows 报 0.6.657、mac 报 0.6.658」，**只在发版时看得见**。
+新闸 `windows/tools/fork-point-agrees.py` 比对两者，把一边改掉一个字符时它红：
+
+    MISMATCH: `PolterVersion.zig` counts commits from '…b5' and `build.rs` counts from '…b6'.
+
+#### 闸：worker 的新文件在它自己树上永远过不了闸
+
+worker 自报「闸全绿」，主管叠到暂存树上 `git add` 之后重跑，多红 4 道，**含公开仓
+泄密闸**（API 地址里的仓库所有者名没进 `KNOWN` 表），还有 5 句 mac 界面字符串缺中文、
+一行门控日志没声明缺席含义、一个线程没命名。成因不在 worker：**闸只扫已跟踪的文件，
+而 worker 按规矩不碰暂存区**，所以它的新文件对闸永远不可见。已放开一个口子：
+worker 可以在**自己的 worktree 里** `git add -N`（只登记不暂存）。
+
+顺带 worker 修了一个闸自身的既存缺陷：`action-payloads-are-read.py` 用裸子串找
+注释锚点，被邻近 arm 的注释文本截胡；过去靠 check_for_updates 那条 `// refuses:`
+泄漏进邻居的 body 侥幸绿，改成真实现后缺陷现形。修的是闸，不是绕开它。
+
+| 判据 | 读数 |
+| --- | --- |
+| 真机：菜单项 | `Check for Updates…` 不再是灰的（同菜单 `Polter Help` 仍 `[禁用]`，作对照） |
+| 真机：命令面板 | `loaded 92 commands; 4 hidden`（5→4），其余 4 条仍隐藏 |
+| 真机：点击 → 请求 → 比较 | 见上面两段日志原文 |
+| mac 单测 | `GitHubUpdateCheckerTests` 6/6；三条「缺失/空/没见过」先翻断言看到红再改代码 |
+| Windows 单测（真机跑交叉编译的测试 exe） | `update::`/`menu::`/`palette::`/`tabs::` 64 过；另 4 条红见下 |
+| 全部 74 道闸 | 与 inspector 之前逐道一致，另多一道 `fork-point-agrees` 为绿 |
+
+⚠️ **既有红，不是这次的**：`tabs::deadlock_detector_tests` d0–d3 在测试机上红，
+用 `7e7899d4b`（不含本条与 581）编的测试 exe 同样红在同样的断言上。成因未查清。
+
+#### 顺带：真机 GUI 验证其实做得到
+
+worker 读了记忆里「argus 起不了 GUI」就把真机 GUI 验证写成了「做不到」。
+**起得来**：`schtasks /create /tn X /tr "<exe>" /sc once /st 23:59 /f /it` +
+`schtasks /run /tn X`（别加 `/rl highest`，会被拒）。菜单用 UIA 驱动：主菜单是
+`#32768` 弹出窗口，默认窗口清单看不到，要 `all=true`；窗口归属用
+`Get-Process -Id <pid> | Select MainWindowHandle` 核，不按外观猜。
+
+### （二十八）补记：inspector 那次提交带红了两道闸（`7e7899d4b` 已修）
+
+`fa80afba2` 提交前只跑了 60 道 `windows/tools` 闸里解析 `cb_action` 的 12 道。
+另有两道被弄红：`a-gated-line-says-what-its-silence-means`（`inspector.rs` 一行门控
+日志没声明）和 `paint-requests-are-answered`（它只认终端 surface 的异步
+`surface_refresh`，不认 inspector 在 `paint()` 里同步画完再 swap）。下一轮 worker
+拿 `fa80afba2` 当基线，把这两道报成「本来就红」。拿 inspector **之前**的
+`f4727116b` 全量逐道 diff 才定位。修法见 `7e7899d4b` 的提交信息；**没有**把
+`ValidateRect` 换成 `BeginPaint`，因为闸自己说那一类它看不见。
+
+### （三十一）0.7 角色功能标 beta（`f63c185dd`）
+
+角色功能（每个终端选一个角色、角色编辑器）还没做完，用户要求菜单上写明。两个平台、中英文，
+所有用户能碰到的入口都带了 beta：tab 右键的角色子菜单（「角色（beta）」／「角色（beta）：射手」）、
+「角色编辑器（beta）…」、编辑器窗口/页面标题，以及 `MainMenu.xib` 里那个运行时会被覆盖、
+但 Xcode 预览看得见的占位项。beta 是每条可翻译串自己的一部分，不是代码里拼的后缀。
+
+两条读数上的教训：
+
+- **Windows 编辑器页标题是 GDI 自绘的，没有 UIA 文本**。那一条只能看截图转写，
+  第一次转写把全角括号读成了半角。定案靠的是**部署上去的那份 `.mo` 解码出来的原文**，
+  不是截图。报告里要把「`ui_snapshot` 逐字返回」和「看图转写」分开写，两者可信度不同。
+- **`update-translations` 会把 33 个 po 全部 msgmerge 一遍**（这次 +7569/-2936，
+  绝大部分是 `#:` 行号漂移）。提交只取 `po/zh_CN.po` 和 `.pot`。
+  ⚠️ 用 `git apply --include/--exclude` 挑文件时，**命令行里出现任何 `--include`，
+  没匹配到的路径就一律忽略**，末尾要补 `--include='*'`。另外别把这些参数塞进 zsh 变量：
+  zsh 不分词，整串会变成一个参数，结果 rc=0，却什么都没应用上。
