@@ -8,7 +8,7 @@
   <sub>It reads the text on their screens, types into them, opens new tabs, and
   minds them while you're asleep.<br>
   Polter itself has no account and no API key, and makes no network calls of its
-  own.</sub>
+  own — except one request to GitHub, and only when you choose Check for Updates.</sub>
 </p>
 
 <p align="center">
@@ -45,7 +45,7 @@ A worker is not a sub-agent. It's an independent session in its own terminal, an
 | | |
 | --- | --- |
 | **macOS 13+** | `Polter-*-macos-universal.zip`, Apple Silicon and Intel in one bundle |
-| **Windows 10+** | `Polter-*-windows-x64.zip`, 63 of the core's 72 actions implemented (2026-09) |
+| **Windows 10+** | `Polter-*-windows-x64.zip`, 70 of the core's 76 actions implemented, 4 refused by name, 2 owed (2026-09-21; how these are counted: `dev-docs/windows/status.md` §2.2 item 2) |
 | **Linux** | No binary. Build from source. |
 
 The **macOS** builds are unsigned, so Gatekeeper will stop them:

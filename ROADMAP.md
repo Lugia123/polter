@@ -151,7 +151,10 @@ and the answer will not change:
   saying nothing. That call belongs to whoever is reading.
 - **No account, no service, no network of its own.** A unix socket in your own
   runtime directory. It never talks to a model; the thinking is done by the
-  agent CLI you already installed.
+  agent CLI you already installed. The single exception is Check for Updates:
+  when you choose it, one anonymous request asks GitHub for the latest
+  release. Never in the background, never on a schedule, and nothing about you
+  or your terminals goes with it.
 - **No telemetry.** There is no number here about how anyone uses this, and
   there will not be one.
 

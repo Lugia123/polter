@@ -6,7 +6,7 @@
 <p align="center">
   <b>让一个 Claude Code 会话去管另外几个。</b><br>
   <sub>它替你读它们屏幕上的字、往里打字、开新 tab，你睡觉的时候替你盯着。<br>
-  Polter 自己不要账号、不要 API key，一个网络请求都不发。</sub>
+  Polter 自己不要账号、不要 API key；除非你亲手点「检查更新」去问一次 GitHub，它一个网络请求都不发。</sub>
 </p>
 
 <p align="center">
@@ -43,7 +43,7 @@ worker 不是 sub-agent，是各自终端里独立的会话，做过什么逐行
 | | |
 | --- | --- |
 | **macOS 13+** | `Polter-*-macos-universal.zip`，Apple Silicon 和 Intel 一个包 |
-| **Windows 10+** | `Polter-*-windows-x64.zip`，核心 72 个 action 实现了 63 个（2026-09） |
+| **Windows 10+** | `Polter-*-windows-x64.zip`，核心 76 个 action 里实现 70 个、具名拒绝 4 个、记账待做 2 个（2026-09-21；数法见 `dev-docs/windows/status.md` §二之二 第 2 条） |
 | **Linux** | 无安装包，可自行编译 |
 
 **macOS** 的包没有签名，Gatekeeper 会拦：

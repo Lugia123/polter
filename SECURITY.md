@@ -57,8 +57,12 @@ renderer is Ghostty's and should go to Ghostty.
 - **A malicious plugin.** Plugins are programs you install and Polter runs
   them; the `wants.calls` gate narrows which RPCs a plugin may make, not what
   the program may do to your machine.
-- **Anything over a network.** Polter opens no network port and speaks to no
-  service. The socket is local, always.
+- **Anything over a network.** Polter opens no network port. The only outbound
+  request it ever makes is to GitHub's releases API, and only when you choose
+  Check for Updates -- there is no background or scheduled check. It is an
+  anonymous HTTPS GET: GitHub sees your IP address and a User-Agent naming the
+  program (on macOS the system default, which includes the OS version), and
+  no account or local data. The socket is local, always.
 
 ---
 
@@ -222,9 +226,11 @@ Everything lives under `$XDG_STATE_HOME/polter` (`LOCALAPPDATA` on Windows).
   each defaulting to on (`src/config/Config.zig:1511`, `:1548`).
 - Screen sampling is off unless asked for: `poltergeist-watch` defaults to
   `false` (`src/config/Config.zig:1332`).
-- **No telemetry, ever.** Nothing here is sent anywhere; Polter has no account,
-  no service and no network of its own (`ROADMAP.md`, "What this will not
-  become").
+- **No telemetry, ever.** Nothing about you or your terminals is sent
+  anywhere; Polter has no account and no service of its own (`ROADMAP.md`,
+  "What this will not become"). The one outbound request -- Check for
+  Updates, when you choose it -- is described under "Anything over a network"
+  above.
 
 The non-redaction and the absent retention period are stated as known
 limitations in
