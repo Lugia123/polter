@@ -73,7 +73,7 @@ struct PersonaMenuTests {
         #expect(menu.items[2].isSeparatorItem)
         #expect(menu.items[3].title == String(localized: "No Role"))
         #expect(menu.items[4].isSeparatorItem)
-        #expect(menu.items[5].title == String(localized: "Role Editor..."))
+        #expect(menu.items[5].title == String(localized: "Role Editor (beta)..."))
     }
 
     /// The order of the file is the order of the menu: `personas.json` keeps
@@ -203,7 +203,7 @@ struct PersonaMenuTests {
         #expect(!noRole.isEnabled)
 
         let editor = try #require(
-            menu.items.first { $0.title == String(localized: "Role Editor...") })
+            menu.items.first { $0.title == String(localized: "Role Editor (beta)...") })
         #expect(editor.isEnabled)
     }
 
@@ -227,7 +227,7 @@ struct PersonaMenuTests {
     @Test func anEmptyCatalogueStillOffersNoRoleAndTheEditor() throws {
         let menu = try submenu(wearingArcher, personas: [], personasKnown: true)
         #expect(menu.items.contains { $0.title == String(localized: "No Role") })
-        #expect(menu.items.contains { $0.title == String(localized: "Role Editor...") })
+        #expect(menu.items.contains { $0.title == String(localized: "Role Editor (beta)...") })
     }
 
     // MARK: Parent item
@@ -289,14 +289,14 @@ struct PersonaMenuTests {
     @Test func theEditorSurvivesTheShieldButNotAnEmptyMenuBar() throws {
         let shielded = try submenu(wearingArcher, shielded: true)
         let editorWhenShielded = try #require(
-            shielded.items.first { $0.title == String(localized: "Role Editor...") })
+            shielded.items.first { $0.title == String(localized: "Role Editor (beta)...") })
         #expect(editorWhenShielded.isEnabled)
 
         let targetless = try #require(PersonaMenu.makeItem(
             state: wearingArcher, personas: both, personasKnown: true,
             target: nil).submenu)
         let editorWhenTargetless = try #require(
-            targetless.items.first { $0.title == String(localized: "Role Editor...") })
+            targetless.items.first { $0.title == String(localized: "Role Editor (beta)...") })
         #expect(!editorWhenTargetless.isEnabled)
     }
 

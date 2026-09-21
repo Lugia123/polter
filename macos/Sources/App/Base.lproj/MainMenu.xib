@@ -434,7 +434,7 @@
                                     <action selector="poltergeistToggleAuthorise:" target="-1" id="pgA-Au-Th2"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Role" id="pgB-Ro-Le1" userLabel="Role">
+                            <menuItem title="Role (beta)" id="pgB-Ro-Le1" userLabel="Role">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="pg6-Sp-Ar1"/>

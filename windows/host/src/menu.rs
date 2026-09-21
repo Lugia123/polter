@@ -348,7 +348,7 @@ const AGENTS_ROWS: &[Row] = &[
     sep(),
     // Host rows: the core knows nothing about either page.
     act(n_("Plugins…"), "__polter_plugin_page"),
-    act(n_("Role Editor..."), "__polter_persona_page"),
+    act(n_("Role Editor (beta)..."), "__polter_persona_page"),
 ];
 
 const GOTO_SPLIT_ROWS: &[Row] = &[

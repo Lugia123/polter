@@ -57,7 +57,7 @@ final class PersonaEditor: NSObject {
             })
 
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))
-        window.title = String(localized: "Role Editor", comment: "角色编辑器：窗口标题")
+        window.title = String(localized: "Role Editor (beta)", comment: "角色编辑器：窗口标题，功能还没做完，标 beta")
         window.styleMask = [.titled, .closable, .resizable]
         window.isReleasedWhenClosed = false
         window.delegate = self

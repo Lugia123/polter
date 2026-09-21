@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-17 21:35+0800\n"
+"POT-Creation-Date: 2026-09-21 20:21+0800\n"
 "PO-Revision-Date: 2026-02-12 01:56+0800\n"
 "Last-Translator: Leah <hi@pluie.me>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -76,7 +76,7 @@ msgstr "忽略"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:439 src/apprt/gtk/ui/1.5/window.blp:318
-#: windows/host/src/menu.rs:435
+#: windows/host/src/menu.rs:407
 msgid "Reload Configuration"
 msgstr "重新加载配置"
 
@@ -91,7 +91,7 @@ msgid "Ghostty: Terminal Inspector"
 msgstr "Ghostty 终端检查器"
 
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:104
-#: windows/host/src/menu.rs:254
+#: windows/host/src/menu.rs:241
 msgid "Find…"
 msgstr "查找…"
 
@@ -121,17 +121,17 @@ msgstr ""
 "会传给运行中的程序。"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/ctxmenu.rs:125
-#: windows/host/src/menu.rs:294
+#: windows/host/src/menu.rs:281
 msgid "Read-only"
 msgstr "只读"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:100 windows/host/src/menu.rs:264
+#: windows/host/src/ctxmenu.rs:100 windows/host/src/menu.rs:251
 msgid "Copy"
 msgstr "复制"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:321 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:101 windows/host/src/menu.rs:265
+#: windows/host/src/ctxmenu.rs:101 windows/host/src/menu.rs:252
 msgid "Paste"
 msgstr "粘贴"
 
@@ -157,29 +157,29 @@ msgstr "更改标题…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:353 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:121 windows/host/src/menu.rs:246
+#: windows/host/src/ctxmenu.rs:121 windows/host/src/menu.rs:233
 msgid "Split Up"
 msgstr "向上分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:359 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:245
+#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:232
 msgid "Split Down"
 msgstr "向下分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:365 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:119 windows/host/src/menu.rs:244
+#: windows/host/src/ctxmenu.rs:119 windows/host/src/menu.rs:231
 msgid "Split Left"
 msgstr "向左分屏"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:371 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:118 windows/host/src/menu.rs:243
+#: windows/host/src/ctxmenu.rs:118 windows/host/src/menu.rs:230
 msgid "Split Right"
 msgstr "向右分屏"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:248
+#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:235
 msgid "Close Split"
 msgstr "关闭分屏"
 
@@ -195,17 +195,17 @@ msgstr "更改标签页标题…"
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:223 windows/host/src/strip.rs:1658
+#: windows/host/src/menu.rs:210 windows/host/src/strip.rs:1658
 msgid "New Tab"
 msgstr "新建标签页"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:396 src/apprt/gtk/ui/1.5/window.blp:242
 #: src/input/command.zig:668 windows/host/src/ctxmenu.rs:112
-#: windows/host/src/menu.rs:249 windows/host/src/strip.rs:1325
+#: windows/host/src/menu.rs:236 windows/host/src/strip.rs:1325
 msgid "Close Tab"
 msgstr "关闭标签页"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:459
+#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:431
 msgid "Window"
 msgstr "窗口"
 
@@ -214,12 +214,12 @@ msgid "Change Window Title…"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:222
+#: src/input/command.zig:421 windows/host/src/menu.rs:209
 msgid "New Window"
 msgstr "新建窗口"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:416 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:685 windows/host/src/menu.rs:250
+#: src/input/command.zig:685 windows/host/src/menu.rs:237
 msgid "Close Window"
 msgstr "关闭窗口"
 
@@ -256,12 +256,12 @@ msgid "Main Menu"
 msgstr "主菜单"
 
 #: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:175
-#: windows/host/src/menu.rs:283 windows/host/src/strip.rs:1665
+#: windows/host/src/menu.rs:270 windows/host/src/strip.rs:1665
 msgid "Command Palette"
 msgstr "命令面板"
 
 #: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:124
-#: windows/host/src/menu.rs:304
+#: windows/host/src/menu.rs:290
 msgid "Terminal Inspector"
 msgstr "终端检查器"
 
@@ -314,12 +314,12 @@ msgid ""
 msgstr "一个应用正在试图从剪贴板读取内容。剪贴板目前的内容如下："
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2322
+#: windows/host/src/main.rs:2324
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "警告：粘贴内容可能不安全"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2315
+#: windows/host/src/main.rs:2317
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -330,17 +330,17 @@ msgid "Quit Ghostty?"
 msgstr "退出 Ghostty 吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:2988
+#: windows/host/src/tabs.rs:3005
 msgid "Close Tab?"
 msgstr "关闭标签页吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:2989
+#: windows/host/src/tabs.rs:3006
 msgid "Close Window?"
 msgstr "关闭窗口吗？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:2990
+#: windows/host/src/tabs.rs:3007
 msgid "Close Split?"
 msgstr "关闭分屏吗？"
 
@@ -349,17 +349,17 @@ msgid "All terminal sessions will be terminated."
 msgstr "终端内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:2996
+#: windows/host/src/tabs.rs:3013
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "标签页内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:2997
+#: windows/host/src/tabs.rs:3014
 msgid "All terminal sessions in this window will be terminated."
 msgstr "窗口内所有运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:2998
+#: windows/host/src/tabs.rs:3015
 msgid "The currently running process in this split will be terminated."
 msgstr "分屏内正在运行中的进程将被终止。"
 
@@ -536,7 +536,7 @@ msgstr "缩小字号"
 msgid "Decrease the font size by 1 point."
 msgstr "将字体大小缩小 1pt。"
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:279
+#: src/input/command.zig:237 windows/host/src/menu.rs:266
 msgid "Reset Font Size"
 msgstr "重置字号"
 
@@ -553,7 +553,7 @@ msgid "Clear the screen and scrollback."
 msgstr "清除屏幕和回滚内容。"
 
 #: src/input/command.zig:249 windows/host/src/ctxmenu.rs:102
-#: windows/host/src/menu.rs:273
+#: windows/host/src/menu.rs:260
 msgid "Select All"
 msgstr "全选"
 
@@ -923,7 +923,7 @@ msgid "Toggle read-only mode for the current surface."
 msgstr "切换当前分屏的只读状态。"
 
 #: src/input/command.zig:557 windows/host/src/ctxmenu.rs:134
-#: windows/host/src/menu.rs:319 windows/host/src/strip.rs:1330
+#: windows/host/src/menu.rs:301 windows/host/src/strip.rs:1330
 msgid "Make This Terminal a Supervisor"
 msgstr "将此终端设为总管"
 
@@ -936,7 +936,7 @@ msgstr ""
 "些。"
 
 #: src/input/command.zig:563 windows/host/src/ctxmenu.rs:139
-#: windows/host/src/menu.rs:320 windows/host/src/strip.rs:1331
+#: windows/host/src/menu.rs:302 windows/host/src/strip.rs:1331
 msgid "Toggle Supervision of This Terminal"
 msgstr "监督此终端"
 
@@ -944,7 +944,7 @@ msgstr "监督此终端"
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr "这个终端的屏幕静止下来时，报给总管。"
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:364
+#: src/input/command.zig:594 windows/host/src/menu.rs:346
 msgid "Hold This Terminal to Its Work"
 msgstr "保持这个终端在岗"
 
@@ -956,7 +956,7 @@ msgstr ""
 "阻止这个终端被下班——无论是总管还是别的什么。只有键盘前的人能设置或解除它。"
 
 #: src/input/command.zig:600 windows/host/src/ctxmenu.rs:144
-#: windows/host/src/menu.rs:321 windows/host/src/strip.rs:1332
+#: windows/host/src/menu.rs:303 windows/host/src/strip.rs:1332
 msgid "Keep Agents Out of This Terminal"
 msgstr "不让 agent 碰此终端"
 
@@ -968,7 +968,7 @@ msgstr ""
 "不让任何 agent（总管也在内）读这个终端、或者往里打字。屏蔽期间，它的 tab 上会"
 "带一把锁。只有你能设这一项。"
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:317
+#: src/input/command.zig:606 windows/host/src/menu.rs:299
 msgid "Terminal Conversations"
 msgstr "终端群聊"
 
@@ -976,7 +976,7 @@ msgstr "终端群聊"
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr "开一个终端，显示各个终端之间说过的话。"
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:380
+#: src/input/command.zig:612 windows/host/src/menu.rs:362
 msgid "Equalize Splits"
 msgstr "均分分屏大小"
 
@@ -984,7 +984,7 @@ msgstr "均分分屏大小"
 msgid "Equalize the size of all splits."
 msgstr "使所有分屏大小相等。"
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:402
+#: src/input/command.zig:618 windows/host/src/menu.rs:384
 msgid "Reset Window Size"
 msgstr "重置窗口大小"
 
@@ -1447,16 +1447,16 @@ msgid "{0} d {1} h"
 msgstr "{0} 天 {1} 小时"
 
 # U+2026, action prompt_tab_title: opens the title overlay (menu.rs, ctxmenu.rs). "Rename Tab..." with three ASCII dots is a DIFFERENT action, rename_tab, in-place on the tab strip. Do not merge them.
-#: windows/host/src/ctxmenu.rs:130 windows/host/src/menu.rs:291
+#: windows/host/src/ctxmenu.rs:130 windows/host/src/menu.rs:278
 msgid "Rename Tab…"
 msgstr "改标签标题…"
 
-#: windows/host/src/ctxmenu.rs:131 windows/host/src/menu.rs:292
+#: windows/host/src/ctxmenu.rs:131 windows/host/src/menu.rs:279
 msgid "Rename Terminal…"
 msgstr "改终端标题…"
 
 # The Chinese is longer than the English on purpose: the parenthesis says this also answers "Don't Ask Again", which writes a lasting grant. English matches macOS verbatim. Shared by menu.rs and ctxmenu.rs.
-#: windows/host/src/ctxmenu.rs:169 windows/host/src/menu.rs:336
+#: windows/host/src/ctxmenu.rs:169 windows/host/src/menu.rs:318
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr "允许总管替此终端点授权框（含「不再询问」）"
 
@@ -1490,162 +1490,161 @@ msgstr "语言"
 msgid "The language changes the next time Polter starts."
 msgstr "语言将在下次启动 Polter 时生效。"
 
-#: windows/host/src/main.rs:2318
+#: windows/host/src/main.rs:2320
 #, rust-format
 msgid "{} lines in all."
 msgstr "共 {} 行。"
 
-#: windows/host/src/menu.rs:234 windows/host/src/strip.rs:1664
+#: windows/host/src/menu.rs:221 windows/host/src/strip.rs:1664
 msgid "Reopen Closed Tab"
 msgstr "重开关闭的标签"
 
-#: windows/host/src/menu.rs:257
+#: windows/host/src/menu.rs:244
 msgid "Next"
 msgstr "下一个"
 
-#: windows/host/src/menu.rs:258
+#: windows/host/src/menu.rs:245
 msgid "Previous"
 msgstr "上一个"
 
-#: windows/host/src/menu.rs:260
+#: windows/host/src/menu.rs:247
 msgid "Hide the Find Bar"
 msgstr "隐藏查找条"
 
-#: windows/host/src/menu.rs:275
+#: windows/host/src/menu.rs:262
 msgid "Find"
 msgstr "查找"
 
-#: windows/host/src/menu.rs:280
+#: windows/host/src/menu.rs:267
 msgid "Zoom In"
 msgstr "放大"
 
-#: windows/host/src/menu.rs:281
+#: windows/host/src/menu.rs:268
 msgid "Zoom Out"
 msgstr "缩小"
 
-#: windows/host/src/menu.rs:296
+#: windows/host/src/menu.rs:283
 msgid "Quick Terminal"
 msgstr "快速终端"
 
-#: windows/host/src/menu.rs:368
+#: windows/host/src/menu.rs:350
 msgid "Plugins…"
 msgstr "插件…"
 
-# Three ASCII dots, matching the agreed wording. Note this catalogue already carries «Rename Tab...» against «Rename Tab…» as two different things; do not merge these on the strength of them looking alike.
-#: windows/host/src/menu.rs:369 windows/host/src/personas.rs:804
-msgid "Role Editor..."
-msgstr "角色编辑器…"
+#: windows/host/src/menu.rs:351 windows/host/src/personas.rs:826
+msgid "Role Editor (beta)..."
+msgstr "角色编辑器（beta）…"
 
-#: windows/host/src/menu.rs:373
+#: windows/host/src/menu.rs:355
 msgid "Up"
 msgstr "上"
 
-#: windows/host/src/menu.rs:374
+#: windows/host/src/menu.rs:356
 msgid "Down"
 msgstr "下"
 
-#: windows/host/src/menu.rs:375
+#: windows/host/src/menu.rs:357
 msgid "Left"
 msgstr "左"
 
-#: windows/host/src/menu.rs:376
+#: windows/host/src/menu.rs:358
 msgid "Right"
 msgstr "右"
 
-#: windows/host/src/menu.rs:382
+#: windows/host/src/menu.rs:364
 msgid "Grow Up"
 msgstr "向上"
 
-#: windows/host/src/menu.rs:383
+#: windows/host/src/menu.rs:365
 msgid "Grow Down"
 msgstr "向下"
 
-#: windows/host/src/menu.rs:384
+#: windows/host/src/menu.rs:366
 msgid "Grow Left"
 msgstr "向左"
 
-#: windows/host/src/menu.rs:385
+#: windows/host/src/menu.rs:367
 msgid "Grow Right"
 msgstr "向右"
 
-#: windows/host/src/menu.rs:391
+#: windows/host/src/menu.rs:373
 msgid "Minimize"
 msgstr "最小化"
 
-#: windows/host/src/menu.rs:392
+#: windows/host/src/menu.rs:374
 msgid "Maximize"
 msgstr "最大化"
 
-#: windows/host/src/menu.rs:394
+#: windows/host/src/menu.rs:376
 msgid "Full Screen"
 msgstr "全屏"
 
-#: windows/host/src/menu.rs:396
+#: windows/host/src/menu.rs:378
 msgid "Split Zoom"
 msgstr "分屏缩放"
 
-#: windows/host/src/menu.rs:397
+#: windows/host/src/menu.rs:379
 msgid "Previous Split"
 msgstr "上一个分屏"
 
-#: windows/host/src/menu.rs:398
+#: windows/host/src/menu.rs:380
 msgid "Next Split"
 msgstr "下一个分屏"
 
-#: windows/host/src/menu.rs:399
+#: windows/host/src/menu.rs:381
 msgid "Select Split"
 msgstr "选择分屏"
 
-#: windows/host/src/menu.rs:400
+#: windows/host/src/menu.rs:382
 msgid "Resize Split"
 msgstr "调整分屏"
 
-#: windows/host/src/menu.rs:404
+#: windows/host/src/menu.rs:386
 msgid "Float on Top"
 msgstr "置顶"
 
-#: windows/host/src/menu.rs:411
+#: windows/host/src/menu.rs:393
 msgid "Polter Help"
 msgstr "Polter 帮助"
 
-#: windows/host/src/menu.rs:427
+#: windows/host/src/menu.rs:406
 msgid "Check for Updates…"
 msgstr "检查更新…"
 
-#: windows/host/src/menu.rs:440
+#: windows/host/src/menu.rs:412
 msgid "File"
 msgstr "文件"
 
-#: windows/host/src/menu.rs:441
+#: windows/host/src/menu.rs:413
 msgid "Edit"
 msgstr "编辑"
 
-#: windows/host/src/menu.rs:442
+#: windows/host/src/menu.rs:414
 msgid "View"
 msgstr "查看"
 
-#: windows/host/src/menu.rs:458
+#: windows/host/src/menu.rs:430
 msgid "Agents"
 msgstr "智能体"
 
-#: windows/host/src/menu.rs:460
+#: windows/host/src/menu.rs:432
 msgid "Help"
 msgstr "帮助"
 
-#: windows/host/src/menu.rs:462
+#: windows/host/src/menu.rs:434
 msgid "Settings…"
 msgstr "设置…"
 
-#: windows/host/src/menu.rs:474
+#: windows/host/src/menu.rs:446
 msgid "Language…"
 msgstr "语言…"
 
 # Menu item (menu.rs ROOT). Deliberately a different msgid from "Keyboard Shortcuts" without the ellipsis, which is the page title and accessible name (settings_ui.rs, uia.rs). The ellipsis says the item opens a page; macOS MainMenu.xib Kb1-Nd-Ls1 has it too. Do not merge the two.
-#: windows/host/src/menu.rs:488
+#: windows/host/src/menu.rs:460
 msgid "Keyboard Shortcuts…"
 msgstr "快捷键…"
 
-#: windows/host/src/menu.rs:489 windows/host/src/settings_ui.rs:1067
+#: windows/host/src/menu.rs:461 windows/host/src/settings_ui.rs:1067
 msgid "About Polter"
 msgstr "关于 Polter"
 
@@ -1660,7 +1659,7 @@ msgid "This menu is out of date. Close it and open it again"
 msgstr "这份菜单已经过期了，关掉重开一次"
 
 # Beside an MCP row whose slot process is broken. It must not read as «switched off by hand»: the user did not do it, and the place to go is the server, not the persona.
-#: windows/host/src/personas.rs:298 windows/host/src/personas_ui.rs:839
+#: windows/host/src/personas.rs:298 windows/host/src/personas_ui.rs:893
 msgid "This server didn't start. Your role isn't what's withholding it."
 msgstr "这个服务器没有起来。不是你的角色没给你它。"
 
@@ -1669,148 +1668,148 @@ msgstr "这个服务器没有起来。不是你的角色没给你它。"
 msgid "Polter isn't managing this server, so the agent sees all of it"
 msgstr "Polter 没有接管这个服务器，所以 agent 看得到它的全部"
 
-#: windows/host/src/personas.rs:312
+#: windows/host/src/personas.rs:334
 msgid "Added by hand"
 msgstr "手动加上的"
 
 # The other direction from «Added by hand». Both are departures from the persona, but the user undoes them with opposite actions, so they are two phrases and not one.
-#: windows/host/src/personas.rs:313
+#: windows/host/src/personas.rs:335
 msgid "Switched off by hand"
 msgstr "手动关掉的"
 
 # Our gap, not the agent's. The reader should go and check the path, not go and install something.
-#: windows/host/src/personas.rs:394
+#: windows/host/src/personas.rs:416
 msgid "Nobody has checked where this agent keeps these yet"
 msgstr "还没有人核实过这家 agent 把它们放在哪"
 
 # Shared deliberately by two states -- the path is known and empty, and the path was read and held nothing. To the user those are one fact.
-#: windows/host/src/personas.rs:395 windows/host/src/personas.rs:396
+#: windows/host/src/personas.rs:417 windows/host/src/personas.rs:418
 msgid "Looked there, and nothing is installed"
 msgstr "去那儿看过了，那里什么都没装"
 
 # It is there and could not be parsed. The core's own detail is shown beside this.
-#: windows/host/src/personas.rs:398 windows/host/src/personas_ui.rs:892
+#: windows/host/src/personas.rs:420 windows/host/src/personas_ui.rs:946
 msgid "Couldn't read what's installed here"
 msgstr "这儿装了什么，读不出来"
 
 # A persona the user picked and then changed one item of. Shown instead of the bare name, so that «Archer» and «Archer, with something switched off since» cannot look the same. Same placeholder note as `Role: {}`.
-#: windows/host/src/personas.rs:607
+#: windows/host/src/personas.rs:629
 #, rust-format
 msgid "{} (modified)"
 msgstr "{}（已改）"
 
-#: windows/host/src/personas.rs:621
+#: windows/host/src/personas.rs:643
 msgid "Takes effect the next time the agent starts"
 msgstr "下次启动 agent 时生效"
 
 # The fourth state of the agent class: nothing has said which CLI this is. It must not read like the «takes effect next start» sentence and must not read like nothing being said at all.
-#: windows/host/src/personas.rs:626
+#: windows/host/src/personas.rs:648
 msgid "May need the agent to restart before it takes effect"
 msgstr "可能要 agent 重启之后才生效"
 
 # The reason the rows below are shown but not offered. Deliberately the same words as the menu item «Keep Agents Out of This Terminal», so the reader recognises the switch they themselves ticked; an earlier draft said «shielded», a word that appears nowhere the user can see.
-#: windows/host/src/personas.rs:722 windows/host/src/personas.rs:1661
-#: windows/host/src/personas_ui.rs:152 windows/host/src/personas_ui.rs:999
+#: windows/host/src/personas.rs:744 windows/host/src/personas.rs:1693
+#: windows/host/src/personas_ui.rs:155 windows/host/src/personas_ui.rs:1064
 msgid "Agents are kept out of this terminal, so its role cannot be changed"
 msgstr "不让 agent 碰此终端，所以它的角色也不能改"
 
-#: windows/host/src/personas.rs:728 windows/host/src/personas_ui.rs:156
+#: windows/host/src/personas.rs:750 windows/host/src/personas_ui.rs:159
 msgid "No agent is connected here, so nothing is wearing this yet"
 msgstr "这个终端里没有 agent 连着，角色存下了，但还没有人穿上"
 
 # The third state: nobody has been asked yet. Deliberately NOT the same sentence as «No roles are defined», which means the question was put and the answer was none.
-#: windows/host/src/personas.rs:746 windows/host/src/personas_ui.rs:133
-#: windows/host/src/personas_ui.rs:907
+#: windows/host/src/personas.rs:768 windows/host/src/personas_ui.rs:136
+#: windows/host/src/personas_ui.rs:972
 msgid "Nothing has reported which roles exist yet"
 msgstr "还没有人报上来有哪些角色"
 
-#: windows/host/src/personas.rs:747 windows/host/src/personas.rs:1702
-#: windows/host/src/personas_ui.rs:134
+#: windows/host/src/personas.rs:769 windows/host/src/personas.rs:1734
+#: windows/host/src/personas_ui.rs:137
 msgid "No roles are defined"
 msgstr "还没有定义任何角色"
 
-#: windows/host/src/personas.rs:753
+#: windows/host/src/personas.rs:775
 msgid "No Role"
 msgstr "不设角色"
 
-#: windows/host/src/personas.rs:893 windows/host/src/personas.rs:1440
-msgid "Role"
-msgstr "角色"
+#: windows/host/src/personas.rs:921 windows/host/src/personas.rs:1472
+msgid "Role (beta)"
+msgstr "角色（beta）"
 
 # The Rust placeholder is `{}`; the Swift side of the same sentence carries `%@`. The two spellings are deliberate -- the two languages cannot share one placeholder -- and unifying them breaks one side.
-#: windows/host/src/personas.rs:897
+#: windows/host/src/personas.rs:925
 #, rust-format
-msgid "Role: {}"
-msgstr "角色：{}"
+msgid "Role (beta): {}"
+msgstr "角色（beta）：{}"
 
-#: windows/host/src/personas_ui.rs:168
+#: windows/host/src/personas_ui.rs:171
 msgid "Reset to the Role"
 msgstr "恢复成这个角色的样子"
 
-#: windows/host/src/personas_ui.rs:174
+#: windows/host/src/personas_ui.rs:178
 msgid "What This Terminal Hands Out"
 msgstr "这个终端交出去的东西"
 
 # The third of three «nothing has reported» sentences. The other two are about which roles exist and what is installed on this machine; they are three different facts and must not share one phrase.
-#: windows/host/src/personas_ui.rs:180 windows/host/src/personas_ui.rs:908
-#: windows/host/src/personas_ui.rs:929
+#: windows/host/src/personas_ui.rs:184 windows/host/src/personas_ui.rs:973
+#: windows/host/src/personas_ui.rs:994
 msgid "Nothing has reported what this terminal hands out yet"
 msgstr "还没有人报上来这个终端交出去了什么"
 
 # Asked, and the answer was nothing -- as opposed to nobody having reported.
-#: windows/host/src/personas_ui.rs:182 windows/host/src/personas_ui.rs:930
+#: windows/host/src/personas_ui.rs:186 windows/host/src/personas_ui.rs:995
 msgid "This terminal hands out nothing yet"
 msgstr "这个终端还没有交出去任何东西"
 
-#: windows/host/src/personas_ui.rs:184 windows/host/src/personas_ui.rs:245
+#: windows/host/src/personas_ui.rs:188 windows/host/src/personas_ui.rs:251
 msgid "Skills"
 msgstr "技能"
 
-#: windows/host/src/personas_ui.rs:186 windows/host/src/personas_ui.rs:246
+#: windows/host/src/personas_ui.rs:190 windows/host/src/personas_ui.rs:252
 msgid "MCP Servers"
 msgstr "MCP 服务器"
 
-#: windows/host/src/personas_ui.rs:195
+#: windows/host/src/personas_ui.rs:199
 msgid "Opening Prompt"
 msgstr "开场提示词"
 
-#: windows/host/src/personas_ui.rs:206
+#: windows/host/src/personas_ui.rs:211
 msgid "Only Applied on Restart"
 msgstr "只有重启才兑现"
 
-#: windows/host/src/personas_ui.rs:218
+#: windows/host/src/personas_ui.rs:224
 msgid "Installed on This Machine"
 msgstr "这台机器上已经装了的"
 
 # Must be on the page and not only in a code comment: a read-only list with no explanation sends the reader looking for switches that are deliberately absent.
-#: windows/host/src/personas_ui.rs:228 windows/host/src/personas_ui.rs:766
+#: windows/host/src/personas_ui.rs:234 windows/host/src/personas_ui.rs:784
 msgid ""
 "Shown so you can see what a role doesn't cover. Polter doesn't change any of "
 "this."
 msgstr "列在这里，是为了让你看见角色没有覆盖到哪里。Polter 不会动这些。"
 
 # The third state again, for the read-only list. An empty list would be read as «nothing is installed on this machine».
-#: windows/host/src/personas_ui.rs:231 windows/host/src/personas_ui.rs:784
-#: windows/host/src/personas_ui.rs:909
+#: windows/host/src/personas_ui.rs:237 windows/host/src/personas_ui.rs:802
+#: windows/host/src/personas_ui.rs:974
 msgid "Nothing has reported what's installed here yet"
 msgstr "还没有人报上来这台机器装了什么"
 
 # A number computed from an incomplete scan looks exactly like one computed from a complete scan, so the incompleteness has to be said out loud.
-#: windows/host/src/personas_ui.rs:239 windows/host/src/personas_ui.rs:962
+#: windows/host/src/personas_ui.rs:245 windows/host/src/personas_ui.rs:1027
 msgid "Some agents' configuration couldn't be read, so this count may be low"
 msgstr "还有 agent 的配置没读到，这个数可能偏小"
 
-#: windows/host/src/personas_ui.rs:244
+#: windows/host/src/personas_ui.rs:250
 msgid "Plugins"
 msgstr "插件"
 
-#: windows/host/src/personas_ui.rs:517
+#: windows/host/src/personas_ui.rs:530
 msgid "Choose a Role"
 msgstr "选一个角色"
 
-#: windows/host/src/personas_ui.rs:531
-msgid "Role Editor"
-msgstr "角色编辑器"
+#: windows/host/src/personas_ui.rs:544
+msgid "Role Editor (beta)"
+msgstr "角色编辑器（beta）"
 
 #: windows/host/src/prompt.rs:331
 msgid "Save as Project"
@@ -1929,6 +1928,21 @@ msgstr "标签颜色"
 #: windows/host/src/uia.rs:1168
 msgid "Menu"
 msgstr "菜单"
+
+# Three ASCII dots, matching the agreed wording. Note this catalogue already carries «Rename Tab...» against «Rename Tab…» as two different things; do not merge these on the strength of them looking alike.
+#~ msgid "Role Editor..."
+#~ msgstr "角色编辑器…"
+
+#~ msgid "Role"
+#~ msgstr "角色"
+
+# The Rust placeholder is `{}`; the Swift side of the same sentence carries `%@`. The two spellings are deliberate -- the two languages cannot share one placeholder -- and unifying them breaks one side.
+#, rust-format
+#~ msgid "Role: {}"
+#~ msgstr "角色：{}"
+
+#~ msgid "Role Editor"
+#~ msgstr "角色编辑器"
 
 #~ msgid "Done"
 #~ msgstr "完成"

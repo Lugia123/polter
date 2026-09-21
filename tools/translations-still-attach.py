@@ -115,14 +115,26 @@ def entries(src):
     for blk in re.split(r"\n\s*\n", src):
         if not blk.strip():
             continue
-        obsolete = blk.lstrip().startswith("#~")
+        # **Read from the kept lines, not the block's first line.** `msgmerge`
+        # can retire an entry -- `#~ msgid` / `#~ msgstr` -- while leaving an
+        # ordinary translator comment or a `#, rust-format` flag sitting above
+        # it with no `#~` and no blank line in between: both are themselves
+        # dropped by the filter two lines down, so `blk.lstrip()` starts with
+        # that comment instead of the marker it precedes, and the whole block
+        # read as live. Measured on this file: a translator comment retired
+        # with `Role: {}` did exactly this, and the block starting one line
+        # later (`#~ msgid "Role Editor..."` behind its own `# Three ASCII
+        # dots…` comment) the same way -- both real `#~` entries, both read as
+        # not obsolete, so a rewording that touched neither string still lost
+        # its own report to a false ADRIFT two entries over.
+        kept_lines = [
+            ln for ln in blk.split("\n")
+            if not re.match(r"^\s*#[^~]", ln) and not re.match(r"^\s*#$", ln)
+        ]
+        obsolete = any(ln.lstrip().startswith("#~") for ln in kept_lines)
         # Drop comment lines, but keep `#~` bodies by stripping the marker --
         # an obsolete entry is still an entry and this file needs to see it.
-        body = "\n".join(
-            re.sub(r"^#~\s?", "", ln)
-            for ln in blk.split("\n")
-            if not re.match(r"^\s*#[^~]", ln) and not re.match(r"^\s*#$", ln)
-        )
+        body = "\n".join(re.sub(r"^#~\s?", "", ln) for ln in kept_lines)
         mid = re.search(r"^msgid((?:\s*\"(?:[^\"\\]|\\.)*\")+)", body, re.M)
         if not mid:
             continue
@@ -150,6 +162,13 @@ def self_test():
     good = 'msgid ""\nmsgstr ""\n\nmsgid "Kept"\nmsgstr "K"\n'
     gone = good + '\nmsgid "Reworded away"\nmsgstr "R"\n'
     obs = good + '\n#~ msgid "Reworded away"\n#~ msgstr "R"\n'
+    # `msgmerge`'s actual shape: a translator comment (or a `#,` flag) left
+    # above a retired entry with no `#~` of its own and no blank line before
+    # the marker -- see the comment on `entries()`.
+    obs_commented = (
+        good
+        + '\n# a translator comment msgmerge left behind\n#~ msgid "Reworded away"\n#~ msgstr "R"\n'
+    )
     untr = good + '\nmsgid "Reworded away"\nmsgstr ""\n'
     multi = good + '\nmsgid ""\n"Two "\n"parts"\nmsgstr "T"\n'
     ids = template_ids(pot)
@@ -157,6 +176,7 @@ def self_test():
         ("the clean shape", good, []),
         ("a translation the template lost", gone, ["Reworded away"]),
         ("the same one, already retired to #~", obs, []),
+        ("...and the same, behind a leftover comment with no blank line", obs_commented, []),
         ("an untranslated entry is not adrift", untr, []),
         ("a msgid spelled over several lines", multi, ["Two parts"]),
     ]

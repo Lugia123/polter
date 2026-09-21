@@ -243,12 +243,12 @@
 "Saves this tab: %@ pane(s)" = "将存下当前标签页的 %@ 个面板";
 
 /* 角色 —— 一个终端里的 agent 手上有哪些工具、技能、开场提示词 */
-"Role" = "角色";
-"Role: %@" = "角色：%@";
+"Role (beta)" = "角色（beta）";
+"Role (beta): %@" = "角色（beta）：%@";
 "No Role" = "不设角色";
 "No roles are defined" = "还没有定义任何角色";
-"Role Editor..." = "角色编辑器…";
-"Role Editor" = "角色编辑器";
+"Role Editor (beta)..." = "角色编辑器（beta）…";
+"Role Editor (beta)" = "角色编辑器（beta）";
 "%@ (modified)" = "%@（已改）";
 "Takes effect the next time the agent starts" = "下次启动 agent 时生效";
 "May need the agent to restart before it takes effect" = "可能要 agent 重启之后才生效";

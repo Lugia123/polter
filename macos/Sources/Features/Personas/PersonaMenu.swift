@@ -108,13 +108,19 @@ enum PersonaMenu {
     /// exactly alike". The submenu still ticks the stored persona, because
     /// the terminal still *has* it; what stops is the parent item claiming
     /// the terminal *is* it.
+    /// **0.7's roles feature is not finished** (roles.md is still marked
+    /// draft), so every entry point the user can reach it from says so --
+    /// task 666. `(beta)` is its own translatable text rather than a literal
+    /// appended after the fact: it sits inside the localized string itself,
+    /// the same way `%@` does, so a translator controls its wording and
+    /// placement exactly as they would any other word in the sentence.
     private static func title(state: PersonaState, personas: [Persona]) -> String {
         guard state.agentPresent, let name = state.displayName(in: personas) else {
-            return String(localized: "Role", comment: "标签页右键菜单：角色子菜单")
+            return String(localized: "Role (beta)", comment: "标签页右键菜单：角色子菜单，功能还没做完，标 beta")
         }
         return String(
-            format: String(localized: "Role: %@",
-                           comment: "标签页右键菜单：角色子菜单，已经设了角色"),
+            format: String(localized: "Role (beta): %@",
+                           comment: "标签页右键菜单：角色子菜单，已经设了角色，功能还没做完，标 beta"),
             name)
     }
 
@@ -234,7 +240,7 @@ enum PersonaMenu {
         // read-only inventory, and being able to look at a shielded
         // terminal was never the thing the shield forbids.
         let editor = NSMenuItem(
-            title: String(localized: "Role Editor...", comment: "角色菜单：打开角色编辑器"),
+            title: String(localized: "Role Editor (beta)...", comment: "角色菜单：打开角色编辑器，功能还没做完，标 beta"),
             action: #selector(PersonaMenuTarget.showPoltergeistPersonaEditor(_:)),
             keyEquivalent: "")
         editor.target = target

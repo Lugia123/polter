@@ -541,7 +541,7 @@ fn paint(win: HWND) {
             let rx = PAD + LIST_W + PAD;
             let rw = (rc.right - rc.left) - rx - PAD;
             let mut y = PAD;
-            text_out(hdc, rx, y, rw, &tr("Role Editor"), 0xC8C8C8, true);
+            text_out(hdc, rx, y, rw, &tr("Role Editor (beta)"), 0xC8C8C8, true);
             y += ROW_H;
             for row in &s.page.rows {
                 let colour = match row.kind {

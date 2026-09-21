@@ -78,7 +78,7 @@ struct PersonaIconTests {
             String(localized: "May need the agent to restart before it takes effect"),
             String(localized: "No agent is connected here, so nothing is wearing this yet"),
             String(localized: "Nothing has reported which roles exist yet"),
-            String(localized: "Role Editor..."),
+            String(localized: "Role Editor (beta)..."),
         ] {
             let row = try #require(titled.first { $0.title == title },
                                    "no row titled \(title)")

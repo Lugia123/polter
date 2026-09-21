@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-17 21:35+0800\n"
+"POT-Creation-Date: 2026-09-21 20:21+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -74,7 +74,7 @@ msgstr ""
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:439 src/apprt/gtk/ui/1.5/window.blp:318
-#: windows/host/src/menu.rs:435
+#: windows/host/src/menu.rs:407
 msgid "Reload Configuration"
 msgstr ""
 
@@ -89,7 +89,7 @@ msgid "Ghostty: Terminal Inspector"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:104
-#: windows/host/src/menu.rs:254
+#: windows/host/src/menu.rs:241
 msgid "Find…"
 msgstr ""
 
@@ -117,17 +117,17 @@ msgid ""
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/ctxmenu.rs:125
-#: windows/host/src/menu.rs:294
+#: windows/host/src/menu.rs:281
 msgid "Read-only"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:100 windows/host/src/menu.rs:264
+#: windows/host/src/ctxmenu.rs:100 windows/host/src/menu.rs:251
 msgid "Copy"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:321 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:101 windows/host/src/menu.rs:265
+#: windows/host/src/ctxmenu.rs:101 windows/host/src/menu.rs:252
 msgid "Paste"
 msgstr ""
 
@@ -153,29 +153,29 @@ msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:353 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:121 windows/host/src/menu.rs:246
+#: windows/host/src/ctxmenu.rs:121 windows/host/src/menu.rs:233
 msgid "Split Up"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:359 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:245
+#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:232
 msgid "Split Down"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:365 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:119 windows/host/src/menu.rs:244
+#: windows/host/src/ctxmenu.rs:119 windows/host/src/menu.rs:231
 msgid "Split Left"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:371 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:118 windows/host/src/menu.rs:243
+#: windows/host/src/ctxmenu.rs:118 windows/host/src/menu.rs:230
 msgid "Split Right"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:248
+#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:235
 msgid "Close Split"
 msgstr ""
 
@@ -191,17 +191,17 @@ msgstr ""
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
 #: src/input/command.zig:427 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:223 windows/host/src/strip.rs:1658
+#: windows/host/src/menu.rs:210 windows/host/src/strip.rs:1658
 msgid "New Tab"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:396 src/apprt/gtk/ui/1.5/window.blp:242
 #: src/input/command.zig:668 windows/host/src/ctxmenu.rs:112
-#: windows/host/src/menu.rs:249 windows/host/src/strip.rs:1325
+#: windows/host/src/menu.rs:236 windows/host/src/strip.rs:1325
 msgid "Close Tab"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:459
+#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:431
 msgid "Window"
 msgstr ""
 
@@ -210,12 +210,12 @@ msgid "Change Window Title…"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:222
+#: src/input/command.zig:421 windows/host/src/menu.rs:209
 msgid "New Window"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.2/surface.blp:416 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:685 windows/host/src/menu.rs:250
+#: src/input/command.zig:685 windows/host/src/menu.rs:237
 msgid "Close Window"
 msgstr ""
 
@@ -252,12 +252,12 @@ msgid "Main Menu"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:175
-#: windows/host/src/menu.rs:283 windows/host/src/strip.rs:1665
+#: windows/host/src/menu.rs:270 windows/host/src/strip.rs:1665
 msgid "Command Palette"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:124
-#: windows/host/src/menu.rs:304
+#: windows/host/src/menu.rs:290
 msgid "Terminal Inspector"
 msgstr ""
 
@@ -310,12 +310,12 @@ msgid ""
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2322
+#: windows/host/src/main.rs:2324
 msgid "Warning: Potentially Unsafe Paste"
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2315
+#: windows/host/src/main.rs:2317
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -326,17 +326,17 @@ msgid "Quit Ghostty?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:2988
+#: windows/host/src/tabs.rs:3005
 msgid "Close Tab?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:2989
+#: windows/host/src/tabs.rs:3006
 msgid "Close Window?"
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:2990
+#: windows/host/src/tabs.rs:3007
 msgid "Close Split?"
 msgstr ""
 
@@ -345,17 +345,17 @@ msgid "All terminal sessions will be terminated."
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:2996
+#: windows/host/src/tabs.rs:3013
 msgid "All terminal sessions in this tab will be terminated."
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:2997
+#: windows/host/src/tabs.rs:3014
 msgid "All terminal sessions in this window will be terminated."
 msgstr ""
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:2998
+#: windows/host/src/tabs.rs:3015
 msgid "The currently running process in this split will be terminated."
 msgstr ""
 
@@ -532,7 +532,7 @@ msgstr ""
 msgid "Decrease the font size by 1 point."
 msgstr ""
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:279
+#: src/input/command.zig:237 windows/host/src/menu.rs:266
 msgid "Reset Font Size"
 msgstr ""
 
@@ -549,7 +549,7 @@ msgid "Clear the screen and scrollback."
 msgstr ""
 
 #: src/input/command.zig:249 windows/host/src/ctxmenu.rs:102
-#: windows/host/src/menu.rs:273
+#: windows/host/src/menu.rs:260
 msgid "Select All"
 msgstr ""
 
@@ -917,7 +917,7 @@ msgid "Toggle read-only mode for the current surface."
 msgstr ""
 
 #: src/input/command.zig:557 windows/host/src/ctxmenu.rs:134
-#: windows/host/src/menu.rs:319 windows/host/src/strip.rs:1330
+#: windows/host/src/menu.rs:301 windows/host/src/strip.rs:1330
 msgid "Make This Terminal a Supervisor"
 msgstr ""
 
@@ -928,7 +928,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:563 windows/host/src/ctxmenu.rs:139
-#: windows/host/src/menu.rs:320 windows/host/src/strip.rs:1331
+#: windows/host/src/menu.rs:302 windows/host/src/strip.rs:1331
 msgid "Toggle Supervision of This Terminal"
 msgstr ""
 
@@ -936,7 +936,7 @@ msgstr ""
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr ""
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:364
+#: src/input/command.zig:594 windows/host/src/menu.rs:346
 msgid "Hold This Terminal to Its Work"
 msgstr ""
 
@@ -947,7 +947,7 @@ msgid ""
 msgstr ""
 
 #: src/input/command.zig:600 windows/host/src/ctxmenu.rs:144
-#: windows/host/src/menu.rs:321 windows/host/src/strip.rs:1332
+#: windows/host/src/menu.rs:303 windows/host/src/strip.rs:1332
 msgid "Keep Agents Out of This Terminal"
 msgstr ""
 
@@ -957,7 +957,7 @@ msgid ""
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:317
+#: src/input/command.zig:606 windows/host/src/menu.rs:299
 msgid "Terminal Conversations"
 msgstr ""
 
@@ -965,7 +965,7 @@ msgstr ""
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:380
+#: src/input/command.zig:612 windows/host/src/menu.rs:362
 msgid "Equalize Splits"
 msgstr ""
 
@@ -973,7 +973,7 @@ msgstr ""
 msgid "Equalize the size of all splits."
 msgstr ""
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:402
+#: src/input/command.zig:618 windows/host/src/menu.rs:384
 msgid "Reset Window Size"
 msgstr ""
 
@@ -1434,15 +1434,15 @@ msgstr ""
 msgid "{0} d {1} h"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:130 windows/host/src/menu.rs:291
+#: windows/host/src/ctxmenu.rs:130 windows/host/src/menu.rs:278
 msgid "Rename Tab…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:131 windows/host/src/menu.rs:292
+#: windows/host/src/ctxmenu.rs:131 windows/host/src/menu.rs:279
 msgid "Rename Terminal…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:169 windows/host/src/menu.rs:336
+#: windows/host/src/ctxmenu.rs:169 windows/host/src/menu.rs:318
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr ""
 
@@ -1476,160 +1476,160 @@ msgstr ""
 msgid "The language changes the next time Polter starts."
 msgstr ""
 
-#: windows/host/src/main.rs:2318
+#: windows/host/src/main.rs:2320
 #, rust-format
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/menu.rs:234 windows/host/src/strip.rs:1664
+#: windows/host/src/menu.rs:221 windows/host/src/strip.rs:1664
 msgid "Reopen Closed Tab"
 msgstr ""
 
-#: windows/host/src/menu.rs:257
+#: windows/host/src/menu.rs:244
 msgid "Next"
 msgstr ""
 
-#: windows/host/src/menu.rs:258
+#: windows/host/src/menu.rs:245
 msgid "Previous"
 msgstr ""
 
-#: windows/host/src/menu.rs:260
+#: windows/host/src/menu.rs:247
 msgid "Hide the Find Bar"
 msgstr ""
 
-#: windows/host/src/menu.rs:275
+#: windows/host/src/menu.rs:262
 msgid "Find"
 msgstr ""
 
-#: windows/host/src/menu.rs:280
+#: windows/host/src/menu.rs:267
 msgid "Zoom In"
 msgstr ""
 
-#: windows/host/src/menu.rs:281
+#: windows/host/src/menu.rs:268
 msgid "Zoom Out"
 msgstr ""
 
-#: windows/host/src/menu.rs:296
+#: windows/host/src/menu.rs:283
 msgid "Quick Terminal"
 msgstr ""
 
-#: windows/host/src/menu.rs:368
+#: windows/host/src/menu.rs:350
 msgid "Plugins…"
 msgstr ""
 
-#: windows/host/src/menu.rs:369 windows/host/src/personas.rs:804
-msgid "Role Editor..."
+#: windows/host/src/menu.rs:351 windows/host/src/personas.rs:826
+msgid "Role Editor (beta)..."
 msgstr ""
 
-#: windows/host/src/menu.rs:373
+#: windows/host/src/menu.rs:355
 msgid "Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:374
+#: windows/host/src/menu.rs:356
 msgid "Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:375
+#: windows/host/src/menu.rs:357
 msgid "Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:376
+#: windows/host/src/menu.rs:358
 msgid "Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:382
+#: windows/host/src/menu.rs:364
 msgid "Grow Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:383
+#: windows/host/src/menu.rs:365
 msgid "Grow Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:384
+#: windows/host/src/menu.rs:366
 msgid "Grow Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:385
+#: windows/host/src/menu.rs:367
 msgid "Grow Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:391
+#: windows/host/src/menu.rs:373
 msgid "Minimize"
 msgstr ""
 
-#: windows/host/src/menu.rs:392
+#: windows/host/src/menu.rs:374
 msgid "Maximize"
 msgstr ""
 
-#: windows/host/src/menu.rs:394
+#: windows/host/src/menu.rs:376
 msgid "Full Screen"
 msgstr ""
 
-#: windows/host/src/menu.rs:396
+#: windows/host/src/menu.rs:378
 msgid "Split Zoom"
 msgstr ""
 
-#: windows/host/src/menu.rs:397
+#: windows/host/src/menu.rs:379
 msgid "Previous Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:398
+#: windows/host/src/menu.rs:380
 msgid "Next Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:399
+#: windows/host/src/menu.rs:381
 msgid "Select Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:400
+#: windows/host/src/menu.rs:382
 msgid "Resize Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:404
+#: windows/host/src/menu.rs:386
 msgid "Float on Top"
 msgstr ""
 
-#: windows/host/src/menu.rs:411
+#: windows/host/src/menu.rs:393
 msgid "Polter Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:427
+#: windows/host/src/menu.rs:406
 msgid "Check for Updates…"
 msgstr ""
 
-#: windows/host/src/menu.rs:440
+#: windows/host/src/menu.rs:412
 msgid "File"
 msgstr ""
 
-#: windows/host/src/menu.rs:441
+#: windows/host/src/menu.rs:413
 msgid "Edit"
 msgstr ""
 
-#: windows/host/src/menu.rs:442
+#: windows/host/src/menu.rs:414
 msgid "View"
 msgstr ""
 
-#: windows/host/src/menu.rs:458
+#: windows/host/src/menu.rs:430
 msgid "Agents"
 msgstr ""
 
-#: windows/host/src/menu.rs:460
+#: windows/host/src/menu.rs:432
 msgid "Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:462
+#: windows/host/src/menu.rs:434
 msgid "Settings…"
 msgstr ""
 
-#: windows/host/src/menu.rs:474
+#: windows/host/src/menu.rs:446
 msgid "Language…"
 msgstr ""
 
-#: windows/host/src/menu.rs:488
+#: windows/host/src/menu.rs:460
 msgid "Keyboard Shortcuts…"
 msgstr ""
 
-#: windows/host/src/menu.rs:489 windows/host/src/settings_ui.rs:1067
+#: windows/host/src/menu.rs:461 windows/host/src/settings_ui.rs:1067
 msgid "About Polter"
 msgstr ""
 
@@ -1641,7 +1641,7 @@ msgstr ""
 msgid "This menu is out of date. Close it and open it again"
 msgstr ""
 
-#: windows/host/src/personas.rs:298 windows/host/src/personas_ui.rs:839
+#: windows/host/src/personas.rs:298 windows/host/src/personas_ui.rs:893
 msgid "This server didn't start. Your role isn't what's withholding it."
 msgstr ""
 
@@ -1649,133 +1649,133 @@ msgstr ""
 msgid "Polter isn't managing this server, so the agent sees all of it"
 msgstr ""
 
-#: windows/host/src/personas.rs:312
+#: windows/host/src/personas.rs:334
 msgid "Added by hand"
 msgstr ""
 
-#: windows/host/src/personas.rs:313
+#: windows/host/src/personas.rs:335
 msgid "Switched off by hand"
 msgstr ""
 
-#: windows/host/src/personas.rs:394
+#: windows/host/src/personas.rs:416
 msgid "Nobody has checked where this agent keeps these yet"
 msgstr ""
 
-#: windows/host/src/personas.rs:395 windows/host/src/personas.rs:396
+#: windows/host/src/personas.rs:417 windows/host/src/personas.rs:418
 msgid "Looked there, and nothing is installed"
 msgstr ""
 
-#: windows/host/src/personas.rs:398 windows/host/src/personas_ui.rs:892
+#: windows/host/src/personas.rs:420 windows/host/src/personas_ui.rs:946
 msgid "Couldn't read what's installed here"
 msgstr ""
 
-#: windows/host/src/personas.rs:607
+#: windows/host/src/personas.rs:629
 #, rust-format
 msgid "{} (modified)"
 msgstr ""
 
-#: windows/host/src/personas.rs:621
+#: windows/host/src/personas.rs:643
 msgid "Takes effect the next time the agent starts"
 msgstr ""
 
-#: windows/host/src/personas.rs:626
+#: windows/host/src/personas.rs:648
 msgid "May need the agent to restart before it takes effect"
 msgstr ""
 
-#: windows/host/src/personas.rs:722 windows/host/src/personas.rs:1661
-#: windows/host/src/personas_ui.rs:152 windows/host/src/personas_ui.rs:999
+#: windows/host/src/personas.rs:744 windows/host/src/personas.rs:1693
+#: windows/host/src/personas_ui.rs:155 windows/host/src/personas_ui.rs:1064
 msgid "Agents are kept out of this terminal, so its role cannot be changed"
 msgstr ""
 
-#: windows/host/src/personas.rs:728 windows/host/src/personas_ui.rs:156
+#: windows/host/src/personas.rs:750 windows/host/src/personas_ui.rs:159
 msgid "No agent is connected here, so nothing is wearing this yet"
 msgstr ""
 
-#: windows/host/src/personas.rs:746 windows/host/src/personas_ui.rs:133
-#: windows/host/src/personas_ui.rs:907
+#: windows/host/src/personas.rs:768 windows/host/src/personas_ui.rs:136
+#: windows/host/src/personas_ui.rs:972
 msgid "Nothing has reported which roles exist yet"
 msgstr ""
 
-#: windows/host/src/personas.rs:747 windows/host/src/personas.rs:1702
-#: windows/host/src/personas_ui.rs:134
+#: windows/host/src/personas.rs:769 windows/host/src/personas.rs:1734
+#: windows/host/src/personas_ui.rs:137
 msgid "No roles are defined"
 msgstr ""
 
-#: windows/host/src/personas.rs:753
+#: windows/host/src/personas.rs:775
 msgid "No Role"
 msgstr ""
 
-#: windows/host/src/personas.rs:893 windows/host/src/personas.rs:1440
-msgid "Role"
+#: windows/host/src/personas.rs:921 windows/host/src/personas.rs:1472
+msgid "Role (beta)"
 msgstr ""
 
-#: windows/host/src/personas.rs:897
+#: windows/host/src/personas.rs:925
 #, rust-format
-msgid "Role: {}"
+msgid "Role (beta): {}"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:168
+#: windows/host/src/personas_ui.rs:171
 msgid "Reset to the Role"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:174
+#: windows/host/src/personas_ui.rs:178
 msgid "What This Terminal Hands Out"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:180 windows/host/src/personas_ui.rs:908
-#: windows/host/src/personas_ui.rs:929
+#: windows/host/src/personas_ui.rs:184 windows/host/src/personas_ui.rs:973
+#: windows/host/src/personas_ui.rs:994
 msgid "Nothing has reported what this terminal hands out yet"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:182 windows/host/src/personas_ui.rs:930
+#: windows/host/src/personas_ui.rs:186 windows/host/src/personas_ui.rs:995
 msgid "This terminal hands out nothing yet"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:184 windows/host/src/personas_ui.rs:245
+#: windows/host/src/personas_ui.rs:188 windows/host/src/personas_ui.rs:251
 msgid "Skills"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:186 windows/host/src/personas_ui.rs:246
+#: windows/host/src/personas_ui.rs:190 windows/host/src/personas_ui.rs:252
 msgid "MCP Servers"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:195
+#: windows/host/src/personas_ui.rs:199
 msgid "Opening Prompt"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:206
+#: windows/host/src/personas_ui.rs:211
 msgid "Only Applied on Restart"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:218
+#: windows/host/src/personas_ui.rs:224
 msgid "Installed on This Machine"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:228 windows/host/src/personas_ui.rs:766
+#: windows/host/src/personas_ui.rs:234 windows/host/src/personas_ui.rs:784
 msgid ""
 "Shown so you can see what a role doesn't cover. Polter doesn't change any of "
 "this."
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:231 windows/host/src/personas_ui.rs:784
-#: windows/host/src/personas_ui.rs:909
+#: windows/host/src/personas_ui.rs:237 windows/host/src/personas_ui.rs:802
+#: windows/host/src/personas_ui.rs:974
 msgid "Nothing has reported what's installed here yet"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:239 windows/host/src/personas_ui.rs:962
+#: windows/host/src/personas_ui.rs:245 windows/host/src/personas_ui.rs:1027
 msgid "Some agents' configuration couldn't be read, so this count may be low"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:244
+#: windows/host/src/personas_ui.rs:250
 msgid "Plugins"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:517
+#: windows/host/src/personas_ui.rs:530
 msgid "Choose a Role"
 msgstr ""
 
-#: windows/host/src/personas_ui.rs:531
-msgid "Role Editor"
+#: windows/host/src/personas_ui.rs:544
+msgid "Role Editor (beta)"
 msgstr ""
 
 #: windows/host/src/prompt.rs:331

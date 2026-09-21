@@ -823,7 +823,7 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
         // against `…`: `po/zh_CN.po` has a comment on «Rename Tab...» saying
         // the two are different actions and must not be merged. So the
         // spelling here is copied rather than tidied.
-        text: tr("Role Editor..."),
+        text: tr("Role Editor (beta)..."),
         separator: false,
         checked: false,
         enabled: true,
@@ -906,17 +906,23 @@ pub fn id_is_spellable(id: &str) -> bool {
 /// **It carries the current persona**, because a submenu whose parent says only
 /// «Role» makes the user open it to find out what this terminal is -- and
 /// §5.2's whole point is that the answer has to be visible without acting.
+///
+/// **Task 666: `(beta)` on both branches.** 0.7's roles feature is not
+/// finished, so every entry point says so. It is inside the translated
+/// string itself -- `tr("Role (beta)")`, not `tr("Role")` with `" (beta)"`
+/// appended after -- so a translator controls its wording the same way they
+/// control every other word here, and never has to notice it was bolted on.
 pub fn submenu_label(surface: Surface) -> String {
     let st = standing(surface);
     // §5.3. With nothing connected the persona is not in force, so the parent
     // states the heading and nothing more; what is stored is still in the
     // submenu, under a row that says why it is not being claimed.
     let Some(name) = st.name.as_deref().filter(|_| st.agent_present) else {
-        return tr("Role");
+        return tr("Role (beta)");
     };
     // ⚠️ `{}` and not `%@`: see `display_name`. The Swift side carries
-    // `Role: %@` for this same sentence, deliberately.
-    tr("Role: {}").replacen("{}", &display_name(name, st.deviated), 1)
+    // `Role (beta): %@` for this same sentence, deliberately.
+    tr("Role (beta): {}").replacen("{}", &display_name(name, st.deviated), 1)
 }
 
 /// Perform one picked entry, on **one named terminal**.
@@ -1463,7 +1469,7 @@ mod tests {
             error: None,
             },
         );
-        assert_eq!(submenu_label(NO_SURFACE), tr("Role"));
+        assert_eq!(submenu_label(NO_SURFACE), tr("Role (beta)"));
         let e = entries(NO_SURFACE);
         assert!(
             e.iter().all(|x| !x.checked),

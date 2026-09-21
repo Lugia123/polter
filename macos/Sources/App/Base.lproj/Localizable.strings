@@ -229,12 +229,12 @@
 "Saves this tab: %@ pane(s)" = "Saves this tab: %@ pane(s)";
 
 /* Roles: which tools, skills and opening prompt the agent in a terminal has */
-"Role" = "Role";
-"Role: %@" = "Role: %@";
+"Role (beta)" = "Role (beta)";
+"Role (beta): %@" = "Role (beta): %@";
 "No Role" = "No Role";
 "No roles are defined" = "No roles are defined";
-"Role Editor..." = "Role Editor...";
-"Role Editor" = "Role Editor";
+"Role Editor (beta)..." = "Role Editor (beta)...";
+"Role Editor (beta)" = "Role Editor (beta)";
 "%@ (modified)" = "%@ (modified)";
 "Takes effect the next time the agent starts" = "Takes effect the next time the agent starts";
 "May need the agent to restart before it takes effect" = "May need the agent to restart before it takes effect";
