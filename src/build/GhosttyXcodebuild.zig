@@ -84,11 +84,19 @@ pub fn init(
         // `POLTER_COMMIT` reaches the bundle through `$(POLTER_COMMIT)` in
         // the Info.plist. Empty is fine and means the About window leaves
         // the row out.
+        //
+        // `POLTER_VERSION_SOURCE` reaches it the same way, through
+        // `$(POLTER_VERSION_SOURCE)` -> `PolterVersionSource`. Task 651:
+        // `GitHubUpdateChecker` reads it to tell a real `0.1.x` (however
+        // unlikely) apart from "this build could not say what version it
+        // is" -- see `PolterVersion.Source`'s doc comment for why that
+        // distinction cannot be reconstructed from `MARKETING_VERSION` alone.
         const vsn = PolterVersion.detect(b);
         step.addArgs(&.{
             b.fmt("MARKETING_VERSION={s}", .{vsn.string}),
             b.fmt("CURRENT_PROJECT_VERSION={d}", .{vsn.count}),
             b.fmt("POLTER_COMMIT={s}", .{vsn.commit}),
+            b.fmt("POLTER_VERSION_SOURCE={s}", .{@tagName(vsn.source)}),
         });
 
         // If we have a specific architecture, we need to pass it

@@ -42,6 +42,24 @@ const MajorMinor = struct { major: u32, minor: u32 };
 const fallback_major = 0;
 const fallback_minor = 1;
 
+/// Where `major.minor` came from. **Not a detail -- a fact a reader outside
+/// this build needs and cannot get any other way.**
+///
+/// `0.1.x` and "I could not tell what version I am" used to be the same
+/// bit pattern: both a real `0.1.x` release (however unlikely) and a
+/// detached-HEAD build with no tag and no `feature/vX.Y` branch produce the
+/// identical string `0.1.<count>`, and nothing downstream of `Version.string`
+/// could tell them apart. Task 651 needed exactly that distinction --
+/// `windows/host/src/update.rs` (and the macOS side, `GitHubUpdateChecker`)
+/// must refuse to compare against GitHub's releases when the version it
+/// would compare is a guess, because a fallback build is almost always
+/// *ahead* of the last tagged release, not behind it, and reporting "update
+/// available" would be telling the person to downgrade. Guessing from the
+/// numbers alone (`major == 0 and minor == 1`) would treat a real `0.1.x`
+/// tag the same as no tag at all, so the fact has to come from here, where
+/// it is actually known, rather than be reconstructed from its symptom.
+pub const Source = enum { tag, branch, fallback };
+
 pub const Version = struct {
     /// `0.1.71`, ready for `MARKETING_VERSION`.
     string: []const u8,
@@ -55,20 +73,27 @@ pub const Version = struct {
     /// nothing to put in it, and a word pretending to be a hash is worse
     /// than a missing row.
     commit: []const u8,
+
+    /// Where `major.minor` (the first two components of `string`) came from.
+    /// See `Source`'s doc comment for why a consumer cannot derive this from
+    /// `string` alone.
+    source: Source,
 };
 
 /// Work it out, or fall back to something honest.
 ///
 /// Never fails. A missing git, a tarball with no history, a clone without
-/// the fork point: all of them produce `0.1.0` with no commit, which reads
-/// as "a build that could not tell" rather than stopping a build that is
-/// otherwise fine.
+/// the fork point: all of them produce `0.1.0` with no commit and
+/// `source = .fallback`, which reads as "a build that could not tell" rather
+/// than stopping a build that is otherwise fine.
 pub fn detect(b: *std.Build) Version {
     const count = countCommits(b) orelse 0;
+    const mm = sourcedMajorMinor(b);
     return .{
-        .string = b.fmt("{d}.{d}.{d}", .{ major(b), minor(b), count }),
+        .string = b.fmt("{d}.{d}.{d}", .{ mm.major, mm.minor, count }),
         .count = count,
         .commit = shortHash(b) orelse "",
+        .source = mm.source,
     };
 }
 
@@ -128,14 +153,15 @@ fn versionFromBranch(b: *std.Build) ?MajorMinor {
     return .{ .major = maj, .minor = min };
 }
 
-/// **The tag first, then the branch.**
+/// **The tag first, then the branch, then the honest fallback -- and which
+/// of the three answers `major.minor`.**
 ///
-/// Both name the same thing, and they are available in different states.
-/// `git checkout <tag>` detaches HEAD, so the branch is gone exactly when
-/// somebody is building a release -- and asking only the branch made the same
-/// commit answer `0.4.484` for whoever tagged it and `0.1.484` for whoever
-/// checked that tag out. One commit, two versions, decided by how the reader
-/// arrived at it.
+/// Tag and branch name the same thing, and they are available in different
+/// states. `git checkout <tag>` detaches HEAD, so the branch is gone exactly
+/// when somebody is building a release -- and asking only the branch made the
+/// same commit answer `0.4.484` for whoever tagged it and `0.1.484` for
+/// whoever checked that tag out. One commit, two versions, decided by how the
+/// reader arrived at it.
 ///
 /// **Only `major.minor` comes from here.** The patch is a commit count and
 /// does not depend on either (`countCommits`), and nothing about a tag being
@@ -144,21 +170,14 @@ fn versionFromBranch(b: *std.Build) ?MajorMinor {
 /// string to say whether it and the core it loaded were built together. A
 /// tagged build is the one users get; it is the last one that should go
 /// quiet.
-fn versionFromHere(b: *std.Build) ?MajorMinor {
+const SourcedMajorMinor = struct { major: u32, minor: u32, source: Source };
+
+fn sourcedMajorMinor(b: *std.Build) SourcedMajorMinor {
     if (exactTag(b)) |name| {
-        if (versionFromTag(name)) |v| return v;
+        if (versionFromTag(name)) |v| return .{ .major = v.major, .minor = v.minor, .source = .tag };
     }
-    return versionFromBranch(b);
-}
-
-fn major(b: *std.Build) u32 {
-    const v = versionFromHere(b) orelse return fallback_major;
-    return v.major;
-}
-
-fn minor(b: *std.Build) u32 {
-    const v = versionFromHere(b) orelse return fallback_minor;
-    return v.minor;
+    if (versionFromBranch(b)) |v| return .{ .major = v.major, .minor = v.minor, .source = .branch };
+    return .{ .major = fallback_major, .minor = fallback_minor, .source = .fallback };
 }
 
 fn countCommits(b: *std.Build) ?u32 {

@@ -264,6 +264,108 @@ fn emit_provenance() {
     }
 }
 
+/// The fork point `PolterVersion.zig` counts commits from on the macOS side.
+///
+/// **Must stay equal to `fork_point` in `src/build/PolterVersion.zig`.**
+/// Duplicated rather than shared -- Cargo's build script and the Zig build
+/// do not call into each other -- so a release tag this host reports as
+/// `0.6.657` and a macOS bundle that reports `0.6.658` for the identically
+/// built commit means one of the two copies of this hash has drifted.
+const POLTER_FORK_POINT: &str = "f81dcadc82ea2afdcf2dc92929037701122f05b5";
+
+/// `POLTER_VERSION`, task 649's answer to "what does this host compare
+/// itself against". Mirrors `PolterVersion.zig`'s scheme exactly (tag on
+/// `HEAD` first, then the branch name, for `major.minor`; commits since
+/// `POLTER_FORK_POINT` for the patch) so the two sides read the same release
+/// tags the same way -- see that file's doc comment for why the number is
+/// computed this way rather than taken from `ghostty_info()`, which answers
+/// a different question (the *core's* version, for the host/core pairing
+/// check a few lines below this one; upstream Ghostty's own scheme, not
+/// Polter's).
+///
+/// Never fails: no git, no repository, no fork point in this history all
+/// fall back to `0.1.<commits-or-0>`, same as the macOS side's `0.1.0`
+/// fallback for the same reasons.
+///
+/// Also emits `POLTER_VERSION_SOURCE` (`tag` / `branch` / `fallback`) --
+/// task 651. `0.1.<count>` is the shape of both a genuine (if unlikely)
+/// `0.1.x` release and a detached-HEAD build with no tag and no
+/// `feature/vX.Y` branch, and `update.rs` needs to tell those apart: a
+/// fallback build is normally a dev checkout ahead of the last release, not
+/// behind it, and comparing its guessed version against GitHub would read as
+/// "update available" -- telling the person to downgrade. Guessing the
+/// source back from `major == 0 && minor == 1` would treat a real `0.1.x`
+/// tag identically to no tag at all, so the fact is carried out of whichever
+/// branch below actually decided it, the same way `PolterVersion.zig`'s
+/// `sourcedMajorMinor` does on the macOS side.
+fn emit_polter_version() {
+    let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+        .join("..")
+        .join("..");
+
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git").arg("-C").arg(&root).args(args).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
+
+    // Tag first, then branch, then the honest fallback -- and which of the
+    // three actually answered `major.minor`. `git checkout <tag>` detaches
+    // HEAD, which is exactly when somebody is building the release that tag
+    // names -- `PolterVersion.zig`'s `sourcedMajorMinor` carries the same
+    // three-way order for the same reason.
+    let (major, minor, source) = if let Some((maj, min)) = exact_tag_major_minor(&git) {
+        (maj, min, "tag")
+    } else if let Some((maj, min)) = branch_major_minor(&git) {
+        (maj, min, "branch")
+    } else {
+        (0, 1, "fallback")
+    };
+
+    let count: u32 = git(&["rev-list", "--count", &format!("{POLTER_FORK_POINT}..HEAD")])
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    println!("cargo:rustc-env=POLTER_VERSION={major}.{minor}.{count}");
+    println!("cargo:rustc-env=POLTER_VERSION_SOURCE={source}");
+}
+
+/// `v0.6.657` -> `Some((0, 6))`, read off an exact tag on `HEAD` if there is
+/// one. A tag naming no version (`tip`), or no tag at all, is `None` --
+/// asking the branch instead -- not an error.
+fn exact_tag_major_minor(git: &impl Fn(&[&str]) -> Option<String>) -> Option<(u32, u32)> {
+    let tag = git(&["describe", "--exact-match", "--tags"])?;
+    let rest = tag.strip_prefix('v')?;
+    let mut parts = rest.splitn(3, '.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    // A third (patch) component has to be there, or this is a tag like `v1`
+    // naming no release to guess a version from.
+    parts.next()?;
+    Some((major, minor))
+}
+
+/// `feature/v0.7` -> `Some((0, 7))`. Anything else, including a detached
+/// `HEAD`, is `None` and falls back to `0.1` in the caller.
+fn branch_major_minor(git: &impl Fn(&[&str]) -> Option<String>) -> Option<(u32, u32)> {
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if branch == "HEAD" {
+        return None;
+    }
+    let rest = branch.strip_prefix("feature/v")?;
+    let mut parts = rest.splitn(2, '.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
 /// Pick the Windows subsystem for each binary.
 ///
 /// # Why this is here and not `#![windows_subsystem]`
@@ -350,6 +452,7 @@ fn main() {
     // and a stamp that depends on the target is a stamp the reader has to
     // reason about.
     emit_provenance();
+    emit_polter_version();
 
     println!("cargo:rerun-if-changed=polter.rc");
     println!("cargo:rerun-if-changed=polter.manifest");

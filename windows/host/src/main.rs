@@ -144,6 +144,7 @@ mod termcolor;
 mod theme;
 mod tsf;
 mod uia;
+mod update;
 
 use ffi::*;
 use std::cell::RefCell;
@@ -3742,20 +3743,14 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             false
         }
 
-        // No updater in this host to ask. The main menu's `检查更新…` row is
-        // greyed with the same reason written beside it (`menu.rs`, `// greyed:`);
-        // this is that row's other door, and until now the two doors gave
-        // different answers.
-        // refuses: this host ships no updater, so there is nothing to ask.
-        ffi::ACTION_CHECK_FOR_UPDATES => {
-            // process-wide: whether an updater exists is a fact about the
-            // process, not about any one window
-            plogf!(
-                "[action] check_for_updates: this host ships no updater, so there is nothing \
-                 to ask. Owed, not inapplicable -- the greyed menu row says the same."
-            );
-            false
-        }
+        // **Task 649.** This used to refuse: the host shipped no updater and
+        // said so by name. `update.rs` now asks GitHub's releases API
+        // directly -- no Sparkle-equivalent, no download, no install, only a
+        // desktop notification when something newer exists. The main menu's
+        // `检查更新…` row moved out of `HostGap` the same way at the same
+        // time (`menu.rs`), and so did the palette's hidden entry
+        // (`palette.rs`'s `UNAVAILABLE`).
+        ffi::ACTION_CHECK_FOR_UPDATES => update::check(origin),
 
         // **`secure_input`, and it arrives without anybody pressing
         // anything.** `Surface.zig`'s `setPasswordInput` raises it whenever

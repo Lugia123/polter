@@ -399,21 +399,11 @@ const HELP_ROWS: &[Row] = &[
         enabled: Enable::No,
     },
     sep(),
-    // The core publishes `check_for_updates`, but block L is not built, so the
-    // row is greyed rather than removed. Removing it would make the missing
-    // updater indistinguishable from a decision never to have one.
-    // greyed: block L (the updater) is not built, so there is nothing behind
-    // this row. Kept visible on purpose: a missing row and a row that never
-    // existed look the same.
-    Row {
-        label: n_("Check for Updates…"),
-        action: Some("check_for_updates"),
-        sub: None,
-        personas: false,
-        check: None,
-        ready: Ready::HostGap("block L is not built"),
-        enabled: Enable::No,
-    },
+    // **Implemented (task 649).** This used to be greyed: block L (the
+    // updater) was not built. `update.rs` now asks GitHub's releases API
+    // directly on this row's action -- see `ffi::ACTION_CHECK_FOR_UPDATES`'s
+    // arm in `main.rs` for the rest.
+    act(n_("Check for Updates…"), "check_for_updates"),
     act(n_("Reload Configuration"), "reload_config"),
 ];
 
@@ -1658,12 +1648,13 @@ mod tests {
         }
     }
 
-    /// Two rows are greyed **always**, and the list is spelled out: when one
-    /// of them gets built, this test is what says "un-grey it" rather than the
+    /// One row is greyed **always**, and the list is spelled out: when it
+    /// gets built, this test is what says "un-grey it" rather than the
     /// menu quietly staying grey forever. The conditional one is next door.
-    /// It was three until task 564 built the language picker.
+    /// It was three until task 564 built the language picker, two until task
+    /// 649 built the updater and un-greyed «Check for Updates…».
     #[test]
-    fn the_greyed_rows_are_the_two_that_are_not_built() {
+    fn the_greyed_rows_are_the_one_that_is_not_built() {
         let mut greyed: Vec<_> = all_rows()
             .iter()
             .filter(|r| r.enabled == Enable::No)
@@ -1673,7 +1664,7 @@ mod tests {
         // Sorted, not in table order: this test is about *which* rows are
         // greyed. Pinning the traversal order here would make it fail the next
         // time a group is reordered, for a reason it does not care about.
-        let mut want = vec!["Check for Updates…", "Polter Help"];
+        let mut want = vec!["Polter Help"];
         want.sort_unstable();
         assert_eq!(greyed, want);
     }
@@ -1705,10 +1696,14 @@ mod tests {
         // in `main.rs`), so this is no longer a gap the host is waiting on. The
         // total does not move -- the row was already a leaf -- only which
         // bucket it is in.
+        //
+        // 649 moves «Check for Updates…» the same way: `update.rs` answers
+        // `ACTION_CHECK_FOR_UPDATES` for real now, so block L is no longer a
+        // gap either.
         assert_eq!(leaves.len(), 58);
-        assert_eq!(n(|r| matches!(r, Ready::Always)), 51, "unconditional rows");
+        assert_eq!(n(|r| matches!(r, Ready::Always)), 52, "unconditional rows");
         assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 5, "state-dependent rows");
-        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 2, "rows this host does not answer yet");
+        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 1, "rows this host does not answer yet");
     }
 
     /// Both non-trivial buckets have to say why, because the reason is what

@@ -71,6 +71,11 @@ features = [
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_OpenGL",
+    # `update.rs`'s GitHub releases check. WinHTTP over a hand-rolled socket
+    # client because it is already in every Windows image and it is what the
+    # rest of this host reaches for -- see `update.rs` for why this is not a
+    # `reqwest`/`ureq` dependency instead.
+    "Win32_Networking_WinHttp",
     "Win32_Security_Cryptography",
     # `WriteFile` and `GetStdHandle`, for the panic hook only. It reports
     # through the raw handles rather than `std::io::Stderr` because a panic

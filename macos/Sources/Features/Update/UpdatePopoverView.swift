@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import Sparkle
 
@@ -28,6 +29,9 @@ struct UpdatePopoverView: View {
 
             case .updateAvailable(let update):
                 UpdateAvailableView(update: update, dismiss: dismiss)
+
+            case .gitHubUpdateAvailable(let update):
+                GitHubUpdateAvailableView(update: update, dismiss: dismiss)
 
             case .downloading(let download):
                 DownloadingView(download: download, dismiss: dismiss)
@@ -211,6 +215,68 @@ private struct UpdateAvailableView: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+}
+
+/// **Only prompts.** Task 649: Polter has no appcast for Sparkle to check
+/// (see `GitHubUpdateChecker`), so this state carries a version and a URL
+/// instead of an `SUAppcastItem`, and there is no "Install and Relaunch"
+/// button here to match -- "View Release" just opens the GitHub page.
+private struct GitHubUpdateAvailableView: View {
+    let update: UpdateState.GitHubUpdateAvailable
+    let dismiss: DismissAction
+
+    private let labelWidth: CGFloat = 60
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(String(localized: "Update Available", comment: "更新弹出面板"))
+                    .font(.system(size: 13, weight: .semibold))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(String(localized: "Version:", comment: "更新弹出面板"))
+                            .foregroundColor(.secondary)
+                            .frame(width: labelWidth, alignment: .trailing)
+                        Text(update.version)
+                    }
+                    .font(.system(size: 11))
+
+                    if let date = update.publishedAt {
+                        HStack(spacing: 6) {
+                            Text(String(localized: "Released:", comment: "更新弹出面板"))
+                                .foregroundColor(.secondary)
+                                .frame(width: labelWidth, alignment: .trailing)
+                            Text(date.formatted(date: .abbreviated, time: .omitted))
+                        }
+                        .font(.system(size: 11))
+                    }
+                }
+                .textSelection(.enabled)
+            }
+
+            HStack(spacing: 8) {
+                Button(String(localized: "Later", comment: "更新弹出面板")) {
+                    update.dismiss()
+                    dismiss()
+                }
+                .controlSize(.small)
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button(String(localized: "View Release", comment: "更新弹出面板")) {
+                    NSWorkspace.shared.open(update.htmlURL)
+                    update.dismiss()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(16)
     }
 }
 

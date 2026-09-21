@@ -362,6 +362,11 @@ struct Unavailable {
 // Inspector" row, moved the same way at the same time. A row left here for an
 // action `cb_action` now handles is exactly what `test "the Windows palette
 // hides only what it must"` in `src/apprt/action.zig` exists to catch.
+//
+// `check_for_updates` left the same way in task 649: `update.rs` answers
+// `ACTION_CHECK_FOR_UPDATES` for real now (a GitHub releases check, prompt
+// only, no download), and `menu.rs`'s "Check for Updates…" row moved out of
+// `HostGap` at the same time.
 const UNAVAILABLE: &[Unavailable] = &[
     Unavailable {
         key: "show_gtk_inspector",
@@ -381,12 +386,6 @@ const UNAVAILABLE: &[Unavailable] = &[
         blocked_on: "toggle_window_decorations",
         why: "GTK client-side decorations -- `Binding.zig`: \"Only implemented on Linux.\" A \
               borderless window here would be a new feature, not this action.",
-    },
-    Unavailable {
-        key: "check_for_updates",
-        blocked_on: "check_for_updates",
-        why: "There is no updater in this host to ask. The main menu's `检查更新…` row is greyed \
-              for the same reason and says so; this is that row's other door.",
     },
     Unavailable {
         key: "toggle_background_opacity",

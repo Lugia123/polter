@@ -77,10 +77,28 @@ def main() -> int:
     cb = main_src[main_src.index("extern \"C\" fn cb_action") :]
     cb = cb[: cb.index("\n}\n")]
     arms = {}
+    # **Where the real `TAG =>` sits, not where the name is first typed.**
+    # A tag can be *named in prose* before its own arm exists -- the comment
+    # on `ACTION_RENDER_INSPECTOR` says by name that `ACTION_EXPORT_TERMINAL_IO`
+    # still refuses, and that sentence sits earlier in the file than
+    # `ACTION_EXPORT_TERMINAL_IO`'s own arm. `above` used to be sliced from
+    # `cb.index(tag)`, a bare substring search that found that earlier prose
+    # instead of the arm -- and it read as correct for months because the
+    # `// refuses:` comment on whichever arm happened to follow leaked into
+    # the *previous* arm's captured body (`nxt`'s regex boundary is the next
+    # literal `TAG =>`, so a comment sitting between two arms belongs, by this
+    # parser's own rule, to the one before it). Task 649 moved
+    # `ACTION_CHECK_FOR_UPDATES` from a refused arm to a real one right after
+    # `ACTION_EXPORT_TERMINAL_IO`, which removed the comment that had been
+    # accidentally covering for it and turned a false pass into the failure
+    # this recomputation exists to fix -- not by resurrecting a comment
+    # elsewhere, but by pointing `above` at the tag's own match.
+    arm_start = {}
     for m in re.finditer(r"(?:ffi::)?(ACTION_[A-Z0-9_]+) =>", cb):
         start = m.end()
         nxt = re.search(r"\n        (?:ffi::)?ACTION_[A-Z0-9_]+ =>|\n        _ =>", cb[start:])
         arms[m.group(1)] = cb[start : start + (nxt.start() if nxt else len(cb) - start)]
+        arm_start[m.group(1)] = m.start()
 
     probe_ok = struct_fields(header, "ghostty_action_new_tab_s") == 1
     print(
@@ -104,7 +122,11 @@ def main() -> int:
             continue  # this host has no arm for it; a different checker's job
         # The comment block above the arm is part of the arm for this
         # purpose: that is where `// refuses:` and the reason line live.
-        above = cb[: cb.index(tag)].rsplit("\n\n", 1)[-1] if tag in cb else ""
+        # Sliced from the arm's own match position (`arm_start`), not a bare
+        # substring search -- see the comment on `arm_start` above for why
+        # that distinction is load-bearing rather than cosmetic.
+        start_pos = arm_start.get(tag)
+        above = cb[:start_pos].rsplit("\n\n", 1)[-1] if start_pos is not None else ""
         context = above + body
         if HANDS_OFF.search(body):
             continue

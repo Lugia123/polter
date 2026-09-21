@@ -93,6 +93,9 @@
 "Downloading Update" = "正在下载更新";
 "Enable automatic updates?" = "开启自动更新？";
 "Execute a command…" = "执行一个命令…";
+"GitHub limits anonymous requests to 60 per hour; try again later." = "GitHub 限制匿名请求每小时 60 次；请稍后再试。";
+"GitHub returned an unexpected response (%@)." = "GitHub 返回了一个意外的响应（%@）。";
+"GitHub's response could not be read." = "无法读取 GitHub 的响应。";
 "Ignore" = "忽略";
 "Install and Relaunch" = "安装并重新启动";
 "Let a Supervisor Answer Prompts Here" = "允许总管在此终端替你回答权限询问";
@@ -117,10 +120,12 @@
 "Something went fatally wrong.\nCheck the logs and restart Polter." = "出了一个致命错误。\n看一下日志，然后重新启动 Polter。";
 "Tab Color" = "标签页颜色";
 "The update is ready. Please restart the application to complete the installation." = "更新已就绪。请重新启动应用以完成安装。";
+"This build's own version could not be determined (it was not built from a release tag or version branch), so it cannot be compared against GitHub's releases." = "无法确定这份构建自身的版本（它不是从发布标签或版本分支构建的），因此无法与 GitHub 上的发布版本比较。";
 "This terminal is in read-only mode. You can still view, select, and scroll through the content, but no input events will be sent to the running application." = "这个终端处于只读模式。你仍然可以查看、选择和滚动内容，但输入不会送给正在运行的程序。";
 "Update Available" = "有可用更新";
 "Update Failed" = "更新失败";
 "Version:" = "版本：";
+"View Release" = "查看发布版本";
 "You can't configure settings in the GUI yet. To modify settings, " = "目前还不能在图形界面里改设置。要修改设置，";
 "You're already running the latest version." = "你运行的已经是最新版本。";
 "You're running a debug build of Polter! Performance will be degraded." = "你运行的是 Polter 的调试构建！性能会下降。";

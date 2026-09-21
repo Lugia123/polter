@@ -251,6 +251,15 @@ KNOWN = {
     # template file it reads, and the template's name is the bundle id.
     "tools/translations-still-attach.py":
         "names the template file it reads, whose filename is the bundle id",
+    # Task 649/651: the GitHub releases API endpoint this fork's own update
+    # checker queries -- `api.github.com/repos/Lugia123/polter/releases/latest`.
+    # The repository owner is part of the URL itself, the same public identity
+    # already in the bundle id, the copyright line and the About window; there
+    # is no way to name this fork's own releases feed without it.
+    "macos/Sources/Features/Update/GitHubUpdateChecker.swift":
+        "GitHub releases API URL names this fork's own repository, Lugia123/polter",
+    "windows/host/src/update.rs":
+        "GitHub releases API URL names this fork's own repository, Lugia123/polter",
 }
 
 

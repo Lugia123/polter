@@ -48,6 +48,8 @@
 	</array>
 	<key>PolterCommit</key>
 	<string>$(POLTER_COMMIT)</string>
+	<key>PolterVersionSource</key>
+	<string>$(POLTER_VERSION_SOURCE)</string>
 	<key>LSEnvironment</key>
 	<dict>
 		<key>GHOSTTY_MAC_LAUNCH_SOURCE</key>

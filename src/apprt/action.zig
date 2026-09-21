@@ -1217,7 +1217,12 @@ pub const Action = union(Key) {
             }
             // The table has content and it was parsed. Zero rows and a table
             // this test could not read are the same reading otherwise.
-            try std.testing.expect(rows >= 5);
+            //
+            // 649 removes `check_for_updates` (implemented; see `update.rs`),
+            // the same way 648 removed `inspector` -- this floor moves from 5
+            // to 4 because the table really did shrink, not because the read
+            // weakened.
+            try std.testing.expect(rows >= 4);
             try std.testing.expectEqual(rows, listed.count());
 
             // **Every action is answered, one way or another.**

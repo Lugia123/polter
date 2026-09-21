@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import Sparkle
@@ -22,6 +23,8 @@ class UpdateViewModel: ObservableObject {
                 return "Update Available: \(version)"
             }
             return "Update Available"
+        case .gitHubUpdateAvailable(let update):
+            return "Update Available: \(update.version)"
         case .downloading(let download):
             if let expectedLength = download.expectedLength, expectedLength > 0 {
                 let progress = Double(download.progress) / Double(expectedLength)
@@ -61,7 +64,7 @@ class UpdateViewModel: ObservableObject {
             return "questionmark.circle"
         case .checking:
             return "arrow.triangle.2.circlepath"
-        case .updateAvailable:
+        case .updateAvailable, .gitHubUpdateAvailable:
             return "shippingbox.fill"
         case .downloading:
             return "arrow.down.circle"
@@ -88,6 +91,8 @@ class UpdateViewModel: ObservableObject {
             return "Please wait while we check for available updates"
         case .updateAvailable(let update):
             return update.releaseNotes?.label ?? "Download and install the latest version"
+        case .gitHubUpdateAvailable:
+            return "A newer release is available on GitHub"
         case .downloading:
             return "Downloading the update package"
         case .extracting:
@@ -112,6 +117,8 @@ class UpdateViewModel: ObservableObject {
         case .updateAvailable(let update):
             let version = update.appcastItem.displayVersionString
             return version.isEmpty ? nil : version
+        case .gitHubUpdateAvailable(let update):
+            return update.version
         case .downloading(let download):
             if let expectedLength = download.expectedLength, expectedLength > 0 {
                 let percentage = Double(download.progress) / Double(expectedLength) * 100
@@ -134,7 +141,7 @@ class UpdateViewModel: ObservableObject {
             return .white
         case .checking:
             return .secondary
-        case .updateAvailable:
+        case .updateAvailable, .gitHubUpdateAvailable:
             return .accentColor
         case .downloading, .extracting, .installing:
             return .secondary
@@ -150,7 +157,7 @@ class UpdateViewModel: ObservableObject {
         switch state {
         case .permissionRequest:
             return Color(nsColor: NSColor.systemBlue.blended(withFraction: 0.3, of: .black) ?? .systemBlue)
-        case .updateAvailable:
+        case .updateAvailable, .gitHubUpdateAvailable:
             return .accentColor
         case .notFound:
             return Color(nsColor: NSColor.systemBlue.blended(withFraction: 0.5, of: .black) ?? .systemBlue)
@@ -166,7 +173,7 @@ class UpdateViewModel: ObservableObject {
         switch state {
         case .permissionRequest:
             return .white
-        case .updateAvailable:
+        case .updateAvailable, .gitHubUpdateAvailable:
             return .white
         case .notFound:
             return .white
@@ -183,6 +190,11 @@ enum UpdateState: Equatable {
     case permissionRequest(PermissionRequest)
     case checking(Checking)
     case updateAvailable(UpdateAvailable)
+    /// A newer release exists on GitHub, found without Sparkle -- see
+    /// `GitHubUpdateChecker`'s doc comment for why this cannot carry an
+    /// `SUAppcastItem` the way `UpdateAvailable` does. There is no download
+    /// behind this state and confirming it only opens `htmlURL`.
+    case gitHubUpdateAvailable(GitHubUpdateAvailable)
     case notFound(NotFound)
     case error(Error)
     case downloading(Downloading)
@@ -241,6 +253,8 @@ enum UpdateState: Equatable {
             checking.cancel
         case .updateAvailable(let available):
             { available.reply(.dismiss) }
+        case .gitHubUpdateAvailable(let available):
+            available.dismiss
         case .downloading(let downloading):
             downloading.cancel
         case .notFound(let notFound):
@@ -262,6 +276,12 @@ enum UpdateState: Equatable {
         switch self {
         case .updateAvailable(let available):
             available.reply(.install)
+        case .gitHubUpdateAvailable(let available):
+            // No download to start -- confirming just takes the user to the
+            // release itself, which is all "只提示" ever asked this state to
+            // do.
+            NSWorkspace.shared.open(available.htmlURL)
+            available.dismiss()
         case .installing(let installing):
             // Remove appcastItem so we can restart without any other alerts.
             var suppressTerminationWarnings = installing
@@ -283,6 +303,8 @@ enum UpdateState: Equatable {
             return true
         case (.updateAvailable(let lUpdate), .updateAvailable(let rUpdate)):
             return lUpdate.appcastItem.displayVersionString == rUpdate.appcastItem.displayVersionString
+        case (.gitHubUpdateAvailable(let lUpdate), .gitHubUpdateAvailable(let rUpdate)):
+            return lUpdate.version == rUpdate.version
         case (.notFound, .notFound):
             return true
         case (.error(let lErr), .error(let rErr)):
@@ -319,6 +341,15 @@ enum UpdateState: Equatable {
             let currentCommit = Bundle.main.infoDictionary?["PolterCommit"] as? String
             return ReleaseNotes(displayVersionString: appcastItem.displayVersionString, currentCommit: currentCommit)
         }
+    }
+
+    /// `GitHubUpdateChecker`'s answer, once it has decided there is
+    /// something newer than the running build.
+    struct GitHubUpdateAvailable {
+        let version: String
+        let htmlURL: URL
+        let publishedAt: Date?
+        let dismiss: () -> Void
     }
 
     enum ReleaseNotes {
