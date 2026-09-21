@@ -273,6 +273,9 @@ fn create_context(owner: HWND, hdc: HDC) -> Option<HGLRC> {
         ..Default::default()
     };
     let format = unsafe { ChoosePixelFormat(hdc, &pfd) };
+    // not-gated: `format == 0` is the failure itself, not a suppressor --
+    // the line reports exactly the event its condition names, the same way
+    // a window class that would not register does.
     if format == 0 {
         hlogf!(owner, "[inspector] ChoosePixelFormat found no suitable format");
         return None;
