@@ -1178,6 +1178,25 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
         try s.write(r);
     }
 
+    // Same reason as `quiet_ms`/`rounds` above: absent means "nobody said",
+    // and a present `null` would invite a reader to compare against it.
+    // `TerminalInfo.window`/`.tab` document that contract; this function
+    // is what has to keep it, and until task 650 it silently did not --
+    // `rpc.zig`'s tests check the in-memory `Response.terminals[n].window`,
+    // which `describe`/the `place.window`/`place.tab` assignment already
+    // got right, so nothing exercised the one function that turns that
+    // struct into the bytes an agent actually reads. A Windows host that
+    // wrote real window/tab keys and a `terminal_list` caller that saw
+    // neither were both correct, about two different layers.
+    if (info.window) |w| {
+        try s.objectField("window");
+        try s.write(w);
+    }
+    if (info.tab) |t| {
+        try s.objectField("tab");
+        try s.write(t);
+    }
+
     try s.endObject();
 }
 
@@ -1524,6 +1543,29 @@ test "an unwatched terminal is placed, but not measured" {
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"quiet_ms\""));
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"rounds\""));
     try testing.expect(std.mem.indexOf(u8, out, "\"quiet_ms\":90000") != null);
+}
+
+test "grouping reaches the wire, not just the in-memory Response (task 650)" {
+    // `rpc.zig`'s own tests (e.g. "a terminal nobody grouped is null, not a
+    // group of its own") check `Response.terminals[n].window` directly and
+    // never call `writeTerminal` -- so they could not have caught `window`
+    // and `tab` being absent from every line ever sent to an agent, which is
+    // what a real Windows build's `terminal_list` response was until this
+    // test existed to fail on it.
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const list = [_]TerminalInfo{
+        .{ .id = 0x11, .window = 1, .tab = 3 },
+        .{ .id = 0x22 }, // nobody grouped this one: absent, not zero
+    };
+    try writeResponse(&w, .{ .terminals = &list });
+    const out = w.buffered();
+
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"window\""));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"tab\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"window\":1") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"tab\":3") != null);
 }
 
 test "group_history parses its cursor and its limit" {

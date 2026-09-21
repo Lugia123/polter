@@ -379,6 +379,14 @@ pub struct WindowState {
     /// The frame's `HWND`. `isize` rather than `HWND` because `State` has to
     /// be `Send` and a raw pointer is not.
     pub frame: isize,
+    /// This window's identity for `ghostty_action_poltergeist_grouping_s`
+    /// (task 581/650) -- out of `take_id()`, the same never-reused counter
+    /// `TabId`/`PaneId` come from, and for the same reason `HWND` cannot be
+    /// used here: a frame's `HWND` is recycled by Windows once the window is
+    /// destroyed, and a key that can come back for a different window is not
+    /// a key, it is an alias waiting for two windows to collide under it.
+    /// `take_id()` never goes backward, so this one cannot.
+    pub id: u64,
     pub tabs: Vec<Tab>,
     pub active: usize,
     /// The window's own queue of pending mutations.
@@ -496,6 +504,7 @@ impl WindowState {
     pub fn state_fields(&self) -> String {
         let WindowState {
             frame,
+            id,
             tabs,
             active,
             ops,
@@ -515,9 +524,10 @@ impl WindowState {
             .collect();
         let active_id = tabs.get(*active).map(|t| t.id.0).unwrap_or(0);
         format!(
-            "frame=0x{:x} tabs=[{}] active={} n={} panes={} ops={} min={}x{} max={}x{} \
+            "frame=0x{:x} id={} tabs=[{}] active={} n={} panes={} ops={} min={}x{} max={}x{} \
              prefullscreen={} scale={:.2} initial={} lastcwd={} lastlayout={}",
             frame,
+            id,
             listed.join(","),
             active_id,
             tabs.len(),
@@ -1524,12 +1534,19 @@ pub fn post_op(frame: HWND, op: Op, from: &'static str) {
 /// convention and an unnoticed second caller look the same from here.
 pub(crate) fn add_window(frame: HWND) {
     let key = frame.0 as isize;
+    // Taken before the closure below, not inside it: `take_id()` locks the
+    // same `STATE` mutex `with_windows_mut` already holds there, and this
+    // file's rule -- stated a few lines down, next to `wlogf!`'s own case of
+    // it -- is that no guard is held across a call that can take one. This
+    // one self-deadlocked on a real machine before the rule was followed.
+    let id = take_id();
     let n = with_windows_mut(|ws| {
         if ws.iter().any(|w| w.frame == key) {
             return None;
         }
         ws.push(WindowState {
             frame: key,
+            id,
             tabs: Vec::new(),
             active: 0,
             ops: Vec::new(),
@@ -4242,6 +4259,30 @@ pub fn tab_of_surface(surface: Surface) -> Option<(HWND, TabId)> {
                 .iter()
                 .find(|t| t.panes.iter().any(|p| p.surface == key))
                 .map(|t| (HWND(w.frame as *mut c_void), t.id))
+        })
+    })
+}
+
+/// Which window and which tab a surface is in, as the two opaque keys
+/// `ghostty_action_poltergeist_grouping_s` wants (task 581/650).
+///
+/// **`WindowState::id`, not `frame_of_surface`'s `HWND`.** The core's
+/// contract for this action says a key only has to be unique and comparable
+/// *right now*; an `HWND` meets that until the window closes and Windows
+/// hands the value to the next one created, which is exactly the alias the
+/// contract's "not stable across anything" warning is about. `WindowState::id`
+/// and `TabId` both come out of `take_id()`, which never goes backward, so
+/// two windows or two tabs never compare equal by accident.
+// window-free: keyed by surface, which is unique in the process -- this is the
+// function that turns such a key *into* a window
+pub fn grouping_of_surface(surface: Surface) -> Option<(u64, u64)> {
+    let key = surface as usize;
+    with_windows(|ws| {
+        ws.iter().find_map(|w| {
+            w.tabs
+                .iter()
+                .find(|t| t.panes.iter().any(|p| p.surface == key))
+                .map(|t| (w.id, t.id.0))
         })
     })
 }

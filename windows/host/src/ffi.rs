@@ -631,6 +631,16 @@ impl Action {
         usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *mut u32
     }
 
+    /// `ghostty_action_poltergeist_grouping_s { uint64_t* window; uint64_t*
+    /// tab; }` (task 581/650). Both pointer-sized and 8-aligned, so `window`
+    /// is at offset 0 and `tab` at offset 8 -- no padding between two
+    /// pointers of the same size.
+    pub fn as_poltergeist_grouping(&self) -> (*mut u64, *mut u64) {
+        let window = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *mut u64;
+        let tab = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *mut u64;
+        (window, tab)
+    }
+
     /// `ghostty_action_reload_config_s { bool soft; }`.
     ///
     /// **`soft` is the difference between two different jobs.** True means

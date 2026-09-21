@@ -3831,38 +3831,58 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // **There were four. `toggle_visibility` left this list in the same
         // merge that brought it here**, because task 302 built it -- which is
         // the list working as intended, and the reason the marker names a task
-        // rather than merely saying "owed".
+        // rather than merely saying "owed". `poltergeist_grouping` left the
+        // same way in 650, for 581 -- two remain (285, 286).
 
-        // **Looked at and deferred this round, with a reason -- not an
-        // oversight.** This host makes no transparent windows: it asks Windows
-        // for none of the extended styles that would allow one (the style is
-        // deliberately not named here so that grepping this tree for it still
-        // answers `no` -- `status.md` §85), and `Binding.zig` says of the
-        // action itself "This does nothing when `background-opacity` is set to
-        // 1 or above". Wiring the switch with nothing underneath it would
-        // produce a row that is offered, pressed, and does nothing.
-        // owed: 581 -- reviewed and deferred; this host has the tabs, not the answer.
+        // **Implemented (task 581/650).** This used to defer: the host could
+        // see which strip a surface was in (`tabs::panes_in_tab_of_surface`)
+        // but had no stable key to name a *window* by -- an `HWND` is reused
+        // the moment Windows destroys the window it named, and a key that
+        // comes back for a different window is not a key. `WindowState` now
+        // carries `id: u64` out of `take_id()`, the same never-reused counter
+        // `TabId`/`PaneId` already used, so both halves of the grouping are
+        // buildable the same way `poltergeist_tab_panes` above already is.
+        //
+        // ⚠️ **Leaving a cell alone is still a real answer.** `grouping_of_surface`
+        // returns `None` for a surface in no tracked tab (the quick
+        // terminal's), and that case still writes nothing -- zero stays zero,
+        // and `terminal_list` reports null rather than a fabricated grouping.
         ffi::ACTION_POLTERGEIST_GROUPING => {
-            // Leaving both cells alone is the honest answer and the core
-            // reads it as one: they arrive zero, an on-screen surface is in
-            // some window and some tab, so zero can only mean "not
-            // answered" -- and `terminal_list` then reports null rather than
-            // inventing a grouping. Same shape as the `poltergeist_tab_panes`
-            // arm above, which has the same permanent user in GTK.
-            //
-            // Not refused: this host does know which strip a surface is in
-            // (`tabs::panes_in_tab_of_surface` walks exactly that), so the
-            // answer is buildable here. What is missing is a stable key per
-            // strip and per window, which is a decision about identity and
-            // not a five-line change. Reviewed and not done, rather than
-            // missed.
-            alogf!(
-                origin,
-                "[action] poltergeist_grouping: deferred (task 581) -- this host can see the \
-                 strip a surface is in but has no stable key to name it by, so it answers \
-                 nothing and the listing reports null."
-            );
-            return false;
+            let (window_cell, tab_cell) = action.as_poltergeist_grouping();
+            if window_cell.is_null() || tab_cell.is_null() {
+                alogf!(origin, "[action] poltergeist_grouping: no result cell; not answered");
+                return false;
+            }
+            let Some(s) = target_surface(&target) else {
+                alogf!(
+                    origin,
+                    "[action] poltergeist_grouping with no surface (tag={}); not answered",
+                    target.tag
+                );
+                return false;
+            };
+            match tabs::grouping_of_surface(s) {
+                Some((window, tab)) => {
+                    unsafe {
+                        window_cell.write(window);
+                        tab_cell.write(tab);
+                    }
+                    alogf!(
+                        origin,
+                        "[action] poltergeist_grouping surface={:?} -> window={} tab={}",
+                        s, window, tab
+                    );
+                    true
+                }
+                None => {
+                    alogf!(
+                        origin,
+                        "[action] poltergeist_grouping surface={:?}: in no tracked tab; not answered",
+                        s
+                    );
+                    false
+                }
+            }
         }
 
         // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
