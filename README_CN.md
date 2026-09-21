@@ -120,3 +120,7 @@ Polter 加的是 `src/poltergeist/`、MCP 工具面、聊天 TUI、终端转录�
 构建看 [`dev-docs/preview-manual.md`](dev-docs/preview-manual.md)，设计推演在 [`dev-docs/poltergeist/`](dev-docs/poltergeist/README.md)。
 
 MIT 协议，和上游一样。
+
+---
+
+感谢 [LINUX DO](https://linux.do) 社区，Polter 最早在那里分享。

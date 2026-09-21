@@ -122,3 +122,7 @@ What Polter adds is `src/poltergeist/`, the MCP tool surface, the chat TUI, term
 Building is in [`dev-docs/preview-manual.md`](dev-docs/preview-manual.md); the design reasoning is under [`dev-docs/poltergeist/`](dev-docs/poltergeist/README.md).
 
 MIT, same as upstream.
+
+---
+
+Thanks to the [LINUX DO](https://linux.do) community, where Polter was first shared.
