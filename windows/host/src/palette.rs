@@ -355,18 +355,14 @@ struct Unavailable {
     why: &'static str,
 }
 
+// `inspector` left this table in task 648: `cb_action`'s `ACTION_INSPECTOR`
+// arm now does something real (`inspector.rs`, and the three
+// `ghostty_inspector_opengl_*` entry points this row's old `why` said did not
+// exist), so the row is no longer stale -- see `menu.rs`'s "Terminal
+// Inspector" row, moved the same way at the same time. A row left here for an
+// action `cb_action` now handles is exactly what `test "the Windows palette
+// hides only what it must"` in `src/apprt/action.zig` exists to catch.
 const UNAVAILABLE: &[Unavailable] = &[
-    Unavailable {
-        key: "inspector",
-        blocked_on: "inspector",
-        why: "The terminal inspector needs a renderer, and libghostty publishes none outside \
-              Apple: the three `ghostty_inspector_metal_*` entry points in `include/ghostty.h` \
-              sit inside `#ifdef __APPLE__`. **Narrower than \"the inspector is Apple-only\"**, \
-              which is false -- `ghostty_surface_inspector`, `_set_size`, `_key`, `_text` and \
-              the mouse entry points are all outside that guard. An inspector here is \"write a \
-              renderer backend\", not \"the C API will not let you\". This row was open until \
-              task 301: `cb_action` refused it by name and the palette went on offering it.",
-    },
     Unavailable {
         key: "show_gtk_inspector",
         blocked_on: "show_gtk_inspector",

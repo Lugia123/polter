@@ -1055,23 +1055,36 @@ pub const Action = union(Key) {
                 try std.testing.expect(raw_owed >= 1);
             }
             // **The comment skip's floor is one line, not a tally.** The real
-            // check on it is the `inspector` control below; this only makes
-            // sure that control is not vacuous -- with no prose naming an
-            // `ACTION_` anywhere, a broken skip would have nothing to trip on.
+            // check on it is the `export_terminal_io` control below; this
+            // only makes sure that control is not vacuous -- with no prose
+            // naming an `ACTION_` anywhere, a broken skip would have nothing
+            // to trip on.
             try std.testing.expect(commented_out >= 1);
             try std.testing.expect(performed.count() >= 55);
 
             // **The positive control for the comment skip, and it is a real
-            // one.** `inspector` is refused by name *and* named in two lines of
-            // prose in the same function. If the skip regresses, the prose
+            // one.** `export_terminal_io` is refused by name *and* named in
+            // prose elsewhere in `cb_action` -- the comment on the
+            // `ACTION_RENDER_INSPECTOR` arm explains that it is a different,
+            // still-refusing dependent. If the skip regresses, the prose
             // wins and this fails -- which is what happened before the skip
             // existed, silently.
-            if (performed.contains("inspector")) {
+            //
+            // `inspector` held this role until task 648. It was refused by
+            // name and named in prose in the same function, which is exactly
+            // what made it a real positive control -- but task 648 built the
+            // renderer that refusal was blocked on (see the comment on the
+            // `ACTION_INSPECTOR` arm), so `inspector` is now genuinely
+            // performed. Asserting it is still refused would fail this test
+            // on every future run for having done the work, not for a
+            // regression, which is the failure mode `export_terminal_io`
+            // does not have -- nothing in this task touches it.
+            if (performed.contains("export_terminal_io")) {
                 std.debug.print(
-                    "`inspector` is refused by name, but this test read it as performed. " ++
-                        "It is mentioned in prose inside `cb_action`; the comment skip above " ++
-                        "has stopped working, and every refusal named in a comment is now " ++
-                        "being counted as an implementation.\n",
+                    "`export_terminal_io` is refused by name, but this test read it as " ++
+                        "performed. It is mentioned in prose inside `cb_action`; the comment " ++
+                        "skip above has stopped working, and every refusal named in a comment " ++
+                        "is now being counted as an implementation.\n",
                     .{},
                 );
                 return error.CommentCountedAsArm;

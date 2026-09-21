@@ -1126,10 +1126,12 @@ pub const Inspector = struct {
 
     const Backend = enum {
         metal,
+        opengl3,
 
         pub fn deinit(self: Backend) void {
             switch (self) {
                 .metal => if (builtin.target.os.tag.isDarwin()) cimgui.ImGui_ImplMetal_Shutdown(),
+                .opengl3 => if (!builtin.target.os.tag.isDarwin()) cimgui.ImGui_ImplOpenGL3_ShutdownWithLoaderCleanup(),
             }
         }
     };
@@ -1228,6 +1230,54 @@ pub const Inspector = struct {
             command_buffer.value,
             encoder.value,
         );
+    }
+
+    /// Initialize the inspector for an OpenGL3 backend. The caller must
+    /// have already made the inspector's GL context current.
+    pub fn initOpenGL(self: *Inspector) bool {
+        cimgui.c.ImGui_SetCurrentContext(self.ig_ctx);
+
+        if (self.backend) |v| {
+            v.deinit();
+            self.backend = null;
+        }
+
+        if (!cimgui.ImGui_ImplOpenGL3_Init(null)) {
+            log.warn("failed to initialize opengl3 backend", .{});
+            return false;
+        }
+        self.backend = .opengl3;
+
+        log.debug("initialized opengl3 backend", .{});
+        return true;
+    }
+
+    /// Render the inspector using the OpenGL3 backend. The caller must
+    /// have already made the inspector's GL context current and must
+    /// swap buffers itself after this returns.
+    pub fn renderOpenGL(self: *Inspector) !void {
+        assert(self.backend == .opengl3);
+
+        // Setup our imgui frame. We need to render multiple frames to ensure
+        // ImGui completes all its state processing. I don't know how to fix
+        // this.
+        for (0..2) |_| {
+            cimgui.ImGui_ImplOpenGL3_NewFrame();
+            try self.newFrame();
+            cimgui.c.ImGui_NewFrame();
+
+            // Build our UI
+            render: {
+                const surface = &self.surface.core_surface;
+                const inspector = surface.inspector orelse break :render;
+                inspector.render(surface);
+            }
+
+            // Render
+            cimgui.c.ImGui_Render();
+        }
+
+        cimgui.ImGui_ImplOpenGL3_RenderDrawData(cimgui.c.ImGui_GetDrawData());
     }
 
     pub fn updateContentScale(self: *Inspector, x: f64, y: f64) void {
@@ -1512,6 +1562,8 @@ pub const CAPI = struct {
     comptime {
         if (builtin.target.os.tag.isDarwin()) {
             _ = Darwin;
+        } else {
+            _ = OpenGL3;
         }
     }
 
@@ -2467,6 +2519,28 @@ pub const CAPI = struct {
         }
 
         export fn ghostty_inspector_metal_shutdown(ptr: *Inspector) void {
+            if (ptr.backend) |v| {
+                v.deinit();
+                ptr.backend = null;
+            }
+        }
+    };
+
+    // OpenGL3 C APIs. This backend is linked in on all non-Darwin
+    // targets (see backend-opengl3 in src/build/SharedDeps.zig).
+    const OpenGL3 = struct {
+        export fn ghostty_inspector_opengl_init(ptr: *Inspector) bool {
+            return ptr.initOpenGL();
+        }
+
+        export fn ghostty_inspector_opengl_render(ptr: *Inspector) void {
+            return ptr.renderOpenGL() catch |err| {
+                log.err("error rendering inspector err={}", .{err});
+                return;
+            };
+        }
+
+        export fn ghostty_inspector_opengl_shutdown(ptr: *Inspector) void {
             if (ptr.backend) |v| {
                 v.deinit();
                 ptr.backend = null;

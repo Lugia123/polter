@@ -108,6 +108,7 @@ mod keybinds;
 mod keys;
 mod hud;
 mod i18n;
+mod inspector;
 mod keyseq;
 mod language;
 mod links;
@@ -2680,21 +2681,36 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             true
         }
 
-        // **Not built, and each says why rather than falling through.** A tag
-        // that reaches `_ => false` is indistinguishable from one that was
-        // never sent; these two lines are the difference between "this host
-        // does not do that yet" and "the menu is broken".
-        // refuses: libghostty publishes no inspector renderer outside Apple.
+        // **Implemented (task 648).** This used to refuse: libghostty's C API
+        // had no inspector *renderer* outside Apple's `ghostty_inspector_metal_*`,
+        // which sit inside `#ifdef __APPLE__` in `include/ghostty.h`. It now
+        // also has `ghostty_inspector_opengl_init/_render/_shutdown`
+        // (`src/apprt/embedded.zig`'s `Inspector.initOpenGL`/`renderOpenGL`),
+        // and `inspector.rs` is this host's side of them: its own `HWND`, its
+        // own WGL context -- never the renderer thread's, see `DRAW_ON_PAINT`'s
+        // doc comment above -- forwarding to the ten platform-neutral
+        // `ghostty_inspector_*` entry points.
+        //
+        // The payload is `ghostty_action_inspector_e` (toggle/show/hide),
+        // read via `as_i32()` and passed through rather than treated as a
+        // bare "open": `INSPECTOR_HIDE` closes one that is open, and
+        // `INSPECTOR_TOGGLE` (the keybind's usual mode) has to know which.
         ffi::ACTION_INSPECTOR => {
-            // process-wide: a fact about what libghostty publishes on this
-            // platform, the same for every window there will ever be
-            plogf!(
-                "[action] inspector requested (mode {}), but libghostty publishes no renderer for \
-                 it outside Apple: ghostty_inspector_metal_* in include/ghostty.h sits inside \
-                 #ifdef __APPLE__. Not a missing host feature -- a missing C API.",
-                action.as_i32()
-            );
-            false
+            let Some(s) = target_surface(&target) else {
+                // process-wide: an inspector belongs to one surface, and an
+                // action naming no surface has none to open
+                plogf!("[action] inspector requested with no target surface; ignored");
+                return false;
+            };
+            let Some(frame) = origin else {
+                // process-wide: `origin_window` found no registered frame for
+                // this surface, so there is no window this line could name
+                plogf!("[action] inspector requested for a surface in no tracked window; ignored");
+                return false;
+            };
+            wlogf!(frame, "[action] inspector requested, mode={}", action.as_i32());
+            inspector::request(frame, s, action.as_i32());
+            true
         }
         // **Two fields are the whole of it**, the same two `Ghostty.App.swift`'s
         // `openChat` sets: the command to run, and the flag that tells the core
@@ -3628,15 +3644,17 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             }
         }
 
-        // ---- task 281: the six that are answered by name, and refused ----
+        // ---- task 281: five, answered by name, and refused (was six until 648) ----
         //
         // **A refusal with a sentence, because the alternative is a number.**
         // Falling through to `_ =>` gets `[action] tag=30 is not implemented
         // by this host`, and from that line nobody can tell "this platform
         // has no such thing" from "nobody has built it yet" -- which are the
         // two answers a person filing a bug needs told apart. `ACTION_INSPECTOR`
-        // above has answered this way for as long as there has been an
-        // inspector question; these six join it.
+        // used to answer this way for as long as there was an inspector
+        // question; task 648 built the renderer that question was blocked on
+        // (see the comment on that arm), and `ACTION_RENDER_INSPECTOR` left
+        // with it, so this is five now, not six.
         //
         // **`false`, and that is the honest answer**: the core asked for
         // something and it did not happen. `action-arms-act.py` polices the
@@ -3644,7 +3662,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // and none of these does that.
         //
         // **They are still reachable, which is why they are worth writing.**
-        // Four of the six are hidden from the command palette now
+        // Four of the five are hidden from the command palette now
         // (`palette.rs`'s `UNAVAILABLE`), but a palette row is not the only
         // door: a keybinding reaches them, and so does
         // `src/poltergeist/actions.zig`'s `selfSafeTag`, which lets an agent
@@ -3690,33 +3708,29 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             false
         }
 
-        // **The inspector's two dependents, and the distinction in this
-        // comment is the one a reader will act on.** `ACTION_INSPECTOR` (29)
-        // above refuses because libghostty publishes no inspector *renderer*
-        // outside Apple. That is narrower than "the inspector is Apple-only",
-        // which is false: `ghostty_surface_inspector`, `_set_size`, `_key`,
-        // `_text` and the mouse entry points are all outside the
-        // `#ifdef __APPLE__` in `include/ghostty.h` -- only the three
-        // `ghostty_inspector_metal_*` are inside it. So an inspector here is
-        // "write a renderer backend", not "the C API will not let you".
+        // **The inspector's two dependents, no longer both refusing.**
+        // `ACTION_INSPECTOR` (29) above used to refuse because libghostty
+        // published no inspector *renderer* outside Apple; task 648 built one
+        // (see the comment on that arm), so `render_inspector` can now
+        // actually arrive: the core raises it from `queueInspectorRender` in
+        // `src/apprt/embedded.zig`, called from every `ghostty_inspector_*`
+        // input callback `inspector.rs` forwards to -- a mouse move over an
+        // open inspector fires this on the same call stack, synchronously,
+        // on the thread that owns the window, which is why this arm can
+        // invalidate the window directly rather than queuing.
         //
-        // Both of these can only arrive *after* an inspector exists -- the
-        // core raises `render_inspector` from `queueInspectorRender` in
-        // `src/apprt/embedded.zig`, and `export_terminal_io` from the
-        // inspector's own panel in `src/inspector/widgets/termio.zig`. With
-        // 29 refusing, neither can fire today. **They are arms anyway**: an
-        // action that cannot arrive and an action that arrives and is ignored
-        // are indistinguishable from the log, and the first one to be wrong
-        // about that would be whoever builds the renderer.
-        // refuses: there is no inspector here to render -- see the `inspector` arm.
-        ffi::ACTION_RENDER_INSPECTOR => {
-            alogf!(
-                origin,
-                "[action] render_inspector: no inspector exists here to render -- see the \
-                 `inspector` arm above. If this line ever appears, something built one."
-            );
-            false
-        }
+        // `ACTION_EXPORT_TERMINAL_IO` (32) below is a **different** dependent
+        // (the inspector's own IO-log panel, `src/inspector/widgets/termio.zig`)
+        // and still refuses -- it is not part of this task and gets no arm
+        // yet, on purpose: it would be a claim this host cannot back up today.
+        ffi::ACTION_RENDER_INSPECTOR => match target_surface(&target) {
+            Some(s) => inspector::request_render(s),
+            None => {
+                // process-wide: same reasoning as ACTION_INSPECTOR above
+                plogf!("[action] render_inspector requested with no target surface; ignored");
+                false
+            }
+        },
         // refuses: the IO log lives in the inspector, which this host does not render.
         ffi::ACTION_EXPORT_TERMINAL_IO => {
             alogf!(
@@ -4217,6 +4231,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let app = APP.load(Ordering::Acquire);
                 let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
                 tabs::run_ops(hwnd, app, hinst);
+                LRESULT(0)
+            }
+
+            // Queued inspector open/show/hide requests. Same reason as
+            // `tabs::WM_POLTER_OP` just above: `cb_action` may be on the
+            // core's thread, and creating or destroying a window off the
+            // thread that owns it is undefined.
+            inspector::WM_POLTER_INSPECTOR_OP => {
+                let hinst: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+                inspector::run_ops(hinst);
                 LRESULT(0)
             }
 
@@ -4824,6 +4848,19 @@ fn load_api() -> Option<Api> {
             translate: sym!(internal, "ghostty_translate"),
             codepoint_width: sym!(vt, "ghostty_unicode_codepoint_width"),
             grapheme_width: sym!(vt, "ghostty_unicode_grapheme_width"),
+            surface_inspector: sym!(internal, "ghostty_surface_inspector"),
+            inspector_free: sym!(internal, "ghostty_inspector_free"),
+            inspector_set_focus: sym!(internal, "ghostty_inspector_set_focus"),
+            inspector_set_content_scale: sym!(internal, "ghostty_inspector_set_content_scale"),
+            inspector_set_size: sym!(internal, "ghostty_inspector_set_size"),
+            inspector_mouse_button: sym!(internal, "ghostty_inspector_mouse_button"),
+            inspector_mouse_pos: sym!(internal, "ghostty_inspector_mouse_pos"),
+            inspector_mouse_scroll: sym!(internal, "ghostty_inspector_mouse_scroll"),
+            inspector_key: sym!(internal, "ghostty_inspector_key"),
+            inspector_text: sym!(internal, "ghostty_inspector_text"),
+            inspector_opengl_init: sym!(internal, "ghostty_inspector_opengl_init"),
+            inspector_opengl_render: sym!(internal, "ghostty_inspector_opengl_render"),
+            inspector_opengl_shutdown: sym!(internal, "ghostty_inspector_opengl_shutdown"),
         })
     }
 }
@@ -6113,6 +6150,11 @@ fn main() {
     };
     if unsafe { RegisterClassExW(&wc2) } == 0 {
         logf!("FATAL RegisterClassExW(surface) failed");
+        die();
+    }
+
+    if !inspector::register_class(hinst) {
+        logf!("FATAL RegisterClassExW(inspector) failed");
         die();
     }
 

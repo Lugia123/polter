@@ -19,6 +19,7 @@ use std::os::raw::c_char;
 pub type App = *mut c_void;
 pub type Config = *mut c_void;
 pub type Surface = *mut c_void;
+pub type Inspector = *mut c_void;
 
 // --- action tags we care about (values generated from ghostty.h) ---
 pub const ACTION_QUIT: u32 = 0;
@@ -375,6 +376,58 @@ pub const MOUSE_UNKNOWN: i32 = 0;
 pub const MOUSE_LEFT: i32 = 1;
 pub const MOUSE_RIGHT: i32 = 2;
 pub const MOUSE_MIDDLE: i32 = 3;
+
+// `ghostty_action_inspector_e`. `ACTION_INSPECTOR`'s payload (`as_i32`).
+pub const INSPECTOR_TOGGLE: i32 = 0;
+pub const INSPECTOR_SHOW: i32 = 1;
+pub const INSPECTOR_HIDE: i32 = 2;
+
+// `ghostty_input_action_e`.
+pub const KEY_RELEASE: i32 = 0;
+pub const KEY_PRESS: i32 = 1;
+pub const KEY_REPEAT: i32 = 2;
+
+// `ghostty_input_key_e` (task 648). Unlike `KeyEvent.keycode` (a raw
+// platform scancode the *core* decodes), `ghostty_inspector_key` takes this
+// enum directly -- this host has to do the decoding, the same as macOS's
+// `Ghostty.Input.Key(keyCode:)`. Values are ordinals counted off
+// `ghostty_input_key_e` in `include/ghostty.h`, machine-generated from the
+// header (not hand-counted) to avoid the class of bug
+// `ACTION_POLTERGEIST_LAYOUT`'s doc comment above warns about: a wrong
+// ordinal compiles, links, and silently dispatches into a different key.
+//
+// `KEY_A`, `KEY_DIGIT_0` and `KEY_F1` are anchors, not the whole alphabet:
+// both this enum and Win32's `VK_A..VK_Z` / `VK_0..VK_9` / `VK_F1..VK_F12`
+// run in the same order with no gaps, so `inspector::key_of` adds an offset
+// to one constant instead of this file naming all 48 -- fewer constants that
+// could individually be mistyped. The keys below don't have that property
+// (Win32's arrow-key ordinals and this enum's don't agree), so they are
+// named individually.
+pub const KEY_A: i32 = 20;
+pub const KEY_DIGIT_0: i32 = 6;
+pub const KEY_F1: i32 = 121;
+pub const KEY_ARROW_UP: i32 = 78;
+pub const KEY_ARROW_DOWN: i32 = 75;
+pub const KEY_ARROW_LEFT: i32 = 76;
+pub const KEY_ARROW_RIGHT: i32 = 77;
+pub const KEY_TAB: i32 = 64;
+pub const KEY_ENTER: i32 = 58;
+pub const KEY_ESCAPE: i32 = 120;
+pub const KEY_BACKSPACE: i32 = 53;
+pub const KEY_DELETE: i32 = 68;
+pub const KEY_SPACE: i32 = 63;
+pub const KEY_HOME: i32 = 71;
+pub const KEY_END: i32 = 69;
+pub const KEY_PAGE_UP: i32 = 74;
+pub const KEY_PAGE_DOWN: i32 = 73;
+pub const KEY_SHIFT_LEFT: i32 = 61;
+pub const KEY_SHIFT_RIGHT: i32 = 62;
+pub const KEY_CONTROL_LEFT: i32 = 56;
+pub const KEY_CONTROL_RIGHT: i32 = 57;
+pub const KEY_ALT_LEFT: i32 = 51;
+pub const KEY_ALT_RIGHT: i32 = 52;
+pub const KEY_META_LEFT: i32 = 59;
+pub const KEY_META_RIGHT: i32 = 60;
 
 pub const PLATFORM_WIN32: u32 = 3;
 
@@ -1303,6 +1356,31 @@ pub struct Api {
     /// using anything else makes the candidate window drift on exactly the
     /// characters an IME produces.
     pub grapheme_width: unsafe extern "C" fn(*const u32, usize, *mut u8) -> usize,
+
+    // --- inspector (task 648) ---
+    /// Get or create the inspector attached to a surface. Idempotent: a
+    /// second call for the same surface returns the same handle.
+    pub surface_inspector: unsafe extern "C" fn(Surface) -> Inspector,
+    /// Deactivate and free the surface's inspector, if it has one.
+    pub inspector_free: unsafe extern "C" fn(Surface),
+    pub inspector_set_focus: unsafe extern "C" fn(Inspector, bool),
+    pub inspector_set_content_scale: unsafe extern "C" fn(Inspector, f64, f64),
+    pub inspector_set_size: unsafe extern "C" fn(Inspector, u32, u32),
+    pub inspector_mouse_button: unsafe extern "C" fn(Inspector, i32, i32, i32),
+    pub inspector_mouse_pos: unsafe extern "C" fn(Inspector, f64, f64),
+    pub inspector_mouse_scroll: unsafe extern "C" fn(Inspector, f64, f64, i32),
+    /// Unlike `surface_key`, this takes the resolved `ghostty_input_key_e`
+    /// directly rather than a raw platform keycode: this host is the one
+    /// that has to know the mapping (see `inspector::key_of`), the same as
+    /// `Ghostty.Input.Key(keyCode:)` on macOS.
+    pub inspector_key: unsafe extern "C" fn(Inspector, i32, i32, i32),
+    pub inspector_text: unsafe extern "C" fn(Inspector, *const c_char),
+    /// The caller must have made the inspector's own GL context current
+    /// before calling any of these three -- this host's, never the
+    /// renderer thread's (see `DRAW_ON_PAINT`'s doc comment in main.rs).
+    pub inspector_opengl_init: unsafe extern "C" fn(Inspector) -> bool,
+    pub inspector_opengl_render: unsafe extern "C" fn(Inspector),
+    pub inspector_opengl_shutdown: unsafe extern "C" fn(Inspector),
 }
 
 #[cfg(test)]

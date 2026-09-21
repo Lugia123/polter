@@ -160,19 +160,6 @@ const fn act_state(label: &'static str, action: &'static str, why: &'static str)
     }
 }
 
-/// A row the core hands to this host, which does not answer it yet.
-const fn act_gap(label: &'static str, action: &'static str, why: &'static str) -> Row {
-    Row {
-        label,
-        action: Some(action),
-        sub: None,
-        personas: false,
-        check: None,
-        ready: Ready::HostGap(why),
-        enabled: Enable::Yes,
-    }
-}
-
 /// A row that runs a core action and shows a check mark for `flag`.
 const fn toggle(label: &'static str, action: &'static str, flag: Flag, ready: Ready) -> Row {
     Row { label, action: Some(action), sub: None, personas: false, check: Some(flag), ready, enabled: Enable::Yes }
@@ -295,17 +282,12 @@ const VIEW_ROWS: &[Row] = &[
     sep(),
     act(n_("Quick Terminal"), "toggle_quick_terminal"),
     sep(),
-    // **Blocked on the core's C API, not on host work.** The only inspector
-    // renderer libghostty publishes is `ghostty_inspector_metal_*`, and that
-    // block of `include/ghostty.h` sits inside `#ifdef __APPLE__`. The tag is
-    // handled now -- it says this in the log instead of falling through
-    // silently -- but there is nothing on Windows to render into.
-    act_gap(
-        n_("Terminal Inspector"),
-        "inspector:toggle",
-        "libghostty publishes no inspector renderer outside Apple (ghostty_inspector_metal_* is \
-         inside #ifdef __APPLE__)",
-    ),
+    // **Implemented (task 648).** This used to be greyed: the only inspector
+    // renderer libghostty published was `ghostty_inspector_metal_*`, inside
+    // `#ifdef __APPLE__` in `include/ghostty.h`. It now also publishes
+    // `ghostty_inspector_opengl_*`, and `inspector.rs` is this host's side of
+    // it -- see `ffi::ACTION_INSPECTOR`'s arm in `main.rs` for the rest.
+    act(n_("Terminal Inspector"), "inspector:toggle"),
 ];
 
 const AGENTS_ROWS: &[Row] = &[
@@ -1717,10 +1699,16 @@ mod tests {
         // do not. The persona submenu itself is **not** a leaf: it carries no
         // action, its children are built when the menu opens, and they take
         // ids out of `personas::ID_BASE` rather than out of this tree.
+        //
+        // 648 moves «Terminal Inspector» from `HostGap` to `Always`: libghostty
+        // now publishes `ghostty_inspector_opengl_*` (see `ffi::ACTION_INSPECTOR`
+        // in `main.rs`), so this is no longer a gap the host is waiting on. The
+        // total does not move -- the row was already a leaf -- only which
+        // bucket it is in.
         assert_eq!(leaves.len(), 58);
-        assert_eq!(n(|r| matches!(r, Ready::Always)), 50, "unconditional rows");
+        assert_eq!(n(|r| matches!(r, Ready::Always)), 51, "unconditional rows");
         assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 5, "state-dependent rows");
-        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 3, "rows this host does not answer yet");
+        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 2, "rows this host does not answer yet");
     }
 
     /// Both non-trivial buckets have to say why, because the reason is what

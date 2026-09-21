@@ -1564,6 +1564,15 @@ GHOSTTY_API void ghostty_inspector_metal_render(ghostty_inspector_t, void*, void
 GHOSTTY_API bool ghostty_inspector_metal_shutdown(ghostty_inspector_t);
 #endif
 
+// The OpenGL3 backend. The caller must make its inspector's GL context
+// current before calling any of these. Unlike the Metal backend above,
+// this is not gated behind a platform #ifdef: which platforms actually
+// link the OpenGL3 backend into the build is a build.zig decision (see
+// backend-opengl3 in src/build/SharedDeps.zig), not a header decision.
+GHOSTTY_API bool ghostty_inspector_opengl_init(ghostty_inspector_t);
+GHOSTTY_API void ghostty_inspector_opengl_render(ghostty_inspector_t);
+GHOSTTY_API void ghostty_inspector_opengl_shutdown(ghostty_inspector_t);
+
 // APIs I'd like to get rid of eventually but are still needed for now.
 // Don't use these unless you know what you're doing.
 GHOSTTY_API void ghostty_set_window_background_blur(ghostty_app_t, void*);
