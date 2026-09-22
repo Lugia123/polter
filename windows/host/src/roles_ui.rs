@@ -849,18 +849,20 @@ fn item_rows(v: &View, d: &Role, kind: ItemKind) -> Vec<Row> {
         out.push(note(err.clone(), 0));
     }
 
-    let (cue, title, keep_later, none) = match kind {
+    let (cue, title, keep_later, none, elsewhere) = match kind {
         ItemKind::Skill => (
             tr("Filter skills"),
             tr("Skills"),
             tr("Keep skills installed later"),
             tr("No skills are installed for this CLI."),
+            tr("This list is what the CLI has on this machine. A project's own skills aren't in it; at launch they follow the switch above."),
         ),
         ItemKind::Mcp => (
             tr("Filter MCP servers"),
             tr("MCP Servers"),
             tr("Keep MCP servers added later"),
             tr("No MCP servers are configured for this CLI."),
+            tr("This list is what the CLI has on this machine. A project's own MCP servers aren't in it; at launch they follow the switch above."),
         ),
     };
     out.push(Row {
@@ -899,6 +901,13 @@ fn item_rows(v: &View, d: &Role, kind: ItemKind) -> Vec<Row> {
         tr("What happens to anything that isn't listed here yet, such as something installed tomorrow or a project's own."),
         26,
     ));
+    // **What the window asks is not what a launch asks.** The inventory is
+    // the core's cache, read once per CLI with no directory; a launch asks
+    // again from the terminal's own, so a project's `.mcp.json` and
+    // `.claude/skills` are in that answer and never in this list. The role
+    // does cover them -- through the default above -- and a list that shows
+    // fewer things than the launch keeps has to say which it is.
+    out.push(note(elsewhere, 26));
 
     if all.is_empty() {
         out.push(row(vec![text(none, Tone::Dim, Font::Normal)]));
@@ -3931,6 +3940,35 @@ mod tests {
         let v = View { ed: &ed, clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
         let k = keys(&rows(&v));
         assert!(k.contains(&"seg:claude".to_string()) && k.contains(&"seg:codex".to_string()));
+    }
+
+    /// The list is the machine's, the launch is the terminal's, and the
+    /// difference is on the page rather than in a surprise at launch.
+    #[test]
+    fn both_item_tabs_say_that_a_projects_own_are_not_listed() {
+        let mut c = cat(&["r"]);
+        let mut ed = editing(&mut c);
+        let empty = HashSet::new();
+        let clis = snapshot();
+        let said = |ed: &Editor| {
+            let v = View { ed, clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+            rows(&v)
+                .iter()
+                .flat_map(|r| r.cells.iter())
+                .filter_map(|c| match &c.kind {
+                    Kind::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .find(|t| t.contains("aren't in it"))
+        };
+        ed.tab = Tab::Skills;
+        let skills = said(&ed).expect("the skills tab says it");
+        ed.tab = Tab::Mcp;
+        let mcp = said(&ed).expect("the MCP tab says it");
+        assert_ne!(skills, mcp, "each tab names the thing it lists");
+        // Not on Basics, which lists neither.
+        ed.tab = Tab::Basics;
+        assert_eq!(said(&ed), None);
     }
 
     #[test]

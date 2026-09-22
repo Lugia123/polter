@@ -2317,6 +2317,14 @@ msgstr "无法用这个角色启动"
 msgid "The roles file couldn't be read. Until it's fixed, what's in it isn't used."
 msgstr "角色文件读不出来，修好之前里面的内容不会生效。"
 
+#: windows/host/src/roles_ui.rs:858
+msgid "This list is what the CLI has on this machine. A project's own skills aren't in it; at launch they follow the switch above."
+msgstr "这里列的是这个 CLI 在本机装的东西，项目自带的 skill 不在其中；启动时它们按上面那个开关处理。"
+
+#: windows/host/src/roles_ui.rs:865
+msgid "This list is what the CLI has on this machine. A project's own MCP servers aren't in it; at launch they follow the switch above."
+msgstr "这里列的是这个 CLI 在本机装的东西，项目自带的 MCP 服务器不在其中；启动时它们按上面那个开关处理。"
+
 # Three ASCII dots, matching the agreed wording. Note this catalogue already carries «Rename Tab...» against «Rename Tab…» as two different things; do not merge these on the strength of them looking alike.
 #~ msgid "Role Editor..."
 #~ msgstr "角色编辑器…"
