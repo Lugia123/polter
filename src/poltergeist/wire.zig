@@ -230,6 +230,34 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             },
         },
 
+        .role_list => .role_list,
+        .role_put => .{
+            .role_put = .{
+                // **An object, written back out as text.** The host parses it
+                // with the same function that reads `personas.json`; handing it
+                // a string the caller typed would have been a second format
+                // (JSON inside a JSON string) that nobody writes correctly by
+                // hand.
+                .role = blk: {
+                    const given = params orelse return error.BadParams;
+                    const v = given.get("role") orelse return error.BadParams;
+                    if (v != .object) return error.BadParams;
+                    break :blk try std.json.Stringify.valueAlloc(aa, v, .{});
+                },
+            },
+        },
+        .role_delete => .{ .role_delete = .{
+            .key = try requireString(aa, params, "key"),
+        } },
+        .role_clis => .{ .role_clis = .{
+            .refresh = optionalBool(params, "refresh", false),
+        } },
+        .role_launch => .{ .role_launch = .{
+            .key = try requireString(aa, params, "key"),
+            .cli = (try optionalString(aa, params, "cli")) orelse "",
+            .cwd = (try optionalString(aa, params, "cwd")) orelse "",
+        } },
+
         .terminal_action => .{ .terminal_action = .{
             .id = try requireId(params),
             .action = try requireString(aa, params, "action"),
@@ -650,6 +678,13 @@ pub const Response = union(enum) {
     terminals: []const TerminalInfo,
     text: []const u8,
 
+    /// A JSON document built by the host, carried as it is under `result`.
+    ///
+    /// For answers whose shape belongs to somebody else -- the role library
+    /// is `personas.json`'s shape, a CLI's inventory is its adapter's -- so
+    /// that this file does not keep a second copy of either to drift.
+    json: []const u8,
+
     /// Which tools this terminal may see, and the version of that answer.
     ///
     /// Names, not definitions: the sidecar already holds the descriptions
@@ -776,6 +811,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.write(true);
             try s.objectField("text");
             try s.write(t);
+        },
+        .json => |raw| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("result");
+            try s.beginWriteRaw();
+            try s.writer.writeAll(raw);
+            s.endWriteRaw();
         },
         .persona_slot => |v| {
             try s.objectField("ok");
@@ -1844,4 +1887,35 @@ fn count(haystack: []const u8, needle: []const u8) usize {
     var i: usize = 0;
     while (std.mem.indexOfPos(u8, haystack, i, needle)) |at| : (i = at + needle.len) n += 1;
     return n;
+}
+
+test "role_put carries the role as the object that was sent, and nothing else" {
+    var p = try parse(
+        \\{"method":"role_put","params":{"role":{"key":"archer","name":"射手","clis":{"claude-code":{"skills":{"default":false,"except":["skill:pdf"]}}}}}}
+    );
+    defer p.deinit();
+    // Written back out, then read by the same parser as the file.
+    const persona = @import("persona.zig");
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const role = try persona.parsePersonaLeaky(arena.allocator(), p.value.role_put.role);
+    try testing.expectEqualStrings("射手", role.name);
+    try testing.expectEqualStrings("skill:pdf", role.clis[0].skills.except[0]);
+
+    // A role that is a string of JSON rather than an object is not a role:
+    // accepting it would be a second format that nobody writes correctly.
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"role_put","params":{"role":"{\"key\":\"a\"}"}}
+    ));
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"role_put","params":{}}
+    ));
+}
+
+test "a JSON answer is carried under result as it was built" {
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try writeResponse(&out.writer, .{ .json = "{\"a\":[1,2]}" });
+    // One line per answer: the newline is the frame.
+    try testing.expectEqualStrings("{\"ok\":true,\"result\":{\"a\":[1,2]}}\n", out.written());
 }

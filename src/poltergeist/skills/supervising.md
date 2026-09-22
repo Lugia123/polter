@@ -389,6 +389,23 @@ part of a chord. So a worker started without it stops at the first permission
 prompt, and stays stopped until a person is fetched at whatever hour it
 happens.
 
+### Starting a worker from a role
+
+A role is a saved way to start an agent CLI: which of its skills and MCP
+servers it keeps, what it is told on top of its system prompt, which model,
+which extra arguments. `role_list` shows the library, `role_clis` shows what
+each CLI has installed to choose from, `role_put` / `role_delete` edit the
+library -- you have the same powers over it as the user has in the role
+library window, so edit it the way they would: say in the group what you
+changed and why.
+
+`role_launch(key, cli?, cwd?)` opens **a new tab** (never a split beside
+you), gives it the role, and starts the CLI there. The reply carries its id;
+`set_watch` it if you mean to mind it. The permission-mode advice above still
+holds: a role that is to run unattended needs `--permission-mode auto` in its
+`args`, or it stops at the first prompt like any other worker. What went
+wrong, when something did, is printed in that tab -- `terminal_read` it.
+
 ### Where a worker lands is not yours to decide any more
 
 **You no longer say where a terminal goes, and you no longer need to.**

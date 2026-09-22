@@ -301,11 +301,50 @@ pub const Manifest = struct {
     /// declared parameters has none that the tool surface may set.
     params: []const ParamSpec = &.{},
 
+    /// Present when this plugin says it manages an agent CLI -- see
+    /// `AgentCli`. Absent for every other plugin, and for one whose section
+    /// did not read, which is logged.
+    agent_cli: ?AgentCli = null,
+
     /// The parameter by that name, if the manifest declares one.
     pub fn param(self: Manifest, name: []const u8) ?ParamSpec {
         for (self.params) |p| if (std.mem.eql(u8, p.name, name)) return p;
         return null;
     }
+};
+
+/// A plugin that manages an agent CLI.
+///
+/// ```json
+/// "agent_cli": { "label": "Claude Code", "bin": "claude",
+///                "adapter": "adapter.py", "adapter_windows": "adapter.ps1" }
+/// ```
+///
+/// **This is what makes the role system plugin-driven.** The core does not
+/// know what Claude Code is: it knows that some plugin said "I can list a
+/// CLI's skills and MCP servers, and I can turn a role into its command
+/// line", and it asks that plugin. A new CLI is a new plugin with the same
+/// two answers. The protocol is in `agent_cli.zig` and roles.md part
+/// eleven.
+///
+/// The CLI's key is the plugin's key. It has to be a valid persona key as
+/// well (`[a-z0-9-]`), because it is written into `personas.json` as the
+/// key of that CLI's choices; a plugin whose key is not gets no
+/// `agent_cli`, and says so in the log.
+pub const AgentCli = struct {
+    /// What a person calls the CLI: "Claude Code".
+    label: []const u8,
+
+    /// The program it starts, for "is it installed" and nothing else.
+    bin: []const u8,
+
+    /// Absolute path of the adapter this system would run, resolved the
+    /// same way as `exec`: `adapter_<os>` first, then `adapter`.
+    adapter: []const u8,
+
+    /// Whether this system can start `adapter`. Same meaning, and the same
+    /// reason for existing, as `Manifest.runnable`.
+    runnable: bool,
 };
 
 /// How this system starts a file of that kind.
@@ -513,7 +552,136 @@ pub fn load(
         },
         .wants = wantsOf(arena, key, obj),
         .params = specsOf(arena, key, obj),
+        .agent_cli = try agentCliOf(arena, key, dir, obj),
     };
+}
+
+/// What the manifest declares under `agent_cli`, or null.
+///
+/// Like `wants`, a section that does not read costs the section and not the
+/// plugin: the plugin may well do something else too (the Claude Code one
+/// also registers Polter with the CLI), and that half should keep working.
+fn agentCliOf(
+    arena: Allocator,
+    key: []const u8,
+    dir: []const u8,
+    obj: std.json.ObjectMap,
+) Allocator.Error!?AgentCli {
+    const a = switch (obj.get("agent_cli") orelse return null) {
+        .object => |o| o,
+        else => {
+            log.warn("plugin {s}: agent_cli is not an object; ignored", .{key});
+            return null;
+        },
+    };
+
+    if (!validCliKey(key)) {
+        log.warn(
+            "plugin {s}: agent_cli ignored -- a CLI's key must be lowercase " ++
+                "letters, digits and dashes, because it is written into personas.json",
+            .{key},
+        );
+        return null;
+    }
+
+    const os_key = "adapter_" ++ @tagName(builtin.os.tag);
+    const rel = stringField(a, os_key) orelse stringField(a, "adapter") orelse {
+        log.warn("plugin {s}: agent_cli has no adapter; ignored", .{key});
+        return null;
+    };
+    const abs = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, rel });
+
+    return .{
+        .label = stringField(a, "label") orelse stringField(obj, "name") orelse key,
+        .bin = stringField(a, "bin") orelse key,
+        .adapter = abs,
+        .runnable = launchable(abs),
+    };
+}
+
+/// `persona.isValidKey`, repeated rather than imported so that this file
+/// keeps its import list; the test beside it holds the two together.
+fn validCliKey(key: []const u8) bool {
+    if (key.len == 0 or key.len > 32) return false;
+    for (key) |c| switch (c) {
+        'a'...'z', '0'...'9', '-' => {},
+        else => return false,
+    };
+    return true;
+}
+
+/// Where plugins are looked for, nearest first: the user's
+/// `<config>/polter/plugins`, then the ones shipped with the app.
+///
+/// **One function for the app and for `+launch`.** A second copy of the
+/// search path in the command-line half would be a second answer to "which
+/// adapter is this", and the first time they differed a role would start
+/// with one plugin's idea of Claude Code and be edited with another's.
+pub fn searchPath(
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+) []const []const u8 {
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+
+    if (internal_os.xdg.config(
+        io,
+        alloc,
+        environ_map,
+        .{ .subdir = "polter/plugins" },
+    )) |base| {
+        out.append(alloc, base) catch {};
+    } else |_| {}
+
+    if (internal_os.resourcesDir(alloc)) |resources| {
+        if (resources.app_path) |app_path| {
+            if (std.fmt.allocPrint(
+                alloc,
+                "{s}/polter/plugins",
+                .{app_path},
+            )) |base| {
+                out.append(alloc, base) catch {};
+            } else |_| {}
+        }
+    } else |_| {}
+
+    return out.items;
+}
+
+/// One plugin's settings, nearest first: the user's
+/// `<config>/polter/plugins/<key>.json`, then a `settings.json` inside the
+/// plugin's own directory anywhere on the search path. See
+/// `Settings.readFirst` for why only the first one found is read.
+pub fn settingsFor(
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) Settings {
+    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+
+    if (internal_os.xdg.config(
+        io,
+        alloc,
+        environ_map,
+        .{ .subdir = "polter/plugins" },
+    )) |base| {
+        if (std.fmt.allocPrint(alloc, "{s}/{s}.json", .{ base, key })) |path| {
+            paths.append(alloc, path) catch {};
+        } else |_| {}
+    } else |_| {}
+
+    for (searchPath(alloc, io, environ_map)) |base| {
+        if (std.fmt.allocPrint(
+            alloc,
+            "{s}/{s}/settings.json",
+            .{ base, key },
+        )) |path| {
+            paths.append(alloc, path) catch {};
+        } else |_| {}
+    }
+
+    return Settings.readFirst(alloc, io, paths.items);
 }
 
 fn stringField(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -2380,5 +2548,74 @@ test "a manifest names the file for this system, and says so when there is none"
         const m = try load(alloc, io, dir);
         try testing.expect(!m.runnable);
         try testing.expectEqualStrings("foreign", m.key);
+    }
+}
+
+test "agent_cli: a plugin that manages a CLI says so, and one that does not is untouched" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-cli-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+
+    const cases = [_]struct { json: []const u8, has: bool }{
+        .{ .json =
+        \\{"key":"claude-code","exec":"p.sh","agent_cli":{"label":"Claude Code","bin":"claude","adapter":"adapter.py"}}
+        , .has = true },
+        // No section: nothing, and the plugin still loads.
+        .{ .json =
+        \\{"key":"archive","exec":"a.py"}
+        , .has = false },
+        // A key that could not go into personas.json: the section goes,
+        // the plugin stays.
+        .{ .json =
+        \\{"key":"Claude_Code","exec":"p.sh","agent_cli":{"adapter":"adapter.py"}}
+        , .has = false },
+        // No adapter to run.
+        .{ .json =
+        \\{"key":"x","exec":"p.sh","agent_cli":{"label":"X"}}
+        , .has = false },
+    };
+
+    for (cases) |c| {
+        var f = try d.createFile(io, "plugin.json", .{});
+        try f.writeStreamingAll(io, c.json);
+        f.close(io);
+
+        const m = try load(alloc, io, dir);
+        try testing.expectEqual(c.has, m.agent_cli != null);
+    }
+
+    var f = try d.createFile(io, "plugin.json", .{});
+    try f.writeStreamingAll(io, cases[0].json);
+    f.close(io);
+    const m = try load(alloc, io, dir);
+    const cli = m.agent_cli.?;
+    try testing.expectEqualStrings("Claude Code", cli.label);
+    try testing.expectEqualStrings("claude", cli.bin);
+    const want = try std.fmt.allocPrint(alloc, "{s}/adapter.py", .{dir});
+    try testing.expectEqualStrings(want, cli.adapter);
+}
+
+test "agent_cli: a CLI key is exactly a key personas.json accepts" {
+    const persona = @import("persona.zig");
+    const samples = [_][]const u8{
+        "claude-code", "codex",   "qwen-code",   "a",
+        "",            "Claude",  "claude_code", "claude.code",
+        "x" ** 32,     "x" ** 33,
+    };
+    for (samples) |k| {
+        try testing.expectEqual(persona.isValidKey(k), validCliKey(k));
     }
 }

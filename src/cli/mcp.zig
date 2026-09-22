@@ -703,6 +703,83 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "role_list",
+        .description = "Every role in the user's role library, in full. A role is a named " ++
+            "way to start an agent CLI: which of that CLI's own skills and MCP servers it " ++
+            "keeps, what it is told on top of its system prompt, which model. Each role " ++
+            "comes back in exactly the shape role_put takes, so reading one, changing a " ++
+            "field and writing it back is the whole edit. `loaded` false means the file " ++
+            "has not been read yet; `error` set means it does not parse and the list is " ++
+            "the last good one. Supervisor only, and a supervisor has the same powers over " ++
+            "roles as the user has in the role library window.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "role_put",
+        .description = "Add a role to the library, or replace the one with the same key " ++
+            "in place. `role` is one object: {key, name, description?, instructions?, " ++
+            "clis: {<cli>: {skills: {default, except: [ids]}, mcp: {default, except: " ++
+            "[ids]}, model?, args?}}}. `key` is lowercase letters, digits and dashes, at " ++
+            "most 32; it is how the role is launched. `<cli>` is a CLI key from role_clis " ++
+            "(e.g. claude-code) -- a role is only offered for the CLIs it has an entry " ++
+            "for. **`default` plus `except`, not a list of what is on**: default true " ++
+            "keeps everything except the listed ids, default false keeps nothing except " ++
+            "them, and anything installed later gets the default. Ids are the `id` " ++
+            "fields role_clis lists (`skill:pdf`, `mcp:argus`); an id that is not " ++
+            "installed is kept and ignored at launch. `instructions` is appended to the " ++
+            "agent's system prompt. `args` are extra command-line arguments, appended " ++
+            "as written. It is checked by the same rules as the file, and refused " ++
+            "whole if any part does not read. Terminals already wearing the role are " ++
+            "switched to the new version. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"role":{"type":"object","description":"One role, in the shape role_list returns."}},"required":["role"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "role_delete",
+        .description = "Delete a role from the library by its key. Terminals wearing it " ++
+            "are taken out of it; agents already running in them keep running. " ++
+            "Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "role_clis",
+        .description = "Which agent CLIs a role can start on this machine, and what each " ++
+            "has installed: every skill and MCP server with its `id` (what role_put's " ++
+            "`except` lists name), what it is for, and where it came from (user, " ++
+            "project, or plugin:<name>). A CLI is here because a plugin manages it; " ++
+            "`error` on one means its plugin could not answer. Read from a cache: " ++
+            "`stale` true means nothing has been read yet, `refreshing` true means a " ++
+            "newer answer is on its way -- ask again in a few seconds. Pass refresh: " ++
+            "true after installing something. Items marked `locked` are always kept " ++
+            "(Polter's own server). Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"refresh":{"type":"boolean","description":"Defaults to false"}},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "role_launch",
+        .description = "Open a new tab and start an agent CLI in it wearing a role -- the " ++
+            "same thing the user's \"Launch with Role\" menu does. The tab is given the " ++
+            "role, and `polter +launch <key> <cli>` is typed into it, which builds the " ++
+            "command line from the role (skills and MCP servers switched off, " ++
+            "instructions, model, extra args) and becomes the CLI. `cli` can be left out " ++
+            "when the role is set up for exactly one. `cwd` defaults to where you are " ++
+            "standing and must be an absolute path when given. The reply carries the new " ++
+            "terminal's `id`; mind it with set_watch if you mean to. **The CLI starts in " ++
+            "its ordinary permission mode** unless the role's args say otherwise, so a " ++
+            "worker that is to run unattended needs a role that starts it that way. If " ++
+            "something is wrong with the role or the CLI, the reason is printed in that " ++
+            "tab. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"}},"required":["key"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "terminal_action",
         .description = "Do to a terminal what the menu bar does. `action` is a Polter " ++
             "keybinding action, written exactly as a config file writes it: `new_tab`, " ++

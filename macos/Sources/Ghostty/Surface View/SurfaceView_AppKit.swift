@@ -1741,6 +1741,9 @@ extension Ghostty {
                 personasKnown: catalog.isKnown,
                 target: self))
 
+            // A new tab beside this terminal, running an agent CLI in a role.
+            menu.addItem(RoleLaunchMenu.makeItem(target: self))
+
             return menu
         }
 

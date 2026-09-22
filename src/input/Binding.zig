@@ -767,11 +767,12 @@ pub const Action = union(enum) {
     /// something it is not allowed to reach. Changing a persona changes what
     /// a terminal may do, which puts it in exactly that family.
     ///
-    /// ⚠️ **The set of personas is the user's and only the user's.** There
-    /// is no action here that creates or edits one, and no tool either --
-    /// see `dev-docs/poltergeist/roles.md` §7. A supervisor that could write
-    /// a persona could give a worker an MCP server the user never agreed to
-    /// and then use it through that worker.
+    /// ⚠️ **No action here creates or edits a persona.** The library is
+    /// edited in its own window and by the supervisor's `role_put` /
+    /// `role_delete`, which the user opened to the supervisor with their
+    /// own powers (`dev-docs/poltergeist/roles.md` part eleven) -- both
+    /// through `PersonaStore.put`, the one writer. A keybinding that edited
+    /// one would be a third way in that nobody decided on.
     poltergeist_persona_set: []const u8,
 
     /// Take this terminal out of any persona, back to handing out

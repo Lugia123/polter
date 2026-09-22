@@ -221,6 +221,15 @@ pub fn add(
         .root_source_file = b.path("plugins/claude-code/provision.sh"),
     });
 
+    // And the Claude Code adapter, which turns a role into a command line.
+    // What it prints is executed, so the test beside `agent_cli.zig` runs
+    // the shipped file against a made-up home and reads the argv back --
+    // the flags it emits were measured against a real `claude`, and this is
+    // what keeps the file saying what was measured.
+    step.root_module.addAnonymousImport("plugin_claude_code_adapter_py", .{
+        .root_source_file = b.path("plugins/claude-code/adapter.py"),
+    });
+
     // And `qwen-code`, for one property that has nothing to do with skills:
     // **the command line it builds for `qwen mcp add`.** That argument order
     // was wrong from the day the file was written -- `-e` is an array option

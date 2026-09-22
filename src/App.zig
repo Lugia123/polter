@@ -59,6 +59,10 @@ personas: poltergeistpkg.PersonaStore,
 /// the distinction the whole `stale` field exists for.
 personas_attempted: bool = false,
 
+/// What each agent CLI on this machine has installed, as its adapter plugin
+/// reports it. Filled on a thread of its own; see `agent_cli.Cache`.
+poltergeist_agent_clis: poltergeistpkg.agent_cli.Cache,
+
 /// What the terminals have said to each other. Separate from the bus
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
@@ -393,6 +397,7 @@ pub fn init(
         .config_conditional_state = .{},
         .poltergeist = .init(alloc, .{}),
         .personas = .{ .alloc = alloc },
+        .poltergeist_agent_clis = .init(alloc),
         .poltergeist_persona_waits = .{ .alloc = alloc, .io = global.io() },
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
@@ -437,6 +442,7 @@ pub fn deinit(self: *App) void {
     self.tasks.deinit();
     self.poltergeist.deinit();
     self.personas.deinit();
+    self.poltergeist_agent_clis.deinit(global.io());
     self.poltergeist_persona_waits.deinit();
 
     // Clean up our font group cache
@@ -1025,31 +1031,7 @@ fn pluginSearchPath(
     environ_map: *const std.process.Environ.Map,
 ) []const []const u8 {
     _ = self;
-
-    var out: std.ArrayListUnmanaged([]const u8) = .empty;
-
-    if (internal_os.xdg.config(
-        io,
-        alloc,
-        environ_map,
-        .{ .subdir = "polter/plugins" },
-    )) |base| {
-        out.append(alloc, base) catch {};
-    } else |_| {}
-
-    if (internal_os.resourcesDir(alloc)) |resources| {
-        if (resources.app_path) |app_path| {
-            if (std.fmt.allocPrint(
-                alloc,
-                "{s}/polter/plugins",
-                .{app_path},
-            )) |base| {
-                out.append(alloc, base) catch {};
-            } else |_| {}
-        }
-    } else |_| {}
-
-    return out.items;
+    return poltergeistpkg.Plugin.searchPath(alloc, io, environ_map);
 }
 
 /// One plugin's own settings file, nearest first.
@@ -1075,30 +1057,8 @@ fn pluginSettings(
     environ_map: *const std.process.Environ.Map,
     key: []const u8,
 ) poltergeistpkg.Plugin.Settings {
-    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
-
-    if (internal_os.xdg.config(
-        io,
-        alloc,
-        environ_map,
-        .{ .subdir = "polter/plugins" },
-    )) |base| {
-        if (std.fmt.allocPrint(alloc, "{s}/{s}.json", .{ base, key })) |path| {
-            paths.append(alloc, path) catch {};
-        } else |_| {}
-    } else |_| {}
-
-    for (self.pluginSearchPath(alloc, io, environ_map)) |base| {
-        if (std.fmt.allocPrint(
-            alloc,
-            "{s}/{s}/settings.json",
-            .{ base, key },
-        )) |path| {
-            paths.append(alloc, path) catch {};
-        } else |_| {}
-    }
-
-    return poltergeistpkg.Plugin.Settings.readFirst(alloc, io, paths.items);
+    _ = self;
+    return poltergeistpkg.Plugin.settingsFor(alloc, io, environ_map, key);
 }
 
 fn findPluginDir(
@@ -2139,6 +2099,155 @@ pub fn setSurfacePersona(
     self.refreshPoltergeistTabs();
 }
 
+/// Every role in the library, as JSON. The window and `role_list` both
+/// read this, so they cannot be told two different stories.
+pub fn personaCatalogJson(self: *App, alloc: Allocator) ![]u8 {
+    self.ensurePersonas();
+    const path = poltergeistpkg.PersonaStore.defaultPath(alloc) catch null;
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try self.personas.writeCatalogJson(&out.writer, path);
+    return try out.toOwnedSlice();
+}
+
+/// Write one role into the library. The window and `role_put` both come
+/// here; `PersonaStore.put` is the one writer underneath.
+pub fn putPersona(self: *App, json: []const u8) !void {
+    self.ensurePersonas();
+    const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try self.personas.put(global.io(), path, json);
+    self.personasChanged();
+}
+
+pub fn deletePersona(self: *App, key: []const u8) !void {
+    self.ensurePersonas();
+    const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try self.personas.remove(global.io(), path, key);
+    self.personasChanged();
+}
+
+/// After the library changed: every terminal wearing a role has just been
+/// re-dressed in the new version of it (`PersonaStore.rebindStates`), so
+/// every one of them is told, and every tab redrawn. Waking only the
+/// terminal whose window made the edit would leave the others handing out
+/// the old role with nobody noticing.
+fn personasChanged(self: *App) void {
+    var ids: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+    defer ids.deinit(self.alloc);
+    var it = self.personas.states.keyIterator();
+    while (it.next()) |id| ids.append(self.alloc, id.*) catch {};
+    for (ids.items) |id| self.wakePersonaWaits(id);
+    self.refreshPoltergeistTabs();
+}
+
+/// What each agent CLI here offers, as JSON (`agent_cli.Cache`). A copy of
+/// the cache; `refresh` starts a new read on its own thread first.
+pub fn agentClisJson(self: *App, alloc: Allocator, refresh: bool) ![]u8 {
+    if (refresh) self.poltergeist_agent_clis.refresh(global.io());
+    return try self.poltergeist_agent_clis.snapshot(global.io(), alloc);
+}
+
+pub const LaunchPersonaError = error{
+    NoSuchPersona,
+    NotSetUpForCli,
+    NoCli,
+    ChooseCli,
+    /// The tab was asked for and had not appeared by the time the call came
+    /// back, so there was nothing to type into.
+    NotYetOpen,
+    NoExecutable,
+};
+
+/// Open a tab beside `by`, put it in the role, and start the CLI there.
+///
+/// Everything that can be refused is refused **before** the tab opens: a
+/// role that does not exist, or that is not set up for the CLI asked for,
+/// must not leave an empty tab behind as its only answer.
+///
+/// What is typed is `'<this executable>' +launch <role> <cli>` and a
+/// return. Both keys are `[a-z0-9-]` by construction, so the only thing
+/// that needs quoting is the path, and it is quoted for a POSIX shell.
+pub fn launchPersona(
+    self: *App,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    key: []const u8,
+    cli: []const u8,
+    cwd: []const u8,
+) !poltergeistpkg.Bus.Id {
+    self.ensurePersonas();
+    const p = self.personas.set.find(key) orelse return error.NoSuchPersona;
+    const chosen: []const u8 = if (cli.len > 0)
+        (p.cli(cli) orelse return error.NotSetUpForCli).cli
+    else switch (p.clis.len) {
+        0 => return error.NoCli,
+        1 => p.clis[0].cli,
+        else => return error.ChooseCli,
+    };
+
+    // Copied now: opening a tab runs the runtime, and nothing here should
+    // hold a slice into the library across that.
+    const role_key = try alloc.dupe(u8, p.key);
+    const cli_key = try alloc.dupe(u8, chosen);
+
+    const io = global.io();
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe = exe_buf[0 .. std.process.executablePath(io, &exe_buf) catch
+        return error.NoExecutable];
+
+    var line: std.Io.Writer.Allocating = .init(alloc);
+    try line.writer.writeAll("'");
+    for (exe) |c| {
+        if (c == '\'') try line.writer.writeAll("'\\''") else try line.writer.writeByte(c);
+    }
+    try line.writer.print("' +launch {s} {s}", .{ role_key, cli_key });
+
+    const id = (try poltergeistOpenTerminal(self, alloc, cwd, by, .tab)) orelse
+        return error.NotYetOpen;
+
+    self.setSurfacePersona(id, role_key) catch |err| {
+        log.warn("poltergeist: launched {s} but could not mark the tab err={}", .{ role_key, err });
+    };
+
+    const surface = self.findSurfaceByID(id) orelse return error.NotYetOpen;
+    try surface.typePoltergeistText(line.written(), true);
+    return id;
+}
+
+fn poltergeistPersonaCatalog(ctx: *anyopaque, alloc: Allocator) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.personaCatalogJson(alloc);
+}
+
+fn poltergeistPersonaPut(ctx: *anyopaque, json: []const u8) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.putPersona(json);
+}
+
+fn poltergeistPersonaDelete(ctx: *anyopaque, key: []const u8) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.deletePersona(key);
+}
+
+fn poltergeistAgentClis(ctx: *anyopaque, alloc: Allocator, refresh: bool) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.agentClisJson(alloc, refresh);
+}
+
+fn poltergeistPersonaLaunch(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    key: []const u8,
+    cli: []const u8,
+    cwd: []const u8,
+) anyerror!poltergeistpkg.Bus.Id {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.launchPersona(alloc, by, key, cli, cwd);
+}
+
 /// Take a terminal out of any persona, back to handing out everything.
 pub fn clearSurfacePersona(self: *App, id: poltergeistpkg.Bus.Id) !void {
     self.ensurePersonas();
@@ -2243,6 +2352,11 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .sendText = poltergeistSend,
         .agentPresent = poltergeistAgentPresent,
         .personaFace = poltergeistPersonaFace,
+        .personaCatalog = poltergeistPersonaCatalog,
+        .personaPut = poltergeistPersonaPut,
+        .personaDelete = poltergeistPersonaDelete,
+        .agentClis = poltergeistAgentClis,
+        .personaLaunch = poltergeistPersonaLaunch,
         .personaSlot = poltergeistPersonaSlot,
         .sendKey = poltergeistSendKey,
         .performAction = poltergeistPerformAction,

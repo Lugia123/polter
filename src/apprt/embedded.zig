@@ -1617,7 +1617,8 @@ pub const CAPI = struct {
     /// its own buffer.
     ///
     /// The strings belong to the core and are valid until the next call or
-    /// the next config reload; copy them before doing anything else.
+    /// the next write to the role library (a save in its window, or a
+    /// supervisor's `role_put`); copy them before doing anything else.
     ///
     /// ⚠️ **Zero is an answer, not an absence.** Zero personas and "the
     /// file has not been read" are different things and the interface has
@@ -1732,6 +1733,130 @@ pub const CAPI = struct {
             b[json.len] = 0;
         };
         return json.len;
+    }
+
+    /// Write `json` into the caller's buffer by the persona buffer rule:
+    /// the real length back, one NUL after it when it fits.
+    fn copyJsonOut(json: []const u8, buf: ?[*]u8, cap: usize) usize {
+        if (buf) |b| if (json.len + 1 <= cap) {
+            @memcpy(b[0..json.len], json);
+            b[json.len] = 0;
+        };
+        return json.len;
+    }
+
+    /// Say why a call failed: the error's name, NUL-terminated, cut to fit.
+    /// A name rather than a sentence because the sentence is the
+    /// interface's to write, in the user's language.
+    fn copyErrorOut(err: anyerror, buf: ?[*]u8, cap: usize) void {
+        const b = buf orelse return;
+        if (cap == 0) return;
+        const name = @errorName(err);
+        const n = @min(name.len, cap - 1);
+        @memcpy(b[0..n], name[0..n]);
+        b[n] = 0;
+    }
+
+    /// What a render that threw answers with. An error named as one, not an
+    /// empty library: "you have no roles" is a sentence the window already
+    /// has, and it would be a lie here.
+    const catalog_fallback =
+        \\{"loaded":false,"error":"the role library could not be rendered","path":null,"personas":[]}
+    ;
+    const clis_fallback =
+        \\{"stale":true,"refreshing":false,"clis":[]}
+    ;
+
+    /// Every role in the library, as JSON: `PersonaStore.writeCatalogJson`,
+    /// the same document `role_list` answers with. Same buffer rule as
+    /// `ghostty_surface_persona_face`.
+    export fn ghostty_app_persona_catalog(
+        app: *App,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const core = app.core_app;
+        const json = core.personaCatalogJson(core.alloc) catch
+            return copyJsonOut(catalog_fallback, buf, cap);
+        defer core.alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
+    /// Add or replace one role (`json` is one persona object). False, with
+    /// the reason's name in `err`, when it was not written; nothing about
+    /// the library changes then.
+    export fn ghostty_app_persona_put(
+        app: *App,
+        json: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.putPersona(json[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
+    export fn ghostty_app_persona_delete(
+        app: *App,
+        key: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.deletePersona(key[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
+    /// What each agent CLI here offers, as JSON (`agent_cli.Cache`). A copy
+    /// of a cache: this never runs anything on the calling thread. With
+    /// `refresh`, a new read starts on its own thread first, and the answer
+    /// says `refreshing` until it lands.
+    export fn ghostty_app_agent_clis(
+        app: *App,
+        refresh: bool,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const core = app.core_app;
+        const json = core.agentClisJson(core.alloc, refresh) catch
+            return copyJsonOut(clis_fallback, buf, cap);
+        defer core.alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
+    /// Open a tab beside this terminal and start a CLI in it wearing a role
+    /// -- what "Launch with Role" does, and the same path `role_launch`
+    /// takes. `cli` may be empty for a role set up for exactly one. The new
+    /// tab starts where this one is standing.
+    export fn ghostty_surface_persona_launch(
+        surface: *Surface,
+        key: [*]const u8,
+        key_len: usize,
+        cli: [*]const u8,
+        cli_len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        const core = surface.core_surface.app;
+        var arena: std.heap.ArenaAllocator = .init(core.alloc);
+        defer arena.deinit();
+        _ = core.launchPersona(
+            arena.allocator(),
+            surface.core_surface.id,
+            key[0..key_len],
+            cli[0..cli_len],
+            "",
+        ) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
     }
 
     export fn ghostty_app_free(v: *App) void {

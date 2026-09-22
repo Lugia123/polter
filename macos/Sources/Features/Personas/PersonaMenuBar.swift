@@ -30,6 +30,11 @@ final class PersonaMenuBar: NSObject, NSMenuDelegate {
     /// The nib's item. Weak: the nib owns it, this only fills it in.
     private weak var item: NSMenuItem?
 
+    /// `Launch with Role ▸`, put right under `Role ▸` by `attach`. Made in
+    /// code rather than in the nib because it is rebuilt on every open
+    /// anyway and has no title of its own to translate there.
+    private var launchItem: NSMenuItem?
+
     /// Take over the item `MainMenu.xib` holds for the role submenu.
     func attach(to item: NSMenuItem) {
         self.item = item
@@ -37,6 +42,12 @@ final class PersonaMenuBar: NSObject, NSMenuDelegate {
         // The menu the item is *in*, i.e. Agents -- see the note above on
         // which menu's opening has to be the trigger.
         item.menu?.delegate = self
+
+        if let menu = item.menu {
+            let launch = RoleLaunchMenu.makeItem(target: nil)
+            menu.insertItem(launch, at: menu.index(of: item) + 1)
+            launchItem = launch
+        }
 
         // Filled in once here as well, so the item is never a dead row: a
         // menu bar item with no submenu is greyed out, and greyed-out reads
@@ -71,6 +82,10 @@ final class PersonaMenuBar: NSObject, NSMenuDelegate {
             personas: catalog.personas,
             personasKnown: catalog.isKnown,
             target: surface)
+
+        if let launchItem {
+            RoleLaunchMenu.configure(launchItem, target: surface)
+        }
     }
 
     /// The terminal the menu bar is about.

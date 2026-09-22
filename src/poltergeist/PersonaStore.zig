@@ -6,13 +6,18 @@
 //! reads `personas.json`, keeps the parsed result, and holds one
 //! `persona.State` per terminal.
 //!
-//! **Read only, and that is the enforcement rather than a habit.** There is
-//! no path in this file that opens `personas.json` for writing, because
-//! `dev-docs/poltergeist/roles.md` §7 requires a persona to be a closed set
-//! the user defines: a tool that could edit one would be a tool that grants
-//! a terminal capabilities the user never agreed to. The constraint is
-//! "there is nothing here that writes", which cannot be forgotten, rather
-//! than "nothing calls the writer", which can.
+//! **One writer.** `put` and `remove` are the only code in Polter that
+//! writes `personas.json`, and both go the same way: build the new set,
+//! write it whole to a temporary file, rename it into place, then read it
+//! back through `load` -- the same parser a hand-edited file goes through.
+//! So nothing can reach the file that the reader would refuse, and what the
+//! terminals are wearing afterwards is what the file says, not what the
+//! writer meant.
+//!
+//! This file used to have no write path at all, on purpose: roles.md §7
+//! kept roles a closed set only the user could define. The user decided
+//! the supervisor gets the same powers over roles as they have (roles.md
+//! part eleven), so the window and the `role_*` tools both come here.
 
 const PersonaStore = @This();
 
@@ -170,12 +175,20 @@ pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
     }
 
     // Only now, with a whole good set in hand, is the old one dropped.
-    if (self.arena) |*a| a.deinit();
+    var old = self.arena;
     self.arena = arena;
     self.set = set;
     self.names = names;
     self.loaded = true;
     self.setError(null);
+
+    // ⚠️ **Before the old arena goes.** Every terminal's state borrows its
+    // key and its face from the set it was given, so freeing the arena
+    // under them leaves each one pointing at freed memory -- silently,
+    // until the next tab refresh reads a key. That could not happen while
+    // the file was read once per run; it happens on every edit now.
+    self.rebindStates();
+    if (old) |*a| a.deinit();
 
     if (set.ignored_denies.len > 0) {
         // Not an error -- the file loaded -- but the user asked for
@@ -186,6 +199,127 @@ pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
             .{set.ignored_denies.len},
         );
     }
+}
+
+/// Point every terminal's state at the set that was just installed.
+///
+/// A terminal wearing a role that still exists is put back into it -- the
+/// role was edited, and what it is wearing should be the edit, which also
+/// bumps its roster so a waiting agent hears about it. One wearing a role
+/// that is gone is taken out of it, rather than left claiming a name the
+/// menu no longer has.
+fn rebindStates(self: *PersonaStore) void {
+    var it = self.states.valueIterator();
+    while (it.next()) |state| {
+        const key = state.key orelse {
+            state.effective = .{};
+            continue;
+        };
+        if (self.set.find(key)) |p| state.setPersona(p) else state.clear();
+    }
+}
+
+pub const WriteError = error{
+    /// The file on disk does not parse right now. Writing would replace
+    /// whatever the user was halfway through with our copy of the last
+    /// good one, so it is refused until they fix it or delete it.
+    FileUnreadable,
+
+    /// The role sent does not pass the same rules as the file.
+    BadPersona,
+
+    NoSuchPersona,
+
+    /// Written, and then reading it back failed. Should not happen -- the
+    /// writer and the reader are one pair -- and is said rather than
+    /// assumed because it is the one outcome that means a bug here.
+    WriteNotLoaded,
+
+    CouldNotWrite,
+    OutOfMemory,
+};
+
+/// Add a role, or replace the one with the same key where it stands.
+///
+/// `json` is one persona object, in the shape the file uses for one.
+pub fn put(self: *PersonaStore, io: std.Io, path: []const u8, json: []const u8) WriteError!void {
+    if (self.load_error != null) return error.FileUnreadable;
+
+    var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+    defer scratch.deinit();
+    const sa = scratch.allocator();
+
+    const p = persona.parsePersonaLeaky(sa, json) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.BadPersona,
+    };
+    const set = try persona.withPersona(sa, self.set, p);
+    try self.commit(io, path, set);
+}
+
+/// Delete a role. Terminals wearing it are taken out of it.
+pub fn remove(self: *PersonaStore, io: std.Io, path: []const u8, key: []const u8) WriteError!void {
+    if (self.load_error != null) return error.FileUnreadable;
+
+    var scratch: std.heap.ArenaAllocator = .init(self.alloc);
+    defer scratch.deinit();
+    const set = (try persona.withoutPersona(scratch.allocator(), self.set, key)) orelse
+        return error.NoSuchPersona;
+    try self.commit(io, path, set);
+}
+
+fn commit(self: *PersonaStore, io: std.Io, path: []const u8, set: persona.Set) WriteError!void {
+    var out: std.Io.Writer.Allocating = .init(self.alloc);
+    defer out.deinit();
+    persona.writeSet(&out.writer, set) catch return error.OutOfMemory;
+
+    writeReplacing(self.alloc, io, path, out.written()) catch |err| {
+        log.warn("poltergeist: could not write {s}: {t}", .{ path, err });
+        return error.CouldNotWrite;
+    };
+
+    self.load(io, path);
+    if (self.load_error != null) return error.WriteNotLoaded;
+}
+
+/// Write `bytes` to `path` by way of a temporary file beside it, so a
+/// reader -- or a crash -- never sees half a file.
+fn writeReplacing(alloc: Allocator, io: std.Io, path: []const u8, bytes: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    if (std.fs.path.dirname(path)) |dir| try cwd.createDirPath(io, dir);
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const tmp = try std.fmt.allocPrint(alloc, "{s}.{x}.tmp", .{ path, &raw });
+    defer alloc.free(tmp);
+
+    {
+        var f = try cwd.createFile(io, tmp, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, bytes);
+    }
+    cwd.rename(tmp, cwd, path, io) catch |err| {
+        cwd.deleteFile(io, tmp) catch {};
+        return err;
+    };
+}
+
+/// Every role in full, as the library window and `role_list` read them.
+///
+/// `loaded` and `error` ride along for the reason `writeFaceJson` gives
+/// them: an empty list, a file nobody has read yet and a file that did not
+/// parse are three different things to tell a person.
+pub fn writeCatalogJson(self: *const PersonaStore, w: *std.Io.Writer, path: ?[]const u8) !void {
+    try w.print("{{\"loaded\":{},\"error\":", .{self.loaded});
+    if (self.load_error) |e| try w.print("{f}", .{std.json.fmt(e, .{})}) else try w.writeAll("null");
+    try w.writeAll(",\"path\":");
+    if (path) |p| try w.print("{f}", .{std.json.fmt(p, .{})}) else try w.writeAll("null");
+    try w.writeAll(",\"personas\":[");
+    for (self.set.personas, 0..) |p, i| {
+        if (i > 0) try w.writeAll(",");
+        try persona.writePersona(w, p);
+    }
+    try w.writeAll("]}");
 }
 
 fn readAll(alloc: Allocator, io: std.Io, path: []const u8) ![]u8 {
@@ -591,4 +725,125 @@ test "personas: a worn persona has a name to show, and a deleted one still has i
     // getting nothing rather than by getting an empty string, which would
     // draw as a persona with a blank label.
     try testing.expectEqual(@as(?NamePair, null), store.cName("scribe"));
+}
+
+test "personas: a role put through the writer is in the file and in the set" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    // A directory that does not exist yet: the first role anybody makes is
+    // also the first time the file exists.
+    const path = try std.fmt.allocPrint(aa, "{s}/sub/personas.json", .{dir});
+
+    var store: PersonaStore = .{ .alloc = testing.allocator };
+    defer store.deinit();
+    store.load(io, path);
+
+    try store.put(io, path,
+        \\{"key":"archer","name":"射手","clis":{"claude-code":{"skills":{"default":false}}}}
+    );
+    try store.put(io, path,
+        \\{"key":"scribe","name":"书记"}
+    );
+    try testing.expectEqual(@as(usize, 2), store.set.personas.len);
+    try testing.expectEqualStrings("射手", store.cName("archer").?.name);
+
+    // The file is what the next start reads, so it is checked, not the
+    // memory.
+    var fresh: PersonaStore = .{ .alloc = testing.allocator };
+    defer fresh.deinit();
+    fresh.load(io, path);
+    try testing.expectEqual(@as(usize, 2), fresh.set.personas.len);
+    try testing.expect(!fresh.set.personas[0].clis[0].skills.default);
+
+    try testing.expectError(error.BadPersona, store.put(io, path,
+        \\{"key":"Bad Key","name":"x"}
+    ));
+    try testing.expectError(error.NoSuchPersona, store.remove(io, path, "nobody"));
+    try store.remove(io, path, "archer");
+    try testing.expectEqual(@as(usize, 1), store.set.personas.len);
+}
+
+test "personas: a file that does not parse is not overwritten" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const path = try std.fmt.allocPrint(aa, "{s}/personas.json", .{dir});
+
+    // Somebody is halfway through editing it by hand.
+    const half = "{\"version\":2,\"personas\":[{\"key\":\"mine\",\"name\":";
+    try write(io, path, half);
+
+    var store: PersonaStore = .{ .alloc = testing.allocator };
+    defer store.deinit();
+    store.load(io, path);
+    try testing.expect(store.load_error != null);
+
+    try testing.expectError(error.FileUnreadable, store.put(io, path,
+        \\{"key":"archer","name":"a"}
+    ));
+    try testing.expectError(error.FileUnreadable, store.remove(io, path, "mine"));
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, path, aa, .limited(max_bytes));
+    try testing.expectEqualStrings(half, after);
+}
+
+test "personas: after an edit a terminal wears the edit, and a deleted role comes off" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const path = try std.fmt.allocPrint(aa, "{s}/personas.json", .{dir});
+
+    var store: PersonaStore = .{ .alloc = testing.allocator };
+    defer store.deinit();
+    store.load(io, path);
+    try store.put(io, path,
+        \\{"key":"archer","name":"a","skills":["one"]}
+    );
+    try store.put(io, path,
+        \\{"key":"scribe","name":"s"}
+    );
+
+    const a: Bus.Id = 0x1111;
+    const b: Bus.Id = 0x2222;
+    try store.setPersona(a, "archer");
+    try store.setPersona(b, "scribe");
+    const roster_before = store.stateOf(a).roster;
+
+    // Edit archer. Its old strings are freed by this; the state has to be
+    // reading the new ones.
+    try store.put(io, path,
+        \\{"key":"archer","name":"a","skills":["two","three"]}
+    );
+    const sa = store.stateOf(a);
+    try testing.expectEqualStrings("archer", sa.key.?);
+    try testing.expectEqual(@as(usize, 2), sa.effective.skills.len);
+    try testing.expectEqualStrings("two", sa.effective.skills[0]);
+    try testing.expect(sa.roster > roster_before);
+    try testing.expect(!sa.deviated(store.set));
+
+    try store.remove(io, path, "scribe");
+    try testing.expectEqual(@as(?[]const u8, null), store.stateOf(b).key);
+    try testing.expectEqualStrings("archer", store.stateOf(a).key.?);
 }

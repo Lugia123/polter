@@ -26,6 +26,7 @@ const toggle_quick_terminal = @import("toggle_quick_terminal.zig");
 const chat = @import("chat.zig");
 const mcp = @import("mcp.zig");
 const mcp_slot = @import("mcp_slot.zig");
+const launch = @import("launch.zig");
 const global = @import("../global.zig");
 
 /// Special commands that can be invoked via CLI flags. These are all
@@ -97,6 +98,10 @@ pub const Action = enum {
     // One upstream MCP server behind one slot, exposed to this terminal
     // according to its role. See `cli/mcp_slot.zig`.
     @"mcp-slot",
+
+    // Become an agent CLI wearing a role. Typed into a new terminal by
+    // "Launch with Role" and `role_launch`. See `cli/launch.zig`.
+    launch,
 
     pub fn detectSpecialCase(arg: []const u8) ?SpecialCase(Action) {
         // If we see a "-e" and we haven't seen a command yet, then
@@ -301,6 +306,7 @@ pub const Action = enum {
             .chat => try chat.run(alloc),
             .mcp => try mcp.run(alloc),
             .@"mcp-slot" => try mcp_slot.run(alloc),
+            .launch => try launch.run(alloc),
         };
     }
 
@@ -347,6 +353,7 @@ pub const Action = enum {
                 .chat => chat.Options,
                 .mcp => mcp.Options,
                 .@"mcp-slot" => mcp_slot.Options,
+                .launch => launch.Options,
             };
         }
     }

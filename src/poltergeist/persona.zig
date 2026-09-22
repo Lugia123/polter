@@ -8,12 +8,14 @@
 //!
 //! Two things live here and they are not the same thing:
 //!
-//!   * **The set** -- what the user wrote in `personas.json`. Read only,
-//!     never written by Polter. That is not tidiness: `roles.md` §7 requires
-//!     a persona to be a closed set the *user* defines, and the way that is
-//!     enforced is that **no write path exists**. A tool that could edit one
-//!     would be a tool that grants a terminal capabilities the user never
-//!     agreed to.
+//!   * **The set** -- what is in `personas.json`. Since version 2 Polter
+//!     writes it as well as reading it: the role library window and the
+//!     supervisor's `role_put` / `role_delete` both go through
+//!     `PersonaStore.put`, which is the one writer. `roles.md` §7 used to
+//!     forbid any write path, on the grounds that editing a role grants a
+//!     terminal capabilities; the user decided the supervisor gets the same
+//!     powers as they have (roles.md part eleven), so the rule is now "one
+//!     writer, every edit validated by the same parser that reads".
 //!   * **The effective set** (`Face`) -- what a given terminal is actually
 //!     handing out right now. Choosing a persona resets it; switching one
 //!     skill on or off moves it alone. The two drifting apart is the state
@@ -40,7 +42,14 @@ pub const max_key_len = 32;
 /// version there is nothing that tells "a file from an older Polter" apart
 /// from "a file with a mistake in it" -- and those two want opposite
 /// answers.
-pub const supported_version: u32 = 1;
+pub const supported_version: u32 = 2;
+
+/// Whether a file of this version can be read. Version 1 is version 2
+/// without `description`, `instructions` and `clis`, so it reads as a
+/// version 2 file with those empty; it is written back as version 2.
+pub fn versionKnown(n: i64) bool {
+    return n == 1 or n == supported_version;
+}
 
 pub const ParseError = error{
     /// Not JSON, or not an object at the top.
@@ -110,6 +119,61 @@ pub const Persona = struct {
     /// and never acted on here.
     hint_disable_host_plugins: []const []const u8 = &.{},
     hint_model: ?[]const u8 = null,
+
+    /// One line for a person choosing between roles. Shown, never sent to
+    /// an agent.
+    description: ?[]const u8 = null,
+
+    /// Text the agent is started with, on top of its own system prompt.
+    /// Handed to the adapter at launch, which decides the flag
+    /// (`--append-system-prompt` for Claude Code).
+    instructions: ?[]const u8 = null,
+
+    /// What this role picks from each agent CLI it can be started in, in
+    /// the order written. A CLI with no entry here is not offered for this
+    /// role.
+    clis: []const CliChoice = &.{},
+
+    pub fn cli(self: Persona, key: []const u8) ?CliChoice {
+        for (self.clis) |c| {
+            if (std.mem.eql(u8, c.cli, key)) return c;
+        }
+        return null;
+    }
+};
+
+/// Which of a CLI's own skills or MCP servers a role leaves on.
+///
+/// **A default plus exceptions, not a list of what is on.** A list of
+/// what is on cannot tell "the user unticked this" from "this did not exist
+/// when the role was written" -- and both happen all the time: a project's
+/// skills only exist in that project, and the user installs things. The
+/// person picks which of the two a new arrival should get, once, as
+/// `default`; `except` is what they ticked the other way.
+///
+/// Ids are the adapter's (`skill:pdf`, `mcp:argus`) and opaque here.
+pub const Selection = struct {
+    default: bool = true,
+    except: []const []const u8 = &.{},
+
+    pub fn enabled(self: Selection, id: []const u8) bool {
+        for (self.except) |e| {
+            if (std.mem.eql(u8, e, id)) return !self.default;
+        }
+        return self.default;
+    }
+};
+
+/// A role's choices for one agent CLI.
+pub const CliChoice = struct {
+    /// The adapter plugin's `agent_cli` key, e.g. `claude-code`.
+    cli: []const u8,
+    skills: Selection = .{},
+    mcp: Selection = .{},
+    /// Passed to the adapter, which knows the flag.
+    model: ?[]const u8 = null,
+    /// Appended to the command line as written.
+    args: []const []const u8 = &.{},
 };
 
 /// Everything `personas.json` declared, in the order it declared it.
@@ -257,7 +321,7 @@ pub fn parseLeaky(aa: Allocator, bytes: []const u8) ParseError!Set {
     };
 
     const version: u32 = switch (root.get("version") orelse return error.BadVersion) {
-        .integer => |n| if (n == supported_version)
+        .integer => |n| if (versionKnown(n))
             @intCast(n)
         else
             return error.BadVersion,
@@ -273,59 +337,10 @@ pub fn parseLeaky(aa: Allocator, bytes: []const u8) ParseError!Set {
     var ignored: std.ArrayList([]const u8) = .empty;
 
     for (list.items) |entry| {
-        const obj = switch (entry) {
-            .object => |o| o,
-            else => return error.BadField,
-        };
-
-        const key = try requireString(obj, "key");
-        if (!isValidKey(key)) return error.BadField;
-        for (personas.items) |p| {
-            if (std.mem.eql(u8, p.key, key)) return error.DuplicateKey;
+        const p = try personaOf(aa, entry, &ignored);
+        for (personas.items) |q| {
+            if (std.mem.eql(u8, q.key, p.key)) return error.DuplicateKey;
         }
-
-        var tools: Tools = .{};
-        if (obj.get("tools")) |tv| switch (tv) {
-            .object => |t| {
-                if (t.get("allow") != null) tools.allow = try stringArray(aa, t, "allow");
-                const deny = try stringArray(aa, t, "deny");
-
-                // The floor is applied here rather than at lookup time so
-                // that the interface has something to show. A deny that is
-                // quietly ignored and a deny that was honoured look the
-                // same from outside.
-                var kept: std.ArrayList([]const u8) = .empty;
-                for (deny) |d| {
-                    if (isFloorTool(d)) {
-                        try ignored.append(aa, d);
-                    } else {
-                        try kept.append(aa, d);
-                    }
-                }
-                tools.deny = try kept.toOwnedSlice(aa);
-            },
-            .null => {},
-            else => return error.BadField,
-        };
-
-        var p: Persona = .{
-            .key = key,
-            .name = try requireString(obj, "name"),
-            .prompt = try optionalString(obj, "prompt"),
-            .skills = try stringArray(aa, obj, "skills"),
-            .mcp = try stringArray(aa, obj, "mcp"),
-            .tools = tools,
-        };
-
-        if (obj.get("hint")) |hv| switch (hv) {
-            .object => |h| {
-                p.hint_disable_host_plugins = try stringArray(aa, h, "disable_host_plugins");
-                p.hint_model = try optionalString(h, "model");
-            },
-            .null => {},
-            else => return error.BadField,
-        };
-
         try personas.append(aa, p);
     }
 
@@ -334,6 +349,255 @@ pub fn parseLeaky(aa: Allocator, bytes: []const u8) ParseError!Set {
         .personas = try personas.toOwnedSlice(aa),
         .ignored_denies = try ignored.toOwnedSlice(aa),
     };
+}
+
+/// Read one persona on its own, as `role_put` and the library window send
+/// it.
+///
+/// **The same rules as the file, because it is the same function.** A
+/// second validator for "one role arriving by itself" would be the second
+/// reader the contract warns about: the looser of the two decides what can
+/// get into the file.
+pub fn parsePersonaLeaky(aa: Allocator, bytes: []const u8) ParseError!Persona {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, aa, bytes, .{}) catch
+        return error.Malformed;
+    var ignored: std.ArrayList([]const u8) = .empty;
+    return personaOf(aa, parsed, &ignored);
+}
+
+fn personaOf(
+    aa: Allocator,
+    entry: std.json.Value,
+    ignored: *std.ArrayList([]const u8),
+) ParseError!Persona {
+    const obj = switch (entry) {
+        .object => |o| o,
+        else => return error.BadField,
+    };
+
+    const key = try requireString(obj, "key");
+    if (!isValidKey(key)) return error.BadField;
+
+    var tools: Tools = .{};
+    if (obj.get("tools")) |tv| switch (tv) {
+        .object => |t| {
+            if (t.get("allow") != null) tools.allow = try stringArray(aa, t, "allow");
+            const deny = try stringArray(aa, t, "deny");
+
+            // The floor is applied here rather than at lookup time so
+            // that the interface has something to show. A deny that is
+            // quietly ignored and a deny that was honoured look the
+            // same from outside.
+            var kept: std.ArrayList([]const u8) = .empty;
+            for (deny) |d| {
+                if (isFloorTool(d)) {
+                    try ignored.append(aa, d);
+                } else {
+                    try kept.append(aa, d);
+                }
+            }
+            tools.deny = try kept.toOwnedSlice(aa);
+        },
+        .null => {},
+        else => return error.BadField,
+    };
+
+    const name = try requireString(obj, "name");
+    // A role with no name is a blank row in a menu. Refused here rather
+    // than drawn, because the editor that would draw it is also the thing
+    // that sent it.
+    if (std.mem.trim(u8, name, " \t\r\n").len == 0) return error.BadField;
+
+    var p: Persona = .{
+        .key = key,
+        .name = name,
+        .prompt = try optionalString(obj, "prompt"),
+        .skills = try stringArray(aa, obj, "skills"),
+        .mcp = try stringArray(aa, obj, "mcp"),
+        .tools = tools,
+        .description = try optionalString(obj, "description"),
+        .instructions = try optionalString(obj, "instructions"),
+    };
+
+    if (obj.get("hint")) |hv| switch (hv) {
+        .object => |h| {
+            p.hint_disable_host_plugins = try stringArray(aa, h, "disable_host_plugins");
+            p.hint_model = try optionalString(h, "model");
+        },
+        .null => {},
+        else => return error.BadField,
+    };
+
+    if (obj.get("clis")) |cv| switch (cv) {
+        .object => |m| {
+            const clis = try aa.alloc(CliChoice, m.count());
+            var it = m.iterator();
+            var i: usize = 0;
+            while (it.next()) |kv| : (i += 1) {
+                // The same charset as a role key, and for a similar reason:
+                // it names a plugin, and plugin keys are plain names.
+                if (!isValidKey(kv.key_ptr.*)) return error.BadField;
+                clis[i] = try cliChoiceOf(aa, kv.key_ptr.*, kv.value_ptr.*);
+            }
+            p.clis = clis;
+        },
+        .null => {},
+        else => return error.BadField,
+    };
+
+    return p;
+}
+
+fn cliChoiceOf(aa: Allocator, key: []const u8, v: std.json.Value) ParseError!CliChoice {
+    const obj = switch (v) {
+        .object => |o| o,
+        else => return error.BadField,
+    };
+    return .{
+        .cli = key,
+        .skills = try selectionOf(aa, obj, "skills"),
+        .mcp = try selectionOf(aa, obj, "mcp"),
+        .model = try optionalString(obj, "model"),
+        .args = try stringArray(aa, obj, "args"),
+    };
+}
+
+fn selectionOf(aa: Allocator, obj: std.json.ObjectMap, field: []const u8) ParseError!Selection {
+    const v = obj.get(field) orelse return .{};
+    const sel = switch (v) {
+        .object => |o| o,
+        .null => return .{},
+        else => return error.BadField,
+    };
+    const default: bool = switch (sel.get("default") orelse std.json.Value{ .bool = true }) {
+        .bool => |b| b,
+        else => return error.BadField,
+    };
+    return .{ .default = default, .except = try stringArray(aa, sel, "except") };
+}
+
+// ---------------------------------------------------------- writing it back
+
+/// Write a whole set as `personas.json`, always at the current version.
+///
+/// One persona per line group, keys in a fixed order, so the file stays
+/// something a person can read and diff -- it is still theirs to edit by
+/// hand.
+///
+/// ⚠️ A floor tool that a hand-written file tried to deny was dropped when
+/// it was read (`ignored_denies`) and is not written back. It never had
+/// any effect, so the file loses a line that was not doing anything.
+pub fn writeSet(w: *std.Io.Writer, set: Set) std.Io.Writer.Error!void {
+    try w.print("{{\n  \"version\": {d},\n  \"personas\": [", .{supported_version});
+    for (set.personas, 0..) |p, i| {
+        try w.writeAll(if (i == 0) "\n    " else ",\n    ");
+        try writePersona(w, p);
+    }
+    try w.writeAll(if (set.personas.len == 0) "]\n}\n" else "\n  ]\n}\n");
+}
+
+/// One persona as a JSON object. Also what `role_list` answers with, so an
+/// agent reads exactly the shape it would write.
+pub fn writePersona(w: *std.Io.Writer, p: Persona) std.Io.Writer.Error!void {
+    try w.print("{{\"key\":{f},\"name\":{f}", .{ jstr(p.key), jstr(p.name) });
+    if (p.description) |d| try w.print(",\"description\":{f}", .{jstr(d)});
+    if (p.instructions) |t| try w.print(",\"instructions\":{f}", .{jstr(t)});
+    if (p.prompt) |t| try w.print(",\"prompt\":{f}", .{jstr(t)});
+    if (p.skills.len > 0) {
+        try w.writeAll(",\"skills\":");
+        try writeStrings(w, p.skills);
+    }
+    if (p.mcp.len > 0) {
+        try w.writeAll(",\"mcp\":");
+        try writeStrings(w, p.mcp);
+    }
+    if (p.tools.allow != null or p.tools.deny.len > 0) {
+        try w.writeAll(",\"tools\":{");
+        var first = true;
+        if (p.tools.allow) |a| {
+            try w.writeAll("\"allow\":");
+            try writeStrings(w, a);
+            first = false;
+        }
+        if (p.tools.deny.len > 0) {
+            if (!first) try w.writeAll(",");
+            try w.writeAll("\"deny\":");
+            try writeStrings(w, p.tools.deny);
+        }
+        try w.writeAll("}");
+    }
+    if (p.hint_disable_host_plugins.len > 0 or p.hint_model != null) {
+        try w.writeAll(",\"hint\":{\"disable_host_plugins\":");
+        try writeStrings(w, p.hint_disable_host_plugins);
+        if (p.hint_model) |m| try w.print(",\"model\":{f}", .{jstr(m)});
+        try w.writeAll("}");
+    }
+    if (p.clis.len > 0) {
+        try w.writeAll(",\"clis\":{");
+        for (p.clis, 0..) |c, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.print("{f}:{{\"skills\":", .{jstr(c.cli)});
+            try writeSelection(w, c.skills);
+            try w.writeAll(",\"mcp\":");
+            try writeSelection(w, c.mcp);
+            if (c.model) |m| try w.print(",\"model\":{f}", .{jstr(m)});
+            if (c.args.len > 0) {
+                try w.writeAll(",\"args\":");
+                try writeStrings(w, c.args);
+            }
+            try w.writeAll("}");
+        }
+        try w.writeAll("}");
+    }
+    try w.writeAll("}");
+}
+
+fn writeSelection(w: *std.Io.Writer, s: Selection) std.Io.Writer.Error!void {
+    try w.print("{{\"default\":{},\"except\":", .{s.default});
+    try writeStrings(w, s.except);
+    try w.writeAll("}");
+}
+
+fn writeStrings(w: *std.Io.Writer, list: []const []const u8) std.Io.Writer.Error!void {
+    try w.writeAll("[");
+    for (list, 0..) |item, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("{f}", .{jstr(item)});
+    }
+    try w.writeAll("]");
+}
+
+fn jstr(s: []const u8) std.json.Formatter([]const u8) {
+    return std.json.fmt(s, .{});
+}
+
+/// `set` with `p` in it: replacing the persona with the same key where it
+/// stands, or appended at the end. Order is the user's menu order, so an
+/// edit must not move a role.
+pub fn withPersona(aa: Allocator, set: Set, p: Persona) Allocator.Error!Set {
+    var out: std.ArrayList(Persona) = .empty;
+    var replaced = false;
+    for (set.personas) |q| {
+        if (std.mem.eql(u8, q.key, p.key)) {
+            try out.append(aa, p);
+            replaced = true;
+        } else try out.append(aa, q);
+    }
+    if (!replaced) try out.append(aa, p);
+    return .{ .version = supported_version, .personas = try out.toOwnedSlice(aa) };
+}
+
+/// `set` without the persona called `key`, or null when there was none.
+pub fn withoutPersona(aa: Allocator, set: Set, key: []const u8) Allocator.Error!?Set {
+    var out: std.ArrayList(Persona) = .empty;
+    var found = false;
+    for (set.personas) |q| {
+        if (std.mem.eql(u8, q.key, key)) {
+            found = true;
+        } else try out.append(aa, q);
+    }
+    if (!found) return null;
+    return .{ .version = supported_version, .personas = try out.toOwnedSlice(aa) };
 }
 
 // ------------------------------------------------------- the effective set
@@ -643,7 +907,7 @@ test "persona: a file that does not parse yields nothing at all" {
         \\{"personas":[]}
     ));
     try testing.expectError(error.BadVersion, parseLeaky(aa,
-        \\{"version":2,"personas":[]}
+        \\{"version":99,"personas":[]}
     ));
     try testing.expectError(error.BadField, parseLeaky(aa,
         \\{"version":1,"personas":[{"key":"Archer","name":"n"}]}
@@ -746,4 +1010,126 @@ test "persona: an unrelated upstream dying does not invalidate a click" {
     var moved: State = .{ .epoch = 8, .roster = 8 };
     moved.setPersona(.{ .key = "archer", .name = "n" });
     try testing.expectError(error.Stale, resolveId(moved, "8-3", 5));
+}
+
+test "persona: a version 1 file still reads, as a role with no CLI choices" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const set = try parseLeaky(arena.allocator(), sample);
+    try testing.expectEqual(@as(u32, 1), set.version);
+    try testing.expectEqual(@as(usize, 0), set.personas[0].clis.len);
+    try testing.expectEqual(@as(?[]const u8, null), set.personas[0].instructions);
+
+    // And a version that is neither is still refused, so an older Polter
+    // reading a newer file says so instead of guessing.
+    try testing.expectError(error.BadVersion, parseLeaky(
+        arena.allocator(),
+        "{\"version\":3,\"personas\":[]}",
+    ));
+}
+
+test "persona: what is written reads back as the same roles" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const text =
+        \\{"version":2,"personas":[
+        \\  {"key":"archer","name":"射手","description":"只读调研",
+        \\   "instructions":"Say \"hi\" first.\nThen work.",
+        \\   "skills":["reading-a-terminal"],"mcp":["argus"],
+        \\   "tools":{"deny":["notify_user"]},
+        \\   "hint":{"disable_host_plugins":["k@x"],"model":"sonnet"},
+        \\   "clis":{"claude-code":{"skills":{"default":false,"except":["skill:pdf"]},
+        \\                          "mcp":{"default":true,"except":["mcp:argus"]},
+        \\                          "model":"opus","args":["--verbose"]},
+        \\           "codex":{}}},
+        \\  {"key":"scribe","name":"书记"}
+        \\]}
+    ;
+    const first = try parseLeaky(aa, text);
+
+    var out: std.Io.Writer.Allocating = .init(aa);
+    try writeSet(&out.writer, first);
+    const again = try parseLeaky(aa, out.written());
+
+    try testing.expectEqual(supported_version, again.version);
+    try testing.expectEqual(@as(usize, 2), again.personas.len);
+    const a = again.personas[0];
+    try testing.expectEqualStrings("只读调研", a.description.?);
+    try testing.expectEqualStrings("Say \"hi\" first.\nThen work.", a.instructions.?);
+    try testing.expectEqualStrings("notify_user", a.tools.deny[0]);
+    try testing.expectEqualStrings("sonnet", a.hint_model.?);
+    try testing.expectEqual(@as(usize, 2), a.clis.len);
+
+    // Order of the CLIs is the order written: it is the order they are
+    // offered in.
+    const cc = a.clis[0];
+    try testing.expectEqualStrings("claude-code", cc.cli);
+    try testing.expect(!cc.skills.default);
+    try testing.expectEqualStrings("skill:pdf", cc.skills.except[0]);
+    try testing.expectEqualStrings("opus", cc.model.?);
+    try testing.expectEqualStrings("--verbose", cc.args[0]);
+    try testing.expectEqualStrings("codex", a.clis[1].cli);
+    try testing.expect(a.clis[1].skills.default);
+
+    try testing.expectEqualStrings("书记", again.personas[1].name);
+}
+
+test "persona: a default and its exceptions decide what is on" {
+    const keep_all: Selection = .{ .default = true, .except = &.{"mcp:argus"} };
+    try testing.expect(keep_all.enabled("mcp:kanban"));
+    try testing.expect(!keep_all.enabled("mcp:argus"));
+
+    // The case a list-of-what-is-on could not express: something installed
+    // after the role was written gets the default, not "off because nobody
+    // ticked it".
+    const keep_none: Selection = .{ .default = false, .except = &.{"skill:pdf"} };
+    try testing.expect(keep_none.enabled("skill:pdf"));
+    try testing.expect(!keep_none.enabled("skill:installed-yesterday"));
+}
+
+test "persona: one role arriving by itself obeys the file's rules" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const p = try parsePersonaLeaky(aa,
+        \\{"key":"new-one","name":"新角色","clis":{"claude-code":{}}}
+    );
+    try testing.expectEqualStrings("new-one", p.key);
+    try testing.expectEqualStrings("claude-code", p.clis[0].cli);
+
+    try testing.expectError(error.BadField, parsePersonaLeaky(aa,
+        \\{"key":"Archer","name":"x"}
+    ));
+    try testing.expectError(error.BadField, parsePersonaLeaky(aa,
+        \\{"key":"a","name":"   "}
+    ));
+    try testing.expectError(error.Incomplete, parsePersonaLeaky(aa,
+        \\{"key":"a"}
+    ));
+    try testing.expectError(error.BadField, parsePersonaLeaky(aa,
+        \\{"key":"a","name":"n","clis":{"Claude Code":{}}}
+    ));
+}
+
+test "persona: an edit keeps the role where it was, a new one goes last" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const set = try parseLeaky(aa, sample);
+
+    const edited = try withPersona(aa, set, .{ .key = "archer", .name = "新名字" });
+    try testing.expectEqualStrings("archer", edited.personas[0].key);
+    try testing.expectEqualStrings("新名字", edited.personas[0].name);
+    try testing.expectEqual(@as(usize, 2), edited.personas.len);
+
+    const added = try withPersona(aa, set, .{ .key = "zz", .name = "z" });
+    try testing.expectEqualStrings("zz", added.personas[2].key);
+
+    const gone = (try withoutPersona(aa, set, "archer")).?;
+    try testing.expectEqual(@as(usize, 1), gone.personas.len);
+    try testing.expectEqualStrings("scribe", gone.personas[0].key);
+    try testing.expectEqual(@as(?Set, null), try withoutPersona(aa, set, "nobody"));
 }

@@ -21,9 +21,10 @@ import OSLog
 /// to.
 ///
 /// ⚠️ **This type reads nothing from disk.** Contract §① is explicit that
-/// the core reads `$XDG_CONFIG_HOME/polter/personas.json` and the apprt asks
-/// for the result: the closed-set check belongs to the core (roles.md §7),
-/// and two readers means two validators with the lenient one deciding.
+/// the core reads `personas.json` and the apprt asks for the result: the
+/// validation belongs to the core, and two readers means two validators
+/// with the lenient one deciding. The same holds for writing -- the role
+/// library window (`RoleLibrary`) saves through the core too.
 @MainActor
 final class PersonaCatalog: ObservableObject {
     static let shared = PersonaCatalog()

@@ -1443,13 +1443,24 @@ GHOSTTY_API void ghostty_app_free(ghostty_app_t);
 // The personas the user has defined, for building a menu from. Same "write
 // what fits, return the real total" rule as above; `buf` may be NULL when
 // `cap` is 0. The strings belong to the core and are valid until the next
-// call or the next config reload -- copy them before doing anything else.
+// call or the next write to the role library -- copy them before doing
+// anything else.
 GHOSTTY_API uintptr_t ghostty_app_personas(ghostty_app_t, ghostty_persona_s*, uintptr_t);
 // What is installed on this machine that a persona does not cover, as JSON.
 // Read only: these are listed so the user can see where a persona stops, and
 // Polter changes none of them. `stale` is NOT an empty list -- an interface
 // that draws them the same way tells the user nothing is installed here.
 GHOSTTY_API uintptr_t ghostty_app_persona_hosts(ghostty_app_t, char*, uintptr_t);
+
+// The role library and the agent CLIs a role can start. Buffers follow the
+// persona rule above: the real length back, one NUL after it when it fits.
+// The bool calls write the failing error's name into `err` (NUL-terminated,
+// cut to `cap`) and change nothing when they return false. All of these run
+// on the app thread; none of them starts a process there.
+GHOSTTY_API uintptr_t ghostty_app_persona_catalog(ghostty_app_t, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_persona_put(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_persona_delete(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+GHOSTTY_API uintptr_t ghostty_app_agent_clis(ghostty_app_t, bool, char*, uintptr_t);
 GHOSTTY_API void ghostty_app_tick(ghostty_app_t);
 GHOSTTY_API void* ghostty_app_userdata(ghostty_app_t);
 GHOSTTY_API void ghostty_app_set_focus(ghostty_app_t, bool);
@@ -1520,6 +1531,10 @@ GHOSTTY_API bool ghostty_surface_binding_action(ghostty_surface_t, const char*, 
 // one NUL is written after it, so it may be read by length or as a C string.
 // `buf` may be NULL when `cap` is 0, which is how you ask for the size first.
 GHOSTTY_API uintptr_t ghostty_surface_persona_face(ghostty_surface_t, char*, uintptr_t);
+// Open a tab beside this terminal and start an agent CLI in it wearing a
+// role (key, key_len, cli, cli_len; cli may be empty). False, with the
+// error's name in the last buffer, when nothing was started.
+GHOSTTY_API bool ghostty_surface_persona_launch(ghostty_surface_t, const char*, uintptr_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
                                                                const char*,
                                                                void*,

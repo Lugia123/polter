@@ -6,6 +6,11 @@
   "exec": "provision.sh",
   "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
+  "agent_cli": {
+    "label": "Claude Code",
+    "bin": "claude",
+    "adapter": "adapter.py"
+  },
   "wants": {
     "events": [
       "provision"

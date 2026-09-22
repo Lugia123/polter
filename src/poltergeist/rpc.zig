@@ -192,6 +192,39 @@ pub const Method = enum {
     /// all.
     terminal_open,
 
+    /// Every role in the library, in full: the same shape `role_put` takes.
+    ///
+    /// The role library is the user's and the supervisor's alike -- the
+    /// user decided a supervisor may do to roles what they can do in the
+    /// window (roles.md part eleven). So these five are open to a
+    /// supervisor and to nobody else.
+    role_list,
+
+    /// Add a role, or replace the one with the same key where it stands.
+    ///
+    /// The role is checked by the same parser that reads `personas.json`,
+    /// so nothing gets into the file that the file would refuse.
+    role_put,
+
+    /// Delete a role. Terminals wearing it are taken out of it.
+    role_delete,
+
+    /// Which agent CLIs a role can start, and what each one has installed
+    /// here -- every skill and MCP server, with what it is for.
+    ///
+    /// Read from a cache that a background thread fills by asking each
+    /// CLI's adapter plugin; `refresh` asks it to read again. The answer
+    /// says `refreshing` while a newer one is on its way.
+    role_clis,
+
+    /// Open a new tab and start an agent CLI in it wearing a role.
+    ///
+    /// The terminal is opened the way `terminal_open` opens a tab, given the
+    /// role, and has `polter +launch <role> <cli>` typed into it -- a fixed
+    /// line with nothing in it but two keys. The command line itself is
+    /// built inside that terminal by the CLI's adapter.
+    role_launch,
+
     /// Do to a terminal what the menu bar does: any of the terminal's own
     /// keybinding actions, by the name the config file uses.
     ///
@@ -421,6 +454,19 @@ pub const Request = union(Method) {
         cwd: []const u8 = "",
         watch: bool = false,
         place: Placement = .auto,
+    },
+    role_list,
+    /// `role` is the role object as JSON text; the wire layer writes it
+    /// back out from the object the caller sent.
+    role_put: struct { role: []const u8 },
+    role_delete: struct { key: []const u8 },
+    role_clis: struct { refresh: bool = false },
+    role_launch: struct {
+        key: []const u8,
+        /// Empty means "the only CLI this role is set up for".
+        cli: []const u8 = "",
+        /// Empty means where the calling terminal is standing.
+        cwd: []const u8 = "",
     },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
@@ -730,6 +776,15 @@ pub fn callableByPlugin(method: Method) bool {
         // narrowing after somebody has built on the wider rule is not.
         .terminal_layout,
 
+        // **Closed to plugins.** The role library was opened to the
+        // supervisor because the user said so of the supervisor; nothing
+        // was said of plugins, and roles decide what an agent may use.
+        .role_list,
+        .role_put,
+        .role_delete,
+        .role_clis,
+        .role_launch,
+
         // **Closed to plugins, and not because of the switch.** Even with
         // the user's switch on for a terminal, the party that may answer a
         // prompt there is a supervisor -- somebody minding that work and
@@ -994,6 +1049,14 @@ pub fn requiresSupervisor(method: Method) bool {
         // which is the supervisor's half of the job.
         .terminal_open,
 
+        // The role library, opened to the supervisor with the user's
+        // powers over it and to nobody else (roles.md part eleven).
+        .role_list,
+        .role_put,
+        .role_delete,
+        .role_clis,
+        .role_launch,
+
         // The settings it is working under are the supervisor's business;
         // a watched terminal has `me` for the parts that concern it.
         //
@@ -1084,6 +1147,14 @@ pub fn targetsTerminal(method: Method) bool {
         .persona_slot,
         .persona_wait,
 
+        // A role, a CLI, or a new terminal nobody has yet -- never an
+        // existing one.
+        .role_list,
+        .role_put,
+        .role_delete,
+        .role_clis,
+        .role_launch,
+
         // These name a task, which is not a terminal. `task_cancel` does
         // reach one -- it types the cancellation into the worker's
         // terminal -- but it does so through the *task*, and the task's
@@ -1165,6 +1236,11 @@ pub fn target(req: Request) ?Bus.Id {
         .persona_face,
         .persona_slot,
         .persona_wait,
+        .role_list,
+        .role_put,
+        .role_delete,
+        .role_clis,
+        .role_launch,
 
         // Named here rather than left to the `inline else` below, because
         // that one reads `v.id` off whatever payload has one and these
@@ -1240,6 +1316,11 @@ pub fn selfPermitted(req: Request) bool {
         .stand_down,
         .become_supervisor,
         .terminal_open,
+        .role_list,
+        .role_put,
+        .role_delete,
+        .role_clis,
+        .role_launch,
         .terminal_actions,
         .terminal_keys,
         .task_create,
@@ -1426,6 +1507,14 @@ pub fn promptReach(method: Method) enum {
         .terminal_list,
         .terminal_read,
         .terminal_open,
+        // `role_launch` types a line and presses return, but only into the
+        // terminal it has just opened, where nothing is waiting to be
+        // answered -- the same reach as `terminal_open`, not `terminal_send`.
+        .role_list,
+        .role_put,
+        .role_delete,
+        .role_clis,
+        .role_launch,
         .terminal_actions,
         .terminal_keys,
         .notices,
@@ -1953,6 +2042,11 @@ test "only what changes the arrangement needs the supervisor" {
             .plugin_test,
             .stand_down,
             .terminal_open,
+            .role_list,
+            .role_put,
+            .role_delete,
+            .role_clis,
+            .role_launch,
             .config_get,
 
             // Making, handing out, closing and calling off work is
@@ -4170,6 +4264,39 @@ pub const Host = struct {
             key: []const u8,
         ) anyerror![]const u8,
 
+        /// Every role, as JSON: `PersonaStore.writeCatalogJson`.
+        personaCatalog: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+        ) anyerror![]const u8,
+
+        /// Write one role (JSON) into the library. Errors are
+        /// `PersonaStore.WriteError`'s names.
+        personaPut: *const fn (ctx: *anyopaque, json: []const u8) anyerror!void,
+
+        personaDelete: *const fn (ctx: *anyopaque, key: []const u8) anyerror!void,
+
+        /// The agent CLI cache as JSON (`agent_cli.Cache.snapshot`),
+        /// starting a fresh read first when `refresh` is set.
+        agentClis: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            refresh: bool,
+        ) anyerror![]const u8,
+
+        /// Open a tab next to `by`, give it the role, and start the CLI.
+        /// The new terminal's id, or null when the runtime has not made it
+        /// by the time this returns -- in which case nothing was typed and
+        /// that is an error, not a success (see `role_launch`).
+        personaLaunch: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            by: Bus.Id,
+            key: []const u8,
+            cli: []const u8,
+            cwd: []const u8,
+        ) anyerror!Bus.Id,
+
         /// Open a terminal in `by`'s window, starting in `cwd`.
         ///
         /// Answers with the new terminal's id when one has appeared by the
@@ -4657,6 +4784,33 @@ pub const Host = struct {
         return self.vtable.openTerminal(self.ctx, alloc, cwd, by, place);
     }
 
+    fn personaCatalog(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
+        return self.vtable.personaCatalog(self.ctx, alloc);
+    }
+
+    fn personaPut(self: Host, json: []const u8) anyerror!void {
+        return self.vtable.personaPut(self.ctx, json);
+    }
+
+    fn personaDelete(self: Host, key: []const u8) anyerror!void {
+        return self.vtable.personaDelete(self.ctx, key);
+    }
+
+    fn agentClis(self: Host, alloc: std.mem.Allocator, refresh: bool) anyerror![]const u8 {
+        return self.vtable.agentClis(self.ctx, alloc, refresh);
+    }
+
+    fn personaLaunch(
+        self: Host,
+        alloc: std.mem.Allocator,
+        by: Bus.Id,
+        key: []const u8,
+        cli: []const u8,
+        cwd: []const u8,
+    ) anyerror!Bus.Id {
+        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd);
+    }
+
     fn quietMs(self: Host, id: Bus.Id) u64 {
         return self.vtable.quietMs(self.ctx, id);
     }
@@ -4935,6 +5089,32 @@ pub const Host = struct {
         return self.vtable.taskHistory(self.ctx, alloc, group, id, before_seq, limit);
     }
 };
+
+/// What a failed write to the role library says.
+///
+/// One sentence per reason, because each asks for something different:
+/// fix the role, fix the file, or look for a bug.
+fn roleWriteFailure(err: anyerror) wire.Response {
+    return switch (err) {
+        error.BadPersona => hostFailure(
+            "BadRole",
+            "the role does not read: it needs a key of lowercase letters, digits and " ++
+                "dashes (at most 32), a name that is not blank, and CLI choices shaped " ++
+                "the way role_list shows them.",
+        ),
+        error.FileUnreadable => hostFailure(
+            "LibraryUnreadable",
+            "personas.json does not parse right now, so writing to it would throw away " ++
+                "whatever somebody was halfway through. It has to be fixed by hand first.",
+        ),
+        error.NoSuchPersona => hostFailure("NoSuchRole", "there is no role with that key."),
+        error.WriteNotLoaded => hostFailure(
+            "WriteNotLoaded",
+            "the library was written but did not read back. This is a bug in Polter.",
+        ),
+        else => hostFailure("RolesFailed", "could not write the role library"),
+    };
+}
 
 /// Carry out one request on behalf of `caller`.
 ///
@@ -5265,6 +5445,69 @@ pub fn dispatch(
             }
 
             return .{ .opened = .{ .id = opened, .watching = watching } };
+        },
+
+        .role_list => {
+            const json = host.personaCatalog(alloc) catch
+                return hostFailure("RolesFailed", "could not read the role library");
+            return .{ .json = json };
+        },
+
+        .role_put => |p| {
+            host.personaPut(p.role) catch |err| return roleWriteFailure(err);
+            return .ok;
+        },
+
+        .role_delete => |p| {
+            host.personaDelete(p.key) catch |err| return roleWriteFailure(err);
+            return .ok;
+        },
+
+        .role_clis => |p| {
+            const json = host.agentClis(alloc, p.refresh) catch
+                return hostFailure("ClisFailed", "could not read which agent CLIs are here");
+            return .{ .json = json };
+        },
+
+        .role_launch => |p| {
+            const id = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd) catch |err| return switch (err) {
+                error.NoSuchPersona => hostFailure(
+                    "NoSuchRole",
+                    "there is no role with that key. role_list has them.",
+                ),
+                error.NotSetUpForCli => hostFailure(
+                    "NotSetUpForCli",
+                    "this role is not set up for that CLI. role_list shows which it is set up for.",
+                ),
+                error.NoCli => hostFailure(
+                    "NoCli",
+                    "this role is not set up for any agent CLI yet. Give it one with role_put.",
+                ),
+                error.ChooseCli => hostFailure(
+                    "ChooseCli",
+                    "this role is set up for more than one CLI; say which with cli.",
+                ),
+                error.NotAbsolute => hostFailure(
+                    "BadParams",
+                    "a working directory has to be an absolute path.",
+                ),
+                error.NoSuchDirectory, error.NotADirectory => hostFailure(
+                    "NoSuchDirectory",
+                    "there is no directory there.",
+                ),
+                // ⚠️ **Not an `opened` with a null id.** `terminal_open` may
+                // answer that way because the tab is still coming and has
+                // nothing to do. This one does: nothing was typed into it, so
+                // a success here would be a shell sitting at a prompt that
+                // everybody believes is an agent.
+                error.NotYetOpen => hostFailure(
+                    "OpenedEmpty",
+                    "a tab was opened but did not appear in time, so the CLI was not " ++
+                        "started in it. It is a plain shell; close it or use it.",
+                ),
+                else => hostFailure("LaunchFailed", "could not open a terminal for the role"),
+            };
+            return .{ .opened = .{ .id = id, .watching = false } };
         },
 
         .terminal_action => |p| {
@@ -6702,6 +6945,13 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
 
+    /// What the role library calls were handed, and what they fail with.
+    role_put: ?[]const u8 = null,
+    role_deleted: ?[]const u8 = null,
+    role_error: ?anyerror = null,
+    role_launched: ?struct { by: Bus.Id, key: []const u8, cli: []const u8, cwd: []const u8 } = null,
+    clis_refreshed: bool = false,
+
     /// Make typing fail the way a real terminal can: its process has gone,
     /// or somebody is at the keyboard.
     send_error: ?anyerror = null,
@@ -6863,6 +7113,11 @@ const FakeHost = struct {
             .sendText = send,
             .agentPresent = agentPresent,
             .personaFace = personaFace,
+            .personaCatalog = personaCatalog,
+            .personaPut = personaPut,
+            .personaDelete = personaDelete,
+            .agentClis = agentClis,
+            .personaLaunch = personaLaunch,
             .personaSlot = personaSlot,
             .sendKey = sendKey,
             .performAction = performAction,
@@ -7363,6 +7618,42 @@ const FakeHost = struct {
         const names = try alloc.alloc([]const u8, all.len);
         for (all, 0..) |m, i| names[i] = @tagName(m);
         return .{ .tools = names, .epoch = 0 };
+    }
+
+    fn personaCatalog(_: *anyopaque, _: std.mem.Allocator) anyerror![]const u8 {
+        return "{\"loaded\":true,\"error\":null,\"path\":null,\"personas\":[]}";
+    }
+
+    fn personaPut(ctx: *anyopaque, json: []const u8) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.role_error) |e| return e;
+        self.role_put = json;
+    }
+
+    fn personaDelete(ctx: *anyopaque, key: []const u8) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.role_error) |e| return e;
+        self.role_deleted = key;
+    }
+
+    fn agentClis(ctx: *anyopaque, _: std.mem.Allocator, refresh: bool) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.clis_refreshed = refresh;
+        return "{\"stale\":false,\"refreshing\":false,\"clis\":[]}";
+    }
+
+    fn personaLaunch(
+        ctx: *anyopaque,
+        _: std.mem.Allocator,
+        by: Bus.Id,
+        key: []const u8,
+        cli: []const u8,
+        cwd: []const u8,
+    ) anyerror!Bus.Id {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.role_error) |e| return e;
+        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd };
+        return 0x7777;
     }
 
     fn quietMs(ctx: *anyopaque, _: Bus.Id) u64 {
@@ -10399,4 +10690,90 @@ test "579: a compaction whose summary was cut says so, and says what is gone" {
     // "it is gone from here" are different facts and only one of them is
     // true.
     try testing.expect(std.mem.indexOf(u8, cut.text, "group_history") != null);
+}
+
+test "roles: the library is the supervisor's, and a worker is turned away" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    for ([_]Request{
+        .role_list,
+        .{ .role_put = .{ .role = "{\"key\":\"a\",\"name\":\"a\"}" } },
+        .{ .role_delete = .{ .key = "a" } },
+        .{ .role_clis = .{} },
+        .{ .role_launch = .{ .key = "a" } },
+    }) |req| {
+        var fake: FakeHost = .{};
+        const refused = try dispatch(alloc, &b, fake.host(), term(worker), req);
+        try testing.expectEqualStrings("NotPermitted", refused.failed.code);
+        // Turned away before anything reached the library.
+        try testing.expectEqual(@as(?[]const u8, null), fake.role_put);
+        try testing.expectEqual(@as(?[]const u8, null), fake.role_deleted);
+        try testing.expect(fake.role_launched == null);
+
+        try testing.expect(!callableByPlugin(std.meta.activeTag(req)));
+        try testing.expect(requiresSupervisor(std.meta.activeTag(req)));
+    }
+}
+
+test "roles: what the supervisor sends is what the library is handed" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    const role = "{\"key\":\"archer\",\"name\":\"a\"}";
+    try testing.expect(try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_put = .{ .role = role } }) == .ok);
+    try testing.expectEqualStrings(role, fake.role_put.?);
+
+    try testing.expect(try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_delete = .{ .key = "archer" } }) == .ok);
+    try testing.expectEqualStrings("archer", fake.role_deleted.?);
+
+    const listed = try dispatch(alloc, &b, fake.host(), term(boss), .role_list);
+    try testing.expect(std.mem.startsWith(u8, listed.json, "{\"loaded\":true"));
+
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_clis = .{ .refresh = true } });
+    try testing.expect(fake.clis_refreshed);
+
+    // The tab is opened beside the one that asked, and the reply names it.
+    const opened = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{
+        .key = "archer",
+        .cli = "claude-code",
+        .cwd = "/tmp",
+    } });
+    try testing.expectEqual(@as(?Bus.Id, 0x7777), opened.opened.id);
+    try testing.expectEqual(boss, fake.role_launched.?.by);
+    try testing.expectEqualStrings("claude-code", fake.role_launched.?.cli);
+    try testing.expectEqualStrings("/tmp", fake.role_launched.?.cwd);
+}
+
+test "roles: each reason a write is refused says what to do about it" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cases = [_]struct { err: anyerror, code: []const u8 }{
+        .{ .err = error.BadPersona, .code = "BadRole" },
+        .{ .err = error.FileUnreadable, .code = "LibraryUnreadable" },
+        .{ .err = error.NoSuchPersona, .code = "NoSuchRole" },
+        .{ .err = error.WriteNotLoaded, .code = "WriteNotLoaded" },
+    };
+    for (cases) |c| {
+        var fake: FakeHost = .{ .role_error = c.err };
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_put = .{ .role = "{}" } });
+        try testing.expectEqualStrings(c.code, res.failed.code);
+    }
+
+    // A launch that opened a tab too late is a failure, not an `opened` with
+    // no id: nothing was typed into it.
+    var fake: FakeHost = .{ .role_error = error.NotYetOpen };
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "a" } });
+    try testing.expectEqualStrings("OpenedEmpty", res.failed.code);
 }

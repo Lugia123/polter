@@ -29,7 +29,7 @@ enum PersonaMenu {
     ///   - state: this terminal's persona, as the core reports it.
     ///   - shielded: the user has put this terminal out of reach. Nothing
     ///     may re-equip it, a supervisor included (roles.md §7.2).
-    ///   - personas: the user-defined closed set, as the core reported it.
+    ///   - personas: the role library, as the core reported it.
     ///   - personasKnown: whether anything has reported that set *at all*.
     ///     `false` and an empty `personas` are different facts and get
     ///     different sentences.
