@@ -710,8 +710,10 @@ const tools = [_]Tool{
             "comes back in exactly the shape role_put takes, so reading one, changing a " ++
             "field and writing it back is the whole edit. `loaded` false means the file " ++
             "has not been read yet; `error` set means it does not parse and the list is " ++
-            "the last good one. Supervisor only, and a supervisor has the same powers over " ++
-            "roles as the user has in the role library window.",
+            "the last good one. Roles with `builtin` true ship with Polter and cannot be " ++
+            "changed or deleted. Supervisor only, and a supervisor has the same powers " ++
+            "over roles as the user has in the role library window, except the three " ++
+            "polter settings role_put names.",
         .schema =
         \\{"type":"object","properties":{},"additionalProperties":false}
         ,
@@ -721,7 +723,8 @@ const tools = [_]Tool{
         .description = "Add a role to the library, or replace the one with the same key " ++
             "in place. `role` is one object: {key, name, description?, instructions?, " ++
             "clis: {<cli>: {skills: {default, except: [ids]}, mcp: {default, except: " ++
-            "[ids]}, model?, args?}}}. `key` is lowercase letters, digits and dashes, at " ++
+            "[ids]}, model?, args?}}, polter?: {supervisor, may_authorise, shielded, " ++
+            "watch, open: auto|tab, quiet_ms?}}. `key` is lowercase letters, digits and dashes, at " ++
             "most 32; it is how the role is launched. `<cli>` is a CLI key from role_clis " ++
             "(e.g. claude-code) -- a role is only offered for the CLIs it has an entry " ++
             "for. **`default` plus `except`, not a list of what is on**: default true " ++
@@ -732,7 +735,14 @@ const tools = [_]Tool{
             "agent's system prompt. `args` are extra command-line arguments, appended " ++
             "as written. It is checked by the same rules as the file, and refused " ++
             "whole if any part does not read. Terminals already wearing the role are " ++
-            "switched to the new version. Supervisor only.",
+            "switched to the new version. `polter` is what Polter does with the " ++
+            "terminal the role is started in, once, at the start: make it a supervisor, " ++
+            "let a supervisor answer its permission prompts, shield it, hand it to the " ++
+            "supervisor that started it to watch, where a click opens it, how long it " ++
+            "may be still. **supervisor, may_authorise and shielded are the user's to " ++
+            "set**: a write that changes any of them from what the role has now (off, " ++
+            "for a new role) is refused as NotPermitted. A built-in role's key is " ++
+            "refused as BuiltinRole. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"role":{"type":"object","description":"One role, in the shape role_list returns."}},"required":["role"],"additionalProperties":false}
         ,
@@ -740,8 +750,8 @@ const tools = [_]Tool{
     .{
         .name = "role_delete",
         .description = "Delete a role from the library by its key. Terminals wearing it " ++
-            "are taken out of it; agents already running in them keep running. " ++
-            "Supervisor only.",
+            "are taken out of it; agents already running in them keep running. A " ++
+            "built-in role cannot be deleted. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}
         ,
@@ -770,7 +780,9 @@ const tools = [_]Tool{
             "instructions, model, extra args) and becomes the CLI. `cli` can be left out " ++
             "when the role is set up for exactly one. `cwd` defaults to where you are " ++
             "standing and must be an absolute path when given. The reply carries the new " ++
-            "terminal's `id`; mind it with set_watch if you mean to. **The CLI starts in " ++
+            "terminal's `id`. The role's `polter` settings are applied to it before the " ++
+            "CLI starts -- with `watch` set, it is already yours to mind; otherwise mind " ++
+            "it with set_watch if you mean to. **The CLI starts in " ++
             "its ordinary permission mode** unless the role's args say otherwise, so a " ++
             "worker that is to run unattended needs a role that starts it that way. If " ++
             "something is wrong with the role or the CLI, the reason is printed in that " ++

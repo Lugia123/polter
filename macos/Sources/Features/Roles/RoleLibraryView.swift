@@ -16,6 +16,11 @@ final class RoleLibraryEditor: ObservableObject {
     @Published var activeCli: String?
     @Published var status: String?
 
+    /// Which part of the role is on screen. Kept across roles on purpose:
+    /// somebody going down the list tuning MCP servers wants to stay on
+    /// the MCP tab.
+    @Published var tab: RoleEditorTab = .basics
+
     /// Whether the key field still follows the name. It stops the moment
     /// the person types a key of their own.
     @Published var keyFollowsName = true
@@ -111,7 +116,11 @@ final class RoleLibraryEditor: ObservableObject {
         guard let source = draft, confirmLeavingDraft() else { return }
         let taken = Set(library.catalog.roles.map(\.key))
         var role = source
-        role.name = String(format: String(localized: "%@ Copy", comment: "角色库：复制角色后的默认名字，%@ 是原名"), source.name)
+        // A copy of a built-in role is the user's: theirs to change, and
+        // saved under a key of its own.
+        role.builtin = false
+        role.name = String(format: String(localized: "%@ Copy", comment: "角色库：复制角色后的默认名字，%@ 是原名"), source.displayName)
+        role.summary = source.displaySummary
         role.key = Role.suggestedKey(for: source.key, avoiding: taken)
         selection = nil
         isNew = true
@@ -150,7 +159,7 @@ final class RoleLibraryEditor: ObservableObject {
 
     @discardableResult
     func save() -> Bool {
-        guard let role = draft else { return true }
+        guard let role = draft, !role.builtin else { return true }
         if isNew && library.catalog.roles.contains(where: { $0.key == role.key }) {
             status = String(localized: "Another role already uses this key.", comment: "角色库：新建角色的 key 与已有角色重复")
             return false
@@ -176,7 +185,7 @@ final class RoleLibraryEditor: ObservableObject {
     }
 
     func delete() {
-        guard let role = draft else { return }
+        guard let role = draft, !role.builtin else { return }
         if isNew {
             load(nil)
             return
@@ -196,6 +205,9 @@ final class RoleLibraryEditor: ObservableObject {
     }
 }
 
+/// The three parts of a role the editor shows one at a time.
+enum RoleEditorTab: Hashable { case basics, skills, mcp }
+
 /// The role library: every role, and one of them being edited.
 struct RoleLibraryView: View {
     @ObservedObject var library: RoleLibrary
@@ -213,7 +225,7 @@ struct RoleLibraryView: View {
             detail
                 .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 760, idealWidth: 920, minHeight: 520, idealHeight: 720)
+        .frame(minWidth: 760, idealWidth: 920, minHeight: 560, idealHeight: 820)
         .onChange(of: library.catalog) { _ in editor.libraryChanged() }
     }
 
@@ -248,7 +260,7 @@ struct RoleLibraryView: View {
                 iconButton("minus", help: String(localized: "Delete Role", comment: "角色库：删除所选角色")) {
                     editor.delete()
                 }
-                .disabled(editor.draft == nil || library.catalog.error != nil)
+                .disabled(editor.draft == nil || editor.draft?.builtin == true || library.catalog.error != nil)
                 Spacer()
             }
             .padding(6)
@@ -279,8 +291,14 @@ struct RoleLibraryView: View {
     private func roleRow(_ role: Role, unsaved: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Text(role.name.isEmpty ? role.key : role.name)
+                Text(role.displayName.isEmpty ? role.key : role.displayName)
                     .lineLimit(1)
+                if role.builtin {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help(String(localized: "Comes with Polter", comment: "角色库：内置角色的锁图标说明"))
+                }
                 if unsaved || (role.key == editor.draft?.key && editor.isDirty) {
                     Circle().fill(Color.accentColor).frame(width: 6, height: 6)
                         .help(String(localized: "Unsaved changes", comment: "角色库：有未保存的修改"))
@@ -312,15 +330,31 @@ struct RoleLibraryView: View {
             if let error = library.catalog.error {
                 banner(String(localized: "The role library file has an error in it. Roles can't be changed here until it's fixed.", comment: "角色库：personas.json 解析失败的横幅"), detail: error)
             }
-            if editor.draft != nil {
+            if let draft = editor.draft {
+                if draft.builtin {
+                    builtinBanner
+                }
+                tabBar
+                Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        basics
-                        instructions
-                        cliPicker
-                        if let cli = editor.activeCli, editor.draft?.choice(for: cli) != nil {
-                            RoleCliEditor(library: library, editor: editor, cliKey: cli)
+                        Group {
+                            switch editor.tab {
+                            case .basics:
+                                basics
+                                instructions
+                                polterSection
+                                cliPicker
+                                if let cli = editor.activeCli, editor.draft?.choice(for: cli) != nil {
+                                    RoleCliStartEditor(library: library, editor: editor, cliKey: cli)
+                                }
+                            case .skills, .mcp:
+                                itemsTab(editor.tab == .skills ? .skill : .mcp)
+                            }
                         }
+                        // Read-only rather than hidden: what it does is the
+                        // point of looking at it.
+                        .disabled(draft.builtin)
                     }
                     .padding(18)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -334,6 +368,75 @@ struct RoleLibraryView: View {
                 Spacer()
             }
         }
+    }
+
+    /// "3/40" for the tab label: kept of installed, for the CLI on screen.
+    private func count(_ kind: AgentCliItem.Kind) -> String? {
+        guard let key = editor.activeCli,
+              let cli = library.clis.cli(key),
+              let choice = editor.draft?.choice(for: key) else { return nil }
+        let all = cli.items(kind)
+        guard !all.isEmpty else { return nil }
+        let sel = kind == .skill ? choice.skills : choice.mcp
+        return "\(all.filter { $0.locked || sel.isOn($0.id) }.count)/\(all.count)"
+    }
+
+    private var tabBar: some View {
+        Picker("", selection: $editor.tab) {
+            Text(String(localized: "Basics", comment: "角色库：tab 名，角色基本信息")).tag(RoleEditorTab.basics)
+            Text(count(.skill).map { String(format: String(localized: "Skills %@", comment: "角色库：tab 名，%@ 是保留数/总数，如 3/40"), $0) }
+                 ?? String(localized: "Skills", comment: "角色编辑器：分区名，技能"))
+                .tag(RoleEditorTab.skills)
+            Text(count(.mcp).map { String(format: String(localized: "MCP %@", comment: "角色库：tab 名，%@ 是保留数/总数"), $0) }
+                 ?? String(localized: "MCP", comment: "角色库：tab 名，MCP 服务器"))
+                .tag(RoleEditorTab.mcp)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: 420)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func itemsTab(_ kind: AgentCliItem.Kind) -> some View {
+        let clis = editor.draft?.clis ?? []
+        if clis.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                note(String(localized: "Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI.", comment: "角色库：还没选 CLI 时 skill/MCP tab 的提示"))
+                Button(String(localized: "Go to Basics", comment: "角色库：跳到基本信息 tab")) { editor.tab = .basics }
+            }
+        } else {
+            if clis.count > 1 {
+                Picker("", selection: Binding(
+                    get: { editor.activeCli ?? clis[0].cli },
+                    set: { editor.activeCli = $0 })) {
+                    ForEach(clis) { choice in
+                        Text(library.clis.label(for: choice.cli)).tag(choice.cli)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 360)
+            }
+            if let cli = editor.activeCli ?? clis.first?.cli {
+                RoleCliItemsEditor(library: library, editor: editor, cliKey: cli, kind: kind)
+            }
+        }
+    }
+
+    private var builtinBanner: some View {
+        HStack(spacing: 10) {
+            Label(String(localized: "This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own.", comment: "角色库：内置角色不可改的横幅"),
+                  systemImage: "lock.fill")
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button(String(localized: "Duplicate", comment: "角色库：横幅上的复制按钮")) { editor.duplicate() }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.secondary.opacity(0.08))
     }
 
     private func banner(_ text: String, detail: String) -> some View {
@@ -357,7 +460,8 @@ struct RoleLibraryView: View {
     private var basics: some View {
         VStack(alignment: .leading, spacing: 10) {
             labeled(String(localized: "Name", comment: "角色库：字段名，角色名")) {
-                TextField("", text: draftBinding.name)
+                TextField("", text: editor.draft?.builtin == true
+                          ? .constant(editor.draft?.displayName ?? "") : draftBinding.name)
                     .textFieldStyle(.roundedBorder)
                     .onChange(of: editor.draft?.name ?? "") { _ in editor.nameChanged() }
             }
@@ -385,7 +489,8 @@ struct RoleLibraryView: View {
             }
             labeled(String(localized: "Description", comment: "角色库：字段名，角色的一句话说明")) {
                 TextField(String(localized: "What this role is for, for whoever picks it", comment: "角色库：说明字段的占位提示"),
-                          text: draftBinding.summary)
+                          text: editor.draft?.builtin == true
+                          ? .constant(editor.draft?.displaySummary ?? "") : draftBinding.summary)
                     .textFieldStyle(.roundedBorder)
             }
         }
@@ -393,11 +498,68 @@ struct RoleLibraryView: View {
 
     private var instructions: some View {
         section(String(localized: "Instructions", comment: "角色库：分区名，启动时附加给 agent 的指令")) {
-            TextEditor(text: draftBinding.instructions)
-                .font(.body)
-                .frame(minHeight: 70, maxHeight: 160)
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3)))
-            note(String(localized: "Added to the agent's system prompt when it starts. Leave it empty to add nothing.", comment: "角色库：指令字段的解释"))
+            VStack(spacing: 0) {
+                TextEditor(text: draftBinding.instructions)
+                    .font(.body)
+                    .frame(height: instructionsHeight)
+                ResizeGrip(height: $instructionsHeight, range: 100...900)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3)))
+            note(String(localized: "Added to the agent's system prompt when it starts. Leave it empty to add nothing. Drag the bottom edge to make the box taller.", comment: "角色库：指令字段的解释"))
+        }
+    }
+
+    /// Remembered between windows and launches: somebody who writes long
+    /// instructions wants the tall box every time, not once.
+    @AppStorage("RoleLibrary.instructionsHeight") private var instructionsHeight: Double = 240
+
+    private var polterBinding: Binding<RolePolter> {
+        Binding(get: { editor.draft?.polter ?? RolePolter() }, set: { editor.draft?.polter = $0 })
+    }
+
+    private var polterSection: some View {
+        section(String(localized: "Polter", comment: "角色库：分区名，这个角色启动的终端在 Polter 里是什么身份")) {
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(String(localized: "Make this terminal a supervisor", comment: "角色库：Polter 选项，启动后设为总管"),
+                       isOn: polterBinding.supervisor)
+                Toggle(String(localized: "Let the supervisor answer this terminal's permission prompts", comment: "角色库：Polter 选项，允许总管替你回答权限问题"),
+                       isOn: polterBinding.mayAuthorise)
+                Toggle(String(localized: "Shield it: no tool can reach it, a supervisor's included", comment: "角色库：Polter 选项，护盾"),
+                       isOn: polterBinding.shielded)
+                note(String(localized: "These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them.", comment: "角色库：前三个 Polter 选项只有用户能改"))
+                    .padding(.leading, 20)
+                    .padding(.bottom, 4)
+
+                let p = editor.draft?.polter ?? RolePolter()
+                Toggle(String(localized: "Hand it to the supervisor to watch", comment: "角色库：Polter 选项，启动后交给当前总管监管"),
+                       isOn: polterBinding.watch)
+                    .disabled(p.supervisor || p.shielded)
+                    .help(String(localized: "The supervisor that started it, or the only one there is. With several and you starting it, nobody.", comment: "角色库：交给总管监管的规则说明"))
+                HStack(spacing: 8) {
+                    Toggle(String(localized: "Report it as still after", comment: "角色库：Polter 选项，静止多久算卡住，后接分钟数"),
+                           isOn: Binding(
+                            get: { editor.draft?.polter.quietMs != nil },
+                            set: { editor.draft?.polter.quietMs = $0 ? 10 * 60_000 : nil }))
+                    if let ms = p.quietMs {
+                        Stepper(value: Binding(
+                            get: { max(1, ms / 60_000) },
+                            set: { editor.draft?.polter.quietMs = $0 * 60_000 }), in: 1...240) {
+                            Text(String(format: String(localized: "%d min", comment: "角色库：静止阈值的分钟数"), max(1, ms / 60_000)))
+                                .monospacedDigit()
+                        }
+                        .fixedSize()
+                    }
+                }
+                .disabled(p.shielded)
+                Picker(String(localized: "Open in", comment: "角色库：Polter 选项，点角色时在哪打开"), selection: polterBinding.open) {
+                    Text(String(localized: "Here when at a prompt, else a new tab", comment: "角色库：打开位置，自动")).tag(RolePolter.Open.auto)
+                    Text(String(localized: "Always a new tab", comment: "角色库：打开位置，始终新标签页")).tag(RolePolter.Open.tab)
+                }
+                .fixedSize()
+                .padding(.top, 4)
+                note(String(localized: "Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these.", comment: "角色库：Polter 选项何时生效"))
+            }
+            .toggleStyle(.checkbox)
         }
     }
 
@@ -527,51 +689,67 @@ struct RoleLibraryView: View {
     }
 }
 
-/// Everything about one CLI for the role being edited: model, arguments,
-/// and every skill and MCP server it has, each with what it is for.
-struct RoleCliEditor: View {
+/// How one CLI is started for the role being edited: model and arguments.
+/// On the Basics tab; what the CLI keeps is on the other two.
+struct RoleCliStartEditor: View {
     @ObservedObject var library: RoleLibrary
     @ObservedObject var editor: RoleLibraryEditor
     var cliKey: String
 
-    @State private var search = ""
     @State private var argsText = ""
 
-    private var cli: AgentCli? { library.clis.cli(cliKey) }
     private var choice: RoleCliChoice? { editor.draft?.choice(for: cliKey) }
 
     /// A command line, not a sentence, so it is not translated.
     private static let argsExample = "--permission-mode auto"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            section(String(format: String(localized: "Starting %@", comment: "角色库：分区名，%@ 是 CLI 名，启动参数"), library.clis.label(for: cliKey))) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(String(localized: "Model", comment: "角色库：字段名，模型"))
-                        .frame(width: 104, alignment: .trailing)
-                        .foregroundStyle(.secondary)
-                    TextField(String(localized: "The CLI's default", comment: "角色库：模型字段占位，留空用 CLI 默认"), text: Binding(
-                        get: { choice?.model ?? "" },
-                        set: { value in editor.updateChoice(cliKey) { $0.model = value } }))
+        section(String(format: String(localized: "Starting %@", comment: "角色库：分区名，%@ 是 CLI 名，启动参数"), library.clis.label(for: cliKey))) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(String(localized: "Model", comment: "角色库：字段名，模型"))
+                    .frame(width: 104, alignment: .trailing)
+                    .foregroundStyle(.secondary)
+                TextField(String(localized: "The CLI's default", comment: "角色库：模型字段占位，留空用 CLI 默认"), text: Binding(
+                    get: { choice?.model ?? "" },
+                    set: { value in editor.updateChoice(cliKey) { $0.model = value } }))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 260)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(String(localized: "Extra Arguments", comment: "角色库：字段名，额外命令行参数"))
+                    .frame(width: 104, alignment: .trailing)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    TextField(Self.argsExample, text: $argsText)
                         .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 260)
-                }
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(String(localized: "Extra Arguments", comment: "角色库：字段名，额外命令行参数"))
-                        .frame(width: 104, alignment: .trailing)
-                        .foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 3) {
-                        TextField(Self.argsExample, text: $argsText)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.body.monospaced())
-                            .onChange(of: argsText) { value in
-                                editor.updateChoice(cliKey) { $0.args = RoleArgs.split(value) }
-                            }
-                        note(String(localized: "Added to the command line as typed. Quote anything with a space in it.", comment: "角色库：额外参数的说明"))
-                    }
+                        .font(.body.monospaced())
+                        .onChange(of: argsText) { value in
+                            editor.updateChoice(cliKey) { $0.args = RoleArgs.split(value) }
+                        }
+                    note(String(localized: "Added to the command line as typed. Quote anything with a space in it.", comment: "角色库：额外参数的说明"))
                 }
             }
+        }
+        .onAppear { argsText = RoleArgs.join(choice?.args ?? []) }
+        .onChange(of: cliKey) { _ in argsText = RoleArgs.join(choice?.args ?? []) }
+        .onChange(of: editor.original) { _ in argsText = RoleArgs.join(choice?.args ?? []) }
+    }
+}
 
+/// The skills, or the MCP servers, one CLI has, each with a switch: one
+/// tab each, so the servers are not at the bottom of a long list of skills.
+struct RoleCliItemsEditor: View {
+    @ObservedObject var library: RoleLibrary
+    @ObservedObject var editor: RoleLibraryEditor
+    var cliKey: String
+    var kind: AgentCliItem.Kind
+
+    @State private var search = ""
+
+    private var cli: AgentCli? { library.clis.cli(cliKey) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
             if let cli {
                 if let error = cli.error {
                     Label {
@@ -586,7 +764,10 @@ struct RoleCliEditor: View {
 
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField(String(localized: "Filter skills and MCP servers", comment: "角色库：搜索框占位"), text: $search)
+                    TextField(kind == .skill
+                              ? String(localized: "Filter skills", comment: "角色库：skill tab 的搜索框占位")
+                              : String(localized: "Filter MCP servers", comment: "角色库：MCP tab 的搜索框占位"),
+                              text: $search)
                         .textFieldStyle(.roundedBorder)
                     Button {
                         library.reloadClis(refresh: true)
@@ -602,18 +783,25 @@ struct RoleCliEditor: View {
                 }
 
                 RoleItemSection(
-                    title: String(localized: "Skills", comment: "角色编辑器：分区名，技能"),
-                    kind: .skill, cli: cli, cliKey: cliKey, search: search, editor: editor)
-                RoleItemSection(
-                    title: String(localized: "MCP Servers", comment: "角色编辑器：分区名，MCP 服务器"),
-                    kind: .mcp, cli: cli, cliKey: cliKey, search: search, editor: editor)
+                    title: kind == .skill
+                        ? String(localized: "Skills", comment: "角色编辑器：分区名，技能")
+                        : String(localized: "MCP Servers", comment: "角色编辑器：分区名，MCP 服务器"),
+                    kind: kind, cli: cli, cliKey: cliKey, search: search, editor: editor)
 
                 ForEach(cli.notes, id: \.self) { note(String($0)) }
+            } else if library.clis.stale {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    note(String(localized: "Reading what's installed…", comment: "角色库：正在读取各 CLI 装了什么"))
+                }
+            } else {
+                note(String(localized: "No plugin manages this CLI any more", comment: "角色库：角色里配了某 CLI，但对应插件已不在"))
             }
         }
-        .onAppear { argsText = RoleArgs.join(choice?.args ?? []) }
-        .onChange(of: cliKey) { _ in argsText = RoleArgs.join(choice?.args ?? []) }
-        .onChange(of: editor.original) { _ in argsText = RoleArgs.join(choice?.args ?? []) }
+        // A new tab or CLI starts unfiltered: a filter left over from the
+        // other list hides things for no visible reason.
+        .onChange(of: kind) { _ in search = "" }
+        .onChange(of: cliKey) { _ in search = "" }
     }
 }
 
@@ -874,4 +1062,41 @@ private func note(_ text: String) -> some View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
+}
+
+/// A strip under a box that makes it taller or shorter when dragged.
+///
+/// SwiftUI's `TextEditor` has no resize handle of its own on macOS, and a
+/// fixed height is either too small for real instructions or too big for
+/// an empty role.
+struct ResizeGrip: View {
+    @Binding var height: Double
+    var range: ClosedRange<Double>
+
+    @State private var start: Double?
+    @State private var hovering = false
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Color.secondary.opacity(hovering ? 0.12 : 0.05))
+            Capsule()
+                .fill(Color.secondary.opacity(0.5))
+                .frame(width: 36, height: 3)
+        }
+        .frame(height: 9)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hovering = inside
+            if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    let base = start ?? height
+                    start = base
+                    height = min(range.upperBound, max(range.lowerBound, base + value.translation.height))
+                }
+                .onEnded { _ in start = nil })
+        .help(String(localized: "Drag to resize", comment: "角色库：拖动调整输入框高度"))
+    }
 }

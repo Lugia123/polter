@@ -35,6 +35,39 @@ struct RoleLibraryTests {
         #expect(!s.isOn("skill:installed-tomorrow"))
     }
 
+    // MARK: The Polter half
+
+    /// Read, edited and written back; a default one is not written at all,
+    /// and `builtin` never is -- a file cannot make a role Polter's.
+    @Test func thePolterHalfRoundTripsAndBuiltinIsNeverWritten() throws {
+        let json = """
+        {"loaded":true,"error":null,"path":null,"personas":[
+         {"key":"polter-supervisor","name":"Polter Supervisor","builtin":true,
+          "polter":{"supervisor":true,"may_authorise":false,"shielded":false,"watch":false,"open":"tab"}},
+         {"key":"w","name":"W","polter":{"watch":true,"open":"auto","quiet_ms":600000}},
+         {"key":"plain","name":"P"}]}
+        """
+        let catalog = try #require(RoleCatalog(json: json))
+        let boss = catalog.roles[0]
+        #expect(boss.builtin)
+        #expect(boss.polter.supervisor)
+        #expect(boss.polter.open == .tab)
+        #expect(boss.displayName != "")
+        #expect(boss.jsonObject["builtin"] == nil)
+
+        var copy = boss
+        copy.builtin = false
+        #expect((copy.jsonObject["polter"] as? [String: Any])?["supervisor"] as? Bool == true)
+
+        let w = catalog.roles[1]
+        #expect(w.polter.watch)
+        #expect(w.polter.quietMs == 600000)
+        #expect((w.jsonObject["polter"] as? [String: Any])?["quiet_ms"] as? Int == 600000)
+
+        #expect(catalog.roles[2].polter.isDefault)
+        #expect(catalog.roles[2].jsonObject["polter"] == nil)
+    }
+
     // MARK: Roles
 
     private let catalogJSON = """

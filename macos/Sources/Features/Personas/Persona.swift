@@ -180,7 +180,9 @@ struct PersonaState: Equatable {
     /// "射手", or "射手（已改）" once it has been changed by hand.
     func displayName(in catalog: [Persona]) -> String? {
         guard let key else { return nil }
-        let base = name ?? catalog.first { $0.key == key }?.name ?? key
+        // The catalog first: it carries a built-in role's name in the
+        // user's language, where the core's copy is English.
+        let base = catalog.first { $0.key == key }?.name ?? name ?? key
         guard deviated else { return base }
         return String(
             format: String(localized: "%@ (modified)",

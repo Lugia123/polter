@@ -662,6 +662,77 @@ Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插�
   没有 agent 能替人做。
 - Swift 测试编过、没跑（以 app 为宿主会起第二个 Polter）。窗口是离线渲染真源码核的图。
 
+# 十二、角色的 Polter 一半，和内置的「Polter 总管」
+
+## 12.1 为什么要有这一半
+
+第十一节的角色只说 **CLI 带什么**：skills、MCP、模型、指令。可用户选「总管」
+角色，要的是**这个终端当总管**——那是 Polter 里的身份，不是 CLI 的配置。以前
+得启动完再去菜单点一次「设为总管」；worker 起来后还得总管再 `set_watch` 一次，
+这一步常被漏掉。
+
+于是角色多了一个 `polter` 对象（`persona.Polter`）：
+
+| 字段 | 意思 | 谁能设 |
+| --- | --- | --- |
+| `supervisor` | 启动后设为总管 | **只有用户** |
+| `may_authorise` | 允许总管替它回答权限问题 | **只有用户** |
+| `shielded` | 护盾，任何工具都碰不到 | **只有用户** |
+| `watch` | 交给启动它的总管（用户启动时：唯一的那个总管）监管 | 总管也可以 |
+| `open` | `auto`（在提示符处就地，否则新 tab）/ `tab`（始终新 tab） | 总管也可以 |
+| `quiet_ms` | 静止多久算卡住，≥ 1000 | 总管也可以 |
+
+不放进来的：**无人值守**是 CLI 自己的参数，已经可以写在 `args` 里；**按住（held）**
+是用户此刻的临场决定，写进角色就成了永久的。
+
+## 12.2 两条规则
+
+**一、授予类三项只有用户能改。** 这就是 §7.1 被划掉时留下的那个理由：总管能
+`role_put` 写角色，也能 `role_launch` 启动。若它能勾上「代答权限」，就能写一个
+角色、再启动，**给自己授权**。所以 `PersonaStore.put(…, who)`：`who = .supervisor`
+时，这三项必须与现有角色一致（新角色即全关），否则整个请求以 `NotPermitted`
+拒绝——拒绝而不是悄悄保留，这样总管读回来的就是它发出去的。角色库窗口走
+`.user`，什么都能设。
+
+**二、只在启动那一刻生效一次**（`App.startRoleIn` → `applyRoleStanding`）。之后
+就是这个终端自己的状态：用户撤掉总管，角色不会把它「纠正」回来；给一个**已经在
+跑**的终端换角色，只换工具，不动身份。否则把一个 worker 换成「总管」角色，它会
+突然开始监管别人——这是唯一一种在发生处看不见的变化。
+
+`open = tab` 连「有 agent 在就热换」那一支也跳过（`App.choosePersona`）：在 worker
+的菜单里点「Polter 总管」，得到的是一个新的总管 tab，而不是 worker 穿上总管角色。
+
+## 12.3 总管身份怎么让 agent 知道
+
+菜单里「设为总管」会推一条 `[Polter] You are now the supervisor…`
+（`Surface.zig`）。启动时不能这么做：那一刻 agent 还没起来，`tellSurface` 会把它
+**打印到 shell 上**。所以这句话随启动走：`persona.launchInstructions` 在
+`supervisor` 为真时把 `supervisor_launch_note` 放在角色自己的指令前面，由
+`polter +launch` 交给 adapter。用户自己写的总管角色，指令留空也不会起一个「是总管
+却不知道」的 agent。
+
+## 12.4 内置角色
+
+`persona.builtins` 目前一个：`polter-supervisor`。
+
+- **不写进 `personas.json`**，由读者补上：`parseLeaky` 把它放在最前面，没有文件
+  时 `builtinSet()`——应用和 `polter +launch`（另一个进程）都是这样。若写进文件，
+  用户删了它下次启动又回来，用户改了它升级时不知道该不该覆盖。
+- 文件或 `role_put` 用了这个 key：`ReservedKey` / `BuiltinRole`，删它：`BuiltinRole`。
+  想改就在角色库里「复制」一份。
+- 内容：skills 默认全关，只留 `polter-*` 三个；MCP 默认全关（polter 自己的锁定常驻）；
+  Polter 一半 `supervisor` + `open = tab`；指令只写身份与边界（拆分、派活、验收，
+  结论进群，不可逆的事先问用户）——「先读 supervising」已经在 12.3 那句里。
+- 名字和说明在核心里是英文，mac 界面按 key 显示本地化文字（`Role.displayName`）。
+
+## 12.5 没做的，和没验证的
+
+- **Windows 没有角色库窗口**，所以那边改不了 Polter 一半；内置角色与启动时的身份
+  走核心，理应生效，**未在 Windows 真机上测**。
+- `watch` 在「用户启动、有多个总管」时不交给任何人，只写一行日志，界面上看不出来。
+
+---
+
 # 附录 A：探针
 
 **这三段是本章所有 🔬 结论的来源，也是以后重测的唯一办法。**

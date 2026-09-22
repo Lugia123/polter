@@ -1792,7 +1792,8 @@ pub const CAPI = struct {
         err: ?[*]u8,
         cap: usize,
     ) bool {
-        app.core_app.putPersona(json[0..len]) catch |e| {
+        // The library window: the user, who may set anything in a role.
+        app.core_app.putPersona(json[0..len], .user) catch |e| {
             copyErrorOut(e, err, cap);
             return false;
         };

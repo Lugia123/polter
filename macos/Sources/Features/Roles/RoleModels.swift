@@ -81,6 +81,50 @@ struct RoleCliChoice: Equatable, Identifiable {
     }
 }
 
+/// What Polter does with the terminal a role is started in -- the core's
+/// `persona.Polter`. Applied once, when the role starts an agent CLI.
+///
+/// `supervisor`, `mayAuthorise` and `shielded` grant the terminal
+/// something, so only the user sets them: the core refuses a supervisor's
+/// `role_put` that changes them, and this window is the user's.
+struct RolePolter: Equatable {
+    enum Open: String, CaseIterable { case auto, tab }
+
+    var supervisor = false
+    var mayAuthorise = false
+    var shielded = false
+    var watch = false
+    var open: Open = .auto
+    /// Nil keeps the configured default.
+    var quietMs: Int?
+
+    var isDefault: Bool { self == RolePolter() }
+
+    init() {}
+
+    init(json: Any?) {
+        guard let obj = json as? [String: Any] else { return }
+        supervisor = (obj["supervisor"] as? Bool) ?? false
+        mayAuthorise = (obj["may_authorise"] as? Bool) ?? false
+        shielded = (obj["shielded"] as? Bool) ?? false
+        watch = (obj["watch"] as? Bool) ?? false
+        open = (obj["open"] as? String).flatMap(Open.init(rawValue:)) ?? .auto
+        quietMs = obj["quiet_ms"] as? Int
+    }
+
+    var json: [String: Any] {
+        var out: [String: Any] = [
+            "supervisor": supervisor,
+            "may_authorise": mayAuthorise,
+            "shielded": shielded,
+            "watch": watch,
+            "open": open.rawValue,
+        ]
+        if let quietMs { out["quiet_ms"] = quietMs }
+        return out
+    }
+}
+
 /// One role from the library, in the shape the window edits.
 ///
 /// **Fields the window does not edit are carried through untouched.** A
@@ -95,13 +139,40 @@ struct Role: Equatable, Identifiable {
     var summary: String = ""
     var instructions: String = ""
     var clis: [RoleCliChoice] = []
+    var polter = RolePolter()
+
+    /// Shipped with Polter. Shown, launched and copied, never saved: the
+    /// core refuses to replace or delete one.
+    var builtin = false
 
     /// Everything else in the object, as JSON, so it compares and saves.
     var passthrough: Data = Data("{}".utf8)
 
     var id: String { key }
 
-    static let editedKeys: Set<String> = ["key", "name", "description", "instructions", "clis"]
+    static let editedKeys: Set<String> = ["key", "name", "description", "instructions", "clis", "polter", "builtin"]
+
+    /// The key of the supervisor role Polter ships (`persona.supervisor_key`).
+    static let supervisorKey = "polter-supervisor"
+
+    /// The name to show. A built-in role's is in the core in English, and
+    /// shown here in the user's language.
+    var displayName: String {
+        guard builtin else { return name }
+        switch key {
+        case Self.supervisorKey: return String(localized: "Polter Supervisor", comment: "角色库：内置角色名，Polter 总管")
+        default: return name
+        }
+    }
+
+    var displaySummary: String {
+        guard builtin else { return summary }
+        switch key {
+        case Self.supervisorKey:
+            return String(localized: "Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it.", comment: "角色库：内置总管角色的一句话说明")
+        default: return summary
+        }
+    }
 
     init(key: String, name: String) {
         self.key = key
@@ -117,6 +188,8 @@ struct Role: Equatable, Identifiable {
         if let clis = obj["clis"] as? [String: Any] {
             self.clis = clis.keys.sorted().map { RoleCliChoice(cli: $0, json: clis[$0]) }
         }
+        polter = RolePolter(json: obj["polter"])
+        builtin = (obj["builtin"] as? Bool) ?? false
         let rest = obj.filter { !Self.editedKeys.contains($0.key) }
         passthrough = (try? JSONSerialization.data(withJSONObject: rest, options: [.sortedKeys])) ?? Data("{}".utf8)
     }
@@ -138,6 +211,7 @@ struct Role: Equatable, Identifiable {
         if !clis.isEmpty {
             out["clis"] = Dictionary(uniqueKeysWithValues: clis.map { ($0.cli, $0.json) })
         }
+        if !polter.isDefault { out["polter"] = polter.json }
         return out
     }
 

@@ -306,7 +306,6 @@
 "Description" = "Description";
 "What this role is for, for whoever picks it" = "What this role is for, for whoever picks it";
 "Instructions" = "Instructions";
-"Added to the agent's system prompt when it starts. Leave it empty to add nothing." = "Added to the agent's system prompt when it starts. Leave it empty to add nothing.";
 "Agent CLIs" = "Agent CLIs";
 "Reading what's installed…" = "Reading what's installed…";
 "No plugin that manages an agent CLI is installed and switched on." = "No plugin that manages an agent CLI is installed and switched on.";
@@ -323,7 +322,6 @@
 "The CLI's default" = "The CLI's default";
 "Extra Arguments" = "Extra Arguments";
 "Added to the command line as typed. Quote anything with a space in it." = "Added to the command line as typed. Quote anything with a space in it.";
-"Filter skills and MCP servers" = "Filter skills and MCP servers";
 "Read what's installed again" = "Read what's installed again";
 "%lld of %lld kept" = "%lld of %lld kept";
 "Keep All" = "Keep All";
@@ -340,3 +338,33 @@
 "No description" = "No description";
 "Show Less" = "Show Less";
 "Show More" = "Show More";
+
+/* Role library: built-in roles and the Polter half of a role */
+"Polter Supervisor" = "Polter Supervisor";
+"Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it." = "Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it.";
+"Comes with Polter" = "Comes with Polter";
+"This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own." = "This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own.";
+"Duplicate" = "Duplicate";
+"Added to the agent's system prompt when it starts. Leave it empty to add nothing. Drag the bottom edge to make the box taller." = "Added to the agent's system prompt when it starts. Leave it empty to add nothing. Drag the bottom edge to make the box taller.";
+"Polter" = "Polter";
+"Make this terminal a supervisor" = "Make this terminal a supervisor";
+"Let the supervisor answer this terminal's permission prompts" = "Let the supervisor answer this terminal's permission prompts";
+"Shield it: no tool can reach it, a supervisor's included" = "Shield it: no tool can reach it, a supervisor's included";
+"These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them." = "These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them.";
+"Hand it to the supervisor to watch" = "Hand it to the supervisor to watch";
+"The supervisor that started it, or the only one there is. With several and you starting it, nobody." = "The supervisor that started it, or the only one there is. With several and you starting it, nobody.";
+"Report it as still after" = "Report it as still after";
+"%d min" = "%d min";
+"Open in" = "Open in";
+"Here when at a prompt, else a new tab" = "Here when at a prompt, else a new tab";
+"Always a new tab" = "Always a new tab";
+"Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these." = "Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these.";
+"Drag to resize" = "Drag to resize";
+"Basics" = "Basics";
+"Skills %@" = "Skills %@";
+"MCP %@" = "MCP %@";
+"MCP" = "MCP";
+"Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI." = "Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI.";
+"Go to Basics" = "Go to Basics";
+"Filter skills" = "Filter skills";
+"Filter MCP servers" = "Filter MCP servers";

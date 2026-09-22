@@ -2114,13 +2114,14 @@ pub fn personaCatalogJson(self: *App, alloc: Allocator) ![]u8 {
     return try out.toOwnedSlice();
 }
 
-/// Write one role into the library. The window and `role_put` both come
-/// here; `PersonaStore.put` is the one writer underneath.
-pub fn putPersona(self: *App, json: []const u8) !void {
+/// Write one role into the library. The window (`who` = user) and
+/// `role_put` (`who` = supervisor) both come here; `PersonaStore.put` is
+/// the one writer underneath, and holds a supervisor to what it may set.
+pub fn putPersona(self: *App, json: []const u8, who: poltergeistpkg.Bus.Authority) !void {
     self.ensurePersonas();
     const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
     defer self.alloc.free(path);
-    try self.personas.put(global.io(), path, json);
+    try self.personas.put(global.io(), path, json, who);
     self.personasChanged();
 }
 
@@ -2222,13 +2223,91 @@ fn launchLine(alloc: Allocator, choice: LaunchChoice) ![]const u8 {
     return line.written();
 }
 
-/// Put a terminal in the role and type the line that starts it there.
-fn startRoleIn(self: *App, id: poltergeistpkg.Bus.Id, key: []const u8, line: []const u8) anyerror!void {
+/// Put a terminal in the role, give it the role's Polter standing, and
+/// type the line that starts it there. `by` is the terminal the launch was
+/// asked from -- a supervisor's for `role_launch`, the clicked one for the
+/// menu, and `id` itself when the role starts where it was clicked.
+fn startRoleIn(
+    self: *App,
+    id: poltergeistpkg.Bus.Id,
+    by: poltergeistpkg.Bus.Id,
+    key: []const u8,
+    line: []const u8,
+) anyerror!void {
     self.setSurfacePersona(id, key) catch |err| {
         log.warn("poltergeist: starting {s} but could not mark the tab err={}", .{ key, err });
     };
     const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
+
+    // Before the line is typed, so the agent that line starts finds the
+    // standing already in place when it first asks `me`.
+    if (self.personas.set.find(key)) |p| self.applyRoleStanding(surface, by, p.polter);
+
     try surface.typePoltergeistText(line, true);
+}
+
+/// Give a terminal that is starting in a role what the role's Polter half
+/// asks for (`persona.Polter`). Once, here, at the start -- never when a
+/// role is put on a terminal that is already running.
+///
+/// As the user: the role is theirs, and a supervisor cannot have written
+/// the three settings that grant something (`PersonaStore.put`).
+fn applyRoleStanding(
+    self: *App,
+    surface: *Surface,
+    by: poltergeistpkg.Bus.Id,
+    want: poltergeistpkg.persona.Polter,
+) void {
+    if (want.isDefault()) return;
+    const bus = &self.poltergeist;
+    const id = surface.id;
+    defer self.refreshPoltergeistTabs();
+    defer self.saveSession();
+
+    if (want.supervisor) {
+        bus.addSupervisor(id) catch |err| {
+            log.warn("poltergeist: role could not make terminal a supervisor err={}", .{err});
+        };
+        log.info("poltergeist: started in a supervisor role, so this terminal is a supervisor", .{});
+    }
+
+    bus.register(id) catch {};
+    if (want.may_authorise) bus.setMayAuthorise(id, true, .user) catch {};
+    if (want.shielded) bus.setShielded(id, true, .user) catch {};
+
+    // Shielded wins: a terminal nothing may reach is not one to be told
+    // about (`Bus.setShielded`). And a supervisor is not watched.
+    if (want.watch and !want.shielded and !want.supervisor) {
+        if (self.roleWatcher(by, id)) |boss| {
+            bus.watch(id, boss) catch |err| {
+                log.warn("poltergeist: role could not hand terminal to its supervisor err={}", .{err});
+            };
+            surface.setPoltergeistWatching(true);
+        } else {
+            log.info("poltergeist: role asked to be watched but there is no one supervisor to watch it", .{});
+        }
+    }
+
+    if (want.quiet_ms) |ms| surface.setPoltergeistThreshold(ms);
+}
+
+/// Who minds a terminal a role says should be watched: the supervisor that
+/// started it, or -- when a person started it from a terminal that is not
+/// one -- the only supervisor there is. Null with none, or with several:
+/// which of two supervisors a terminal belongs to is not the program's to
+/// guess (the same reason `Bus.removeSupervisor` releases rather than
+/// hands on).
+fn roleWatcher(self: *App, by: poltergeistpkg.Bus.Id, id: poltergeistpkg.Bus.Id) ?poltergeistpkg.Bus.Id {
+    const bus = &self.poltergeist;
+    if (by != id and bus.isSupervisor(by)) return by;
+    var found: ?poltergeistpkg.Bus.Id = null;
+    var it = bus.entries.iterator();
+    while (it.next()) |kv| {
+        if (kv.key_ptr.* == id or kv.value_ptr.role != .supervisor) continue;
+        if (found != null) return null;
+        found = kv.key_ptr.*;
+    }
+    return found;
 }
 
 /// Open a tab beside `by` and start the role there.
@@ -2253,14 +2332,14 @@ pub fn launchPersona(
 
     // Set before the tab is asked for: a runtime that creates the surface
     // synchronously runs its `init` -- and so the claim -- inside the call.
-    self.setPendingLaunch(choice.key, line);
+    self.setPendingLaunch(choice.key, line, by);
     const id = try poltergeistOpenTerminal(self, alloc, cwd, by, .tab);
     if (id) |new| {
         // Claimed already when the surface was made inside the call; if not,
         // it is ours now and the pending one goes.
         if (self.poltergeist_pending_launch != null) {
             self.clearPendingLaunch();
-            try self.startRoleIn(new, choice.key, line);
+            try self.startRoleIn(new, by, choice.key, line);
         }
     }
     return id;
@@ -2270,6 +2349,8 @@ pub fn launchPersona(
 pub const PendingLaunch = struct {
     key: []const u8,
     line: []const u8,
+    /// The terminal the launch was asked from (`startRoleIn`).
+    by: poltergeistpkg.Bus.Id,
     /// Past this, a terminal that starts is not the one that was asked for
     /// -- the tab was refused or closed -- and it is left alone.
     deadline_ms: u64,
@@ -2279,7 +2360,7 @@ pub const PendingLaunch = struct {
 /// enough that a tab the person opens by hand later is never mistaken for it.
 const pending_launch_ms = 10_000;
 
-fn setPendingLaunch(self: *App, key: []const u8, line: []const u8) void {
+fn setPendingLaunch(self: *App, key: []const u8, line: []const u8, by: poltergeistpkg.Bus.Id) void {
     self.clearPendingLaunch();
     const k = self.alloc.dupe(u8, key) catch return;
     const l = self.alloc.dupe(u8, line) catch {
@@ -2289,6 +2370,7 @@ fn setPendingLaunch(self: *App, key: []const u8, line: []const u8) void {
     self.poltergeist_pending_launch = .{
         .key = k,
         .line = l,
+        .by = by,
         .deadline_ms = self.poltergeistElapsedMs() + pending_launch_ms,
     };
 }
@@ -2313,7 +2395,7 @@ pub fn claimPendingLaunch(self: *App, surface: *Surface) void {
         log.info("poltergeist: the tab for role {s} never came; not starting it", .{p.key});
         return;
     }
-    self.startRoleIn(surface.id, p.key, p.line) catch |err| {
+    self.startRoleIn(surface.id, p.by, p.key, p.line) catch |err| {
         log.warn("poltergeist: could not start role {s} in its tab err={}", .{ p.key, err });
     };
 }
@@ -2347,8 +2429,16 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
     const cli = if (comma) |c| arg[c + 1 ..] else "";
 
     const p = self.personas.set.find(key) orelse return error.NoSuchPersona;
+
+    // "Always in a new tab" is the user saying which of these they mean,
+    // ahead of time, so none of the guessing below applies -- including
+    // wearing it here when an agent is connected. It is also what keeps a
+    // click on the supervisor role in a worker's menu from turning into
+    // the worker wearing it.
+    const new_tab = p.polter.open == .tab and p.clis.len > 0;
+
     const agent_here = if (self.poltergeist_server) |*srv| srv.agentPresent(id) else false;
-    if (agent_here or p.clis.len == 0) {
+    if (!new_tab and (agent_here or p.clis.len == 0)) {
         try self.setSurfacePersona(id, key);
         return .worn;
     }
@@ -2358,9 +2448,9 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
     defer arena.deinit();
     const aa = arena.allocator();
 
-    if (surface.isAtShellPrompt()) {
+    if (!new_tab and surface.isAtShellPrompt()) {
         const choice = try self.resolveLaunch(aa, key, cli);
-        try self.startRoleIn(id, choice.key, try launchLine(aa, choice));
+        try self.startRoleIn(id, id, choice.key, try launchLine(aa, choice));
         return .started_here;
     }
     _ = try self.launchPersona(aa, id, key, cli, "");
@@ -2374,7 +2464,8 @@ fn poltergeistPersonaCatalog(ctx: *anyopaque, alloc: Allocator) anyerror![]const
 
 fn poltergeistPersonaPut(ctx: *anyopaque, json: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.putPersona(json);
+    // The tool surface: only a supervisor reaches `role_put`.
+    return self.putPersona(json, .supervisor);
 }
 
 fn poltergeistPersonaDelete(ctx: *anyopaque, key: []const u8) anyerror!void {

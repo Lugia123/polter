@@ -128,9 +128,11 @@ pub const max_bytes = 256 * 1024;
 pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
     const bytes = readAll(self.alloc, io, path) catch |err| switch (err) {
         error.FileNotFound => {
-            // Nothing there, and nothing wrong. Note that we looked.
-            self.setError(null);
-            self.loaded = true;
+            // Nothing there, and nothing wrong. What is left is the roles
+            // Polter ships, which every reader adds whether or not there is
+            // a file -- `+launch` in its own process included.
+            var arena: std.heap.ArenaAllocator = .init(self.alloc);
+            self.install(&arena, persona.builtinSet(), path) catch arena.deinit();
             return;
         },
         else => {
@@ -152,31 +154,47 @@ pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
         return;
     };
 
+    self.install(&arena, set, path) catch {
+        arena.deinit();
+        return;
+    };
+
+    if (set.ignored_denies.len > 0) {
+        // Not an error -- the file loaded -- but the user asked for
+        // something that did not happen, and an instruction silently
+        // ignored is indistinguishable from one that was honoured.
+        log.warn(
+            "poltergeist: {d} tool(s) in personas.json cannot be denied and were kept",
+            .{set.ignored_denies.len},
+        );
+    }
+}
+
+/// Make `set`, which lives in `arena`, the one in use. On failure nothing
+/// changed and the arena is still the caller's.
+fn install(self: *PersonaStore, arena: *std.heap.ArenaAllocator, set: persona.Set, path: []const u8) error{OutOfMemory}!void {
     // The C-facing copies, built while the arena is still ours to fail in.
     const aa = arena.allocator();
     const names = aa.alloc(NamePair, set.personas.len) catch {
         self.setErrorFmt("out of memory reading {s}", .{path});
-        arena.deinit();
-        return;
+        return error.OutOfMemory;
     };
     for (set.personas, 0..) |p, i| {
         names[i] = .{
             .key = aa.dupeZ(u8, p.key) catch {
                 self.setErrorFmt("out of memory reading {s}", .{path});
-                arena.deinit();
-                return;
+                return error.OutOfMemory;
             },
             .name = aa.dupeZ(u8, p.name) catch {
                 self.setErrorFmt("out of memory reading {s}", .{path});
-                arena.deinit();
-                return;
+                return error.OutOfMemory;
             },
         };
     }
 
     // Only now, with a whole good set in hand, is the old one dropped.
     var old = self.arena;
-    self.arena = arena;
+    self.arena = arena.*;
     self.set = set;
     self.names = names;
     self.loaded = true;
@@ -189,16 +207,6 @@ pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
     // the file was read once per run; it happens on every edit now.
     self.rebindStates();
     if (old) |*a| a.deinit();
-
-    if (set.ignored_denies.len > 0) {
-        // Not an error -- the file loaded -- but the user asked for
-        // something that did not happen, and an instruction silently
-        // ignored is indistinguishable from one that was honoured.
-        log.warn(
-            "poltergeist: {d} tool(s) in personas.json cannot be denied and were kept",
-            .{set.ignored_denies.len},
-        );
-    }
 }
 
 /// Point every terminal's state at the set that was just installed.
@@ -230,6 +238,14 @@ pub const WriteError = error{
 
     NoSuchPersona,
 
+    /// The key is a role Polter ships (`persona.builtins`). Those are
+    /// neither replaced nor deleted; a copy under another key can be.
+    BuiltinPersona,
+
+    /// A supervisor tried to change what only the user may set in a role
+    /// (`persona.Polter.userOnlyEql`).
+    NotPermitted,
+
     /// Written, and then reading it back failed. Should not happen -- the
     /// writer and the reader are one pair -- and is said rather than
     /// assumed because it is the one outcome that means a bug here.
@@ -242,7 +258,13 @@ pub const WriteError = error{
 /// Add a role, or replace the one with the same key where it stands.
 ///
 /// `json` is one persona object, in the shape the file uses for one.
-pub fn put(self: *PersonaStore, io: std.Io, path: []const u8, json: []const u8) WriteError!void {
+///
+/// `who` is who is writing. The user -- the library window -- may set
+/// anything. A supervisor may not change the three settings that grant a
+/// terminal something (`persona.Polter`): its write has to leave them as
+/// they are, which for a new role is off. Refused whole rather than quietly
+/// kept, so that what the supervisor reads back is what it sent.
+pub fn put(self: *PersonaStore, io: std.Io, path: []const u8, json: []const u8, who: Bus.Authority) WriteError!void {
     if (self.load_error != null) return error.FileUnreadable;
 
     var scratch: std.heap.ArenaAllocator = .init(self.alloc);
@@ -251,8 +273,13 @@ pub fn put(self: *PersonaStore, io: std.Io, path: []const u8, json: []const u8) 
 
     const p = persona.parsePersonaLeaky(sa, json) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
+        error.ReservedKey => error.BuiltinPersona,
         else => error.BadPersona,
     };
+    if (who != .user) {
+        const before: persona.Polter = if (self.set.find(p.key)) |q| q.polter else .{};
+        if (!persona.Polter.userOnlyEql(before, p.polter)) return error.NotPermitted;
+    }
     const set = try persona.withPersona(sa, self.set, p);
     try self.commit(io, path, set);
 }
@@ -260,6 +287,7 @@ pub fn put(self: *PersonaStore, io: std.Io, path: []const u8, json: []const u8) 
 /// Delete a role. Terminals wearing it are taken out of it.
 pub fn remove(self: *PersonaStore, io: std.Io, path: []const u8, key: []const u8) WriteError!void {
     if (self.load_error != null) return error.FileUnreadable;
+    if (persona.isBuiltinKey(key)) return error.BuiltinPersona;
 
     var scratch: std.heap.ArenaAllocator = .init(self.alloc);
     defer scratch.deinit();
@@ -507,14 +535,14 @@ test "personas: a good file loads, and a later bad one does not take it away" {
     store.load(io, path);
     try testing.expect(store.loaded);
     try testing.expectEqual(@as(?[]const u8, null), store.load_error);
-    try testing.expectEqual(@as(usize, 0), store.set.personas.len);
+    try testing.expectEqual(persona.builtins.len + 0, store.set.personas.len);
 
     try write(io, path,
         \\{"version":1,"personas":[{"key":"archer","name":"Archer",
         \\  "tools":{"deny":["notify_user"]}}]}
     );
     store.load(io, path);
-    try testing.expectEqual(@as(usize, 1), store.set.personas.len);
+    try testing.expectEqual(persona.builtins.len + 1, store.set.personas.len);
     try testing.expectEqual(@as(?[]const u8, null), store.load_error);
 
     // **The assertion this test exists for.** A typo must not silently
@@ -523,8 +551,8 @@ test "personas: a good file loads, and a later bad one does not take it away" {
     // uses for something else.
     try write(io, path, "{\"version\":1,\"personas\":[{\"key\":\"a\"");
     store.load(io, path);
-    try testing.expectEqual(@as(usize, 1), store.set.personas.len);
-    try testing.expectEqualStrings("Archer", store.set.personas[0].name);
+    try testing.expectEqual(persona.builtins.len + 1, store.set.personas.len);
+    try testing.expectEqualStrings("Archer", store.set.personas[persona.builtins.len + 0].name);
     try testing.expect(store.load_error != null);
     try testing.expect(std.mem.indexOf(u8, store.load_error.?, "personas.json") != null);
 }
@@ -748,11 +776,12 @@ test "personas: a role put through the writer is in the file and in the set" {
 
     try store.put(io, path,
         \\{"key":"archer","name":"射手","clis":{"claude-code":{"skills":{"default":false}}}}
-    );
+    , .user);
     try store.put(io, path,
         \\{"key":"scribe","name":"书记"}
-    );
-    try testing.expectEqual(@as(usize, 2), store.set.personas.len);
+    , .user);
+    // The two written, after the built-ins every set starts with.
+    try testing.expectEqual(persona.builtins.len + 2, store.set.personas.len);
     try testing.expectEqualStrings("射手", store.cName("archer").?.name);
 
     // The file is what the next start reads, so it is checked, not the
@@ -760,15 +789,15 @@ test "personas: a role put through the writer is in the file and in the set" {
     var fresh: PersonaStore = .{ .alloc = testing.allocator };
     defer fresh.deinit();
     fresh.load(io, path);
-    try testing.expectEqual(@as(usize, 2), fresh.set.personas.len);
-    try testing.expect(!fresh.set.personas[0].clis[0].skills.default);
+    try testing.expectEqual(persona.builtins.len + 2, fresh.set.personas.len);
+    try testing.expect(!fresh.set.find("archer").?.clis[0].skills.default);
 
     try testing.expectError(error.BadPersona, store.put(io, path,
         \\{"key":"Bad Key","name":"x"}
-    ));
+    , .user));
     try testing.expectError(error.NoSuchPersona, store.remove(io, path, "nobody"));
     try store.remove(io, path, "archer");
-    try testing.expectEqual(@as(usize, 1), store.set.personas.len);
+    try testing.expectEqual(persona.builtins.len + 1, store.set.personas.len);
 }
 
 test "personas: a file that does not parse is not overwritten" {
@@ -795,7 +824,7 @@ test "personas: a file that does not parse is not overwritten" {
 
     try testing.expectError(error.FileUnreadable, store.put(io, path,
         \\{"key":"archer","name":"a"}
-    ));
+    , .user));
     try testing.expectError(error.FileUnreadable, store.remove(io, path, "mine"));
 
     const after = try std.Io.Dir.cwd().readFileAlloc(io, path, aa, .limited(max_bytes));
@@ -820,10 +849,10 @@ test "personas: after an edit a terminal wears the edit, and a deleted role come
     store.load(io, path);
     try store.put(io, path,
         \\{"key":"archer","name":"a","skills":["one"]}
-    );
+    , .user);
     try store.put(io, path,
         \\{"key":"scribe","name":"s"}
-    );
+    , .user);
 
     const a: Bus.Id = 0x1111;
     const b: Bus.Id = 0x2222;
@@ -835,7 +864,7 @@ test "personas: after an edit a terminal wears the edit, and a deleted role come
     // reading the new ones.
     try store.put(io, path,
         \\{"key":"archer","name":"a","skills":["two","three"]}
-    );
+    , .user);
     const sa = store.stateOf(a);
     try testing.expectEqualStrings("archer", sa.key.?);
     try testing.expectEqual(@as(usize, 2), sa.effective.skills.len);
@@ -846,4 +875,79 @@ test "personas: after an edit a terminal wears the edit, and a deleted role come
     try store.remove(io, path, "scribe");
     try testing.expectEqual(@as(?[]const u8, null), store.stateOf(b).key);
     try testing.expectEqualStrings("archer", store.stateOf(a).key.?);
+}
+
+test "personas: no file is the built-ins, and they can be neither replaced nor deleted" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const path = try std.fmt.allocPrint(aa, "{s}/personas.json", .{dir});
+
+    var store: PersonaStore = .{ .alloc = testing.allocator };
+    defer store.deinit();
+    store.load(io, path);
+    try testing.expect(store.loaded);
+    try testing.expect(store.set.find(persona.supervisor_key) != null);
+    try testing.expect(store.cName(persona.supervisor_key) != null);
+
+    try testing.expectError(error.BuiltinPersona, store.put(io, path,
+        \\{"key":"polter-supervisor","name":"mine"}
+    , .user));
+    try testing.expectError(error.BuiltinPersona, store.remove(io, path, persona.supervisor_key));
+
+    // Refused before anything was written.
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, path, .{}));
+}
+
+test "personas: a supervisor may not set what grants a terminal something" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const path = try std.fmt.allocPrint(aa, "{s}/personas.json", .{dir});
+
+    var store: PersonaStore = .{ .alloc = testing.allocator };
+    defer store.deinit();
+    store.load(io, path);
+
+    // A new role that grants anything: refused, one setting at a time.
+    for ([_][]const u8{ "supervisor", "may_authorise", "shielded" }) |field| {
+        const json = try std.fmt.allocPrint(aa, "{{\"key\":\"x\",\"name\":\"x\",\"polter\":{{\"{s}\":true}}}}", .{field});
+        try testing.expectError(error.NotPermitted, store.put(io, path, json, .supervisor));
+        try testing.expect(store.set.find("x") == null);
+    }
+
+    // What does not grant anything is the supervisor's to set.
+    try store.put(io, path,
+        \\{"key":"x","name":"x","polter":{"watch":true,"open":"tab"}}
+    , .supervisor);
+
+    // The user grants it ...
+    try store.put(io, path,
+        \\{"key":"x","name":"x","polter":{"watch":true,"may_authorise":true}}
+    , .user);
+
+    // ... after which a supervisor's edit that carries it as it is goes
+    // through, and one that takes it away is refused like one that adds it.
+    try store.put(io, path,
+        \\{"key":"x","name":"renamed","polter":{"may_authorise":true,"open":"tab"}}
+    , .supervisor);
+    try testing.expectEqualStrings("renamed", store.set.find("x").?.name);
+    try testing.expectError(error.NotPermitted, store.put(io, path,
+        \\{"key":"x","name":"x"}
+    , .supervisor));
+    try testing.expect(store.set.find("x").?.polter.may_authorise);
 }

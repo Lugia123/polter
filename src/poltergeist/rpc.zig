@@ -5108,6 +5108,16 @@ fn roleWriteFailure(err: anyerror) wire.Response {
                 "whatever somebody was halfway through. It has to be fixed by hand first.",
         ),
         error.NoSuchPersona => hostFailure("NoSuchRole", "there is no role with that key."),
+        error.BuiltinPersona => hostFailure(
+            "BuiltinRole",
+            "that role ships with Polter and cannot be changed or deleted. Write a copy " ++
+                "under another key instead.",
+        ),
+        error.NotPermitted => hostFailure(
+            "NotPermitted",
+            "polter.supervisor, polter.may_authorise and polter.shielded can only be " ++
+                "set by the user, in the role library. Send them as role_list shows them.",
+        ),
         error.WriteNotLoaded => hostFailure(
             "WriteNotLoaded",
             "the library was written but did not read back. This is a bug in Polter.",
@@ -5500,7 +5510,15 @@ pub fn dispatch(
             // A null id is the tab still being made (Windows, always): the
             // launch waits for it and is typed in when it appears, and
             // `terminal_list` will have it in a moment.
-            return .{ .opened = .{ .id = id, .watching = false } };
+            //
+            // `watching` is read off the bus, not assumed: a role with
+            // `polter.watch` has already put the new terminal in the
+            // caller's charge (`App.applyRoleStanding`), and a constant
+            // `false` here told the supervisor to go and do it again.
+            return .{ .opened = .{
+                .id = id,
+                .watching = if (id) |new| bus.minds(caller, new) else false,
+            } };
         },
 
         .terminal_action => |p| {

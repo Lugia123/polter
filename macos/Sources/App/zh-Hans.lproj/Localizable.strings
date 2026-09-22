@@ -320,7 +320,6 @@
 "Description" = "说明";
 "What this role is for, for whoever picks it" = "这个角色是干什么的，写给挑选它的人看";
 "Instructions" = "指令";
-"Added to the agent's system prompt when it starts. Leave it empty to add nothing." = "启动时附加到 agent 的系统提示词后面。留空就什么都不加。";
 "Agent CLIs" = "Agent CLI";
 "Reading what's installed…" = "正在读取已安装的内容…";
 "No plugin that manages an agent CLI is installed and switched on." = "没有安装并启用任何管理 agent CLI 的插件。";
@@ -337,7 +336,6 @@
 "The CLI's default" = "CLI 默认";
 "Extra Arguments" = "额外参数";
 "Added to the command line as typed. Quote anything with a space in it." = "按原样追加到命令行。含空格的参数请加引号。";
-"Filter skills and MCP servers" = "筛选 skill 和 MCP 服务器";
 "Read what's installed again" = "重新读取已安装的内容";
 "%lld of %lld kept" = "保留 %lld / %lld";
 "Keep All" = "全部保留";
@@ -354,3 +352,33 @@
 "No description" = "没有说明";
 "Show Less" = "收起";
 "Show More" = "展开";
+
+/* Role library: built-in roles and the Polter half of a role */
+"Polter Supervisor" = "Polter 总管";
+"Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it." = "在新标签页里作为本窗口的总管启动：拆分工作、派活、验收。";
+"Comes with Polter" = "Polter 自带";
+"This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own." = "这是 Polter 自带的角色，不能修改或删除。复制一份就能改成你自己的。";
+"Duplicate" = "复制";
+"Added to the agent's system prompt when it starts. Leave it empty to add nothing. Drag the bottom edge to make the box taller." = "启动时附加到 agent 的系统提示词后面。留空就什么都不加。拖动下边缘可以把输入框拉高。";
+"Polter" = "Polter";
+"Make this terminal a supervisor" = "将此终端设为总管";
+"Let the supervisor answer this terminal's permission prompts" = "允许总管替你回答此终端的权限问题";
+"Shield it: no tool can reach it, a supervisor's included" = "开启护盾：任何工具都碰不到它，总管也不行";
+"These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them." = "这三项会给终端授予权限，所以只有你能在这里设置。能编辑角色的总管也改不了它们。";
+"Hand it to the supervisor to watch" = "交给总管监管";
+"The supervisor that started it, or the only one there is. With several and you starting it, nobody." = "交给启动它的那个总管；如果是你启动的，就交给唯一的那个总管。有多个总管时不交给任何人。";
+"Report it as still after" = "静止多久算卡住";
+"%d min" = "%d 分钟";
+"Open in" = "打开位置";
+"Here when at a prompt, else a new tab" = "在提示符处就地打开，否则开新标签页";
+"Always a new tab" = "始终在新标签页中打开";
+"Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these." = "只在用这个角色启动 agent CLI 时生效一次。给已经在运行的终端换上这个角色，只会切换它的工具，不会改这些设置。";
+"Drag to resize" = "拖动调整大小";
+"Basics" = "基本信息";
+"Skills %@" = "Skills %@";
+"MCP %@" = "MCP %@";
+"MCP" = "MCP";
+"Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI." = "先在「基本信息」里选一个 agent CLI：skill 和 MCP 服务器是属于某个 CLI 的。";
+"Go to Basics" = "去基本信息";
+"Filter skills" = "筛选 skill";
+"Filter MCP servers" = "筛选 MCP 服务器";

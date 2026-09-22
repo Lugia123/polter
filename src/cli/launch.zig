@@ -77,23 +77,30 @@ pub fn run(alloc: Allocator) !u8 {
 
     // --- the role
     const path = try PersonaStore.defaultPath(aa);
-    const bytes = std.Io.Dir.cwd().readFileAlloc(
+    // No file is a library of the built-in roles alone, as it is for the
+    // app (`PersonaStore.load`).
+    const bytes: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(
         io,
         path,
         aa,
         .limited(PersonaStore.max_bytes),
-    ) catch |err| {
-        try err_out.print("Polter: could not read the role library at {s} ({t}).\n", .{ path, err });
-        return 1;
+    ) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => {
+            try err_out.print("Polter: could not read the role library at {s} ({t}).\n", .{ path, err });
+            return 1;
+        },
     };
-    const set = persona.parseLeaky(aa, bytes) catch |err| {
+    const set = if (bytes) |b| persona.parseLeaky(aa, b) catch |err| {
         try err_out.print("Polter: {s} does not read as a role library ({t}).\n", .{ path, err });
         return 1;
-    };
-    const p = set.find(parsed.role) orelse {
+    } else persona.builtinSet();
+    var p = set.find(parsed.role) orelse {
         try err_out.print("Polter: there is no role called \"{s}\".\n", .{parsed.role});
         return 1;
     };
+    // A supervisor role's agent is told it is one (`persona.launchInstructions`).
+    p.instructions = try persona.launchInstructions(aa, p);
 
     // --- which CLI
     const choice: persona.CliChoice = if (parsed.cli) |key|

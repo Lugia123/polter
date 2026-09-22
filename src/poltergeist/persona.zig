@@ -67,6 +67,12 @@ pub const ParseError = error{
     /// Two personas claim the same key.
     DuplicateKey,
 
+    /// A persona in the file, or one sent to be written, uses the key of a
+    /// role Polter ships (`builtins`). Refused rather than let one shadow
+    /// the other: two rows with one key is the ambiguity `DuplicateKey`
+    /// already refuses, and the built-in one cannot be the one to go.
+    ReservedKey,
+
     OutOfMemory,
 };
 
@@ -134,6 +140,13 @@ pub const Persona = struct {
     /// role.
     clis: []const CliChoice = &.{},
 
+    /// What Polter does with the terminal it is started in. See `Polter`.
+    polter: Polter = .{},
+
+    /// Shipped with Polter rather than written by anybody (`builtins`).
+    /// Never written to the file, never replaced, never deleted.
+    builtin: bool = false,
+
     pub fn cli(self: Persona, key: []const u8) ?CliChoice {
         for (self.clis) |c| {
             if (std.mem.eql(u8, c.cli, key)) return c;
@@ -141,6 +154,151 @@ pub const Persona = struct {
         return null;
     }
 };
+
+/// What Polter does with a terminal a role is **started** in.
+///
+/// The CLI half of a role (`clis`) says what the agent is given; this half
+/// says what the terminal *is* in Polter -- the standing the user would
+/// otherwise set by hand, one menu at a time, after every launch.
+///
+/// **Applied once, at the start, and never again.** After that the standing
+/// is the terminal's own: the user can take it away and the role does not
+/// put it back, and putting a role on a terminal that is already running
+/// changes its tools, not who it is. A worker switched into the supervisor
+/// role would otherwise start minding other terminals with nobody having
+/// asked it to -- the one change here that is not visible where it happens.
+///
+/// ⚠️ **Three of these grant something, and only the user may set them**:
+/// `supervisor`, `may_authorise`, `shielded`. A supervisor can write roles
+/// (`role_put`) and start them (`role_launch`); if it could also tick
+/// "may answer permission prompts" it could hand itself that power by
+/// writing a role and starting it. `userOnlyEql` is what `PersonaStore.put`
+/// holds a supervisor's write to.
+pub const Polter = struct {
+    /// Make the terminal a supervisor, as the menu's "Supervise" does.
+    supervisor: bool = false,
+
+    /// Let a supervisor answer this terminal's permission prompts.
+    may_authorise: bool = false,
+
+    /// Out of reach of every tool, a supervisor's included.
+    shielded: bool = false,
+
+    /// Put it under the eye of the supervisor that started it -- or, when
+    /// the user started it, of the one supervisor there is. With none, or
+    /// with several and the user starting it, nobody: which of two
+    /// supervisors should mind a terminal is not the program's to guess.
+    watch: bool = false,
+
+    /// Where clicking the role starts it.
+    open: Open = .auto,
+
+    /// How long the screen may be still before it is reported, when it is
+    /// watched. Null keeps the configured default.
+    quiet_ms: ?u64 = null,
+
+    pub const Open = enum {
+        /// Polter decides from what is running there (`App.choosePersona`):
+        /// this terminal if it is at a shell prompt, a new tab if not.
+        auto,
+        /// A new tab, whatever the terminal clicked in is doing.
+        tab,
+    };
+
+    pub fn isDefault(self: Polter) bool {
+        return std.meta.eql(self, Polter{});
+    }
+
+    /// Whether `a` and `b` agree on everything only the user may set.
+    pub fn userOnlyEql(a: Polter, b: Polter) bool {
+        return a.supervisor == b.supervisor and
+            a.may_authorise == b.may_authorise and
+            a.shielded == b.shielded;
+    }
+};
+
+/// What an agent started in a supervisor role is told, before the role's
+/// own instructions.
+///
+/// Part of the launch rather than of any one role's text: a role the user
+/// writes with "make this terminal a supervisor" ticked and nothing typed
+/// in the instructions would otherwise start an agent that is a supervisor
+/// and does not know it. The notice the menu's "Supervise" sends
+/// (`Surface.zig`, `.poltergeist_supervisor`) cannot do this job -- at
+/// launch there is no agent yet, so it would be printed to the shell.
+pub const supervisor_launch_note =
+    "You were started in a Polter terminal that has been made the supervisor " ++
+    "of this window's terminals. Before doing anything else, read the " ++
+    "`supervising` skill with the polter MCP tool skill_read, and follow it -- " ++
+    "including making a group for the work and keeping its brief current. " ++
+    "Talk to the terminals you supervise through the group and task tools: " ++
+    "only what goes through them is written down and survives a restart.";
+
+/// The instructions an agent started in `p` is given: the supervisor note
+/// when the role makes it one, then the role's own. Null when both are
+/// absent.
+pub fn launchInstructions(aa: Allocator, p: Persona) Allocator.Error!?[]const u8 {
+    if (!p.polter.supervisor) return p.instructions;
+    const own = p.instructions orelse return supervisor_launch_note;
+    return try std.mem.concat(aa, u8, &.{ supervisor_launch_note, "\n\n", own });
+}
+
+// ------------------------------------------------------------ the built-ins
+
+pub const supervisor_key = "polter-supervisor";
+
+/// The Polter skills a supervisor reads. The polter MCP server itself needs
+/// no entry: it is always kept (`locked` in the inventory).
+const supervisor_skills = [_][]const u8{
+    "skill:polter-supervising",
+    "skill:polter-operating-a-terminal",
+    "skill:polter-reading-a-terminal",
+};
+
+/// Roles Polter ships. They come first in every set, are the same on every
+/// machine, and cannot be edited or deleted -- a copy under another key
+/// can. `name` and `description` are English here; the interface shows
+/// them in the user's language by `key`.
+pub const builtins = [_]Persona{
+    .{
+        .key = supervisor_key,
+        .name = "Polter Supervisor",
+        .description = "Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it.",
+        .instructions =
+        \\You are the supervisor. The person talking to you here is the user;
+        \\the other terminals are your workers.
+        \\
+        \\- Your job is to split the work, hand it out, and check what comes back.
+        \\  Hand anything that takes more than a few minutes to a worker rather than
+        \\  doing it yourself, so that you stay free to watch everyone.
+        \\- Hand out work as tasks on the task panel, with a result that can be
+        \\  checked. A task is done when you have checked it, not when a worker says so.
+        \\- Put decisions and results in the group, not only on this screen: nobody
+        \\  else can see this screen, and the group survives a restart.
+        \\- Ask the user before anything that cannot be undone or reaches outside this
+        \\  machine, and when a decision is theirs to make.
+        ,
+        .clis = &.{.{
+            .cli = "claude-code",
+            .skills = .{ .default = false, .except = &supervisor_skills },
+            .mcp = .{ .default = false },
+        }},
+        .polter = .{ .supervisor = true, .open = .tab },
+        .builtin = true,
+    },
+};
+
+pub fn isBuiltinKey(key: []const u8) bool {
+    for (builtins) |b| {
+        if (std.mem.eql(u8, b.key, key)) return true;
+    }
+    return false;
+}
+
+/// The set a machine with no `personas.json` has: the built-ins alone.
+pub fn builtinSet() Set {
+    return .{ .personas = &builtins };
+}
 
 /// Which of a CLI's own skills or MCP servers a role leaves on.
 ///
@@ -335,9 +493,11 @@ pub fn parseLeaky(aa: Allocator, bytes: []const u8) ParseError!Set {
 
     var personas: std.ArrayList(Persona) = .empty;
     var ignored: std.ArrayList([]const u8) = .empty;
+    try personas.appendSlice(aa, &builtins);
 
     for (list.items) |entry| {
         const p = try personaOf(aa, entry, &ignored);
+        if (isBuiltinKey(p.key)) return error.ReservedKey;
         for (personas.items) |q| {
             if (std.mem.eql(u8, q.key, p.key)) return error.DuplicateKey;
         }
@@ -362,7 +522,9 @@ pub fn parsePersonaLeaky(aa: Allocator, bytes: []const u8) ParseError!Persona {
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, aa, bytes, .{}) catch
         return error.Malformed;
     var ignored: std.ArrayList([]const u8) = .empty;
-    return personaOf(aa, parsed, &ignored);
+    const p = try personaOf(aa, parsed, &ignored);
+    if (isBuiltinKey(p.key)) return error.ReservedKey;
+    return p;
 }
 
 fn personaOf(
@@ -445,7 +607,42 @@ fn personaOf(
         else => return error.BadField,
     };
 
+    if (obj.get("polter")) |pv| switch (pv) {
+        .object => |o| p.polter = try polterOf(o),
+        .null => {},
+        else => return error.BadField,
+    };
+
     return p;
+}
+
+fn polterOf(obj: std.json.ObjectMap) ParseError!Polter {
+    var out: Polter = .{};
+    out.supervisor = try optionalBool(obj, "supervisor");
+    out.may_authorise = try optionalBool(obj, "may_authorise");
+    out.shielded = try optionalBool(obj, "shielded");
+    out.watch = try optionalBool(obj, "watch");
+    if (obj.get("open")) |v| switch (v) {
+        .string => |s| out.open = std.meta.stringToEnum(Polter.Open, s) orelse return error.BadField,
+        .null => {},
+        else => return error.BadField,
+    };
+    if (obj.get("quiet_ms")) |v| switch (v) {
+        // A floor of a second: anything shorter reports a terminal for
+        // drawing its own prompt, and zero would report it continuously.
+        .integer => |n| out.quiet_ms = if (n >= 1000) @intCast(n) else return error.BadField,
+        .null => {},
+        else => return error.BadField,
+    };
+    return out;
+}
+
+fn optionalBool(obj: std.json.ObjectMap, field: []const u8) ParseError!bool {
+    return switch (obj.get(field) orelse return false) {
+        .bool => |b| b,
+        .null => false,
+        else => error.BadField,
+    };
 }
 
 fn cliChoiceOf(aa: Allocator, key: []const u8, v: std.json.Value) ParseError!CliChoice {
@@ -489,11 +686,17 @@ fn selectionOf(aa: Allocator, obj: std.json.ObjectMap, field: []const u8) ParseE
 /// any effect, so the file loses a line that was not doing anything.
 pub fn writeSet(w: *std.Io.Writer, set: Set) std.Io.Writer.Error!void {
     try w.print("{{\n  \"version\": {d},\n  \"personas\": [", .{supported_version});
-    for (set.personas, 0..) |p, i| {
-        try w.writeAll(if (i == 0) "\n    " else ",\n    ");
+    // The built-ins are Polter's, not the user's: every reader puts them
+    // back, so writing them would only make a file that the next read
+    // refuses as `ReservedKey`.
+    var n: usize = 0;
+    for (set.personas) |p| {
+        if (p.builtin) continue;
+        try w.writeAll(if (n == 0) "\n    " else ",\n    ");
         try writePersona(w, p);
+        n += 1;
     }
-    try w.writeAll(if (set.personas.len == 0) "]\n}\n" else "\n  ]\n}\n");
+    try w.writeAll(if (n == 0) "]\n}\n" else "\n  ]\n}\n");
 }
 
 /// One persona as a JSON object. Also what `role_list` answers with, so an
@@ -549,6 +752,18 @@ pub fn writePersona(w: *std.Io.Writer, p: Persona) std.Io.Writer.Error!void {
         }
         try w.writeAll("}");
     }
+    if (!p.polter.isDefault()) {
+        const o = p.polter;
+        try w.print(
+            ",\"polter\":{{\"supervisor\":{},\"may_authorise\":{},\"shielded\":{},\"watch\":{},\"open\":\"{t}\"",
+            .{ o.supervisor, o.may_authorise, o.shielded, o.watch, o.open },
+        );
+        if (o.quiet_ms) |ms| try w.print(",\"quiet_ms\":{d}", .{ms});
+        try w.writeAll("}");
+    }
+    // Read by the window and `role_list`; ignored when read back, since a
+    // file cannot make a role Polter's.
+    if (p.builtin) try w.writeAll(",\"builtin\":true");
     try w.writeAll("}");
 }
 
@@ -827,7 +1042,7 @@ test "persona: the sample file loads with every field where it was put" {
     const aa = arena.allocator();
 
     const set = try parseLeaky(aa, sample);
-    try testing.expectEqual(@as(usize, 2), set.personas.len);
+    try testing.expectEqual(builtins.len + 2, set.personas.len);
 
     const archer = set.find("archer").?;
     try testing.expectEqualStrings("射手", archer.name);
@@ -838,8 +1053,8 @@ test "persona: the sample file loads with every field where it was put" {
     try testing.expectEqualStrings("kanban@x", archer.hint_disable_host_plugins[0]);
 
     // Order is the user's, and the menu is built from it.
-    try testing.expectEqualStrings("archer", set.personas[0].key);
-    try testing.expectEqualStrings("scribe", set.personas[1].key);
+    try testing.expectEqualStrings("archer", set.personas[builtins.len + 0].key);
+    try testing.expectEqualStrings("scribe", set.personas[builtins.len + 1].key);
 
     // Absent lists are empty, not missing.
     const scribe = set.find("scribe").?;
@@ -1017,8 +1232,8 @@ test "persona: a version 1 file still reads, as a role with no CLI choices" {
     defer arena.deinit();
     const set = try parseLeaky(arena.allocator(), sample);
     try testing.expectEqual(@as(u32, 1), set.version);
-    try testing.expectEqual(@as(usize, 0), set.personas[0].clis.len);
-    try testing.expectEqual(@as(?[]const u8, null), set.personas[0].instructions);
+    try testing.expectEqual(@as(usize, 0), set.personas[builtins.len + 0].clis.len);
+    try testing.expectEqual(@as(?[]const u8, null), set.personas[builtins.len + 0].instructions);
 
     // And a version that is neither is still refused, so an older Polter
     // reading a newer file says so instead of guessing.
@@ -1054,8 +1269,8 @@ test "persona: what is written reads back as the same roles" {
     const again = try parseLeaky(aa, out.written());
 
     try testing.expectEqual(supported_version, again.version);
-    try testing.expectEqual(@as(usize, 2), again.personas.len);
-    const a = again.personas[0];
+    try testing.expectEqual(builtins.len + 2, again.personas.len);
+    const a = again.personas[builtins.len + 0];
     try testing.expectEqualStrings("只读调研", a.description.?);
     try testing.expectEqualStrings("Say \"hi\" first.\nThen work.", a.instructions.?);
     try testing.expectEqualStrings("notify_user", a.tools.deny[0]);
@@ -1073,7 +1288,7 @@ test "persona: what is written reads back as the same roles" {
     try testing.expectEqualStrings("codex", a.clis[1].cli);
     try testing.expect(a.clis[1].skills.default);
 
-    try testing.expectEqualStrings("书记", again.personas[1].name);
+    try testing.expectEqualStrings("书记", again.personas[builtins.len + 1].name);
 }
 
 test "persona: a default and its exceptions decide what is on" {
@@ -1121,15 +1336,106 @@ test "persona: an edit keeps the role where it was, a new one goes last" {
     const set = try parseLeaky(aa, sample);
 
     const edited = try withPersona(aa, set, .{ .key = "archer", .name = "新名字" });
-    try testing.expectEqualStrings("archer", edited.personas[0].key);
-    try testing.expectEqualStrings("新名字", edited.personas[0].name);
-    try testing.expectEqual(@as(usize, 2), edited.personas.len);
+    try testing.expectEqualStrings("archer", edited.personas[builtins.len + 0].key);
+    try testing.expectEqualStrings("新名字", edited.personas[builtins.len + 0].name);
+    try testing.expectEqual(builtins.len + 2, edited.personas.len);
 
     const added = try withPersona(aa, set, .{ .key = "zz", .name = "z" });
-    try testing.expectEqualStrings("zz", added.personas[2].key);
+    try testing.expectEqualStrings("zz", added.personas[builtins.len + 2].key);
 
     const gone = (try withoutPersona(aa, set, "archer")).?;
-    try testing.expectEqual(@as(usize, 1), gone.personas.len);
-    try testing.expectEqualStrings("scribe", gone.personas[0].key);
+    try testing.expectEqual(builtins.len + 1, gone.personas.len);
+    try testing.expectEqualStrings("scribe", gone.personas[builtins.len + 0].key);
     try testing.expectEqual(@as(?Set, null), try withoutPersona(aa, set, "nobody"));
+}
+
+test "persona: every set starts with the built-in roles, and a file cannot claim their keys" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const empty = try parseLeaky(aa, "{\"version\":2,\"personas\":[]}");
+    try testing.expectEqual(builtins.len, empty.personas.len);
+    const boss = empty.find(supervisor_key).?;
+    try testing.expect(boss.builtin);
+    try testing.expect(boss.polter.supervisor);
+    try testing.expectEqual(Polter.Open.tab, boss.polter.open);
+    try testing.expect(boss.instructions != null);
+    // Nothing of the CLI's own but Polter's skills: the polter server is
+    // kept whatever this says.
+    try testing.expect(!boss.clis[0].skills.default);
+    try testing.expect(!boss.clis[0].mcp.default);
+    try testing.expect(builtinSet().find(supervisor_key) != null);
+
+    try testing.expectError(error.ReservedKey, parseLeaky(aa,
+        \\{"version":2,"personas":[{"key":"polter-supervisor","name":"mine"}]}
+    ));
+    try testing.expectError(error.ReservedKey, parsePersonaLeaky(aa,
+        \\{"key":"polter-supervisor","name":"mine"}
+    ));
+}
+
+test "persona: the Polter half reads, writes back, and the built-ins are not written" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const first = try parseLeaky(aa,
+        \\{"version":2,"personas":[
+        \\  {"key":"w","name":"worker","polter":{"watch":true,"open":"tab","quiet_ms":600000,
+        \\   "may_authorise":true}},
+        \\  {"key":"plain","name":"p"}
+        \\]}
+    );
+    var out: std.Io.Writer.Allocating = .init(aa);
+    try writeSet(&out.writer, first);
+    try testing.expect(std.mem.indexOf(u8, out.written(), supervisor_key) == null);
+
+    const again = try parseLeaky(aa, out.written());
+    try testing.expectEqual(builtins.len + 2, again.personas.len);
+    const w = again.find("w").?.polter;
+    try testing.expect(w.watch and w.may_authorise and !w.supervisor and !w.shielded);
+    try testing.expectEqual(Polter.Open.tab, w.open);
+    try testing.expectEqual(@as(?u64, 600000), w.quiet_ms);
+    try testing.expect(again.find("plain").?.polter.isDefault());
+    // A default Polter half is not written at all.
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"polter\"") ==
+        std.mem.lastIndexOf(u8, out.written(), "\"polter\""));
+
+    try testing.expectError(error.BadField, parsePersonaLeaky(aa,
+        \\{"key":"a","name":"n","polter":{"open":"window"}}
+    ));
+    try testing.expectError(error.BadField, parsePersonaLeaky(aa,
+        \\{"key":"a","name":"n","polter":{"quiet_ms":10}}
+    ));
+    try testing.expectError(error.BadField, parsePersonaLeaky(aa,
+        \\{"key":"a","name":"n","polter":{"supervisor":"yes"}}
+    ));
+}
+
+test "persona: only the user's three settings count for userOnlyEql" {
+    const base: Polter = .{};
+    try testing.expect(Polter.userOnlyEql(base, .{ .watch = true, .open = .tab, .quiet_ms = 5000 }));
+    try testing.expect(!Polter.userOnlyEql(base, .{ .supervisor = true }));
+    try testing.expect(!Polter.userOnlyEql(base, .{ .may_authorise = true }));
+    try testing.expect(!Polter.userOnlyEql(base, .{ .shielded = true }));
+}
+
+test "persona: an agent started in a supervisor role is told it is one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const plain: Persona = .{ .key = "a", .name = "a", .instructions = "own" };
+    try testing.expectEqualStrings("own", (try launchInstructions(aa, plain)).?);
+    try testing.expectEqual(@as(?[]const u8, null), try launchInstructions(aa, .{ .key = "b", .name = "b" }));
+
+    const bare: Persona = .{ .key = "c", .name = "c", .polter = .{ .supervisor = true } };
+    try testing.expectEqualStrings(supervisor_launch_note, (try launchInstructions(aa, bare)).?);
+
+    var with = bare;
+    with.instructions = "own";
+    const text = (try launchInstructions(aa, with)).?;
+    try testing.expect(std.mem.startsWith(u8, text, supervisor_launch_note));
+    try testing.expect(std.mem.endsWith(u8, text, "\n\nown"));
 }

@@ -84,9 +84,9 @@ final class PersonaCatalog: ObservableObject {
         setPersonas(library.catalog.roles.map { role in
             var p = Persona(
                 key: role.key,
-                name: role.name,
+                name: role.displayName,
                 clis: role.clis.map { Persona.Cli(key: $0.cli, label: library.clis.label(for: $0.cli)) })
-            p.summaryForMenu = role.summary
+            p.summaryForMenu = role.displaySummary
             return p
         })
     }
