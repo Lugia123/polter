@@ -341,7 +341,7 @@
 
 /* Role library: built-in roles and the Polter half of a role */
 "Polter Supervisor" = "Polter Supervisor";
-"Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it." = "Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it.";
+"Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it." = "Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it.";
 "Comes with Polter" = "Comes with Polter";
 "This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own." = "This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own.";
 "Duplicate" = "Duplicate";

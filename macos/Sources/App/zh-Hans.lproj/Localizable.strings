@@ -355,7 +355,7 @@
 
 /* Role library: built-in roles and the Polter half of a role */
 "Polter Supervisor" = "Polter 总管";
-"Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it." = "在新标签页里作为本窗口的总管启动：拆分工作、派活、验收。";
+"Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it." = "把启动它的终端设为本窗口的总管：拆分工作、派活、验收。";
 "Comes with Polter" = "Polter 自带";
 "This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own." = "这是 Polter 自带的角色，不能修改或删除。复制一份就能改成你自己的。";
 "Duplicate" = "复制";

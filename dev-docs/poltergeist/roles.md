@@ -699,8 +699,13 @@ Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插�
 跑**的终端换角色，只换工具，不动身份。否则把一个 worker 换成「总管」角色，它会
 突然开始监管别人——这是唯一一种在发生处看不见的变化。
 
-`open = tab` 连「有 agent 在就热换」那一支也跳过（`App.choosePersona`）：在 worker
-的菜单里点「Polter 总管」，得到的是一个新的总管 tab，而不是 worker 穿上总管角色。
+`open = tab` 连「有 agent 在就热换」那一支也跳过（`App.choosePersona`）。
+
+~~内置总管角色用的是 `open = tab`，理由是在 worker 的菜单里点它应该得到新总管 tab，
+而不是 worker 穿上总管角色。~~ **改成了 `auto`**（2026-09-22，用户实测报的 bug）：
+想把一个正在跑的 agent 切成总管、或在停在提示符的终端里就地起总管，结果都被送去了
+新 tab。点角色的人要的是「这个终端」，不是「另开一个」；想另开就用启动菜单或
+`role_launch`。
 
 ## 12.3 总管身份怎么让 agent 知道
 
@@ -721,7 +726,7 @@ Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插�
 - 文件或 `role_put` 用了这个 key：`ReservedKey` / `BuiltinRole`，删它：`BuiltinRole`。
   想改就在角色库里「复制」一份。
 - 内容：skills 默认全关，只留 `polter-*` 三个；MCP 默认全关（polter 自己的锁定常驻）；
-  Polter 一半 `supervisor` + `open = tab`；指令只写身份与边界（拆分、派活、验收，
+  Polter 一半 `supervisor`（`open` 是默认的 `auto`，见 12.2）；指令只写身份与边界（拆分、派活、验收，
   结论进群，不可逆的事先问用户）——「先读 supervising」已经在 12.3 那句里。
 - 名字和说明在核心里是英文，mac 界面按 key 显示本地化文字（`Role.displayName`）。
 

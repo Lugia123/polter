@@ -263,7 +263,7 @@ pub const builtins = [_]Persona{
     .{
         .key = supervisor_key,
         .name = "Polter Supervisor",
-        .description = "Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it.",
+        .description = "Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it.",
         .instructions =
         \\You are the supervisor. The person talking to you here is the user;
         \\the other terminals are your workers.
@@ -283,7 +283,10 @@ pub const builtins = [_]Persona{
             .skills = .{ .default = false, .except = &supervisor_skills },
             .mcp = .{ .default = false },
         }},
-        .polter = .{ .supervisor = true, .open = .tab },
+        // `.auto`, not `.tab`: picking it on a terminal already running an
+        // agent should put that agent in the role, and picking it at a shell
+        // prompt should start it there. `.tab` sent both to a new tab.
+        .polter = .{ .supervisor = true },
         .builtin = true,
     },
 };
@@ -1359,7 +1362,7 @@ test "persona: every set starts with the built-in roles, and a file cannot claim
     const boss = empty.find(supervisor_key).?;
     try testing.expect(boss.builtin);
     try testing.expect(boss.polter.supervisor);
-    try testing.expectEqual(Polter.Open.tab, boss.polter.open);
+    try testing.expectEqual(Polter.Open.auto, boss.polter.open);
     try testing.expect(boss.instructions != null);
     // Nothing of the CLI's own but Polter's skills: the polter server is
     // kept whatever this says.

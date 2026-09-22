@@ -169,7 +169,7 @@ struct Role: Equatable, Identifiable {
         guard builtin else { return summary }
         switch key {
         case Self.supervisorKey:
-            return String(localized: "Starts in a new tab as this window's supervisor: splits the work, hands it out and checks it.", comment: "角色库：内置总管角色的一句话说明")
+            return String(localized: "Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it.", comment: "角色库：内置总管角色的一句话说明")
         default: return summary
         }
     }

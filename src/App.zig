@@ -2432,9 +2432,7 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
 
     // "Always in a new tab" is the user saying which of these they mean,
     // ahead of time, so none of the guessing below applies -- including
-    // wearing it here when an agent is connected. It is also what keeps a
-    // click on the supervisor role in a worker's menu from turning into
-    // the worker wearing it.
+    // wearing it here when an agent is connected.
     const new_tab = p.polter.open == .tab and p.clis.len > 0;
 
     const agent_here = if (self.poltergeist_server) |*srv| srv.agentPresent(id) else false;
