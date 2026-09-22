@@ -1423,6 +1423,21 @@ fn role_rows_fitting(dpi: i32, limit: i32) -> usize {
     (0..).take_while(|&i| role_row_rect_at(dpi, 0, i).is_some_and(|r| r.bottom <= limit)).count()
 }
 
+/// Whether a field's text is written into its control.
+///
+/// ⚠️ **The two reasons a field can differ from the model are opposites.**
+/// While somebody types, the model follows the control, and writing it back
+/// would put their caret at the start of what they just typed -- so a
+/// control with the keyboard is left alone. But when the whole draft is
+/// replaced -- another role selected, reverted, saved, changed on disk --
+/// the control is the stale one, and "it has the keyboard" is exactly the
+/// wrong reason to leave it. The window opens with the name field focused,
+/// which is how selecting another role left its old name on screen with
+/// everything else changed.
+pub fn text_needs_writing(focused: bool, matches: bool, whole_draft_changed: bool) -> bool {
+    !matches && (!focused || whole_draft_changed)
+}
+
 pub fn clamp_instructions_height(h: i32) -> i32 {
     h.clamp(INSTR_MIN, INSTR_MAX)
 }
@@ -1458,6 +1473,11 @@ const ID_SAVE: u16 = 132;
 /// Pane controls take ids from here up.
 const ID_DYNAMIC: u16 = 1000;
 const TIMER_CLIS: usize = 1;
+/// How often the window asks whether there is a terminal to launch beside.
+/// Cheap (it reads the window registry), and the alternative is a button
+/// whose greyness is a fact about when the window was opened.
+const TIMER_TERMINALS: usize = 2;
+const TERMINALS_EVERY_MS: u32 = 1000;
 /// The macOS side polls every half second for thirty seconds.
 const POLL_EVERY_MS: u32 = 500;
 const POLL_FOR: Duration = Duration::from_secs(30);
@@ -1519,6 +1539,8 @@ struct Live {
     rect: RECT,
     label: String,
     options: Vec<String>,
+    /// The `draft_gen` this control's text was last put in step with.
+    gen: u64,
 }
 
 /// What a control *is*, for deciding whether an existing one can be reused:
@@ -1562,6 +1584,13 @@ struct State {
     /// height then (DIP).
     drag: Option<(i32, i32)>,
     poll_until: Option<Instant>,
+    /// What the last look said about there being a terminal to launch
+    /// beside. `None` until it has been asked once.
+    launchable: Option<bool>,
+    /// Bumped every time the draft is replaced wholesale rather than typed
+    /// into; `reconcile` writes even a focused field when it has moved on.
+    /// See `text_needs_writing`.
+    draft_gen: u64,
 }
 
 impl Default for State {
@@ -1578,6 +1607,8 @@ impl Default for State {
             ids: HashMap::new(),
             drag: None,
             poll_until: None,
+            launchable: None,
+            draft_gen: 0,
         }
     }
 }
@@ -1638,12 +1669,22 @@ pub fn open(parent: HWND) {
     }
     let win = main_hwnd();
     let was_visible = unsafe { IsWindowVisible(win) }.as_bool();
-    ST.with(|c| c.borrow_mut().owner = parent);
+    // ⚠️ **What this is handed is not always a terminal window.** The menu
+    // bar's row passes the frame; the tab's right-click menu passes the
+    // *surface* (`ctxmenu.rs` hands `personas::perform` the surface window,
+    // and that is what reaches here). Both were taken as a frame, and
+    // everything a frame is for then went wrong quietly: `tabs::window` does
+    // not know a surface, so "is there a terminal to launch beside" answered
+    // no and the Launch button was grey with a terminal in front of it; and
+    // `GWLP_HWNDPARENT` was set to a child window, which is not an owner, so
+    // Windows had nothing to hand activation back to on close.
+    let owner = frame_for(parent);
+    ST.with(|c| c.borrow_mut().owner = owner);
     // Owned, not topmost -- the reason is in `settings_ui::own_and_place`.
     // Re-owned at every open, because which terminal window this belongs to
     // is a fact about this opening.
     unsafe {
-        SetWindowLongPtrW(win, GWLP_HWNDPARENT, parent.0 as isize);
+        SetWindowLongPtrW(win, GWLP_HWNDPARENT, owner.0 as isize);
     }
     if was_visible {
         let _ = unsafe { SetForegroundWindow(win) };
@@ -1664,19 +1705,25 @@ pub fn open(parent: HWND) {
             let first = s.cat.roles.first().map(|r| r.key.clone());
             s.model.ed.load(&s.cat, first.as_deref());
         }
+        draft_replaced(s);
     });
     start_polling_if_needed(false);
 
     let dpi = dpi_of(win);
     let (w, h) = (W0 * dpi / 96, H0 * dpi / 96);
     let mut fr = RECT::default();
-    let (x, y) = if !parent.0.is_null() && unsafe { GetWindowRect(parent, &mut fr) }.is_ok() {
+    let (x, y) = if !owner.0.is_null() && unsafe { GetWindowRect(owner, &mut fr) }.is_ok() {
         (fr.left + ((fr.right - fr.left) - w) / 2, fr.top + ((fr.bottom - fr.top) - h) / 3)
     } else {
         (CW_USEDEFAULT, CW_USEDEFAULT)
     };
     unsafe {
         let _ = SetWindowPos(win, Some(HWND_TOP), x, y, w, h, SWP_SHOWWINDOW);
+        // **Whether a launch is possible is not a fact about this opening.**
+        // Terminal windows open and close while this one stays up, and the
+        // Launch button has to follow them; nothing else would tell it, so
+        // it asks on a timer while it is on screen.
+        SetTimer(Some(win), TIMER_TERMINALS, TERMINALS_EVERY_MS, None);
     }
     refresh();
 
@@ -1707,11 +1754,17 @@ fn close() {
     });
     unsafe {
         let _ = KillTimer(Some(win), TIMER_CLIS);
+        let _ = KillTimer(Some(win), TIMER_TERMINALS);
         let _ = ShowWindow(win, SW_HIDE);
     }
-    // Owned, so Windows hands activation back to the owner; `focus_back` puts
-    // the keyboard in the pane it came from rather than wherever that
-    // window's focus defaults to.
+    // ⚠️ **Focus and the foreground are two different pieces of state**, and
+    // only one of them was being handed back: on the test machine the closed
+    // window was still the foreground one, so every keystroke went into
+    // something invisible. `overlay.rs` has the whole story -- it is the
+    // command palette's bug, and it reaches any window that hides itself.
+    // Being owned was supposed to make Windows do this by itself, and did
+    // not, which is its own reason to hand it back and read it back.
+    crate::overlay::foreground_back(win, prev, "roles");
     crate::overlay::focus_back(prev, "roles");
     // process-wide: the role library window is one per process
     crate::plogf!("[roles-ui] hidden");
@@ -1766,6 +1819,14 @@ fn create() -> bool {
         ] {
             let wc = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                // **Repaint the whole client area when the size changes.**
+                // Without these two, Windows keeps the old pixels and only
+                // invalidates what the new size uncovered -- and on the test
+                // machine, maximising left the previous layout's controls
+                // painted where they used to be, with the third tab showing
+                // the first one's label. What a window shows must not depend
+                // on what it showed before it was resized.
+                style: CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc: Some(proc_fn),
                 hInstance: hi,
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
@@ -1890,8 +1951,31 @@ fn create() -> bool {
 
 // ------------------------------------------------------------- refreshing
 
-fn can_launch(owner: HWND) -> bool {
-    !owner.0.is_null() && !crate::tabs::active_surface(owner).is_null()
+/// The terminal window a handle belongs to: the handle itself when it is one,
+/// the window above it when it is a surface or another child, and whichever
+/// window is in front when it is neither. **Never a handle this host does not
+/// know**, because every use of it -- owning this window, placing it, asking
+/// which terminal a launch goes beside -- is a use that fails silently on one.
+fn frame_for(hwnd: HWND) -> HWND {
+    crate::winid::frame_of_window(hwnd).unwrap_or_else(crate::tabs::overlay_frame)
+}
+
+/// The terminal a launch opens its tab beside, **asked afresh every time**
+/// rather than remembered from the opening: the window this one belongs to
+/// can be closed while it stays up, and another can be opened.
+fn launch_surface() -> crate::ffi::Surface {
+    let owner = ST.with(|c| c.borrow().owner);
+    let surface = crate::tabs::active_surface(owner);
+    if !surface.is_null() {
+        return surface;
+    }
+    // The window it was opened over is gone: the button is about whether
+    // there is a terminal at all, so ask the question that way.
+    crate::tabs::active_surface(crate::tabs::overlay_frame())
+}
+
+fn can_launch() -> bool {
+    !launch_surface().is_null()
 }
 
 fn measure_with(hdc: HDC) -> impl Fn(&str, i32, Font, bool) -> (i32, i32) {
@@ -1921,8 +2005,7 @@ fn refresh() {
     if win.0.is_null() || pane.0.is_null() {
         return;
     }
-    let owner = ST.with(|c| c.borrow().owner);
-    let launchable = can_launch(owner);
+    let launchable = can_launch();
     let dpi = dpi_of(win);
 
     struct Plan {
@@ -1995,7 +2078,10 @@ fn refresh() {
         s.scroll
     });
 
-    let ids = reconcile(pane, &laid, scroll, dpi);
+    let gen = ST.with(|c| {
+        c.borrow().draft_gen
+    });
+    let ids = reconcile(pane, &laid, scroll, dpi, gen);
     let height = laid.height;
     ST.with(|c| {
         let mut s = c.borrow_mut();
@@ -2095,7 +2181,7 @@ fn set_text_if_changed(h: HWND, s: &str) {
 /// into already holds what the model was just set from, and writing it back
 /// would move the caret to the start. When focus leaves, the next refresh
 /// brings it in line -- `args` normalised, a cleared minutes box restored.
-fn reconcile(pane: HWND, laid: &Laid, scroll: i32, dpi: i32) -> HashMap<u16, String> {
+fn reconcile(pane: HWND, laid: &Laid, scroll: i32, dpi: i32, gen: u64) -> HashMap<u16, String> {
     APPLYING.store(true, Ordering::Release);
     let mut old = LIVE.with(|l| std::mem::take(&mut *l.borrow_mut()));
     let mut now: HashMap<String, Live> = HashMap::new();
@@ -2137,9 +2223,11 @@ fn reconcile(pane: HWND, laid: &Laid, scroll: i32, dpi: i32) -> HashMap<u16, Str
         }
         match &p.kind {
             Kind::Edit { text, cue, .. } => {
-                if h != focus && get_text(h) != *text {
+                let same = get_text(h) == *text;
+                if text_needs_writing(h == focus, same, live.gen != gen) {
                     set_text(h, text);
                 }
+                live.gen = gen;
                 if live.label != *cue {
                     let wide: Vec<u16> = cue.encode_utf16().chain(Some(0)).collect();
                     unsafe {
@@ -2274,7 +2362,7 @@ fn make_control(pane: HWND, tag: Tag) -> Option<Live> {
         }
     }
     subclass(h);
-    Some(Live { hwnd: h, id, tag, rect: RECT::default(), label: String::new(), options: Vec::new() })
+    Some(Live { hwnd: h, id, tag, rect: RECT::default(), label: String::new(), options: Vec::new(), gen: u64::MAX })
 }
 
 /// Throw every pane control away, so the next refresh makes them again --
@@ -2331,6 +2419,29 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // The characters those two keys also produce, which an `EDIT`
             // would otherwise answer with a beep.
             WM_CHAR if wp.0 == 0x13 || wp.0 == 0x1B => return LRESULT(0),
+            // ⚠️ **The wheel goes to whatever has the keyboard, not to
+            // whatever is under the pointer.** The page opens with the name
+            // field focused, an `EDIT` answers the wheel itself, and the
+            // page therefore did not scroll at all until the person clicked
+            // somewhere that was not a control -- with a section of Basics
+            // below the bottom edge at the default size. So every control
+            // this window makes hands the wheel to the pane, which is the
+            // thing that scrolls.
+            //
+            // Two exceptions, both because the control really does scroll:
+            // the instructions box, which has its own scroll bar, and a
+            // combo box with its list open.
+            WM_MOUSEWHEEL => {
+                let style = GetWindowLongPtrW(h, GWL_STYLE) as u32;
+                let multiline = style & ES_MULTILINE as u32 != 0;
+                let dropped = SendMessageW(h, CB_GETDROPPEDSTATE, None, None).0 != 0;
+                if !multiline && !dropped {
+                    if let Ok(parent) = GetParent(h) {
+                        SendMessageW(parent, WM_MOUSEWHEEL, Some(wp), Some(lp));
+                        return LRESULT(0);
+                    }
+                }
+            }
             WM_NCDESTROY => {
                 let _ = RemovePropW(h, PROP_PREV);
                 let _ = RemovePropW(h, PROP_SEG);
@@ -2455,6 +2566,13 @@ fn with_model<R>(f: impl FnOnce(&mut State) -> R) -> R {
     ST.with(|c| f(&mut c.borrow_mut()))
 }
 
+/// Say that the draft was replaced rather than typed into, so that the
+/// fields are written even where the keyboard is. Every way a role is
+/// swapped goes through here; see `text_needs_writing`.
+fn draft_replaced(s: &mut State) {
+    s.draft_gen = s.draft_gen.wrapping_add(1);
+}
+
 fn select(key: &str) {
     if !ST.with(|c| selecting_is_a_change(&c.borrow().model.ed, key)) {
         return;
@@ -2463,6 +2581,7 @@ fn select(key: &str) {
         with_model(|s| {
             s.model.ed.load(&s.cat, Some(key));
             s.scroll = 0;
+            draft_replaced(s);
         });
     }
     refresh();
@@ -2496,6 +2615,7 @@ fn save() -> bool {
             Ok(()) => s.model.ed.saved(&s.cat, &role.key),
             Err(why) => s.model.ed.status = Some(why),
         }
+        draft_replaced(s);
     });
     refresh();
     ok
@@ -2506,6 +2626,7 @@ fn new_role() {
         with_model(|s| {
             s.model.ed.new_role(&s.cat, &s.clis);
             s.scroll = 0;
+            draft_replaced(s);
         });
     }
     refresh();
@@ -2519,6 +2640,7 @@ fn duplicate() {
         with_model(|s| {
             s.model.ed.duplicate(&s.cat);
             s.scroll = 0;
+            draft_replaced(s);
         });
     }
     refresh();
@@ -2533,6 +2655,7 @@ fn delete() {
     if is_new {
         with_model(|s| {
             s.model.ed.load(&s.cat, None);
+            draft_replaced(s);
         });
         refresh();
         return;
@@ -2557,6 +2680,7 @@ fn delete() {
             Ok(()) => s.model.ed.load(&s.cat, None),
             Err(why) => s.model.ed.status = Some(why),
         }
+        draft_replaced(s);
     });
     refresh();
 }
@@ -2564,6 +2688,7 @@ fn delete() {
 fn revert() {
     with_model(|s| {
         s.model.ed.revert(&s.cat);
+        draft_replaced(s);
     });
     refresh();
 }
@@ -2588,10 +2713,13 @@ fn launch() {
             None => return,
         },
     };
-    let surface = crate::tabs::active_surface(owner);
-    crate::wlogf!(owner, "[roles-ui] launching {} with {}", role.key, cli);
+    // The same question the button asked, asked again at the moment it is
+    // acted on: between the two, a window can have closed.
+    let surface = launch_surface();
+    let frame = frame_for(owner);
+    crate::wlogf!(frame, "[roles-ui] launching {} with {}", role.key, cli);
     let result = roles::launch(surface, &role.key, &cli);
-    crate::wlogf!(owner, "[roles-ui] launch {} -> {}", role.key, if result.is_ok() { "ok" } else { "refused" });
+    crate::wlogf!(frame, "[roles-ui] launch {} -> {}", role.key, if result.is_ok() { "ok" } else { "refused" });
     if let Err(why) = result {
         with_model(|s| s.model.ed.status = Some(format!("{} — {}", tr("The role couldn't be launched"), why)));
     }
@@ -2817,7 +2945,7 @@ fn draw_dot(hdc: HDC, cx: i32, cy: i32, r: i32, colour: u32) {
 
 fn paint_main(win: HWND) {
     // Everything this paints is read out first; nothing below borrows.
-    let (list, empty, error, builtin, has_draft, owner, list_top, ed) = ST.with(|c| {
+    let (list, empty, error, builtin, has_draft, list_top, ed) = ST.with(|c| {
         let s = c.borrow();
         let ed = &s.model.ed;
         (
@@ -2826,12 +2954,11 @@ fn paint_main(win: HWND) {
             s.cat.error.clone(),
             ed.draft.as_ref().is_some_and(|d| d.builtin),
             ed.draft.is_some(),
-            s.owner,
             s.list_top,
             ed.clone(),
         )
     });
-    let footer = footer_note(&ed, can_launch(owner));
+    let footer = footer_note(&ed, can_launch());
 
     unsafe {
         let mut ps = PAINTSTRUCT::default();
@@ -3218,6 +3345,7 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     with_model(|s| {
                         s.cat = cat;
                         s.model.ed.library_changed(&s.cat);
+                        draft_replaced(s);
                     });
                     refresh();
                 }
@@ -3227,14 +3355,49 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 on_timer();
                 LRESULT(0)
             }
+            // **Only when the answer changed.** A refresh a second rebuilds
+            // nothing visibly, but it would move the caret out of a field
+            // somebody is typing in the moment the rule in `reconcile`
+            // stopped holding, and it would hide any such mistake behind a
+            // repaint nobody asked for.
+            WM_TIMER if wp.0 == TIMER_TERMINALS => {
+                let now = can_launch();
+                let changed = ST.with(|c| {
+                    let mut s = c.borrow_mut();
+                    let changed = s.launchable != Some(now);
+                    s.launchable = Some(now);
+                    changed
+                });
+                if changed {
+                    refresh();
+                }
+                LRESULT(0)
+            }
             WM_GETMINMAXINFO => {
                 let mmi = &mut *(lp.0 as *mut MINMAXINFO);
                 let dpi = dpi_of(win);
                 mmi.ptMinTrackSize = POINT { x: MIN_W * dpi / 96, y: MIN_H * dpi / 96 };
                 LRESULT(0)
             }
-            WM_SIZE => {
+            // The last word after a drag-resize: a size that arrived while
+            // the pointer was still down is not always the size it ends at.
+            WM_EXITSIZEMOVE => {
                 refresh();
+                LRESULT(0)
+            }
+            WM_SIZE => {
+                // Everything moves: the list, the tabs, the pane and every
+                // control in it. **Then the whole window is redrawn,
+                // children included** -- a moved child keeps its old pixels
+                // until something asks for new ones, and `RDW_ALLCHILDREN`
+                // is that asking.
+                refresh();
+                let _ = RedrawWindow(
+                    Some(win),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+                );
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -3847,6 +4010,81 @@ mod tests {
         assert_eq!(b.height - a.height, 160);
         let sup = |l: &Laid| l.cells.iter().find(|p| p.key == "sup").unwrap().rect.top;
         assert_eq!(sup(&b) - sup(&a), 160);
+    }
+
+    /// ⚠️ **The rule that left a role's old name on screen.** The window
+    /// opens with the name field focused; selecting another role changed
+    /// every other field and not that one, because "it has the keyboard"
+    /// was read as "the person is typing in it".
+    #[test]
+    fn a_focused_field_is_left_alone_while_typing_and_written_when_the_draft_is_replaced() {
+        // Typing: the model already holds what the control shows, and where
+        // it does not, the control is the newer of the two.
+        assert!(!text_needs_writing(true, true, false));
+        assert!(!text_needs_writing(true, false, false));
+        // The draft was replaced: the control is the stale one, keyboard or
+        // not.
+        assert!(text_needs_writing(true, false, true));
+        assert!(text_needs_writing(false, false, false));
+        // Nothing to write either way when they already agree.
+        assert!(!text_needs_writing(false, true, true));
+        assert!(!text_needs_writing(true, true, true));
+    }
+
+    /// The footer says why Launch is grey, because the button cannot.
+    #[test]
+    fn the_footer_says_why_launching_is_not_offered() {
+        let mut c = cat(&["r"]);
+        let mut ed = editing(&mut c);
+        assert_eq!(footer_note(&ed, true), None);
+        let (no_terminal, is_error) = footer_note(&ed, false).unwrap();
+        assert!(!is_error);
+        assert_eq!(no_terminal, tr("Open a terminal window first; the new tab goes beside it."));
+        // An unsaved change is the nearer reason, and an error beats both.
+        ed.draft.as_mut().unwrap().name = "x".into();
+        assert_eq!(footer_note(&ed, false).unwrap().0, tr("Unsaved changes"));
+        ed.status = Some("refused".into());
+        assert_eq!(footer_note(&ed, false).unwrap(), ("refused".to_string(), true));
+        // With no role open there is nothing to say.
+        ed.load(&c, None);
+        assert_eq!(footer_note(&ed, false), None);
+    }
+
+    /// ⚠️ **Basics does not fit the window it opens at**, which is why the
+    /// wheel has to reach the pane from wherever the keyboard is: the last
+    /// section is below the bottom edge until the page is scrolled.
+    #[test]
+    fn the_basics_page_is_taller_than_the_pane_it_opens_in() {
+        let f = frame_layout(W0, H0, 96, None, false, true);
+        let pane_h = f.pane.bottom - f.pane.top;
+        let laid = basics_laid(96, f.pane.right - f.pane.left);
+        assert!(laid.height > pane_h, "{} vs {pane_h}", laid.height);
+        let last = laid.cells.iter().map(|p| p.rect.bottom).max().unwrap();
+        assert!(last > pane_h, "the last row starts on screen and ends below it");
+        // And the CLI checkboxes are among what is out of sight.
+        let cli = laid.cells.iter().find(|p| p.key == "cli:claude").unwrap();
+        assert!(cli.rect.top > pane_h, "{:?}", cli.rect);
+    }
+
+    /// A maximised window is a size like any other: everything is laid out
+    /// for it, nothing is left where it was.
+    #[test]
+    fn a_maximised_size_lays_out_like_any_other() {
+        for (w, h, dpi) in [(2560, 1440, 96), (3840, 2160, 192)] {
+            let f = frame_layout(w, h, dpi, None, false, true);
+            let tabs = f.tabs.unwrap();
+            assert!(tabs[0].bottom <= f.pane.top && f.pane.bottom <= f.footer.unwrap().top);
+            assert!(f.footer_buttons[2].right <= w);
+            // The tab bar stays its own width and centred on the pane rather
+            // than stretching across a wide screen.
+            assert!(tabs[2].right - tabs[0].left <= TABS_MAX_W * dpi / 96);
+            let mid = (tabs[0].left + tabs[2].right) / 2;
+            assert!((mid - (f.pane.left + w) / 2).abs() <= 2 * dpi / 96, "tabs are centred");
+            let laid = basics_laid(dpi, f.pane.right - f.pane.left);
+            for p in laid.cells.iter() {
+                assert!(p.rect.right <= f.pane.right - f.pane.left, "{} escapes", p.key);
+            }
+        }
     }
 
     #[test]

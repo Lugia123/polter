@@ -167,6 +167,22 @@ def main():
         # places the POSIX side looks for `claude` besides `PATH`.
         env["HOME"] = paths["HOME"]
         env["USERPROFILE"] = paths["HOME"]
+        # **Measured on the Windows test machine, and it cost this script its
+        # own floor.** Python on Windows writes a redirected stdout in the
+        # system code page, so `adapter.py` died with `UnicodeEncodeError` on
+        # the emoji in the fixtures and exited 1 -- four of the twelve
+        # requests. That is a difference in the harness, not in the adapters,
+        # and it is worse than a false alarm: the control that proves this
+        # script can tell the two apart (break `adapter.ps1` on purpose and
+        # watch it go red) **passed while broken**, because the same four
+        # requests were red before and after. `PYTHONUTF8=1` is what Polter's
+        # own adapter is not affected by -- it reads and writes bytes -- and
+        # what makes the Python side comparable here.
+        env["PYTHONUTF8"] = "1"
+        # And it is outranked by this one, which a machine may already have
+        # set to its code page, so the harness takes it off rather than
+        # leaving the fix conditional on somebody's environment.
+        env.pop("PYTHONIOENCODING", None)
 
         py_cmd = [sys.executable, os.path.join(PLUGIN, "adapter.py")]
         # **The same flags Polter starts it with** (`Plugin.launchArgvFor`),
@@ -190,6 +206,13 @@ def main():
             rc_ps, out_ps, err_ps = run(ps_cmd + [q, request], env)
             report = []
             ok = True
+            # A request that carries a real JSON object is one both adapters
+            # answer. `adapter.py` failing on one of those is this script's
+            # own footing giving way -- say so in those words, because the
+            # first time it happened it read as the adapters disagreeing.
+            if "raw" not in case and rc_py != 0:
+                report.append("adapter.py itself failed (exit %d). That is this harness, "
+                              "not a difference between the adapters." % rc_py)
             if rc_py != rc_ps:
                 ok = False
                 report.append("exit codes differ: py %d, ps1 %d" % (rc_py, rc_ps))
