@@ -3367,6 +3367,8 @@ fn apply_pane_cwd(tabs: &mut [Tab], surface: usize, cwd: &str) -> bool {
 /// A live pane's own last-reported directory, or `None` if it never reported
 /// one. **This is what task 533's project save reads** -- `Tab::cwd` cannot
 /// answer this question for any pane but whichever reported most recently.
+// window-free: a scan over every window, for a `PaneId`, which `take_id` hands out
+// once per process
 pub fn cwd_of_pane(id: PaneId) -> Option<String> {
     with_windows(|ws| {
         ws.iter()
@@ -3420,6 +3422,8 @@ pub fn set_history_filename_for_surface(surface: Surface, filename: String) -> b
 /// (history capture is off by default -- see `Config.ShellIntegrationFeatures`
 /// -- so this is the common case, not a bug). Mirrors `cwd_of_pane`; this is
 /// what task 533's project save reads for `SavedLeaf::history`.
+// window-free: a scan over every window, for a `PaneId`, which `take_id` hands out
+// once per process
 pub fn history_of_pane(id: PaneId) -> Option<String> {
     with_windows(|ws| {
         ws.iter()
@@ -3739,6 +3743,8 @@ fn set_shell_title(surface: usize, title: String) -> ShellTitle {
 /// A live pane's own last-reported shell title, or `None` if it never
 /// reported one (or reported one before this field existed in the running
 /// process). Mirrors `cwd_of_pane`; see `Pane::title`'s doc comment.
+// window-free: a scan over every window, for a `PaneId`, which `take_id` hands out
+// once per process
 pub fn title_of_pane(id: PaneId) -> Option<String> {
     with_windows(|ws| {
         ws.iter()

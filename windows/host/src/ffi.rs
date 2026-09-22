@@ -877,7 +877,7 @@ pub struct SurfaceConfig {
     pub history_restore: *const c_char,
 }
 
-/// `ghostty_action_set_title_s` (`include/ghostty.h:755-758`): `{ const
+/// `ghostty_action_set_title_s` (its typedef in `include/ghostty.h`): `{ const
 /// char* title; bool is_explicit; }`. Not read through this struct --
 /// `Action::as_cstr`/`as_cstr_with_explicit` read `payload[0..8]` and
 /// `payload[8]` directly, because the payload is a shared byte buffer sized

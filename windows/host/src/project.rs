@@ -332,7 +332,8 @@ pub struct Entry {
 /// **Inherits `Project.zig`'s `sanitizeFilename` gap on purpose (task 544 is
 /// where that gets fixed, on the Zig side).** A project whose name sanitizes
 /// to empty is saved as `project` with no `.json` suffix, and the `.json`
-/// filter below -- copied from `Project.zig:442` -- will never surface it.
+/// filter below -- copied from `Project.zig::list`'s
+/// `endsWith(..., ".json")` -- will never surface it.
 /// Fixing the filter here without the write side changing too would make
 /// this list *disagree* with macOS's about which projects exist, which is
 /// worse than both platforms sharing the same bug until 544 lands.

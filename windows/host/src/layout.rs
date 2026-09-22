@@ -215,9 +215,14 @@ pub fn to_node(
 /// which the first version did -- gives the caller ids it cannot feed back
 /// into `terminal_read` or `terminal_send`, **which is the whole reason this
 /// call exists** (task 406).
-pub fn describe(node: &Node, surface_of: &dyn Fn(PaneId) -> Option<SurfaceKey>) -> serde_json::Value {
+// `key_of`, not `surface_of`: that name is a real function in `tabs.rs` that
+// takes the window lock, and `lock-reentry.py` matches callees by name -- so
+// a parameter wearing it made this pure walk, and every other `describe` by
+// the same bare name (`project::describe` inside a `with_windows` closure),
+// read as taking the lock while it was held.
+pub fn describe(node: &Node, key_of: &dyn Fn(PaneId) -> Option<SurfaceKey>) -> serde_json::Value {
     match node {
-        Node::Leaf(id) => match surface_of(*id) {
+        Node::Leaf(id) => match key_of(*id) {
             Some(k) => serde_json::json!({ "pane": format!("0x{k:x}") }),
             // A pane in the tree with no surface is a bug this side, and
             // saying so beats handing back a number from the wrong
@@ -227,8 +232,8 @@ pub fn describe(node: &Node, surface_of: &dyn Fn(PaneId) -> Option<SurfaceKey>) 
         Node::Split(s) => serde_json::json!({
             "split": match s.axis { Axis::Horizontal => "h", Axis::Vertical => "v" },
             "ratio": s.ratio,
-            "left": describe(&s.left, surface_of),
-            "right": describe(&s.right, surface_of),
+            "left": describe(&s.left, key_of),
+            "right": describe(&s.right, key_of),
         }),
     }
 }

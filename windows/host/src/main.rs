@@ -2977,6 +2977,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // header gives `key` and `name` for the duration of this call and
             // no longer; a port that stored the pointers would see nothing go
             // wrong until the next frame.
+            // It tells nobody anything: the terminal is `surface`, resolved
+            // above, and it goes with the result into `set_persona_for_surface`.
+            // carries no terminal: it decodes this action's payload, nothing more
             let persona = unsafe { personas::persona_from_mark(&action) };
             if persona.is_none() {
                 // process-wide: the core says this pointer is never null, so

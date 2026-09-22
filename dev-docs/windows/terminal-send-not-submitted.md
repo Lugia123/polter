@@ -324,14 +324,14 @@
 > **`#3` 的 `len=4 hex=6162630d` 不能推出「一次 write」。** `tap.log` 的一行是
 > node stdin 的一次 **`data` 事件 = 一次 read**（见上面「仪器与它的地板」那条标注），
 > 而 Ghostty 在 Windows 上写的 `in_pipe` 是 `PIPE_TYPE_BYTE`
-> （`src/pty.zig:375-385`），**字节流不保留写边界**。
+> （`src/pty.zig` 里 `WindowsPty.open` 的 `CreateNamedPipeW`），**字节流不保留写边界**。
 >
-> **代码侧：合并根本不发生在我们这一侧。** `src/termio/Exec.zig:448-513` 的
-> `while (i < data.len)`（:463-464）只在**本次调用的 data** 上迭代，
-> `@min(data.len, i + buf.len)`（:471）夹的是本条消息的长度；每块都新拿一个
-> `Write`（:465），各自带 `buf: [64]u8`（:552），各自一次 `queueWrite`（:504-512）。
+> **代码侧：合并根本不发生在我们这一侧。** `src/termio/Exec.zig` 里 `queueWrite` 的
+> `while (i < data.len)` 只在**本次调用的 data** 上迭代，
+> `@min(data.len, i + buf.len)` 夹的是本条消息的长度；每块都新拿一个
+> `ThreadData.Write`（`write_pool.create`），各自带 `buf: [64]u8`，各自一次 `write_stream.queueWrite`。
 > 单缓冲、没有 writev/gather，IOCP 侧一个 completion 一次 `WriteFile`
-> （`iocp.zig:591-602`）。⇒ **它是拆分，绝不聚合：N 条邮箱消息至少 N 次 write。**
+> （libxev `backend/iocp.zig` 里 `Loop.start_completion` 的 `.write` 分支）。⇒ **它是拆分，绝不聚合：N 条邮箱消息至少 N 次 write。**
 > `"abc"` 与 `"\r"` 是两条独立的 `queueIo`，因此**真键盘和 `terminal_send` 都是两次
 > write**，3 字节 + 1 字节。
 >
@@ -418,13 +418,13 @@
 ⭐ **所以不要照着这一格去改 `src/termio/Exec.zig`。** 那里没有可改的东西：
 `N` 条消息至少 `N` 次写，已经是拆开的。若要试「让 CR 晚到」，唯一知道这个 CR 是
 那段 payload 的提交的层是 `Surface.typePoltergeistText`
-（`src/Surface.zig:4058-4165`，合成 enter 在 `:4162`）——但它是**脆弱修法**：
+（`src/Surface.zig::typePoltergeistText`，合成 enter 是它末尾那次 `keyCallback(.enter)`）——但它是**脆弱修法**：
 多少毫秒够取决于对端调度，没有判据能证明它总是够。**在排除掉更确定的候选之前
 不要做它。**
 
 # 括号粘贴（mode 2004）这一格：**已做，2026-09-13，阴性**
 
-> 这一节**不带编号**是有意的：本文件在我之前就已经有两个「六、」（第 182 行与第 198 行）和一个「七、」（第 188 行）。重编号会让引用过旧编号的人对不上账，所以只在这里说明，不动别人的标题。
+> 这一节**不带编号**是有意的：本文件在我之前就已经有两个「六、」（「六、⚠️ 允许的结论里包括「不是我们能修的」」与「六、字节层实测：同一个 tap 会话里的四格」）和一个「七、」（「七、这份文件为什么存在」）。重编号会让引用过旧编号的人对不上账，所以只在这里说明，不动别人的标题。
 
 > ⚠️ **别再跑这一格。** 它曾经被写成「下一格该做什么（未做）」，同一天就做完了，
 > 结果是**证伪**。留着这一节是为了让下一个人知道**不必**再跑。
@@ -454,8 +454,8 @@ L2 2004 after-h  => 1   (set)
 
 > ⚠️ **而且外推之外还留了一个没对上的读数，不要把它当成已解释。**
 > 「单行本来就不加框」这个说法**与代码不符**：单行走
-> `textCallback` → `completeClipboardPaste`（`src/Surface.zig:4121` → `:7052`），
-> 它在 `:7109` 调的是同一个 `input.paste.encode`，而 `paste.zig:93-97` 在
+> `textCallback` → `completeClipboardPaste`（都在 `src/Surface.zig`，入口是 `typePoltergeistText` 的单行分支），
+> 后者调的是同一个 `input.paste.encode`，而 `paste.zig` 里 `encode` 的 `if (opts.bracketed)` 分支在
 > `bracketed` 为真时**单行一样加框**。
 > ⇒ 于是两条读数彼此矛盾：**DECRQM 说 2004 记住了**，**tap 说单行没框**。
 > 两者**不在同一个会话、不在同一个提交**（tap 那格是 `ac197ec5f`），
@@ -466,8 +466,8 @@ L2 2004 after-h  => 1   (set)
 ## 证伪之后，形状变成什么样
 
 - **框是有的**（DECRQM 实测），**CR 也确实在框外**——`typePoltergeistText` 是先把
-  `encode` 出来的三段 vec 全部入队（`src/Surface.zig:4137`），**之后**才合成 enter
-  （`:4162`），顺序由同一条邮箱保证（见第六节判读 4 的勘误）。
+  `encode` 出来的三段 vec 全部入队（`src/Surface.zig::typePoltergeistText` 里 `for (vecs)` 那个 `queueIo(writeReq)` 循环），**之后**才合成 enter
+  （同一函数末尾的 `keyCallback(.enter)`），顺序由同一条邮箱保证（见第六节判读 4 的勘误）。
 - **接收端仍然不提交。**
 - qwen 界面上显示的 **`[Pasted Content NNN chars]`** 正是它**收到了框、并按粘贴语义
   处理**的表现——它把框内内容当成一次粘贴插入，而不是当成输入的行。
@@ -596,7 +596,7 @@ L2 2004 after-h  => 1   (set)
 > `GLYPH_WIDTH_GRAPHEMES 0x08`、`GLYPH_WIDTH_WCSWIDTH 0x10`、
 > `GLYPH_WIDTH_CONSOLE 0x18`、`AMBIGUOUS_IS_WIDE 0x20`。
 > **没有** `WIN32_INPUT_MODE`、**没有** `PASSTHROUGH_MODE`（有人记得有，核了，没有）。
-> 我们这一侧传的是 `dwFlags = 0`（`src/pty.zig:446-453`）——**改不了，因为没有可改的位。**
+> 我们这一侧传的是 `dwFlags = 0`（`src/pty.zig` 里 `WindowsPty.open` 的 `CreatePseudoConsole` 调用）——**改不了，因为没有可改的位。**
 
 ## 3. ⭐⭐ 本轮最大的教训：探针宿主必须和被测的 CLI 同类
 
@@ -661,7 +661,7 @@ L2 2004 after-h  => 1   (set)
 
 | | 改哪一层 | 修的是 | 失败时的表现 | 和「没修」分得开吗 |
 |---|---|---|---|---|
-| (a) 走非框路径 | `input/paste.zig` + 拆掉 `Surface.zig:4104` 那道拒绝 | 都不修 | 三行当三条命令执行，**或**照样被吞 | 分得开，但代价是破坏性 |
+| (a) 走非框路径 | `input/paste.zig` + 拆掉 `Surface.zig::typePoltergeistText` 的 `error.UnbracketedMultiline` 那道拒绝 | 都不修 | 三行当三条命令执行，**或**照样被吞 | 分得开，但代价是破坏性 |
 | (b) CR 拉开间隔 | `typePoltergeistText` + 新定时器/状态机 | 只修 2 | 有时提交、有时不提交 | ❌ **完全分不开** |
 | (c) 不发 CR，调用方再调一次 | `rpc.zig` 语义 + 两处自动发送 + supervising skill | 只修 2 | 恒不提交 | 分得开（恒假 vs 偶尔假） |
 | (d) 走 `WriteConsoleInput` | Windows host 新增独立进程 | 修 1（绕过） | 起不来 / 装不上 | 分得开（构建期就炸） |
@@ -675,14 +675,14 @@ L2 2004 after-h  => 1   (set)
 
 另有一条止血选项 **(e1)**：在 **poltergeist 这条路上**（⚠️ 不能改 `paste.zig`
 的 `fromTerminal`，那会连用户的 Ctrl+V 一起改）承认「框到不了」，让
-`Surface.zig:4104` 那道拒绝照常触发，把**静默不提交**换成**具名拒绝**。
+`Surface.zig::typePoltergeistText` 的 `error.UnbracketedMultiline` 那道拒绝照常触发，把**静默不提交**换成**具名拒绝**。
 它一个缺陷都不修，但**拒绝不可能被读成成功**——全表里唯一结构上不会制造假象的选项。
 
 ## 6. ⚠️ 范围问题：这可能根本不是 Poltergeist 的缺陷
 
 用户自己按 **Ctrl+V** 走的是**同一条 encode**：
-`src/Surface.zig:7009` `.paste => try self.completeClipboardPaste(data, confirmed)`，
-而它在 `:7059-7062` 读的是同一个 `.fromTerminal(&self.io.terminal)`、加框用的是同一个
+`src/Surface.zig::completeClipboardRequest` 的 `.paste => try self.completeClipboardPaste(data, confirmed)`，
+而 `completeClipboardPaste` 读的是同一个 `.fromTerminal(&self.io.terminal)`、加框用的是同一个
 `input.paste.encode`。
 
 ⇒ **若框真的到不了，Windows 上用户自己粘贴多行文本进 agent CLI 也是无框到达**，
@@ -792,7 +792,7 @@ L2 2004 after-h  => 1   (set)
 （见修法一节对 (b) 的否决理由）。
 
 > ~~⚠️⚠️ **「长度」这一条还有一个没被排除的替代解释，杠杆在我们这边。**~~
-> ~~`src/termio/Exec.zig:471` 把每条消息切成 **64 字节**一块~~
+> ~~`src/termio/Exec.zig` 的 `queueWrite` 把每条消息切成 **64 字节**一块~~
 > ~~⇒ **不同 payload 长度写出的次数不同，读侧看到的边界就可能不同。**~~
 > ~~所以「120 字不提交」**未必**是接收端有个长度阈值，也可能只是它落在了不同的读边界上。~~
 > ~~⭐ **这两种目前分不开。**~~
@@ -810,7 +810,7 @@ L2 2004 after-h  => 1   (set)
 > `3+6+1=10`、`84+6+1=91`、`360+6+1=367`。
 >
 > ⭐ **三格的形状完全相同**：第一次 read 只有开框 6 字节，第二次是
-> **payload + 闭框 + CR 一起**。而按 `Exec.zig:471` 的 64 字节切块，
+> **payload + 闭框 + CR 一起**。而按 `Exec.zig` 里 `queueWrite` 的 64 字节切块，
 > C 格至少 **8 次 write** ⇒ 在读侧**合并成 1 次 read**
 > ⇒ **我们切几次，对读侧完全不可见。**
 >
@@ -864,7 +864,7 @@ ConPTY 输入解析上各挖了一轮，**每一轮都得到了正确的事实�
 剩下的方向只有一个：**让 CR 单独成为接收端的一次 read**（而且它本身很小）。
 它有三种做法，**三条现在都出局了**：
 
-- ~~**一次写完整个 payload，不切 64 字节**（改 `src/termio/Exec.zig:471`）~~
+- ~~**一次写完整个 payload，不切 64 字节**（改 `src/termio/Exec.zig` 的 `queueWrite`）~~
   —— ⭐ **删除资格已定**：上面第 3 小节那三格证明**我们切几次对读侧完全不可见**
   （C 格至少 8 次 write，读侧仍是 1 次 read）。**改了不会有任何区别。**
   ⚠️ **这一格顺手避免了一次白干**——在它之前，这条看起来是全表里唯一
@@ -884,10 +884,10 @@ ConPTY 输入解析上各挖了一轮，**每一轮都得到了正确的事实�
 > completion 连量都不对应到我们关心的那件事。
 >
 > 附带代价（已经足够，但不是主要理由）：
-> - **跨线程状态机**：`ttyWrite` 跑在 io 线程（`src/termio/Exec.zig:516-530`），
+> - **跨线程状态机**：`ttyWrite` 跑在 io 线程（`src/termio/Exec.zig` 的 `ttyWrite`），
 >   **够不到 `Surface`**；
 > - **RPC 应答时机要改**——今天 `terminal_send` 是同步返回的；
-> - ⭐ **必须拆掉 `src/Surface.zig:4155-4156` 那个
+> - ⭐ **必须拆掉 `src/Surface.zig::typePoltergeistText` 里那个
 >   `const stamp = self.last_key_time; defer self.last_key_time = stamp;`。**
 >   回车一旦挪进回调，`defer` **早就先执行完了**，
 >   ⇒ **我们自己打的回车会被记成「用户在键盘上」，下一条 `terminal_send` 会被
@@ -952,7 +952,7 @@ if (keyMatchers[Command.SUBMIT](key)) {
 ⭐ **「没找到」就是没找到，不是「不存在」。** 这一格原样留作**未解**。
 
 ⚠️ 并且别忘了第 3 小节末尾那条：**mac 上「长度」那一格还有一个我们这侧的替代解释**
-（`Exec.zig:471` 的 64 字节切块改变了读边界），**它和「接收端有长度阈值」目前分不开**。
+（`Exec.zig` 里 `queueWrite` 的 64 字节切块改变了读边界），**它和「接收端有长度阈值」目前分不开**。
 ⇒ macOS 这一半**同时**缺两样：对方的机制，和我们这侧的排除。
 
 ## 4. 结论（最终）
@@ -977,7 +977,7 @@ if (keyMatchers[Command.SUBMIT](key)) {
 
 **二、⭐⭐ 派活的工作流要跟着改，这一半比代码改动更要紧。**
 
-`src/poltergeist/skills/supervising.md:212-213` 今天写的是：
+`src/poltergeist/skills/supervising.md` 的「The panel: what was handed out, so it survives the night」一节第 3 步今天写的是：
 
 > `terminal_send` each worker its own instruction, naming the task number,
 > with the acceptance test in it.

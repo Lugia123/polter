@@ -50,9 +50,10 @@ use crate::tabs::{self, TabId};
 /// already holds that lock to find `tab` in the first place -- is the same
 /// non-reentrant-mutex-taken-twice shape `tabs.rs` has warned about at
 /// several of its own call sites (see `create_tab_with`'s comment on
-/// `take_id`/`take_pending_cwd`). A real run of this exact bug produced:
-/// `[state] DEADLOCK: host/src/tabs.rs:3288 waited 5s; holder is
-/// host/src/project_ui.rs:47` -- caught by the host's own watchdog rather
+/// `take_id`/`take_pending_cwd`). A real run of this exact bug produced
+/// a `[state] DEADLOCK` line: the `with_windows` call in `tabs.rs`'s
+/// `cwd_of_pane` waited 5s, and the holder was the `with_windows` call at
+/// the top of this function -- caught by the host's own watchdog rather
 /// than hanging silently, but a bug regardless. Building `meta` from
 /// `tab.panes` directly, while still inside the one borrow, is the fix.
 pub fn snapshot_for_tab(frame: HWND, id: TabId, name: String, saved_at: i64) -> Option<Snapshot> {

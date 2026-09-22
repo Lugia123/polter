@@ -147,7 +147,7 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 nicety: without it the layout would land on whichever window
 #                 happened to be in front, and the caller would be told the
 #                 shape it asked for had been applied.
-MIN_CARRYING_ARMS = 20
+MIN_CARRYING_ARMS = 24
 
 # The notifications that carry no address **today**, by `TAG -> module::fn`.
 #
