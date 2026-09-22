@@ -45,9 +45,18 @@ type, a field name or a sentence.
 
 # The four claims
 
-  1. **How much there is.** 96 calls in `src/Surface.zig`, in a 48/48 split of
+  1. **How much there is.** 98 calls in `src/Surface.zig`, in a 49/49 split of
      `lockUncancelable` and `unlock`. A change either way wants a look: this is
      the size of the unchecked area.
+     Last re-read 2026-09-22 by the method above (strip `//`, count
+     `.mutex.<name>(`): 96 became 98 with `isAtShellPrompt`, the lock/unlock
+     pair around `cursorIsAtPrompt` that `needsConfirmQuit` already takes the
+     same way. Looked at for re-entry: its one caller is the
+     `poltergeist_persona_set` binding action, and `keyCallback` reaches
+     `maybeHandleBinding` holding no lock -- the `reset` and
+     `copy_to_clipboard` arms of the same dispatcher take this lock
+     themselves, which they could not if it were
+     held.
   2. **Where the core took care.** Two sites deliberately drop the lock across
      a call and take it back in a `defer` -- the paste arms of
      `mouseButtonCallback`, with the comment *"Pasting can trigger a lock grab
@@ -86,8 +95,8 @@ LOCK_GATE = os.path.join(HERE, "lock-reentry.py")
 
 # Claim 1. Re-derive with `mutex_calls`; the split is named so a *new* call
 # name shows up as a mismatch rather than as a number that happens to add up.
-CALLS = 96
-SPLIT = {"lockUncancelable": 48, "unlock": 48}
+CALLS = 98
+SPLIT = {"lockUncancelable": 49, "unlock": 49}
 
 # Claim 2. Down is a safety regression; up means somebody found another.
 CAREFUL_SITES = 2

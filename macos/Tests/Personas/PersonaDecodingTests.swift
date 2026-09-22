@@ -129,21 +129,6 @@ struct PersonaDecodingTests {
         #expect(!argus.isDeviation)  // nothing was changed by hand
     }
 
-    /// Only the two states the tick box cannot express get a sentence.
-    ///
-    /// `withheld` is what every slot reports today, so a note there would
-    /// land on every row and bury `broken`, which is the one that must not
-    /// be missed. The floor for this is the pair of `nil`s: if those ever
-    /// start returning text, the noise is back.
-    @Test func onlyTheStatesTheTickBoxCannotExpressSayAnything() {
-        #expect(PersonaEditorView.slotNote(.broken) != nil)
-        #expect(PersonaEditorView.slotNote(.transparent) != nil)
-        #expect(PersonaEditorView.slotNote(.granted) == nil)
-        #expect(PersonaEditorView.slotNote(.withheld) == nil)
-        #expect(PersonaEditorView.slotNote(nil) == nil)
-        #expect(PersonaEditorView.slotNote(.broken) != PersonaEditorView.slotNote(.transparent))
-    }
-
     /// A slot state this build has never heard of decodes to nothing, and
     /// nothing is drawn for it. Guessing would put a sentence about the
     /// server under a row whose state we do not actually know.
@@ -151,7 +136,6 @@ struct PersonaDecodingTests {
         let json = #"{"skills":[],"mcp":[{"id":"1-0","name":"x","enabled":true,"in_persona":true,"slot":"quarantined"}]}"#
         let face = try #require(PersonaFace(json: json))
         #expect(face.mcp.first?.slot == nil)
-        #expect(PersonaEditorView.slotNote(face.mcp.first?.slot) == nil)
     }
 
     /// A row with no id is a row whose switch could not be sent anywhere, so
@@ -163,21 +147,6 @@ struct PersonaDecodingTests {
     }
 
     // MARK: Errors
-
-    /// The lead-in is chosen by `error_kind`, never by reading the message:
-    /// "fix the file" and "reopen the menu" ask different things, and prose
-    /// is not a way to tell them apart.
-    @Test func thetwoErrorKindsReadDifferently() throws {
-        let parse = try #require(PersonaEditorView.errorLead("parse"))
-        let stale = try #require(PersonaEditorView.errorLead("stale_id"))
-        #expect(parse != stale)
-    }
-
-    /// An `error_kind` this side does not know gets no invented sentence --
-    /// the core's own message still shows, with nothing put in its mouth.
-    @Test func anUnknownErrorKindGetsNoLeadIn() {
-        #expect(PersonaEditorView.errorLead("something-new") == nil)
-    }
 
     @Test func theCoresErrorTextSurvivesDecoding() throws {
         let json = #"{"skills":[],"mcp":[],"error":"personas.json:3: expected ','","error_kind":"parse"}"#

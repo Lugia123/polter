@@ -15,8 +15,6 @@ import AppKit
     /// for "No Role". One selector serves every persona because the item
     /// carries the key.
     func setPoltergeistPersona(_ sender: NSMenuItem)
-
-    func showPoltergeistPersonaEditor(_ sender: NSMenuItem)
 }
 
 @MainActor
@@ -216,6 +214,27 @@ enum PersonaMenu {
                 entry.representedObject = persona.key
                 entry.state = isCurrent ? .on : .off
                 entry.isEnabled = !shielded && actionable
+                if !persona.summaryForMenu.isEmpty { entry.toolTip = persona.summaryForMenu }
+
+                // More than one CLI: the row opens a list of them, and the
+                // chosen one rides along as `key,cli`. With one or none the
+                // core already knows which, and the row acts directly.
+                if persona.clis.count > 1 {
+                    entry.action = nil
+                    let sub = NSMenu()
+                    sub.autoenablesItems = false
+                    for cli in persona.clis {
+                        let row = NSMenuItem(
+                            title: cli.label,
+                            action: #selector(PersonaMenuTarget.setPoltergeistPersona(_:)),
+                            keyEquivalent: "")
+                        row.target = target
+                        row.representedObject = "\(persona.key),\(cli.key)"
+                        row.isEnabled = !shielded && actionable
+                        sub.addItem(row)
+                    }
+                    entry.submenu = sub
+                }
                 menu.addItem(entry)
             }
         }
@@ -236,20 +255,17 @@ enum PersonaMenu {
 
         menu.addItem(.separator())
 
-        // Not disabled when shielded: the editor's third pane is the
-        // read-only inventory, and being able to look at a shielded
-        // terminal was never the thing the shield forbids.
-        let editor = NSMenuItem(
-            title: String(localized: "Role Editor (beta)...", comment: "角色菜单：打开角色编辑器，功能还没做完，标 beta"),
-            action: #selector(PersonaMenuTarget.showPoltergeistPersonaEditor(_:)),
+        // The library is about every role, not this terminal, so it is
+        // live with no terminal and on a shielded one: that is when somebody
+        // sets up their first role.
+        let library = NSMenuItem(
+            title: String(localized: "Role Library...", comment: "用角色启动：打开角色库窗口"),
+            action: #selector(RoleLibraryOpener.showRoleLibrary(_:)),
             keyEquivalent: "")
-        editor.target = target
-        // The shield leaves this one alive on purpose -- looking at a
-        // shielded terminal was never what it forbids. Having nothing to
-        // look at is a different fact, and it does disable it.
-        editor.isEnabled = actionable
-        editor.setImage(systemSymbolName: PersonaSymbol.editor.rawValue, desired: imagesDesired)
-        menu.addItem(editor)
+        library.target = RoleLibraryOpener.shared
+        library.isEnabled = true
+        library.setImage(systemSymbolName: PersonaSymbol.editor.rawValue, desired: imagesDesired)
+        menu.addItem(library)
 
         // A submenu built here is fully decided here, so AppKit is told not
         // to ask the target to validate it. Without this the disabled notes

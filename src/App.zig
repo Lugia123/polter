@@ -63,6 +63,9 @@ personas_attempted: bool = false,
 /// reports it. Filled on a thread of its own; see `agent_cli.Cache`.
 poltergeist_agent_clis: poltergeistpkg.agent_cli.Cache,
 
+/// A role launch whose tab has not appeared yet. See `launchPersona`.
+poltergeist_pending_launch: ?PendingLaunch = null,
+
 /// What the terminals have said to each other. Separate from the bus
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
@@ -443,6 +446,7 @@ pub fn deinit(self: *App) void {
     self.poltergeist.deinit();
     self.personas.deinit();
     self.poltergeist_agent_clis.deinit(global.io());
+    self.clearPendingLaunch();
     self.poltergeist_persona_waits.deinit();
 
     // Clean up our font group cache
@@ -2154,29 +2158,22 @@ pub const LaunchPersonaError = error{
     NotSetUpForCli,
     NoCli,
     ChooseCli,
-    /// The tab was asked for and had not appeared by the time the call came
-    /// back, so there was nothing to type into.
-    NotYetOpen,
     NoExecutable,
 };
 
-/// Open a tab beside `by`, put it in the role, and start the CLI there.
-///
-/// Everything that can be refused is refused **before** the tab opens: a
-/// role that does not exist, or that is not set up for the CLI asked for,
-/// must not leave an empty tab behind as its only answer.
-///
-/// What is typed is `'<this executable>' +launch <role> <cli>` and a
-/// return. Both keys are `[a-z0-9-]` by construction, so the only thing
-/// that needs quoting is the path, and it is quoted for a POSIX shell.
-pub fn launchPersona(
+/// A role and the CLI to start it in, checked against the library.
+const LaunchChoice = struct { key: []const u8, cli: []const u8 };
+
+/// Everything that can be refused about a launch, refused before anything
+/// opens or is typed: a role that does not exist, or that is not set up for
+/// the CLI asked for, must not leave an empty tab or a half-typed line
+/// behind as its only answer. Copies into `alloc`.
+fn resolveLaunch(
     self: *App,
     alloc: Allocator,
-    by: poltergeistpkg.Bus.Id,
     key: []const u8,
     cli: []const u8,
-    cwd: []const u8,
-) !poltergeistpkg.Bus.Id {
+) !LaunchChoice {
     self.ensurePersonas();
     const p = self.personas.set.find(key) orelse return error.NoSuchPersona;
     const chosen: []const u8 = if (cli.len > 0)
@@ -2186,34 +2183,188 @@ pub fn launchPersona(
         1 => p.clis[0].cli,
         else => return error.ChooseCli,
     };
+    return .{ .key = try alloc.dupe(u8, p.key), .cli = try alloc.dupe(u8, chosen) };
+}
 
-    // Copied now: opening a tab runs the runtime, and nothing here should
-    // hold a slice into the library across that.
-    const role_key = try alloc.dupe(u8, p.key);
-    const cli_key = try alloc.dupe(u8, chosen);
-
+/// The line typed into a terminal to start a role there:
+/// `'<this executable>' +launch <role> <cli>` -- on Windows
+/// `& '<polter-cli.exe>' +launch …`, see below. Both keys are `[a-z0-9-]`
+/// by construction, so the only thing that needs quoting is the path.
+fn launchLine(alloc: Allocator, choice: LaunchChoice) ![]const u8 {
     const io = global.io();
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe = exe_buf[0 .. std.process.executablePath(io, &exe_buf) catch
         return error.NoExecutable];
 
     var line: std.Io.Writer.Allocating = .init(alloc);
-    try line.writer.writeAll("'");
-    for (exe) |c| {
-        if (c == '\'') try line.writer.writeAll("'\\''") else try line.writer.writeByte(c);
+    if (comptime builtin.os.tag == .windows) {
+        // Three differences from POSIX. The line is run by `polter-cli.exe`,
+        // the console build beside this one: `+launch` puts an agent CLI on
+        // the tab's console, and the GUI build has none to give it (the
+        // reason `+chat` goes there too). It is typed for PowerShell, the
+        // shell a Windows tab starts, where a quoted path is run with `&`
+        // and a quote inside single quotes is doubled. And there is no exec,
+        // which `cli/launch.zig` deals with.
+        const dir = std.fs.path.dirname(exe) orelse return error.NoExecutable;
+        const cli_exe = try std.fs.path.join(alloc, &.{ dir, "polter-cli.exe" });
+        std.Io.Dir.cwd().access(io, cli_exe, .{}) catch return error.NoExecutable;
+        try line.writer.writeAll("& '");
+        for (cli_exe) |c| {
+            if (c == '\'') try line.writer.writeAll("''") else try line.writer.writeByte(c);
+        }
+    } else {
+        try line.writer.writeAll("'");
+        for (exe) |c| {
+            if (c == '\'') try line.writer.writeAll("'\\''") else try line.writer.writeByte(c);
+        }
     }
-    try line.writer.print("' +launch {s} {s}", .{ role_key, cli_key });
+    try line.writer.print("' +launch {s} {s}", .{ choice.key, choice.cli });
+    return line.written();
+}
 
-    const id = (try poltergeistOpenTerminal(self, alloc, cwd, by, .tab)) orelse
-        return error.NotYetOpen;
-
-    self.setSurfacePersona(id, role_key) catch |err| {
-        log.warn("poltergeist: launched {s} but could not mark the tab err={}", .{ role_key, err });
+/// Put a terminal in the role and type the line that starts it there.
+fn startRoleIn(self: *App, id: poltergeistpkg.Bus.Id, key: []const u8, line: []const u8) anyerror!void {
+    self.setSurfacePersona(id, key) catch |err| {
+        log.warn("poltergeist: starting {s} but could not mark the tab err={}", .{ key, err });
     };
+    const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
+    try surface.typePoltergeistText(line, true);
+}
 
-    const surface = self.findSurfaceByID(id) orelse return error.NotYetOpen;
-    try surface.typePoltergeistText(line.written(), true);
+/// Open a tab beside `by` and start the role there.
+///
+/// The new terminal's id, or null when the runtime has not made it by the
+/// time this returns -- Windows opens tabs asynchronously, and so do splits
+/// everywhere. Null is not a failure: the launch is left as
+/// `poltergeist_pending_launch`, and the next terminal to finish starting
+/// claims it (`claimPendingLaunch`). Measured on the Windows test machine:
+/// before this, a supervisor's `role_launch` there always answered
+/// `OpenedEmpty` and left a bare shell.
+pub fn launchPersona(
+    self: *App,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    key: []const u8,
+    cli: []const u8,
+    cwd: []const u8,
+) anyerror!?poltergeistpkg.Bus.Id {
+    const choice = try self.resolveLaunch(alloc, key, cli);
+    const line = try launchLine(alloc, choice);
+
+    // Set before the tab is asked for: a runtime that creates the surface
+    // synchronously runs its `init` -- and so the claim -- inside the call.
+    self.setPendingLaunch(choice.key, line);
+    const id = try poltergeistOpenTerminal(self, alloc, cwd, by, .tab);
+    if (id) |new| {
+        // Claimed already when the surface was made inside the call; if not,
+        // it is ours now and the pending one goes.
+        if (self.poltergeist_pending_launch != null) {
+            self.clearPendingLaunch();
+            try self.startRoleIn(new, choice.key, line);
+        }
+    }
     return id;
+}
+
+/// A role launch waiting for its tab to exist.
+pub const PendingLaunch = struct {
+    key: []const u8,
+    line: []const u8,
+    /// Past this, a terminal that starts is not the one that was asked for
+    /// -- the tab was refused or closed -- and it is left alone.
+    deadline_ms: u64,
+};
+
+/// How long a launch waits for its tab. Generous for a slow machine, short
+/// enough that a tab the person opens by hand later is never mistaken for it.
+const pending_launch_ms = 10_000;
+
+fn setPendingLaunch(self: *App, key: []const u8, line: []const u8) void {
+    self.clearPendingLaunch();
+    const k = self.alloc.dupe(u8, key) catch return;
+    const l = self.alloc.dupe(u8, line) catch {
+        self.alloc.free(k);
+        return;
+    };
+    self.poltergeist_pending_launch = .{
+        .key = k,
+        .line = l,
+        .deadline_ms = self.poltergeistElapsedMs() + pending_launch_ms,
+    };
+}
+
+fn clearPendingLaunch(self: *App) void {
+    const p = self.poltergeist_pending_launch orelse return;
+    self.alloc.free(p.key);
+    self.alloc.free(p.line);
+    self.poltergeist_pending_launch = null;
+}
+
+/// Called by a surface at the end of its `init`, the first moment it can be
+/// typed into: if a role launch is waiting for a tab, this is it.
+pub fn claimPendingLaunch(self: *App, surface: *Surface) void {
+    const p = self.poltergeist_pending_launch orelse return;
+    self.poltergeist_pending_launch = null;
+    defer {
+        self.alloc.free(p.key);
+        self.alloc.free(p.line);
+    }
+    if (self.poltergeistElapsedMs() > p.deadline_ms) {
+        log.info("poltergeist: the tab for role {s} never came; not starting it", .{p.key});
+        return;
+    }
+    self.startRoleIn(surface.id, p.key, p.line) catch |err| {
+        log.warn("poltergeist: could not start role {s} in its tab err={}", .{ p.key, err });
+    };
+}
+
+/// What clicking a role in a terminal's menu did.
+pub const RoleChoice = enum { worn, started_here, started_in_tab };
+
+/// The one thing a click on a role does, decided here rather than by which
+/// menu the person happened to open (the owner's ask: "让程序来判断用户的意图").
+///
+///   * **An agent is connected to Polter from this terminal**, or the role
+///     has no agent CLI to start: the role is put on the terminal, hot. That
+///     is the running agent changing hats. What only a start can apply --
+///     the CLI's own skills and servers -- waits for the next start, and the
+///     menu says so (`PersonaHostClass`).
+///   * **The terminal is at its shell prompt**: the CLI is started *here*,
+///     in this terminal, rather than in a new tab.
+///   * **Something else is running**: a new tab, because typing a command
+///     into a program that is not a shell is typing into somebody's work.
+///
+/// "Is an agent here" is the bus's answer (`Server.agentPresent`), not a
+/// list of CLI names: any CLI talking to Polter counts, so nothing here
+/// knows Claude Code. "At the prompt" is shell integration's, the same
+/// answer that decides whether closing the tab asks first.
+///
+/// `arg` is `<key>` or `<key>,<cli>`.
+pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) anyerror!RoleChoice {
+    self.ensurePersonas();
+    const comma = std.mem.indexOfScalar(u8, arg, ',');
+    const key = if (comma) |c| arg[0..c] else arg;
+    const cli = if (comma) |c| arg[c + 1 ..] else "";
+
+    const p = self.personas.set.find(key) orelse return error.NoSuchPersona;
+    const agent_here = if (self.poltergeist_server) |*srv| srv.agentPresent(id) else false;
+    if (agent_here or p.clis.len == 0) {
+        try self.setSurfacePersona(id, key);
+        return .worn;
+    }
+
+    const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    if (surface.isAtShellPrompt()) {
+        const choice = try self.resolveLaunch(aa, key, cli);
+        try self.startRoleIn(id, choice.key, try launchLine(aa, choice));
+        return .started_here;
+    }
+    _ = try self.launchPersona(aa, id, key, cli, "");
+    return .started_in_tab;
 }
 
 fn poltergeistPersonaCatalog(ctx: *anyopaque, alloc: Allocator) anyerror![]const u8 {
@@ -2243,7 +2394,7 @@ fn poltergeistPersonaLaunch(
     key: []const u8,
     cli: []const u8,
     cwd: []const u8,
-) anyerror!poltergeistpkg.Bus.Id {
+) anyerror!?poltergeistpkg.Bus.Id {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.launchPersona(alloc, by, key, cli, cwd);
 }

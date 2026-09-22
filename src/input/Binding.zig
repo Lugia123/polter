@@ -773,6 +773,11 @@ pub const Action = union(enum) {
     /// own powers (`dev-docs/poltergeist/roles.md` part eleven) -- both
     /// through `PersonaStore.put`, the one writer. A keybinding that edited
     /// one would be a third way in that nobody decided on.
+    ///
+    /// The value is `<key>` or `<key>,<cli>`. What choosing a role does is
+    /// decided by `App.choosePersona` from what is in the terminal: an agent
+    /// already there wears it, a shell prompt starts the CLI in place,
+    /// anything else starts it in a new tab.
     poltergeist_persona_set: []const u8,
 
     /// Take this terminal out of any persona, back to handing out

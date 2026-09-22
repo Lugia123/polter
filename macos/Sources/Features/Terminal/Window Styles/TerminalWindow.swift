@@ -715,7 +715,6 @@ extension TerminalWindow {
     private static let agentShieldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentShield")
     private static let agentAuthoriseIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentAuthorise")
     private static let agentPersonaIdentifier = PersonaMenu.itemIdentifier
-    private static let agentRoleLaunchIdentifier = RoleLaunchMenu.itemIdentifier
 
     private static let projectSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSeparator")
     private static let projectSaveAsIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSaveAs")
@@ -789,7 +788,6 @@ extension TerminalWindow {
             Self.agentShieldIdentifier,
             Self.agentAuthoriseIdentifier,
             Self.agentPersonaIdentifier,
-            Self.agentRoleLaunchIdentifier,
         ])
 
         let separator = NSMenuItem.separator()
@@ -855,10 +853,6 @@ extension TerminalWindow {
             personas: catalog.personas,
             personasKnown: catalog.isKnown,
             target: target))
-
-        // "Launch with Role ▸" opens a new tab beside the right-clicked one,
-        // so it is pointed at the same `target`.
-        menu.addItem(RoleLaunchMenu.makeItem(target: target))
     }
 
     private func appendTabModifierSection(to menu: NSMenu, target: TerminalController?) {

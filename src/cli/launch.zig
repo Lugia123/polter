@@ -18,7 +18,8 @@
 //! The process then **replaces itself** with the CLI, so the CLI is the
 //! shell's child exactly as if it had been typed, and inherits this
 //! terminal's `GHOSTTY_POLTER_*` variables -- which is how its `+mcp` knows
-//! which terminal it is in.
+//! which terminal it is in. Windows cannot replace a process, so there it
+//! runs the CLI as a child on the same console and waits.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -138,7 +139,7 @@ pub fn run(alloc: Allocator) !u8 {
 
     const cwd = std.process.currentPathAlloc(io, aa) catch null;
     var request: std.Io.Writer.Allocating = .init(aa);
-    try agent_cli.writeLaunchRequest(&request.writer, p, choice, cwd, env.get("HOME"));
+    try agent_cli.writeLaunchRequest(&request.writer, p, choice, cwd, env.get("HOME") orelse env.get("USERPROFILE"));
 
     const answer = switch (try agent_cli.ask(aa, io, &env, adapter, .launch, request.written())) {
         .ok => |json| json,
@@ -162,11 +163,39 @@ pub fn run(alloc: Allocator) !u8 {
 
     for (launch.env) |kv| try env.put(kv[0], kv[1]);
 
-    const err = std.process.replace(io, .{ .argv = launch.argv, .environ_map = &env });
-    try err_out.print("Polter: could not start {s} ({t}).", .{ launch.argv[0], err });
-    if (err == error.FileNotFound) try err_out.print(" Is {s} installed?", .{adapter.bin});
-    try err_out.writeAll("\n");
-    return 127;
+    if (comptime std.process.can_replace) {
+        const err = std.process.replace(io, .{ .argv = launch.argv, .environ_map = &env });
+        try err_out.print("Polter: could not start {s} ({t}).", .{ launch.argv[0], err });
+        if (err == error.FileNotFound) try err_out.print(" Is {s} installed?", .{adapter.bin});
+        try err_out.writeAll("\n");
+        return 127;
+    }
+
+    // **Windows has no exec.** So the CLI runs as a child sharing this
+    // console -- this process is `polter-cli.exe`, the console build, for
+    // exactly that reason (`App.launchPersona`) -- and its exit code is
+    // handed back as ours, so the shell sees what it would have seen had
+    // the CLI been typed.
+    var child = std.process.spawn(io, .{
+        .argv = launch.argv,
+        .environ_map = &env,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| {
+        try err_out.print("Polter: could not start {s} ({t}).", .{ launch.argv[0], err });
+        if (err == error.FileNotFound) try err_out.print(" Is {s} installed?", .{adapter.bin});
+        try err_out.writeAll("\n");
+        return 127;
+    };
+    const term = child.wait(io) catch |err| {
+        try err_out.print("Polter: lost track of {s} ({t}).\n", .{ launch.argv[0], err });
+        return 1;
+    };
+    return switch (term) {
+        .exited => |code| code,
+        else => 1,
+    };
 }
 
 const Parsed = struct {

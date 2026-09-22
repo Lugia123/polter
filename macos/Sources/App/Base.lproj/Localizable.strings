@@ -233,8 +233,6 @@
 "Role (beta): %@" = "Role (beta): %@";
 "No Role" = "No Role";
 "No roles are defined" = "No roles are defined";
-"Role Editor (beta)..." = "Role Editor (beta)...";
-"Role Editor (beta)" = "Role Editor (beta)";
 "%@ (modified)" = "%@ (modified)";
 "Takes effect the next time the agent starts" = "Takes effect the next time the agent starts";
 "May need the agent to restart before it takes effect" = "May need the agent to restart before it takes effect";
@@ -279,12 +277,9 @@
 "A tab was opened but didn't appear in time, so nothing was started in it." = "A tab was opened but didn't appear in time, so nothing was started in it.";
 "Polter isn't ready yet." = "Polter isn't ready yet.";
 "Role Library" = "Role Library";
-"Launch with Role" = "Launch with Role";
-"Open a terminal window first" = "Open a terminal window first";
 "Reading the role library…" = "Reading the role library…";
 "No roles yet" = "No roles yet";
 "Role Library..." = "Role Library...";
-"%@ (no agent CLI chosen)" = "%@ (no agent CLI chosen)";
 "The role couldn't be launched" = "The role couldn't be launched";
 "Save changes to this role?" = "Save changes to this role?";
 "Your changes will be lost if you don't save them." = "Your changes will be lost if you don't save them.";

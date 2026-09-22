@@ -50,11 +50,25 @@ struct Persona: Identifiable, Equatable, Hashable {
         var isEmpty: Bool { disableHostPlugins.isEmpty && model == nil }
     }
 
-    init(key: String, name: String, prompt: String? = nil, hint: Hint? = nil) {
+    /// The agent CLIs this role can start, as (key, label), in the order
+    /// the role lists them. Two or more make its menu row a submenu, so the
+    /// person says which; one or none leave it a single row.
+    var clis: [Cli] = []
+
+    /// A role's one-line description, shown as the row's tooltip.
+    var summaryForMenu: String = ""
+
+    struct Cli: Equatable, Hashable {
+        var key: String
+        var label: String
+    }
+
+    init(key: String, name: String, prompt: String? = nil, hint: Hint? = nil, clis: [Cli] = []) {
         self.key = key
         self.name = name
         self.prompt = prompt
         self.hint = hint
+        self.clis = clis
     }
 }
 

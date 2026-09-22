@@ -64,7 +64,7 @@ struct PersonaMenuTests {
 
     // MARK: Shape
 
-    @Test func aPlainSubmenuIsTheTwoPersonasThenNoRoleThenTheEditor() throws {
+    @Test func aPlainSubmenuIsTheTwoPersonasThenNoRoleThenTheLibrary() throws {
         let menu = try submenu(wearingArcher)
 
         #expect(menu.items.count == 6)
@@ -73,7 +73,7 @@ struct PersonaMenuTests {
         #expect(menu.items[2].isSeparatorItem)
         #expect(menu.items[3].title == String(localized: "No Role"))
         #expect(menu.items[4].isSeparatorItem)
-        #expect(menu.items[5].title == String(localized: "Role Editor (beta)..."))
+        #expect(menu.items[5].title == String(localized: "Role Library..."))
     }
 
     /// The order of the file is the order of the menu: `personas.json` keeps
@@ -203,7 +203,7 @@ struct PersonaMenuTests {
         #expect(!noRole.isEnabled)
 
         let editor = try #require(
-            menu.items.first { $0.title == String(localized: "Role Editor (beta)...") })
+            menu.items.first { $0.title == String(localized: "Role Library...") })
         #expect(editor.isEnabled)
     }
 
@@ -227,7 +227,7 @@ struct PersonaMenuTests {
     @Test func anEmptyCatalogueStillOffersNoRoleAndTheEditor() throws {
         let menu = try submenu(wearingArcher, personas: [], personasKnown: true)
         #expect(menu.items.contains { $0.title == String(localized: "No Role") })
-        #expect(menu.items.contains { $0.title == String(localized: "Role Editor (beta)...") })
+        #expect(menu.items.contains { $0.title == String(localized: "Role Library...") })
     }
 
     // MARK: Parent item
@@ -282,22 +282,44 @@ struct PersonaMenuTests {
         #expect(clickable.count == 4)
     }
 
-    /// The shield and an empty menu bar are different facts, and the editor
-    /// is where they part: looking at a shielded terminal is allowed, and
-    /// that is what `aShieldedTerminalOffersNothingToClickButTheEditor`
-    /// pins. With no terminal at all there is nothing to look at.
-    @Test func theEditorSurvivesTheShieldButNotAnEmptyMenuBar() throws {
+    /// The library is about every role, not about this terminal: it stays
+    /// live on a shielded terminal and with no terminal at all -- the menu
+    /// bar with every window closed is where a first role gets made.
+    @Test func theLibraryIsAlwaysReachable() throws {
         let shielded = try submenu(wearingArcher, shielded: true)
-        let editorWhenShielded = try #require(
-            shielded.items.first { $0.title == String(localized: "Role Editor (beta)...") })
-        #expect(editorWhenShielded.isEnabled)
+        let whenShielded = try #require(
+            shielded.items.first { $0.title == String(localized: "Role Library...") })
+        #expect(whenShielded.isEnabled)
 
         let targetless = try #require(PersonaMenu.makeItem(
             state: wearingArcher, personas: both, personasKnown: true,
             target: nil).submenu)
-        let editorWhenTargetless = try #require(
-            targetless.items.first { $0.title == String(localized: "Role Editor (beta)...") })
-        #expect(!editorWhenTargetless.isEnabled)
+        let whenTargetless = try #require(
+            targetless.items.first { $0.title == String(localized: "Role Library...") })
+        #expect(whenTargetless.isEnabled)
+    }
+
+    /// A role set up for two agent CLIs opens a list of them, and each row
+    /// carries `key,cli` so the core knows which to start. One CLI or none:
+    /// a single row carrying the key alone.
+    @Test func aRoleWithSeveralClisAsksWhich() throws {
+        let duo = Persona(key: "duo", name: "Duo", clis: [
+            .init(key: "claude-code", label: "Claude Code"),
+            .init(key: "codex", label: "Codex"),
+        ])
+        let solo = Persona(key: "solo", name: "Solo", clis: [.init(key: "claude-code", label: "Claude Code")])
+        let menu = try submenu(wearingArcher, personas: [solo, duo])
+
+        let soloRow = try #require(menu.items.first { $0.title == "Solo" })
+        #expect(soloRow.submenu == nil)
+        #expect(soloRow.representedObject as? String == "solo")
+
+        let duoRow = try #require(menu.items.first { $0.title == "Duo" })
+        let clis = try #require(duoRow.submenu)
+        #expect(clis.items.map(\.title) == ["Claude Code", "Codex"])
+        #expect(clis.items.map { $0.representedObject as? String } == ["duo,claude-code", "duo,codex"])
+        #expect(clis.items.allSatisfy { $0.isEnabled })
+        #expect(clis.items.allSatisfy { $0.action == #selector(PersonaMenuTarget.setPoltergeistPersona(_:)) })
     }
 
     @Test func theSubmenuDecidesItsOwnEnabledState() throws {

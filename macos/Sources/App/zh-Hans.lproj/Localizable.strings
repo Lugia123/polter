@@ -247,8 +247,6 @@
 "Role (beta): %@" = "角色（beta）：%@";
 "No Role" = "不设角色";
 "No roles are defined" = "还没有定义任何角色";
-"Role Editor (beta)..." = "角色编辑器（beta）…";
-"Role Editor (beta)" = "角色编辑器（beta）";
 "%@ (modified)" = "%@（已改）";
 "Takes effect the next time the agent starts" = "下次启动 agent 时生效";
 "May need the agent to restart before it takes effect" = "可能要 agent 重启之后才生效";
@@ -293,12 +291,9 @@
 "A tab was opened but didn't appear in time, so nothing was started in it." = "标签页已打开，但没有及时出现，所以里面什么都没启动。";
 "Polter isn't ready yet." = "Polter 还没准备好。";
 "Role Library" = "角色库";
-"Launch with Role" = "用角色启动";
-"Open a terminal window first" = "请先打开一个终端窗口";
 "Reading the role library…" = "正在读取角色库…";
 "No roles yet" = "还没有角色";
 "Role Library..." = "角色库…";
-"%@ (no agent CLI chosen)" = "%@（还没选 agent CLI）";
 "The role couldn't be launched" = "无法用这个角色启动";
 "Save changes to this role?" = "保存对这个角色的修改吗？";
 "Your changes will be lost if you don't save them." = "不保存的话，修改会丢失。";

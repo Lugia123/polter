@@ -4286,8 +4286,8 @@ pub const Host = struct {
 
         /// Open a tab next to `by`, give it the role, and start the CLI.
         /// The new terminal's id, or null when the runtime has not made it
-        /// by the time this returns -- in which case nothing was typed and
-        /// that is an error, not a success (see `role_launch`).
+        /// by the time this returns -- the launch then waits for it and is
+        /// typed in when it appears (`App.claimPendingLaunch`).
         personaLaunch: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
@@ -4295,7 +4295,7 @@ pub const Host = struct {
             key: []const u8,
             cli: []const u8,
             cwd: []const u8,
-        ) anyerror!Bus.Id,
+        ) anyerror!?Bus.Id,
 
         /// Open a terminal in `by`'s window, starting in `cwd`.
         ///
@@ -4807,7 +4807,7 @@ pub const Host = struct {
         key: []const u8,
         cli: []const u8,
         cwd: []const u8,
-    ) anyerror!Bus.Id {
+    ) anyerror!?Bus.Id {
         return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd);
     }
 
@@ -5495,18 +5495,11 @@ pub fn dispatch(
                     "NoSuchDirectory",
                     "there is no directory there.",
                 ),
-                // ⚠️ **Not an `opened` with a null id.** `terminal_open` may
-                // answer that way because the tab is still coming and has
-                // nothing to do. This one does: nothing was typed into it, so
-                // a success here would be a shell sitting at a prompt that
-                // everybody believes is an agent.
-                error.NotYetOpen => hostFailure(
-                    "OpenedEmpty",
-                    "a tab was opened but did not appear in time, so the CLI was not " ++
-                        "started in it. It is a plain shell; close it or use it.",
-                ),
                 else => hostFailure("LaunchFailed", "could not open a terminal for the role"),
             };
+            // A null id is the tab still being made (Windows, always): the
+            // launch waits for it and is typed in when it appears, and
+            // `terminal_list` will have it in a moment.
             return .{ .opened = .{ .id = id, .watching = false } };
         },
 
@@ -6951,6 +6944,7 @@ const FakeHost = struct {
     role_error: ?anyerror = null,
     role_launched: ?struct { by: Bus.Id, key: []const u8, cli: []const u8, cwd: []const u8 } = null,
     clis_refreshed: bool = false,
+    role_tab_late: bool = false,
 
     /// Make typing fail the way a real terminal can: its process has gone,
     /// or somebody is at the keyboard.
@@ -7649,11 +7643,11 @@ const FakeHost = struct {
         key: []const u8,
         cli: []const u8,
         cwd: []const u8,
-    ) anyerror!Bus.Id {
+    ) anyerror!?Bus.Id {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
         self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd };
-        return 0x7777;
+        return if (self.role_tab_late) null else 0x7777;
     }
 
     fn quietMs(ctx: *anyopaque, _: Bus.Id) u64 {
@@ -10771,9 +10765,10 @@ test "roles: each reason a write is refused says what to do about it" {
         try testing.expectEqualStrings(c.code, res.failed.code);
     }
 
-    // A launch that opened a tab too late is a failure, not an `opened` with
-    // no id: nothing was typed into it.
-    var fake: FakeHost = .{ .role_error = error.NotYetOpen };
+    // A tab the runtime has not made yet is not a failure: the launch waits
+    // for it and is typed in when it appears (measured on Windows, where
+    // every tab arrives late and this used to answer `OpenedEmpty`).
+    var fake: FakeHost = .{ .role_tab_late = true };
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "a" } });
-    try testing.expectEqualStrings("OpenedEmpty", res.failed.code);
+    try testing.expectEqual(@as(?Bus.Id, null), res.opened.id);
 }

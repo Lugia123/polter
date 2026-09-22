@@ -13,13 +13,8 @@ import AppKit
 @MainActor
 final class PersonaMenuTargetStub: NSObject, PersonaMenuTarget {
     private(set) var personaCalls: [String?] = []
-    private(set) var editorCalls = 0
 
     func setPoltergeistPersona(_ sender: NSMenuItem) {
         personaCalls.append(sender.representedObject as? String)
-    }
-
-    func showPoltergeistPersonaEditor(_ sender: NSMenuItem) {
-        editorCalls += 1
     }
 }

@@ -169,7 +169,7 @@ struct PersonaMenuWidthTests {
 
     /// Every `Localizable.strings` the app ships, keyed by localization.
     private static func localizationTables() throws -> [(String, [String: String])] {
-        let bundle = Bundle(for: PersonaEditorState.self)
+        let bundle = Bundle(for: RoleLibraryEditor.self)
         return bundle.localizations.compactMap { localization in
             guard let url = bundle.url(forResource: "Localizable",
                                        withExtension: "strings",

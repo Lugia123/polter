@@ -151,19 +151,9 @@ extension Ghostty {
         /// because nothing loads `personas.json` yet -- so this reads as a
         /// terminal with no persona, and the menu says exactly that rather
         /// than pretending otherwise.
-        @Published var poltergeistPersonaState: PersonaState = .none {
-            didSet {
-                guard oldValue != poltergeistPersonaState else { return }
-                refreshPersonaEditor()
-            }
-        }
+        @Published var poltergeistPersonaState: PersonaState = .none
 
-        @Published var poltergeistPersonaFace: PersonaFace = .init() {
-            didSet {
-                guard oldValue != poltergeistPersonaFace else { return }
-                refreshPersonaEditor()
-            }
-        }
+        @Published var poltergeistPersonaFace: PersonaFace = .init()
 
         /// A clipboard confirmation waiting to be handled by its controller.
         @Published var pendingClipboardConfirmation: ClipboardConfirmationRequest? {
@@ -1740,9 +1730,6 @@ extension Ghostty {
                 personas: catalog.personas,
                 personasKnown: catalog.isKnown,
                 target: self))
-
-            // A new tab beside this terminal, running an agent CLI in a role.
-            menu.addItem(RoleLaunchMenu.makeItem(target: self))
 
             return menu
         }

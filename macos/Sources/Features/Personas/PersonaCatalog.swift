@@ -69,25 +69,26 @@ final class PersonaCatalog: ObservableObject {
         reloadInventory(app)
     }
 
+    /// Read from the role library rather than `ghostty_app_personas`,
+    /// because the menu needs each role's agent CLIs as well as its name:
+    /// a role set up for two of them opens a submenu to pick one.
     private func reloadPersonas(_ app: ghostty_app_t) {
-        let total = ghostty_app_personas(app, nil, 0)
-        guard total > 0 else {
+        _ = app
+        let library = RoleLibrary.shared
+        library.reload()
+        guard library.catalog.loaded else {
             setPersonas([])
+            isKnown = false
             return
         }
-
-        var rows = [ghostty_persona_s](repeating: .init(), count: Int(total))
-        let written = rows.withUnsafeMutableBufferPointer {
-            ghostty_app_personas(app, $0.baseAddress, UInt($0.count))
-        }
-
-        // Copy the strings before anything else happens: the core owns them
-        // and they live only until the next call or the next config reload.
-        let parsed: [Persona] = rows.prefix(Int(min(written, total))).compactMap { row in
-            guard let key = row.key, let name = row.name else { return nil }
-            return Persona(key: String(cString: key), name: String(cString: name))
-        }
-        setPersonas(parsed)
+        setPersonas(library.catalog.roles.map { role in
+            var p = Persona(
+                key: role.key,
+                name: role.name,
+                clis: role.clis.map { Persona.Cli(key: $0.cli, label: library.clis.label(for: $0.cli)) })
+            p.summaryForMenu = role.summary
+            return p
+        })
     }
 
     private func reloadInventory(_ app: ghostty_app_t) {

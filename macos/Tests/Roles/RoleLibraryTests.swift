@@ -2,8 +2,8 @@ import AppKit
 import Testing
 @testable import Ghostty
 
-/// The role library's values and the `Launch with Role ▸` menu, built
-/// without an app, a window or a core.
+/// The role library's values, built without an app, a window or a core.
+/// The menu that uses them is `PersonaMenuTests`.
 ///
 /// The value half is also compiled and run on its own against
 /// `RoleModels.swift` (see that file's header): these tests run hosted in
@@ -84,75 +84,5 @@ struct RoleLibraryTests {
         let args = ["--x", "a b", "", "it's"]
         #expect(RoleArgs.split(RoleArgs.join(args)) == args)
         #expect(RoleArgs.split("--permission-mode auto") == ["--permission-mode", "auto"])
-    }
-
-    // MARK: Launch menu
-
-    private func role(_ key: String, clis: [String]) -> Role {
-        var r = Role(key: key, name: key.capitalized)
-        r.clis = clis.map { RoleCliChoice(cli: $0) }
-        return r
-    }
-
-    private func submenu(_ roles: [Role], target: RoleLaunchTarget?, loaded: Bool = true) -> NSMenu {
-        var catalog = RoleCatalog()
-        catalog.loaded = loaded
-        catalog.roles = roles
-        let item = NSMenuItem()
-        RoleLaunchMenu.configure(item, catalog: catalog, clis: AgentCliSnapshot(), target: target, imagesDesired: false)
-        return item.submenu!
-    }
-
-    @Test func oneCliLaunchesStraightAwayAndSeveralAsk() throws {
-        let target = RoleLaunchTargetStub()
-        let menu = submenu([role("solo", clis: ["claude-code"]), role("duo", clis: ["claude-code", "codex"])], target: target)
-
-        let solo = menu.items[0]
-        #expect(solo.submenu == nil)
-        #expect(solo.isEnabled)
-        #expect(solo.representedObject as? [String] == ["solo", "claude-code"])
-        #expect(solo.action == #selector(RoleLaunchTarget.launchWithRole(_:)))
-
-        let duo = menu.items[1]
-        let clis = try #require(duo.submenu)
-        #expect(clis.items.map { $0.representedObject as? [String] } == [["duo", "claude-code"], ["duo", "codex"]])
-        #expect(clis.items.allSatisfy { $0.isEnabled })
-
-        // The library is always the last row.
-        #expect(menu.items.last?.action == #selector(RoleLibraryOpener.showRoleLibrary(_:)))
-    }
-
-    /// Shown, not hidden: a role missing from the menu reads as unsaved.
-    @Test func aRoleWithNoCliIsListedAndCannotBeClicked() {
-        let menu = submenu([role("idle", clis: [])], target: RoleLaunchTargetStub())
-        #expect(menu.items[0].title.contains("Idle"))
-        #expect(!menu.items[0].isEnabled)
-    }
-
-    /// Nowhere to open the tab beside: every launch row is off, and the
-    /// library row is still on -- that is when a first role gets made.
-    @Test func withNoTerminalOnlyTheLibraryIsClickable() {
-        let menu = submenu([role("solo", clis: ["claude-code"])], target: nil)
-        let enabled = menu.items.filter { $0.isEnabled && !$0.isSeparatorItem }
-        #expect(enabled.count == 1)
-        #expect(enabled.first?.action == #selector(RoleLibraryOpener.showRoleLibrary(_:)))
-    }
-
-    /// "Not read yet" and "none" are different rows.
-    @Test func notReadYetIsNotNoRoles() {
-        let unread = submenu([], target: RoleLaunchTargetStub(), loaded: false)
-        let empty = submenu([], target: RoleLaunchTargetStub(), loaded: true)
-        #expect(unread.items[0].title != empty.items[0].title)
-        #expect(!unread.items[0].isEnabled)
-        #expect(!empty.items[0].isEnabled)
-    }
-}
-
-@MainActor
-final class RoleLaunchTargetStub: NSObject, RoleLaunchTarget {
-    private(set) var launches: [[String]] = []
-
-    func launchWithRole(_ sender: NSMenuItem) {
-        if let pair = sender.representedObject as? [String] { launches.append(pair) }
     }
 }

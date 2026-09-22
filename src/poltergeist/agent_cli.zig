@@ -445,7 +445,9 @@ pub const Cache = struct {
         defer environ_map.deinit();
         _ = login_path.widen(aa, io, &environ_map);
 
-        const home = environ_map.get("HOME");
+        // `USERPROFILE` on Windows, where there is no `HOME` -- measured:
+        // the Windows test machine's adapter was asked with `"home":null`.
+        const home = environ_map.get("HOME") orelse environ_map.get("USERPROFILE");
         var request: std.Io.Writer.Allocating = .init(aa);
         try request.writer.print("{{\"version\":{d},\"cwd\":null,\"home\":", .{contract_version});
         try writeOptional(&request.writer, home);

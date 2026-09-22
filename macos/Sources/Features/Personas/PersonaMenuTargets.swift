@@ -85,66 +85,15 @@ extension Ghostty.SurfaceView: PersonaMenuTarget {
             // terminal's face (`error_kind`), so the way to find out what
             // "no" meant is to ask, not to guess from the action string.
             reloadPersonaFace()
-            refreshPersonaEditor()
         }
     }
 
-    @objc func showPoltergeistPersonaEditor(_ sender: NSMenuItem) {
-        PersonaEditor.shared.present(
-            for: self,
-            model: personaEditorModel,
-            onSelectPersona: { [weak self] key in
-                self?.sendPersonaAction(PersonaAction.set(key))
-            },
-            onToggleSkill: { [weak self] entry, on in
-                self?.sendPersonaAction(PersonaAction.skill(entry.id, on))
-            },
-            onToggleMCP: { [weak self] entry, on in
-                self?.sendPersonaAction(PersonaAction.mcp(entry.id, on))
-            },
-            onResetToPersona: { [weak self] in
-                // Re-picking the persona *is* the reset: contract §② defines
-                // "set to a persona" as assigning the key and resetting the
-                // face to its declaration. A fourth action would be a second
-                // definition of the same thing, free to drift from the first.
-                guard let self, let key = self.poltergeistPersonaState.key else { return }
-                self.sendPersonaAction(PersonaAction.set(key))
-            })
-    }
-
-    /// Pull this terminal's face out of the core.
-    ///
-    /// Called before a menu is built and after an action is refused -- the
-    /// two moments when a stale answer would be shown to somebody about to
-    /// act on it.
     func reloadPersonaFace() {
         guard let surface = self.surface else { return }
         poltergeistPersonaFace = PersonaFace.read(surface: surface) ?? .init()
     }
 
     /// The snapshot the editor draws, gathered fresh.
-    var personaEditorModel: PersonaEditorModel {
-        let catalog = PersonaCatalog.shared
-        catalog.reload()
-        reloadPersonaFace()
-        return PersonaEditorModel(
-            terminalTitle: title,
-            state: poltergeistPersonaState,
-            personas: catalog.personas,
-            personasKnown: catalog.isKnown,
-            face: poltergeistPersonaFace,
-            inventory: catalog.inventory,
-            shielded: poltergeistShielded)
-    }
-
-    /// Push current state into this terminal's editor window, if one is up.
-    ///
-    /// Called from wherever the core's report lands. Cheap and a no-op when
-    /// no editor is open, so the call site does not have to know.
-    func refreshPersonaEditor() {
-        guard PersonaEditor.shared.isOpen(for: self) else { return }
-        PersonaEditor.shared.update(for: self, model: personaEditorModel)
-    }
 }
 
 // MARK: - Controller
@@ -157,9 +106,5 @@ extension Ghostty.SurfaceView: PersonaMenuTarget {
 extension TerminalController: PersonaMenuTarget {
     @objc func setPoltergeistPersona(_ sender: NSMenuItem) {
         focusedSurface?.setPoltergeistPersona(sender)
-    }
-
-    @objc func showPoltergeistPersonaEditor(_ sender: NSMenuItem) {
-        focusedSurface?.showPoltergeistPersonaEditor(sender)
     }
 }

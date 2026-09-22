@@ -65,7 +65,7 @@ final class RoleLibraryWindow: NSObject, NSWindowDelegate {
     static func launch(role: Role, cli: String) {
         guard let surface = launchSurface else { return }
         if let error = RoleLibrary.launch(from: surface, key: role.key, cli: cli) {
-            RoleLaunchMenu.showError(error)
+            RoleLibraryOpener.showLaunchError(error)
         }
     }
 }

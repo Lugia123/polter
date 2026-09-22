@@ -1037,6 +1037,11 @@ pub fn init(
     // the terminal is sized and its IO is running.
     app.flushPoltergeistAlerts(self);
 
+    // A role launched into a tab that the runtime made asynchronously has
+    // been waiting for this terminal; it is typed in now, for the same
+    // reason as the line above.
+    app.claimPendingLaunch(self);
+
     // We are no longer the first surface
     app.first = false;
 }
@@ -1284,6 +1289,17 @@ pub fn deactivateInspector(self: *Surface) void {
     insp.deinit(self.alloc);
     self.alloc.destroy(insp);
     self.inspector = null;
+}
+
+/// Whether this terminal is sitting at its shell's prompt with nothing
+/// running -- shell integration's answer, the one closing a tab asks.
+/// False when the shell has no integration, which is the careful direction:
+/// the caller then does not type into it.
+pub fn isAtShellPrompt(self: *Surface) bool {
+    if (self.child_exited) return false;
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+    return self.io.terminal.cursorIsAtPrompt();
 }
 
 /// True if the surface requires confirmation to quit. This should be called
@@ -6911,7 +6927,10 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         ),
 
         .poltergeist_persona_set => |key| {
-            self.app.setSurfacePersona(self.id, key) catch |err| {
+            // `key` or `key,cli`. What it does -- wear the role, start the
+            // CLI here, or start it in a new tab -- is decided by the app
+            // from what is in this terminal; see `App.choosePersona`.
+            _ = self.app.choosePersona(self.id, key) catch |err| {
                 // **A key that is not in the file is the ordinary case**,
                 // not a broken one: a menu built a moment ago names a
                 // persona the user has since renamed or deleted. `false`
