@@ -178,6 +178,13 @@ id 按构造就落在 `[0-9-]` ⊂ `[a-z0-9_:,-]` 里，**那道闸一个字符�
 config 是用户写的，而 roles.md §七 要求角色是用户定义的闭集
 —— **Polter 侧一条写路径都不存在**，这就是那条硬闸的实现，不是提示词。
 
+> ⚠️ **v2 起这一段的后半句不成立了，留着是因为它说明了当初为什么这样。**
+> 用户决定总管对角色库和自己同权（roles.md §七 第 1 条的划线处），于是有了
+> 一个写者：`PersonaStore.put / remove`，写完用同一个 `load` 读回。路径也不是
+> 上面那个 XDG 路径：`PersonaStore.defaultPath` 在 macOS 上先用 Application
+> Support，**以代码为准**。v2 新增的字段（`description` / `instructions` /
+> `clis`）见 roles.md 第十一节。
+
 **格式**：
 
 ```jsonc
