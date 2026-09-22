@@ -9,7 +9,8 @@
   "agent_cli": {
     "label": "Claude Code",
     "bin": "claude",
-    "adapter": "adapter.py"
+    "adapter": "adapter.py",
+    "adapter_windows": "adapter.ps1"
   },
   "wants": {
     "events": [

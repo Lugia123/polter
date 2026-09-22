@@ -1,0 +1,89 @@
+{
+  "about": "Fixed inputs for compare.py: a home, a project, and a broken home, written into a temporary directory; then requests sent to both adapters. {HOME}, {CWD} and {HOME2} are replaced by the real paths (JSON-escaped inside .json files).",
+  "files": {
+    "HOME/.claude/skills/pdf/SKILL.md": "---\nname: pdf\ndescription: \"Read and write PDF files\"\n---\nbody\n",
+    "HOME/.claude/skills/writer/SKILL.md": "---\nname: writer\ndescription: >\n  Folds long\n  lines into one.\n\n  Next paragraph.\nother: x\n---\n",
+    "HOME/.claude/skills/notes-zh/SKILL.md": "---\ndescription: '写中文笔记，带“引号”和 \\ 反斜杠'\n---\n",
+    "HOME/.claude/skills/crlf/SKILL.md": "---\r\nname: crlf\r\ndescription: |\r\n  line one\r\n  line two\r\n---\r\n",
+    "HOME/.claude/skills/oldmac/SKILL.md": "---\rname: oldmac\rdescription: lone carriage returns, which Python's text mode reads as line ends\r---\r",
+    "HOME/.claude/skills/nofm/SKILL.md": "no frontmatter here\n",
+    "HOME/.claude/skills/.hidden/SKILL.md": "---\nname: hidden\n---\n",
+    "HOME/.claude/skills/Zeta/SKILL.md": "---\nname: Zeta\ndescription: an upper-case name sorts before every lower-case one\n---\n",
+    "HOME/.claude/skills/no-skill-file/readme.txt": "a directory with no SKILL.md is not a skill\n",
+    "HOME/.claude.json": {"json": {
+      "numbers": 1.5,
+      "mcpServers": {
+        "polter": {"command": "/usr/local/bin/polter-cli", "args": ["+mcp"], "env": {"POLTER_TOKEN": "secret-must-not-appear"}},
+        "claude.ai Docs": {"type": "http", "url": "https://user:pw@docs.example.com/mcp?k=1"},
+        "sse-one": {"type": "sse", "url": "http://127.0.0.1:9000/sse"},
+        "odd": {"httpUrl": "ftp-nothing"},
+        "empty": {},
+        "Kanban": {"command": "node", "args": ["--api-key", "secret-must-not-appear"]},
+        "中文服务": {"command": "/opt/x/run.sh"},
+        "emoji😀": {"command": "x"}
+      },
+      "projects": {
+        "{CWD}": {"mcpServers": {"local-one": {"command": "/bin/local-srv", "args": ["--token", "abc"]}}},
+        "/elsewhere": {"mcpServers": {"not-me": {"command": "x"}}}
+      }
+    }},
+    "HOME/.claude/settings.json": {"json": {"enabledPlugins": {"argus@mk": true, "off@mk": false, "one@mk": 1, "kanban@mk": true, "strmcp@mk": true}}},
+    "HOME/.claude/plugins/installed_plugins.json": {"json": {"version": 2, "plugins": {
+      "argus@mk": [{"scope": "user", "installPath": "{HOME}/plugins/argus"}],
+      "off@mk": [{"scope": "user", "installPath": "{HOME}/plugins/off"}],
+      "one@mk": [{"scope": "user", "installPath": "{HOME}/plugins/off"}],
+      "kanban@mk": [
+        {"scope": "project", "projectPath": "/elsewhere", "installPath": "{HOME}/plugins/wrong"},
+        {"scope": "project", "projectPath": "{CWD}", "installPath": "{HOME}/plugins/kanban"}
+      ],
+      "proj@mk": [{"scope": "project", "projectPath": "{CWD}", "installPath": "{HOME}/plugins/proj"}],
+      "strmcp@mk": [{"scope": "user", "installPath": "{HOME}/plugins/strmcp"}]
+    }}},
+    "HOME/plugins/argus/.claude-plugin/plugin.json": {"json": {"name": "argus", "description": "Remote hosts, 远程主机", "mcpServers": {
+      "argus": {"command": "C:/tools/argus/argus.exe"},
+      "files": {"type": "http", "url": "https://files.example.com"}
+    }}},
+    "HOME/plugins/argus/skills/terminal/SKILL.md": "---\nname: terminal\ndescription: Drive a remote terminal\n---\n",
+    "HOME/plugins/off/.claude-plugin/plugin.json": {"json": {"description": "switched off: never listed"}},
+    "HOME/plugins/off/skills/nope/SKILL.md": "---\nname: nope\n---\n",
+    "HOME/plugins/kanban/.claude-plugin/plugin.json": {"json": {"description": 42}},
+    "HOME/plugins/kanban/.mcp.json": {"json": {"mcpServers": {"kanban": {"url": "https://kb.example.com/mcp"}}}},
+    "HOME/plugins/proj/.claude-plugin/plugin.json": {"json": {"description": "Project plugin"}},
+    "HOME/plugins/proj/.mcp.json": {"json": {"direct": {"command": "/x/direct"}}},
+    "HOME/plugins/strmcp/.claude-plugin/plugin.json": {"json": {"description": "mcpServers named as a file", "mcpServers": "servers.json"}},
+    "HOME/plugins/strmcp/servers.json": {"json": {"s1": {"command": "/x/s1"}}},
+    "HOME/plugins/strmcp/skills/multi/SKILL.md": "---\nname: multi\ndescription: |\n  first\n\n  third\n---\n",
+    "CWD/.claude/skills/pdf/SKILL.md": "---\nname: pdf\ndescription: the project's own copy, shadowed by id\n---\n",
+    "CWD/.claude/skills/proj-skill/SKILL.md": "---\nname: proj-skill\ndescription: A project skill\n---\n",
+    "CWD/.mcp.json": {"json": {"mcpServers": {"shared": {"type": "http", "url": "https://shared.example.com/x"}, "polter": {"command": "dup"}}}},
+    "CWD/.claude/settings.json": {"json": {"enabledPlugins": {"off@mk": false}}},
+    "CWD/.claude/settings.local.json": {"json": {"enabledPlugins": {"proj@mk": true}}},
+    "HOME2/.claude/settings.json": "{not json",
+    "HOME2/.claude.json": "[1, 2"
+  },
+  "requests": [
+    {"name": "inventory, with a project", "question": "inventory", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}"}},
+    {"name": "inventory, no project", "question": "inventory", "request": {"version": 1, "cwd": null, "home": "{HOME}"}},
+    {"name": "inventory, no home in the request", "question": "inventory", "request": {"version": 1, "cwd": "{CWD}", "home": null}},
+    {"name": "inventory, files that do not parse", "question": "inventory", "request": {"version": 1, "cwd": null, "home": "{HOME2}"}},
+    {"name": "launch, everything kept, nothing else", "question": "launch", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}",
+      "role": {"key": "plain", "name": "Plain", "instructions": null},
+      "cli": {"skills": {"default": true, "except": []}, "mcp": {"default": true, "except": []}, "model": null, "args": []}}},
+    {"name": "launch, skills off by default, MCP excepted, model, hard instructions, merged --settings", "question": "launch", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}",
+      "role": {"key": "hard", "name": "难的角色", "instructions": "第一行：用中文回答。\n\"quoted\" and 'single' \\ backslash\n& | % ! ^ < > $env:PATH `tick` %PATH%\n\ttabbed\u0001ctrl"},
+      "cli": {"skills": {"default": false, "except": ["skill:pdf", "skill:missing"]},
+              "mcp": {"default": true, "except": ["mcp:claude_ai_Docs", "mcp:polter", "mcp:plugin_argus_argus"]},
+              "model": "opus",
+              "args": ["--settings", "{\"skillOverrides\": {\"writer\": \"on\", \"pdf\": \"on\"}, \"theme\": \"暗\", \"n\": 3, \"nested\": {\"a\": [true, null]}}", "--verbose", "--settings=./file.json", "--permission-mode", "auto"]}}},
+    {"name": "launch, MCP off by default, the role's own model, a dangling --settings", "question": "launch", "request": {"version": 1, "cwd": "{CWD}", "home": "{HOME}",
+      "role": {"key": "m", "name": "M", "instructions": "", "model": "sonnet"},
+      "cli": {"skills": {"default": true, "except": ["skill:argus:terminal", "skill:writer"]}, "mcp": {"default": false, "except": ["mcp:shared"]}, "model": null, "args": ["--settings"]}}},
+    {"name": "launch, only the user's --settings", "question": "launch", "request": {"version": 1, "cwd": null, "home": "{HOME}",
+      "role": {"key": "s", "name": "S", "instructions": "one line"},
+      "cli": {"skills": {"default": true, "except": []}, "mcp": {"default": true, "except": []}, "model": "", "args": ["--settings={\"a\": 1}", "--settings", "{\"b\": \"x\", \"a\": 2}"]}}},
+    {"name": "launch, an empty role and cli", "question": "launch", "request": {"version": 1, "cwd": null, "home": "{HOME}", "role": {}, "cli": {}}},
+    {"name": "a request that is not JSON", "question": "launch", "raw": "not json"},
+    {"name": "a request that is not an object", "question": "inventory", "raw": "[1]"},
+    {"name": "a question nobody asks", "question": "status", "raw": "{}"}
+  ]
+}

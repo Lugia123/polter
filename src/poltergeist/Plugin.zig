@@ -567,6 +567,21 @@ fn agentCliOf(
     dir: []const u8,
     obj: std.json.ObjectMap,
 ) Allocator.Error!?AgentCli {
+    return agentCliFor(arena, builtin.os.tag, key, dir, obj);
+}
+
+/// `agentCliOf` with the system as an argument, **for the reason
+/// `launchKindFor` takes one**: with the target baked in, "Windows is given
+/// `adapter_windows` and can start it" is a claim no test on the build
+/// machine could ever see fail. The Claude Code plugin shipped only a `.py`
+/// for as long as that was true, and Windows found out at the first launch.
+fn agentCliFor(
+    arena: Allocator,
+    tag: std.Target.Os.Tag,
+    key: []const u8,
+    dir: []const u8,
+    obj: std.json.ObjectMap,
+) Allocator.Error!?AgentCli {
     const a = switch (obj.get("agent_cli") orelse return null) {
         .object => |o| o,
         else => {
@@ -584,7 +599,7 @@ fn agentCliOf(
         return null;
     }
 
-    const os_key = "adapter_" ++ @tagName(builtin.os.tag);
+    const os_key = try std.fmt.allocPrint(arena, "adapter_{s}", .{@tagName(tag)});
     const rel = stringField(a, os_key) orelse stringField(a, "adapter") orelse {
         log.warn("plugin {s}: agent_cli has no adapter; ignored", .{key});
         return null;
@@ -595,7 +610,7 @@ fn agentCliOf(
         .label = stringField(a, "label") orelse stringField(obj, "name") orelse key,
         .bin = stringField(a, "bin") orelse key,
         .adapter = abs,
-        .runnable = launchable(abs),
+        .runnable = launchKindFor(tag, abs) != .unsupported,
     };
 }
 
@@ -2606,6 +2621,71 @@ test "agent_cli: a plugin that manages a CLI says so, and one that does not is u
     try testing.expectEqualStrings("claude", cli.bin);
     const want = try std.fmt.allocPrint(alloc, "{s}/adapter.py", .{dir});
     try testing.expectEqualStrings(want, cli.adapter);
+}
+
+test "agent_cli: each system is given the adapter it can start" {
+    // **The shipped manifest, read from the repository**, not a copy of it
+    // written here: the defect this is for was in that file (an `adapter`
+    // and no `adapter_windows`), and a fixture would have been right while
+    // the file was wrong.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const read = struct {
+        fn f(i: std.Io, a: Allocator, path: []const u8) ![]u8 {
+            return std.Io.Dir.cwd().readFileAlloc(i, path, a, .limited(1024 * 1024)) catch |err| {
+                std.debug.print(
+                    "cannot read {s} ({t}). Run `zig build test` from the repository root.\n",
+                    .{ path, err },
+                );
+                return error.ShippedPluginUnreadable;
+            };
+        }
+    }.f;
+
+    const text = try read(io, alloc, "plugins/claude-code/plugin.json");
+    const shipped = (try std.json.parseFromSliceLeaky(std.json.Value, alloc, text, .{})).object;
+
+    // Windows: the PowerShell port, started the way every `.ps1` is.
+    const win = (try agentCliFor(alloc, .windows, "claude-code", "C:\\p\\claude-code", shipped)).?;
+    try testing.expect(endsWithIgnoreCase(win.adapter, "/adapter.ps1"));
+    try testing.expect(win.runnable);
+    const argv = (try launchArgvFor(alloc, .windows, win.adapter)).?;
+    try testing.expectEqualStrings("powershell", argv[0]);
+    try testing.expectEqualStrings(win.adapter, argv[argv.len - 1]);
+
+    // Everywhere else: exactly what it was -- `adapter.py`, run as itself.
+    for ([_]std.Target.Os.Tag{ .macos, .linux, .freebsd }) |tag| {
+        const cli = (try agentCliFor(alloc, tag, "claude-code", "/p/claude-code", shipped)).?;
+        try testing.expectEqualStrings("/p/claude-code/adapter.py", cli.adapter);
+        try testing.expect(cli.runnable);
+        const a = (try launchArgvFor(alloc, tag, cli.adapter)).?;
+        try testing.expectEqual(@as(usize, 1), a.len);
+        try testing.expectEqualStrings(cli.adapter, a[0]);
+    }
+
+    // **A plugin without `adapter_windows` is unchanged on Windows**: it is
+    // given its `adapter`, and a `.py` there is said at load to be one this
+    // system cannot start -- which is what `launch.zig` reports, rather than
+    // a spawn that fails later.
+    const bare = (try std.json.parseFromSliceLeaky(std.json.Value, alloc,
+        \\{"key":"claude-code","exec":"p.sh","agent_cli":{"label":"Claude Code","bin":"claude","adapter":"adapter.py"}}
+    , .{})).object;
+    const old = (try agentCliFor(alloc, .windows, "claude-code", "C:\\p", bare)).?;
+    try testing.expect(endsWithIgnoreCase(old.adapter, "/adapter.py"));
+    try testing.expect(!old.runnable);
+    try testing.expect((try launchArgvFor(alloc, .windows, old.adapter)) == null);
+    const posix = (try agentCliFor(alloc, .macos, "claude-code", "/p", bare)).?;
+    try testing.expect(posix.runnable);
+
+    // And the files the manifest names are there. A name for a file that
+    // does not ship is a Windows launch that fails exactly as before.
+    _ = try read(io, alloc, "plugins/claude-code/adapter.py");
+    _ = try read(io, alloc, "plugins/claude-code/adapter.ps1");
 }
 
 test "agent_cli: a CLI key is exactly a key personas.json accepts" {
