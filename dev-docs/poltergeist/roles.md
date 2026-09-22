@@ -597,34 +597,70 @@ adapter launch '{"version":1,"cwd":…,"home":…,
   不留一个空标签页当回答。标签页开了却没及时出现时，`role_launch` 答 `OpenedEmpty`
   而不是一个 `id` 为空的成功——那个标签页里什么都没敲，是个普通 shell。
 
-## 11.7 三个入口，一条路
+## 11.7 一个菜单，程序判断意图
 
-| 入口 | 走到哪 |
+标签页右键、终端右键、Agents 菜单里**只有一个「角色 ▸」**：
+
+```
+角色 A
+角色 B        ▸ Claude Code / Codex   （配了多个 CLI 时才有这一层）
+─────
+不设角色
+─────
+角色库…
+```
+
+原先并排的「角色 ▸」（给正在跑的终端换装）和「用角色启动 ▸」（起新 agent）
+被用户合并了：**让用户按操作挑菜单，等于把判断推给了用户**。现在点一个角色，
+由 `App.choosePersona` 看这个终端里是什么：
+
+| 终端里 | 点角色做什么 |
 | --- | --- |
-| 标签页右键 / 终端右键 / Agents 菜单的「用角色启动 ▸ 角色 ▸（CLI）」 | `ghostty_surface_persona_launch` → `App.launchPersona` |
-| 角色库窗口的「启动」 | 同上，来源终端取最前面那个窗口的焦点终端 |
-| 总管的 `role_launch` | `rpc` → `App.launchPersona` |
+| 有 agent 连着 Polter，或者这个角色没配 CLI | **热切换**（第五节那条路）。CLI 自己的 skill / MCP 要下次启动才变，菜单顶上那行「可能要重启」照旧说 |
+| 停在 shell 提示符上 | **就在这个终端里启动**，不开新 tab |
+| 前台有别的程序在跑 | **开新 tab 启动**——往一个不是 shell 的程序里敲命令，是在别人的活上打字 |
 
-「用角色启动」和第五节的「角色 ▸」**是两个菜单**：一个给正在跑的终端换装，一个起新
-agent。并在一个子菜单里就会有两行都叫「射手」、做的事完全不同。
+「有没有 agent」用的是 `Server.agentPresent`，**不是一张 CLI 名单**：任何走
+Polter MCP 的 CLI 都算，所以这里不认识 Claude Code。「在不在提示符」用的是
+shell 集成的答案（关 tab 时要不要确认也是问它）；没有 shell 集成时答「不在」，
+那是安全的方向——结果是开新 tab，而不是往里敲。
+
+旧的「角色编辑器」窗口删了：它能做的（选角色、看生效集）菜单和角色库都覆盖了。
+
+同一条动作 `poltergeist_persona_set:<key>[,<cli>]` 在核心里判断，所以 Windows
+菜单点角色也走这套逻辑；Windows 还没有角色库窗口。
 
 总管工具：`role_list`（全部角色，形状就是 `role_put` 收的）、`role_put`、`role_delete`、
-`role_clis`（各 CLI 装了什么，读缓存；`stale` / `refreshing` 分开说）、`role_launch`。
-五个都只给总管，插件不可调。
+`role_clis`（各 CLI 装了什么，读缓存；`stale` / `refreshing` 分开说）、`role_launch`
+（总是开新 tab）。五个都只给总管，插件不可调。
 
-## 11.8 没做的，和没验证的
+## 11.8 Windows：真机上测出来的三件事
 
-- **Windows 界面没做。** 新增的 C 函数是追加的（没有改任何 struct），Windows 宿主不绑
-  它们也照常工作；`adapter.py` 在 Windows 上没有 `adapter_windows`，所以那边不会列出
-  Claude Code。
-- **只有 Claude Code 一个适配器。** codex 等在第六节那张表里有抓手，照 11.3 的契约各写
-  一个插件即可，核心不用动。
-- **给已经在跑的终端「穿」v2 角色时，CLI 那一半不会生效**（那是启动参数）。第五节的菜单
-  仍然只换 Polter 自己那一半；界面上还没有一句话说「CLI 部分下次启动才生效」。
-- **没有人用眼睛看过真实窗口。** 窗口是用真实源码离线渲染成图核过的（浅色、深色、新建、
-  空库），菜单结构有 Swift 测试；但 Swift 测试要以 app 为宿主运行，而本机不允许 agent
-  起第二个 Polter（它会改写用户的 `~/.claude.json` 注册），所以**那批测试编过了、没跑过**。
-- `role_launch` 总是开新标签页，不进总管旁边的分栏。
+Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插件：
+
+1. **Windows 开 tab 是异步的**，核心同步找不到新终端，`role_launch` 曾一律答
+   `OpenedEmpty`、留一个空 shell。改成「待启动」：tab 没及时出现就记下，**下一个
+   完成 `init` 的终端来认领**（`App.claimPendingLaunch`，10 秒过期）。
+2. **敲进去的那一行在 Windows 上是另一句话**：`& '<polter-cli.exe>' +launch …`——
+   PowerShell 跑带引号的路径要 `&`；用控制台版 `polter-cli.exe`，因为 GUI 版给不了
+   子进程控制台；**Windows 没有 exec**，`+launch` 改为起子进程、等它、把退出码带回。
+3. **Windows 没有 `HOME`**，请求里的 home 回落到 `USERPROFILE`。
+
+修完之后的读数：`role_put` 两次（第二次改名覆盖已有文件）、`role_list`、坏 key 被拒、
+`role_clis` 经 PowerShell 适配器读到清单、`role_launch` 答 `ok` 且随后新 tab 里
+`polter-cli +launch` 调到适配器（带转义引号的指令原样到达）并起出子进程——子进程
+写出的标记同时带着适配器给的环境变量和这个终端的 Polter 管道地址。
+
+## 11.9 没做的，和没验证的
+
+- **Windows 没有角色库窗口**，菜单也还是 Windows 自己那一份（有旧的编辑器入口）；
+  核心那一半（点角色的判断、`+launch`、`role_*`）已在 Windows 真机上走通。
+- **只有 Claude Code 一个适配器**，没有 `adapter_windows`。codex 等照 11.3 各写一个插件。
+- **菜单是人点的，没有人点过合并后的菜单。** Mac 上 `role_*` 与 `+launch` 用 `+mcp`
+  在一个新实例里真跑过（claude 的 argv 与角色逐项对得上；关掉的 skill 调不到、MCP 不在
+  清单里；指令经对照实验确认送到）；点菜单这一步（`ghostty_surface_binding_action`）
+  没有 agent 能替人做。
+- Swift 测试编过、没跑（以 app 为宿主会起第二个 Polter）。窗口是离线渲染真源码核的图。
 
 # 附录 A：探针
 
