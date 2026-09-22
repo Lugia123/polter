@@ -65,7 +65,9 @@ else's terminal for your own in the listing.
 
 `persona_face()` says which of these tools you may see right now. **It is
 about you**: there is no way to ask what some other terminal may do, because
-the answer is keyed to the token your connection proved.
+the answer is keyed to the token your connection proved. (A supervisor has a
+separate tool for that, `terminal_capabilities`; it is closed to everybody
+else.)
 
 Two reasons it is worth knowing about. The user can change what a terminal
 is holding **while that terminal is running** -- a tool you had at the start

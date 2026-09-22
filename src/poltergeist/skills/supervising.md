@@ -406,6 +406,13 @@ holds: a role that is to run unattended needs `--permission-mode auto` in its
 `args`, or it stops at the first prompt like any other worker. What went
 wrong, when something did, is printed in that tab -- `terminal_read` it.
 
+Before handing a terminal work, `terminal_capabilities(id)` tells you what it
+actually has: the role it wears, whether its CLI was **started** from that
+role (`started: launched`, with the skills and MCP servers kept and switched
+off) or only had the role put on while running (`worn_hot` -- its CLI still
+has what it started with), the Polter tools it can see, and who minds it.
+Any terminal, another supervisor or yourself; only you can ask it.
+
 ### Where a worker lands is not yours to decide any more
 
 **You no longer say where a terminal goes, and you no longer need to.**

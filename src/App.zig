@@ -2064,6 +2064,12 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // moved. Done here rather than in `dispatch` because `dispatch` is pure
     // and synchronous: blocking in there would stop the app thread, which
     // is every terminal's thread.
+    // A launched role's standing is claimed here too, before a wait is
+    // parked: `dispatch` does it for everything else, but a slot process's
+    // `persona_wait` may be held instead of dispatched, and that is as much
+    // the agent arriving as its sidecar's first call.
+    poltergeistpkg.rpc.arrived(&self.poltergeist, self.poltergeistHost(), caller);
+
     if (pending.request == .persona_wait) {
         if (self.parkPersonaWait(pending, caller)) return;
     }
@@ -2231,83 +2237,57 @@ fn startRoleIn(
     self: *App,
     id: poltergeistpkg.Bus.Id,
     by: poltergeistpkg.Bus.Id,
-    key: []const u8,
+    choice: LaunchChoice,
     line: []const u8,
 ) anyerror!void {
+    const key = choice.key;
     self.setSurfacePersona(id, key) catch |err| {
         log.warn("poltergeist: starting {s} but could not mark the tab err={}", .{ key, err });
     };
     const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
 
-    // Before the line is typed, so the agent that line starts finds the
-    // standing already in place when it first asks `me`.
-    if (self.personas.set.find(key)) |p| self.applyRoleStanding(surface, by, p.polter);
+    // What it is being started with, for `terminal_capabilities`: the one
+    // place that knows a terminal's CLI half was applied rather than only
+    // its role put on hot. Copied now, because an edit to the role later
+    // does not reach a CLI that is already running.
+    if (self.personas.set.find(key)) |p| if (p.cli(choice.cli)) |c| {
+        self.personas.noteLaunch(id, key, c) catch |err| {
+            log.warn("poltergeist: could not record the launch of {s} err={}", .{ key, err });
+        };
+    };
+
+    // **Held for the agent, not applied.** The role's Polter half is the
+    // agent's standing, so it waits until the agent that line starts first
+    // speaks to Polter (`poltergeistAgentArrived`). Applied here, before
+    // the line was typed, a `+launch` that failed left a supervisor with no
+    // agent in it -- measured on the Windows machine.
+    if (self.personas.set.find(key)) |p| {
+        self.personas.holdStanding(id, by, p.polter, self.poltergeistElapsedMs()) catch |err| {
+            log.warn("poltergeist: could not hold the standing of {s} for its agent err={}", .{ key, err });
+        };
+    }
 
     try surface.typePoltergeistText(line, true);
 }
 
-/// Give a terminal that is starting in a role what the role's Polter half
-/// asks for (`persona.Polter`). Once, here, at the start -- never when a
-/// role is put on a terminal that is already running.
-///
-/// As the user: the role is theirs, and a supervisor cannot have written
-/// the three settings that grant something (`PersonaStore.put`).
-fn applyRoleStanding(
-    self: *App,
-    surface: *Surface,
-    by: poltergeistpkg.Bus.Id,
-    want: poltergeistpkg.persona.Polter,
+/// A request has come from terminal `id` (`rpc.arrived`): if a role launch
+/// is holding a standing for the agent it started there, give it now --
+/// before that request is answered, so the agent's first `me` already
+/// reads it. The bus half is `PersonaStore.claimStanding`; what is left
+/// here is the half that lives on the surface.
+fn poltergeistAgentArrived(
+    ctx: *anyopaque,
+    bus: *poltergeistpkg.Bus,
+    id: poltergeistpkg.Bus.Id,
 ) void {
-    if (want.isDefault()) return;
-    const bus = &self.poltergeist;
-    const id = surface.id;
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const applied = self.personas.claimStanding(bus, id, self.poltergeistElapsedMs()) orelse return;
     defer self.refreshPoltergeistTabs();
     defer self.saveSession();
 
-    if (want.supervisor) {
-        bus.addSupervisor(id) catch |err| {
-            log.warn("poltergeist: role could not make terminal a supervisor err={}", .{err});
-        };
-        log.info("poltergeist: started in a supervisor role, so this terminal is a supervisor", .{});
-    }
-
-    bus.register(id) catch {};
-    if (want.may_authorise) bus.setMayAuthorise(id, true, .user) catch {};
-    if (want.shielded) bus.setShielded(id, true, .user) catch {};
-
-    // Shielded wins: a terminal nothing may reach is not one to be told
-    // about (`Bus.setShielded`). And a supervisor is not watched.
-    if (want.watch and !want.shielded and !want.supervisor) {
-        if (self.roleWatcher(by, id)) |boss| {
-            bus.watch(id, boss) catch |err| {
-                log.warn("poltergeist: role could not hand terminal to its supervisor err={}", .{err});
-            };
-            surface.setPoltergeistWatching(true);
-        } else {
-            log.info("poltergeist: role asked to be watched but there is no one supervisor to watch it", .{});
-        }
-    }
-
-    if (want.quiet_ms) |ms| surface.setPoltergeistThreshold(ms);
-}
-
-/// Who minds a terminal a role says should be watched: the supervisor that
-/// started it, or -- when a person started it from a terminal that is not
-/// one -- the only supervisor there is. Null with none, or with several:
-/// which of two supervisors a terminal belongs to is not the program's to
-/// guess (the same reason `Bus.removeSupervisor` releases rather than
-/// hands on).
-fn roleWatcher(self: *App, by: poltergeistpkg.Bus.Id, id: poltergeistpkg.Bus.Id) ?poltergeistpkg.Bus.Id {
-    const bus = &self.poltergeist;
-    if (by != id and bus.isSupervisor(by)) return by;
-    var found: ?poltergeistpkg.Bus.Id = null;
-    var it = bus.entries.iterator();
-    while (it.next()) |kv| {
-        if (kv.key_ptr.* == id or kv.value_ptr.role != .supervisor) continue;
-        if (found != null) return null;
-        found = kv.key_ptr.*;
-    }
-    return found;
+    const surface = self.findSurfaceByID(id) orelse return;
+    if (applied.watched_by != null) surface.setPoltergeistWatching(true);
+    if (applied.want.quiet_ms) |ms| surface.setPoltergeistThreshold(ms);
 }
 
 /// Open a tab beside `by` and start the role there.
@@ -2332,14 +2312,14 @@ pub fn launchPersona(
 
     // Set before the tab is asked for: a runtime that creates the surface
     // synchronously runs its `init` -- and so the claim -- inside the call.
-    self.setPendingLaunch(choice.key, line, by);
+    self.setPendingLaunch(choice, line, by);
     const id = try poltergeistOpenTerminal(self, alloc, cwd, by, .tab);
     if (id) |new| {
         // Claimed already when the surface was made inside the call; if not,
         // it is ours now and the pending one goes.
         if (self.poltergeist_pending_launch != null) {
             self.clearPendingLaunch();
-            try self.startRoleIn(new, by, choice.key, line);
+            try self.startRoleIn(new, by, choice, line);
         }
     }
     return id;
@@ -2348,6 +2328,9 @@ pub fn launchPersona(
 /// A role launch waiting for its tab to exist.
 pub const PendingLaunch = struct {
     key: []const u8,
+    /// The CLI it is to start in, so the launch can be recorded when the
+    /// tab arrives (`startRoleIn`).
+    cli: []const u8,
     line: []const u8,
     /// The terminal the launch was asked from (`startRoleIn`).
     by: poltergeistpkg.Bus.Id,
@@ -2360,15 +2343,21 @@ pub const PendingLaunch = struct {
 /// enough that a tab the person opens by hand later is never mistaken for it.
 const pending_launch_ms = 10_000;
 
-fn setPendingLaunch(self: *App, key: []const u8, line: []const u8, by: poltergeistpkg.Bus.Id) void {
+fn setPendingLaunch(self: *App, choice: LaunchChoice, line: []const u8, by: poltergeistpkg.Bus.Id) void {
     self.clearPendingLaunch();
-    const k = self.alloc.dupe(u8, key) catch return;
+    const k = self.alloc.dupe(u8, choice.key) catch return;
+    const c = self.alloc.dupe(u8, choice.cli) catch {
+        self.alloc.free(k);
+        return;
+    };
     const l = self.alloc.dupe(u8, line) catch {
         self.alloc.free(k);
+        self.alloc.free(c);
         return;
     };
     self.poltergeist_pending_launch = .{
         .key = k,
+        .cli = c,
         .line = l,
         .by = by,
         .deadline_ms = self.poltergeistElapsedMs() + pending_launch_ms,
@@ -2378,6 +2367,7 @@ fn setPendingLaunch(self: *App, key: []const u8, line: []const u8, by: poltergei
 fn clearPendingLaunch(self: *App) void {
     const p = self.poltergeist_pending_launch orelse return;
     self.alloc.free(p.key);
+    self.alloc.free(p.cli);
     self.alloc.free(p.line);
     self.poltergeist_pending_launch = null;
 }
@@ -2389,13 +2379,14 @@ pub fn claimPendingLaunch(self: *App, surface: *Surface) void {
     self.poltergeist_pending_launch = null;
     defer {
         self.alloc.free(p.key);
+        self.alloc.free(p.cli);
         self.alloc.free(p.line);
     }
     if (self.poltergeistElapsedMs() > p.deadline_ms) {
         log.info("poltergeist: the tab for role {s} never came; not starting it", .{p.key});
         return;
     }
-    self.startRoleIn(surface.id, p.by, p.key, p.line) catch |err| {
+    self.startRoleIn(surface.id, p.by, .{ .key = p.key, .cli = p.cli }, p.line) catch |err| {
         log.warn("poltergeist: could not start role {s} in its tab err={}", .{ p.key, err });
     };
 }
@@ -2448,7 +2439,7 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
 
     if (!new_tab and surface.isAtShellPrompt()) {
         const choice = try self.resolveLaunch(aa, key, cli);
-        try self.startRoleIn(id, id, choice.key, try launchLine(aa, choice));
+        try self.startRoleIn(id, id, choice, try launchLine(aa, choice));
         return .started_here;
     }
     _ = try self.launchPersona(aa, id, key, cli, "");
@@ -2592,6 +2583,8 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .sendText = poltergeistSend,
         .agentPresent = poltergeistAgentPresent,
         .personaFace = poltergeistPersonaFace,
+        .terminalCapabilities = poltergeistTerminalCapabilities,
+        .agentArrived = poltergeistAgentArrived,
         .personaCatalog = poltergeistPersonaCatalog,
         .personaPut = poltergeistPersonaPut,
         .personaDelete = poltergeistPersonaDelete,
@@ -3635,7 +3628,15 @@ fn poltergeistPersonaFace(
 ) anyerror!poltergeistpkg.rpc.Host.PersonaFace {
     const self: *App = @ptrCast(@alignCast(ctx));
     self.ensurePersonas();
+    return .{
+        .tools = try self.visibleTools(alloc, id),
+        .epoch = self.personas.stateOf(id).epoch,
+    };
+}
 
+/// The Polter tools `id` may see. One function, so `persona_face` and
+/// `terminal_capabilities` cannot give two answers about one terminal.
+fn visibleTools(self: *App, alloc: Allocator, id: poltergeistpkg.Bus.Id) ![]const []const u8 {
     const all = std.enums.values(poltergeistpkg.rpc.Method);
     var names: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer names.deinit(alloc);
@@ -3646,10 +3647,28 @@ fn poltergeistPersonaFace(
         if (!self.personas.toolVisible(id, name)) continue;
         names.appendAssumeCapacity(name);
     }
+    return try names.toOwnedSlice(alloc);
+}
 
+/// What one terminal can do, for a supervisor (`terminal_capabilities`).
+/// Only the role half and the tools: the standing is the bus's and `rpc`
+/// fills it in.
+fn poltergeistTerminalCapabilities(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+) anyerror!poltergeistpkg.rpc.Host.Capabilities {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.findSurfaceByID(id) == null) return error.UnknownTerminal;
+    self.ensurePersonas();
+
+    // The cache's copy, never a read: asking an adapter runs a process and
+    // this is the app thread. A cache nobody has filled yet comes back as
+    // `stale`, and says so.
+    const clis = try self.agentClisJson(alloc, false);
     return .{
-        .tools = try names.toOwnedSlice(alloc),
-        .epoch = self.personas.stateOf(id).epoch,
+        .persona = try self.personas.capabilities(alloc, id, clis, self.poltergeistElapsedMs()),
+        .tools = try self.visibleTools(alloc, id),
     };
 }
 

@@ -99,6 +99,9 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
     const value: rpc.Request = switch (method) {
         .me => .me,
         .persona_face => .persona_face,
+        .terminal_capabilities => .{ .terminal_capabilities = .{
+            .id = try requireId(params),
+        } },
         .persona_slot => .{ .persona_slot = .{
             .slot = try requireString(aa, params, "slot"),
         } },
@@ -714,6 +717,11 @@ pub const Response = union(enum) {
         /// that has seen a higher one has already been told.
         epoch: u64,
     },
+    /// What `terminal_capabilities` answers. See `rpc.CapabilitiesView`;
+    /// the JSON is written out below by hand so that every absent answer is
+    /// a `null` the reader can see, never a field that is simply missing.
+    capabilities: rpc.CapabilitiesView,
+
     skill: struct { name: []const u8, body: []const u8 },
     messages: struct {
         lines: []const rpc.ChatLine,
@@ -753,7 +761,14 @@ pub const Response = union(enum) {
         /// Null when the runtime has not made it yet. Not an error: the tab
         /// is coming and `terminal_list` will have it.
         id: ?Bus.Id,
-        watching: bool,
+
+        /// Null when it is not known yet, and then left out of the reply the
+        /// way `id` is: `role_launch` returns before the tab exists on
+        /// Windows, and before the launched agent has connected everywhere
+        /// -- and a role's `watch` is applied only when it does
+        /// (`PersonaStore.claimStanding`). A `false` there would be a "no"
+        /// nobody knows yet.
+        watching: ?bool,
     },
     /// A task's number, answering `task_create`.
     task: u64,
@@ -841,6 +856,12 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.endArray();
             try s.objectField("epoch");
             try s.write(f.epoch);
+        },
+        .capabilities => |c| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("capabilities");
+            try writeCapabilities(&s, c);
         },
         .skill => |k| {
             try s.objectField("ok");
@@ -985,8 +1006,10 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.objectField("id");
                 try writeId(&s, id);
             }
-            try s.objectField("watching");
-            try s.write(v.watching);
+            if (v.watching) |w| {
+                try s.objectField("watching");
+                try s.write(w);
+            }
         },
         .actions => |list| {
             try s.objectField("ok");
@@ -1091,6 +1114,116 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
 fn writeId(s: *std.json.Stringify, id: Bus.Id) std.Io.Writer.Error!void {
     var buf: [18]u8 = undefined;
     try s.write(std.fmt.bufPrint(&buf, "0x{x:0>16}", .{id}) catch unreachable);
+}
+
+fn writeCapabilities(s: *std.json.Stringify, c: rpc.CapabilitiesView) std.Io.Writer.Error!void {
+    const p = c.persona;
+    try s.beginObject();
+    try s.objectField("id");
+    try writeId(s, c.id);
+
+    try s.objectField("role");
+    if (p.role) |r| {
+        try s.beginObject();
+        try s.objectField("key");
+        try s.write(r.key);
+        try s.objectField("name");
+        try s.write(r.name);
+        try s.objectField("deviated");
+        try s.write(r.deviated);
+        try s.objectField("builtin");
+        try s.write(r.builtin);
+        try s.endObject();
+    } else try s.write(null);
+
+    try s.objectField("started");
+    try s.write(@tagName(p.started));
+
+    try s.objectField("cli");
+    if (p.cli) |cli| {
+        try s.beginObject();
+        try s.objectField("key");
+        try s.write(cli.key);
+        try s.objectField("role");
+        try s.write(cli.role);
+        try s.objectField("model");
+        try s.write(cli.model);
+        try s.objectField("args");
+        try s.write(cli.args);
+        try s.objectField("inventory");
+        try s.write(@tagName(cli.inventory));
+        try s.objectField("refreshing");
+        try s.write(cli.refreshing);
+        try s.objectField("error");
+        try s.write(cli.@"error");
+        try s.objectField("skills");
+        try writeSplit(s, cli.skills);
+        try s.objectField("mcp");
+        try writeSplit(s, cli.mcp);
+        try s.endObject();
+    } else try s.write(null);
+
+    try s.objectField("polter");
+    try s.beginObject();
+    try s.objectField("tools");
+    try s.write(c.tools);
+    try s.objectField("unfiltered");
+    try s.write(p.unfiltered);
+    try s.objectField("skills");
+    try s.write(p.skills);
+    try s.objectField("slots");
+    try s.write(p.slots);
+    try s.objectField("epoch");
+    try s.write(p.epoch);
+    try s.endObject();
+
+    // What a launch will give this terminal once its agent connects, and
+    // has not yet. Null when nothing is waiting.
+    try s.objectField("pending_standing");
+    if (p.pending_standing) |ps| {
+        try s.beginObject();
+        try s.objectField("supervisor");
+        try s.write(ps.want.supervisor);
+        try s.objectField("may_authorise");
+        try s.write(ps.want.may_authorise);
+        try s.objectField("shielded");
+        try s.write(ps.want.shielded);
+        try s.objectField("watch");
+        try s.write(ps.want.watch);
+        try s.objectField("quiet_ms");
+        try s.write(ps.want.quiet_ms);
+        try s.objectField("expires_in_ms");
+        try s.write(ps.expires_in_ms);
+        try s.endObject();
+    } else try s.write(null);
+
+    try s.objectField("standing");
+    try s.beginObject();
+    try s.objectField("supervisor");
+    try s.write(c.standing.supervisor);
+    try s.objectField("watched_by");
+    if (c.standing.watched_by) |w| try writeId(s, w) else try s.write(null);
+    try s.objectField("may_authorise");
+    try s.write(c.standing.may_authorise);
+    try s.objectField("shielded");
+    try s.write(c.standing.shielded);
+    try s.objectField("held");
+    try s.write(c.standing.held);
+    try s.endObject();
+
+    try s.objectField("agent_present");
+    try s.write(c.agent_present);
+    try s.endObject();
+}
+
+fn writeSplit(s: *std.json.Stringify, split: ?rpc.persona.Capabilities.Split) std.Io.Writer.Error!void {
+    const v = split orelse return s.write(null);
+    try s.beginObject();
+    try s.objectField("kept");
+    try s.write(v.kept);
+    try s.objectField("off");
+    try s.write(v.off);
+    try s.endObject();
 }
 
 fn writePlugin(s: *std.json.Stringify, v: rpc.PluginView) std.Io.Writer.Error!void {

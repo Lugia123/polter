@@ -628,7 +628,7 @@ shell 集成的答案（关 tab 时要不要确认也是问它）；没有 shell
 旧的「角色编辑器」窗口删了：它能做的（选角色、看生效集）菜单和角色库都覆盖了。
 
 同一条动作 `poltergeist_persona_set:<key>[,<cli>]` 在核心里判断，所以 Windows
-菜单点角色也走这套逻辑；Windows 还没有角色库窗口。
+菜单点角色也走这套逻辑。Windows 的角色库窗口见 `windows/host/src/roles_ui.rs`（2026-09-23 起）。
 
 总管工具：`role_list`（全部角色，形状就是 `role_put` 收的）、`role_put`、`role_delete`、
 `role_clis`（各 CLI 装了什么，读缓存；`stale` / `refreshing` 分开说）、`role_launch`
@@ -653,9 +653,19 @@ Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插�
 
 ## 11.9 没做的，和没验证的
 
-- **Windows 没有角色库窗口**，菜单也还是 Windows 自己那一份（有旧的编辑器入口）；
-  核心那一半（点角色的判断、`+launch`、`role_*`）已在 Windows 真机上走通。
-- **只有 Claude Code 一个适配器**，没有 `adapter_windows`。codex 等照 11.3 各写一个插件。
+- ~~**Windows 没有角色库窗口**，菜单也还是 Windows 自己那一份（有旧的编辑器入口）；
+  核心那一半（点角色的判断、`+launch`、`role_*`）已在 Windows 真机上走通。~~
+  **两句都已不成立。** 窗口有了（`roles_ui.rs`，旧的 `personas_ui.rs` 已下线，与 mac
+  63ab92741 一致）。而「已在真机上走通」**当时就不对**：11.8 在真机上用的是一个
+  PowerShell 写的假插件，随包发的 claude-code adapter 是 `.py`，Windows 起不了——
+  2026-09-23 真机上第一次用它，角色启动开箱即失败。
+- **只有 Claude Code 一个适配器**。codex 等照 11.3 各写一个插件。它在 Windows 上是
+  `adapter.ps1`（manifest 的 `adapter_windows`），是 `adapter.py` 的逐项移植：Windows 上
+  `.py` 起不来，Polter 在 Windows 上也不带 Python。两份的输出由
+  `test/claude-code-adapter/compare.py` 按同一组夹具逐字比对（允许不同的三处及理由写在
+  脚本开头）；mac 上用 pwsh 跑过，**Windows PowerShell 5.1 上没验证**，`argv[0]` 从
+  `claude.cmd` 找到真正的 `claude.exe`（或 `node.exe` + `cli.js`）那一段也只在 Windows 上
+  走得到。
 - **菜单是人点的，没有人点过合并后的菜单。** Mac 上 `role_*` 与 `+launch` 用 `+mcp`
   在一个新实例里真跑过（claude 的 argv 与角色逐项对得上；关掉的 skill 调不到、MCP 不在
   清单里；指令经对照实验确认送到）；点菜单这一步（`ghostty_surface_binding_action`）
@@ -694,10 +704,35 @@ Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插�
 拒绝——拒绝而不是悄悄保留，这样总管读回来的就是它发出去的。角色库窗口走
 `.user`，什么都能设。
 
-**二、只在启动那一刻生效一次**（`App.startRoleIn` → `applyRoleStanding`）。之后
-就是这个终端自己的状态：用户撤掉总管，角色不会把它「纠正」回来；给一个**已经在
-跑**的终端换角色，只换工具，不动身份。否则把一个 worker 换成「总管」角色，它会
-突然开始监管别人——这是唯一一种在发生处看不见的变化。
+~~**二、只在启动那一刻生效一次**（`App.startRoleIn` → `applyRoleStanding`）。~~
+**二、在启动出来的 agent 连上 Polter 时生效一次**（`App.startRoleIn` →
+`PersonaStore.holdStanding` 挂起；该终端第一个请求到达时 `rpc.arrived` →
+`PersonaStore.claimStanding` 应用）。
+
+> 2026-09-23 改的，W3 在 Windows 真机上测出来的：原来在敲 `+launch` 那一行**之前**
+> 就应用，而 `+launch` 失败（adapter 起不来）时 host 日志照样打「started in a
+> supervisor role」——终端成了总管，里面却没有 agent。身份是给 agent 的，所以等
+> agent：
+>
+> - **生效点**是该终端的第一个请求到 app 线程、被回答**之前**（在 `authorize`
+>   之前），所以 agent 的第一个 `me` 读到的已经是新身份。`persona_wait` 会被
+>   app 挂起而不走 `dispatch`，所以挂起前也调一次；领取只有一次，重复调用无害。
+> - **`+launch` 失败 → 永远没有请求 → 身份不生效。**
+> - **会过期**：`PersonaStore.standing_wait_ms`（60 秒，awake 时钟）内没连上就作废，
+>   以免很久以后在这个终端里手敲的 `claude` 捡到它；到期的在领取时丢掉，不留。
+>   同一终端再启动一次会替换它，新角色没有身份可给时直接清掉。
+> - 看得见：`terminal_capabilities` 的 `pending_standing`（还剩多少毫秒）；
+>   `role_launch` 的 `watching` 在「role 有 watch、agent 还没连上」时**省略**，
+>   不答 `false`。
+> - ⚠️ 窗口：`agentPresent` 在握手时就为真，身份要等第一个请求。这之间总管看到
+>   「有 agent、还不是被监管」是真实状态，不是错。
+> - ⚠️ 判据是「这个终端来了请求」，不是「来的是那个 CLI」：一分钟内在这个终端里
+>   别的程序用这个终端的 token 连上来，也会领走它。
+
+之后就是这个终端自己的状态：用户撤掉总管，角色不会把它「纠正」回来；给一个**已经在
+跑**的终端换角色，只换工具，不动身份（热换不经过 `startRoleIn`，什么都不挂）。否则把
+一个 worker 换成「总管」角色，它会突然开始监管别人——这是唯一一种在发生处看不见的
+变化。
 
 `open = tab` 连「有 agent 在就热换」那一支也跳过（`App.choosePersona`）。
 
@@ -732,9 +767,94 @@ Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插�
 
 ## 12.5 没做的，和没验证的
 
-- **Windows 没有角色库窗口**，所以那边改不了 Polter 一半；内置角色与启动时的身份
-  走核心，理应生效，**未在 Windows 真机上测**。
+- ~~**Windows 没有角色库窗口**，所以那边改不了 Polter 一半；内置角色与启动时的身份
+  走核心，理应生效，**未在 Windows 真机上测**。~~ 窗口已有；真机读数见 status 与
+  roles-win 群 #699（第一阶段：内置角色在、启动成总管、watch 归启动者、保留 key 整份
+  拒读——并由此测出 12.2 第二条改成「agent 连上时生效」）。
 - `watch` 在「用户启动、有多个总管」时不交给任何人，只写一行日志，界面上看不出来。
+
+---
+
+# 十三、总管查任意终端能力：`terminal_capabilities`
+
+## 13.1 为什么要有
+
+总管派活之前要知道对方手上有什么：穿的什么角色、CLI 是不是按角色起的、关掉了
+哪些 skill 和 MCP、能看到哪些 Polter 工具、谁在管它。以前只有 `persona_face`，
+而它**故意只问自己**（personas-contract.md ⑤ 第 1 条下面那段划线）。用户
+2026-09-22 定的新规则：
+
+- **worker 之间互相看不到，仍然对。** worker 查别人是低权限方摸边界，这正是当初
+  「踩点面」担心的事，继续关着。
+- **总管必须能查任意终端**——worker，也包括别的总管（为以后多总管铺路）。总管
+  本来就能 `terminal_read` / `terminal_send` 任何未护盾终端，读屏幕或直接问那个
+  agent 就能知道这些；结构化查询**不新增可及范围**，只是把猜变成读。
+
+所以是**一个新方法**，而不是给 `persona_face` 加回 `id`：`persona_face` 对所有人
+都只问自己，新方法对总管以外的所有人都关着。两条规则各自没有例外。
+
+## 13.2 规则
+
+| 调用者 | 结果 |
+| --- | --- |
+| 总管，问任何未护盾终端（含别的总管、含自己） | 回答 |
+| 总管，问护盾终端 | `Shielded`，与其它工具一致 |
+| 总管，问不存在的 id | `UnknownTerminal` |
+| 非总管，问任何人（**包括自己的 id**） | `NotPermitted`；查自己用 `persona_face` / `me` |
+| 插件 | `NotPermitted`（插件从来不是总管） |
+
+`rpc.requiresSupervisor` 给出 `true`，`selfPermitted` 给出 `true`，护盾走
+`authorize` 里那条对所有人都一样的检查。
+
+## 13.3 回答
+
+一次给全，四段；每个「没有」都是可见的 `null`，不是缺字段或空串：
+
+- **`role`**：`key` / `name` / `deviated` / `builtin`；不穿角色时 `null`。
+- **`started`** + **`cli`**：`launched`（按角色**启动**，CLI 那一半生效了，`cli`
+  有值）、`worn_hot`（运行中**热换**上的角色：CLI 还是它启动时那样，所以 `cli`
+  是 `null`，而这个 `null` 是答案不是缺口）、`none`。`cli` 里是 CLI 的 key、启动
+  时用的角色 key（热换过之后可以和 `role.key` 不同）、`model`、`args`，以及这个
+  CLI 的 skills / MCP 各 `kept` / `off` 哪些。
+- **`polter`**：它此刻能看到的 Polter 工具（和它自己问 `persona_face` 得到的是
+  同一个函数，`App.visibleTools`）、角色列的 Polter skills、上游 slots；
+  `unfiltered: true` 表示没穿角色、什么都不扣。
+- **`standing`**：`supervisor` / `watched_by` / `may_authorise` / `shielded` /
+  `held`，取自 Bus。`shielded` 在成功的回答里恒为 `false`（护盾终端在查之前就被
+  拒了），留着是为了形状自己说明这一点。
+- **`agent_present`**：此刻有没有 agent 从那个终端连着 Polter。启动记录会比它描述
+  的 CLI 活得久（agent 退出、剩下 shell），靠这一位区分。
+
+## 13.4 「用哪个 CLI 启动的」记在哪
+
+以前没有地方记：`App.startRoleIn` 只拿到角色 key 和一行命令。现在它拿到
+`(key, cli)`，在敲那行命令时调用 `PersonaStore.noteLaunch`，把角色对这个 CLI 的
+`CliChoice`（Selection、model、args）**拷贝**一份存在 `PersonaStore.launches`
+里，每条一个自己的 arena。
+
+- **和 `states` 分开存**：热换改 `states` 不改这里，重新启动改这里。只热换过的
+  终端没有这条记录，`started` 就是 `worn_hot`。
+- **启动时拷贝，不是事后查**：之后改角色不会改到已经在跑的 CLI。
+- 异步开 tab 的那条路（`PendingLaunch`）也带上了 `cli`。
+- 终端关闭时 `PersonaStore.forget` 一并释放。
+
+`kept` / `off` 是**现在**的清单（`agent_cli.Cache` 的副本，不在 app 线程上跑
+adapter）配**启动时**的 Selection 算的，规则和 adapter 拼命令行时一样：
+`locked`（Polter 自己的服务器）永远保留，其余按 `Selection.enabled`。清单还没
+读过：`inventory: "stale"`，`skills` / `mcp` 为 `null`——**不给空列表**，否则
+「不知道」会读成「什么都没关」。CLI 在这台机器上已不在列：`absent`；adapter
+答不上来：`failed` + `error`。
+
+## 13.5 没做的，和没验证的
+
+- **启动记录是「敲下那行命令时」的**，不是 CLI 真正起来之后的：`+launch` 在新
+  进程里自己再解析一次角色并问 adapter，两次之间角色被改、或 `+launch` 失败，
+  这里都看不出来。`agent_present` 能说明 agent 在不在，说明不了它是不是按这条
+  记录起的。
+- 启动之后装上的 skill / MCP 按 Selection 的 `default` 归到 kept 或 off——这和
+  那个正在跑的 CLI 实际有没有它**未必一致**（它启动时还没有这一项）。
+- **未在真机上核**：测试里构造了回答（`rpc.zig` 的 `terminal_capabilities:` 那
+  五条），真机上由总管核。
 
 ---
 

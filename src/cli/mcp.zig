@@ -518,9 +518,29 @@ const tools = [_]Tool{
     },
     .{
         .name = "persona_face",
-        .description = "Which of Polter's tools you may see right now, and the version of that answer. About **you**: there is no way to ask what some other terminal is allowed to do. Worth calling when a reply says a tool does not exist and you were sure it did -- the user can change what a terminal is holding while it runs, and what you were told at the start is not a promise about now.",
+        .description = "Which of Polter's tools you may see right now, and the version of that answer. About **you**, for every terminal: a worker has no way to ask what some other terminal is allowed to do. (A supervisor asking about another terminal uses terminal_capabilities.) Worth calling when a reply says a tool does not exist and you were sure it did -- the user can change what a terminal is holding while it runs, and what you were told at the start is not a promise about now.",
         .schema =
         \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "terminal_capabilities",
+        .description = "What one terminal can do, in one answer, so you can hand out work " ++
+            "without guessing: `role` (key, name, whether it was changed since it was put " ++
+            "on, whether Polter ships it; null when it wears none); `started` -- " ++
+            "`launched` (started from a role, so the CLI half was applied), `worn_hot` (a " ++
+            "role put on while it ran: its CLI kept what it started with, and `cli` is null " ++
+            "for that reason) or `none`; `cli` (which agent CLI and role it was started in, " ++
+            "model, extra args, and which of that CLI's skills and MCP servers were kept " ++
+            "and switched off -- `inventory` says `stale` or `absent` rather than giving an " ++
+            "empty list when that could not be worked out); `polter` (the Polter tools it " ++
+            "can see -- what persona_face would tell it -- and the Polter skills and " ++
+            "upstream slots its role names); and `standing` (supervisor, watched_by, " ++
+            "may_authorise, shielded, held). `id` may be any terminal, another supervisor " ++
+            "or yourself. A shielded terminal is out of reach here as everywhere. " ++
+            "Supervisor only: a worker asks about itself with persona_face and me.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}
         ,
     },
     .{
@@ -780,9 +800,15 @@ const tools = [_]Tool{
             "instructions, model, extra args) and becomes the CLI. `cli` can be left out " ++
             "when the role is set up for exactly one. `cwd` defaults to where you are " ++
             "standing and must be an absolute path when given. The reply carries the new " ++
-            "terminal's `id`. The role's `polter` settings are applied to it before the " ++
-            "CLI starts -- with `watch` set, it is already yours to mind; otherwise mind " ++
-            "it with set_watch if you mean to. **The CLI starts in " ++
+            "terminal's `id` -- **except when the tab does not exist yet, which on Windows " ++
+            "is every time**: then there is no `id` and no `watching`, and the terminal " ++
+            "shows up in terminal_list a moment later. The role's `polter` settings " ++
+            "(supervisor, watch, ...) are applied when the agent the launch started first " ++
+            "connects to Polter, not before -- a launch whose CLI never starts gets none of " ++
+            "them. So `watching` is true once it is yours to mind, false when the role will " ++
+            "not hand it to you (mind it with set_watch if you mean to), and absent while " ++
+            "that is not known yet; terminal_capabilities shows what is still waiting " ++
+            "(`pending_standing`). **The CLI starts in " ++
             "its ordinary permission mode** unless the role's args say otherwise, so a " ++
             "worker that is to run unattended needs a role that starts it that way. If " ++
             "something is wrong with the role or the CLI, the reason is printed in that " ++

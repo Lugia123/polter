@@ -261,7 +261,6 @@
 "Some agents' configuration couldn't be read, so this count may be low" = "Some agents' configuration couldn't be read, so this count may be low";
 "Nothing has reported what this terminal hands out yet" = "Nothing has reported what this terminal hands out yet";
 "Agents are kept out of this terminal, so its role cannot be changed" = "Agents are kept out of this terminal, so its role cannot be changed";
-"The roles file could not be read, so the previous one is still in use" = "The roles file could not be read, so the previous one is still in use";
 "This menu is out of date. Close it and open it again" = "This menu is out of date. Close it and open it again";
 "Polter isn't managing this server, so the agent sees all of it" = "Polter isn't managing this server, so the agent sees all of it";
 

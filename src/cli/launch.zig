@@ -22,12 +22,14 @@
 //! runs the CLI as a child on the same console and waits.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
 const persona = @import("../poltergeist/persona.zig");
 const PersonaStore = @import("../poltergeist/PersonaStore.zig");
 const agent_cli = @import("../poltergeist/agent_cli.zig");
+const Plugin = @import("../poltergeist/Plugin.zig");
 
 pub const Options = struct {
     pub fn deinit(self: Options) void {
@@ -58,6 +60,12 @@ pub fn run(alloc: Allocator) !u8 {
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
     const aa = arena.allocator();
+
+    // Before the writer's own `defer`, so it runs after that flush: the
+    // console goes back to its code page only once everything we print
+    // has been written in UTF-8.
+    const console = Console.utf8();
+    defer console.restore();
 
     var buffer: [4096]u8 = undefined;
     var stderr_file: std.Io.File = .stderr();
@@ -137,10 +145,7 @@ pub fn run(alloc: Allocator) !u8 {
 
     const adapters = agent_cli.discover(aa, io, &env);
     const adapter = agent_cli.find(adapters, choice.cli) orelse {
-        try err_out.print(
-            "Polter: no plugin that manages \"{s}\" is installed and switched on.\n",
-            .{choice.cli},
-        );
+        try whyNoAdapter(aa, io, &env, choice.cli, err_out);
         return 1;
     };
 
@@ -178,6 +183,12 @@ pub fn run(alloc: Allocator) !u8 {
         return 127;
     }
 
+    // The CLI gets the console the way the person had it: its code page
+    // was ours to change for our own lines, not for somebody else's
+    // program.
+    try err_out.flush();
+    console.restore();
+
     // **Windows has no exec.** So the CLI runs as a child sharing this
     // console -- this process is `polter-cli.exe`, the console build, for
     // exactly that reason (`App.launchPersona`) -- and its exit code is
@@ -204,6 +215,111 @@ pub fn run(alloc: Allocator) !u8 {
         else => 1,
     };
 }
+
+/// Why `agent_cli.discover` offered no adapter for `key`, in the words the
+/// person needs -- which are different for "there is no such plugin" and
+/// "the plugin is here, but its adapter cannot run on this system".
+///
+/// The second used to be said as the first. Measured on the Windows
+/// machine: the Claude Code plugin installed and switched on, its adapter a
+/// `.py` file this system has nothing to run with, and the message said no
+/// plugin was installed -- sending the person to reinstall something that
+/// was already there.
+///
+/// ⚠️ **Only the wording is decided here.** Which adapters exist is
+/// `discover`'s answer and nothing below changes it; this walks the same
+/// search path (`Plugin.searchPath`, nearest first, first directory for a
+/// key wins) only to pick the sentence. If the two walks ever disagree, the
+/// cost is a less exact sentence, never a different launch.
+fn whyNoAdapter(
+    aa: Allocator,
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+    key: []const u8,
+    out: *std.Io.Writer,
+) !void {
+    for (Plugin.searchPath(aa, io, env)) |base| {
+        var dir = std.Io.Dir.cwd().openDir(io, base, .{ .iterate = true }) catch continue;
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            if (entry.name.len > 0 and entry.name[0] == '_') continue;
+            const path = std.fmt.allocPrint(aa, "{s}/{s}", .{ base, entry.name }) catch continue;
+            const manifest = Plugin.load(aa, io, path) catch continue;
+            if (!std.mem.eql(u8, manifest.key, key)) continue;
+            const cli = manifest.agent_cli orelse continue;
+
+            if (!Plugin.settingsFor(aa, io, env, key).enabled) {
+                try out.print(
+                    "Polter: the plugin that manages \"{s}\" is installed but switched off.\n",
+                    .{key},
+                );
+                return;
+            }
+            if (!cli.runnable) {
+                const file = std.fs.path.basename(cli.adapter);
+                try out.print(
+                    "Polter: the plugin that manages \"{s}\" is installed and switched on, " ++
+                        "but its adapter {s} cannot run on this system: Polter has no way " ++
+                        "to start a {s} file here.\n",
+                    .{ key, file, extensionOf(file) },
+                );
+                return;
+            }
+        }
+    }
+    try out.print(
+        "Polter: no plugin that manages \"{s}\" is installed and switched on.\n",
+        .{key},
+    );
+}
+
+fn extensionOf(file: []const u8) []const u8 {
+    const ext = std.fs.path.extension(file);
+    return if (ext.len > 0) ext else file;
+}
+
+/// The Windows console's output code page, put to UTF-8 for the lines this
+/// prints and put back afterwards.
+///
+/// **The lines are UTF-8 and the console was not.** On a Chinese Windows
+/// the console starts in code page 936, and `Polter · Role · Claude Code —`
+/// came out as `Polter 路 … 鈥?`: the `·` and `—` bytes read as GBK.
+/// Changing the words to dodge the characters would fix one message and
+/// leave the next one to find this again.
+///
+/// Put back, not left: the console belongs to the shell the person typed
+/// into, and the CLI started next inherits it.
+///
+/// Nothing at all anywhere else -- a POSIX terminal takes the bytes as they
+/// are.
+const Console = struct {
+    saved: u32 = 0,
+
+    const k32 = struct {
+        extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) u32;
+        extern "kernel32" fn SetConsoleOutputCP(code_page: u32) callconv(.winapi) i32;
+    };
+    const utf8_code_page: u32 = 65001;
+
+    fn utf8() Console {
+        if (comptime builtin.os.tag != .windows) return .{};
+        // Zero means there is no console to ask about (output redirected
+        // to a file, say), and then there is nothing to change or restore.
+        const saved = k32.GetConsoleOutputCP();
+        if (saved == 0 or saved == utf8_code_page) return .{};
+        if (k32.SetConsoleOutputCP(utf8_code_page) == 0) return .{};
+        return .{ .saved = saved };
+    }
+
+    /// Safe to call twice: the second puts back the same page again.
+    fn restore(self: Console) void {
+        if (comptime builtin.os.tag != .windows) return;
+        if (self.saved == 0) return;
+        _ = k32.SetConsoleOutputCP(self.saved);
+    }
+};
 
 const Parsed = struct {
     role: []const u8,

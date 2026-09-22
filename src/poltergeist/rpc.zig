@@ -20,6 +20,7 @@ const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
 pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
+pub const persona = @import("persona.zig");
 const secret = @import("secret.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -163,7 +164,27 @@ pub const Method = enum {
     /// `+mcp` calls this to build `tools/list`. It carries names rather
     /// than whole tool definitions because the descriptions and schemas are
     /// tens of kilobytes that never change; the sidecar already has them.
+    ///
+    /// A supervisor asking the same about **another** terminal has
+    /// `terminal_capabilities`, which is a separate method on purpose: this
+    /// one stays about the caller for everybody, and the other is closed to
+    /// everybody but a supervisor.
     persona_face,
+
+    /// Everything a supervisor needs to know about what one terminal can do:
+    /// the role it wears, the CLI it was started in and what that CLI kept
+    /// and switched off, the Polter tools it can see, and its standing.
+    ///
+    /// **Supervisor only, and any terminal -- another supervisor's
+    /// included.** The old reason for having no such question -- "asking
+    /// what another terminal may do is a reconnaissance surface" -- is kept
+    /// on `persona_face`, and it still holds for a worker. It does not hold
+    /// for a supervisor: `terminal_read` and `terminal_send` already reach
+    /// every terminal that is not shielded, so a supervisor can find all of
+    /// this out by reading the screen or asking the agent. A structured
+    /// answer adds no reach; it only stops the supervisor guessing while it
+    /// hands out work. A shielded terminal is refused here as everywhere.
+    terminal_capabilities,
 
     /// Whether this terminal's persona wants a given upstream MCP slot.
     ///
@@ -448,6 +469,7 @@ pub const Request = union(Method) {
 
     config_get: struct { key: []const u8 = "" },
     persona_face,
+    terminal_capabilities: struct { id: Bus.Id },
     persona_slot: struct { slot: []const u8 },
     persona_wait: struct { slot: []const u8, epoch: u64 = 0 },
     terminal_open: struct {
@@ -770,6 +792,11 @@ pub fn callableByPlugin(method: Method) bool {
         .persona_slot,
         .persona_wait,
 
+        // **Closed to plugins.** A supervisor's question about another
+        // terminal, and `requiresSupervisor` refuses it to a plugin first;
+        // named so this list reads as the whole answer.
+        .terminal_capabilities,
+
         // **Closed to plugins.** Rearranging somebody's window is a change
         // to what the person is looking at, and a plugin is a setting of this
         // machine rather than a party minding the work. Widening is easy;
@@ -1008,6 +1035,15 @@ pub fn requiresSupervisor(method: Method) bool {
         .persona_slot => false,
         .persona_wait => false,
 
+        // **The same question about another terminal is the supervisor's.**
+        // A worker asking it of a peer is the reconnaissance `persona_face`
+        // was made self-only to prevent; a supervisor already reaches every
+        // unshielded terminal with `terminal_read`, so for it this adds no
+        // reach. A worker asking about itself is refused too -- it has
+        // `persona_face` and `me`, and one rule with no exception is the
+        // one that cannot be argued round.
+        .terminal_capabilities => true,
+
         // Who talks to whom is the supervisor's to arrange, the same way
         // who is watched is. A terminal that could make its own groups and
         // pull others into them would be building a structure the user
@@ -1187,6 +1223,10 @@ pub fn targetsTerminal(method: Method) bool {
         // checked for existence like the rest -- an answer typed at a
         // mistyped id is an answer nobody gave to a box still waiting.
         .terminal_answer_prompt,
+
+        // Names the terminal being asked about, so the shield is asked of
+        // it like any other target.
+        .terminal_capabilities,
         => true,
 
         // These name a terminal to put in or take out of a group. Checked
@@ -1390,6 +1430,11 @@ pub fn selfPermitted(req: Request) bool {
         .group_add,
         .group_remove,
         .task_assign,
+
+        // A question with nothing that comes back round: asking what you
+        // can do yourself changes nothing, and a supervisor checking that
+        // its own launch came out right is an ordinary thing to want.
+        .terminal_capabilities,
         => true,
 
         // Decided per action, exhaustively, in `actions.selfSafeTag`.
@@ -1525,6 +1570,7 @@ pub fn promptReach(method: Method) enum {
         .persona_face,
         .persona_slot,
         .persona_wait,
+        .terminal_capabilities,
         .clock_in,
         .clock_out,
         .set_quiescence_threshold,
@@ -2060,6 +2106,10 @@ test "only what changes the arrangement needs the supervisor" {
             // Rearranging a window is arranging, not operating.
             .terminal_layout,
 
+            // Another terminal's capabilities: a supervisor's question
+            // (`requiresSupervisor` says why).
+            .terminal_capabilities,
+
             // **Closed, and it is the one method here that is closed by two
             // things at once.** The user's switch says whether that
             // terminal's prompts may be answered at all; this says who may
@@ -2139,7 +2189,7 @@ test "opening a terminal names it when it is there, and does not pretend when it
         try testing.expectEqual(boss, fake.opened.?.by);
 
         // Not asked for, so not claimed.
-        try testing.expect(!res.opened.watching);
+        try testing.expectEqual(@as(?bool, false), res.opened.watching);
         try testing.expect(!b.minds(boss, 0x3333));
     }
 
@@ -2149,7 +2199,7 @@ test "opening a terminal names it when it is there, and does not pretend when it
         var fake: FakeHost = .{ .open_result = null };
         const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{} });
         try testing.expect(res.opened.id == null);
-        try testing.expect(!res.opened.watching);
+        try testing.expectEqual(@as(?bool, false), res.opened.watching);
     }
 }
 
@@ -2165,7 +2215,7 @@ test "a terminal opened to be minded is claimed on the way" {
         .watch = true,
     } });
 
-    try testing.expect(res.opened.watching);
+    try testing.expectEqual(@as(?bool, true), res.opened.watching);
     try testing.expect(b.minds(boss, 0x4444));
 }
 
@@ -3652,6 +3702,34 @@ pub const ChatLine = struct {
 };
 
 /// One plugin as `plugin_list` reports it.
+/// What `terminal_capabilities` answers: the role half the host works out
+/// (`persona.Capabilities`), the tools the terminal can see, and the
+/// standing, which is the bus's and so is filled in here.
+pub const CapabilitiesView = struct {
+    id: Bus.Id,
+    persona: persona.Capabilities,
+
+    /// What `persona_face` would answer if that terminal asked it.
+    tools: []const []const u8,
+
+    /// Whether an agent is connected to Polter from there right now. A
+    /// launch record outlives the CLI it describes -- the agent can exit
+    /// and leave a shell -- and this is how the two are told apart.
+    agent_present: bool,
+
+    standing: Standing,
+
+    pub const Standing = struct {
+        supervisor: bool,
+        watched_by: ?Bus.Id,
+        may_authorise: bool,
+        /// Always false in an answer: a shielded terminal is refused
+        /// before anything is looked up. Carried so the shape says so.
+        shielded: bool,
+        held: bool,
+    };
+};
+
 pub const PluginView = struct {
     key: []const u8,
     name: []const u8 = "",
@@ -4200,6 +4278,13 @@ pub const Host = struct {
         epoch: u64,
     };
 
+    /// What `terminalCapabilities` answers. Everything in it belongs to the
+    /// allocator that was passed in.
+    pub const Capabilities = struct {
+        persona: persona.Capabilities,
+        tools: []const []const u8,
+    };
+
     pub const VTable = struct {
         /// The visible screen, or the last `lines` rows when non-zero.
         /// Returned memory belongs to the caller's allocator.
@@ -4237,6 +4322,27 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
             id: Bus.Id,
         ) anyerror!PersonaFace,
+
+        /// The role half of `terminal_capabilities` for `id`, and the tools
+        /// it can see -- the same list `personaFace` gives it. Fails with
+        /// `UnknownTerminal` for an id that names no terminal.
+        ///
+        /// Who may ask is this file's rule (`requiresSupervisor`), not the
+        /// host's: the host answers for whatever id it is handed.
+        terminalCapabilities: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+        ) anyerror!Capabilities,
+
+        /// A request has arrived from terminal `id`. If a role launch is
+        /// holding a standing for the agent it started there, this is where
+        /// it is applied (`PersonaStore.claimStanding`). See `arrived`.
+        agentArrived: *const fn (
+            ctx: *anyopaque,
+            bus: *Bus,
+            id: Bus.Id,
+        ) void,
 
         /// Whether an agent is listening in this terminal right now.
         ///
@@ -4753,6 +4859,14 @@ pub const Host = struct {
         return self.vtable.personaFace(self.ctx, alloc, id);
     }
 
+    fn terminalCapabilities(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+    ) anyerror!Capabilities {
+        return self.vtable.terminalCapabilities(self.ctx, alloc, id);
+    }
+
     fn sendKey(self: Host, id: Bus.Id, key: []const u8) anyerror!keys.Outcome {
         return self.vtable.sendKey(self.ctx, id, key);
     }
@@ -5135,6 +5249,23 @@ fn roleWriteFailure(err: anyerror) wire.Response {
 /// than an error, because the agent on the other end needs to be told what
 /// happened -- a silent failure would have it waiting on something that is
 /// never going to occur.
+/// Tell the host a terminal has spoken, before anything it asked is judged.
+///
+/// **The moment a launched role's standing takes effect.** It used to be
+/// applied when the launch line was typed, and a `+launch` that failed left
+/// a supervisor with no agent in it (measured on the Windows machine). Now
+/// it waits for the agent: the first request from that terminal claims it,
+/// and because this runs **before** `authorize`, that request is judged --
+/// and its `me` answered -- with the standing already in place.
+///
+/// Called by `dispatch` and, for the requests the app holds instead of
+/// dispatching (`persona_wait`), by the app itself. Claiming is take-once,
+/// so the second call is nothing.
+pub fn arrived(bus: *Bus, host: Host, who: Bus.Caller) void {
+    const id = who.terminalId() orelse return;
+    host.vtable.agentArrived(host.ctx, bus, id);
+}
+
 pub fn dispatch(
     alloc: std.mem.Allocator,
     bus: *Bus,
@@ -5142,6 +5273,7 @@ pub fn dispatch(
     who: Bus.Caller,
     req: Request,
 ) std.mem.Allocator.Error!wire.Response {
+    arrived(bus, host, who);
     authorize(bus, who, req) catch |err| return failure(err);
 
     // Everything below this line that names a terminal has already been
@@ -5198,6 +5330,30 @@ pub fn dispatch(
                     "could not work out what this terminal is wearing",
                 );
             return .{ .persona_face = .{ .tools = face.tools, .epoch = face.epoch } };
+        },
+
+        .terminal_capabilities => |p| {
+            const caps = host.terminalCapabilities(alloc, p.id) catch |err| return switch (err) {
+                error.UnknownTerminal => failure(error.UnknownTerminal),
+                else => hostFailure(
+                    "CapabilitiesFailed",
+                    "could not work out what that terminal can do",
+                ),
+            };
+            const e: Bus.Entry = bus.entries.get(p.id) orelse .{};
+            return .{ .capabilities = .{
+                .id = p.id,
+                .persona = caps.persona,
+                .tools = caps.tools,
+                .agent_present = host.agentPresent(p.id),
+                .standing = .{
+                    .supervisor = e.role == .supervisor,
+                    .watched_by = e.watched_by,
+                    .may_authorise = e.may_authorise,
+                    .shielded = e.shielded,
+                    .held = e.held,
+                },
+            } };
         },
 
         .terminal_list => {
@@ -5510,14 +5666,9 @@ pub fn dispatch(
             // A null id is the tab still being made (Windows, always): the
             // launch waits for it and is typed in when it appears, and
             // `terminal_list` will have it in a moment.
-            //
-            // `watching` is read off the bus, not assumed: a role with
-            // `polter.watch` has already put the new terminal in the
-            // caller's charge (`App.applyRoleStanding`), and a constant
-            // `false` here told the supervisor to go and do it again.
             return .{ .opened = .{
                 .id = id,
-                .watching = if (id) |new| bus.minds(caller, new) else false,
+                .watching = if (id) |new| launchedWatching(alloc, bus, host, caller, new) else null,
             } };
         },
 
@@ -6914,6 +7065,28 @@ fn joined(
     return out.items;
 }
 
+/// Whether a terminal `role_launch` just made is in `caller`'s charge, or
+/// null when that is not decided yet.
+///
+/// Read off the bus, never assumed: a constant `false` once told the
+/// supervisor to go and claim a terminal the role had already handed it.
+/// But a role's `watch` is no longer applied at the launch -- it waits for
+/// the launched agent to connect (`PersonaStore.claimStanding`) -- so a
+/// terminal not minded *yet* whose launch is still holding a `watch` is
+/// "not yet", and saying `false` would be a "no" nobody knows.
+fn launchedWatching(
+    alloc: std.mem.Allocator,
+    bus: *const Bus,
+    host: Host,
+    caller: Bus.Id,
+    id: Bus.Id,
+) ?bool {
+    if (bus.minds(caller, id)) return true;
+    const caps = host.terminalCapabilities(alloc, id) catch return null;
+    const held = caps.persona.pending_standing orelse return false;
+    return if (held.want.watch) null else false;
+}
+
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
     return .{ .failed = .{ .code = code, .message = message } };
 }
@@ -7119,12 +7292,28 @@ const FakeHost = struct {
     /// A tool name this terminal's persona hides, for the filter tests.
     persona_hidden: ?[]const u8 = null,
 
+    /// A real persona store, so `terminal_capabilities` is answered by the
+    /// code the app uses rather than by a canned reply. Null for the tests
+    /// that do not ask it.
+    personas: ?*PersonaStore = null,
+
+    /// The clock `claimStanding` and `capabilities` are asked with.
+    now_ms: u64 = 0,
+
+    /// What `agent_cli.Cache.snapshot` would hand back.
+    clis_json: []const u8 = "{\"stale\":true,\"refreshing\":true,\"clis\":[]}",
+
+    /// Terminals this fake says exist, for `terminal_capabilities`.
+    known: []const Bus.Id = &.{ boss, worker, other },
+
     fn host(self: *FakeHost) Host {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
             .sendText = send,
             .agentPresent = agentPresent,
             .personaFace = personaFace,
+            .terminalCapabilities = terminalCapabilities,
+            .agentArrived = agentArrived,
             .personaCatalog = personaCatalog,
             .personaPut = personaPut,
             .personaDelete = personaDelete,
@@ -7630,6 +7819,29 @@ const FakeHost = struct {
         const names = try alloc.alloc([]const u8, all.len);
         for (all, 0..) |m, i| names[i] = @tagName(m);
         return .{ .tools = names, .epoch = 0 };
+    }
+
+    fn terminalCapabilities(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+    ) anyerror!Host.Capabilities {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (std.mem.indexOfScalar(Bus.Id, self.known, id) == null) return error.UnknownTerminal;
+        const store = self.personas orelse return error.TestUnexpectedResult;
+        const face = try personaFace(ctx, alloc, id);
+        return .{
+            .persona = try store.capabilities(alloc, id, self.clis_json, self.now_ms),
+            .tools = face.tools,
+        };
+    }
+
+    /// The same call the app makes, into the same store: what is tested is
+    /// `claimStanding` and where `dispatch` calls it, not a stand-in.
+    fn agentArrived(ctx: *anyopaque, bus: *Bus, id: Bus.Id) void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const store = self.personas orelse return;
+        _ = store.claimStanding(bus, id, self.now_ms);
     }
 
     fn personaCatalog(_: *anyopaque, _: std.mem.Allocator) anyerror![]const u8 {
@@ -10527,6 +10739,431 @@ test "persona_face: the caller is told which tools it may see, and it is about i
     try testing.expectEqual(@as(?Bus.Id, null), target(.persona_face));
 }
 
+// -- task 700: terminal_capabilities -----------------------------------------
+//
+// **A real `PersonaStore` behind the fake**, so the role half is worked out
+// by the code the app runs -- the launch record, the hot-worn case and the
+// kept/off split -- rather than by a reply a test typed in.
+
+const PersonaStore = @import("PersonaStore.zig");
+
+/// A second supervisor, a shielded terminal, and an id nothing has.
+const caps_boss2: Bus.Id = 0x4444;
+const caps_shielded: Bus.Id = 0x5555;
+const caps_unknown: Bus.Id = 0x9999;
+
+const caps_roles = [_]persona.Persona{.{
+    .key = "w",
+    .name = "Worker",
+    .skills = &.{"operating-a-terminal"},
+    .mcp = &.{"argus"},
+    .clis = &.{.{
+        .cli = "claude-code",
+        .skills = .{ .except = &.{"skill:pdf"} },
+        .mcp = .{ .default = false, .except = &.{"mcp:argus"} },
+        .model = "sonnet",
+        .args = &.{"--permission-mode=acceptEdits"},
+    }},
+}};
+
+/// What `agent_cli.Cache.snapshot` hands back once the adapter has
+/// answered: two skills and three servers, Polter's own locked.
+const caps_clis =
+    \\{"stale":false,"refreshing":false,"clis":[{"key":"claude-code","label":"Claude Code",
+    \\ "bin":"claude","error":null,"inventory":{"items":[
+    \\  {"kind":"skill","id":"skill:pdf"},{"kind":"skill","id":"skill:docx"},
+    \\  {"kind":"mcp","id":"mcp:polter","locked":true},
+    \\  {"kind":"mcp","id":"mcp:argus"},{"kind":"mcp","id":"mcp:pencil"}]}}]}
+;
+
+const CapsFixture = struct {
+    bus: Bus,
+    store: PersonaStore,
+
+    /// `worker` started in role `w`; `other` had `w` put on it hot; `caps_boss2`
+    /// a second supervisor wearing nothing; `caps_shielded` shielded.
+    fn init(self: *CapsFixture) !void {
+        self.bus = try testBus(testing.allocator);
+        errdefer self.bus.deinit();
+        try self.bus.addSupervisor(caps_boss2);
+        try self.bus.register(caps_shielded);
+        try self.bus.setShielded(caps_shielded, true, .user);
+        try self.bus.register(other);
+
+        self.store = .{ .alloc = testing.allocator, .set = .{ .personas = &caps_roles }, .loaded = true };
+        errdefer self.store.deinit();
+        try self.store.setPersona(worker, "w");
+        try self.store.noteLaunch(worker, "w", caps_roles[0].clis[0]);
+        try self.store.setPersona(other, "w");
+    }
+
+    fn deinit(self: *CapsFixture) void {
+        self.store.deinit();
+        self.bus.deinit();
+    }
+
+    fn fake(self: *CapsFixture) FakeHost {
+        return .{
+            .personas = &self.store,
+            .clis_json = caps_clis,
+            .known = &.{ boss, caps_boss2, worker, other, caps_shielded },
+        };
+    }
+};
+
+fn expectCaps(res: wire.Response) !CapabilitiesView {
+    return switch (res) {
+        .capabilities => |c| c,
+        else => {
+            std.debug.print("terminal_capabilities answered {t}\n", .{res});
+            return error.WrongResponse;
+        },
+    };
+}
+
+fn expectList(want: []const []const u8, got: []const []const u8) !void {
+    try testing.expectEqual(want.len, got.len);
+    for (want, got) |w, g| try testing.expectEqualStrings(w, g);
+}
+
+// -- task 702: a launched role's standing waits for its agent ----------------
+
+/// A tab a launch has just opened: no bus entry, nobody connected yet.
+const fresh: Bus.Id = 0x6666;
+
+const standing_roles = [_]persona.Persona{
+    .{
+        .key = "lead",
+        .name = "Lead",
+        .clis = &.{.{ .cli = "claude-code" }},
+        .polter = .{ .supervisor = true },
+    },
+    .{
+        .key = "hand",
+        .name = "Hand",
+        .clis = &.{.{ .cli = "claude-code" }},
+        .polter = .{ .watch = true, .quiet_ms = 5_000 },
+    },
+};
+
+fn standingStore() PersonaStore {
+    return .{ .alloc = testing.allocator, .set = .{ .personas = &standing_roles }, .loaded = true };
+}
+
+fn roleIn(res: wire.Response) !Bus.Role {
+    return switch (res) {
+        .me => |m| m.role,
+        else => {
+            std.debug.print("me answered {t}\n", .{res});
+            return error.WrongResponse;
+        },
+    };
+}
+
+test "launched standing: nothing is given until the agent connects, then before its first answer" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // What `App.startRoleIn` does for a launch: wear the role, hold its
+    // standing. The launch line is typed; whether `+launch` works is not
+    // known here, and that is the point.
+    try store.setPersona(fresh, "lead");
+    try store.holdStanding(fresh, fresh, standing_roles[0].polter, 0);
+
+    // **The agent has not connected.** Other terminals talk -- the
+    // supervisor asks about this one, and lists the window -- and none of
+    // that is the agent arriving. A `+launch` whose adapter never started
+    // stays exactly here: a terminal wearing a role, with no standing.
+    const before = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = fresh },
+    }));
+    _ = try dispatch(alloc, &bus, fake.host(), term(boss), .terminal_list);
+    try testing.expect(!bus.isSupervisor(fresh));
+    try testing.expect(!before.standing.supervisor);
+
+    // And it says so: held, not yet in effect, with the time it has left.
+    const held = before.persona.pending_standing orelse return error.NotShownAsPending;
+    try testing.expect(held.want.supervisor);
+    try testing.expectEqual(PersonaStore.standing_wait_ms, held.expires_in_ms);
+
+    // **The agent connects.** Its very first request is answered with the
+    // standing already in place: `me` says supervisor, not unclaimed.
+    fake.now_ms = 1_000;
+    try testing.expectEqual(Bus.Role.supervisor, try roleIn(try dispatch(alloc, &bus, fake.host(), term(fresh), .me)));
+    try testing.expect(bus.isSupervisor(fresh));
+
+    // Once. Nothing is left waiting.
+    const after = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = fresh },
+    }));
+    try testing.expectEqual(@as(?persona.Capabilities.PendingStanding, null), after.persona.pending_standing);
+    try testing.expect(after.standing.supervisor);
+}
+
+test "launched standing: an agent that connects after it ran out gets nothing" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    try store.setPersona(fresh, "lead");
+    try store.holdStanding(fresh, fresh, standing_roles[0].polter, 0);
+
+    // A `claude` somebody types into that terminal by hand, long after the
+    // launch failed, is not the agent the launch started.
+    fake.now_ms = PersonaStore.standing_wait_ms + 1;
+    const caps = try expectCaps(try dispatch(alloc, &bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = fresh },
+    }));
+    try testing.expectEqual(@as(?persona.Capabilities.PendingStanding, null), caps.persona.pending_standing);
+
+    try testing.expectEqual(Bus.Role.none, try roleIn(try dispatch(alloc, &bus, fake.host(), term(fresh), .me)));
+    try testing.expect(!bus.isSupervisor(fresh));
+
+    // Dropped, not kept for later: winding the clock back finds nothing.
+    fake.now_ms = 0;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .me);
+    try testing.expect(!bus.isSupervisor(fresh));
+
+    // A later launch of a role with nothing to give clears an older hold.
+    try store.holdStanding(fresh, fresh, standing_roles[0].polter, 0);
+    try store.holdStanding(fresh, fresh, .{}, 0);
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .me);
+    try testing.expect(!bus.isSupervisor(fresh));
+}
+
+test "launched standing: a role put on hot gives no standing, and watch goes to the launcher" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // Hot: the role goes on, nothing is held (`App.choosePersona`'s worn
+    // path never reaches `startRoleIn`), so the agent already running
+    // there keeps the standing it had.
+    try store.setPersona(other, "lead");
+    try testing.expectEqual(Bus.Role.none, try roleIn(try dispatch(alloc, &bus, fake.host(), term(other), .me)));
+    try testing.expect(!bus.isSupervisor(other));
+
+    // Launched by the supervisor with `watch`: the agent arrives already
+    // minded by the one that started it.
+    try store.setPersona(fresh, "hand");
+    try store.holdStanding(fresh, boss, standing_roles[1].polter, 0);
+    try testing.expectEqual(Bus.Role.watched, try roleIn(try dispatch(alloc, &bus, fake.host(), term(fresh), .me)));
+    try testing.expect(bus.minds(boss, fresh));
+}
+
+test "terminal_capabilities: a supervisor asking about a worker is told all four parts" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fx: CapsFixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var fake = fx.fake();
+
+    const res = try dispatch(alloc, &fx.bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = worker },
+    });
+    const c = try expectCaps(res);
+    try testing.expectEqual(worker, c.id);
+
+    // 1. The role.
+    const role = c.persona.role orelse return error.NoRole;
+    try testing.expectEqualStrings("w", role.key);
+    try testing.expectEqualStrings("Worker", role.name.?);
+    try testing.expect(!role.deviated);
+    try testing.expect(!role.builtin);
+
+    // 2. The CLI it was started in, and the split worked out with the
+    // selection recorded at launch. `mcp:polter` is off by the role's
+    // default and kept because it is locked -- the same rule the adapter
+    // applied when it built the command line.
+    try testing.expectEqual(persona.Capabilities.Started.launched, c.persona.started);
+    const cli = c.persona.cli orelse return error.NoCli;
+    try testing.expectEqualStrings("claude-code", cli.key);
+    try testing.expectEqualStrings("w", cli.role);
+    try testing.expectEqualStrings("sonnet", cli.model.?);
+    try expectList(&.{"--permission-mode=acceptEdits"}, cli.args);
+    try testing.expectEqual(persona.Capabilities.Inventory.ok, cli.inventory);
+    try expectList(&.{"skill:docx"}, cli.skills.?.kept);
+    try expectList(&.{"skill:pdf"}, cli.skills.?.off);
+    try expectList(&.{ "mcp:polter", "mcp:argus" }, cli.mcp.?.kept);
+    try expectList(&.{"mcp:pencil"}, cli.mcp.?.off);
+
+    // 3. Polter's own half.
+    try testing.expect(!c.persona.unfiltered);
+    try expectList(&.{"operating-a-terminal"}, c.persona.skills);
+    try expectList(&.{"argus"}, c.persona.slots);
+    var saw_me = false;
+    for (c.tools) |t| {
+        if (std.mem.eql(u8, t, "me")) saw_me = true;
+    }
+    try testing.expect(saw_me);
+
+    // 4. The standing, from the bus.
+    try testing.expect(!c.standing.supervisor);
+    try testing.expectEqual(@as(?Bus.Id, boss), c.standing.watched_by);
+    try testing.expect(!c.standing.shielded);
+    try testing.expect(!c.standing.held);
+    try testing.expect(c.agent_present);
+
+    // And the wire: every part is there, and an absent one is `null`
+    // rather than missing.
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, res);
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, alloc, out.written(), .{});
+    const o = v.object.get("capabilities").?.object;
+    for ([_][]const u8{ "id", "role", "started", "cli", "polter", "standing", "agent_present" }) |k| {
+        if (o.get(k) == null) {
+            std.debug.print("no {s} in {s}\n", .{ k, out.written() });
+            return error.MissingField;
+        }
+    }
+    try testing.expectEqualStrings("0x0000000000001111", o.get("standing").?.object.get("watched_by").?.string);
+    try testing.expectEqualStrings("launched", o.get("started").?.string);
+}
+
+test "terminal_capabilities: a supervisor may ask about another supervisor, and about itself" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fx: CapsFixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var fake = fx.fake();
+
+    const c = try expectCaps(try dispatch(alloc, &fx.bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = caps_boss2 },
+    }));
+    try testing.expect(c.standing.supervisor);
+    try testing.expectEqual(@as(?Bus.Id, null), c.standing.watched_by);
+
+    // Wearing nothing: `role` is null -- not an empty key -- nothing was
+    // launched, and nothing is filtered.
+    try testing.expectEqual(@as(?persona.Capabilities.Role, null), c.persona.role);
+    try testing.expectEqual(persona.Capabilities.Started.none, c.persona.started);
+    try testing.expectEqual(@as(?persona.Capabilities.Cli, null), c.persona.cli);
+    try testing.expect(c.persona.unfiltered);
+
+    const self_caps = try expectCaps(try dispatch(alloc, &fx.bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = boss },
+    }));
+    try testing.expectEqual(boss, self_caps.id);
+}
+
+test "terminal_capabilities: anyone but a supervisor is refused, even about itself" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fx: CapsFixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var fake = fx.fake();
+
+    // `other` is unmarked and `worker` is watched; neither may ask, about
+    // a peer, a supervisor or itself. Itself included on purpose: a worker
+    // has `persona_face` and `me` for that, and one rule with no exception
+    // is the one nobody can argue round.
+    for ([_]Bus.Id{ worker, other }) |caller| {
+        for ([_]Bus.Id{ worker, other, boss, caps_boss2 }) |asked| {
+            const res = try dispatch(alloc, &fx.bus, fake.host(), term(caller), .{
+                .terminal_capabilities = .{ .id = asked },
+            });
+            if (res != .failed) {
+                std.debug.print("0x{x} asking about 0x{x} was answered\n", .{ caller, asked });
+                return error.NotRefused;
+            }
+            try testing.expectEqualStrings("NotPermitted", res.failed.code);
+        }
+    }
+    try testing.expect(requiresSupervisor(.terminal_capabilities));
+    try testing.expect(!callableByPlugin(.terminal_capabilities));
+}
+
+test "terminal_capabilities: a shielded terminal is refused, and an unknown id is named" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fx: CapsFixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var fake = fx.fake();
+
+    const shielded = try dispatch(alloc, &fx.bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = caps_shielded },
+    });
+    try testing.expect(shielded == .failed);
+    try testing.expectEqualStrings("Shielded", shielded.failed.code);
+
+    const unknown = try dispatch(alloc, &fx.bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = caps_unknown },
+    });
+    try testing.expect(unknown == .failed);
+    try testing.expectEqualStrings("UnknownTerminal", unknown.failed.code);
+}
+
+test "terminal_capabilities: a role put on hot has no CLI half, and says why" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fx: CapsFixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var fake = fx.fake();
+
+    const hot = try expectCaps(try dispatch(alloc, &fx.bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = other },
+    }));
+    // Wearing the same role as `worker`, so the two differ in one thing:
+    // how the role got there.
+    try testing.expectEqualStrings("w", hot.persona.role.?.key);
+    try testing.expectEqual(persona.Capabilities.Started.worn_hot, hot.persona.started);
+    try testing.expectEqual(@as(?persona.Capabilities.Cli, null), hot.persona.cli);
+
+    // And an inventory nobody has read yet is `stale`, never an empty
+    // split: "could not tell" must not read as "nothing is switched off".
+    fake.clis_json = "{\"stale\":true,\"refreshing\":true,\"clis\":[]}";
+    const stale = try expectCaps(try dispatch(alloc, &fx.bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = worker },
+    }));
+    const cli = stale.persona.cli.?;
+    try testing.expectEqual(persona.Capabilities.Inventory.stale, cli.inventory);
+    try testing.expect(cli.refreshing);
+    try testing.expectEqual(@as(?persona.Capabilities.Split, null), cli.skills);
+    try testing.expectEqual(@as(?persona.Capabilities.Split, null), cli.mcp);
+
+    // A CLI this machine no longer lists is `absent`, likewise not empty.
+    fake.clis_json = "{\"stale\":false,\"refreshing\":false,\"clis\":[]}";
+    const absent = try expectCaps(try dispatch(alloc, &fx.bus, fake.host(), term(boss), .{
+        .terminal_capabilities = .{ .id = worker },
+    }));
+    try testing.expectEqual(persona.Capabilities.Inventory.absent, absent.persona.cli.?.inventory);
+    try testing.expectEqual(@as(?persona.Capabilities.Split, null), absent.persona.cli.?.skills);
+}
+
 // -- task 579 ---------------------------------------------------------------
 //
 // **A real `Chat`, not `FakeHost`.** The fake has no cursor, so it cannot
@@ -10789,4 +11426,34 @@ test "roles: each reason a write is refused says what to do about it" {
     var fake: FakeHost = .{ .role_tab_late = true };
     const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "a" } });
     try testing.expectEqual(@as(?Bus.Id, null), res.opened.id);
+
+    // And with no terminal, whether it is minded is not known either: not
+    // `false`, and not on the wire at all -- the same as the missing `id`.
+    try testing.expectEqual(@as(?bool, null), res.opened.watching);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, res);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "watching") == null);
+}
+
+test "role_launch: a role whose watch waits for its agent says not yet, not no" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var store = standingStore();
+    defer store.deinit();
+    // The fake opens 0x7777; the store holds what `App.startRoleIn` would.
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, 0x7777 } };
+
+    try store.holdStanding(0x7777, boss, standing_roles[1].polter, 0);
+    const held = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "hand" } });
+    try testing.expectEqual(@as(?Bus.Id, 0x7777), held.opened.id);
+    try testing.expectEqual(@as(?bool, null), held.opened.watching);
+
+    // Nothing held that would watch it: that is a real no.
+    try store.holdStanding(0x7777, boss, .{}, 0);
+    const plain = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "hand" } });
+    try testing.expectEqual(@as(?bool, false), plain.opened.watching);
 }

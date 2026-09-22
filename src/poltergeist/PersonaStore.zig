@@ -74,15 +74,56 @@ names: []const NamePair = &.{},
 /// than the one it was made for.
 states: std.AutoHashMapUnmanaged(Bus.Id, persona.State) = .empty,
 
+/// Which role and CLI each terminal was started in (`persona.Launch`).
+///
+/// **Separate from `states`**, because the two move independently: a role
+/// put on hot changes `states` and not this, and a relaunch changes this.
+/// Each entry owns its copy in an arena of its own, so a library edit that
+/// replaces `arena` cannot pull the strings out from under it.
+launches: std.AutoHashMapUnmanaged(Bus.Id, Launched) = .empty,
+
+/// A role's Polter half (`persona.Polter`) waiting for the agent it was
+/// started for, one per terminal. See `holdStanding`.
+///
+/// Plain values, nothing borrowed, so a library edit cannot pull anything
+/// out from under it. Cleared by `forget` with the rest.
+standings: std.AutoHashMapUnmanaged(Bus.Id, PendingStanding) = .empty,
+
 pub const NamePair = struct {
     key: [:0]const u8,
     name: [:0]const u8,
 };
 
+const Launched = struct {
+    arena: std.heap.ArenaAllocator,
+    launch: persona.Launch,
+};
+
+pub const PendingStanding = struct {
+    want: persona.Polter,
+    /// The terminal the launch was asked from (`App.startRoleIn`).
+    by: Bus.Id,
+    /// Past this, whatever connects from that terminal is not the agent the
+    /// launch started, and nothing is applied.
+    deadline_ms: u64,
+};
+
+/// How long a launched agent has to connect before its standing is dropped.
+///
+/// Starting a CLI and its MCP sidecar takes seconds, more on a cold Windows
+/// machine; a `claude` somebody types into the same terminal by hand minutes
+/// later must not inherit a supervisor's standing. A minute sits between the
+/// two. `pending_launch_ms` in `App.zig` is the same idea for the tab.
+pub const standing_wait_ms: u64 = 60_000;
+
 pub fn deinit(self: *PersonaStore) void {
     if (self.arena) |*a| a.deinit();
     if (self.load_error) |e| self.alloc.free(e);
     self.states.deinit(self.alloc);
+    var it = self.launches.valueIterator();
+    while (it.next()) |l| l.arena.deinit();
+    self.launches.deinit(self.alloc);
+    self.standings.deinit(self.alloc);
     self.* = undefined;
 }
 
@@ -136,6 +177,7 @@ pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
             return;
         },
         else => {
+            self.keepBuiltinsOnly(path);
             self.setErrorFmt("could not read {s}: {t}", .{ path, err });
             return;
         },
@@ -149,8 +191,9 @@ pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
         // The sentence names the file and what was wrong with it, because
         // the person reading it is looking at a menu that did not change
         // and has to be told where to go.
-        self.setErrorFmt("{s} was not loaded: {t}", .{ path, err });
         arena.deinit();
+        self.keepBuiltinsOnly(path);
+        self.setErrorFmt("{s} was not loaded: {t}", .{ path, err });
         return;
     };
 
@@ -168,6 +211,21 @@ pub fn load(self: *PersonaStore, io: std.Io, path: []const u8) void {
             .{set.ignored_denies.len},
         );
     }
+}
+
+/// After a read that failed: when there is no earlier good set to keep, the
+/// roles Polter ships, so they are there however the file is broken.
+///
+/// **Only when there is nothing to keep.** A later bad file leaves the last
+/// good set in place, and that set has the built-ins in it already. It is
+/// the *first* read failing that used to leave nothing at all -- measured
+/// on the Windows machine: the list came up empty, "Polter Supervisor"
+/// included, because the file the user was halfway through did not parse.
+/// Called before the error is set, because installing clears it.
+fn keepBuiltinsOnly(self: *PersonaStore, path: []const u8) void {
+    if (self.loaded) return;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    self.install(&arena, persona.builtinSet(), path) catch arena.deinit();
 }
 
 /// Make `set`, which lives in `arena`, the one in use. On failure nothing
@@ -390,6 +448,294 @@ pub fn clearPersona(self: *PersonaStore, id: Bus.Id) !void {
 /// Forget a terminal. Called when a surface goes.
 pub fn forget(self: *PersonaStore, id: Bus.Id) void {
     _ = self.states.remove(id);
+    _ = self.standings.remove(id);
+    if (self.launches.fetchRemove(id)) |kv| {
+        var a = kv.value.arena;
+        a.deinit();
+    }
+}
+
+/// Whether a role's Polter half gives the terminal anything. `open` is
+/// about where the role starts, not what the terminal becomes.
+fn grantsStanding(want: persona.Polter) bool {
+    return want.supervisor or want.may_authorise or want.shielded or
+        want.watch or want.quiet_ms != null;
+}
+
+/// Hold `want` for the agent a launch is about to start in `id`.
+///
+/// **Held, not applied.** It used to be applied here, before the launch
+/// line was even typed -- and measured on the Windows machine, a `+launch`
+/// whose adapter would not start left a terminal that was a supervisor
+/// with no agent in it. The standing is for the agent, so it waits for the
+/// agent: `claimStanding`, on the first request from that terminal.
+///
+/// Replaces whatever was held for `id` before; a role with nothing to give
+/// clears it, so an older launch's standing cannot outlive a newer launch.
+pub fn holdStanding(
+    self: *PersonaStore,
+    id: Bus.Id,
+    by: Bus.Id,
+    want: persona.Polter,
+    now_ms: u64,
+) Allocator.Error!void {
+    if (!grantsStanding(want)) {
+        _ = self.standings.remove(id);
+        return;
+    }
+    try self.standings.put(self.alloc, id, .{
+        .want = want,
+        .by = by,
+        .deadline_ms = now_ms + standing_wait_ms,
+    });
+}
+
+/// What is held for `id` and still able to be claimed, or null.
+pub fn heldStanding(self: *const PersonaStore, id: Bus.Id, now_ms: u64) ?PendingStanding {
+    const s = self.standings.get(id) orelse return null;
+    if (now_ms > s.deadline_ms) return null;
+    return s;
+}
+
+/// What `claimStanding` did, for the parts of it that are the app's to
+/// show: the tab's watching mark and its quiet threshold live on the
+/// surface, not on the bus.
+pub const Applied = struct {
+    want: persona.Polter,
+    /// Who it was handed to, when `watch` found somebody.
+    watched_by: ?Bus.Id,
+};
+
+/// A request has arrived from `id`: if a launch is holding a standing for
+/// it, apply it to `bus` now, once, and say what was applied.
+///
+/// **Called before that request is answered** (`rpc.arrived`), so the
+/// agent's first `me` already reads the standing it was started with.
+/// Taken either way -- an expired one is dropped rather than left for the
+/// next thing that connects.
+///
+/// As the user: the role is theirs, and a supervisor cannot have written
+/// the three settings that grant something (`put`).
+pub fn claimStanding(self: *PersonaStore, bus: *Bus, id: Bus.Id, now_ms: u64) ?Applied {
+    const held = self.standings.fetchRemove(id) orelse return null;
+    const s = held.value;
+    if (now_ms > s.deadline_ms) {
+        log.info("poltergeist: a role's standing for this terminal ran out before its agent connected; not applying it", .{});
+        return null;
+    }
+    const want = s.want;
+
+    if (want.supervisor) {
+        bus.addSupervisor(id) catch |err| {
+            log.warn("poltergeist: role could not make terminal a supervisor err={}", .{err});
+        };
+        log.info("poltergeist: the agent started in a supervisor role connected, so this terminal is a supervisor", .{});
+    }
+
+    bus.register(id) catch {};
+    if (want.may_authorise) bus.setMayAuthorise(id, true, .user) catch {};
+    if (want.shielded) bus.setShielded(id, true, .user) catch {};
+
+    // Shielded wins: a terminal nothing may reach is not one to be told
+    // about (`Bus.setShielded`). And a supervisor is not watched.
+    var watched_by: ?Bus.Id = null;
+    if (want.watch and !want.shielded and !want.supervisor) {
+        if (roleWatcher(bus, s.by, id)) |boss| {
+            if (bus.watch(id, boss)) {
+                watched_by = boss;
+            } else |err| {
+                log.warn("poltergeist: role could not hand terminal to its supervisor err={}", .{err});
+            }
+        } else {
+            log.info("poltergeist: role asked to be watched but there is no one supervisor to watch it", .{});
+        }
+    }
+    return .{ .want = want, .watched_by = watched_by };
+}
+
+/// Who minds a terminal a role says should be watched: the supervisor that
+/// started it, or -- when a person started it from a terminal that is not
+/// one -- the only supervisor there is. Null with none, or with several:
+/// which of two supervisors a terminal belongs to is not the program's to
+/// guess (the same reason `Bus.removeSupervisor` releases rather than
+/// hands on).
+fn roleWatcher(bus: *const Bus, by: Bus.Id, id: Bus.Id) ?Bus.Id {
+    if (by != id and bus.isSupervisor(by)) return by;
+    var found: ?Bus.Id = null;
+    var it = bus.entries.iterator();
+    while (it.next()) |kv| {
+        if (kv.key_ptr.* == id or kv.value_ptr.role != .supervisor) continue;
+        if (found != null) return null;
+        found = kv.key_ptr.*;
+    }
+    return found;
+}
+
+/// Record that `id` was started in role `key` with the CLI `choice`, and
+/// forget whatever it was started in before. Copies both.
+pub fn noteLaunch(self: *PersonaStore, id: Bus.Id, key: []const u8, choice: persona.CliChoice) Allocator.Error!void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    errdefer arena.deinit();
+    const aa = arena.allocator();
+    const launch: persona.Launch = .{
+        .role = try aa.dupe(u8, key),
+        .choice = .{
+            .cli = try aa.dupe(u8, choice.cli),
+            .skills = try dupeSelection(aa, choice.skills),
+            .mcp = try dupeSelection(aa, choice.mcp),
+            .model = if (choice.model) |m| try aa.dupe(u8, m) else null,
+            .args = try dupeList(aa, choice.args),
+        },
+    };
+
+    const gop = try self.launches.getOrPut(self.alloc, id);
+    if (gop.found_existing) gop.value_ptr.arena.deinit();
+    gop.value_ptr.* = .{ .arena = arena, .launch = launch };
+}
+
+/// What `id` was started in, or null when it was not started from a role.
+pub fn launchOf(self: *const PersonaStore, id: Bus.Id) ?persona.Launch {
+    const l = self.launches.getPtr(id) orelse return null;
+    return l.launch;
+}
+
+fn dupeSelection(aa: Allocator, s: persona.Selection) Allocator.Error!persona.Selection {
+    return .{ .default = s.default, .except = try dupeList(aa, s.except) };
+}
+
+fn dupeList(aa: Allocator, list: []const []const u8) Allocator.Error![]const []const u8 {
+    const out = try aa.alloc([]const u8, list.len);
+    for (list, 0..) |s, i| out[i] = try aa.dupe(u8, s);
+    return out;
+}
+
+/// The role half of `terminal_capabilities` for `id`, in `aa`.
+///
+/// `clis_json` is `agent_cli.Cache.snapshot`'s document. The split of a
+/// CLI's skills and servers into kept and off is worked out against it
+/// **now**, with the selection recorded **at launch** -- the same rule the
+/// adapter applied when it built the command line (`enabled` in
+/// `adapter.py`, `locked` always kept). A cache nobody has read yet is said
+/// to be `stale`; it is never answered as an empty split.
+pub fn capabilities(
+    self: *const PersonaStore,
+    aa: Allocator,
+    id: Bus.Id,
+    clis_json: []const u8,
+    now_ms: u64,
+) Allocator.Error!persona.Capabilities {
+    const state = self.stateOf(id);
+    const role: ?persona.Capabilities.Role = if (state.key) |k| blk: {
+        const p = self.set.find(k);
+        break :blk .{
+            .key = k,
+            .name = if (p) |q| q.name else null,
+            .deviated = state.deviated(self.set),
+            .builtin = if (p) |q| q.builtin else false,
+        };
+    } else null;
+
+    const launch = self.launchOf(id);
+    const started: persona.Capabilities.Started = if (launch != null)
+        .launched
+    else if (state.key != null)
+        .worn_hot
+    else
+        .none;
+
+    return .{
+        .role = role,
+        .started = started,
+        .cli = if (launch) |l| try cliView(aa, l, clis_json) else null,
+        .unfiltered = state.key == null,
+        .skills = state.effective.skills,
+        .slots = state.effective.slots,
+        .epoch = state.epoch,
+        .pending_standing = if (self.heldStanding(id, now_ms)) |s| .{
+            .want = s.want,
+            .expires_in_ms = s.deadline_ms - now_ms,
+        } else null,
+    };
+}
+
+fn cliView(aa: Allocator, l: persona.Launch, clis_json: []const u8) Allocator.Error!persona.Capabilities.Cli {
+    var out: persona.Capabilities.Cli = .{
+        .key = l.choice.cli,
+        .role = l.role,
+        .model = l.choice.model,
+        .args = l.choice.args,
+        .inventory = .failed,
+        .refreshing = false,
+        .@"error" = "the list of agent CLIs could not be read",
+        .skills = null,
+        .mcp = null,
+    };
+
+    const doc = std.json.parseFromSliceLeaky(std.json.Value, aa, clis_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return out,
+    };
+    if (doc != .object) return out;
+    if (doc.object.get("refreshing")) |r| out.refreshing = r == .bool and r.bool;
+    if (doc.object.get("stale")) |s| if (s == .bool and s.bool) {
+        out.inventory = .stale;
+        out.@"error" = null;
+        return out;
+    };
+
+    const clis = doc.object.get("clis") orelse return out;
+    if (clis != .array) return out;
+    const entry = for (clis.array.items) |c| {
+        if (c != .object) continue;
+        const k = c.object.get("key") orelse continue;
+        if (k == .string and std.mem.eql(u8, k.string, l.choice.cli)) break c.object;
+    } else {
+        out.inventory = .absent;
+        out.@"error" = null;
+        return out;
+    };
+
+    if (entry.get("error")) |e| if (e == .string) {
+        out.@"error" = e.string;
+        return out;
+    };
+    const inv = entry.get("inventory") orelse return out;
+    if (inv != .object) return out;
+    const items = inv.object.get("items") orelse return out;
+    if (items != .array) return out;
+
+    var skills_kept: std.ArrayListUnmanaged([]const u8) = .empty;
+    var skills_off: std.ArrayListUnmanaged([]const u8) = .empty;
+    var mcp_kept: std.ArrayListUnmanaged([]const u8) = .empty;
+    var mcp_off: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (items.array.items) |item| {
+        if (item != .object) continue;
+        const item_id = switch (item.object.get("id") orelse continue) {
+            .string => |s| s,
+            else => continue,
+        };
+        const kind = switch (item.object.get("kind") orelse continue) {
+            .string => |s| s,
+            else => continue,
+        };
+        const locked = if (item.object.get("locked")) |v| v == .bool and v.bool else false;
+
+        const is_skill = std.mem.eql(u8, kind, "skill");
+        if (!is_skill and !std.mem.eql(u8, kind, "mcp")) continue;
+        const sel = if (is_skill) l.choice.skills else l.choice.mcp;
+        const kept = locked or sel.enabled(item_id);
+        const list = if (is_skill)
+            (if (kept) &skills_kept else &skills_off)
+        else
+            (if (kept) &mcp_kept else &mcp_off);
+        try list.append(aa, item_id);
+    }
+
+    out.inventory = .ok;
+    out.@"error" = null;
+    out.skills = .{ .kept = skills_kept.items, .off = skills_off.items };
+    out.mcp = .{ .kept = mcp_kept.items, .off = mcp_off.items };
+    return out;
 }
 
 /// The NUL-terminated key and name for a persona, for the C surface.
@@ -513,6 +859,37 @@ fn tmpDir(alloc: Allocator, io: std.Io) ![]const u8 {
     const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-personas-{x}", .{&raw});
     try std.Io.Dir.cwd().createDirPath(io, dir);
     return dir;
+}
+
+test "personas: a bad file on the first read still leaves the built-in roles" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try tmpDir(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const path = try std.fmt.allocPrint(aa, "{s}/personas.json", .{dir});
+
+    var store: PersonaStore = .{ .alloc = testing.allocator };
+    defer store.deinit();
+
+    // The first thing this process ever reads does not parse. There is no
+    // earlier set to keep -- and the roles Polter ships are there anyway,
+    // with the error said.
+    try write(io, path, "{\"version\":1,\"personas\":[{\"key\":\"a\"");
+    store.load(io, path);
+    try testing.expect(store.loaded);
+    try testing.expect(store.load_error != null);
+    try testing.expect(store.set.find(persona.supervisor_key) != null);
+    try testing.expectEqual(persona.builtins.len, store.set.personas.len);
+
+    // Still refused as a write target: the file on disk is the user's
+    // half-finished one, and writing would replace it.
+    try testing.expectError(error.FileUnreadable, store.remove(io, path, "a"));
 }
 
 test "personas: a good file loads, and a later bad one does not take it away" {

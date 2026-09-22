@@ -952,6 +952,123 @@ pub const State = struct {
     }
 };
 
+/// Which role and CLI a terminal was **started** in, recorded when the
+/// launch line is typed (`App.startRoleIn`).
+///
+/// ⚠️ **Not the same thing as `State.key`, and the difference is the
+/// point.** A role put on a running terminal changes what Polter hands out
+/// and nothing else: the CLI in there keeps the skills, servers, model and
+/// arguments it was started with. Only a launch applies the CLI half, so
+/// only a launch writes one of these -- and a terminal that was only ever
+/// worn hot has none, which is the answer, not a gap.
+///
+/// The choice is copied at launch, not looked up later: an edit to the role
+/// afterwards does not reach a CLI that is already running.
+pub const Launch = struct {
+    /// The role key the launch was for.
+    role: []const u8,
+    choice: CliChoice,
+};
+
+/// What `terminal_capabilities` knows about a terminal from the role side:
+/// what it wears, how it came to wear it, and what its CLI was started
+/// with. The Polter tool names and the standing are added by the caller
+/// (`rpc.CapabilitiesView`).
+///
+/// Slices borrow from whatever the producer was given to allocate in.
+pub const Capabilities = struct {
+    /// Null when the terminal wears no role. Null, not an empty key:
+    /// "wears nothing" and "wears a role called nothing" are different.
+    role: ?Role,
+
+    started: Started,
+
+    /// Null unless `started` is `launched`.
+    cli: ?Cli,
+
+    /// No role: nothing is withheld, and `skills` / `slots` are empty
+    /// because nothing had to be listed -- not because nothing is there.
+    unfiltered: bool,
+
+    /// Polter skills the role names.
+    skills: []const []const u8,
+
+    /// Upstream MCP slots the role wants. Meaningless when `unfiltered`,
+    /// where every slot is wanted.
+    slots: []const []const u8,
+
+    /// `State.epoch`, so an answer can be compared with a later one.
+    epoch: u64,
+
+    /// A launch's Polter half still waiting for its agent to connect
+    /// (`PersonaStore.holdStanding`). Null when nothing is waiting -- which
+    /// includes one that ran out, because that one will never apply.
+    pending_standing: ?PendingStanding,
+
+    pub const PendingStanding = struct {
+        want: Polter,
+        /// How long the agent still has to connect.
+        expires_in_ms: u64,
+    };
+
+    pub const Role = struct {
+        key: []const u8,
+        /// Null when the library no longer has the role.
+        name: ?[]const u8,
+        deviated: bool,
+        builtin: bool,
+    };
+
+    pub const Started = enum {
+        /// Started from a role: the CLI half was applied. `cli` says how.
+        launched,
+        /// Wearing a role that was put on it while running. Its CLI was not
+        /// started from the role, so nothing of the role's CLI half is in
+        /// effect, and `cli` is null for that reason.
+        worn_hot,
+        /// No role, no launch.
+        none,
+    };
+
+    pub const Cli = struct {
+        /// The CLI's key (`claude-code`).
+        key: []const u8,
+        /// The role it was started in -- which is not necessarily the one
+        /// worn now: a role can be put on hot after the launch.
+        role: []const u8,
+        model: ?[]const u8,
+        args: []const []const u8,
+
+        /// Whether the per-item split below could be worked out.
+        inventory: Inventory,
+        /// A newer inventory is being read.
+        refreshing: bool,
+        /// Why the inventory is `failed`.
+        @"error": ?[]const u8,
+
+        /// Null unless `inventory` is `ok`. Never an empty split standing
+        /// in for "could not tell".
+        skills: ?Split,
+        mcp: ?Split,
+    };
+
+    pub const Inventory = enum {
+        ok,
+        /// Nothing has been read yet. Not "nothing is installed".
+        stale,
+        /// The CLI's adapter could not answer.
+        failed,
+        /// This machine lists no such CLI -- its plugin is gone, or was
+        /// never here.
+        absent,
+    };
+
+    pub const Split = struct {
+        kept: []const []const u8,
+        off: []const []const u8,
+    };
+};
+
 /// What a slot is doing, which is not the same question as whether the
 /// persona asked for it.
 ///

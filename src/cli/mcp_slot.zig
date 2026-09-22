@@ -1620,6 +1620,11 @@ const RealPolter = struct {
 
         self.vtable = undefined;
         self.vtable.personaSlot = personaSlot;
+        // `dispatch` tells the host about every caller before it judges
+        // the request (`rpc.arrived`), so this entry is reached by every
+        // call, not only by a persona one. Nothing is launched here, so
+        // there is nothing to claim.
+        self.vtable.agentArrived = agentArrived;
 
         self.server = try .init(alloc, io, path, .{
             .ctx = self,
@@ -1651,6 +1656,8 @@ const RealPolter = struct {
         self.epoch += 1;
     }
 
+    fn agentArrived(_: *anyopaque, _: *Bus, _: Bus.Id) void {}
+
     fn host(self: *RealPolter) rpc.Host {
         return .{ .ctx = self, .vtable = &self.vtable };
     }
@@ -1659,7 +1666,8 @@ const RealPolter = struct {
     ///
     /// ⚠️ **The gate above `dispatch` is what makes the half-filled vtable
     /// safe.** Only the two persona methods get through, and those reach
-    /// exactly one entry. Anything else is refused here rather than being
+    /// exactly two entries: `personaSlot`, and `agentArrived`, which
+    /// `dispatch` calls for every caller. Anything else is refused here rather than being
     /// allowed to call through a field that was never set -- which would
     /// not fail, it would jump somewhere.
     fn submit(ctx: *anyopaque, pending: *Server.Pending) void {

@@ -275,7 +275,6 @@
 "Some agents' configuration couldn't be read, so this count may be low" = "还有 agent 的配置没读到，这个数可能偏小";
 "Nothing has reported what this terminal hands out yet" = "还没有人报上来这个终端交出去了什么";
 "Agents are kept out of this terminal, so its role cannot be changed" = "不让 agent 碰此终端，所以它的角色也不能改";
-"The roles file could not be read, so the previous one is still in use" = "角色文件读不出来，现在用的还是上一份";
 "This menu is out of date. Close it and open it again" = "这份菜单已经过期了，关掉重开一次";
 "Polter isn't managing this server, so the agent sees all of it" = "Polter 没有接管这个服务器，所以 agent 看得到它的全部";
 
