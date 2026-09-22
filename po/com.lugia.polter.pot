@@ -1893,3 +1893,391 @@ msgstr ""
 #: windows/host/src/uia.rs:1168
 msgid "Menu"
 msgstr ""
+
+#: windows/host/src/menu.rs:353
+msgid "Role Library (beta)..."
+msgstr ""
+
+#: windows/host/src/roles.rs:336
+msgid "Polter Supervisor"
+msgstr ""
+
+#: windows/host/src/roles.rs:346
+msgid "Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it."
+msgstr ""
+
+#: windows/host/src/roles.rs:612
+msgid "Yours"
+msgstr ""
+
+#: windows/host/src/roles.rs:613
+msgid "This Project"
+msgstr ""
+
+#: windows/host/src/roles.rs:614
+msgid "This Project, Only on This Machine"
+msgstr ""
+
+#: windows/host/src/roles.rs:675
+msgid "This role can't be saved: it needs a name, and a key of lowercase letters, digits and dashes."
+msgstr ""
+
+#: windows/host/src/roles.rs:676
+msgid "The role library file has an error in it, so saving would overwrite it. Fix the file first."
+msgstr ""
+
+#: windows/host/src/roles.rs:677
+msgid "That role no longer exists."
+msgstr ""
+
+#: windows/host/src/roles.rs:678
+msgid "The role was written but didn't read back. This is a bug in Polter."
+msgstr ""
+
+#: windows/host/src/roles.rs:679
+msgid "The role library file couldn't be written."
+msgstr ""
+
+#: windows/host/src/roles.rs:680
+msgid "This role isn't set up for that agent CLI."
+msgstr ""
+
+#: windows/host/src/roles.rs:681
+msgid "This role isn't set up for any agent CLI yet. Pick one in the role library."
+msgstr ""
+
+#: windows/host/src/roles.rs:682
+msgid "This role is set up for more than one agent CLI. Choose one."
+msgstr ""
+
+#: windows/host/src/roles.rs:683
+msgid "A tab was opened but didn't appear in time, so nothing was started in it."
+msgstr ""
+
+#: windows/host/src/roles.rs:684
+msgid "Polter isn't ready yet."
+msgstr ""
+
+#: windows/host/src/roles.rs:689 windows/host/src/roles_ui.rs:2893
+msgid "This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own."
+msgstr ""
+
+#: windows/host/src/roles.rs:690
+msgid "Only you can make a role's terminal a supervisor, let it answer permission prompts, or keep agents out of it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:156 windows/host/src/roles_ui.rs:1872
+msgid "New Role"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:178
+#, rust-format
+msgid "{} Copy"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:234
+msgid "Another role already uses this key."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:357
+msgid "Unsaved changes"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:360
+msgid "Open a terminal window first; the new tab goes beside it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:385
+msgid "Basics"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:387
+#, rust-format
+msgid "Skills {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:391
+#, rust-format
+msgid "MCP {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:392
+msgid "MCP"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:419
+msgid "No agent CLI"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:450
+msgid "Reading the role library…"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:453
+msgid "No roles yet"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:454
+msgid "A role is a saved way to start an agent CLI: which skills and MCP servers it keeps, and what it's told."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:665
+msgid "Select a role, or make a new one."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:680
+msgid "Name"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:682 windows/host/src/roles_ui.rs:692
+msgid "Key"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:685
+msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:687
+msgid "Only lowercase letters, digits and dashes, at most 32."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:695
+msgid "Description"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:696
+msgid "What this role is for, for whoever picks it"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:699
+msgid "Instructions"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:710
+msgid "Added to the agent's system prompt when it starts. Leave it empty to add nothing. Drag the bottom edge to make the box taller."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:715
+msgid "Polter"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:716
+msgid "Make this terminal a supervisor"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:717
+msgid "Let the supervisor answer this terminal's permission prompts"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:718
+msgid "Shield it: no tool can reach it, a supervisor's included"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:720
+msgid "These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:723
+msgid "Hand it to the supervisor to watch"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:727
+msgid "The supervisor that started it, or the only one there is. With several and you starting it, nobody."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:728
+msgid "Report it as still after"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:736
+msgid "min"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:741
+msgid "Open in"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:745
+msgid "Here when at a prompt, else a new tab"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:745
+msgid "Always a new tab"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:756
+msgid "Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:760
+msgid "Agent CLIs"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:762 windows/host/src/roles_ui.rs:841
+msgid "Reading what's installed…"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:764
+msgid "No plugin that manages an agent CLI is installed and switched on."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:769
+#, rust-format
+msgid "{} isn't on this machine's PATH"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:772 windows/host/src/roles_ui.rs:848
+msgid "Its plugin couldn't list what's installed"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:781 windows/host/src/roles_ui.rs:841
+msgid "No plugin manages this CLI any more"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:791
+#, rust-format
+msgid "Starting {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:793
+msgid "Model"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:794
+msgid "The CLI's default"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:798
+msgid "Extra Arguments"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:802
+msgid "Added to the command line as typed. Quote anything with a space in it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:831
+msgid "Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:832
+msgid "Go to Basics"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:854
+msgid "Filter skills"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:856
+msgid "Keep skills installed later"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:857
+msgid "No skills are installed for this CLI."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:860
+msgid "Filter MCP servers"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:862
+msgid "Keep MCP servers added later"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:863
+msgid "No MCP servers are configured for this CLI."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:889
+#, rust-format
+msgid "{} of {} kept"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:891
+msgid "Keep All"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:892
+msgid "Turn All Off"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:899
+msgid "What happens to anything that isn't listed here yet, such as something installed tomorrow or a project's own."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:906
+msgid "Nothing matches the filter."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:921
+msgid "Keep or turn off everything in this group"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:949
+msgid "No description"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:965
+msgid "Show Less"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:965
+msgid "Show More"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:987
+#, rust-format
+msgid "Also in this role but not installed here: {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1782 windows/host/src/roles_ui.rs:2377
+msgid "Role Library"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1873 windows/host/src/roles_ui.rs:1877
+msgid "Duplicate"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1874 windows/host/src/roles_ui.rs:2536
+msgid "Delete"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1878 windows/host/src/roles_ui.rs:1955 windows/host/src/roles_ui.rs:1955
+msgid "Launch"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1878
+msgid "Revert"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2024
+msgid "The role library file has an error in it. Roles can't be changed here until it's fixed."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2439
+msgid "Save changes to this role?"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2440
+msgid "Your changes will be lost if you don't save them."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2442
+msgid "Don't Save"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2534
+#, rust-format
+msgid "Delete the role \"{}\"?"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2535
+msgid "Terminals wearing it are taken out of it. Agents already running keep running."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2586
+msgid "The role couldn't be launched"
+msgstr ""
+
+#: windows/host/src/personas.rs:166
+msgid "The roles file couldn't be read. Until it's fixed, what's in it isn't used."
+msgstr ""

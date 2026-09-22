@@ -348,7 +348,9 @@ const AGENTS_ROWS: &[Row] = &[
     sep(),
     // Host rows: the core knows nothing about either page.
     act(n_("Plugins…"), "__polter_plugin_page"),
-    act(n_("Role Editor (beta)..."), "__polter_persona_page"),
+    // The role library window (`roles_ui.rs`), as on macOS. Beta is part of
+    // the msgid, not appended in code: see `f63c185dd`.
+    act(n_("Role Library (beta)..."), "__polter_role_library"),
 ];
 
 const GOTO_SPLIT_ROWS: &[Row] = &[
@@ -494,11 +496,12 @@ fn run_host(frame: HWND, action: &str) -> bool {
             crate::settings_ui::request_keybinds();
             true
         }
-        // The personas page. The core owns the personas themselves (the
-        // contract puts storage and the closed-set check there); this opens
-        // the window that shows them.
-        "__polter_persona_page" => {
-            crate::personas_ui::request_toggle();
+        // The role library. The core owns the roles themselves (storage and
+        // validation are there, see `roles.rs`); this opens the window that
+        // shows and edits them. The old personas page is still reached from
+        // the tab menu's role submenu (`personas::Pick::Editor`).
+        "__polter_role_library" => {
+            crate::roles_ui::open(frame);
             true
         }
         // The stack, and the tab it makes, both live in the host: see
@@ -548,7 +551,7 @@ const HOST_ACTIONS: &[&str] = &[
     // Windows; it cannot be seen from a macOS `cargo check`, because the
     // whole crate's tests only compile for a Windows target.
     "__polter_keybinds",
-    "__polter_persona_page",
+    "__polter_role_library",
 ];
 
 // ------------------------------------------------------- the core's actions

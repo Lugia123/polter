@@ -1343,21 +1343,37 @@ pub struct Api {
     /// the host needed in order to use them. See `i18n.rs`.
     pub translate: unsafe extern "C" fn(*const c_char) -> *const c_char,
 
-    // -- personas. Contract §3.3 / §3.4 / §3.5.
+    // -- personas. Contract §3.3 / §3.5. (§3.4's `ghostty_app_persona_hosts`
+    // was read only by the old editor page, and went with it.)
     //
-    // All three follow one rule: **write what fits and return the real
+    // Both follow one rule: **write what fits and return the real
     // total**, so a caller asks with `cap = 0` first and allocates once.
-    // `buf` may be null when `cap` is zero. The two JSON ones return a byte
-    // count that does **not** count the terminating NUL, and write one after
-    // the text when it fits -- so they can be read by length or as a C
+    // `buf` may be null when `cap` is zero. The JSON one returns a byte
+    // count that does **not** count the terminating NUL, and writes one after
+    // the text when it fits -- so it can be read by length or as a C
     // string, and this host reads by length.
     /// `ghostty_app_personas`. Rows belong to the core and are valid until
     /// the next call or the next config reload; copy them at once.
     pub app_personas: unsafe extern "C" fn(App, *mut PersonaRow, usize) -> usize,
-    /// `ghostty_app_persona_hosts`. JSON; `stale` is **not** an empty list.
-    pub app_persona_hosts: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
     /// `ghostty_surface_persona_face`. JSON, per terminal.
     pub surface_persona_face: unsafe extern "C" fn(Surface, *mut u8, usize) -> usize,
+
+    // -- the role library (`roles.rs`). Same buffer rule as above for the
+    // two JSON ones; the bool ones write the failing error's name into the
+    // last buffer, NUL-terminated and cut to its cap, and change nothing
+    // when they return false. All run on the app thread.
+    /// `ghostty_app_persona_catalog`. JSON: `{loaded,error,path,personas}`.
+    pub app_persona_catalog: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_app_persona_put(app, json, len, err, cap)`.
+    pub app_persona_put: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_persona_delete(app, key, len, err, cap)`.
+    pub app_persona_delete: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_agent_clis(app, refresh, buf, cap)`. JSON:
+    /// `{stale,refreshing,clis}`; never runs an adapter on this thread.
+    pub app_agent_clis: unsafe extern "C" fn(App, bool, *mut u8, usize) -> usize,
+    /// `ghostty_surface_persona_launch(surface, key, len, cli, len, err, cap)`.
+    pub surface_persona_launch:
+        unsafe extern "C" fn(Surface, *const u8, usize, *const u8, usize, *mut u8, usize) -> bool,
 
     // from ghostty-vt.dll -- proves both DLLs are loaded and callable
     pub codepoint_width: unsafe extern "C" fn(u32) -> u8,

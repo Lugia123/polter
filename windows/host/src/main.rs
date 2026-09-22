@@ -120,7 +120,6 @@ mod overlay;
 mod osk;
 mod palette;
 mod personas;
-mod personas_ui;
 mod plugins;
 mod polterclose;
 mod project;
@@ -130,6 +129,8 @@ mod settings_ui;
 mod quick;
 mod reload;
 mod reopen;
+mod roles;
+mod roles_ui;
 mod session;
 mod winid;
 mod winnav;
@@ -4845,8 +4846,12 @@ fn load_api() -> Option<Api> {
             surface_free: sym!(internal, "ghostty_surface_free"),
             surface_binding_action: sym!(internal, "ghostty_surface_binding_action"),
             app_personas: sym!(internal, "ghostty_app_personas"),
-            app_persona_hosts: sym!(internal, "ghostty_app_persona_hosts"),
             surface_persona_face: sym!(internal, "ghostty_surface_persona_face"),
+            app_persona_catalog: sym!(internal, "ghostty_app_persona_catalog"),
+            app_persona_put: sym!(internal, "ghostty_app_persona_put"),
+            app_persona_delete: sym!(internal, "ghostty_app_persona_delete"),
+            app_agent_clis: sym!(internal, "ghostty_app_agent_clis"),
+            surface_persona_launch: sym!(internal, "ghostty_surface_persona_launch"),
             surface_complete_clipboard_request: sym!(
                 internal,
                 "ghostty_surface_complete_clipboard_request"
@@ -6403,7 +6408,6 @@ fn main() {
     notify::init(hinst);
     divider::init(hinst);
     settings_ui::init(hinst);
-    personas_ui::init(hinst);
     // **After the API is loaded**, because the provider asks it questions the
     // moment a menu is built.
     personas::install_core_provider();

@@ -1929,6 +1929,394 @@ msgstr "标签颜色"
 msgid "Menu"
 msgstr "菜单"
 
+#: windows/host/src/menu.rs:353
+msgid "Role Library (beta)..."
+msgstr "角色库（beta）…"
+
+#: windows/host/src/roles.rs:336
+msgid "Polter Supervisor"
+msgstr "Polter 总管"
+
+#: windows/host/src/roles.rs:346
+msgid "Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it."
+msgstr "把启动它的终端设为本窗口的总管：拆分工作、派活、验收。"
+
+#: windows/host/src/roles.rs:612
+msgid "Yours"
+msgstr "你自己的"
+
+#: windows/host/src/roles.rs:613
+msgid "This Project"
+msgstr "本项目"
+
+#: windows/host/src/roles.rs:614
+msgid "This Project, Only on This Machine"
+msgstr "本项目（仅本机）"
+
+#: windows/host/src/roles.rs:675
+msgid "This role can't be saved: it needs a name, and a key of lowercase letters, digits and dashes."
+msgstr "这个角色存不了：它需要一个名字，以及只含小写字母、数字和短横线的 key。"
+
+#: windows/host/src/roles.rs:676
+msgid "The role library file has an error in it, so saving would overwrite it. Fix the file first."
+msgstr "角色库文件里有错误，现在保存会把它覆盖掉。请先修好这个文件。"
+
+#: windows/host/src/roles.rs:677
+msgid "That role no longer exists."
+msgstr "这个角色已经不存在了。"
+
+#: windows/host/src/roles.rs:678
+msgid "The role was written but didn't read back. This is a bug in Polter."
+msgstr "角色已写入，但读回失败。这是 Polter 的缺陷。"
+
+#: windows/host/src/roles.rs:679
+msgid "The role library file couldn't be written."
+msgstr "角色库文件写不进去。"
+
+#: windows/host/src/roles.rs:680
+msgid "This role isn't set up for that agent CLI."
+msgstr "这个角色没有为该 agent CLI 配置。"
+
+#: windows/host/src/roles.rs:681
+msgid "This role isn't set up for any agent CLI yet. Pick one in the role library."
+msgstr "这个角色还没选任何 agent CLI，请在角色库里选一个。"
+
+#: windows/host/src/roles.rs:682
+msgid "This role is set up for more than one agent CLI. Choose one."
+msgstr "这个角色配了不止一个 agent CLI，请选一个。"
+
+#: windows/host/src/roles.rs:683
+msgid "A tab was opened but didn't appear in time, so nothing was started in it."
+msgstr "标签页已打开，但没有及时出现，所以里面什么都没启动。"
+
+#: windows/host/src/roles.rs:684
+msgid "Polter isn't ready yet."
+msgstr "Polter 还没准备好。"
+
+#: windows/host/src/roles.rs:689 windows/host/src/roles_ui.rs:2893
+msgid "This role comes with Polter and can't be changed or deleted. Duplicate it to make one of your own."
+msgstr "这是 Polter 自带的角色，不能修改或删除。复制一份就能改成你自己的。"
+
+#: windows/host/src/roles.rs:690
+msgid "Only you can make a role's terminal a supervisor, let it answer permission prompts, or keep agents out of it."
+msgstr "只有你能把角色的终端设为总管、允许它回答权限提示，或把 agent 挡在它外面。"
+
+#: windows/host/src/roles_ui.rs:156 windows/host/src/roles_ui.rs:1872
+msgid "New Role"
+msgstr "新角色"
+
+#: windows/host/src/roles_ui.rs:178
+#, rust-format
+msgid "{} Copy"
+msgstr "{} 副本"
+
+#: windows/host/src/roles_ui.rs:234
+msgid "Another role already uses this key."
+msgstr "已经有别的角色用了这个 key。"
+
+#: windows/host/src/roles_ui.rs:357
+msgid "Unsaved changes"
+msgstr "有未保存的修改"
+
+#: windows/host/src/roles_ui.rs:360
+msgid "Open a terminal window first; the new tab goes beside it."
+msgstr "请先打开一个终端窗口，新标签页会开在它旁边。"
+
+#: windows/host/src/roles_ui.rs:385
+msgid "Basics"
+msgstr "基本信息"
+
+#: windows/host/src/roles_ui.rs:387
+#, rust-format
+msgid "Skills {}"
+msgstr "Skills {}"
+
+#: windows/host/src/roles_ui.rs:391
+#, rust-format
+msgid "MCP {}"
+msgstr "MCP {}"
+
+#: windows/host/src/roles_ui.rs:392
+msgid "MCP"
+msgstr "MCP"
+
+#: windows/host/src/roles_ui.rs:419
+msgid "No agent CLI"
+msgstr "未选 agent CLI"
+
+#: windows/host/src/roles_ui.rs:450
+msgid "Reading the role library…"
+msgstr "正在读取角色库…"
+
+#: windows/host/src/roles_ui.rs:453
+msgid "No roles yet"
+msgstr "还没有角色"
+
+#: windows/host/src/roles_ui.rs:454
+msgid "A role is a saved way to start an agent CLI: which skills and MCP servers it keeps, and what it's told."
+msgstr "角色是一套保存好的 agent CLI 启动方式：保留哪些 skill 和 MCP 服务器、启动时告诉它什么。"
+
+#: windows/host/src/roles_ui.rs:665
+msgid "Select a role, or make a new one."
+msgstr "选一个角色，或者新建一个。"
+
+#: windows/host/src/roles_ui.rs:680
+msgid "Name"
+msgstr "名称"
+
+#: windows/host/src/roles_ui.rs:682 windows/host/src/roles_ui.rs:692
+msgid "Key"
+msgstr "Key"
+
+#: windows/host/src/roles_ui.rs:685
+msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
+msgstr "只能用小写字母、数字和短横线，保存后不能再改。"
+
+#: windows/host/src/roles_ui.rs:687
+msgid "Only lowercase letters, digits and dashes, at most 32."
+msgstr "只能用小写字母、数字和短横线，最多 32 个字符。"
+
+#: windows/host/src/roles_ui.rs:695
+msgid "Description"
+msgstr "说明"
+
+#: windows/host/src/roles_ui.rs:696
+msgid "What this role is for, for whoever picks it"
+msgstr "这个角色是干什么的，写给挑选它的人看"
+
+#: windows/host/src/roles_ui.rs:699
+msgid "Instructions"
+msgstr "指令"
+
+#: windows/host/src/roles_ui.rs:710
+msgid "Added to the agent's system prompt when it starts. Leave it empty to add nothing. Drag the bottom edge to make the box taller."
+msgstr "启动时附加到 agent 的系统提示词后面。留空就什么都不加。拖动下边缘可以把输入框拉高。"
+
+#: windows/host/src/roles_ui.rs:715
+msgid "Polter"
+msgstr "Polter"
+
+#: windows/host/src/roles_ui.rs:716
+msgid "Make this terminal a supervisor"
+msgstr "将此终端设为总管"
+
+#: windows/host/src/roles_ui.rs:717
+msgid "Let the supervisor answer this terminal's permission prompts"
+msgstr "允许总管替你回答此终端的权限问题"
+
+#: windows/host/src/roles_ui.rs:718
+msgid "Shield it: no tool can reach it, a supervisor's included"
+msgstr "开启护盾：任何工具都碰不到它，总管也不行"
+
+#: windows/host/src/roles_ui.rs:720
+msgid "These three give the terminal something, so only you can set them, here. A supervisor that edits roles can't change them."
+msgstr "这三项会给终端授予权限，所以只有你能在这里设置。能编辑角色的总管也改不了它们。"
+
+#: windows/host/src/roles_ui.rs:723
+msgid "Hand it to the supervisor to watch"
+msgstr "交给总管监管"
+
+#: windows/host/src/roles_ui.rs:727
+msgid "The supervisor that started it, or the only one there is. With several and you starting it, nobody."
+msgstr "交给启动它的那个总管；如果是你启动的，就交给唯一的那个总管。有多个总管时不交给任何人。"
+
+#: windows/host/src/roles_ui.rs:728
+msgid "Report it as still after"
+msgstr "静止多久算卡住"
+
+#: windows/host/src/roles_ui.rs:736
+msgid "min"
+msgstr "分钟"
+
+#: windows/host/src/roles_ui.rs:741
+msgid "Open in"
+msgstr "打开位置"
+
+#: windows/host/src/roles_ui.rs:745
+msgid "Here when at a prompt, else a new tab"
+msgstr "在提示符处就地打开，否则开新标签页"
+
+#: windows/host/src/roles_ui.rs:745
+msgid "Always a new tab"
+msgstr "始终在新标签页中打开"
+
+#: windows/host/src/roles_ui.rs:756
+msgid "Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these."
+msgstr "只在用这个角色启动 agent CLI 时生效一次。给已经在运行的终端换上这个角色，只会切换它的工具，不会改这些设置。"
+
+#: windows/host/src/roles_ui.rs:760
+msgid "Agent CLIs"
+msgstr "Agent CLI"
+
+#: windows/host/src/roles_ui.rs:762 windows/host/src/roles_ui.rs:841
+msgid "Reading what's installed…"
+msgstr "正在读取已安装的内容…"
+
+#: windows/host/src/roles_ui.rs:764
+msgid "No plugin that manages an agent CLI is installed and switched on."
+msgstr "没有安装并启用任何管理 agent CLI 的插件。"
+
+#: windows/host/src/roles_ui.rs:769
+#, rust-format
+msgid "{} isn't on this machine's PATH"
+msgstr "本机 PATH 里找不到 {}"
+
+#: windows/host/src/roles_ui.rs:772 windows/host/src/roles_ui.rs:848
+msgid "Its plugin couldn't list what's installed"
+msgstr "它的插件没能列出已安装的内容"
+
+#: windows/host/src/roles_ui.rs:781 windows/host/src/roles_ui.rs:841
+msgid "No plugin manages this CLI any more"
+msgstr "已经没有插件管理这个 CLI 了"
+
+#: windows/host/src/roles_ui.rs:791
+#, rust-format
+msgid "Starting {}"
+msgstr "启动 {}"
+
+#: windows/host/src/roles_ui.rs:793
+msgid "Model"
+msgstr "模型"
+
+#: windows/host/src/roles_ui.rs:794
+msgid "The CLI's default"
+msgstr "CLI 默认"
+
+#: windows/host/src/roles_ui.rs:798
+msgid "Extra Arguments"
+msgstr "额外参数"
+
+#: windows/host/src/roles_ui.rs:802
+msgid "Added to the command line as typed. Quote anything with a space in it."
+msgstr "按原样追加到命令行。含空格的参数请加引号。"
+
+#: windows/host/src/roles_ui.rs:831
+msgid "Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
+msgstr "先在「基本信息」里选一个 agent CLI：skill 和 MCP 服务器是属于某个 CLI 的。"
+
+#: windows/host/src/roles_ui.rs:832
+msgid "Go to Basics"
+msgstr "去基本信息"
+
+#: windows/host/src/roles_ui.rs:854
+msgid "Filter skills"
+msgstr "筛选 skill"
+
+#: windows/host/src/roles_ui.rs:856
+msgid "Keep skills installed later"
+msgstr "以后新装的 skill 默认保留"
+
+#: windows/host/src/roles_ui.rs:857
+msgid "No skills are installed for this CLI."
+msgstr "这个 CLI 没有安装任何 skill。"
+
+#: windows/host/src/roles_ui.rs:860
+msgid "Filter MCP servers"
+msgstr "筛选 MCP 服务器"
+
+#: windows/host/src/roles_ui.rs:862
+msgid "Keep MCP servers added later"
+msgstr "以后新加的 MCP 服务器默认保留"
+
+#: windows/host/src/roles_ui.rs:863
+msgid "No MCP servers are configured for this CLI."
+msgstr "这个 CLI 没有配置任何 MCP 服务器。"
+
+#: windows/host/src/roles_ui.rs:889
+#, rust-format
+msgid "{} of {} kept"
+msgstr "保留 {} / {}"
+
+#: windows/host/src/roles_ui.rs:891
+msgid "Keep All"
+msgstr "全部保留"
+
+#: windows/host/src/roles_ui.rs:892
+msgid "Turn All Off"
+msgstr "全部关闭"
+
+#: windows/host/src/roles_ui.rs:899
+msgid "What happens to anything that isn't listed here yet, such as something installed tomorrow or a project's own."
+msgstr "决定这里还没列出的东西怎么处理，比如明天新装的、或某个项目自带的。"
+
+#: windows/host/src/roles_ui.rs:906
+msgid "Nothing matches the filter."
+msgstr "没有符合筛选条件的项。"
+
+#: windows/host/src/roles_ui.rs:921
+msgid "Keep or turn off everything in this group"
+msgstr "整组保留或关闭"
+
+#: windows/host/src/roles_ui.rs:949
+msgid "No description"
+msgstr "没有说明"
+
+#: windows/host/src/roles_ui.rs:965
+msgid "Show Less"
+msgstr "收起"
+
+#: windows/host/src/roles_ui.rs:965
+msgid "Show More"
+msgstr "展开"
+
+#: windows/host/src/roles_ui.rs:987
+#, rust-format
+msgid "Also in this role but not installed here: {}"
+msgstr "角色里还提到了本机没装的：{}"
+
+#: windows/host/src/roles_ui.rs:1782 windows/host/src/roles_ui.rs:2377
+msgid "Role Library"
+msgstr "角色库"
+
+#: windows/host/src/roles_ui.rs:1873 windows/host/src/roles_ui.rs:1877
+msgid "Duplicate"
+msgstr "复制"
+
+#: windows/host/src/roles_ui.rs:1874 windows/host/src/roles_ui.rs:2536
+msgid "Delete"
+msgstr "删除"
+
+#: windows/host/src/roles_ui.rs:1878 windows/host/src/roles_ui.rs:1955 windows/host/src/roles_ui.rs:1955
+msgid "Launch"
+msgstr "启动"
+
+#: windows/host/src/roles_ui.rs:1878
+msgid "Revert"
+msgstr "还原"
+
+#: windows/host/src/roles_ui.rs:2024
+msgid "The role library file has an error in it. Roles can't be changed here until it's fixed."
+msgstr "角色库文件里有错误。修好之前，这里不能修改角色。"
+
+#: windows/host/src/roles_ui.rs:2439
+msgid "Save changes to this role?"
+msgstr "保存对这个角色的修改吗？"
+
+#: windows/host/src/roles_ui.rs:2440
+msgid "Your changes will be lost if you don't save them."
+msgstr "不保存的话，修改会丢失。"
+
+#: windows/host/src/roles_ui.rs:2442
+msgid "Don't Save"
+msgstr "不保存"
+
+#: windows/host/src/roles_ui.rs:2534
+#, rust-format
+msgid "Delete the role \"{}\"?"
+msgstr "删除角色「{}」？"
+
+#: windows/host/src/roles_ui.rs:2535
+msgid "Terminals wearing it are taken out of it. Agents already running keep running."
+msgstr "正在用它的终端会被取消这个角色；已经在跑的 agent 会继续跑。"
+
+#: windows/host/src/roles_ui.rs:2586
+msgid "The role couldn't be launched"
+msgstr "无法用这个角色启动"
+
+#: windows/host/src/personas.rs:166
+msgid "The roles file couldn't be read. Until it's fixed, what's in it isn't used."
+msgstr "角色文件读不出来，修好之前里面的内容不会生效。"
+
 # Three ASCII dots, matching the agreed wording. Note this catalogue already carries «Rename Tab...» against «Rename Tab…» as two different things; do not merge these on the strength of them looking alike.
 #~ msgid "Role Editor..."
 #~ msgstr "角色编辑器…"

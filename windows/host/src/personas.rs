@@ -123,7 +123,9 @@ impl HostClass {
 /// and write a persona that is already there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
-    /// `personas.json` did not load. The previous catalogue is still in force.
+    /// `personas.json` did not load. Whether an earlier good version is
+    /// still in force depends on whether one was ever read -- on the first
+    /// read of a process there is none -- so nothing here may claim it.
     Parse,
     /// A menu built against an older roster sent an id that no longer names
     /// anything (§0.5).
@@ -156,7 +158,12 @@ impl ErrorKind {
 pub fn error_lead_in(kind: ErrorKind) -> Option<String> {
     match kind {
         ErrorKind::Parse => {
-            Some(tr("The roles file could not be read, so the previous one is still in use"))
+            // ⚠️ **Says nothing about an earlier version.** It used to say
+            // «the previous one is still in use», and the test machine showed
+            // that sentence on a first read, when there is no previous one.
+            // What is true either way is that the file as it stands is not
+            // being used.
+            Some(tr("The roles file couldn't be read. Until it's fixed, what's in it isn't used."))
         }
         ErrorKind::StaleId => Some(tr("This menu is out of date. Close it and open it again")),
         ErrorKind::Unknown => None,
@@ -207,252 +214,6 @@ impl Standing {
     }
 }
 
-/// What the slot process behind one MCP entry is doing (§4.3).
-///
-/// ⚠️ **This exists because `enabled` alone made two different things look
-/// identical.** «the user switched argus off» and «the persona grants argus
-/// but that server did not start» were both `enabled:false`, so the editor
-/// could only draw one row for them -- and §4.3 says that shape sends the
-/// user off to edit the persona when what they need is to go and look at the
-/// server.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SlotState {
-    /// Outside Polter: never got an answer, so the slot passes the upstream
-    /// through verbatim (§4.2). **Not a failure** -- it is the state a
-    /// terminal the user started outside Ghostty is supposed to be in.
-    Transparent,
-    Granted,
-    Withheld,
-    /// Granted, and the upstream is not running. The one state here that is
-    /// about something being wrong.
-    Broken,
-}
-
-/// One thing the terminal either hands out or does not: a skill, or an MCP
-/// slot.
-///
-/// **Two bits, not one.** `on` is what this terminal is handing out now;
-/// `in_persona` is what the persona it was given declares. The pair is the
-/// whole of §5.2's "preset, plus a departure from it" -- one bit could say
-/// *that* something had changed but never *which way*, and the two ways need
-/// opposite actions from the user to undo.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Item {
-    /// §3.5's `id`, `<roster>-<index>`. **Carried and handed back verbatim**:
-    /// the contract says the apprt must not build one, because building one
-    /// would make this a second place that knows the format -- and the format
-    /// carries the roster number that makes a click on a stale menu
-    /// detectable.
-    pub id: String,
-    pub name: String,
-    /// In the effective set right now.
-    pub on: bool,
-    /// The persona this terminal was given asks for it. §3.5's `in_persona`,
-    /// **computed by the core** rather than by comparing catalogues out here:
-    /// two readers means two rules, and the lax one wins.
-    pub in_persona: bool,
-    /// §4.3, for an MCP slot. `None` for a skill, which has no process behind
-    /// it and therefore none of these states.
-    pub slot: Option<SlotState>,
-}
-
-/// Which way an item departs from its persona.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Departure {
-    /// Not in the persona; switched on here.
-    AddedByHand,
-    /// In the persona; switched off here.
-    SwitchedOffByHand,
-}
-
-impl Item {
-    /// ⚠️ **Two directions, never one flag.** Merging these into "changed"
-    /// loses the only thing the user needs in order to put it back: one is
-    /// undone by switching something off, the other by switching it on.
-    pub fn departure(&self) -> Option<Departure> {
-        match (self.on, self.in_persona) {
-            (true, false) => Some(Departure::AddedByHand),
-            (false, true) => Some(Departure::SwitchedOffByHand),
-            _ => None,
-        }
-    }
-
-    /// The sentence that belongs beside this row, if any.
-    ///
-    /// ⚠️ **`Broken` is checked first, and the order is the whole point.** An
-    /// item the persona grants and whose server is not running is
-    /// `in_persona` and `!on`, so by the departure rule alone it would read
-    /// «switched off by hand» -- blaming the user for something they did not
-    /// do, and sending them to the persona instead of to the server. That is
-    /// the misattribution §4.3 exists to stop, and it is one `if` away at all
-    /// times.
-    pub fn aside(&self) -> String {
-        // **Only two of the four slot states say anything**, which is W3's
-        // call and it is right: `granted` and `withheld` are what the
-        // checkbox beside them already shows, and a sentence on every row is
-        // noise that drowns the one row that matters. On a build where every
-        // slot is `withheld` -- which is today -- a note per row would bury
-        // `broken` exactly where §4.3 needs it seen.
-        match self.slot {
-            Some(SlotState::Broken) => {
-                return tr("This server didn't start. Your role isn't what's withholding it.")
-            }
-            Some(SlotState::Transparent) => {
-                return tr("Polter isn't managing this server, so the agent sees all of it")
-            }
-            // `Granted` and `Withheld` say nothing: the checkbox does.
-            _ => {}
-        }
-        self.departure().map(departure_note).unwrap_or_default()
-    }
-}
-
-impl Item {
-    /// ⚠️ **Whether this row's sentence is a warning rather than a note.**
-    ///
-    /// Only `Transparent`, and the reason is that the editor is the one place
-    /// that state cannot legitimately appear. §4.2 says a slot passes the
-    /// upstream through **only when it never got an answer**, which is a
-    /// terminal started outside Ghostty -- and this window only exists inside
-    /// Ghostty. So a transparent row here means a slot that *is* inside
-    /// Polter fell through to pass-through, which is the hole §4.2 was
-    /// written to close: anyone who can make Polter unreachable gets every
-    /// upstream tool.
-    ///
-    /// Read outside the editor the same sentence is an ordinary statement of
-    /// fact. **Here it is a symptom**, and drawing it like the others would
-    /// let the one row that means something wrong sit quietly among rows that
-    /// do not.
-    pub fn aside_is_warning(&self) -> bool {
-        self.slot == Some(SlotState::Transparent)
-    }
-}
-
-/// The sentence that goes beside a departed item.
-pub fn departure_note(d: Departure) -> String {
-    match d {
-        Departure::AddedByHand => tr("Added by hand"),
-        Departure::SwitchedOffByHand => tr("Switched off by hand"),
-    }
-}
-
-/// What one terminal is handing out, §5.2's "effective set".
-///
-/// **Three states, like everything else here.** "nobody has read the face
-/// yet" and "the face was read and it hands out nothing" send the user to
-/// different places, and the agreed wording has a separate sentence for each.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Handout {
-    NotReported,
-    Known { skills: Vec<Item>, mcp: Vec<Item> },
-}
-
-impl Default for Handout {
-    /// **`NotReported`, not an empty pair.** The default is what a build with
-    /// nothing wired up answers, and that is precisely "nobody has said".
-    fn default() -> Handout {
-        Handout::NotReported
-    }
-}
-
-impl Handout {
-    /// §5.2: the effective set no longer matches the persona it came from.
-    ///
-    /// **Derived rather than carried as a third field.** A `deviated` bool
-    /// beside these lists is a second place for one fact, and the two drift --
-    /// which here would mean a tab saying «Archer» over a page showing
-    /// something switched off by hand.
-    pub fn deviated(&self) -> bool {
-        match self {
-            Handout::NotReported => false,
-            Handout::Known { skills, mcp } => {
-                skills.iter().chain(mcp.iter()).any(|i| i.departure().is_some())
-            }
-        }
-    }
-
-    /// Read, and there is nothing in it. **Not the same as `NotReported`.**
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Handout::Known { skills, mcp } if skills.is_empty() && mcp.is_empty())
-    }
-}
-
-/// How well one part of one agent's installation could be read.
-///
-/// **Four states, not a list that might be empty.** `inventory.zig` states
-/// the reason and this host copies it rather than reducing it: the four send
-/// the user to four different places, and three of them would quietly become
-/// "nothing here" if this were a `Vec`. §4 puts this pane on screen so the
-/// user can see *where a persona stops*; a pane that says "nothing" when it
-/// means "we never looked" is worse than no pane at all.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Section {
-    /// Nobody has confirmed where this agent keeps this kind of thing.
-    /// **Not evidence of anything** -- our gap, not theirs. The user who
-    /// reads it should go and check the path, not go and install something.
-    UnknownLocation,
-    /// The path is known and there is nothing at it. The ordinary answer for
-    /// an agent that is not installed, and **not a problem**.
-    Absent,
-    /// Read. An empty list here really does mean empty, which `Absent` does
-    /// not.
-    Read(Vec<String>),
-    /// It is there and could not be read. The one to put in front of the
-    /// user, with the core's own detail.
-    Failed(String),
-}
-
-impl Section {
-    /// The sentence for a section with nothing to list, or `None` when there
-    /// is a list to draw instead.
-    ///
-    /// ⚠️ **`Absent` and `Read(vec![])` deliberately share a sentence.** To
-    /// the user they are one fact -- there is nothing installed here -- and
-    /// `inventory.zig` says so where it defines them. The three that must
-    /// stay apart are "we never looked", "we looked and it is empty" and "we
-    /// looked and could not read it".
-    pub fn note(&self) -> Option<String> {
-        match self {
-            Section::UnknownLocation => Some(tr("Nobody has checked where this agent keeps these yet")),
-            Section::Absent => Some(tr("Looked there, and nothing is installed")),
-            Section::Read(v) if v.is_empty() => Some(tr("Looked there, and nothing is installed")),
-            Section::Read(_) => None,
-            Section::Failed(_) => Some(tr("Couldn't read what's installed here")),
-        }
-    }
-}
-
-/// One agent CLI's installation, as §3.4's JSON describes it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostInventory {
-    /// `claude-code`. The key the core uses.
-    pub key: String,
-    /// What to show. The core's own label, not a table here.
-    pub label: String,
-    pub plugins: Section,
-    pub skills: Section,
-    pub mcp: Section,
-}
-
-/// What is installed on this machine outside Polter's reach (§4).
-///
-/// **`stale` is not an empty list**, which the C header says in as many
-/// words. An interface that draws them the same way tells the user nothing is
-/// installed here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Inventory {
-    NotReported,
-    Known {
-        hosts: Vec<HostInventory>,
-        /// §4.1's `complete`. False means some agent's configuration could
-        /// not be read, so **anything counted from this is a lower bound**.
-        /// Said on screen rather than swallowed: a number computed from an
-        /// incomplete scan looks exactly like one computed from a complete
-        /// one.
-        complete: bool,
-    },
-}
-
 // ---------------------------------------------------------------- provider
 
 /// Where the facts come from.
@@ -469,14 +230,6 @@ pub trait Provider: Send + Sync {
     /// defined» in front of a user whose file simply has not been read.
     fn catalogue(&self, surface: Surface) -> Catalogue;
     fn standing(&self, surface: Surface) -> Standing;
-    /// What this terminal is handing out right now, §5.2.
-    fn effective(&self, surface: Surface) -> Handout;
-    /// §4's read-only list. **Provided, never gathered here**: this host
-    /// would be a fourth reader of files whose layout lives in the
-    /// provisioning plugins, and a fourth reader is a fourth thing to keep in
-    /// agreement.
-    fn installed(&self) -> Inventory;
-
     /// Hand one binding string to `ghostty_surface_binding_action` for this
     /// terminal, and say what came of it.
     ///
@@ -491,13 +244,6 @@ pub trait Provider: Send + Sync {
     /// log; a bool would make a cold agent's successful switch and a refusal
     /// look the same.
     fn send(&self, surface: Surface, action: &str) -> SetOutcome;
-}
-
-/// Which of the two lists an item belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Skill,
-    Mcp,
 }
 
 /// What came back from asking for a switch.
@@ -560,48 +306,12 @@ pub fn standing(surface: Surface) -> Standing {
     }
 }
 
-/// What this terminal is handing out. Empty when nothing is wired up, which
-/// the page distinguishes from "the persona asks for nothing" by asking
-/// [`catalogue`] as well.
-pub fn effective(surface: Surface) -> Handout {
-    match slot().lock() {
-        Ok(g) => g.as_ref().map(|p| p.effective(surface)).unwrap_or_default(),
-        Err(_) => Handout::default(),
-    }
-}
-
-/// §4's read-only list, or the fact that nobody has reported one.
-pub fn installed() -> Inventory {
-    match slot().lock() {
-        Ok(g) => g.as_ref().map(|p| p.installed()).unwrap_or(Inventory::NotReported),
-        Err(_) => Inventory::NotReported,
-    }
-}
-
 /// Hand one action string to the core.
 pub fn send(surface: Surface, action: &str) -> SetOutcome {
     match slot().lock() {
         Ok(g) => g.as_ref().map(|p| p.send(surface, action)).unwrap_or(SetOutcome::NotWired),
         Err(_) => SetOutcome::NotWired,
     }
-}
-
-/// Switch one item of the effective set. This is the path that produces a
-/// departure, §5.2.
-///
-/// The id is checked on the way past and **still sent** if it fails: see
-/// [`id_is_spellable`] for why saying so is this host's job and refusing is
-/// not.
-pub fn toggle(surface: Surface, kind: Kind, id: &str, on: bool) -> SetOutcome {
-    if !id_is_spellable(id) {
-        // process-wide: an id the core minted that does not look like
-        // `<epoch>-<index>`. The action goes anyway; this line is the only
-        // thing that would say the format had changed under us.
-        // absence: proves nothing -- silent on every healthy machine, and
-        // equally silent on one where nobody touched the editor.
-        crate::plogf!("[persona] id {id:?} is not <epoch>-<index>; the format may have changed");
-    }
-    send(surface, &action_toggle(kind, id, on))
 }
 
 // ------------------------------------------------------------------ labels
@@ -656,7 +366,7 @@ pub fn effect_note(c: HostClass) -> Option<String> {
 pub enum Pick {
     /// Set this terminal's persona, or clear it with `None`.
     Set(Option<String>),
-    /// Open the persona editor.
+    /// Open the role library (`roles_ui.rs`).
     Editor,
     /// A row that only says something. Greyed; picking it does nothing, and
     /// it exists so that the *reason* there is nothing to pick is on screen
@@ -823,7 +533,7 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
         // against `…`: `po/zh_CN.po` has a comment on «Rename Tab...» saying
         // the two are different actions and must not be merged. So the
         // spelling here is copied rather than tidied.
-        text: tr("Role Editor (beta)..."),
+        text: tr("Role Library (beta)..."),
         separator: false,
         checked: false,
         enabled: true,
@@ -856,14 +566,10 @@ pub fn key_is_spellable(key: &str) -> bool {
         && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// The four action strings, §3.2. **The only place this host spells one.**
-///
-/// ⚠️ **`on,` / `off,` and not `+` / `-`.** The contract's v2 changed this,
-/// and the reason is a gate in this crate: `menu.rs`'s
-/// `action_strings_have_a_binding_shape` allows `[a-z0-9_:,-]`, so `-` passes
-/// and `+` does not. With the old spelling «switch off» would have gone green
-/// and «switch on» red -- and half-green is the state that reads most like
-/// working.
+/// Setting and clearing a terminal's role, §3.2. **The only place this host
+/// spells either.** The per-item `poltergeist_persona_skill` / `_mcp` switches
+/// went with the old editor page, as on macOS (`63ab92741`); the core still
+/// has them.
 pub fn action_set(key: &str) -> String {
     format!("poltergeist_persona_set:{key}")
 }
@@ -871,34 +577,6 @@ pub fn action_set(key: &str) -> String {
 /// §3.2. No parameter: clearing is one thing, not "set to nothing".
 pub fn action_clear() -> String {
     "poltergeist_persona_clear".to_string()
-}
-
-/// §3.2, for one item of the effective set. `id` is the core's, verbatim.
-pub fn action_toggle(kind: Kind, id: &str, on: bool) -> String {
-    let what = match kind {
-        Kind::Skill => "skill",
-        Kind::Mcp => "mcp",
-    };
-    let state = if on { "on" } else { "off" };
-    format!("poltergeist_persona_{what}:{state},{id}")
-}
-
-/// Whether an id from the core can be spelled into a binding string.
-///
-/// §0.5 mints ids as `<epoch>-<index>`, both decimal, and argues that they
-/// therefore fall inside the gate's `[a-z0-9_:,-]` "by construction".
-///
-/// ⚠️ **"By construction" is a statement about the core, and this file is the
-/// party that copies the id into the action string.** If the core ever writes
-/// the epoch in hex, `8-3f` still passes the gate -- `f` is a lowercase
-/// letter -- so nothing would go red, and the claim this host relies on would
-/// have quietly stopped being the reason it is safe. Checked here so that the
-/// day it changes is a line in a log rather than nothing at all.
-///
-/// Like [`key_is_spellable`], this **says so and still sends**: deciding what
-/// the core may mint is not this host's to decide.
-pub fn id_is_spellable(id: &str) -> bool {
-    !id.is_empty() && id.chars().all(|c| c.is_ascii_digit() || c == '-')
 }
 
 /// The label of the row the submenu hangs off.
@@ -944,8 +622,10 @@ pub fn perform(frame: windows::Win32::Foundation::HWND, surface: Surface, e: &En
             crate::wlogf!(frame, "[persona] a row with nothing to do was picked: {:?}", e.text);
             false
         }
+        // The role library window, as the macOS role submenu opens it
+        // (`PersonaMenu.swift`). The same row as the menu bar's.
         Pick::Editor => {
-            crate::personas_ui::request_toggle();
+            crate::roles_ui::open(frame);
             true
         }
         Pick::Set(key) => {
@@ -1020,8 +700,6 @@ pub unsafe fn persona_from_mark(action: &crate::ffi::Action) -> Option<TabPerson
 pub struct Face {
     pub stale: bool,
     pub prompt: Option<String>,
-    pub skills: Vec<Item>,
-    pub mcp: Vec<Item>,
     pub error: Option<(ErrorKind, String)>,
 }
 
@@ -1036,42 +714,6 @@ pub fn parse_face(text: &str) -> Face {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
         return Face { stale: true, ..Default::default() };
     };
-    let items = |key: &str, with_slot: bool| -> Vec<Item> {
-        v.get(key)
-            .and_then(|x| x.as_array())
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|r| {
-                        // **A row with no id is dropped, not given one.** The
-                        // id is what goes into the action string; inventing
-                        // one -- from the name, or from the position -- would
-                        // send a click at whatever now sits there. A row the
-                        // user cannot act on is better than a row that acts
-                        // on something else.
-                        let id = r.get("id")?.as_str()?.to_string();
-                        Some(Item {
-                            id,
-                            name: r.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                            on: r.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
-                            in_persona: r
-                                .get("in_persona")
-                                .and_then(|x| x.as_bool())
-                                .unwrap_or(false),
-                            slot: if with_slot {
-                                // **A missing or unknown `slot` is `None`, not
-                                // `Granted`.** Guessing the friendly value
-                                // here would draw a broken server as a
-                                // working one.
-                                r.get("slot").and_then(|x| x.as_str()).and_then(slot_from_wire)
-                            } else {
-                                None
-                            },
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
     let error = v.get("error").and_then(|x| x.as_str()).map(|text| {
         let kind = v
             .get("error_kind")
@@ -1083,92 +725,10 @@ pub fn parse_face(text: &str) -> Face {
     Face {
         stale: v.get("stale").and_then(|x| x.as_bool()).unwrap_or(false),
         prompt: v.get("prompt").and_then(|x| x.as_str()).map(|s| s.to_string()),
-        // **Skills carry no `slot`**, and asking for one would invent a state
-        // for something with no process behind it.
-        skills: items("skills", false),
-        mcp: items("mcp", true),
         error,
     }
 }
 
-fn slot_from_wire(s: &str) -> Option<SlotState> {
-    match s {
-        "transparent" => Some(SlotState::Transparent),
-        "granted" => Some(SlotState::Granted),
-        "withheld" => Some(SlotState::Withheld),
-        "broken" => Some(SlotState::Broken),
-        _ => None,
-    }
-}
-
-/// Parse §3.4's installed-inventory JSON.
-pub fn parse_inventory(text: &str) -> Inventory {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Inventory::NotReported;
-    };
-    // `stale` is **not** an empty list; the header says so, and an interface
-    // that collapses them tells the user nothing is installed here.
-    if v.get("stale").and_then(|x| x.as_bool()).unwrap_or(true) {
-        return Inventory::NotReported;
-    }
-    let section = |h: &serde_json::Value, key: &str| -> Section {
-        let Some(sec) = h.get(key) else { return Section::UnknownLocation };
-        let names = || -> Vec<String> {
-            sec.get("items")
-                .and_then(|x| x.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|i| i.get("name").and_then(|n| n.as_str()))
-                        .map(|s| s.to_string())
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        match sec.get("status").and_then(|x| x.as_str()) {
-            Some("absent") => Section::Absent,
-            Some("read") => Section::Read(names()),
-            Some("failed") => Section::Failed(
-                sec.get("detail").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            ),
-            // **`unknown_location` and anything unrecognised land together,
-            // and that is the safe side**: it is the state that says "we did
-            // not look", so a status this build has not heard of is reported
-            // as our gap rather than as the machine having nothing.
-            _ => Section::UnknownLocation,
-        }
-    };
-    let hosts = v
-        .get("hosts")
-        .and_then(|x| x.as_array())
-        .map(|a| {
-            a.iter()
-                .map(|h| HostInventory {
-                    key: h.get("key").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                    label: h
-                        .get("label")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    plugins: section(h, "plugins"),
-                    skills: section(h, "skills"),
-                    mcp: section(h, "mcp"),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Inventory::Known {
-        hosts,
-        complete: v
-            .get("slot_budget")
-            .and_then(|b| b.get("complete"))
-            .and_then(|x| x.as_bool())
-            // **Absent reads as incomplete**, because the sentence it turns on
-            // only ever says "this count may be low" -- being wrong in that
-            // direction costs a line on screen, the other direction costs the
-            // user a number they believe.
-            .unwrap_or(false),
-    }
-}
 
 
 // ----------------------------------------------------------- the provider
@@ -1313,26 +873,6 @@ impl Provider for CoreProvider {
             _ => SetOutcome::Applied,
         }
     }
-
-    fn effective(&self, surface: Surface) -> Handout {
-        let f = self.face(surface);
-        if f.stale {
-            return Handout::NotReported;
-        }
-        Handout::Known { skills: f.skills, mcp: f.mcp }
-    }
-
-    fn installed(&self) -> Inventory {
-        let Some(api) = crate::api_opt() else { return Inventory::NotReported };
-        let app = crate::app_opt();
-        if app.is_null() {
-            return Inventory::NotReported;
-        }
-        match ask_json(|b, c| unsafe { (api.app_persona_hosts)(app, b, c) }) {
-            Some(text) => parse_inventory(&text),
-            None => Inventory::NotReported,
-        }
-    }
 }
 
 /// Install the provider that reads the core. Called once, at start-up.
@@ -1363,12 +903,6 @@ mod tests {
         }
         fn send(&self, _s: Surface, _a: &str) -> SetOutcome {
             SetOutcome::Applied
-        }
-        fn effective(&self, _s: Surface) -> Handout {
-            Handout::default()
-        }
-        fn installed(&self) -> Inventory {
-            Inventory::NotReported
         }
     }
 
@@ -1603,7 +1137,7 @@ mod tests {
         assert_eq!(b[0].pick, Pick::Nothing);
     }
 
-    /// The editor row is always reachable, including from a build that can
+    /// The role library row is always reachable, including from a build that can
     /// answer nothing else. It is the only way in on a machine where the
     /// catalogue is empty, so losing it would be losing the way to fix that.
     #[test]
@@ -1692,7 +1226,7 @@ mod tests {
         // a greyed row with nothing saying why reads as a broken feature.
         let why = tr("Agents are kept out of this terminal, so its role cannot be changed");
         assert!(on.iter().any(|e| e.text == why), "{on:?}");
-        // The editor row stays live: it is how the user reads what is set,
+        // The role library row stays live: it is how the user reads what is set,
         // and reading is not changing.
         assert!(on.last().unwrap().enabled);
 
@@ -1763,53 +1297,16 @@ mod tests {
         };
         // The negative control for the gate itself: it does reject something.
         assert!(!gate("poltergeist_persona_set:Archer"));
-        assert!(!gate("poltergeist_persona_skill:+8-3"));
 
-        let all = [
-            action_set("archer"),
-            action_clear(),
-            action_toggle(Kind::Skill, "8-3", true),
-            action_toggle(Kind::Skill, "8-3", false),
-            action_toggle(Kind::Mcp, "12-0", true),
-            action_toggle(Kind::Mcp, "12-0", false),
-        ];
+        let all = [action_set("archer"), action_clear()];
         for a in &all {
             assert!(gate(a), "{a:?}");
         }
         // The names before the `:` are the four the contract names, and they
         // are what `assert_actions_exist` compares against the core's union.
         let names: Vec<&str> = all.iter().map(|a| a.split(':').next().unwrap()).collect();
-        for want in [
-            "poltergeist_persona_set",
-            "poltergeist_persona_clear",
-            "poltergeist_persona_skill",
-            "poltergeist_persona_mcp",
-        ] {
+        for want in ["poltergeist_persona_set", "poltergeist_persona_clear"] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
-        }
-        // On and off differ in the prefix and nowhere else -- one switch, two
-        // spellings, which is why the contract did not make them two actions.
-        assert_eq!(action_toggle(Kind::Skill, "8-3", true), "poltergeist_persona_skill:on,8-3");
-        assert_eq!(action_toggle(Kind::Skill, "8-3", false), "poltergeist_persona_skill:off,8-3");
-    }
-
-    /// The id guard, **negative cases first** for the same reason
-    /// `key_is_spellable`'s are: a predicate that only accepted the good ones
-    /// would accept everything.
-    #[test]
-    fn an_id_is_only_the_shape_the_contract_mints() {
-        for good in ["8-3", "0-0", "12-0", "18446744073709551615-7"] {
-            assert!(id_is_spellable(good), "{good:?}");
-        }
-        for bad in [
-            "",      // nothing at all
-            "8_3",   // the separator the contract did not pick
-            "8-3f",  // a hex epoch: passes the binding gate, is not this shape
-            "argus", // a name where an id should be
-            "8 3",   // a space, which the gate rejects by name
-            "+8-3",  // the prefix the first draft of the contract used
-        ] {
-            assert!(!id_is_spellable(bad), "{bad:?}");
         }
     }
 
@@ -1850,7 +1347,7 @@ mod tests {
     /// allowed to report -- so the failure would look like a finding.
     #[test]
     fn the_core_literals_are_found_and_are_json() {
-        for f in ["ghostty_surface_persona_face", "ghostty_app_persona_hosts"] {
+        for f in ["ghostty_surface_persona_face"] {
             let s = stub_json(f);
             assert!(s.len() > 10, "{f}: {s:?}");
             serde_json::from_str::<serde_json::Value>(&s).unwrap_or_else(|e| panic!("{f}: {e}"));
@@ -1875,112 +1372,19 @@ mod tests {
         // Not an empty face. Drawing "you have nothing" would be a lie the
         // interface could not detect.
         assert!(f.stale);
-        assert!(f.skills.is_empty() && f.mcp.is_empty());
         let (kind, text) = f.error.expect("the render failure names itself");
         assert_eq!(kind, ErrorKind::Unknown, "this build has never heard of `render`");
         assert_eq!(error_lead_in(kind), None, "so it invents no sentence");
         assert!(!text.is_empty(), "and the core's own words still reach the screen");
     }
 
-    /// The inventory the core answers with today: `stale`, which **must not**
-    /// become an empty list on the way in.
-    #[test]
-    fn todays_inventory_from_the_core_is_not_reported_rather_than_empty() {
-        let inv = parse_inventory(&stub_json("ghostty_app_persona_hosts"));
-        assert_eq!(inv, Inventory::NotReported);
-        assert_ne!(inv, Inventory::Known { hosts: Vec::new(), complete: true });
-    }
-
-    /// The shape the core produces **once a persona is loaded**, as W1 posted
-    /// it. Not the contract's example -- the contract's example is a
-    /// specification and this is what the program emits.
-    const REAL_FACE: &str = concat!(
-        r#"{"key":"archer","name":"Archer","deviated":false,"epoch":1,"roster":1,"#,
-        r#""agent_present":true,"host_class":"unknown","prompt":null,"#,
-        r#""skills":[{"id":"1-0","name":"reading-a-terminal","enabled":true,"in_persona":true}],"#,
-        r#""mcp":[{"id":"1-0","name":"argus","enabled":true,"in_persona":true,"slot":"withheld"}],"#,
-        r#""error":null,"error_kind":null,"stale":false}"#
-    );
-
-    #[test]
-    fn a_loaded_face_parses_into_rows_that_can_be_acted_on() {
-        let f = parse_face(REAL_FACE);
-        assert!(!f.stale);
-        assert_eq!(f.skills.len(), 1);
-        assert_eq!(f.mcp.len(), 1);
-
-        let skill = &f.skills[0];
-        assert_eq!(skill.id, "1-0");
-        assert_eq!(skill.name, "reading-a-terminal");
-        assert!(skill.on && skill.in_persona);
-        // **A skill has no slot**, and asking the core for one would be
-        // asking about a process that does not exist.
-        assert_eq!(skill.slot, None);
-        // The id survives into the action string, verbatim.
-        assert_eq!(action_toggle(Kind::Skill, &skill.id, false), "poltergeist_persona_skill:off,1-0");
-
-        let mcp = &f.mcp[0];
-        assert_eq!(mcp.slot, Some(SlotState::Withheld));
-        assert_eq!(action_toggle(Kind::Mcp, &mcp.id, true), "poltergeist_persona_mcp:on,1-0");
-        // Both ids are `1-0` and the two actions are still different, because
-        // the kind is in the action name. A single id space would have made
-        // these collide.
-        assert_ne!(
-            action_toggle(Kind::Skill, &skill.id, true),
-            action_toggle(Kind::Mcp, &mcp.id, true)
-        );
-    }
-
-    /// ⚠️ **A row with no id is dropped, not given one.**
-    ///
-    /// The id is what goes into the action string. Falling back to the name,
-    /// or to the position, would send a click at whatever now sits there --
-    /// and a row the user cannot act on is much better than a row that acts
-    /// on something else.
-    #[test]
-    fn a_row_without_an_id_is_dropped_rather_than_given_one() {
-        let f = parse_face(
-            r#"{"stale":false,"skills":[{"name":"nameless","enabled":true,"in_persona":true},
-                 {"id":"1-1","name":"fine","enabled":true,"in_persona":true}],"mcp":[]}"#,
-        );
-        assert_eq!(f.skills.len(), 1);
-        assert_eq!(f.skills[0].name, "fine");
-    }
-
     /// An unreadable face is **stale**, not empty. Those are different claims:
     /// one is about our reading, the other about the terminal.
     #[test]
     fn an_unparseable_face_is_stale_and_not_a_terminal_that_hands_out_nothing() {
-        for bad in ["", "not json", "{", "[]"] {
-            let f = parse_face(bad);
-            assert!(f.stale || f.skills.is_empty(), "{bad:?}");
+        for bad in ["", "not json", "{"] {
+            assert!(parse_face(bad).stale, "{bad:?}");
         }
-        assert!(parse_face("not json").stale);
-    }
-
-    /// ⚠️ **An unknown `slot` is `None`, never `Granted`.** Guessing the
-    /// friendly value would draw a server that is not running as one that is.
-    #[test]
-    fn an_unknown_slot_state_is_not_guessed_to_be_the_working_one() {
-        let f = parse_face(
-            r#"{"stale":false,"skills":[],"mcp":[
-                 {"id":"1-0","name":"a","enabled":true,"in_persona":true,"slot":"quantum"},
-                 {"id":"1-1","name":"b","enabled":true,"in_persona":true}]}"#,
-        );
-        assert_eq!(f.mcp[0].slot, None);
-        assert_eq!(f.mcp[1].slot, None);
-        // And the four it does know decode to four different things.
-        let one = |s: &str| {
-            parse_face(&format!(
-                r#"{{"stale":false,"skills":[],"mcp":[{{"id":"1-0","name":"a","enabled":true,"in_persona":true,"slot":"{s}"}}]}}"#
-            ))
-            .mcp[0]
-                .slot
-        };
-        assert_eq!(one("transparent"), Some(SlotState::Transparent));
-        assert_eq!(one("granted"), Some(SlotState::Granted));
-        assert_eq!(one("withheld"), Some(SlotState::Withheld));
-        assert_eq!(one("broken"), Some(SlotState::Broken));
     }
 
     /// §3.5's error channel, **including a kind this build has never heard
@@ -2007,28 +1411,6 @@ mod tests {
         assert_eq!(ErrorKind::from_wire("stale_id"), ErrorKind::StaleId);
         assert_ne!(error_lead_in(ErrorKind::Parse), error_lead_in(ErrorKind::StaleId));
         assert!(error_lead_in(ErrorKind::Parse).is_some());
-    }
-
-    /// §4.3's rendering rule: **two of the four states speak, two do not.**
-    ///
-    /// `granted` and `withheld` say nothing because the checkbox beside them
-    /// already does. On a build where every slot is `withheld` -- which is
-    /// today's -- a sentence on every row would bury `broken`, and burying
-    /// `broken` is the one outcome §4.3 exists to prevent.
-    #[test]
-    fn only_broken_and_transparent_say_anything_beside_a_row() {
-        let row = |slot: SlotState| Item {
-            id: "1-0".into(),
-            name: "argus".into(),
-            on: true,
-            in_persona: true,
-            slot: Some(slot),
-        };
-        assert_eq!(row(SlotState::Granted).aside(), "");
-        assert_eq!(row(SlotState::Withheld).aside(), "");
-        assert!(!row(SlotState::Broken).aside().is_empty());
-        assert!(!row(SlotState::Transparent).aside().is_empty());
-        assert_ne!(row(SlotState::Broken).aside(), row(SlotState::Transparent).aside());
     }
 
     /// The ids these rows take cannot collide with either menu's own.
