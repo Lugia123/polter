@@ -5285,3 +5285,52 @@ worker 读了记忆里「argus 起不了 GUI」就把真机 GUI 验证写成了�
   ⚠️ 用 `git apply --include/--exclude` 挑文件时，**命令行里出现任何 `--include`，
   没匹配到的路径就一律忽略**，末尾要补 `--include='*'`。另外别把这些参数塞进 zsh 变量：
   zsh 不分词，整串会变成一个参数，结果 rc=0，却什么都没应用上。
+
+### （三十二）Windows 角色库窗口，和真机测出来的八件事（2026-09-23）
+
+Windows 拿到了和 mac 一样的角色库窗口（`windows/host/src/roles_ui.rs`，数据层
+`roles.rs`），旧的单终端角色页面 `personas_ui.rs` 随之下线——mac 在 `63ab92741`
+就是这么做的。同一轮里核心加了 `terminal_capabilities`（总管可查任意终端的能力
+边界），角色的「Polter 一半」改为**启动出来的 agent 连上时**才生效。
+
+**这一节的价值不在窗口，在于这八件事只有真机会说。** 判据和读数在 roles-win 群
+#699 的四轮报告里，机器是那台常用的 Windows 测试机。
+
+1. **随包发的 claude-code adapter 在 Windows 上从来没跑通过。** 它是 `adapter.py`，
+   而 `Plugin.launchKindFor` 在 Windows 上把 `.py` 判成 `.unsupported`。11.8 那次
+   「Windows 上角色启动已走通」用的是一个 PowerShell 写的**假插件**，所以这个缺口
+   在真机上第一次用真插件时才暴露。修法是移植出 `adapter.ps1`（manifest 的
+   `adapter_windows`），不引入 Python 依赖。
+2. **启动失败，身份照样生效。** `+launch` 起不来时，终端已经被设成了总管——里面却
+   没有 agent。身份改成挂起、由该终端的第一个请求领取，失败就永远没人来领。
+3. **报错说了错的原因。** 「插件没装或没开」而插件装着开着，只是 adapter 在这个
+   平台起不了。拆成三句。
+4. **UTF-8 的字符在 936 控制台里是乱码。** `+launch` 打印前切代码页、打印后还原。
+5. **配置文件首读就失败时，内置角色也跟着消失**，而提示说「还在用上一份」——首读
+   根本没有上一份。两处都改了。
+6. **窗口的两个缺陷同源：右键菜单那条路传进来的是 surface 句柄，不是 frame。**
+   当成 frame 用，于是「有没有终端可启动」永远答否（Launch 恒灰），
+   `GWLP_HWNDPARENT` 被设成子窗口等于没有 owner（关窗后焦点无处可去）。
+7. **owned 窗口随 owner 一起销毁，而记着的句柄不会自己作废。** 关掉角色库所属的
+   终端窗口后，本进程再也打不开它：`open()` 读到野句柄，走了「已经开着，提到前面」
+   那一支，日志照打 `shown`。⚠️ 连带一条：`RegisterClassExW` 返回 0 且
+   `GetLastError()==ERROR_CLASS_ALREADY_EXISTS` 不是失败，当成失败会让第二次创建
+   在注册那一步就退出来。
+8. **判据本身坏过两次，而且两次都是「坏的时候照样通过」。**
+   ① `compare.py` 比对两个 adapter：Windows 的 python 按系统代码页写管道，夹具里的
+   emoji 让 `adapter.py` 直接 `UnicodeEncodeError` 退 1，于是**正版和故意改坏的版本
+   红在同样四条上**，那个「改坏看它红」的对照失去了分辨力。修法是把 `PYTHONUTF8=1`
+   固化进脚本（并清掉会盖过它的 `PYTHONIOENCODING`）。
+   ② 一条纯函数测试的夹具把「本窗口」和 owner 写成同一个句柄值，于是「忽略可用性
+   检查」这个变异照样通过；改成三个不同的值才红。
+
+**未获读数的，照实记**（不是「通过」）：鼠标滚轮——真机上那条通道连终端自己的
+200 行回滚都推不动，**正对照失败**，所以 `WM_MOUSEWHEEL` 那一处改动至今没有读数；
+拖动窗口边框改尺寸（`WM_EXITSIZEMOVE`）同样没抓住；高对比度主题按用户要求不测
+（要改那台机器的系统设置）；中文界面下那两句新说明的换行没看到——切换语言在这台
+机器上**没有生效**（语言文件写的是 `zh-Hans`，包里 locale 目录名是 `zh_CN`，核心
+日志 `no translation shipped for locale=en_US.UTF-8`），这条与角色无关，已记到
+windows-port。
+
+**一条上一轮写错、这轮更正的**：11.9 说过「核心那一半已在 Windows 真机上走通」，
+那句当时就不成立——见第 1 条。
