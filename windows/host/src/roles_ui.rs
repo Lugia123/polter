@@ -50,7 +50,9 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::core::{s, w, BOOL, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
@@ -1447,6 +1449,39 @@ pub fn text_needs_writing(focused: bool, matches: bool, whole_draft_changed: boo
     !matches && (!focused || whole_draft_changed)
 }
 
+/// Where the keyboard goes when this window hides: the window that had it
+/// before, or the terminal this one belongs to.
+///
+/// ⚠️ **"The window that had it" can be this window.** The handle was read
+/// after the window was already on screen, so it was this one -- and the
+/// close handed the keyboard back to a window it had just hidden. The log
+/// said so and read as success: *handed back to HWND(0x6101ee) ok=1 --
+/// GetForegroundWindow now HWND(0x6101ee): the window that had it*. All
+/// three of "nothing had it", "this window had it" and "the window that had
+/// it is gone" end in the same place, which is the terminal this one was
+/// opened over; a window that hides itself must leave the keyboard
+/// somewhere a person can type into.
+pub fn handback_to(prev: isize, prev_usable: bool, owner: isize) -> isize {
+    if prev != 0 && prev_usable {
+        prev
+    } else {
+        owner
+    }
+}
+
+/// What a window that is gone leaves behind: nothing that names it.
+///
+/// An owned window is destroyed with its owner, and everything remembered
+/// about it -- the handles, the controls, what was on screen -- stops being
+/// true at that moment. **The draft goes too**: the next opening starts from
+/// the library, exactly as it does after a close.
+pub fn forgotten(m: &mut Model) {
+    m.ed = Editor::default();
+    m.search.clear();
+    m.collapsed.clear();
+    m.expanded.clear();
+}
+
 pub fn clamp_instructions_height(h: i32) -> i32 {
     h.clamp(INSTR_MIN, INSTR_MAX)
 }
@@ -1673,11 +1708,27 @@ fn save_height(h: i32) {
 /// two windows editing it would be two drafts racing each other to save.
 /// Called on the UI thread, from the menu.
 pub fn open(parent: HWND) {
+    // ⚠️ **An owned window is destroyed with its owner.** Close the terminal
+    // window this one was opened over and this window goes with it, without
+    // anybody here asking for that -- and the handle remembered for it then
+    // names nothing. It used to be believed anyway: `open` saw a handle,
+    // took the "already up, bring it forward" path, and wrote
+    // `[roles-ui] shown` about a window that had not existed for some time.
+    // `WM_NCDESTROY` forgets it, and this is the second reading, for a
+    // destruction that never reached the procedure.
+    if !main_hwnd().0.is_null() && !unsafe { IsWindow(Some(main_hwnd())) }.as_bool() {
+        forget_window();
+    }
     if main_hwnd().0.is_null() && !create() {
         return;
     }
     let win = main_hwnd();
     let was_visible = unsafe { IsWindowVisible(win) }.as_bool();
+    // ⚠️ **Read before the window is on screen.** Showing it takes the
+    // focus, so the same call made afterwards answers "this window" -- which
+    // is what it answered, and what the close then handed the keyboard back
+    // to. See `handback_to`.
+    let had_focus = unsafe { GetFocus() };
     // ⚠️ **What this is handed is not always a terminal window.** The menu
     // bar's row passes the frame; the tab's right-click menu passes the
     // *surface* (`ctxmenu.rs` hands `personas::perform` the surface window,
@@ -1740,8 +1791,10 @@ pub fn open(parent: HWND) {
     // to go back before any of them takes focus. Same contract as the
     // settings page.
     let first = LIVE.with(|l| l.borrow().get("name").map(|x| x.hwnd));
-    let prev = crate::overlay::focus_to_edit(first.unwrap_or(win), "roles");
-    ST.with(|c| c.borrow_mut().prev_focus = prev);
+    // Its answer is the focus *now*, which is this window; the one worth
+    // keeping was read at the top.
+    let _ = crate::overlay::focus_to_edit(first.unwrap_or(win), "roles");
+    ST.with(|c| c.borrow_mut().prev_focus = had_focus);
     // process-wide: the role library window is one per process; it is not
     // opened *for* a terminal window, only placed over one
     crate::plogf!("[roles-ui] shown");
@@ -1754,12 +1807,13 @@ fn close() {
         return;
     }
     let win = main_hwnd();
-    let prev = ST.with(|c| {
+    let (prev, owner) = ST.with(|c| {
         let s = &mut *c.borrow_mut();
-        s.model.ed = Editor::default();
-        s.model.search.clear();
+        forgotten(&mut s.model);
         s.poll_until = None;
-        s.prev_focus
+        let was = s.prev_focus;
+        s.prev_focus = HWND(std::ptr::null_mut());
+        (was, s.owner)
     });
     unsafe {
         let _ = KillTimer(Some(win), TIMER_CLIS);
@@ -1767,14 +1821,16 @@ fn close() {
         let _ = ShowWindow(win, SW_HIDE);
     }
     // ⚠️ **Focus and the foreground are two different pieces of state**, and
-    // only one of them was being handed back: on the test machine the closed
-    // window was still the foreground one, so every keystroke went into
-    // something invisible. `overlay.rs` has the whole story -- it is the
-    // command palette's bug, and it reaches any window that hides itself.
-    // Being owned was supposed to make Windows do this by itself, and did
-    // not, which is its own reason to hand it back and read it back.
-    crate::overlay::foreground_back(win, prev, "roles");
-    crate::overlay::focus_back(prev, "roles");
+    // both are handed back here: on the test machine the closed window was
+    // still the foreground one, so every keystroke went into something
+    // invisible. `overlay.rs` has the whole story -- it is the command
+    // palette's bug, and it reaches any window that hides itself. Being
+    // owned was supposed to make Windows do this by itself, and did not.
+    //
+    // **Where to**, is `handback_to`: not this window, and never nothing.
+    let target = HWND(handback_to(prev.0 as isize, usable_handback(prev), owner.0 as isize) as *mut c_void);
+    crate::overlay::foreground_back(win, target, "roles");
+    crate::overlay::focus_back(target, "roles");
     // process-wide: the role library window is one per process
     crate::plogf!("[roles-ui] hidden");
 }
@@ -1843,7 +1899,12 @@ fn create() -> bool {
                 lpszClassName: class,
                 ..Default::default()
             };
-            if RegisterClassExW(&wc) == 0 {
+            // **`ERROR_CLASS_ALREADY_EXISTS` is not a failure here.** The
+            // window can be made a second time -- after it was destroyed with
+            // its owner -- and the class from the first time is still
+            // registered, so refusing on it would mean the library opens once
+            // per process and then never again.
+            if RegisterClassExW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
                 // process-wide: registering the window class, once per process
                 // absence: means it was not reached -- this is the failure arm
                 // of a call made once, the first time the library is opened,
@@ -1983,6 +2044,16 @@ fn launch_surface() -> crate::ffi::Surface {
     crate::tabs::active_surface(crate::tabs::overlay_frame())
 }
 
+/// Whether a remembered focus is still somewhere to hand the keyboard: a
+/// window that exists and is not this one. See `handback_to`.
+fn usable_handback(prev: HWND) -> bool {
+    if prev.0.is_null() || !unsafe { IsWindow(Some(prev)) }.as_bool() {
+        return false;
+    }
+    let root = unsafe { GetAncestor(prev, GA_ROOT) };
+    root != main_hwnd()
+}
+
 fn can_launch() -> bool {
     !launch_surface().is_null()
 }
@@ -2068,7 +2139,23 @@ fn refresh() {
     place_fixed(&frame, &plan.tab_labels, plan.tab, plan.buttons, &plan.launch_label, plan.builtin, plan.has_draft);
     let pr = frame.pane;
     unsafe {
-        let _ = SetWindowPos(pane, None, pr.left, pr.top, pr.right - pr.left, pr.bottom - pr.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        // ⚠️ **`SWP_FRAMECHANGED`, because this window has a scroll bar and a
+        // scroll bar is not in the client area.** Invalidating the client
+        // area -- which a resize, a repaint and every tab switch do -- never
+        // reaches it, so after maximising, the bar stayed drawn down the
+        // column where the window's right edge used to be, over the text
+        // that now runs past it. It survived every redraw and went away on
+        // restore, which is the shape of a non-client area nobody asked to
+        // be recalculated.
+        let _ = SetWindowPos(
+            pane,
+            None,
+            pr.left,
+            pr.top,
+            pr.right - pr.left,
+            pr.bottom - pr.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
     }
 
     let mut pc = RECT::default();
@@ -2113,7 +2200,12 @@ fn refresh() {
         };
         SetScrollInfo(pane, SB_VERT, &si, true);
         let _ = InvalidateRect(Some(win), None, false);
-        let _ = RedrawWindow(Some(pane), None, None, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+        let _ = RedrawWindow(
+            Some(pane),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
+        );
     }
 }
 
@@ -2372,6 +2464,34 @@ fn make_control(pane: HWND, tag: Tag) -> Option<Live> {
     }
     subclass(h);
     Some(Live { hwnd: h, id, tag, rect: RECT::default(), label: String::new(), options: Vec::new(), gen: u64::MAX })
+}
+
+/// Everything this module remembers about a window that no longer exists.
+///
+/// **The controls are not destroyed here**: they went with the window that
+/// owned them. What is left is this side's memory of them, and every part of
+/// it is now a handle to nothing -- which is exactly the state that made a
+/// destroyed window look like one that was already open.
+fn forget_window() {
+    MAIN.store(std::ptr::null_mut(), Ordering::Release);
+    PANE.store(std::ptr::null_mut(), Ordering::Release);
+    FIXED.with(|f| f.set(None));
+    LIVE.with(|l| l.borrow_mut().clear());
+    ST.with(|c| {
+        let s = &mut *c.borrow_mut();
+        forgotten(&mut s.model);
+        s.laid = Laid::default();
+        s.ids.clear();
+        s.scroll = 0;
+        s.list_top = 0;
+        s.drag = None;
+        s.poll_until = None;
+        s.launchable = None;
+        s.prev_focus = HWND(std::ptr::null_mut());
+        s.owner = HWND(std::ptr::null_mut());
+    });
+    // process-wide: the role library window is one per process
+    crate::plogf!("[roles-ui] the window is gone; the next opening makes a new one");
 }
 
 /// Throw every pane control away, so the next refresh makes them again --
@@ -3401,11 +3521,14 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 // until something asks for new ones, and `RDW_ALLCHILDREN`
                 // is that asking.
                 refresh();
+                // `RDW_FRAME` as well: a child's scroll bar lives outside its
+                // client area, and this is the message after which one of
+                // them was left drawn at the old width.
                 let _ = RedrawWindow(
                     Some(win),
                     None,
                     None,
-                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW,
                 );
                 LRESULT(0)
             }
@@ -3435,6 +3558,12 @@ unsafe extern "system" fn main_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_PAINT => {
                 paint_main(win);
                 LRESULT(0)
+            }
+            // Destroyed rather than hidden, which happens when the terminal
+            // window it is owned by is closed. See `forget_window`.
+            WM_NCDESTROY => {
+                forget_window();
+                DefWindowProcW(win, msg, wp, lp)
             }
             _ => DefWindowProcW(win, msg, wp, lp),
         }
@@ -4123,6 +4252,46 @@ mod tests {
                 assert!(p.rect.right <= f.pane.right - f.pane.left, "{} escapes", p.key);
             }
         }
+    }
+
+    /// ⚠️ **The close that handed the keyboard back to itself.** All three
+    /// of "nothing had it", "this window had it" and "what had it is gone"
+    /// answer the same way, and it is never this window.
+    #[test]
+    fn hiding_hands_the_keyboard_to_something_a_person_can_type_into() {
+        // ⚠️ **Three different numbers.** With the terminal and the owner
+        // written as one, an implementation that ignored `usable` passed
+        // this test -- measured, not supposed: the mutation that drops the
+        // check went green here until they were told apart.
+        let (terminal, owner, this_window, none) = (0x1234, 0xabcd, 0x6101ee, 0);
+        assert_eq!(handback_to(terminal, true, owner), terminal);
+        // What had it was this window, or a window that has since gone.
+        assert_eq!(handback_to(this_window, false, owner), owner);
+        // Nothing had it.
+        assert_eq!(handback_to(none, true, owner), owner);
+        assert_eq!(handback_to(none, false, owner), owner);
+        // And with no terminal either, there is nothing to invent.
+        assert_eq!(handback_to(none, false, none), none);
+    }
+
+    /// A window that is gone leaves nothing behind that names it: the next
+    /// opening starts from the library, as it does after a close.
+    #[test]
+    fn a_destroyed_window_is_forgotten_down_to_the_draft() {
+        let mut c = cat(&["r", "s"]);
+        let mut m = Model { ed: editing(&mut c), ..Model::default() };
+        m.ed.draft.as_mut().unwrap().name = "half typed".into();
+        m.search = "pdf".into();
+        m.collapsed.insert("user".into());
+        m.expanded.insert("skill:a".into());
+        assert!(m.ed.is_dirty());
+        forgotten(&mut m);
+        assert!(m.ed.draft.is_none() && !m.ed.is_dirty() && !m.ed.is_new);
+        assert!(m.search.is_empty() && m.collapsed.is_empty() && m.expanded.is_empty());
+        // And the page it would draw is the one with no role open.
+        let v = View { ed: &m.ed, clis: &snapshot(), instr_h: 240, search: "", collapsed: &m.collapsed, expanded: &m.expanded };
+        assert_eq!(keys(&rows(&v)), Vec::<String>::new());
+        assert_eq!(buttons(&m.ed, &c, true), Buttons { new: true, ..Buttons::default() });
     }
 
     #[test]
