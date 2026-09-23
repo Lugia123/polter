@@ -196,7 +196,9 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .summary = try requireString(aa, params, "summary"),
         } },
 
-        .group_list => .group_list,
+        .group_list => .{ .group_list = .{
+            .group = try optionalString(aa, params, "group"),
+        } },
 
         .group_post => .{ .group_post = .{
             .group = try requireString(aa, params, "group"),
@@ -796,6 +798,13 @@ pub const Response = union(enum) {
         /// (`PersonaStore.claimStanding`). A `false` there would be a "no"
         /// nobody knows yet.
         watching: ?bool,
+
+        /// Why a watch that was asked for did not start, when it did not.
+        /// No default on purpose: every place that answers with a terminal
+        /// has to say whether it has one of these, because the failure it
+        /// stands for -- a mark on the bus with nothing sampling under it --
+        /// is silent everywhere else (task 595).
+        watch_failed: ?[]const u8,
     },
     /// A task's number, answering `task_create`.
     task: u64,
@@ -942,6 +951,18 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                     try s.write(g.brief);
                 }
 
+                // Next to the preview it explains, in the words `group_post`
+                // uses for its own cut: what was written and what is here.
+                if (g.brief_given) |given| {
+                    try s.objectField("brief_cut");
+                    try s.beginObject();
+                    try s.objectField("given");
+                    try s.write(given);
+                    try s.objectField("kept");
+                    try s.write(g.brief.len);
+                    try s.endObject();
+                }
+
                 // The same rule, pointed the other way: written only when
                 // it is false, because a listing where every entry says
                 // `joined: true` is a field that has never told anybody
@@ -1046,6 +1067,10 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             if (v.watching) |w| {
                 try s.objectField("watching");
                 try s.write(w);
+            }
+            if (v.watch_failed) |why| {
+                try s.objectField("watch_failed");
+                try s.write(why);
             }
         },
         .actions => |list| {

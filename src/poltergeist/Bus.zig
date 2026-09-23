@@ -498,6 +498,12 @@ pub fn quietMs(self: *const Bus, id: Id, now_ms: u64) u64 {
 /// with entries nobody asked for.
 pub fn noteQuiet(self: *Bus, id: Id, quiet_ms: u64, now_ms: u64) void {
     const e = self.entries.getPtr(id) orelse return;
+
+    // A heartbeat the sampler sent before it heard it was stopped arrives
+    // after `unwatch` has forgotten the figure. Taken, it would put a
+    // measurement back on a terminal nothing measures any more, and
+    // `quietMs` would extend it by the wall clock from then on (task 550).
+    if (e.role != .watched) return;
     e.last_quiet_ms = quiet_ms;
     e.last_event_ms = now_ms;
 }
@@ -837,6 +843,12 @@ pub fn report(
         .resumed => |r| .{ NoticeKind.resumed, r },
     };
 
+    // Not watched is not measured: a report that lands after `unwatch` is
+    // one the sampler sent before it was told to stop, and recording it
+    // would give a released terminal a quiet time again -- one `quietMs`
+    // then extends for as long as the window is open (task 550).
+    if (e.role != .watched) return false;
+
     // Track the duration whatever we decide to do about telling anyone.
     // `terminal_list` reads this, and a terminal that is not being reported
     // -- clocked off, or rate limited -- is still worth answering about
@@ -851,8 +863,6 @@ pub fn report(
         .quiescent, .still_quiescent => e.rounds +| 1,
         .resumed => 0,
     };
-
-    if (e.role != .watched) return false;
 
     // A terminal that has clocked off is supposed to be quiet. Saying so
     // again every quarter of an hour is exactly the kind of nagging that

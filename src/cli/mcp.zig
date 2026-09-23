@@ -587,9 +587,9 @@ const tools = [_]Tool{
     },
     .{
         .name = "group_list",
-        .description = "Which groups there are. A worker is shown the ones it is in. A supervisor is shown all of them, each with its note and with `joined: false` on any it is not a member of -- which is what a restart leaves: groups come back from disk with their names and notes intact and nobody in them, because deciding which terminal on screen now is which one from last night is a judgement and Polter does not make it. So an empty-looking list after a restart is not a lost night; a `joined: false` group is one to rejoin with group_add, not to rebuild with group_create -- its task panel is still behind it.",
+        .description = "Which groups there are. A worker is shown the ones it is in. A supervisor is shown all of them, each with its note and with `joined: false` on any it is not a member of -- which is what a restart leaves: groups come back from disk with their names and notes intact and nobody in them, because deciding which terminal on screen now is which one from last night is a judgement and Polter does not make it. So an empty-looking list after a restart is not a lost night; a `joined: false` group is one to rejoin with group_add, not to rebuild with group_create -- its task panel is still behind it. **Each note in the full list is a preview**: one longer than 512 bytes is cut on a character boundary and carries `brief_cut: {given, kept}` saying how long it really is. Pass `group` for that one group with its note whole.",
         .schema =
-        \\{"type":"object","properties":{},"additionalProperties":false}
+        \\{"type":"object","properties":{"group":{"type":"string","description":"Just this group, with its note whole; omit for all of them, each note a preview"}},"additionalProperties":false}
         ,
     },
     .{
@@ -694,7 +694,9 @@ const tools = [_]Tool{
             "work in four directories cannot be set up that way at all. `cwd` must be an " ++
             "absolute path that exists -- a directory that is not there is refused rather " ++
             "than opened somewhere else quietly. Pass watch: true to mind it from the " ++
-            "moment it exists. The reply carries `id` when the terminal was ready before " ++
+            "moment it exists; when that could not be done the reply says `watching: false` " ++
+            "with a `watch_failed` saying why -- the terminal is open all the same, so do " ++
+            "not open a second, and set_watch tries again. The reply carries `id` when the terminal was ready before " ++
             "the call returned; when it is missing the tab is still opening and " ++
             "terminal_list will have it in a moment. **What you get is a shell " ++
             "in that directory with nothing running in it**, so whatever should " ++

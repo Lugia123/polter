@@ -424,7 +424,11 @@ pub const Request = union(Method) {
     group_add: struct { group: []const u8, id: Bus.Id, history: History = .none },
     group_remove: struct { group: []const u8, id: Bus.Id },
     group_compact: struct { group: []const u8, through: u64, summary: []const u8 },
-    group_list,
+    group_list: struct {
+        /// Just this group, with its brief whole. Omitted, every group the
+        /// caller may see, each brief cut to a preview (task 591).
+        group: ?[]const u8 = null,
+    },
     group_post: struct {
         group: []const u8,
         text: []const u8,
@@ -569,10 +573,17 @@ pub const Request = union(Method) {
 /// so an unbounded reply had eight megabytes of headroom over a sixty-four
 /// kilobyte buffer. It took a few days of real use to get there.
 ///
-/// The budget is over the *raw* text. JSON escaping inflates it, and worst
-/// of all for CJK: `std.json` writes a three-byte character as a six-byte
-/// `\uXXXX` escape, so Chinese doubles. The figure below leaves room for
-/// that doubling inside the smaller of the two read buffers.
+/// The budget is over the *raw* text. JSON escaping inflates it -- quotes,
+/// backslashes, control bytes -- and the figure below leaves room for the
+/// text to double inside the smaller of the two read buffers.
+///
+/// ⚠️ This used to say CJK is what doubles, because `std.json` writes a
+/// three-byte character as a six-byte `\uXXXX`. It does not, with the
+/// options used here and in `cli/mcp.zig` (`escape_unicode` is false by
+/// default): measured on Zig 0.16.0 for task 591, 120 bytes of Chinese came
+/// out as 122, and 126 once wrapped again by the MCP layer -- against 242
+/// with `escape_unicode = true`, so the measurement could see a doubling.
+/// The room is kept anyway; it is the safe direction to be wrong in.
 pub const read_budget_bytes: usize = 96 * 1024;
 
 /// What each line costs on top of its text: the author's name and the JSON
@@ -2229,6 +2240,36 @@ test "a terminal opened to be minded is claimed on the way" {
     try testing.expect(b.minds(boss, 0x4444));
 }
 
+test "a terminal opened to be minded but not sampled says so (task 595)" {
+    // The host is the side that samples. When it refuses, nothing is
+    // measuring the terminal, so no quiet notice will ever come -- and a
+    // reply saying `watching: true` would have the supervisor wait for one
+    // all night. The terminal is still opened (a failure would have the
+    // caller open a second), so the refusal travels in the reply itself.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .open_result = 0x4445, .watch_error = error.UnknownTerminal };
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{
+        .cwd = "/tmp/work",
+        .watch = true,
+    } });
+    try testing.expectEqual(@as(?Bus.Id, 0x4445), res.opened.id);
+    try testing.expectEqual(@as(?bool, false), res.opened.watching);
+
+    // And no bus mark left behind with nothing sampling under it: that is
+    // the phantom `terminal_list` would go on reporting as minded.
+    try testing.expect(!b.minds(boss, 0x4445));
+
+    // Said in the reply, not only in a log nobody on the other end reads.
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, res);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"watch_failed\"") != null);
+}
+
 test "a directory that is not there stops the terminal being opened" {
     // Refused rather than opened somewhere else in silence: a terminal that
     // quietly started in the wrong place is one the supervisor will hand
@@ -2983,7 +3024,7 @@ test "group_list names the groups a terminal is in" {
     defer b.deinit();
     var fake: FakeHost = .{};
 
-    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .group_list);
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .group_list = .{} });
     defer {
         for (res.groups) |g| {
             testing.allocator.free(g.name);
@@ -4160,7 +4201,20 @@ pub const ChatGroupInfo = struct {
     /// -- so the answer to "is last night gone" is no, and the next move is
     /// `group_add`, not `group_create`.
     joined: bool = true,
+
+    /// How long the brief was before the listing cut it to a preview, when
+    /// it did. Null when `brief` is the whole of it. Set only by
+    /// `group_list` itself, never by the host, which has no budget to cut to.
+    brief_given: ?usize = null,
 };
+
+/// How much of each brief a listing of every group carries (task 591).
+///
+/// Enough to recognise what a group is for -- about 170 characters of
+/// Chinese, 500 of English -- and small enough that a night of thirteen
+/// groups with full briefs comes back in a few kilobytes rather than a
+/// hundred. The whole brief is one `group_list{group}` away.
+pub const brief_preview_bytes: usize = 512;
 
 /// One task as it goes out over the wire.
 ///
@@ -5664,16 +5718,42 @@ pub fn dispatch(
             // Claimed straight away when asked for, because a supervisor
             // opening a terminal has almost always opened it to mind it, and
             // the alternative is a second call that can fail on its own.
+            //
+            // In `set_watch`'s order -- host first, bus second -- and with
+            // neither failure swallowed (task 595). `watching` means the
+            // host has started sampling it, not that the bus wrote it down:
+            // a mark with no sampler under it is a supervisor waiting all
+            // night for a quiet notice nothing will ever send. The terminal
+            // is open either way, so a refused watch is not a failed call --
+            // that would have the caller open a second -- it is said in the
+            // reply, next to the `watching: false` it explains.
             var watching = false;
+            var watch_failed: ?[]const u8 = null;
             if (opened) |id| {
                 if (p.watch) {
-                    bus.watch(id, caller) catch {};
-                    host.setWatching(id, true) catch {};
-                    watching = bus.minds(caller, id);
+                    if (host.setWatching(id, true)) {
+                        if (bus.watch(id, caller)) {
+                            watching = bus.minds(caller, id);
+                        } else |err| {
+                            // Sampling with nobody minding it would report
+                            // to no one, so it is stopped again.
+                            host.setWatching(id, false) catch {};
+                            watch_failed = switch (err) {
+                                error.AlreadyWatched => "opened, but another supervisor already " ++
+                                    "minds it, so it was not claimed.",
+                                error.OutOfMemory => "opened, but could not be claimed. " ++
+                                    "set_watch will try again.",
+                            };
+                        }
+                    } else |_| {
+                        watch_failed = "opened, but its sampling could not be started, so " ++
+                            "nothing is measuring it and no quiet notice will come. " ++
+                            "set_watch will try again.";
+                    }
                 }
             }
 
-            return .{ .opened = .{ .id = opened, .watching = watching } };
+            return .{ .opened = .{ .id = opened, .watching = watching, .watch_failed = watch_failed } };
         },
 
         .role_list => {
@@ -5732,6 +5812,7 @@ pub fn dispatch(
             return .{ .opened = .{
                 .id = id,
                 .watching = if (id) |new| launchedWatching(alloc, bus, host, caller, new) else null,
+                .watch_failed = null,
             } };
         },
 
@@ -6223,7 +6304,7 @@ pub fn dispatch(
             return .ok;
         },
 
-        .group_list => {
+        .group_list => |p| {
             // **The brief goes to everybody in the group.** It used to go
             // only to the supervisor who wrote it and to the person at the
             // keyboard, on the reasoning that a note you might have to
@@ -6246,6 +6327,28 @@ pub fn dispatch(
 
             const groups = host.chatGroupInfo(alloc, caller, all) catch
                 return hostFailure("ListFailed", "could not list groups");
+
+            // **Bounded, and the bound is said.** The listing used to carry
+            // every brief whole, and a brief holds up to 8 KiB: thirteen
+            // groups made one reply of a hundred kilobytes (task 591). Each
+            // brief is cut to a preview instead, on a character boundary,
+            // and the entry says how long it really was -- a preview that
+            // reads as the whole note is the silent cut of task 579 again.
+            // Cutting briefs rather than paging groups, because the list of
+            // groups is what a supervisor needs whole after a restart, and
+            // the brief is what it needs only for the one it has picked.
+            if (p.group) |want| {
+                for (groups) |g| if (std.mem.eql(u8, g.name, want))
+                    return .{ .groups = try alloc.dupe(ChatGroupInfo, &.{g}) };
+                return hostFailure("NoSuchGroup", "no group by that name");
+            }
+            for (groups) |*g| {
+                if (g.brief.len <= brief_preview_bytes) continue;
+                var end = brief_preview_bytes;
+                while (end > 0 and g.brief[end] & 0xC0 == 0x80) end -= 1;
+                g.brief_given = g.brief.len;
+                g.brief = g.brief[0..end];
+            }
             return .{ .groups = groups };
         },
 
@@ -7552,6 +7655,14 @@ const FakeHost = struct {
     /// Whether the last `set_watch` asked to start or stop sampling.
     watching: ?bool = null,
 
+    /// The groups `chatGroupInfo` lists, when a test wants more than the
+    /// one `build` group every other test is written against.
+    groups: ?[]const ChatGroupInfo = null,
+
+    /// Set to make `setWatching` refuse, the way the runtime does when the
+    /// terminal has gone or its sampler could not be started.
+    watch_error: ?anyerror = null,
+
     /// Who the fake says made every group. Null means the usual boss.
     group_owner: ?Bus.Id = null,
 
@@ -7966,6 +8077,16 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.ListFailed;
 
+        if (self.groups) |list| {
+            const out = try alloc.alloc(ChatGroupInfo, list.len);
+            for (list, out) |g, *o| o.* = .{
+                .name = try alloc.dupe(u8, g.name),
+                .brief = if (g.brief.len > 0) try alloc.dupe(u8, g.brief) else "",
+                .joined = g.joined,
+            };
+            return out;
+        }
+
         const out = try alloc.alloc(ChatGroupInfo, 1);
         out[0] = .{
             .name = try alloc.dupe(u8, "build"),
@@ -8289,6 +8410,7 @@ const FakeHost = struct {
 
     fn setWatching(ctx: *anyopaque, _: Bus.Id, watching: bool) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.watch_error) |err| return err;
         self.watching = watching;
     }
 
@@ -8561,6 +8683,65 @@ test "a terminal nobody is watching is still listed, with where it is" {
     try testing.expect(stranger.rounds == null);
 }
 
+test "a terminal let go stops being sampled and stops having a quiet time (task 550)" {
+    // The panel saw four terminals with role none and watching false still
+    // carrying a `quiet_ms`, one of them two hours of it. Two things have to
+    // hold for that not to happen: the host is told to stop sampling, and
+    // nothing that arrives after the release -- a heartbeat or a report the
+    // sampler had already sent before it heard -- puts the figure back.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const open = [_]Place{.{ .id = worker, .cwd = "/work", .title = "worker" }};
+    var fake: FakeHost = .{ .open = &open, .quiet_ms = 7_169_574 };
+
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = true } });
+    try testing.expectEqual(@as(?bool, true), fake.watching);
+    const still: @import("Sampler.zig").Event = .{ .quiescent = .{
+        .quiet_ms = 180_000,
+        .silent_ms = 180_000,
+        .changed_rows = 0,
+        .total_rows = 24,
+    } };
+    _ = b.report(worker, still, 180_000);
+
+    const listed = struct {
+        fn quiet(a: std.mem.Allocator, bus: *Bus, host: Host) !wire.TerminalInfo {
+            const res = try dispatch(a, bus, host, term(boss), .terminal_list);
+            for (res.terminals) |info| if (info.id == worker) return info;
+            return error.NotListed;
+        }
+    }.quiet;
+
+    // Measured while minded: the figure is there.
+    try testing.expect((try listed(alloc, &b, fake.host())).quiet_ms != null);
+
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = false } });
+
+    // The host was told to stop, not only the bus.
+    try testing.expectEqual(@as(?bool, false), fake.watching);
+
+    // And nothing measured is left.
+    const released = try listed(alloc, &b, fake.host());
+    try testing.expect(!released.watching);
+    try testing.expectEqual(Bus.Role.none, released.role);
+    try testing.expect(released.quiet_ms == null);
+    try testing.expect(released.rounds == null);
+
+    // What the sampler sent before it heard it was stopped lands after the
+    // release: a heartbeat, then a report. Neither may bring it back -- once
+    // one does, the figure is extended by the wall clock for as long as the
+    // window stays open, which is how a released terminal reads two hours.
+    b.noteQuiet(worker, 185_000, 185_000);
+    _ = b.report(worker, still, 190_000);
+    const late = try listed(alloc, &b, fake.host());
+    try testing.expect(late.quiet_ms == null);
+    try testing.expect(late.rounds == null);
+}
+
 test "me works for a terminal that supervises nothing" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -8806,6 +8987,74 @@ test "a group's brief is the supervisor's alone to write" {
     try testing.expect(requiresSupervisor(.group_set_brief));
 }
 
+test "group_list stays small with a night's worth of Chinese briefs, and says what it cut (task 591)" {
+    // Thirteen groups, each with a brief filled to what the store keeps:
+    // 8 KiB of Chinese, 2730 characters at three bytes each. Listed whole,
+    // that is a hundred kilobytes in one reply -- a supervisor asking which
+    // groups there are spends thousands of tokens it did not choose to.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const brief = "简" ** 2730;
+    comptime std.debug.assert(brief.len == 8190);
+    var list: [13]ChatGroupInfo = undefined;
+    for (&list, 0..) |*g, i| g.* = .{
+        .name = try std.fmt.allocPrint(alloc, "组{d}", .{i}),
+        .brief = brief,
+    };
+    var fake: FakeHost = .{ .groups = &list };
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_list = .{} });
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, res);
+    const reply = out.written();
+
+    // Bounded: every group still listed, each brief a preview.
+    try testing.expectEqual(@as(usize, 13), res.groups.len);
+    try testing.expect(reply.len < 10 * 1024);
+
+    // And the cut is said, on the entry it happened to, with both sizes --
+    // a preview that reads as the whole brief is the silent cut of 579.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"brief_cut\"") != null);
+    try testing.expect(std.mem.indexOf(u8, reply, "\"given\":8190") != null);
+
+    // Never mid-character: the preview is still UTF-8 a reader can decode.
+    for (res.groups) |g| try testing.expect(std.unicode.utf8ValidateSlice(g.brief));
+}
+
+test "group_list for one group hands its brief back whole (task 591)" {
+    // The preview is only worth cutting if the whole note is still one call
+    // away -- otherwise the cut is a loss, not a budget.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const brief = "简" ** 2730;
+    const list = [_]ChatGroupInfo{
+        .{ .name = "甲", .brief = brief },
+        .{ .name = "乙", .brief = "短" },
+    };
+    var fake: FakeHost = .{ .groups = &list };
+
+    const one = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_list = .{ .group = "甲" } });
+    try testing.expectEqual(@as(usize, 1), one.groups.len);
+    try testing.expectEqualStrings(brief, one.groups[0].brief);
+    try testing.expect(one.groups[0].brief_given == null);
+
+    // A short one is never marked as cut, in the full listing either.
+    const all = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_list = .{} });
+    try testing.expect(all.groups[1].brief_given == null);
+    try testing.expectEqual(@as(?usize, 8190), all.groups[0].brief_given);
+
+    const none = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_list = .{ .group = "丙" } });
+    try testing.expectEqualStrings("NoSuchGroup", none.failed.code);
+}
+
 test "every listing of a group carries its brief, members included" {
     // This asserted the opposite until a supervisor wrote a round's whole
     // briefing into a brief and four workers never saw a word of it. The
@@ -8820,11 +9069,11 @@ test "every listing of a group carries its brief, members included" {
     const alloc = arena.allocator();
 
     // The supervisor sees what it wrote.
-    const mine = try dispatch(alloc, &b, fake.host(), term(boss), .group_list);
+    const mine = try dispatch(alloc, &b, fake.host(), term(boss), .{ .group_list = .{} });
     try testing.expectEqualStrings("写 retry 装饰器", mine.groups[0].brief);
 
     // And so does a member, which is the whole point of writing one.
-    const theirs = try dispatch(alloc, &b, fake.host(), term(worker), .group_list);
+    const theirs = try dispatch(alloc, &b, fake.host(), term(worker), .{ .group_list = .{} });
     try testing.expectEqualStrings("build", theirs.groups[0].name);
     try testing.expectEqualStrings("写 retry 装饰器", theirs.groups[0].brief);
 }
@@ -8838,7 +9087,7 @@ test "zz574 a member's listing carries the brief body" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const theirs = try dispatch(alloc, &b, fake.host(), term(worker), .group_list);
+    const theirs = try dispatch(alloc, &b, fake.host(), term(worker), .{ .group_list = .{} });
     try testing.expectEqualStrings("build", theirs.groups[0].name);
     try testing.expectEqualStrings("写 retry 装饰器", theirs.groups[0].brief);
 }
@@ -8912,7 +9161,7 @@ test "the person at the keyboard sees the brief too" {
         &b,
         fake.host(),
         term(Chat.user_id),
-        .group_list,
+        .{ .group_list = .{} },
     );
     try testing.expect(res.groups[0].brief.len > 0);
 }

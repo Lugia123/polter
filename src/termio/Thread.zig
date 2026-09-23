@@ -146,6 +146,16 @@ write_delay_active: bool = false,
 /// Null when Poltergeist is disabled, which is the default.
 quiescence: ?Quiescence = null,
 
+/// What a supervisor or the keybind last asked of this terminal's sampling
+/// (`poltergeist_watch`), when anything has. Null means nobody has, and the
+/// configured `poltergeist-watch` decides. Kept apart from the config
+/// because a reload replaces the config: read from there, a reload undid
+/// every watch -- `poltergeist-watch` defaults to off, so it stopped the
+/// sampling of every terminal a supervisor was minding without a word, and
+/// with it on it restarted the sampling of every one it had let go (task
+/// 550). See `wantsSampling`.
+quiescence_asked: ?bool = null,
+
 /// Baseline for the monotonic millisecond clock handed to the sampler.
 /// Taken once when sampling starts so the numbers are small and monotonic.
 quiescence_epoch: std.Io.Timestamp = undefined,
@@ -685,6 +695,7 @@ fn setQuiescenceWatch(
     cb: *CallbackData,
     want: bool,
 ) void {
+    self.quiescence_asked = want;
     const q = if (self.quiescence) |*p| p else {
         if (!want) return;
         self.startQuiescence(io, cb) catch |err| {
@@ -699,12 +710,20 @@ fn setQuiescenceWatch(
     log.info("poltergeist: sampling {s}", .{if (want) "on" else "off"});
 }
 
+/// Whether a terminal should be sampled: what was last asked of this one,
+/// and the configured default only when nothing has been. The config is
+/// the default for terminals nobody has said anything about -- not an
+/// order that overrides the ones somebody has.
+fn wantsSampling(configured: bool, asked: ?bool) bool {
+    return asked orelse configured;
+}
+
 /// Bring sampling in line with the current config. Called after a config
 /// reload so that turning `poltergeist-watch` on or off, or changing a
 /// threshold, reaches terminals that are already open rather than only new
 /// ones.
 fn syncQuiescence(self: *Thread, io: *termio.Termio, cb: *CallbackData) void {
-    const want = io.config.poltergeist_watch;
+    const want = wantsSampling(io.config.poltergeist_watch, self.quiescence_asked);
 
     const q = if (self.quiescence) |*p| p else {
         if (!want) return;
@@ -1056,6 +1075,27 @@ fn selectionScrollCallback(
     );
 
     return .disarm;
+}
+
+test "a config reload does not undo a watch that was asked for (task 550)" {
+    const testing = std.testing;
+
+    // Nothing asked: the config decides, either way.
+    try testing.expect(!wantsSampling(false, null));
+    try testing.expect(wantsSampling(true, null));
+
+    // Minded by a supervisor under the default config. A reload used to
+    // stop this one's sampling -- still marked watched, nothing measuring.
+    try testing.expect(wantsSampling(false, true));
+
+    // Let go under `poltergeist-watch = true`. A reload used to start this
+    // one sampling again.
+    try testing.expect(!wantsSampling(true, false));
+
+    // ⚠️ What this does not catch: `syncQuiescence` going back to reading
+    // `io.config.poltergeist_watch` directly instead of asking this. Found by
+    // reading the code, not reproduced on a running terminal; the thread's
+    // loop is not something a test here can drive.
 }
 
 test "a configured threshold reaches the sampler in the unit it left in" {
