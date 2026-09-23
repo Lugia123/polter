@@ -1473,12 +1473,20 @@ msgstr ""
 msgid "No shortcut yet"
 msgstr ""
 
-#: windows/host/src/language.rs:317
+#: windows/host/src/language.rs:291
 msgid "Language"
 msgstr ""
 
-#: windows/host/src/language.rs:318
+#: windows/host/src/language.rs:283
 msgid "The language changes the next time Polter starts."
+msgstr ""
+
+#: windows/host/src/language.rs:287
+#, rust-format
+msgid ""
+"LANG={} is set in the environment Polter was started from, and Polter uses "
+"it in preference to this choice. For this choice to take effect, clear LANG "
+"and start Polter again."
 msgstr ""
 
 #: windows/host/src/main.rs:2320

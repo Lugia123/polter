@@ -1487,13 +1487,23 @@ msgstr "菜单里不显示这个快捷键（键仍然有效）"
 msgid "No shortcut yet"
 msgstr "尚无快捷键"
 
-#: windows/host/src/language.rs:317
+#: windows/host/src/language.rs:291
 msgid "Language"
 msgstr "语言"
 
-#: windows/host/src/language.rs:318
+#: windows/host/src/language.rs:283
 msgid "The language changes the next time Polter starts."
 msgstr "语言将在下次启动 Polter 时生效。"
+
+#: windows/host/src/language.rs:287
+#, rust-format
+msgid ""
+"LANG={} is set in the environment Polter was started from, and Polter uses "
+"it in preference to this choice. For this choice to take effect, clear LANG "
+"and start Polter again."
+msgstr ""
+"启动 Polter 的环境里已设 LANG={}，Polter 会优先用它，而不是这里的选择。"
+"要让这个选择生效，请先清掉 LANG，再重新启动 Polter。"
 
 #: windows/host/src/main.rs:2320
 #, rust-format

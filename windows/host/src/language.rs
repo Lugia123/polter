@@ -59,57 +59,9 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::app_language::{decide, notice_after_save, AppLanguage, Notice, Startup};
 use crate::i18n::tr;
 use crate::{plogf, wlogf};
-
-/// The languages the menu offers. `AppLanguage.allCases`, in the same order.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AppLanguage {
-    English,
-    SimplifiedChinese,
-}
-
-impl AppLanguage {
-    pub const ALL: [AppLanguage; 2] = [AppLanguage::English, AppLanguage::SimplifiedChinese];
-
-    /// What is written to the file. `AppLanguage`'s raw values, so a file
-    /// and a macOS defaults entry holding the same choice say the same thing.
-    pub fn raw(self) -> &'static str {
-        match self {
-            AppLanguage::English => "en",
-            AppLanguage::SimplifiedChinese => "zh-Hans",
-        }
-    }
-
-    /// Shown in its own language, never translated -- and therefore not
-    /// wrapped in `tr`. A menu that says "Chinese" to someone who cannot read
-    /// English is no use to them.
-    pub fn display_name(self) -> &'static str {
-        match self {
-            AppLanguage::English => "English",
-            AppLanguage::SimplifiedChinese => "简体中文",
-        }
-    }
-
-    /// What goes into `LANG`. The same strings `posixLocale` hands the core
-    /// on macOS. `en_US` matches no catalogue, which is how English is chosen:
-    /// the msgids are English.
-    pub fn posix_locale(self) -> &'static str {
-        match self {
-            AppLanguage::English => "en_US.UTF-8",
-            AppLanguage::SimplifiedChinese => "zh_CN.UTF-8",
-        }
-    }
-
-    /// Read back a stored or reported name. **By prefix**, as macOS does, so a
-    /// hand-edited `zh-Hans-CN` still counts.
-    fn from_name(name: &str) -> Option<AppLanguage> {
-        let name = name.trim();
-        AppLanguage::ALL
-            .into_iter()
-            .find(|l| !name.is_empty() && name.starts_with(l.raw()))
-    }
-}
 
 /// `%LOCALAPPDATA%\polter\language`, the sibling of `session.json`.
 fn path() -> Option<PathBuf> {
@@ -174,10 +126,13 @@ static PRIOR_LANG: Mutex<Option<Option<OsString>>> = Mutex::new(None);
 pub fn apply_before_init() {
     let inherited = std::env::var_os("LANG");
     let saved = selected();
-    let inherited_is_set = inherited.as_ref().is_some_and(|v| !v.is_empty());
 
-    match (inherited_is_set, saved) {
-        (true, Some(s)) => {
+    // The table itself is `app_language::decide`, which is pure and tested.
+    // A `LANG` that is not valid Unicode is still a set `LANG`; it is passed
+    // as a placeholder that is non-empty, which is all `decide` asks of it.
+    let inherited_str = inherited.as_ref().map(|v| v.to_str().unwrap_or("\u{fffd}"));
+    match decide(inherited_str, saved) {
+        Startup::HonourInherited { saved: s } => {
             // process-wide: startup, before any window exists
             plogf!(
                 "[lang] LANG={} present, honouring it over saved choice {}",
@@ -185,20 +140,20 @@ pub fn apply_before_init() {
                 s.raw()
             );
         }
-        (true, None) => {
+        Startup::InheritedNoChoice => {
             // process-wide: startup, before any window exists
             plogf!(
                 "[lang] LANG={} present and no saved choice",
                 inherited.as_ref().unwrap().to_string_lossy()
             );
         }
-        (false, Some(s)) => {
+        Startup::Apply(s) => {
             std::env::set_var("LANG", s.posix_locale());
             *PRIOR_LANG.lock().unwrap() = Some(inherited);
             // process-wide: startup, before any window exists
             plogf!("[lang] saved choice {} -> LANG={} for ghostty_init", s.raw(), s.posix_locale());
         }
-        (false, None) => {
+        Startup::FollowSystem => {
             // process-wide: startup, before any window exists
             plogf!("[lang] no saved choice and no LANG; following the system");
         }
@@ -312,13 +267,29 @@ fn show_picker(frame: HWND, at: POINT) {
 
     // **No restart button.** Restarting ends every shell and agent session in
     // every window; macOS's `relaunch()` does that, and it is not copied here.
-    // The wording promises nothing about which language comes back: a `LANG`
-    // set in the environment still wins.
+    //
+    // **And no promise the next start will not keep.** A `LANG` set in the
+    // environment still wins over the saved choice (see this file's module
+    // comment for why), and this sentence used to say "next time" regardless
+    // -- on such a machine the choice then silently did not apply, and the
+    // only trace was a log line. `notice_after_save` asks the same table the
+    // next start will, with the `LANG` this process was started with, and the
+    // value is shown so the person can clear it. Nothing is said about where
+    // that `LANG` came from: that is not something this process can read.
+    let lang = std::env::var_os("LANG").map(|v| v.to_string_lossy().into_owned());
+    let text = match notice_after_save(lang.as_deref(), *language) {
+        Notice::NextStart => {
+            wlogf!(frame, "[lang] no LANG in the environment; the choice applies at the next start");
+            tr("The language changes the next time Polter starts.")
+        }
+        Notice::LangWins(value) => {
+            wlogf!(frame, "[lang] LANG={} is set; told the person it wins over {}", value, language.raw());
+            tr("LANG={} is set in the environment Polter was started from, and Polter uses it in preference to this choice. For this choice to take effect, clear LANG and start Polter again.")
+                .replacen("{}", value, 1)
+        }
+    };
     let title: Vec<u16> = tr("Language").encode_utf16().chain(Some(0)).collect();
-    let body: Vec<u16> = tr("The language changes the next time Polter starts.")
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
+    let body: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
     unsafe {
         MessageBoxW(
             Some(frame),
@@ -328,19 +299,4 @@ fn show_picker(frame: HWND, at: POINT) {
         );
     }
     wlogf!(frame, "[lang] told the person the change waits for the next start");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The file holds macOS's raw values, and reading one back is by prefix.
-    #[test]
-    fn stored_names_read_back() {
-        assert_eq!(AppLanguage::from_name("en"), Some(AppLanguage::English));
-        assert_eq!(AppLanguage::from_name("zh-Hans\r\n"), Some(AppLanguage::SimplifiedChinese));
-        assert_eq!(AppLanguage::from_name("zh-Hans-CN"), Some(AppLanguage::SimplifiedChinese));
-        assert_eq!(AppLanguage::from_name(""), None);
-        assert_eq!(AppLanguage::from_name("de"), None);
-    }
 }

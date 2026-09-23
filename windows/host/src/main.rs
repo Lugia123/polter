@@ -110,6 +110,7 @@ mod hud;
 mod i18n;
 mod inspector;
 mod keyseq;
+mod app_language;
 mod language;
 mod links;
 mod layout;
