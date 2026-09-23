@@ -1410,6 +1410,7 @@ extension Ghostty {
                 }
                 surfaceView.poltergeistShielded = v.shielded
                 surfaceView.poltergeistMayAuthorise = v.may_authorise
+                surfaceView.poltergeistWorkerMentions = v.worker_mentions
 
                 // Which persona, and whether anybody is in there wearing it.
                 //

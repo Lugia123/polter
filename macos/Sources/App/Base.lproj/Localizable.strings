@@ -87,6 +87,7 @@
 "Ignore" = "Ignore";
 "Install and Relaunch" = "Install and Relaunch";
 "Let a Supervisor Answer Prompts Here" = "Let a Supervisor Answer Prompts Here";
+"Let Workers Name Each Other Directly" = "Let Workers Name Each Other Directly";
 "Loading" = "Loading";
 "No Updates Found" = "No Updates Found";
 "No matches" = "No matches";
@@ -185,6 +186,7 @@
 "last_tab" = "Go to Last Tab";
 "next_tab" = "Next Tab";
 "poltergeist_toggle_authorise" = "Toggle: Let a Supervisor Answer Prompts";
+"poltergeist_toggle_worker_mentions" = "Toggle: Let Workers Name Each Other Directly";
 "poltergeist_persona_set" = "Set This Terminal's Role";
 "poltergeist_persona_clear" = "Clear This Terminal's Role";
 "poltergeist_persona_skill" = "Switch One Skill On or Off Here";

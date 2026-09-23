@@ -816,6 +816,9 @@ fn actionCommands(action: Action.Key) []const Command {
         // to *lift* a shield. This switch has no such coincidence protecting
         // it, so it stays off the palette and lives on the menus only.
         .poltergeist_toggle_authorise,
+        // The same argument, word for word: it widens what one agent may do
+        // to another, so a palette entry would let an agent grant it.
+        .poltergeist_toggle_worker_mentions,
         => comptime &.{},
 
         // ⚠️ **Off the palette for the reason directly above, and it is the
@@ -1267,10 +1270,20 @@ test "menu labels reach the palette" {
         // type into it, so a palette entry for this switch would be a way for
         // an agent to grant itself the permission the switch withholds. The
         // cost is that the row is unsearchable, and it is the smaller one.
-        .{ .path = "windows/host/src/menu.rs", .what = "the main menu", .paired_match = false, .min_rows = 40, .no_command = 7 },
-        .{ .path = "windows/host/src/ctxmenu.rs", .what = "the terminal's right-click menu", .paired_match = false, .min_rows = 15, .no_command = 2 },
+        //
+        // **7 -> 8, 2 -> 3 and the tab menu's 1 -> 2 (task 575), for the same
+        // reason, word for word.** `poltergeist_toggle_worker_mentions` lets a
+        // supervisor's workers type into each other through a group mention;
+        // it widens what one agent may do to another exactly as the answer
+        // switch does, so it is kept off the palette for the same reason
+        // (`.poltergeist_toggle_worker_mentions` beside
+        // `.poltergeist_toggle_authorise` in `defaults`). One row in each of
+        // the three places a supervisor's switches live: the main menu, the
+        // terminal's right-click menu and the tab's. Not the blank strip's.
+        .{ .path = "windows/host/src/menu.rs", .what = "the main menu", .paired_match = false, .min_rows = 40, .no_command = 8 },
+        .{ .path = "windows/host/src/ctxmenu.rs", .what = "the terminal's right-click menu", .paired_match = false, .min_rows = 15, .no_command = 3 },
         .{ .path = "windows/host/src/strip.rs", .what = "the blank strip's menu", .paired_match = false, .min_rows = 3, .no_command = 1 },
-        .{ .path = "windows/host/src/strip.rs", .what = "the tab's right-click menu", .paired_match = true, .min_rows = 8, .no_command = 1 },
+        .{ .path = "windows/host/src/strip.rs", .what = "the tab's right-click menu", .paired_match = true, .min_rows = 8, .no_command = 2 },
     };
 
     for (sources) |source| {

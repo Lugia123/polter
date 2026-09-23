@@ -99,6 +99,7 @@
 "Ignore" = "忽略";
 "Install and Relaunch" = "安装并重新启动";
 "Let a Supervisor Answer Prompts Here" = "允许总管在此终端替你回答权限询问";
+"Let Workers Name Each Other Directly" = "允许 worker 之间直接点名";
 "Loading" = "加载中";
 "No Updates Found" = "没有可用更新";
 "No matches" = "没有匹配项";
@@ -199,6 +200,7 @@
 "last_tab" = "跳到最后一个标签页";
 "next_tab" = "下一个标签页";
 "poltergeist_toggle_authorise" = "切换：让总管替你回答权限询问";
+"poltergeist_toggle_worker_mentions" = "切换：允许 worker 之间直接点名";
 "poltergeist_persona_set" = "把这个终端设成某个角色";
 "poltergeist_persona_clear" = "清掉这个终端的角色";
 "poltergeist_persona_skill" = "在这里单独开关一个技能";

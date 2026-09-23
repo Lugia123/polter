@@ -2018,6 +2018,18 @@ pub const PoltergeistMark = struct {
     /// prefix stays empty for it.
     may_authorise: bool,
 
+    /// This supervisor lets the workers it minds name each other in a group
+    /// post and be typed into directly, instead of having those mentions
+    /// redirected to it (`Bus.Entry.worker_mentions`). False on anything that
+    /// is not a supervisor. No glyph, for the reason `may_authorise` has none.
+    ///
+    /// ⚠️ **In the C struct it sits in what was padding**: offset 15, after
+    /// the three bools, so the struct stays 24 bytes and `persona` stays at
+    /// 16. The test under `C` pins all of that; a host built before this
+    /// field existed reads the same offsets it always did and never looks at
+    /// byte 15.
+    worker_mentions: bool,
+
     /// Which persona this terminal is wearing, and whether anybody is in
     /// there to wear it.
     ///
@@ -2148,6 +2160,7 @@ pub const PoltergeistMark = struct {
         shielded: bool,
         held: bool,
         may_authorise: bool,
+        worker_mentions: bool,
         persona: *const Persona,
     };
 
@@ -2158,6 +2171,7 @@ pub const PoltergeistMark = struct {
             .shielded = self.shielded,
             .held = self.held,
             .may_authorise = self.may_authorise,
+            .worker_mentions = self.worker_mentions,
             .persona = self.persona,
         };
     }
@@ -2172,6 +2186,20 @@ pub const PoltergeistMark = struct {
         const testing = std.testing;
         try testing.expectEqual(@as(usize, 24), @sizeOf(C));
         try testing.expectEqual(@as(usize, 24), @sizeOf(Persona));
+
+        // **Every offset the Windows host reads by hand**
+        // (`as_poltergeist_mark` in `windows/host/src/ffi.rs`), pinned here
+        // because a wrong one there does not crash: it reads some other
+        // byte. `worker_mentions` went into the padding at 15 (task 575);
+        // if this reddens, something moved that an old host still reads at
+        // the old place.
+        try testing.expectEqual(@as(usize, 0), @offsetOf(C, "prefix"));
+        try testing.expectEqual(@as(usize, 8), @offsetOf(C, "role"));
+        try testing.expectEqual(@as(usize, 12), @offsetOf(C, "shielded"));
+        try testing.expectEqual(@as(usize, 13), @offsetOf(C, "held"));
+        try testing.expectEqual(@as(usize, 14), @offsetOf(C, "may_authorise"));
+        try testing.expectEqual(@as(usize, 15), @offsetOf(C, "worker_mentions"));
+        try testing.expectEqual(@as(usize, 16), @offsetOf(C, "persona"));
         try testing.expect(@sizeOf(C) <= @sizeOf(NewSplit.C));
 
         // ⚠️ **The offsets, because the other side reads them by hand.**

@@ -140,6 +140,16 @@ pub enum Flag {
     Shielded,
     Held,
     MayAuthorise,
+    /// This terminal, **as a supervisor**, lets the workers it minds name each
+    /// other directly in the group instead of having those mentions rewritten
+    /// to it. Default off -- rewriting is the default.
+    ///
+    /// **Scoped to a supervisor, which is why its row is left out rather than
+    /// greyed on anything else.** Greying says "this exists, not now"; on a
+    /// worker the answer is not "not now", it is that the setting is not about
+    /// this terminal at all and never will be. A greyed row would send someone
+    /// looking for how to earn it.
+    WorkerMentions,
 }
 
 /// Shorthand for the common case: a labelled row that runs a core action.
@@ -318,6 +328,20 @@ const AGENTS_ROWS: &[Row] = &[
         n_("Let a Supervisor Answer Prompts Here"),
         "poltergeist_toggle_authorise",
         Flag::MayAuthorise,
+        Ready::Always,
+    ),
+    // **A supervisor's own setting, and the only row here that is not about
+    // the terminal it is opened on.** With it off -- the default -- a worker
+    // naming another worker in the group has that mention rewritten to this
+    // supervisor, who decides what to pass on. With it on they reach each
+    // other directly and this supervisor merely has the message unread.
+    //
+    // Left out entirely on anything that is not a supervisor; see
+    // `Flag::WorkerMentions` for why that is not the greying §3.4.3 asks for.
+    toggle(
+        n_("Let Workers Name Each Other Directly"),
+        "poltergeist_toggle_worker_mentions",
+        Flag::WorkerMentions,
         Ready::Always,
     ),
     // **The hold, and the only door into it on this platform.**
@@ -696,15 +720,25 @@ fn default_state(flag: Flag) -> Option<bool> {
         | Flag::Watched
         | Flag::Shielded
         | Flag::Held
-        | Flag::MayAuthorise => {
+        | Flag::MayAuthorise
+        | Flag::WorkerMentions => {
             let active = crate::tabs::active_surface(crate::tabs::overlay_frame());
-            let (role, shielded, held, may_authorise) = crate::tabs::mark_for_surface(active)?;
+            let mark = crate::tabs::mark_for_surface(active)?;
             Some(match flag {
-                Flag::Supervisor => role == ROLE_SUPERVISOR,
-                Flag::Watched => role == ROLE_WATCHED,
-                Flag::Shielded => shielded,
-                Flag::MayAuthorise => may_authorise,
-                _ => held,
+                Flag::Supervisor => mark.role == ROLE_SUPERVISOR,
+                Flag::Watched => mark.role == ROLE_WATCHED,
+                Flag::Shielded => mark.shielded,
+                Flag::Held => mark.held,
+                Flag::MayAuthorise => mark.may_authorise,
+                Flag::WorkerMentions => {
+                    crate::worker_mentions::ticked(Some(mark.role), mark.worker_mentions)
+                }
+                // **Named, not `_`.** This tail used to read `_ => held`,
+                // and the outer arm's list is what kept that correct. Add a
+                // flag to that list and `_` catches it too: the new row
+                // would tick from the hold, look plausible, and say nothing.
+                // Spelled out, a seventh flag stops the build here instead.
+                Flag::ReadOnly | Flag::FloatOnTop => return None,
             })
         }
     }
@@ -836,6 +870,7 @@ fn check_state_counts() -> (usize, usize, Vec<&'static str>) {
                 Flag::Shielded => "Shielded",
                 Flag::Held => "Held",
                 Flag::MayAuthorise => "MayAuthorise",
+                Flag::WorkerMentions => "WorkerMentions",
             }),
         }
     }
@@ -1000,15 +1035,52 @@ const ID_BASE: usize = 0x5000;
 #[cfg(test)]
 pub fn max_static_id() -> usize {
     let mut flat: Vec<&Row> = Vec::new();
-    flatten(ROOT, &mut flat);
+    // **The widest the table ever gets.** One row is left out on anything
+    // that is not a supervisor, so the flattened length is no longer a
+    // constant -- and the number this function exists to give is a *bound*
+    // that `personas::ID_BASE` has to clear. Taking it from the narrow menu
+    // would leave the two ranges touching exactly when a supervisor opens it.
+    flatten(ROOT, &mut flat, true);
     ID_BASE + flat.len()
 }
 
 /// Flatten the tree in the order the menus are built, so an id is an index.
-fn flatten<'a>(rows: &'a [Row], out: &mut Vec<&'a Row>) {
+/// Whether a row is on the menu at all, as opposed to greyed on it.
+///
+/// ⚠️ **The only row this can hide, and the two walks that must agree.**
+/// `show` walks the table twice -- `flatten` to fix what each id means and
+/// `build` to put the rows on screen -- and the id a click returns indexes
+/// the first walk. A row left out of one walk and not the other shifts every
+/// id after it, and the menu then runs the wrong command **while looking
+/// right**, which is this file's oldest warning. So both walkers take the same
+/// `supervisor` and ask this one function; neither decides for itself.
+///
+/// `§3.4.3` says greyed rather than hidden, and that rule is about a row that
+/// exists for this terminal and cannot be used **now**. This one does not
+/// exist for a worker at all -- see `Flag::WorkerMentions`.
+fn row_visible(r: &Row, supervisor: bool) -> bool {
+    match r.check {
+        Some(Flag::WorkerMentions) => supervisor,
+        _ => true,
+    }
+}
+
+/// Whether the surface the root menu acts on is a supervisor.
+///
+/// Read **once** per opening and handed to both walks, so the two cannot
+/// disagree if a mark arrives between them.
+fn active_is_supervisor() -> bool {
+    let active = crate::tabs::active_surface(crate::tabs::overlay_frame());
+    crate::worker_mentions::offered(crate::tabs::mark_for_surface(active).map(|m| m.role))
+}
+
+fn flatten<'a>(rows: &'a [Row], out: &mut Vec<&'a Row>, supervisor: bool) {
     for r in rows {
+        if !row_visible(r, supervisor) {
+            continue;
+        }
         if let Some(s) = r.sub {
-            flatten(s, out);
+            flatten(s, out, supervisor);
             continue;
         }
         // The persona rows are not in this order at all: their count is only
@@ -1037,6 +1109,7 @@ fn build(
     rows: &[Row],
     next: &mut usize,
     personas: &mut Vec<crate::personas::Entry>,
+    supervisor: bool,
 ) -> Option<HMENU> {
     unsafe {
         let menu = match CreatePopupMenu() {
@@ -1047,6 +1120,11 @@ fn build(
             }
         };
         for r in rows {
+            // **The same question `flatten` asked, and asked of the same
+            // value.** These two walks are what pairs an id with a command.
+            if !row_visible(r, supervisor) {
+                continue;
+            }
             if r.personas {
                 // **The surface, not the window.** A persona belongs to one
                 // terminal, and this menu hangs off a frame that may hold
@@ -1078,7 +1156,7 @@ fn build(
                 // walking the tree the same way this does; a submenu quietly
                 // left out here would shift every id after it, and the menu
                 // would then run the wrong command while looking right.
-                let child = build(frame, children, next, personas)?;
+                let child = build(frame, children, next, personas, supervisor)?;
                 let wide: Vec<u16> = tr(r.label).encode_utf16().chain(Some(0)).collect();
                 let _ = AppendMenuW(
                     menu,
@@ -1159,8 +1237,12 @@ fn build_personas(frame: HWND, entries: &[crate::personas::Entry]) -> Option<HME
 /// strip's mouse handling, which is already on that thread.
 pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     validate_once();
+    // **Read once, used by both walks.** `flatten` fixes what each id means
+    // and `build` puts the rows up; if they disagreed about this one value
+    // every id after the hidden row would name a different command.
+    let supervisor = active_is_supervisor();
     let mut order: Vec<&Row> = Vec::new();
-    flatten(ROOT, &mut order);
+    flatten(ROOT, &mut order, supervisor);
 
     let mut next = 0usize;
     // **Kept for as long as the menu is up.** The persona ids are indices
@@ -1168,7 +1250,7 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     // rebuilding it afterwards would be a second walk that can disagree with
     // the first.
     let mut personas: Vec<crate::personas::Entry> = Vec::new();
-    let Some(menu) = build(frame, ROOT, &mut next, &mut personas) else { return };
+    let Some(menu) = build(frame, ROOT, &mut next, &mut personas, supervisor) else { return };
 
     // Items on the root itself, which is what a person sees when it opens:
     // the six groups plus the two tail rows. Not the 50-odd leaves below.
@@ -1291,7 +1373,9 @@ fn selftest_requested() -> bool {
 /// means 54 green lines on a stretch of code nobody can reach.
 fn run_selftest(frame: HWND) {
     let mut order: Vec<&Row> = Vec::new();
-    flatten(ROOT, &mut order);
+    // The self-test drives what a click could reach **on this terminal**, so
+    // it asks the same question the menu does rather than the widest one.
+    flatten(ROOT, &mut order, active_is_supervisor());
     let (last, first): (Vec<&Row>, Vec<&Row>) = order
         .iter()
         .partition(|r| r.action.is_some_and(|a| ENDS_THE_SESSION.contains(&a)));
@@ -1612,7 +1696,8 @@ mod tests {
     #[test]
     fn ids_stay_in_their_own_range() {
         let mut flat = Vec::new();
-        flatten(ROOT, &mut flat);
+        // The widest menu, for the same reason `max_static_id` uses it.
+        flatten(ROOT, &mut flat, true);
         assert!(ID_BASE > 0x4000 + 0x100);
         assert!(ID_BASE + flat.len() < 0xF000);
     }

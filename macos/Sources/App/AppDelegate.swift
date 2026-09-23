@@ -85,6 +85,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuPoltergeistShield: NSMenuItem?
     @IBOutlet private var menuPoltergeistAuthorise: NSMenuItem?
     @IBOutlet private var menuPoltergeistPersona: NSMenuItem?
+    @IBOutlet private var menuPoltergeistDirectMentions: NSMenuItem?
     @IBOutlet private var menuLanguage: NSMenuItem?
     @IBOutlet private var menuPlugins: NSMenuItem?
     @IBOutlet private var menuReopenTab: NSMenuItem?
@@ -356,6 +357,12 @@ class AppDelegate: NSObject,
         // the same `PersonaMenu` -- and rebuilt when the Agents menu opens,
         // because which terminal it is about is decided then, not now.
         if let item = menuPoltergeistPersona { personaMenuBar.attach(to: item) }
+
+        // The supervisor's direct-mentions switch, from the same
+        // `MentionMenu` the two right-click menus call. Filled by the same
+        // delegate as `Role`: that object is the Agents menu's delegate, and
+        // a menu has only one.
+        if let item = menuPoltergeistDirectMentions { personaMenuBar.attachMentions(to: item) }
 
         // Check if secure input was enabled when we last quit.
         if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {

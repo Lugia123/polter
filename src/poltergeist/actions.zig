@@ -128,6 +128,7 @@ pub fn selfSafeTag(tag: std.meta.Tag(inputpkg.Binding.Action)) bool {
         .poltergeist_toggle_held,
         .poltergeist_toggle_shielded,
         .poltergeist_toggle_authorise,
+        .poltergeist_toggle_worker_mentions,
         .poltergeist_toggle_chat,
 
         // The four persona actions. Same footing as the five above: an

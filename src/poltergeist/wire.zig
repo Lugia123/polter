@@ -11,6 +11,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Bus = @import("Bus.zig");
+const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
 const rpc = @import("rpc.zig");
 
@@ -200,6 +201,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .group_post => .{ .group_post = .{
             .group = try requireString(aa, params, "group"),
             .text = try requireString(aa, params, "text"),
+            .mention = try optionalIds(aa, params, "mention"),
         } },
 
         .group_read => .{ .group_read = .{
@@ -397,6 +399,31 @@ fn requireIdNamed(params: ?std.json.ObjectMap, key: []const u8) ParseError!Bus.I
 
         else => error.BadParams,
     };
+}
+
+/// An array of terminal ids, each in either form `requireIdNamed` takes.
+/// Absent or `null` is the empty list; anything else malformed is refused
+/// whole rather than read as far as it goes -- a list of names half-read is
+/// a post that reaches some of the people it was for.
+fn optionalIds(
+    aa: Allocator,
+    params: ?std.json.ObjectMap,
+    key: []const u8,
+) ParseError![]const Bus.Id {
+    const p = params orelse return &.{};
+    const v = p.get(key) orelse return &.{};
+    const items = switch (v) {
+        .null => return &.{},
+        .array => |arr| arr.items,
+        else => return error.BadParams,
+    };
+    const out = try aa.alloc(Bus.Id, items.len);
+    for (items, out) |item, *id| id.* = switch (item) {
+        .integer => |i| if (i < 0) return error.BadParams else @intCast(i),
+        .string => |str| std.fmt.parseUnsigned(Bus.Id, str, 0) catch return error.BadParams,
+        else => return error.BadParams,
+    };
+    return out;
 }
 
 fn requireString(
@@ -794,6 +821,16 @@ pub const Response = union(enum) {
         more: bool = false,
     },
 
+    /// A group post that named somebody: where it landed, whether it was
+    /// cut, and one row per name saying whether that terminal was typed into.
+    /// See `rpc.MentionRow`. A post that named nobody still answers `ok` or
+    /// `text`, exactly as before.
+    posted: struct {
+        seq: u64,
+        cut: ?Chat.Kept,
+        deliveries: []const rpc.MentionRow,
+    },
+
     failed: struct { code: []const u8, message: []const u8 },
 };
 
@@ -1090,6 +1127,45 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 // and sort.
                 try s.objectField("kind");
                 try s.write(t.kind);
+                try s.endObject();
+            }
+            try s.endArray();
+        },
+        .posted => |v| {
+            try s.objectField("ok");
+            try s.write(true);
+            try s.objectField("seq");
+            try s.write(v.seq);
+
+            // **Always written**, null when nothing was cut, so a reader
+            // checks one field rather than learning that its absence means
+            // something.
+            try s.objectField("cut");
+            if (v.cut) |c| {
+                try s.beginObject();
+                try s.objectField("given");
+                try s.write(c.given);
+                try s.objectField("kept");
+                try s.write(c.kept);
+                try s.endObject();
+            } else try s.write(null);
+
+            try s.objectField("deliveries");
+            try s.beginArray();
+            for (v.deliveries) |row| {
+                try s.beginObject();
+                try s.objectField("id");
+                try writeId(&s, row.id);
+                try s.objectField("to");
+                if (row.to) |to| try writeId(&s, to) else try s.write(null);
+                try s.objectField("rewritten");
+                try s.write(row.rewritten);
+                try s.objectField("delivered");
+                try s.write(row.code == null);
+                try s.objectField("code");
+                try s.write(row.code);
+                try s.objectField("message");
+                try s.write(row.message);
                 try s.endObject();
             }
             try s.endArray();
@@ -2051,4 +2127,41 @@ test "a JSON answer is carried under result as it was built" {
     try writeResponse(&out.writer, .{ .json = "{\"a\":[1,2]}" });
     // One line per answer: the newline is the frame.
     try testing.expectEqualStrings("{\"ok\":true,\"result\":{\"a\":[1,2]}}\n", out.written());
+}
+
+test "group_post: mention is ids in either form, and the reply has one row per name" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const req = try parseRequestLeaky(arena.allocator(),
+        \\{"method":"group_post","params":{"group":"build","text":"hi","mention":["0x2222",13107]}}
+    );
+    try testing.expectEqualSlices(Bus.Id, &.{ 0x2222, 0x3333 }, req.group_post.mention);
+
+    // Absent is the plain post it always was.
+    const plain = try parseRequestLeaky(arena.allocator(),
+        \\{"method":"group_post","params":{"group":"build","text":"hi"}}
+    );
+    try testing.expectEqual(@as(usize, 0), plain.group_post.mention.len);
+
+    // A malformed name refuses the request rather than being skipped.
+    try testing.expectError(error.BadParams, parseRequestLeaky(arena.allocator(),
+        \\{"method":"group_post","params":{"group":"build","text":"hi","mention":["bob"]}}
+    ));
+
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeResponse(&w, .{ .posted = .{
+        .seq = 7,
+        .cut = null,
+        .deliveries = &.{
+            .{ .id = 0x2222, .to = 0x2222 },
+            .{ .id = 0x3333, .to = 0x1111, .rewritten = true, .code = "DraftInLine", .message = "m" },
+            .{ .id = 0, .to = null, .code = "NotATerminal", .message = "m" },
+        },
+    } });
+    try testing.expectEqualStrings(
+        \\{"ok":true,"seq":7,"cut":null,"deliveries":[{"id":"0x0000000000002222","to":"0x0000000000002222","rewritten":false,"delivered":true,"code":null,"message":null},{"id":"0x0000000000003333","to":"0x0000000000001111","rewritten":true,"delivered":false,"code":"DraftInLine","message":"m"},{"id":"0x0000000000000000","to":null,"rewritten":false,"delivered":false,"code":"NotATerminal","message":"m"}]}
+    ++ "\n",
+        w.buffered(),
+    );
 }

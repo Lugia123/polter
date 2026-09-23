@@ -425,7 +425,17 @@ pub const Request = union(Method) {
     group_remove: struct { group: []const u8, id: Bus.Id },
     group_compact: struct { group: []const u8, through: u64, summary: []const u8 },
     group_list,
-    group_post: struct { group: []const u8, text: []const u8 },
+    group_post: struct {
+        group: []const u8,
+        text: []const u8,
+
+        /// Terminals this post is addressed to by name, each of which is
+        /// typed into with a return after it (`dev-docs/poltergeist/mentions.md`).
+        /// **A parameter, never read out of `text`**: a name parsed out of
+        /// prose is a guess, and a wrong guess types into somebody who was
+        /// not named. Empty is today's post, unchanged.
+        mention: []const Bus.Id = &.{},
+    },
     group_read: struct {
         group: []const u8,
 
@@ -4086,6 +4096,49 @@ pub const ChatMember = struct {
     title: []const u8,
 };
 
+/// Who a group post is to be typed into, handed to `Host.chatPost`.
+pub const Mentions = struct {
+    /// The author's title as the stored text names it, so the line typed
+    /// into each terminal names the author the same way the record does
+    /// rather than reading a title that may have changed since.
+    from_title: []const u8 = "",
+
+    /// One per terminal to type into. The host fills in `err`.
+    to: []Delivery = &.{},
+
+    pub const none: Mentions = .{};
+};
+
+pub const Delivery = struct {
+    to: Bus.Id,
+
+    /// Null: typed, with a return after it. Otherwise why not -- one of
+    /// `terminal_send`'s refusals, which apply here unchanged.
+    err: ?anyerror = null,
+};
+
+/// One name in a group post, and what became of it. **Exactly one per
+/// distinct id the author named**, so an author can check every name it
+/// wrote against an answer.
+pub const MentionRow = struct {
+    /// Who the author named.
+    id: Bus.Id,
+
+    /// Who was actually typed into for it: `id`, its supervisor when the
+    /// mention was rewritten, or null when there was nobody to type into.
+    to: ?Bus.Id,
+
+    /// A worker named a worker and the mention went to a supervisor
+    /// instead (`Bus.Entry.worker_mentions`).
+    rewritten: bool = false,
+
+    /// Null when the line was typed and submitted. **The message is in the
+    /// group either way**: a row with a code here is a delivery that did
+    /// not happen, not a post that did not.
+    code: ?[]const u8 = null,
+    message: ?[]const u8 = null,
+};
+
 /// One group as it appears in a listing.
 ///
 /// `brief` is empty for the watched terminals -- not because the text is
@@ -4574,12 +4627,21 @@ pub const Host = struct {
         /// in silence, so a supervisor who wrote a long instruction was
         /// told `ok` and believed all of it had been said, while the
         /// readers got the first part and no sign that there had been more.
+        ///
+        /// `mentions.to` is who to type the message into, already worked out
+        /// -- rewritten, filtered, de-duplicated. The host adds the message
+        /// naming them, types one line into each with a return after it, and
+        /// writes what happened into `err`. **In that order, and before any
+        /// notice goes out**: a notice typed into a named terminal first
+        /// would leave a line in its input box, and the mention would then be
+        /// refused as `DraftInLine` by the host's own doing.
         chatPost: *const fn (
             ctx: *anyopaque,
             group: []const u8,
             from: Bus.Id,
             text: []const u8,
-        ) anyerror!Chat.Kept,
+            mentions: Mentions,
+        ) anyerror!Chat.Posted,
 
         /// Groups `id` is in. The slice and the names inside it must belong
         /// to `alloc`.
@@ -5061,8 +5123,9 @@ pub const Host = struct {
         group: []const u8,
         from: Bus.Id,
         text: []const u8,
-    ) anyerror!Chat.Kept {
-        return self.vtable.chatPost(self.ctx, group, from, text);
+        mentions: Mentions,
+    ) anyerror!Chat.Posted {
+        return self.vtable.chatPost(self.ctx, group, from, text, mentions);
     }
 
     fn chatGroups(
@@ -6187,8 +6250,10 @@ pub fn dispatch(
         },
 
         .group_post => |p| {
-            const wrote = host.chatPost(p.group, caller, p.text) catch |err|
-                return chatFailure(err);
+            if (p.mention.len > 0) return postMentioning(alloc, bus, host, caller, p);
+
+            const wrote = (host.chatPost(p.group, caller, p.text, .none) catch |err|
+                return chatFailure(err)).wrote;
 
             // **Said before anything else, because it changes what was
             // said.** A message over the per-message limit is trimmed, and
@@ -6813,6 +6878,240 @@ fn failure(err: Error) wire.Response {
     return .{ .failed = .{ .code = @errorName(err), .message = errorMessage(err) } };
 }
 
+/// A group post that names terminals: `dev-docs/poltergeist/mentions.md`.
+///
+/// Four steps, and the order is the contract:
+///
+/// 1. **Check every name first.** One that is not in the group refuses the
+///    whole post -- nothing lands and nobody is typed into. Never "posted,
+///    but some of them did not get it" for a name that could not have.
+/// 2. **Decide who each name is typed into.** A worker naming a worker goes
+///    to a supervisor instead, unless that supervisor has switched it off
+///    (`Bus.Entry.worker_mentions`); a shielded terminal or the person at
+///    the keyboard is typed into by nobody.
+/// 3. **Write the names into the text**, frozen as they are now, so the
+///    record says who was meant even after titles change -- and says so
+///    when a mention was rewritten.
+/// 4. **Post and deliver**, in the host, then report per name.
+fn postMentioning(
+    alloc: std.mem.Allocator,
+    bus: *const Bus,
+    host: Host,
+    caller: Bus.Id,
+    p: @FieldType(Request, "group_post"),
+) std.mem.Allocator.Error!wire.Response {
+    if (p.mention.len > Chat.max_mentions) return hostFailure(
+        "TooManyMentions",
+        try std.fmt.allocPrint(
+            alloc,
+            "a post may name at most {d} terminals; that one named {d}. Nothing was " ++
+                "posted. A message for everybody is an ordinary post.",
+            .{ Chat.max_mentions, p.mention.len },
+        ),
+    );
+
+    var named: std.ArrayList(Bus.Id) = .empty;
+    for (p.mention) |id| {
+        if (std.mem.indexOfScalar(Bus.Id, named.items, id) == null) try named.append(alloc, id);
+    }
+
+    const members = host.chatMembers(alloc, p.group) catch |err| return chatFailure(err);
+
+    // Step 1.
+    const from_title = titleOf(members, caller) orelse return chatFailure(error.NotAMember);
+    var strangers: std.Io.Writer.Allocating = .init(alloc);
+    for (named.items) |id| {
+        if (id == caller) return hostFailure(
+            "MentionSelf",
+            "that post names its own author. Nothing was posted: take your own id out " ++
+                "of `mention`.",
+        );
+        if (titleOf(members, id) == null) strangers.writer.print(" 0x{x:0>16}", .{id}) catch
+            return error.OutOfMemory;
+    }
+    if (strangers.written().len > 0) return hostFailure(
+        "NotAMember",
+        try std.fmt.allocPrint(
+            alloc,
+            "not in \"{s}\":{s}. Nothing was posted and nobody was typed into -- a post " ++
+                "is checked whole, so that no message goes out with some of its names " ++
+                "silently dropped. group_members lists who is in it.",
+            .{ p.group, strangers.written() },
+        ),
+    );
+
+    // Step 2.
+    const rows = try alloc.alloc(MentionRow, named.items.len);
+    for (named.items, rows) |id, *row| row.* = planMention(bus, caller, id, members);
+
+    // Step 3.
+    var body: std.Io.Writer.Allocating = .init(alloc);
+    writeMentionText(&body.writer, rows, members, from_title, p.text) catch
+        return error.OutOfMemory;
+
+    // Step 4. One delivery per terminal, however many names lead to it: two
+    // workers both redirected to one supervisor type one line, not two.
+    var targets: std.ArrayList(Delivery) = .empty;
+    for (rows) |row| {
+        const to = row.to orelse continue;
+        if (row.code != null) continue;
+        for (targets.items) |t| {
+            if (t.to == to) break;
+        } else try targets.append(alloc, .{ .to = to });
+    }
+
+    const posted = host.chatPost(p.group, caller, body.written(), .{
+        .from_title = from_title,
+        .to = targets.items,
+    }) catch |err| return chatFailure(err);
+
+    for (rows) |*row| {
+        if (row.code != null) continue;
+        const to = row.to orelse continue;
+        for (targets.items) |t| {
+            if (t.to != to) continue;
+            if (t.err) |err| {
+                const why = mentionFailure(err);
+                row.code = why.code;
+                row.message = try std.fmt.allocPrint(
+                    alloc,
+                    "{s} The message itself is in the group and counted unread; only " ++
+                        "the typing did not happen.",
+                    .{why.message},
+                );
+            }
+            break;
+        }
+    }
+
+    return .{ .posted = .{
+        .seq = posted.seq,
+        .cut = if (posted.wrote.cut()) posted.wrote else null,
+        .deliveries = rows,
+    } };
+}
+
+/// The text a named post is kept as: each name, as it is right now, then
+/// what was said. A rewritten name says who it was meant for and who wanted
+/// it, so a reader of the group can tell it was not addressed to the
+/// supervisor in the first place.
+fn writeMentionText(
+    w: *std.Io.Writer,
+    rows: []const MentionRow,
+    members: []const ChatMember,
+    from_title: []const u8,
+    text: []const u8,
+) std.Io.Writer.Error!void {
+    for (rows) |row| {
+        const title = titleOf(members, row.id) orelse "";
+        if (!row.rewritten) {
+            try Chat.writeName(w, row.id, title);
+        } else if (row.to) |sup| {
+            try Chat.writeName(w, sup, titleOf(members, sup) orelse "");
+            try w.writeAll(" (↪ 原点名 ");
+            try Chat.writeName(w, row.id, title);
+            try w.print("：{s} 想让 {s} 做下面这件事，请主管判断后转发)", .{ from_title, title });
+        } else {
+            try w.writeAll("(↪ 原点名 ");
+            try Chat.writeName(w, row.id, title);
+            try w.writeAll("：找不到可以转交的主管，未投递)");
+        }
+        try w.writeByte(' ');
+    }
+    try w.writeAll(text);
+}
+
+fn titleOf(list: []const ChatMember, id: Bus.Id) ?[]const u8 {
+    for (list) |m| if (m.id == id) return m.title;
+    return null;
+}
+
+/// Who one name in a post is typed into. Pure, so every cell of the rule is
+/// a test rather than a scenario.
+fn planMention(
+    bus: *const Bus,
+    caller: Bus.Id,
+    id: Bus.Id,
+    members: []const ChatMember,
+) MentionRow {
+    if (id == Chat.user_id) return .{
+        .id = id,
+        .to = null,
+        .code = "NotATerminal",
+        .message = "that is the person at the keyboard, who reads the group in the " ++
+            "conversations window; there is no terminal to type into. The message is " ++
+            "in the group.",
+    };
+
+    // Refused to everybody, supervisors included -- the same rule as
+    // `authorize`, which a mention does not go through and so has to repeat.
+    if (bus.isShielded(id)) return .{
+        .id = id,
+        .to = null,
+        .code = "Shielded",
+        .message = "the user has put that terminal out of reach, so nothing is typed " ++
+            "into it by anybody. The message is in the group.",
+    };
+
+    // A worker reaching a worker: the one crossing a mention could open that
+    // `authorize` keeps shut (cross-process-authz.md, X2).
+    const crossing = !bus.isSupervisor(caller) and bus.roleOf(id) == .watched;
+    if (!crossing) return .{ .id = id, .to = id };
+
+    const sup = bus.minderOf(caller) orelse bus.minderOf(id) orelse return .{
+        .id = id,
+        .to = null,
+        .rewritten = true,
+        .code = "NoSupervisor",
+        .message = "a worker naming a worker goes to their supervisor, and neither " ++
+            "terminal has one that has claimed it. Nothing was typed; the message, " ++
+            "with who it was meant for, is in the group.",
+    };
+
+    if (bus.workerMentions(sup)) return .{ .id = id, .to = id };
+
+    for (members) |m| {
+        if (m.id == sup) return .{ .id = id, .to = sup, .rewritten = true };
+    }
+    return .{
+        .id = id,
+        .to = null,
+        .rewritten = true,
+        .code = "NoSupervisor",
+        .message = "a worker naming a worker goes to their supervisor, and that " ++
+            "supervisor is not in this group. Nothing was typed; the message, with who " ++
+            "it was meant for, is in the group.",
+    };
+}
+
+/// Why a mention was not typed, in `terminal_send`'s words -- the refusals
+/// are the same refusals, and they are not bypassed here: `UserPresent` and
+/// `DraftInLine` are the only thing between a mention and a return pressed
+/// under somebody's hands.
+fn mentionFailure(err: anyerror) struct { code: []const u8, message: []const u8 } {
+    return switch (err) {
+        error.NoSuchTerminal => .{
+            .code = "NoSuchTerminal",
+            .message = "that terminal is in the group but is not open any more.",
+        },
+        error.UnbracketedMultiline => .{
+            .code = "UnbracketedMultiline",
+            .message = "that terminal would run the line breaks as commands.",
+        },
+        error.UnsafeText => .{
+            .code = "UnsafeText",
+            .message = "the message carries an end-of-paste sequence, which is never typed.",
+        },
+        error.ChildExited => .{
+            .code = "ChildExited",
+            .message = "that terminal's process has exited; there is nothing in it to read this.",
+        },
+        error.UserPresent => .{ .code = "UserPresent", .message = key_arrived },
+        error.DraftInLine => .{ .code = "DraftInLine", .message = draft_in_line },
+        else => .{ .code = "SendFailed", .message = "could not type into that terminal." },
+    };
+}
+
 /// Turn what the chat log refused into something an agent can act on.
 fn chatFailure(err: anyerror) wire.Response {
     return switch (err) {
@@ -7148,7 +7447,23 @@ const FakeHost = struct {
     /// group of one and a group of several are different cases for the
     /// note `group_post` may return.
     member_count: usize = 1,
+
+    /// Who `chatMembers` says is in the group, when a test needs particular
+    /// ids rather than `member_count` made-up ones.
+    members: ?[]const ChatMember = null,
+
     posted: ?struct { group: []const u8, from: Bus.Id, text: []const u8 } = null,
+
+    /// How many posts reached the host at all -- zero is what a refused
+    /// post has to leave behind.
+    post_count: usize = 0,
+
+    /// The lines a post typed into named terminals, in order, and which
+    /// terminals refuse to be typed into and how.
+    typed: [8]struct { id: Bus.Id, text: []const u8 } = undefined,
+    typed_count: usize = 0,
+    typed_mem: [8192]u8 = undefined,
+    send_errors: []const struct { id: Bus.Id, err: anyerror } = &.{},
     added: ?struct { group: []const u8, id: Bus.Id, history: History } = null,
     compacted: ?struct { group: []const u8, through: u64, summary: []const u8, by: Bus.Id } = null,
     read_group: ?[]const u8 = null,
@@ -7614,11 +7929,32 @@ const FakeHost = struct {
         group: []const u8,
         from: Bus.Id,
         text: []const u8,
-    ) anyerror!Chat.Kept {
+        mentions: Mentions,
+    ) anyerror!Chat.Posted {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
         self.posted = .{ .group = group, .from = from, .text = text };
-        return self.post_kept orelse .{ .given = text.len, .kept = text.len };
+        self.post_count += 1;
+
+        // Typed the way the real host types it: one line, the same
+        // `Chat.formatDelivery`, through `send` so its refusals apply.
+        self.typed_count = 0;
+        var fba: std.heap.FixedBufferAllocator = .init(&self.typed_mem);
+        for (mentions.to) |*d| {
+            const line = try Chat.formatDelivery(fba.allocator(), group, 1, from, mentions.from_title, text);
+            const refused: ?anyerror = for (self.send_errors) |e| {
+                if (e.id == d.to) break e.err;
+            } else null;
+            if (refused) |err| {
+                d.err = err;
+                continue;
+            }
+            if (self.typed_count < self.typed.len) {
+                self.typed[self.typed_count] = .{ .id = d.to, .text = line };
+                self.typed_count += 1;
+            }
+        }
+        return .{ .seq = 1, .wrote = self.post_kept orelse .{ .given = text.len, .kept = text.len } };
     }
 
     fn chatGroupInfo(
@@ -7672,6 +8008,7 @@ const FakeHost = struct {
     ) anyerror![]const ChatMember {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
+        if (self.members) |list| return alloc.dupe(ChatMember, list);
 
         const out = try alloc.alloc(ChatMember, self.member_count);
         for (out, 0..) |*m, i| m.* = .{
@@ -11456,4 +11793,236 @@ test "role_launch: a role whose watch waits for its agent says not yet, not no" 
     try store.holdStanding(0x7777, boss, .{}, 0);
     const plain = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "hand" } });
     try testing.expectEqual(@as(?bool, false), plain.opened.watching);
+}
+
+// -- mentions (task 575, dev-docs/poltergeist/mentions.md part eight) --------
+
+const mention_w2: Bus.Id = 0x4444;
+
+const mention_members = [_]ChatMember{
+    .{ .id = boss, .title = "boss" },
+    .{ .id = worker, .title = "wA" },
+    .{ .id = mention_w2, .title = "wB" },
+    .{ .id = other, .title = "loose" },
+};
+
+fn mentionBus() !Bus {
+    var b = try testBus(testing.allocator);
+    errdefer b.deinit();
+    try b.watch(mention_w2, boss);
+    return b;
+}
+
+fn postNaming(
+    alloc: std.mem.Allocator,
+    b: *Bus,
+    fake: *FakeHost,
+    from: Bus.Id,
+    names: []const Bus.Id,
+) !wire.Response {
+    return dispatch(alloc, b, fake.host(), term(from), .{ .group_post = .{
+        .group = "build",
+        .text = "run the build",
+        .mention = names,
+    } });
+}
+
+fn typedInto(fake: *const FakeHost, id: Bus.Id) ?[]const u8 {
+    for (fake.typed[0..fake.typed_count]) |t| if (t.id == id) return t.text;
+    return null;
+}
+
+test "mention: naming somebody not in the group refuses the whole post" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members };
+
+    const res = try postNaming(arena.allocator(), &b, &fake, boss, &.{ worker, 0xdead });
+    try testing.expectEqualStrings("NotAMember", res.failed.code);
+    try testing.expect(std.mem.indexOf(u8, res.failed.message, "0x000000000000dead") != null);
+
+    // **Not in the group** is the criterion, not "an error came back": the
+    // host was never asked to post, and nobody -- not even the member who
+    // *was* named correctly -- was typed into.
+    try testing.expectEqual(@as(usize, 0), fake.post_count);
+    try testing.expectEqual(@as(usize, 0), fake.typed_count);
+
+    const self_named = try postNaming(arena.allocator(), &b, &fake, boss, &.{boss});
+    try testing.expectEqualStrings("MentionSelf", self_named.failed.code);
+    try testing.expectEqual(@as(usize, 0), fake.post_count);
+}
+
+test "mention: the named terminal is typed the message, one line, names frozen in" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members };
+
+    const res = try postNaming(arena.allocator(), &b, &fake, boss, &.{ worker, worker });
+
+    // One row for the one distinct name, delivered, straight to it.
+    try testing.expectEqual(@as(usize, 1), res.posted.deliveries.len);
+    const row = res.posted.deliveries[0];
+    try testing.expectEqual(worker, row.id);
+    try testing.expectEqual(@as(?Bus.Id, worker), row.to);
+    try testing.expect(!row.rewritten);
+    try testing.expect(row.code == null);
+
+    // The record names who was meant, id and title.
+    try testing.expectEqualStrings("@2222 wA run the build", fake.posted.?.text);
+
+    // And the line typed is the record's text, not a paraphrase of it.
+    try testing.expectEqualStrings(
+        "[poltergeist] build #1 @1111 boss: @2222 wA run the build",
+        typedInto(&fake, worker).?,
+    );
+    try testing.expectEqual(@as(usize, 1), fake.typed_count);
+}
+
+test "mention: a terminal with a draft is not typed into, and the post stands" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{
+        .open = &.{},
+        .members = &mention_members,
+        .send_errors = &.{
+            .{ .id = worker, .err = error.DraftInLine },
+            .{ .id = mention_w2, .err = error.UserPresent },
+        },
+    };
+
+    const res = try postNaming(arena.allocator(), &b, &fake, boss, &.{ worker, mention_w2, other });
+
+    // Posted: the group has it, whatever became of the typing.
+    try testing.expectEqual(@as(usize, 1), fake.post_count);
+
+    // Each refusal reported against its own name, in the host's own words,
+    // and not retried or worked round.
+    const rows = res.posted.deliveries;
+    try testing.expectEqualStrings("DraftInLine", rows[0].code.?);
+    try testing.expect(std.mem.indexOf(u8, rows[0].message.?, "in the group") != null);
+    try testing.expectEqualStrings("UserPresent", rows[1].code.?);
+    try testing.expect(rows[2].code == null);
+
+    // Nothing was typed into either refusing terminal -- the one with a
+    // draft keeps exactly what it had.
+    try testing.expect(typedInto(&fake, worker) == null);
+    try testing.expect(typedInto(&fake, mention_w2) == null);
+    try testing.expect(typedInto(&fake, other) != null);
+}
+
+test "mention: nobody who was not named is typed into" {
+    // ⭐ **The positive control.** Every other test here would still pass if
+    // a mention typed into the whole group; this is the one that would not.
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members };
+
+    _ = try postNaming(arena.allocator(), &b, &fake, boss, &.{mention_w2});
+    try testing.expectEqual(@as(usize, 1), fake.typed_count);
+    try testing.expect(typedInto(&fake, mention_w2) != null);
+    for ([_]Bus.Id{ boss, worker, other }) |id| {
+        try testing.expect(typedInto(&fake, id) == null);
+    }
+
+    // And a post naming nobody types into nobody.
+    const plain = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .group_post = .{
+        .group = "build",
+        .text = "for whoever reads it",
+    } });
+    _ = plain;
+    try testing.expectEqual(@as(usize, 0), fake.typed_count);
+}
+
+test "mention: switch off, a worker naming a worker reaches the supervisor and not the worker" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members };
+
+    const res = try postNaming(arena.allocator(), &b, &fake, worker, &.{mention_w2});
+
+    const row = res.posted.deliveries[0];
+    try testing.expectEqual(mention_w2, row.id);
+    try testing.expectEqual(@as(?Bus.Id, boss), row.to);
+    try testing.expect(row.rewritten);
+    try testing.expect(row.code == null);
+
+    // B was not typed into; the supervisor was.
+    try testing.expect(typedInto(&fake, mention_w2) == null);
+    try testing.expect(typedInto(&fake, boss) != null);
+    try testing.expectEqual(@as(usize, 1), fake.typed_count);
+
+    // The record says who it was originally for and who wanted it.
+    const text = fake.posted.?.text;
+    try testing.expect(std.mem.startsWith(u8, text, "@1111 boss (↪ 原点名 @4444 wB："));
+    try testing.expect(std.mem.indexOf(u8, text, "wA 想让 wB") != null);
+
+    // A worker naming its supervisor, and a worker naming a terminal nobody
+    // minds, go straight through.
+    const up = try postNaming(arena.allocator(), &b, &fake, worker, &.{ boss, other });
+    try testing.expect(!up.posted.deliveries[0].rewritten);
+    try testing.expect(!up.posted.deliveries[1].rewritten);
+    try testing.expect(typedInto(&fake, other) != null);
+}
+
+test "mention: switch on, the worker is typed into and the supervisor is not" {
+    var b = try mentionBus();
+    defer b.deinit();
+    try b.setWorkerMentions(boss, true, .user);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members };
+
+    const res = try postNaming(arena.allocator(), &b, &fake, worker, &.{mention_w2});
+    const row = res.posted.deliveries[0];
+    try testing.expectEqual(@as(?Bus.Id, mention_w2), row.to);
+    try testing.expect(!row.rewritten);
+
+    try testing.expect(typedInto(&fake, mention_w2) != null);
+    // The supervisor only has one more unread: it is not named, so nothing
+    // is typed into it. (Its unread count is `Chat`'s, and the supervisor
+    // is woken for every unread message as it always was -- see the test
+    // on `Chat.waking`.)
+    try testing.expect(typedInto(&fake, boss) == null);
+    try testing.expectEqualStrings("@4444 wB run the build", fake.posted.?.text);
+}
+
+test "mention: shielded, the user, and no supervisor to forward to" {
+    var b = try mentionBus();
+    defer b.deinit();
+    try b.register(0x5555);
+    try b.setShielded(0x5555, true, .user);
+    const members = mention_members ++ [_]ChatMember{
+        .{ .id = Chat.user_id, .title = "you" },
+        .{ .id = 0x5555, .title = "locked" },
+    };
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &members };
+
+    const res = try postNaming(arena.allocator(), &b, &fake, boss, &.{ Chat.user_id, 0x5555 });
+    try testing.expectEqualStrings("NotATerminal", res.posted.deliveries[0].code.?);
+    try testing.expectEqualStrings("Shielded", res.posted.deliveries[1].code.?);
+    try testing.expectEqual(@as(usize, 1), fake.post_count);
+    try testing.expectEqual(@as(usize, 0), fake.typed_count);
+
+    // A worker whose supervisor is not in the group: posted, nobody typed
+    // into, and the row still says who was meant.
+    const no_boss = [_]ChatMember{ mention_members[1], mention_members[2] };
+    fake.members = &no_boss;
+    const orphan = try postNaming(arena.allocator(), &b, &fake, worker, &.{mention_w2});
+    const row = orphan.posted.deliveries[0];
+    try testing.expectEqualStrings("NoSupervisor", row.code.?);
+    try testing.expectEqual(mention_w2, row.id);
+    try testing.expect(row.to == null and row.rewritten);
+    try testing.expectEqual(@as(usize, 0), fake.typed_count);
 }

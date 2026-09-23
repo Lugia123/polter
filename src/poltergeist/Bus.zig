@@ -261,6 +261,25 @@ pub const Entry = struct {
     /// `rpc.authorize`.
     may_authorise: bool = false,
 
+    /// Whether the workers this supervisor minds may name each other in a
+    /// group post and be typed into directly (`dev-docs/poltergeist/mentions.md`
+    /// part six). Only meaningful on a supervisor's own entry.
+    ///
+    /// **Off means rewritten, not refused**: a worker naming a worker has the
+    /// mention redirected to this supervisor, with the original target said
+    /// in the text, so the supervisor decides whether to pass it on. Workers
+    /// cannot reach each other otherwise (`rpc.authorize`), and a mention that
+    /// typed into a worker would be a way round that.
+    ///
+    /// **The user's alone**, like `may_authorise` and for the same reason: it
+    /// widens what one agent may do to another, so an agent must not be able
+    /// to grant it -- no keybinding, no palette entry.
+    ///
+    /// ⚠️ **In memory, and as long-lived as the supervisor role it sits on.**
+    /// `removeSupervisor` clears it and nothing writes it to disk, so a
+    /// supervisor stood up again after a restart starts with it off.
+    worker_mentions: bool = false,
+
     /// Which supervisor is minding this terminal -- that is, **which one
     /// gets told when it goes quiet**.
     ///
@@ -519,6 +538,7 @@ pub fn removeSupervisor(self: *Bus, id: Id) void {
     if (e.role != .supervisor) return;
     e.role = .none;
     e.last_delivery_ms = null;
+    e.worker_mentions = false;
 
     var it = self.entries.iterator();
     while (it.next()) |kv| {
@@ -714,6 +734,45 @@ pub fn setMayAuthorise(
     if (who != .user) return error.NotPermitted;
     const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
     e.may_authorise = may;
+}
+
+/// Let the workers this supervisor minds name each other directly, or go
+/// back to having those mentions redirected to it. The user only; see
+/// `Entry.worker_mentions`.
+pub fn setWorkerMentions(
+    self: *Bus,
+    id: Id,
+    on: bool,
+    who: Authority,
+) SetWorkerMentionsError!void {
+    if (who != .user) return error.NotPermitted;
+    const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
+    if (e.role != .supervisor) return error.NotASupervisor;
+    e.worker_mentions = on;
+}
+
+pub const SetWorkerMentionsError = error{
+    UnknownTerminal,
+    NotPermitted,
+
+    /// The switch belongs to a supervisor: it says what that supervisor's
+    /// workers may do to each other. On anybody else it would mean nothing,
+    /// and a "yes" stored there would come back to life if the terminal
+    /// were made a supervisor later.
+    NotASupervisor,
+};
+
+/// Whether this supervisor's workers may name each other directly. False
+/// for anything that is not a supervisor.
+pub fn workerMentions(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    return e.role == .supervisor and e.worker_mentions;
+}
+
+/// The supervisor minding `id`, if one has claimed it.
+pub fn minderOf(self: *const Bus, id: Id) ?Id {
+    const e = self.entries.get(id) orelse return null;
+    return e.watched_by;
 }
 
 /// Whether a supervisor may answer a permission prompt in this terminal.
@@ -2313,4 +2372,30 @@ test "letting a terminal go stops measuring it rather than extrapolating" {
     b.unwatch(worker);
     try testing.expect(!b.observed(worker));
     try testing.expectEqual(@as(u64, 0), b.quietMs(worker, 10 * std.time.ms_per_hour));
+}
+
+test "the worker-mentions switch is the user's, a supervisor's, and dies with the role" {
+    var b: Bus = .init(testing.allocator, .{});
+    defer b.deinit();
+    try b.addSupervisor(0x1);
+    try b.watch(0x2, 0x1);
+
+    // Off until somebody says otherwise.
+    try testing.expect(!b.workerMentions(0x1));
+
+    // Not an agent's to grant: it widens what one worker may do to another.
+    try testing.expectError(error.NotPermitted, b.setWorkerMentions(0x1, true, .supervisor));
+    // Not a worker's switch at all.
+    try testing.expectError(error.NotASupervisor, b.setWorkerMentions(0x2, true, .user));
+
+    try b.setWorkerMentions(0x1, true, .user);
+    try testing.expect(b.workerMentions(0x1));
+    try testing.expectEqual(@as(?Id, 0x1), b.minderOf(0x2));
+
+    // Standing down takes it with it: a terminal made supervisor again
+    // starts with it off rather than inheriting a "yes" from last time.
+    b.removeSupervisor(0x1);
+    try testing.expect(!b.workerMentions(0x1));
+    try b.addSupervisor(0x1);
+    try testing.expect(!b.workerMentions(0x1));
 }

@@ -825,6 +825,12 @@ typedef struct {
   // at the terminal, this is a permission they granted to somebody else, and
   // it is shown in the menu it was granted from.
   bool may_authorise;
+  // This supervisor lets the workers it minds name each other in a group post
+  // and be typed into directly, instead of having those mentions redirected to
+  // it. False on anything that is not a supervisor. Offset 15: it occupies
+  // what was padding, so the struct is still 24 bytes and `persona` is still
+  // at 16 -- a host that predates it reads every other field where it did.
+  bool worker_mentions;
   // Never NULL. The core always has something to say -- if only "no persona
   // chosen, nobody connected" -- so every distinction lives in the fields
   // rather than in a second nearly-synonymous NULL.

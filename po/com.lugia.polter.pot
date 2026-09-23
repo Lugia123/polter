@@ -951,6 +951,11 @@ msgstr ""
 msgid "Keep Agents Out of This Terminal"
 msgstr ""
 
+#: windows/host/src/ctxmenu.rs:182 windows/host/src/menu.rs:342
+#: windows/host/src/strip.rs:1337
+msgid "Let Workers Name Each Other Directly"
+msgstr ""
+
 #: src/input/command.zig:601
 msgid ""
 "Stop every agent, supervisors included, from reading this terminal or typing "

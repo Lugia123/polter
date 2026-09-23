@@ -960,6 +960,11 @@ msgstr ""
 msgid "Keep Agents Out of This Terminal"
 msgstr "不让 agent 碰此终端"
 
+#: windows/host/src/ctxmenu.rs:182 windows/host/src/menu.rs:342
+#: windows/host/src/strip.rs:1337
+msgid "Let Workers Name Each Other Directly"
+msgstr "允许 worker 之间直接点名"
+
 #: src/input/command.zig:601
 msgid ""
 "Stop every agent, supervisors included, from reading this terminal or typing "

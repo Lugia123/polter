@@ -136,6 +136,17 @@ extension Ghostty {
         /// the only place it shows.
         @Published var poltergeistMayAuthorise: Bool = false
 
+        /// This terminal is a supervisor that lets its workers name each
+        /// other directly, instead of having a worker-to-worker mention
+        /// rewritten into one of itself (mentions.md §5, §6). Off by default,
+        /// and meaningful only while `poltergeistRole == .supervisor`.
+        ///
+        /// Set from the poltergeist mark's `worker_mentions`, the way
+        /// `poltergeistMayAuthorise` is; the core re-sends the mark when the
+        /// switch changes. It lives in memory only, for as long as the
+        /// terminal is a supervisor.
+        @Published var poltergeistWorkerMentions: Bool = false
+
         /// Which persona this terminal has been given, and whether its
         /// face has since been changed by hand (roles.md §5.2).
         ///
@@ -1729,6 +1740,13 @@ extension Ghostty {
                 shielded: poltergeistShielded,
                 personas: catalog.personas,
                 personasKnown: catalog.isKnown,
+                target: self))
+
+            // The supervisor's direct-mentions switch, from the same builder
+            // as the tab strip's and the menu bar's copies.
+            menu.addItem(MentionMenu.makeItem(
+                isSupervisor: poltergeistRole == .supervisor,
+                allowed: poltergeistWorkerMentions,
                 target: self))
 
             return menu

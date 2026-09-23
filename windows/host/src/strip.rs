@@ -1317,6 +1317,10 @@ enum TabCmd {
     Supervisor,
     Watch,
     Shield,
+    /// This terminal, **as a supervisor**, lets the workers it minds name
+    /// each other directly in the group. Default off: a worker naming another
+    /// worker has that mention rewritten to this supervisor.
+    WorkerMentions,
 }
 
 impl TabCmd {
@@ -1330,6 +1334,7 @@ impl TabCmd {
             TabCmd::Supervisor => n_("Make This Terminal a Supervisor"),
             TabCmd::Watch => n_("Toggle Supervision of This Terminal"),
             TabCmd::Shield => n_("Keep Agents Out of This Terminal"),
+            TabCmd::WorkerMentions => n_("Let Workers Name Each Other Directly"),
         }
     }
 
@@ -1348,6 +1353,7 @@ impl TabCmd {
             TabCmd::Supervisor => "poltergeist_supervisor",
             TabCmd::Watch => "poltergeist_toggle_watch",
             TabCmd::Shield => "poltergeist_toggle_shielded",
+            TabCmd::WorkerMentions => "poltergeist_toggle_worker_mentions",
         }
     }
 
@@ -1359,12 +1365,48 @@ impl TabCmd {
     /// **Three different state bits, read three times.** Sharing one getter
     /// between them is the most natural way to write this and would tick all
     /// three together.
-    fn checked(self, role: u8, shielded: bool) -> bool {
+    /// ⚠️ **Takes the whole mark, and every arm is named.** This used to take
+    /// `(role, shielded)` and end in `_ => false`, which meant a new row was
+    /// silently unticked forever -- it would look like a switch that never
+    /// remembers being set, with nothing anywhere saying why. Named arms make
+    /// the next row a compile error here instead.
+    fn checked(self, m: crate::tabs::Mark) -> bool {
         match self {
-            TabCmd::Supervisor => role == 1,
-            TabCmd::Watch => role == 2,
-            TabCmd::Shield => shielded,
-            _ => false,
+            TabCmd::Supervisor => m.role == 1,
+            TabCmd::Watch => m.role == 2,
+            TabCmd::Shield => m.shielded,
+            TabCmd::WorkerMentions => {
+                crate::worker_mentions::ticked(Some(m.role), m.worker_mentions)
+            }
+            TabCmd::Close
+            | TabCmd::CloseOthers
+            | TabCmd::CloseRight
+            | TabCmd::MoveToNewWindow
+            | TabCmd::Rename => false,
+        }
+    }
+
+    /// Whether this row is on the menu at all, as opposed to greyed on it.
+    ///
+    /// ⚠️ **This is not the hiding `enabled` warns about, and the difference
+    /// is the whole reason it is allowed here.** That warning is about a row
+    /// the host has not built yet: it exists for this terminal, it will work
+    /// one day, and a person told about it must not conclude they imagined
+    /// it. Greyed says "this exists, not now".
+    ///
+    /// `Mentions` is not "not now". It is a supervisor's own setting, and on
+    /// a worker there is nothing for it to be about -- not now, not ever.
+    /// Greyed there would say "you could have this", and send someone looking
+    /// for how to earn it. **Temporarily absent is greyed with a reason;
+    /// never applicable is left out.**
+    ///
+    /// Safe to leave out here because a row's command id is
+    /// `TAB_ID_BASE + <its index in TAB_MENU>` -- its position in the table,
+    /// not its position on screen -- so removing one shifts no other id.
+    fn on_menu(self, supervisor: bool) -> bool {
+        match self {
+            TabCmd::WorkerMentions => supervisor,
+            _ => true,
         }
     }
 
@@ -1396,7 +1438,26 @@ const TAB_MENU: &[Option<TabCmd>] = &[
     Some(TabCmd::Supervisor),
     Some(TabCmd::Watch),
     Some(TabCmd::Shield),
+    Some(TabCmd::WorkerMentions),
 ];
+
+// **The worker-mentions row is in the table, checked while compiling.** This
+// menu is the one of the three where the row's words and binding live on the
+// enum rather than in the table, so dropping the table entry leaves both
+// literals in place and
+// `windows/tools/the-worker-mentions-row-is-in-every-agent-menu.py` green.
+// This is the half of that check the source text cannot see.
+const _: () = {
+    let mut i = 0;
+    let mut found = false;
+    while i < TAB_MENU.len() {
+        if matches!(TAB_MENU[i], Some(TabCmd::WorkerMentions)) {
+            found = true;
+        }
+        i += 1;
+    }
+    assert!(found, "TAB_MENU lost the worker-mentions row");
+};
 
 /// Command ids. Well clear of anything Windows sends, and clear of
 /// `ctxmenu.rs`'s `0x4000` block so a stray id cannot be read by both.
@@ -1419,7 +1480,8 @@ fn ordinal(frame: HWND, id: TabId) -> String {
 
 /// The tab right-click menu, on the tab that was right-clicked.
 fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
-    let (role, shielded) = tabs::tab_mark(frame, target.id);
+    let mark = tabs::tab_mark(frame, target.id);
+    let (role, shielded) = (mark.role, mark.shielded);
     let colour = tabs::tab_color(frame, target.id);
 
     let chosen = unsafe {
@@ -1462,8 +1524,11 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
                 }
                 continue;
             };
+            if !cmd.on_menu(crate::worker_mentions::offered(Some(role))) {
+                continue;
+            }
             let mut flags = MF_STRING;
-            if cmd.checked(role, shielded) {
+            if cmd.checked(mark) {
                 flags |= MF_CHECKED;
             }
             if !cmd.enabled() {
@@ -1612,7 +1677,10 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
                 None => false,
             }
         }
-        TabCmd::Supervisor | TabCmd::Watch | TabCmd::Shield => {
+        // `Mentions` rides with the three agent rows: all four are core
+        // binding strings performed on the tab that was right-clicked, and
+        // the core is what decides whether the binding can be performed.
+        TabCmd::Supervisor | TabCmd::Watch | TabCmd::Shield | TabCmd::WorkerMentions => {
             // Straight at that tab's surface. `crate::binding` would send it
             // to whichever surface has focus.
             tabs::binding_on_tab(frame, id, cmd.action())
@@ -2256,6 +2324,56 @@ pub fn script_step(frame: HWND, step: usize) -> bool {
 
 #[cfg(test)]
 mod menu_inset_tests {
+    /// The supervisor-only row is on a supervisor's tab menu and nowhere
+    /// else, and it ticks from its own bit.
+    ///
+    /// **Left out rather than greyed**, which this file's `enabled` warns
+    /// against in general and for a good reason -- see `on_menu` for why the
+    /// two cases are different.
+    #[test]
+    fn the_mentions_row_is_supervisor_only_and_ticks_from_its_own_bit() {
+        assert!(TabCmd::WorkerMentions.on_menu(true));
+        assert!(!TabCmd::WorkerMentions.on_menu(false));
+        // The rows that are about the terminal stay put either way.
+        for c in [TabCmd::Close, TabCmd::Rename, TabCmd::Supervisor, TabCmd::Shield] {
+            assert!(c.on_menu(false), "{c:?} is not a supervisor's own setting");
+        }
+
+        // A supervisor with the bit set: `worker_mentions::ticked` draws no
+        // tick on anything that is not one.
+        let on = crate::tabs::Mark { role: 1, worker_mentions: true, ..Default::default() };
+        assert!(TabCmd::WorkerMentions.checked(on));
+        assert!(!TabCmd::Shield.checked(on));
+        assert!(!TabCmd::WorkerMentions.checked(tmark(1, true)));
+    }
+
+    /// Its id comes from the table, which is what makes leaving it out safe.
+    #[test]
+    fn leaving_the_row_out_moves_no_other_id() {
+        // The ids are `TAB_ID_BASE + <index in TAB_MENU>`, so the index of
+        // every other row is a constant of the table rather than a function
+        // of what is drawn. Stated as a test because the drawing loop is
+        // what would quietly start using a running counter instead.
+        let mentions_at = TAB_MENU.iter().position(|r| *r == Some(TabCmd::WorkerMentions));
+        assert!(mentions_at.is_some(), "the row is in the table");
+        for (i, row) in TAB_MENU.iter().enumerate() {
+            if let Some(c) = row {
+                assert_eq!(
+                    TAB_MENU.iter().position(|r| r.as_ref() == Some(c)),
+                    Some(i),
+                    "{c:?} appears at more than one index, so an id would be ambiguous"
+                );
+            }
+        }
+    }
+
+    /// A mark for the tick tests: role and shield, the rest off.
+    /// **The bits added since default off**, so assertions written against
+    /// the old two-argument `checked` mean exactly what they meant before.
+    fn tmark(role: u8, shielded: bool) -> crate::tabs::Mark {
+        crate::tabs::Mark { role, shielded, ..Default::default() }
+    }
+
     use super::*;
 
     /// A strip's geometry without a window, built from the same pure pieces
@@ -2422,21 +2540,21 @@ mod menu_inset_tests {
     #[test]
     fn the_three_agent_rows_do_not_share_a_state_bit() {
         // role 1 = supervisor, 2 = watched; shielded is its own flag.
-        assert!(TabCmd::Supervisor.checked(1, false));
-        assert!(!TabCmd::Watch.checked(1, false));
-        assert!(!TabCmd::Shield.checked(1, false));
+        assert!(TabCmd::Supervisor.checked(tmark(1, false)));
+        assert!(!TabCmd::Watch.checked(tmark(1, false)));
+        assert!(!TabCmd::Shield.checked(tmark(1, false)));
 
-        assert!(!TabCmd::Supervisor.checked(2, false));
-        assert!(TabCmd::Watch.checked(2, false));
-        assert!(!TabCmd::Shield.checked(2, false));
+        assert!(!TabCmd::Supervisor.checked(tmark(2, false)));
+        assert!(TabCmd::Watch.checked(tmark(2, false)));
+        assert!(!TabCmd::Shield.checked(tmark(2, false)));
 
-        assert!(!TabCmd::Supervisor.checked(0, true));
-        assert!(!TabCmd::Watch.checked(0, true));
-        assert!(TabCmd::Shield.checked(0, true));
+        assert!(!TabCmd::Supervisor.checked(tmark(0, true)));
+        assert!(!TabCmd::Watch.checked(tmark(0, true)));
+        assert!(TabCmd::Shield.checked(tmark(0, true)));
 
         // And nothing is ticked when the terminal is nothing in particular.
         for cmd in [TabCmd::Supervisor, TabCmd::Watch, TabCmd::Shield, TabCmd::Close] {
-            assert!(!cmd.checked(0, false), "{cmd:?} ticked on a plain terminal");
+            assert!(!cmd.checked(tmark(0, false)), "{cmd:?} ticked on a plain terminal");
         }
     }
 

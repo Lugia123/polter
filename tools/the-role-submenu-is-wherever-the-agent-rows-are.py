@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-r"""The macOS `Role` submenu is in every menu the per-terminal agent rows are in.
+r"""Every shared agent item is in every macOS menu the per-terminal agent rows are in.
+
+Two items are held to this today, each built by its own shared builder:
+`Role ▸` (`PersonaMenu`) and the supervisor's **Let Workers Name Each Other
+Directly** switch (`MentionMenu`, task 596). They are listed in `BUILDERS`;
+a third item that comes to live beside the rows joins by adding a row there.
 
 # The defect this is the floor for
 
@@ -22,8 +27,8 @@ written down as a menu that ought to. A fourth menu that grows the agent rows
 tomorrow is checked from the moment it does.
 
   1. Each macOS menu-building file that carries the shield row must also
-     build the role item -- and it must build it by calling the shared
-     builder, not by writing a second copy of the submenu.
+     build every item in `BUILDERS` -- and it must build each by calling its
+     shared builder, not by writing a second copy.
   2. The menu bar's copy is in a nib, so its two halves are checked
      separately: the item is inside the Agents submenu in the nib, and the
      delegate that fills it is wired to that same item in `AppDelegate`.
@@ -40,9 +45,12 @@ it, and this check exists precisely because prose and code disagreed.
 
   * **Whether the item is drawn, enabled, ticked correctly, or does
     anything.** This reads menu definitions, not a running program. What the
-    submenu contains is `macos/Tests/Personas/PersonaMenuTests.swift`'s, and
+    submenu contains is `macos/Tests/Personas/PersonaMenuTests.swift`'s (and
+    `macos/Tests/Mentions/MentionMenuTests.swift`'s for the switch), and
     that it contains the same thing in all three places is what calling one
     builder buys -- this file checks the call, not the contents.
+  * **Whether the arguments passed are the right terminal's state.** A
+    call with `allowed: false` hard-coded passes here.
   * **The GTK and Windows menus.** Windows builds its own tree in
     `windows/host/src/menu.rs` and has its own tests; GTK has neither the
     rows nor the submenu.
@@ -68,15 +76,28 @@ SWIFT_MENUS = [
 SHIELD_SWIFT = re.compile(r"poltergeistToggleShielded")
 SHIELD_XIB = re.compile(r'selector="poltergeistToggleShielded:"')
 
-# The shared builder, called rather than mentioned.
-BUILDS_ROLE = re.compile(r"PersonaMenu\s*\.\s*(?:makeItem|configure)\s*\(")
 
-# The nib half: an outlet on the delegate pointing at a menu item.
-OUTLET = re.compile(r'<outlet\s+property="menuPoltergeistPersona"\s+destination="([^"]+)"')
+class Builder:
+    """One shared item that has to be wherever the agent rows are.
 
-# The delegate half: the item is declared and something is attached to it.
-OUTLET_DECLARED = re.compile(r"@IBOutlet[^\n]*\bmenuPoltergeistPersona\b")
-OUTLET_ATTACHED = re.compile(r"\bmenuPoltergeistPersona\b[^\n]*\battach\s*\(")
+    `name` is what a finding calls it; `builder` the type whose `makeItem` /
+    `configure` must be *called*; `outlet` the delegate property the nib's
+    copy is wired to; `attach` the method `AppDelegate` hands that item to.
+    """
+
+    def __init__(self, name, builder, outlet, attach):
+        self.name = name
+        self.builds = re.compile(r"\b%s\s*\.\s*(?:makeItem|configure)\s*\(" % builder)
+        self.outlet = re.compile(r'<outlet\s+property="%s"\s+destination="([^"]+)"' % outlet)
+        self.declared = re.compile(r"@IBOutlet[^\n]*\b%s\b" % outlet)
+        self.attached = re.compile(r"\b%s\b[^\n]*\b%s\s*\(" % (outlet, attach))
+
+
+BUILDERS = [
+    Builder("role item", "PersonaMenu", "menuPoltergeistPersona", "attach"),
+    Builder("direct-mentions switch", "MentionMenu", "menuPoltergeistDirectMentions",
+            "attachMentions"),
+]
 
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 LINE_COMMENT = re.compile(r"//[^\n]*")
@@ -113,12 +134,13 @@ def findings(sources):
         if not SHIELD_SWIFT.search(src):
             continue
         carriers.append(name)
-        if not BUILDS_ROLE.search(src):
-            out.append(
-                f"{name} builds the per-terminal agent rows and no role item. "
-                "Two of the three menus having it is what hid this for a whole "
-                "feature's worth of work"
-            )
+        for b in BUILDERS:
+            if not b.builds.search(src):
+                out.append(
+                    f"{name} builds the per-terminal agent rows and no {b.name}. "
+                    "Two of the three menus having it is what hid this for a whole "
+                    "feature's worth of work"
+                )
 
     xib = sources.get(XIB, "")
     agents = submenu_block(xib, "Agents")
@@ -129,29 +151,30 @@ def findings(sources):
         )
     elif SHIELD_XIB.search(agents):
         carriers.append(XIB)
-        outlet = OUTLET.search(xib)
-        if not outlet:
-            out.append(
-                "the menu bar's Agents menu carries the agent rows and has no role "
-                "item: nothing in the nib is wired to the delegate as one"
-            )
-        elif ('id="%s"' % outlet.group(1)) not in agents:
-            out.append(
-                "the menu bar's role item is wired up but is not in the Agents "
-                "submenu, which is where the rows it belongs with are"
-            )
         delegate = code_only(sources.get(APPDELEGATE, ""))
-        if not OUTLET_DECLARED.search(delegate):
-            out.append(
-                f"{APPDELEGATE} does not declare the role item's outlet, so the nib's "
-                "row is connected to nothing and stays empty"
-            )
-        elif not OUTLET_ATTACHED.search(delegate):
-            out.append(
-                f"{APPDELEGATE} declares the role item's outlet and never attaches the "
-                "menu to it. An item with no submenu is a dead row, and it looks "
-                "exactly like a feature that was never built"
-            )
+        for b in BUILDERS:
+            outlet = b.outlet.search(xib)
+            if not outlet:
+                out.append(
+                    f"the menu bar's Agents menu carries the agent rows and has no "
+                    f"{b.name}: nothing in the nib is wired to the delegate as one"
+                )
+            elif ('id="%s"' % outlet.group(1)) not in agents:
+                out.append(
+                    f"the menu bar's {b.name} is wired up but is not in the Agents "
+                    "submenu, which is where the rows it belongs with are"
+                )
+            if not b.declared.search(delegate):
+                out.append(
+                    f"{APPDELEGATE} does not declare the {b.name}'s outlet, so the nib's "
+                    "row is connected to nothing and stays empty"
+                )
+            elif not b.attached.search(delegate):
+                out.append(
+                    f"{APPDELEGATE} declares the {b.name}'s outlet and never hands it to "
+                    "anything that fills it. That is a dead row, and it looks exactly "
+                    "like a feature that was never built"
+                )
 
     if not carriers:
         out.append(
@@ -171,25 +194,33 @@ GOOD_XIB = """
         <connections><action selector="poltergeistToggleShielded:" target="-1" id="pg9"/></connections>
       </menuItem>
       <menuItem title="Role" id="pgB-Ro-Le1"/>
+      <menuItem title="Let Workers Name Each Other Directly" id="pgC-Mn-Tn1"/>
     </items>
   </menu>
 </menuItem>
 <outlet property="menuPoltergeistPersona" destination="pgB-Ro-Le1" id="pgB-Ou-Tl1"/>
+<outlet property="menuPoltergeistDirectMentions" destination="pgC-Mn-Tn1" id="pgC-Ou-Tl1"/>
 """
+
+GOOD_DELEGATE = (
+    "    @IBOutlet private var menuPoltergeistPersona: NSMenuItem?\n"
+    "    @IBOutlet private var menuPoltergeistDirectMentions: NSMenuItem?\n"
+    "    if let item = menuPoltergeistPersona { personaMenuBar.attach(to: item) }\n"
+    "    if let item = menuPoltergeistDirectMentions { personaMenuBar.attachMentions(to: item) }\n"
+)
 
 GOOD = {
     XIB: GOOD_XIB,
-    APPDELEGATE: (
-        "    @IBOutlet private var menuPoltergeistPersona: NSMenuItem?\n"
-        "    if let item = menuPoltergeistPersona { personaMenuBar.attach(to: item) }\n"
-    ),
+    APPDELEGATE: GOOD_DELEGATE,
     SWIFT_MENUS[0]: (
         "#selector(TerminalController.poltergeistToggleShielded(_:))\n"
         "menu.addItem(PersonaMenu.makeItem(state: s, personas: p, personasKnown: k, target: t))\n"
+        "menu.addItem(MentionMenu.makeItem(isSupervisor: v, allowed: a, target: t))\n"
     ),
     SWIFT_MENUS[1]: (
         "action: #selector(poltergeistToggleShielded(_:))\n"
         "menu.addItem(PersonaMenu.makeItem(state: s, personas: p, personasKnown: k, target: self))\n"
+        "menu.addItem(MentionMenu.makeItem(isSupervisor: v, allowed: a, target: self))\n"
     ),
 }
 
@@ -208,6 +239,18 @@ def self_test():
         "/// Same submenu as the tab strip's, built by PersonaMenu.\n"
         "let role = NSMenuItem(title: \"Role\", action: nil, keyEquivalent: \"\")\n"
         "role.submenu = NSMenu()\n"
+        "menu.addItem(MentionMenu.makeItem(isSupervisor: v, allowed: a, target: self))\n"
+    )
+
+    # The same decoy for the switch: a hand-made row beside a comment that
+    # names the builder -- which is the shape MentionMenu.swift's own doc
+    # comment had before this check could see it.
+    handwritten_switch = (
+        "action: #selector(poltergeistToggleShielded(_:))\n"
+        "menu.addItem(PersonaMenu.makeItem(state: s, personas: p, personasKnown: k, target: self))\n"
+        "// built by MentionMenu.makeItem(...), like the menu bar's\n"
+        "let sw = NSMenuItem(title: \"Let Workers Name Each Other Directly\", "
+        "action: #selector(togglePoltergeistDirectMentions(_:)), keyEquivalent: \"\")\n"
     )
 
     cases = [
@@ -220,15 +263,39 @@ def self_test():
         ("the nib's item is outside the Agents submenu",
          case(**{XIB: GOOD_XIB.replace('<menuItem title="Role" id="pgB-Ro-Le1"/>', "")}), 1),
         ("the outlet is never declared",
-         case(**{APPDELEGATE: "// no outlet here"}), 1),
+         case(**{APPDELEGATE: GOOD_DELEGATE.replace(
+             "    @IBOutlet private var menuPoltergeistPersona: NSMenuItem?\n", "")}), 1),
         ("declared and never attached",
-         case(**{APPDELEGATE: "@IBOutlet private var menuPoltergeistPersona: NSMenuItem?"}), 1),
+         case(**{APPDELEGATE: GOOD_DELEGATE.replace(
+             "    if let item = menuPoltergeistPersona { personaMenuBar.attach(to: item) }\n",
+             "")}), 1),
         ("a right-click menu writes its own copy instead of calling the builder",
          case(**{SWIFT_MENUS[1]: handwritten}), 1),
         ("the builder is named in a comment and not called",
          case(**{SWIFT_MENUS[0]:
                  "#selector(TerminalController.poltergeistToggleShielded(_:))\n"
-                 "// built by PersonaMenu.makeItem(...) elsewhere\n"}), 1),
+                 "// built by PersonaMenu.makeItem(...) elsewhere\n"
+                 "menu.addItem(MentionMenu.makeItem(isSupervisor: v, allowed: a, target: t))\n"}), 1),
+
+        # The switch, one half at a time -- each must go red on its own, or
+        # adding it to BUILDERS only made this print another line.
+        ("the menu bar has the rows and no direct-mentions switch",
+         case(**{XIB: GOOD_XIB.replace(
+             '<menuItem title="Let Workers Name Each Other Directly" id="pgC-Mn-Tn1"/>', "").replace(
+             '<outlet property="menuPoltergeistDirectMentions" destination="pgC-Mn-Tn1" id="pgC-Ou-Tl1"/>',
+             "")}), 1),
+        ("the switch's nib item is outside the Agents submenu",
+         case(**{XIB: GOOD_XIB.replace(
+             '<menuItem title="Let Workers Name Each Other Directly" id="pgC-Mn-Tn1"/>', "")}), 1),
+        ("the switch's outlet is never declared",
+         case(**{APPDELEGATE: GOOD_DELEGATE.replace(
+             "    @IBOutlet private var menuPoltergeistDirectMentions: NSMenuItem?\n", "")}), 1),
+        ("the switch's outlet is declared and never handed to anything",
+         case(**{APPDELEGATE: GOOD_DELEGATE.replace(
+             "    if let item = menuPoltergeistDirectMentions { personaMenuBar.attachMentions(to: item) }\n",
+             "")}), 1),
+        ("a right-click menu hand-writes the switch and names the builder in a comment",
+         case(**{SWIFT_MENUS[0]: handwritten_switch}), 1),
         ("the rows are gone from everywhere",
          case(**{XIB: GOOD_XIB.replace("poltergeistToggleShielded:", "somethingElse:"),
                  SWIFT_MENUS[0]: "// nothing", SWIFT_MENUS[1]: "// nothing"}), 1),
@@ -242,9 +309,10 @@ def self_test():
                 print(f"    {f}")
             ok = False
     if ok:
-        print("probe self-test: OK (menu bar without the item, the item outside the group, "
-              "each half of the wiring missing, a hand-written copy, a builder named only in "
-              "a comment, and the rows gone from everywhere)")
+        print("probe self-test: OK (for the role item and the direct-mentions switch each: "
+              "menu bar without the item, the item outside the group, each half of the wiring "
+              "missing, a hand-written copy, a builder named only in a comment; and the rows "
+              "gone from everywhere)")
     return ok
 
 
@@ -274,9 +342,11 @@ def main():
     for f in found:
         print(f"HIT    {f}")
     if found:
-        print(f"\n{len(found)} problem(s): a menu has the agent rows without the role item.")
+        print(f"\n{len(found)} problem(s): a menu has the agent rows without one of "
+              f"{', '.join(b.name for b in BUILDERS)}.")
         return 1
-    print("OK: every menu with the agent rows builds the role item from the shared builder.")
+    print("OK: every menu with the agent rows builds "
+          f"{' and '.join('the ' + b.name for b in BUILDERS)} from the shared builders.")
     return 0
 
 

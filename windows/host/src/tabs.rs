@@ -148,6 +148,14 @@ pub struct Tab {
     /// with a `key` of null inside a persona that is always present.
     pub persona: Option<crate::personas::TabPersona>,
     pub may_authorise: bool,
+    /// This terminal, **as a supervisor**, lets the workers it minds name
+    /// each other directly rather than having those mentions rewritten to it.
+    ///
+    /// False on anything that is not a supervisor -- and false there means
+    /// "nothing for this to be about", not "switched off". That is why the
+    /// menus leave the row out on a worker instead of greying it: greyed
+    /// says "not now", and on a worker the answer is never.
+    pub worker_mentions: bool,
     /// The shell's working directory, as the core last reported it
     /// (`GHOSTTY_ACTION_PWD`). Kept so a reopened tab lands where the closed
     /// one was, which is the whole of what makes "reopen" different from
@@ -2430,6 +2438,7 @@ pub fn create_tab_with(
             shielded: false,
             held: false,
             may_authorise: false,
+            worker_mentions: false,
             persona: None,
             cwd: initial_cwd,
             title_override: None,
@@ -3495,10 +3504,40 @@ pub fn set_tab_color(frame: HWND, id: TabId, color: u8) -> bool {
 }
 
 /// What Poltergeist has made of a tab: `(role, shielded)`.
-pub fn tab_mark(frame: HWND, id: TabId) -> (u8, bool) {
+pub fn tab_mark(frame: HWND, id: TabId) -> Mark {
     window(frame)
-        .and_then(|w| w.tabs.iter().find(|t| t.id == id).map(|t| (t.role, t.shielded)))
-        .unwrap_or((0, false))
+        .and_then(|w| {
+            w.tabs.iter().find(|t| t.id == id).map(|t| Mark {
+                role: t.role,
+                shielded: t.shielded,
+                held: t.held,
+                may_authorise: t.may_authorise,
+                worker_mentions: t.worker_mentions,
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// What Poltergeist has made of one terminal, as a set of **named** fields.
+///
+/// **It was a tuple until a fifth bit arrived, and that is the whole reason
+/// this type exists.** The readers destructured positionally, and one of them
+/// said `Some((.., a)) if a` -- `..` binds the *last* element, so widening the
+/// tuple moved that read from `may_authorise` to the new field. It still
+/// compiled. A permission granted to a supervisor would have been drawn from
+/// a different bit entirely, and nothing anywhere would have said so.
+///
+/// Named fields make that failure impossible rather than unlikely: a reader
+/// that wants the permission asks for `may_authorise`, and a sixth bit cannot
+/// move what it reads.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Mark {
+    /// 0 none, 1 supervisor, 2 watched.
+    pub role: u8,
+    pub shielded: bool,
+    pub held: bool,
+    pub may_authorise: bool,
+    pub worker_mentions: bool,
 }
 
 /// What Poltergeist has made of the terminal in a **particular surface**.
@@ -3510,7 +3549,7 @@ pub fn tab_mark(frame: HWND, id: TabId) -> (u8, bool) {
 /// mark's landing tab, and the button width), each time by two stores of one
 /// fact drifting apart with nothing to report it.
 // window-free: keyed by surface, which is unique in the process
-pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool, bool, bool)> {
+pub fn mark_for_surface(surface: Surface) -> Option<Mark> {
     let key = surface as usize;
     // Every window: a surface is unique in the process, so the window it is
     // in is an answer rather than a parameter.
@@ -3518,7 +3557,13 @@ pub fn mark_for_surface(surface: Surface) -> Option<(u8, bool, bool, bool)> {
         ws.iter()
             .flat_map(|w| w.tabs.iter())
             .find(|t| t.panes.iter().any(|p| p.surface == key))
-            .map(|t| (t.role, t.shielded, t.held, t.may_authorise))
+            .map(|t| Mark {
+                role: t.role,
+                shielded: t.shielded,
+                held: t.held,
+                may_authorise: t.may_authorise,
+                worker_mentions: t.worker_mentions,
+            })
     })
 }
 
@@ -3575,6 +3620,7 @@ pub fn set_mark_for_surface(
     shielded: bool,
     held: bool,
     may_authorise: bool,
+    worker_mentions: bool,
 ) -> bool {
     let key = surface as usize;
     with_windows_mut(|ws| {
@@ -3585,6 +3631,7 @@ pub fn set_mark_for_surface(
                     tab.shielded = shielded;
                     tab.held = held;
                     tab.may_authorise = may_authorise;
+                    tab.worker_mentions = worker_mentions;
                     return true;
                 }
             }
@@ -3775,6 +3822,7 @@ mod pane_metadata_tests {
             shielded: false,
             held: false,
             may_authorise: false,
+            worker_mentions: false,
             persona: None,
             cwd: None,
             title_override: None,

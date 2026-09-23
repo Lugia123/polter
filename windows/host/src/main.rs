@@ -133,6 +133,7 @@ mod roles;
 mod roles_ui;
 mod session;
 mod winid;
+mod worker_mentions;
 mod winnav;
 mod wintitle;
 mod search;
@@ -2967,7 +2968,8 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // Done inline rather than queued because it touches no window: it
         // writes two fields under the same lock every `Op` would have taken.
         ffi::ACTION_POLTERGEIST_MARK => {
-            let (role, shielded, held, may_authorise) = action.as_poltergeist_mark();
+            let (role, shielded, held, may_authorise, worker_mentions) =
+                action.as_poltergeist_mark();
             // **Resolved once and passed on.** This arm knew which terminal
             // the mark was for and told nobody: `set_mark_for_surface` got it,
             // the notification below did not, and so the menu's own line could
@@ -2993,7 +2995,14 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             let found =
                 surface.is_some_and(|s| {
                     tabs::set_persona_for_surface(s, persona);
-                    tabs::set_mark_for_surface(s, role as u8, shielded, held, may_authorise)
+                    tabs::set_mark_for_surface(
+                        s,
+                        role as u8,
+                        shielded,
+                        held,
+                        may_authorise,
+                        worker_mentions,
+                    )
                 });
             // The surface's own right-click menu wants the same three bits.
             // It reads them back out of `tabs::mark_for_surface`; this call
@@ -3006,8 +3015,8 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             );
             alogf!(
                 origin,
-                "[action] poltergeist_mark role={} shielded={} surface={:?} matched={}",
-                role, shielded, target.surface, found
+                "[action] poltergeist_mark role={} shielded={} authorise={} mentions={} surface={:?} matched={}",
+                role, shielded, may_authorise, worker_mentions, target.surface, found
             );
             true
         }

@@ -1126,6 +1126,22 @@ pub const Action = union(enum) {
     ///
     crash: CrashThread,
 
+    /// On a supervisor: let the workers it minds name each other in a group
+    /// post and be typed into directly, or go back to having those mentions
+    /// redirected to this supervisor. Off until you say otherwise, and gone
+    /// when the terminal stops being a supervisor. See
+    /// `dev-docs/poltergeist/mentions.md`.
+    ///
+    /// Yours alone, like `poltergeist_toggle_authorise` and for its reason:
+    /// it widens what one agent may do to another. **No keybinding and no
+    /// command-palette entry.** On a terminal that is not a supervisor it does
+    /// nothing.
+    ///
+    /// Added at the end of this union (task 575); nothing outside Zig reads
+    /// this enum's numbering, but there is no reason to be the change that
+    /// finds out.
+    poltergeist_toggle_worker_mentions,
+
     pub const Key = @typeInfo(Action).@"union".tag_type.?;
 
     /// Make this a valid gobject if we're in a GTK environment.
@@ -1598,6 +1614,7 @@ pub const Action = union(enum) {
             .poltergeist_toggle_held,
             .poltergeist_toggle_shielded,
             .poltergeist_toggle_authorise,
+            .poltergeist_toggle_worker_mentions,
             .poltergeist_toggle_chat,
             .poltergeist_persona_set,
             .poltergeist_persona_clear,

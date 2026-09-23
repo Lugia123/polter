@@ -834,7 +834,7 @@ impl Provider for CoreProvider {
         let tp = crate::tabs::persona_for_surface(surface).unwrap_or_default();
         // §3.2's bit is already in today's mark, beside `role` and `held`.
         let shielded =
-            crate::tabs::mark_for_surface(surface).map(|(_, s, ..)| s).unwrap_or(false);
+            crate::tabs::mark_for_surface(surface).map(|m| m.shielded).unwrap_or(false);
         Standing {
             key: tp.key,
             name: tp.name,

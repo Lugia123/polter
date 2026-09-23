@@ -195,6 +195,7 @@ poltergeist_tab_shielded: bool = false,
 poltergeist_tab_role: poltergeistpkg.Bus.Role = .none,
 poltergeist_tab_held: bool = false,
 poltergeist_tab_may_authorise: bool = false,
+poltergeist_tab_worker_mentions: bool = false,
 
 /// The persona half of this tab's mark, kept here because the action hands
 /// the apprt a pointer to it and that pointer has to outlive the call.
@@ -3758,6 +3759,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     const role = self.app.poltergeist.roleOf(self.id);
     const held = if (self.app.poltergeist.get(self.id)) |e| e.held else false;
     const may_authorise = self.app.poltergeist.mayAuthorise(self.id);
+    const worker_mentions = self.app.poltergeist.workerMentions(self.id);
 
     // A persona is the user's intent for the terminal, not a measurement of
     // what is running in it -- so it is kept whether or not an agent is
@@ -3818,6 +3820,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
         .role = role,
         .held = held,
         .may_authorise = may_authorise,
+        .worker_mentions = worker_mentions,
         .persona = persona,
     };
     const was: PoltergeistTabState = .{
@@ -3826,6 +3829,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
         .role = self.poltergeist_tab_role,
         .held = self.poltergeist_tab_held,
         .may_authorise = self.poltergeist_tab_may_authorise,
+        .worker_mentions = self.poltergeist_tab_worker_mentions,
         .persona = self.poltergeist_persona,
     };
     if (!poltergeistTabMarkChanged(was, now)) return;
@@ -3834,6 +3838,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     self.poltergeist_tab_role = role;
     self.poltergeist_tab_held = held;
     self.poltergeist_tab_may_authorise = may_authorise;
+    self.poltergeist_tab_worker_mentions = worker_mentions;
     self.poltergeist_persona = persona;
 
     // Unmarked is an empty prefix, not an empty title. This no longer
@@ -3855,6 +3860,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
             .shielded = shielded,
             .held = held,
             .may_authorise = may_authorise,
+            .worker_mentions = worker_mentions,
             // The field, not the local: the apprt is handed a pointer, and
             // a pointer to a local would dangle the moment this returns.
             .persona = &self.poltergeist_persona,
@@ -3874,6 +3880,7 @@ const PoltergeistTabState = struct {
     role: poltergeistpkg.Bus.Role,
     held: bool,
     may_authorise: bool,
+    worker_mentions: bool,
 
     /// ⚠️ **Compared by value, and the two string fields are pointers.**
     /// `std.meta.eql` on a slice or a many-pointer compares the address, so
@@ -3905,6 +3912,7 @@ test "a hold is a change even when nothing else moved" {
         .role = .none,
         .held = false,
         .may_authorise = false,
+        .worker_mentions = false,
         .persona = .none,
     };
 
@@ -6917,6 +6925,32 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // can be seen. This one is a permission the user granted to a
             // supervisor, and the place it has to be visible is the menu
             // the user granted it from, which shows its own state.
+            return true;
+        },
+
+        .poltergeist_toggle_worker_mentions => {
+            const bus = &self.app.poltergeist;
+            const next = !bus.workerMentions(self.id);
+
+            // `.user` for the reason `poltergeist_toggle_authorise` gives: it
+            // widens what one agent may do to another, so only a keypress or
+            // a menu click may set it.
+            bus.setWorkerMentions(self.id, next, .user) catch |err| switch (err) {
+                // Only a supervisor carries it. The menus offer it only
+                // there; a binding pressed anywhere else does nothing, and
+                // says so rather than pretending.
+                error.UnknownTerminal, error.NotASupervisor => {
+                    log.info("poltergeist: worker mentions: this terminal is not a supervisor", .{});
+                    return false;
+                },
+                error.NotPermitted => unreachable,
+            };
+
+            log.info("poltergeist: workers under this supervisor may name each other: {}", .{next});
+
+            // The menu that set it shows its own state, which it reads off
+            // the mark.
+            self.updatePoltergeistTabMark();
             return true;
         },
 

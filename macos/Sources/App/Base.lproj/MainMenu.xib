@@ -74,6 +74,7 @@
                 <outlet property="menuPoltergeistShield" destination="pg9-Sh-Ld1" id="pg9-Ou-Tl1"/>
                 <outlet property="menuPoltergeistAuthorise" destination="pgA-Au-Th1" id="pgA-Ou-Tl1"/>
                 <outlet property="menuPoltergeistPersona" destination="pgB-Ro-Le1" id="pgB-Ou-Tl1"/>
+                <outlet property="menuPoltergeistDirectMentions" destination="pgC-Mn-Tn1" id="pgC-Ou-Tl1"/>
                 <outlet property="menuLanguage" destination="pg7-La-Ng1" id="pg7-Ou-Tl1"/>
                 <outlet property="menuPlugins" destination="pg8-Pl-Ug1" id="pg8-Ou-Tl1"/>
                 <outlet property="menuReopenTab" destination="rt1-Re-Op1" id="rt1-Ou-Tl1"/>
@@ -435,6 +436,9 @@
                                 </connections>
                             </menuItem>
                             <menuItem title="Role (beta)" id="pgB-Ro-Le1" userLabel="Role">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                            </menuItem>
+                            <menuItem title="Let Workers Name Each Other Directly" id="pgC-Mn-Tn1" userLabel="Direct Mentions">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="pg6-Sp-Ar1"/>

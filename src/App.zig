@@ -4777,10 +4777,15 @@ fn chatPost(
     group: []const u8,
     from: poltergeistpkg.Bus.Id,
     text: []const u8,
-) anyerror!poltergeistpkg.Chat.Kept {
+    mentions: poltergeistpkg.rpc.Mentions,
+) anyerror!poltergeistpkg.Chat.Posted {
     const self: *App = @ptrCast(@alignCast(ctx));
     const at: u64 = @intCast(self.poltergeistWallMs());
-    const posted = try self.chat.post(group, from, text, at);
+
+    var named: [poltergeistpkg.Chat.max_mentions]poltergeistpkg.Bus.Id = undefined;
+    if (mentions.to.len > named.len) return error.TooManyMentions;
+    for (mentions.to, 0..) |d, i| named[i] = d.to;
+    const posted = try self.chat.postMentioning(group, from, text, named[0..mentions.to.len], at);
     const seq = posted.seq;
 
     // A terminal's title moves with its work, so the record follows it.
@@ -4792,12 +4797,44 @@ fn chatPost(
     // was actually said rather than what somebody tried to say.
     self.logChat(group, seq, from, at, false, text);
 
+    // **Typed before the notices go out**, not after: a notice lands in the
+    // input box without a return, and a named terminal handed one first
+    // would then refuse its own mention as `DraftInLine`. A terminal typed
+    // into here is marked as told, so the sweep below does not put a second
+    // line in behind the first.
+    //
+    // Through `poltergeistSend`, the same door `terminal_send` uses, so
+    // `UserPresent` and `DraftInLine` apply unchanged. What it types is the
+    // text as the group keeps it -- `Chat.formatDelivery` folds the line
+    // breaks, nothing else -- so the terminal and the record say the same.
+    if (mentions.to.len > 0) {
+        const kept = self.chat.messageText(group, seq) orelse text;
+        const line = try poltergeistpkg.Chat.formatDelivery(
+            self.alloc,
+            group,
+            seq,
+            from,
+            mentions.from_title,
+            kept,
+        );
+        defer self.alloc.free(line);
+
+        const now_ms = self.poltergeistElapsedMs();
+        for (mentions.to) |*d| {
+            poltergeistSend(self, d.to, line, true) catch |err| {
+                d.err = err;
+                continue;
+            };
+            self.chat.markTold(group, d.to, now_ms);
+        }
+    }
+
     self.tellTerminalsAboutMessages();
 
     // Handed straight back: whether it all fitted is not this layer's to
     // interpret, and the sentence the writer reads is built where the reply
     // is written. The same shape `setBrief` already answers with.
-    return posted.wrote;
+    return posted;
 }
 
 /// Put one message in the log on disk, if there is one.

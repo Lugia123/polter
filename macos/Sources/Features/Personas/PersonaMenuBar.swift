@@ -30,6 +30,23 @@ final class PersonaMenuBar: NSObject, NSMenuDelegate {
     /// The nib's item. Weak: the nib owns it, this only fills it in.
     private weak var item: NSMenuItem?
 
+    /// The nib's direct-mentions item (`MentionMenu`), when there is one.
+    ///
+    /// Here rather than in a delegate of its own because it sits in the same
+    /// Agents menu, and a menu has exactly one delegate: a second object
+    /// claiming it would silently unhook `Role`. Filled in by the same
+    /// `rebuild`, from the same one reading of "which terminal".
+    private weak var mentionsItem: NSMenuItem?
+
+    /// Take over the item `MainMenu.xib` holds for the direct-mentions switch.
+    ///
+    /// Call after `attach(to:)`: it is that call that makes this object the
+    /// Agents menu's delegate, and so what re-fills the item on every open.
+    func attachMentions(to item: NSMenuItem) {
+        mentionsItem = item
+        rebuild()
+    }
+
     /// Take over the item `MainMenu.xib` holds for the role submenu.
     func attach(to item: NSMenuItem) {
         self.item = item
@@ -52,13 +69,21 @@ final class PersonaMenuBar: NSObject, NSMenuDelegate {
     }
 
     private func rebuild() {
-        guard let item else { return }
-
         // One reading of "which terminal", used for both the state shown and
         // the target acted on. Two lookups would be two answers the moment
         // focus moved between them, and the menu would then be describing one
         // terminal while pointing at another.
         let surface = Self.focusedSurface
+
+        if let mentionsItem {
+            MentionMenu.configure(
+                mentionsItem,
+                isSupervisor: surface?.poltergeistRole == .supervisor,
+                allowed: surface?.poltergeistWorkerMentions ?? false,
+                target: surface)
+        }
+
+        guard let item else { return }
 
         let catalog = PersonaCatalog.shared
         catalog.reload()

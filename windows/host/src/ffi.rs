@@ -276,6 +276,11 @@ pub struct LayoutOut {
     pub len: usize,
 }
 
+/// ⚠️ **`repr(C)` and the `persona` field are what make the assertions on
+/// this struct mean anything.** Without them `offset_of!` measured whatever
+/// order rustc chose and `size_of` came out 16 -- a number the C side has
+/// never had -- so a pin on it pinned nothing the core writes.
+#[repr(C)]
 pub struct PoltergeistMark {
     pub prefix: *const c_char,
     /// `ghostty_action_poltergeist_role_e`: 0 none, 1 supervisor, 2 watched.
@@ -292,6 +297,24 @@ pub struct PoltergeistMark {
     /// glyph in `prefix`: the other three marks are promises to the person at
     /// the terminal, this is a permission they granted to somebody else.
     pub may_authorise: bool,
+    /// This terminal, **as a supervisor**, lets the workers it minds name each
+    /// other directly in the group rather than having those mentions rewritten
+    /// to it.
+    ///
+    /// **Added at the end, into the padding byte that was already there.**
+    /// `may_authorise` left one byte of tail padding before the 8-aligned
+    /// persona pointer, so this field costs nothing: the struct's size does
+    /// not move and neither does `persona`. That is the whole reason it is
+    /// here rather than anywhere tidier -- an offset that moves is one an
+    /// older `polter-host.exe` reads wrong against a newer DLL, silently.
+    ///
+    /// **False on anything that is not a supervisor**, and that is a fact
+    /// about scope rather than about the switch: a worker does not have this
+    /// setting turned off, it has nothing for the setting to be about.
+    pub worker_mentions: bool,
+    /// Read by `Action::as_poltergeist_persona`; here so that the struct is
+    /// the size the C one is.
+    pub persona: *const PersonaMark,
 }
 
 /// `ghostty_poltergeist_persona_s`. **Reached through a pointer on the mark**,
@@ -521,11 +544,27 @@ impl Action {
     /// `held` is a second `bool` immediately after `shielded`, at 13. **Added
     /// at the end on purpose**: every offset above it is unchanged, so the
     /// struct grew without moving anything an older reading depended on.
-    pub fn as_poltergeist_mark(&self) -> (i32, bool, bool, bool) {
+    ///
+    /// `worker_mentions` is the fourth bool, at 15, which is where the
+    /// struct's tail padding already was -- so reading it needs no other
+    /// offset to change, and `persona` stays at 16.
+    pub fn as_poltergeist_mark(&self) -> (i32, bool, bool, bool, bool) {
         let role = i32::from_ne_bytes(self.payload[8..12].try_into().unwrap());
-        // `shielded`, `held`, `may_authorise`: three bools in declaration
-        // order after the int, one byte each, no padding between them.
-        (role, self.payload[12] != 0, self.payload[13] != 0, self.payload[14] != 0)
+        // `shielded`, `held`, `may_authorise`, `worker_mentions`: four bools
+        // in declaration order after the int, one byte each, no padding
+        // between them.
+        //
+        // **Read at `offset_of!`, not at literals**, so the const assertions
+        // below pin the very offsets read here. With literals the two could
+        // disagree and both look right.
+        let at = |off: usize| self.payload[off] != 0;
+        (
+            role,
+            at(std::mem::offset_of!(PoltergeistMark, shielded)),
+            at(std::mem::offset_of!(PoltergeistMark, held)),
+            at(std::mem::offset_of!(PoltergeistMark, may_authorise)),
+            at(std::mem::offset_of!(PoltergeistMark, worker_mentions)),
+        )
     }
 
     /// The `persona` pointer the mark now carries, at offset 16.
@@ -942,6 +981,23 @@ const _: () = {
     assert!(std::mem::offset_of!(PersonaMark, agent_present) == 17);
     assert!(std::mem::offset_of!(PersonaMark, host_class) == 20);
     assert!(std::mem::size_of::<PersonaRow>() == 16);
+
+    // **The mark's own layout, which had no assertion at all until a fifth
+    // field was added to it.** Every one of these bytes is read by hand out
+    // of a `[u8; 24]` payload, so a field that moves is not a compile error
+    // anywhere -- it is a tick drawn from a byte of padding, or a permission
+    // read out of the wrong bool. The reason `worker_mentions` could be
+    // added without touching anything else is precisely that 15 was already
+    // padding, and that is the claim these pin. The numbers are the C header's
+    // (`ghostty_action_poltergeist_mark_s`, task 575 contract v1: size 24,
+    // `worker_mentions` at 15, `persona` at 16), not ones measured here.
+    assert!(std::mem::size_of::<PoltergeistMark>() == 24);
+    assert!(std::mem::offset_of!(PoltergeistMark, role) == 8);
+    assert!(std::mem::offset_of!(PoltergeistMark, shielded) == 12);
+    assert!(std::mem::offset_of!(PoltergeistMark, held) == 13);
+    assert!(std::mem::offset_of!(PoltergeistMark, may_authorise) == 14);
+    assert!(std::mem::offset_of!(PoltergeistMark, worker_mentions) == 15);
+    assert!(std::mem::offset_of!(PoltergeistMark, persona) == 16);
 };
 
 /// Resolved entry points. We load at runtime rather than link, because the

@@ -60,6 +60,23 @@ pub const Message = struct {
 
     /// Owned by the group.
     text: []const u8,
+
+    /// The terminals this message was addressed to by name, and so should
+    /// interrupt even when nothing else in the group would (`waking`).
+    ///
+    /// The terminals it was *delivered to*, which is not always the ones the
+    /// author named: a worker naming a worker is redirected to its
+    /// supervisor unless that supervisor has said otherwise
+    /// (`Bus.Entry.worker_mentions`), and it is the supervisor who is woken.
+    /// Who was originally named is in `text`, for people to read.
+    ///
+    /// Owned by the group. Empty for nearly every message.
+    mentions: []const Id = &.{},
+
+    fn release(self: Message, alloc: Allocator) void {
+        alloc.free(self.text);
+        if (self.mentions.len > 0) alloc.free(self.mentions);
+    }
 };
 
 pub const Config = struct {
@@ -83,7 +100,22 @@ pub const Error = error{
 
     /// Nothing to say, or nothing to compact.
     Empty,
+
+    /// A post named somebody who is not in the group. The whole post is
+    /// refused: nothing is added and nobody is typed into.
+    MentionNotAMember,
+
+    /// A post named its own author.
+    MentionSelf,
+
+    /// A post named more terminals than `max_mentions`.
+    TooManyMentions,
 } || Allocator.Error;
+
+/// Most terminals one post may name. Each one is a line typed into somebody's
+/// terminal with a return after it; a post naming the whole group is what a
+/// group post already is, without the interruption.
+pub const max_mentions = 16;
 
 const Member = struct {
     /// Messages at or below this are not shown to this member: it was
@@ -195,7 +227,7 @@ const Group = struct {
     last_ms: u64 = 0,
 
     fn deinit(self: *Group, alloc: Allocator) void {
-        for (self.log.items) |m| alloc.free(m.text);
+        for (self.log.items) |m| m.release(alloc);
         self.log.deinit(alloc);
         if (self.brief.len > 0) alloc.free(self.brief);
 
@@ -558,9 +590,60 @@ pub fn post(
     text: []const u8,
     now_ms: u64,
 ) Error!Posted {
+    return self.postMentioning(name, from, text, &.{}, now_ms);
+}
+
+/// `post`, addressed to some of the group by name. See `Message.mentions`.
+///
+/// **Checked whole before anything is added**: one name that is not in the
+/// group refuses the post, so there is never a message out there that some
+/// of its addressees were silently dropped from. Duplicates are collapsed.
+pub fn postMentioning(
+    self: *Chat,
+    name: []const u8,
+    from: Id,
+    text: []const u8,
+    mentions: []const Id,
+    now_ms: u64,
+) Error!Posted {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     if (!group.members.contains(from)) return error.NotAMember;
-    return self.append(group, from, text, now_ms, false);
+    if (mentions.len > max_mentions) return error.TooManyMentions;
+
+    var buf: [max_mentions]Id = undefined;
+    var n: usize = 0;
+    for (mentions) |id| {
+        if (id == from) return error.MentionSelf;
+        if (!group.members.contains(id)) return error.MentionNotAMember;
+        if (std.mem.indexOfScalar(Id, buf[0..n], id) != null) continue;
+        buf[n] = id;
+        n += 1;
+    }
+
+    return self.append(group, from, text, now_ms, false, buf[0..n]);
+}
+
+/// The text of one message as the group holds it -- trimmed and, if it was
+/// over the limit, cut -- or null if it is not in the group any more.
+pub fn messageText(self: *const Chat, name: []const u8, seq: u64) ?[]const u8 {
+    const group = self.groups.getPtr(name) orelse return null;
+    var i = group.log.items.len;
+    while (i > 0) {
+        i -= 1;
+        const m = group.log.items[i];
+        if (m.seq == seq) return m.text;
+        if (m.seq < seq) break;
+    }
+    return null;
+}
+
+/// Record that `id` has just been interrupted about this group by some other
+/// route than a notice -- a mention typed straight into it -- so the notice
+/// sweep that follows the same post does not type a second line in behind it.
+pub fn markTold(self: *Chat, name: []const u8, id: Id, now_ms: u64) void {
+    const group = self.groups.getPtr(name) orelse return;
+    const who = group.members.getPtr(id) orelse return;
+    who.last_told_ms = now_ms;
 }
 
 /// Record where a message landed in the log.
@@ -635,6 +718,7 @@ fn append(
     text: []const u8,
     now_ms: u64,
     summary: bool,
+    mentions: []const Id,
 ) Error!Posted {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (trimmed.len == 0) return error.Empty;
@@ -642,6 +726,8 @@ fn append(
     const kept = utf8Cut(trimmed, self.config.max_text_bytes);
     const owned = try self.alloc.dupe(u8, kept);
     errdefer self.alloc.free(owned);
+    const named: []const Id = if (mentions.len == 0) &.{} else try self.alloc.dupe(Id, mentions);
+    errdefer if (named.len > 0) self.alloc.free(named);
 
     const seq = group.next_seq;
     group.next_seq += 1;
@@ -652,6 +738,7 @@ fn append(
         .at_ms = now_ms,
         .summary = summary,
         .text = owned,
+        .mentions = named,
     });
 
     // The sender has seen its own message by definition.
@@ -670,7 +757,7 @@ fn trim(self: *Chat, group: *Group) void {
     if (group.log.items.len <= self.config.max_messages) return;
 
     const drop = group.log.items.len - self.config.max_messages;
-    for (group.log.items[0..drop]) |m| self.alloc.free(m.text);
+    for (group.log.items[0..drop]) |m| m.release(self.alloc);
     std.mem.copyForwards(
         Message,
         group.log.items[0 .. group.log.items.len - drop],
@@ -720,7 +807,7 @@ pub fn compact(
     const first_seq = group.log.items[0].seq;
     const seq = group.log.items[cut - 1].seq;
     const cut_log_seq = group.log.items[cut - 1].log_seq;
-    for (group.log.items[0..cut]) |m| self.alloc.free(m.text);
+    for (group.log.items[0..cut]) |m| m.release(self.alloc);
 
     if (cut > 1) {
         std.mem.copyForwards(
@@ -853,14 +940,41 @@ pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
 /// mark, and nothing here can tell them apart. That is why the rule is drawn
 /// on "who acts on it" rather than on "who is it". See
 /// `dev-docs/poltergeist/tasks.md`.
+///
+/// # The one exception: being named
+///
+/// **A message that names this member interrupts it whatever its role**
+/// (`Message.mentions`, `dev-docs/poltergeist/mentions.md` part four). The
+/// author said who it was for, so "nobody is expecting anything of it" is no
+/// longer true of that message. Only the named messages count: a watched
+/// terminal named once in a group of twenty unread is woken for one, and a
+/// member not named in anything is woken for exactly what it was before --
+/// nothing.
 pub fn waking(self: *const Chat, name: []const u8, id: Id, role: Bus.Role) usize {
     return switch (role) {
         .supervisor => self.unread(name, id),
 
         // Minded: its supervisor types into it, and the group cannot compete
         // with that channel. Unmarked: nobody is expecting anything of it.
-        .watched, .none => 0,
+        // Unless the message said it was for them.
+        .watched, .none => self.unreadNaming(name, id),
     };
+}
+
+/// How many of `id`'s unread messages in this group name it.
+fn unreadNaming(self: *const Chat, name: []const u8, id: Id) usize {
+    const group = self.groups.getPtr(name) orelse return 0;
+    const who = group.members.get(id) orelse return 0;
+
+    var n: usize = 0;
+    for (group.log.items) |m| {
+        if (m.seq <= who.cursor) continue;
+        if (m.seq <= who.floor) continue;
+        if (m.from == id) continue;
+        if (std.mem.indexOfScalar(Id, m.mentions, id) == null) continue;
+        n += 1;
+    }
+    return n;
 }
 
 /// Total unread across every group `id` is in.
@@ -1125,6 +1239,51 @@ pub fn formatNotice(
         "[poltergeist] {d} new message{s} in \"{s}\". Read them with group_read.",
         .{ count, if (count == 1) "" else "s", name },
     );
+}
+
+/// How a terminal is named inside message text: `@` and the first eight hex
+/// digits of its id, then its title as it was at that moment.
+///
+/// The id and not only the title because a title is changed at will, and
+/// somebody reading the record tomorrow has to know who was meant tonight.
+/// Eight digits because the full sixteen are unreadable in a sentence and
+/// eight are already one in four billion.
+pub fn writeName(w: *std.Io.Writer, id: Id, title: []const u8) std.Io.Writer.Error!void {
+    var hex: [16]u8 = undefined;
+    const digits = std.fmt.bufPrint(&hex, "{x}", .{id}) catch unreachable;
+    try w.print("@{s}", .{digits[0..@min(digits.len, 8)]});
+    if (title.len > 0) try w.print(" {s}", .{title});
+}
+
+/// The one line typed into a named terminal, with a return after it.
+///
+/// Everything on one line: a message's line breaks are folded to spaces,
+/// because a bare shell -- which is a terminal a group may contain -- runs
+/// each line as it arrives (`terminal_send`'s `UnbracketedMultiline`). The
+/// group keeps the text as it was written; this is only the delivery.
+///
+/// `stored` is the text as the group holds it, with the names already
+/// written in by the caller -- so what is typed and what is kept say the
+/// same names, frozen at the same moment.
+pub fn formatDelivery(
+    alloc: Allocator,
+    group: []const u8,
+    seq: u64,
+    from: Id,
+    from_title: []const u8,
+    stored: []const u8,
+) Allocator.Error![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+    w.print("[poltergeist] {s} #{d} ", .{ group, seq }) catch return error.OutOfMemory;
+    writeName(w, from, from_title) catch return error.OutOfMemory;
+    w.writeAll(": ") catch return error.OutOfMemory;
+    for (stored) |c| w.writeByte(switch (c) {
+        '\r', '\n', '\t' => ' ',
+        else => c,
+    }) catch return error.OutOfMemory;
+    return out.toOwnedSlice() catch error.OutOfMemory;
 }
 
 // -- tests ------------------------------------------------------------------
@@ -2327,4 +2486,89 @@ test "not being woken is not being kept out" {
     const late = (try chat.read(testing.allocator, "build", 0x5555, 0, .unlimited)).messages;
     defer testing.allocator.free(late);
     try testing.expectEqual(@as(usize, 1), late.len);
+}
+
+test "a named member is woken for what names it, and nobody else is woken at all" {
+    // Task 575, part four of the contract. ⭐ **The second half is the
+    // point**: the obvious way to get the first half right is to wake
+    // everybody, and every assertion about the named member would still
+    // pass. `b` is the positive control -- in the group, unread, not named.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    try chat.add("build", b, .none, .{});
+
+    _ = try chat.post("build", boss, "for everybody", 0);
+    _ = try chat.postMentioning("build", boss, "for a", &.{a}, 1);
+
+    // Both can see both messages -- `unread` is untouched by naming.
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", b));
+
+    // `a` is woken for the one that names it, whatever its standing.
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .watched));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .none));
+
+    // `b` is exactly where it was before mentions existed.
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", b, .watched));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", b, .none));
+    try testing.expect(!chat.shouldNotify("build", b, 0, 1000, .watched));
+
+    // A supervisor was already woken for everything; naming adds nothing.
+    try testing.expectEqual(@as(usize, 2), chat.waking("build", a, .supervisor));
+
+    // Having read it, `a` is not woken again for it.
+    const seen = (try chat.read(testing.allocator, "build", a, null, .unlimited)).messages;
+    defer testing.allocator.free(seen);
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
+}
+
+test "one name that is not in the group refuses the whole post" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+
+    try testing.expectError(
+        error.MentionNotAMember,
+        chat.postMentioning("build", boss, "hello", &.{ a, 0xdead }, 0),
+    );
+    try testing.expectError(
+        error.MentionSelf,
+        chat.postMentioning("build", boss, "hello", &.{boss}, 0),
+    );
+
+    // Nothing landed, and nobody has anything waiting.
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.groups.getPtr("build").?.log.items.len);
+}
+
+test "a mention typed into a terminal is one line with the names frozen in it" {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    try writeName(&aw.writer, 0x2528abcdef012345, "M-core");
+    try testing.expectEqualStrings("@2528abcd M-core", aw.written());
+
+    const line = try formatDelivery(testing.allocator, "build", 7, 0x1111, "boss", "@2222 w\nrun it\r\nnow");
+    defer testing.allocator.free(line);
+    try testing.expectEqualStrings("[poltergeist] build #7 @1111 boss: @2222 w run it  now", line);
+    try testing.expect(std.mem.indexOfScalar(u8, line, '\n') == null);
+}
+
+test "named messages that fall off the end or are compacted are freed" {
+    // `testing.allocator` is the assertion: a leaked `mentions` slice fails
+    // the test at `deinit`.
+    var chat: Chat = .init(testing.allocator, .{ .max_messages = 2 });
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    _ = try chat.postMentioning("build", boss, "one", &.{a}, 0);
+    _ = try chat.postMentioning("build", boss, "two", &.{ a, a }, 1);
+    _ = try chat.postMentioning("build", boss, "three", &.{a}, 2);
+    try testing.expectEqual(@as(usize, 1), chat.groups.getPtr("build").?.log.items[0].mentions.len);
+    _ = try chat.compact("build", 3, "summary", boss, 3);
 }

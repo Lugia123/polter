@@ -59,6 +59,10 @@ pub enum Tick {
     PgWatched,
     PgShielded,
     PgMayAuthorise,
+    /// This terminal, **as a supervisor**, lets the workers it minds name
+    /// each other directly. Scoped to a supervisor, so its row is left out
+    /// elsewhere rather than greyed -- see `tabs::Mark::worker_mentions`.
+    PgWorkerMentions,
 }
 
 /// One row. `action` is a core binding string, or `None` for a separator.
@@ -170,6 +174,15 @@ const ROWS: &[Row] = &[
         "poltergeist_toggle_authorise",
         Tick::PgMayAuthorise,
     ),
+    // **A supervisor's own setting, and the only row here that is not about
+    // the terminal the menu was opened on.** Off by default: a worker naming
+    // another worker has that mention rewritten to this supervisor. On, they
+    // reach each other and this supervisor only has it unread.
+    checkable(
+        n_("Let Workers Name Each Other Directly"),
+        "poltergeist_toggle_worker_mentions",
+        Tick::PgWorkerMentions,
+    ),
     ROLES,
     SEP,
     item(n_("Command Palette"), "toggle_command_palette"),
@@ -243,7 +256,7 @@ static PG_NEVER_TOLD_LOGGED: AtomicBool = AtomicBool::new(false);
 /// screen from one whose state was never learned -- which is exactly the
 /// confusion §3.3 says these ticks exist to prevent. So the difference is
 /// stated in the log instead of left to be guessed at.
-fn mark_of(surface: Surface) -> Option<(u8, bool, bool, bool)> {
+fn mark_of(surface: Surface) -> Option<crate::tabs::Mark> {
     if surface.is_null() {
         return None;
     }
@@ -283,7 +296,7 @@ fn binding_on(surface: Surface, owner: HWND, name: &str) -> bool {
 /// **which surface the state is about** (`hud::is_readonly_for`).
 /// `hud::is_readonly()` exists and resolves the focused surface -- its own
 /// doc comment says a menu must not use it.
-fn tick_state(surface: Surface, mark: Option<(u8, bool, bool, bool)>, t: Tick) -> bool {
+fn tick_state(surface: Surface, mark: Option<crate::tabs::Mark>, t: Tick) -> bool {
     match t {
         Tick::Readonly => crate::hud::is_readonly_for(surface as usize),
         // **Three bits, read three times.** Sharing one getter between the
@@ -293,15 +306,26 @@ fn tick_state(surface: Surface, mark: Option<(u8, bool, bool, bool)>, t: Tick) -
         // and this menu has no row for it: the hold row lives on the strip
         // menu alone, because only the person at the keyboard may set one and
         // that is a decision about which doors exist, not about ticks.
-        Tick::PgSupervisor => matches!(mark, Some((r, ..)) if r == ROLE_SUPERVISOR),
-        Tick::PgWatched => matches!(mark, Some((r, ..)) if r == ROLE_WATCHED),
-        Tick::PgShielded => matches!(mark, Some((_, s, ..)) if s),
+        //
+        // ⚠️ **These read by name and used to read by position.** The
+        // permission below was written `Some((.., a)) if a`, and `..` binds
+        // the *last* element -- so the day a fifth bit was appended, that row
+        // would have started ticking from the new bit while still compiling.
+        // `tabs::Mark`'s fields are what make that a spelling mistake rather
+        // than a silent one.
+        Tick::PgSupervisor => matches!(mark, Some(m) if m.role == ROLE_SUPERVISOR),
+        Tick::PgWatched => matches!(mark, Some(m) if m.role == ROLE_WATCHED),
+        Tick::PgShielded => matches!(mark, Some(m) if m.shielded),
         // The fourth bit, and it is a permission rather than a mark: the
         // three above are promises to the person at this terminal, this is
         // one they granted to a supervisor. It has no glyph on the tab for
         // that reason, so this row is the only place its state is visible --
         // which is exactly why it has to tick.
-        Tick::PgMayAuthorise => matches!(mark, Some((.., a)) if a),
+        Tick::PgMayAuthorise => matches!(mark, Some(m) if m.may_authorise),
+        Tick::PgWorkerMentions => crate::worker_mentions::ticked(
+            mark.map(|m| m.role),
+            mark.is_some_and(|m| m.worker_mentions),
+        ),
     }
 }
 
@@ -328,12 +352,35 @@ pub struct Item {
 /// shortcut *follows the config*: the bug being fixed here is a label that
 /// stays the same when the binding changes, and the only way to see that is
 /// to build the same menu twice against two different binding tables.
+///
+/// **Tests only now.** `show` is the one caller that knows whether this
+/// terminal is a supervisor, so it calls `build_scoped`; the tests want the
+/// widest menu, which is this.
+#[cfg(test)]
 fn build(
     shortcut: &dyn Fn(&str) -> Option<String>,
     tick: &dyn Fn(Tick) -> bool,
 ) -> Vec<Item> {
+    build_scoped(shortcut, tick, true)
+}
+
+/// The same menu, with the supervisor-only row left out when it does not
+/// apply.
+///
+/// **Left out rather than greyed, and safe to leave out here.** A row's
+/// command id is `ID_BASE + Item::index`, and `index` is its position in
+/// `ROWS` rather than its position on screen -- so removing one shifts
+/// nothing. `menu.rs` cannot do this so cheaply: its ids are handed out in
+/// walk order, which is why the same hiding there had to be taught to both
+/// of its walks.
+fn build_scoped(
+    shortcut: &dyn Fn(&str) -> Option<String>,
+    tick: &dyn Fn(Tick) -> bool,
+    supervisor: bool,
+) -> Vec<Item> {
     ROWS.iter()
         .enumerate()
+        .filter(|(_, row)| supervisor || row.tick != Some(Tick::PgWorkerMentions))
         .map(|(index, row)| {
             if row.roles {
                 // **The text is filled in by `show`**, which has the surface.
@@ -394,7 +441,11 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
     // clicked, and this is the same question one window down.
     let surface = crate::tabs::surface_of(surface_hwnd);
     let mark = mark_of(surface);
-    let items = build(&|a| crate::keys::shortcut_for(a), &|t| tick_state(surface, mark, t));
+    let items = build_scoped(
+        &|a| crate::keys::shortcut_for(a),
+        &|t| tick_state(surface, mark, t),
+        crate::worker_mentions::offered(mark.map(|m| m.role)),
+    );
 
     unsafe {
         let menu = match CreatePopupMenu() {
@@ -899,26 +950,79 @@ mod tests {
         }
     }
 
+    /// The supervisor-only row is **off the menu** on anything else -- and
+    /// every other row keeps the id it had.
+    ///
+    /// **The second half is the one worth having.** Leaving a row out is
+    /// easy; leaving it out without moving anybody else's command is the
+    /// thing that goes wrong, and here it holds because a row's id comes
+    /// from its index in `ROWS` rather than from its place on screen. If
+    /// that ever changes, this test says so before a menu starts running
+    /// the wrong command while looking right.
+    #[test]
+    fn the_supervisor_only_row_is_absent_elsewhere_and_shifts_nothing() {
+        let wide = build_scoped(&no_shortcuts, &no_ticks, true);
+        let narrow = build_scoped(&no_shortcuts, &no_ticks, false);
+
+        let mentions = |v: &Vec<Item>| {
+            v.iter().any(|i| ROWS[i.index].tick == Some(Tick::PgWorkerMentions))
+        };
+        assert!(mentions(&wide), "a supervisor should be offered the switch");
+        assert!(!mentions(&narrow), "a worker has nothing for the switch to be about");
+        assert_eq!(wide.len(), narrow.len() + 1, "exactly one row came off");
+
+        // Every row the narrow menu still has points at the same `ROWS` entry
+        // it did in the wide one.
+        for it in &narrow {
+            let same = wide.iter().find(|w| w.index == it.index);
+            assert!(same.is_some(), "row {} vanished from the wide menu", it.index);
+            assert_eq!(same.unwrap().text, it.text);
+        }
+    }
+
+    /// The new bit is its own, and does not tick from the permission beside
+    /// it. Those two were one `..` pattern away from being the same read.
+    #[test]
+    fn the_mentions_switch_is_its_own_bit() {
+        let on = Some(crate::tabs::Mark {
+            role: ROLE_SUPERVISOR,
+            worker_mentions: true,
+            ..Default::default()
+        });
+        let authorise_only = Some(crate::tabs::Mark { may_authorise: true, ..Default::default() });
+        assert!(tick_state(NO_SURFACE, on, Tick::PgWorkerMentions));
+        assert!(!tick_state(NO_SURFACE, on, Tick::PgMayAuthorise));
+        assert!(tick_state(NO_SURFACE, authorise_only, Tick::PgMayAuthorise));
+        assert!(!tick_state(NO_SURFACE, authorise_only, Tick::PgWorkerMentions));
+    }
+
+    /// A mark for the tick tests, spelled in the order the fields are
+    /// declared. **The fifth bit defaults off**, so every assertion written
+    /// against the four-field tuple means exactly what it meant before.
+    fn mark(role: u8, shielded: bool, held: bool, may_authorise: bool) -> crate::tabs::Mark {
+        crate::tabs::Mark { role, shielded, held, may_authorise, worker_mentions: false }
+    }
+
     /// `supervisor` and `watched` are two values of one enum, so they can
     /// never both be on. The mapping from role to row is where that gets
     /// dropped -- e.g. by testing `!= none` for both.
     #[test]
     fn supervisor_and_watched_are_mutually_exclusive() {
-        assert!(tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false, false, false)), Tick::PgSupervisor));
-        assert!(!tick_state(NO_SURFACE, Some((ROLE_SUPERVISOR, false, false, false)), Tick::PgWatched));
+        assert!(tick_state(NO_SURFACE, Some(mark(ROLE_SUPERVISOR, false, false, false)), Tick::PgSupervisor));
+        assert!(!tick_state(NO_SURFACE, Some(mark(ROLE_SUPERVISOR, false, false, false)), Tick::PgWatched));
 
-        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false, false)), Tick::PgSupervisor));
-        assert!(tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false, false)), Tick::PgWatched));
+        assert!(!tick_state(NO_SURFACE, Some(mark(ROLE_WATCHED, false, false, false)), Tick::PgSupervisor));
+        assert!(tick_state(NO_SURFACE, Some(mark(ROLE_WATCHED, false, false, false)), Tick::PgWatched));
     }
 
     /// The shield is independent of the role: a shielded terminal that is
     /// neither supervisor nor watched must tick exactly one row.
     #[test]
     fn the_shield_is_its_own_bit() {
-        assert!(tick_state(NO_SURFACE, Some((0, true, false, false)), Tick::PgShielded));
-        assert!(!tick_state(NO_SURFACE, Some((0, true, false, false)), Tick::PgSupervisor));
-        assert!(!tick_state(NO_SURFACE, Some((0, true, false, false)), Tick::PgWatched));
-        assert!(!tick_state(NO_SURFACE, Some((ROLE_WATCHED, false, false, false)), Tick::PgShielded));
+        assert!(tick_state(NO_SURFACE, Some(mark(0, true, false, false)), Tick::PgShielded));
+        assert!(!tick_state(NO_SURFACE, Some(mark(0, true, false, false)), Tick::PgSupervisor));
+        assert!(!tick_state(NO_SURFACE, Some(mark(0, true, false, false)), Tick::PgWatched));
+        assert!(!tick_state(NO_SURFACE, Some(mark(ROLE_WATCHED, false, false, false)), Tick::PgShielded));
     }
 
     /// The authorise switch is its own bit too, and it is the one with no
@@ -927,14 +1031,14 @@ mod tests {
     /// test that looks at one row can see that.
     #[test]
     fn the_authorise_switch_is_its_own_bit() {
-        let on = Some((0u8, false, false, true));
+        let on = Some(mark(0u8, false, false, true));
         assert!(tick_state(NO_SURFACE, on, Tick::PgMayAuthorise));
         assert!(!tick_state(NO_SURFACE, on, Tick::PgShielded));
         assert!(!tick_state(NO_SURFACE, on, Tick::PgSupervisor));
         assert!(!tick_state(NO_SURFACE, on, Tick::PgWatched));
 
         // Shielded and not authorising: the two must not move together.
-        let shielded = Some((0u8, true, false, false));
+        let shielded = Some(mark(0u8, true, false, false));
         assert!(tick_state(NO_SURFACE, shielded, Tick::PgShielded));
         assert!(!tick_state(NO_SURFACE, shielded, Tick::PgMayAuthorise));
     }
@@ -949,8 +1053,8 @@ mod tests {
         }
         // The distinction this test exists to protect: the two cases are
         // different values, so a caller can tell them apart.
-        let none_mark: Option<(u8, bool, bool, bool)> = None;
-        let role_none: Option<(u8, bool, bool, bool)> = Some((0, false, false, false));
+        let none_mark: Option<crate::tabs::Mark> = None;
+        let role_none: Option<crate::tabs::Mark> = Some(mark(0, false, false, false));
         assert_ne!(none_mark, role_none);
     }
 }

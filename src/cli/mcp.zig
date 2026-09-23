@@ -601,9 +601,18 @@ const tools = [_]Tool{
             "message; they read it when they choose to. **A message has a size limit, " ++
             "and a long one is cut**: when that happens the reply says how much you " ++
             "wrote and how much the group kept, because the readers see no sign that " ++
-            "there was more. Say the rest in a second message.",
+            "there was more. Say the rest in a second message. " ++
+            "**A post does not interrupt anybody under supervision -- unless you name " ++
+            "them in `mention`**: each named terminal has the message typed into it with " ++
+            "a return, the way a supervisor gives an instruction. Names go in `mention` " ++
+            "as terminal ids, never as @ in the text, and every one must be in the group " ++
+            "or nothing is posted. A worker naming another worker reaches that worker's " ++
+            "supervisor instead unless the supervisor has allowed it. The reply has one " ++
+            "row per name in `deliveries`: `delivered: false` with a `code` " ++
+            "(UserPresent, DraftInLine, ...) means that terminal was not typed into -- " ++
+            "the message is in the group either way.",
         .schema =
-        \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"}},"required":["group","text"]}
+        \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"},"mention":{"type":"array","items":{"type":"string"},"description":"Terminal ids (0x...) to type this message into, each with a return. Every one must be a member of the group."}},"required":["group","text"]}
         ,
     },
     .{

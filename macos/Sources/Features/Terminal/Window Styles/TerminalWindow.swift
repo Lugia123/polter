@@ -715,6 +715,7 @@ extension TerminalWindow {
     private static let agentShieldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentShield")
     private static let agentAuthoriseIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentAuthorise")
     private static let agentPersonaIdentifier = PersonaMenu.itemIdentifier
+    private static let agentMentionsIdentifier = MentionMenu.itemIdentifier
 
     private static let projectSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSeparator")
     private static let projectSaveAsIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSaveAs")
@@ -788,6 +789,7 @@ extension TerminalWindow {
             Self.agentShieldIdentifier,
             Self.agentAuthoriseIdentifier,
             Self.agentPersonaIdentifier,
+            Self.agentMentionsIdentifier,
         ])
 
         let separator = NSMenuItem.separator()
@@ -852,6 +854,13 @@ extension TerminalWindow {
             shielded: surface?.poltergeistShielded ?? false,
             personas: catalog.personas,
             personasKnown: catalog.isKnown,
+            target: target))
+
+        // The supervisor's direct-mentions switch. Same builder as the
+        // terminal's own menu and the menu bar, same right-clicked `target`.
+        menu.addItem(MentionMenu.makeItem(
+            isSupervisor: surface?.poltergeistRole == .supervisor,
+            allowed: surface?.poltergeistWorkerMentions ?? false,
             target: target))
     }
 
