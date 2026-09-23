@@ -100,13 +100,55 @@ final class PersonaMenuBar: NSObject, NSMenuDelegate {
 
     /// The terminal the menu bar is about.
     ///
-    /// `keyWindow` is the focused one; `mainWindow` is the fallback for the
-    /// moments AppKit has no key window but the app is still frontmost. With
-    /// neither, `nil` -- and a `nil` target is not a silent failure here: the
-    /// submenu is built from `PersonaState.none`, which is the same "no
-    /// persona, nobody connected" it would show for a terminal that has none.
+    /// Chosen by `terminalWindow(ordered:key:main:isTerminal:isShowing:)`;
+    /// this only feeds it the app's real windows. With no terminal to be
+    /// about the answer is `nil`, and a `nil` target is not a silent failure:
+    /// `PersonaMenu` greys every row and says there is no terminal here
+    /// (task 588), and `MentionMenu` hides its switch.
     private static var focusedSurface: Ghostty.SurfaceView? {
-        let window = NSApp.keyWindow ?? NSApp.mainWindow
+        let window = terminalWindow(
+            ordered: NSApp.orderedWindows,
+            key: NSApp.keyWindow,
+            main: NSApp.mainWindow,
+            isTerminal: { $0.windowController is BaseTerminalController },
+            isShowing: { $0.isVisible && !$0.isMiniaturized && $0.isOnActiveSpace })
         return (window?.windowController as? BaseTerminalController)?.focusedSurface
+    }
+
+    /// Which window the menu bar's per-terminal rows should be about.
+    ///
+    /// **Why not `keyWindow ?? mainWindow`** (task 589). That only falls back
+    /// when there is no key window at all. With the role library -- or any
+    /// other window of this app that is not a terminal -- in front, the key
+    /// window exists and is not a terminal; and being an ordinary titled
+    /// window it is the main window too, so the fallback falls back to the
+    /// same thing. The rows then pointed at nobody while a terminal sat in
+    /// plain view right behind it.
+    ///
+    /// So the question asked is "is it a terminal", not "is it key":
+    ///
+    ///   1. the key window, if it is a terminal -- the ordinary case, and
+    ///      unchanged;
+    ///   2. else the main window, if it is a terminal (a panel can be key
+    ///      without being main, leaving the terminal behind it main);
+    ///   3. else the frontmost terminal that is actually on screen here --
+    ///      the one behind whatever is in front. Only a showing one: a
+    ///      minimised terminal, or one on another Space, is not one the user
+    ///      is looking at, and acting on it would be worse than a grey row;
+    ///   4. else none.
+    ///
+    /// Generic over the window type, and every question about a window is
+    /// passed in, so it can be decided -- and checked -- without an app or a
+    /// window server.
+    static func terminalWindow<W: AnyObject>(
+        ordered: [W],
+        key: W?,
+        main: W?,
+        isTerminal: (W) -> Bool,
+        isShowing: (W) -> Bool
+    ) -> W? {
+        if let key, isTerminal(key) { return key }
+        if let main, isTerminal(main) { return main }
+        return ordered.first { isTerminal($0) && isShowing($0) }
     }
 }

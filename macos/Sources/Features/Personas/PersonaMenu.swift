@@ -143,10 +143,11 @@ enum PersonaMenu {
         // half has to be done here.
         //
         // Reachable by a person, not only by a driver: the menu bar's copy
-        // is built against `NSApp.keyWindow ?? .mainWindow`, and with every
-        // window closed there is no terminal to be about. Finding "some"
-        // surface instead would be worse than a grey row -- it would act on
-        // a terminal the user is not looking at.
+        // is built against the terminal `PersonaMenuBar.terminalWindow`
+        // picks, and with every terminal closed, minimised or on another
+        // Space there is none to be about. Finding "some" surface instead
+        // would be worse than a grey row -- it would act on a terminal the
+        // user is not looking at.
         let actionable = target != nil
         if !actionable {
             menu.addItem(disabledNote(
