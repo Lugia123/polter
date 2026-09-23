@@ -1747,7 +1747,33 @@ pub fn open(parent: HWND) {
         SetWindowLongPtrW(win, GWLP_HWNDPARENT, owner.0 as isize);
     }
     if was_visible {
-        let _ = unsafe { SetForegroundWindow(win) };
+        // **Minimised is still "visible"** to `IsWindowVisible`, so a second
+        // click on a library the person minimised lands here. Restoring it
+        // first is the usual Windows idiom -- `SetForegroundWindow` is not
+        // documented to un-minimise anything -- and that is all it is here:
+        // task 587's W3 cell on the real machine is what will say whether a
+        // minimised library came back without it. Not measured yet.
+        let iconic = unsafe { IsIconic(win) }.as_bool();
+        if iconic {
+            let _ = unsafe { ShowWindow(win, SW_RESTORE) };
+        }
+        let asked = unsafe { SetForegroundWindow(win) }.as_bool();
+        // ⚠️ **Both halves of "did it come to the front", because they can
+        // disagree.** The return value is what Windows said about the request;
+        // who is in the foreground afterwards is what happened. A refused
+        // request is silent everywhere else, and this branch used to write
+        // nothing at all -- so on the machine a second click that raised the
+        // window and one that did nothing read the same.
+        let front = unsafe { GetForegroundWindow() } == win;
+        // process-wide: the role library window is one per process; it is not
+        // opened *for* a terminal window, only placed over one
+        crate::plogf!(
+            "[roles-ui] raised (already open): iconic_before={} restored={} set_foreground={} foreground_now={}",
+            iconic,
+            iconic && !unsafe { IsIconic(win) }.as_bool(),
+            asked,
+            front
+        );
         return;
     }
 
