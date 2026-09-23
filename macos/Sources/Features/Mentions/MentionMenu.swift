@@ -28,7 +28,7 @@ import AppKit
 /// hatch bolted onto the other.
 @MainActor
 enum MentionMenu {
-    static let itemIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.poltergeistDirectMentions")
+    static let itemIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.directMentions")
 
     /// The item, ready to be added to a context menu.
     ///

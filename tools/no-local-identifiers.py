@@ -192,6 +192,14 @@ KNOWN = {
     # which is the thing that must not leak.
     "macos/Sources/Features/Personas/PersonaMenu.swift":
         "NSUserInterfaceItemIdentifier value namespaced by the bundle id",
+    # The third of these, and the reason the paragraph above applies to it
+    # exactly: the direct-mentions switch sits in the same three menus as the
+    # role item, next to identifiers spelled the same way. It was briefly
+    # spelled with upstream's prefix to get past this gate -- which is the
+    # "private convention" the note above warns about, arrived at from the
+    # other direction.
+    "macos/Sources/Features/Mentions/MentionMenu.swift":
+        "NSUserInterfaceItemIdentifier value namespaced by the bundle id",
     "macos/Sources/Features/About/AboutView.swift": "links to the fork's public repository",
     # The download link. A README that tells people where to get the releases
     # has to name the repository, and the repository's name is the fork's
