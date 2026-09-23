@@ -4445,6 +4445,12 @@ pub fn load(alloc_gpa: Allocator) !Config {
     try result.loadRecursiveFiles(alloc_gpa);
     try result.finalize();
 
+    // Polter fork addition (task 728), not upstream: a font-family that is
+    // not installed is said in the diagnostics rather than only logged.
+    // Here rather than in `finalize`, which every test's config passes
+    // through and which should not depend on the machine's fonts.
+    try fontpkg.family_check.diagnose(&result);
+
     return result;
 }
 

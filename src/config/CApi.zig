@@ -88,6 +88,14 @@ export fn ghostty_config_finalize(self: *Config) void {
     self.finalize() catch |err| {
         log.err("error finalizing config err={}", .{err});
     };
+
+    // Polter fork addition (task 728), not upstream: the macOS and Windows
+    // hosts load their configuration through here rather than through
+    // `Config.load`, so the check that a font-family is installed is made
+    // here too. The hosts read the diagnostics after this returns.
+    @import("../font/main.zig").family_check.diagnose(self) catch |err| {
+        log.err("error checking font-family err={}", .{err});
+    };
 }
 
 export fn ghostty_config_get(
@@ -312,6 +320,33 @@ export fn ghostty_config_open_path() String {
 const Diagnostic = extern struct {
     message: [*:0]const u8 = "",
 };
+
+test "ghostty_config_finalize says a font-family that is not installed (task 728)" {
+    // The wiring, not the rule: the macOS and Windows hosts load their
+    // configuration through this export, so a check that only `Config.load`
+    // made would never reach either of them. CoreText only, because it is
+    // the backend this can be run against here.
+    const options = @import("../font/main.zig").options;
+    if (options.backend != .coretext and options.backend != .coretext_freetype)
+        return error.SkipZigTest;
+
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    try cfg.@"font-family".parseCLI(cfg._arena.?.allocator(), "NoSuchFontFamilyB1Xyz");
+
+    ghostty_config_finalize(&cfg);
+
+    // Read back the way the hosts read it -- `ghostty_config_get_diagnostic`
+    // is the text their error window shows, key and all.
+    var found = false;
+    for (0..ghostty_config_diagnostics_count(&cfg)) |i| {
+        const shown = std.mem.span(ghostty_config_get_diagnostic(&cfg, @intCast(i)).message);
+        if (std.mem.startsWith(u8, shown, "font-family: ") and
+            std.mem.indexOf(u8, shown, "\"NoSuchFontFamilyB1Xyz\"") != null) found = true;
+    }
+    try testing.expect(found);
+}
 
 test "ghostty_config_get: bool" {
     const testing = std.testing;

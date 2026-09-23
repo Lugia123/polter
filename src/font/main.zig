@@ -30,6 +30,10 @@ pub const Descriptor = discovery.Descriptor;
 pub const Discover = discovery.Discover;
 pub const Library = library.Library;
 
+// Polter fork addition (task 728), not upstream: says a configured
+// font-family that is not installed where the user sees it.
+pub const family_check = @import("family_check.zig");
+
 // If we're targeting wasm then we export some wasm APIs.
 comptime {
     if (builtin.target.cpu.arch.isWasm()) {
