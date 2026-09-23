@@ -683,6 +683,13 @@ pub const TerminalInfo = struct {
     /// Null on the same terms as `quiet_ms`.
     rounds: ?u16 = null,
 
+    /// Whether the sampling behind a watch is known to be running: see
+    /// `Bus.Sampling`. Null, and left out, for a terminal nobody watches.
+    /// ⚠️ `watching` is the mark; this is whether anything is measuring
+    /// under it -- the two were one field, and a mark with nothing under
+    /// it read as a watch (task 731).
+    sampling: ?Bus.Sampling = null,
+
     /// Which window and which tab this terminal is in, as two opaque keys.
     ///
     /// **Only equality means anything.** They are not handles, nothing may
@@ -1453,6 +1460,10 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
     if (info.rounds) |r| {
         try s.objectField("rounds");
         try s.write(r);
+    }
+    if (info.sampling) |state| {
+        try s.objectField("sampling");
+        try s.write(@tagName(state));
     }
 
     // Same reason as `quiet_ms`/`rounds` above: absent means "nobody said",

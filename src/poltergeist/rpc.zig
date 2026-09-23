@@ -6974,6 +6974,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         // nevertheless been reported, which is a claim about a watch that
         // is over.
         .rounds = if (bus.observed(id)) e.rounds else null,
+        .sampling = bus.samplingOf(id),
     };
 }
 
@@ -8681,6 +8682,76 @@ test "a terminal nobody is watching is still listed, with where it is" {
     try testing.expectEqual(Bus.Role.none, stranger.role);
     try testing.expect(stranger.quiet_ms == null);
     try testing.expect(stranger.rounds == null);
+}
+
+test "terminal_list says whether anything is measuring under a watch (task 731)" {
+    // `watching` is the mark. What is under it arrives later from the IO
+    // thread, or never, and the listing has to be able to say which.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const open = [_]Place{.{ .id = worker, .cwd = "/work", .title = "worker" }};
+    var fake: FakeHost = .{ .open = &open };
+
+    const listed = struct {
+        fn one(a: std.mem.Allocator, bus: *Bus, host: Host) !wire.TerminalInfo {
+            const res = try dispatch(a, bus, host, term(boss), .terminal_list);
+            for (res.terminals) |info| if (info.id == worker) return info;
+            return error.NotListed;
+        }
+    }.one;
+
+    // Not watched: nothing to say. (`testBus` starts with this one watched,
+    // so it is let go first.)
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = false } });
+    try testing.expect((try listed(alloc, &b, fake.host())).sampling == null);
+
+    // Just watched: asked for, not confirmed -- not a fault.
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = true } });
+    const asked = try listed(alloc, &b, fake.host());
+    try testing.expect(asked.watching);
+    try testing.expectEqual(@as(?Bus.Sampling, .starting), asked.sampling);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, .{ .terminals = &.{asked} });
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"sampling\":\"starting\"") != null);
+
+    // The IO thread could not: still marked, and now said to be empty.
+    b.noteSampling(worker, false);
+    const failed = try listed(alloc, &b, fake.host());
+    try testing.expect(failed.watching);
+    try testing.expectEqual(@as(?Bus.Sampling, .failed), failed.sampling);
+
+    // Watched again, and this time the answer was lost on the way: the
+    // first heartbeat is proof enough, because only a running sampler
+    // sends one.
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = true } });
+    try testing.expectEqual(@as(?Bus.Sampling, .starting), (try listed(alloc, &b, fake.host())).sampling);
+    b.noteQuiet(worker, 1_000, 1_000);
+    try testing.expectEqual(@as(?Bus.Sampling, .running), (try listed(alloc, &b, fake.host())).sampling);
+
+    // A report is the same evidence.
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = true } });
+    const still: @import("Sampler.zig").Event = .{ .quiescent = .{
+        .quiet_ms = 180_000,
+        .silent_ms = 180_000,
+        .changed_rows = 0,
+        .total_rows = 24,
+    } };
+    _ = b.report(worker, still, 181_000);
+    try testing.expectEqual(@as(?Bus.Sampling, .running), (try listed(alloc, &b, fake.host())).sampling);
+
+    // And the answer itself, when it does arrive.
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = true } });
+    b.noteSampling(worker, true);
+    try testing.expectEqual(@as(?Bus.Sampling, .running), (try listed(alloc, &b, fake.host())).sampling);
+
+    // Let go: gone, and an answer arriving late does not bring it back.
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .set_watch = .{ .id = worker, .watch = false } });
+    b.noteSampling(worker, false);
+    try testing.expect((try listed(alloc, &b, fake.host())).sampling == null);
 }
 
 test "a terminal let go stops being sampled and stops having a quiet time (task 550)" {

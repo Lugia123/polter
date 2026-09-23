@@ -501,8 +501,21 @@ fn drainMailbox(
     const data = &cb.data;
 
     // If we're draining, we just drain the mailbox and return.
+    //
+    // ⚠️ **Draining discards, and a discarded request is one nobody is
+    // told was refused.** A watch is the one that matters: dropped here it
+    // left the bus marking a terminal watched with nothing sampling it, and
+    // no trace of it anywhere (task 731). So it is answered on the way out.
+    // Any request added to `termio.Message` whose sender waits on an
+    // answer has the same shape.
     if (self.flags.drain) {
-        while (mailbox.pop(global.io())) |msg| msg.deinit();
+        while (mailbox.pop(global.io())) |msg| {
+            switch (msg) {
+                .poltergeist_watch => |want| if (want) answerSampling(cb.io, false),
+                else => {},
+            }
+            msg.deinit();
+        }
         return;
     }
 
@@ -700,14 +713,41 @@ fn setQuiescenceWatch(
         if (!want) return;
         self.startQuiescence(io, cb) catch |err| {
             log.warn("poltergeist: could not start quiescence sampling err={}", .{err});
+            answerSampling(io, false);
+            return;
         };
+        answerSampling(io, true);
         return;
     };
+
+    // Answered even when nothing changes: the watch that asked has just
+    // been marked unconfirmed (`Bus.watch`), and saying nothing would
+    // leave it that way until the next heartbeat.
+    if (want) answerSampling(io, true);
 
     if (q.enabled == want) return;
     q.enabled = want;
     if (want) self.armQuiescence(cb);
     log.info("poltergeist: sampling {s}", .{if (want) "on" else "off"});
+}
+
+/// Tell the app whether the sampling it asked for is running (task 731).
+///
+/// Instant, like every other message this thread sends the app. One lost
+/// to a full mailbox leaves the watch reading `starting` -- unconfirmed --
+/// and the first heartbeat corrects it; it never reads as running when it
+/// is not (`Bus.Sampling`).
+fn answerSampling(io: *termio.Termio, started: bool) void {
+    // Dropped when the mailbox is full, and the loss is one the bus can
+    // carry: the watch stays `starting`, which is unconfirmed rather than
+    // wrong -- a running sampler's heartbeat confirms it, and a failed one
+    // is never read as running.
+    _ = io.surface_mailbox.app.push(.{
+        .poltergeist_sampling = .{
+            .from = io.surface_mailbox.surface.id,
+            .started = started,
+        },
+    }, .{ .instant = {} });
 }
 
 /// Whether a terminal should be sampled: what was last asked of this one,
@@ -1187,4 +1227,102 @@ test "a write delay pauses the drain, so the return is not written with the text
     try thread.drainMailbox(&cb);
     try testing.expect(thread.write_delay_active);
     try testing.expectEqual(@as(usize, 1), io.mailbox.spsc.queue.len);
+}
+
+test "a watch asked of a terminal whose IO thread has failed is answered, not dropped (task 731)" {
+    // When the IO thread fails to start -- a command that could not be run
+    // is the everyday case -- it stays up only to drain its mailbox, and it
+    // used to drain by discarding. A `poltergeist_watch` swallowed there is
+    // a terminal the bus has marked watched with nothing sampling it, and
+    // no word of it anywhere, not even a log line.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const App = @import("../App.zig");
+    const apprt = @import("../apprt.zig");
+
+    const io = try alloc.create(termio.Termio);
+    defer alloc.destroy(io);
+    io.* = undefined;
+    io.alloc = alloc;
+    io.mailbox = try .initSPSC(alloc);
+    defer io.mailbox.deinit(alloc);
+
+    // Only the id is read of the surface.
+    const surface = try alloc.create(@import("../Surface.zig"));
+    defer alloc.destroy(surface);
+    surface.* = undefined;
+    surface.id = 0x7310;
+
+    var rt_app: apprt.App = .{};
+    const queue = try App.Mailbox.Queue.create(alloc);
+    defer queue.destroy(alloc);
+    io.surface_mailbox = .{ .surface = surface, .app = .{ .rt_app = &rt_app, .mailbox = queue } };
+
+    var thread: Thread = try .init(alloc);
+    defer thread.deinit();
+    thread.flags.drain = true;
+
+    var cb: CallbackData = .{ .self = &thread, .io = io };
+    cb.data = undefined;
+
+    io.mailbox.send(.{ .poltergeist_watch = true }, null);
+    try thread.drainMailbox(&cb);
+
+    // Said back to the app, where `terminal_list` can say it.
+    try testing.expectEqual(@as(usize, 1), queue.len);
+    const said = queue.pop(global.io()).?;
+    try testing.expectEqual(@as(u64, 0x7310), said.poltergeist_sampling.from);
+    try testing.expect(!said.poltergeist_sampling.started);
+
+    // A request to stop needs no answer: nothing is waiting on one.
+    io.mailbox.send(.{ .poltergeist_watch = false }, null);
+    try thread.drainMailbox(&cb);
+    try testing.expectEqual(@as(usize, 0), queue.len);
+}
+
+test "a watch asked of a working IO thread is confirmed, every time it is asked (task 731)" {
+    // The ordinary case the answer has to cover as well: the bus marks every
+    // watch unconfirmed (`Bus.watch`), so a thread that answered only when
+    // sampling was newly started would leave a second watch -- a supervisor
+    // claiming a terminal the keybind had already put under watch -- reading
+    // `starting` until a heartbeat came.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const App = @import("../App.zig");
+    const apprt = @import("../apprt.zig");
+
+    const io = try alloc.create(termio.Termio);
+    defer alloc.destroy(io);
+    io.* = undefined;
+    io.alloc = alloc;
+    io.config.poltergeist_quiescence_ms = 180_000;
+    io.config.poltergeist_repeat_ms = 900_000;
+
+    const surface = try alloc.create(@import("../Surface.zig"));
+    defer alloc.destroy(surface);
+    surface.* = undefined;
+    surface.id = 0x7311;
+
+    var rt_app: apprt.App = .{};
+    const queue = try App.Mailbox.Queue.create(alloc);
+    defer queue.destroy(alloc);
+    io.surface_mailbox = .{ .surface = surface, .app = .{ .rt_app = &rt_app, .mailbox = queue } };
+
+    var thread: Thread = try .init(alloc);
+    defer thread.deinit();
+    var cb: CallbackData = .{ .self = &thread, .io = io };
+    cb.data = undefined;
+
+    thread.setQuiescenceWatch(io, &cb, true);
+    try testing.expectEqual(@as(usize, 1), queue.len);
+    try testing.expect(queue.pop(global.io()).?.poltergeist_sampling.started);
+
+    // Already sampling: asked again, answered again.
+    thread.setQuiescenceWatch(io, &cb, true);
+    try testing.expectEqual(@as(usize, 1), queue.len);
+    try testing.expect(queue.pop(global.io()).?.poltergeist_sampling.started);
+
+    // Stopping is not answered.
+    thread.setQuiescenceWatch(io, &cb, false);
+    try testing.expectEqual(@as(usize, 0), queue.len);
 }

@@ -371,6 +371,11 @@ pub const Entry = struct {
     last_quiet_ms: u64 = 0,
     last_event_ms: ?u64 = null,
 
+    /// Whether the sampling a watch asked for is known to be running; see
+    /// `Sampling`. Only meaningful while the terminal is watched, and only
+    /// read through `samplingOf`, which says so.
+    sampling: ?Sampling = null,
+
     /// How many times the supervisor has been told this terminal is quiet
     /// since it last came back to work.
     ///
@@ -504,6 +509,10 @@ pub fn noteQuiet(self: *Bus, id: Id, quiet_ms: u64, now_ms: u64) void {
     // measurement back on a terminal nothing measures any more, and
     // `quietMs` would extend it by the wall clock from then on (task 550).
     if (e.role != .watched) return;
+
+    // Only a running sampler sends these, so one arriving confirms it even
+    // if the IO thread's own answer was dropped on the way (task 731).
+    e.sampling = .running;
     e.last_quiet_ms = quiet_ms;
     e.last_event_ms = now_ms;
 }
@@ -655,6 +664,51 @@ pub fn watch(self: *Bus, id: Id, by: ?Id) WatchError!void {
 
     e.role = .watched;
     e.duty = .on;
+
+    // Every watch goes with a request to the terminal's IO thread to
+    // sample (`Host.setWatching`, `Surface.setPoltergeistWatching`), and
+    // the answer comes back later -- or never. Unconfirmed until it does.
+    e.sampling = .starting;
+}
+
+/// What is known of the sampling behind a watch (task 731).
+///
+/// **Three states, not a failure flag.** The IO thread's answer is sent
+/// `.instant` and dropped when the app's mailbox is full, and a thread that
+/// has wedged sends nothing at all. With only a "failed" flag, either of
+/// those would read as fine. Here they read as `starting` -- not confirmed
+/// -- which is what they are.
+pub const Sampling = enum {
+    /// Asked for, not yet confirmed. Not a fault: it is what every watch is
+    /// for the moment after it is made.
+    starting,
+
+    /// The IO thread said it started, or something it measured has arrived
+    /// -- a heartbeat or a report, which only a running sampler sends.
+    running,
+
+    /// The IO thread said it could not: nothing is measuring this terminal,
+    /// and no quiet notice will come from it.
+    failed,
+};
+
+/// Record the IO thread's answer to a request to sample this terminal.
+///
+/// Recorded whatever the terminal's role, and read only through
+/// `samplingOf`, which is the one place that asks whether it is watched:
+/// an answer arriving after the watch it belonged to has ended is never
+/// shown, and the next watch starts from `starting` again (`watch`).
+pub fn noteSampling(self: *Bus, id: Id, started: bool) void {
+    const e = self.entries.getPtr(id) orelse return;
+    e.sampling = if (started) .running else .failed;
+}
+
+/// What is known of the sampling behind this terminal's watch, or null
+/// when it is not watched -- whatever is left over from an earlier watch.
+pub fn samplingOf(self: *const Bus, id: Id) ?Sampling {
+    const e = self.entries.get(id) orelse return null;
+    if (e.role != .watched) return null;
+    return e.sampling;
 }
 
 pub const WatchError = error{
@@ -848,6 +902,9 @@ pub fn report(
     // would give a released terminal a quiet time again -- one `quietMs`
     // then extends for as long as the window is open (task 550).
     if (e.role != .watched) return false;
+
+    // Evidence the sampler is running, on the same terms as a heartbeat.
+    e.sampling = .running;
 
     // Track the duration whatever we decide to do about telling anyone.
     // `terminal_list` reads this, and a terminal that is not being reported

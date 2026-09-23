@@ -218,6 +218,12 @@ S0 落地时有三处与上面的推导不一致，记在这里而不是偷偷�
 
 这条的代价是每终端每 5 秒一条 app mailbox 消息（`.instant`，满了就丢，下一拍再说一次）；换来的是那个外推的前提被真正满足，而不是被假设。
 
+**5. 「被 watch」和「有东西在采样」是两件事，现在分开报（task 731）。**
+
+`set_watch` / `terminal_open{watch}` 同步做完的只是两件事：在 bus 上打标记，以及往 IO 线程排一条 `poltergeist_watch`。采样到底起没起来，要等 IO 线程处理那条消息之后才知道——也可能永远不知道。所以 IO 线程每收到一条 `poltergeist_watch=true` 就回一条 `poltergeist_sampling{started}`，bus 为每个被 watch 的终端记 `Bus.Sampling` 三态：`starting`（请求了、还没确认）→ `running`（确认了，或者来过心跳/报告——只有跑着的采样器才发这些）/ `failed`（IO 线程说起不来）。`terminal_list` / `me` 把它作为 `sampling` 字段报出来。之所以要三态而不是一个失败标志：回报是 `.instant`，满了就丢；只有失败标志的话，丢掉的那一条会读成「正常」。
+
+⚠️ **IO 线程的 drain 模式会丢掉发给它的每一条消息。** IO 线程启动失败时（最常见的是命令没能起来），它只为了把邮箱清空而继续跑，`drainMailbox` 对每条消息直接 `deinit`，一条日志都不留。在 task 731 之前，`poltergeist_watch` 就是这样消失的：set_watch 回 ok，bus 标了 watched，什么都没在采样。现在 drain 路径会对 watch 请求回一条 `started=false`。**以后往 `termio.Message` 里加一条「发送方在等结果」的消息，都要想到 drain 模式下它会被静默吞掉。**
+
 ## 静止事件的定义与配置
 
 ### 事件字段只有四个

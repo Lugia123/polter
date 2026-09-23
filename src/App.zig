@@ -5691,6 +5691,13 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
                 msg.quiet_ms,
                 self.poltergeistElapsedMs(),
             ),
+            .poltergeist_sampling => |msg| {
+                if (!msg.started) log.warn(
+                    "poltergeist: sampling could not start for terminal 0x{x}; it is marked watched with nothing measuring it",
+                    .{msg.from},
+                );
+                self.poltergeist.noteSampling(msg.from, msg.started);
+            },
             .poltergeist_request => |p| self.poltergeistRequest(p),
             .poltergeist_alert => |line| self.poltergeistAlert(line),
             .redraw_surface => |surface| try self.redrawSurface(rt_app, surface),
@@ -6016,6 +6023,15 @@ pub const Message = union(enum) {
     poltergeist_quiet: struct {
         from: poltergeistpkg.Bus.Id,
         quiet_ms: u64,
+    },
+
+    /// A surface's IO thread answering a request to sample it: whether the
+    /// sampling is running. Sent for every such request, including the
+    /// ones a failed IO thread would otherwise have dropped unread, so
+    /// `terminal_list` can say a watch has nothing under it (task 731).
+    poltergeist_sampling: struct {
+        from: poltergeistpkg.Bus.Id,
+        started: bool,
     },
 
     /// A request from an agent, waiting on its connection thread for an
