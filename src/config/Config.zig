@@ -1555,6 +1555,37 @@ command: ?Command = null,
 /// Set it to zero to say nothing about silence.
 @"poltergeist-group-quiet-after": Duration = .{ .duration = 60 * std.time.ns_per_min },
 
+/// How long a watched terminal may go without calling a Polter tool before
+/// that is worth a line.
+///
+/// **A second clock, beside the screen's.** `poltergeist-quiescence-after`
+/// measures whether the screen has stopped changing, and a screen can keep
+/// changing after the work has stopped: an agent whose CLI hit a network
+/// error and sits in a retry loop redraws its countdown for ever, and reads
+/// as busy. An agent that is working calls tools. So this counts from the
+/// last one, and the line it produces -- `0x… no tool call 22m (screen
+/// changed 3s ago)` -- rides out in the supervisor's box, in the same line
+/// and on the same clock as the quiet reports (`poltergeist-notice-interval`),
+/// and again each further time this much has passed.
+///
+/// **A supervisor's own silence is shown on its tab**: the flag goes
+/// hollow. Its box is the one place it could not be told, since a stuck
+/// supervisor is exactly the one that does not read it.
+///
+/// **Arithmetic, not a verdict**, like every other line here. A worker
+/// waiting on a permission prompt, or sitting through a long build, calls
+/// nothing and is fine. The line says how long; reading the terminal says
+/// why.
+///
+/// Only counted from the first call: a terminal whose agent has never
+/// called a tool -- a plain shell, or an agent that never started -- is
+/// never reported by this. Traffic the sidecar makes on its own account is
+/// not a call; see `rpc.isAgentCall`.
+///
+/// Fifteen minutes by default. Set it to zero to switch it off, both the
+/// line and the tab.
+@"poltergeist-calls-silent-after": Duration = .{ .duration = 15 * std.time.ns_per_min },
+
 /// How much uncompacted conversation a group may carry before the
 /// supervisor is reminded to tidy it.
 ///

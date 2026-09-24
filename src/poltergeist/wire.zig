@@ -690,6 +690,14 @@ pub const TerminalInfo = struct {
     /// it read as a watch (task 731).
     sampling: ?Bus.Sampling = null,
 
+    /// How long since this terminal's agent last called a Polter tool.
+    /// Null, and left out, for one that never has -- a plain shell, or an
+    /// agent that has not started -- which is not the same answer as "a
+    /// long time". A second clock beside `quiet_ms`, not a refinement of
+    /// it: a screen stuck on a retry loop keeps changing and calls nothing.
+    /// See `Bus.Entry.last_call_ms`.
+    call_silent_ms: ?u64 = null,
+
     /// Which window and which tab this terminal is in, as two opaque keys.
     ///
     /// **Only equality means anything.** They are not handles, nothing may
@@ -1465,6 +1473,10 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
         try s.objectField("sampling");
         try s.write(@tagName(state));
     }
+    if (info.call_silent_ms) |ms| {
+        try s.objectField("call_silent_ms");
+        try s.write(ms);
+    }
 
     // Same reason as `quiet_ms`/`rounds` above: absent means "nobody said",
     // and a present `null` would invite a reader to compare against it.
@@ -1831,6 +1843,23 @@ test "an unwatched terminal is placed, but not measured" {
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"quiet_ms\""));
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"rounds\""));
     try testing.expect(std.mem.indexOf(u8, out, "\"quiet_ms\":90000") != null);
+}
+
+test "a terminal that has never called a tool sends no call_silent_ms, not zero" {
+    // Zero would say "called a tool this instant"; absent says it never
+    // has, which is the true answer for a plain shell.
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const list = [_]TerminalInfo{
+        .{ .id = 0x11 },
+        .{ .id = 0x22, .call_silent_ms = 1_320_000 },
+    };
+    try writeResponse(&w, .{ .terminals = &list });
+    const out = w.buffered();
+
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"call_silent_ms\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"call_silent_ms\":1320000") != null);
 }
 
 test "grouping reaches the wire, not just the in-memory Response (task 650)" {

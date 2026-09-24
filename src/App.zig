@@ -492,6 +492,8 @@ pub fn updateConfig(self: *App, rt_app: *apprt.App, config: *const Config) !void
         config.@"poltergeist-notice-interval".duration / std.time.ns_per_ms;
     self.poltergeist.config.stand_down_allowed =
         config.@"poltergeist-supervisor-stand-down";
+    self.poltergeist.config.calls_silent_after_ms =
+        config.@"poltergeist-calls-silent-after".duration / std.time.ns_per_ms;
 
     self.poltergeist_task_idle_ms =
         config.@"poltergeist-task-idle-after".duration / std.time.ns_per_ms;
@@ -585,8 +587,38 @@ fn poltergeistReport(
     // Before the hand-over, so anything worked out this pass rides out in
     // the same line rather than waiting a whole interval behind it.
     self.considerGroupNotes(now_ms);
+    _ = self.poltergeist.considerCalls(now_ms);
     self.considerWorkerNudge(from, event);
     self.deliverPoltergeistNotices(now_ms);
+}
+
+/// A moving screen has restated its quiet time (`Sampler.heartbeat`).
+///
+/// **This is the only thing that runs while a screen is moving**, and that
+/// is why it now does more than record the figure. The box is otherwise
+/// handed over when a quiet report arrives, and a terminal stuck printing
+/// retry countdowns never sends one -- so a call-silence line about it
+/// (`Bus.considerCalls`) would sit in the box with nothing to carry it,
+/// exactly while it matters. Delivery is still bounded by
+/// `poltergeist-notice-interval`, and an empty box interrupts nobody, so
+/// this changes when a waiting line goes out, never how often.
+///
+/// The tabs are redrawn for the same reason: a supervisor's hollow flag
+/// has to appear while everything around it is busy.
+///
+/// ⚠️ **Not a timer.** A window with nothing watched in it sends no
+/// heartbeats and no reports, and then nothing here runs -- the gap
+/// `considerGroupNotes` names, and the same one.
+fn poltergeistHeartbeat(
+    self: *App,
+    from: poltergeistpkg.Bus.Id,
+    quiet_ms: u64,
+) void {
+    const now_ms = self.poltergeistElapsedMs();
+    self.poltergeist.noteQuiet(from, quiet_ms, now_ms);
+    _ = self.poltergeist.considerCalls(now_ms);
+    self.deliverPoltergeistNotices(now_ms);
+    self.refreshPoltergeistTabs();
 }
 
 /// Remind one worker that printing is not reporting, once, when it stops.
@@ -2087,6 +2119,19 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
         } },
     };
 
+    // After, so a call that made this terminal a supervisor or put it under
+    // watch is counted on the entry it made. A supervisor's hollow flag
+    // (`Bus.TabMark.supervisor_silent`) is the one mark a call can change,
+    // so that is the one case that redraws the tabs: doing it on every
+    // request would walk every surface for nothing.
+    const now_ms = self.poltergeistElapsedMs();
+    const was_silent = if (caller.terminalId()) |id|
+        self.poltergeist.tabMark(id, now_ms, 0) == .supervisor_silent
+    else
+        false;
+    poltergeistpkg.rpc.noteCall(&self.poltergeist, caller, pending.request, now_ms);
+    if (was_silent) self.refreshPoltergeistTabs();
+
     pending.complete(global.io(), response);
 }
 
@@ -2594,6 +2639,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .sendKey = poltergeistSendKey,
         .performAction = poltergeistPerformAction,
         .quietMs = poltergeistQuiet,
+        .callSilentMs = poltergeistCallSilent,
         .openTerminals = poltergeistOpenTerminals,
         .openTerminal = poltergeistOpenTerminal,
         .configText = poltergeistConfigText,
@@ -3699,6 +3745,11 @@ fn poltergeistPersonaSlot(
 fn poltergeistQuiet(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) u64 {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.poltergeist.quietMs(id, self.poltergeistElapsedMs());
+}
+
+fn poltergeistCallSilent(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) ?u64 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.poltergeist.callSilentMs(id, self.poltergeistElapsedMs());
 }
 
 /// Every terminal on screen, with where it is and what it is called.
@@ -5686,11 +5737,7 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
             .close => |surface| self.closeSurface(surface),
             .surface_message => |msg| try self.surfaceMessage(msg.surface, msg.message),
             .poltergeist_report => |msg| self.poltergeistReport(msg.from, msg.event),
-            .poltergeist_quiet => |msg| self.poltergeist.noteQuiet(
-                msg.from,
-                msg.quiet_ms,
-                self.poltergeistElapsedMs(),
-            ),
+            .poltergeist_quiet => |msg| self.poltergeistHeartbeat(msg.from, msg.quiet_ms),
             .poltergeist_sampling => |msg| {
                 if (!msg.started) log.warn(
                     "poltergeist: sampling could not start for terminal 0x{x}; it is marked watched with nothing measuring it",

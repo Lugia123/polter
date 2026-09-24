@@ -335,6 +335,25 @@ either at zero says nothing.
 A group nobody has taken up gets no such line — there is nobody to tell.
 After a restart that is every group, until a supervisor takes one up.
 
+**A second clock, not about the screen.** A line can also carry
+
+    [poltergeist] 0x0000000000002222 no tool call 22m (screen changed 3s ago)
+
+which is how long since that terminal's agent last called a Polter tool. It
+exists because **a screen that keeps changing is not proof of work**: a CLI
+that hit a network error and sits retrying redraws its countdown for ever,
+never goes quiet, and never appears in a `quiet` clause — a supervisor once
+waited most of an hour on one of those. Read it as arithmetic like the rest:
+a worker waiting on a permission prompt, or running a forty-minute build,
+also calls nothing. It is a reason to `terminal_read`, never a reason on its
+own to close, restart or interrupt anything. `terminal_list` carries the same
+figure as `call_silent_ms`, absent for a terminal that has never called.
+Threshold `poltergeist-calls-silent-after`, zero to switch off.
+
+Your own silence cannot come to you — if you are stuck you would not read it —
+so it goes on your tab instead: your flag turns hollow, ⚑ to ⚐, for the person
+to see.
+
 Then:
 
 1. **Look.** `terminal_read` gives you the screen; `reading-a-terminal` is

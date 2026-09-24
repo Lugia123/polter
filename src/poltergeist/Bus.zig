@@ -376,6 +376,40 @@ pub const Entry = struct {
     /// read through `samplingOf`, which says so.
     sampling: ?Sampling = null,
 
+    /// When this terminal's agent last called a Polter tool, or null if it
+    /// never has; see `noteCall`.
+    ///
+    /// **A second clock, because the first one cannot see this.** Everything
+    /// else here is measured off the screen, and a screen that keeps
+    /// changing reads as work. An agent stuck in a retry loop -- a CLI that
+    /// hit `ENOTFOUND` and prints its retry countdown for ever -- has a
+    /// screen that keeps changing and has stopped working: on the night
+    /// this was written, a supervisor read "not quiet" off one of those for
+    /// the better part of an hour and waited on a dead worker. An agent
+    /// that is working calls tools; one in a loop calls none.
+    ///
+    /// Null and "a long time ago" are different answers and stay different:
+    /// a plain shell, or an agent that has not started yet, has never
+    /// spoken to Polter, and nothing about that says it stopped.
+    last_call_ms: ?u64 = null,
+
+    /// How long the calls had been silent when that was last put in the
+    /// box, rounded down to a whole threshold, so the next entry comes one
+    /// threshold later rather than on every tick. Zero when nothing has
+    /// been said since the last call.
+    silent_raised_ms: u64 = 0,
+
+    /// Whether the supervisor has a call-silence line about this terminal
+    /// it has not been shown; the `pending` of the second clock, and
+    /// counted the way `handed_over` counts the first.
+    ///
+    /// **Its own slot rather than another `NoticeKind`.** A kind overwrites
+    /// the kind before it, and the two things said here are not successive
+    /// states of one fact: "quiet 900s" and "no tool call 15m" can both be
+    /// true, and when only the second is, that difference is the news.
+    silent_pending: bool = false,
+    silent_handed: u8 = 0,
+
     /// How many times the supervisor has been told this terminal is quiet
     /// since it last came back to work.
     ///
@@ -424,6 +458,11 @@ pub const Config = struct {
     /// has finished can stop being one -- and stop being woken every
     /// interval for a box that will now always be empty.
     stand_down_allowed: bool = true,
+
+    /// How long a terminal may go without calling a Polter tool before
+    /// that is worth a line; `poltergeist-calls-silent-after`. Zero says
+    /// nothing about it at all. See `Entry.last_call_ms`.
+    calls_silent_after_ms: u64 = 15 * std.time.ms_per_min,
 };
 
 alloc: Allocator,
@@ -523,6 +562,85 @@ pub fn noteQuiet(self: *Bus, id: Id, quiet_ms: u64, now_ms: u64) void {
 pub fn observed(self: *const Bus, id: Id) bool {
     const e = self.entries.get(id) orelse return false;
     return e.last_event_ms != null;
+}
+
+/// Record that this terminal's agent has just called a Polter tool.
+///
+/// Only the calls an agent makes: the sidecar's own traffic is sorted out
+/// before this, by `rpc.noteCall`, because some of it carries on however
+/// dead the agent is. A terminal the bus has never registered is ignored,
+/// on the terms `noteQuiet` gives -- nobody is minding it, so there is
+/// nobody to tell.
+///
+/// A call ends the silence, so whatever was waiting in the box about it is
+/// no longer true and goes, the way `resumed` replaces a quiet report.
+pub fn noteCall(self: *Bus, id: Id, now_ms: u64) void {
+    const e = self.entries.getPtr(id) orelse return;
+    e.last_call_ms = now_ms;
+    e.silent_raised_ms = 0;
+    e.silent_pending = false;
+    e.silent_handed = 0;
+}
+
+/// How long it has been since this terminal last called a Polter tool, or
+/// null if it never has. See `Entry.last_call_ms` for why those differ.
+pub fn callSilentMs(self: *const Bus, id: Id, now_ms: u64) ?u64 {
+    const e = self.entries.get(id) orelse return null;
+    const last = e.last_call_ms orelse return null;
+    return now_ms -| last;
+}
+
+/// Whether this terminal's calls have been silent for at least
+/// `calls_silent_after_ms`. Never, when that is zero.
+fn callsSilent(self: *const Bus, id: Id, now_ms: u64) bool {
+    const after = self.config.calls_silent_after_ms;
+    if (after == 0) return false;
+    const silent = self.callSilentMs(id, now_ms) orelse return false;
+    return silent >= after;
+}
+
+/// Put a line in the box for every watched terminal whose calls have gone
+/// silent for another whole `calls_silent_after_ms`: once at the
+/// threshold, again at twice it, and so on, until a call arrives.
+///
+/// **Arithmetic, not a verdict**, on the terms `report` keeps about a
+/// screen. An agent waiting on a permission prompt, or sitting through a
+/// forty-minute build, calls nothing and is fine; one stuck retrying a
+/// network error calls nothing and is not. The line says how long, and the
+/// supervisor goes and reads the terminal.
+///
+/// **Not driven by the screen, and not gated on it.** The case this exists
+/// for is the one where the screen keeps changing, so asking whether the
+/// screen is quiet first would be asking the question that already gave
+/// the wrong answer.
+///
+/// Watched terminals only, and not one that has clocked off: the same
+/// terminals the quiet reports are about, for the same reasons. A
+/// supervisor's own silence cannot go in its own box -- if it is stuck,
+/// nobody reads it -- and is shown on its tab instead; see `tabMark`.
+///
+/// Answers whether anything new went in.
+pub fn considerCalls(self: *Bus, now_ms: u64) bool {
+    const after = self.config.calls_silent_after_ms;
+    if (after == 0) return false;
+
+    var raised = false;
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const e = kv.value_ptr;
+        if (e.role != .watched) continue;
+        if (e.duty == .off) continue;
+        const last = e.last_call_ms orelse continue;
+
+        const silent = now_ms -| last;
+        if (silent < e.silent_raised_ms + after) continue;
+
+        e.silent_raised_ms = silent - silent % after;
+        e.silent_pending = true;
+        e.silent_handed = 0;
+        raised = true;
+    }
+    return raised;
 }
 
 /// Name the supervisor. Naming a new one steps the previous one down.
@@ -966,6 +1084,19 @@ pub const TabMark = enum {
     /// The terminal minding the others.
     supervisor,
 
+    /// The terminal minding the others, which has not called a Polter tool
+    /// for `calls_silent_after_ms`.
+    ///
+    /// **On the tab, because there is nowhere else it can go.** A worker's
+    /// silence goes in its supervisor's box; a supervisor's would go in its
+    /// own, and a supervisor that is stuck is the one terminal guaranteed
+    /// not to read it. The tab is read by the person, without asking
+    /// anybody. The hollow flag is the filled one the way the hollow disc
+    /// is the filled disc: the same terminal, not moving. Arithmetic like
+    /// every other mark here -- a supervisor waiting on a long build is
+    /// silent too.
+    supervisor_silent,
+
     /// The ring is the hold. It is the same shape family as the plain
     /// marks on purpose: a held terminal is still doing one of the two
     /// things any watched terminal does, and the ring says the hold is on
@@ -983,6 +1114,7 @@ pub const TabMark = enum {
             .held_on_duty => "\u{25C9} ",
             .held_quiet => "\u{25CE} ",
             .supervisor => "\u{2691} ",
+            .supervisor_silent => "\u{2690} ",
         };
     }
 };
@@ -1023,7 +1155,10 @@ pub fn tabMark(self: *const Bus, id: Id, now_ms: u64, quiet_after_ms: u64) TabMa
     const e = self.entries.get(id) orelse return .none;
     return switch (e.role) {
         .none => .none,
-        .supervisor => .supervisor,
+        .supervisor => if (self.callsSilent(id, now_ms))
+            .supervisor_silent
+        else
+            .supervisor,
         .watched => switch (e.duty) {
             .off => .off_duty,
             .on => if (self.quietMs(id, now_ms) >= quiet_after_ms)
@@ -1148,55 +1283,99 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take) ?[]u8 {
     var it = self.entries.iterator();
     while (it.next()) |kv| {
         const e = kv.value_ptr;
-        const kind = e.pending orelse continue;
+        if (e.pending == null and !e.silent_pending) continue;
 
         // Not this supervisor's terminal. Left in the box for whoever is
         // minding it, rather than dropped.
         const owner = e.watched_by orelse to;
         if (owner != to) continue;
 
-        total += 1;
+        const id = kv.key_ptr.*;
 
-        switch (how) {
-            .consume => {
-                e.pending = null;
-                e.handed_over = 0;
-            },
-            .hand_over => {
-                e.handed_over +|= 1;
-                if (e.handed_over >= max_hand_overs) {
+        if (e.pending) |kind| {
+            total += 1;
+
+            switch (how) {
+                .consume => {
                     e.pending = null;
                     e.handed_over = 0;
-                }
-            },
+                },
+                .hand_over => {
+                    e.handed_over +|= 1;
+                    if (e.handed_over >= max_hand_overs) {
+                        e.pending = null;
+                        e.handed_over = 0;
+                    }
+                },
+            }
+
+            if (listed < max_listed) {
+                const sep = if (listed == 0) " " else ", ";
+                const mark = w.end;
+                const written = switch (kind) {
+                    .quiescent, .still_quiescent => w.print(
+                        "{s}0x{x:0>16} quiet {d}s",
+                        .{ sep, id, self.quietMs(id, now_ms) / std.time.ms_per_s },
+                    ),
+                    .resumed => w.print(
+                        "{s}0x{x:0>16} back at work",
+                        .{ sep, id },
+                    ),
+                };
+
+                // Out of room. What is written already stands -- wound back
+                // to the end of the last whole entry, because a failed
+                // `print` fills the buffer before it reports, and half of
+                // `0x2222 quiet 90s` is an id nobody can look up. The rest
+                // is covered by the count below.
+                written catch {
+                    w.end = mark;
+                    break;
+                };
+                listed += 1;
+            }
         }
 
-        if (listed >= max_listed) continue;
+        // The second clock, as its own entry: see `considerCalls`. The
+        // screen's figure rides along in brackets when there is one,
+        // because "no tool call, and the screen changed three seconds ago"
+        // is the case this exists for and should read as that without the
+        // supervisor having to go and compare two entries.
+        if (e.silent_pending) {
+            total += 1;
 
-        const sep = if (listed == 0) " " else ", ";
-        const mark = w.end;
-        const written = switch (kind) {
-            .quiescent, .still_quiescent => w.print(
-                "{s}0x{x:0>16} quiet {d}s",
-                .{ sep, kv.key_ptr.*, self.quietMs(kv.key_ptr.*, now_ms) / std.time.ms_per_s },
-            ),
-            .resumed => w.print(
-                "{s}0x{x:0>16} back at work",
-                .{ sep, kv.key_ptr.* },
-            ),
-        };
+            switch (how) {
+                .consume => {
+                    e.silent_pending = false;
+                    e.silent_handed = 0;
+                },
+                .hand_over => {
+                    e.silent_handed +|= 1;
+                    if (e.silent_handed >= max_hand_overs) {
+                        e.silent_pending = false;
+                        e.silent_handed = 0;
+                    }
+                },
+            }
 
-        // Out of room. What is written already stands -- wound back to
-        // the end of the last whole entry, because a failed `print` fills
-        // the buffer before it reports, and half of `0x2222 quiet 90s` is
-        // an id nobody can look up. The rest is covered by the count
-        // below, and the `pending` flags are cleared either way: they have
-        // been accounted for.
-        written catch {
-            w.end = mark;
-            break;
-        };
-        listed += 1;
+            if (listed < max_listed) {
+                const sep = if (listed == 0) " " else ", ";
+                const mark = w.end;
+                const silent_min = (self.callSilentMs(id, now_ms) orelse 0) / std.time.ms_per_min;
+                const written = if (self.observed(id)) w.print(
+                    "{s}0x{x:0>16} no tool call {d}m (screen changed {d}s ago)",
+                    .{ sep, id, silent_min, self.quietMs(id, now_ms) / std.time.ms_per_s },
+                ) else w.print(
+                    "{s}0x{x:0>16} no tool call {d}m",
+                    .{ sep, id, silent_min },
+                );
+                written catch {
+                    w.end = mark;
+                    break;
+                };
+                listed += 1;
+            }
+        }
     }
 
     // The supervisor's own line, after the terminals and before the count
@@ -1849,6 +2028,7 @@ test "every mark but none has a marker, and none has nothing" {
         .held_on_duty,
         .held_quiet,
         .supervisor,
+        .supervisor_silent,
     }) |m| {
         try testing.expect(m.prefix().len > 0);
         // Trailing space, because it sits in front of a title.
@@ -2465,4 +2645,192 @@ test "the worker-mentions switch is the user's, a supervisor's, and dies with th
     try testing.expect(!b.workerMentions(0x1));
     try b.addSupervisor(0x1);
     try testing.expect(!b.workerMentions(0x1));
+}
+
+// -- the call-silence clock ---------------------------------------------------
+
+/// A third terminal beside `worker`, for the control that must stay quiet.
+const busy: Id = 0x3333;
+
+/// Run the bus from `from_ms` to `to_ms` the way the app does while screens
+/// are moving: every five seconds each of `moving` restates a small quiet
+/// time (`noteQuiet`, the heartbeat), and the call clock is looked at.
+/// `busy`, if it is among them, also calls a tool every five minutes.
+fn runMoving(b: *Bus, moving: []const Id, from_ms: u64, to_ms: u64) void {
+    var t = from_ms;
+    while (t <= to_ms) : (t += 5 * std.time.ms_per_s) {
+        for (moving) |id| {
+            b.noteQuiet(id, 3 * std.time.ms_per_s, t);
+            if (id == busy and t % (5 * std.time.ms_per_min) == 0) b.noteCall(id, t);
+        }
+        _ = b.considerCalls(t);
+    }
+}
+
+test "a moving screen with no tool call reaches the supervisor; one that keeps calling does not" {
+    // The night this was written: a worker's CLI hit ENOTFOUND and sat
+    // retrying, its screen never still, and the supervisor was told nothing
+    // for most of an hour. Both terminals here have screens that never stop
+    // -- neither is ever reported quiet -- and only the calls differ.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    try b.watch(busy, boss);
+    b.noteCall(worker, 0);
+    b.noteCall(busy, 0);
+
+    runMoving(&b, &.{ worker, busy }, 0, 16 * std.time.ms_per_min);
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 16 * std.time.ms_per_min, &buf) orelse
+        return error.TestExpectedNotice;
+
+    // The positive control, as the words the supervisor reads.
+    try testing.expect(std.mem.indexOf(
+        u8,
+        line,
+        "0x0000000000002222 no tool call 16m (screen changed 3s ago)",
+    ) != null);
+
+    // The negative control: the terminal that kept calling is not named.
+    // Without this, "reports everybody" and "reports the right one" read
+    // the same.
+    try testing.expect(std.mem.indexOf(u8, line, "3333") == null);
+
+    // And it came from the calls, not the screen: nothing here was ever
+    // still long enough to be a quiet report.
+    try testing.expect(std.mem.indexOf(u8, line, " quiet ") == null);
+}
+
+test "a terminal that has never called a tool is not reported as silent" {
+    // A plain shell under watch, or an agent that never started. Never
+    // having called is "not known", not "a long time ago".
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    try b.watch(busy, boss);
+    b.noteCall(busy, 0);
+
+    // `busy` called once and then stopped, so the box has something true
+    // in it and the assertion about `worker` is not about an empty box.
+    runMoving(&b, &.{worker}, 0, 60 * std.time.ms_per_min);
+
+    try testing.expect(b.callSilentMs(worker, 60 * std.time.ms_per_min) == null);
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 60 * std.time.ms_per_min, &buf) orelse
+        return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "3333 no tool call 60m") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "2222") == null);
+}
+
+test "a threshold of zero says nothing about calls, in the box or on the tab" {
+    var b: Bus = .init(testing.allocator, .{ .calls_silent_after_ms = 0 });
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    b.noteCall(worker, 0);
+    b.noteCall(boss, 0);
+
+    runMoving(&b, &.{worker}, 0, 3 * 60 * std.time.ms_per_min);
+
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 3 * 60 * std.time.ms_per_min, &buf) == null);
+    try testing.expectEqual(
+        TabMark.supervisor,
+        b.tabMark(boss, 3 * 60 * std.time.ms_per_min, 1000),
+    );
+}
+
+test "the silence is said again a threshold later, and a call ends it" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    b.noteCall(worker, 0);
+
+    var buf: [255]u8 = undefined;
+
+    runMoving(&b, &.{worker}, 0, 15 * std.time.ms_per_min);
+    const first = b.drain(boss, 15 * std.time.ms_per_min, &buf) orelse
+        return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, first, "2222 no tool call 15m") != null);
+
+    // Read, and nothing new until another whole threshold has passed.
+    runMoving(&b, &.{worker}, 15 * std.time.ms_per_min + 5000, 29 * std.time.ms_per_min);
+    try testing.expect(b.drain(boss, 29 * std.time.ms_per_min, &buf) == null);
+
+    runMoving(&b, &.{worker}, 29 * std.time.ms_per_min + 5000, 30 * std.time.ms_per_min);
+    const second = b.drain(boss, 30 * std.time.ms_per_min, &buf) orelse
+        return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, second, "2222 no tool call 30m") != null);
+
+    // A line that is waiting when a call arrives is no longer true, and
+    // goes; the clock starts from the call.
+    runMoving(&b, &.{worker}, 30 * std.time.ms_per_min + 5000, 45 * std.time.ms_per_min);
+    b.noteCall(worker, 45 * std.time.ms_per_min);
+    try testing.expect(b.drain(boss, 45 * std.time.ms_per_min, &buf) == null);
+
+    runMoving(&b, &.{worker}, 45 * std.time.ms_per_min, 60 * std.time.ms_per_min);
+    const third = b.drain(boss, 60 * std.time.ms_per_min, &buf) orelse
+        return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, third, "2222 no tool call 15m") != null);
+}
+
+test "a clocked off terminal is not reported for not calling" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    try b.watch(busy, boss);
+    b.noteCall(worker, 0);
+    b.noteCall(busy, 0);
+    try b.clockOff(worker, .supervisor);
+
+    runMoving(&b, &.{}, 0, 20 * std.time.ms_per_min);
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 20 * std.time.ms_per_min, &buf) orelse
+        return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "3333 no tool call 20m") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "2222") == null);
+}
+
+test "a silent supervisor's flag goes hollow, and a call fills it again" {
+    // Its own box is the one place this cannot go: a stuck supervisor is
+    // the one terminal that would not read it.
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    b.noteCall(boss, 0);
+
+    const t15 = 15 * std.time.ms_per_min;
+    try testing.expectEqual(TabMark.supervisor, b.tabMark(boss, t15 - 1, 1000));
+    try testing.expectEqual(TabMark.supervisor_silent, b.tabMark(boss, t15, 1000));
+
+    // And not in its own box, where nobody would see it.
+    _ = b.considerCalls(t15);
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, t15, &buf) == null);
+
+    b.noteCall(boss, t15 + 1000);
+    try testing.expectEqual(TabMark.supervisor, b.tabMark(boss, t15 + 1000, 1000));
+}
+
+test "a supervisor that has never called keeps its flag" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try testing.expectEqual(
+        TabMark.supervisor,
+        b.tabMark(boss, 10 * 60 * std.time.ms_per_min, 1000),
+    );
 }

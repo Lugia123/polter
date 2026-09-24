@@ -4577,6 +4577,11 @@ pub const Host = struct {
         /// How long that terminal's screen has been unchanged.
         quietMs: *const fn (ctx: *anyopaque, id: Bus.Id) u64,
 
+        /// How long since that terminal's agent last called a tool, or null
+        /// if it never has (`Bus.callSilentMs`). Through the host for the
+        /// reason `quietMs` is: the host has the clock.
+        callSilentMs: *const fn (ctx: *anyopaque, id: Bus.Id) ?u64,
+
         /// Start or stop sampling a terminal's screen.
         ///
         /// Separate from the bus entry because they are separate facts: the
@@ -5045,6 +5050,10 @@ pub const Host = struct {
         return self.vtable.quietMs(self.ctx, id);
     }
 
+    fn callSilentMs(self: Host, id: Bus.Id) ?u64 {
+        return self.vtable.callSilentMs(self.ctx, id);
+    }
+
     fn openTerminals(self: Host, alloc: std.mem.Allocator) anyerror![]const Place {
         return self.vtable.openTerminals(self.ctx, alloc);
     }
@@ -5381,6 +5390,105 @@ fn roleWriteFailure(err: anyerror) wire.Response {
 pub fn arrived(bus: *Bus, host: Host, who: Bus.Caller) void {
     const id = who.terminalId() orelse return;
     host.vtable.agentArrived(host.ctx, bus, id);
+}
+
+/// Whether a request of this kind is an agent calling a tool, as opposed to
+/// the sidecar talking to Polter on its own account.
+///
+/// **This list is the whole of what `Bus.considerCalls` can see, and one
+/// wrong answer blinds it.** The sidecar keeps a `persona_wait` open on a
+/// second connection for as long as the process lives (`cli/mcp.zig`,
+/// `notifier`), re-sent at least every 250ms when the host answers early --
+/// and it carries on whether or not the agent above it is doing anything.
+/// Counted, it would keep every clock fresh and a terminal stuck in a retry
+/// loop would never be reported, which is the only case this exists for.
+///
+/// The three that are not calls:
+///
+/// - `persona_wait`: the notifier's long poll, and the slot process's.
+/// - `persona_slot`: asked once by a slot process when it starts.
+/// - `persona_face`: asked by the sidecar every time the CLI lists its
+///   tools. It is also a tool an agent can call, and here the two cannot be
+///   told apart, so an agent calling it on purpose is not counted either.
+///   Missing one real call costs one refresh; counting the sidecar's costs
+///   the signal.
+///
+/// ⚠️ **Exhaustive, with no `else`, on purpose.** A method added to
+/// `Method` does not compile until somebody has said which side it is on.
+/// Defaulting it to "a call" would be the silent failure this file keeps
+/// out: the next piece of background traffic added to the sidecar would
+/// quietly switch the whole thing off.
+pub fn isAgentCall(method: Method) bool {
+    return switch (method) {
+        .persona_wait,
+        .persona_slot,
+        .persona_face,
+        => false,
+
+        .me,
+        .terminal_list,
+        .notices,
+        .group_members,
+        .group_set_brief,
+        .notify_user,
+        .session_recall,
+        .terminal_read,
+        .terminal_send,
+        .clock_out,
+        .clock_in,
+        .set_quiescence_threshold,
+        .set_watch,
+        .skill_read,
+        .group_create,
+        .group_destroy,
+        .group_add,
+        .group_remove,
+        .group_compact,
+        .group_list,
+        .group_post,
+        .group_read,
+        .group_history,
+        .plugin_list,
+        .plugin_configure,
+        .plugin_test,
+        .config_get,
+        .terminal_capabilities,
+        .terminal_open,
+        .role_list,
+        .role_put,
+        .role_delete,
+        .role_clis,
+        .role_launch,
+        .terminal_action,
+        .terminal_actions,
+        .terminal_key,
+        .terminal_keys,
+        .terminal_answer_prompt,
+        .terminal_layout,
+        .stand_down,
+        .become_supervisor,
+        .task_create,
+        .task_edit,
+        .task_assign,
+        .task_close,
+        .task_cancel,
+        .task_progress,
+        .task_list,
+        .task_history,
+        => true,
+    };
+}
+
+/// A request from `who` has been carried out: if it was the agent calling a
+/// tool, start its call-silence clock again (`Bus.noteCall`).
+///
+/// Called after `dispatch` rather than before it, so that the call which
+/// made a terminal a supervisor, or had it put under watch, is counted on
+/// the entry that call created. A plugin is not a terminal and has no clock.
+pub fn noteCall(bus: *Bus, who: Bus.Caller, method: Method, now_ms: u64) void {
+    const id = who.terminalId() orelse return;
+    if (!isAgentCall(method)) return;
+    bus.noteCall(id, now_ms);
 }
 
 pub fn dispatch(
@@ -6975,6 +7083,10 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         // is over.
         .rounds = if (bus.observed(id)) e.rounds else null,
         .sampling = bus.samplingOf(id),
+
+        // Null for a terminal that has never called a tool, which is not
+        // the same answer as a long time ago; see `Bus.Entry.last_call_ms`.
+        .call_silent_ms = host.callSilentMs(id),
     };
 }
 
@@ -7572,6 +7684,7 @@ const FakeHost = struct {
     compacted: ?struct { group: []const u8, through: u64, summary: []const u8, by: Bus.Id } = null,
     read_group: ?[]const u8 = null,
     quiet_ms: u64 = 0,
+    call_silent_ms: ?u64 = null,
 
     /// What the last `group_history` asked for, and what the fake says
     /// about there being older still.
@@ -7752,6 +7865,7 @@ const FakeHost = struct {
             .openTerminal = openTerminal,
             .configText = configText,
             .quietMs = quietMs,
+            .callSilentMs = callSilentMs,
             .openTerminals = openTerminals,
             .setWatching = setWatching,
             .stoodDown = stoodDown,
@@ -8344,6 +8458,11 @@ const FakeHost = struct {
         return self.quiet_ms;
     }
 
+    fn callSilentMs(ctx: *anyopaque, _: Bus.Id) ?u64 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.call_silent_ms;
+    }
+
     fn openTerminals(
         ctx: *anyopaque,
         alloc: std.mem.Allocator,
@@ -8832,6 +8951,53 @@ test "me works for a terminal that supervises nothing" {
     try testing.expectEqual(Bus.Role.watched, res.me.role);
     try testing.expectEqual(@as(u64, 4242), res.me.quiet_ms);
     try testing.expect(res.me.watching);
+}
+
+test "me carries how long since the last tool call, through describe as terminal_list does" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    var never: FakeHost = .{};
+    const a = try dispatch(testing.allocator, &b, never.host(), term(worker), .me);
+    try testing.expect(a.me.call_silent_ms == null);
+
+    var silent: FakeHost = .{ .call_silent_ms = 1_320_000 };
+    const c = try dispatch(testing.allocator, &b, silent.host(), term(worker), .me);
+    try testing.expectEqual(@as(?u64, 1_320_000), c.me.call_silent_ms);
+}
+
+test "the sidecar's own traffic does not keep a stuck agent's clock fresh" {
+    // The sidecar holds a `persona_wait` open for as long as it lives and
+    // re-sends it at least every quarter second when answered early, and
+    // it does that whether or not the agent above it is doing anything.
+    // Here `worker` is stuck: its screen moves (heartbeats) and all that
+    // reaches Polter from its terminal is the sidecar. `other` is working:
+    // the same screen, the same sidecar, and a real call every five
+    // minutes. Only `worker` may be named.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.watch(other, boss);
+
+    noteCall(&b, term(worker), .group_read, 0);
+    noteCall(&b, term(other), .group_read, 0);
+
+    var t: u64 = 0;
+    const end = 16 * std.time.ms_per_min;
+    while (t <= end) : (t += 5 * std.time.ms_per_s) {
+        for ([_]Bus.Id{ worker, other }) |id| {
+            b.noteQuiet(id, 2 * std.time.ms_per_s, t);
+            noteCall(&b, term(id), .persona_wait, t);
+            noteCall(&b, term(id), .persona_face, t);
+            noteCall(&b, term(id), .persona_slot, t);
+        }
+        if (t % (5 * std.time.ms_per_min) == 0) noteCall(&b, term(other), .task_progress, t);
+        _ = b.considerCalls(t);
+    }
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, end, &buf) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "0x0000000000002222 no tool call 16m") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "3333") == null);
 }
 
 test "a terminal nothing has sampled reports no duration, not a huge one" {
