@@ -266,7 +266,14 @@ struct PersonaMenuTests {
         #expect(menu.items.first?.title == String(localized: "There is no terminal here to change"))
         #expect(menu.items.first?.isEnabled == false)
 
-        for row in menu.items where !row.isSeparatorItem {
+        // Every row but one: the library is about the roles themselves, not
+        // about this terminal, so it stays reachable with no terminal at all
+        // -- `theLibraryIsAlwaysReachable` is the other half of that pair.
+        // It arrived with the library (63ab92741) while this loop still said
+        // "every row", and the two have contradicted each other since: mac
+        // tests run in the app and nobody had run them.
+        let library = String(localized: "Role Library...")
+        for row in menu.items where !row.isSeparatorItem && row.title != library {
             #expect(!row.isEnabled, "\(row.title) is still clickable with nothing to act on")
         }
     }
