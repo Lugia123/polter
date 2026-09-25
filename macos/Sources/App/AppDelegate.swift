@@ -408,6 +408,12 @@ class AppDelegate: NSObject,
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(keyboardSelectionDidChange(_:)),
+            name: NSTextInputContext.keyboardSelectionDidChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(ghosttyBellDidRing(_:)),
             name: .ghosttyBellDidRing,
             object: nil
@@ -790,6 +796,11 @@ class AppDelegate: NSObject,
         ] as? Ghostty.Config else { return }
 
         ghosttyConfigDidChange(config: config)
+    }
+
+    @MainActor @objc private func keyboardSelectionDidChange(_ notification: Notification) {
+        syncMenuShortcuts(ghostty.config)
+        TerminalController.all.forEach { $0.relabelTabs() }
     }
 
     @objc private func ghosttyBellDidRing(_ notification: Notification) {
@@ -1508,13 +1519,12 @@ extension AppDelegate {
 
             return .terminateLater
         } else {
-            let alert = NSAlert()
-            alert.messageText = String(localized: "You have \(controllersNeedConfirmation.count) windows with running processes. Do you want to review these windows before quitting?", comment: "应用级提醒框／Dock 菜单")
-            alert.informativeText = String(localized: "If you don't review your windows, any running processes will be terminated", comment: "应用级提醒框／Dock 菜单")
-            alert.addButton(withTitle: String(localized: "Review Windows...", comment: "应用级提醒框／Dock 菜单"))
-            alert.addButton(withTitle: String(localized: "Terminate Processes", comment: "应用级提醒框／Dock 菜单"))
-            alert.addButton(withTitle: String(localized: "Cancel", comment: "应用级提醒框／Dock 菜单"))
-            alert.alertStyle = .warning
+            // `String(...)` so the key is `%@`, the one the table has: an
+            // `Int` interpolated here makes the key `%lld`, which the table
+            // never matches. Keep the literal on one line.
+            let alert = NSAlert.reviewWindowsAlert(
+                messageText: String(localized: "You have \(String(controllersNeedConfirmation.count)) windows with running processes. Do you want to review these windows before quitting?", comment: "应用级提醒框／Dock 菜单")
+            )
 
             switch alert.runModal() {
             case .alertFirstButtonReturn:

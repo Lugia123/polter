@@ -57,6 +57,15 @@ for a check whose whole job is to notice new cases.
   across lines for width, a string quietly stops being asked for -- so the
   two places that were long enough to want it carry a comment saying they
   have to stay on one line.
+- **Whether an interpolated value makes the key `%@`.** Only a `String`
+  does. An `Int` makes it `%lld`, so `"\(n) panes"` looks up
+  `%lld panes` and never finds the `%@ panes` this file tells you to
+  write -- measured by dumping `String.LocalizationValue`, not read off a
+  doc. This file cannot see a type, so it assumes `%@` throughout; the
+  convention that makes that true is to interpolate `\(String(n))`.
+- **Text a function returns.** `return "Deny"` reaches a `Button` as a
+  `String` the call cannot trace back to a literal, so it is invisible here
+  however this file's patterns are widened.
 - **Text that reaches the screen without passing any of the calls named
   above.** A `String` handed to something this does not list is invisible
   here. `KeybindsModel.note` was exactly that -- four sentences returned
@@ -85,11 +94,22 @@ ZH_DIR = MAC / "App" / "zh-Hans.lproj"
 # English next to menu items from the xib that were in Chinese. The window
 # title of the shortcuts window did the same. Every one of these puts text on
 # screen; which framework drew it is not the question being asked.
+#
+# **Then the same gap one layer further in: the text handed to our own
+# helpers.** `confirmClose(messageText: "Close Tab?", ...)` and
+# `confirmButtonTitle: String = "Close"` put words on screen exactly as
+# `addButton(withTitle:)` does, one call later -- and a gate that only knows
+# the AppKit call sees an argument that arrives already a `String`. Every
+# close-confirmation dialog in the app shipped in English next to Chinese
+# buttons that way, twenty-four literals, while this file was green. So a
+# parameter label ending in `Text` or `Title` counts as a visible call, both
+# where a literal is passed to it and where it is the parameter's default.
 CALL = re.compile(
     r'\b(Text|Button|Label|TextField|SecureField|Toggle|Picker|'
     r'navigationTitle|help|confirmationDialog|alert|'
     r'NSMenuItem\(title:|NSMenu\(title:|addItem\(withTitle:|'
-    r'addButton\(withTitle:|setAccessibilityLabel)\(?\s*"'
+    r'addButton\(withTitle:|setAccessibilityLabel|'
+    r'[a-z]\w*(?:Text|Title):(?:\s*String\s*=)?)\(?\s*"'
 )
 
 # `x.messageText = "..."`, `window.title = "..."`: assignment, not a call, so
@@ -269,6 +289,14 @@ def self_test() -> None:
     assert list(visible_literals(sample)), "probe: a visible literal was not matched"
     assert not list(visible_literals('foo("Update Available")')), \
         "probe: a non-visible call was matched"
+
+    # Text handed to a helper by label, and a helper's own default.
+    for sample in ('confirmClose(messageText: "Close Tab?",',
+                   '        informativeText: "The tab will close.",',
+                   '        confirmButtonTitle: String = "Close",'):
+        assert list(visible_literals(sample)), f"probe: not seen -- {sample!r}"
+    assert not list(visible_literals('let key: String = "TerminalDefaultLevel"')), \
+        "probe: a plain string constant was read as a visible label"
 
     # The one that broke this file: a literal whose interpolation contains a
     # string of its own. A `"[^"]*"` scan reads it as ending at the third

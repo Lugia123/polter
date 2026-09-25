@@ -36,8 +36,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GENERIC = ROOT / "src" / "renderer" / "generic.zig"
 
-RELEASE = re.compile(r"\bswap_chain\.releaseFrame\s*\(")
-ERRDEFER_RELEASE = re.compile(r"errdefer\s+(?P<guard>if\s*\([^)]*\)\s*)?self\.swap_chain\.releaseFrame")
+# ⚠️ **The optional unwrap and the receiver are both spellings, not shapes.**
+# Upstream 0.8 made `swap_chain` optional, so the release turned into
+# `self.swap_chain.?.releaseFrame()`. The previous pattern required the two
+# names to be adjacent, so it matched nothing -- and this check does not go
+# quiet when `RELEASE` finds nothing, it reports "nothing releases the frame
+# at all". **It accused the one tree where the release was correct**: the
+# permit is returned on the first line of `frameCompleted`, ahead of the
+# health send, which is exactly what this file exists to require.
+#
+# The failure to learn from is not the missed `.?`. It is that the probes
+# below were written in the same spelling as the code, so the self-test went
+# on passing while the reader had gone blind -- a probe that shares the
+# subject's spelling cannot detect a spelling change. The probes now include
+# the optional form and the bare receiver, so the next rename of this shape
+# is caught by the self-test rather than by a reader who happens to look.
+#
+# Both are written as optional: `self.` because the errdefer in `drawFrame`
+# drops it today, `.?` because the field is optional today. Neither should be
+# *required*, since either could come back.
+RELEASE = re.compile(r"\bswap_chain(?:\.\?)?\.releaseFrame\s*\(")
+ERRDEFER_RELEASE = re.compile(
+    r"errdefer\s+(?P<guard>if\s*\([^)]*\)\s*)?(?:self\.)?swap_chain(?:\.\?)?\.releaseFrame"
+)
 COMPLETE = re.compile(r"defer\s+frame_ctx\.complete\s*\(")
 BLOCKING_SEND = re.compile(r"\.forever\b")
 
@@ -91,15 +112,29 @@ def main() -> int:
     bad_late = '_ = self.surface_mailbox.push(.{ .h = h }, .{ .forever = {} });\nself.swap_chain.releaseFrame();'
     good_late = 'self.swap_chain.releaseFrame();\n_ = self.surface_mailbox.push(.{ .h = h }, .{ .forever = {} });'
 
+    # The same two defects in the spellings the tree has actually used, so a
+    # rename of the receiver or the unwrap fails *here* instead of turning
+    # the reader into one that reports "nothing releases the frame at all"
+    # about a correct tree. `bad_late_opt` is the shape that went undetected.
+    bad_double_bare = "errdefer swap_chain.releaseFrame();\nvar frame_ctx = x;\ndefer frame_ctx.complete(sync);"
+    good_double_bare = "var owned = true;\nerrdefer if (owned) swap_chain.releaseFrame();\nvar frame_ctx = x;\nowned = false;\ndefer frame_ctx.complete(sync);"
+    bad_late_opt = '_ = self.surface_mailbox.push(.{ .h = h }, .{ .forever = {} });\nself.swap_chain.?.releaseFrame();'
+    good_late_opt = 'self.swap_chain.?.releaseFrame();\n_ = self.surface_mailbox.push(.{ .h = h }, .{ .forever = {} });'
+
     probe_ok = (
         double_release(bad_double)
         and not double_release(good_double)
         and late_release(bad_late)
         and not late_release(good_late)
+        and double_release(bad_double_bare)
+        and not double_release(good_double_bare)
+        and late_release(bad_late_opt)
+        and not late_release(good_late_opt)
     )
     print(
         "probe self-test:",
-        "OK (a double release and a late release are both told apart)"
+        "OK (a double release and a late release are told apart, in the bare, "
+        "`self.` and optional-unwrap spellings)"
         if probe_ok
         else "FAILED -- the reader is broken, so nothing below means anything",
     )

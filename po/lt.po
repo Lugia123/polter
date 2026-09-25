@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-14 03:06+0800\n"
-"PO-Revision-Date: 2026-02-20 12:13+0100\n"
+"POT-Creation-Date: 2026-09-21 20:21+0800\n"
+"PO-Revision-Date: 2026-08-13 08:25+0200\n"
 "Last-Translator: Tadas Lotuzas <tdslot@gmail.com>\n"
 "Language-Team: Language LT\n"
 "Language: LT\n"
@@ -78,7 +78,7 @@ msgstr "Ignoruoti"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:439 src/apprt/gtk/ui/1.5/window.blp:318
-#: windows/host/src/menu.rs:409
+#: windows/host/src/menu.rs:407
 msgid "Reload Configuration"
 msgstr "Iš naujo įkelti konfigūraciją"
 
@@ -92,8 +92,8 @@ msgstr "⚠️ Naudojate Ghostty derinimo versiją! Našumas bus sumažintas."
 msgid "Ghostty: Terminal Inspector"
 msgstr "Ghostty: terminalo inspektorius"
 
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:93
-#: windows/host/src/menu.rs:232
+#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:104
+#: windows/host/src/menu.rs:241
 msgid "Find…"
 msgstr "Rasti…"
 
@@ -123,18 +123,18 @@ msgstr ""
 "slinkti per turinį, tačiau jokie įvesties įvykiai nebus siunčiami "
 "veikiančiai programai."
 
-#: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/ctxmenu.rs:114
-#: windows/host/src/menu.rs:272
+#: src/apprt/gtk/ui/1.2/surface.blp:112 windows/host/src/ctxmenu.rs:125
+#: windows/host/src/menu.rs:281
 msgid "Read-only"
 msgstr "Tik skaitymui"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:89 windows/host/src/menu.rs:242
+#: windows/host/src/ctxmenu.rs:100 windows/host/src/menu.rs:251
 msgid "Copy"
 msgstr "Kopijuoti"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:321 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:90 windows/host/src/menu.rs:243
+#: windows/host/src/ctxmenu.rs:101 windows/host/src/menu.rs:252
 msgid "Paste"
 msgstr "Įklijuoti"
 
@@ -148,11 +148,11 @@ msgstr "Išvalyti"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:338 src/apprt/gtk/ui/1.5/window.blp:286
 msgid "Reset"
-msgstr "Atstatyti"
+msgstr "Nustatyti iš naujo"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:345 src/apprt/gtk/ui/1.5/window.blp:250
 msgid "Split"
-msgstr "Padalinti"
+msgstr "Padalyti"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:253
 msgid "Change Title…"
@@ -160,31 +160,31 @@ msgstr "Keisti pavadinimą…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:353 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:110 windows/host/src/menu.rs:224
+#: windows/host/src/ctxmenu.rs:121 windows/host/src/menu.rs:233
 msgid "Split Up"
-msgstr "Padalinti aukštyn"
+msgstr "Padalyti aukštyn"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:359 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:109 windows/host/src/menu.rs:223
+#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:232
 msgid "Split Down"
-msgstr "Padalinti žemyn"
+msgstr "Padalyti žemyn"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:365 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:108 windows/host/src/menu.rs:222
+#: windows/host/src/ctxmenu.rs:119 windows/host/src/menu.rs:231
 msgid "Split Left"
-msgstr "Padalinti kairėn"
+msgstr "Padalyti kairėn"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:371 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:107 windows/host/src/menu.rs:221
+#: windows/host/src/ctxmenu.rs:118 windows/host/src/menu.rs:230
 msgid "Split Right"
-msgstr "Padalinti dešinėn"
+msgstr "Padalyti dešinėn"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:226
+#: src/apprt/gtk/ui/1.2/surface.blp:377 windows/host/src/menu.rs:235
 msgid "Close Split"
-msgstr ""
+msgstr "Uždaryti padalijimą"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:383
 msgid "Tab"
@@ -197,32 +197,32 @@ msgstr "Keisti kortelės pavadinimą…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
-#: src/input/command.zig:427 windows/host/src/ctxmenu.rs:95
-#: windows/host/src/menu.rs:202 windows/host/src/strip.rs:1658
+#: src/input/command.zig:427 windows/host/src/ctxmenu.rs:106
+#: windows/host/src/menu.rs:210 windows/host/src/strip.rs:1658
 msgid "New Tab"
 msgstr "Nauja kortelė"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:396 src/apprt/gtk/ui/1.5/window.blp:242
-#: src/input/command.zig:668 windows/host/src/ctxmenu.rs:101
-#: windows/host/src/menu.rs:227 windows/host/src/strip.rs:1325
+#: src/input/command.zig:668 windows/host/src/ctxmenu.rs:112
+#: windows/host/src/menu.rs:236 windows/host/src/strip.rs:1325
 msgid "Close Tab"
 msgstr "Uždaryti kortelę"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:433
+#: src/apprt/gtk/ui/1.2/surface.blp:403 windows/host/src/menu.rs:431
 msgid "Window"
 msgstr "Langas"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:215
 msgid "Change Window Title…"
-msgstr ""
+msgstr "Keisti lango pavadinimą…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:201
+#: src/input/command.zig:421 windows/host/src/menu.rs:209
 msgid "New Window"
 msgstr "Naujas langas"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:416 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:685 windows/host/src/menu.rs:228
+#: src/input/command.zig:685 windows/host/src/menu.rs:237
 msgid "Close Window"
 msgstr "Uždaryti langą"
 
@@ -232,11 +232,11 @@ msgstr "Konfigūracija"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:427 src/apprt/gtk/ui/1.5/window.blp:306
 msgid "Open Configuration in OS Editor"
-msgstr ""
+msgstr "Atidaryti konfigūraciją sistemos redaktoriuje"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:433 src/apprt/gtk/ui/1.5/window.blp:312
 msgid "Open Configuration in New Window"
-msgstr ""
+msgstr "Atidaryti konfigūraciją naujame lange"
 
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:5
 msgid "Leave blank to restore the default title."
@@ -258,13 +258,13 @@ msgstr "Peržiūrėti atidarytas korteles"
 msgid "Main Menu"
 msgstr "Pagrindinis meniu"
 
-#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:163
-#: windows/host/src/menu.rs:261 windows/host/src/strip.rs:1665
+#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:175
+#: windows/host/src/menu.rs:270 windows/host/src/strip.rs:1665
 msgid "Command Palette"
 msgstr "Komandų paletė"
 
-#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:113
-#: windows/host/src/menu.rs:282
+#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:124
+#: windows/host/src/menu.rs:290
 msgid "Terminal Inspector"
 msgstr "Terminalo inspektorius"
 
@@ -282,27 +282,27 @@ msgstr "Vykdyti komandą…"
 
 #: src/apprt/gtk/class/application.zig:1805
 msgid "The keybind was revoked by the system."
-msgstr ""
+msgstr "Sistema atšaukė spartųjį klavišą."
 
 #: src/apprt/gtk/class/application.zig:1807
 msgid "The keybind was denied by the system."
-msgstr ""
+msgstr "Sistema neleido naudoti sparčiojo klavišo."
 
 #: src/apprt/gtk/class/application.zig:1818
 msgid "Global keybind unavailable"
-msgstr ""
+msgstr "Visuotinis spartusis klavišas nepasiekiamas"
 
 #: src/apprt/gtk/class/application.zig:2318
 msgid "Export Terminal IO Events"
-msgstr ""
+msgstr "Eksportuoti terminalo įvesties ir išvesties įvykius"
 
 #: src/apprt/gtk/class/application.zig:2321
 msgid "Export"
-msgstr ""
+msgstr "Eksportuoti"
 
 #: src/apprt/gtk/class/application.zig:2868
 msgid "Editing configuration file"
-msgstr ""
+msgstr "Redaguojamas konfigūracijos failas"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
 msgid ""
@@ -321,12 +321,12 @@ msgstr ""
 "turinys."
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2310
+#: windows/host/src/main.rs:2324
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "Įspėjimas: galimai nesaugus įklijavimas"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2303
+#: windows/host/src/main.rs:2317
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -339,17 +339,17 @@ msgid "Quit Ghostty?"
 msgstr "Išeiti iš Ghostty?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:2977
+#: windows/host/src/tabs.rs:3005
 msgid "Close Tab?"
 msgstr "Uždaryti kortelę?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:2978
+#: windows/host/src/tabs.rs:3006
 msgid "Close Window?"
 msgstr "Uždaryti langą?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:2979
+#: windows/host/src/tabs.rs:3007
 msgid "Close Split?"
 msgstr "Uždaryti padalijimą?"
 
@@ -358,17 +358,17 @@ msgid "All terminal sessions will be terminated."
 msgstr "Visos terminalo sesijos bus nutrauktos."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:2985
+#: windows/host/src/tabs.rs:3013
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "Visos terminalo sesijos šioje kortelėje bus nutrauktos."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:2986
+#: windows/host/src/tabs.rs:3014
 msgid "All terminal sessions in this window will be terminated."
 msgstr "Visos terminalo sesijos šiame lange bus nutrauktos."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:2987
+#: windows/host/src/tabs.rs:3015
 msgid "The currently running process in this split will be terminated."
 msgstr "Šiuo metu vykdomas procesas šiame padalijime bus nutrauktas."
 
@@ -396,7 +396,7 @@ msgstr "Keisti kortelės pavadinimą"
 
 #: src/apprt/gtk/class/title_dialog.zig:229 windows/host/src/prompt.rs:69
 msgid "Change Window Title"
-msgstr ""
+msgstr "Keisti lango pavadinimą"
 
 #: src/apprt/gtk/class/window.zig:1159
 msgid "Reloaded the configuration"
@@ -414,523 +414,555 @@ msgstr "Iškarpinė išvalyta"
 msgid "Ghostty Developers"
 msgstr "Ghostty kūrėjai"
 
-#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:112
+#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:123
 msgid "Reset Terminal"
-msgstr ""
+msgstr "Nustatyti terminalą iš naujo"
 
 #: src/input/command.zig:150
 msgid "Reset the terminal to a clean state."
-msgstr ""
+msgstr "Atkurti pradinę švarią terminalo būseną."
 
 #: src/input/command.zig:155
 msgid "Copy to Clipboard"
-msgstr ""
+msgstr "Kopijuoti į iškarpinę"
 
 #: src/input/command.zig:156
 msgid ""
 "Copy the selected text to the clipboard in both plain and styled formats."
-msgstr ""
+msgstr "Kopijuoti pažymėtą tekstą į iškarpinę paprastu ir formatuotu pavidalu."
 
 #: src/input/command.zig:159
 msgid "Copy Selection as Plain Text to Clipboard"
-msgstr ""
+msgstr "Kopijuoti pažymėtą tekstą į iškarpinę kaip paprastąjį tekstą"
 
 #: src/input/command.zig:160
 msgid "Copy the selected text as plain text to the clipboard."
-msgstr ""
+msgstr "Kopijuoti pažymėtą tekstą į iškarpinę kaip paprastąjį tekstą."
 
 #: src/input/command.zig:163
 msgid "Copy Selection as ANSI Sequences to Clipboard"
-msgstr ""
+msgstr "Kopijuoti pažymėtą tekstą į iškarpinę kaip ANSI sekas"
 
 #: src/input/command.zig:164
 msgid "Copy the selected text as ANSI escape sequences to the clipboard."
-msgstr ""
+msgstr "Kopijuoti pažymėtą tekstą į iškarpinę kaip ANSI valdymo sekas."
 
 #: src/input/command.zig:167
 msgid "Copy Selection as HTML to Clipboard"
-msgstr ""
+msgstr "Kopijuoti pažymėtą tekstą į iškarpinę kaip HTML"
 
 #: src/input/command.zig:168
 msgid "Copy the selected text as HTML to the clipboard."
-msgstr ""
+msgstr "Kopijuoti pažymėtą tekstą į iškarpinę kaip HTML."
 
 #: src/input/command.zig:173
 msgid "Copy URL to Clipboard"
-msgstr ""
+msgstr "Kopijuoti URL į iškarpinę"
 
 #: src/input/command.zig:174
 msgid "Copy the URL under the cursor to the clipboard."
-msgstr ""
+msgstr "Kopijuoti po žymekliu esantį URL į iškarpinę."
 
 #: src/input/command.zig:179
 msgid "Copy Terminal Title to Clipboard"
-msgstr ""
+msgstr "Kopijuoti terminalo pavadinimą į iškarpinę"
 
 #: src/input/command.zig:180
 msgid ""
 "Copy the terminal title to the clipboard. If the terminal title is not set "
 "this has no effect."
 msgstr ""
+"Kopijuoti terminalo pavadinimą į iškarpinę. Jei terminalo pavadinimas "
+"nenustatytas, nieko nebus daroma."
 
 #: src/input/command.zig:185
 msgid "Paste from Clipboard"
-msgstr ""
+msgstr "Įklijuoti iš iškarpinės"
 
 #: src/input/command.zig:186
 msgid "Paste the contents of the main clipboard."
-msgstr ""
+msgstr "Įklijuoti pagrindinės iškarpinės turinį."
 
 #: src/input/command.zig:191
 msgid "Paste from Selection"
-msgstr ""
+msgstr "Įklijuoti iš pažymėjimo"
 
 #: src/input/command.zig:192
 msgid "Paste the contents of the selection clipboard."
-msgstr ""
+msgstr "Įklijuoti pažymėjimo iškarpinės turinį."
 
 #: src/input/command.zig:197
 msgid "Start Search"
-msgstr ""
+msgstr "Pradėti paiešką"
 
 #: src/input/command.zig:198
 msgid "Start a search if one isn't already active."
-msgstr ""
+msgstr "Pradėti paiešką, jei ji dar nevykdoma."
 
 #: src/input/command.zig:203
 msgid "Search Selection"
-msgstr ""
+msgstr "Ieškoti pažymėto teksto"
 
 #: src/input/command.zig:204
 msgid "Start a search for the current text selection."
-msgstr ""
+msgstr "Pradėti šiuo metu pažymėto teksto paiešką."
 
 #: src/input/command.zig:209
 msgid "End Search"
-msgstr ""
+msgstr "Baigti paiešką"
 
 #: src/input/command.zig:210
 msgid "End the current search if any and hide any GUI elements."
 msgstr ""
+"Baigti vykdomą paiešką, jei tokia yra, ir paslėpti visus grafinės sąsajos "
+"elementus."
 
 #: src/input/command.zig:215
 msgid "Next Search Result"
-msgstr ""
+msgstr "Kitas paieškos rezultatas"
 
 #: src/input/command.zig:216
 msgid "Navigate to the next search result, if any."
-msgstr ""
+msgstr "Pereiti prie kito paieškos rezultato, jei toks yra."
 
 #: src/input/command.zig:219
 msgid "Previous Search Result"
-msgstr ""
+msgstr "Ankstesnis paieškos rezultatas"
 
 #: src/input/command.zig:220
 msgid "Navigate to the previous search result, if any."
-msgstr ""
+msgstr "Pereiti prie ankstesnio paieškos rezultato, jei toks yra."
 
 #: src/input/command.zig:225
 msgid "Increase Font Size"
-msgstr ""
+msgstr "Padidinti šrifto dydį"
 
 #: src/input/command.zig:226
 msgid "Increase the font size by 1 point."
-msgstr ""
+msgstr "Padidinti šrifto dydį 1 punktu."
 
 #: src/input/command.zig:231
 msgid "Decrease Font Size"
-msgstr ""
+msgstr "Sumažinti šrifto dydį"
 
 #: src/input/command.zig:232
 msgid "Decrease the font size by 1 point."
-msgstr ""
+msgstr "Sumažinti šrifto dydį 1 punktu."
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:257
+#: src/input/command.zig:237 windows/host/src/menu.rs:266
 msgid "Reset Font Size"
-msgstr ""
+msgstr "Atkurti šrifto dydį"
 
 #: src/input/command.zig:238
 msgid "Reset the font size to the default."
-msgstr ""
+msgstr "Atkurti numatytąjį šrifto dydį."
 
 #: src/input/command.zig:243
 msgid "Clear Screen"
-msgstr ""
+msgstr "Išvalyti ekraną"
 
 #: src/input/command.zig:244
 msgid "Clear the screen and scrollback."
-msgstr ""
+msgstr "Išvalyti ekraną ir slinkimo istoriją."
 
-#: src/input/command.zig:249 windows/host/src/ctxmenu.rs:91
-#: windows/host/src/menu.rs:251
+#: src/input/command.zig:249 windows/host/src/ctxmenu.rs:102
+#: windows/host/src/menu.rs:260
 msgid "Select All"
-msgstr ""
+msgstr "Pažymėti viską"
 
 #: src/input/command.zig:250
 msgid "Select all text on the screen."
-msgstr ""
+msgstr "Pažymėti visą tekstą ekrane."
 
 #: src/input/command.zig:255
 msgid "Scroll to Top"
-msgstr ""
+msgstr "Slinkti į viršų"
 
 #: src/input/command.zig:256
 msgid "Scroll to the top of the screen."
-msgstr ""
+msgstr "Slinkti į ekrano viršų."
 
 #: src/input/command.zig:261
 msgid "Scroll to Bottom"
-msgstr ""
+msgstr "Slinkti į apačią"
 
 #: src/input/command.zig:262
 msgid "Scroll to the bottom of the screen."
-msgstr ""
+msgstr "Slinkti į ekrano apačią."
 
 #: src/input/command.zig:267
 msgid "Scroll to Selection"
-msgstr ""
+msgstr "Slinkti iki pažymėto teksto"
 
 #: src/input/command.zig:268
 msgid "Scroll to the selected text."
-msgstr ""
+msgstr "Slinkti iki pažymėto teksto."
 
 #: src/input/command.zig:273
 msgid "Scroll Page Up"
-msgstr ""
+msgstr "Slinkti puslapiu aukštyn"
 
 #: src/input/command.zig:274
 msgid "Scroll the screen up by a page."
-msgstr ""
+msgstr "Paslinkti ekraną vienu puslapiu aukštyn."
 
 #: src/input/command.zig:279
 msgid "Scroll Page Down"
-msgstr ""
+msgstr "Slinkti puslapiu žemyn"
 
 #: src/input/command.zig:280
 msgid "Scroll the screen down by a page."
-msgstr ""
+msgstr "Paslinkti ekraną vienu puslapiu žemyn."
 
 #: src/input/command.zig:286
 msgid "Copy Screen to Temporary File and Copy Path"
-msgstr ""
+msgstr "Įrašyti ekrano turinį į laikinąjį failą ir kopijuoti kelią"
 
 #: src/input/command.zig:287
 msgid ""
 "Copy the screen contents to a temporary file and copy the path to the "
 "clipboard."
 msgstr ""
+"Įrašyti ekrano turinį į laikinąjį failą ir nukopijuoti jo kelią į iškarpinę."
 
 #: src/input/command.zig:291
 msgid "Copy Screen to Temporary File and Paste Path"
-msgstr ""
+msgstr "Įrašyti ekrano turinį į laikinąjį failą ir įklijuoti kelią"
 
 #: src/input/command.zig:292
 msgid ""
 "Copy the screen contents to a temporary file and paste the path to the file."
-msgstr ""
+msgstr "Įrašyti ekrano turinį į laikinąjį failą ir įklijuoti jo kelią į failą."
 
 #: src/input/command.zig:296
 msgid "Copy Screen to Temporary File and Open"
-msgstr ""
+msgstr "Įrašyti ekrano turinį į laikinąjį failą ir atidaryti"
 
 #: src/input/command.zig:297
 msgid "Copy the screen contents to a temporary file and open it."
-msgstr ""
+msgstr "Įrašyti ekrano turinį į laikinąjį failą ir jį atidaryti."
 
 #: src/input/command.zig:305
 msgid "Copy Screen as HTML to Temporary File and Copy Path"
-msgstr ""
+msgstr "Įrašyti ekrano turinį kaip HTML į laikinąjį failą ir kopijuoti kelią"
 
 #: src/input/command.zig:306
 msgid ""
 "Copy the screen contents as HTML to a temporary file and copy the path to "
 "the clipboard."
 msgstr ""
+"Įrašyti ekrano turinį kaip HTML į laikinąjį failą ir nukopijuoti jo kelią į "
+"iškarpinę."
 
 #: src/input/command.zig:313
 msgid "Copy Screen as HTML to Temporary File and Paste Path"
-msgstr ""
+msgstr "Įrašyti ekrano turinį kaip HTML į laikinąjį failą ir įklijuoti kelią"
 
 #: src/input/command.zig:314
 msgid ""
 "Copy the screen contents as HTML to a temporary file and paste the path to "
 "the file."
 msgstr ""
+"Įrašyti ekrano turinį kaip HTML į laikinąjį failą ir įklijuoti jo kelią į "
+"failą."
 
 #: src/input/command.zig:321
 msgid "Copy Screen as HTML to Temporary File and Open"
-msgstr ""
+msgstr "Įrašyti ekrano turinį kaip HTML į laikinąjį failą ir atidaryti"
 
 #: src/input/command.zig:322
 msgid "Copy the screen contents as HTML to a temporary file and open it."
-msgstr ""
+msgstr "Įrašyti ekrano turinį kaip HTML į laikinąjį failą ir jį atidaryti."
 
 #: src/input/command.zig:330
 msgid "Copy Screen as ANSI Sequences to Temporary File and Copy Path"
 msgstr ""
+"Įrašyti ekrano turinį kaip ANSI sekas į laikinąjį failą ir kopijuoti kelią"
 
 #: src/input/command.zig:331
 msgid ""
 "Copy the screen contents as ANSI escape sequences to a temporary file and "
 "copy the path to the clipboard."
 msgstr ""
+"Įrašyti ekrano turinį kaip ANSI valdymo sekas į laikinąjį failą ir "
+"nukopijuoti jo kelią į iškarpinę."
 
 #: src/input/command.zig:338
 msgid "Copy Screen as ANSI Sequences to Temporary File and Paste Path"
 msgstr ""
+"Įrašyti ekrano turinį kaip ANSI sekas į laikinąjį failą ir įklijuoti kelią"
 
 #: src/input/command.zig:339
 msgid ""
 "Copy the screen contents as ANSI escape sequences to a temporary file and "
 "paste the path to the file."
 msgstr ""
+"Įrašyti ekrano turinį kaip ANSI valdymo sekas į laikinąjį failą ir įklijuoti "
+"jo kelią į failą."
 
 #: src/input/command.zig:346
 msgid "Copy Screen as ANSI Sequences to Temporary File and Open"
-msgstr ""
+msgstr "Įrašyti ekrano turinį kaip ANSI sekas į laikinąjį failą ir atidaryti"
 
 #: src/input/command.zig:347
 msgid ""
 "Copy the screen contents as ANSI escape sequences to a temporary file and "
 "open it."
 msgstr ""
+"Įrašyti ekrano turinį kaip ANSI valdymo sekas į laikinąjį failą ir jį "
+"atidaryti."
 
 #: src/input/command.zig:354
 msgid "Copy Selection to Temporary File and Copy Path"
-msgstr ""
+msgstr "Įrašyti pažymėtą tekstą į laikinąjį failą ir kopijuoti kelią"
 
 #: src/input/command.zig:355
 msgid ""
 "Copy the selection contents to a temporary file and copy the path to the "
 "clipboard."
 msgstr ""
+"Įrašyti pažymėtą tekstą į laikinąjį failą ir nukopijuoti jo kelią į "
+"iškarpinę."
 
 #: src/input/command.zig:359
 msgid "Copy Selection to Temporary File and Paste Path"
-msgstr ""
+msgstr "Įrašyti pažymėtą tekstą į laikinąjį failą ir įklijuoti kelią"
 
 #: src/input/command.zig:360
 msgid ""
 "Copy the selection contents to a temporary file and paste the path to the "
 "file."
 msgstr ""
+"Įrašyti pažymėtą tekstą į laikinąjį failą ir įklijuoti jo kelią į failą."
 
 #: src/input/command.zig:364
 msgid "Copy Selection to Temporary File and Open"
-msgstr ""
+msgstr "Įrašyti pažymėtą tekstą į laikinąjį failą ir atidaryti"
 
 #: src/input/command.zig:365
 msgid "Copy the selection contents to a temporary file and open it."
-msgstr ""
+msgstr "Įrašyti pažymėtą tekstą į laikinąjį failą ir jį atidaryti."
 
 #: src/input/command.zig:373
 msgid "Copy Selection as HTML to Temporary File and Copy Path"
-msgstr ""
+msgstr "Įrašyti pažymėtą tekstą kaip HTML į laikinąjį failą ir kopijuoti kelią"
 
 #: src/input/command.zig:374
 msgid ""
 "Copy the selection contents as HTML to a temporary file and copy the path to "
 "the clipboard."
 msgstr ""
+"Įrašyti pažymėtą tekstą kaip HTML į laikinąjį failą ir nukopijuoti jo kelią "
+"į iškarpinę."
 
 #: src/input/command.zig:381
 msgid "Copy Selection as HTML to Temporary File and Paste Path"
-msgstr ""
+msgstr "Įrašyti pažymėtą tekstą kaip HTML į laikinąjį failą ir įklijuoti kelią"
 
 #: src/input/command.zig:382
 msgid ""
 "Copy the selection contents as HTML to a temporary file and paste the path "
 "to the file."
 msgstr ""
+"Įrašyti pažymėtą tekstą kaip HTML į laikinąjį failą ir įklijuoti jo kelią į "
+"failą."
 
 #: src/input/command.zig:389
 msgid "Copy Selection as HTML to Temporary File and Open"
-msgstr ""
+msgstr "Įrašyti pažymėtą tekstą kaip HTML į laikinąjį failą ir atidaryti"
 
 #: src/input/command.zig:390
 msgid "Copy the selection contents as HTML to a temporary file and open it."
-msgstr ""
+msgstr "Įrašyti pažymėtą tekstą kaip HTML į laikinąjį failą ir jį atidaryti."
 
 #: src/input/command.zig:398
 msgid "Copy Selection as ANSI Sequences to Temporary File and Copy Path"
 msgstr ""
+"Įrašyti pažymėtą tekstą kaip ANSI sekas į laikinąjį failą ir kopijuoti kelią"
 
 #: src/input/command.zig:399
 msgid ""
 "Copy the selection contents as ANSI escape sequences to a temporary file and "
 "copy the path to the clipboard."
 msgstr ""
+"Įrašyti pažymėtą tekstą kaip ANSI valdymo sekas į laikinąjį failą ir "
+"nukopijuoti jo kelią į iškarpinę."
 
 #: src/input/command.zig:406
 msgid "Copy Selection as ANSI Sequences to Temporary File and Paste Path"
 msgstr ""
+"Įrašyti pažymėtą tekstą kaip ANSI sekas į laikinąjį failą ir įklijuoti kelią"
 
 #: src/input/command.zig:407
 msgid ""
 "Copy the selection contents as ANSI escape sequences to a temporary file and "
 "paste the path to the file."
 msgstr ""
+"Įrašyti pažymėtą tekstą kaip ANSI valdymo sekas į laikinąjį failą ir "
+"įklijuoti jo kelią į failą."
 
 #: src/input/command.zig:414
 msgid "Copy Selection as ANSI Sequences to Temporary File and Open"
-msgstr ""
+msgstr "Įrašyti pažymėtą tekstą kaip ANSI sekas į laikinąjį failą ir atidaryti"
 
 #: src/input/command.zig:415
 msgid ""
 "Copy the selection contents as ANSI escape sequences to a temporary file and "
 "open it."
 msgstr ""
+"Įrašyti pažymėtą tekstą kaip ANSI valdymo sekas į laikinąjį failą ir jį "
+"atidaryti."
 
 #: src/input/command.zig:422
 msgid "Open a new window."
-msgstr ""
+msgstr "Atidaryti naują langą."
 
 #: src/input/command.zig:428
 msgid "Open a new tab."
-msgstr ""
+msgstr "Atidaryti naują kortelę."
 
 #: src/input/command.zig:434
 msgid "Move Tab Left"
-msgstr ""
+msgstr "Perkelti kortelę kairėn"
 
 #: src/input/command.zig:435
 msgid "Move the current tab to the left."
-msgstr ""
+msgstr "Perkelti dabartinę kortelę kairėn."
 
 #: src/input/command.zig:439
 msgid "Move Tab Right"
-msgstr ""
+msgstr "Perkelti kortelę dešinėn"
 
 #: src/input/command.zig:440
 msgid "Move the current tab to the right."
-msgstr ""
+msgstr "Perkelti dabartinę kortelę dešinėn."
 
 #: src/input/command.zig:446 windows/host/src/strip.rs:1328
 msgid "Move Tab to New Window"
-msgstr ""
+msgstr "Perkelti kortelę į naują langą"
 
 #: src/input/command.zig:447
 msgid "Move the current tab to a new window."
-msgstr ""
+msgstr "Perkelti dabartinę kortelę į naują langą."
 
 #: src/input/command.zig:452
 msgid "Toggle Tab Overview"
-msgstr ""
+msgstr "Rodyti arba slėpti kortelių apžvalgą"
 
 #: src/input/command.zig:453
 msgid "Toggle the tab overview."
-msgstr ""
+msgstr "Rodyti arba slėpti kortelių apžvalgą."
 
 #: src/input/command.zig:458
 msgid "Change Terminal Title…"
-msgstr ""
+msgstr "Keisti terminalo pavadinimą…"
 
 #: src/input/command.zig:459
 msgid "Prompt for a new title for the current terminal."
-msgstr ""
+msgstr "Paprašyti įvesti naują dabartinio terminalo pavadinimą."
 
 #: src/input/command.zig:465
 msgid "Prompt for a new title for the current tab."
-msgstr ""
+msgstr "Paprašyti įvesti naują dabartinės kortelės pavadinimą."
 
 #: src/input/command.zig:478
 msgid "Split the terminal to the left."
-msgstr ""
+msgstr "Padalyti terminalą kairėn."
 
 #: src/input/command.zig:483
 msgid "Split the terminal to the right."
-msgstr ""
+msgstr "Padalyti terminalą dešinėn."
 
 #: src/input/command.zig:488
 msgid "Split the terminal up."
-msgstr ""
+msgstr "Padalyti terminalą aukštyn."
 
 #: src/input/command.zig:493
 msgid "Split the terminal down."
-msgstr ""
+msgstr "Padalyti terminalą žemyn."
 
 #: src/input/command.zig:500
 msgid "Focus Split: Previous"
-msgstr ""
+msgstr "Aktyvinti ankstesnį padalijimą"
 
 #: src/input/command.zig:501
 msgid "Focus the previous split, if any."
-msgstr ""
+msgstr "Aktyvinti ankstesnį padalijimą, jei toks yra."
 
 #: src/input/command.zig:505
 msgid "Focus Split: Next"
-msgstr ""
+msgstr "Aktyvinti kitą padalijimą"
 
 #: src/input/command.zig:506
 msgid "Focus the next split, if any."
-msgstr ""
+msgstr "Aktyvinti kitą padalijimą, jei toks yra."
 
 #: src/input/command.zig:510
 msgid "Focus Split: Left"
-msgstr ""
+msgstr "Aktyvinti padalijimą kairėje"
 
 #: src/input/command.zig:511
 msgid "Focus the split to the left, if it exists."
-msgstr ""
+msgstr "Aktyvinti padalijimą kairėje, jei toks yra."
 
 #: src/input/command.zig:515
 msgid "Focus Split: Right"
-msgstr ""
+msgstr "Aktyvinti padalijimą dešinėje"
 
 #: src/input/command.zig:516
 msgid "Focus the split to the right, if it exists."
-msgstr ""
+msgstr "Aktyvinti padalijimą dešinėje, jei toks yra."
 
 #: src/input/command.zig:520
 msgid "Focus Split: Up"
-msgstr ""
+msgstr "Aktyvinti padalijimą viršuje"
 
 #: src/input/command.zig:521
 msgid "Focus the split above, if it exists."
-msgstr ""
+msgstr "Aktyvinti padalijimą viršuje, jei toks yra."
 
 #: src/input/command.zig:525
 msgid "Focus Split: Down"
-msgstr ""
+msgstr "Aktyvinti padalijimą apačioje"
 
 #: src/input/command.zig:526
 msgid "Focus the split below, if it exists."
-msgstr ""
+msgstr "Aktyvinti padalijimą apačioje, jei toks yra."
 
 #: src/input/command.zig:533
 msgid "Focus Window: Previous"
-msgstr ""
+msgstr "Aktyvinti ankstesnį langą"
 
 #: src/input/command.zig:534
 msgid "Focus the previous window, if any."
-msgstr ""
+msgstr "Aktyvinti ankstesnį langą, jei toks yra."
 
 #: src/input/command.zig:538
 msgid "Focus Window: Next"
-msgstr ""
+msgstr "Aktyvinti kitą langą"
 
 #: src/input/command.zig:539
 msgid "Focus the next window, if any."
-msgstr ""
+msgstr "Aktyvinti kitą langą, jei toks yra."
 
 #: src/input/command.zig:545
 msgid "Toggle Split Zoom"
-msgstr ""
+msgstr "Išdidinti arba atkurti padalijimą"
 
 #: src/input/command.zig:546
 msgid "Toggle the zoom state of the current split."
-msgstr ""
+msgstr "Išdidinti dabartinį padalijimą arba atkurti jo dydį."
 
 #: src/input/command.zig:551
 msgid "Toggle Read-Only Mode"
-msgstr ""
+msgstr "Įjungti arba išjungti tik skaitymo režimą"
 
 #: src/input/command.zig:552
 msgid "Toggle read-only mode for the current surface."
-msgstr ""
+msgstr "Įjungti arba išjungti dabartinio terminalo tik skaitymo režimą."
 
-#: src/input/command.zig:557 windows/host/src/ctxmenu.rs:123
-#: windows/host/src/menu.rs:297 windows/host/src/strip.rs:1330
+#: src/input/command.zig:557 windows/host/src/ctxmenu.rs:134
+#: windows/host/src/menu.rs:301 windows/host/src/strip.rs:1330
 msgid "Make This Terminal a Supervisor"
 msgstr ""
 
@@ -940,8 +972,8 @@ msgid ""
 "supervisors; each reaches only its own."
 msgstr ""
 
-#: src/input/command.zig:563 windows/host/src/ctxmenu.rs:128
-#: windows/host/src/menu.rs:298 windows/host/src/strip.rs:1331
+#: src/input/command.zig:563 windows/host/src/ctxmenu.rs:139
+#: windows/host/src/menu.rs:302 windows/host/src/strip.rs:1331
 msgid "Toggle Supervision of This Terminal"
 msgstr ""
 
@@ -949,7 +981,7 @@ msgstr ""
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr ""
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:342
+#: src/input/command.zig:594 windows/host/src/menu.rs:346
 msgid "Hold This Terminal to Its Work"
 msgstr ""
 
@@ -959,9 +991,14 @@ msgid ""
 "Its tab wears a ring while the hold lasts. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:600 windows/host/src/ctxmenu.rs:133
-#: windows/host/src/menu.rs:299 windows/host/src/strip.rs:1332
+#: src/input/command.zig:600 windows/host/src/ctxmenu.rs:144
+#: windows/host/src/menu.rs:303 windows/host/src/strip.rs:1332
 msgid "Keep Agents Out of This Terminal"
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:182 windows/host/src/menu.rs:342
+#: windows/host/src/strip.rs:1337
+msgid "Let Workers Name Each Other Directly"
 msgstr ""
 
 #: src/input/command.zig:601
@@ -970,7 +1007,7 @@ msgid ""
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:295
+#: src/input/command.zig:606 windows/host/src/menu.rs:299
 msgid "Terminal Conversations"
 msgstr ""
 
@@ -978,201 +1015,204 @@ msgstr ""
 msgid "Open a terminal showing what the terminals have said to each other."
 msgstr ""
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:356
+#: src/input/command.zig:612 windows/host/src/menu.rs:362
 msgid "Equalize Splits"
-msgstr ""
+msgstr "Suvienodinti padalijimus"
 
 #: src/input/command.zig:613
 msgid "Equalize the size of all splits."
-msgstr ""
+msgstr "Suvienodinti visų padalijimų dydžius."
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:378
+#: src/input/command.zig:618 windows/host/src/menu.rs:384
 msgid "Reset Window Size"
-msgstr ""
+msgstr "Atkurti lango dydį"
 
 #: src/input/command.zig:619
 msgid "Reset the window size to the default."
-msgstr ""
+msgstr "Atkurti numatytąjį lango dydį."
 
 #: src/input/command.zig:624
 msgid "Toggle Inspector"
-msgstr ""
+msgstr "Rodyti arba slėpti inspektorių"
 
 #: src/input/command.zig:625
 msgid "Toggle the inspector."
-msgstr ""
+msgstr "Rodyti arba slėpti konkretų inspektorių."
 
 #: src/input/command.zig:630
 msgid "Show the GTK Inspector"
-msgstr ""
+msgstr "Rodyti GTK inspektorių"
 
 #: src/input/command.zig:631
 msgid "Show the GTK inspector."
-msgstr ""
+msgstr "Rodyti GTK inspektorių."
 
 #: src/input/command.zig:636
 msgid "Show On-Screen Keyboard"
-msgstr ""
+msgstr "Rodyti ekrano klaviatūrą"
 
 #: src/input/command.zig:637
 msgid "Show the on-screen keyboard if present."
-msgstr ""
+msgstr "Rodyti ekrano klaviatūrą, jei ji pasiekiama."
 
 #: src/input/command.zig:643
 msgid "Open Config Using OS editor"
-msgstr ""
+msgstr "Atidaryti konfigūraciją sistemos redaktoriuje"
 
 #: src/input/command.zig:644
 msgid "Open the config file with the OS's default editor."
 msgstr ""
+"Atidaryti konfigūracijos failą numatytuoju operacinės sistemos redaktoriumi."
 
 #: src/input/command.zig:648
 msgid "Open Config in New Terminal Window"
-msgstr ""
+msgstr "Atidaryti konfigūraciją naujame terminalo lange"
 
 #: src/input/command.zig:649
 msgid "Open the config file in a new window using $EDITOR or $VISUAL."
-msgstr ""
+msgstr "Atidaryti konfigūracijos failą naujame lange su $EDITOR arba $VISUAL."
 
 #: src/input/command.zig:655
 msgid "Reload Config"
-msgstr ""
+msgstr "Iš naujo įkelti konfigūraciją"
 
 #: src/input/command.zig:656
 msgid "Reload the config file."
-msgstr ""
+msgstr "Iš naujo įkelti konfigūracijos failą."
 
 #: src/input/command.zig:661
 msgid "Close Terminal"
-msgstr ""
+msgstr "Uždaryti terminalą"
 
 #: src/input/command.zig:662
 msgid "Close the current terminal."
-msgstr ""
+msgstr "Uždaryti dabartinį terminalą."
 
 #: src/input/command.zig:669
 msgid "Close the current tab."
-msgstr ""
+msgstr "Uždaryti dabartinę kortelę."
 
 #: src/input/command.zig:673 windows/host/src/strip.rs:1326
 msgid "Close Other Tabs"
-msgstr ""
+msgstr "Uždaryti kitas korteles"
 
 #: src/input/command.zig:674
 msgid "Close all tabs in this window except the current one."
-msgstr ""
+msgstr "Uždaryti visas šio lango korteles, išskyrus dabartinę."
 
 #: src/input/command.zig:678 windows/host/src/strip.rs:1327
 msgid "Close Tabs to the Right"
-msgstr ""
+msgstr "Uždaryti korteles dešinėje"
 
 #: src/input/command.zig:679
 msgid "Close all tabs to the right of the current one."
-msgstr ""
+msgstr "Uždaryti visas korteles dabartinės kortelės dešinėje."
 
 #: src/input/command.zig:686
 msgid "Close the current window."
-msgstr ""
+msgstr "Uždaryti dabartinį langą."
 
 #: src/input/command.zig:691
 msgid "Close All Windows"
-msgstr ""
+msgstr "Uždaryti visus langus"
 
 #: src/input/command.zig:692
 msgid "Close all windows."
-msgstr ""
+msgstr "Uždaryti visus langus."
 
 #: src/input/command.zig:697
 msgid "Toggle Maximize"
-msgstr ""
+msgstr "Išdidinti arba atkurti langą"
 
 #: src/input/command.zig:698
 msgid "Toggle the maximized state of the current window."
-msgstr ""
+msgstr "Išdidinti dabartinį langą arba atkurti jo dydį."
 
 #: src/input/command.zig:703
 msgid "Toggle Fullscreen"
-msgstr ""
+msgstr "Įjungti arba išjungti viso ekrano režimą"
 
 #: src/input/command.zig:704
 msgid "Toggle the fullscreen state of the current window."
-msgstr ""
+msgstr "Įjungti arba išjungti dabartinio lango viso ekrano režimą."
 
 #: src/input/command.zig:709
 msgid "Toggle Window Decorations"
-msgstr ""
+msgstr "Rodyti arba slėpti lango dekoracijas"
 
 #: src/input/command.zig:710
 msgid "Toggle the window decorations."
-msgstr ""
+msgstr "Rodyti arba slėpti konkretaus lango dekoracijas."
 
 #: src/input/command.zig:715
 msgid "Toggle Float on Top"
-msgstr ""
+msgstr "Įjungti arba išjungti lango rodymą virš kitų"
 
 #: src/input/command.zig:716
 msgid "Toggle the float on top state of the current window."
-msgstr ""
+msgstr "Įjungti arba išjungti dabartinio lango rodymą virš kitų."
 
 #: src/input/command.zig:721
 msgid "Toggle Secure Input"
-msgstr ""
+msgstr "Įjungti arba išjungti saugios įvesties režimą"
 
 #: src/input/command.zig:722
 msgid "Toggle secure input mode."
-msgstr ""
+msgstr "Įjungti arba išjungti saugios įvesties režimą."
 
 #: src/input/command.zig:727
 msgid "Toggle Mouse Reporting"
-msgstr ""
+msgstr "Įjungti arba išjungti pelės įvykių perdavimą"
 
 #: src/input/command.zig:728
 msgid "Toggle whether mouse events are reported to terminal applications."
 msgstr ""
+"Įjungti arba išjungti pelės įvykių perdavimą terminale veikiančioms "
+"programoms."
 
 #: src/input/command.zig:733
 msgid "Toggle Background Opacity"
-msgstr ""
+msgstr "Perjungti fono nepermatomumą"
 
 #: src/input/command.zig:734
 msgid "Toggle the background opacity of a window that started transparent."
-msgstr ""
+msgstr "Perjungti lango, kuris buvo paleistas permatomas, fono nepermatomumą."
 
 #: src/input/command.zig:739
 msgid "Check for Updates"
-msgstr ""
+msgstr "Tikrinti, ar yra naujinimų"
 
 #: src/input/command.zig:740
 msgid "Check for updates to the application."
-msgstr ""
+msgstr "Tikrinti, ar yra programos naujinimų."
 
 #: src/input/command.zig:745
 msgid "Undo"
-msgstr ""
+msgstr "Atšaukti"
 
 #: src/input/command.zig:746
 msgid "Undo the last action."
-msgstr ""
+msgstr "Atšaukti paskutinį veiksmą."
 
 #: src/input/command.zig:751
 msgid "Redo"
-msgstr ""
+msgstr "Pakartoti"
 
 #: src/input/command.zig:752
 msgid "Redo the last undone action."
-msgstr ""
+msgstr "Pakartoti paskutinį atšauktą veiksmą."
 
 #: src/input/command.zig:758
 msgid "Quit the application."
-msgstr ""
+msgstr "Išeiti iš programos."
 
 #: src/input/command.zig:763
 msgid "Ghostty"
-msgstr ""
+msgstr "Ghostty"
 
 #: src/input/command.zig:764
 msgid "Put a little Ghostty in your terminal."
-msgstr ""
+msgstr "Įleiskite truputį Ghostty į savo terminalą."
 
 #: src/cli/chat.zig:603
 msgid "all"
@@ -1447,15 +1487,15 @@ msgstr ""
 msgid "{0} d {1} h"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:119 windows/host/src/menu.rs:269
+#: windows/host/src/ctxmenu.rs:130 windows/host/src/menu.rs:278
 msgid "Rename Tab…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:270
+#: windows/host/src/ctxmenu.rs:131 windows/host/src/menu.rs:279
 msgid "Rename Terminal…"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:158 windows/host/src/menu.rs:314
+#: windows/host/src/ctxmenu.rs:169 windows/host/src/menu.rs:318
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr ""
 
@@ -1481,165 +1521,322 @@ msgstr ""
 msgid "No shortcut yet"
 msgstr ""
 
-#: windows/host/src/language.rs:317
+#: windows/host/src/language.rs:291
 msgid "Language"
 msgstr ""
 
-#: windows/host/src/language.rs:318
+#: windows/host/src/language.rs:283
 msgid "The language changes the next time Polter starts."
 msgstr ""
 
-#: windows/host/src/main.rs:2306
+#: windows/host/src/language.rs:287
+#, rust-format
+msgid ""
+"LANG={} is set in the environment Polter was started from, and Polter uses "
+"it in preference to this choice. For this choice to take effect, clear LANG "
+"and start Polter again."
+msgstr ""
+
+#: windows/host/src/main.rs:2320
 #, rust-format
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/menu.rs:213 windows/host/src/strip.rs:1664
+#: windows/host/src/menu.rs:221 windows/host/src/strip.rs:1664
 msgid "Reopen Closed Tab"
 msgstr ""
 
-#: windows/host/src/menu.rs:235
+#: windows/host/src/menu.rs:244
 msgid "Next"
 msgstr ""
 
-#: windows/host/src/menu.rs:236
+#: windows/host/src/menu.rs:245
 msgid "Previous"
 msgstr ""
 
-#: windows/host/src/menu.rs:238
+#: windows/host/src/menu.rs:247
 msgid "Hide the Find Bar"
 msgstr ""
 
-#: windows/host/src/menu.rs:253
+#: windows/host/src/menu.rs:262
 msgid "Find"
 msgstr ""
 
-#: windows/host/src/menu.rs:258
+#: windows/host/src/menu.rs:267
 msgid "Zoom In"
 msgstr ""
 
-#: windows/host/src/menu.rs:259
+#: windows/host/src/menu.rs:268
 msgid "Zoom Out"
 msgstr ""
 
-#: windows/host/src/menu.rs:274
+#: windows/host/src/menu.rs:283
 msgid "Quick Terminal"
 msgstr ""
 
-#: windows/host/src/menu.rs:345
+#: windows/host/src/menu.rs:350
 msgid "Plugins…"
 msgstr ""
 
-#: windows/host/src/menu.rs:349
+#: windows/host/src/menu.rs:351 windows/host/src/personas.rs:826
+msgid "Role Editor (beta)..."
+msgstr ""
+
+#: windows/host/src/menu.rs:355
 msgid "Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:350
+#: windows/host/src/menu.rs:356
 msgid "Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:351
+#: windows/host/src/menu.rs:357
 msgid "Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:352
+#: windows/host/src/menu.rs:358
 msgid "Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:358
+#: windows/host/src/menu.rs:364
 msgid "Grow Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:359
+#: windows/host/src/menu.rs:365
 msgid "Grow Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:360
+#: windows/host/src/menu.rs:366
 msgid "Grow Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:361
+#: windows/host/src/menu.rs:367
 msgid "Grow Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:367
+#: windows/host/src/menu.rs:373
 msgid "Minimize"
 msgstr ""
 
-#: windows/host/src/menu.rs:368
+#: windows/host/src/menu.rs:374
 msgid "Maximize"
 msgstr ""
 
-#: windows/host/src/menu.rs:370
+#: windows/host/src/menu.rs:376
 msgid "Full Screen"
 msgstr ""
 
-#: windows/host/src/menu.rs:372
+#: windows/host/src/menu.rs:378
 msgid "Split Zoom"
 msgstr ""
 
-#: windows/host/src/menu.rs:373
+#: windows/host/src/menu.rs:379
 msgid "Previous Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:374
+#: windows/host/src/menu.rs:380
 msgid "Next Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:375
+#: windows/host/src/menu.rs:381
 msgid "Select Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:376
+#: windows/host/src/menu.rs:382
 msgid "Resize Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:380
+#: windows/host/src/menu.rs:386
 msgid "Float on Top"
 msgstr ""
 
-#: windows/host/src/menu.rs:387
+#: windows/host/src/menu.rs:393
 msgid "Polter Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:402
+#: windows/host/src/menu.rs:406
 msgid "Check for Updates…"
 msgstr ""
 
-#: windows/host/src/menu.rs:414
+#: windows/host/src/menu.rs:412
 msgid "File"
 msgstr ""
 
-#: windows/host/src/menu.rs:415
+#: windows/host/src/menu.rs:413
 msgid "Edit"
 msgstr ""
 
-#: windows/host/src/menu.rs:416
+#: windows/host/src/menu.rs:414
 msgid "View"
 msgstr ""
 
-#: windows/host/src/menu.rs:432
+#: windows/host/src/menu.rs:430
 msgid "Agents"
 msgstr ""
 
-#: windows/host/src/menu.rs:434
+#: windows/host/src/menu.rs:432
 msgid "Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:436
+#: windows/host/src/menu.rs:434
 msgid "Settings…"
 msgstr ""
 
-#: windows/host/src/menu.rs:448
+#: windows/host/src/menu.rs:446
 msgid "Language…"
 msgstr ""
 
-#: windows/host/src/menu.rs:461
+#: windows/host/src/menu.rs:460
 msgid "Keyboard Shortcuts…"
 msgstr ""
 
-#: windows/host/src/menu.rs:462 windows/host/src/settings_ui.rs:1067
+#: windows/host/src/menu.rs:461 windows/host/src/settings_ui.rs:1067
 msgid "About Polter"
+msgstr ""
+
+#: windows/host/src/personas.rs:159
+msgid "The roles file could not be read, so the previous one is still in use"
+msgstr ""
+
+#: windows/host/src/personas.rs:161
+msgid "This menu is out of date. Close it and open it again"
+msgstr ""
+
+#: windows/host/src/personas.rs:298 windows/host/src/personas_ui.rs:893
+msgid "This server didn't start. Your role isn't what's withholding it."
+msgstr ""
+
+#: windows/host/src/personas.rs:301
+msgid "Polter isn't managing this server, so the agent sees all of it"
+msgstr ""
+
+#: windows/host/src/personas.rs:334
+msgid "Added by hand"
+msgstr ""
+
+#: windows/host/src/personas.rs:335
+msgid "Switched off by hand"
+msgstr ""
+
+#: windows/host/src/personas.rs:416
+msgid "Nobody has checked where this agent keeps these yet"
+msgstr ""
+
+#: windows/host/src/personas.rs:417 windows/host/src/personas.rs:418
+msgid "Looked there, and nothing is installed"
+msgstr ""
+
+#: windows/host/src/personas.rs:420 windows/host/src/personas_ui.rs:946
+msgid "Couldn't read what's installed here"
+msgstr ""
+
+#: windows/host/src/personas.rs:629
+#, rust-format
+msgid "{} (modified)"
+msgstr ""
+
+#: windows/host/src/personas.rs:643
+msgid "Takes effect the next time the agent starts"
+msgstr ""
+
+#: windows/host/src/personas.rs:648
+msgid "May need the agent to restart before it takes effect"
+msgstr ""
+
+#: windows/host/src/personas.rs:744 windows/host/src/personas.rs:1693
+#: windows/host/src/personas_ui.rs:155 windows/host/src/personas_ui.rs:1064
+msgid "Agents are kept out of this terminal, so its role cannot be changed"
+msgstr ""
+
+#: windows/host/src/personas.rs:750 windows/host/src/personas_ui.rs:159
+msgid "No agent is connected here, so nothing is wearing this yet"
+msgstr ""
+
+#: windows/host/src/personas.rs:768 windows/host/src/personas_ui.rs:136
+#: windows/host/src/personas_ui.rs:972
+msgid "Nothing has reported which roles exist yet"
+msgstr ""
+
+#: windows/host/src/personas.rs:769 windows/host/src/personas.rs:1734
+#: windows/host/src/personas_ui.rs:137
+msgid "No roles are defined"
+msgstr ""
+
+#: windows/host/src/personas.rs:775
+msgid "No Role"
+msgstr ""
+
+#: windows/host/src/personas.rs:921 windows/host/src/personas.rs:1472
+msgid "Role (beta)"
+msgstr ""
+
+#: windows/host/src/personas.rs:925
+#, rust-format
+msgid "Role (beta): {}"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:171
+msgid "Reset to the Role"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:178
+msgid "What This Terminal Hands Out"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:184 windows/host/src/personas_ui.rs:973
+#: windows/host/src/personas_ui.rs:994
+msgid "Nothing has reported what this terminal hands out yet"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:186 windows/host/src/personas_ui.rs:995
+msgid "This terminal hands out nothing yet"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:188 windows/host/src/personas_ui.rs:251
+msgid "Skills"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:190 windows/host/src/personas_ui.rs:252
+msgid "MCP Servers"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:199
+msgid "Opening Prompt"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:211
+msgid "Only Applied on Restart"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:224
+msgid "Installed on This Machine"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:234 windows/host/src/personas_ui.rs:784
+msgid ""
+"Shown so you can see what a role doesn't cover. Polter doesn't change any of "
+"this."
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:237 windows/host/src/personas_ui.rs:802
+#: windows/host/src/personas_ui.rs:974
+msgid "Nothing has reported what's installed here yet"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:245 windows/host/src/personas_ui.rs:1027
+msgid "Some agents' configuration couldn't be read, so this count may be low"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:250
+msgid "Plugins"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:530
+msgid "Choose a Role"
+msgstr ""
+
+#: windows/host/src/personas_ui.rs:544
+msgid "Role Editor (beta)"
 msgstr ""
 
 #: windows/host/src/prompt.rs:331
@@ -1756,4 +1953,434 @@ msgstr ""
 
 #: windows/host/src/uia.rs:1168
 msgid "Menu"
+msgstr ""
+
+#: windows/host/src/menu.rs:353
+msgid "Role Library (beta)..."
+msgstr ""
+
+#: windows/host/src/roles.rs:336
+msgid "Polter Supervisor"
+msgstr ""
+
+#: windows/host/src/roles.rs:346
+msgid ""
+"Makes the terminal it starts in this window's supervisor: splits the work, "
+"hands it out and checks it."
+msgstr ""
+
+#: windows/host/src/roles.rs:612
+msgid "Yours"
+msgstr ""
+
+#: windows/host/src/roles.rs:613
+msgid "This Project"
+msgstr ""
+
+#: windows/host/src/roles.rs:614
+msgid "This Project, Only on This Machine"
+msgstr ""
+
+#: windows/host/src/roles.rs:675
+msgid ""
+"This role can't be saved: it needs a name, and a key of lowercase letters, "
+"digits and dashes."
+msgstr ""
+
+#: windows/host/src/roles.rs:676
+msgid ""
+"The role library file has an error in it, so saving would overwrite it. Fix "
+"the file first."
+msgstr ""
+
+#: windows/host/src/roles.rs:677
+msgid "That role no longer exists."
+msgstr ""
+
+#: windows/host/src/roles.rs:678
+msgid "The role was written but didn't read back. This is a bug in Polter."
+msgstr ""
+
+#: windows/host/src/roles.rs:679
+msgid "The role library file couldn't be written."
+msgstr ""
+
+#: windows/host/src/roles.rs:680
+msgid "This role isn't set up for that agent CLI."
+msgstr ""
+
+#: windows/host/src/roles.rs:681
+msgid ""
+"This role isn't set up for any agent CLI yet. Pick one in the role library."
+msgstr ""
+
+#: windows/host/src/roles.rs:682
+msgid "This role is set up for more than one agent CLI. Choose one."
+msgstr ""
+
+#: windows/host/src/roles.rs:683
+msgid ""
+"A tab was opened but didn't appear in time, so nothing was started in it."
+msgstr ""
+
+#: windows/host/src/roles.rs:684
+msgid "Polter isn't ready yet."
+msgstr ""
+
+#: windows/host/src/roles.rs:689 windows/host/src/roles_ui.rs:2893
+msgid ""
+"This role comes with Polter and can't be changed or deleted. Duplicate it to "
+"make one of your own."
+msgstr ""
+
+#: windows/host/src/roles.rs:690
+msgid ""
+"Only you can make a role's terminal a supervisor, let it answer permission "
+"prompts, or keep agents out of it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:156 windows/host/src/roles_ui.rs:1872
+msgid "New Role"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:178
+#, rust-format
+msgid "{} Copy"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:234
+msgid "Another role already uses this key."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:357
+msgid "Unsaved changes"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:360
+msgid "Open a terminal window first; the new tab goes beside it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:385
+msgid "Basics"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:387
+#, rust-format
+msgid "Skills {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:391
+#, rust-format
+msgid "MCP {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:392
+msgid "MCP"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:419
+msgid "No agent CLI"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:450
+msgid "Reading the role library…"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:453
+msgid "No roles yet"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:454
+msgid ""
+"A role is a saved way to start an agent CLI: which skills and MCP servers it "
+"keeps, and what it's told."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:665
+msgid "Select a role, or make a new one."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:680
+msgid "Name"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:682 windows/host/src/roles_ui.rs:692
+msgid "Key"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:685
+msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:687
+msgid "Only lowercase letters, digits and dashes, at most 32."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:695
+msgid "Description"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:696
+msgid "What this role is for, for whoever picks it"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:699
+msgid "Instructions"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:710
+msgid ""
+"Added to the agent's system prompt when it starts. Leave it empty to add "
+"nothing. Drag the bottom edge to make the box taller."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:715
+msgid "Polter"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:716
+msgid "Make this terminal a supervisor"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:717
+msgid "Let the supervisor answer this terminal's permission prompts"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:718
+msgid "Shield it: no tool can reach it, a supervisor's included"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:720
+msgid ""
+"These three give the terminal something, so only you can set them, here. A "
+"supervisor that edits roles can't change them."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:723
+msgid "Hand it to the supervisor to watch"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:727
+msgid ""
+"The supervisor that started it, or the only one there is. With several and "
+"you starting it, nobody."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:728
+msgid "Report it as still after"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:736
+msgid "min"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:741
+msgid "Open in"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:745
+msgid "Here when at a prompt, else a new tab"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:745
+msgid "Always a new tab"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:756
+msgid ""
+"Applied once, when the role starts an agent CLI. Putting the role on a "
+"terminal that's already running changes its tools, not these."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:760
+msgid "Agent CLIs"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:762 windows/host/src/roles_ui.rs:841
+msgid "Reading what's installed…"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:764
+msgid "No plugin that manages an agent CLI is installed and switched on."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:769
+#, rust-format
+msgid "{} isn't on this machine's PATH"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:772 windows/host/src/roles_ui.rs:848
+msgid "Its plugin couldn't list what's installed"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:781 windows/host/src/roles_ui.rs:841
+msgid "No plugin manages this CLI any more"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:791
+#, rust-format
+msgid "Starting {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:793
+msgid "Model"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:794
+msgid "The CLI's default"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:798
+msgid "Extra Arguments"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:802
+msgid "Added to the command line as typed. Quote anything with a space in it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:831
+msgid ""
+"Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:832
+msgid "Go to Basics"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:854
+msgid "Filter skills"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:856
+msgid "Keep skills installed later"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:857
+msgid "No skills are installed for this CLI."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:860
+msgid "Filter MCP servers"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:862
+msgid "Keep MCP servers added later"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:863
+msgid "No MCP servers are configured for this CLI."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:889
+#, rust-format
+msgid "{} of {} kept"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:891
+msgid "Keep All"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:892
+msgid "Turn All Off"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:899
+msgid ""
+"What happens to anything that isn't listed here yet, such as something "
+"installed tomorrow or a project's own."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:906
+msgid "Nothing matches the filter."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:921
+msgid "Keep or turn off everything in this group"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:949
+msgid "No description"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:965
+msgid "Show Less"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:965
+msgid "Show More"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:987
+#, rust-format
+msgid "Also in this role but not installed here: {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1782 windows/host/src/roles_ui.rs:2377
+msgid "Role Library"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1873 windows/host/src/roles_ui.rs:1877
+msgid "Duplicate"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1874 windows/host/src/roles_ui.rs:2536
+msgid "Delete"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1878 windows/host/src/roles_ui.rs:1955
+msgid "Launch"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1878
+msgid "Revert"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2024
+msgid ""
+"The role library file has an error in it. Roles can't be changed here until "
+"it's fixed."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2439
+msgid "Save changes to this role?"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2440
+msgid "Your changes will be lost if you don't save them."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2442
+msgid "Don't Save"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2534
+#, rust-format
+msgid "Delete the role \"{}\"?"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2535
+msgid ""
+"Terminals wearing it are taken out of it. Agents already running keep "
+"running."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2586
+msgid "The role couldn't be launched"
+msgstr ""
+
+#: windows/host/src/personas.rs:166
+msgid ""
+"The roles file couldn't be read. Until it's fixed, what's in it isn't used."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:858
+msgid ""
+"This list is what the CLI has on this machine. A project's own skills aren't "
+"in it; at launch they follow the switch above."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:865
+msgid ""
+"This list is what the CLI has on this machine. A project's own MCP servers "
+"aren't in it; at launch they follow the switch above."
 msgstr ""

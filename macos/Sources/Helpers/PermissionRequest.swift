@@ -29,7 +29,7 @@ class PermissionRequest {
         _ key: String,
         message: String,
         informative: String = "",
-        allowText: String = "Allow",
+        allowText: String = String(localized: "Allow", comment: "权限请求框"),
         allowDuration: AllowDuration = .once,
         rememberDuration: Duration? = .seconds(86400),
         window: NSWindow? = nil,

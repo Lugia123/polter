@@ -116,7 +116,44 @@ PATTERNS = (("path", PATH_LINE),)
 #
 # **Measured, not chosen.** Lower it as they are replaced with symbol names;
 # the check tells you the number to write.
-BASELINE = 70
+#
+# 70 -> 67 (the 0.8 upstream merge). All three came out of one rewrite:
+# `main.rs`'s `cb_confirm_read_clipboard`, forced by upstream 0.8 adding
+# `ghostty_surface_deny_clipboard_request` -- present in its `include/ghostty.h`
+# and in neither our tip nor the merge base. The host used to spell "cancel" as
+# completing with an empty string, and the three citations documented exactly
+# that: two into `Surface.zig` (the unsafe-paste test, and the rethrow that
+# made `confirmed: false` loop forever) and one into `embedded.zig`'s
+# completion path. **They are described here and not spelled**, because this
+# file is one of the trees this check scans -- writing them out the matched
+# way would raise the very number the paragraph is explaining, which is what
+# happened on the first attempt at this comment. The `embedded.zig` one
+# **had** to go, because the mechanism it described no longer exists;
+# keeping it would have been a false statement. The other two kept
+# their claim in prose and dropped only the number, one of them replaced by
+# the symbol name `input.paste.isSafe` -- which is the direction this ratchet
+# exists to push, not a loss.
+#
+# ⚠️ **Re-measuring is not re-baselining, and this is where the number gets
+# written off.** Two further entries moved in the same work -- one in
+# `ffi.rs` and one in `main.rs`, each citing the same place as before at a
+# shifted number -- and are *not* drops. Five entries differ between the two
+# listings and only three of them are real, so a diff read by count rather
+# than by item gets this wrong in both directions. Lower this number only
+# after listing both trees and diffing them, or
+# a reference someone deleted to get past this check is indistinguishable
+# from drift. Listing them needs no checkout and must not touch the index:
+#
+#     git archive HEAD dev-docs/windows windows/host/src windows/tools \
+#         | tar -x -C /tmp/base
+#     # Copy this script into both trees. In each copy raise LIST_LINES and
+#     # set BASELINE to something impossible, so it prints the whole list
+#     # instead of a head -- then `comm` the two listings.
+#
+# **Check the locator before believing it**: the old tree has to print
+# exactly the old baseline (it printed 70). If it does not, the diff is
+# against the wrong point and every conclusion drawn from it is that error.
+BASELINE = 67
 
 # Print at most this many, with their line numbers. A reader needs somewhere
 # to start, not the whole list.

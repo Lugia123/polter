@@ -95,8 +95,27 @@ LOCK_GATE = os.path.join(HERE, "lock-reentry.py")
 
 # Claim 1. Re-derive with `mutex_calls`; the split is named so a *new* call
 # name shows up as a mismatch rather than as a number that happens to add up.
-CALLS = 98
-SPLIT = {"lockUncancelable": 49, "unlock": 49}
+#
+# 98 -> 102 (the 0.8 upstream merge), re-read 2026-09-25 by the method in the
+# docstring: strip `//`, count `.mutex.<name>(`. **The four are upstream's,
+# not ours**, and the way that was established is the only reason this is an
+# adjustment rather than a finding: count per *enclosing function* on all
+# three trees, not per line -- every one of these call lines is textually
+# identical, so a line-level diff reports the whole file as changed and tells
+# you nothing. By function: merge base 96, our tip 98, upstream 96, merged
+# 102. The two functions that gained a `lockUncancelable`/`unlock` pair are
+# `startClipboardRequest` and `completeClipboardPasteEvent`, and upstream has
+# exactly one pair in each of them while our tip had neither.
+#
+# ⚠️ **Re-entry for these two is *not* established here.** Claim 2 still
+# reads 2, so the deliberate drop-and-retake sites are intact, and the two
+# paste arms of `mouseButtonCallback` that call `startClipboardRequest` drop
+# the lock first -- which is what those sites are. That is not the same as
+# having traced every caller of both functions, which was not done. This
+# account is a record of an unwatched area; the count of risky sites within
+# it stays unknown, and these two are inside that unknown, not outside it.
+CALLS = 102
+SPLIT = {"lockUncancelable": 51, "unlock": 51}
 
 # Claim 2. Down is a safety regression; up means somebody found another.
 CAREFUL_SITES = 2

@@ -211,15 +211,15 @@ struct ProjectPickerView: View {
     // sees `String(localized:` when the literal starts on the same line as
     // the call.
     private func overwriteMessage(for entry: ProjectStore.Entry) -> String {
-        String(localized: "\"\(entry.name)\" already has \(entry.paneCount) pane(s), saved \(Self.dateFormatter.string(from: entry.savedAt)). Overwriting it can't be undone.", comment: "覆盖确认框正文，参数依次是项目名、面板数、保存时间")
+        String(localized: "\"\(entry.name)\" already has \(String(entry.paneCount)) pane(s), saved \(Self.dateFormatter.string(from: entry.savedAt)). Overwriting it can't be undone.", comment: "覆盖确认框正文，参数依次是项目名、面板数、保存时间")
     }
 
     private func currentPaneCountLabel(_ count: Int) -> String {
-        String(localized: "Saves this tab: \(count) pane(s)", comment: "另存为项目：新建行下方，提示会存下当前 tab 的几个面板")
+        String(localized: "Saves this tab: \(String(count)) pane(s)", comment: "另存为项目：新建行下方，提示会存下当前 tab 的几个面板")
     }
 
     private func subtitle(for entry: ProjectStore.Entry) -> String {
-        String(localized: "\(entry.paneCount) pane(s) · saved \(Self.dateFormatter.string(from: entry.savedAt))", comment: "项目列表每一行的副标题：面板数和保存时间")
+        String(localized: "\(String(entry.paneCount)) pane(s) · saved \(Self.dateFormatter.string(from: entry.savedAt))", comment: "项目列表每一行的副标题：面板数和保存时间")
     }
 
     private static let dateFormatter: DateFormatter = {

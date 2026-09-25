@@ -64,7 +64,7 @@ enum GitHubUpdateChecker {
             case .malformedResponse:
                 return String(localized: "GitHub's response could not be read.", comment: "更新检查错误")
             case .unexpectedStatus(let code):
-                return String(localized: "GitHub returned an unexpected response (\(code)).", comment: "更新检查错误")
+                return String(localized: "GitHub returned an unexpected response (\(String(code))).", comment: "更新检查错误")
             case .versionUnknown:
                 return String(localized: "This build's own version could not be determined (it was not built from a release tag or version branch), so it cannot be compared against GitHub's releases.", comment: "更新检查错误")
             }

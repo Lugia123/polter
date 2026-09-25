@@ -376,7 +376,7 @@ class BaseTerminalController: NSWindowController,
     func confirmCloseAsync(
         messageText: String,
         informativeText: String,
-        confirmButtonTitle: String = "Close",
+        confirmButtonTitle: String = String(localized: "Close", comment: "关闭确认框"),
     ) async -> NSApplication.ModalResponse? {
         // If we already have an alert, we need to wait for that one.
         guard alert == nil else { return nil }
@@ -409,7 +409,7 @@ class BaseTerminalController: NSWindowController,
     func confirmClose(
         messageText: String,
         informativeText: String,
-        confirmButtonTitle: String = "Close",
+        confirmButtonTitle: String = String(localized: "Close", comment: "关闭确认框"),
         completion: @escaping () -> Void
     ) {
         Task {
@@ -485,8 +485,8 @@ class BaseTerminalController: NSWindowController,
         // so SwiftUI does not update any of the bindings to note that window is no longer
         // being shown, and provides no callback to detect this.
         confirmClose(
-            messageText: "Close Terminal?",
-            informativeText: "The terminal still has a running process. If you close the terminal the process will be killed."
+            messageText: String(localized: "Close Terminal?", comment: "关闭确认框"),
+            informativeText: String(localized: "The terminal still has a running process. If you close the terminal the process will be killed.", comment: "关闭确认框")
         ) { [weak self] in
             if let self {
                 self.removeSurfaceNode(node)
@@ -1269,8 +1269,8 @@ class BaseTerminalController: NSWindowController,
         }
         // We require confirmation, so show an alert as long as we aren't already.
         confirmClose(
-            messageText: "Close Terminal?",
-            informativeText: "The terminal still has a running process. If you close the terminal the process will be killed."
+            messageText: String(localized: "Close Terminal?", comment: "关闭确认框"),
+            informativeText: String(localized: "The terminal still has a running process. If you close the terminal the process will be killed.", comment: "关闭确认框")
         ) { [weak self] in
             self?.window?.close()
         }
@@ -1512,7 +1512,7 @@ class BaseTerminalController: NSWindowController,
     }
 
     @IBAction func findPrevious(_ sender: Any) {
-        focusedSurface?.findNext(sender)
+        focusedSurface?.findPrevious(sender)
     }
 
     @IBAction func findHide(_ sender: Any) {
@@ -1715,7 +1715,7 @@ extension BaseTerminalController {
         target.pendingClipboardConfirmation = nil
     }
 
-    func clipboardConfirmationComplete(_ action: ClipboardConfirmationView.Action) {
+    func clipboardConfirmationComplete(_ action: ClipboardConfirmationView.Action, remember: Bool) {
         // End our clipboard confirmation no matter what
         guard let cc = self.clipboardConfirmation else { return }
         dismissClipboardConfirmation(cc)
@@ -1724,7 +1724,7 @@ extension BaseTerminalController {
         case .cancel:
             cc.confirmation.cancel()
         case .confirm:
-            cc.confirmation.complete()
+            cc.confirmation.complete(remember: remember)
         }
 
         // Clear only if this is still the surface's current request. Completing

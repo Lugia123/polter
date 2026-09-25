@@ -62,7 +62,7 @@ const preamble =
     "\n\n";
 
 /// The `help` command shows general help about Polter. Recognized as either
-/// `-h, `--help`, or like other actions `+help`.
+/// `-h`, `--help`, or like other actions `+help`.
 ///
 /// You can also specify `--help` or `-h` along with any action such as
 /// `+list-themes` to see help for a specific action.

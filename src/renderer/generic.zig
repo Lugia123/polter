@@ -63,6 +63,11 @@ const log = std.log.scoped(.generic_renderer);
 /// like "that code never ran". See `renderer/log_budget.zig`.
 const rsz_log_max: usize = 20;
 
+/// How long `frameCompleted` waits for room in the app mailbox before giving
+/// up on a health report (and retrying it next frame). The same bound, and
+/// for the same reasons, as a send into the renderer's own mailbox.
+const health_send_timeout_ns: u64 = renderer.Thread.send_timeout_ns;
+
 /// Create a renderer type with the provided graphics API wrapper.
 ///
 /// The graphics API wrapper must provide the interface outlined below.
@@ -98,11 +103,17 @@ const rsz_log_max: usize = 20;
 ///
 /// [ Texture ] - An abstraction over a GPU texture.
 ///
+/// [ ExportedFrame ] - A finished frame ready to be consumed by the apprt
+///                     in case that the frame needs to be composited with
+///                     UI elements by the graphical toolkit manually.
+///
 pub fn Renderer(comptime GraphicsAPI: type) type {
     return struct {
         const Self = @This();
 
         pub const API = GraphicsAPI;
+
+        pub const ExportedFrame = if (@hasDecl(GraphicsAPI, "ExportedFrame")) GraphicsAPI.ExportedFrame else void;
 
         const Target = GraphicsAPI.Target;
         const Buffer = GraphicsAPI.Buffer;
@@ -147,6 +158,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// The mailbox for communicating with the window.
         surface_mailbox: apprt.surface.Mailbox,
+
+        /// The latest exported frame ready to be consumed by an apprt
+        /// who needs to manually composite the frame with UI elements.
+        /// Previously exported frames are released when a new frame is
+        /// exported and pushed onto the queue.
+        ///
+        /// Unused if the renderer does not need to export frames to
+        /// present its rendered frame.
+        latest_frame: LatestFrame = .{},
 
         /// Current font metrics defining our grid.
         grid_metrics: font.Metrics,
@@ -244,11 +264,24 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// don't support a display link.
         display_link: ?DisplayLink = null,
 
-        /// Health of the most recently completed frame.
+        /// Health most recently *reported to the surface*. A change that
+        /// could not be delivered leaves this at the old value so the next
+        /// frame retries; see `frameCompleted`.
         health: std.atomic.Value(Health) = .{ .raw = .healthy },
 
-        /// Our swap chain (multiple buffering)
-        swap_chain: SwapChain,
+        /// How many health reports did not fit in the app mailbox within
+        /// `health_send_timeout_ns`. Each one is retried on the next frame.
+        health_report_drops: u64 = 0,
+
+        /// True when we have a graphics context that can create GPU
+        /// resources. Creating any GPU resource while this is false is invalid.
+        display_realized: bool = true,
+
+        /// Our swap chain (multiple buffering). Null when it has
+        /// been released, either because the surface is hidden
+        /// (`releaseGpuResources`) or because the display is
+        /// unrealized. Rebuilt on the next `drawFrame`.
+        swap_chain: ?SwapChain,
 
         /// This value is used to force-update swap chain targets in the
         /// event of a config change that requires it (such as blending mode).
@@ -276,6 +309,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Our overlay state, if any.
         overlay: ?Overlay = null,
 
+        /// The base timestamp for the Kitty graphics animation clock.
+        /// Animation frame timing is expressed as milliseconds since
+        /// this instant. Set on the first frame update that observes
+        /// Kitty images.
+        kitty_animation_clock: ?std.Io.Timestamp = null,
+
+        /// When the next Kitty animation frame is due, in
+        /// milliseconds on the animation clock, from the most recent
+        /// frame update. Null when no running animation needs a
+        /// wakeup.
+        kitty_animation_next_ms: ?u64 = null,
+
         const HighlightTag = enum(u8) {
             search_match,
             search_match_selected,
@@ -299,14 +344,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             /// frame state struct so we can start working on a new frame.
             frame_sema: std.Io.Semaphore = .{ .permits = buf_count },
 
-            /// Set to true when deinited, if you try to deinit a defunct
-            /// swap chain it will just be ignored, to prevent double-free.
-            ///
-            /// This is required because of `displayUnrealized`, since it
-            /// `deinits` the swapchain, which leads to a double-free if
-            /// the renderer is deinited after that.
-            defunct: bool = false,
-
             pub fn init(api: GraphicsAPI, custom_shaders: bool) !SwapChain {
                 var result: SwapChain = .{ .frames = undefined };
 
@@ -319,9 +356,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             pub fn deinit(self: *SwapChain) void {
-                if (self.defunct) return;
-                self.defunct = true;
-
                 // Wait for all of our inflight draws to complete
                 // so that we can cleanly deinit our GPU state.
                 for (0..buf_count) |_| self.frame_sema.waitUncancelable(
@@ -333,11 +367,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             /// Get the next frame state to draw to. This will wait on the
             /// semaphore to ensure that the frame is available. This must
             /// always be paired with a call to releaseFrame.
-            pub fn nextFrame(self: *SwapChain) error{Defunct}!*FrameState {
-                if (self.defunct) return error.Defunct;
-
+            pub fn nextFrame(self: *SwapChain) *FrameState {
                 self.frame_sema.waitUncancelable(global.io());
-                errdefer self.frame_sema.post();
                 self.frame_index = (self.frame_index + 1) % buf_count;
                 return &self.frames[self.frame_index];
             }
@@ -617,6 +648,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             blending: configpkg.Config.AlphaBlending,
             background_blur: configpkg.Config.BackgroundBlur,
             scroll_to_bottom_on_output: bool,
+            custom_shader_animation: configpkg.CustomShaderAnimation,
 
             pub fn init(
                 alloc_gpa: Allocator,
@@ -691,6 +723,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .blending = config.@"alpha-blending",
                     .background_blur = config.@"background-blur",
                     .scroll_to_bottom_on_output = config.@"scroll-to-bottom".output,
+                    .custom_shader_animation = config.@"custom-shader-animation",
                     .arena = arena,
                 };
             }
@@ -710,13 +743,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             errdefer api.deinit();
 
             const has_custom_shaders = options.config.custom_shaders.value.items.len > 0;
-
-            // Prepare our swap chain
-            var swap_chain = try SwapChain.init(
-                api,
-                has_custom_shaders,
-            );
-            errdefer swap_chain.deinit();
 
             // Create the font shaper.
             var font_shaper = try font.Shaper.init(alloc, .{
@@ -816,15 +842,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .font_shaper = font_shaper,
                 .font_shaper_cache = font.ShaperCache.init(),
 
-                // Shaders (initialized below)
-                .shaders = undefined,
-
                 // Graphics API stuff
                 .api = api,
-                .swap_chain = swap_chain,
+                .swap_chain = null,
+                .has_custom_shaders = has_custom_shaders,
+                .reinitialize_shaders = true,
+                // Shaders are initialized lazily on the render thread.
+                .shaders = .uninit,
             };
-
-            try result.initShaders();
 
             // Ensure our undefined values above are correctly initialized.
             result.updateFontGridUniforms();
@@ -836,11 +861,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            // This only deinitializes and frees CPU-side state
+            // and does not free GPU resources like the swap chain and
+            // shaders. Those are freed with `releaseGpuResources`.
+
             if (self.overlay) |*overlay| overlay.deinit(self.alloc);
             self.terminal_state.deinit(self.alloc);
             if (self.search_selected_match) |*m| m.arena.deinit();
             if (self.search_matches) |*m| m.arena.deinit();
-            self.swap_chain.deinit();
+
+            self.latest_frame.deinit(global.io());
 
             if (DisplayLink != void) {
                 if (self.display_link) |display_link| {
@@ -855,20 +885,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.font_shaper_cache.deinit(self.alloc);
 
             self.config.deinit();
-
-            self.images.deinit(self.alloc);
-
-            if (self.bg_image) |img| img.deinit(self.alloc);
-
-            self.deinitShaders();
-
             self.api.deinit();
 
             self.* = undefined;
-        }
-
-        fn deinitShaders(self: *Self) void {
-            self.shaders.deinit(self.alloc);
         }
 
         fn initShaders(self: *Self) !void {
@@ -898,33 +917,38 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.has_custom_shaders = has_custom_shaders;
         }
 
-        /// This is called early right after surface creation.
-        pub fn surfaceInit(surface: *apprt.Surface) !void {
-            // If our API has to do things here, let it.
-            if (@hasDecl(GraphicsAPI, "surfaceInit")) {
-                try GraphicsAPI.surfaceInit(surface);
-            }
-        }
-
-        /// This is called just prior to spinning up the renderer thread for
-        /// final main thread setup requirements.
-        pub fn finalizeSurfaceInit(self: *Self, surface: *apprt.Surface) !void {
-            // If our API has to do things to finalize surface init, let it.
-            if (@hasDecl(GraphicsAPI, "finalizeSurfaceInit")) {
-                try self.api.finalizeSurfaceInit(surface);
-            }
-        }
-
         /// Callback called by renderer.Thread when it begins.
-        pub fn threadEnter(self: *const Self, surface: *apprt.Surface) !void {
+        pub fn threadEnter(self: *Self, surface: *apprt.Surface) !void {
             // If our API has to do things on thread enter, let it.
             if (@hasDecl(GraphicsAPI, "threadEnter")) {
                 try self.api.threadEnter(surface);
             }
         }
 
-        /// Callback called by renderer.Thread when it exits.
-        pub fn threadExit(self: *const Self) void {
+        /// Callback called by renderer.Thread when it exits. Called on the
+        /// render thread. Releases all GPU resources before the API tears down
+        /// its context, since after this the GL context will be gone.
+        pub fn threadExit(self: *Self) void {
+            {
+                self.draw_mutex.lockUncancelable(global.io());
+                defer self.draw_mutex.unlock(global.io());
+
+                // Release swap chain and shaders.
+                self.releaseGpuResources();
+
+                // We don't release images in `releaseGpuResources`
+                // since it can be called whenever the terminal is
+                // occluded or unrealized, and we don't want to
+                // reupload images every time that happens.
+                self.images.deinit(self.alloc);
+                self.images = .empty;
+
+                if (self.bg_image) |img| {
+                    img.deinit(self.alloc);
+                    self.bg_image = null;
+                }
+            }
+
             // If our API has to do things on thread exit, let it.
             if (@hasDecl(GraphicsAPI, "threadExit")) {
                 self.api.threadExit();
@@ -962,54 +986,101 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         /// This is called by the GTK apprt after the surface is
-        /// reinitialized due to any of the events mentioned in
-        /// the doc comment for `displayUnrealized`.
+        /// reinitialized (e.g. after the widget is re-realized following
+        /// a display change or reparenting).
         pub fn displayRealized(self: *Self) !void {
             // If our API has to do things on realize, let it.
             if (@hasDecl(GraphicsAPI, "displayRealized")) {
                 self.api.displayRealized();
             }
 
-            // Lock the draw mutex so that we can
-            // safely reinitialize our GPU resources.
+            // Lock the draw mutex so that we can safely update state.
             self.draw_mutex.lockUncancelable(global.io());
             defer self.draw_mutex.unlock(global.io());
 
-            // We assume that the swap chain was deinited in
-            // `displayUnrealized`, in which case it should be
-            // marked defunct. If not, we have a problem.
-            assert(self.swap_chain.defunct);
-
-            // We reinitialize our shaders and our swap chain.
-            try self.initShaders();
-            self.swap_chain = try SwapChain.init(
-                self.api,
-                self.has_custom_shaders,
-            );
-            self.reinitialize_shaders = false;
+            // Mark the display as realized. The render thread will lazily
+            // rebuild the swap chain and shaders on the next `drawFrame`,
+            // which is the right place for GL resource creation (it
+            // guarantees a current context on the render thread).
+            self.display_realized = true;
+            self.reinitialize_shaders = true;
             self.target_config_modified = 1;
         }
 
-        /// This is called by the GTK apprt when the surface is being destroyed.
-        /// This can happen because the surface is being closed but also when
-        /// moving the window between displays or splitting.
+        /// This is called when the surface is being unrealized.
+        /// This can happen because the surface is being closed but
+        /// also when moving the window between displays or splitting.
+        ///
+        /// This runs on the main thread and only updates CPU-side state
+        /// here; resource cleanup happens on the render thread via
+        /// `releaseGpuResources`.
         pub fn displayUnrealized(self: *Self) void {
-            // If our API has to do things on unrealize, let it.
-            if (@hasDecl(GraphicsAPI, "displayUnrealized")) {
-                self.api.displayUnrealized();
-            }
-
-            // Lock the draw mutex so that we can
-            // safely deinitialize our GPU resources.
+            // Lock the draw mutex so that we can safely update state.
             self.draw_mutex.lockUncancelable(global.io());
             defer self.draw_mutex.unlock(global.io());
 
-            // We deinit our swap chain and shaders.
-            //
-            // This will mark them as defunct so that they
-            // can't be double-freed or used in draw calls.
-            self.swap_chain.deinit();
-            self.shaders.deinit(self.alloc);
+            // Clearing `display_realized` ensures drawFrame doesn't attempt
+            // to rebuild the swap chain or make any graphics API calls.
+            // The actual GPU resource release is done by the render thread.
+            self.display_realized = false;
+        }
+
+        /// A thread-safe, single-slot "latest wins" queue. The render thread
+        /// calls `push` with the latest frame; the apprt calls `take` in its
+        /// snapshot handler to grab the most recent frame. Old frames are
+        /// dropped and released. For a terminal this is correct — we never
+        /// want to queue up frames behind a slow compositor.
+        const LatestFrame = struct {
+            const Self = @This();
+            mutex: std.Io.Mutex = .init,
+            latest: ?ExportedFrame = null,
+
+            pub fn push(self: *LatestFrame, io: std.Io, value: ExportedFrame) void {
+                if (comptime ExportedFrame == void) return;
+
+                self.mutex.lockUncancelable(io);
+                defer self.mutex.unlock(io);
+                if (self.latest) |*old| old.deinit();
+                self.latest = value;
+            }
+
+            pub fn take(self: *LatestFrame, io: std.Io) ?ExportedFrame {
+                if (comptime ExportedFrame == void) return null;
+
+                self.mutex.lockUncancelable(io);
+                defer self.mutex.unlock(io);
+                const result = self.latest orelse return null;
+                self.latest = null;
+                return result;
+            }
+
+            pub fn deinit(self: *LatestFrame, io: std.Io) void {
+                if (comptime ExportedFrame == void) return;
+
+                self.mutex.lockUncancelable(io);
+                defer self.mutex.unlock(io);
+                if (self.latest) |*v| v.deinit();
+                self.latest = null;
+            }
+        };
+
+        /// Push the latest completed frame, replacing if one previously
+        /// existed. Called on the render thread.
+        ///
+        /// Has no effect for renderers that do not export frames
+        /// (i.e. `ExportedFrame == void`).
+        pub fn pushFrame(self: *Self, frame: ExportedFrame) void {
+            return self.latest_frame.push(global.io(), frame);
+        }
+
+        /// Take the latest completed frame for the apprt to composite.
+        /// Returns null if no frame is available. The caller takes
+        /// ownership of the returned frame. Called on the main thread.
+        ///
+        /// Has no effect for renderers that do not export frames
+        /// (i.e. `ExportedFrame == void`).
+        pub fn takeFrame(self: *Self) ?ExportedFrame {
+            return self.latest_frame.take(global.io());
         }
 
         fn displayLinkCallback(
@@ -1037,8 +1108,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.syncDisplayLink(id, draw_now);
         }
 
-        /// True if our renderer has animations so that a higher frequency
-        /// timer is used.
         /// Name the statement this thread is about to run, so that a log
         /// which stops mid-frame says *where* it stopped.
         ///
@@ -1064,8 +1133,74 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             log.info("[rphase] r={x} at=" ++ at, .{@intFromPtr(self)});
         }
 
-        pub fn hasAnimations(self: *const Self) bool {
-            return self.has_custom_shaders;
+        /// The cadence of continuous (draw-only) animation wakes,
+        /// i.e. 120fps, and the floor for any animation wake delay.
+        pub const draw_interval_ms: u64 = 8;
+
+        /// A point in the future when the renderer needs to be driven
+        /// again to keep animating, and what kind of drive it needs.
+        pub const AnimationWake = struct {
+            /// Delay in milliseconds until the wake is due.
+            delay_ms: u64,
+            kind: Kind,
+
+            pub const Kind = enum {
+                /// A redraw alone suffices, no updateFrame. Much cheaper
+                /// than `update`.
+                draw,
+
+                /// Frame data must be updated first: updateFrame, then draw.
+                update,
+            };
+        };
+
+        /// The soonest animation wake this renderer needs, if any:
+        /// custom shader animation wants continuous draw-only wakes
+        /// at draw_interval_ms while active, and a running Kitty
+        /// graphics animation wants an update wake when its next
+        /// frame is due. The renderer thread drives its animation
+        /// timer off this, re-querying after every wake.
+        ///
+        /// Must be called on the render thread.
+        pub fn animationWake(self: *const Self) ?AnimationWake {
+            // Custom shaders animate by redrawing on a fixed cadence,
+            // gated by configuration and focus.
+            const shader_delay: ?u64 = shader: {
+                if (!self.has_custom_shaders) break :shader null;
+                break :shader switch (self.config.custom_shader_animation) {
+                    .false => null,
+                    .always => draw_interval_ms,
+                    .true => if (self.focused) draw_interval_ms else null,
+                };
+            };
+
+            // Kitty animations tick during updateFrame; between
+            // updates the deadline is absolute on the animation
+            // clock, so a stream of draw wakes recomputing this
+            // cannot starve it into the future.
+            const kitty_delay: ?u64 = kitty: {
+                const next = self.kitty_animation_next_ms orelse break :kitty null;
+                const base = self.kitty_animation_clock orelse break :kitty null;
+                const now: std.Io.Timestamp = .now(global.io(), .awake);
+                const now_ms: u64 = @intCast(@divTrunc(
+                    base.durationTo(now).nanoseconds,
+                    std.time.ns_per_ms,
+                ));
+                // Never wake faster than the draw interval; an
+                // overdue frame is picked up on the next wake.
+                break :kitty @max(next -| now_ms, draw_interval_ms);
+            };
+
+            // An update wake includes a draw, so it wins ties.
+            if (kitty_delay) |k| {
+                if (shader_delay == null or k <= shader_delay.?) {
+                    return .{ .delay_ms = k, .kind = .update };
+                }
+            }
+
+            if (shader_delay) |s| return .{ .delay_ms = s, .kind = .draw };
+
+            return null;
         }
 
         /// True if our renderer is using vsync. If true, the renderer or apprt
@@ -1097,10 +1232,49 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         pub fn setVisible(self: *Self, visible: bool) void {
             self.visible = visible;
             self.syncDisplayLink(null, null);
+
+            // When we're hidden, release our GPU resources.
+            if (!visible) {
+                self.draw_mutex.lockUncancelable(global.io());
+                defer self.draw_mutex.unlock(global.io());
+                self.releaseGpuResources();
+            }
+        }
+
+        /// Release the GPU resources we hold while the surface is not
+        /// visible. Today this is the swap chain (render targets, font
+        /// atlas texture copies, cell buffers, custom shader textures),
+        /// which makes up nearly all of a surface's GPU memory usage.
+        /// The swap chain is rebuilt on the next `drawFrame`.
+        ///
+        /// Note that images are NOT released here since we don't want
+        /// to reupload images every time the terminal is brought back
+        /// from being occluded or unrealized.
+        ///
+        /// Caller must lock the draw mutex before calling this function.
+        /// Resources that are already released are skipped.
+        pub fn releaseGpuResources(self: *Self) void {
+            if (self.swap_chain) |*sc| {
+                // Waits for any in-flight frames to complete, then
+                // frees all GPU resources.
+                sc.deinit();
+                self.swap_chain = null;
+            }
+
+            // Release the shaders as well if we're unrealized.
+            if (!self.display_realized) {
+                self.shaders.deinit(self.alloc);
+            }
         }
 
         /// Create or update the display link and match it to the current
         /// surface state.
+        ///
+        /// Must be called on the render thread and must NOT be called
+        /// while holding `draw_mutex`. Stopping a CVDisplayLink is a
+        /// blocking join on CoreVideo's IO thread, and the apprt calls
+        /// `drawFrame` (which takes `draw_mutex`) from the CoreAnimation
+        /// layer display path on the main thread.
         fn syncDisplayLink(
             self: *Self,
             display_id: ?u32,
@@ -1140,11 +1314,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 };
             }
 
-            // If we're not visible, then we want to stop the display link
-            // because it is a waste of resources and we can move to pure
-            // change-driven updates.
-            if (self.visible and self.focused) {
-                display_link.start() catch {};
+            const should_run =
+                // Non-visible windows never vsync
+                self.visible and
+                // Only vsync if we have cell changes or animation
+                (self.cells_rebuilt or self.animationWake() != null);
+
+            if (should_run) {
+                if (!display_link.isRunning()) {
+                    display_link.start() catch {};
+                }
             } else {
                 display_link.stop() catch {};
             }
@@ -1162,11 +1341,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Update all our textures so that they sync on the next frame.
             // We can modify this without a lock because the GPU does not
-            // touch this data.
-            for (&self.swap_chain.frames) |*frame| {
+            // touch this data. A released swap chain is rebuilt with
+            // fresh frames that sync all textures on first use.
+            if (self.swap_chain) |*sc| for (&sc.frames) |*frame| {
                 frame.grayscale_modified = 0;
                 frame.color_modified = 0;
-            }
+            };
 
             // Get our metrics from the grid. This doesn't require a lock because
             // the metrics are never recalculated.
@@ -1318,6 +1498,33 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 const preedit: ?renderer.State.Preedit = preedit: {
                     const p = state.preedit orelse break :preedit null;
                     break :preedit try p.clone(arena_alloc);
+                };
+
+                // Advance any running Kitty graphics animations to the
+                // frame due now, and remember when the next frame is
+                // due (as an absolute deadline, see animationWake) so
+                // the renderer thread can schedule a wakeup for it.
+                // This must happen before the dirty check below:
+                // advancing a frame marks the image state dirty.
+                self.kitty_animation_next_ms = next: {
+                    // Likely case: we have no kitty images, so do nothing.
+                    const storage = &state.terminal.screens.active.kitty_images;
+                    if (storage.images.count() == 0) break :next null;
+
+                    const now: std.Io.Timestamp = .now(global.io(), .awake);
+                    const base = self.kitty_animation_clock orelse base: {
+                        self.kitty_animation_clock = now;
+                        break :base now;
+                    };
+                    const now_ms: u64 = @intCast(@divTrunc(
+                        base.durationTo(now).nanoseconds,
+                        std.time.ns_per_ms,
+                    ));
+                    const delay = storage.animationTick(
+                        global.io(),
+                        now_ms,
+                    ) orelse break :next null;
+                    break :next now_ms + delay;
                 };
 
                 // If we have Kitty graphics data, we enter a SLOW SLOW SLOW path.
@@ -1521,6 +1728,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // Update custom shader uniforms that depend on terminal state.
                 self.updateCustomShaderUniformsFromState();
             }
+
+            // Start the display link now that the rebuilt frame is ready.
+            self.syncDisplayLink(null, null);
         }
 
         /// Draw the frame to the screen.
@@ -1531,11 +1741,30 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self: *Self,
             sync: bool,
         ) !void {
-            // We hold a the draw mutex to prevent changes to any
-            // data we access while we're in the middle of drawing.
-            self.draw_mutex.lockUncancelable(global.io());
-            defer self.draw_mutex.unlock(global.io());
+            // Everything that touches draw state happens under the draw
+            // mutex. The display link is synced only after the mutex is
+            // released; see `syncDisplayLink` for why it must never be
+            // called with the draw mutex held.
+            const sync_display_link = locked: {
+                self.draw_mutex.lockUncancelable(global.io());
+                defer self.draw_mutex.unlock(global.io());
+                break :locked try self.drawFrameLocked(sync);
+            };
 
+            if (sync_display_link) self.syncDisplayLink(null, null);
+        }
+
+        /// The body of `drawFrame`. Must be called with `draw_mutex` held.
+        ///
+        /// Returns true if the display link should be resynced once the
+        /// draw mutex is released. This is only ever true on the no-redraw
+        /// path, which a sync draw never takes, so the main thread's sync
+        /// draws never touch the display link and `syncDisplayLink` stays
+        /// on the render thread.
+        fn drawFrameLocked(
+            self: *Self,
+            sync: bool,
+        ) !bool {
             // After the graphics API is complete (so we defer) we want to
             // update our scrollbar state.
             defer if (self.scrollbar_dirty) {
@@ -1557,7 +1786,26 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // If either of our surface dimensions is zero
             // then drawing is absurd, so we just return.
             self.rphase("zerosize");
-            if (surface_size.width == 0 or surface_size.height == 0) return;
+            if (surface_size.width == 0 or surface_size.height == 0) return false;
+
+            // If we have no graphics context we can't draw. This is
+            // only the case while unrealized (GTK); displayRealized
+            // rebuilds the swap chain.
+            if (!self.display_realized) return false;
+
+            // Get our swap chain, rebuilding it if it was released
+            // while we were hidden. Rebuilding is deferred to draw
+            // time because resource creation must happen somewhere
+            // our graphics API allows it (OpenGL requires a current
+            // context, which drawFrame guarantees).
+            const swap_chain: *SwapChain, const swap_chain_rebuilt: bool =
+                if (self.swap_chain) |*sc| .{ sc, false } else rebuild: {
+                    self.swap_chain = try SwapChain.init(
+                        self.api,
+                        self.has_custom_shaders,
+                    );
+                    break :rebuild .{ &self.swap_chain.?, true };
+                };
 
             const size_changed =
                 self.size.screen.width != surface_size.width or
@@ -1565,10 +1813,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Conditions under which we need to draw the frame, otherwise we
             // don't need to since the previous frame should be identical.
+            //
+            // While any animation is in progress (a pending animation wake)
+            // every draw must actually render.
             const needs_redraw =
                 size_changed or
+                swap_chain_rebuilt or
                 self.cells_rebuilt or
-                self.hasAnimations() or
+                self.animationWake() != null or
                 sync;
 
             // **The components, on both sides of the decision.**
@@ -1586,13 +1838,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // question is open, so this reports where the answer is computed
             // rather than where one of the answers is used.
             if (comptime build_config.log_render_phase) log.info(
-                "[rphase] r={x} at=decide needs_redraw={} size_changed={} cells_rebuilt={} animations={} sync={}",
+                "[rphase] r={x} at=decide needs_redraw={} size_changed={} swap_chain_rebuilt={} cells_rebuilt={} animations={} sync={}",
                 .{
                     @intFromPtr(self),
                     needs_redraw,
                     size_changed,
+                    swap_chain_rebuilt,
                     self.cells_rebuilt,
-                    self.hasAnimations(),
+                    self.animationWake() != null,
                     sync,
                 },
             );
@@ -1635,18 +1888,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // goes. This only marks the branch.
                 self.rphase("noredraw");
 
-                // We still need to present the last target again, because the
-                // apprt may be swapping buffers and display an outdated frame
-                // if we don't draw something new.
-                self.rphase("presentlast");
-                try self.api.presentLastTarget();
-                return;
+                // Ask our caller to resync the display link once the draw
+                // mutex is released, because we can probably pause the
+                // display link at this point.
+                return true;
             }
             self.cells_rebuilt = false;
 
             // Wait for a frame to be available.
             self.rphase("nextframe");
-            const frame = try self.swap_chain.nextFrame();
+            const frame = swap_chain.nextFrame();
             // **Exactly one release per acquisition.** Once `beginFrame`
             // succeeds, `frame_ctx.complete` releases the frame on every exit
             // path including the failing ones, so an unconditional `errdefer`
@@ -1656,9 +1907,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // reading -- the exact race the swap chain exists to prevent, and
             // one whose symptom (tearing, flickering cells) looks nothing like
             // a double release.
+            //
+            // ⚠️ Upstream fixed the same leak independently (c4e16970a) with
+            // an *unconditional* `errdefer swap_chain.releaseFrame()`, which
+            // has exactly that double release. Merging theirs verbatim undoes
+            // #446; keep the gate.
             var frame_owned = true;
-            errdefer if (frame_owned) self.swap_chain.releaseFrame();
-            // log.debug("drawing frame index={}", .{self.swap_chain.frame_index});
+            errdefer if (frame_owned) swap_chain.releaseFrame();
+            // log.debug("drawing frame index={}", .{swap_chain.frame_index});
 
             // If we need to reinitialize our shaders, do so.
             if (self.reinitialize_shaders) {
@@ -1752,7 +2008,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // Setup our frame data
             try frame.uniforms.sync(&.{self.uniforms});
             try frame.cells_bg.sync(self.cells.bg_cells);
-            const fg_count = try frame.cells.syncFromArrayLists(self.cells.fg_rows.lists);
+            const fg_count = try frame.cells.syncFromArrayLists(self.cells.fg_rows);
 
             // If our background image buffer has changed, sync it.
             if (frame.bg_image_buffer_modified != self.bg_image_buffer_modified) {
@@ -1806,6 +2062,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 //       would require us to do color space conversion on the
                 //       CPU-side. In the future when we have utilities for
                 //       that we should remove this step and use clear_color.
+
                 if (self.bg_image) |img| switch (img) {
                     .ready => |texture| pass.step(.{
                         .pipeline = self.shaders.pipelines.bg_image,
@@ -1915,6 +2172,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     });
                 }
             }
+
+            return false;
         }
 
         // Callback from the graphics API when a frame is completed.
@@ -1922,29 +2181,59 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self: *Self,
             health: Health,
         ) void {
+            // **The permit comes back first, before anything that can wait.**
+            // The health report below is a send into the *app* mailbox, which
+            // is drained by the UI thread; if that thread is busy for long
+            // enough to fill it, the send waits. Waiting before the release
+            // meant the frame was never handed back, so the next `nextFrame`
+            // blocked forever on the semaphore and the pane stopped drawing
+            // for good -- a moment of UI slowness turned into a permanently
+            // dead surface. Releasing first costs nothing: the frame's work
+            // is finished by the time we are called.
+            //
+            // The swap chain is guaranteed to exist here: it is only torn
+            // down after waiting for all in-flight frames to complete, and
+            // this callback is what signals that completion.
+            self.swap_chain.?.releaseFrame();
+
             // If our health value hasn't changed, then we do nothing. We don't
             // do a cmpxchg here because strict atomicity isn't important.
-            // **The permit comes back first, before anything that can wait.**
-            // The health report below is a blocking send into the *app*
-            // mailbox, which is drained by the UI thread; if that thread is
-            // busy for long enough to fill it, this send parks here. Parking
-            // before the release meant the frame was never handed back, so
-            // the next `nextFrame` blocked forever on the semaphore and the
-            // pane stopped drawing for good -- a moment of UI slowness turned
-            // into a permanently dead surface. Releasing first costs nothing:
-            // the frame's work is finished by the time we are called.
-            self.swap_chain.releaseFrame();
+            if (self.health.load(.seq_cst) == health) return;
 
-            if (self.health.load(.seq_cst) != health) {
-                self.health.store(health, .seq_cst);
-
-                // Our health value changed, so we notify the surface so that it
-                // can do something about it.
-                self.rphase("health");
-                _ = self.surface_mailbox.push(.{
-                    .renderer_health = health,
-                }, .{ .forever = {} });
+            // Our health value changed, so we notify the surface so that it
+            // can do something about it.
+            //
+            // **Bounded, and committed only once delivered (#483).** This
+            // used to wait `.forever`. The app mailbox holds 64 and only the
+            // UI thread drains it, so a full one parked this thread for good
+            // -- with the draw mutex held, since we are called from inside
+            // `drawFrameLocked` -- and the pane froze on its last frame while
+            // the window stayed responsive. Releasing the permit first (above)
+            // only stopped that from also starving the swap chain; it did not
+            // stop the park. Upstream still has the `.forever` here.
+            //
+            // A report that does not fit is not lost: `self.health` is left
+            // at the old value, so the next completed frame sees the same
+            // difference and tries again.
+            self.rphase("health");
+            if (self.surface_mailbox.push(.{
+                .renderer_health = health,
+            }, .{ .ns = health_send_timeout_ns }) == 0) {
+                self.health_report_drops += 1;
+                // absence: means it was not reached -- the first failure
+                // always speaks, so no line at all means every health change
+                // was delivered. Later ones are sampled.
+                if (renderer.shouldReport(self.health_report_drops, 64)) log.warn(
+                    "[mbox] app mailbox STILL full after {d}ms; renderer_health={s} not reported, will retry next frame drops={d}",
+                    .{
+                        health_send_timeout_ns / std.time.ns_per_ms,
+                        @tagName(health),
+                        self.health_report_drops,
+                    },
+                );
+                return;
             }
+            self.health.store(health, .seq_cst);
         }
 
         /// Call this any time the background image path changes.
@@ -2134,11 +2423,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.draw_mutex.lockUncancelable(global.io());
             defer self.draw_mutex.unlock(global.io());
 
-            // We only actually need the padding from this,
-            // everything else is derived elsewhere.
-            self.size.padding = size.padding;
-
+            self.size = size;
             self.updateScreenSizeUniforms();
+
+            // Some graphics APIs need to manually update their viewport,
+            // like OpenGL. Do so here.
+            if (@hasDecl(GraphicsAPI, "setViewport")) {
+                self.api.setViewport(self.size.screen.width, self.size.screen.height);
+            }
 
             log.debug("screen size size={}", .{size});
         }
@@ -3515,7 +3807,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 @intCast(cp.codepoint),
                 .regular,
                 .text,
-                .{ .grid_metrics = self.grid_metrics },
+                .{
+                    .grid_metrics = self.grid_metrics,
+                    .thicken = self.config.font_thicken,
+                    .thicken_strength = self.config.font_thicken_strength,
+                },
             ) catch |err| {
                 log.warn("error rendering preedit glyph err={}", .{err});
                 return;
@@ -3568,8 +3864,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
 test "frameCompleted reports a health change once per flip, not per frame" {
     // **This test exists because that report had no coverage at all, and
-    // could not have had any.** It is a blocking send into the app mailbox,
-    // and until `apprt.none.App` grew a `wakeup` the app mailbox could not be
+    // could not have had any.** It is a send into the app mailbox, and until `apprt.none.App` grew a `wakeup` the app mailbox could not be
     // instantiated under the runtime the default test build uses -- so the
     // whole path went uncompiled, and nothing said so.
     //
@@ -3596,7 +3891,10 @@ test "frameCompleted reports a health change once per flip, not per frame" {
     // chain frame before anything else, so the semaphore is a real dependency
     // of this test and not something being worked around.
     r.health = .{ .raw = .healthy };
-    r.swap_chain.frame_sema = .{ .permits = 0 };
+    r.health_report_drops = 0;
+    // Optional since upstream's `releaseGpuResources`; `frameCompleted`
+    // unwraps it with `.?`, so it has to be present.
+    r.swap_chain = .{ .frames = undefined, .frame_sema = .{ .permits = 0 } };
     // ⚠️ **A real runtime object, not `undefined`.** This used to be
     // `undefined` and was safe, because `apprt.none.App.wakeup` did nothing
     // at all -- the pointer was never followed. It counts calls now, so it
@@ -3617,4 +3915,91 @@ test "frameCompleted reports a health change once per flip, not per frame" {
 
     r.frameCompleted(.healthy);
     try std.testing.expectEqual(@as(usize, 2), q.len);
+}
+
+test "a full app mailbox does not park frameCompleted, and the report is retried" {
+    // **#483.** The health report used to wait `.forever` on the app
+    // mailbox, which only the UI thread drains. A full mailbox parked the
+    // renderer thread for good -- holding the draw mutex, because this is
+    // called from inside `drawFrameLocked` -- and the pane froze on its last
+    // frame while the window kept answering.
+    //
+    // ⚠️ **Red as an assertion, not as a hang**, for the same reason as the
+    // mailbox tests in `renderer/Thread.zig`: the call runs on a detached
+    // thread, this one polls a flag with its own bound, and the sender is
+    // freed before any verdict so a "no" cannot leave a parked thread behind.
+    //
+    // Floor: put `.forever` back in `frameCompleted` and this goes red on
+    // `returned_in_time`.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+    const App = @import("../App.zig");
+    const R = renderer.Renderer;
+
+    const q = try App.Mailbox.Queue.create(alloc);
+    defer q.destroy(alloc);
+
+    const r = try alloc.create(R);
+    defer alloc.destroy(r);
+    r.health = .{ .raw = .healthy };
+    r.health_report_drops = 0;
+    r.swap_chain = .{ .frames = undefined, .frame_sema = .{ .permits = 0 } };
+    var rt_app: apprt.App = .{};
+    r.surface_mailbox = .{ .surface = undefined, .app = .{
+        .rt_app = &rt_app,
+        .mailbox = q,
+    } };
+
+    // Fill it to the brim.
+    while (r.surface_mailbox.push(.{ .renderer_health = .healthy }, .{ .instant = {} }) > 0) {}
+    const filled = q.len;
+
+    const Ctx = struct {
+        r: *R,
+        returned: std.atomic.Value(bool) = .init(false),
+
+        fn run(self: *@This()) void {
+            self.r.frameCompleted(.unhealthy);
+            self.returned.store(true, .release);
+        }
+    };
+    var ctx: Ctx = .{ .r = r };
+    const th = try std.Thread.spawn(.{}, Ctx.run, .{&ctx});
+    // Detached on purpose: joining a sender that never returns would hang
+    // exactly the way this test exists to avoid.
+    th.detach();
+
+    // Generous against the bound, so a slow machine cannot fail this on
+    // timing alone.
+    var waited: usize = 0;
+    while (waited < 4_000 and !ctx.returned.load(.acquire)) : (waited += 10) {
+        try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+    }
+    const returned_in_time = ctx.returned.load(.acquire);
+
+    // Free a still-parked sender before the queue and renderer go away,
+    // whatever the verdict below.
+    _ = q.pop(io);
+    var drain: usize = 0;
+    while (drain < 1_000 and !ctx.returned.load(.acquire)) : (drain += 10) {
+        try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+    }
+
+    try testing.expect(returned_in_time);
+
+    // It gave up without delivering, and said so...
+    try testing.expectEqual(@as(usize, filled - 1), q.len);
+    try testing.expectEqual(@as(u64, 1), r.health_report_drops);
+    // ...and did not record the change as reported, so it is not lost:
+    try testing.expectEqual(Health.healthy, r.health.load(.seq_cst));
+
+    // The permit came back regardless.
+    try testing.expectEqual(@as(usize, 1), r.swap_chain.?.frame_sema.permits);
+
+    // Now there is room: the next frame with the same health delivers it.
+    r.frameCompleted(.unhealthy);
+    try testing.expectEqual(filled, q.len);
+    try testing.expectEqual(Health.unhealthy, r.health.load(.seq_cst));
+    try testing.expectEqual(@as(u64, 1), r.health_report_drops);
 }

@@ -68,7 +68,7 @@ pub fn detect(b: *std.Build) !Version {
             else => return err,
         };
 
-        break :short_hash std.mem.trimEnd(u8, output, "\r\n ");
+        break :short_hash std.mem.trim(u8, output, &std.ascii.whitespace);
     };
 
     const tag = b.runAllowFail(

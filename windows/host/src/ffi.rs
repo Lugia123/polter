@@ -462,19 +462,61 @@ pub const CLIPBOARD_SELECTION: u32 = 1;
 pub const CLIPBOARD_REQUEST_PASTE: u32 = 0;
 pub const CLIPBOARD_REQUEST_OSC_52_READ: u32 = 1;
 pub const CLIPBOARD_REQUEST_OSC_52_WRITE: u32 = 2;
+pub const CLIPBOARD_REQUEST_KITTY_READ: u32 = 3;
+pub const CLIPBOARD_REQUEST_KITTY_WRITE: u32 = 4;
+pub const CLIPBOARD_REQUEST_LIST: u32 = 5;
+
+// `ghostty_clipboard_read_result_e`, what `read_clipboard_cb` returns.
+//
+// **`STARTED` is 0.** This used to be a `bool` meaning "started", so the old
+// `true` is now `UNAVAILABLE` and the old `false` is now `STARTED` -- a host
+// that kept its `bool` would swallow ctrl+v on an empty clipboard and wait for
+// a completion it never sends, and throw a full clipboard away.
+pub const CLIPBOARD_READ_STARTED: u32 = 0;
+pub const CLIPBOARD_READ_UNAVAILABLE: u32 = 1;
+pub const CLIPBOARD_READ_UNSUPPORTED: u32 = 2;
 
 /// `ghostty_clipboard_content_s`.
 ///
-/// **The write callback is handed an array of these, not a string.** Both
-/// fields are `const char*`, so a host that reads the payload as one C string
-/// gets the *mime type* -- `text/plain` copied to the clipboard, every time,
-/// with no error anywhere. The pair is the reason this struct exists rather
-/// than a `*const c_char`.
+/// **The write callback is handed an array of these, not a string.** Read as
+/// one C string the payload is the *mime type* -- `text/plain` copied to the
+/// clipboard, every time, with no error anywhere.
+///
+/// **`len` is part of the array stride.** Without it every element after the
+/// first is read 8 bytes early. `data` is binary-safe and is **not**
+/// NUL-terminated; `mime` is.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ClipboardContent {
     pub mime: *const c_char,
     pub data: *const c_char,
+    pub len: usize,
+}
+
+/// `ghostty_clipboard_complete_s`: what `surface_complete_clipboard_request`
+/// takes. Everything is borrowed for the duration of that call only.
+#[repr(C)]
+pub struct ClipboardComplete {
+    pub contents: *const ClipboardContent,
+    pub contents_len: usize,
+    pub available: *const *const c_char,
+    pub available_len: usize,
+    pub confirmed: bool,
+    pub remember: bool,
+}
+
+/// `ghostty_clipboard_confirm_s`: what `confirm_read_clipboard_cb` is handed.
+/// Borrowed for the duration of that callback only.
+#[repr(C)]
+pub struct ClipboardConfirm {
+    pub contents: *const ClipboardContent,
+    pub contents_len: usize,
+    pub available: *const *const c_char,
+    pub available_len: usize,
+    /// The requesting program's name, or null when the protocol has none.
+    pub name: *const c_char,
+    /// We have no "remember" UI, so this is read and never offered.
+    pub can_remember: bool,
 }
 
 // `ghostty_target_tag_e`. **The union only has a surface in it**, so when
@@ -838,19 +880,30 @@ impl Action {
 
 pub type WakeupCb = extern "C" fn(*mut c_void);
 pub type ActionCb = extern "C" fn(App, Target, Action) -> bool;
-/// `(surface userdata, ghostty_clipboard_e, request state) -> started`.
+/// `(surface userdata, ghostty_clipboard_e, request state, mimes, mime count,
+/// list) -> ghostty_clipboard_read_result_e`.
 ///
-/// **The return value carries an ownership contract**, and it is the one
-/// thing in this file that leaks if it is got wrong. `embedded.zig`
+/// **The return value carries an ownership contract.** `embedded.zig`
 /// (`clipboardRequest`) allocates the request state before calling this:
 ///
-///  * return `false` and the core destroys that state -- the safe answer, and
-///    the right one for *every* failure path here;
-///  * return `true` and the host has promised to call
-///    `ghostty_surface_complete_clipboard_request` with that same pointer.
-///    Returning `true` and then bailing out leaks the request, silently.
-pub type ReadClipboardCb = extern "C" fn(*mut c_void, u32, *mut c_void) -> bool;
-pub type ConfirmReadClipboardCb = extern "C" fn(*mut c_void, *const c_char, *mut c_void, u32);
+///  * return `CLIPBOARD_READ_UNAVAILABLE` / `_UNSUPPORTED` and the core
+///    destroys that state -- the answer for *every* failure path here;
+///  * return `CLIPBOARD_READ_STARTED` (**0**) and the host has promised to
+///    call `ghostty_surface_complete_clipboard_request` or
+///    `ghostty_surface_deny_clipboard_request` with that same pointer.
+///    Returning it and then bailing out leaks the request, silently -- and a
+///    paste keybind that got `STARTED` has already swallowed the key.
+///
+/// `mimes` are exactly the representations wanted (text-like ones are always
+/// spelled `text/plain`); `list` asks for the listing of every type on the
+/// clipboard to come back in the completion's `available`.
+pub type ReadClipboardCb =
+    extern "C" fn(*mut c_void, u32, *mut c_void, *const *const c_char, usize, bool) -> u32;
+/// `(surface userdata, confirmation, request state, ghostty_clipboard_request_e)`.
+/// The host must answer with `complete_clipboard_request` or
+/// `deny_clipboard_request` against the same state.
+pub type ConfirmReadClipboardCb =
+    extern "C" fn(*mut c_void, *const ClipboardConfirm, *mut c_void, u32);
 /// `(surface userdata, ghostty_clipboard_e, contents, count, confirm)`.
 ///
 /// The first argument is **the surface's** userdata -- our pane id -- not the
@@ -1276,15 +1329,21 @@ pub struct Api {
     /// the keyboard.
     pub surface_binding_action: unsafe extern "C" fn(Surface, *const u8, usize) -> bool,
     /// The second half of a paste. `read_clipboard_cb` only says a request
-    /// **started**; the text arrives back through here, against the same
+    /// **started**; the contents arrive back through here, against the same
     /// `state` pointer the callback was handed.
     ///
-    /// **Its absence from this struct is the whole of "paste does nothing".**
-    /// Without the symbol there is no way to finish a request, which makes
-    /// `cb_read_clipboard`'s hard-coded `false` the only self-consistent thing
-    /// it could have been.
+    /// **Resolved by name, so the compiler never sees the header.** It used
+    /// to take `(surface, const char*, state, confirmed)`; with the old
+    /// signature it would still resolve and still be called, with a string
+    /// where the core reads a struct. `the-clipboard-abi-matches-the-header.py`
+    /// is what holds the two together.
     pub surface_complete_clipboard_request:
-        unsafe extern "C" fn(Surface, *const c_char, *mut c_void, bool),
+        unsafe extern "C" fn(Surface, *const ClipboardComplete, *mut c_void),
+    /// The other way to finish a started request: the user said no. The core
+    /// answers the protocol (an empty OSC 52 reply, a Kitty `EPERM`) and frees
+    /// the state. Before this existed "no" had to be spelled as an empty
+    /// completion, which for a write would have cleared the clipboard.
+    pub surface_deny_clipboard_request: unsafe extern "C" fn(Surface, *mut c_void),
 
     // --- keyboard ---
     /// The real input entry point. `surface_text` only ever meant "these

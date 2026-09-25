@@ -137,8 +137,22 @@
 "If you don't review your windows, any running processes will be terminated" = "If you don't review your windows, any running processes will be terminated";
 "Review Windows..." = "Review Windows...";
 "Terminate Processes" = "Terminate Processes";
+"You have %@ windows with running processes. Do you want to review these windows before closing?" = "You have %@ windows with running processes. Do you want to review these windows before closing?";
+"Close" = "Close";
+/* 关闭确认框 */
+"Close Terminal?" = "Close Terminal?";
+"Close Tab?" = "Close Tab?";
+"Close Window?" = "Close Window?";
+"Close Other Tabs?" = "Close Other Tabs?";
+"Close Tabs on the Right?" = "Close Tabs on the Right?";
+"The terminal still has a running process. If you close the terminal the process will be killed." = "The terminal still has a running process. If you close the terminal the process will be killed.";
+"The terminal still has a running process. If you close the tab the process will be killed." = "The terminal still has a running process. If you close the tab the process will be killed.";
+"At least one other tab still has a running process. If you close the tab the process will be killed." = "At least one other tab still has a running process. If you close the tab the process will be killed.";
+"At least one tab to the right still has a running process. If you close the tab the process will be killed." = "At least one tab to the right still has a running process. If you close the tab the process will be killed.";
+"All terminal sessions in this window will be terminated." = "All terminal sessions in this window will be terminated.";
 "Warning: Potentially Unsafe Paste" = "Warning: Potentially Unsafe Paste";
 "Authorize Clipboard Access" = "Authorize Clipboard Access";
+"Remember this choice for the session" = "Remember this choice for the session";
 "Cannot Create New Tab" = "Cannot Create New Tab";
 "Tabs aren't supported in the Quick Terminal." = "Tabs aren't supported in the Quick Terminal.";
 "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again." = "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again.";

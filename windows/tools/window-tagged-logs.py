@@ -150,7 +150,25 @@ LIST_LINES = 12
 # an `Option<TabId>`. The option is not a missing argument -- the put-back
 # after a failed reopen names a tab destroyed long ago, and inventing an id
 # there would be the only line in the file whose subject does not exist.
-BASELINE_UNTAGGED = 35
+# 35 -> 33 (the 0.8 upstream merge): both were `[clip]` lines inside the
+# workaround that upstream deleted. `main.rs` used to spell "cancel" as
+# completing the request with an empty string, and the two lines announced
+# that workaround's own hazards -- "an empty completion would clear the
+# clipboard" on the OSC 52 write branch, and "completed empty so the core
+# releases the request". Upstream 0.8 added
+# `ghostty_surface_deny_clipboard_request`; the host calls it now, there is no
+# empty completion left, and neither line has a subject any more.
+# ⚠️ **What was checked before lowering this, and what to check next time:**
+# a log line disappearing is only free when the *silent failure it announced*
+# disappeared with it. It did here, and the evidence is positive rather than
+# assumed -- the decline path still speaks, at `main.rs`'s
+# `[clip] confirmation: pane={} req={} answered {}` immediately before the
+# deny call. That line names its pane, which is why it does not count here:
+# the debt went down because the instrumentation got *better*, not because it
+# was deleted. Measured on the tree about to be committed, by listing both
+# trees and diffing -- five entries changed and only these two were drops,
+# the other three being the same lines at shifted numbers.
+BASELINE_UNTAGGED = 33
 
 # **There is no table of process-wide tags here, and there used to be.**
 # It was a second place where a fact lived, and it could not be right: `[menu]`

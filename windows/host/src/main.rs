@@ -2189,145 +2189,266 @@ extern "C" fn cb_wakeup(_ud: *mut c_void) {}
 // nothing** -- the one shape of defect that no amount of checking the logs
 // would have caught, because its log was green. What was missing was not the
 // knowledge of how to write a clipboard (`tabs::copy_to_clipboard` has been
-// complete since the tab titles needed it) but the wiring, and on the read
-// side half the entry points: `ghostty_surface_complete_clipboard_request`
-// was never even resolved from the DLL, which is what made a hard-coded
-// `false` the only self-consistent thing `cb_read_clipboard` could return.
+// complete since the tab titles needed it) but the wiring.
+//
+// **The read side answers with `ghostty_clipboard_read_result_e`, and its
+// `STARTED` is 0.** It was a `bool` until the 0.8 upstream merge; see
+// `ffi::CLIPBOARD_READ_STARTED` for what keeping the `bool` would have done.
 
-/// A paste has been asked for. **Returning `true` is a promise**, see
-/// `ffi::ReadClipboardCb`: the core has allocated `state` and will only free
-/// it if we return `false` or complete the request. Every failure path below
-/// therefore returns `false`, and there is no path that returns `true`
-/// without having called `complete_clipboard_request` first.
-extern "C" fn cb_read_clipboard(ud: *mut c_void, kind: u32, state: *mut c_void) -> bool {
+/// Something wants the clipboard read: a paste, an OSC 52 or Kitty read, or a
+/// mode 5522 paste event that only wants the list of types.
+///
+/// **The answer is a fact about the clipboard, and the core decides what to
+/// do with it** -- `embedded.zig` is deliberately not second-guessing it:
+///
+///  * `STARTED` -- we completed the request (synchronously, below, which is
+///    what macOS does too). A paste keybind treats the key as consumed.
+///  * `UNAVAILABLE` -- the clipboard is there but has nothing we can serve
+///    for what was asked: no text on it, or it could not be opened right now
+///    (another process holds it). A paste keybind is then *not* performed,
+///    so ctrl+v falls through to the shell as 0x16 -- the behaviour
+///    `Config.zig` promises for an empty clipboard.
+///  * `UNSUPPORTED` -- that clipboard cannot be read at all: the selection
+///    clipboard, which Windows does not have, or a pane with no surface.
+///
+/// **Every path that does not call `complete_clipboard_request` returns
+/// something other than `STARTED`.** See `ffi::ReadClipboardCb` for why.
+extern "C" fn cb_read_clipboard(
+    ud: *mut c_void,
+    kind: u32,
+    state: *mut c_void,
+    mimes: *const *const std::os::raw::c_char,
+    n_mimes: usize,
+    list: bool,
+) -> u32 {
     let pane = ud as u64;
     if kind != ffi::CLIPBOARD_STANDARD {
         // See `cb_write_clipboard` for why this is refused rather than mapped.
-        logf!("[clip] read kind={} pane={} -> refused: no selection clipboard on Windows", kind, pane);
-        return false;
+        logf!("[clip] read kind={} pane={} -> unsupported: no selection clipboard on Windows", kind, pane);
+        return ffi::CLIPBOARD_READ_UNSUPPORTED;
     }
     let surface = tabs::surface_of_pane(pane);
     if surface.is_null() {
-        logf!("[clip] read kind={} pane={} -> false: no surface for that pane", kind, pane);
-        return false;
+        logf!("[clip] read kind={} pane={} -> unsupported: no surface for that pane", kind, pane);
+        return ffi::CLIPBOARD_READ_UNSUPPORTED;
     }
-    let text = match tabs::read_clipboard_text() {
-        Ok(t) => t,
-        Err(why) => {
-            logf!("[clip] read kind={} pane={} -> false: {}", kind, pane, why);
-            return false;
+    // The only representation this host can serve is text. The core spells
+    // every text-like type `text/plain` before it gets here.
+    let wanted: Vec<String> = if mimes.is_null() {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(mimes, n_mimes) }
+            .iter()
+            .filter(|p| !p.is_null())
+            .map(|&p| unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().to_string())
+            .collect()
+    };
+    let wants_text = wanted.iter().any(|m| m == "text/plain");
+    // The text is read when it is wanted *or* when a listing is asked for,
+    // because "is there text on it" is the whole of what the listing can say.
+    let text = if wants_text || list {
+        match tabs::read_clipboard_text() {
+            Ok(t) if !t.is_empty() => Some(t),
+            Ok(_) => None,
+            Err(why) => {
+                logf!("[clip] read pane={}: {}", pane, why);
+                None
+            }
         }
+    } else {
+        None
     };
-    // An interior NUL cannot be handed to a C string API. Truncating at it is
-    // what every other apprt does, and it is said out loud rather than
-    // silently producing a shorter paste.
-    let cut = text.find('\0');
-    if let Some(at) = cut {
-        logf!("[clip] read pane={}: clipboard text has a NUL at {}; truncated there", pane, at);
+    // Nothing to serve and no listing asked for: there is nothing to complete
+    // the request with, so it is not started. **This is the ctrl+v-on-an-
+    // empty-clipboard path**, and it must not answer `STARTED`.
+    if text.is_none() && !list {
+        logf!(
+            "[clip] read kind={} pane={} mimes={:?} -> unavailable: nothing to serve",
+            kind, pane, wanted
+        );
+        return ffi::CLIPBOARD_READ_UNAVAILABLE;
     }
-    let text = &text[..cut.unwrap_or(text.len())];
-    let Ok(c) = std::ffi::CString::new(text) else {
-        logf!("[clip] read kind={} pane={} -> false: could not make a C string", kind, pane);
-        return false;
+
+    let mime = c"text/plain";
+    let contents: Vec<ffi::ClipboardContent> = match (&text, wants_text) {
+        (Some(t), true) => vec![ffi::ClipboardContent {
+            mime: mime.as_ptr(),
+            data: t.as_ptr() as *const std::os::raw::c_char,
+            len: t.len(),
+        }],
+        _ => Vec::new(),
     };
-    logf!("[clip] read kind={} pane={} -> {} chars, completing", kind, pane, text.chars().count());
+    let available: Vec<*const std::os::raw::c_char> = match (&text, list) {
+        (Some(_), true) => vec![mime.as_ptr()],
+        _ => Vec::new(),
+    };
+    logf!(
+        "[clip] read kind={} pane={} mimes={:?} list={} -> started: {} chars, {} listed",
+        kind,
+        pane,
+        wanted,
+        list,
+        if contents.is_empty() { 0 } else { text.as_deref().map_or(0, |t| t.chars().count()) },
+        available.len()
+    );
     // **`confirmed: false`.** `clipboard-paste-protection` defaults to true,
     // and this is what keeps it working: the core gets to look at the text
     // and ask before pasting something that could run on arrival. Passing
     // `true` here would answer that question on the user's behalf, always.
+    let complete = ffi::ClipboardComplete {
+        contents: contents.as_ptr(),
+        contents_len: contents.len(),
+        available: available.as_ptr(),
+        available_len: available.len(),
+        confirmed: false,
+        remember: false,
+    };
+    // Everything `complete` points at lives until the end of this function,
+    // and the core only borrows it for the call.
     unsafe {
-        (api().surface_complete_clipboard_request)(surface, c.as_ptr(), state, false);
+        (api().surface_complete_clipboard_request)(surface, &complete, state);
     }
-    true
+    ffi::CLIPBOARD_READ_STARTED
 }
 
-/// The core looked at the text and wants it confirmed before pasting.
+/// The first text-like representation in a borrowed content array, the same
+/// rule the core uses (`terminal.clipboard.isTextMime`).
 ///
-/// **This fires on any ordinary multi-line paste** (`Surface.zig:6678`:
-/// unbracketed text that is not `input.paste.isSafe`), so it is not an exotic
-/// path -- leaving it empty, as it was, means pasting a two-line command
-/// silently does nothing. That is the same defect this task exists to fix,
-/// one level down.
+/// **Reads `len` bytes, never up to a NUL**: `data` is binary-safe and is not
+/// terminated.
+fn clip_text_of(contents: *const ffi::ClipboardContent, n: usize) -> Option<(String, String)> {
+    if contents.is_null() || n == 0 {
+        return None;
+    }
+    let items = unsafe { std::slice::from_raw_parts(contents, n) };
+    items.iter().find_map(|c| {
+        if c.mime.is_null() {
+            return None;
+        }
+        let mime = unsafe { std::ffi::CStr::from_ptr(c.mime) }.to_string_lossy().to_string();
+        let text_like = matches!(
+            mime.as_str(),
+            "text/plain" | "text/plain;charset=utf-8" | "UTF8_STRING" | "TEXT" | "STRING"
+        );
+        if !text_like {
+            return None;
+        }
+        let data = if c.data.is_null() || c.len == 0 {
+            String::new()
+        } else {
+            let bytes = unsafe { std::slice::from_raw_parts(c.data as *const u8, c.len) };
+            String::from_utf8_lossy(bytes).to_string()
+        };
+        Some((mime, data))
+    })
+}
+
+/// The core looked at the request and wants the user to agree first.
+///
+/// **This fires on any ordinary multi-line paste** (unbracketed text that is
+/// not `input.paste.isSafe`), so it is not an exotic path -- leaving it empty,
+/// as it once was, means pasting a two-line command silently does nothing. It
+/// also fires for OSC 52 and Kitty reads under `clipboard-read = ask`, and for
+/// Kitty writes under `clipboard-write = ask`.
 ///
 /// So it asks. A `MessageBox` is not the dialog `s4.md` §J wants (macOS has
 /// 195 lines of `ClipboardConfirmation` with the text shown in full), and it
-/// is recorded as that block still being unwritten -- but the alternative is
-/// a paste that works for one line and not for two.
+/// is recorded as that block still being unwritten.
 ///
-/// **A refusal does not leak, and the way out is worth stating.** The only
-/// exported entry point is `complete_clipboard_request`, so "cancel" has to be
-/// spelled as a completion that does nothing. `embedded.zig:800-832` only
-/// keeps the request when the completion throws `UnsafePaste` /
-/// `UnauthorizedPaste`; every other outcome, errors included, falls through to
-/// `alloc.destroy(state)`. So completing with an **empty string** frees it:
+/// **Yes completes with exactly what was shown, `confirmed: true`.** The
+/// confirmation's contents are borrowed for this callback, and the
+/// `MessageBox` runs inside it, so they are still valid when we complete.
+/// `confirmed: true` is what stops the core asking again -- with `false`, an
+/// OSC 52 read under `clipboard-read = ask` would call straight back in here.
 ///
-///  * `.paste` -> `completeClipboardPaste` returns at `if (data.len == 0)`,
-///    which is its **first** line, ahead of the safety check. Nothing is
-///    pasted and no error is thrown.
-///  * `.osc_52_read` -> replies with an empty OSC 52 payload, which is the
-///    right answer to a read the user declined: the client gets its reply and
-///    learns nothing about the clipboard.
-///
-/// **`confirmed: true`, and the reason is the OSC 52 branch, not the paste
-/// one.** For `.paste` either value works, because the length check is
-/// reached first. For `.osc_52_read`, `confirmed: false` with
-/// `clipboard-read = ask` throws `UnauthorizedPaste` again
-/// (`Surface.zig:6591`), which calls straight back into this function --
-/// round and round, and the state is never released.
+/// **No is `deny_clipboard_request`.** The core answers the protocol (an
+/// empty OSC 52 reply, a Kitty `EPERM`, nothing at all for a paste or a
+/// write) and frees the state.
 extern "C" fn cb_confirm_read_clipboard(
     ud: *mut c_void,
-    s: *const std::os::raw::c_char,
+    confirm: *const ffi::ClipboardConfirm,
     state: *mut c_void,
     req: u32,
 ) {
     let pane = ud as u64;
-    let text = if s.is_null() {
-        String::new()
-    } else {
-        unsafe { std::ffi::CStr::from_ptr(s) }.to_string_lossy().to_string()
-    };
     let surface = tabs::surface_of_pane(pane);
+    if surface.is_null() {
+        // Nothing to answer against: the surface that owns `state` is gone.
+        logf!("[clip] confirmation requested: pane={} req={} has no surface; dropped", pane, req);
+        return;
+    }
+    if confirm.is_null() {
+        logf!("[clip] confirmation requested: pane={} req={} with no payload; denied", pane, req);
+        unsafe { (api().surface_deny_clipboard_request)(surface, state) };
+        return;
+    }
+    let c = unsafe { &*confirm };
+    let text = clip_text_of(c.contents, c.contents_len).map(|(_, d)| d).unwrap_or_default();
+    let name = if c.name.is_null() {
+        None
+    } else {
+        Some(unsafe { std::ffi::CStr::from_ptr(c.name) }.to_string_lossy().to_string())
+    };
     logf!(
-        "[clip] paste confirmation requested: pane={} req={} {} chars, {} lines",
+        "[clip] confirmation requested: pane={} req={} name={:?} {} contents, {} chars of text, {} lines",
         pane,
         req,
+        name,
+        c.contents_len,
         text.chars().count(),
         text.lines().count()
     );
-    if surface.is_null() {
-        logf!("[clip] paste confirmation: no surface for pane {}; not pasting", pane);
-        return;
-    }
 
     // Enough of it to judge by, and not so much that the box does not fit.
     let mut preview: String = text.chars().take(400).collect();
     if text.chars().count() > 400 {
         preview.push_str("\n…");
     }
-    // **Both halves are the core's own, word for word.**
-    // `clipboard_confirmation_dialog.zig`'s `.paste` arm warns about
-    // exactly this, and both msgids are in `po/` with translations -- so this box asks in
-    // the same words as the GTK one instead of putting a second wording of
-    // one warning into every catalogue.
+    // **Every sentence is the core's own, word for word**
+    // (`clipboard_confirmation_dialog.zig`), and all of them are in `po/`
+    // with translations -- so this box asks in the same words as the GTK one
+    // instead of putting a second wording of one warning into every
+    // catalogue.
     //
-    // The line count is the one thing that sentence does not carry, and it is
+    // The line count is the one thing those sentences do not carry, and it is
     // worth keeping: "may contain commands" reads very differently for two
     // lines and for two hundred. It is a separate msgid so the number can
     // move within its own sentence.
+    let (title, warning) = match req {
+        ffi::CLIPBOARD_REQUEST_OSC_52_READ | ffi::CLIPBOARD_REQUEST_KITTY_READ => (
+            i18n::tr("Authorize Clipboard Access"),
+            i18n::tr(
+                "An application is attempting to read from the clipboard. The current clipboard contents are shown below."
+            ),
+        ),
+        ffi::CLIPBOARD_REQUEST_OSC_52_WRITE | ffi::CLIPBOARD_REQUEST_KITTY_WRITE => (
+            i18n::tr("Authorize Clipboard Access"),
+            i18n::tr(
+                "An application is attempting to write to the clipboard. The current clipboard contents are shown below."
+            ),
+        ),
+        _ => (
+            i18n::tr("Warning: Potentially Unsafe Paste"),
+            i18n::tr(
+                "Pasting this text into the terminal may be dangerous as it looks like some commands may be executed."
+            ),
+        ),
+    };
+    // The program's own name, when the protocol carries one, is the first
+    // thing worth knowing about who is asking. Not translated: it is a name.
+    let warning = match &name {
+        Some(n) => format!("{}\n\n{}", n, warning),
+        None => warning,
+    };
     let body = format!(
         "{}\n\n{}\n\n{}",
-        i18n::tr(
-            "Pasting this text into the terminal may be dangerous as it looks like some commands may be executed."
-        ),
+        warning,
         preview,
         i18n::tr("{} lines in all.").replace("{}", &text.lines().count().to_string())
     );
     let yes = unsafe {
         let b: Vec<u16> = body.encode_utf16().chain(Some(0)).collect();
-        let t: Vec<u16> = i18n::tr("Warning: Potentially Unsafe Paste")
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+        let t: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
         MessageBoxW(
             // The confirmation is modal over a window; which one is the
             // same gap every panel has. See `tabs::overlay_frame`.
@@ -2337,38 +2458,33 @@ extern "C" fn cb_confirm_read_clipboard(
             MB_YESNO | MB_ICONWARNING,
         ) == IDYES
     };
-    logf!("[clip] paste confirmation: pane={} answered {}", pane, if yes { "yes" } else { "no" });
+    logf!("[clip] confirmation: pane={} req={} answered {}", pane, req, if yes { "yes" } else { "no" });
     if !yes {
-        // **Not `.osc_52_write`.** That branch hands the string straight to
-        // `setClipboard`, so completing it with an empty one would *clear*
-        // the user's clipboard rather than leave it alone. It cannot arrive
-        // here today -- `setClipboard` returns no error, so it never reaches
-        // the catch that calls this function -- but the day it can, emptying
-        // the clipboard on a refusal is not the failure to discover late.
-        if req == ffi::CLIPBOARD_REQUEST_OSC_52_WRITE {
-            logf!(
-                "[clip] declined an OSC 52 write; not completing it, because an empty completion would clear the clipboard"
-            );
-            return;
-        }
-        let empty = std::ffi::CString::default();
-        unsafe {
-            (api().surface_complete_clipboard_request)(surface, empty.as_ptr(), state, true);
-        }
-        logf!("[clip] paste declined; completed empty so the core releases the request");
+        unsafe { (api().surface_deny_clipboard_request)(surface, state) };
         return;
     }
+    // We have no "remember this" UI, so `can_remember` is never offered and
+    // `remember` is always false: a session grant the user did not see
+    // offered is not one they gave.
+    let complete = ffi::ClipboardComplete {
+        contents: c.contents,
+        contents_len: c.contents_len,
+        available: c.available,
+        available_len: c.available_len,
+        confirmed: true,
+        remember: false,
+    };
     unsafe {
-        (api().surface_complete_clipboard_request)(surface, s, state, true);
+        (api().surface_complete_clipboard_request)(surface, &complete, state);
     }
 }
 
-/// Something asked for text to be put on the clipboard.
+/// Something asked for data to be put on the clipboard.
 ///
-/// **The payload is an array of `{mime, data}` pairs, not a string.** Read as
+/// **The payload is an array of `{mime, data, len}`, not a string.** Read as
 /// one C string it yields the mime type, so a copy would put `text/plain` on
 /// the clipboard and report success -- which is this defect exactly, with a
-/// different cause.
+/// different cause. And `data` is not NUL-terminated: it is read by `len`.
 extern "C" fn cb_write_clipboard(
     ud: *mut c_void,
     kind: u32,
@@ -2397,22 +2513,13 @@ extern "C" fn cb_write_clipboard(
         logf!("[clip] write kind={} pane={} -> nothing to write (count={})", kind, pane, n);
         return;
     }
-    let items = unsafe { std::slice::from_raw_parts(content, n) };
-    let read = |p: *const std::os::raw::c_char| -> Option<String> {
-        if p.is_null() {
-            return None;
-        }
-        Some(unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().to_string())
-    };
-    // Prefer plain text; fall back to the first entry that has any data, so a
-    // core that sends only some other text-ish mime still copies something.
-    let chosen = items
-        .iter()
-        .map(|c| (read(c.mime).unwrap_or_default(), read(c.data)))
-        .filter(|(_, d)| d.is_some())
-        .max_by_key(|(m, _)| u8::from(m.starts_with("text/plain")));
-    let Some((mime, Some(data))) = chosen else {
-        logf!("[clip] write kind={} pane={} count={} -> nothing to write: every entry had a null data pointer", kind, pane, n);
+    // **Only a text-like entry is written.** A Kitty write can carry an image
+    // or any other type, and this host only knows how to hold text; putting
+    // PNG bytes on the clipboard as text would be a copy that reports success
+    // and delivers garbage. An empty text entry is a real request -- Kitty
+    // uses it to clear the clipboard -- and is written as such.
+    let Some((mime, data)) = clip_text_of(content, n) else {
+        logf!("[clip] write kind={} pane={} count={} -> refused: no text-like entry; this host only holds text", kind, pane, n);
         return;
     };
     match tabs::copy_to_clipboard(&data) {
@@ -4865,6 +4972,10 @@ fn load_api() -> Option<Api> {
             surface_complete_clipboard_request: sym!(
                 internal,
                 "ghostty_surface_complete_clipboard_request"
+            ),
+            surface_deny_clipboard_request: sym!(
+                internal,
+                "ghostty_surface_deny_clipboard_request"
             ),
             surface_key: sym!(internal, "ghostty_surface_key"),
             surface_text: sym!(internal, "ghostty_surface_text"),

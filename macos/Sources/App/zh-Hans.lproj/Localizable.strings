@@ -151,8 +151,22 @@
 "If you don't review your windows, any running processes will be terminated" = "不逐个查看的话，正在运行的进程都会被结束";
 "Review Windows..." = "逐个查看…";
 "Terminate Processes" = "结束这些进程";
+"You have %@ windows with running processes. Do you want to review these windows before closing?" = "你有 %@ 个标签页里还有进程在运行。要在关闭前逐个看一下吗？";
+"Close" = "关闭";
+/* 关闭确认框 */
+"Close Terminal?" = "关闭终端？";
+"Close Tab?" = "关闭标签页？";
+"Close Window?" = "关闭窗口？";
+"Close Other Tabs?" = "关闭其他标签页？";
+"Close Tabs on the Right?" = "关闭右侧的标签页？";
+"The terminal still has a running process. If you close the terminal the process will be killed." = "终端里还有进程在运行。关闭终端会杀掉它。";
+"The terminal still has a running process. If you close the tab the process will be killed." = "终端里还有进程在运行。关闭标签页会杀掉它。";
+"At least one other tab still has a running process. If you close the tab the process will be killed." = "至少有一个其他标签页里还有进程在运行。关闭会杀掉它。";
+"At least one tab to the right still has a running process. If you close the tab the process will be killed." = "右侧至少有一个标签页里还有进程在运行。关闭会杀掉它。";
+"All terminal sessions in this window will be terminated." = "这个窗口里的所有终端会话都会被结束。";
 "Warning: Potentially Unsafe Paste" = "警告：这次粘贴可能不安全";
 "Authorize Clipboard Access" = "授权访问剪贴板";
+"Remember this choice for the session" = "本次会话内记住这个选择";
 "Cannot Create New Tab" = "无法新建标签页";
 "Tabs aren't supported in the Quick Terminal." = "快捷终端不支持标签页。";
 "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again." = "非原生全屏下不能新建标签页。请先退出全屏再试。";

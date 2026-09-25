@@ -314,7 +314,30 @@ VOCABULARY_CENSUS = {
     r"fetch_add": 0,
     r"\.take\(\)": 1,
     r"hasRoom\(\)": 2,
-    r"shouldReport\(": 3,
+    # 3 -> 2 (the 0.8 upstream merge). **This alternative lost a site, and it
+    # is the allowed reason rather than the regression one.** The third was
+    # `renderer/Thread.zig`'s `app_mailbox_drops`, gating
+    # "[mbox] app mailbox full, message dropped kind=redraw_surface". Upstream
+    # deleted the whole `must_draw_from_app_thread` branch it lived in -- the
+    # symbol appears four times in our pre-merge tip and not once upstream --
+    # so the thread now calls `drawFrame(false)` directly and pushes nothing.
+    # `redraw_surface` no longer occurs anywhere under `src/`, so there is no
+    # message that can be dropped and nothing left to stay silent about.
+    # The two that remain: `renderer/Thread.zig`'s wakeup heartbeat and
+    # `renderer/generic.zig`'s `health_report_drops`; `termio/Termio.zig`'s
+    # `renderer_mailbox_drops` is a third site but its `if` is not matched
+    # here, which is a separate blind spot and not what this number counts.
+    #
+    # Method, since the last number did not carry one: count the conditions
+    # enclosing a log call that this alternative matches, over the scanned
+    # trees only -- `SUBJECT_DIRS` above, which is `windows/host/src/*.rs`
+    # plus `src/renderer/**` and `src/termio/**`, not the whole repository.
+    # Re-derive it by running this check; it names the alternative and both
+    # numbers.
+    # **Before lowering it, find the site that went and say which of the two
+    # reasons it was** -- a load-bearing alternative that quietly stops
+    # matching looks exactly like one whose subject was legitimately removed.
+    r"shouldReport\(": 2,
     r"\.swap\(true": 2,
     r"\.swap\(1": 1,
     r"complained": 0,
