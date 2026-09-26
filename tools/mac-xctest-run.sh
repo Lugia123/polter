@@ -15,6 +15,18 @@
 #   xctestrun carries the UI tests, and running them pops a system
 #   "XCTest wants to Enable UI Automation" password dialog on the user's screen.
 # - DerivedData lives inside the worktree, so removing the worktree removes it.
+# - **Zero tests run is a failure, not a pass.** `-only-testing` that matches
+#   nothing makes xcodebuild run no tests and exit 0 -- indistinguishable from
+#   "all passed" unless something counts. Measured 2026-09-27 on 684cadade,
+#   issue #28, a test that had to be red before its fix:
+#     -only-testing:GhosttyTests/PluginSettingsTests/severalSubscriptionsGiveSeveralPhrases
+#       -> xcodebuild exit=0, TOTAL 0   (nothing ran; read as green)
+#     -only-testing:GhosttyTests/PluginSettingsTests/severalSubscriptionsGiveSeveralPhrases()
+#       -> xcodebuild exit=65, TOTAL 1, Failed 1   (the real reading)
+#   A Swift Testing `@Test` is named with its `()`. So TOTAL 0 exits 3 here,
+#   after cleaning up, and says why. Same shape as `zig build test
+#   -Dtest-filter` matching nothing: a filter that matches nothing does not
+#   fail, it quietly tests nothing.
 set -eu
 wt=$1; out=$2; shift 2
 die() { print -u2 "xctest-run: $*"; exit 1; }
@@ -41,7 +53,7 @@ print "xcodebuild test exit=$rc; host state used: $(ls $x/state/polter 2>/dev/nu
 
 after=$(mcp); [[ $after == $before ]] && print MCP_SAME || { print -u2 "MCP ENTRY CHANGED:\nbefore: $before\nafter:  $after"; }
 xcrun xcresulttool get test-results tests --path "$out.xcresult" > "$out.json"
-python3 - "$out.json" <<'EOF'
+python3 - "$out.json" <<'EOF' && counted=0 || counted=$?
 import json, sys
 from collections import Counter, defaultdict
 d = json.load(open(sys.argv[1])); per = defaultdict(Counter); fails = []
@@ -55,7 +67,14 @@ def walk(n, suite):
     for c in n.get('children', []): walk(c, n.get('name') if t == 'Test Suite' else suite)
 for n in d.get('testNodes', []): walk(n, '?')
 for s in sorted(per): print(sum(per[s].values()), s, dict(per[s]))
-print('TOTAL', sum(sum(c.values()) for c in per.values()))
+total = sum(sum(c.values()) for c in per.values())
+print('TOTAL', total)
 for f in fails: print('FAIL', f)
+sys.exit(3 if total == 0 else 0)
 EOF
 rm -rf "$x" "$out.xcresult"
+if [ "$counted" -eq 3 ]; then
+    print -u2 "xctest-run: 0 tests ran (xcodebuild exit=$rc). This is not a pass: the -only-testing filter matched nothing. A Swift Testing @Test is named with its (), e.g. -only-testing:GhosttyTests/PluginSettingsTests/severalSubscriptionsGiveSeveralPhrases()"
+    exit 3
+fi
+[ "$counted" -eq 0 ] || die "counting the results failed (exit $counted)"
