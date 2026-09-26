@@ -1322,6 +1322,11 @@ pub struct Api {
     pub surface_set_content_scale: unsafe extern "C" fn(Surface, f64, f64),
     pub surface_set_focus: unsafe extern "C" fn(Surface, bool),
     pub surface_free: unsafe extern "C" fn(Surface),
+    /// `ghostty_surface_capture_scrollback(surface, path)`: queue a write of
+    /// this pane's scrollback snapshot to `path` (absolute, UTF-8; the core
+    /// copies it). `true` means queued, not written. Only a project save
+    /// calls it (`project_ui::capture_scrollback`).
+    pub surface_capture_scrollback: unsafe extern "C" fn(Surface, *const c_char) -> bool,
     /// **Would closing this surface lose something?**
     ///
     /// The core answers from three things at once: the `confirm-close-surface`

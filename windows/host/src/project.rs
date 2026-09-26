@@ -59,6 +59,13 @@ pub struct SavedLeaf {
     /// to open directly -- bash/zsh keys give a filename under
     /// `CommandHistory.defaultDir`, fish gives a `fish_history` session name.
     pub history: String,
+    /// The pane's scrollback snapshot, as a name **relative to
+    /// `scrollback_dir`** of this project's file: `<ASCII digits>.snap`, or
+    /// empty for none. Never a path -- the directory is derived by whoever
+    /// reads the file, from the file's own path, so the three
+    /// implementations' disagreeing name sanitizers (issue #23) never meet
+    /// here. See `dev-docs/project-scrollback.md` §4.5.
+    pub scrollback: String,
 }
 
 /// One node of the saved tree: a pane, or a division of two more nodes.
@@ -74,6 +81,14 @@ pub struct Snapshot {
     pub name: String,
     pub saved_at: i64,
     pub root: Option<SavedNode>,
+    /// The next scrollback snapshot number this project will hand out
+    /// (`next_scrollback` on the wire, shared with macOS). See `Allocator`.
+    ///
+    /// ⚠️ **Read and written back even by a build that does not use it.** A
+    /// writer that dropped a counter it did not understand would reset it,
+    /// the next save would hand out a number some closed pane still has a
+    /// file under, and a new pane would open with that pane's history.
+    pub next_scrollback: Option<u64>,
 }
 
 /// Matches `Project.zig`'s `ReadError`: never a half a tree.
@@ -119,6 +134,172 @@ pub fn resolve_state_dir() -> Option<PathBuf> {
 /// (`default_dir`'s return value).
 pub fn path_for(dir: &Path, name: &str) -> PathBuf {
     dir.join(sanitize_filename(name))
+}
+
+/// Where the scrollback snapshots of the project saved at `project_file`
+/// live: the file's path with its extension replaced by `.scrollback`
+/// (`foo.json` -> `foo.scrollback`, and the extensionless `project` that an
+/// empty name sanitizes to -> `project.scrollback`).
+///
+/// ⚠️ **Derived from the file, never from the project's name.** Sanitizing
+/// the name a second time is what the first design did, and it assumed every
+/// implementation sanitizes alike -- Zig cuts at 200 bytes, Swift at 200
+/// Characters (issue #23), so a snapshot would be written into one directory
+/// and looked for in another, with nothing reporting it.
+pub fn scrollback_dir(project_file: &Path) -> PathBuf {
+    project_file.with_extension("scrollback")
+}
+
+/// Whether `name` is a snapshot name this format writes: ASCII digits, then
+/// `.snap`, and nothing else.
+///
+/// **Checked on read, because the core deletes what it cannot decode.** A
+/// restored pane's snapshot is removed when it is missing, stale or corrupt,
+/// so a project file is -- through this one field -- a list of files the core
+/// may delete. `../../somewhere/else.snap` passes the core's own `.snap`
+/// check; it does not pass this one, and no separator or drive can.
+pub fn is_scrollback_name(name: &str) -> bool {
+    match name.strip_suffix(".snap") {
+        Some(digits) => !digits.is_empty() && digits.len() <= 20 && digits.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// Every leaf of `node`, in the order `describe` and `layout::fresh` walk
+/// (left before right) -- the order a save numbers snapshots in, so the
+/// caller can pair each leaf with the surface it met at the same position.
+pub fn leaves_mut(node: &mut SavedNode) -> Vec<&mut SavedLeaf> {
+    let mut out = Vec::new();
+    fn walk<'a>(n: &'a mut SavedNode, out: &mut Vec<&'a mut SavedLeaf>) {
+        match n {
+            SavedNode::Leaf(l) => out.push(l),
+            SavedNode::Split { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+        }
+    }
+    walk(node, &mut out);
+    out
+}
+
+/// Remove the snapshots in `dir` that this save did not name.
+///
+/// **The filter is what this code makes, not a pattern it happens to
+/// recognise**: only `is_scrollback_name` files are candidates, and of those
+/// only the ones not in `keep`. Anything else in the directory -- including
+/// whatever temporary name the core writes before its rename -- is left
+/// alone. Returns how many were removed. A missing directory is zero.
+///
+/// ⚠️ Captures are asynchronous. A capture from an *earlier* save of this
+/// project, still queued for a pane index this save no longer has, can land
+/// after this has run and leave one orphan behind; the next save removes it.
+pub fn prune_scrollback_dir(dir: &Path, keep: &[String]) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if is_scrollback_name(name) && !keep.iter().any(|k| k == name) && std::fs::remove_file(e.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// The number in a snapshot name: `7` for `7.snap`. `None` for anything
+/// `is_scrollback_name` refuses.
+pub fn scrollback_number(name: &str) -> Option<u64> {
+    if !is_scrollback_name(name) {
+        return None;
+    }
+    name.strip_suffix(".snap")?.parse().ok()
+}
+
+/// A pane's snapshot: which project's directory it is in, and its name there.
+/// **Held by the pane, for the pane's life** (`tabs::Pane::scrollback`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Slot {
+    /// `scrollback_dir` of the project file. The project's identity for this
+    /// purpose: numbers are handed out per project, so a pane saved into two
+    /// projects has a number in each.
+    pub dir: PathBuf,
+    pub name: String,
+}
+
+impl Slot {
+    /// The slot a pane was restored from, given the absolute path it was
+    /// created with (`scrollback_path`). `None` for anything that is not a
+    /// snapshot name inside a directory.
+    pub fn from_restore_path(path: &str) -> Option<Slot> {
+        let p = Path::new(path);
+        let name = p.file_name()?.to_str()?;
+        if !is_scrollback_name(name) {
+            return None;
+        }
+        Some(Slot { dir: p.parent()?.to_path_buf(), name: name.to_string() })
+    }
+}
+
+/// Hands out snapshot names that belong to a **pane**, not to a position.
+///
+/// ⚠️ **Why not "leaf `n` gets `n.snap`"** -- which is what this file first
+/// did. Save a project, swap two panes, save it again: each pane's scrollback
+/// is written into the file the *other* pane's leaf points at, and on restore
+/// each pane shows the other's history. Nothing reports it; it looks like
+/// success. The same shape on macOS is `ProjectScrollback.Allocator`, and this
+/// follows it: a number is given to a pane the first time it is saved into a
+/// project and stays with it, and **no number is ever given out twice** -- a
+/// new pane given a closed pane's number would restore the closed pane's
+/// history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Allocator {
+    /// The next number to hand out. Written back to the file as
+    /// `next_scrollback`.
+    pub next: u64,
+}
+
+impl Allocator {
+    /// `stored` is the file's `next_scrollback`; `in_use` is every snapshot
+    /// name the file refers to or the directory holds. Starts past all of
+    /// them, so a file that lost its counter -- written before it existed,
+    /// by hand, or by a writer that dropped it -- still cannot hand out a
+    /// number that is taken.
+    pub fn new<'a>(stored: Option<u64>, in_use: impl IntoIterator<Item = &'a str>) -> Allocator {
+        let past = in_use.into_iter().filter_map(scrollback_number).map(|n| n + 1).max().unwrap_or(0);
+        Allocator { next: stored.unwrap_or(0).max(past) }
+    }
+
+    /// The name for a pane in the project whose snapshots live in `dir`: the
+    /// one it already has there, or a new one.
+    pub fn name_for(&mut self, dir: &Path, current: Option<&Slot>) -> String {
+        if let Some(slot) = current.filter(|s| s.dir == dir) {
+            if let Some(n) = scrollback_number(&slot.name) {
+                self.next = self.next.max(n + 1);
+                return slot.name.clone();
+            }
+        }
+        let name = format!("{}.snap", self.next);
+        self.next += 1;
+        name
+    }
+}
+
+/// Every snapshot name a saved tree refers to.
+pub fn scrollback_names(node: &SavedNode) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(n: &SavedNode, out: &mut Vec<String>) {
+        match n {
+            SavedNode::Leaf(l) if !l.scrollback.is_empty() => out.push(l.scrollback.clone()),
+            SavedNode::Leaf(_) => {}
+            SavedNode::Split { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+        }
+    }
+    walk(node, &mut out);
+    out
 }
 
 const MAX_FILENAME_LEN: usize = 200;
@@ -200,6 +381,9 @@ fn node_to_json(node: &SavedNode) -> serde_json::Value {
             if !leaf.history.is_empty() {
                 obj.insert("history".to_string(), serde_json::Value::String(leaf.history.clone()));
             }
+            if !leaf.scrollback.is_empty() {
+                obj.insert("scrollback".to_string(), serde_json::Value::String(leaf.scrollback.clone()));
+            }
             serde_json::Value::Object(obj)
         }
         SavedNode::Split { axis, ratio, left, right } => serde_json::json!({
@@ -221,6 +405,12 @@ fn json_to_node(v: &serde_json::Value) -> Result<SavedNode, ReadError> {
             cwd: opt_str(obj.get("cwd")),
             title: opt_str(obj.get("title")),
             history: opt_str(obj.get("history")),
+            // A name that is not one this format writes is dropped, not
+            // refused: the pane still opens, just without its scrollback,
+            // which is exactly what a missing snapshot gives. Refusing would
+            // cost the whole project for one field. See `is_scrollback_name`
+            // on why this is checked at all.
+            scrollback: Some(opt_str(obj.get("scrollback"))).filter(|s| is_scrollback_name(s)).unwrap_or_default(),
         })),
         "split" => {
             let direction = obj
@@ -255,6 +445,9 @@ pub fn snapshot_to_json(snapshot: &Snapshot) -> serde_json::Value {
     if let Some(root) = &snapshot.root {
         obj.insert("root".to_string(), node_to_json(root));
     }
+    if let Some(n) = snapshot.next_scrollback {
+        obj.insert("next_scrollback".to_string(), serde_json::json!(n));
+    }
     serde_json::Value::Object(obj)
 }
 
@@ -271,7 +464,12 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ReadError> {
         None => None,
     };
 
-    Ok(Snapshot { name, saved_at, root })
+    // Absent or not a whole number: `None`, and the allocator falls back on
+    // the numbers actually in use (`Allocator::new`), which is what it would
+    // do for a file written before the counter existed.
+    let next_scrollback = obj.get("next_scrollback").and_then(|n| n.as_u64());
+
+    Ok(Snapshot { name, saved_at, root, next_scrollback })
 }
 
 // ---------------------------------------------------------------------------
@@ -308,10 +506,18 @@ pub fn read(dir: &Path, name: &str) -> Result<Snapshot, ReadError> {
 
 /// Delete a saved project. `NotFound` if there was no such project -- matches
 /// `Project.zig::delete`.
+///
+/// **Takes the project's snapshot directory with it** (`scrollback_dir`): its
+/// snapshots mean nothing without the file that numbers them. That removal is
+/// best-effort and after the file, so a failure there leaves orphans rather
+/// than a project with its scrollback gone.
 pub fn delete(dir: &Path, name: &str) -> Result<(), ReadError> {
     let path = path_for(dir, name);
     match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            let _ = std::fs::remove_dir_all(scrollback_dir(&path));
+            Ok(())
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ReadError::NotFound),
         Err(_) => Err(ReadError::Corrupt),
     }
@@ -337,10 +543,17 @@ pub struct Entry {
 /// Fixing the filter here without the write side changing too would make
 /// this list *disagree* with macOS's about which projects exist, which is
 /// worse than both platforms sharing the same bug until 544 lands.
-pub fn list(dir: &Path) -> Vec<Entry> {
-    let mut entries = Vec::new();
+///
+/// **Skipping is unchanged; hiding it is not.** A project that fails to read
+/// is still left out -- the same in all three implementations, and changing
+/// it here alone would make them disagree about which projects exist -- but
+/// every one left out is named in `Listing::skipped` with the reason, so the
+/// caller can say so. A list that is quietly one short is how a project
+/// "disappears" with nothing anywhere to search for.
+pub fn list(dir: &Path) -> Listing {
+    let mut out = Listing::default();
     let Ok(read_dir) = std::fs::read_dir(dir) else {
-        return entries;
+        return out;
     };
     for dirent in read_dir.flatten() {
         let path = dirent.path();
@@ -350,12 +563,28 @@ pub fn list(dir: &Path) -> Vec<Entry> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(bytes) = std::fs::read(&path) else { continue };
-        if let Ok(snapshot) = parse_snapshot(&bytes) {
-            entries.push(Entry { name: snapshot.name, saved_at: snapshot.saved_at });
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                out.skipped.push((path, format!("unreadable: {e}")));
+                continue;
+            }
+        };
+        match parse_snapshot(&bytes) {
+            Ok(snapshot) => out.entries.push(Entry { name: snapshot.name, saved_at: snapshot.saved_at }),
+            Err(e) => out.skipped.push((path, format!("{e:?}"))),
         }
     }
-    entries
+    out
+}
+
+/// What `list` found: the projects, and the `.json` files it left out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Listing {
+    pub entries: Vec<Entry>,
+    /// Each file that looked like a project and could not be read as one,
+    /// with why. Files that are not `.json` are not projects and are not here.
+    pub skipped: Vec<(PathBuf, String)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -370,16 +599,21 @@ pub fn list(dir: &Path) -> Vec<Entry> {
 /// the caller applies that per pane *after* the shape comes back and hands
 /// over which surface is which leaf (`layout::describe`'s output), via the
 /// existing `set_tab_title` path. That follow-up step is not wired yet;
-/// this function only answers "what shape, with what cwd and what history
-/// handle".
+/// this function only answers "what shape, with what cwd, what history
+/// handle and what scrollback snapshot".
+///
+/// `snaps` is `scrollback_dir` of the file this snapshot was read from; a
+/// leaf's relative `scrollback` name becomes an absolute path under it
+/// (`scrollback_path`), which is what `ghostty_surface_config_s` takes.
 ///
 /// Note the axis strings here are `"h"`/`"v"`, `layout.rs`'s convention --
 /// **not** `direction_str`'s `"horizontal"`/`"vertical"` above. Two
 /// different wire formats; see that function's doc comment.
-pub fn to_layout_shape(node: &SavedNode) -> serde_json::Value {
+pub fn to_layout_shape(node: &SavedNode, snaps: &Path) -> serde_json::Value {
     match node {
         SavedNode::Leaf(leaf) => {
-            if leaf.cwd.is_empty() && leaf.history.is_empty() {
+            let scrollback = scrollback_path(snaps, leaf);
+            if leaf.cwd.is_empty() && leaf.history.is_empty() && scrollback.is_none() {
                 serde_json::json!({ "new": null })
             } else {
                 let mut new_obj = serde_json::Map::new();
@@ -389,16 +623,32 @@ pub fn to_layout_shape(node: &SavedNode) -> serde_json::Value {
                 if !leaf.history.is_empty() {
                     new_obj.insert("history".to_string(), serde_json::Value::String(leaf.history.clone()));
                 }
+                if let Some(p) = scrollback {
+                    new_obj.insert("scrollback".to_string(), serde_json::Value::String(p));
+                }
                 serde_json::json!({ "new": new_obj })
             }
         }
         SavedNode::Split { axis, ratio, left, right } => serde_json::json!({
             "split": match axis { Axis::Horizontal => "h", Axis::Vertical => "v" },
             "ratio": ratio,
-            "left": to_layout_shape(left),
-            "right": to_layout_shape(right),
+            "left": to_layout_shape(left, snaps),
+            "right": to_layout_shape(right, snaps),
         }),
     }
+}
+
+/// The absolute path of `leaf`'s snapshot under `snaps`, as UTF-8 (what the
+/// C API takes), or `None` when it has none -- or when its name is not one
+/// this format writes, which `json_to_node` already drops but a `SavedLeaf`
+/// built some other way might still carry. A path that is not valid Unicode
+/// cannot be handed over as UTF-8 and is `None` too: the pane opens without
+/// scrollback rather than with a path the core would misread.
+pub fn scrollback_path(snaps: &Path, leaf: &SavedLeaf) -> Option<String> {
+    if !is_scrollback_name(&leaf.scrollback) {
+        return None;
+    }
+    snaps.join(&leaf.scrollback).to_str().map(str::to_string)
 }
 
 /// The other direction: a live tree plus a way to look up each pane's saved
@@ -441,6 +691,7 @@ pub fn write_fixture(path: &str) -> bool {
         cwd: "C:\\work\\repo".to_string(),
         title: "a \"quoted\" title, a backslash \\, and 中文".to_string(),
         history: "a1b2c3.history".to_string(),
+        scrollback: "1.snap".to_string(),
     });
     let left_leaf = SavedNode::Leaf(SavedLeaf::default());
     let root = SavedNode::Split {
@@ -449,7 +700,7 @@ pub fn write_fixture(path: &str) -> bool {
         left: Box::new(left_leaf),
         right: Box::new(right_leaf),
     };
-    let snapshot = Snapshot { name: "fixture project".to_string(), saved_at: 1_757_000_000, root: Some(root) };
+    let snapshot = Snapshot { name: "fixture project".to_string(), saved_at: 1_757_000_000, root: Some(root), next_scrollback: None };
 
     let body = match serde_json::to_string_pretty(&snapshot_to_json(&snapshot)) {
         Ok(b) => b,
@@ -545,6 +796,7 @@ mod tests {
             cwd: "/work/repo".to_string(),
             title: "retry.py".to_string(),
             history: "a1b2c3.history".to_string(),
+            scrollback: "0.snap".to_string(),
         });
         let right = SavedNode::Leaf(SavedLeaf { cwd: "/work/repo/tests".to_string(), ..Default::default() });
         SavedNode::Split { axis: Axis::Horizontal, ratio: 0.62, left: Box::new(left), right: Box::new(right) }
@@ -555,7 +807,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let snapshot = Snapshot { name: "写 retry 装饰器".to_string(), saved_at: 1_757_000_000, root: Some(sample_tree()) };
+        let snapshot = Snapshot { name: "写 retry 装饰器".to_string(), saved_at: 1_757_000_000, root: Some(sample_tree()), next_scrollback: None };
         write(&dir, &snapshot).expect("write should succeed");
 
         let back = read(&dir, "写 retry 装饰器").expect("read should succeed");
@@ -569,7 +821,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-blank-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        write(&dir, &Snapshot { name: "blank".to_string(), saved_at: 1, root: None }).unwrap();
+        write(&dir, &Snapshot { name: "blank".to_string(), saved_at: 1, root: None, next_scrollback: None }).unwrap();
         let back = read(&dir, "blank").unwrap();
         assert!(back.root.is_none());
 
@@ -581,7 +833,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-delete-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        write(&dir, &Snapshot { name: "gone soon".to_string(), saved_at: 5, root: None }).unwrap();
+        write(&dir, &Snapshot { name: "gone soon".to_string(), saved_at: 5, root: None, next_scrollback: None }).unwrap();
         delete(&dir, "gone soon").unwrap();
         assert_eq!(read(&dir, "gone soon"), Err(ReadError::NotFound));
 
@@ -604,11 +856,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("polter-project-rs-list-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        write(&dir, &Snapshot { name: "alpha".to_string(), saved_at: 10, root: None }).unwrap();
-        write(&dir, &Snapshot { name: "beta".to_string(), saved_at: 20, root: None }).unwrap();
+        write(&dir, &Snapshot { name: "alpha".to_string(), saved_at: 10, root: None, next_scrollback: None }).unwrap();
+        write(&dir, &Snapshot { name: "beta".to_string(), saved_at: 20, root: None, next_scrollback: None }).unwrap();
         std::fs::write(dir.join("garbage.json"), b"{not json").unwrap();
 
-        let entries = list(&dir);
+        let listing = list(&dir);
+        let entries = listing.entries;
+        // Left out, as before -- and now said so, by name.
+        assert_eq!(listing.skipped.len(), 1, "{:?}", listing.skipped);
+        assert_eq!(listing.skipped[0].0, dir.join("garbage.json"));
         assert_eq!(entries.len(), 2);
         assert!(entries.contains(&Entry { name: "alpha".to_string(), saved_at: 10 }));
         assert!(entries.contains(&Entry { name: "beta".to_string(), saved_at: 20 }));
@@ -620,7 +876,7 @@ mod tests {
     fn listing_a_directory_that_does_not_exist_yet_is_empty_not_an_error() {
         let dir = std::env::temp_dir().join("polter-project-rs-list-does-not-exist-4a1f");
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(list(&dir), Vec::new());
+        assert_eq!(list(&dir), Listing::default());
     }
 
     #[test]
@@ -655,6 +911,7 @@ mod tests {
             name: "cutoff".to_string(),
             saved_at: 3,
             root: Some(sample_tree()),
+            next_scrollback: None,
         }))
         .unwrap();
         let half = &full[..full.len() / 2];
@@ -685,9 +942,11 @@ mod tests {
                     cwd: "/a".to_string(),
                     title: "t".to_string(),
                     history: "h.history".to_string(),
+                    scrollback: "0.snap".to_string(),
                 })),
                 right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
             }),
+            next_scrollback: None,
         };
         assert_eq!(parse_snapshot(bytes), Ok(want));
     }
@@ -697,8 +956,8 @@ mod tests {
     /// hand beside it.
     ///
     /// ⚠️ The destructuring patterns below have no `..` on purpose. Adding a
-    /// field to `SavedLeaf` or `Snapshot` -- the next one is the scrollback
-    /// snapshot's filename -- is a compile error here until that field is
+    /// field to `SavedLeaf` or `Snapshot` -- as `scrollback` was -- is a
+    /// compile error here until that field is
     /// given its JSON key in `expect`. A writer that forgets the new field is
     /// then a red assertion that names the key, instead of a project that
     /// silently loses it on the next save. (This file is one of three
@@ -710,13 +969,21 @@ mod tests {
             cwd: "C:\\work".to_string(),
             title: "a title".to_string(),
             history: "a1b2.history".to_string(),
+            scrollback: "7.snap".to_string(),
         };
-        let SavedLeaf { cwd, title, history } = &leaf;
-        let expect: [(&str, &str); 3] = [("cwd", cwd), ("title", title), ("history", history)];
+        let SavedLeaf { cwd, title, history, scrollback } = &leaf;
+        let expect: [(&str, &str); 4] =
+            [("cwd", cwd), ("title", title), ("history", history), ("scrollback", scrollback)];
 
-        let snapshot = Snapshot { name: "all fields".to_string(), saved_at: 42, root: Some(SavedNode::Leaf(leaf.clone())) };
-        let Snapshot { name, saved_at, root: _ } = &snapshot;
+        let snapshot = Snapshot {
+            name: "all fields".to_string(),
+            saved_at: 42,
+            root: Some(SavedNode::Leaf(leaf.clone())),
+            next_scrollback: Some(8),
+        };
+        let Snapshot { name, saved_at, root: _, next_scrollback } = &snapshot;
         let json = snapshot_to_json(&snapshot);
+        assert_eq!(json.get("next_scrollback").and_then(|v| v.as_u64()), *next_scrollback, "`next_scrollback` was not written");
 
         assert_eq!(json.get("name").and_then(|v| v.as_str()), Some(name.as_str()), "`name` was not written");
         assert_eq!(json.get("saved_at").and_then(|v| v.as_i64()), Some(*saved_at), "`saved_at` was not written");
@@ -731,8 +998,182 @@ mod tests {
     }
 
     #[test]
+    fn a_scrollback_name_is_only_what_a_save_writes() {
+        for ok in ["0.snap", "12.snap", "00000000000000000001.snap"] {
+            assert!(is_scrollback_name(ok), "{ok:?} should be accepted");
+        }
+        for bad in [
+            "",
+            ".snap",
+            "a.snap",
+            "-1.snap",
+            "0.SNAP",
+            "0.snap.tmp",
+            "0",
+            "../0.snap",
+            "0/1.snap",
+            "..\\0.snap",
+            "C:\\x\\0.snap",
+            "１.snap", // full-width digit: not ASCII
+            "000000000000000000001.snap", // 21 digits
+        ] {
+            assert!(!is_scrollback_name(bad), "{bad:?} should be refused");
+        }
+    }
+
+    /// The case `is_scrollback_name` exists for: a project file is, through
+    /// this field, a list of files the core may delete. A name reaching
+    /// outside the snapshot directory is dropped and the rest of the pane
+    /// still loads.
+    #[test]
+    fn a_scrollback_name_that_reaches_outside_is_dropped_and_the_pane_still_loads() {
+        let bytes = br#"{"name":"p","saved_at":1,
+            "root":{"kind":"leaf","cwd":"/a","scrollback":"..\\..\\Users\\x\\keep.snap"}}"#;
+        let snap = parse_snapshot(bytes).expect("one bad field must not cost the project");
+        assert_eq!(snap.root, Some(SavedNode::Leaf(SavedLeaf { cwd: "/a".to_string(), ..Default::default() })));
+    }
+
+    #[test]
+    fn the_snapshot_directory_is_the_project_file_with_its_extension_replaced() {
+        // From a file path, not a name: which file a name maps to is
+        // `path_for`'s business (and differs between the implementations,
+        // issue #23), and this function must not have an opinion on it.
+        let dir = Path::new("/state/projects");
+        assert_eq!(scrollback_dir(&dir.join("写 retry.json")), dir.join("写 retry.scrollback"));
+        assert_eq!(scrollback_dir(&dir.join("v1.2.json")), dir.join("v1.2.scrollback"));
+        // The empty name sanitizes to `project` with no `.json`; see
+        // `sanitize_filename`. Still its own directory, not the parent.
+        assert_eq!(scrollback_dir(&path_for(dir, "")), dir.join("project.scrollback"));
+    }
+
+    #[test]
+    fn pruning_removes_only_the_snapshots_this_save_did_not_name() {
+        let dir = std::env::temp_dir().join(format!("polter-project-rs-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["0.snap", "1.snap", "2.snap", "1.snap.tmp", "notes.txt"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+
+        let removed = prune_scrollback_dir(&dir, &["0.snap".to_string(), "2.snap".to_string()]);
+
+        let mut left: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(removed, 1);
+        assert_eq!(left, ["0.snap", "1.snap.tmp", "2.snap", "notes.txt"]);
+        assert_eq!(prune_scrollback_dir(&dir.join("absent"), &[]), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deleting_a_project_takes_its_snapshot_directory_with_it() {
+        let dir = std::env::temp_dir().join(format!("polter-project-rs-delete-snaps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        write(&dir, &Snapshot { name: "with snaps".to_string(), saved_at: 1, root: None, next_scrollback: None }).unwrap();
+        let snaps = scrollback_dir(&path_for(&dir, "with snaps"));
+        std::fs::create_dir_all(&snaps).unwrap();
+        std::fs::write(snaps.join("0.snap"), b"x").unwrap();
+
+        delete(&dir, "with snaps").unwrap();
+        assert!(!snaps.exists(), "{snaps:?} outlived its project");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The floor this allocator exists for**: two panes saved, swapped,
+    /// saved again. Each must keep the number it was given, so each leaf
+    /// points at the file its own pane writes -- whatever position it is in.
+    /// Numbering by position passes every single-pane and every unchanged-
+    /// layout test, and fails this one.
+    #[test]
+    fn a_pane_keeps_its_snapshot_when_the_layout_changes() {
+        let dir = Path::new("/p/x.scrollback");
+        // Pane A and pane B, by identity; each holds its slot.
+        let mut slot_a: Option<Slot> = None;
+        let mut slot_b: Option<Slot> = None;
+
+        // First save: A left of B.
+        let mut alloc = Allocator::new(None, []);
+        let a1 = alloc.name_for(dir, slot_a.as_ref());
+        slot_a = Some(Slot { dir: dir.to_path_buf(), name: a1.clone() });
+        let b1 = alloc.name_for(dir, slot_b.as_ref());
+        slot_b = Some(Slot { dir: dir.to_path_buf(), name: b1.clone() });
+        assert_ne!(a1, b1);
+        let stored = alloc.next;
+
+        // Second save of the same project, B now left of A.
+        let mut alloc = Allocator::new(Some(stored), [a1.as_str(), b1.as_str()]);
+        let leaf0 = alloc.name_for(dir, slot_b.as_ref()); // B, now first
+        let leaf1 = alloc.name_for(dir, slot_a.as_ref()); // A, now second
+        assert_eq!(leaf0, b1, "B's history must stay in B's file after the swap");
+        assert_eq!(leaf1, a1, "A's history must stay in A's file after the swap");
+    }
+
+    #[test]
+    fn a_closed_panes_number_is_never_given_to_a_new_pane() {
+        let dir = Path::new("/p/x.scrollback");
+        // Saved with two panes (0 and 1); pane 1 then closed and its file
+        // pruned. The counter says 2, and a new pane must get 2, not 1.
+        let mut alloc = Allocator::new(Some(2), ["0.snap"]);
+        let kept = Slot { dir: dir.to_path_buf(), name: "0.snap".to_string() };
+        assert_eq!(alloc.name_for(dir, Some(&kept)), "0.snap");
+        assert_eq!(alloc.name_for(dir, None), "2.snap");
+    }
+
+    #[test]
+    fn a_file_that_lost_its_counter_starts_past_every_number_in_use() {
+        let mut alloc = Allocator::new(None, ["4.snap", "junk", "1.snap", "../9.snap"]);
+        assert_eq!(alloc.name_for(Path::new("/p/x.scrollback"), None), "5.snap");
+        // A stored counter behind what is on disk loses to what is on disk.
+        let mut alloc = Allocator::new(Some(2), ["6.snap"]);
+        assert_eq!(alloc.name_for(Path::new("/p/x.scrollback"), None), "7.snap");
+    }
+
+    #[test]
+    fn a_slot_from_another_project_is_not_reused_here() {
+        let here = Path::new("/p/this.scrollback");
+        let other = Slot { dir: PathBuf::from("/p/other.scrollback"), name: "0.snap".to_string() };
+        let mut alloc = Allocator::new(Some(3), []);
+        assert_eq!(alloc.name_for(here, Some(&other)), "3.snap");
+    }
+
+    #[test]
+    fn a_restore_path_gives_back_the_panes_slot() {
+        let p = Path::new("/p/x.scrollback").join("4.snap");
+        assert_eq!(
+            Slot::from_restore_path(p.to_str().unwrap()),
+            Some(Slot { dir: PathBuf::from("/p/x.scrollback"), name: "4.snap".to_string() })
+        );
+        assert_eq!(Slot::from_restore_path("/p/x.scrollback/notes.txt"), None);
+    }
+
+    /// **Read and written back unchanged**, which is a different promise from
+    /// "an unknown field does not make the read fail": that one keeps the
+    /// project opening, this one keeps the counter from being reset by a
+    /// round trip through this build.
+    #[test]
+    fn next_scrollback_survives_a_read_and_a_write() {
+        let bytes = br#"{"name":"p","saved_at":1,"next_scrollback":12,"root":{"kind":"leaf","scrollback":"11.snap"}}"#;
+        let snap = parse_snapshot(bytes).unwrap();
+        assert_eq!(snap.next_scrollback, Some(12));
+        let again = snapshot_to_json(&snap);
+        assert_eq!(again.get("next_scrollback").and_then(|v| v.as_u64()), Some(12));
+        assert_eq!(parse_snapshot(&serde_json::to_vec(&again).unwrap()).unwrap(), snap);
+    }
+
+    #[test]
+    fn to_layout_shape_turns_a_scrollback_name_into_a_path_under_the_snapshot_directory() {
+        let snaps = Path::new("/p/x.scrollback");
+        let shape = to_layout_shape(&sample_tree(), snaps);
+        assert_eq!(shape["left"]["new"]["scrollback"], snaps.join("0.snap").to_str().unwrap());
+        assert!(shape["right"]["new"].get("scrollback").is_none());
+    }
+
+    #[test]
     fn to_layout_shape_carries_cwd_and_shape_but_not_title_or_history() {
-        let shape = to_layout_shape(&sample_tree());
+        let shape = to_layout_shape(&sample_tree(), Path::new("/p/x.scrollback"));
         assert_eq!(shape["split"], "h");
         assert_eq!(shape["left"]["new"]["cwd"], "/work/repo");
         // title/history are not part of layout::Shape at all -- this is the
@@ -752,11 +1193,7 @@ mod tests {
             right: Node::Leaf(2),
         }));
 
-        let saved = describe(&live, &|id: PaneId| SavedLeaf {
-            cwd: format!("/pane/{id}"),
-            title: String::new(),
-            history: String::new(),
-        });
+        let saved = describe(&live, &|id: PaneId| SavedLeaf { cwd: format!("/pane/{id}"), ..Default::default() });
 
         match saved {
             SavedNode::Split { axis, left, right, .. } => {

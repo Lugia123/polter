@@ -210,7 +210,7 @@ const fn sub(label: &'static str, rows: &'static [Row]) -> Row {
 // was just fixed. The definition belongs on the side that is already depended
 // on -- this file calls `keys.rs`, so putting it there adds no back edge.
 
-// The six groups. The structure is the macOS `MainMenu.xib` tree; the actions
+// The seven groups. The structure is the macOS `MainMenu.xib` tree; the actions
 // are the core's, checked below. Anything macOS has that Windows has no
 // concept of (`Hide Others`, `Services`, `Secure Keyboard Entry`, …) is not
 // here on purpose -- see `design.md` §1.3.
@@ -245,6 +245,20 @@ const FILE_ROWS: &[Row] = &[
     act(n_("Close Split"), "close_surface"),
     act(n_("Close Tab"), "close_tab:this"),
     act(n_("Close Window"), "close_window"),
+];
+
+/// The `Project` group, where macOS has it: its own menu, after `Agents`
+/// (`MainMenu.xib`, `pj0-Mn-Ma1`). Both rows are the host's -- a project is a
+/// host-side file, and the core has no action for either.
+///
+/// **`Load Project…` is why this group exists (task 839).** Saving had a
+/// dialog and no row that opened it; loading had neither. Without these two
+/// rows no Windows user could reach a saved project, and nothing that restores
+/// one had ever run outside a unit test. `Manage Projects…` (macOS's third
+/// row) is not here yet.
+const PROJECT_ROWS: &[Row] = &[
+    act(n_("Save as Project…"), "__polter_save_project"),
+    act(n_("Load Project…"), "__polter_load_project"),
 ];
 
 const FIND_ROWS: &[Row] = &[
@@ -454,6 +468,7 @@ const ROOT: &[Row] = &[
     // here would be this port inventing terminology and would put the two
     // platforms out of step.
     sub(n_("Agents"), AGENTS_ROWS),
+    sub(n_("Project"), PROJECT_ROWS),
     sub(n_("Window"), WINDOW_ROWS),
     sub(n_("Help"), HELP_ROWS),
     sep(),
@@ -487,9 +502,10 @@ const ROOT: &[Row] = &[
     act(n_("About Polter"), "__polter_about"),
 ];
 
-/// The six groups, for the log line and for the tests. Kept next to `ROOT`
-/// because "six groups" is a claim about `ROOT`, not a constant.
-const GROUP_COUNT: usize = 6;
+/// The seven groups, for the log line and for the tests. Kept next to `ROOT`
+/// because "seven groups" is a claim about `ROOT`, not a constant. (Six until
+/// task 839 added `Project`.)
+const GROUP_COUNT: usize = 7;
 
 // -------------------------------------------------------------- host rows
 
@@ -532,6 +548,21 @@ fn run_host(frame: HWND, action: &str) -> bool {
         // `reopen.rs`. It answers false when there is nothing to reopen,
         // which is also what the greyed row is saying.
         "__polter_reopen_tab" => crate::reopen::reopen_last(frame),
+        // The tab in front, named by the name it shows -- the box opens on
+        // that name, as `prompt_title` opens on the current title.
+        "__polter_save_project" => {
+            let (tabs_now, active) = crate::tabs::strip_snapshot(frame);
+            match tabs_now.get(active) {
+                Some((id, title)) => {
+                    crate::prompt::prompt_save_as_project(frame, *id, title.clone());
+                    true
+                }
+                None => false,
+            }
+        }
+        // **Returns before the list is on screen**, for the reason
+        // `__polter_language` gives below.
+        "__polter_load_project" => crate::project_picker::request_load(frame),
         "__polter_minimize" => {
             let _ = unsafe { ShowWindow(frame, SW_MINIMIZE) };
             true
@@ -576,6 +607,8 @@ const HOST_ACTIONS: &[&str] = &[
     // whole crate's tests only compile for a Windows target.
     "__polter_keybinds",
     "__polter_role_library",
+    "__polter_save_project",
+    "__polter_load_project",
 ];
 
 // ------------------------------------------------------- the core's actions
@@ -1253,7 +1286,8 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     let Some(menu) = build(frame, ROOT, &mut next, &mut personas, supervisor) else { return };
 
     // Items on the root itself, which is what a person sees when it opens:
-    // the six groups plus the two tail rows. Not the 50-odd leaves below.
+    // the groups plus the tail rows (`GROUP_COUNT` and the tail test say how
+    // many). Not the 50-odd leaves below.
     let root_items = ROOT.iter().filter(|r| !r.label.is_empty()).count();
     wlogf!(frame, "[menu] root shown at {screen_x},{screen_y} items={root_items}");
 
@@ -1681,7 +1715,7 @@ mod tests {
     /// row, and that is the part worth pinning: the tail is where the
     /// app-level rows live, not a place things land by accident.
     #[test]
-    fn the_root_has_six_groups_and_four_tail_items() {
+    fn the_root_has_seven_groups_and_four_tail_items() {
         let groups = ROOT.iter().filter(|r| r.sub.is_some()).count();
         assert_eq!(groups, GROUP_COUNT);
         let tail: Vec<_> = ROOT.iter().filter(|r| r.action.is_some()).collect();

@@ -73,7 +73,14 @@ pub enum Shape {
     /// tab, and every caller that never sends a `"history"` key (which is
     /// every caller except that loader, today) gets `None` here exactly as
     /// before this field existed.
-    New { cwd: Option<String>, history: Option<String> },
+    ///
+    /// `scrollback` is `ghostty_surface_config_s.scrollback_restore`: the
+    /// absolute path of a snapshot saved with a project. **Only a project
+    /// can put one here** (`parse_project`); `parse`, which is what the
+    /// `poltergeist_layout` tool reaches, refuses the key. The core deletes a
+    /// snapshot it cannot decode, so accepting a path from a caller would be
+    /// letting any agent name a `.snap` file for the core to remove.
+    New { cwd: Option<String>, history: Option<String>, scrollback: Option<String> },
     Split {
         axis: Axis,
         ratio: f64,
@@ -89,6 +96,22 @@ pub enum Shape {
 /// cannot work out, and quietly choosing a half for them is how a tool comes
 /// to report success for a shape nobody asked for.
 pub fn parse(v: &serde_json::Value) -> Result<Shape, String> {
+    parse_from(v, Source::Tool)
+}
+
+/// `parse`, for a shape a saved project built (`project::to_layout_shape`):
+/// the one source allowed to carry `"scrollback"`. See `Shape::New`.
+pub fn parse_project(v: &serde_json::Value) -> Result<Shape, String> {
+    parse_from(v, Source::Project)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Source {
+    Tool,
+    Project,
+}
+
+fn parse_from(v: &serde_json::Value, source: Source) -> Result<Shape, String> {
     let obj = v.as_object().ok_or_else(|| "each cell must be an object".to_string())?;
 
     if let Some(p) = obj.get("pane") {
@@ -99,7 +122,7 @@ pub fn parse(v: &serde_json::Value) -> Result<Shape, String> {
     }
 
     if let Some(n) = obj.get("new") {
-        let (cwd, history) = match n {
+        let (cwd, history, scrollback) = match n {
             serde_json::Value::Object(o) => {
                 let cwd = match o.get("cwd") {
                     Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
@@ -109,12 +132,20 @@ pub fn parse(v: &serde_json::Value) -> Result<Shape, String> {
                     Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
                     _ => None,
                 };
-                (cwd, history)
+                let scrollback = match (o.get("scrollback"), source) {
+                    (None, _) => None,
+                    (Some(_), Source::Tool) => {
+                        return Err("\"scrollback\" is not accepted here; only a saved project restores one".to_string())
+                    }
+                    (Some(serde_json::Value::String(s)), Source::Project) if !s.is_empty() => Some(s.clone()),
+                    (Some(_), Source::Project) => None,
+                };
+                (cwd, history, scrollback)
             }
-            serde_json::Value::Null => (None, None),
+            serde_json::Value::Null => (None, None, None),
             _ => return Err("\"new\" must be an object or null".to_string()),
         };
-        return Ok(Shape::New { cwd, history });
+        return Ok(Shape::New { cwd, history, scrollback });
     }
 
     let axis = match obj.get("split").and_then(|s| s.as_str()) {
@@ -141,8 +172,8 @@ pub fn parse(v: &serde_json::Value) -> Result<Shape, String> {
         }
     };
 
-    let left = parse(obj.get("left").ok_or_else(|| "a split needs \"left\"".to_string())?)?;
-    let right = parse(obj.get("right").ok_or_else(|| "a split needs \"right\"".to_string())?)?;
+    let left = parse_from(obj.get("left").ok_or_else(|| "a split needs \"left\"".to_string())?, source)?;
+    let right = parse_from(obj.get("right").ok_or_else(|| "a split needs \"right\"".to_string())?, source)?;
     Ok(Shape::Split { axis, ratio, left: Box::new(left), right: Box::new(right) })
 }
 
@@ -174,12 +205,19 @@ pub fn existing(shape: &Shape, out: &mut Vec<SurfaceKey>) {
     }
 }
 
-/// Every cell that needs a pane made, in the order they will be numbered:
-/// its `cwd` and, for task 533's loader, its `history`.
-pub fn fresh<'a>(shape: &'a Shape, out: &mut Vec<(&'a Option<String>, &'a Option<String>)>) {
+/// A cell that needs a pane made: what `Shape::New` carries, by name, so the
+/// three strings cannot be taken in the wrong order.
+pub struct Fresh<'a> {
+    pub cwd: &'a Option<String>,
+    pub history: &'a Option<String>,
+    pub scrollback: &'a Option<String>,
+}
+
+/// Every cell that needs a pane made, in the order they will be numbered.
+pub fn fresh<'a>(shape: &'a Shape, out: &mut Vec<Fresh<'a>>) {
     match shape {
         Shape::Existing(_) => {}
-        Shape::New { cwd, history } => out.push((cwd, history)),
+        Shape::New { cwd, history, scrollback } => out.push(Fresh { cwd, history, scrollback }),
         Shape::Split { left, right, .. } => {
             fresh(left, out);
             fresh(right, out);
@@ -313,5 +351,36 @@ pub fn perform(action: &Action, target: Option<Surface>) -> bool {
             wlogf!(frame, "[layout] queued op produced no answer");
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The tool cannot name a snapshot.** The core deletes a snapshot it
+    /// cannot decode, so a `"scrollback"` accepted here would let any agent
+    /// pick a `.snap` file for the core to remove. Refused, not ignored: a
+    /// caller who sent it meant something this will not do.
+    #[test]
+    fn the_layout_tool_refuses_a_scrollback_path() {
+        let v = serde_json::json!({ "split": "h", "left": { "new": null },
+            "right": { "new": { "cwd": "/a", "scrollback": "C:\\x\\0.snap" } } });
+        let err = parse(&v).err().expect("the tool path must refuse it");
+        assert!(err.contains("scrollback"), "{err}");
+    }
+
+    /// And a project's shape carries it, at any depth -- the source has to
+    /// reach the nested cells, not just the root.
+    #[test]
+    fn a_project_shape_carries_its_scrollback_paths_down_the_tree() {
+        let v = serde_json::json!({ "split": "v", "left": { "new": { "scrollback": "/p/x.scrollback/0.snap" } },
+            "right": { "split": "h", "left": { "new": null },
+                       "right": { "new": { "cwd": "/b", "scrollback": "/p/x.scrollback/2.snap" } } } });
+        let shape = parse_project(&v).expect("a project shape parses");
+        let mut cells = Vec::new();
+        fresh(&shape, &mut cells);
+        let got: Vec<Option<&str>> = cells.iter().map(|c| c.scrollback.as_deref()).collect();
+        assert_eq!(got, [Some("/p/x.scrollback/0.snap"), None, Some("/p/x.scrollback/2.snap")]);
     }
 }

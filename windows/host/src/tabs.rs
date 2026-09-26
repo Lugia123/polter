@@ -91,6 +91,13 @@ pub struct Pane {
     /// on if the first is missed. See `pending_history` (on `State`) and its
     /// three call sites in `create_pane`'s callers.
     pub history: Option<String>,
+    /// This pane's scrollback snapshot in the project it was last saved into
+    /// or loaded from. **The pane's for life** -- given the first time the
+    /// pane is saved into a project (`project::Allocator`), handed back when
+    /// a project restores it, and never derived from where the pane sits in
+    /// the tree: two panes swapped would otherwise each save into the
+    /// other's file.
+    pub scrollback: Option<crate::project::Slot>,
 }
 
 /// A tab's identity. **Never an index, and never reused.**
@@ -217,7 +224,12 @@ pub enum Op {
     /// case of the two: this one makes a frame *and* a surface, and both
     /// have to happen on the thread that owns windows.
     NewWindow,
-    CloseTab(i32),
+    // ⚠️ **No `CloseTab(mode)` here, and that is the fix for issue #24.** It
+    // carried the keyboard's `close_tab` into the queue undecided, and the
+    // queue is the one place a confirmation cannot be asked (see `ask`), so
+    // `ctrl+shift+w` closed busy tabs without a word. The action is now
+    // decided on the window's thread (`close_tab_mode_asking`); a variant
+    // that closes tabs by mode would be a way to skip that again.
     GotoTab(i32),
     /// Make one **named** tab active.
     ///
@@ -298,9 +310,9 @@ pub enum Op {
     /// `poltergeist_close`: an agent asking, through the tool surface, for a
     /// tab or a window to go.
     ///
-    /// **Carries the tab, not a mode.** `Op::CloseTab` resolves against
-    /// `active_index()`, which is right for the keyboard binding and wrong
-    /// here: the action names the surface it was sent for, and that surface's
+    /// **Carries the tab, not a mode.** The keyboard's `close_tab` resolves
+    /// against the tab in front (`close_tab_mode_asking`), which is right for
+    /// a key press and wrong here: the action names the surface it was sent for, and that surface's
     /// tab need not be the one in front -- an agent works in a background
     /// tab, which is the whole point of the tool. Closing "the active tab"
     /// would look completely normal and take the wrong terminal.
@@ -338,7 +350,6 @@ impl Op {
             Op::NewTab(_) => "NewTab",
             Op::ApplyLayout(..) => "ApplyLayout",
             Op::NewWindow => "NewWindow",
-            Op::CloseTab(_) => "CloseTab",
             Op::GotoTab(_) => "GotoTab",
             Op::ActivateTab(_) => "ActivateTab",
             Op::ShowRootMenu => "ShowRootMenu",
@@ -2278,6 +2289,23 @@ fn create_pane(
         sc.history_restore = h.as_ptr();
         logf!("[pane] {} history_restore set ({} bytes)", id, h.as_bytes().len());
     }
+    // Same lifetime rule again, and the same "only a project load sets it".
+    // The path is logged whole: when a restored pane comes back empty, the
+    // first question is which file it was pointed at.
+    let scrollback_c = match &spec.scrollback {
+        None => None,
+        Some(p) => match std::ffi::CString::new(p.clone()) {
+            Ok(p) => Some(p),
+            Err(_) => {
+                logf!("[pane] {} scrollback {:?} has an interior NUL; restoring with no scrollback", id, p);
+                None
+            }
+        },
+    };
+    if let Some(p) = &scrollback_c {
+        sc.scrollback_restore = p.as_ptr();
+        logf!("[pane] {} scrollback_restore set {:?}", id, p);
+    }
 
     let s = unsafe { (api().surface_new)(app, &sc) };
     if s.is_null() {
@@ -2332,6 +2360,9 @@ fn create_pane(
         cwd: pending_cwd,
         title: None,
         history: pending_history,
+        // A pane made from a saved project keeps the snapshot it was made
+        // from, so saving it again writes to the same file.
+        scrollback: spec.scrollback.as_deref().and_then(crate::project::Slot::from_restore_path),
     })
 }
 
@@ -2366,6 +2397,11 @@ pub struct NewTab {
     /// for this pane, or `None` for every caller but task 533's project
     /// loader. Passed through to `create_pane` unread, same as `cwd`.
     pub history: Option<String>,
+    /// `ghostty_surface_config_s.scrollback_restore`: the absolute path of
+    /// the scrollback snapshot saved with this pane, or `None` for every
+    /// caller but a project load. Passed through unread: the core decides
+    /// whether the file is there and usable, and removes it when it is not.
+    pub scrollback: Option<String>,
     /// What to run instead of the configured shell. `polter +chat` for the
     /// chat surface; nothing else uses it yet.
     pub command: Option<String>,
@@ -2561,7 +2597,7 @@ fn apply_layout(
     // Kept so the reply can name the new panes by surface: after `made` is
     // drained into the tab, the pairs are gone from here.
     let mut fresh_pairs: Vec<(PaneId, usize)> = Vec::new();
-    for (id, (cwd, history)) in ids.iter().zip(wanted.iter()) {
+    for (id, cell) in ids.iter().zip(wanted.iter()) {
         let Some((_, Placement::Visible(r))) = placed.iter().find(|(p, _)| p == id).cloned() else {
             // Undo: a pane already made for this shape must not be left
             // behind, because nothing would ever refer to it again.
@@ -2570,7 +2606,12 @@ fn apply_layout(
             }
             return Err(format!("pane {id} has no place in that layout"));
         };
-        let spec = NewTab { cwd: (*cwd).clone(), history: (*history).clone(), ..NewTab::default() };
+        let spec = NewTab {
+            cwd: cell.cwd.clone(),
+            history: cell.history.clone(),
+            scrollback: cell.scrollback.clone(),
+            ..NewTab::default()
+        };
         match create_pane(frame, app, hinst, *id, r, spec) {
             Some(p) => {
                 fresh_pairs.push((p.id, p.surface));
@@ -2995,6 +3036,8 @@ enum Subject {
     Tab,
     Window,
     Pane,
+    OtherTabs,
+    RightTabs,
 }
 
 impl Subject {
@@ -3014,6 +3057,8 @@ impl Subject {
             Subject::Tab => n_("Close Tab?"),
             Subject::Window => n_("Close Window?"),
             Subject::Pane => n_("Close Split?"),
+            Subject::OtherTabs => n_("Close Other Tabs"),
+            Subject::RightTabs => n_("Close Tabs to the Right"),
         }
     }
 
@@ -3022,6 +3067,15 @@ impl Subject {
             Subject::Tab => n_("All terminal sessions in this tab will be terminated."),
             Subject::Window => n_("All terminal sessions in this window will be terminated."),
             Subject::Pane => n_("The currently running process in this split will be terminated."),
+            // ⚠️ **These two say what goes, not that a process dies with it.**
+            // They are the command palette's descriptions of the same two
+            // commands (`src/input/command.zig`), already translated in every
+            // shipped language; a sentence that also warned about running
+            // processes -- macOS has one -- is not in `po/` yet, and a new
+            // msgid here would render in English everywhere until it is.
+            // The box only appears when something in those tabs is running.
+            Subject::OtherTabs => n_("Close all tabs in this window except the current one."),
+            Subject::RightTabs => n_("Close all tabs to the right of the current one."),
         }
     }
 
@@ -3033,6 +3087,8 @@ impl Subject {
             Subject::Tab => "tab",
             Subject::Window => "window",
             Subject::Pane => "pane",
+            Subject::OtherTabs => "other_tabs",
+            Subject::RightTabs => "right_tabs",
         }
     }
 }
@@ -3061,15 +3117,19 @@ fn ask(frame: HWND, what: Subject) -> bool {
 /// keybinding and tool paths do not come through here -- they go through the
 /// core, which answers the same question itself and hands it to
 /// `cb_close_surface`.
-pub fn close_tab_asking(frame: HWND, id: TabId) {
+///
+/// `false` when the person said no and nothing was closed, so a caller's log
+/// can say which of the two happened instead of "handled".
+pub fn close_tab_asking(frame: HWND, id: TabId) -> bool {
     let flags = tab_confirm_flags(frame, id);
     // not-gated: the condition is the event -- one dialog was shown and the
     // person said no. Silence here is a tab that was not kept.
     if dialogs_for(&flags) == 1 && !ask(frame, Subject::Tab) {
         wlogf!(frame, "[close] tab {:?} kept", id);
-        return;
+        return false;
     }
     close_tab(frame, id);
+    true
 }
 
 /// Close every tab in a window **after asking once**, however many panes it
@@ -3084,6 +3144,80 @@ pub fn close_all_tabs_of_asking(frame: HWND) -> bool {
     }
     close_all_tabs_of(frame);
     true
+}
+
+/// Close the tabs `scope` takes around `anchor` **after asking once**, if
+/// anything in *those* tabs is busy (issue #24).
+///
+/// Every tab-closing gesture a person makes with more than the strip's cross
+/// comes through here: the keyboard's `close_tab` in all three modes
+/// (`close_tab_mode_asking`) and the strip menu's "Close Other Tabs" / "Close
+/// Tabs to the Right". The rule itself -- which tabs, whether to ask, at most
+/// once -- is `close_scope::decide`, tested off Windows.
+///
+/// **What is closed is what was asked about, by identity.** The tabs are
+/// named before the box goes up, and the box runs a message loop: by the time
+/// the person answers, ops may have moved or added tabs. Closing "everything
+/// to the right" as it stands *then* could take a tab nobody was asked about;
+/// closing the named ones cannot.
+///
+/// ⚠️ **On the window's own thread, outside the op drain** -- the same rule
+/// as `ask`. Nothing that reaches the op queue closes tabs by mode any more.
+///
+/// `false` when nothing was closed: the person said no, or `anchor` is gone.
+pub fn close_tabs_asking(frame: HWND, anchor: TabId, scope: crate::close_scope::Scope) -> bool {
+    use crate::close_scope::Scope;
+    let (at, ids, busy) = {
+        let Some(win) = window(frame) else { return false };
+        let Some(at) = win.tabs.iter().position(|t| t.id == anchor) else { return false };
+        let ids: Vec<TabId> = win.tabs.iter().map(|t| t.id).collect();
+        let busy: Vec<bool> =
+            win.tabs.iter().map(|t| t.panes.iter().any(|p| surface_needs_confirm(p.surface))).collect();
+        (at, ids, busy)
+    };
+    let subject = match scope {
+        Scope::This => Subject::Tab,
+        Scope::Others => Subject::OtherTabs,
+        Scope::Right => Subject::RightTabs,
+    };
+    let Some(going) = crate::close_scope::decide(scope, at, &busy, || ask(frame, subject)) else {
+        // not-gated: the condition is the event -- one dialog was shown and
+        // the person said no. Silence here is tabs that were not kept.
+        wlogf!(frame, "[close] {} around tab {:?} kept", subject.log_key(), anchor);
+        return false;
+    };
+    wlogf!(frame, "[close] {} around tab {:?}: closing {} tab(s)", subject.log_key(), anchor, going.len());
+    for i in going {
+        // One at a time through the single-tab close, which also closes the
+        // window when the last tab goes and keeps the active index valid.
+        close_tab(frame, ids[i]);
+    }
+    if scope == Scope::Others {
+        // The one that stays is the one the person was looking at.
+        activate_tab(frame, anchor);
+    }
+    true
+}
+
+/// The keyboard's `close_tab` action, on the window's thread: resolve the
+/// mode against the tab in front **now**, then `close_tabs_asking`.
+///
+/// `mode` is `ghostty_action_close_tab_mode_e`; anything this build does not
+/// know is treated as `this`, which is what the op it replaces did.
+pub fn close_tab_mode_asking(frame: HWND, mode: i32) {
+    use crate::close_scope::Scope;
+    let scope = match mode {
+        CLOSE_TAB_OTHER => Scope::Others,
+        CLOSE_TAB_RIGHT => Scope::Right,
+        _ => Scope::This,
+    };
+    let anchor = window(frame).and_then(|w| w.tabs.get(w.active).map(|t| t.id));
+    match anchor {
+        Some(anchor) => {
+            close_tabs_asking(frame, anchor, scope);
+        }
+        None => wlogf!(frame, "[close] close_tab mode={} with no tab in front; nothing to close", mode),
+    }
 }
 
 /// Close one pane **after asking**, for the path where the core already
@@ -3113,6 +3247,18 @@ pub fn close_tab(frame: HWND, id: TabId) {
         return;
     }
     set_active(frame, active_index(frame));
+}
+
+/// Record the snapshot a pane was just saved under -- see `Pane::scrollback`.
+/// A pane that has gone since the save started is nothing to record on.
+pub fn set_scrollback_slot(frame: HWND, pane: PaneId, slot: crate::project::Slot) {
+    let Some(mut win) = window(frame) else { return };
+    for t in win.tabs.iter_mut() {
+        if let Some(p) = t.panes.iter_mut().find(|p| p.id == pane) {
+            p.scrollback = Some(slot);
+            return;
+        }
+    }
 }
 
 /// Where a tab sits right now, and how many there are.
@@ -3277,11 +3423,15 @@ pub fn binding_on_tab(frame: HWND, id: TabId, name: &str) -> bool {
 
 /// Close every tab except one, **named by identity**.
 ///
-/// **Not `Op::CloseTab(CLOSE_TAB_OTHER)`.** That branch is the core's action
-/// and resolves against `active_index()`, which is exactly right for the
-/// keyboard binding and exactly wrong for a menu opened on a tab that does
-/// not have focus. The two are different operations that happen to share a
-/// name, so they are different functions.
+/// **Named by identity, never "the active tab".** A menu can be opened on a
+/// tab that does not have focus, and an agent works in a background tab; both
+/// name the tab they mean. The keyboard's `close_tab:other` resolves "the tab
+/// in front" once, on the window's thread, and then comes here by identity
+/// too (`close_tabs_asking`).
+///
+/// ⚠️ **Does not ask.** A person's gesture reaches this through
+/// `close_tabs_asking`; `Op::PoltergeistClose` (an agent's) calls it directly,
+/// and whether that should ask is undecided (issue #24).
 pub fn close_other_tabs(frame: HWND, id: TabId) {
     let victims: Vec<usize> = {
         let Some(win) = window(frame) else { return };
@@ -3807,7 +3957,7 @@ mod pane_metadata_tests {
     use super::*;
 
     fn test_pane(id: u64, surface: usize) -> Pane {
-        Pane { id, hwnd: 0, surface, cwd: None, title: None, history: None }
+        Pane { id, hwnd: 0, surface, cwd: None, title: None, history: None, scrollback: None }
     }
 
     fn test_tab(panes: Vec<Pane>) -> Tab {
@@ -5138,38 +5288,6 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             }
             Op::MoveTabToNewWindow { tab } => {
                 move_tab_to_new_window(frame, hinst, tab);
-            }
-            Op::CloseTab(mode) => {
-                let (active, n) = (active_index(frame), count(frame));
-                match mode {
-                    CLOSE_TAB_OTHER => {
-                        for i in (0..n).rev() {
-                            if i != active {
-                                destroy_tab_at(frame, i);
-                            }
-                        }
-                        set_active(frame, 0);
-                    }
-                    CLOSE_TAB_RIGHT => {
-                        for i in (active + 1..n).rev() {
-                            destroy_tab_at(frame, i);
-                        }
-                    }
-                    _ => {
-                        destroy_tab_at(frame, active);
-                        if count(frame) == 0 {
-                            wlogf!(frame, "[tab] last tab closed");
-                            // Through the one point, so every route leaves the same record the
-                            // window's own X does -- and it **destroys** the window, which the
-                            // direct `window_finished` call that used to be here never did: it
-                            // recorded the window as finished and left it on the screen. See
-                            // `winid::close_window_now`.
-                            crate::winid::close_window_now(frame);
-                        } else {
-                            set_active(frame, active_index(frame));
-                        }
-                    }
-                }
             }
             // The scoped close an agent asked for. Every branch names the
             // tab by identity; see the variant's own note for why.

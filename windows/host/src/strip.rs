@@ -1636,6 +1636,12 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
     // the fact; this is the naming, not the arithmetic.
     let before: Vec<TabId> = tabs::strip_snapshot(frame).0.into_iter().map(|(i, _)| i).collect();
 
+    // **Set by the three close rows when the person said no.** `ok` is
+    // "the row was handled", and a close that was declined was handled -- so
+    // `ok=1` and "closed tab 3" used to be printed over a tab that was still
+    // there (`remaining 1,2,3` said so two words later). A reader grepping
+    // for either would count a cancelled close as a closed tab.
+    let mut kept = false;
     let ok = match cmd {
         TabCmd::Close => {
             // **Recorded where the request is made, not where it ends.** This
@@ -1643,18 +1649,20 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
             // cannot say which one a person used -- and they are two different
             // gestures that a fix might cover only one of.
             crate::winid::close_requested(frame, crate::winid::CloseVia::Menu);
-            tabs::close_tab_asking(frame, id);
-            report_remaining(frame, &before, &format!("closed tab {}", at));
+            kept = !tabs::close_tab_asking(frame, id);
+            report_remaining(frame, &before, &closed_or_kept(kept, &format!("tab {}", at)));
             true
         }
+        // **Asking, like `Close` above** -- these two did not, which is the
+        // strip menu's half of issue #24.
         TabCmd::CloseOthers => {
-            tabs::close_other_tabs(frame, id);
-            report_remaining(frame, &before, &format!("closed other than tab {}", at));
+            kept = !tabs::close_tabs_asking(frame, id, crate::close_scope::Scope::Others);
+            report_remaining(frame, &before, &closed_or_kept(kept, &format!("other than tab {}", at)));
             true
         }
         TabCmd::CloseRight => {
-            tabs::close_tabs_right_of(frame, id);
-            report_remaining(frame, &before, &format!("closed right of tab {}", at));
+            kept = !tabs::close_tabs_asking(frame, id, crate::close_scope::Scope::Right);
+            report_remaining(frame, &before, &closed_or_kept(kept, &format!("right of tab {}", at)));
             true
         }
         // **Through the core, not straight into `tabs.rs`.** The row names a
@@ -1687,6 +1695,10 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
         }
     };
 
+    if kept {
+        wlogf!(frame, "[tabmenu] pick {:?} tab {} -> {} declined: nothing closed", cmd.label(), at, cmd.action());
+        return;
+    }
     wlogf!(frame, 
         "[tabmenu] pick {:?} tab {} -> {} ok={}",
         cmd.label(),
@@ -1694,6 +1706,16 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
         cmd.action(),
         ok as u8
     );
+}
+
+/// The head of a close row's `remaining` line: what happened, not what was
+/// asked for. See `kept` in `run_tab_command`.
+fn closed_or_kept(kept: bool, what: &str) -> String {
+    if kept {
+        format!("kept (declined) {what}")
+    } else {
+        format!("closed {what}")
+    }
 }
 
 /// `[tabmenu] closed tab 3, remaining 1,2,4,5`.

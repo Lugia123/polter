@@ -23,7 +23,7 @@
 
 use windows::Win32::Foundation::HWND;
 
-use crate::plogf;
+use crate::{plogf, wlogf};
 use crate::project::{self, SavedLeaf, SavedNode, Snapshot};
 use crate::tabs::{self, TabId};
 
@@ -56,29 +56,117 @@ use crate::tabs::{self, TabId};
 /// the top of this function -- caught by the host's own watchdog rather
 /// than hanging silently, but a bug regardless. Building `meta` from
 /// `tab.panes` directly, while still inside the one borrow, is the fix.
-pub fn snapshot_for_tab(frame: HWND, id: TabId, name: String, saved_at: i64) -> Option<Snapshot> {
-    let root = tabs::with_windows(|ws| {
+///
+/// **Also returns the pane behind every leaf** (`LeafPane`), in the order
+/// `project::leaves_mut` walks them -- collected in the same borrow, by the
+/// same `describe` walk, so position `n` in the list is leaf `n` of the tree
+/// and no second walk has to agree with the first. A leaf whose pane was not
+/// found gets a default `LeafPane` (surface `0`), and its metadata is the
+/// default too.
+///
+/// **Nothing is asked of the core in here.** The surfaces come out so that
+/// `save_project` can make its capture calls after this lock is released;
+/// the deadlock described above is what calling out from inside it has
+/// already cost once.
+fn snapshot_and_surfaces(frame: HWND, id: TabId, name: String, saved_at: i64) -> Option<(Snapshot, Vec<LeafPane>)> {
+    let (root, surfaces) = tabs::with_windows(|ws| {
         let win = ws.iter().find(|w| w.frame == frame.0 as isize)?;
         let tab = win.tabs.iter().find(|t| t.id == id)?;
         let node = tab.tree.root()?;
-        let meta: std::collections::HashMap<polter_split_tree::PaneId, SavedLeaf> = tab
+        let meta: std::collections::HashMap<polter_split_tree::PaneId, (SavedLeaf, LeafPane)> = tab
             .panes
             .iter()
             .map(|p| {
                 (
                     p.id,
-                    SavedLeaf {
-                        cwd: p.cwd.clone().unwrap_or_default(),
-                        title: p.title.clone().unwrap_or_default(),
-                        history: p.history.clone().unwrap_or_default(),
-                    },
+                    (
+                        SavedLeaf {
+                            cwd: p.cwd.clone().unwrap_or_default(),
+                            title: p.title.clone().unwrap_or_default(),
+                            history: p.history.clone().unwrap_or_default(),
+                            // Named by `save_project`, from the pane's own
+                            // slot (`capture_scrollback`); empty until then.
+                            scrollback: String::new(),
+                        },
+                        LeafPane { pane: p.id, surface: p.surface, slot: p.scrollback.clone() },
+                    ),
                 )
             })
             .collect();
-        Some(project::describe(node, &|id| meta.get(&id).cloned().unwrap_or_default()))
+        let order = std::cell::RefCell::new(Vec::new());
+        let root = project::describe(node, &|id| {
+            let (leaf, pane) = meta.get(&id).cloned().unwrap_or_default();
+            order.borrow_mut().push(pane);
+            leaf
+        });
+        Some((root, order.into_inner()))
     })?;
 
-    Some(Snapshot { name, saved_at, root: Some(root) })
+    Some((Snapshot { name, saved_at, root: Some(root), next_scrollback: None }, surfaces))
+}
+
+/// The pane behind one leaf of a snapshot being saved.
+#[derive(Clone, Debug, Default)]
+struct LeafPane {
+    pane: polter_split_tree::PaneId,
+    surface: usize,
+    slot: Option<project::Slot>,
+}
+
+/// Name every leaf's snapshot **by its pane**, ask the core to write each one,
+/// and give each pane its slot to keep. See `project::Allocator` for why the
+/// name belongs to the pane and never to the leaf's position.
+///
+/// **A leaf is named even when the capture is refused**, as macOS does: the
+/// name is the pane's for life, and a name whose file never lands reads back
+/// as "no scrollback" -- the core opens an empty terminal -- which is today's
+/// behaviour anyway.
+///
+/// **Not waited for.** `true` from the core means the request reached the
+/// pane's IO thread, not that the file exists; the JSON names the file it
+/// *will* be (`dev-docs/project-scrollback.md` §3.2). The core also finishes
+/// queued captures before `ghostty_surface_free` returns, so closing right
+/// after saving does not lose them.
+fn capture_scrollback(
+    frame: HWND,
+    snapshot: &mut Snapshot,
+    panes: &[LeafPane],
+    snaps: &std::path::Path,
+    alloc: &mut project::Allocator,
+) {
+    let Some(root) = snapshot.root.as_mut() else { return };
+    let leaves = project::leaves_mut(root);
+    if leaves.len() != panes.len() {
+        // Cannot happen while both come from one `describe` walk; if it
+        // does, pairing them by position could give one pane another's
+        // snapshot, so nothing is named at all.
+        wlogf!(frame, "[project] capture skipped: {} leaves but {} panes", leaves.len(), panes.len());
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(snaps) {
+        wlogf!(frame, "[project] capture skipped: cannot create {:?}: {}", snaps, e);
+        return;
+    }
+    for (leaf, p) in leaves.into_iter().zip(panes) {
+        if p.surface == 0 {
+            continue;
+        }
+        let name = alloc.name_for(snaps, p.slot.as_ref());
+        leaf.scrollback = name.clone();
+        tabs::set_scrollback_slot(frame, p.pane, project::Slot { dir: snaps.to_path_buf(), name: name.clone() });
+        let Some(abs) = snaps.join(&name).to_str().and_then(|s| std::ffi::CString::new(s).ok()) else {
+            wlogf!(frame, "[project] capture {}: {:?} is not a UTF-8 path the core can take", name, snaps);
+            continue;
+        };
+        // Written before the call: `capture_scrollback` queues onto the IO
+        // thread's mailbox and waits for room when it is full, so this line
+        // being the last one is what that wait would look like.
+        wlogf!(frame, "[project] capture pane {} -> {} via ghostty_surface_capture_scrollback(0x{:x}) …", p.pane, name, p.surface);
+        let ok = unsafe { (crate::api().surface_capture_scrollback)(p.surface as crate::ffi::Surface, abs.as_ptr()) };
+        if !ok {
+            wlogf!(frame, "[project] capture {}: the core refused it; the leaf keeps the name, its file is not written", name);
+        }
+    }
 }
 
 /// Number of leaves in a saved tree. Used by `save_project`'s log line and by
@@ -141,7 +229,7 @@ pub fn save_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let Some(snapshot) = snapshot_for_tab(frame, id, name.clone(), saved_at) else {
+    let Some((mut snapshot, surfaces)) = snapshot_and_surfaces(frame, id, name.clone(), saved_at) else {
         return Err("that tab no longer exists".to_string());
     };
 
@@ -160,7 +248,38 @@ pub fn save_project(dir: &std::path::Path, frame: HWND, id: TabId, name: String)
         }
     }
 
-    project::write(dir, &snapshot).map_err(|e| e.to_string())
+    // Derived from the file this save writes, not from `name` again: see
+    // `project::scrollback_dir`.
+    let snaps = project::scrollback_dir(&project::path_for(dir, &snapshot.name));
+    // **What this project has already handed out**: the counter in the file
+    // being replaced, and every snapshot name that file or the directory
+    // still holds. A counter that went missing cannot make a number be used
+    // twice, because what is on disk is counted too.
+    let existing = project::read(dir, &snapshot.name).ok();
+    let mut in_use: Vec<String> =
+        existing.as_ref().and_then(|e| e.root.as_ref()).map(project::scrollback_names).unwrap_or_default();
+    if let Ok(entries) = std::fs::read_dir(&snaps) {
+        in_use.extend(entries.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)));
+    }
+    let mut alloc = project::Allocator::new(existing.and_then(|e| e.next_scrollback), in_use.iter().map(String::as_str));
+    capture_scrollback(frame, &mut snapshot, &surfaces, &snaps, &mut alloc);
+    snapshot.next_scrollback = Some(alloc.next);
+    let named = snapshot.root.as_ref().map(project::scrollback_names).unwrap_or_default();
+    project::write(dir, &snapshot).map_err(|e| e.to_string())?;
+    // After the write, so a failed write leaves the previous save's
+    // snapshots where its file still points. Kept: exactly what the tree
+    // now names.
+    let pruned = project::prune_scrollback_dir(&snaps, &named);
+    wlogf!(
+        frame,
+        "[project] saved {:?}: {} of {} pane(s) named a snapshot, next_scrollback={}, {} stale snapshot(s) removed",
+        name,
+        named.len(),
+        surfaces.len(),
+        alloc.next,
+        pruned
+    );
+    Ok(())
 }
 
 /// Read the project that saving as `name` would overwrite, if any -- for a
@@ -185,19 +304,27 @@ pub fn existing_project_for_overwrite_check(dir: &std::path::Path, name: &str) -
 /// Every other leaf is `Shape::New{cwd}`, restored fresh -- this is the
 /// "existing terminal_layout path" task 533 was scoped to reuse, not a
 /// second way to build a tab.
-pub fn shape_for_snapshot_seeded(snapshot: &Snapshot, seed_surface: usize) -> Option<serde_json::Value> {
+///
+/// `snaps` is the project file's `project::scrollback_dir`, which turns each
+/// leaf's relative snapshot name into the absolute path a pane is created
+/// with (see `project::to_layout_shape`).
+pub fn shape_for_snapshot_seeded(
+    snapshot: &Snapshot,
+    seed_surface: usize,
+    snaps: &std::path::Path,
+) -> Option<serde_json::Value> {
     let root = snapshot.root.as_ref()?;
-    Some(seed_leftmost(root, seed_surface))
+    Some(seed_leftmost(root, seed_surface, snaps))
 }
 
-fn seed_leftmost(node: &SavedNode, seed_surface: usize) -> serde_json::Value {
+fn seed_leftmost(node: &SavedNode, seed_surface: usize, snaps: &std::path::Path) -> serde_json::Value {
     match node {
         SavedNode::Leaf(_) => serde_json::json!({ "pane": format!("0x{seed_surface:x}") }),
         SavedNode::Split { axis, ratio, left, right } => serde_json::json!({
             "split": match axis { polter_split_tree::Axis::Horizontal => "h", polter_split_tree::Axis::Vertical => "v" },
             "ratio": ratio,
-            "left": seed_leftmost(left, seed_surface),
-            "right": project::to_layout_shape(right),
+            "left": seed_leftmost(left, seed_surface, snaps),
+            "right": project::to_layout_shape(right, snaps),
         }),
     }
 }
@@ -225,8 +352,8 @@ fn leftmost_leaf(node: &SavedNode) -> &SavedLeaf {
 /// so this makes no assumption about which thread called it -- the caller
 /// still queues `tabs::Op::ApplyLayout` with the shape this returns, the same
 /// path `poltergeist_layout` uses.
-pub fn shape_for_snapshot(snapshot: &Snapshot) -> Option<serde_json::Value> {
-    snapshot.root.as_ref().map(project::to_layout_shape)
+pub fn shape_for_snapshot(snapshot: &Snapshot, snaps: &std::path::Path) -> Option<serde_json::Value> {
+    snapshot.root.as_ref().map(|r| project::to_layout_shape(r, snaps))
 }
 
 /// Load a saved project into a brand-new tab in `frame`. This is the
@@ -237,7 +364,7 @@ pub fn shape_for_snapshot(snapshot: &Snapshot) -> Option<serde_json::Value> {
 /// `cb_action`), **never from inside `tabs::run_ops`**: `post_op` +
 /// `drain_for_layout` below queue and then synchronously wait for a *second*
 /// op, and doing that from inside the op loop that would have to run it is
-/// the same non-reentrant shape `snapshot_for_tab`'s deadlock was, one level
+/// the same non-reentrant shape `snapshot_and_surfaces`'s deadlock was, one level
 /// up (queueing into your own queue and then blocking for it to drain, while
 /// the thread that drains it is this one and it is not draining because it
 /// is here instead).
@@ -272,11 +399,20 @@ pub fn load_project_into_new_tab(
     name: &str,
 ) -> Result<(), String> {
     let snapshot = project::read(dir, name).map_err(|e| format!("{e:?}"))?;
+    // From the file just read, not from `name` sanitized again: see
+    // `project::scrollback_dir`.
+    let snaps = project::scrollback_dir(&project::path_for(dir, name));
 
+    // The seed pane is created here rather than by the layout step, so its
+    // scrollback has to be given here too -- the same reason as `cwd` and
+    // `history` (task 547): `scrollback_restore` is read once, at
+    // `surface_new`, and a pane the layout step plugs in by identity has
+    // long since passed it.
     let seed = snapshot.root.as_ref().map(leftmost_leaf);
     let seed_spec = tabs::NewTab {
         cwd: seed.filter(|l| !l.cwd.is_empty()).map(|l| l.cwd.clone()),
         history: seed.filter(|l| !l.history.is_empty()).map(|l| l.history.clone()),
+        scrollback: seed.and_then(|l| project::scrollback_path(&snaps, l)),
         ..Default::default()
     };
     if !tabs::create_tab_with(frame, app, hinst, seed_spec) {
@@ -288,12 +424,12 @@ pub fn load_project_into_new_tab(
         return Err("the new tab has no active surface".to_string());
     }
 
-    let Some(shape_json) = shape_for_snapshot_seeded(&snapshot, seed_surface as usize) else {
+    let Some(shape_json) = shape_for_snapshot_seeded(&snapshot, seed_surface as usize, &snaps) else {
         // An empty project: the fresh blank tab this function already made
         // is the whole of what there was to build.
         return Ok(());
     };
-    let shape = crate::layout::parse(&shape_json)?;
+    let shape = crate::layout::parse_project(&shape_json)?;
     let at = tabs::pane_id_of_surface(seed_surface);
 
     let outcome: crate::layout::Outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -322,12 +458,13 @@ mod tests {
                 left: Box::new(SavedNode::Leaf(SavedLeaf { cwd: "/a".to_string(), ..Default::default() })),
                 right: Box::new(SavedNode::Leaf(SavedLeaf { cwd: "/b".to_string(), ..Default::default() })),
             }),
+            next_scrollback: None,
         }
     }
 
     #[test]
     fn shape_for_snapshot_carries_cwd_through_the_existing_layout_shape() {
-        let shape = shape_for_snapshot(&sample_snapshot()).unwrap();
+        let shape = shape_for_snapshot(&sample_snapshot(), std::path::Path::new("/p/x.scrollback")).unwrap();
         assert_eq!(shape["split"], "h");
         assert_eq!(shape["left"]["new"]["cwd"], "/a");
         assert_eq!(shape["right"]["new"]["cwd"], "/b");
@@ -335,8 +472,8 @@ mod tests {
 
     #[test]
     fn shape_for_snapshot_of_an_empty_project_is_none() {
-        let snapshot = Snapshot { name: "blank".to_string(), saved_at: 1, root: None };
-        assert!(shape_for_snapshot(&snapshot).is_none());
+        let snapshot = Snapshot { name: "blank".to_string(), saved_at: 1, root: None, next_scrollback: None };
+        assert!(shape_for_snapshot(&snapshot, std::path::Path::new("/p/x.scrollback")).is_none());
     }
 
     #[test]
@@ -380,13 +517,9 @@ mod tests {
             })),
         }));
 
-        let saved = project::describe(&live, &|id| SavedLeaf {
-            cwd: format!("/pane/{id}"),
-            title: String::new(),
-            history: String::new(),
-        });
+        let saved = project::describe(&live, &|id| SavedLeaf { cwd: format!("/pane/{id}"), ..Default::default() });
 
-        let shape = project::to_layout_shape(&saved);
+        let shape = project::to_layout_shape(&saved, std::path::Path::new("/p/x.scrollback"));
 
         // Root axis: Horizontal -> "h", not "v".
         assert_eq!(shape["split"], "h");
@@ -435,7 +568,7 @@ mod tests {
         }));
 
         let saved = project::describe(&live, &|id| SavedLeaf { cwd: cwd_of(id).to_string(), ..Default::default() });
-        let snapshot = Snapshot { name: "three panes three dirs".to_string(), saved_at: 42, root: Some(saved) };
+        let snapshot = Snapshot { name: "three panes three dirs".to_string(), saved_at: 42, root: Some(saved), next_scrollback: None };
 
         let dir = std::env::temp_dir().join(format!("polter-project-ui-rs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -488,7 +621,7 @@ mod tests {
 
     #[test]
     fn shape_for_snapshot_seeded_reuses_the_seed_pane_as_the_leftmost_leaf() {
-        let shape = shape_for_snapshot_seeded(&sample_snapshot(), 0xABCD).unwrap();
+        let shape = shape_for_snapshot_seeded(&sample_snapshot(), 0xABCD, std::path::Path::new("/p/x.scrollback")).unwrap();
         assert_eq!(shape["left"]["pane"], "0xabcd");
         // The other leaf is still freshly built, cwd intact.
         assert_eq!(shape["right"]["new"]["cwd"], "/b");
@@ -510,7 +643,7 @@ mod tests {
         // Same tree, walked the other way: the shape's "left" cell should be
         // the seed placeholder, and its sibling should be the *other* leaf's
         // cwd ("/b"), never "/a" showing up on the wrong side.
-        let shape = seed_leftmost(&root, 0x1234);
+        let shape = seed_leftmost(&root, 0x1234, std::path::Path::new("/p/x.scrollback"));
         assert_eq!(shape["left"]["pane"], "0x1234");
         assert_eq!(shape["right"]["new"]["cwd"], "/b");
     }

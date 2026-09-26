@@ -100,6 +100,7 @@
 //! 3 = console), not a successful build. See `subsystems()` in `build.rs`.
 
 mod capture;
+mod close_scope;
 mod ctxmenu;
 mod divider;
 mod dnd;
@@ -124,6 +125,7 @@ mod personas;
 mod plugins;
 mod polterclose;
 mod project;
+mod project_picker;
 mod project_ui;
 mod prompt;
 mod settings_ui;
@@ -529,6 +531,16 @@ pub const WM_WD_PING: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 9;
 /// runs its own message loop inside that drain. What reaches the queue is an
 /// op that has already been decided.
 pub const WM_ASK_CLOSE_PANE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
+
+/// The keyboard's `close_tab`, carried to the window's thread to be decided
+/// there. `WPARAM` is `ghostty_action_close_tab_mode_e`.
+///
+/// ⚠️ **Same reason as `WM_ASK_CLOSE_PANE`, and it is the fix for issue #24.**
+/// This used to be queued as an op, and the op queue is the one place a
+/// confirmation cannot be raised -- so `ctrl+shift+w` closed tabs with
+/// running processes in them without asking, in all three modes. `+ 17` is
+/// used by nothing else in this host.
+pub const WM_ASK_CLOSE_TAB: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 17;
 
 /// A fixed-size line builder that never allocates.
 ///
@@ -3305,10 +3317,29 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             );
             queue_from(origin, Op::NewTab(cwd), "new_tab action")
         }
+        // **Posted, not queued** -- see `WM_ASK_CLOSE_TAB`. The window's
+        // procedure asks (if anything in the tabs going is busy) and closes.
         ACTION_CLOSE_TAB => {
             let mode = action.as_i32();
             alogf!(origin, "[action] close_tab mode={}", mode);
-            queue_from(origin, Op::CloseTab(mode), "close_tab action")
+            match origin {
+                Some(frame) => unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        Some(frame),
+                        WM_ASK_CLOSE_TAB,
+                        WPARAM(mode as u32 as usize),
+                        LPARAM(0),
+                    )
+                    .is_ok()
+                },
+                None => {
+                    // process-wide: the action named no surface, so there is
+                    // no window for this line to belong to -- which is the
+                    // fact being reported
+                    plogf!("[action] close_tab mode={}: the action names no window; nothing closed", mode);
+                    false
+                }
+            }
         }
         ACTION_GOTO_TAB => {
             let v = action.as_i32();
@@ -4188,6 +4219,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 tabs::close_pane_asking(hwnd, wp.0 as u64);
                 LRESULT(0)
             }
+            m if m == WM_ASK_CLOSE_TAB => {
+                // Same place, same reason: see `WM_ASK_CLOSE_TAB`.
+                tabs::close_tab_mode_asking(hwnd, wp.0 as u32 as i32);
+                LRESULT(0)
+            }
 
             m if m == WM_WD_PING => {
                 WD_PONG.store(wp.0 as u64, Ordering::Relaxed);
@@ -4961,6 +4997,7 @@ fn load_api() -> Option<Api> {
             surface_set_content_scale: sym!(internal, "ghostty_surface_set_content_scale"),
             surface_set_focus: sym!(internal, "ghostty_surface_set_focus"),
             surface_free: sym!(internal, "ghostty_surface_free"),
+            surface_capture_scrollback: sym!(internal, "ghostty_surface_capture_scrollback"),
             surface_binding_action: sym!(internal, "ghostty_surface_binding_action"),
             app_personas: sym!(internal, "ghostty_app_personas"),
             surface_persona_face: sym!(internal, "ghostty_surface_persona_face"),
