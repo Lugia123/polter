@@ -4485,9 +4485,21 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
     // about what was asked for, and before any of it is sent.
     try self.poltergeistMayType();
 
-    // Single-line text goes the way it always has. Only the multi-line case
-    // is new, and it goes framed -- reading the mode is not what makes this
-    // safe, sending the frame is.
+    // **Both branches send the text framed when the target has bracketed
+    // paste on -- the single-line one too.** `textCallback` is
+    // `completeClipboardPaste`, which encodes with the terminal's own modes,
+    // so a single line to a target with 2004 set arrives as
+    // `ESC[200~ ... ESC[201~` like any paste. Measured 2026-09-27 (issue #11,
+    // task 847) with a byte probe that sets 2004: three single-line sends all
+    // arrived framed, and the return came in a read of its own 234-762ms
+    // later. (This used to say only the multi-line case goes framed, which
+    // read as "a single line is sent bare"; it is not, wherever 2004 is on.)
+    //
+    // What differs is the route: single-line text goes through
+    // `textCallback` as it always has, and is sent bare where 2004 is off;
+    // multi-line text is only ever sent with 2004 on (refused above
+    // otherwise) and is encoded here directly. Reading the mode is not what
+    // makes the multi-line case safe, sending the frame is.
     if (!multiline) {
         try self.textCallback(text);
     } else {
