@@ -235,6 +235,40 @@ pub(crate) mod test_log {
 
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
+    /// **Where records go while a `logged` call holds the turn.**
+    ///
+    /// ⚠️ **Setting `POLTER_HOST_LOG` alone does not redirect anything.** The
+    /// process's `SINK` is a `OnceLock`: the log is opened once, at the first
+    /// record, through whatever `log_path` said at that moment, and the
+    /// handle is held from then on (task 317; see `Sink`). So `logged` only
+    /// ever captured when its call happened to hold the process's first
+    /// record. In a full run every later call read back an empty file, and
+    /// eight tests went red there while passing alone (issue #13).
+    ///
+    /// So the call opens its own `Sink` -- through `Sink::direct`, the same
+    /// open the product makes, with `POLTER_HOST_LOG` naming this call's file
+    /// -- and `Sink::write` sends every record here while it is installed.
+    /// Taken out, and so closed, before the file is read back: reading or
+    /// deleting a file this process still holds open is the other face of
+    /// the same defect (`d0`, which called `logged` twice with one tag and
+    /// wrote its second half into a file the first call had deleted).
+    static CAPTURE: Mutex<Option<super::Sink>> = Mutex::new(None);
+
+    /// `Sink::write`'s test-only branch: `true` when the record was taken.
+    pub(super) fn capture(bytes: &[u8]) -> bool {
+        let guard = CAPTURE.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(sink) => {
+                use std::io::Write as _;
+                if let Some(mut f) = sink.file.as_ref() {
+                    let _ = f.write_all(bytes);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
     thread_local! {
         /// Whether **this thread** holds the redirect. Per-thread for the
         /// reason `tabs::test_arena` spells out: "somebody holds it" is a
@@ -272,6 +306,8 @@ pub(crate) mod test_log {
 
     impl Drop for Restore {
         fn drop(&mut self) {
+            // First, so the file is closed before anyone reads or deletes it.
+            drop(CAPTURE.lock().unwrap_or_else(|e| e.into_inner()).take());
             match self.previous.take() {
                 Some(p) => std::env::set_var("POLTER_HOST_LOG", p),
                 None => std::env::remove_var("POLTER_HOST_LOG"),
@@ -283,9 +319,13 @@ pub(crate) mod test_log {
     /// Run `body` with the log redirected to a fresh file named for `tag`,
     /// and hand back everything written to it.
     ///
-    /// `log_path` reads `POLTER_HOST_LOG` on every call, so the lines go
-    /// through exactly the path they go through in the product -- no hook
-    /// sits between the code under test and the file.
+    /// The file is opened by `Sink::direct`, the product's own open, reading
+    /// `POLTER_HOST_LOG` as the product does; records reach it through
+    /// `Sink::write`. What differs from the product is that the sink is this
+    /// call's rather than the process's -- see `CAPTURE` for why that cannot
+    /// be avoided. (This used to say `log_path` is read on every call, so the
+    /// variable alone redirected the log. That stopped being true with task
+    /// 317's held handle, and this function went on relying on it.)
     ///
     /// **Lock order, if this is ever held with another turn**: `tabs`'
     /// `test_arena` outermost, then a module's own registry lock, then this.
@@ -315,6 +355,7 @@ pub(crate) mod test_log {
             _turn: turn,
         };
         std::env::set_var("POLTER_HOST_LOG", &path);
+        *CAPTURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(super::Sink::direct(None));
         HAS_THE_TURN.with(|c| c.set(true));
 
         body();
@@ -386,6 +427,40 @@ pub(crate) mod test_log {
         );
         assert!(!this_thread_has_the_redirect(), "and the turn was released");
     }
+
+    /// **The redirect takes after the process has already logged** (#13).
+    /// The record before the call is what pins the process's own sink; once
+    /// that has happened, the environment variable alone no longer moves
+    /// anything, and this is red.
+    #[test]
+    fn a_redirect_after_the_first_record_still_takes() {
+        // process-wide: pins the process's sink before any redirect, which is
+        // the whole of this test's setup.
+        crate::plogf!("[floor] a record before the redirect");
+        let out = logged("floor-late", || {
+            // process-wide: a probe for the redirect itself.
+            crate::plogf!("[floor] a record inside the redirect");
+        });
+        assert!(
+            out.contains("[floor] a record inside the redirect"),
+            "a redirect made after the first record did not take. Log was:\n{out}"
+        );
+    }
+
+    /// **Two calls with the same tag each see their own records** -- the
+    /// shape `d0` has, one path used twice. The first call must have closed
+    /// its file before deleting it, or the second writes into a file that no
+    /// longer exists.
+    #[test]
+    fn one_tag_used_twice_captures_both_times() {
+        for n in 0..2 {
+            let out = logged("floor-twice", || {
+                // process-wide: a probe for the redirect itself.
+                crate::plogf!("[floor] call {n}");
+            });
+            assert!(out.contains(&format!("[floor] call {n}")), "call {n}. Log was:\n{out}");
+        }
+    }
 }
 
 /// The file whose presence asks for a state dump. Deleted as it is read, so
@@ -410,10 +485,12 @@ fn dumpstate_path() -> Option<std::path::PathBuf> {
 /// it to the `polter-host.exe +mcp` it spawned, and that child **deleted the
 /// GUI's log**: 3214 lines to 284, measured, with both copies kept.
 ///
-/// It gets to delete it because every write here is `open`/`append`/`close`
-/// per line -- no handle is held, and a file with no open handle is one
-/// Windows will let you remove. **A choice made for another reason is what
-/// made the deletion possible.**
+/// It got to delete it because every write here was then `open`/`append`/
+/// `close` per line -- no handle was held, and a file with no open handle is
+/// one Windows will let you remove. **A choice made for another reason is
+/// what made the deletion possible.** (Task 317 later made the log a held
+/// handle -- see `Sink` -- which is also what `test_log::logged` had to be
+/// changed for, issue #13.)
 ///
 /// `<exe stem>-<pid>.log` already kept instances apart. **Only the pinned
 /// path was exempt -- and the person who pins it is the person debugging**,
@@ -1281,6 +1358,15 @@ struct Sink {
 impl Sink {
     fn write(&self, bytes: &[u8]) {
         use std::io::Write as _;
+        // Tests only: while `test_log::logged` holds the turn, every record
+        // goes to the file it opened for that call. See `test_log::CAPTURE`
+        // for why this seam has to exist. The product build has no such
+        // branch -- and so keeps the property the comment on `Sink` insists
+        // on, that writing a record takes no lock.
+        #[cfg(test)]
+        if test_log::capture(bytes) {
+            return;
+        }
         if let Some(mut f) = self.file.as_ref() {
             let _ = f.write_all(bytes);
         }
