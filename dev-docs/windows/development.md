@@ -40,6 +40,24 @@ zig build -Dtarget=x86_64-windows-gnu -Dapp-runtime=none -Drenderer=opengl \
 **退出码 1。编译阶段四类假设、5 个错误（`SIGKILL` 占两处），全部在 `src/poltergeist/` 里；四类修完后链接阶段还会再冒出一处 `localtime_r`，见 §1.5。**
 Ghostty 核心编得过。
 
+### 0.1 ⚠️ 上面那条是实验命令，不是出包命令：包和包之间的时间，只有同一条命令出的才可比
+
+实验二的 `-Doptimize=ReleaseSmall` 是 2026-08-31 那次实验用的，**不是**任何人定下的出包规矩。今天实际在用的有两种（2026-09-27 的读数）：
+
+| 谁在用 | 核心 | 宿主 |
+|---|---|---|
+| 真机上跑的产品包 | `-Dtarget=x86_64-windows-gnu -Dapp-runtime=none -Drenderer=opengl -Doptimize=ReleaseFast -Demit-macos-app=false -Demit-xcframework=false` | `cargo build --release` |
+| 照上面实验二那一行出的探针包 | 同上，但 `-Doptimize=ReleaseSmall` | 不带宿主，沿用产品包里的 |
+
+**两种都合法，这里不替任何一种定规矩**：发布到底该用哪一种，没有人量过。
+
+⚠️ **只有用同一条命令出的包，它们之间的时间读数（`surface_free done in N ms` 之类）才可比。** 2026-09-27 差一点拿两个不同构建方式的包（`ghostty-internal.dll` 分别是 31389184 字节和 26892800 字节）的 `surface_free` 毫秒数，去量一次进程快照的开销。两个数都叫毫秒，量的条件却不同。
+
+⚠️ **「这个包是怎么构建的」目前无法从产物或日志反查**：`zig build` 的输出不记参数，宿主启动日志 `[build]` 那几行只打 sha、大小和 mtime，不打优化级别。**dll 的大小是唯一的线索，而它只够猜**：同一棵树上 ReleaseSmall 和 ReleaseFast 差多少，没有量过；而上面那两个数来自两棵不同的树，树本身也会让大小变。
+可能的修法（**没做**）：出包时把那条命令写进 `share/` 下的一个文本文件；或者让核心带上 `builtin.mode`，由 `[build]` 那行一起打出来。
+
+所以出包时，说明里写清三样：**包里有什么**（文件清单和 dll 的 sha）；**哪些必须和 dll 同一棵树**（`share/` 必须，插件脚本在 `share/ghostty/polter/plugins/`，缺了插件起不来；宿主可以不同树，但启动时会报「不是一对」）；**用的是哪条命令**。拿到包的人第一眼核两件：dll 的 sha，以及 `share/ghostty/polter/plugins` 在不在。
+
 ## 1. 五处 POSIX 假设（四处编译期，一处链接期）
 
 编译期那四处都在插件宿主这一个子系统里——起插件、杀插件、写它的设置文件、记 pid。
