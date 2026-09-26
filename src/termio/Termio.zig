@@ -24,6 +24,7 @@ const ProcessInfo = @import("../pty.zig").ProcessInfo;
 const compat_file = @import("../lib/compat/file.zig");
 const poltergeist = @import("../poltergeist/main.zig");
 const scrollback = @import("scrollback.zig");
+const journalpkg = @import("scrollback_journal.zig");
 
 const log = std.log.scoped(.io_exec);
 
@@ -59,6 +60,15 @@ poltergeist_bytes: std.atomic.Value(u64) = .init(0),
 /// one. Null when the option is off, or when there is no state directory to
 /// write into.
 poltergeist_transcript: ?poltergeist.Transcript = null,
+
+/// The file this terminal's scrollback is journaled to, if its pane belongs
+/// to a project (`setScrollbackJournal`). Owned by the IO thread.
+scrollback_journal: ?ScrollbackJournal = null,
+
+/// Set when anything the journal records may have changed: pty output (on
+/// the reader thread, hence atomic) and resizes. Cleared by a successful
+/// write. A pane with nothing new writes nothing.
+scrollback_dirty: std.atomic.Value(bool) = .init(false),
 
 /// A handle to wake up the renderer. This hints to the renderer that
 /// a repaint should happen.
@@ -232,6 +242,10 @@ pub const DerivedConfig = struct {
     /// and zero for "neither capture nor restore".
     project_scrollback_limit: u64,
 
+    /// `project-scrollback-autosave-interval` in milliseconds; zero writes
+    /// the journal only on close and on an explicit capture.
+    project_scrollback_autosave_ms: u64,
+
     pub fn init(
         alloc_gpa: Allocator,
         config: *const configpkg.Config,
@@ -274,6 +288,7 @@ pub const DerivedConfig = struct {
             .poltergeist_repeat_ms = config.@"poltergeist-quiescence-repeat".duration / std.time.ns_per_ms,
             .poltergeist_terminal_log = config.@"poltergeist-terminal-log",
             .project_scrollback_limit = config.@"project-scrollback-limit-bytes".value,
+            .project_scrollback_autosave_ms = config.@"project-scrollback-autosave-interval".duration / std.time.ns_per_ms,
 
             // This has to be last so that we copy AFTER the arena allocations
             // above happen (Zig assigns in order).
@@ -423,12 +438,110 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
     }
 }
 
-/// Save this terminal's scrollback to `path` for a project.
+/// A pane's journal: where it goes and what has been written there.
+pub const ScrollbackJournal = struct {
+    path: []u8,
+    writer: journalpkg.Writer = .{},
+
+    /// Whether the line saying the journal is really being written has been
+    /// logged. A request being queued proves nothing; this line does.
+    first_write_logged: bool = false,
+
+    fn deinit(self: *ScrollbackJournal, alloc: Allocator) void {
+        alloc.free(self.path);
+        self.writer.deinit(alloc);
+    }
+};
+
+/// Start keeping this terminal's scrollback journaled at `path`, or stop
+/// (null). See `scrollback_journal.zig`.
 ///
-/// Encoded under the renderer lock, since the terminal is shared with the
-/// renderer, and written to disk after it is released so the file system
-/// never holds up drawing. With the feature switched off, an old snapshot at
-/// `path` is removed instead, so it cannot be restored later as current.
+/// **While this terminal is already journaling to `path`, setting `path`
+/// again changes nothing.** A pane that has just been restored has no
+/// journal yet, so the host's call for it is not a repeat: it starts one, and
+/// the first write rewrites the file from the restored state.
+///
+/// Setting another path stops the old journal and **leaves its file where
+/// it is**. The host numbers the files -- one per pane for the pane's life --
+/// so only the host knows whether the old one is still wanted; and every
+/// place core deletes a file is a place that has to be kept to `.snap`
+/// paths, so there is one fewer of them here.
+pub fn setScrollbackJournal(self: *Termio, path: ?[]const u8) void {
+    if (path) |p| if (self.scrollback_journal) |*j| {
+        if (std.mem.eql(u8, j.path, p)) return;
+    };
+    if (self.scrollback_journal) |*j| {
+        log.info("scrollback journal stopped path={s}", .{j.path});
+        j.deinit(self.alloc);
+        self.scrollback_journal = null;
+    }
+    const p = path orelse return;
+    // absence: means it was not reached -- with the feature on, the line
+    // below it ("scrollback journal requested") is logged instead.
+    if (self.config.project_scrollback_limit == 0) {
+        log.info("scrollback journal not started, project-scrollback-limit-bytes is 0 path={s}", .{p});
+        return;
+    }
+    const owned = self.alloc.dupe(u8, p) catch {
+        log.warn("scrollback journal not started, out of memory: this pane's scrollback is not being saved path={s}", .{p});
+        return;
+    };
+    self.scrollback_journal = .{ .path = owned };
+    self.scrollback_dirty.store(true, .monotonic);
+    log.info("scrollback journal requested path={s}; it is being written once \"scrollback journal active\" follows", .{p});
+}
+
+/// Write the journal if anything changed since the last write. `final` also
+/// flushes it to disk: closing and explicit saves pay for that, the timer
+/// does not.
+///
+/// Prepared under the renderer lock, written after it is released.
+pub fn journalScrollback(self: *Termio, final: bool) void {
+    const j = if (self.scrollback_journal) |*p| p else return;
+    if (!self.scrollback_dirty.swap(false, .acq_rel)) return;
+    const io = global.io();
+
+    var prepared = prepared: {
+        self.renderer_state.mutex.lockUncancelable(io);
+        defer self.renderer_state.mutex.unlock(io);
+        break :prepared journalpkg.prepare(
+            self.alloc,
+            io,
+            &j.writer,
+            &self.terminal,
+            self.config.project_scrollback_limit,
+        ) catch |err| {
+            self.scrollback_dirty.store(true, .monotonic);
+            log.warn("scrollback journal not written, this pane's scrollback is not saved until the next try path={s} err={}", .{ j.path, err });
+            return;
+        };
+    };
+    defer prepared.deinit(self.alloc);
+    const mode = @tagName(prepared.mode);
+    const bytes = prepared.bytes.len;
+
+    journalpkg.commit(self.alloc, io, &j.writer, j.path, &prepared, final) catch |err| {
+        self.scrollback_dirty.store(true, .monotonic);
+        log.warn("scrollback journal write failed, this pane's scrollback is not saved until the next write, which rewrites the file whole path={s} err={}", .{ j.path, err });
+        return;
+    };
+
+    if (!j.first_write_logged) {
+        j.first_write_logged = true;
+        log.info("scrollback journal active path={s}", .{j.path});
+    }
+    // Every write says how much it cost, so the interval can be judged by
+    // bytes rather than guessed.
+    log.info("scrollback journal wrote bytes={} mode={s} synced={} path={s}", .{ bytes, mode, final, j.path });
+}
+
+/// Save this terminal's scrollback to `path` for a project, now and flushed:
+/// a compacted journal (`scrollback_journal.zig`), the same format the
+/// autosave keeps up to date. If this terminal is already journaling to
+/// `path`, that journal is rewritten in place.
+///
+/// With the feature switched off, an old snapshot at `path` is removed
+/// instead, so it cannot be restored later as current.
 pub fn captureScrollback(self: *Termio, path: []const u8) void {
     const io = global.io();
     const limit = self.config.project_scrollback_limit;
@@ -437,21 +550,30 @@ pub fn captureScrollback(self: *Termio, path: []const u8) void {
         return;
     }
 
-    const bytes = bytes: {
+    if (self.scrollback_journal) |*j| if (std.mem.eql(u8, j.path, path)) {
+        j.writer.invalidate();
+        self.scrollback_dirty.store(true, .monotonic);
+        self.journalScrollback(true);
+        return;
+    };
+
+    var writer: journalpkg.Writer = .{};
+    defer writer.deinit(self.alloc);
+    var prepared = prepared: {
         self.renderer_state.mutex.lockUncancelable(io);
         defer self.renderer_state.mutex.unlock(io);
-        break :bytes scrollback.capture(self.alloc, &self.terminal, limit) catch |err| {
-            log.warn("scrollback capture failed path={s} err={}", .{ path, err });
+        break :prepared journalpkg.prepare(self.alloc, io, &writer, &self.terminal, limit) catch |err| {
+            log.warn("scrollback capture failed, nothing saved for this pane path={s} err={}", .{ path, err });
             return;
         };
     };
-    defer self.alloc.free(bytes);
-
-    scrollback.writeFile(io, path, bytes) catch |err| {
-        log.warn("scrollback snapshot not written path={s} err={}", .{ path, err });
+    defer prepared.deinit(self.alloc);
+    const bytes = prepared.bytes.len;
+    journalpkg.commit(self.alloc, io, &writer, path, &prepared, true) catch |err| {
+        log.warn("scrollback snapshot not written, nothing saved for this pane path={s} err={}", .{ path, err });
         return;
     };
-    log.info("scrollback captured bytes={} path={s}", .{ bytes.len, path });
+    log.info("scrollback captured bytes={} path={s}", .{ bytes, path });
 }
 
 /// Open this terminal's transcript, or answer null and say why.
@@ -490,6 +612,7 @@ fn openTranscript(
 
 pub fn deinit(self: *Termio) void {
     self.backend.deinit();
+    if (self.scrollback_journal) |*j| j.deinit(self.alloc);
 
     // Before the terminal goes: this is the last chance to write down the
     // rows still on the active screen, and the pin has to be handed back to
@@ -674,6 +797,9 @@ pub fn resize(
     {
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());
+
+        // A resize can change history in place; the journal rewrites.
+        self.scrollback_dirty.store(true, .monotonic);
 
         // Update the size of our terminal state
         try self.terminal.resize(
@@ -921,6 +1047,7 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
     // pty output at all (scrolling, selection, IME preedit), so neither
     // number substitutes for the other.
     _ = self.poltergeist_bytes.fetchAdd(buf.len, .monotonic);
+    self.scrollback_dirty.store(true, .monotonic);
 
     // Schedule a render. We can call this first because we have the lock.
     self.terminal_stream.handler.queueRender() catch unreachable;

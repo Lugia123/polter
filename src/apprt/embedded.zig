@@ -2453,6 +2453,30 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// Keep the surface's scrollback journaled at `path` (absolute, UTF-8,
+    /// ending in `.snap`), or stop with null. See `ghostty.h` for what the
+    /// return value does and does not mean.
+    export fn ghostty_surface_set_scrollback_journal(
+        surface: *Surface,
+        path: ?[*:0]const u8,
+    ) bool {
+        const p: ?[]const u8 = if (path) |c| std.mem.sliceTo(c, 0) else null;
+        if (p) |v| {
+            // Core rewrites and deletes this file, so it only takes a path
+            // that looks like a snapshot -- the rule `scrollback.deleteFile`
+            // keeps.
+            if (!std.fs.path.isAbsolute(v) or !std.mem.endsWith(u8, v, ".snap")) {
+                log.warn("set_scrollback_journal needs an absolute path ending in .snap path={s}", .{v});
+                return false;
+            }
+        }
+        surface.core_surface.setScrollbackJournal(p) catch |err| {
+            log.warn("set_scrollback_journal could not be queued err={}", .{err});
+            return false;
+        };
+        return true;
+    }
+
     /// Update the focused state of a surface.
     export fn ghostty_surface_set_focus(surface: *Surface, focused: bool) void {
         surface.focusCallback(focused);

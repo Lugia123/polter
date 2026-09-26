@@ -430,6 +430,16 @@ page_serial: u64,
 /// checked against the live list before its coordinates are used.
 page_serial_epoch: u64,
 
+/// How many times `resize` has run on this list.
+///
+/// **A resize can change history without changing any serial.** A taller
+/// window pulls history rows back into the active area, where the program can
+/// write over them, and a shorter one pushes them back -- the same nodes, the
+/// same serials, different content. Anything that keeps a copy of completed
+/// pages (the scrollback journal, `termio/scrollback_journal.zig`) compares
+/// this to know its copy may no longer match.
+resize_count: u64 = 0,
+
 /// Byte size of the raw backing mappings owned by active page nodes. This is
 /// logical scrollback accounting and does not change while a mapping is
 /// decommitted. It excludes encoded storage and unused preheated pool items.
@@ -1260,6 +1270,7 @@ pub const Resize = struct {
 /// TODO: docs
 pub fn resize(self: *PageList, opts: Resize) Allocator.Error!void {
     defer self.assertIntegrity();
+    self.resize_count += 1;
 
     // Resizing forces all nodes to be decompressed today so we need to
     // reschedule compression.

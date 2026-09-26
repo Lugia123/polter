@@ -1902,6 +1902,15 @@ input: RepeatableReadableIO = .{},
 /// occupied.
 @"project-scrollback-limit-bytes": Limit(u64, 10_000_000) = .default,
 
+/// How often a pane that belongs to a project saves its scrollback while it
+/// runs, so that a crash, a forced restart or a power cut loses at most this
+/// much. A pane with no output since the last save writes nothing. Each save
+/// writes only what changed -- new pages of history and the visible screen --
+/// not the whole scrollback again.
+///
+/// `0` saves only when the pane is closed or the project is saved.
+@"project-scrollback-autosave-interval": Duration = .{ .duration = 5 * std.time.ns_per_s },
+
 /// Whether to compress scrollback pages while the terminal is idle.
 ///
 /// Ghostty does its best to only compress when idle and decompress

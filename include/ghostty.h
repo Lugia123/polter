@@ -1535,6 +1535,26 @@ GHOSTTY_API ghostty_surface_config_s ghostty_surface_config_new();
 // surface's IO thread, atomically. Writes nothing (and removes `path`) when
 // project-scrollback-limit-bytes is 0.
 GHOSTTY_API bool ghostty_surface_capture_scrollback(ghostty_surface_t, const char*);
+// Keep the surface's scrollback journaled at `path` from now on: a file core
+// writes itself, every project-scrollback-autosave-interval when there is
+// something new, on close, and on ghostty_surface_capture_scrollback to the
+// same path. NULL stops. `path` is absolute UTF-8 ending in ".snap"; while
+// the journal is on, core owns that file -- do not write or delete it.
+//
+// Returns true once the request is queued, false for a bad path or no
+// memory. **true does not mean the journal is being written**: the core log
+// says "scrollback journal active path=..." when it first is, and nothing
+// before that line is evidence that it works.
+//
+// While this surface is already journaling to `path`, setting the same path
+// again does nothing. A surface restored from scrollback_restore has no
+// journal yet, so calling this for it is not a repeat: it starts one, and the
+// first write rewrites the file from the restored state.
+//
+// Setting another path stops the old journal and leaves its file where it
+// is. The host numbers these files, one per pane for the pane's life, so only
+// the host knows whether the old one is still wanted -- the host removes it.
+GHOSTTY_API bool ghostty_surface_set_scrollback_journal(ghostty_surface_t, const char*);
 
 GHOSTTY_API ghostty_surface_t ghostty_surface_new(ghostty_app_t,
                                                      const ghostty_surface_config_s*);

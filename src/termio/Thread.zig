@@ -131,6 +131,12 @@ sync_reset_cancel_c: xev.Completion = .{},
 write_delay: xev.Timer,
 write_delay_c: xev.Completion = .{},
 
+/// Writes the scrollback journal every `project-scrollback-autosave-interval`
+/// while one is set (`Termio.setScrollbackJournal`). Armed only then.
+journal: xev.Timer,
+journal_c: xev.Completion = .{},
+journal_armed: bool = false,
+
 /// True from the moment a `write_delay` is taken until its timer fires.
 /// While it is set, `drainMailbox` returns without popping anything, so a
 /// wakeup arriving during the gap does not step over it.
@@ -203,6 +209,10 @@ pub fn init(
     var write_delay_h = try xev.Timer.init();
     errdefer write_delay_h.deinit();
 
+    // This timer writes the scrollback journal.
+    var journal_h = try xev.Timer.init();
+    errdefer journal_h.deinit();
+
     return Thread{
         .alloc = alloc,
         .loop = loop,
@@ -211,6 +221,7 @@ pub fn init(
         .coalesce = coalesce_h,
         .sync_reset = sync_reset_h,
         .write_delay = write_delay_h,
+        .journal = journal_h,
     };
 }
 
@@ -222,6 +233,7 @@ pub fn deinit(self: *Thread) void {
     self.coalesce.deinit();
     self.sync_reset.deinit();
     self.write_delay.deinit();
+    self.journal.deinit();
     self.stop.deinit();
     self.loop.deinit();
 }
@@ -516,8 +528,18 @@ fn finishCaptures(self: *Thread, cb: *CallbackData) void {
             defer v.alloc.free(v.path);
             cb.io.captureScrollback(v.path);
         },
+        // Taken, so the last write below goes where the host last said.
+        .scrollback_journal => |v| {
+            defer if (v.path) |path| v.alloc.free(path);
+            cb.io.setScrollbackJournal(v.path);
+        },
         else => msg.deinit(),
     };
+
+    // **The journal's last write, flushed.** Whatever the pane showed since
+    // the last timer tick is otherwise lost when it closes, which is the
+    // ordinary way a pane ends.
+    cb.io.journalScrollback(true);
 }
 
 /// This is the data passed to xev callbacks on the thread.
@@ -552,6 +574,7 @@ fn drainMailbox(
                 // The shell is gone but the screen it left is not, and a
                 // project saved now should still get it.
                 .capture_scrollback => |v| cb.io.captureScrollback(v.path),
+                .scrollback_journal => |v| cb.io.setScrollbackJournal(v.path),
                 else => {},
             }
             msg.deinit();
@@ -629,6 +652,11 @@ fn drainMailbox(
             .capture_scrollback => |v| {
                 defer v.alloc.free(v.path);
                 io.captureScrollback(v.path);
+            },
+            .scrollback_journal => |v| {
+                defer if (v.path) |path| v.alloc.free(path);
+                io.setScrollbackJournal(v.path);
+                self.armJournal(cb);
             },
             .start_synchronized_output => self.startSynchronizedOutput(cb),
             .linefeed_mode => |v| self.flags.linefeed_mode = v,
@@ -838,6 +866,38 @@ fn syncQuiescence(self: *Thread, io: *termio.Termio, cb: *CallbackData) void {
         // fires at most once more, sees `enabled` false, and stops there.
         log.info("poltergeist: watching stopped by config reload", .{});
     }
+}
+
+/// Arm the journal timer if a journal is set and none is pending.
+fn armJournal(self: *Thread, cb: *CallbackData) void {
+    if (self.journal_armed) return;
+    if (cb.io.scrollback_journal == null) return;
+    const ms = cb.io.config.project_scrollback_autosave_ms;
+    if (ms == 0) return;
+    self.journal_armed = true;
+    self.journal.run(&self.loop, &self.journal_c, ms, CallbackData, cb, journalCallback);
+}
+
+fn journalCallback(
+    cb_: ?*CallbackData,
+    _: *xev.Loop,
+    _: *xev.Completion,
+    r: xev.Timer.RunError!void,
+) xev.CallbackAction {
+    const cb = cb_ orelse return .disarm;
+    cb.self.journal_armed = false;
+    _ = r catch |err| switch (err) {
+        error.Canceled => return .disarm,
+        else => {
+            log.warn("scrollback journal timer error, this pane's scrollback is saved only on close from now on err={}", .{err});
+            return .disarm;
+        },
+    };
+    cb.io.journalScrollback(false);
+    // Re-armed by hand, like the quiescence timer: stops by itself once the
+    // journal is unset.
+    cb.self.armJournal(cb);
+    return .disarm;
 }
 
 fn armQuiescence(self: *Thread, cb: *CallbackData) void {
@@ -1386,7 +1446,6 @@ test "a capture queued as the surface closes is still written" {
     // sees only the stop.
     const testing = std.testing;
     const alloc = testing.allocator;
-    const terminalpkg = @import("../terminal/main.zig");
 
     // Only what `run` and `Termio.captureScrollback` read is set, as in the
     // tests above.
@@ -1396,6 +1455,9 @@ test "a capture queued as the surface closes is still written" {
     io.alloc = alloc;
     io.config.poltergeist_watch = false;
     io.config.project_scrollback_limit = 10_000_000;
+    io.config.project_scrollback_autosave_ms = 0;
+    io.scrollback_journal = null;
+    io.scrollback_dirty = .init(false);
     io.terminal = try .init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
     defer io.terminal.deinit(alloc);
     {
@@ -1429,15 +1491,161 @@ test "a capture queued as the surface closes is still written" {
     try thread.stop.notify();
     try thread.run(&cb);
 
-    // The file is there and is a whole snapshot of what was on screen.
+    // The file is there and is a whole snapshot of what was on screen: a
+    // compacted journal, which is what a capture writes.
     const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, alloc, .unlimited);
     defer alloc.free(bytes);
-    var source: std.Io.Reader = .fixed(bytes);
-    var decoded = try terminalpkg.snapshot.decodeExact(alloc, testing.io, &source, .{
-        .max_continuation_bytes = 0,
-    });
-    defer decoded.deinit(alloc);
-    const text = try decoded.terminal.?.plainString(alloc);
+    var loaded = try termio.scrollback_journal.load(alloc, testing.io, bytes);
+    defer loaded.terminal.deinit(alloc);
+    const text = try loaded.terminal.plainString(alloc);
     defer alloc.free(text);
     try testing.expect(std.mem.indexOf(u8, text, "before close") != null);
+}
+
+/// A minimal Termio for driving `Thread.run` and the journal without a pty,
+/// as the test above does.
+const TestJournalTermio = struct {
+    io: *termio.Termio,
+    mutex: std.Io.Mutex = .init,
+    state: renderer.State = undefined,
+    wakeup: xev.Async = undefined,
+    stream: @import("../terminal/main.zig").TerminalStream = undefined,
+    dir_buf: [64]u8 = undefined,
+    path_buf: [96]u8 = undefined,
+    dir: []const u8 = "",
+    path: []const u8 = "",
+
+    fn create(autosave_ms: u64) !*TestJournalTermio {
+        const alloc = std.testing.allocator;
+        const self = try alloc.create(TestJournalTermio);
+        self.* = .{ .io = try alloc.create(termio.Termio) };
+        const io = self.io;
+        io.* = undefined;
+        io.alloc = alloc;
+        io.config.poltergeist_watch = false;
+        io.config.project_scrollback_limit = 10_000_000;
+        io.config.project_scrollback_autosave_ms = autosave_ms;
+        io.scrollback_journal = null;
+        io.scrollback_dirty = .init(false);
+        io.terminal = try .init(std.testing.io, alloc, .{ .cols = 20, .rows = 5 });
+        self.state = .{ .mutex = &self.mutex, .terminal = &io.terminal };
+        io.renderer_state = &self.state;
+        self.wakeup = try xev.Async.init();
+        io.renderer_wakeup = &self.wakeup;
+        io.mailbox = try .initSPSC(alloc);
+        self.stream = io.terminal.vtStream();
+
+        var raw: [6]u8 = undefined;
+        std.testing.io.random(&raw);
+        self.dir = try std.fmt.bufPrint(&self.dir_buf, "/tmp/polter-journal-{x}", .{&raw});
+        self.path = try std.fmt.bufPrint(&self.path_buf, "{s}/0.snap", .{self.dir});
+        return self;
+    }
+
+    fn destroy(self: *TestJournalTermio) void {
+        const alloc = std.testing.allocator;
+        std.Io.Dir.cwd().deleteTree(std.testing.io, self.dir) catch {};
+        if (self.io.scrollback_journal) |*j| {
+            alloc.free(j.path);
+            j.writer.deinit(alloc);
+        }
+        self.stream.deinit();
+        self.wakeup.deinit();
+        self.io.mailbox.deinit(alloc);
+        self.io.terminal.deinit(alloc);
+        alloc.destroy(self.io);
+        alloc.destroy(self);
+    }
+
+    /// Output as if from the pty: what marks the journal dirty in the product.
+    fn output(self: *TestJournalTermio, bytes: []const u8) void {
+        self.stream.nextSlice(bytes);
+        self.io.scrollback_dirty.store(true, .monotonic);
+    }
+
+    fn setJournal(self: *TestJournalTermio) !void {
+        self.io.mailbox.send(.{ .scrollback_journal = .{
+            .alloc = std.testing.allocator,
+            .path = try std.testing.allocator.dupe(u8, self.path),
+        } }, null);
+        self.io.mailbox.notify();
+    }
+
+    fn fileHas(self: *TestJournalTermio, text: []const u8) !bool {
+        const alloc = std.testing.allocator;
+        const bytes = std.Io.Dir.cwd().readFileAlloc(std.testing.io, self.path, alloc, .unlimited) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return err,
+        };
+        defer alloc.free(bytes);
+        var loaded = try termio.scrollback_journal.load(alloc, std.testing.io, bytes);
+        defer loaded.terminal.deinit(alloc);
+        const plain = try loaded.terminal.plainString(alloc);
+        defer alloc.free(plain);
+        return std.mem.indexOf(u8, plain, text) != null;
+    }
+};
+
+test "a journaled pane that closes writes what it last showed (F-close)" {
+    // Autosave off: only the close can have written it.
+    const h = try TestJournalTermio.create(0);
+    defer h.destroy();
+    var thread: Thread = try .init(std.testing.allocator);
+    defer thread.deinit();
+    var cb: CallbackData = .{ .self = &thread, .io = h.io };
+    cb.data = undefined;
+
+    try h.setJournal();
+    h.output("last thing on screen\r\n");
+    try thread.stop.notify();
+    try thread.run(&cb);
+
+    try std.testing.expect(try h.fileHas("last thing on screen"));
+}
+
+test "a journaled pane writes on the timer, before it closes (F-timer)" {
+    const h = try TestJournalTermio.create(50);
+    defer h.destroy();
+    var thread: Thread = try .init(std.testing.allocator);
+    defer thread.deinit();
+    var cb: CallbackData = .{ .self = &thread, .io = h.io };
+    cb.data = undefined;
+
+    try h.setJournal();
+    h.output("written by the timer\r\n");
+
+    // Looked at **before** the stop, so the close's own write cannot be what
+    // is seen here: after the stop, the close would write it anyway.
+    const Stopper = struct {
+        fn run(t: *Thread, harness: *TestJournalTermio, seen: *bool) void {
+            std.testing.io.sleep(.fromMilliseconds(400), .awake) catch {};
+            seen.* = harness.fileHas("written by the timer") catch false;
+            t.stop.notify() catch {};
+        }
+    };
+    var seen = false;
+    const stopper = try std.Thread.spawn(.{}, Stopper.run, .{ &thread, h, &seen });
+    try thread.run(&cb);
+    stopper.join();
+
+    try std.testing.expect(seen);
+}
+
+test "a journaled pane with nothing new writes nothing" {
+    // The cost side of the timer: an idle pane must not rewrite a checkpoint
+    // every interval.
+    const h = try TestJournalTermio.create(0);
+    defer h.destroy();
+    h.io.setScrollbackJournal(h.path);
+    h.output("something\r\n");
+    h.io.journalScrollback(false);
+    const first = (try std.Io.Dir.cwd().statFile(std.testing.io, h.path, .{})).size;
+    h.io.journalScrollback(false);
+    const second = (try std.Io.Dir.cwd().statFile(std.testing.io, h.path, .{})).size;
+    try std.testing.expectEqual(first, second);
+    // And something new is written.
+    h.output("more\r\n");
+    h.io.journalScrollback(false);
+    const third = (try std.Io.Dir.cwd().statFile(std.testing.io, h.path, .{})).size;
+    try std.testing.expect(third > second);
 }

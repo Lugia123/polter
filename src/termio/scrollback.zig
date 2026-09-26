@@ -28,6 +28,7 @@ const Allocator = std.mem.Allocator;
 const terminalpkg = @import("../terminal/main.zig");
 const snapshot = terminalpkg.snapshot;
 const Terminal = terminalpkg.Terminal;
+const journal = @import("scrollback_journal.zig");
 
 const log = std.log.scoped(.scrollback);
 
@@ -130,15 +131,21 @@ pub fn restore(
     t: *Terminal,
     stream: anytype,
 ) Outcome {
-    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| switch (err) {
+    // Whole, because a journal is read from its end back (the last whole
+    // checkpoint, then its pages newest first). Bounded by the journal's own
+    // compaction at about twice `project-scrollback-limit-bytes`.
+    const file_bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited) catch |err| switch (err) {
         error.FileNotFound => return .missing,
         else => return unreadable(io, path, err),
     };
-    defer file.close(io);
+    defer alloc.free(file_bytes);
 
-    var read_buf: [64 * 1024]u8 = undefined;
-    var file_reader = file.reader(io, &read_buf);
-    const reader = &file_reader.interface;
+    // A journal (`scrollback_journal.zig`) or, from before it existed or from
+    // an explicit capture, one v1 snapshot.
+    if (journal.isJournal(file_bytes)) return restoreJournal(alloc, io, path, file_bytes, t);
+
+    var source: std.Io.Reader = .fixed(file_bytes);
+    const reader = &source;
 
     var decoder: snapshot.Decoder = .init(reader);
     var decoded = decoder.ready(alloc, io, .{
@@ -187,6 +194,34 @@ pub fn restore(
     return .{ .restored = .{
         .history_rows = t.screens.get(.primary).?.pages.total_rows - t.rows,
         .dropped_continuation = dropped_continuation,
+    } };
+}
+
+/// The journal half of `restore`. `load` has already applied the pages to the
+/// terminal it returns, before any resize -- order 2 above, for the same
+/// reason -- so what is left is the resize and the transplant. A journal's
+/// checkpoint is written with a ground continuation, so there is none to
+/// drop.
+fn restoreJournal(
+    alloc: Allocator,
+    io: std.Io,
+    path: []const u8,
+    bytes: []const u8,
+    t: *Terminal,
+) Outcome {
+    var loaded = journal.load(alloc, io, bytes) catch |err| return unreadable(io, path, err);
+    defer loaded.terminal.deinit(alloc);
+    if (loaded.dropped_pages > 0) log.warn(
+        "scrollback journal: {} older pages not applied path={s}",
+        .{ loaded.dropped_pages, path },
+    );
+
+    resizeRestored(alloc, &loaded.terminal, t.cols, t.rows) catch |err|
+        return unreadable(io, path, err);
+    transplantPrimary(&loaded.terminal, t);
+    return .{ .restored = .{
+        .history_rows = t.screens.get(.primary).?.pages.total_rows - t.rows,
+        .dropped_continuation = 0,
     } };
 }
 

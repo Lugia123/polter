@@ -1206,6 +1206,17 @@ pub fn captureScrollback(self: *Surface, path: []const u8) Allocator.Error!void 
 ///
 /// We centralize all our logic into this spot so we can intercept
 /// messages for example in readonly mode.
+/// Keep this terminal's scrollback journaled at `path`, or stop (null). Only
+/// queues the request; the IO thread logs "scrollback journal active" when the
+/// journal is first really written (see `termio.Termio.setScrollbackJournal`).
+pub fn setScrollbackJournal(self: *Surface, path: ?[]const u8) Allocator.Error!void {
+    const owned: ?[]const u8 = if (path) |p| try self.alloc.dupe(u8, p) else null;
+    self.queueIo(.{ .scrollback_journal = .{
+        .alloc = self.alloc,
+        .path = owned,
+    } }, .unlocked);
+}
+
 fn queueIo(
     self: *Surface,
     msg: termio.Message,

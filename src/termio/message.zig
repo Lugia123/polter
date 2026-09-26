@@ -116,6 +116,11 @@ pub const Message = union(enum) {
     /// `Termio.captureScrollback`. The path is allocated and must be freed.
     capture_scrollback: CaptureScrollback,
 
+    /// Keep this terminal's scrollback journaled at `path`, or stop (null).
+    /// See `Termio.setScrollbackJournal`. The path is allocated and must be
+    /// freed.
+    scrollback_journal: ScrollbackJournal,
+
     /// Write where the data fits in the union.
     write_small: WriteReq.Small,
 
@@ -136,6 +141,12 @@ pub const Message = union(enum) {
     pub const CaptureScrollback = struct {
         alloc: Allocator,
         path: []const u8,
+    };
+
+    /// The payload of `scrollback_journal`.
+    pub const ScrollbackJournal = struct {
+        alloc: Allocator,
+        path: ?[]const u8,
     };
 
     /// Return a write request for the given data. This will use
@@ -162,6 +173,7 @@ pub const Message = union(enum) {
             .kitty_clipboard_grant_write,
             => |v| v.alloc.free(v.pw),
             .capture_scrollback => |v| v.alloc.free(v.path),
+            .scrollback_journal => |v| if (v.path) |path| v.alloc.free(path),
             else => {},
         }
     }
