@@ -10,6 +10,16 @@
 #   bundle id can be checked in between (Debug => com.lugia.polter.debug).
 # - The test host gets no command-line flags, so MCP registration is turned off
 #   by a config file: TEST_RUNNER_XDG_CONFIG_HOME -> <tmp>/config/polter/config.polter.
+#   **That file was never read** (measured 2026-09-27): the test plan
+#   (macos/Ghostty.xctestplan) sets GHOSTTY_CONFIG_PATH to
+#   /tmp/Ghostty/testing_config.ghostty, which normally does not exist, so
+#   the host loaded no config at all -- host log `error loading config from
+#   file path=/tmp/Ghostty/testing_config.ghostty err=error.FileNotFound` and
+#   no `reading configuration file` line. The register-mcp=false above never
+#   took effect. TEST_RUNNER_GHOSTTY_CONFIG_PATH overrides the plan's value
+#   with the file above; the host then loads exactly that file (one
+#   `reading configuration file` line) and register-mcp=false is in force.
+#   The user's config is not read either way.
 #   TEST_RUNNER_XDG_STATE_HOME puts its socket/state under /tmp (short path).
 # - `-skip-testing GhosttyUITests` must be given to the *test* step too: the
 #   xctestrun carries the UI tests, and running them pops a system
@@ -60,6 +70,7 @@ xtr=$(ls "$wt"/dd/Build/Products/*.xctestrun | head -1)
 x=$(mktemp -d /tmp/pxt.XXXX); mkdir -p "$x/config/polter" "$x/state"
 print 'poltergeist-register-mcp = false' > "$x/config/polter/config.polter"
 env -i PATH="$PATH" HOME="$HOME" TEST_RUNNER_XDG_CONFIG_HOME="$x/config" TEST_RUNNER_XDG_STATE_HOME="$x/state" \
+    TEST_RUNNER_GHOSTTY_CONFIG_PATH="$x/config/polter/config.polter" \
     xcodebuild test-without-building -xctestrun "$xtr" -destination 'platform=macOS,arch=arm64' \
     -skip-testing GhosttyUITests "$@" -resultBundlePath "$out.xcresult" > "$out-test.log" 2>&1 && rc=0 || rc=$?
 print "xcodebuild test exit=$rc; host state used: $(ls $x/state/polter 2>/dev/null | tr '\n' ' ')"
