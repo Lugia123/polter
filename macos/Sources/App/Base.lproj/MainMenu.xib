@@ -105,7 +105,7 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="VOq-y0-SEH"/>
-                            <menuItem title="Preferences…" keyEquivalent="," id="BOF-NM-1cW">
+                            <menuItem title="Preferences…" id="BOF-NM-1cW">
                                 <connections>
                                     <action selector="openConfig:" target="bbz-4X-AYv" id="X65-fg-iWU"/>
                                 </connections>
@@ -491,8 +491,7 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="eu3-7i-yIM"/>
-                            <menuItem title="Toggle Full Screen" keyEquivalent="f" id="8kY-Pi-KaY">
-                                <modifierMask key="keyEquivalentModifierMask" control="YES" command="YES"/>
+                            <menuItem title="Toggle Full Screen" id="8kY-Pi-KaY">
                                 <connections>
                                     <action selector="toggleGhosttyFullScreen:" target="-1" id="QB9-7R-xyc"/>
                                 </connections>
