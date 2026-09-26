@@ -206,6 +206,9 @@ fn transplantPrimary(from: *Terminal, to: *Terminal) void {
     // not to the one the snapshot was taken under.
     const limits = dst.pages.limits;
 
+    // What a new pane's cursor is, before the old one takes its place.
+    const fresh = dst.cursor;
+
     std.mem.swap(@TypeOf(src.pages), &src.pages, &dst.pages);
     std.mem.swap(@TypeOf(src.cursor), &src.cursor, &dst.cursor);
     dst.semantic_prompt.seen = src.semantic_prompt.seen;
@@ -213,8 +216,7 @@ fn transplantPrimary(from: *Terminal, to: *Terminal) void {
     dst.pages.setMaxBytes(explicit(limits.bytes.explicit));
     dst.pages.setMaxLines(explicit(limits.lines.explicit));
 
-    // The old session's pen is not the new shell's.
-    to.setAttribute(.unset) catch {};
+    restoreFreshCursor(to, dst, fresh);
 
     // **What was on screen goes into history, and the new shell starts on a
     // clean screen.** Restored content left in the active area belongs to
@@ -234,16 +236,67 @@ fn transplantPrimary(from: *Terminal, to: *Terminal) void {
         .{err},
     );
     to.setCursorPos(1, 1);
+}
 
-    // **The cursor came over with the pages, and with it the old shell's
-    // notion of where it was** -- at a prompt, in its input. A resize acts on
-    // that (`Screen.clearPromptForRedraw`): it walks up from the cursor to the
-    // nearest prompt and clears from there down, so a resize after the
-    // restore found the old prompt, now in history, and blanked it. The new
-    // shell has printed nothing yet; the cursor is in output, as it is in a
-    // fresh terminal.
-    dst.cursor.semantic_content = .output;
-    dst.cursor.semantic_content_clear_eol = false;
+/// Give the transplanted cursor back everything but its place in the pages.
+///
+/// **The cursor comes over with the pages only because its `page_pin` is a
+/// tracked pin in their list.** The rest of it describes the old shell at the
+/// moment of the snapshot, and none of that is true of the new one:
+///
+/// * `semantic_content` said "at a prompt, in its input". A resize acts on
+///   that (`Screen.clearPromptForRedraw` walks up from the cursor to the
+///   nearest prompt and clears from there down), so the host's resize after
+///   a restore blanked the old prompt, already in history (#844).
+/// * `protected` (DECSCA) and an OSC 8 `hyperlink` left open would be put on
+///   every character the new shell prints, for the rest of the session;
+///   `cursor_style` (DECSCUSR) would keep the old program's shape (#36).
+///
+/// So the invariant: every field is what `fresh` -- the new pane's own
+/// cursor -- had, except the three pointers into the pages and
+/// `hyperlink_implicit_id`, which numbers links already *in* those pages and
+/// has to keep counting past them. Fields holding references are released
+/// the way their owners release them: `endHyperlink` for the link,
+/// `setAttribute(.unset)` for the pen. The position is set by the caller.
+///
+/// A field added to `Screen.Cursor` and not listed below does not compile,
+/// so a new piece of shell state cannot come over silently.
+fn restoreFreshCursor(to: *Terminal, dst: *terminalpkg.Screen, fresh: terminalpkg.Screen.Cursor) void {
+    comptime {
+        const handled = [_][]const u8{
+            // Set by the caller (`setCursorPos`).
+            "x",                          "y",
+            // Released through their owners, below.
+            "hyperlink_id",               "hyperlink",
+            "style",                      "style_id",
+            // Copied from `fresh`, below.
+            "cursor_style",               "pending_wrap",
+            "protected",                  "semantic_content",
+            "semantic_content_clear_eol",
+            // Kept: they belong to the pages, not to the old shell.
+            "hyperlink_implicit_id",
+            "page_pin",                   "page_row",
+            "page_cell",
+        };
+        const fields = @typeInfo(terminalpkg.Screen.Cursor).@"struct".fields;
+        for (fields) |f| {
+            for (handled) |h| {
+                if (std.mem.eql(u8, f.name, h)) break;
+            } else @compileError("Screen.Cursor." ++ f.name ++
+                " is not handled by restoreFreshCursor: say whether a restored pane takes it from the new pane or keeps it");
+        }
+        // And no name in the list that is not a field: a misspelled entry
+        // would leave the real field unhandled.
+        if (fields.len != handled.len) @compileError("restoreFreshCursor's field list names something Screen.Cursor does not have");
+    }
+
+    dst.endHyperlink();
+    to.setAttribute(.unset) catch {};
+    dst.cursor.cursor_style = fresh.cursor_style;
+    dst.cursor.pending_wrap = fresh.pending_wrap;
+    dst.cursor.protected = fresh.protected;
+    dst.cursor.semantic_content = fresh.semantic_content;
+    dst.cursor.semantic_content_clear_eol = fresh.semantic_content_clear_eol;
 }
 
 /// Resize a terminal decoded from a snapshot to the pane it is going into,
@@ -761,4 +814,46 @@ test "the Windows sequence: restore, a second resize, then ConPTY's ED2 (#826)" 
     const active = try t.screens.get(.primary).?.dumpStringAlloc(testing.allocator, .{ .active = .{} });
     defer testing.allocator.free(active);
     try testing.expect(std.mem.indexOf(u8, active, "L0") == null);
+}
+
+test "a restored pane's cursor carries none of the old shell's state (#36)" {
+    // The old session left a bar cursor (DECSCUSR), protected mode on
+    // (DECSCA), an OSC 8 link open, and the cursor in a prompt's input.
+    var buf: [128]u8 = undefined;
+    const path = try testPath(&buf);
+    defer testCleanup(path);
+    {
+        var source = try testSource(80, 24, 30);
+        defer source.deinit(testing.allocator);
+        var s0 = source.vtStream();
+        defer s0.deinit();
+        s0.nextSlice("\x1b[5 q\x1b[1\"q\x1b]8;;https://old.example\x1b\\\x1b]133;A\x07$ \x1b]133;B\x07typing");
+        const c = source.screens.get(.primary).?.cursor;
+        // The fixture is what it says, or the test proves nothing.
+        try testing.expectEqual(.bar, c.cursor_style);
+        try testing.expect(c.protected);
+        try testing.expect(c.hyperlink != null);
+        try testing.expect(c.semantic_content != .output);
+        try testSave(&source, path);
+    }
+
+    var t = try testFresh(80, 24);
+    defer t.deinit(testing.allocator);
+    const fresh = t.screens.get(.primary).?.cursor;
+    var s = t.vtStream();
+    defer s.deinit();
+    try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+
+    const c = t.screens.get(.primary).?.cursor;
+    try testing.expectEqual(fresh.cursor_style, c.cursor_style);
+    try testing.expectEqual(fresh.protected, c.protected);
+    try testing.expectEqual(fresh.hyperlink_id, c.hyperlink_id);
+    try testing.expect(c.hyperlink == null);
+    try testing.expectEqual(fresh.semantic_content, c.semantic_content);
+
+    // What the user would see: the new shell's first character is plain.
+    s.nextSlice("N");
+    const first = t.screens.get(.primary).?.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?;
+    try testing.expect(!first.cell.protected);
+    try testing.expect(!first.cell.hyperlink);
 }
