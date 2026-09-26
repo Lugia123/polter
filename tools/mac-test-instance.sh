@@ -4,6 +4,10 @@
 #
 #     tools/mac-test-instance.sh <path/to/Polter.app> [<args for -e ...>]
 #
+# Extra config flags for the instance (they must come before `-e`, so they
+# cannot ride in the command): MAC_TEST_EXTRA_FLAGS='--copy-on-select=false'.
+# This is how a floor breaks one thing on purpose without a rebuild.
+#
 # Default command is `-e /bin/sh`. Prints `pid=`, `state=`, `socket=` and
 # `bundle=` lines; everything the test does afterwards should name that pid
 # (see tools/mac-drive.sh, tools/mac-hid.swift) and nothing else.
@@ -90,6 +94,7 @@ XDG_STATE_HOME=$state nohup "$exe" \
     --poltergeist-register-mcp=false \
     --config-default-files=false \
     --window-save-state=never \
+    ${MAC_TEST_EXTRA_FLAGS-} \
     -e "$@" >"$state/stdout.log" 2>&1 &
 pid=$!
 start=$(date +%s)
