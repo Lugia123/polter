@@ -696,9 +696,17 @@ const tools = [_]Tool{
             "than opened somewhere else quietly. Pass watch: true to mind it from the " ++
             "moment it exists; when that could not be done the reply says `watching: false` " ++
             "with a `watch_failed` saying why -- the terminal is open all the same, so do " ++
-            "not open a second, and set_watch tries again. The reply carries `id` when the terminal was ready before " ++
-            "the call returned; when it is missing the tab is still opening and " ++
-            "terminal_list will have it in a moment. **What you get is a shell " ++
+            "not open a second, and set_watch tries again. `watch` names which it was: " ++
+            "not_asked, watching, or refused. **The reply says where it went**: `placed` " ++
+            "is split or tab. A split's terminal does not exist yet when the reply is " ++
+            "written, so it carries `pending: true` and no `id` -- and a watch asked for " ++
+            "on a split comes back refused, saying so; set_watch it once terminal_list " ++
+            "shows it. A tab you did not ask for carries `fallback` (why) and " ++
+            "`fallback_kind`: cannot (what you asked for could not be done -- worth " ++
+            "reporting for here), timing (ask again shortly) or deliberate (auto keeping " ++
+            "out of a tab the person arranged; here does not). For a tab, `id` is there " ++
+            "when it was ready before the call returned; when it is missing terminal_list " ++
+            "will have it in a moment. **What you get is a shell " ++
             "in that directory with nothing running in it**, so whatever should " ++
             "run there is a separate terminal_send -- and it need not be an " ++
             "agent CLI: a build, a server, a log to tail are all ordinary uses. " ++
@@ -730,7 +738,7 @@ const tools = [_]Tool{
             "split in your own tab, which falls back to a tab when there is no room " ++
             "and says so in the log.",
         .schema =
-        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here"],"description":"Defaults to auto: beside you while there is room, a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab."}},"required":["cwd"]}
+        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here"],"description":"Defaults to auto: beside you while there is room, a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab, even beside terminals you did not open, and the reply says when it could not."}},"required":["cwd"]}
         ,
     },
     .{

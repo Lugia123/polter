@@ -2222,7 +2222,7 @@ test "opening a terminal names it when it is there, and does not pretend when it
         try testing.expectEqual(boss, fake.opened.?.by);
 
         // Not asked for, so not claimed.
-        try testing.expectEqual(@as(?bool, false), res.opened.watching);
+        try testing.expect(res.opened.watch == .not_asked);
         try testing.expect(!b.minds(boss, 0x3333));
     }
 
@@ -2232,8 +2232,86 @@ test "opening a terminal names it when it is there, and does not pretend when it
         var fake: FakeHost = .{ .open_result = null };
         const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{} });
         try testing.expect(res.opened.id == null);
-        try testing.expectEqual(@as(?bool, false), res.opened.watching);
+        try testing.expect(res.opened.watch == .not_asked);
     }
+}
+
+test "a split opened to be minded says it is not minded, and why (issue #17)" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A split's terminal does not exist when the reply is written, so
+    // nothing can be claimed yet. This used to answer a bare
+    // `watching: false` -- the same words as "not asked for".
+    var fake: FakeHost = .{ .open_result = null, .open_placed = .split };
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{
+        .cwd = "/tmp/work",
+        .watch = true,
+        .place = .here,
+    } });
+    try testing.expect(res.opened.id == null);
+    try testing.expect(res.opened.watch == .refused);
+    try testing.expect(std.mem.indexOf(u8, res.opened.watch.refused, "split") != null);
+    try testing.expectEqual(Placement.here, fake.opened.?.place);
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, res);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"watch_failed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"placed\":\"split\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"pending\":true") != null);
+}
+
+test "a split nobody asked to mind is not reported as a refused watch" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // "Not asked" and "asked and not done" are two answers.
+    var fake: FakeHost = .{ .open_result = null, .open_placed = .split };
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_open = .{
+        .cwd = "/tmp/work",
+        .place = .here,
+    } });
+    try testing.expect(res.opened.watch == .not_asked);
+}
+
+test "where a terminal went, and why it went to a tab, reach the caller" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    for (std.meta.tags(TabWhy)) |why| {
+        var fake: FakeHost = .{ .open_result = 0x3333, .open_placed = .{ .tab = why } };
+        const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{
+            .cwd = "/tmp/work",
+            .place = .here,
+        } });
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        try wire.writeResponse(&out.writer, res);
+        const text = out.written();
+        try testing.expect(std.mem.indexOf(u8, text, "\"placed\":\"tab\"") != null);
+
+        if (why == .asked) {
+            // What was asked for is not a fallback.
+            try testing.expect(std.mem.indexOf(u8, text, "fallback") == null);
+            continue;
+        }
+        const code = try std.fmt.allocPrint(alloc, "\"fallback\":\"{s}\"", .{@tagName(why)});
+        const kind = try std.fmt.allocPrint(alloc, "\"fallback_kind\":\"{s}\"", .{@tagName(why.kind())});
+        try testing.expect(std.mem.indexOf(u8, text, code) != null);
+        try testing.expect(std.mem.indexOf(u8, text, kind) != null);
+    }
+
+    // The three kinds a caller acts on differently.
+    try testing.expectEqual(TabWhy.Kind.cannot, TabWhy.column_full.kind());
+    try testing.expectEqual(TabWhy.Kind.timing, TabWhy.last_worker_pending.kind());
+    try testing.expectEqual(TabWhy.Kind.deliberate, TabWhy.not_our_layout.kind());
 }
 
 test "a terminal opened to be minded is claimed on the way" {
@@ -2248,7 +2326,7 @@ test "a terminal opened to be minded is claimed on the way" {
         .watch = true,
     } });
 
-    try testing.expectEqual(@as(?bool, true), res.opened.watching);
+    try testing.expect(res.opened.watch == .watching);
     try testing.expect(b.minds(boss, 0x4444));
 }
 
@@ -2270,7 +2348,7 @@ test "a terminal opened to be minded but not sampled says so (task 595)" {
         .watch = true,
     } });
     try testing.expectEqual(@as(?Bus.Id, 0x4445), res.opened.id);
-    try testing.expectEqual(@as(?bool, false), res.opened.watching);
+    try testing.expect(res.opened.watch == .refused);
 
     // And no bus mark left behind with nothing sampling under it: that is
     // the phantom `terminal_list` would go on reporting as minded.
@@ -4379,9 +4457,86 @@ pub const Placement = enum {
 
     /// A split in the caller's own tab.
     ///
-    /// Falls back to a tab when the budget has no room, and says so in the
-    /// log -- **a fallback that was silent would read as "here" having worked**.
+    /// Unlike `auto`, it splits even when the tab holds terminals that were
+    /// not opened as workers: the caller named this tab, so keeping the
+    /// person's layout intact is not a reason to go elsewhere
+    /// (`TabWhy.not_our_layout` is for `auto` only). It still falls back to a
+    /// tab when it cannot split, and the reply says so and why
+    /// (`Placed.tab`) -- **a fallback that was silent would read as "here"
+    /// having worked**, and did (issue #17).
     here,
+};
+
+/// Where a `terminal_open` actually put the terminal. Answered in the reply,
+/// because the caller asked for a place and is the one who has to know
+/// whether it got it.
+pub const Placed = union(enum) {
+    /// A split in the caller's tab. Its terminal does not exist yet when
+    /// the reply is written (both apprts split asynchronously), so the
+    /// reply has no id and says `pending`.
+    split,
+    /// A tab, and why.
+    tab: TabWhy,
+};
+
+/// Why a terminal went into a tab. One code per reason, grouped into three
+/// kinds a caller acts on differently -- see `Kind`.
+pub const TabWhy = enum {
+    /// The caller asked for `tab`.
+    asked,
+
+    // -- cannot: a split was due and could not be made.
+    /// The apprt did not say how many terminals share the tab.
+    no_pane_count,
+    /// Three workers already stand beside the caller; the fourth needs a
+    /// second column, which means splitting a subtree -- not possible today.
+    column_full,
+    /// The apprt would not split (GTK cannot split into a named directory).
+    split_refused,
+    /// Asking the apprt to split failed outright.
+    split_failed,
+
+    // -- timing: a split may be possible if asked again.
+    /// The caller's previous worker has not appeared yet, so how full the
+    /// tab is cannot be known.
+    last_worker_pending,
+    /// The caller's previous worker has been closed; which pane replaced
+    /// it is a guess this does not make.
+    last_worker_gone,
+
+    // -- deliberate: a split was possible and was not made on purpose.
+    /// `auto` only: the tab holds terminals the person arranged, and
+    /// rearranging them is not what `auto` was asked for.
+    not_our_layout,
+
+    pub const Kind = enum {
+        /// Not a fallback: what was asked for.
+        asked,
+        /// What was asked for could not be done. `here` not honoured for one
+        /// of these is worth reporting.
+        cannot,
+        /// Worth asking again in a moment.
+        timing,
+        /// On purpose; `terminal_layout` places a pane exactly.
+        deliberate,
+    };
+
+    pub fn kind(self: TabWhy) Kind {
+        return switch (self) {
+            .asked => .asked,
+            .no_pane_count, .column_full, .split_refused, .split_failed => .cannot,
+            .last_worker_pending, .last_worker_gone => .timing,
+            .not_our_layout => .deliberate,
+        };
+    }
+};
+
+/// What `Host.openTerminal` hands back.
+pub const Opened = struct {
+    /// Null when the terminal does not exist yet: always for a split, and
+    /// for a tab the runtime has not made by the time this returns.
+    id: ?Bus.Id,
+    placed: Placed,
 };
 
 pub const Place = struct {
@@ -4540,18 +4695,18 @@ pub const Host = struct {
 
         /// Open a terminal in `by`'s window, starting in `cwd`.
         ///
-        /// Answers with the new terminal's id when one has appeared by the
-        /// time it returns, and null when the runtime has not got to it yet.
-        /// Null is not a failure: the tab is on its way and `terminal_list`
-        /// will have it. Blocking here would park this thread on work the
-        /// UI thread has to do.
+        /// Answers with where the terminal went, and its id when it has
+        /// appeared by the time this returns (null when the runtime has not
+        /// got to it yet -- never a failure, and always the case for a split).
+        /// Blocking here would park this thread on work the UI thread has to
+        /// do.
         openTerminal: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
             cwd: []const u8,
             by: Bus.Id,
             place: Placement,
-        ) anyerror!?Bus.Id,
+        ) anyerror!Opened,
 
         /// Do one of the terminal's own keybinding actions to it.
         ///
@@ -5043,7 +5198,7 @@ pub const Host = struct {
         cwd: []const u8,
         by: Bus.Id,
         place: Placement,
-    ) anyerror!?Bus.Id {
+    ) anyerror!Opened {
         return self.vtable.openTerminal(self.ctx, alloc, cwd, by, place);
     }
 
@@ -5863,33 +6018,39 @@ pub fn dispatch(
             // is open either way, so a refused watch is not a failed call --
             // that would have the caller open a second -- it is said in the
             // reply, next to the `watching: false` it explains.
-            var watching = false;
-            var watch_failed: ?[]const u8 = null;
-            if (opened) |id| {
-                if (p.watch) {
-                    if (host.setWatching(id, true)) {
-                        if (bus.watch(id, caller)) {
-                            watching = bus.minds(caller, id);
-                        } else |err| {
-                            // Sampling with nobody minding it would report
-                            // to no one, so it is stopped again.
-                            host.setWatching(id, false) catch {};
-                            watch_failed = switch (err) {
-                                error.AlreadyWatched => "opened, but another supervisor already " ++
-                                    "minds it, so it was not claimed.",
-                                error.OutOfMemory => "opened, but could not be claimed. " ++
-                                    "set_watch will try again.",
-                            };
-                        }
-                    } else |_| {
-                        watch_failed = "opened, but its sampling could not be started, so " ++
-                            "nothing is measuring it and no quiet notice will come. " ++
-                            "set_watch will try again.";
-                    }
-                }
-            }
+            const watch: wire.OpenedWatch = watch: {
+                if (!p.watch) break :watch .not_asked;
+                const id = opened.id orelse break :watch .{ .refused = if (opened.placed == .split)
+                    "opened as a split, whose terminal did not exist yet when this returned, " ++
+                        "so it could not be claimed and is not being minded. set_watch it " ++
+                        "once terminal_list shows it."
+                else
+                    "opened, but its terminal did not exist yet when this returned, so it " ++
+                        "could not be claimed and is not being minded. set_watch it once " ++
+                        "terminal_list shows it." };
+                host.setWatching(id, true) catch break :watch .{
+                    .refused = "opened, but its sampling could not be started, so " ++
+                        "nothing is measuring it and no quiet notice will come. " ++
+                        "set_watch will try again.",
+                };
+                bus.watch(id, caller) catch |err| {
+                    // Sampling with nobody minding it would report to no
+                    // one, so it is stopped again.
+                    host.setWatching(id, false) catch {};
+                    break :watch .{ .refused = switch (err) {
+                        error.AlreadyWatched => "opened, but another supervisor already " ++
+                            "minds it, so it was not claimed.",
+                        error.OutOfMemory => "opened, but could not be claimed. " ++
+                            "set_watch will try again.",
+                    } };
+                };
+                if (!bus.minds(caller, id)) break :watch .{
+                    .refused = "opened and claimed, but the bus does not show it as minded by you.",
+                };
+                break :watch .watching;
+            };
 
-            return .{ .opened = .{ .id = opened, .watching = watching, .watch_failed = watch_failed } };
+            return .{ .opened = .{ .id = opened.id, .watch = watch, .placed = opened.placed } };
         },
 
         .role_list => {
@@ -5945,11 +6106,15 @@ pub fn dispatch(
             // A null id is the tab still being made (Windows, always): the
             // launch waits for it and is typed in when it appears, and
             // `terminal_list` will have it in a moment.
-            return .{ .opened = .{
-                .id = id,
-                .watching = if (id) |new| launchedWatching(alloc, bus, host, caller, new) else null,
-                .watch_failed = null,
-            } };
+            return .{
+                .opened = .{
+                    .id = id,
+                    // No id yet: whether the role wants a watch cannot be asked of
+                    // a terminal that is not there, so it is not known.
+                    .watch = if (id) |new| launchedWatching(alloc, bus, host, caller, new) else .unknown,
+                    .placed = null,
+                },
+            };
         },
 
         .terminal_action => |p| {
@@ -7623,11 +7788,13 @@ fn launchedWatching(
     host: Host,
     caller: Bus.Id,
     id: Bus.Id,
-) ?bool {
-    if (bus.minds(caller, id)) return true;
-    const caps = host.terminalCapabilities(alloc, id) catch return null;
-    const held = caps.persona.pending_standing orelse return false;
-    return if (held.want.watch) null else false;
+) wire.OpenedWatch {
+    if (bus.minds(caller, id)) return .watching;
+    // Two different "don't know"s used to share `null` here: the host not
+    // answering, and a watch that will be applied when the agent connects.
+    const caps = host.terminalCapabilities(alloc, id) catch return .unknown;
+    const held = caps.persona.pending_standing orelse return .not_asked;
+    return if (held.want.watch) .later else .not_asked;
 }
 
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
@@ -7765,8 +7932,10 @@ const FakeHost = struct {
 
     /// The last terminal asked for, what the fake hands back, and how it
     /// can be made to refuse.
-    opened: ?struct { cwd: []const u8, by: Bus.Id } = null,
+    opened: ?struct { cwd: []const u8, by: Bus.Id, place: Placement } = null,
     open_result: ?Bus.Id = null,
+    /// Where the fake says it put the terminal.
+    open_placed: Placed = .{ .tab = .asked },
     open_error: ?anyerror = null,
 
     /// What the fake calls its configuration.
@@ -8525,12 +8694,12 @@ const FakeHost = struct {
         _: std.mem.Allocator,
         cwd: []const u8,
         by: Bus.Id,
-        _: Placement,
-    ) anyerror!?Bus.Id {
+        place: Placement,
+    ) anyerror!Opened {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.open_error) |err| return err;
-        self.opened = .{ .cwd = cwd, .by = by };
-        return self.open_result;
+        self.opened = .{ .cwd = cwd, .by = by, .place = place };
+        return .{ .id = self.open_result, .placed = self.open_placed };
     }
 
     fn sendKey(ctx: *anyopaque, id: Bus.Id, k: []const u8) anyerror!keys.Outcome {
@@ -12280,7 +12449,7 @@ test "roles: each reason a write is refused says what to do about it" {
 
     // And with no terminal, whether it is minded is not known either: not
     // `false`, and not on the wire at all -- the same as the missing `id`.
-    try testing.expectEqual(@as(?bool, null), res.opened.watching);
+    try testing.expect(res.opened.watch == .unknown);
     var out: std.Io.Writer.Allocating = .init(alloc);
     try wire.writeResponse(&out.writer, res);
     try testing.expect(std.mem.indexOf(u8, out.written(), "watching") == null);
@@ -12301,12 +12470,13 @@ test "role_launch: a role whose watch waits for its agent says not yet, not no" 
     try store.holdStanding(0x7777, boss, standing_roles[1].polter, 0);
     const held = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "hand" } });
     try testing.expectEqual(@as(?Bus.Id, 0x7777), held.opened.id);
-    try testing.expectEqual(@as(?bool, null), held.opened.watching);
+    // Not "unknown": this one will be applied, and the reply says so.
+    try testing.expect(held.opened.watch == .later);
 
     // Nothing held that would watch it: that is a real no.
     try store.holdStanding(0x7777, boss, .{}, 0);
     const plain = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "hand" } });
-    try testing.expectEqual(@as(?bool, false), plain.opened.watching);
+    try testing.expect(plain.opened.watch == .not_asked);
 }
 
 // -- mentions (task 575, dev-docs/poltergeist/mentions.md part eight) --------

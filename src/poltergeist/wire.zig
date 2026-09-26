@@ -719,6 +719,22 @@ pub const TerminalInfo = struct {
     tab: ?u64 = null,
 };
 
+/// What became of the watch a terminal was opened with. See `Response.opened`.
+pub const OpenedWatch = union(enum) {
+    /// No watch was asked for.
+    not_asked,
+    /// Asked for, and the terminal is being minded.
+    watching,
+    /// Asked for, and it will be applied once the terminal has appeared --
+    /// `role_launch`, whose watch `PersonaStore.claimStanding` applies when
+    /// the launched agent connects. Not being minded yet.
+    later,
+    /// Could not be found out: the host did not answer about this terminal.
+    unknown,
+    /// Asked for and not done, and why. The terminal is open all the same.
+    refused: []const u8,
+};
+
 pub const Response = union(enum) {
     ok,
     me: TerminalInfo,
@@ -802,24 +818,21 @@ pub const Response = union(enum) {
         names: []const []const u8,
     },
     opened: struct {
-        /// Null when the runtime has not made it yet. Not an error: the tab
-        /// is coming and `terminal_list` will have it.
+        /// Null when the runtime has not made it yet. Not an error: the
+        /// terminal is coming and `terminal_list` will have it.
         id: ?Bus.Id,
 
-        /// Null when it is not known yet, and then left out of the reply the
-        /// way `id` is: `role_launch` returns before the tab exists on
-        /// Windows, and before the launched agent has connected everywhere
-        /// -- and a role's `watch` is applied only when it does
-        /// (`PersonaStore.claimStanding`). A `false` there would be a "no"
-        /// nobody knows yet.
-        watching: ?bool,
+        /// What became of a watch. No default, and no catch-all: every place
+        /// that answers with a terminal picks one, and a missing one does not
+        /// compile. It replaced a `?bool` + `?[]const u8` pair in which
+        /// `false` meant "not asked", "asked and refused" and -- for a split,
+        /// whose terminal does not exist yet -- "asked and silently skipped",
+        /// with nothing in the reply to tell them apart (issue #17).
+        watch: OpenedWatch,
 
-        /// Why a watch that was asked for did not start, when it did not.
-        /// No default on purpose: every place that answers with a terminal
-        /// has to say whether it has one of these, because the failure it
-        /// stands for -- a mark on the bus with nothing sampling under it --
-        /// is silent everywhere else (task 595).
-        watch_failed: ?[]const u8,
+        /// Where `terminal_open` put it. Null for `role_launch`, which does
+        /// not take a placement.
+        placed: ?rpc.Placed,
     },
     /// A task's number, answering `task_create`.
     task: u64,
@@ -1079,13 +1092,50 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.objectField("id");
                 try writeId(&s, id);
             }
-            if (v.watching) |w| {
-                try s.objectField("watching");
-                try s.write(w);
+
+            // `watch` names the case outright; `watching` and `watch_failed`
+            // are the older pair, still written for callers that read them.
+            // ⚠️ Every case writes its own reason out -- this is the layer
+            // that could fold `refused` back into a bare `watching: false`,
+            // and a test holds each case to the text it must carry.
+            try s.objectField("watch");
+            try s.write(@tagName(v.watch));
+            switch (v.watch) {
+                .not_asked => {
+                    try s.objectField("watching");
+                    try s.write(false);
+                },
+                .watching => {
+                    try s.objectField("watching");
+                    try s.write(true);
+                },
+                // Not known to be minded or not yet: left out, as `id` is.
+                .later, .unknown => {},
+                .refused => |why| {
+                    try s.objectField("watching");
+                    try s.write(false);
+                    try s.objectField("watch_failed");
+                    try s.write(why);
+                },
             }
-            if (v.watch_failed) |why| {
-                try s.objectField("watch_failed");
-                try s.write(why);
+
+            if (v.placed) |placed| {
+                try s.objectField("placed");
+                try s.write(@tagName(placed));
+                switch (placed) {
+                    // Its terminal does not exist yet, which is why there is
+                    // no `id` -- said, rather than left to be inferred.
+                    .split => {
+                        try s.objectField("pending");
+                        try s.write(true);
+                    },
+                    .tab => |why| if (why != .asked) {
+                        try s.objectField("fallback");
+                        try s.write(@tagName(why));
+                        try s.objectField("fallback_kind");
+                        try s.write(@tagName(why.kind()));
+                    },
+                }
             }
         },
         .actions => |list| {
@@ -2229,4 +2279,39 @@ test "group_post: mention is ids in either form, and the reply has one row per n
     ++ "\n",
         w.buffered(),
     );
+}
+
+test "every answer about a watch carries its reason onto the wire" {
+    // This is the layer that could fold a reason back into a bare
+    // `watching: false`, so it is held to each case here -- a consumer
+    // cannot see a silence the producer made. The switch is exhaustive on
+    // purpose: a new case does not compile until it is written down here.
+    const alloc = testing.allocator;
+    for (std.meta.tags(std.meta.Tag(OpenedWatch))) |tag| {
+        const watch: OpenedWatch = switch (tag) {
+            .not_asked => .not_asked,
+            .watching => .watching,
+            .later => .later,
+            .unknown => .unknown,
+            .refused => .{ .refused = "the reason, verbatim" },
+        };
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        try writeResponse(&out.writer, .{ .opened = .{ .id = null, .watch = watch, .placed = null } });
+        const text = out.written();
+
+        const named = try std.fmt.allocPrint(alloc, "\"watch\":\"{s}\"", .{@tagName(tag)});
+        defer alloc.free(named);
+        try testing.expect(std.mem.indexOf(u8, text, named) != null);
+
+        switch (watch) {
+            .not_asked => try testing.expect(std.mem.indexOf(u8, text, "\"watching\":false") != null),
+            .watching => try testing.expect(std.mem.indexOf(u8, text, "\"watching\":true") != null),
+            .later, .unknown => try testing.expect(std.mem.indexOf(u8, text, "\"watching\"") == null),
+            .refused => |why| {
+                try testing.expect(std.mem.indexOf(u8, text, "\"watching\":false") != null);
+                try testing.expect(std.mem.indexOf(u8, text, why) != null);
+            },
+        }
+    }
 }
