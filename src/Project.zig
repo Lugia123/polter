@@ -49,10 +49,10 @@ pub const Direction = enum {
 /// A pane: one leaf of the tree.
 pub const Leaf = struct {
     /// Where the pane was working.
-    cwd: []const u8 = "",
+    cwd: []const u8,
 
     /// What the pane's tab/title said.
-    title: []const u8 = "",
+    title: []const u8,
 
     /// An opaque handle to this pane's history, or empty if it never ran a
     /// command that got captured. What it means is shell-dependent, which
@@ -71,8 +71,37 @@ pub const Leaf = struct {
     ///
     /// Never assume it's a path you can open directly -- check the pane's
     /// shell first.
-    history: []const u8 = "",
+    history: []const u8,
+
+    /// This pane's scrollback snapshot, as a name relative to the project
+    /// file's snapshot directory: `<ASCII digits>.snap`, or empty for none.
+    /// Never a path. The directory is derived by whoever reads the file,
+    /// from the file's own path (`<file without its extension>.scrollback/`),
+    /// never by sanitizing the project name again -- the three
+    /// implementations sanitize names differently (issue #23).
+    ///
+    /// The number belongs to the pane for its whole life, not to its place
+    /// in the tree: swapping two panes must not swap their histories.
+    ///
+    /// Only a name `isScrollbackName` accepts is read; anything else reads
+    /// as empty. The core deletes a snapshot it cannot decode, so this one
+    /// field makes a project file a list of files the core may delete, and
+    /// `../../elsewhere/keep.snap` passes the core's own `.snap` check.
+    scrollback: []const u8,
 };
+
+/// Whether `name` is a snapshot name this format writes: 1 to 20 ASCII
+/// digits, then `.snap`, and nothing else -- so no separator, drive or `..`
+/// can get through. The same rule as `is_scrollback_name` in
+/// `windows/host/src/project.rs` and `ProjectScrollback.isSnapshotFilename`
+/// on macOS.
+pub fn isScrollbackName(name: []const u8) bool {
+    if (!std.mem.endsWith(u8, name, ".snap")) return false;
+    const digits = name[0 .. name.len - ".snap".len];
+    if (digits.len == 0 or digits.len > 20) return false;
+    for (digits) |c| if (!std.ascii.isDigit(c)) return false;
+    return true;
+}
 
 /// A split: two children divided in some direction at some ratio.
 pub const Split = struct {
@@ -104,8 +133,44 @@ pub const Snapshot = struct {
     /// happen in practice -- a tab always has at least one pane -- but an
     /// empty tree is not a corrupt file, so it round-trips rather than
     /// erroring).
-    root: ?*const Node = null,
+    root: ?*const Node,
+
+    /// The next scrollback snapshot number this project will hand out
+    /// (`next_scrollback` on the wire), or null in a file written before
+    /// snapshots existed. Only ever grows, so a number that belonged to a
+    /// pane since closed is never handed to a new one -- which would open
+    /// the new pane with the old one's history.
+    ///
+    /// Read and written back even though nothing here allocates: a writer
+    /// that dropped a counter it did not use would reset it for the
+    /// implementations that do. Anything but a non-negative integer reads
+    /// as null, the same as `windows/host/src/project.rs` (`as_u64`).
+    next_scrollback: ?u64,
 };
+
+// **No field of the file's shape may have a default.** This format has
+// three implementations -- this file, `windows/host/src/project.rs`, and
+// `macos/Sources/Features/Projects/ProjectDocument.swift` -- and nothing
+// compiles all three. A field added here with `= ""` compiles everywhere
+// it is not mentioned, `parseNode` included, so the reader could silently
+// never fill it. Without a default, every place that builds one of these
+// is a compile error naming the field until it says what goes there.
+//
+// What this cannot see is the other two implementations: the test
+// "every field in the shared sample survives this build, and every field
+// this build has is in the sample" does that, against
+// `test/project-format/all_fields.json`, which the other two read as well.
+comptime {
+    for (.{ Leaf, Split, Snapshot }) |T| {
+        for (std.meta.fields(T)) |f| {
+            if (f.default_value_ptr != null) @compileError(
+                @typeName(T) ++ "." ++ f.name ++
+                    " has a default value; fields of the project file may not" ++
+                    " (see the comment above this check in src/Project.zig)",
+            );
+        }
+    }
+}
 
 /// One entry from `list`: enough to show a picker without reading every
 /// file whole.
@@ -240,6 +305,10 @@ fn writeJson(s: *std.json.Stringify, snapshot: Snapshot) !void {
         try s.objectField("root");
         try writeNode(s, root.*);
     }
+    if (snapshot.next_scrollback) |n| {
+        try s.objectField("next_scrollback");
+        try s.write(n);
+    }
     try s.endObject();
 }
 
@@ -260,6 +329,10 @@ fn writeNode(s: *std.json.Stringify, node: Node) !void {
             if (leaf.history.len > 0) {
                 try s.objectField("history");
                 try s.write(leaf.history);
+            }
+            if (leaf.scrollback.len > 0) {
+                try s.objectField("scrollback");
+                try s.write(leaf.scrollback);
             }
             try s.endObject();
         },
@@ -330,7 +403,12 @@ pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
     else
         null;
 
-    return .{ .name = name, .saved_at = saved_at, .root = root };
+    const next_scrollback: ?u64 = if (obj.get("next_scrollback")) |v| switch (v) {
+        .integer => |n| std.math.cast(u64, n),
+        else => null,
+    } else null;
+
+    return .{ .name = name, .saved_at = saved_at, .root = root, .next_scrollback = next_scrollback };
 }
 
 fn parseNode(arena: Allocator, value: std.json.Value) ReadError!*const Node {
@@ -347,11 +425,19 @@ fn parseNode(arena: Allocator, value: std.json.Value) ReadError!*const Node {
     const node = try arena.create(Node);
 
     if (std.mem.eql(u8, kind, "leaf")) {
-        node.* = .{ .leaf = .{
-            .cwd = optionalStr(obj.get("cwd")) orelse "",
-            .title = optionalStr(obj.get("title")) orelse "",
-            .history = optionalStr(obj.get("history")) orelse "",
-        } };
+        node.* = .{
+            .leaf = .{
+                .cwd = optionalStr(obj.get("cwd")) orelse "",
+                .title = optionalStr(obj.get("title")) orelse "",
+                .history = optionalStr(obj.get("history")) orelse "",
+                // Invalid is absent, not corrupt: one bad field should not cost
+                // the whole project, and an absent snapshot is an empty pane.
+                .scrollback = if (optionalStr(obj.get("scrollback"))) |name|
+                    if (isScrollbackName(name)) name else ""
+                else
+                    "",
+            },
+        };
         return node;
     }
 
@@ -432,6 +518,7 @@ pub fn rename(
         .name = new_name,
         .saved_at = old.saved_at,
         .root = old.root,
+        .next_scrollback = old.next_scrollback,
     });
 
     if (!std.mem.eql(u8, old_name, new_name)) {
@@ -501,6 +588,7 @@ fn expectNodesEqual(a: Node, b: Node) !void {
             try testing.expectEqualStrings(al.cwd, bl.cwd);
             try testing.expectEqualStrings(al.title, bl.title);
             try testing.expectEqualStrings(al.history, bl.history);
+            try testing.expectEqualStrings(al.scrollback, bl.scrollback);
         },
         .split => |as| {
             const bs = switch (b) {
@@ -527,8 +615,8 @@ test "what is written comes back exactly" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history" } };
-    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests" } };
+    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap" } };
+    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "" } };
     const root: Node = .{ .split = .{
         .direction = .horizontal,
         .ratio = 0.62,
@@ -540,6 +628,7 @@ test "what is written comes back exactly" {
         .name = "写 retry 装饰器",
         .saved_at = 1_757_000_000,
         .root = &root,
+        .next_scrollback = 4,
     };
 
     try write(alloc, io, dir, snapshot);
@@ -547,6 +636,7 @@ test "what is written comes back exactly" {
     const back = try read(alloc, io, dir, "写 retry 装饰器");
     try testing.expectEqualStrings(snapshot.name, back.name);
     try testing.expectEqual(snapshot.saved_at, back.saved_at);
+    try testing.expectEqual(snapshot.next_scrollback, back.next_scrollback);
     try expectNodesEqual(root, back.root.?.*);
 }
 
@@ -562,7 +652,7 @@ test "a project with no layout round-trips as an empty root" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try write(alloc, io, dir, .{ .name = "blank", .saved_at = 1 });
+    try write(alloc, io, dir, .{ .name = "blank", .saved_at = 1, .root = null, .next_scrollback = null });
 
     const back = try read(alloc, io, dir, "blank");
     try testing.expect(back.root == null);
@@ -580,13 +670,13 @@ test "a nested tree round-trips" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const a: Node = .{ .leaf = .{ .cwd = "/a" } };
-    const b: Node = .{ .leaf = .{ .cwd = "/b" } };
-    const c: Node = .{ .leaf = .{ .cwd = "/c" } };
+    const a: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "" } };
+    const b: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "" } };
+    const c: Node = .{ .leaf = .{ .cwd = "/c", .title = "", .history = "", .scrollback = "" } };
     const inner: Node = .{ .split = .{ .direction = .vertical, .ratio = 0.5, .left = &b, .right = &c } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.3, .left = &a, .right = &inner } };
 
-    try write(alloc, io, dir, .{ .name = "nested", .saved_at = 2, .root = &root });
+    try write(alloc, io, dir, .{ .name = "nested", .saved_at = 2, .root = &root, .next_scrollback = null });
 
     const back = try read(alloc, io, dir, "nested");
     try expectNodesEqual(root, back.root.?.*);
@@ -634,10 +724,10 @@ test "a truncated file does not read out half a tree" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/a" } };
-    const right: Node = .{ .leaf = .{ .cwd = "/b" } };
+    const left: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "" } };
+    const right: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "" } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.5, .left = &left, .right = &right } };
-    try write(alloc, io, dir, .{ .name = "cutoff", .saved_at = 3, .root = &root });
+    try write(alloc, io, dir, .{ .name = "cutoff", .saved_at = 3, .root = &root, .next_scrollback = null });
 
     // Cut the file off partway through, the way a crash mid-write might
     // leave it (atomic replace makes this specific case unreachable in
@@ -691,7 +781,7 @@ test "an empty name is rejected at write, not saved unfindably" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try testing.expectError(error.InvalidName, write(alloc, io, dir, .{ .name = "", .saved_at = 1 }));
+    try testing.expectError(error.InvalidName, write(alloc, io, dir, .{ .name = "", .saved_at = 1, .root = null, .next_scrollback = null }));
 
     // Nothing was written under any name a picker could show.
     const entries = try list(alloc, io, dir);
@@ -716,7 +806,7 @@ test "a name made entirely of illegal characters still sanitizes to something, a
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try write(alloc, io, dir, .{ .name = "/", .saved_at = 2 });
+    try write(alloc, io, dir, .{ .name = "/", .saved_at = 2, .root = null, .next_scrollback = null });
     const back = try read(alloc, io, dir, "/");
     try testing.expectEqualStrings("/", back.name);
 }
@@ -733,7 +823,7 @@ test "delete removes a project and reading it after is NotFound" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try write(alloc, io, dir, .{ .name = "gone soon", .saved_at = 5 });
+    try write(alloc, io, dir, .{ .name = "gone soon", .saved_at = 5, .root = null, .next_scrollback = null });
     try delete(alloc, io, dir, "gone soon");
 
     try testing.expectError(error.NotFound, read(alloc, io, dir, "gone soon"));
@@ -766,14 +856,17 @@ test "rename keeps the tree and moves the name" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const leaf: Node = .{ .leaf = .{ .cwd = "/work" } };
-    try write(alloc, io, dir, .{ .name = "old name", .saved_at = 6, .root = &leaf });
+    const leaf: Node = .{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "" } };
+    try write(alloc, io, dir, .{ .name = "old name", .saved_at = 6, .root = &leaf, .next_scrollback = 3 });
 
     try rename(alloc, io, dir, "old name", "new name");
 
     const back = try read(alloc, io, dir, "new name");
     try testing.expectEqualStrings("new name", back.name);
     try testing.expectEqual(@as(i64, 6), back.saved_at);
+    // Dropping the counter on a rename would let the next save hand out a
+    // number a closed pane still has a snapshot under.
+    try testing.expectEqual(@as(?u64, 3), back.next_scrollback);
     try expectNodesEqual(leaf, back.root.?.*);
 
     try testing.expectError(error.NotFound, read(alloc, io, dir, "old name"));
@@ -791,8 +884,8 @@ test "list finds every saved project and skips a corrupt one" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    try write(alloc, io, dir, .{ .name = "alpha", .saved_at = 10 });
-    try write(alloc, io, dir, .{ .name = "beta", .saved_at = 20 });
+    try write(alloc, io, dir, .{ .name = "alpha", .saved_at = 10, .root = null, .next_scrollback = null });
+    try write(alloc, io, dir, .{ .name = "beta", .saved_at = 20, .root = null, .next_scrollback = null });
 
     {
         var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
@@ -826,4 +919,227 @@ test "listing a directory that does not exist yet is empty, not an error" {
 
     const entries = try list(alloc, io, "/tmp/polter-project-does-not-exist-4a1f");
     try testing.expectEqual(@as(usize, 0), entries.len);
+}
+
+test "a scrollback name that could name anything but a snapshot here reads as empty" {
+    // Accepted: what a writer of this format produces.
+    for ([_][]const u8{ "0.snap", "7.snap", "12345678901234567890.snap" }) |ok| {
+        try testing.expect(isScrollbackName(ok));
+    }
+    // Refused: a path, a separator, a drive, no digits, too many digits,
+    // something that is not a digit, the wrong suffix.
+    for ([_][]const u8{
+        "../../elsewhere/keep.snap", "/abs/0.snap", "a/0.snap",                   "..\\0.snap",
+        "C:0.snap",                  ".snap",       "123456789012345678901.snap", "1a.snap",
+        "-1.snap",                   "0.snap/",     "0.SNAP",                     "0.snapx",
+        "",
+    }) |bad| {
+        try testing.expect(!isScrollbackName(bad));
+    }
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const snap = try parse(arena.allocator(),
+        \\{"name":"p","saved_at":1,"root":{"kind":"split","direction":"vertical","ratio":0.5,
+        \\  "left":{"kind":"leaf","cwd":"/a","scrollback":"../../elsewhere/keep.snap"},
+        \\  "right":{"kind":"leaf","cwd":"/b","scrollback":"4.snap"}}}
+    );
+    // The bad name costs that one field, not the project.
+    try testing.expectEqualStrings("", snap.root.?.split.left.leaf.scrollback);
+    try testing.expectEqualStrings("/a", snap.root.?.split.left.leaf.cwd);
+    try testing.expectEqualStrings("4.snap", snap.root.?.split.right.leaf.scrollback);
+}
+
+// -- the shared sample --------------------------------------------------------
+
+/// One project with every field of the format filled in, each with its own
+/// value. It is read by the tests of all three implementations of this
+/// format -- this one, `windows/host/src/project.rs`, and
+/// `macos/Tests/Projects/SharedProjectSampleTests.swift` -- and each of them
+/// checks the same things against it: every key in it survives that
+/// implementation's read-then-write, and every field that implementation
+/// has is a key in it. **Adding a field means adding it there first**; the
+/// test in each implementation that has not caught up yet then goes red
+/// and names the key.
+///
+/// It lives under `test/`, not beside this file, because it is the judge
+/// between three implementations rather than a fixture of this one. That
+/// puts it outside this module's package path, so it cannot be
+/// `@embedFile`d ("embed of file outside package path") and is read at
+/// test time instead, relative to the repository root -- which is where
+/// `zig build test` runs. Not finding it is a failure, never a skip.
+const all_fields_sample_path = "test/project-format/all_fields.json";
+
+/// The keys found on each kind of object in a project file. `kind` is the
+/// discriminator, not a field, so it is in none of them.
+const KeySets = struct {
+    snapshot: std.StringArrayHashMapUnmanaged(void) = .empty,
+    leaf: std.StringArrayHashMapUnmanaged(void) = .empty,
+    split: std.StringArrayHashMapUnmanaged(void) = .empty,
+
+    fn of(alloc: Allocator, file: std.json.Value) !KeySets {
+        var sets: KeySets = .{};
+        const obj = switch (file) {
+            .object => |o| o,
+            else => return error.Corrupt,
+        };
+        var it = obj.iterator();
+        while (it.next()) |e| try sets.snapshot.put(alloc, e.key_ptr.*, {});
+        if (obj.get("root")) |root| try sets.addNode(alloc, root);
+        return sets;
+    }
+
+    fn addNode(self: *KeySets, alloc: Allocator, node: std.json.Value) !void {
+        const obj = switch (node) {
+            .object => |o| o,
+            else => return error.Corrupt,
+        };
+        const kind = switch (obj.get("kind") orelse return error.Corrupt) {
+            .string => |s| s,
+            else => return error.Corrupt,
+        };
+        const set = if (std.mem.eql(u8, kind, "leaf"))
+            &self.leaf
+        else if (std.mem.eql(u8, kind, "split"))
+            &self.split
+        else
+            return error.Corrupt;
+        var it = obj.iterator();
+        while (it.next()) |e| {
+            if (std.mem.eql(u8, e.key_ptr.*, "kind")) continue;
+            try set.put(alloc, e.key_ptr.*, {});
+        }
+        if (set == &self.split) {
+            try self.addNode(alloc, obj.get("left") orelse return error.Corrupt);
+            try self.addNode(alloc, obj.get("right") orelse return error.Corrupt);
+        }
+    }
+};
+
+/// Prints one line per key the two sets disagree on, saying which file to
+/// change. Returns whether they agreed.
+fn sampleKeysAgree(
+    comptime what: []const u8,
+    sample: std.StringArrayHashMapUnmanaged(void),
+    written: std.StringArrayHashMapUnmanaged(void),
+) bool {
+    var ok = true;
+    for (sample.keys()) |k| if (!written.contains(k)) {
+        ok = false;
+        std.debug.print(
+            "src/Project.zig loses {s}.{s}: it is in test/project-format/all_fields.json" ++
+                " but does not come back out of parse + writeJson -- carry it in the type," ++
+                " parseNode/parse and writeNode/writeJson\n",
+            .{ what, k },
+        );
+    };
+    for (written.keys()) |k| if (!sample.contains(k)) {
+        ok = false;
+        std.debug.print(
+            "src/Project.zig writes {s}.{s}, which test/project-format/all_fields.json" ++
+                " does not have -- add it there, then to windows/host/src/project.rs and" ++
+                " macos/Sources/Features/Projects/ProjectDocument.swift, whose tests read" ++
+                " the same file\n",
+            .{ what, k },
+        );
+    };
+    return ok;
+}
+
+/// Every field of `T` is a key of `sample`. Catches the one case the
+/// read-then-write comparison cannot: a field this build has that it
+/// neither writes nor finds in the sample. Relies on field names being the
+/// JSON keys, which is true of every field today.
+fn fieldsAreInSample(
+    comptime T: type,
+    comptime what: []const u8,
+    sample: std.StringArrayHashMapUnmanaged(void),
+) bool {
+    var ok = true;
+    inline for (std.meta.fields(T)) |f| if (!sample.contains(f.name)) {
+        ok = false;
+        std.debug.print(
+            "Project." ++ what ++ " has a field `" ++ f.name ++ "` but" ++
+                " test/project-format/all_fields.json has no " ++ what ++ "." ++ f.name ++
+                " -- add it to the sample, and make writeNode/writeJson write it\n",
+            .{},
+        );
+    };
+    return ok;
+}
+
+fn jsonEql(a: std.json.Value, b: std.json.Value) bool {
+    const num = struct {
+        fn of(v: std.json.Value) ?f64 {
+            return switch (v) {
+                .integer => |n| @floatFromInt(n),
+                .float => |f| f,
+                else => null,
+            };
+        }
+    };
+    if (num.of(a)) |x| return if (num.of(b)) |y| x == y else false;
+    return switch (a) {
+        .null => b == .null,
+        .bool => |x| b == .bool and b.bool == x,
+        .string => |x| b == .string and std.mem.eql(u8, x, b.string),
+        .array => |x| b == .array and x.items.len == b.array.items.len and for (x.items, b.array.items) |p, q| {
+            if (!jsonEql(p, q)) break false;
+        } else true,
+        .object => |x| b == .object and x.count() == b.object.count() and for (x.keys()) |k| {
+            const other = b.object.get(k) orelse break false;
+            if (!jsonEql(x.get(k).?, other)) break false;
+        } else true,
+        else => false,
+    };
+}
+
+test "every field in the shared sample survives this build, and every field this build has is in the sample" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const all_fields_sample = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        all_fields_sample_path,
+        alloc,
+        .limited(1024 * 1024),
+    ) catch |err| {
+        std.debug.print(
+            "cannot read the shared sample {s} ({s}): this test runs from the repository root\n",
+            .{ all_fields_sample_path, @errorName(err) },
+        );
+        return err;
+    };
+
+    const sample = try std.json.parseFromSliceLeaky(std.json.Value, alloc, all_fields_sample, .{});
+
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
+    try writeJson(&s, try parse(alloc, all_fields_sample));
+    const written = try std.json.parseFromSliceLeaky(std.json.Value, alloc, buf.written(), .{});
+
+    const want: KeySets = try .of(alloc, sample);
+    const got: KeySets = try .of(alloc, written);
+
+    // Each is its own line so that one disagreement does not hide the next.
+    var ok = true;
+    if (!sampleKeysAgree("snapshot", want.snapshot, got.snapshot)) ok = false;
+    if (!sampleKeysAgree("leaf", want.leaf, got.leaf)) ok = false;
+    if (!sampleKeysAgree("split", want.split, got.split)) ok = false;
+    if (!fieldsAreInSample(Snapshot, "snapshot", want.snapshot)) ok = false;
+    if (!fieldsAreInSample(Leaf, "leaf", want.leaf)) ok = false;
+    if (!fieldsAreInSample(Split, "split", want.split)) ok = false;
+    try testing.expect(ok);
+
+    // Same keys is not same values: a writer that put `title` under `cwd`
+    // and `cwd` under `title` passes everything above.
+    if (!jsonEql(sample, written)) {
+        std.debug.print("src/Project.zig read + wrote the shared sample back as:\n{s}\n", .{buf.written()});
+        return error.TestExpectedEqual;
+    }
 }

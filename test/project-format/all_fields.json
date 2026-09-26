@@ -1,0 +1,24 @@
+{
+  "name": "every field",
+  "saved_at": 1757000000,
+  "next_scrollback": 12,
+  "root": {
+    "kind": "split",
+    "direction": "vertical",
+    "ratio": 0.25,
+    "left": {
+      "kind": "leaf",
+      "cwd": "/work/left",
+      "title": "left title",
+      "history": "left.history",
+      "scrollback": "3.snap"
+    },
+    "right": {
+      "kind": "leaf",
+      "cwd": "/work/right",
+      "title": "right title",
+      "history": "right.history",
+      "scrollback": "8.snap"
+    }
+  }
+}

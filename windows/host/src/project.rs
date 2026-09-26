@@ -1171,6 +1171,90 @@ mod tests {
         assert!(shape["right"]["new"].get("scrollback").is_none());
     }
 
+    /// The keys found on each kind of object in a project file, `kind`
+    /// itself left out -- it is the discriminator, not a field.
+    fn key_sets(file: &serde_json::Value) -> [(&'static str, std::collections::BTreeSet<String>); 3] {
+        fn walk(node: &serde_json::Value, leaf: &mut std::collections::BTreeSet<String>, split: &mut std::collections::BTreeSet<String>) {
+            let obj = node.as_object().expect("a node is an object");
+            let into = match obj.get("kind").and_then(|k| k.as_str()) {
+                Some("leaf") => &mut *leaf,
+                Some("split") => &mut *split,
+                other => panic!("unknown node kind {other:?}"),
+            };
+            into.extend(obj.keys().filter(|k| *k != "kind").cloned());
+            if obj.get("kind").and_then(|k| k.as_str()) == Some("split") {
+                walk(&obj["left"], leaf, split);
+                walk(&obj["right"], leaf, split);
+            }
+        }
+        let top = file.as_object().expect("a project file is an object");
+        let (mut leaf, mut split) = (Default::default(), Default::default());
+        if let Some(root) = top.get("root") {
+            walk(root, &mut leaf, &mut split);
+        }
+        [("snapshot", top.keys().cloned().collect()), ("leaf", leaf), ("split", split)]
+    }
+
+    /// **The same file `src/Project.zig` and the mac tests check against.**
+    /// `test/project-format/all_fields.json` is one project with every field
+    /// of the format filled in; this checks that every key in it survives this
+    /// implementation's read-then-write, and that this implementation writes
+    /// no key it lacks. `every_field_is_written` above keeps this file's
+    /// writer honest about its own struct; this is what keeps it honest about
+    /// the other two implementations, which nothing here compiles.
+    ///
+    /// Adding a field to the format: add it to the sample first, and this
+    /// test (and theirs) name what has not caught up.
+    #[test]
+    fn the_shared_sample_survives_this_build_and_this_build_writes_nothing_it_lacks() {
+        const SAMPLE: &str = include_str!("../../../test/project-format/all_fields.json");
+        let sample: serde_json::Value = serde_json::from_str(SAMPLE).expect("the shared sample is JSON");
+        let written = snapshot_to_json(&parse_snapshot(SAMPLE.as_bytes()).expect("the shared sample must read"));
+
+        // What this build writes when every field it has is filled in. No
+        // `..` in the literals: a field added to either struct is a compile
+        // error here until it is given a (non-empty) value.
+        let own = snapshot_to_json(&Snapshot {
+            name: "n".to_string(),
+            saved_at: 1,
+            root: Some(SavedNode::Split {
+                axis: Axis::Horizontal,
+                ratio: 0.5,
+                left: Box::new(SavedNode::Leaf(SavedLeaf {
+                    cwd: "c".to_string(),
+                    title: "t".to_string(),
+                    history: "h".to_string(),
+                    scrollback: "5.snap".to_string(),
+                })),
+                right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
+            }),
+            next_scrollback: Some(9),
+        });
+
+        let mut problems = Vec::new();
+        for (((what, want), (_, got)), (_, mine)) in key_sets(&sample).into_iter().zip(key_sets(&written)).zip(key_sets(&own)) {
+            for k in want.difference(&got) {
+                problems.push(format!(
+                    "windows/host/src/project.rs loses {what}.{k}: it is in test/project-format/all_fields.json \
+                     but does not come back out of parse_snapshot + snapshot_to_json -- carry it in \
+                     SavedLeaf/Snapshot, json_to_node/parse_snapshot and node_to_json/snapshot_to_json"
+                ));
+            }
+            for k in got.union(&mine).filter(|k| !want.contains(*k)) {
+                problems.push(format!(
+                    "windows/host/src/project.rs writes {what}.{k}, which test/project-format/all_fields.json \
+                     does not have -- add it there, then to src/Project.zig and \
+                     macos/Sources/Features/Projects/ProjectDocument.swift, whose tests read the same file"
+                ));
+            }
+        }
+        assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+
+        // Same keys is not same values: a writer that swapped `cwd` and
+        // `title` passes everything above.
+        assert_eq!(written, sample, "the shared sample did not come back as it went in");
+    }
+
     #[test]
     fn to_layout_shape_carries_cwd_and_shape_but_not_title_or_history() {
         let shape = to_layout_shape(&sample_tree(), Path::new("/p/x.scrollback"));
