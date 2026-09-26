@@ -579,18 +579,25 @@ The judgement is what this file is for:
   different names for two different readers, and neither substitutes for the
   other:
   - **`set_surface_title:worker A`** is what `terminal_list` reports back —
-    **the name you will use**. Four hex ids in four identical directories are
-    not something you will tell apart in eight hours.
+    **the name you will use**, and the one the chat's member list and the
+    task panel's owners show. Four hex ids in four identical directories are
+    not something you will tell apart in eight hours. **`set_surface_title:`
+    with nothing after the colon takes the name back**: the terminal follows
+    its program's title again. ⚠️ On macOS the window and tab may then show
+    an empty title rather than the program's, until the display side learns
+    the same rule (issue #9).
   - **`set_tab_title:worker A`** is what appears on the tab strip — **the name
     the person will use**, and the only one they can see without asking you.
     It does *not* reach `terminal_list`.
 
-  ⚠️ **Naming a tab now keeps it.** Until recently the program running in the
-  worker overwrote that name at its next prompt, so naming a tab looked like
-  it worked and quietly did not. A name you set explicitly outranks the one
-  the program announces from then on — which also means **that tab stops
-  showing what is running in it**. That is the trade: on a worker you have
-  named, "who this is" replaces "what it is doing".
+  ⚠️ **A name you set now keeps, in both places.** Until recently the
+  program running in the worker overwrote it at its next prompt — the tab's
+  name first, and `terminal_list`'s for longer (issue #9: one prompt of a
+  bare shell was enough) — so naming a worker looked like it worked and
+  quietly did not. A name you set explicitly outranks the one the program
+  announces from then on — which also means **that tab stops showing what is
+  running in it**, and `terminal_list` stops telling you. That is the trade:
+  on a worker you have named, "who this is" replaces "what it is doing".
 - **The clipboard is the person's**, in whatever window they are in.
 
 None of it is forbidden — it is one keystroke away for the person sitting
