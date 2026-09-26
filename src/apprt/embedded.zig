@@ -334,11 +334,16 @@ pub const App = struct {
             .set_title => switch (target) {
                 .app => {},
                 .surface => |surface| {
-                    // Dupe the title so that we can store it. If we get an allocation
-                    // error we just ignore it, since this only breaks a few minor things.
-                    const alloc = self.core_app.alloc;
-                    if (surface.rt_surface.title) |v| alloc.free(v);
-                    surface.rt_surface.title = alloc.dupeZ(u8, value.title) catch null;
+                    // Store it so `getTitle` can answer -- through
+                    // `apprt.Title`, which keeps a name somebody chose
+                    // (`explicit`) from being replaced by the next title the
+                    // program reports. If we get an allocation error we just
+                    // ignore it, since this only breaks a few minor things.
+                    surface.rt_surface.title.set(
+                        self.core_app.alloc,
+                        value.title,
+                        value.explicit,
+                    ) catch {};
                 },
             },
 
@@ -514,8 +519,11 @@ pub const Surface = struct {
     inspector: ?*Inspector = null,
 
     /// The current title of the surface. The embedded apprt saves this so
-    /// that getTitle works without the implementer needing to save it.
-    title: ?[:0]const u8 = null,
+    /// that getTitle works without the implementer needing to save it --
+    /// and it is what Polter reports (`terminal_list`, chat members, task
+    /// owners), so a chosen name has to survive here, not just on screen.
+    /// See `apprt.Title`.
+    title: apprt.Title = .{},
 
     /// Surface initialization options.
     pub const Options = extern struct {
@@ -756,7 +764,7 @@ pub const Surface = struct {
         self.freeInspector();
 
         // Free our title
-        if (self.title) |v| self.app.core_app.alloc.free(v);
+        self.title.deinit(self.app.core_app.alloc);
 
         // Remove ourselves from the list of known surfaces in the app.
         self.app.core_app.deleteSurface(self);
@@ -813,7 +821,7 @@ pub const Surface = struct {
     }
 
     pub fn getTitle(self: *Surface) ?[:0]const u8 {
-        return self.title;
+        return self.title.current;
     }
 
     pub fn supportsClipboard(
