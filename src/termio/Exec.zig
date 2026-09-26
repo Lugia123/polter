@@ -286,8 +286,20 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
 /// console ends the read on its own" -- #26 is the case where it does not.
 ///
 /// **The shape, and why each part is there:**
-///  * A short wait first, so an ordinary close still ends on end-of-file and
-///    the last frame the console writes is read rather than cut off.
+///  * **A short wait first, `step_ms` = 20**, so an ordinary close still
+///    ends on end-of-file, with no cancel at all, and the last frame the
+///    console writes is read rather than cut off. 20 was picked by hand, not
+///    derived from a measurement. What supports it after the fact: three
+///    ordinary closes on the Server 2022 test machine with this code, one of
+///    them a `surface_free` of 84 ms, all read `0 cancel(s)` (#845). The
+///    reader had already reached end-of-file when this wait began or within
+///    its first 20 ms; the `surface_free` time is the whole free and is not
+///    comparable with this wait.
+///    The worry it leaves open: a reader that would reach end-of-file on its
+///    own at, say, 30 ms is cancelled at 20 and logged as cancelled. None has
+///    been seen. **An ordinary close that logs one or more cancels is that
+///    case, and is the reading that should move this number**, to above the
+///    time it logged.
 ///  * Then cancel and wait, **repeated**: a cancel only lands on a read that
 ///    is pending, and one that arrives while the reader is between reads is
 ///    lost -- the next `ReadFile` would block again. The reader leaves on
@@ -298,6 +310,13 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
 ///  * Every cancel's result is logged. Three earlier rounds in this
 ///    repository got `CancelIoEx` wrong, and a swallowed return value is how
 ///    "never woken" and "woken, did not leave" came to look the same.
+///  * The final line carries the **measured** time from the start of the wait
+///    to the reader's exit, not a count of waits (the first version logged
+///    `0 ms` for anything that ended inside the first wait, which read as
+///    "immediately" and meant "within 20 ms"). That number is also what shows
+///    `step_ms` going stale: ⚠️ **if ordinary closes start to log times near
+///    20 ms, or cancels, the machine got slower and the threshold needs
+///    moving -- it is not evidence that #26 got more frequent.**
 ///
 /// ⚠️ `CancelSynchronousIo` (by thread rather than by handle) may be the
 /// better-documented fit for a synchronous read; it has **not** been
@@ -306,10 +325,10 @@ fn stopReaderWindows(exec: *ThreadData) void {
     const kernel32 = windows.exp.kernel32;
     const WAIT_TIMEOUT: windows.DWORD = 0x102;
     const step_ms: windows.DWORD = 20;
-    const give_up_ms: windows.DWORD = 2000;
+    const give_up_ms: i64 = 2000;
 
     const reader = exec.read_thread.getHandle();
-    var waited_ms: windows.DWORD = 0;
+    const start: std.Io.Timestamp = .now(global.io(), .awake);
     var cancels: u32 = 0;
     while (true) {
         switch (kernel32.WaitForSingleObject(reader, step_ms)) {
@@ -320,7 +339,7 @@ fn stopReaderWindows(exec: *ThreadData) void {
                 return;
             },
         }
-        waited_ms += step_ms;
+        const waited_ms = start.untilNow(global.io(), .awake).toMilliseconds();
         if (waited_ms >= give_up_ms) {
             log.warn(
                 "io reader still blocked after {} ms and {} cancel(s); joining anyway",
@@ -338,7 +357,10 @@ fn stopReaderWindows(exec: *ThreadData) void {
             if (ok == windows.FALSE) windows.GetLastError() else .SUCCESS,
         });
     }
-    log.info("io reader stopped after {} ms, {} cancel(s)", .{ waited_ms, cancels });
+    log.info("io reader stopped after {} ms, {} cancel(s)", .{
+        start.untilNow(global.io(), .awake).toMilliseconds(),
+        cancels,
+    });
 }
 
 pub fn focusGained(
