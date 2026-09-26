@@ -80,6 +80,7 @@ def check_table(problems):
 
     declared = None
     rows = 0
+    seen = {}
     for number, line in enumerate(text.split("\n"), 1):
         line = line.rstrip("\r")
         if not line:
@@ -96,6 +97,9 @@ def check_table(problems):
             problems.append(f"{TABLE}:{number}: {len(fields)} fields, want 4 (input, expected, status, note)")
             continue
         source, expected, status, _ = fields
+        if source in seen:
+            problems.append(f"{TABLE}:{number}: same input as line {seen[source]} -- the row adds no coverage but still counts toward '# rows', which is exactly what that count can't see")
+        seen.setdefault(source, number)
         try:
             bytes.fromhex(source).decode("utf-8")
         except ValueError:
