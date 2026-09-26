@@ -257,21 +257,88 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
             log.warn("no pty to close; the read thread may not wake", .{});
         }
 
-        // `CancelIoEx` used to live here, and it is gone on purpose.
-        //
-        // It was measured on the real machine with the read definitely still
-        // blocked: it returned **SUCCESS**, and the read *was* interrupted --
-        // so it worked, and the three earlier rounds' verdict ("this API never
-        // does anything here") does not apply to this one. It is removed
-        // because nothing needs it: closing the console above ends the read on
-        // its own, and keeping a second way to stop the reader would keep a
-        // precondition ("the cancel must land while a read is pending") that
-        // the shutdown no longer depends on.
-        //
-        // What that measurement *did* expose is below.
+        // **And then do not wait for end-of-file on its own (#26).**
+        stopReaderWindows(exec);
     }
 
     exec.read_thread.join();
+}
+
+/// Get the io-reader out of its blocking `ReadFile` on the pty's output
+/// pipe, **whoever else still holds a write end of that pipe** (#26).
+///
+/// Closing the console is supposed to end the read: the read returns once
+/// the pipe has no writers, and the console host was the last one. **That
+/// assumption failed on the real machine.** With the host gone, a write end
+/// was still alive and the join below hung the main thread for good. The
+/// leading hypothesis (issue #26) is that `CreatePseudoConsole` makes an
+/// inheritable copy of the write end in *this* process for the length of the
+/// call, and any process spawned on another thread in that window -- a
+/// plugin, another pane's shell, anything that inherits handles without a
+/// `HANDLE_LIST` -- keeps one for as long as it lives. Which process it was
+/// cannot be settled from here, and fixing it there would mean fixing every
+/// spawn in the process, including ones in DLLs this code does not own. So
+/// this side stops depending on it: the reader is woken on purpose.
+///
+/// `CancelIoEx` on the read handle, which this code once used and deleted:
+/// measured on the real machine (38379d241), it returned SUCCESS with a read
+/// pending and the read was interrupted. It was deleted because "closing the
+/// console ends the read on its own" -- #26 is the case where it does not.
+///
+/// **The shape, and why each part is there:**
+///  * A short wait first, so an ordinary close still ends on end-of-file and
+///    the last frame the console writes is read rather than cut off.
+///  * Then cancel and wait, **repeated**: a cancel only lands on a read that
+///    is pending, and one that arrives while the reader is between reads is
+///    lost -- the next `ReadFile` would block again. The reader leaves on
+///    `OPERATION_ABORTED` without reading again (`threadMainWindows`).
+///  * **Bounded.** Past `give_up_ms` this says so and joins anyway. The
+///    point of the bound is that the log then carries a number instead of a
+///    silence: `still blocked after N ms` is what a regression looks like.
+///  * Every cancel's result is logged. Three earlier rounds in this
+///    repository got `CancelIoEx` wrong, and a swallowed return value is how
+///    "never woken" and "woken, did not leave" came to look the same.
+///
+/// ⚠️ `CancelSynchronousIo` (by thread rather than by handle) may be the
+/// better-documented fit for a synchronous read; it has **not** been
+/// measured here, and `CancelIoEx` has.
+fn stopReaderWindows(exec: *ThreadData) void {
+    const kernel32 = windows.exp.kernel32;
+    const WAIT_TIMEOUT: windows.DWORD = 0x102;
+    const step_ms: windows.DWORD = 20;
+    const give_up_ms: windows.DWORD = 2000;
+
+    const reader = exec.read_thread.getHandle();
+    var waited_ms: windows.DWORD = 0;
+    var cancels: u32 = 0;
+    while (true) {
+        switch (kernel32.WaitForSingleObject(reader, step_ms)) {
+            windows.WAIT_OBJECT_0 => break,
+            WAIT_TIMEOUT => {},
+            else => |r| {
+                log.warn("io reader: WaitForSingleObject -> {} err={}; joining", .{ r, windows.GetLastError() });
+                return;
+            },
+        }
+        waited_ms += step_ms;
+        if (waited_ms >= give_up_ms) {
+            log.warn(
+                "io reader still blocked after {} ms and {} cancel(s); joining anyway",
+                .{ waited_ms, cancels },
+            );
+            return;
+        }
+        const ok = kernel32.CancelIoEx(exec.read_thread_fd, null);
+        cancels += 1;
+        // not-gated: at most give_up_ms / step_ms lines, and only on the path
+        // that #26 is about -- an ordinary close leaves in the first wait.
+        log.info("io reader: CancelIoEx #{} -> {} err={}", .{
+            cancels,
+            ok,
+            if (ok == windows.FALSE) windows.GetLastError() else .SUCCESS,
+        });
+    }
+    log.info("io reader stopped after {} ms, {} cancel(s)", .{ waited_ms, cancels });
 }
 
 pub fn focusGained(

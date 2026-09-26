@@ -482,15 +482,19 @@ const WindowsPty = struct {
     /// The reader sits in a blocking `ReadFile` on `out_pipe`, and that read
     /// does not return when the child process dies: the write end belongs to
     /// the console host, not to the child, so it stays open until the console
-    /// itself is closed. Closing it here is what ends the read.
+    /// itself is closed. Closing it here is what *usually* ends the read.
     ///
-    /// The alternative the code used to rely on -- `CancelIoEx` on the read
-    /// handle -- cannot do this job: it cancels *registered, cancellable*
-    /// requests, and a synchronous read on this pipe is often not one. It
-    /// reports `ERROR_NOT_FOUND` and changes nothing. See
-    /// `dev-docs/windows/status.md` section 七.8: the same function had already
-    /// been wrong three times in the named-pipe shutdown, where the answer
-    /// was also to stop cancelling and close the thing being waited on.
+    /// ⚠️ **Not always, and so it is not the only thing that does (#26).**
+    /// The read ends when the pipe has no writers left, and on the real
+    /// machine a write end outlived the console host -- the leading
+    /// hypothesis is a copy inherited by a process spawned while
+    /// `CreatePseudoConsole` held an inheritable duplicate of it. The reader
+    /// is therefore also woken on purpose, with `CancelIoEx` on the read
+    /// handle: see `stopReaderWindows` in `termio/Exec.zig`. That call was
+    /// measured on the real machine (38379d241) returning SUCCESS with a read
+    /// pending and interrupting it; an older note here, and three older
+    /// rounds in the named-pipe shutdown (`dev-docs/windows/status.md` 七.8),
+    /// said it could not, and that note is what this replaces.
     pub fn closeConsole(self: *Pty) void {
         if (self.console_closed) return;
         self.console_closed = true;
