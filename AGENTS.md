@@ -122,6 +122,23 @@ unreproduced bug, a limitation worth stating, a fix believed rather than
 proven -- all of those are better in the tracker than in a commit message
 nobody will search.
 
+⚠️ **Never give `gh` a bare issue number.** Without `-R`, `gh` resolves the
+number against whichever remote it picks, and with `origin`, `old-fork` and
+`upstream` all configured and no default set, it picks `upstream`. Measured
+2026-09-27: `gh issue view 24` returned upstream's #24 ("Text sizing",
+CLOSED) instead of this repository's, which is about Ctrl+Shift+W. **The
+numbers collide and nothing warns you.** A read lands on the wrong issue and
+comes back looking like a real answer; an `edit` or a `create` would have
+written into somebody else's project.
+
+So pass `-R` with this repository's slug on every invocation
+(`git remote get-url origin` has it). `gh repo set-default` has since been
+pointed at this repository as the mechanical stop this section otherwise
+says does not exist -- it writes `remote.origin.gh-resolved = base` into the
+shared `.git/config`, so worktrees inherit it. ⚠️ That lives in local config
+and a fresh clone will not have it, which is why `-R` stays mandatory rather
+than becoming optional.
+
 > This replaces an unconditional "never create an issue" that came from
 > upstream and was retired in `438a2e352`. That commit named the guard going
 > missing with it, and left the narrow version available "if the first agent
