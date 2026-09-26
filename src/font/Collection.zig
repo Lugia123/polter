@@ -1394,8 +1394,15 @@ test "adjusted sizes" {
 }
 
 test "face metrics" {
-    // The web canvas backend doesn't calculate face metrics, only cell metrics
-    if (options.backend != .web_canvas) return error.SkipZigTest;
+    // The web canvas backend doesn't calculate face metrics, only cell metrics.
+    //
+    // This guard read `!=` from 2025-09-18 (upstream 4af4e1872, turning
+    // `if (options.backend != .web_canvas) { ...asserts... }` into an early
+    // return without flipping it) to 2026-09-27: it skipped every real
+    // backend, and web_canvas, the one it let through, is `unreachable` in
+    // every table below -- so no assertion here ran in that year. The
+    // FreeType values were re-measured when it was fixed; see below.
+    if (options.backend == .web_canvas) return error.SkipZigTest;
 
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -1436,11 +1443,22 @@ test "face metrics" {
     // values are backend-dependent due to hinting.
     const narrowMetricsExpected = font.Metrics.FaceMetrics{
         .px_per_em = 16.0,
+        // FreeType values: re-measured 2026-09-27 on coretext_freetype (the
+        // same FreeType face code and load flags as the Linux backends,
+        // which were not measured). The year of skipped runs spanned
+        // upstream changes to FreeType sizing and hinting (0bddaed53,
+        // ad9f9dc11 "Default to light hinting", 6d65abc48 "fully correct
+        // load flags"); the earlier value was 8.0. The reading, printed from
+        // this test with `-Dfont-backend=coretext_freetype` (only the
+        // fields that changed kept):
+        //
+        //     narrow=.{ .px_per_em = 16, .cell_width = 7, ... }
         .cell_width = switch (options.backend) {
             .freetype,
+            .freetype_windows,
             .fontconfig_freetype,
             .coretext_freetype,
-            => 8.0,
+            => 7.0,
             .coretext,
             .coretext_harfbuzz,
             .coretext_noshape,
@@ -1458,6 +1476,7 @@ test "face metrics" {
         .ex_height = 7.3828125,
         .ascii_height = switch (options.backend) {
             .freetype,
+            .freetype_windows,
             .fontconfig_freetype,
             .coretext_freetype,
             => 18.0625,
@@ -1472,6 +1491,7 @@ test "face metrics" {
         .px_per_em = 16.0,
         .cell_width = switch (options.backend) {
             .freetype,
+            .freetype_windows,
             .fontconfig_freetype,
             .coretext_freetype,
             => 10.0,
@@ -1490,11 +1510,16 @@ test "face metrics" {
         .strikethrough_thickness = 0.8,
         .cap_height = 11.36,
         .ex_height = 8.48,
+        // Re-measured with the narrow font's cell_width above; was 16.0.
+        // The reading:
+        //
+        //     wide=.{ ..., .ascii_height = 15.5, .ic_width = null }
         .ascii_height = switch (options.backend) {
             .freetype,
+            .freetype_windows,
             .fontconfig_freetype,
             .coretext_freetype,
-            => 16.0,
+            => 15.5,
             .coretext,
             .coretext_harfbuzz,
             .coretext_noshape,
