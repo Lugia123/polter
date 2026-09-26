@@ -88,6 +88,16 @@ def build_empty_tree(gates, extra=()):
         os.makedirs(os.path.join(top, *d.split("/")), exist_ok=True)
     for g in gates:
         shutil.copy2(os.path.join(HERE, g), tools)
+    # The shared modules come along: they are code the gates run, not a
+    # subject. Without them every gate that imports one dies on
+    # ModuleNotFoundError before its own guard runs -- measured when lib/ was
+    # introduced, two gates that refused the empty tree with a FAIL became two
+    # that crashed, and this gate reported the same totals either way.
+    # `glob("*.py")` does not descend into lib/, so nothing in it is a subject.
+    lib = os.path.join(HERE, "lib")
+    if os.path.isdir(lib):
+        shutil.copytree(lib, os.path.join(tools, "lib"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
     for name, body in extra:
         with open(os.path.join(tools, name), "w", encoding="utf-8") as fh:
             fh.write(body)
@@ -113,12 +123,21 @@ def self_test():
     nothing. **A checker whose failing case is never exercised is the fifth
     gate of the four above.**
     """
-    good = "import sys\nprint('FAIL: nothing to scan')\nsys.exit(1)\n"
+    # The guarded probe imports every shared module first, the way a real
+    # gate does, so a tree built without lib/ makes it crash -- and a crash is
+    # caught below by what it printed, since its exit code is 1 either way.
+    mods = sorted(os.path.splitext(os.path.basename(m))[0]
+                  for m in glob.glob(os.path.join(HERE, "lib", "*.py")))
+    good = ("import os, sys\n"
+            "sys.path.insert(0, os.path.join(os.path.dirname("
+            "os.path.abspath(__file__)), 'lib'))\n"
+            + "".join(f"import {m}\n" for m in mods)
+            + "print('FAIL: nothing to scan')\nsys.exit(1)\n")
     bad = "print('scanned 0 files')\nprint('OK: all clear')\n"
     top, tools = build_empty_tree([], extra=(("zz_probe_good.py", good),
                                              ("zz_probe_bad.py", bad)))
     try:
-        rc_good, _ = run(tools, "zz_probe_good.py")
+        rc_good, said_good = run(tools, "zz_probe_good.py")
         rc_bad, _ = run(tools, "zz_probe_bad.py")
     finally:
         shutil.rmtree(top, ignore_errors=True)
@@ -126,6 +145,12 @@ def self_test():
         print(f"FAIL: self-test broken (guarded probe exited {rc_good}, "
               f"unguarded probe exited {rc_bad}); this gate cannot tell the "
               f"two apart, so nothing below it means anything.")
+        return False
+    if not said_good.startswith("FAIL: nothing to scan"):
+        print(f"FAIL: self-test broken: the guarded probe did not reach its "
+              f"own refusal ({said_good!r}). If that is an ImportError, the "
+              f"empty tree is missing lib/, and every gate that imports from "
+              f"it is refusing by crashing rather than by its guard.")
         return False
     print("probe self-test: OK (a guarded gate passes, an unguarded one is caught)")
     return True

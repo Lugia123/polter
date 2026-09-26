@@ -59,8 +59,8 @@ import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "host", "src")
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _cb_action as cb  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import cb_action as cb  # noqa: E402
 
 HELD = "poltergeist_toggle_held"
 

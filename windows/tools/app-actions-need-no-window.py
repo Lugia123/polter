@@ -55,8 +55,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 SRC = os.path.join(ROOT, "windows", "host", "src")
 
-sys.path.insert(0, HERE)
-import _cb_action as cb  # noqa: E402
+sys.path.insert(0, os.path.join(HERE, "lib"))
+import cb_action as cb  # noqa: E402
 
 
 def top_level_args(text: str, i: int) -> list[str]:

@@ -3738,7 +3738,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // reads as entirely normal.
         //
         // Written with `if let` rather than a nested `match`: the arms of this
-        // function are read by a parser (`windows/tools/_cb_action.py`), and a
+        // function are read by a parser (`windows/tools/lib/cb_action.py`), and a
         // `match` inside an arm puts arms in front of it that are not
         // `cb_action`'s.
         ffi::ACTION_SELECTION_CHANGED => {

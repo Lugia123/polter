@@ -69,7 +69,7 @@ left two behind.
 
 Two gates rather than one because an action can fail either without failing
 the other, in both directions. They share one reading of the source
-(`_cb_action.py`) so that the arms are parsed once.
+(`lib/cb_action.py`) so that the arms are parsed once.
 """
 
 import glob
@@ -78,8 +78,8 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _cb_action  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import cb_action  # noqa: E402
 import sys
 
 # **Measured, not chosen.** Two classes, counted together because the remedy is
@@ -522,7 +522,7 @@ def menu_rows():
 def handled_tags(main_src: str):
     """The `ACTION_*` constants `cb_action` has a branch for.
 
-    **The walk itself lives in `_cb_action.py`**, shared with
+    **The walk itself lives in `lib/cb_action.py`**, shared with
     `action-arms-act.py`. The two gates ask different questions of these arms
     -- this one "is there a branch", that one "does the branch do anything" --
     and a second walker would be a second reader of one fact. Moving it out
@@ -536,8 +536,8 @@ def handled_tags(main_src: str):
     """
     tags = set()
     arms = 0
-    for pattern, _body, _line in _cb_action.arms(main_src):
-        found = _cb_action.tags_of(pattern)
+    for pattern, _body, _line in cb_action.arms(main_src):
+        found = cb_action.tags_of(pattern)
         if found:
             arms += 1
             tags.update(found)

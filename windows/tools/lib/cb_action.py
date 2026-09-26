@@ -13,6 +13,16 @@ is a brace/paren walk rather than a regex because the spellings vary in ways
 that each cost a wrong answer when guessed: `ffi::ACTION_X` and bare
 `ACTION_X` both appear, or-patterns put two names on one arm, and arm bodies
 mention `ACTION_` constants of their own that a body-wide search would collect.
+
+**This is a module and only a module.** It lives in `lib/` rather than next
+to the gates because everything directly in `windows/tools/` is a gate: the
+loops that run "all the gates" glob `*.py` there, and so does
+`gates-fail-on-empty.py`. When this file sat among them as `_cb_action.py`, a
+loop that skipped `_*` and the meta-gate that did not counted two different
+sets, and its self-check crashed on an empty tree instead of refusing. The
+check that the walk still finds arms is `cb-action-arms-are-found.py`, and
+`every-script-here-is-a-gate.py` keeps the two roles from sharing a file
+again.
 """
 
 import re
@@ -80,41 +90,6 @@ def line_of(src: str, pos: int) -> int:
     return src.count("\n", 0, pos) + 1
 
 
-
-
 def tags_of(pattern: str):
     """The `ACTION_*` constants an arm's pattern names."""
     return re.findall(r"\bACTION_[A-Z0-9_]+", pattern)
-
-
-if __name__ == "__main__":
-    # **This file is in `windows/tools/*.py` and will be run by the loop that
-    # runs the gates, so it must not be a silent zero.** A helper that prints
-    # nothing and exits 0 is indistinguishable from a gate that passes, which
-    # is the shape this directory keeps finding.
-    #
-    # So when run directly it does the one useful thing it can: prove the walk
-    # still finds arms. **Both gates that import it go quiet in the same way
-    # if this breaks** -- `menu-actions-handled.py` would report zero arms and
-    # conclude every menu row is fine, and `action-arms-act.py` would report
-    # no lying arms. Two green reports, one broken parser.
-    import os
-    import sys
-
-    here = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(here, "..", "host", "src", "main.rs"), encoding="utf-8") as fh:
-        src = fh.read()
-
-    all_arms = list(arms(src))
-    named = [a for a in all_arms if tags_of(a[0])]
-
-    print("not a gate: the shared reading of `cb_action`'s arms, used by "
-          "menu-actions-handled.py and action-arms-act.py")
-    print(f"  parsed {len(all_arms)} arm(s), {len(named)} of them naming ACTION_* constants")
-
-    if len(named) < 10:
-        print()
-        print("FAIL: that is too few to be real. The walk has stopped matching the "
-              "source, and **both gates that use it would report clean** -- one "
-              "finding no unhandled menu rows, the other no lying arms.")
-        sys.exit(1)

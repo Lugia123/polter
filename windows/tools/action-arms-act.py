@@ -45,7 +45,7 @@ covers it, so:
 
 An action can pass one and fail the other in both directions, so neither
 subsumes the other. **They do share their reading of the source**:
-`_cb_action.py` walks the arms once and both import it, because "the arms of
+`lib/cb_action.py` walks the arms once and both import it, because "the arms of
 `cb_action`" is one fact and this repository has spent a night on facts with
 two readers.
 
@@ -58,8 +58,8 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _cb_action as cb  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import cb_action as cb  # noqa: E402
 
 LOG = re.compile(r"\b(alogf|wlogf|plogf|logf|hlogf)!\s*\(")
 CALL = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:::[A-Za-z_][A-Za-z0-9_]*\s*)*\(")

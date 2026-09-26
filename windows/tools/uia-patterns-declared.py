@@ -148,7 +148,7 @@ CANARY_EXCUSED = CANARY_BARE.replace(
     "        Err(gone())",
 )
 # A comment that merely *names* a pattern must not count as offering one --
-# the same trap `_cb_action.py` fell into, where prose was read as code.
+# the same trap `lib/cb_action.py` fell into, where prose was read as code.
 CANARY_COMMENT_ONLY = CANARY_BARE.replace(
     "        Err(gone())",
     "        // UIA_InvokePatternId belongs here and is not implemented\n"
