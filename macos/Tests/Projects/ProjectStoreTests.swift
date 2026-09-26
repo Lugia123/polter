@@ -62,15 +62,20 @@ struct ProjectStoreTests {
         try store.save(name: "throwaway", tree: .init())
         #expect(store.list().count == 1)
 
-        try store.delete(name: "throwaway")
+        try store.delete(try #require(store.entry(name: "throwaway")))
         #expect(store.list().isEmpty)
     }
 
     @MainActor
     @Test func deletingSomethingNotThereThrows() {
-        let store = makeStore()
+        let (store, dir) = makeStoreWithDirectory()
+        let gone = ProjectStore.Entry(
+            url: dir.appendingPathComponent("never saved.json"),
+            name: "never saved",
+            savedAt: Date(),
+            paneCount: 0)
         #expect(throws: (any Error).self) {
-            try store.delete(name: "never saved")
+            try store.delete(gone)
         }
     }
 
@@ -109,8 +114,8 @@ struct ProjectStoreTests {
 
         #expect(store.holderTitle(name: "notes") == "~/src/notes")
         let actions: [() throws -> Void] = [
-            { try store.delete(name: "notes") },
-            { try store.restorePrevious(name: "notes") },
+            { try store.delete(try #require(store.entry(name: "notes"))) },
+            { try store.restorePrevious(try #require(store.entry(name: "notes"))) },
         ]
         for action in actions {
             do {
@@ -145,7 +150,7 @@ struct ProjectStoreTests {
         try store.write(ProjectFile(name: "notes", savedAt: 2, root: nil, nextScrollback: nil))
         #expect(store.entry(name: "notes")?.hasPrevious == true)
 
-        try store.delete(name: "notes")
+        try store.delete(try #require(store.entry(name: "notes")))
         #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("notes.json.prev").path))
     }
 
@@ -159,7 +164,7 @@ struct ProjectStoreTests {
         try FileManager.default.createDirectory(at: snapshots, withIntermediateDirectories: true)
         try Data("x".utf8).write(to: snapshots.appendingPathComponent("0.snap"))
 
-        try store.delete(name: "notes")
+        try store.delete(try #require(store.entry(name: "notes")))
         #expect(!FileManager.default.fileExists(atPath: snapshots.path))
     }
 
@@ -181,5 +186,49 @@ struct ProjectStoreTests {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("polter-project-store-tests-\(UUID().uuidString)")
         return (ProjectStore(directory: dir), dir)
+    }
+
+    // MARK: - Files an older rule named (issue #23)
+
+    /// The failure this guards against is silent: a project saved under an
+    /// older rule's filename is listed (the listing reads contents) but
+    /// can't be opened or deleted (those used to recompute the filename).
+    /// `a:b` is `a:b.json` under the old macOS rule and `a_b.json` now.
+    @MainActor
+    @Test func aProjectUnderAnOlderFilenameIsStillFoundAndMovedOnSave() throws {
+        let (store, dir) = makeStoreWithDirectory()
+        let legacy = dir.appendingPathComponent("a:b.json")
+        let root = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "")
+        try ProjectFile(name: "a:b", savedAt: 1, root: root, nextScrollback: 3).encoded().write(to: legacy)
+        try Data("previous".utf8).write(to: ProjectFileWriter.previousURL(for: legacy))
+
+        let found = try #require(store.entry(name: "a:b"))
+        #expect(found.url.lastPathComponent == "a:b.json")
+        #expect(store.list().map(\.name) == ["a:b"])
+
+        try store.save(name: "a:b", tree: .init())
+
+        let moved = dir.appendingPathComponent("a_b.json")
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+        #expect(!FileManager.default.fileExists(atPath: ProjectFileWriter.previousURL(for: legacy).path))
+        #expect(store.list().map(\.url.lastPathComponent) == ["a_b.json"])
+        // The layout changed (a pane -> nothing), so the adopted file became
+        // `.prev`; the counter it carried survived the move.
+        let previous = try ProjectFile.decode(from: Data(contentsOf: ProjectFileWriter.previousURL(for: moved)))
+        #expect(previous.root == root)
+        #expect(try ProjectFile.decode(from: Data(contentsOf: moved)).nextScrollback == 3)
+    }
+
+    /// Deleting goes by the file the entry came from, sidecars included --
+    /// not by a filename recomputed from the name.
+    @MainActor
+    @Test func deletingAProjectUnderAnOlderFilenameRemovesThatFile() throws {
+        let (store, dir) = makeStoreWithDirectory()
+        let legacy = dir.appendingPathComponent("a:b.json")
+        try ProjectFile(name: "a:b", savedAt: 1, root: nil, nextScrollback: nil).encoded().write(to: legacy)
+        try Data("previous".utf8).write(to: ProjectFileWriter.previousURL(for: legacy))
+
+        try store.delete(try #require(store.entry(name: "a:b")))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).isEmpty)
     }
 }

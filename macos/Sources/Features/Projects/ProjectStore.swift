@@ -19,13 +19,16 @@ final class ProjectStore {
     /// One saved project, as shown in a picker: enough to render a row
     /// without decoding (let alone materializing) its tree.
     ///
-    /// `name` doubles as identity -- saving under a name that already
-    /// exists overwrites that file, the same trade `Project.zig`'s
-    /// `pathFor` documents ("two names that sanitize to the same filename
-    /// collide -- last write wins"). This store doesn't invent a second,
-    /// stable identifier the user never sees either.
+    /// Its identity is `url`, the file a listing found it in -- not a
+    /// filename recomputed from `name`. A project saved under an older
+    /// filename rule still sits under that name, and recomputing would look
+    /// for it somewhere else and quietly not find it (issue #23). Opening,
+    /// deleting and restoring all go through `url`; only saving uses the
+    /// current rule (`ProjectFilename`), and it moves an older file over
+    /// when it does (`ProjectFileAdoption`).
     struct Entry: Identifiable, Equatable {
-        var id: String { name }
+        var id: String { url.path }
+        let url: URL
         let name: String
         let savedAt: Date
         let paneCount: Int
@@ -57,10 +60,12 @@ final class ProjectStore {
     /// with their own directory get their own bindings.
     let bindings = ProjectBindingRegistry()
 
-    /// The identity a binding is keyed by: the project's file, so names
-    /// that sanitize to one filename are one project.
+    /// The identity a binding is keyed by: the file the current rule gives
+    /// `name`, so names that sanitize to one filename are one project. The
+    /// empty name has no file and keys as ""; nothing binds it, because
+    /// `save` refuses it before a binding is made.
     func bindingKey(name: String) -> String {
-        fileURL(name: name).standardizedFileURL.path
+        ruleURL(name: name)?.standardizedFileURL.path ?? ""
     }
 
     private let directory: URL
@@ -101,29 +106,36 @@ final class ProjectStore {
     /// but never materializes a tree, so listing never spins up a terminal
     /// process.
     func list() -> [Entry] {
+        listed()
+            .map { makeEntry($0.file, at: $0.url) }
+            .sorted { $0.savedAt > $1.savedAt }
+    }
+
+    /// Every project file in the directory, decoded; unreadable ones are
+    /// skipped and logged (see `ProjectListing.decode` for why skipped).
+    private func listed() -> [(url: URL, file: ProjectFile)] {
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil)) ?? []
-
-        let decoded = ProjectListing.decode(urls.filter { $0.pathExtension == "json" }) { url, error in
+        return ProjectListing.decode(urls.filter { $0.pathExtension == "json" }) { url, error in
             Self.logger.warning(
                 "not listing '\(url.lastPathComponent, privacy: .public)': \(error.localizedDescription, privacy: .public)")
         }
-        let entries = decoded.map { makeEntry($0.file, at: $0.url) }
-
-        return entries.sorted { $0.savedAt > $1.savedAt }
     }
 
+    /// The project called `name`, wherever it is saved -- see
+    /// `ProjectListing.locate`.
     func entry(name: String) -> Entry? {
-        let url = fileURL(name: name)
-        guard let data = try? Data(contentsOf: url),
-              let file = try? ProjectFile.decode(from: data)
+        let listed = listed()
+        guard let url = ProjectListing.locate(name: name, ruleFile: ruleURL(name: name), listed: listed),
+              let file = listed.first(where: { $0.url == url })?.file
         else { return nil }
         return makeEntry(file, at: url)
     }
 
     private func makeEntry(_ file: ProjectFile, at url: URL) -> Entry {
         Entry(
+            url: url,
             name: file.name,
             savedAt: file.savedAtDate,
             paneCount: file.paneCount,
@@ -153,9 +165,9 @@ final class ProjectStore {
         capturingScrollback: Bool = true
     ) throws -> Entry {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw StoreError.nameEmpty }
+        guard let url = ruleURL(name: trimmed) else { throw StoreError.nameEmpty }
+        try adoptLegacyFile(name: trimmed, as: url)
 
-        let url = fileURL(name: trimmed)
         let scrollbackDirectory = ProjectScrollback.directory(forProjectFile: url)
         let existing = (try? Data(contentsOf: url)).flatMap { try? ProjectFile.decode(from: $0) }
         let onDisk = (try? FileManager.default.contentsOfDirectory(atPath: scrollbackDirectory.path)) ?? []
@@ -212,7 +224,7 @@ final class ProjectStore {
     /// live surfaces.
     @discardableResult
     func write(_ file: ProjectFile) throws -> Entry {
-        let url = fileURL(name: file.name)
+        guard let url = ruleURL(name: file.name) else { throw StoreError.nameEmpty }
         let outcome = try ProjectFileWriter.write(file, to: url)
 
         switch outcome {
@@ -234,15 +246,16 @@ final class ProjectStore {
     ///   entire point when actually opening a project, so only call this
     ///   then. Use `list()`/`entry(name:)` for anything that just displays
     ///   metadata.
-    func loadTree(name: String, app: ghostty_app_t) throws -> SplitTree<Ghostty.SurfaceView> {
-        let url = fileURL(name: name)
-        guard let data = try? Data(contentsOf: url) else {
+    func loadTree(_ entry: Entry, app: ghostty_app_t) throws -> SplitTree<Ghostty.SurfaceView> {
+        guard let data = try? Data(contentsOf: entry.url) else {
             throw StoreError.notFound
         }
         let file = try ProjectFile.decode(from: data)
+        // The snapshots sit beside the file they were saved with, which is
+        // `entry.url` even when that is an older rule's name.
         let location = ProjectScrollback.Location(
-            directory: ProjectScrollback.directory(forProjectFile: url),
-            key: bindingKey(name: name))
+            directory: ProjectScrollback.directory(forProjectFile: entry.url),
+            key: bindingKey(name: entry.name))
         let root = file.root.map { $0.materializing(app, scrollback: location) }
         return SplitTree(root: root, zoomed: nil)
     }
@@ -257,10 +270,10 @@ final class ProjectStore {
     /// Scrollback isn't versioned (see `dev-docs/project-scrollback.md`
     /// 3.5.6): a pane that exists only in the previous version restores
     /// without its history.
-    func restorePrevious(name: String) throws {
-        try refuseIfBound(name: name)
-        try ProjectFileWriter.restorePrevious(at: fileURL(name: name))
-        Self.logger.info("restored previous version of project '\(name, privacy: .public)'")
+    func restorePrevious(_ entry: Entry) throws {
+        try refuseIfBound(name: entry.name)
+        try ProjectFileWriter.restorePrevious(at: entry.url)
+        Self.logger.info("restored previous version of project '\(entry.name, privacy: .public)'")
     }
 
     /// The title of the tab bound to `name`, for saying who holds it.
@@ -277,41 +290,46 @@ final class ProjectStore {
 
     /// Refused while a tab is bound to the project -- it would write the
     /// project straight back on its next autosave.
-    func delete(name: String) throws {
-        try refuseIfBound(name: name)
-        let url = fileURL(name: name)
-        try FileManager.default.removeItem(at: url)
-        try? FileManager.default.removeItem(at: ProjectFileWriter.previousURL(for: url))
-        // Snapshots mean nothing without the project that captured them
+    func delete(_ entry: Entry) throws {
+        try refuseIfBound(name: entry.name)
+        try FileManager.default.removeItem(at: entry.url)
+        // The `.prev` and the snapshots mean nothing without the project
         // (unlike `history`, which outlives any one project). Absent is
-        // fine: a project saved before scrollback existed has none.
-        try? FileManager.default.removeItem(at: ProjectScrollback.directory(forProjectFile: url))
-        Self.logger.info("deleted project '\(name, privacy: .public)'")
-    }
-
-    /// Mirrors `Project.zig`'s `sanitizeFilename`: control bytes, `/`, and
-    /// `\` become `_`; an empty result falls back to `"project"`; the
-    /// result is capped in length before the `.json` extension is
-    /// appended. Capped by `Character` rather than by UTF-8 byte count --
-    /// the Zig side caps raw bytes and can in principle split a multi-byte
-    /// sequence, which isn't a boundary worth reproducing here since a
-    /// project name only has to collide-or-not the same way across
-    /// platforms, not produce byte-identical filenames.
-    private static func sanitizedFilename(for name: String) -> String {
-        var sanitized = ""
-        for scalar in name.unicodeScalars {
-            let v = scalar.value
-            // Control bytes (incl. NUL), DEL, and the two path separators --
-            // same set `Project.zig`'s `sanitizeFilename` replaces.
-            let isUnsafe = v <= 0x1f || v == 0x7f || v == 0x2f /* / */ || v == 0x5c /* \ */
-            sanitized.unicodeScalars.append(isUnsafe ? "_" : scalar)
+        // fine: a project saved before either existed has none.
+        for sidecar in ProjectFileAdoption.sidecars(of: entry.url) {
+            try? FileManager.default.removeItem(at: sidecar)
         }
-
-        let capped = String(sanitized.prefix(200))
-        return capped.isEmpty ? "project" : capped
+        Self.logger.info("deleted project '\(entry.name, privacy: .public)'")
     }
 
-    private func fileURL(name: String) -> URL {
-        directory.appendingPathComponent(Self.sanitizedFilename(for: name)).appendingPathExtension("json")
+    /// Before saving `name` to `target`: if the project is still in a file
+    /// an older filename rule named, move it (and its `.prev` and
+    /// snapshots) to `target` first, so this save carries on from it --
+    /// its layout becomes `.prev` if the layout changed, its snapshot
+    /// numbers stay allocated -- instead of starting a second copy beside
+    /// it.
+    private func adoptLegacyFile(name: String, as target: URL) throws {
+        guard let found = ProjectListing.locate(name: name, ruleFile: target, listed: listed()),
+              found.lastPathComponent != target.lastPathComponent
+        else { return }
+        switch try ProjectFileAdoption.adopt(found, as: target) {
+        case .adopted:
+            Self.logger.info(
+                "moved project '\(name, privacy: .public)' from '\(found.lastPathComponent, privacy: .public)' to '\(target.lastPathComponent, privacy: .public)'")
+        case .targetTaken:
+            // The rule's file exists but didn't list (it doesn't decode).
+            // Not overwritten: it may be somebody's project in a form this
+            // build can't read. The save that follows rotates it into
+            // `.prev` (`ProjectFileWriter` keeps undecodable files).
+            Self.logger.warning(
+                "not moving project '\(name, privacy: .public)' from '\(found.lastPathComponent, privacy: .public)': '\(target.lastPathComponent, privacy: .public)' exists")
+        }
+    }
+
+    /// The file the current rule gives a *new* project called `name`, or
+    /// nil for the empty name -- see `ProjectFilename`. Never used to find
+    /// an existing project; that is `entry(name:)`.
+    private func ruleURL(name: String) -> URL? {
+        ProjectFilename.forNewFile(named: name).map { directory.appendingPathComponent($0) }
     }
 }

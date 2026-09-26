@@ -45,10 +45,10 @@ final class ProjectPicker: NSObject {
                 self?.close()
             },
             onDelete: { entry in
-                try store.delete(name: entry.name)
+                try store.delete(entry)
             },
             onRestorePrevious: { entry in
-                try store.restorePrevious(name: entry.name)
+                try store.restorePrevious(entry)
             },
             onCancel: { [weak self] in
                 onCancel()

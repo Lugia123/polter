@@ -136,7 +136,7 @@ extension TerminalController {
             if let holder = store.holderTitle(name: entry.name) {
                 throw ProjectStore.StoreError.boundElsewhere(name: entry.name, holder: holder)
             }
-            let tree = try store.loadTree(name: entry.name, app: app)
+            let tree = try store.loadTree(entry, app: app)
             let controller = TerminalController.openProject(ghostty, tree: tree, attachingTo: window)
             try controller.bindProject(entry.name)
         } catch {
