@@ -164,7 +164,7 @@ pub fn restore(
     //    would keep one screenful and lose the rest.
     while (decoder.next(alloc, &old) catch |err| return unreadable(io, path, err)) |_| {}
 
-    old.resize(alloc, .{ .cols = t.cols, .rows = t.rows }) catch |err|
+    resizeRestored(alloc, &old, t.cols, t.rows) catch |err|
         return unreadable(io, path, err);
 
     // 3. **The continuation is dropped, not fed to `stream`.** This is the
@@ -216,10 +216,59 @@ fn transplantPrimary(from: *Terminal, to: *Terminal) void {
     // The old session's pen is not the new shell's.
     to.setAttribute(.unset) catch {};
 
-    // The new shell's prompt goes below what was there, not over the last
-    // line of it -- that line is usually the old prompt.
-    to.carriageReturn();
-    to.index() catch |err| log.warn("could not move below restored content err={}", .{err});
+    // **What was on screen goes into history, and the new shell starts on a
+    // clean screen.** Restored content left in the active area belongs to
+    // whatever happens there next, and on Windows that destroyed it: a
+    // resize after the restore clears the old prompt's rows (they still
+    // carry prompt marks, and the pane's own terminal redraws prompts), and
+    // ConPTY's opening `ESC [ 2 J`, finding no prompt, discards the screen
+    // rather than scrolling it (#826). In history nothing after the restore
+    // can reach it -- no resize, no erase, no heuristic, no timing. The cost
+    // is visible: the last screenful is one scroll up rather than on screen.
+    // If this fails the restored screen stays where it was, exposed to
+    // exactly what this is here to prevent -- so the log says what that
+    // means for the user, not just that a call failed.
+    dst.scrollClear() catch |err| log.warn(
+        "restored screen could not be moved into history and stayed on screen, " ++
+            "where the new shell's first clear may erase it for good err={}",
+        .{err},
+    );
+    to.setCursorPos(1, 1);
+
+    // **The cursor came over with the pages, and with it the old shell's
+    // notion of where it was** -- at a prompt, in its input. A resize acts on
+    // that (`Screen.clearPromptForRedraw`): it walks up from the cursor to the
+    // nearest prompt and clears from there down, so a resize after the
+    // restore found the old prompt, now in history, and blanked it. The new
+    // shell has printed nothing yet; the cursor is in output, as it is in a
+    // fresh terminal.
+    dst.cursor.semantic_content = .output;
+    dst.cursor.semantic_content_clear_eol = false;
+}
+
+/// Resize a terminal decoded from a snapshot to the pane it is going into,
+/// **without clearing its prompt for a redraw.**
+///
+/// `shell_redraws_prompt` records that the shell at the time would redraw its
+/// prompt after a resize, and `Terminal.resize` acts on it by clearing the
+/// prompt rows (`Screen.clearPromptForRedraw`). That was true when the
+/// snapshot was taken and is false now: the shell it describes is gone, and
+/// the new one prints its own prompt below the restored content. Left as
+/// recorded, the resize erases the old prompt's text and keeps its marks,
+/// and the next `ESC [ 2 J` -- ConPTY sends one to every new pane -- finds
+/// no prompt to keep the screen for, and discards it (#826).
+///
+/// This is the only reader of the flag (`Terminal.resize`), so setting it
+/// here changes nothing else. It is set on the decoded terminal only; the
+/// pane's own terminal keeps its own value, because its shell is alive.
+fn resizeRestored(
+    alloc: Allocator,
+    old: *Terminal,
+    cols: terminalpkg.size.CellCountInt,
+    rows: terminalpkg.size.CellCountInt,
+) !void {
+    old.flags.shell_redraws_prompt = .false;
+    try old.resize(alloc, .{ .cols = cols, .rows = rows });
 }
 
 fn explicit(v: usize) ?usize {
@@ -523,4 +572,193 @@ test "an unreadable snapshot starts empty and is deleted" {
         try testing.expect(std.mem.indexOf(u8, dump, "L0") == null);
         try testing.expect(!testExists(path));
     }
+}
+
+/// The text of the first row marked as a prompt in the active area, or null.
+fn testPromptRowText(t: *Terminal, buf: []u8) ?[]const u8 {
+    return testPromptRowTextIn(t, .active, buf);
+}
+
+/// The text of the last row marked as a prompt in history, or null. After a
+/// restore the old prompt is there, with everything else that was on screen.
+fn testHistoryPromptText(t: *Terminal, buf: []u8) ?[]const u8 {
+    return testPromptRowTextIn(t, .history, buf);
+}
+
+fn testPromptRowTextIn(t: *Terminal, comptime area: enum { active, history }, buf: []u8) ?[]const u8 {
+    const screen = t.screens.get(.primary).?;
+    var it = switch (area) {
+        .active => screen.pages.getTopLeft(.active).rowIterator(.right_down, null),
+        .history => (screen.pages.getBottomRight(.history) orelse return null)
+            .rowIterator(.left_up, screen.pages.getTopLeft(.history)),
+    };
+    while (it.next()) |p| {
+        const rac = p.rowAndCell();
+        if (rac.row.semantic_prompt != .prompt) continue;
+        const cells = p.node.page().getCells(rac.row);
+        var n: usize = 0;
+        for (cells) |cell| {
+            if (n == buf.len) break;
+            const cp = cell.codepoint();
+            buf[n] = if (cp >= 0x20 and cp < 0x7f) @intCast(cp) else ' ';
+            n += 1;
+        }
+        return std.mem.trimEnd(u8, buf[0..n], " ");
+    }
+    return null;
+}
+
+/// A snapshot at 80x24 of output ending at a marked prompt.
+fn testSavePrompted(path: []const u8, redraw: ?@TypeOf(@as(Terminal, undefined).flags.shell_redraws_prompt)) !void {
+    var source = try testSource(80, 24, 200);
+    defer source.deinit(testing.allocator);
+    {
+        var s = source.vtStream();
+        defer s.deinit();
+        s.nextSlice("\x1b]133;A\x07$ ");
+    }
+    if (redraw) |r| source.flags.shell_redraws_prompt = r;
+    try testSave(&source, path);
+}
+
+test "restore keeps the old prompt's text, and an ED2 after it keeps the screen" {
+    // The resize into the pane used to clear the prompt for a redraw by a
+    // shell that no longer exists (#826).
+    inline for (.{ 80, 42 }) |cols| {
+        var buf: [128]u8 = undefined;
+        const path = try testPath(&buf);
+        defer testCleanup(path);
+        try testSavePrompted(path, null);
+
+        var t = try testFresh(cols, 20);
+        defer t.deinit(testing.allocator);
+        var s = t.vtStream();
+        defer s.deinit();
+        try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+
+        // The old prompt went into history with the rest of the screen, and
+        // its text came through the resize (without the fix, it is empty).
+        var text: [128]u8 = undefined;
+        const old_prompt = testHistoryPromptText(&t, &text);
+        try testing.expect(old_prompt != null);
+        try testing.expectEqualStrings("$", old_prompt.?);
+
+        // The first thing a new pane gets on Windows.
+        s.nextSlice("\x1b[H\x1b[2J");
+        const dump = try testDump(&t);
+        defer testing.allocator.free(dump);
+        try testing.expect(std.mem.indexOf(u8, dump, "L000199") != null);
+    }
+}
+
+test "a snapshot taken with shell_redraws_prompt false restores the same way" {
+    var buf: [128]u8 = undefined;
+    const path = try testPath(&buf);
+    defer testCleanup(path);
+    try testSavePrompted(path, .false);
+
+    var t = try testFresh(80, 20);
+    defer t.deinit(testing.allocator);
+    var s = t.vtStream();
+    defer s.deinit();
+    try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+    var text: [128]u8 = undefined;
+    const old_prompt = testHistoryPromptText(&t, &text);
+    try testing.expect(old_prompt != null);
+    try testing.expectEqualStrings("$", old_prompt.?);
+}
+
+test "a decoded terminal is resized with no prompt redraw" {
+    // The invariant itself, apart from any snapshot shape: whatever the
+    // decoded terminal recorded, `resizeRestored` resizes it as a terminal
+    // whose shell will not redraw.
+    var t = try testSource(80, 24, 200);
+    defer t.deinit(testing.allocator);
+    {
+        var s = t.vtStream();
+        defer s.deinit();
+        s.nextSlice("\x1b]133;A\x07$ ");
+    }
+    try testing.expectEqual(.true, t.flags.shell_redraws_prompt);
+    try resizeRestored(testing.allocator, &t, 80, 20);
+    try testing.expectEqual(.false, t.flags.shell_redraws_prompt);
+    var text: [128]u8 = undefined;
+    const prompt = testPromptRowText(&t, &text);
+    try testing.expect(prompt != null);
+    try testing.expectEqualStrings("$", prompt.?);
+}
+
+test "restore leaves the pane's own prompt redraw setting alone" {
+    // The new shell is alive and does redraw; only the decoded terminal's
+    // record is overridden.
+    var buf: [128]u8 = undefined;
+    const path = try testPath(&buf);
+    defer testCleanup(path);
+    try testSavePrompted(path, null);
+
+    var t = try testFresh(80, 20);
+    defer t.deinit(testing.allocator);
+    const own = t.flags.shell_redraws_prompt;
+    var s = t.vtStream();
+    defer s.deinit();
+    try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+    try testing.expectEqual(own, t.flags.shell_redraws_prompt);
+}
+
+/// How many rows up from the bottom of the active area the first row with a
+/// prompt mark is, or null -- the number the #826 probes read on Windows.
+fn testFirstMarkedFromBottom(t: *Terminal) ?usize {
+    const pages = &t.screens.get(.primary).?.pages;
+    var it = pages.getBottomRight(.active).?.rowIterator(.left_up, pages.getTopLeft(.active));
+    var i: usize = 0;
+    while (it.next()) |p| : (i += 1) {
+        if (p.rowAndCell().row.semantic_prompt != .none) return i;
+    }
+    return null;
+}
+
+test "the Windows sequence: restore, a second resize, then ConPTY's ED2 (#826)" {
+    // Measured on the machine: a snapshot taken at 80x24, restored into a
+    // 56x18 grid, then the grid became 42x20 before the first pty byte,
+    // which was `ESC [ 2 J`. Before the restored screen went straight into
+    // history, that sequence lost the last screenful: `history 184 -> 184`.
+    var buf: [128]u8 = undefined;
+    const path = try testPath(&buf);
+    defer testCleanup(path);
+    try testSavePrompted(path, null);
+
+    var t = try testFresh(56, 18);
+    defer t.deinit(testing.allocator);
+    var s = t.vtStream();
+    defer s.deinit();
+    try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+    try t.resize(testing.allocator, .{ .cols = 42, .rows = 20 });
+
+    // The fixture is the reading, or it is a different experiment.
+    try testing.expectEqual(@as(u16, 42), t.cols);
+    try testing.expectEqual(@as(u16, 20), t.rows);
+
+    s.nextSlice("\x1b[2J");
+
+    // The last screenful is in history -- every line of it.
+    const history = try t.screens.get(.primary).?.dumpStringAlloc(testing.allocator, .{ .history = .{} });
+    defer testing.allocator.free(history);
+    var line: [16]u8 = undefined;
+    for (184..200) |i| {
+        const want = try std.fmt.bufPrint(&line, "L{d:0>6}", .{i});
+        try testing.expect(std.mem.indexOf(u8, history, want) != null);
+    }
+    // A screenful more than the 184 rows that used to be all that survived.
+    try testing.expect(t.screens.get(.primary).?.pages.total_rows - t.rows >= 184 + 16);
+    // And the old prompt with it: the second resize must not reach into
+    // history to clear it for a shell that is not there.
+    var text: [128]u8 = undefined;
+    const old_prompt = testHistoryPromptText(&t, &text);
+    try testing.expect(old_prompt != null);
+    try testing.expectEqualStrings("$", old_prompt.?);
+
+    // And the screen is the new shell's: none of the old output is on it.
+    const active = try t.screens.get(.primary).?.dumpStringAlloc(testing.allocator, .{ .active = .{} });
+    defer testing.allocator.free(active);
+    try testing.expect(std.mem.indexOf(u8, active, "L0") == null);
 }
