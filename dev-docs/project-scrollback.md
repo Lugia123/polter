@@ -98,11 +98,11 @@ scrollback 不能照抄这条路，因为**差一个根本性质**：history 的
 
 ⚠️ **核心只删以 `.snap` 结尾的路径。** 路径是宿主给的，而删它的是核心，所以「只删快照」这条校验放在核心，三个宿主不用各做一遍。其他路径一律不删，只记一条 warn。测试：`an unreadable file that is not a .snap is left where it is`。`project-scrollback-limit-bytes = 0` 时，capture 删掉 `path` 上的旧快照（同样只删 `.snap`），restore 什么都不做。
 
-### 3.3.1 Windows 上恢复时落在活动区里的那一屏会整段消失（成因已定案）
+### 3.3.1 ⚠️ Windows 上恢复时落在活动区里的那一屏会整段消失（成因未定）
 
-核心这一侧是完整的 —— `src/termio/scrollback.zig` 的 `transplantPrimary` 把**整个 `pages`
-（含活动区）和光标**都换过去，然后 `carriageReturn` + `index` 把新 shell 的提示符放在恢复内容
-下面。本机探针也证实了：一个只有 3 行、全在屏上的快照，恢复后活动区里就是那 3 行。
+核心这一侧看起来是完整的 —— `src/termio/scrollback.zig` 的 `transplantPrimary` 把**整个
+`pages`（含活动区）和光标**都换过去，然后 `carriageReturn` + `index` 把新 shell 的提示符
+放在恢复内容下面。本机探针也证实了：一个只有 3 行、全在屏上的快照，恢复后活动区里就是那 3 行。
 
 **真机（Windows）上，恢复那一刻落在活动区里的内容整段没有了，而历史完好。**
 用一份 200 行、最后一行带 OSC 133;A 提示符标记的快照量到：
@@ -112,58 +112,61 @@ scrollback 不能照抄这条路，因为**差一个根本性质**：history 的
     不见了        PROBE-FULL-184 … 199 + 那行带标记的 `$ `，共 17 行
     窗格高度      约 20 行  ⇒ 不见的正好是「恢复那一刻在屏幕上的那一屏」
 
-⚠️ **mac 上没有这个现象**，原因见下：写方是 ConPTY 的开场字节，mac 的 pty 不发它。
+⚠️ **mac 上没有这个现象。**
 
-#### 成因
+#### 已经被真机读数排除掉的候选
 
-写方是 **ConPTY 对每个 pane 开场都发的 `ESC[2J`**，它在恢复完成之后到达，落在刚被
-transplant 进活动区的那一屏上。`Terminal.eraseDisplay(.complete)` 的启发式只检查活动区的
-**最后一行**是不是提示符：是就 `scrollClear`（把活动区推进历史），不是就直接清掉。
-恢复做完 `index()` 之后，提示符行下面还有空行，**最后一行是空的** ⇒ 走「直接清掉」⇒ 内容
-消失、一行都没进历史。
+**不是 RIS**（`ESC c`，两个 pane 各 0 次）。**不是逐格空格覆写**（`ESC[…K` 0 次、连续空格
+0 次）。**不是背景色擦除**（最底 4 行 `bg_color_cells=0`、`styled_cells=0`）。
 
-真机探针（把读数打在做判断的那一刻，实例 4944，复现了同一个 `history_rows=184`）：
+⚠️⚠️ **也不是 ConPTY 开场那个 `ESC[2J`，尽管有两版文档说是它。** 把探针放进
+`eraseDisplay(.complete)` 做判断的那一刻，在真机上量到（实例 4492，复现了同一个
+`history_rows=184`）：
 
-    恢复的 pane   branch=clear only   bottom_row_prompt=none   bottom_row_empty=true
-                  first_marked_row_from_bottom=2   first_marked_kind=prompt_continuation
-                  cursor_y=17  active_rows=20   history_before=184  history_after=184
-    干净的 pane   branch=clear only   bottom_row_empty=true     history_before=0 history_after=0
+    ED2FIX fix31=present
+    ED2ROW row_from_bottom=0 kind=none                nonempty_cells=0 cp16=0×16
+    ED2ROW row_from_bottom=1 kind=none                nonempty_cells=0 cp16=0×16
+    ED2ROW row_from_bottom=2 kind=prompt_continuation nonempty_cells=0 cp16=0×16
+    ED2ROW row_from_bottom=3 kind=prompt              nonempty_cells=0 cp16=0×16
+    ED2FIX skipped=4 stopped_at_row_from_bottom=4 stopped_at_kind=none predicate=false
+    ED2PROBE … cursor_y=17 first_marked_row_from_bottom=2 branch=clear only 184→184
 
-⭐ **`first_marked_row_from_bottom=2` 是定案的那个数字**：带标记的提示符行**在活动区里**，
-只是不在最后一行，而启发式只看最后一行。
+⭐ **两行带标记的行（`prompt_continuation` 和 `prompt`）`nonempty_cells=0`、码点全 0** ——
+**标记还在，文字已经不在了。** ⇒ **ED2 做判断的那一刻，提示符行就是空的**，这个屏幕按任何
+合理的定义都「不在提示符上」，所以 `clear only` 并没有判错。**写方在更早的地方。**
 
-⭐ **同一段 `ESC[2J` 在两个 pane 里都出现、都在 off=0**（干净 pane 是对照）。它**不是恢复路径
-额外产生的字节** —— 但干净 pane 收到它时屏上本来就空，恢复的 pane 收到它时屏上正好是那一屏。
-⚠️ **「对照格里也有」不等于「它不是写方」**：控住的是输入，不是它到达时的状态。
+#### ⚠️ 这一节写错过两版，两版的错法不一样，都留在这里
 
-被读数排除掉的：**不是 RIS**（`ESC c` 两个 pane 各 0 次）；**不是逐格空格覆写**
-（`ESC[…K` 0 次、连续空格 0 次）。
+**第一版：「不是 ED2」，而排除它的是一个坏夹具。** 夹具把带标记的行放在**最后一行**，真机上
+它在**从底往上第 2 行**、底下两行是空的。⇒ **夹具在被测的那条启发式唯一会读的那一维上取了
+不同的值**，于是它证明的是另一件事 —— 而那看起来像一个合格的排除。
+⭐ **一次排除比一次确认更要检查夹具：确认错了会红，排除错了只会安静。**
 
-#### ⚠️ 这一节此前排除过真正的成因，排除它的是一个坏夹具
+**第二版：「成因已定案，是 ConPTY 的 `ESC[2J`」。** 那一版的链是自洽的，每一环都有读数，
+**缺的那一环恰好是没人量的那一环**：ED2 到达时活动区里还有没有内容。补上探针之后，链断在
+第一环。⭐ **一条每一环都有读数、只有枢纽是推的链，读起来和一条完整的链一模一样。**
 
-上一版写着「**不是 ED2** —— 本机喂 ED2（在带 133;A 的提示符上）是 200 行**全进历史**」。
-那个读数是真的，**夹具是错的**：它把带标记的行放在**最后一行**，而真机上那一行在**从底往上
-第 2 行**，底下两行是空的。⇒ **夹具没造出真机的状态，于是它证明的是另一件事。**
-⭐ 判据里「最后一行是什么」这件事，正是被测的那条启发式唯一看的东西 —— **夹具在被测对象最
-敏感的那一维上取了和现场不同的值。**
+#### 下一格：`restore` 返回的那一刻，活动区里到底是什么
 
-#### 修法
+⚠️ 这是唯一还欠的读数，而它把问题劈成两条完全不同的路：
 
-这条启发式本身就是缺陷，**上游逐字节一致**（`upstream/main` `982fe90d9`，源自 2023 年的
-`4047a9055` / `414f2e52a`），已开 issue #31。**它自己的注释写的是 "if … our last non-empty
-row is a prompt"，而代码检查的是最后一行** ⇒ 跳过尾部空行本来就是原意。
+- **A. 恢复完活动区里就有内容** ⇒ 有人在 `restore` 和 ED2 之间把它擦了，去找那个人。
+- **B. 恢复完活动区里就是空的**（只有标记，没有文字）⇒ **`transplantPrimary` 本身就没把最后
+  一屏放进活动区**，成因在 `src/termio/scrollback.zig`，ED2 从头到尾无辜。
 
-修法是**判断之前跳过尾部空行**，不是在恢复路径上绕开 ED2 —— 收窄不变量，不加特例。
-`PageList.scrollClear` 本来就从底往上数空行、只 grow `rows - 空行数` 行，所以尾部空行不会被
-推进历史。
+⚠️ **一并要量的**：真机那个 pane 是 **42 列**，而快照很可能是在更宽的终端上抓的 ⇒ 恢复时会
+reflow。**把「快照里记的 cols」和「恢复进去的 pane 的 cols」一起打出来** —— 两者不同的话，
+reflow 是 B 那一支的头号嫌疑人，而 **mac 上没出现这个现象可能只是因为窗口宽度不同，不是因为
+没有 ConPTY**。
 
-⚠️ **这是一个用户看得见的行为变化，不要写成「只是修了个 bug」**：屏幕没填满时按 `clear`，
-之后往上翻会看到清屏前那一屏。会不会看到取决于 `clear` 是谁 ——
-macOS `/usr/bin/clear` 是 `ESC[3J ESC[H ESC[2J`（**3J 在前**，所以看得到）；
-ncurses 6.5 的是 `ESC[H ESC[2J ESC[3J`（3J 在后，看不到）；`clear -x` 没有 3J；
-`TERM=screen-256color` 下两个实现都发 ED0，根本不经过这条启发式。
-接受它的理由有三条：修掉一个真实的丢数据缺陷、让代码和自己的注释一致、让「屏幕填满」和
-「没填满」两种情况行为一致（填满时今天本来就是推进历史的）。
+#### 与 #31 的关系：是两件事
+
+`eraseDisplay(.complete)` 的启发式只看最后一行，而它自己的注释写的是
+「if … our **last non-empty row** is a prompt」—— 代码和意图分岔，**上游逐字节一致**，已开
+issue #31。⚠️ **但真机读数证明它修不了这个缺陷**：`skipped=4` 之后停在一个**内容行**上，
+**按注释的原意照样不成立**。⇒ **#31 是真缺陷，不是这里的成因**，它的合入是独立的判断，而且
+它带一个用户看得见的 `clear` 行为变化（`/usr/bin/clear` 的 `ESC[3J` 在前，ncurses 在后，
+`clear -x` 没有，`screen-256color` 走 ED0 根本不到这段代码）。
 
 #### ⚠️ 判据的边界在时间上，不在数据上
 
