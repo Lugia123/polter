@@ -1563,7 +1563,8 @@ fn main(self: *Resident) void {
                     break :step .failure;
                 };
 
-                child = std.process.spawn(io, .{
+                internal_os.windows.spawnTrace("plugin spawn", .begin, 0);
+                const spawned = std.process.spawn(io, .{
                     .argv = argv,
 
                     // **The user's `PATH`, not the launcher's.** A Polter
@@ -1623,7 +1624,9 @@ fn main(self: *Resident) void {
                         .pair => if (pair) |p| .{ .file = p.theirs } else .inherit,
                         .pipe => .pipe,
                     },
-                }) catch |err| {
+                });
+                internal_os.windows.spawnTrace("plugin spawn", .end, 0);
+                child = spawned catch |err| {
                     if (pair) |p| {
                         p.ours.close(io);
                         p.theirs.close(io);

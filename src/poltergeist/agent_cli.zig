@@ -33,6 +33,7 @@
 //!     before that process becomes the CLI. See `cli/launch.zig`.
 
 const std = @import("std");
+const internal_os = @import("../os/main.zig");
 const Allocator = std.mem.Allocator;
 
 const Plugin = @import("Plugin.zig");
@@ -170,7 +171,8 @@ pub fn ask(
 
     const argv = try std.mem.concat(arena, []const u8, &.{ base, &.{ @tagName(question), request } });
 
-    const result = std.process.run(arena, io, .{
+    internal_os.windows.spawnTrace("agent_cli run", .begin, 0);
+    const ran = std.process.run(arena, io, .{
         .argv = argv,
         .environ_map = environ_map,
         .stdout_limit = .limited(max_answer),
@@ -179,7 +181,9 @@ pub fn ask(
             .raw = .fromMilliseconds(timeout_ms),
             .clock = .awake,
         } },
-    }) catch |err| return .{ .failed = try std.fmt.allocPrint(
+    });
+    internal_os.windows.spawnTrace("agent_cli run", .end, 0);
+    const result = ran catch |err| return .{ .failed = try std.fmt.allocPrint(
         arena,
         "{s} could not be run ({t})",
         .{ adapter.adapter, err },

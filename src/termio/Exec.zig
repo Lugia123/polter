@@ -2057,11 +2057,36 @@ pub const ReadThread = struct {
         // read could fall through to a quit-pipe check and then resume
         // reading; that check could never see anything, and the resume is
         // exactly what turned a successful cancel into a permanent block.
+        // #26 instrument: when the last read went in and came out, on the
+        // same clock as the pty's and the spawns' lines. One line at exit,
+        // not one per read -- the read that matters is the one that ended
+        // the thread, and how it ended says whether a close would have hung.
+        var reads: u64 = 0;
+        var read_in: i64 = 0;
+        var read_out: i64 = 0;
+        // How the last read ended, on the same line: the line before this
+        // one may belong to another thread.
+        var ended: windows.Win32Error = .SUCCESS;
+        defer log.info("io reader exit tid={} handle={} ended={} reads={} last_read_in={} last_read_out={} qpf={}", .{
+            std.os.windows.GetCurrentThreadId(),
+            @intFromPtr(fd),
+            ended,
+            reads,
+            read_in,
+            read_out,
+            windows.qpfNow(),
+        });
+
         var buf: [1024]u8 = undefined;
         while (true) {
             var n: windows.DWORD = 0;
-            if (windows.exp.kernel32.ReadFile(fd, &buf, buf.len, &n, null) == windows.FALSE) {
+            reads += 1;
+            read_in = windows.qpcNow();
+            const read_ok = windows.exp.kernel32.ReadFile(fd, &buf, buf.len, &n, null);
+            read_out = windows.qpcNow();
+            if (read_ok == windows.FALSE) {
                 const err = windows.GetLastError();
+                ended = err;
                 switch (err) {
                     // Nothing cancels this read any more (see
                     // `threadExit`), so an abort can only mean somebody

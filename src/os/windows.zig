@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const windows = std.os.windows;
 
 // NOTE: The Windows part of the Zig stdlib is currently in the process of
@@ -608,4 +609,53 @@ pub fn ProcThreadAttributeValue(
         (if (thread) PROC_THREAD_ATTRIBUTE_THREAD else 0) |
         (if (input) PROC_THREAD_ATTRIBUTE_INPUT else 0) |
         (if (additive) PROC_THREAD_ATTRIBUTE_ADDITIVE else 0);
+}
+
+/// **An instrument for #26, not a feature: remove it with the question.**
+///
+/// The #26 hypothesis is that a process spawned while `CreatePseudoConsole`
+/// holds its inheritable duplicate of the pipe's write end takes that
+/// duplicate with it. Whether two such calls ever overlapped could not be
+/// read from the logs we had: nothing marked where `CreatePseudoConsole`
+/// started or ended, and the core's lines carry no time at all, so their
+/// order against the host's lines is an order of writes, not of events.
+///
+/// So every call that brackets one of the two is logged on both sides with
+/// the thread and the performance counter, which is comparable across
+/// threads -- unlike the order of lines in the file. `qpf` is repeated on
+/// every line so one line can be read without the others.
+///
+/// A bracket is **wider** than the thing inside it (a `spawn` also makes
+/// pipes; a `run` also waits). That makes "never overlapped" a strong
+/// reading and "overlapped" a weak one.
+///
+/// `point` is a single moment rather than one side of a bracket; the pty uses
+/// it to say which read handle belongs to which console, because the handle
+/// value is what the reader and `closeConsole` lines carry.
+pub fn spawnTrace(comptime what: []const u8, comptime phase: enum { begin, end, point }, note: u64) void {
+    if (comptime builtin.os.tag != .windows) return;
+    std.log.scoped(.spawn_trace).info("{s} {s} tid={} qpc={} qpf={} note={}", .{
+        what,
+        @tagName(phase),
+        windows.GetCurrentThreadId(),
+        qpcNow(),
+        qpfNow(),
+        note,
+    });
+}
+
+/// The performance counter, for the #26 instrument. 0 off Windows.
+pub fn qpcNow() i64 {
+    if (comptime builtin.os.tag != .windows) return 0;
+    var qpc: LARGE_INTEGER = 0;
+    _ = windows.ntdll.RtlQueryPerformanceCounter(&qpc);
+    return qpc;
+}
+
+/// The performance counter's frequency, for the #26 instrument. 0 off Windows.
+pub fn qpfNow() i64 {
+    if (comptime builtin.os.tag != .windows) return 0;
+    var qpf: LARGE_INTEGER = 0;
+    _ = windows.ntdll.RtlQueryPerformanceFrequency(&qpf);
+    return qpf;
 }

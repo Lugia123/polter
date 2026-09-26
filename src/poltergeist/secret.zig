@@ -50,6 +50,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
+const internal_os = @import("../os/main.zig");
 const reap = @import("reap.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -290,7 +291,8 @@ fn runCapturing(
     io: std.Io,
     argv: []const []const u8,
 ) Error![]const u8 {
-    var child = std.process.spawn(io, .{
+    internal_os.windows.spawnTrace("secret spawn", .begin, 0);
+    const spawned = std.process.spawn(io, .{
         .argv = argv,
         .stdin = .ignore,
         .stdout = .pipe,
@@ -299,7 +301,9 @@ fn runCapturing(
         // reaches wherever Polter's output goes. A silent failure here is
         // the hardest kind to work out at 3am.
         .stderr = .inherit,
-    }) catch |err| {
+    });
+    internal_os.windows.spawnTrace("secret spawn", .end, 0);
+    var child = spawned catch |err| {
         log.warn("secret: could not run resolver err={}", .{err});
         return error.Unresolved;
     };

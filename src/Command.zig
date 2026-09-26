@@ -487,7 +487,8 @@ fn startWindows(self: *Command, arena: Allocator) !void {
     if (attribute_list != null) flags |= windows.EXTENDED_STARTUPINFO_PRESENT;
 
     var process_information: windows.PROCESS_INFORMATION = undefined;
-    if (windows.exp.kernel32.CreateProcessW(
+    windows.spawnTrace("shell CreateProcessW", .begin, 0);
+    const created = windows.exp.kernel32.CreateProcessW(
         null,
         command_line_w.ptr,
         null,
@@ -498,7 +499,9 @@ fn startWindows(self: *Command, arena: Allocator) !void {
         if (cwd_w) |w| w.ptr else null,
         @ptrCast(&startup_info_ex.StartupInfo),
         &process_information,
-    ) == windows.FALSE) return spawnError(windows.GetLastError());
+    );
+    windows.spawnTrace("shell CreateProcessW", .end, 0);
+    if (created == windows.FALSE) return spawnError(windows.GetLastError());
 
     self.pid = process_information.hProcess;
 }

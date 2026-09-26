@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const build_config = @import("../build_config.zig");
 const apprt = @import("../apprt.zig");
 const global = @import("../global.zig");
+const windows = @import("windows.zig");
 
 const log = std.log.scoped(.@"os-open");
 
@@ -54,6 +55,7 @@ pub fn open(
     // a console, not output.
     spawn_opts.create_no_window = true;
 
+    windows.spawnTrace("open spawn", .begin, 0);
     const exe = if (comptime build_config.snap) local_env: {
         // In the snap on Linux the launcher exports LD_LIBRARY_PATH
         // pointing at the snap's bundled libraries. Leaking this into
@@ -71,6 +73,7 @@ pub fn open(
     } else
         // Non-snap releases don't need to alter the env.
         try std.process.spawn(global.io(), spawn_opts);
+    windows.spawnTrace("open spawn", .end, 0);
 
     const thread = try std.Thread.spawn(.{}, openThread, .{ global.io(), exe });
     thread.detach();

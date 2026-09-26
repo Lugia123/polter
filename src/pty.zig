@@ -331,6 +331,10 @@ const WindowsPty = struct {
     // Process-wide counter for pipe names
     var pipe_name_counter = std.atomic.Value(u32).init(1);
 
+    // Process-wide count of `CreatePseudoConsole` calls, for the #26
+    // instrument in `open`.
+    var open_seq = std.atomic.Value(u64).init(0);
+
     out_pipe: windows.HANDLE,
     in_pipe: windows.HANDLE,
     out_pipe_pty: windows.HANDLE,
@@ -444,6 +448,10 @@ const WindowsPty = struct {
         try SetHandleInformation.f(pty.out_pipe);
         try SetHandleInformation.f(pty.out_pipe_pty);
 
+        // #26 instrument: `note` is the order of this call in the process,
+        // so the first surface's console is `note=1`.
+        const seq = open_seq.fetchAdd(1, .monotonic) + 1;
+        windows.spawnTrace("pty CreatePseudoConsole", .begin, seq);
         const result = windows.exp.kernel32.CreatePseudoConsole(
             .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) },
             pty.in_pipe_pty,
@@ -451,6 +459,10 @@ const WindowsPty = struct {
             0,
             &pty.pseudo_console,
         );
+        windows.spawnTrace("pty CreatePseudoConsole", .end, seq);
+        // Which read handle is this console's: `note` of the reader's and
+        // `closeConsole`'s lines. Logged here, on the IO thread, next to `seq`.
+        windows.spawnTrace("pty read handle", .point, @intFromPtr(pty.out_pipe));
         if (result != windows.S_OK) return error.Unexpected;
 
         // **Give up our copy of the write end, now that the console has one.**
@@ -498,7 +510,9 @@ const WindowsPty = struct {
     pub fn closeConsole(self: *Pty) void {
         if (self.console_closed) return;
         self.console_closed = true;
+        windows.spawnTrace("pty closeConsole", .begin, @intFromPtr(self.out_pipe));
         _ = windows.exp.kernel32.ClosePseudoConsole(self.pseudo_console);
+        windows.spawnTrace("pty closeConsole", .end, @intFromPtr(self.out_pipe));
     }
 
     pub fn deinit(self: *Pty) void {
