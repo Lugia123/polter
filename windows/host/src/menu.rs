@@ -1794,48 +1794,65 @@ mod tests {
         assert_eq!(greyed, want);
     }
 
-    /// The three buckets, counted. **Pinned so that building one of the
+    /// Which rows are excused, by name. **Pinned so that building one of the
     /// missing pieces has to come here and say so**: a row that starts
     /// working while the table still calls it not-built turns the self-test's
     /// summary into a stale note nobody rereads. The run-time counterpart is
     /// the "works now but is still marked not-built" line.
+    ///
+    /// **This used to be four counts, and the counts guarded the wrong
+    /// thing** (issue #32). Every legitimate new menu row turned it red --
+    /// 561, 564, 571, 648, 649, e8cb84196 and the two project rows each came
+    /// here to raise a number -- while the change it exists for passed: move
+    /// «Polter Help» out of `HostGap` and some working row into it, and every
+    /// count stays the same. Measured on the table as it stood: that swap was
+    /// green, so was swapping a `NeedsState` row with an `Always` one; adding
+    /// or deleting an ordinary row was red.
+    ///
+    /// So the two excused buckets are spelled out, **by action** rather than
+    /// by label (a label is reworded and translated; the action is what the
+    /// row does), and `Always` is left uncounted: `Ready` has three cases, so
+    /// once the other two are pinned row by row, `Always` is exactly the rest.
+    /// Adding an ordinary row no longer comes here; moving a row into or out
+    /// of an excuse does, and the failure names it.
     #[test]
     fn the_three_readiness_buckets_are_what_we_think() {
         let rows = all_rows();
         let leaves: Vec<_> = rows.iter().filter(|r| r.action.is_some()).collect();
-        let n = |f: fn(&Ready) -> bool| leaves.iter().filter(|r| f(&r.ready)).count();
-        // **These four numbers had drifted before task 561**, in the same way
-        // and for the same reason as the tail count next door: rows were added
-        // and the counts were not, and nobody saw it because this crate's
-        // tests only run on Windows. 561 moves a row without adding or
-        // removing one, so only the stale half is corrected here. 564 moves
-        // the language row from the last bucket to the first.
-        // 571 adds one leaf, «Role Editor...», which is unconditional -- so
-        // both the total and the first bucket move by one and the other two
-        // do not. The persona submenu itself is **not** a leaf: it carries no
-        // action, its children are built when the menu opens, and they take
-        // ids out of `personas::ID_BASE` rather than out of this tree.
-        //
-        // 648 moves «Terminal Inspector» from `HostGap` to `Always`: libghostty
-        // now publishes `ghostty_inspector_opengl_*` (see `ffi::ACTION_INSPECTOR`
-        // in `main.rs`), so this is no longer a gap the host is waiting on. The
-        // total does not move -- the row was already a leaf -- only which
-        // bucket it is in.
-        //
-        // 649 moves «Check for Updates…» the same way: `update.rs` answers
-        // `ACTION_CHECK_FOR_UPDATES` for real now, so block L is no longer a
-        // gap either.
-        //
-        // e8cb84196 adds «Let Workers Name Each Other Directly» and did not
-        // come here, so this was red on Windows from then on (59 against 58).
-        // It is `Always`, and rightly: the core refuses it only on a terminal
-        // that is not a supervisor, and on those `row_visible` leaves it out
-        // of both the menu and the self-test. So the total and the first
-        // bucket move by one and the other two do not.
-        assert_eq!(leaves.len(), 59);
-        assert_eq!(n(|r| matches!(r, Ready::Always)), 53, "unconditional rows");
-        assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 5, "state-dependent rows");
-        assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 1, "rows this host does not answer yet");
+        let bucket = |f: fn(&Ready) -> bool| {
+            let mut v: Vec<&str> = leaves
+                .iter()
+                .filter(|r| f(&r.ready))
+                .filter_map(|r| r.action)
+                .collect();
+            v.sort_unstable();
+            v
+        };
+
+        // A piece of the host that is not built. Building it means deleting
+        // its line here and making the row `Always`.
+        let mut host_gap = vec!["__polter_help_docs"];
+        host_gap.sort_unstable();
+        assert_eq!(
+            bucket(|r| matches!(r, Ready::HostGap(_))),
+            host_gap,
+            "rows this host does not answer yet"
+        );
+
+        // Rows the terminal's own state can refuse, rightly.
+        let mut needs_state = vec![
+            "__polter_reopen_tab",
+            "copy_to_clipboard",
+            "end_search",
+            "navigate_search:next",
+            "navigate_search:previous",
+        ];
+        needs_state.sort_unstable();
+        assert_eq!(
+            bucket(|r| matches!(r, Ready::NeedsState(_))),
+            needs_state,
+            "state-dependent rows"
+        );
     }
 
     /// Both non-trivial buckets have to say why, because the reason is what
