@@ -187,6 +187,9 @@ typedef enum {
   GHOSTTY_BINDING_FLAGS_ALL = 1 << 1,
   GHOSTTY_BINDING_FLAGS_GLOBAL = 1 << 2,
   GHOSTTY_BINDING_FLAGS_PERFORMABLE = 1 << 3,
+  // Performable but kept in the reverse map, so in menus anyway. Only the
+  // macOS defaults set it (cmd+c/v/z, shift+cmd+z). See Binding.Flags.menu.
+  GHOSTTY_BINDING_FLAGS_MENU = 1 << 4,
 } ghostty_binding_flags_e;
 
 typedef enum {
@@ -460,9 +463,9 @@ typedef struct {
   // belongs to the host.
   ghostty_input_trigger_s trigger;
 
-  // Bits of ghostty_binding_flags_e. PERFORMABLE is the one a listing cares
-  // about: it is why the binding is missing from the reverse map, and so from
-  // the menu.
+  // Bits of ghostty_binding_flags_e. PERFORMABLE without MENU is the pair a
+  // listing cares about: it is why the binding is missing from the reverse
+  // map, and so from the menu. PERFORMABLE with MENU is in the menu.
   uint8_t flags;
 
   // True when the binding is reached through a leader-key sequence, in which

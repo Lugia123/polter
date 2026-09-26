@@ -7239,17 +7239,23 @@ pub const Keybinds = struct {
             else
                 .{ .ctrl = true, .shift = true };
 
+            // `menu` on macOS only: there the surface sees cmd+c/v before
+            // the Edit menu does and keeps them performable, so the menu can
+            // carry the shortcut -- which is the only way a plain text field
+            // gets cmd+c/v at all (issue #30). GTK handles menu shortcuts
+            // first, so on Linux these stay out of the menu. See
+            // `Binding.Flags.menu`.
             try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'c' }, .mods = mods },
                 .{ .copy_to_clipboard = .mixed },
-                .{ .performable = true },
+                .{ .performable = true, .menu = builtin.target.os.tag.isDarwin() },
             );
             try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'v' }, .mods = mods },
                 .paste_from_clipboard,
-                .{ .performable = true },
+                .{ .performable = true, .menu = builtin.target.os.tag.isDarwin() },
             );
 
             // **Windows also binds the bare `ctrl+c` / `ctrl+v`**, which the
@@ -8020,17 +8026,21 @@ pub const Keybinds = struct {
                 .{ .undo = {} },
                 .{ .performable = true },
             );
+            // `menu`: the Edit menu's Undo/Redo carry cmd+z / shift+cmd+z so
+            // a text field gets them (issue #30); see the cmd+c/v note above.
+            // shift+cmd+t stays off the menu -- one shortcut per menu item,
+            // and cmd+z is the one people expect there.
             try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'z' }, .mods = .{ .super = true } },
                 .{ .undo = {} },
-                .{ .performable = true },
+                .{ .performable = true, .menu = true },
             );
             try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'z' }, .mods = .{ .super = true, .shift = true } },
                 .{ .redo = {} },
-                .{ .performable = true },
+                .{ .performable = true, .menu = true },
             );
 
             // Viewport scrolling
@@ -8620,6 +8630,46 @@ pub const Keybinds = struct {
             \\
         ;
         try std.testing.expectEqualStrings(want, buf.written());
+    }
+
+    // Issue #30: on macOS the Edit menu must be able to show cmd+c/v/z and
+    // shift+cmd+z -- a plain text field only gets those keys through the
+    // menu -- while the bindings stay performable, so a terminal still lets
+    // cmd+v through when the clipboard holds no text (upstream #10751).
+    // Skips elsewhere: the Darwin branch is comptime-dead there.
+    test "Keybinds: macOS edit menu carries cmd+c/v/z and stays performable" {
+        if (comptime !builtin.target.os.tag.isDarwin()) return error.SkipZigTest;
+
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var keybinds: Keybinds = .{};
+        try keybinds.init(alloc);
+
+        const Case = struct { action: inputpkg.Binding.Action, key: u21, shift: bool };
+        const cases = [_]Case{
+            .{ .action = .paste_from_clipboard, .key = 'v', .shift = false },
+            .{ .action = .{ .copy_to_clipboard = .mixed }, .key = 'c', .shift = false },
+            .{ .action = .undo, .key = 'z', .shift = false },
+            .{ .action = .redo, .key = 'z', .shift = true },
+        };
+        for (cases) |case| {
+            const shown = keybinds.set.getTrigger(case.action).?;
+            try testing.expect(std.meta.activeTag(shown.key) == .unicode);
+            try testing.expectEqual(case.key, shown.key.unicode);
+            try testing.expect(shown.mods.super);
+            try testing.expectEqual(case.shift, shown.mods.shift);
+
+            const leaf = keybinds.set.get(shown).?.value_ptr.leaf;
+            try testing.expect(leaf.flags.performable);
+            try testing.expect(leaf.flags.menu);
+        }
+
+        // The search family is left alone: still performable-only, still
+        // off the menu.
+        try testing.expect(keybinds.set.getTrigger(.start_search) == null);
     }
 
     // **The Windows `ctrl+c` / `ctrl+v` divergence, pinned.**

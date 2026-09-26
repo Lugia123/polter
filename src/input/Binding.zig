@@ -47,12 +47,27 @@ pub const Flags = packed struct {
     /// if it doesn't exist.
     performable: bool = false,
 
+    /// Keep this binding in the reverse map -- and so in the menus built on
+    /// it -- even though it is `performable`. Ignored unless `performable`
+    /// is set: every other binding is in the reverse map already.
+    ///
+    /// Only for an apprt whose surface sees a key before its menu does, so
+    /// that a performable binding still gets to decline the key: macOS,
+    /// where `SurfaceView.performKeyEquivalent` runs ahead of the menu bar
+    /// and deliberately does not route performable bindings through it. Not
+    /// for GTK or Windows, which handle menu accelerators first (see
+    /// `Set.reverse`). Set by the macOS defaults for cmd+c/v/z and
+    /// shift+cmd+z, so the Edit menu carries those shortcuts and a plain
+    /// text field -- which only gets them through the menu -- can use them
+    /// (issue #30).
+    menu: bool = false,
+
     /// Whether a binding with these flags belongs in `Set.reverse`. The
     /// one place this is decided: `putFlags` and the reverse fixup after a
     /// removal must agree, or removing one binding can put a hidden one on
     /// a menu.
     pub fn tracksReverse(self: Flags) bool {
-        return !self.performable;
+        return !self.performable or self.menu;
     }
 
     /// C type
@@ -74,6 +89,7 @@ pub const Flags = packed struct {
         try testing.expectEqual(@as(u8, 0b0101), (Flags{ .global = true }).cval());
         try testing.expectEqual(@as(u8, 0b1001), (Flags{ .performable = true }).cval());
         try testing.expectEqual(@as(u8, 0b1111), (Flags{ .consumed = true, .all = true, .global = true, .performable = true }).cval());
+        try testing.expectEqual(@as(u8, 0b11001), (Flags{ .performable = true, .menu = true }).cval());
     }
 };
 
@@ -2282,8 +2298,10 @@ pub const Set = struct {
     /// for performable to work so this is a conscious decision to ease the
     /// integration with GUI toolkits.
     ///
-    /// Which bindings are in here is decided by `Flags.tracksReverse` and
-    /// nowhere else.
+    /// The exception is a performable binding with `Flags.menu`, for an
+    /// apprt whose surface sees keys before its menu (macOS): see that
+    /// field. Which bindings are in here is decided by `Flags.tracksReverse`
+    /// and nowhere else.
     reverse: ReverseMap = .{},
 
     /// The chain parent is the information necessary to attach a chained
@@ -2853,6 +2871,13 @@ pub const Set = struct {
 
     /// Get a trigger for the given action. An action can have multiple
     /// triggers so this will return the first one found.
+    ///
+    /// ⚠️ This reads `reverse`, so null means "not in the reverse map" --
+    /// NOT "not bound". An action bound only by performable triggers (cmd+f,
+    /// cmd+g, and cmd+c/v/z before `Flags.menu`) answers null here while
+    /// its keys work. To ask whether an action is bound at all, walk
+    /// `bindings`. (Issue #30 was misdiagnosed once by reading null as
+    /// "unbound".)
     pub fn getTrigger(self: Set, a: Action) ?Trigger {
         return self.reverse.get(a);
     }
@@ -4297,6 +4322,31 @@ test "set: removing the shown binding does not put a performable one on the menu
 
     s.remove(alloc, .{ .key = .{ .unicode = 'a' } });
     try testing.expect(s.getTrigger(.{ .new_window = {} }) == null);
+}
+
+test "set: performable with menu is part of reverse mappings" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s: Set = .{};
+    defer s.deinit(alloc);
+
+    try s.put(alloc, .{ .key = .{ .unicode = 'a' } }, .{ .new_window = {} });
+    try s.putFlags(
+        alloc,
+        .{ .key = .{ .unicode = 'b' } },
+        .{ .new_window = {} },
+        .{ .performable = true, .menu = true },
+    );
+    try testing.expect(s.getTrigger(.{ .new_window = {} }).?.key.unicode == 'b');
+
+    // And the refill after a removal may pick it, since it could have been
+    // put there in the first place.
+    try s.put(alloc, .{ .key = .{ .unicode = 'c' } }, .{ .new_window = {} });
+    s.remove(alloc, .{ .key = .{ .unicode = 'c' } });
+    try testing.expect(s.getTrigger(.{ .new_window = {} }) != null);
+    s.remove(alloc, .{ .key = .{ .unicode = 'a' } });
+    try testing.expect(s.getTrigger(.{ .new_window = {} }).?.key.unicode == 'b');
 }
 
 test "set: performable is not part of reverse mappings" {

@@ -1119,11 +1119,16 @@ pub use crate::keys::TriggerC as Trigger;
 
 /// `ghostty_binding_flags_e`. **`PERFORMABLE` is the one this host cares
 /// about**: a binding carrying it is absent from the core's reverse map, which
-/// is why the menu cannot print its shortcut even though the key works.
+/// is why the menu cannot print its shortcut even though the key works --
+/// unless it also carries `MENU`, which keeps it in the reverse map. Only the
+/// macOS defaults set `MENU` (issue #30); nothing on Windows does, because
+/// this host's accelerators see a key before the core, which is exactly what
+/// `MENU` must not be used with.
 pub const BINDING_CONSUMED: u8 = 1 << 0;
 pub const BINDING_ALL: u8 = 1 << 1;
 pub const BINDING_GLOBAL: u8 = 1 << 2;
 pub const BINDING_PERFORMABLE: u8 = 1 << 3;
+pub const BINDING_MENU: u8 = 1 << 4;
 
 /// `ghostty_keybind_s`: one row of the keybind listing.
 ///
@@ -1169,7 +1174,7 @@ impl Keybind {
     /// Whether the core's reverse map -- and therefore the menu -- can see
     /// this binding.
     pub fn hidden_from_menu(&self) -> bool {
-        self.bound && (self.flags & BINDING_PERFORMABLE) != 0
+        self.bound && (self.flags & BINDING_PERFORMABLE) != 0 && (self.flags & BINDING_MENU) == 0
     }
 }
 

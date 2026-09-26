@@ -130,6 +130,7 @@ extension Ghostty.Input {
         static let all = BindingFlags(rawValue: GHOSTTY_BINDING_FLAGS_ALL.rawValue)
         static let global = BindingFlags(rawValue: GHOSTTY_BINDING_FLAGS_GLOBAL.rawValue)
         static let performable = BindingFlags(rawValue: GHOSTTY_BINDING_FLAGS_PERFORMABLE.rawValue)
+        static let menu = BindingFlags(rawValue: GHOSTTY_BINDING_FLAGS_MENU.rawValue)
 
         init(rawValue: UInt32) {
             self.rawValue = rawValue
