@@ -47,6 +47,14 @@ pub const Flags = packed struct {
     /// if it doesn't exist.
     performable: bool = false,
 
+    /// Whether a binding with these flags belongs in `Set.reverse`. The
+    /// one place this is decided: `putFlags` and the reverse fixup after a
+    /// removal must agree, or removing one binding can put a hidden one on
+    /// a menu.
+    pub fn tracksReverse(self: Flags) bool {
+        return !self.performable;
+    }
+
     /// C type
     pub const C = u8;
 
@@ -2273,6 +2281,9 @@ pub const Set = struct {
     /// such as GTK handle menu shortcuts too early in the event lifecycle
     /// for performable to work so this is a conscious decision to ease the
     /// integration with GUI toolkits.
+    ///
+    /// Which bindings are in here is decided by `Flags.tracksReverse` and
+    /// nowhere else.
     reverse: ReverseMap = .{},
 
     /// The chain parent is the information necessary to attach a chained
@@ -2716,7 +2727,7 @@ pub const Set = struct {
         // This is true if we're going to track this entry as
         // a reverse mapping. There are certain scenarios we don't.
         // See the reverse map docs for more information.
-        const track_reverse: bool = !flags.performable;
+        const track_reverse: bool = flags.tracksReverse();
 
         // No matter what our chained parent becomes invalid because
         // getOrPut invalidates pointers.
@@ -2964,7 +2975,13 @@ pub const Set = struct {
             switch (it_entry.value_ptr.*) {
                 .leader, .leaf_chained => {},
                 .leaf => |leaf_search| {
-                    if (leaf_search.action.hash() == action_hash) {
+                    // Only a binding that could have been put here in the
+                    // first place: without this, removing the one binding
+                    // a menu shows fills the slot with a performable one it
+                    // was never meant to show.
+                    if (leaf_search.action.hash() == action_hash and
+                        leaf_search.flags.tracksReverse())
+                    {
                         entry.value_ptr.* = it_entry.key_ptr.*;
                         return;
                     }
@@ -4258,6 +4275,28 @@ test "set: maintains reverse mapping" {
         const trigger = s.getTrigger(.{ .new_window = {} }).?;
         try testing.expect(trigger.key.unicode == 'a');
     }
+}
+
+// The state after the removal is the subject: the defect was in the refill
+// that happens then, so the reverse map being right before it proves nothing.
+test "set: removing the shown binding does not put a performable one on the menu" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s: Set = .{};
+    defer s.deinit(alloc);
+
+    try s.put(alloc, .{ .key = .{ .unicode = 'a' } }, .{ .new_window = {} });
+    try s.putFlags(
+        alloc,
+        .{ .key = .{ .unicode = 'b' } },
+        .{ .new_window = {} },
+        .{ .performable = true },
+    );
+    try testing.expect(s.getTrigger(.{ .new_window = {} }).?.key.unicode == 'a');
+
+    s.remove(alloc, .{ .key = .{ .unicode = 'a' } });
+    try testing.expect(s.getTrigger(.{ .new_window = {} }) == null);
 }
 
 test "set: performable is not part of reverse mappings" {
