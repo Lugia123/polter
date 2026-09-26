@@ -218,10 +218,17 @@ struct PluginSettingsTests {
 
         // Said in a fixed order, not the manifest's, so two plugins wanting
         // the same pair read the same way round.
-        #expect(plugin.roles == ["Keeps the conversations",
-                                 "Sets your agent up to reach Polter"])
-        #expect(plugin.subtitle
-                == "Keeps the conversations · Sets your agent up to reach Polter")
+        //
+        // ⚠️ Against the localized phrases, not English literals (issue #28):
+        // the test host runs in the machine's language, so a literal here is
+        // red on every Chinese machine -- and `-testLanguage` does not change
+        // that. Nor Chinese literals, which would only move the red to the
+        // English machines. What this test is about is which phrases, in
+        // which order, joined how; the words are the strings table's.
+        let keeps = String(localized: "Keeps the conversations")
+        let reaches = String(localized: "Sets your agent up to reach Polter")
+        #expect(plugin.roles == [keeps, reaches])
+        #expect(plugin.subtitle == "\(keeps) · \(reaches)")
 
         // And the one it has no phrase for survives beside them.
         #expect(plugin.unrecognisedEvents == ["telepathy"])
