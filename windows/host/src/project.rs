@@ -661,6 +661,75 @@ mod tests {
         assert_eq!(parse_snapshot(half), Err(ReadError::Corrupt));
     }
 
+    /// **The floor under every field this format grows.** A file written by a
+    /// newer build -- one that knows a field this one does not, such as the
+    /// scrollback snapshot a pane may carry -- must still open here, with
+    /// every field this build does know read correctly. `json_to_node` and
+    /// `parse_snapshot` look fields up by name and ignore the rest, so today
+    /// this holds; this test is what keeps a stricter reader from breaking
+    /// every project saved by the next version.
+    #[test]
+    fn a_file_with_fields_this_build_does_not_know_still_reads() {
+        let bytes = br#"{"name":"from the future","saved_at":9,"format":2,
+            "root":{"kind":"split","direction":"vertical","ratio":0.25,"weight":3,
+              "left":{"kind":"leaf","cwd":"/a","title":"t","history":"h.history",
+                      "scrollback":"0.snap","colour":{"r":1}},
+              "right":{"kind":"leaf","unheard_of":[1,2,3]}}}"#;
+        let want = Snapshot {
+            name: "from the future".to_string(),
+            saved_at: 9,
+            root: Some(SavedNode::Split {
+                axis: Axis::Vertical,
+                ratio: 0.25,
+                left: Box::new(SavedNode::Leaf(SavedLeaf {
+                    cwd: "/a".to_string(),
+                    title: "t".to_string(),
+                    history: "h.history".to_string(),
+                })),
+                right: Box::new(SavedNode::Leaf(SavedLeaf::default())),
+            }),
+        };
+        assert_eq!(parse_snapshot(bytes), Ok(want));
+    }
+
+    /// **Every field of a leaf and of the snapshot reaches the file**, and
+    /// the list of fields checked here is the struct's own, not one kept by
+    /// hand beside it.
+    ///
+    /// ⚠️ The destructuring patterns below have no `..` on purpose. Adding a
+    /// field to `SavedLeaf` or `Snapshot` -- the next one is the scrollback
+    /// snapshot's filename -- is a compile error here until that field is
+    /// given its JSON key in `expect`. A writer that forgets the new field is
+    /// then a red assertion that names the key, instead of a project that
+    /// silently loses it on the next save. (This file is one of three
+    /// implementations of the format -- `src/Project.zig`, this one, and the
+    /// mac one -- and this test only speaks for this one.)
+    #[test]
+    fn every_field_is_written() {
+        let leaf = SavedLeaf {
+            cwd: "C:\\work".to_string(),
+            title: "a title".to_string(),
+            history: "a1b2.history".to_string(),
+        };
+        let SavedLeaf { cwd, title, history } = &leaf;
+        let expect: [(&str, &str); 3] = [("cwd", cwd), ("title", title), ("history", history)];
+
+        let snapshot = Snapshot { name: "all fields".to_string(), saved_at: 42, root: Some(SavedNode::Leaf(leaf.clone())) };
+        let Snapshot { name, saved_at, root: _ } = &snapshot;
+        let json = snapshot_to_json(&snapshot);
+
+        assert_eq!(json.get("name").and_then(|v| v.as_str()), Some(name.as_str()), "`name` was not written");
+        assert_eq!(json.get("saved_at").and_then(|v| v.as_i64()), Some(*saved_at), "`saved_at` was not written");
+        let node = json.get("root").and_then(|v| v.as_object()).expect("`root` was not written");
+        assert_eq!(node.get("kind").and_then(|v| v.as_str()), Some("leaf"));
+        for (key, value) in expect {
+            assert_eq!(node.get(key).and_then(|v| v.as_str()), Some(value), "leaf field `{key}` was not written");
+        }
+        // `kind` plus one key per field: nothing written that the reader
+        // does not know about.
+        assert_eq!(node.len(), expect.len() + 1, "leaf has keys this test does not name: {node:?}");
+    }
+
     #[test]
     fn to_layout_shape_carries_cwd_and_shape_but_not_title_or_history() {
         let shape = to_layout_shape(&sample_tree());

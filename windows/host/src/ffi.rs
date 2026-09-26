@@ -532,7 +532,13 @@ pub struct Target {
     pub surface: Surface,
 }
 
-#[repr(C)]
+/// `ghostty_action_s`. **`align(8)` because the C union holds pointers**,
+/// so `ghostty_action_s` is 8-aligned; `[u8; 24]` alone made this 4. It was
+/// harmless -- the struct only arrives by value in `cb_action`, which the
+/// Win64 ABI passes as a pointer to the caller's copy, and every accessor
+/// reads `payload` byte-wise -- but it was a layout the header does not
+/// have, found by `ffi_layout.rs` the first time it was measured.
+#[repr(C, align(8))]
 pub struct Action {
     pub tag: u32,
     pub _pad: u32,
@@ -1052,6 +1058,15 @@ const _: () = {
     assert!(std::mem::offset_of!(PoltergeistMark, worker_mentions) == 15);
     assert!(std::mem::offset_of!(PoltergeistMark, persona) == 16);
 };
+
+// **The same kind of assert as above, for every field of every struct here
+// that mirrors `include/ghostty.h`, with numbers clang measured rather than
+// ones read off the header by hand.** Generated; the gate
+// `windows/tools/the-ffi-structs-match-the-header.py` fails when the header
+// has moved on and this file has not. Adding a field to a C struct is then
+// two steps that each go red on their own: the gate until the file is
+// regenerated, and this build until the Rust struct has the field.
+include!("ffi_layout.rs");
 
 /// Resolved entry points. We load at runtime rather than link, because the
 /// build installs no import library for ghostty-internal.dll, and because
