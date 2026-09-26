@@ -123,7 +123,11 @@ scrollback 不能照抄这条路，因为**差一个根本性质**：history 的
 
 `Leaf.history` 的文件放在 `CommandHistory.defaultDir`，是项目目录的**兄弟**，理由写在 `src/Project.zig:61-65`：一个 pane 的命令历史比任何一个把它存进去的项目活得长。
 
-scrollback **相反** —— 它是为这一次项目存盘抓的，脱离那个项目没有意义。所以放在项目自己旁边：`<projects>/<sanitized-name>.scrollback/<n>.snap`，用 `Project.pathFor`（`src/Project.zig:166`）同一套名字消毒。
+scrollback **相反** —— 它是为这一次项目存盘抓的，脱离那个项目没有意义。所以放在项目自己旁边：`<项目文件去掉扩展名>.scrollback/<n>.snap`。
+
+⚠️ **目录名从项目文件自己的路径推出，不要拿项目名再消毒一次。** 本文第一版写的是「用 `Project.pathFor`（`src/Project.zig:166`）同一套名字消毒」，那是错的，因为它默认三份实现的消毒器一致 —— 而它们不一致，见 issue #23：Zig 按**字节**截到 200（`src/Project.zig:179`），Swift 按 **Character** 截到 200（`macos/Sources/Features/Projects/ProjectStore.swift:169`），一个 67 个汉字的名字是 201 字节，两边算出**不同的文件名**。照第一版写法，快照会存进一个目录、恢复时去另一个目录找，而表现是「恢复不出来且不报错」。
+
+正确的形状是让每一份实现只用**自己手里已经打开的那个项目文件的路径**去推目录名，于是平台内部只经过一个消毒器，跨平台的消毒分歧到不了这条路上。JSON 里只存 `"N.snap"` 这样的相对名，目录由读它的那一方推出。
 
 用子目录而不是平铺的兄弟文件，是为了让删除是一次递归删、以及让孤儿可见。`Project.delete`（`src/Project.zig:398`）要同步删这个目录 —— **三份实现都要**（见 3.1）。孤儿快照（项目还在但 pane 没了）要在存盘时按「这次写了哪些编号」清理，判据参照 `cleanup-filter-vs-what-you-made` 那类错误：**清场的过滤条件必须和这次实际产生的东西对齐，不能只认一个名字模式。**
 
