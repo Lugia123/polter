@@ -340,6 +340,18 @@ scrollback **相反** —— 它是为这一次项目存盘抓的，脱离那个
 
 用子目录而不是平铺的兄弟文件，是为了让删除是一次递归删、以及让孤儿可见。`Project.delete`（`src/Project.zig:398`）要同步删这个目录 —— **三份实现都要**（见 3.1）。孤儿快照（项目还在但 pane 没了）要在存盘时按「这次写了哪些编号」清理，判据参照 `cleanup-filter-vs-what-you-made` 那类错误：**清场的过滤条件必须和这次实际产生的东西对齐，不能只认一个名字模式。**
 
+### 4.5.1 Windows 上的路径长度：MAX_PATH 管得到谁
+
+项目文件和快照目录都在 `%LOCALAPPDATA%\polter\projects\` 下面，前缀里带着用户名。一个长项目名加上长用户名，整条路径可能超过 260。**在 Windows 上会碰这些路径的有两方，而两方都不受 260 的限制。** 下面每一条都写了是从哪儿读来的，因为它们依赖的是标准库的内部实现，不是标准库对外的承诺。
+
+- **Rust 宿主**（写 `project.json`、列目录、删目录、清快照）：Rust 1.95.0 的 `std::fs` 在 Windows 上把每个路径都交给 `library/std/src/sys/path/windows.rs:86` 的 `maybe_verbatim`，它再调 `get_long_path(path, prefer_verbatim=true)`。那里的 `LEGACY_MAX_PATH = 248`（`:104`）：**长度 ≥ 248 个 UTF-16 单位的路径，先过一遍 `GetFullPathNameW`，再加上 `\\?\`**（`:155-159`）。哪些调用会走到它：`File::open`（`sys/fs/windows.rs:339`，`fs::write` / `fs::read` 都经过这里）、`mkdir`（`:1219`）、`readdir`（`:1236`）直接调；`remove_file` / `rename` / `remove_dir_all` 经 `sys/fs/mod.rs:71-88` 的 `with_native_path`，它在 Windows 上就是 `maybe_verbatim`（`sys/path/windows.rs:43-47`）。
+  ⇒ `windows/host/src/project.rs` **自己不加前缀，也不需要加。** 钉住这一点的是那里的 `a_project_past_max_path_saves_lists_opens_and_deletes`：它构造一个超过 260 的路径，把写、读、列、清、删整条链走一遍。⚠️ 这条测试**先**用不带前缀的原始 `CreateFileW` 打开同一个路径，**要求它失败**；如果那台机器开了 `LongPathsEnabled`、原始调用成功了，测试就 panic，而不是 skip —— 在一台显示不出这个问题的机器上，它不该算绿。
+- **核心**（写 `.snap`）：本来就走 NT 路径（`\??\`），MAX_PATH 管不到它。和实测一致：一个 263 字符的快照路径在测试机上写成功了（issue #29）。
+  临时文件名：zig 0.16 的 `lib/std/Io/Threaded.zig:4745` `atomicFileInit`（Windows 走非 Linux 分支）用 `std.fmt.hex(random_integer)` 当临时名（`:4755`），也就是**固定 16 个十六进制字符，放在目标目录里，和目标文件名无关**。`src/termio/scrollback.zig:67` 调 `createFileAtomic` 时只传了 basename（`N.snap`）。⇒ 核心的临时文件只比 `0.snap` 长约 10 个字符，**不随项目名变长**。
+  - mac 上量到的「临时名多吃 47 个字符」（`.<stem>.json.<UUID>.tmp`，来自 #834，**这里没有复核**）说的是 **Swift 写 `project.json` 的方式**，不是核心，所以它不适用于 Windows。Windows 上 `project.json` 的临时名是 Rust 的 `<stem>.json.tmp`（`project.rs:510` 的 `with_extension("json.tmp")`），只比目标多 4 个字符。
+
+**仍然成立的限制是单个路径分量的长度，不是整条路径。** NTFS 的每个分量最多 255 个 UTF-16 单位，加不加 `\\?\` 都一样。命名规则把名字截到 200 个 UTF-8 字节（`test/fixtures/project-filenames.tsv`），也就是最多 200 个 UTF-16 单位；最长的分量是 `<stem>.scrollback`（≤ 211）和 `<stem>.json.tmp`（≤ 209），都在 255 以内。
+
 ## 五、恢复不了的东西
 
 以下几项是格式当前不支持的，接受，不要在本任务里试图补：

@@ -837,6 +837,95 @@ mod tests {
         assert_eq!(sanitize_filename("*?\"<>|"), Ok("______.json".to_string()));
     }
 
+    /// **A project whose file path is past MAX_PATH still saves, lists, opens
+    /// and deletes** (issue #29) -- the whole of what this file does to disk.
+    ///
+    /// ⚠️ **Nothing here adds `\\?\`, and that is not an omission.** Rust's
+    /// `std::fs` does it: every path it hands to Windows goes through
+    /// `sys::path::windows::maybe_verbatim`, which prefixes anything of 248
+    /// UTF-16 units or more (read in the 1.95.0 source; `File::open`,
+    /// `create_dir`, `read_dir` call it, `rename`/`remove_file`/`remove_dir_all`
+    /// reach it through `with_native_path`). This test is what says so on the
+    /// machine, rather than a reading of somebody else's source.
+    ///
+    /// ⭐ **The positive control comes first and can fail the test.** The same
+    /// path is opened with raw `CreateFileW` and no prefix, which must be
+    /// refused. If it is not -- long paths are enabled on this machine
+    /// (`LongPathsEnabled`) -- then nothing below would have been tested, and
+    /// the test says so and fails instead of passing on a machine that cannot
+    /// show the problem.
+    #[cfg(windows)]
+    #[test]
+    fn a_project_past_max_path_saves_lists_opens_and_deletes() {
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+        };
+
+        let root = std::env::temp_dir().join(format!("polter-project-rs-longpath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut dir = root.clone();
+        while dir.as_os_str().encode_wide().count() < 230 {
+            dir = dir.join("d".repeat(24));
+        }
+        let name = "n".repeat(40);
+        let file = path_for(&dir, &name).unwrap();
+        let units = file.as_os_str().encode_wide().count();
+        assert!(units > 260, "the constructed path is only {units} UTF-16 units");
+        std::fs::create_dir_all(&dir).expect("create the deep directory");
+
+        // Positive control: the same file, raw, without `\\?\`.
+        let mut wide: Vec<u16> = file.as_os_str().encode_wide().collect();
+        wide.push(0);
+        let raw = unsafe {
+            CreateFileW(
+                PCWSTR::from_raw(wide.as_ptr()),
+                FILE_GENERIC_WRITE.0,
+                FILE_SHARE_READ,
+                None,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+        };
+        if let Ok(h) = raw {
+            let _ = unsafe { windows::Win32::Foundation::CloseHandle(h) };
+            let _ = std::fs::remove_dir_all(&root);
+            panic!(
+                "positive control did not fail: a raw CreateFileW of a {units}-unit path succeeded, so \
+                 long paths are enabled on this machine and this test cannot show the MAX_PATH case"
+            );
+        }
+
+        let snap = Snapshot {
+            name: name.clone(),
+            saved_at: 5,
+            root: Some(SavedNode::Leaf(SavedLeaf { cwd: "C:\\w".to_string(), scrollback: "0.snap".to_string(), ..Default::default() })),
+            next_scrollback: Some(1),
+        };
+        write(&dir, &snap).expect("write past MAX_PATH");
+        assert!(file.exists(), "{file:?} was not written");
+        assert_eq!(read_file(&file), Ok(snap.clone()));
+        let listing = list(&dir);
+        assert_eq!(listing.skipped, Vec::new());
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, file);
+
+        // The snapshot directory beside it, and pruning inside it.
+        let snaps = scrollback_dir(&file);
+        std::fs::create_dir_all(&snaps).expect("create the snapshot directory past MAX_PATH");
+        std::fs::write(snaps.join("0.snap"), b"x").unwrap();
+        std::fs::write(snaps.join("7.snap"), b"x").unwrap();
+        assert_eq!(prune_scrollback_dir(&snaps, &["0.snap".to_string()]), 1);
+
+        delete(&dir, &name).expect("delete past MAX_PATH");
+        assert!(!file.exists());
+        assert!(!snaps.exists(), "{snaps:?} outlived its project");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The case the table's second column cannot express on its own: a name
     /// with nothing left is refused, never written as a bare `project`.
     #[test]
