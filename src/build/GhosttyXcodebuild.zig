@@ -99,6 +99,53 @@ pub fn init(
             b.fmt("POLTER_VERSION_SOURCE={s}", .{@tagName(vsn.source)}),
         });
 
+        // The signing identity, read here and passed as a build setting for
+        // the same reason the version is: a certificate belongs to one
+        // machine, and one written into the project file would be committed
+        // and then be wrong for everybody else.
+        //
+        // Left unset, the project's own `CODE_SIGN_IDENTITY = "-"` stands and
+        // the app is signed ad-hoc -- which is what CI and anyone without a
+        // certificate gets, and what this repository shipped until now.
+        //
+        // **Why it is worth setting.** An ad-hoc signature carries no team
+        // identifier, so macOS can only identify the app by its cdhash, and a
+        // cdhash is a hash of the contents: it changes on every rebuild. TCC
+        // records its grants (Accessibility, Screen Recording) against that
+        // identity, so **every reinstall silently voids them** -- silently
+        // because System Settings keeps drawing the toggle as on. It reads
+        // `auth_value`; the check uses the code identity. Measured 2026-09-26:
+        // the grants were written 09-18, the binary was replaced 09-23, and
+        // the three preflights had been returning false ever since while the
+        // switches looked fine.
+        //
+        // ⚠️ The environment here is deliberately empty except for PATH (see
+        // above), so this has to be read on the Zig side and handed over as an
+        // argument -- exporting it for xcodebuild would not survive.
+        //
+        // ⚠️⚠️ `POLTER_CODESIGN_IDENTITY` must be the *generic* name
+        // ("Apple Development"), not the full certificate name. The project
+        // signs automatically, and automatic signing rejects a specific
+        // identity outright:
+        //
+        //     Ghostty has conflicting provisioning settings. Ghostty is
+        //     automatically signed, but code signing identity
+        //     Apple Development: … has been manually specified.
+        //
+        // xcodebuild then exits 65 and the build fails at the very last step,
+        // after everything else has compiled. Which certificate gets used is
+        // decided by DEVELOPMENT_TEAM, not by naming it here.
+        if (env.get("POLTER_CODESIGN_IDENTITY")) |identity| {
+            step.addArgs(&.{b.fmt("CODE_SIGN_IDENTITY={s}", .{identity})});
+
+            // Only meaningful alongside an identity: it is what lets TCC key a
+            // grant to "this team's build of this bundle id" rather than to
+            // one exact binary.
+            if (env.get("POLTER_DEVELOPMENT_TEAM")) |team| {
+                step.addArgs(&.{b.fmt("DEVELOPMENT_TEAM={s}", .{team})});
+            }
+        }
+
         // If we have a specific architecture, we need to pass it
         // to xcodebuild.
         if (xc_arch) |arch| step.addArgs(&.{ "-arch", arch });

@@ -44,14 +44,21 @@ const log = std.log.scoped(.opengl);
 
 /// Whether this build drives its own WGL context on a host-provided `HWND`.
 ///
-/// This is the `embedded` apprt on Windows: there is no app runtime to hand
-/// us a context the way GTK does, only a window handle from the external
-/// host. Everything else -- GTK, and anything that ever builds OpenGL on a
-/// Unix -- takes upstream's surfaceless EGL path and exports its frames.
-/// `embedded` on Darwin has no OpenGL path at all (it uses Metal).
-const wgl_enabled =
-    apprt.runtime == apprt.embedded and
-    builtin.os.tag == .windows;
+/// This is every Windows build. The product is the `embedded` apprt: there is
+/// no app runtime to hand us a context the way GTK does, only a window handle
+/// from the external host. Everything else -- GTK, and anything that ever
+/// builds OpenGL on a Unix -- takes upstream's surfaceless EGL path and
+/// exports its frames. `embedded` on Darwin has no OpenGL path at all (it
+/// uses Metal).
+///
+/// ⚠️ **Keyed on the OS alone, not on `embedded`.** The one other Windows
+/// build is the test binary, whose apprt is `none` (`none` makes no exe on
+/// Windows). It used to fall through to the EGL path, whose `Dmabuf` holds
+/// POSIX fds -- `HANDLE` on Windows -- so the Windows test binary did not
+/// compile at all (#806). Taking the WGL path instead means the tests
+/// compile the renderer shape the product runs. `initWgl` still needs
+/// `embedded`'s surface and says so at compile time if anything reaches it.
+const wgl_enabled = builtin.os.tag == .windows;
 
 /// Threading model for the WGL path.
 ///
@@ -171,6 +178,13 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
 }
 
 fn initWgl(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
+    // Only `embedded` has a host window to build on. The Windows test build
+    // (`none`) shares the WGL path but must never create a context.
+    if (comptime apprt.runtime != apprt.embedded) @compileError(
+        "OpenGL.initWgl needs the embedded apprt's host window; " ++
+            "this Windows build uses " ++ @typeName(apprt.runtime),
+    );
+
     // Build our context on the window the host gave us.
     const hwnd = switch (opts.rt_surface.platform) {
         .win32 => |v| v.hwnd,

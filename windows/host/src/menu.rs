@@ -1788,8 +1788,15 @@ mod tests {
         // 649 moves «Check for Updates…» the same way: `update.rs` answers
         // `ACTION_CHECK_FOR_UPDATES` for real now, so block L is no longer a
         // gap either.
-        assert_eq!(leaves.len(), 58);
-        assert_eq!(n(|r| matches!(r, Ready::Always)), 52, "unconditional rows");
+        //
+        // e8cb84196 adds «Let Workers Name Each Other Directly» and did not
+        // come here, so this was red on Windows from then on (59 against 58).
+        // It is `Always`, and rightly: the core refuses it only on a terminal
+        // that is not a supervisor, and on those `row_visible` leaves it out
+        // of both the menu and the self-test. So the total and the first
+        // bucket move by one and the other two do not.
+        assert_eq!(leaves.len(), 59);
+        assert_eq!(n(|r| matches!(r, Ready::Always)), 53, "unconditional rows");
         assert_eq!(n(|r| matches!(r, Ready::NeedsState(_))), 5, "state-dependent rows");
         assert_eq!(n(|r| matches!(r, Ready::HostGap(_))), 1, "rows this host does not answer yet");
     }
