@@ -39,6 +39,18 @@
 #    its mtime.
 # 5. **Inherited `GHOSTTY_*` / `POLTER_*` dropped**: a shell inside the
 #    user's Polter carries the user's socket and token.
+# 6. **The config is a file of its own**, `<state>/config/polter/isolated-test.polter`,
+#    given as `GHOSTTY_CONFIG_PATH` (and `XDG_CONFIG_HOME=<state>/config`).
+#    Without it, ⌘, (open_config) opened the *user's* config in TextEdit
+#    (#830, 2026-09-27). Isolating XDG_CONFIG_HOME alone does not stop that:
+#    on macOS open_config tries Application Support first
+#    (`src/config/edit.zig` configPathCandidates), that path is built from the
+#    core's compile-time bundle id (not the app's Info.plist) -- the user's directory
+#    even for a `.debug` build -- and when no candidate exists it *creates*
+#    one. With GHOSTTY_CONFIG_PATH set the Swift side loads only that file
+#    (`Config(at:)`, no default files) and ⌘, opens it; the candidate search
+#    never runs. The odd filename is on purpose: a window titled
+#    `config.polter` would not say which one was opened.
 #
 # ⚠️ What this does not stop: launching activates the new app, so it takes
 # the foreground from whoever was using the machine -- the user, if they are
@@ -92,6 +104,12 @@ fi
 probe="$state/polter/polter-0123456789abcdef.sock"
 [ "${#probe}" -lt 104 ] || die "state directory $state is too long for an AF_UNIX socket (${#probe} bytes)"
 
+# --- 6. A config file of the instance's own. --------------------------------
+config_file="$state/config/polter/isolated-test.polter"
+mkdir -p "$state/config/polter" || die "could not create $state/config/polter"
+[ -f "$config_file" ] || printf '# Config of a test instance started by tools/mac-test-instance.sh.\n# Isolated on purpose; nothing here is the user'"'"'s.\n' > "$config_file" \
+    || die "could not write $config_file"
+
 # --- 4. The user's MCP registration, before. --------------------------------
 mcp_entry() {
     python3 -c 'import json,os;print(json.dumps(json.load(open(os.path.expanduser("~/.claude.json"))).get("mcpServers",{}).get("polter"),sort_keys=True))'
@@ -103,7 +121,7 @@ was_front=$(front_pid)
 
 # --- 3, 5. Start it. --------------------------------------------------------
 for v in $(env | cut -d= -f1 | grep -E '^(GHOSTTY|POLTER)_' || true); do unset "$v"; done
-XDG_STATE_HOME=$state nohup "$exe" \
+XDG_STATE_HOME=$state XDG_CONFIG_HOME="$state/config" GHOSTTY_CONFIG_PATH="$config_file" nohup "$exe" \
     --poltergeist-register-mcp=false \
     --config-default-files=false \
     --window-save-state=never \
@@ -163,4 +181,4 @@ while [ -z "$sock" ] && [ $i -lt 20 ]; do
     i=$((i + 1))
 done
 
-printf 'pid=%s\nstate=%s\nsocket=%s\nbundle=%s\n' "$pid" "$state" "${sock:-none}" "$bundle"
+printf 'pid=%s\nstate=%s\nsocket=%s\nbundle=%s\nconfig=%s\n' "$pid" "$state" "${sock:-none}" "$bundle" "$config_file"
