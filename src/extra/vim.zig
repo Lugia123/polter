@@ -1,5 +1,6 @@
 const std = @import("std");
 const Config = @import("../config/Config.zig");
+const quota = @import("quota.zig");
 
 /// This is the associated Vim file as named by the variable.
 pub const syntax = comptimeGenSyntax();
@@ -62,7 +63,7 @@ pub const compiler =
 /// Generates the syntax file at comptime.
 fn comptimeGenSyntax() []const u8 {
     comptime {
-        @setEvalBranchQuota(50000);
+        @setEvalBranchQuota(quota.configWalk());
         var counter: std.Io.Writer.Discarding = .init(&.{});
         try writeSyntax(&counter.writer);
 

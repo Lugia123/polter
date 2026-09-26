@@ -1189,6 +1189,19 @@ inline fn surfaceMailbox(self: *Surface) Mailbox {
     };
 }
 
+/// Ask the IO thread to save this terminal's scrollback to `path`, for a
+/// project being saved. Returns as soon as the request is queued; the file
+/// appears later (see `termio.Termio.captureScrollback`), and before this
+/// surface's `deinit` returns if it has not appeared by then (see
+/// `termio.Thread.finishCaptures`).
+pub fn captureScrollback(self: *Surface, path: []const u8) Allocator.Error!void {
+    const owned = try self.alloc.dupe(u8, path);
+    self.queueIo(.{ .capture_scrollback = .{
+        .alloc = self.alloc,
+        .path = owned,
+    } }, .unlocked);
+}
+
 /// Queue a message for the IO thread, taking ownership of `msg`.
 ///
 /// We centralize all our logic into this spot so we can intercept

@@ -973,6 +973,11 @@ pub struct SurfaceConfig {
     /// seven bytes between `poltergeist_chat` and this 8-aligned pointer
     /// that the C compiler does, which is what the size assert below checks.
     pub history_restore: *const c_char,
+    /// `ghostty_surface_config_s.scrollback_restore`: the absolute path of a
+    /// scrollback snapshot saved with this pane, or null. Every caller starts
+    /// from `ghostty_surface_config_new()`, which leaves it null; the project
+    /// code that sets it is task 827's.
+    pub scrollback_restore: *const c_char,
 }
 
 /// `ghostty_action_set_title_s` (its typedef in `include/ghostty.h`): `{ const
@@ -998,7 +1003,7 @@ struct SetTitlePayload {
 const _: () = {
     assert!(std::mem::size_of::<Action>() == 32);
     assert!(std::mem::size_of::<Target>() == 16);
-    assert!(std::mem::size_of::<SurfaceConfig>() == 104);
+    assert!(std::mem::size_of::<SurfaceConfig>() == 112);
     // 8-byte pointer, then a 1-byte bool immediately after it at offset 8 --
     // asserted as a size rather than an offset because `SetTitlePayload` has
     // only the one field after the pointer, so pinning the total size pins

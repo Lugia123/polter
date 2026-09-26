@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Config = @import("../config/Config.zig");
+const quota = @import("quota.zig");
 const Action = @import("../cli.zig").ghostty.Action;
 
 /// A zsh completions configuration that contains all the available commands
@@ -11,7 +12,7 @@ const equals_required = "=-:::";
 
 fn comptimeGenerateZshCompletions() []const u8 {
     comptime {
-        @setEvalBranchQuota(50000);
+        @setEvalBranchQuota(quota.configWalk());
         var counter: std.Io.Writer.Discarding = .init(&.{});
         try writeZshCompletions(&counter.writer);
 

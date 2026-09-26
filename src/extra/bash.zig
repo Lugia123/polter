@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Config = @import("../config/Config.zig");
+const quota = @import("quota.zig");
 const Action = @import("../cli.zig").ghostty.Action;
 
 /// A bash completions configuration that contains all the available commands
@@ -18,7 +19,7 @@ pub const completions = comptimeGenerateBashCompletions();
 
 fn comptimeGenerateBashCompletions() []const u8 {
     comptime {
-        @setEvalBranchQuota(50000);
+        @setEvalBranchQuota(quota.configWalk());
         var counter: std.Io.Writer.Discarding = .init(&.{});
         try writeBashCompletions(&counter.writer);
 

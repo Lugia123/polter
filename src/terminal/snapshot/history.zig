@@ -185,6 +185,64 @@ pub fn encode(
     }
 }
 
+/// Encode one screen's HISTORY with only as many of its newest pages as fit
+/// in `budget` bytes, and subtract what they used from `budget`.
+///
+/// The budget counts the **encoded** PAGE records, header and CRC included --
+/// not a per-cell upper bound. The bound is 8 bytes per cell while ordinary
+/// output encodes near 1, so a budget enforced against the bound would keep
+/// a small fraction of what fits.
+///
+/// HISTORY declares its page count before the pages, so the pages are
+/// encoded into a staging buffer first, newest to oldest, and the walk stops
+/// at the first page that would overrun. Stopping there keeps the most
+/// recent history, which is the part worth having. Peak staging memory is
+/// the budget plus the one page that did not fit.
+pub fn encodeLimited(
+    alloc: Allocator,
+    terminal_screen: *const TerminalScreen,
+    key: TerminalScreenKey,
+    destination: *record.Writer,
+    budget: *u64,
+) EncodeError!void {
+    var staged: std.Io.Writer.Allocating = .init(alloc);
+    defer staged.deinit();
+
+    var page_count: u32 = 0;
+    {
+        var staged_records: record.Writer = .init(alloc, &staged.writer);
+        defer staged_records.deinit();
+
+        var node = terminal_screen.pages.getTopLeft(.active).node.prev;
+        while (node) |current| : (node = current.prev) {
+            const before = staged.writer.end;
+            {
+                var preserved = try current.pagePreservingState(terminal_screen.alloc);
+                defer preserved.deinit();
+                try page.encode(preserved.page(), &staged_records);
+            }
+            if (staged.writer.end > budget.*) {
+                staged.shrinkRetainingCapacity(before);
+                break;
+            }
+            page_count = std.math.add(u32, page_count, 1) catch
+                return error.PageCountOverflow;
+        }
+    }
+    budget.* -= staged.writer.end;
+
+    const header: Header = .{ .key = key, .page_count = page_count };
+    {
+        const payload = destination.begin(.history);
+        errdefer destination.cancel();
+        try header.encode(payload);
+        try destination.finish();
+    }
+
+    // The staged bytes are already complete, framed PAGE records.
+    try destination.writer().writeAll(staged.written());
+}
+
 /// Errors possible while restoring one HISTORY and its PAGE sequence.
 pub const DecodeError = Decoder.InitError ||
     Decoder.RestoreError ||

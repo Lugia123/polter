@@ -33,6 +33,16 @@ pub const EncodeError = terminal.EncodeError ||
 
 pub const EncodeOptions = struct {
     continuation: Continuation,
+
+    /// Most bytes of HISTORY pages to write, across all screens, or null for
+    /// all of them. Pages are kept newest first and cut at a page boundary,
+    /// so the result is the most recent history that fits. Measured on the
+    /// encoded records, not estimated.
+    ///
+    /// SCREEN's `history_rows` still declares the complete extent: SCREEN is
+    /// written before the cut is known, and that field is advisory. Row
+    /// totals after decoding come from the pages actually written.
+    max_history_bytes: ?u64 = null,
 };
 
 /// Encode one complete terminal snapshot.
@@ -80,17 +90,36 @@ pub fn encode(
     // 5. Ready marker.
     try checkpoint.encode(.ready, &stream);
 
-    // 6. History
-    try history.encode(
-        t.screens.get(.primary).?,
-        .primary,
-        &stream,
-    );
-    if (t.screens.get(.alternate)) |alternate| try history.encode(
-        alternate,
-        .alternate,
-        &stream,
-    );
+    // 6. History. Primary first, so under a byte budget it is the primary
+    // screen's history that is kept.
+    if (options.max_history_bytes) |max| {
+        var budget: u64 = max;
+        try history.encodeLimited(
+            alloc,
+            t.screens.get(.primary).?,
+            .primary,
+            &stream,
+            &budget,
+        );
+        if (t.screens.get(.alternate)) |alternate| try history.encodeLimited(
+            alloc,
+            alternate,
+            .alternate,
+            &stream,
+            &budget,
+        );
+    } else {
+        try history.encode(
+            t.screens.get(.primary).?,
+            .primary,
+            &stream,
+        );
+        if (t.screens.get(.alternate)) |alternate| try history.encode(
+            alternate,
+            .alternate,
+            &stream,
+        );
+    }
 
     // 7. Finish
     try checkpoint.encode(.finish, &stream);
@@ -2097,4 +2126,60 @@ test "incremental decode failure leaves applied history usable" {
     try testing.expectEqual(@as(u21, 'A'), testTopLeftCodepoint(primary));
     primary.pages.assertIntegrity();
     primary.assertIntegrity();
+}
+
+test "max_history_bytes keeps the newest pages that fit, measured exactly" {
+    const testing = std.testing;
+
+    // History pages A (oldest), B, C above the active page D. All three are
+    // the same shape, so each encodes to the same number of bytes.
+    var t = try testHistoryTerminal(3);
+    defer t.deinit(testing.allocator);
+
+    const Encoded = struct {
+        fn len(term: *const Terminal, max: ?u64) !usize {
+            var out: std.Io.Writer.Allocating = .init(testing.allocator);
+            defer out.deinit();
+            try encode(testing.allocator, &out.writer, term, .{
+                .continuation = .ground,
+                .max_history_bytes = max,
+            });
+            return out.written().len;
+        }
+
+        fn oldest(term: *const Terminal, max: ?u64) !u21 {
+            var out: std.Io.Writer.Allocating = .init(testing.allocator);
+            defer out.deinit();
+            try encode(testing.allocator, &out.writer, term, .{
+                .continuation = .ground,
+                .max_history_bytes = max,
+            });
+            var source: std.Io.Reader = .fixed(out.written());
+            var decoded = try decodeExact(
+                testing.allocator,
+                testing.io,
+                &source,
+                test_decode_options,
+            );
+            defer decoded.deinit(testing.allocator);
+            return testTopLeftCodepoint(decoded.terminal.?.screens.get(.primary).?);
+        }
+    };
+
+    const all = try Encoded.len(&t, null);
+    const none = try Encoded.len(&t, 0);
+    try testing.expect(all > none);
+    try testing.expectEqual(0, (all - none) % 3);
+    const page_bytes: u64 = (all - none) / 3;
+
+    // Unlimited and a budget of exactly everything write the same bytes.
+    try testing.expectEqual(all, try Encoded.len(&t, 3 * page_bytes));
+
+    // The budget is compared against real encoded bytes: exactly two pages'
+    // worth keeps two, one byte less keeps one. An estimate from an upper
+    // bound per cell could not land on either boundary.
+    try testing.expectEqual(@as(u21, 'B'), try Encoded.oldest(&t, 2 * page_bytes));
+    try testing.expectEqual(@as(u21, 'C'), try Encoded.oldest(&t, 2 * page_bytes - 1));
+    try testing.expectEqual(@as(u21, 'D'), try Encoded.oldest(&t, 0));
+    try testing.expectEqual(@as(u21, 'A'), try Encoded.oldest(&t, null));
 }

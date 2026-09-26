@@ -4,6 +4,7 @@ const std = @import("std");
 const Config = @import("../config/Config.zig");
 const Action = @import("../cli.zig").ghostty.Action;
 const help_strings = @import("help_strings");
+const quota = @import("quota.zig");
 
 /// A fish completions configuration that contains all the available commands
 /// and options.
@@ -11,7 +12,7 @@ pub const completions = comptimeGenerateCompletions();
 
 fn comptimeGenerateCompletions() []const u8 {
     comptime {
-        @setEvalBranchQuota(50000);
+        @setEvalBranchQuota(evalBranchQuota());
         var counter: std.Io.Writer.Discarding = .init(&.{});
         try writeCompletions(&counter.writer);
 
@@ -20,6 +21,23 @@ fn comptimeGenerateCompletions() []const u8 {
         try writeCompletions(&writer);
         const final = buf;
         return final[0..writer.end];
+    }
+}
+
+/// `quota.configWalk` plus this generator's own extra: every help string is
+/// scanned by `getDescription`, charged here at full length though the scan
+/// stops at the first sentence. See `quota.zig` for how the rest was set.
+fn evalBranchQuota() comptime_int {
+    comptime {
+        const config_fields = @typeInfo(Config).@"struct".fields;
+        // No quota raise here; see `quota.items`.
+        var help: comptime_int = 0;
+        for (config_fields) |field| {
+            if (@hasDecl(help_strings.Config, field.name)) {
+                help += @field(help_strings.Config, field.name).len;
+            }
+        }
+        return quota.configWalk() + 2 * help;
     }
 }
 

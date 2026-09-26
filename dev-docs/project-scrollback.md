@@ -68,25 +68,35 @@ scrollback 不能照抄这条路，因为**差一个根本性质**：history 的
 2. 核心把它变成一条发往 IO 线程的 mailbox 消息。
 3. IO 线程上 `snapshot.encode` 写到 `path` 的临时文件，再原子 rename 就位。
 
-**建议：宿主不等它。** 宿主立刻写 JSON（里面写上它**预期**的快照文件名），快照文件异步落地。这样不阻塞 UI，而且失败模式正好退化成今天的行为（见 3.3）。
+**宿主不等它。** 宿主立刻写 JSON（里面写上它**预期**的快照文件名），快照文件异步落地。这样不阻塞 UI，而且失败模式正好退化成今天的行为（见 3.4）。
+
+已实现为 `ghostty_surface_capture_scrollback(surface, path)`（`include/ghostty.h`）→ `Surface.captureScrollback` → `termio.Message.capture_scrollback` → `Termio.captureScrollback`：在 renderer 锁里编码成内存中的字节，**出锁以后**才原子写盘（`termio/scrollback.zig` 的 `writeFile`），所以文件系统不会卡住渲染。`path` 必须是绝对路径。
+
+⚠️ **「不等」之所以成立，靠的是核心保证关窗时不丢请求。** surface 关闭时 IO 线程**不会**把 mailbox 抽干：`Surface.deinit` 发 `stop`，`stopCallback` 只调 `loop.stop()`，剩下的消息由 `Mailbox.deinit` 不经处理地释放。而「存成项目然后关窗」正是先给每个 pane 入队一次 capture、紧接着关掉所有 pane。所以 `termio/Thread.zig` 的 `run` 在循环停下之后用 `finishCaptures` 把还在队列里的 capture 全部写完，这一步在 join 之前，那时 terminal 还完整。**对宿主的保证：在 `ghostty_surface_free` 之前调过的 capture，`free` 返回时文件已经落盘。** 不经过 `free` 就退出的进程（直接 exit、崩溃）不在这个保证之内。
 
 ### 3.3 取：宿主 → 核心
 
-这一半可以**照抄** `history_restore`：`src/apprt/embedded.zig:585` 那个 `history_restore: ?[*:0]const u8` 字段，注释写明它「不在这里解释」，由核心在知道自己要 spawn 哪个 shell 的地方展开。新增一个同形状的 `scrollback_restore: ?[*:0]const u8`，在 `src/termio/Termio.zig:306` —— 现在无条件 `Terminal.init` 的那一行 —— 消费它。
+这一半**照抄了** `history_restore`：`src/apprt/embedded.zig:585` 那个 `history_restore: ?[*:0]const u8` 字段，注释写明它「不在这里解释」，由核心在知道自己要 spawn 哪个 shell 的地方展开。新增一个同形状的 `scrollback_restore: ?[*:0]const u8`，在 `src/termio/Termio.zig:306` —— 现在无条件 `Terminal.init` 的那一行 —— 消费它。
 
 ⚠️ 这个字段在 C 结构体里的**声明顺序就是内存布局**（`embedded.zig:571-574` 明写了这一点，而且 `history_restore` 自己就带着「Declared last to match `ghostty_surface_config_s`」的注释）。加字段必须同时改 `include/` 里的 C 头和 Rust 侧手写的 extern 结构体，而 **Rust 手写的 extern 结构体在布局变了的时候不会编译失败** —— 这正是本次上游合并里 `ghostty_clipboard_content_s` 加 `len` 字段踩过的坑（见 `a4e13545a` 的提交信息）。
 
-三条**必须按顺序**的约束，顺序错了的表现都是「静默地少恢复」：
+**实现（`src/termio/scrollback.zig` 的 `restore`）不直接拿解码出来的 `Terminal` 当 pane 的终端**，而是只把它 primary 屏的 pages 和 cursor 移植进 pane 自己新建的终端（`transplantPrimary`）。原因：pane 里跑的是一个**新 shell**，旧会话的模式、alternate 屏、颜色、charset、kitty keyboard 标志描述的都是一个已经不在的程序，照搬会让新 shell 起在旧 vim 的 alternate 屏里、带着旧程序开的鼠标上报。移植后 scrollback 上限改用当前配置的值，画笔复位，光标移到恢复内容下面一行。恢复在 `Termio.init` 里、shell spawn 之前、任何线程启动之前做。
 
-1. **先把 `Terminal` 放到最终地址，再建 `Stream`。** `snapshot.zig:113-128` 反复强调这一点，因为 `Decoded.toOwned()` 会**移动** `Terminal`。现有代码正好合适：`Termio.zig:306` 造终端，`:380` 才 `terminal_stream: .init(...)`，中间没有别的东西拿 `&self.terminal`。
-2. **先把历史收完，再 resize。** `snapshot.zig:440-458` 明写：一旦 `t.cols != state.cols`，当前页被消费但丢弃，**并且该序列其余的页一并丢弃**（因为后面的页更老，跨空洞贴上去会把 scrollback 顺序弄坏）。快照解出来的终端是**存盘时**的尺寸，而窗口现在可能是别的尺寸。所以顺序是：decode → 把 `next` 抽干 → 然后才 `Terminal.resize`，让 `PageList` 自己做 reflow。反过来做的结果是：小窗口恢复出一屏内容，其余几千行无声消失。
-3. **continuation 字节要丢掉，不要喂。** `src/terminal/snapshot/continuation.zig:1-24` 里的 continuation 是「把 VT 解析器从 ground 带到当前状态所需的最小 pty 字节」，它服务的是**热迁移**：快照切在一个转义序列中间，后续的 pty 字节接着来。项目恢复不是热迁移 —— 后续字节来自一个**全新的 shell**，和旧的半截转义序列毫无关系。把它喂进去，新 shell 的头几个字节会被当成旧转义序列的尾巴解析。⚠️ 这一条与格式设计的**意图相反**，是本场景特有的决定，实现时要把理由写在调用点上，否则下一个人会「修好」它。
+三条**必须按顺序**的约束，顺序错了的表现都是「静默地少恢复」。每一条都有测试，每一条的地板都是「把顺序写反、仍然编得过 → 测试红在断言上」：
+
+1. **先把 `Terminal` 放到最终地址，再建 `Stream`。** `snapshot.zig:113-128` 反复强调这一点，因为 `Decoded.toOwned()` 会**移动** `Terminal`。在移植方案里，Stream 从来不指向解码出来的终端（它只属于 pane 自己的终端，而 continuation 不喂，见第 3 条），所以这一条变成了它的同类：**历史必须在移植之前抽进解码出来的那个终端。** 反过来（先移植再抽）时，页会被 prepend 到解码终端**此刻**拿着的屏上，也就是 pane 那块空屏，而它随后就被释放了。测试：`restore at the same size brings all the history back`，写反时红在 `history_rows >= saved_history`。
+2. **先把历史收完，再 resize。** `snapshot.zig:440-458` 明写：一旦 `t.cols != state.cols`，当前页被消费但丢弃，**并且该序列其余的页一并丢弃**（因为后面的页更老，跨空洞贴上去会把 scrollback 顺序弄坏）。快照解出来的终端是**存盘时**的尺寸，而窗口现在可能是别的尺寸。所以顺序是：decode → 把 `next` 抽干 → 然后才 `Terminal.resize`，让 `PageList` 自己做 reflow。反过来做的结果是：小窗口恢复出一屏内容，其余几千行无声消失。测试：`restore into a narrower window keeps every line of history`（存 40 列、恢复 12 列），写反时红在 `history_rows >= saved_history`。⚠️ 这条测试的夹具必须**真的有 HISTORY 页**：几百行输出全都落在 SCREEN 带的那一页里，HISTORY 一页都没有，这时把顺序写反测试照样绿。所以夹具写两万行，并断言快照里有 ≥ 2 个 HISTORY 页。
+3. **continuation 字节要丢掉，不要喂。** `src/terminal/snapshot/continuation.zig:1-24` 里的 continuation 是「把 VT 解析器从 ground 带到当前状态所需的最小 pty 字节」，它服务的是**热迁移**：快照切在一个转义序列中间，后续的 pty 字节接着来。项目恢复不是热迁移 —— 后续字节来自一个**全新的 shell**，和旧的半截转义序列毫无关系。把它喂进去，新 shell 的头几个字节会被当成旧转义序列的尾巴解析。⚠️ 这一条与格式设计的**意图相反**，是本场景特有的决定，实现时要把理由写在调用点上，否则下一个人会「修好」它。测试：`a continuation in the snapshot does not reach the new shell`，快照切在 `ESC [` 中间，恢复后喂 `hello`；写反时 `h` 会被当成 CSI 的终结字节，只剩 `ello`，红在 `hello` 那条断言。抓取一侧写的 continuation 一律是 ground，因为项目快照从来不会被续写，Termio 的 stream 也不跟踪 continuation。
 
 ### 3.4 读不动就当没有
 
 格式版本号当前是 1，`envelope.zig:57` 要求**严格相等**，不匹配直接 `error.UnsupportedVersion`，没有迁移层；而 `main.zig:21-23` 自称版本 1 是 work-in-progress、**会继续破坏兼容**。
 
-这对本功能不是问题，但必须是**设计出来的**行为而不是事后补的：**快照缺失、版本不符、CRC 坏、任何 decode 错误 → 起一个空终端，并把那个文件删掉。** 退化结果恰好等于今天的行为。这条要有测试。
+这对本功能不是问题，但必须是**设计出来的**行为而不是事后补的：**快照缺失、版本不符、CRC 坏、任何 decode 错误 → 起一个空终端，并把那个文件删掉。** 退化结果恰好等于今天的行为。所有可能失败的步骤都在移植之前完成，所以 pane 的终端要么完全没被碰过，要么已经完整恢复。
+
+测试 `an unreadable snapshot starts empty and is deleted` 用的是**真快照改字节**：翻转最后一个历史页 payload 里的一个字节（`InvalidChecksum`，此前的页已经抽进去了）、改版本号（`UnsupportedVersion`）、截掉一半（`EndOfStream`）。
+
+⚠️ **核心只删以 `.snap` 结尾的路径。** 路径是宿主给的，而删它的是核心，所以「只删快照」这条校验放在核心，三个宿主不用各做一遍。其他路径一律不删，只记一条 warn。测试：`an unreadable file that is not a .snap is left where it is`。`project-scrollback-limit-bytes = 0` 时，capture 删掉 `path` 上的旧快照（同样只删 `.snap`），restore 什么都不做。
 
 ## 三·五、自动保存：这件事的形状（2026-09-26 由产品负责人改定）
 
@@ -120,9 +130,12 @@ scrollback 不能照抄这条路，因为**差一个根本性质**：history 的
 **磁盘形状**：每个 pane 两个文件 —— 一个只追加的完成页日志（淘汰时头部前进，死掉的前缀
 大到一定比例再压实一次），加一个小文件放元数据 + 活动页，每周期重写。不是 550 个文件。
 
-⚠️ **未核实**：这套线格式的 envelope/record 分帧允不允许写一串裸 PAGE 记录而不带
-TERMINAL/SCREEN 外壳（`envelope.zig` 的 magic + 版本，以及 `main.zig:47-63` 的记录顺序）。
-不允许的话容器要另定，那是额外工作量，落地前先回答这个问题。
+**一串裸 PAGE 记录不是一份合法的 v1 快照，但可以直接拿来当容器的零件**（在 `e5c8a9b6e` 上核过）：
+
+- **不合法**：v1 的语法是 envelope 之后必须紧跟 TERMINAL（`main.zig:47-63`）。`snapshot.decode` / `Decoder.ready` 读到的第一个记录如果不是 TERMINAL，就报 `UnexpectedRecordTag`（`terminal.zig:961`）。所以「envelope + 裸 PAGE」这种文件不能冒充快照，也不该复用快照的 magic `GHOSTSNP`：同一个 magic 配两套语法，读错的人只会得到一个莫名其妙的错误。
+- **零件能单独用**：记录分帧（`record.Writer` / `record.Reader`，带 CRC）和 PAGE 编解码都是 pub 的，也不依赖外壳。`page.encode` 写出一个完整的带帧记录；`page.Decoder.init` 只检查记录 tag 是不是 `page`（`page.zig:192-200`）；`history.decodePage` 把一页 prepend 到一个活着的 screen 上。
+- ⇒ 第 3 步的形状：**完成页日志** = 自己的一个小文件头（自己的 magic 和版本）+ 一串带帧的 PAGE 记录；**活动部分** = 一份普通的 v1 快照，写成 `max_history_bytes = 0`，于是只有 TERMINAL、SCREEN 和一个空的 HISTORY，有几十 KB，每个周期整份重写。恢复时先照第三节的办法解那份小快照，然后在 resize 之前，从日志里由新到旧逐页调 `decodePage` prepend。3.3 的顺序约束原样适用。⚠️ 但宽度检查和「丢一页就丢掉其后更老的所有页」这两条规则写在 `Decoder.nextPage` 里，不在 `decodePage` 里，所以直接调 `decodePage` 的人要自己把它们补上。
+- 要另外定的只有日志的文件头，以及淘汰和压实的记账，线格式本身不用动。
 
 ### 3.5.4 有两件事会打破「页不可变」，都必须有地板
 
@@ -194,9 +207,18 @@ TERMINAL/SCREEN 外壳（`envelope.zig` 的 magic + 版本，以及 `main.zig:47
 
 50 MB 是**一个**焦点终端的内存上限。落到盘上它是「每 pane × 每项目」，而且每次存盘都付一遍：一个 12 pane 的项目按 50 MB 算是 600 MB。所以持久化要有自己的上限。
 
-**建议：`project-scrollback-limit-bytes`，按 pane 计，默认 10 MB，`0` 表示彻底关掉这个功能。**
+**已实现：`project-scrollback-limit-bytes`，按 pane 计，默认 10 MB，`0` 表示彻底关掉这个功能。**
 
-为什么是 10 MB 而不是 50：这个数字的依据是内容量而不是感觉 —— 编码在 cell 层省空间的手段是「每行只编到最后一个非默认 cell，全默认行就是 3 字节的行头」加「每行按需选 1/2/4/8 字节的 cell 宽度，纯 ASCII 无样式行是 1 字节/cell」（`grid.zig:57-92`）。所以 10 MB 对典型输出是十万行以上的量级，远超任何人会往回翻的距离；而重样式行最坏能到 8 字节/cell，10 MB 在最坏情况下仍有约一万五千行。**这个量级是按上述编码规则推算的，没有实测**（未核实：`src/benchmark/TerminalSnapshot.zig:307-311` 会打印 `framing=` / `encoded=` 实测值，想要准数跑它；这是定默认值之前该做的第一件事）。
+为什么是 10 MB 而不是 50：编码在 cell 层省空间的手段是「每行只编到最后一个非默认 cell，全默认行就是 3 字节的行头」加「每行按需选 1/2/4/8 字节的 cell 宽度」（`grid.zig:57-92`）。**实测**（`ghostty-bench +terminal-snapshot --mode=report`，ReleaseFast，80×24，scrollback 不设上限；`encoded=` 是读数，行数是按语料文本去掉转义序列、按 80 列折行**算出来的**，不是从终端读的）：
+
+| 语料 | 行数（算） | `encoded=` | 字节/行 | 字节/cell | 10 MB ≈ |
+| ---- | ---------: | ---------: | ------: | --------: | ------: |
+| `ghostty-gen +ascii` 5 MB，满行无样式 | 62,500 | 5,192,155 | 83 | 1.04 | 12 万行 |
+| `git log --color=always --stat -n 6000` | 172,038 | 16,990,808 | 99 | 1.23 | 10 万行 |
+| `git log -p --color=always -n 400` | 263,487 | 40,005,747 | 152 | 1.90 | 6.6 万行 |
+| `ls -laR --color=always /usr/share`（中文 locale，每行带宽字符和颜色） | 27,942 | 11,527,446 | 413 | 5.2 | 2.4 万行 |
+
+所以 10 MB 对普通输出是十万行量级；最重的那种每行都带颜色和宽字符的输出也有两万多行。编码速度：`git log --stat` 那份（17 MB）编一次约 5 ms（`--mode=encode --loops=10` 对比 `--mode=noop` 的墙钟差，粗测）。
 
 按 pane 而不是按项目总量，理由是：按项目总量要在 pane 之间仲裁「谁被砍」，而没有一个非任意的答案。这一条是全文里最值得回头确认的决定。
 
@@ -206,7 +228,7 @@ TERMINAL/SCREEN 外壳（`envelope.zig` 的 magic + 版本，以及 `main.zig:47
 
 同时**不要用上界估算**：上界是 8 字节/cell，而真实内容常常接近 1 字节/cell，按上界卡 10 MB 可能只装进 1.2 MB。
 
-**建议：给 `EncodeOptions`（`snapshot.zig:34-36`，目前只有 `continuation` 一个字段）加一个 `max_history_bytes: ?u64`，实现成两趟：把历史页由新到旧逐页编到一块暂存缓冲里，边编边累加**真实**字节数，到预算就停，然后写 page_count = 已编页数 + 那批缓冲。** 峰值内存就是上限本身（10 MB），有界。
+**已实现：给 `EncodeOptions` 加了 `max_history_bytes: ?u64`（`history.zig` 的 `encodeLimited`），实现成两趟：把历史页由新到旧逐页编到一块暂存缓冲里，边编边累加**真实**字节数，到预算就停，然后写 page_count = 已编页数 + 那批缓冲。** 峰值内存就是上限本身（10 MB），有界。
 
 由新到旧这个顺序是现成的：`history.zig:6-7`（图见 `:28-38`）说明历史页就是按新→旧排的，`:177` 的注释写明这么排就是为了让解码端能边收边 prepend。所以「停在预算处」天然保留的是**最近的**内容 —— 正是要的语义。
 
@@ -251,4 +273,5 @@ scrollback **相反** —— 它是为这一次项目存盘抓的，脱离那个
 - **「三份实现」的判据**：改完之后，三份里任意一份**漏加字段都不会有闸变红**。判据必须直接数三处（例如三份各自都能读到一个含新字段的样例文件，且都能写出含新字段的文件），不能只跑测试。
 - **地板**：每一条判据都要先**故意打坏被测对象、看它红在哪一行**。特别是第 3.3 节那三条顺序约束 —— 它们失败的形式是「静默地少恢复」，所以地板必须是「把顺序故意写反 → 判据红」，而不是「顺序对 → 判据绿」。
 - **resize 那条的地板**：存盘时用一个宽度，恢复时用另一个宽度，断言历史行数没少。顺序写反的时候这一条会红在行数上，而一个只在同宽度下测的判据永远绿。
-- **`（未核实）`**：第 4.3 节的默认值 10 MB 是推算的，落地前先用 `src/benchmark/TerminalSnapshot.zig` 量一遍真实字节数再定。
+- 第 4.3 节的默认值 10 MB 已经实测过，见那一节的表。
+- **关窗那条的地板**：「存成项目 + 立刻关窗 → 快照文件存在且能解码」。测试 `a capture queued as the surface closes is still written`（`termio/Thread.zig`）入队 capture 后**不发 wakeup**，直接 stop 再跑循环，这是竞态最坏的情况。拆掉 `finishCaptures` 后红在读文件那一行。

@@ -588,6 +588,13 @@ typedef struct {
   // depends on which shell core ends up spawning, which the apprt does
   // not know in advance. See apprt.embedded.Surface.Options.history_restore.
   const char* history_restore;
+
+  // The absolute path of a scrollback snapshot saved with this pane by
+  // ghostty_surface_capture_scrollback, or NULL if this surface is not being
+  // restored from a project. Core reads it before the shell starts; a file
+  // that is missing or cannot be decoded gives an empty terminal, and one
+  // that cannot be decoded is deleted. See dev-docs/project-scrollback.md.
+  const char* scrollback_restore;
 } ghostty_surface_config_s;
 
 typedef struct {
@@ -1520,6 +1527,11 @@ GHOSTTY_API bool ghostty_app_has_global_keybinds(ghostty_app_t);
 GHOSTTY_API void ghostty_app_set_color_scheme(ghostty_app_t, ghostty_color_scheme_e);
 
 GHOSTTY_API ghostty_surface_config_s ghostty_surface_config_new();
+// Save the surface's scrollback to `path` (absolute, UTF-8) for a project.
+// Returns true once the request is queued; the file is written later, on the
+// surface's IO thread, atomically. Writes nothing (and removes `path`) when
+// project-scrollback-limit-bytes is 0.
+GHOSTTY_API bool ghostty_surface_capture_scrollback(ghostty_surface_t, const char*);
 
 GHOSTTY_API ghostty_surface_t ghostty_surface_new(ghostty_app_t,
                                                      const ghostty_surface_config_s*);

@@ -23,6 +23,7 @@ const configpkg = @import("../config.zig");
 const ProcessInfo = @import("../pty.zig").ProcessInfo;
 const compat_file = @import("../lib/compat/file.zig");
 const poltergeist = @import("../poltergeist/main.zig");
+const scrollback = @import("scrollback.zig");
 
 const log = std.log.scoped(.io_exec);
 
@@ -227,6 +228,10 @@ pub const DerivedConfig = struct {
     /// `poltergeist-terminal-log`.
     poltergeist_terminal_log: bool,
 
+    /// `project-scrollback-limit-bytes`: the history budget for a capture,
+    /// and zero for "neither capture nor restore".
+    project_scrollback_limit: u64,
+
     pub fn init(
         alloc_gpa: Allocator,
         config: *const configpkg.Config,
@@ -268,6 +273,7 @@ pub const DerivedConfig = struct {
             .poltergeist_quiescence_ms = config.@"poltergeist-quiescence-after".duration / std.time.ns_per_ms,
             .poltergeist_repeat_ms = config.@"poltergeist-quiescence-repeat".duration / std.time.ns_per_ms,
             .poltergeist_terminal_log = config.@"poltergeist-terminal-log",
+            .project_scrollback_limit = config.@"project-scrollback-limit-bytes".value,
 
             // This has to be last so that we copy AFTER the arena allocations
             // above happen (Zig assigns in order).
@@ -388,6 +394,64 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
             opts.surface_mailbox.surface.id,
         ),
     };
+
+    // A pane reopened from a project shows what it last showed. Here, before
+    // the shell is spawned and before any other thread can see the terminal:
+    // restoring is only correct into a terminal nothing has written to yet.
+    if (opts.full_config._scrollback_restore) |path| restore: {
+        // absence: means it was not reached -- either the pane was not
+        // restored from a project, or the feature is on and one of the three
+        // lines below says what happened instead.
+        if (opts.config.project_scrollback_limit == 0) {
+            log.info("scrollback restore skipped, project-scrollback-limit-bytes is 0", .{});
+            break :restore;
+        }
+        switch (scrollback.restore(
+            alloc,
+            global.io(),
+            path,
+            &self.terminal,
+            &self.terminal_stream,
+        )) {
+            .missing => log.info("no scrollback snapshot to restore path={s}", .{path}),
+            .unreadable => {}, // `restore` has said why and removed the file.
+            .restored => |r| log.info(
+                "scrollback restored history_rows={} dropped_continuation={} path={s}",
+                .{ r.history_rows, r.dropped_continuation, path },
+            ),
+        }
+    }
+}
+
+/// Save this terminal's scrollback to `path` for a project.
+///
+/// Encoded under the renderer lock, since the terminal is shared with the
+/// renderer, and written to disk after it is released so the file system
+/// never holds up drawing. With the feature switched off, an old snapshot at
+/// `path` is removed instead, so it cannot be restored later as current.
+pub fn captureScrollback(self: *Termio, path: []const u8) void {
+    const io = global.io();
+    const limit = self.config.project_scrollback_limit;
+    if (limit == 0) {
+        scrollback.deleteFile(io, path);
+        return;
+    }
+
+    const bytes = bytes: {
+        self.renderer_state.mutex.lockUncancelable(io);
+        defer self.renderer_state.mutex.unlock(io);
+        break :bytes scrollback.capture(self.alloc, &self.terminal, limit) catch |err| {
+            log.warn("scrollback capture failed path={s} err={}", .{ path, err });
+            return;
+        };
+    };
+    defer self.alloc.free(bytes);
+
+    scrollback.writeFile(io, path, bytes) catch |err| {
+        log.warn("scrollback snapshot not written path={s} err={}", .{ path, err });
+        return;
+    };
+    log.info("scrollback captured bytes={} path={s}", .{ bytes.len, path });
 }
 
 /// Open this terminal's transcript, or answer null and say why.

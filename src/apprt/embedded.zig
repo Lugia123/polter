@@ -581,8 +581,17 @@ pub const Surface = struct {
         /// gets expanded into `HISTFILE` (bash/zsh) or `fish_history` +
         /// `GHOSTTY_HISTORY_RESTORE_FILE` (fish).
         ///
-        /// Declared last to match `ghostty_surface_config_s`.
+        /// Declared after `poltergeist_chat` to match `ghostty_surface_config_s`.
         history_restore: ?[*:0]const u8 = null,
+
+        /// The absolute path of a scrollback snapshot saved with this pane
+        /// by `ghostty_surface_capture_scrollback`, or null if this surface
+        /// is not being restored from a project. Unlike `history_restore`
+        /// this *is* just a path: core reads it, and deletes it if it cannot
+        /// be read. See `configpkg.Config._scrollback_restore`.
+        ///
+        /// Declared last to match `ghostty_surface_config_s`.
+        scrollback_restore: ?[*:0]const u8 = null,
     };
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
@@ -664,6 +673,14 @@ pub const Surface = struct {
             const restore = std.mem.sliceTo(c_restore, 0);
             if (restore.len > 0) {
                 config._history_restore = try config.arenaAlloc().dupe(u8, restore);
+            }
+        }
+
+        // A scrollback snapshot saved with the pane, restored by termio.
+        if (opts.scrollback_restore) |c_restore| {
+            const restore = std.mem.sliceTo(c_restore, 0);
+            if (restore.len > 0) {
+                config._scrollback_restore = try config.arenaAlloc().dupe(u8, restore);
             }
         }
 
@@ -2405,6 +2422,27 @@ pub const CAPI = struct {
     /// Update the content scale of the surface.
     export fn ghostty_surface_set_content_scale(surface: *Surface, x: f64, y: f64) void {
         surface.updateContentScale(x, y);
+    }
+
+    /// Save the surface's scrollback to `path` (absolute, UTF-8) for a
+    /// project. Returns once the request is queued, true if it was; the
+    /// file is written on the IO thread, atomically, some time later.
+    export fn ghostty_surface_capture_scrollback(
+        surface: *Surface,
+        path: ?[*:0]const u8,
+    ) bool {
+        const p = std.mem.sliceTo(path orelse return false, 0);
+        // Relative would mean relative to whatever the IO thread's working
+        // directory is, which nobody calling this knows.
+        if (!std.fs.path.isAbsolute(p)) {
+            log.warn("capture_scrollback needs an absolute path path={s}", .{p});
+            return false;
+        }
+        surface.core_surface.captureScrollback(p) catch |err| {
+            log.warn("capture_scrollback could not be queued err={}", .{err});
+            return false;
+        };
+        return true;
     }
 
     /// Update the focused state of a surface.

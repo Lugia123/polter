@@ -1881,6 +1881,27 @@ input: RepeatableReadableIO = .{},
 /// This can be changed at runtime but will only affect new terminal surfaces.
 @"scrollback-limit-lines": Limit(usize, std.math.maxInt(usize)) = .default,
 
+/// How much of each pane's scrollback is saved with a project, in bytes of
+/// saved file per pane. When the project is reopened, each pane shows what
+/// it last showed, back as far as this allowed. `0` saves nothing and
+/// restores nothing.
+///
+/// This is a cap on the file, separate from `scrollback-limit-bytes` (what a
+/// live terminal keeps in memory), because it is paid again for every pane
+/// of every saved project. When the scrollback is bigger than this, the
+/// **most recent** part is kept. There is no expiry: a project opened months
+/// later shows the same content.
+///
+/// The default is 10 MB. As a rough guide, on an 80 column terminal that
+/// holds about 120,000 rows of dense plain text, 100,000 rows of colored
+/// `git log --stat`, 65,000 rows of colored `git log -p`, and 25,000 rows of
+/// output where every line is colored and has wide characters (a colored
+/// `ls -la` in a CJK locale).
+///
+/// Kitty graphics are not saved: an image comes back as the blank space it
+/// occupied.
+@"project-scrollback-limit-bytes": Limit(u64, 10_000_000) = .default,
+
 /// Whether to compress scrollback pages while the terminal is idle.
 ///
 /// Ghostty does its best to only compress when idle and decompress
@@ -4486,6 +4507,12 @@ _conditional_state: conditional.State = .{},
 /// value, a fish session name) depends on which shell core ends up
 /// spawning.
 _history_restore: ?[]const u8 = null,
+
+/// The path of a scrollback snapshot saved with a project's pane, set by
+/// the apprt per surface (see `apprt.embedded.Surface.Options.scrollback_restore`)
+/// like `_history_restore` and for the same reason not a user-facing key.
+/// Consumed in `termio/Termio.zig`'s `init`, via `termio/scrollback.zig`.
+_scrollback_restore: ?[]const u8 = null,
 
 /// The conditional keys that are used at any point during the configuration
 /// loading. This is used to speed up the conditional evaluation process.

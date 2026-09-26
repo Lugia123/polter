@@ -446,12 +446,6 @@ fn threadMain_(self: *Thread, io: *termio.Termio) !void {
     };
     defer crash.sentry.thread_state = null;
 
-    // Get the mailbox. This must be an SPSC mailbox for threading.
-    const mailbox = switch (io.mailbox) {
-        .spsc => |*v| v,
-        // else => return error.TermioUnsupportedMailbox,
-    };
-
     // This is the data sent to xev callbacks. We want a pointer to both
     // ourselves and the thread data so we can thread that through (pun intended).
     var cb: CallbackData = .{ .self = self, .io = io };
@@ -464,15 +458,32 @@ fn threadMain_(self: *Thread, io: *termio.Termio) !void {
     defer cb.data.deinit();
     defer io.threadExit(&cb.data);
 
+    try self.run(&cb);
+}
+
+/// The event loop, and what has to happen after it stops. Apart from
+/// `threadMain_` so a test can run it without a pty.
+fn run(self: *Thread, cb: *CallbackData) !void {
+    const io = cb.io;
+
+    // Get the mailbox. This must be an SPSC mailbox for threading.
+    const mailbox = switch (io.mailbox) {
+        .spsc => |*v| v,
+        // else => return error.TermioUnsupportedMailbox,
+    };
+
+    // **After the loop, whatever it stopped for.** See `finishCaptures`.
+    defer self.finishCaptures(cb);
+
     // Start the async handlers.
-    mailbox.wakeup.wait(&self.loop, &self.wakeup_c, CallbackData, &cb, wakeupCallback);
-    self.stop.wait(&self.loop, &self.stop_c, CallbackData, &cb, stopCallback);
+    mailbox.wakeup.wait(&self.loop, &self.wakeup_c, CallbackData, cb, wakeupCallback);
+    self.stop.wait(&self.loop, &self.stop_c, CallbackData, cb, stopCallback);
 
     // Start Poltergeist's quiescence sampling if this surface is watched.
     // Failing to set it up must never take the terminal down with it: a
     // monitoring feature is not worth a dead pty.
     if (io.config.poltergeist_watch) {
-        self.startQuiescence(io, &cb) catch |err| {
+        self.startQuiescence(io, cb) catch |err| {
             log.warn("poltergeist: could not start quiescence sampling err={}", .{err});
         };
     }
@@ -481,6 +492,32 @@ fn threadMain_(self: *Thread, io: *termio.Termio) !void {
     log.debug("starting IO thread", .{});
     defer log.debug("starting IO thread shutdown", .{});
     try self.loop.run(.until_done);
+}
+
+/// Write the scrollback snapshots still queued when the loop stopped.
+///
+/// **A surface closing does not drain its mailbox.** `Surface.deinit`
+/// signals `stop`, `stopCallback` stops the loop, and whatever the wakeup
+/// had not reached yet is freed unprocessed by `Mailbox.deinit`. For most
+/// messages that is right -- nobody will see a resize again. A capture is
+/// the exception: "save the project and close the window" queues one per
+/// pane and then closes every pane, so dropping it here loses the snapshot
+/// in exactly the case the feature is for, and silently -- the project
+/// just reopens without its scrollback.
+///
+/// The terminal is still whole here (`Termio.deinit` runs after this thread
+/// is joined), so the capture is as good as one made a moment earlier.
+/// Everything else popped is freed, as `Mailbox.deinit` would have.
+fn finishCaptures(self: *Thread, cb: *CallbackData) void {
+    _ = self;
+    const queue = cb.io.mailbox.spsc.queue;
+    while (queue.pop(global.io())) |msg| switch (msg) {
+        .capture_scrollback => |v| {
+            defer v.alloc.free(v.path);
+            cb.io.captureScrollback(v.path);
+        },
+        else => msg.deinit(),
+    };
 }
 
 /// This is the data passed to xev callbacks on the thread.
@@ -512,6 +549,9 @@ fn drainMailbox(
         while (mailbox.pop(global.io())) |msg| {
             switch (msg) {
                 .poltergeist_watch => |want| if (want) answerSampling(cb.io, false),
+                // The shell is gone but the screen it left is not, and a
+                // project saved now should still get it.
+                .capture_scrollback => |v| cb.io.captureScrollback(v.path),
                 else => {},
             }
             msg.deinit();
@@ -585,6 +625,10 @@ fn drainMailbox(
             .kitty_clipboard_grant_write => |v| {
                 defer v.alloc.free(v.pw);
                 try io.kittyClipboardGrant(v.pw, .write);
+            },
+            .capture_scrollback => |v| {
+                defer v.alloc.free(v.path);
+                io.captureScrollback(v.path);
             },
             .start_synchronized_output => self.startSynchronizedOutput(cb),
             .linefeed_mode => |v| self.flags.linefeed_mode = v,
@@ -1333,4 +1377,67 @@ test "a watch asked of a working IO thread is confirmed, every time it is asked 
     // Stopping is not answered.
     thread.setQuiescenceWatch(io, &cb, false);
     try testing.expectEqual(@as(usize, 0), queue.len);
+}
+
+test "a capture queued as the surface closes is still written" {
+    // "Save the project, close the window": the capture is queued and the
+    // stop follows before the IO thread has woken for it. The wakeup is
+    // never sent here, which is the worst case of that race -- the loop
+    // sees only the stop.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const terminalpkg = @import("../terminal/main.zig");
+
+    // Only what `run` and `Termio.captureScrollback` read is set, as in the
+    // tests above.
+    const io = try alloc.create(termio.Termio);
+    defer alloc.destroy(io);
+    io.* = undefined;
+    io.alloc = alloc;
+    io.config.poltergeist_watch = false;
+    io.config.project_scrollback_limit = 10_000_000;
+    io.terminal = try .init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer io.terminal.deinit(alloc);
+    {
+        var s = io.terminal.vtStream();
+        defer s.deinit();
+        s.nextSlice("before close\r\n");
+    }
+    var mutex: std.Io.Mutex = .init;
+    var state: renderer.State = .{ .mutex = &mutex, .terminal = &io.terminal };
+    io.renderer_state = &state;
+    io.mailbox = try .initSPSC(alloc);
+    defer io.mailbox.deinit(alloc);
+
+    var thread: Thread = try .init(alloc);
+    defer thread.deinit();
+    var cb: CallbackData = .{ .self = &thread, .io = io };
+    cb.data = undefined;
+
+    var raw: [6]u8 = undefined;
+    testing.io.random(&raw);
+    var dir_buf: [64]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&dir_buf, "/tmp/polter-close-{x}", .{&raw});
+    defer std.Io.Dir.cwd().deleteTree(testing.io, dir) catch {};
+    var path_buf: [96]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/0.snap", .{dir});
+
+    io.mailbox.send(.{ .capture_scrollback = .{
+        .alloc = alloc,
+        .path = try alloc.dupe(u8, path),
+    } }, null);
+    try thread.stop.notify();
+    try thread.run(&cb);
+
+    // The file is there and is a whole snapshot of what was on screen.
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, alloc, .unlimited);
+    defer alloc.free(bytes);
+    var source: std.Io.Reader = .fixed(bytes);
+    var decoded = try terminalpkg.snapshot.decodeExact(alloc, testing.io, &source, .{
+        .max_continuation_bytes = 0,
+    });
+    defer decoded.deinit(alloc);
+    const text = try decoded.terminal.?.plainString(alloc);
+    defer alloc.free(text);
+    try testing.expect(std.mem.indexOf(u8, text, "before close") != null);
 }

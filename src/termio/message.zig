@@ -112,6 +112,10 @@ pub const Message = union(enum) {
     kitty_clipboard_grant_read: KittyClipboardGrant,
     kitty_clipboard_grant_write: KittyClipboardGrant,
 
+    /// Save the terminal's scrollback to a file for a project. See
+    /// `Termio.captureScrollback`. The path is allocated and must be freed.
+    capture_scrollback: CaptureScrollback,
+
     /// Write where the data fits in the union.
     write_small: WriteReq.Small,
 
@@ -126,6 +130,12 @@ pub const Message = union(enum) {
     pub const KittyClipboardGrant = struct {
         alloc: Allocator,
         pw: []const u8,
+    };
+
+    /// The payload of `capture_scrollback`.
+    pub const CaptureScrollback = struct {
+        alloc: Allocator,
+        path: []const u8,
     };
 
     /// Return a write request for the given data. This will use
@@ -151,6 +161,7 @@ pub const Message = union(enum) {
             .kitty_clipboard_grant_read,
             .kitty_clipboard_grant_write,
             => |v| v.alloc.free(v.pw),
+            .capture_scrollback => |v| v.alloc.free(v.path),
             else => {},
         }
     }
