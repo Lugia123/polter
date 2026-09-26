@@ -175,6 +175,24 @@ KNOWN = {
     "dev-docs/macos/driving-the-mac-app.md":
         "bundle id is the TCC subject the documented commands query by",
     "src/main_ghostty.zig": "log predicate in a comment quotes the bundle id",
+    # The isolated-test-instance launcher. Both hits are the *installed* app's
+    # bundle id, and the id is the whole mechanism rather than a decoration:
+    # step 1 refuses to start anything whose `CFBundleIdentifier` equals it,
+    # because a Release-configuration build shares the user's id and would
+    # therefore restore -- and possibly overwrite -- the window state of the
+    # Polter the user is working in. Paraphrasing the id turns that gate into
+    # a comparison that never matches, which is worse than the hit: the check
+    # would pass every build, including the one it exists to stop.
+    #
+    # The cost is the one this file's own documentation names: KNOWN allows by
+    # *path*, so every hit in this launcher is now skipped, not just these two.
+    # ⚠️ That matters more here than for the menu builders above, because this
+    # script's whole job is to compose paths -- a state directory, a socket
+    # directory, an app bundle. Those must stay arguments and `mktemp` output.
+    # A literal path off this machine written into this file is exactly what
+    # must not leak, and from today this gate will not be the thing that says so.
+    "tools/mac-test-instance.sh":
+        "refuses to launch a build whose bundle id is the installed app's",
     "src/build/PolterVersion.zig": "names the fork's own remote, Lugia123/polter",
     "macos/Ghostty-Info.plist": "pasteboard type derived from the bundle id",
     "macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift":

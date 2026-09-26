@@ -4,9 +4,10 @@
 # gives us on Windows, built out of what the system already ships --
 # `screencapture`, `osascript` and the accessibility API behind System Events.
 #
-# Everything here needs one permission: **Accessibility**, granted to the
-# *responsible* process, which is the app that owns the terminal this runs in
-# (`Polter` on this machine), not to `osascript` and not to this script. See
+# Two permissions, both granted to the *responsible* process -- the app that
+# owns the terminal this runs in (`Polter` on this machine), not `osascript`
+# and not this script: **Accessibility** for `tree`, `click` and `windows`,
+# and **Screen Recording** for `shot`. Either can be missing on its own. See
 # `dev-docs/macos/driving-the-mac-app.md` -- the reasoning there is what makes
 # the error messages below readable.
 #
@@ -25,7 +26,7 @@ die() { printf 'mac-drive: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat >&2 <<'USAGE'
-usage: mac-drive.sh <pid> shot <out.png>
+usage: mac-drive.sh <pid> shot <out.png> [<window title>]
        mac-drive.sh <pid> tree [<menu-bar-item>]
        mac-drive.sh <pid> click <menu-bar-item> <menu-item>
        mac-drive.sh <pid> windows
@@ -110,20 +111,71 @@ require_process() {
     printf '%s' "$out"
 }
 
+# The window server's own list of the target's on-screen, ordinary (layer 0)
+# windows, front to back, one "<window id><TAB><title>" per line. Read through
+# CoreGraphics rather than System Events: it is the list `screencapture -l`
+# takes its ids from, and it is filtered on the pid the kernel reports, so it
+# cannot resolve to another process by name the way the AppleScript can.
+cg_windows() {
+    osascript -l JavaScript - "$pid" <<'EOF'
+ObjC.import('CoreGraphics');
+function run(argv) {
+  const pid = parseInt(argv[0], 10);
+  const list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo(
+    $.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, 0));
+  const out = [];
+  for (let i = 0; i < list.count; i++) {
+    const w = list.objectAtIndex(i);
+    if (w.objectForKey('kCGWindowOwnerPID').js !== pid) continue;
+    if (w.objectForKey('kCGWindowLayer').js !== 0) continue;
+    const name = w.objectForKey('kCGWindowName');
+    out.push(w.objectForKey('kCGWindowNumber').js + '\t' + (name ? name.js : ''));
+  }
+  return out.join('\n');
+}
+EOF
+}
+
 case "$action" in
 shot)
-    [ $# -eq 1 ] || usage
+    [ $# -ge 1 ] && [ $# -le 2 ] || usage
     out=$1
-    # -x: no camera sound. Note this captures the *screen*, not the window:
+    title=${2-}
+    # **One window of the target, by id -- never the screen.** This used to
+    # be `screencapture -x "$out"`, the whole display, and that could only
+    # show the target when it happened to be in front. When it was not, the
+    # picture was of whatever was: on this machine, the user's own Polter,
+    # which has a prompt in it too. A check reading "a prompt is visible"
+    # then passed on the wrong program -- the worst way for it to pass.
+    #
+    # `-l <id>` draws that window's own contents whether or not it is in
+    # front and whether or not anything covers it, so the target no longer
+    # has to be raised, and raising it (which takes the user's focus) is not
+    # part of taking a picture any more. A minimised or off-screen window is
+    # not in the list and is an error here, not a picture of something else.
+    #
+    # With no title, the frontmost of the target's windows; with one, the
+    # first whose title is exactly that. A native tab bar is one window per
+    # tab and only the selected tab is on screen.
+    wins=$(cg_windows) || die "could not read the window list for pid $pid"
+    [ -n "$wins" ] || die "pid $pid has no on-screen window to capture"
+    if [ -n "$title" ]; then
+        wid=$(printf '%s\n' "$wins" | awk -F '\t' -v t="$title" '$2 == t { print $1; exit }')
+        [ -n "$wid" ] || die "pid $pid has no on-screen window titled '$title' (has: $(printf '%s' "$wins" | cut -f2 | tr '\n' '|'))"
+    else
+        wid=$(printf '%s\n' "$wins" | head -n 1 | cut -f1)
+    fi
+
+    # -x: no camera sound. -o: no shadow, so the image is the window only.
     # screencapture needs Screen Recording, which is a different permission
     # from Accessibility and is granted to the same responsible process.
     #
     # An unauthorised screencapture prints "could not create image from
     # display", exits 1 and **writes no file** -- so the file check below is
     # not belt-and-braces, it is the check that catches a half-failure.
-    screencapture -x "$out" || die "screencapture failed (Screen Recording not granted to the responsible process?)"
+    screencapture -x -o -l"$wid" "$out" || die "screencapture failed (Screen Recording not granted to the responsible process?)"
     [ -s "$out" ] || die "screencapture exited 0 but produced no file at $out"
-    printf '%s\n' "$out"
+    printf '%s\twindow %s of pid %s\n' "$out" "$wid" "$pid"
     ;;
 
 tree)
