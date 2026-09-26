@@ -1098,7 +1098,14 @@ fn same_commit(a: &str, b: &str) -> bool {
 /// unusual, so nobody reads it on an ordinary day.
 fn unknown_pairing_reason(host_missing: bool, core_readable: bool) -> &'static str {
     match (host_missing, core_readable) {
-        (true, false) => "neither side carries a commit this build can read",
+        // Both halves negative, and said as negatives: "neither side carries a
+        // commit" read correctly only by the accident of a negative subject
+        // under an affirmative verb, and the test asking for "no commit" was
+        // red from the day it was written (issue #14).
+        (true, false) => {
+            "neither side can be compared: the host carries no commit, and \
+             ghostty-internal.dll's version string carries none this build can read"
+        }
         (true, true) => {
             "the host carries no commit at all -- it was built without one embedded"
         }
