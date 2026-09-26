@@ -15,6 +15,15 @@ extension TerminalRestorableState {
         let effectiveFullscreenMode: FullscreenMode?
         let tabColor: TerminalTabColor?
         let titleOverride: String?
+
+        // MARK: - Polter: project binding
+        //
+        // Not a version bump: optional, so state written before it existed
+        // decodes with it nil, and an older build ignores the key. See
+        // `TerminalController.boundProject` -- this is what makes a tab's
+        // binding survive a restart, and it lives here rather than in a
+        // file of its own so it survives exactly when the tab does.
+        var boundProject: String?
     }
 }
 
@@ -26,6 +35,7 @@ extension TerminalRestorableState.InternalState where ViewType == Ghostty.Surfac
             effectiveFullscreenMode: controller.fullscreenStyle?.fullscreenMode,
             tabColor: (controller.window as? TerminalWindow)?.tabColor,
             titleOverride: controller.titleOverride,
+            boundProject: controller.boundProject,
         )
     }
 }

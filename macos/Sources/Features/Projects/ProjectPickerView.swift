@@ -27,13 +27,19 @@ struct ProjectPickerView: View {
     /// see `ProjectStore.Entry`, where the name *is* the on-disk identity.
     var onSave: (String) -> Void = { _ in }
     var onLoad: (ProjectStore.Entry) -> Void = { _ in }
-    var onDelete: (ProjectStore.Entry) -> Void = { _ in }
+    /// Throws when the store refuses (a tab is bound to it); the row then
+    /// stays and the reason is shown.
+    var onDelete: (ProjectStore.Entry) throws -> Void = { _ in }
+    /// Swap the project with its `.prev` -- see `ProjectStore.restorePrevious`.
+    var onRestorePrevious: (ProjectStore.Entry) throws -> Void = { _ in }
     var onCancel: () -> Void = {}
 
     @State private var entries: [ProjectStore.Entry] = []
     @State private var newName: String = ""
     @State private var pendingOverwrite: ProjectStore.Entry?
     @State private var pendingDelete: ProjectStore.Entry?
+    @State private var pendingRestore: ProjectStore.Entry?
+    @State private var failure: String?
     @FocusState private var newNameFocused: Bool
 
     var body: some View {
@@ -89,12 +95,33 @@ struct ProjectPickerView: View {
         ) { entry in
             Button(String(localized: "Cancel", comment: "删除确认框：取消按钮"), role: .cancel) {}
             Button(String(localized: "Delete", comment: "删除确认框：删除按钮"), role: .destructive) {
-                onDelete(entry)
-                entries.removeAll { $0.id == entry.id }
+                attempt { try onDelete(entry) }
             }
         } message: { entry in
             // One line -- see the note above `overwriteMessage`.
             Text(String(localized: "\"\(entry.name)\" will be permanently deleted.", comment: "删除确认框正文，参数是项目名"))
+        }
+        .alert(
+            String(localized: "Restore Previous Version?", comment: "恢复上一版确认框标题"),
+            isPresented: restoreAlertBinding,
+            presenting: pendingRestore
+        ) { entry in
+            Button(String(localized: "Cancel", comment: "恢复上一版确认框：取消按钮"), role: .cancel) {}
+            Button(String(localized: "Restore", comment: "恢复上一版确认框：恢复按钮")) {
+                attempt { try onRestorePrevious(entry) }
+            }
+        } message: { entry in
+            // One line -- see the note above `overwriteMessage`.
+            Text(String(localized: "\"\(entry.name)\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it.", comment: "恢复上一版确认框正文，参数是项目名"))
+        }
+        .alert(
+            String(localized: "Project Error", comment: "项目功能出错提醒标题"),
+            isPresented: failureAlertBinding,
+            presenting: failure
+        ) { _ in
+            Button(String(localized: "OK", comment: "项目功能出错提醒：确定按钮")) {}
+        } message: { message in
+            Text(message)
         }
     }
 
@@ -142,6 +169,15 @@ struct ProjectPickerView: View {
                 }
                 Spacer()
                 if case .manage = mode {
+                    if entry.hasPrevious {
+                        Button {
+                            pendingRestore = entry
+                        } label: {
+                            Image(systemName: "clock.arrow.circlepath")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(String(localized: "Restore Previous Version", comment: "项目管理：恢复上一版按钮的提示"))
+                    }
                     Button {
                         pendingDelete = entry
                     } label: {
@@ -184,6 +220,17 @@ struct ProjectPickerView: View {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         onSave(trimmed)
+    }
+
+    /// Run a store action, then show what's on disk now -- or, when the
+    /// store refused, why.
+    private func attempt(_ action: () throws -> Void) {
+        do {
+            try action()
+        } catch {
+            failure = error.localizedDescription
+        }
+        entries = store.list()
     }
 
     private func reload() {
@@ -233,6 +280,18 @@ struct ProjectPickerView: View {
         Binding(
             get: { pendingOverwrite != nil },
             set: { if !$0 { pendingOverwrite = nil } })
+    }
+
+    private var restoreAlertBinding: Binding<Bool> {
+        Binding(
+            get: { pendingRestore != nil },
+            set: { if !$0 { pendingRestore = nil } })
+    }
+
+    private var failureAlertBinding: Binding<Bool> {
+        Binding(
+            get: { failure != nil },
+            set: { if !$0 { failure = nil } })
     }
 
     private var deleteAlertBinding: Binding<Bool> {

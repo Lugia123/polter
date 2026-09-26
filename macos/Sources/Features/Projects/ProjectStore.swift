@@ -29,11 +29,17 @@ final class ProjectStore {
         let name: String
         let savedAt: Date
         let paneCount: Int
+        /// Whether a `.prev` generation exists to go back to -- see
+        /// `ProjectFileWriter.write`.
+        var hasPrevious = false
     }
 
     enum StoreError: LocalizedError {
         case nameEmpty
         case notFound
+        /// `name` is bound to an open tab, titled `holder`, and the action
+        /// would either give it a second writer or change the file under it.
+        case boundElsewhere(name: String, holder: String)
 
         var errorDescription: String? {
             switch self {
@@ -41,8 +47,20 @@ final class ProjectStore {
                 return String(localized: "Project name can't be empty.", comment: "项目存储出错：名字为空")
             case .notFound:
                 return String(localized: "That project no longer exists.", comment: "项目存储出错：项目已不存在")
+            case .boundElsewhere(let name, let holder):
+                return String(localized: "\"\(name)\" is open in the tab \"\(holder)\", which saves it automatically. Close that tab first.", comment: "项目存储出错：项目已绑定到另一个 tab，参数依次是项目名、那个 tab 的标题")
             }
         }
+    }
+
+    /// Which open tab each project is bound to. One per store, so tests
+    /// with their own directory get their own bindings.
+    let bindings = ProjectBindingRegistry()
+
+    /// The identity a binding is keyed by: the project's file, so names
+    /// that sanitize to one filename are one project.
+    func bindingKey(name: String) -> String {
+        fileURL(name: name).standardizedFileURL.path
     }
 
     private let directory: URL
@@ -87,43 +105,125 @@ final class ProjectStore {
             at: directory,
             includingPropertiesForKeys: nil)) ?? []
 
-        let entries: [Entry] = urls
-            .filter { $0.pathExtension == "json" }
-            .compactMap { url -> Entry? in
-                guard let data = try? Data(contentsOf: url),
-                      let file = try? ProjectFile.decode(from: data)
-                else { return nil }
-                return Entry(name: file.name, savedAt: file.savedAtDate, paneCount: file.paneCount)
-            }
+        let decoded = ProjectListing.decode(urls.filter { $0.pathExtension == "json" }) { url, error in
+            Self.logger.warning(
+                "not listing '\(url.lastPathComponent, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+        }
+        let entries = decoded.map { makeEntry($0.file, at: $0.url) }
 
         return entries.sorted { $0.savedAt > $1.savedAt }
     }
 
     func entry(name: String) -> Entry? {
-        guard let data = try? Data(contentsOf: fileURL(name: name)),
+        let url = fileURL(name: name)
+        guard let data = try? Data(contentsOf: url),
               let file = try? ProjectFile.decode(from: data)
         else { return nil }
-        return Entry(name: file.name, savedAt: file.savedAtDate, paneCount: file.paneCount)
+        return makeEntry(file, at: url)
     }
 
-    /// Save (or overwrite -- see `Entry`) a project under `name`, capturing
-    /// `tree`'s current shape and each pane's `cwd`/`title`.
+    private func makeEntry(_ file: ProjectFile, at url: URL) -> Entry {
+        Entry(
+            name: file.name,
+            savedAt: file.savedAtDate,
+            paneCount: file.paneCount,
+            hasPrevious: FileManager.default.fileExists(atPath: ProjectFileWriter.previousURL(for: url).path))
+    }
+
+    /// Save (or overwrite -- see `Entry`) a project under `name`: `tree`'s
+    /// current shape, each pane's `cwd`/`title`/`history`, and each pane's
+    /// scrollback snapshot name.
+    ///
+    /// `capturingScrollback` is whether to also ask the core to write each
+    /// pane's snapshot, handing a pane that has none a new number. Only an
+    /// explicit save and the flush when a bound tab closes do that: a full
+    /// snapshot is up to `project-scrollback-limit-bytes` per pane, and
+    /// autosave runs whenever a title changes. Autosave writes the layout
+    /// and carries each pane's existing snapshot name over unchanged.
+    ///
+    /// - Important: When capturing, call this while every pane in `tree` is
+    ///   still alive. The snapshots are written asynchronously on each
+    ///   surface's IO thread; the core guarantees a capture requested before
+    ///   `ghostty_surface_free` has landed by the time that returns, and
+    ///   nothing about one requested after.
     @discardableResult
-    func save(name: String, tree: SplitTree<Ghostty.SurfaceView>) throws -> Entry {
+    func save(
+        name: String,
+        tree: SplitTree<Ghostty.SurfaceView>,
+        capturingScrollback: Bool = true
+    ) throws -> Entry {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw StoreError.nameEmpty }
 
-        let savedAt = Int(Date().timeIntervalSince1970)
-        let root = tree.root.map { ProjectNode.capturing($0) }
-        let file = ProjectFile(name: trimmed, savedAt: savedAt, root: root)
-        let data = try file.encoded()
+        let url = fileURL(name: trimmed)
+        let scrollbackDirectory = ProjectScrollback.directory(forProjectFile: url)
+        let existing = (try? Data(contentsOf: url)).flatMap { try? ProjectFile.decode(from: $0) }
+        let onDisk = (try? FileManager.default.contentsOfDirectory(atPath: scrollbackDirectory.path)) ?? []
+        var allocator = ProjectScrollback.Allocator(
+            project: bindingKey(name: trimmed),
+            storedNext: existing?.nextScrollback,
+            inUse: (existing?.scrollbackFilenames ?? []) + onDisk)
 
-        try data.write(to: fileURL(name: trimmed), options: .atomic)
+        if capturingScrollback && tree.root != nil {
+            try? FileManager.default.createDirectory(
+                at: scrollbackDirectory,
+                withIntermediateDirectories: true)
+        }
 
-        Self.logger.info(
-            "saved project '\(trimmed, privacy: .public)' with \(tree.count, privacy: .public) pane(s)")
+        // A pane's snapshot name is recorded whether or not the capture
+        // request was accepted: the name is the pane's for life, and a name
+        // whose file never landed reads back as "no scrollback" -- the core
+        // starts an empty terminal -- which is today's behavior.
+        let root = tree.root.map { node in
+            ProjectNode.capturing(node) { view in
+                guard let snapshot = allocator.snapshot(for: view.projectSnapshot, allocate: capturingScrollback) else {
+                    return ""
+                }
+                view.projectSnapshot = snapshot
+                if capturingScrollback, let surface = view.surface {
+                    let path = scrollbackDirectory.appendingPathComponent(snapshot.filename).path
+                    if !ghostty_surface_capture_scrollback(surface, path) {
+                        Self.logger.warning("scrollback capture for '\(snapshot.filename, privacy: .public)' was not queued")
+                    }
+                }
+                return snapshot.filename
+            }
+        }
 
-        return Entry(name: trimmed, savedAt: file.savedAtDate, paneCount: tree.count)
+        let entry = try write(ProjectFile(
+            name: trimmed,
+            savedAt: Int(Date().timeIntervalSince1970),
+            root: root,
+            nextScrollback: allocator.next))
+
+        // Kept: exactly the names the saved tree refers to (and their
+        // in-flight `.tmp`). A pane closed since the last save leaves a
+        // snapshot nothing refers to, and it goes -- here, on every save,
+        // not only the capturing ones.
+        ProjectScrollback.prune(
+            directory: scrollbackDirectory,
+            keeping: Set(root?.scrollbackFilenames ?? []))
+
+        return entry
+    }
+
+    /// The file-level half of `save`, keeping one previous generation --
+    /// see `ProjectFileWriter.write`. Separate so it can be driven without
+    /// live surfaces.
+    @discardableResult
+    func write(_ file: ProjectFile) throws -> Entry {
+        let url = fileURL(name: file.name)
+        let outcome = try ProjectFileWriter.write(file, to: url)
+
+        switch outcome {
+        case .unchanged:
+            Self.logger.debug("project '\(file.name, privacy: .public)' unchanged, not written")
+        case .written(let rotated):
+            Self.logger.info(
+                "saved project '\(file.name, privacy: .public)' with \(file.paneCount, privacy: .public) pane(s), previous kept: \(rotated, privacy: .public)")
+        }
+
+        return makeEntry(file, at: url)
     }
 
     /// Materialize a saved project's tree, ready to hand to
@@ -135,16 +235,57 @@ final class ProjectStore {
     ///   then. Use `list()`/`entry(name:)` for anything that just displays
     ///   metadata.
     func loadTree(name: String, app: ghostty_app_t) throws -> SplitTree<Ghostty.SurfaceView> {
-        guard let data = try? Data(contentsOf: fileURL(name: name)) else {
+        let url = fileURL(name: name)
+        guard let data = try? Data(contentsOf: url) else {
             throw StoreError.notFound
         }
         let file = try ProjectFile.decode(from: data)
-        let root = file.root.map { $0.materializing(app) }
+        let location = ProjectScrollback.Location(
+            directory: ProjectScrollback.directory(forProjectFile: url),
+            key: bindingKey(name: name))
+        let root = file.root.map { $0.materializing(app, scrollback: location) }
         return SplitTree(root: root, zoomed: nil)
     }
 
+    /// Put `name`'s previous generation back, keeping the current one as
+    /// the new `.prev` (so this is undone by doing it again).
+    ///
+    /// Refused while a tab is bound to the project: that tab's layout is
+    /// what it would autosave next, so the restored file would be
+    /// overwritten by the very layout it was restored to get away from.
+    ///
+    /// Scrollback isn't versioned (see `dev-docs/project-scrollback.md`
+    /// 3.5.6): a pane that exists only in the previous version restores
+    /// without its history.
+    func restorePrevious(name: String) throws {
+        try refuseIfBound(name: name)
+        try ProjectFileWriter.restorePrevious(at: fileURL(name: name))
+        Self.logger.info("restored previous version of project '\(name, privacy: .public)'")
+    }
+
+    /// The title of the tab bound to `name`, for saying who holds it.
+    func holderTitle(name: String) -> String? {
+        guard let holder = bindings.owner(of: bindingKey(name: name)) else { return nil }
+        return (holder as? ProjectBindingHolder)?.projectBindingTitle ?? ""
+    }
+
+    private func refuseIfBound(name: String) throws {
+        if let holder = holderTitle(name: name) {
+            throw StoreError.boundElsewhere(name: name, holder: holder)
+        }
+    }
+
+    /// Refused while a tab is bound to the project -- it would write the
+    /// project straight back on its next autosave.
     func delete(name: String) throws {
-        try FileManager.default.removeItem(at: fileURL(name: name))
+        try refuseIfBound(name: name)
+        let url = fileURL(name: name)
+        try FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: ProjectFileWriter.previousURL(for: url))
+        // Snapshots mean nothing without the project that captured them
+        // (unlike `history`, which outlives any one project). Absent is
+        // fine: a project saved before scrollback existed has none.
+        try? FileManager.default.removeItem(at: ProjectScrollback.directory(forProjectFile: url))
         Self.logger.info("deleted project '\(name, privacy: .public)'")
     }
 

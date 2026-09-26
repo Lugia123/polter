@@ -76,6 +76,9 @@ final class TerminalRestorableState: TerminalRestorable {
     var titleOverride: String? {
         internalState.titleOverride
     }
+    var boundProject: String? {
+        internalState.boundProject
+    }
 
     /// Internal State we use to perform unit tests
     ///
@@ -170,6 +173,10 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
 
         // Restore the tab title override
         c.titleOverride = state.titleOverride
+
+        // Restore the project binding, so autosave carries on after a
+        // restart instead of quietly falling back to manual saving.
+        c.restoreProjectBinding(state.boundProject)
 
         // Setup our restored state on the controller
         // Find the focused surface in surfaceTree

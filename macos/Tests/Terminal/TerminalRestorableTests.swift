@@ -111,6 +111,37 @@ struct TerminalRestorableTests {
     }
 }
 
+extension TerminalRestorableTests {
+    /// The project binding has to survive what a restart does to window
+    /// state -- an NSKeyedArchiver round trip -- or autosave quietly falls
+    /// back to manual saving after the first relaunch. A test that only
+    /// checked the binding within one run would stay green without this.
+    @MainActor
+    @Test func projectBindingSurvivesARelaunch() throws {
+        let tree = try SplitTreeTests.makeHorizontalSplit()
+        let state = DummyTerminalRestorableState(.init(
+            focusedSurface: nil,
+            surfaceTree: tree.0,
+            effectiveFullscreenMode: nil,
+            tabColor: nil,
+            titleOverride: nil,
+            boundProject: "写 retry 装饰器"))
+
+        let data = try archive(CodableBridge(state), className: "CodableBridge<Terminal>")
+        let restored = try unarchive(data, className: "CodableBridge<Terminal>", as: CodableBridge<DummyTerminalRestorableState>.self)
+            .value.internalState
+        #expect(restored.boundProject == "写 retry 装饰器")
+    }
+
+    /// State written before the binding existed restores unbound.
+    @MainActor
+    @Test func stateFromBeforeBindingRestoresUnbound() throws {
+        let v7 = try unarchive(v7Data, className: "CodableBridge<Terminal>", as: CodableBridge<DummyTerminalRestorableState>.self)
+            .value.internalState
+        #expect(v7.boundProject == nil)
+    }
+}
+
 private extension TerminalRestorableTests {
     func archive<T: NSObject & NSSecureCoding>(_ obj: T, className: String?) throws -> Data {
         let archiver = NSKeyedArchiver(requiringSecureCoding: true)

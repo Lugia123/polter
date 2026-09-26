@@ -73,6 +73,20 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// `TerminalController+Projects.swift`.
     var isPresentingCloseSaveAlert = false
 
+    /// The project this tab is bound to and autosaves into, or nil. Set by
+    /// saving as a project, by loading one, and by window restoration --
+    /// see `bindProject` in `TerminalController+Projects.swift`. Kept in
+    /// `TerminalRestorableState` so it lives exactly as long as the tab
+    /// does, restarts included.
+    var boundProject: String?
+
+    /// Coalesces the stream of layout/cwd/title changes into one write --
+    /// nil while unbound.
+    var projectAutosave: ProjectAutosaveDebouncer<MainQueueScheduler>?
+
+    /// What `projectAutosave` is listening to; emptied on unbind.
+    var projectAutosaveCancellables: Set<AnyCancellable> = []
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -1239,6 +1253,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     override func windowWillClose(_ notification: Notification) {
         super.windowWillClose(notification)
         cancelPendingInitialPresentation()
+        // The last change before closing still counts, the scrollback is
+        // captured while the panes are still alive, and the binding must go
+        // with the tab so the project can be opened again.
+        saveBoundProjectOnClose()
+        unbindProject()
         self.relabelTabs()
 
         // If we remove a window, we reset the cascade point to the key window so that

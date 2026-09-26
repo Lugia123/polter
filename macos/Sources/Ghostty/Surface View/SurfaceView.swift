@@ -602,6 +602,14 @@ extension Ghostty {
         /// when loading a project.
         var historyRestore: String?
 
+        /// Absolute path of a scrollback snapshot to restore this surface's
+        /// screen and history from, or nil for a surface that starts empty.
+        /// Passed straight through to `ghostty_surface_config_s.scrollback_restore`.
+        /// Not checked here: a missing, stale or undecodable file makes the
+        /// core start an empty terminal and delete it. Set by
+        /// `ProjectNode.materializing` when loading a project.
+        var scrollbackRestore: String?
+
         /// Wait after the command
         var waitAfterCommand: Bool = false
 
@@ -673,27 +681,33 @@ extension Ghostty {
                         return try historyRestore.withCString { cHistoryRestore in
                             config.history_restore = cHistoryRestore
 
-                            // Convert dictionary to arrays for easier processing
-                            let keys = Array(environmentVariables.keys)
-                            let values = Array(environmentVariables.values)
+                            // Same shape as `history_restore`: a path the core reads and, if it
+                            // can't decode it, deletes -- see `scrollbackRestore` above.
+                            return try scrollbackRestore.withCString { cScrollbackRestore in
+                                config.scrollback_restore = cScrollbackRestore
 
-                            // Create C strings for all keys and values
-                            return try keys.withCStrings { keyCStrings in
-                                return try values.withCStrings { valueCStrings in
-                                    // Create array of ghostty_env_var_s
-                                    var envVars = [ghostty_env_var_s]()
-                                    envVars.reserveCapacity(environmentVariables.count)
-                                    for i in 0..<environmentVariables.count {
-                                        envVars.append(ghostty_env_var_s(
-                                            key: keyCStrings[i],
-                                            value: valueCStrings[i]
-                                        ))
-                                    }
+                                // Convert dictionary to arrays for easier processing
+                                let keys = Array(environmentVariables.keys)
+                                let values = Array(environmentVariables.values)
 
-                                    return try envVars.withUnsafeMutableBufferPointer { buffer in
-                                        config.env_vars = buffer.baseAddress
-                                        config.env_var_count = environmentVariables.count
-                                        return try body(&config)
+                                // Create C strings for all keys and values
+                                return try keys.withCStrings { keyCStrings in
+                                    return try values.withCStrings { valueCStrings in
+                                        // Create array of ghostty_env_var_s
+                                        var envVars = [ghostty_env_var_s]()
+                                        envVars.reserveCapacity(environmentVariables.count)
+                                        for i in 0..<environmentVariables.count {
+                                            envVars.append(ghostty_env_var_s(
+                                                key: keyCStrings[i],
+                                                value: valueCStrings[i]
+                                            ))
+                                        }
+
+                                        return try envVars.withUnsafeMutableBufferPointer { buffer in
+                                            config.env_vars = buffer.baseAddress
+                                            config.env_var_count = environmentVariables.count
+                                            return try body(&config)
+                                        }
                                     }
                                 }
                             }

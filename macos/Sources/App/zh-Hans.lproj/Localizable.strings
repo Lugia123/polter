@@ -397,3 +397,10 @@
 "Go to Basics" = "去基本信息";
 "Filter skills" = "筛选 skill";
 "Filter MCP servers" = "筛选 MCP 服务器";
+
+/* Project autosave (#833) */
+"\"%@\" is open in the tab \"%@\", which saves it automatically. Close that tab first." = "“%@”已在标签页“%@”中打开，那个标签页会自动保存它。请先关闭那个标签页。";
+"Restore Previous Version?" = "恢复上一版？";
+"Restore" = "恢复";
+"\"%@\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it." = "“%@”将回到上一次改动之前的布局。当前版本会保留下来，再做一次就能撤销。";
+"Restore Previous Version" = "恢复上一版";

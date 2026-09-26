@@ -383,3 +383,10 @@
 "Go to Basics" = "Go to Basics";
 "Filter skills" = "Filter skills";
 "Filter MCP servers" = "Filter MCP servers";
+
+/* Project autosave (#833) */
+"\"%@\" is open in the tab \"%@\", which saves it automatically. Close that tab first." = "\"%@\" is open in the tab \"%@\", which saves it automatically. Close that tab first.";
+"Restore Previous Version?" = "Restore Previous Version?";
+"Restore" = "Restore";
+"\"%@\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it." = "\"%@\" goes back to its layout before the last change. The current version is kept, so doing this again undoes it.";
+"Restore Previous Version" = "Restore Previous Version";

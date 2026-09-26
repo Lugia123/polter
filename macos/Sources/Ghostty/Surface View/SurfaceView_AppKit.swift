@@ -285,6 +285,12 @@ extension Ghostty {
         /// when the surface is saved as part of a project.
         var historyFilename: String?
 
+        /// This pane's scrollback snapshot in the project it was last saved
+        /// into or loaded from -- see `ProjectScrollback.Allocator`. Kept on
+        /// the pane rather than derived from its position so that moving the
+        /// pane around the split tree doesn't hand it another pane's history.
+        var projectSnapshot: ProjectScrollback.PaneSnapshot?
+
         // The cached contents of the screen.
         private(set) var cachedScreenContents: CachedValue<String>
         private(set) var cachedVisibleContents: CachedValue<String>
