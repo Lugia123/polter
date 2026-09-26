@@ -5946,6 +5946,32 @@ fn release_left(pane: HWND) -> bool {
     true
 }
 
+/// Which pane the core has been told is holding the middle button, or 0.
+///
+/// **The same one-press-one-release slot as `LEFT_DOWN_PANE`, for a different
+/// reason.** The middle button takes no capture (see `WM_MBUTTONDOWN`), so
+/// its `WM_MBUTTONUP` goes to whichever pane is under the pointer by then --
+/// not necessarily the one the press went to. The slot is what sends the
+/// release to the pane that saw the press, and sends nothing for a release
+/// whose press no pane saw.
+static MIDDLE_DOWN_PANE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Tell the core the middle button went down on this pane, and remember it.
+fn press_middle(pane: HWND) {
+    MIDDLE_DOWN_PANE.store(pane.0 as isize, std::sync::atomic::Ordering::Release);
+    mouse_button(pane, crate::ffi::MOUSE_PRESS, crate::ffi::MOUSE_MIDDLE);
+}
+
+/// Tell the core the middle button came up -- **on the pane that saw the
+/// press, at most once per press**, whichever pane the release arrived at.
+/// Nothing at all when no pane saw a press.
+fn release_middle() {
+    let key = MIDDLE_DOWN_PANE.swap(0, std::sync::atomic::Ordering::AcqRel);
+    if key != 0 {
+        mouse_button(HWND(key as *mut _), crate::ffi::MOUSE_RELEASE, crate::ffi::MOUSE_MIDDLE);
+    }
+}
+
 /// no position to report and must not invent one.
 fn mouse_button(pane: HWND, state: i32, button: i32) {
     let s = surface_of(pane);
@@ -6179,6 +6205,39 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 // release from a position `mouse_pos` had not yet updated.
                 release_left(hwnd);
                 let _ = ReleaseCapture();
+                LRESULT(0)
+            }
+
+            // **The middle button. The host forwarded none of it before
+            // this**, so `middle-click-action` -- whose Windows default is
+            // `clipboard-paste` precisely because this host has no selection
+            // clipboard -- was a setting that could never run. The core does
+            // the paste itself on the press (`Surface.mouseButtonCallback`);
+            // all this has to do is say where and which button, the same two
+            // calls the left arms make.
+            //
+            // ⚠️ **No focus change and no capture, on purpose.** Focus: a
+            // middle click on another pane pastes into *that* pane, as on
+            // mac, without also asking it to be typed into. Capture: there is
+            // one capture per thread and the left arms already own its
+            // bookkeeping (`LEFT_DOWN_PANE`, `WM_CAPTURECHANGED`); a middle
+            // press taking it would let the middle release end a left drag.
+            // `MIDDLE_DOWN_PANE` is what stands in for capture here.
+            WM_MBUTTONDOWN => {
+                mouse_pos(hwnd, lp);
+                press_middle(hwnd);
+                LRESULT(0)
+            }
+            WM_MBUTTONUP => {
+                // `lp` is in *this* window's client coordinates, so it is a
+                // position only for the pane it arrived at. A release that
+                // belongs to another pane goes out without one rather than
+                // with a point measured against the wrong window.
+                let pressed = MIDDLE_DOWN_PANE.load(std::sync::atomic::Ordering::Acquire);
+                if pressed == hwnd.0 as isize {
+                    mouse_pos(hwnd, lp);
+                }
+                release_middle();
                 LRESULT(0)
             }
 

@@ -20,8 +20,11 @@ without anything saying the second was not asked for.
 
 # What this checks
 
-Every send of `MOUSE_RELEASE` -- and of `MOUSE_PRESS` -- must go through the
-one pair of helpers that keeps the count. A window procedure that calls the
+Every send of `MOUSE_RELEASE` -- and of `MOUSE_PRESS` -- must go through a
+pair of helpers that keeps the count: `press_left` / `release_left`, and
+`press_middle` / `release_middle` for the middle button, which takes no
+capture and so needs the slot to send its release to the pane that saw the
+press. A window procedure that calls the
 raw forwarder is a second place the pairing can be got wrong, and the shape of
 getting it wrong is a duplicate that reads exactly like a repeat the user
 asked for.
@@ -29,7 +32,8 @@ asked for.
 # What this does not check
 
   * **That the pairing itself is right.** `release_left` returning false when
-    the button was never down is a fact about its body, not about its callers.
+    the button was never down is a fact about its body, not about its callers;
+    so is `release_middle` sending nothing when no pane saw a press.
   * **Anything on the machine.** That four clicks now produce four dispatches
     is WT's reading and cannot be taken here: this file reads text.
 
@@ -45,7 +49,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 
 # The helpers that are allowed to send one, and nothing else.
-GATEKEEPERS = ("fn press_left(", "fn release_left(")
+GATEKEEPERS = (
+    "fn press_left(",
+    "fn release_left(",
+    "fn press_middle(",
+    "fn release_middle(",
+)
 SEND = re.compile(r"\bmouse_button\s*\(([^;]*?)\)\s*;", re.S)
 KINDS = re.compile(r"MOUSE_(PRESS|RELEASE)\b")
 
@@ -86,7 +95,8 @@ def scan(src: str):
         problems.append(
             f"`{owner}` (tabs.rs:{line}) sends MOUSE_{kind.group(1)} straight to the "
             f"forwarder. Every press and release has to go through `press_left` / "
-            f"`release_left`, which are what keep one press to one release -- a "
+            f"`release_left` (or the `_middle` pair), which are what keep one "
+            f"press to one release -- a "
             f"second path is a second place the pairing can be wrong, and a "
             f"duplicate release is indistinguishable from a click the user made."
         )
@@ -117,9 +127,19 @@ CANARY_PROSE = CANARY_OK.replace(
 )
 
 
+# The middle button has a pair of its own; a raw send of it is just as wrong.
+CANARY_BAD_MIDDLE = CANARY_OK.replace(
+    "        release_left(hwnd);\n",
+    "        mouse_button(hwnd, crate::ffi::MOUSE_PRESS, crate::ffi::MOUSE_MIDDLE);\n",
+)
+
+
 def self_test() -> None:
     if not scan(CANARY_BAD)[0]:
         print("FAIL: a window procedure sending a raw release was not reported.")
+        sys.exit(2)
+    if CANARY_BAD_MIDDLE == CANARY_OK or not scan(CANARY_BAD_MIDDLE)[0]:
+        print("FAIL: a window procedure sending a raw middle press was not reported.")
         sys.exit(2)
     if scan(CANARY_OK)[0]:
         print("FAIL: a release sent through the pair was reported anyway.")
@@ -128,7 +148,8 @@ def self_test() -> None:
         print("FAIL: a call written in a comment was read as a call. Prose is not "
               "code, and this checker reads text.")
         sys.exit(2)
-    print("probe self-test: OK (raw send reported, guarded send accepted, prose ignored)")
+    print("probe self-test: OK (raw send reported, raw middle send reported, "
+          "guarded send accepted, prose ignored)")
 
 
 def main() -> int:
